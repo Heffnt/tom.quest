@@ -69,6 +69,120 @@ if (sharedBlock && daemonBlock) {
   }
 }
 
+// 2b. Model table: SESSION_MODELS (ttsShared.ts, the one home) and the
+// daemon's mirror of the same name in session.mjs must agree entry for entry
+// — name, family, id and effort — because the family picks the RUNNER on the
+// box and the id/effort are what that runner puts on the command line. Same
+// block-scoped extraction and count-vs-parsed assertion as the repo map, so
+// an entry the regex cannot read fails loudly rather than vanishing from both
+// sides. `as const` on the one home is stripped by the block regex's `}`.
+// witness: change gpt-5.6-terra's effort on one side only, or add a model to
+// ttsShared without mirroring it.
+const modelEntryRe =
+  /"?([\w.-]+)"?: \{ family: "(\w+)", id: (null|"[^"]+"), effort: (null|"[^"]+") \}/g;
+const readModels = (block, where) => {
+  const entries = [...block.matchAll(modelEntryRe)].map(
+    (m) => `${m[1]}={${m[2]},${m[3]},${m[4]}}`,
+  );
+  const lines = block
+    .split("\n")
+    .filter((l) => l.includes(":") && !l.trim().startsWith("//")).length;
+  if (lines !== entries.length) {
+    failures.push(
+      `${where}: ${lines} model entr${lines === 1 ? "y" : "ies"} but only ${entries.length} parsed — unreadable entry shape`,
+    );
+  }
+  return entries;
+};
+// The block is the run of indented lines between `SESSION_MODELS = {` and the
+// column-0 `}` — one entry per line is the shape both homes use.
+const modelBlockRe = /SESSION_MODELS = \{\r?\n((?:[ \t]+.*\r?\n)+)\}/;
+const sharedModels = shared.match(modelBlockRe);
+const daemonModels = sessionMjs.match(modelBlockRe);
+if (!sharedModels) failures.push("ttsShared.ts: SESSION_MODELS not found");
+if (!daemonModels) failures.push("session.mjs: SESSION_MODELS not found");
+if (sharedModels && daemonModels) {
+  const a = readModels(sharedModels[1], "ttsShared.ts SESSION_MODELS").sort().join("|");
+  const b = readModels(daemonModels[1], "session.mjs SESSION_MODELS").sort().join("|");
+  if (a !== b) {
+    failures.push(`model tables drifted:\n  ttsShared.ts: ${a}\n  session.mjs:  ${b}`);
+  }
+  // Every family named must have a runner branch in startQuery: "claude" is
+  // the SDK query and "codex" the codexQuery import. A third family with no
+  // branch would silently run as Claude.
+  const families = new Set([...a.matchAll(/=\{(\w+),/g)].map((m) => m[1]));
+  for (const family of families) {
+    if (family !== "claude" && family !== "codex") {
+      failures.push(`SESSION_MODELS names family "${family}" but session.mjs has no runner for it`);
+    }
+  }
+}
+// The absent-model default must be the same word on both sides. The one home
+// keeps it as the named constant LEGACY_SESSION_MODEL (modelFamily reads that
+// name, and the browser imports it rather than spelling "opus" again); the
+// daemon, which cannot import .ts, still carries the literal in `name ??
+// "opus"`. Both halves are read here and compared.
+const sharedDefault = shared.match(
+  /LEGACY_SESSION_MODEL[^=\n]*= "([\w.-]+)"/,
+);
+const daemonDefault = sessionMjs.match(/SESSION_MODELS\[\w+ \?\? "([\w.-]+)"\]\.family/);
+if (!sharedDefault) failures.push("ttsShared.ts: LEGACY_SESSION_MODEL literal not found");
+if (!/SESSION_MODELS\[\w+ \?\? LEGACY_SESSION_MODEL\]\.family/.test(shared)) {
+  failures.push(
+    "ttsShared.ts: modelFamily does not read LEGACY_SESSION_MODEL — the legacy word has one home",
+  );
+}
+if (!daemonDefault) failures.push("session.mjs: modelFamily's absent-model default not found");
+if (sharedDefault && daemonDefault && sharedDefault[1] !== daemonDefault[1]) {
+  failures.push(
+    `absent-model default drifted: ttsShared.ts reads absent as "${sharedDefault[1]}", session.mjs as "${daemonDefault[1]}"`,
+  );
+}
+
+// 2c. The PLANNER prompt names the models by hand. worker/jobs/plan-graphs.mjs
+// builds the prompt that tells the batch planner which model words it may put
+// on a task, and that list is prose inside a template literal — nothing types
+// it against SESSION_MODELS. Both directions are checked, the same shape as the
+// repo map: every model in the one home must be named in the prompt (a model
+// added to the table but not the prompt is a model the planner never chooses),
+// and every model-shaped quoted word in the prompt must exist in the table (a
+// word the table lacks is a name the SESSION_MODEL validator rejects, so the
+// planner's output is dropped on write).
+// witness: add a model to SESSION_MODELS without naming it in the prompt, or
+// rename gpt-5.6-terra in the table and leave the prompt saying the old word.
+const planGraphs = readFileSync("worker/jobs/plan-graphs.mjs", "utf8");
+// The prompt is the whole body of `function prompt(ctx) { ... }` — the region
+// bounded by its declaration and the next column-0 `}`.
+const promptBody = planGraphs.match(/\nfunction prompt\(ctx\) \{\n([\s\S]*?)\n\}\n/);
+if (!promptBody) {
+  failures.push("plan-graphs.mjs: the planner prompt body (function prompt(ctx)) not found");
+}
+if (promptBody && sharedModels) {
+  const tableNames = [...sharedModels[1].matchAll(modelEntryRe)].map((m) => m[1]);
+  // A quoted word that LOOKS like a model name: a gpt-*/claude-* id, or one of
+  // the bare Claude tier words. Anything else in the prompt is ordinary prose.
+  const MODEL_SHAPED = /^(?:gpt-[\w.-]+|claude-[\w.-]+|opus|sonnet|haiku|fable)$/i;
+  const quoted = new Set(
+    [...promptBody[1].matchAll(/"([\w.-]+)"/g)]
+      .map((m) => m[1])
+      .filter((word) => MODEL_SHAPED.test(word)),
+  );
+  for (const name of tableNames) {
+    if (!quoted.has(name)) {
+      failures.push(
+        `plan-graphs.mjs planner prompt never names the model "${name}" — SESSION_MODELS offers it but the planner is never told it exists`,
+      );
+    }
+  }
+  for (const word of quoted) {
+    if (!tableNames.includes(word)) {
+      failures.push(
+        `plan-graphs.mjs planner prompt offers the model "${word}", which SESSION_MODELS does not define — the SESSION_MODEL validator rejects it`,
+      );
+    }
+  }
+}
+
 // 3. The usage-limit fingerprint: the daemon's account auto-switch
 // (USAGE_LIMIT_RE in session.mjs) and the scheduler's circuit breaker
 // (AUTO_USAGE_RE in claudeSessions.ts) must mean the same thing by "the
@@ -95,6 +209,11 @@ if (usageA && usageB) {
     "You've hit your session limit · resets 8:10am (UTC)",
     "Claude AI usage limit reached",
     "5-hour limit reached",
+    // Codex's cap vocabulary (2026-09-04): the app-server protocol's
+    // RateLimitReachedType literals and the CLI's prose.
+    "usage_limit_reached",
+    "rate_limit_reached",
+    "You've hit your usage limit. Try again later.",
   ]) {
     if (!re.test(observed)) {
       failures.push(`usage-limit regex misses observed cap text: "${observed}"`);

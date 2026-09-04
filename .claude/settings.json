@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node scripts/codex-run.mjs:*)",
+      "Bash(tts-codex:*)"
+    ]
+  }
+}

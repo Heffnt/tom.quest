@@ -1,0 +1,22 @@
+#!/bin/sh
+# tts-codex — hand a prompt to OpenAI Codex from anywhere on the Jarvis Box.
+#
+# WHY THIS EXISTS: a Claude session's `codex` subagent runs
+# `node scripts/codex-run.mjs` from the repo root. That works in tom.quest and
+# nowhere else — a session working in CMT, in a checkout that predates the
+# script, or in no repo at all has no such file to run. This is the same thing
+# on the PATH.
+#
+# It is a two-line forwarder ON PURPOSE. setup.sh copies scripts/codex-run.mjs
+# to /opt/tts/codex-run.mjs, and everything that matters — the flags, the
+# defaults, the clean-stdout contract, the timeout — lives in that one file, so
+# the two ways of reaching Codex can never drift apart.
+#
+#   echo "<prompt>" | tts-codex [same flags as scripts/codex-run.mjs]
+#
+# Flags: --cwd DIR, --sandbox read-only|workspace-write, --model NAME,
+# --effort LEVEL, --timeout MS, --schema FILE, --keep-logs. The prompt arrives
+# on stdin; only Codex's final answer comes back on stdout.
+#
+# Requires `codex login status` to say Logged in (setup.sh step 4, NEXT STEPS).
+exec node /opt/tts/codex-run.mjs "$@"

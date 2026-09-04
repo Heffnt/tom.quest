@@ -1,6 +1,10 @@
 import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+// The stored form of "which model does this run on". ONE HOME (ttsShared.ts):
+// the name implies its FAMILY, and the family is what picks the runner on the
+// Jarvis Box — Claude's Agent SDK or OpenAI's Codex CLI.
+import { SESSION_MODEL } from "./ttsShared";
 
 // `agent` is not a rank between `user` and `admin`: it is a side branch that
 // reads the surfaces in convex/agentSurfaces.ts and writes nothing. See
@@ -571,14 +575,14 @@ export default defineSchema({
     needs: v.optional(v.array(v.id("dtsTodos"))),
     // tasks: who does it. Same meaning as the plan-step actor it succeeds.
     actor: v.optional(v.union(v.literal("tom"), v.literal("agent"))),
-    // The model tier an agent task needs. ABSENT IS THE DEFAULT AND THE NORM:
-    // workers run Opus, so nothing is written here for an ordinary task. The
-    // planner sets "fable" on the rare task whose difficulty warrants the
-    // stronger model, and the worker reads it as its --model flag. One literal
-    // rather than a free string: an unrecognized tier name would be a silent
-    // mis-dispatch, and the tiers below Opus are chosen per-call in-session,
-    // never stored on a task.
-    model: v.optional(v.literal("fable")),
+    // The model an agent task needs, from the one union in ttsShared
+    // (SESSION_MODELS: opus | sonnet | fable | gpt-5.6-sol | gpt-5.6-terra).
+    // ABSENT IS THE NORM: the scheduler falls back to the fleet default
+    // (claudeAutoConfig.defaultModel) for an untagged task, so the planner
+    // writes here only when THIS task needs a particular model. A closed union
+    // rather than a free string: an unrecognized name would be a silent
+    // mis-dispatch (the planner route drops one instead of carrying it).
+    model: v.optional(SESSION_MODEL),
     // Completion evidence — the artifact that shows the work happened (branch,
     // PR, brief). The plan-step field of the same name, per row.
     evidence: v.optional(v.string()),
@@ -998,14 +1002,21 @@ export default defineSchema({
     // resumable via sdkSessionId; leaving is not an ending.
     outcome: v.optional(v.union(v.literal("completed"), v.literal("errored"))),
     outcomeSummary: v.optional(v.string()), // agent-authored one-liner + rulings recorded
-    // The model tier this session runs on, carried from the task the scheduler
-    // claimed (dtsTodos.model). ABSENT IS THE DEFAULT AND THE NORM: a worker
-    // runs Opus unless the planner marked the task "fable", so nothing is
-    // written here for an ordinary session. The daemon reads it off the poll
-    // payload and passes it to the SDK; one literal rather than a free string,
-    // for the same reason the task field is (an unrecognized tier name would be
-    // a silent mis-dispatch).
-    model: v.optional(v.literal("fable")),
+    // The model this session runs on (ttsShared SESSION_MODELS). Its FAMILY
+    // picks the runner on the Jarvis Box: "claude" goes through the Agent SDK,
+    // "codex" through OpenAI's Codex CLI. The daemon reads it off the poll
+    // payload every tick, so setSessionModel changes it mid-session.
+    //
+    // ABSENT MEANS LEGACY OPUS, not "unset": every row written since
+    // 2026-09-04 carries an explicit model (insertSession fills in
+    // DEFAULT_SESSION_MODEL), and modelFamily() reads absent as "opus" because
+    // that is what the rows written before this field existed actually ran.
+    model: v.optional(SESSION_MODEL),
+    // Provenance of a "reopen as" (forkSessionAs): the session this one
+    // continues on a different model. The fork is a NEW row — a cross-family
+    // change cannot resume an SDK session — and this is the only thread back
+    // to where its transcript came from.
+    forkedFrom: v.optional(v.id("claudeSessions")),
     sdkSessionId: v.optional(v.string()), // set once the SDK reports it; resume key
     cwd: v.optional(v.string()), // daemon-reported working dir on the Jarvis Box
     lastSdkEventAt: v.optional(v.number()), // "last output Xm ago" fact
@@ -1130,6 +1141,25 @@ export default defineSchema({
         liveSessions: v.number(),
       }),
     ),
+    // Codex account usage, read off the Codex CLI by the daemon and reported
+    // with the heartbeat. The scheduler's weekly gate reads it: at or past
+    // CODEX_WEEKLY_CAP_PERCENT (ttsShared) the fleet starts no Codex session.
+    // The five-hour figure is recorded but NOT gated on (Tom, 2026-09-04) —
+    // that window refills by itself while the week does not. `readAt` is the
+    // instant the reading was TAKEN, not the instant it was reported: the
+    // daemon keeps resending its last successful reading unchanged while later
+    // reads fail, so an old readAt means "nobody has managed to ask Codex for a
+    // while". Absent usage and usage older than CODEX_USAGE_STALE_MS
+    // (ttsShared) are both UNKNOWN, and unknown admits, so a daemon that cannot
+    // read the CLI never silently freezes the fleet.
+    codexUsage: v.optional(
+      v.object({
+        weeklyUsedPercent: v.number(),
+        fiveHourUsedPercent: v.number(),
+        weeklyResetsAt: v.optional(v.number()),
+        readAt: v.number(),
+      }),
+    ),
   }),
 
   // Autonomous-fleet admission config (P3, ratified 2026-08-28). Singleton via
@@ -1144,6 +1174,10 @@ export default defineSchema({
     minFreeMemMb: v.number(), // admit while freeMemMb >= this
     maxLiveAutonomous: v.number(),
     maxNewPerTick: v.number(),
+    // The fleet default model: what an autonomous session runs on when the
+    // todo it claimed named no model of its own. Absent reads as
+    // DEFAULT_SESSION_MODEL (ttsShared), which is the strongest Codex model.
+    defaultModel: v.optional(SESSION_MODEL),
     updatedAt: v.number(),
   }),
 });

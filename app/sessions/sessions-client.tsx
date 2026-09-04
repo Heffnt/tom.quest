@@ -96,6 +96,7 @@ export default function SessionsClient() {
         daemonStale={daemonStale}
         daemonLastSeenAt={health?.lastSeenAt}
         onBack={closeSession}
+        onOpen={openSession}
       />
     </div>
   ) : (

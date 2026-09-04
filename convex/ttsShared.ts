@@ -13,6 +13,8 @@
 //                       used for due-date arithmetic, where '2 a.m. belongs to
 //                       yesterday' would be wrong.
 
+import { v } from "convex/values";
+
 const HOUR_MS = 3_600_000;
 export const DAY_MS = 86_400_000;
 
@@ -413,6 +415,80 @@ export const NO_REPO = "none";
 export const SESSION_REPO_NAMES = Object.keys(
   SESSION_REPOS,
 ) as (keyof typeof SESSION_REPOS)[];
+
+// ── Session models (ratified by Tom, 2026-09-04) ─────────────────────────────
+// THE ONE HOME for which model a session runs on. A model name implies its
+// FAMILY, and the family is what picks the runner on the Jarvis Box: "claude"
+// runs through the Agent SDK, "codex" through OpenAI's Codex CLI
+// (worker/session-host/codex-query.mjs). There is no separate "agent" field —
+// the model IS the choice.
+//
+// Rules Tom set:
+//   - He can always choose the model for his own sessions, at creation and
+//     mid-session (setSessionModel; a cross-family change is a "reopen as").
+//   - Autonomous sessions use a todo's tagged model if it has one, else the
+//     fleet default (claudeAutoConfig.defaultModel), which starts at the
+//     strongest Codex model.
+//   - When Codex's WEEKLY usage is at or past CODEX_WEEKLY_CAP_PERCENT, the
+//     fleet starts no Codex session: untagged todos fall back to "opus",
+//     Codex-tagged todos wait. The 5-hour window is not gated.
+//   - Codex subagents inherit the parent's model unless the parent asks for
+//     a cheaper one; "gpt-5.6-terra" is the cheap tier. No luna.
+//
+// `id` is what the runner passes on the command line; null means the
+// account default (today's behaviour for an ordinary Claude session).
+// `effort` is Codex's model_reasoning_effort, sent on every turn.
+//
+// MIRRORED in worker/session-host/session.mjs (the daemon cannot import .ts);
+// scripts/check-session-mirrors.mjs fails guardrails on drift.
+export const SESSION_MODELS = {
+  opus: { family: "claude", id: null, effort: null },
+  sonnet: { family: "claude", id: "claude-sonnet-5", effort: null },
+  fable: { family: "claude", id: "claude-fable-5", effort: null },
+  "gpt-5.6-sol": { family: "codex", id: "gpt-5.6-sol", effort: "xhigh" },
+  "gpt-5.6-terra": { family: "codex", id: "gpt-5.6-terra", effort: "medium" },
+} as const;
+export type SessionModel = keyof typeof SESSION_MODELS;
+export type ModelFamily = (typeof SESSION_MODELS)[SessionModel]["family"];
+export const SESSION_MODEL_NAMES = Object.keys(
+  SESSION_MODELS,
+) as SessionModel[];
+/** The strongest Codex model Tom has access to — the default for new
+ * sessions and the fleet default's starting value. */
+export const DEFAULT_SESSION_MODEL: SessionModel = "gpt-5.6-sol";
+/** Where the fleet lands when Codex's weekly cap is hit and the todo named
+ * no model of its own. */
+export const CODEX_FALLBACK_MODEL: SessionModel = "opus";
+export const CODEX_WEEKLY_CAP_PERCENT = 90;
+/**
+ * How long a Codex usage reading stays believable. The daemon re-reads the
+ * Codex CLI every few minutes and keeps sending its LAST SUCCESSFUL reading —
+ * with that reading's original readAt — when a later read fails, so the age of
+ * readAt is the whole staleness signal. Past this window the scheduler treats
+ * the reading as UNKNOWN, exactly as if it were absent, and unknown ADMITS: a
+ * CLI that stopped answering must not leave a months-old "90%" holding the
+ * Codex door shut forever.
+ */
+export const CODEX_USAGE_STALE_MS = 15 * 60_000;
+/** The stored form. One union of literals, DERIVED from the table above so a
+ * model added there is accepted by the validator in the same edit — a
+ * hand-copied union rejected a model the table already knew. An unknown model
+ * name is still rejected at the validator, never silently dispatched. */
+export const SESSION_MODEL = v.union(
+  ...SESSION_MODEL_NAMES.map((m) => v.literal(m)),
+);
+export function isSessionModel(name: unknown): name is SessionModel {
+  return typeof name === "string" && Object.prototype.hasOwnProperty.call(SESSION_MODELS, name);
+}
+/** A row written before models existed (model absent) ran Claude on the
+ * account default — so absent reads as this. ONE HOME for the legacy word: the
+ * browser and modelFamily below both read it here rather than spelling "opus"
+ * again (the daemon's mirror in worker/session-host/session.mjs carries the
+ * literal, and scripts/check-session-mirrors.mjs fences the two together). */
+export const LEGACY_SESSION_MODEL: SessionModel = "opus";
+export function modelFamily(model: SessionModel | undefined): ModelFamily {
+  return SESSION_MODELS[model ?? LEGACY_SESSION_MODEL].family;
+}
 
 export function isSessionRepo(name: string): boolean {
   return Object.prototype.hasOwnProperty.call(SESSION_REPOS, name);

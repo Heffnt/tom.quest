@@ -20,12 +20,16 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import {
   log,
   sessionsFetch,
+  sessionsGet,
   sleep,
   backoffMs,
   truncated,
   ERROR_TEXT_LIMIT,
+  scrubbedEnv,
 } from "./lib.mjs";
 import { BANNED_TOOLS, bannedToolDenial } from "./banned-tools.mjs";
+import { codexQuery } from "./codex-query.mjs";
+import { FORK_TRANSCRIPT_FILE, renderTranscript } from "./fork-transcript.mjs";
 
 const execFile = promisify(execFileCb);
 
@@ -46,6 +50,44 @@ const REPO_GITHUB = {
   WikiTom: "Heffnt/WikiTom",
 };
 
+// Which model a session runs on, and therefore which RUNNER: family "claude"
+// goes through the Agent SDK (startQuery's query()), family "codex" through
+// OpenAI's Codex CLI (codex-query.mjs). `id` is what the runner is handed —
+// null means the account default, which is how an ordinary Claude session
+// has always run; `effort` is Codex's model_reasoning_effort, repeated on
+// every turn (a resume without it falls back to config.toml).
+// MIRROR of SESSION_MODELS in convex/ttsShared.ts (the one home; ratified by
+// Tom 2026-09-04) — same reason as REPO_GITHUB above: this file cannot import
+// .ts. Fenced: scripts/check-session-mirrors.mjs fails guardrails on drift.
+const SESSION_MODELS = {
+  opus: { family: "claude", id: null, effort: null },
+  sonnet: { family: "claude", id: "claude-sonnet-5", effort: null },
+  fable: { family: "claude", id: "claude-fable-5", effort: null },
+  "gpt-5.6-sol": { family: "codex", id: "gpt-5.6-sol", effort: "xhigh" },
+  "gpt-5.6-terra": { family: "codex", id: "gpt-5.6-terra", effort: "medium" },
+};
+// The default is the SAME on both sides of the mirror: a row written before
+// the model field existed ran Claude on the account default, so absent reads
+// as "opus" (ttsShared's modelFamily says the same).
+//
+// A name this daemon does NOT know is not an error: the one home gains a
+// model before the box is redeployed, and the row is already written. It
+// degrades to the opus spec — the account default every session ran before
+// models existed — and the Session logs it once. Before this guard the
+// lookup threw in the constructor, outside the poll walk's try, and the
+// daemon crash-looped under systemd on every poll that listed the row (the
+// same guard #applyModel already had for a mid-session change).
+export function knownModel(name) {
+  return Object.hasOwn(SESSION_MODELS, name ?? "opus");
+}
+export function modelSpec(name) {
+  return SESSION_MODELS[knownModel(name) ? (name ?? "opus") : "opus"];
+}
+export function modelFamily(name) {
+  if (!knownModel(name)) name = "opus";
+  return SESSION_MODELS[name ?? "opus"].family;
+}
+
 // The live-tail buffer segment-finalizes past this size so the hot
 // claudeStreamBuf row stays small forever (matches the schema's ~16KB note).
 const BUF_SEGMENT_BYTES = 16 * 1024;
@@ -53,15 +95,29 @@ const BUF_SEGMENT_BYTES = 16 * 1024;
 // permission, status change, error) bypass it.
 const FLUSH_THROTTLE_MS = 400;
 
-// ── Permission posture (ratified by Tom, 2026-08-28 revision; canonical home
-// WikiTom tts/spec.md §20.2) ─────────────────────────────────────────────────
+// ── Permission posture (ratified by Tom, 2026-08-28; per-command checks
+// narrowed to autonomous sessions by Tom's ruling of 2026-09-04; canonical
+// home WikiTom tts/spec.md §20.2) ────────────────────────────────────────────
 // Unified auto mode, every session mode: no tool call parks on Tom. The
 // durable safety boundary is structural, not per-call — sessions work in
 // throwaway workdirs under /var/cache (deleted at end), pushes land only in
 // the session/<id> branch namespace, merging anything is Tom's gate (the
 // execute-approved PR-gate precedent), rulings can only come from Tom's
 // pens, and every allowed call still lands as a tool-call transcript row for
-// review. The ONE per-call check kept: file-editing tools must target the
+// review.
+//
+// The 2026-09-04 ruling: the Jarvis Box IS the sandbox. The per-command
+// checks below — the out-of-workdir edit denial and the Bash classifier
+// tiers 1–3 — apply to AUTONOMOUS sessions only. An interactive session is
+// one Tom opened and is steering; its commands are authorized by him, and a
+// classifier second-guessing them costs latency and false denials for no
+// boundary the structure does not already hold. What stays for EVERY mode:
+// the banned-tool deny (AskUserQuestion has no surface anywhere) and the
+// Tier-0 self-destruction guard in #canUseTool, because restarting the
+// daemon kills every OTHER live session, not just the one asking — that is
+// a boundary between sessions, not a check on Tom.
+//
+// The edit check, where it applies: file-editing tools must target the
 // session workdir — auto-DENIED with a corrective message otherwise (the
 // observed gotcha where the model writes to hallucinated absolute paths
 // before checking cwd). MultiEdit is included because it is the same class
@@ -75,14 +131,17 @@ const EDIT_TOOLS = new Set(["Write", "Edit", "NotebookEdit", "MultiEdit"]);
 // in #canUseTool for any path that reaches the gate anyway.
 
 // ── The Bash classifier (Tom's ruling 2026-08-29, adoption.md
-//    `session-permission-posture`) ──────────────────────────────────────────
+//    `session-permission-posture`; autonomous sessions only since the
+//    2026-09-04 ruling) ─────────────────────────────────────────────────────
 // Auto mode still parks NOTHING on Tom. But the structural boundary above is
 // a boundary on FILES and BRANCHES, and a shell is neither: one Bash call can
 // push to main, read any env var and POST it somewhere, or rewrite the Jarvis Box's
-// own /etc and account config. So Bash — and only Bash — gets a cheap-model
-// classifier standing in for the prompt that used to park. Three tiers,
-// cheapest first, because latency here is latency on every command a session
-// runs.
+// own /etc and account config. So Bash — and only Bash, and only in an
+// AUTONOMOUS session (nobody is steering it) — gets a cheap-model classifier
+// standing in for the prompt that used to park. Three tiers, cheapest first,
+// because latency here is latency on every command a session runs. Codex
+// sessions never reach this gate at all: Codex reports commands after they
+// ran (codex-query.mjs header).
 //
 // Tier 1: the system's own write pens. A session records its outcome and
 // prepares todos by key-authed curl to $CONVEX_SITE_URL — that IS the
@@ -136,6 +195,12 @@ const SHELL_CHAINING_RE = /[\n;&|`]|\$\(/;
 // call, which then allows the benign command.
 const BASH_DANGER_RE =
   /\bgit\b(?:[^\n;|&]|\\\n)*\bpush\b|\bssh\b|\bscp\b|\brsync\b|\bsudo\b|\bsystemctl\b|\bcrontab\b|\/etc\/|\/root\/|\.claude-accounts|GH_TOKEN|WORKER_KEY|TOMQUEST_AGENT|\bgh\b|\bcurl\b(?:[^\n]|\\\n)*(?:-d\b|--data|--form|-F\b|-T\b|--upload)|\bwget\b|\brm\s+(?:-\w+\s+)*\//;
+
+// Tier 0 — the daemon's own service. Matched in EVERY session mode (the one
+// per-command check the 2026-09-04 ruling keeps for interactive sessions):
+// see #canUseTool.
+const DAEMON_SELF_DESTRUCT_RE =
+  /systemctl\s+(?:restart|stop|kill)\s+\S*tts-session-host|service\s+tts-session-host\s+(?:restart|stop)|pkill\s+[^|;&]*session-host/;
 
 // Tier 3 mechanics: the Jarvis Box's own authenticated `claude` CLI (same binary the
 // cron jobs use — CLAUDE_CONFIG_DIR is already in process.env), cheapest
@@ -210,17 +275,23 @@ const AUTO_MAX_TURNS = 200;
 const AUTO_TURN_CAP_MS = 90 * 60 * 1000;
 
 // Usage-limit signals in SDK errors / error results — the session-host
-// reacts by switching the active Max account (see maybeSwitchAccount).
+// reacts by switching the active Max account (see maybeSwitchAccount), for
+// family "claude" only; a Codex cap has no second account to switch to and
+// is handled server-side by the scheduler's breaker keyed on family.
 // Deliberately NARROW: "overloaded" (a transient API 529) must not burn the
 // 3h switch throttle on a signal that resolves by itself. "session limit" is
 // here from observation, not caution: on 2026-08-30 the CLI's actual text was
 // "You've hit your session limit · resets 8:10am (UTC)", which matched
 // NEITHER alternative — the account never switched and the scheduler burned a
-// dozen launches against a wall for an hour. LOCKSTEP: the scheduler's
-// circuit breaker in convex/claudeSessions.ts (AUTO_USAGE_RE) carries the
-// same pattern — change both together (scripts/check-session-mirrors.mjs
-// fails the build when they drift).
-export const USAGE_LIMIT_RE = /usage.?limit|limit reached|session limit/i;
+// dozen launches against a wall for an hour. The Codex alternatives
+// (usage_limit_reached / usage_limit_exceeded / rate_limit_reached, and the
+// prose "hit your usage limit") are the CLI's own cap vocabulary, added
+// 2026-09-04 so a capped Codex turn's error text reads as a cap to the
+// breaker. LOCKSTEP: the scheduler's circuit breaker in
+// convex/claudeSessions.ts (AUTO_USAGE_RE) carries the same pattern — change
+// both together (scripts/check-session-mirrors.mjs fails the build when they
+// drift).
+export const USAGE_LIMIT_RE = /usage.?limit|limit reached|session limit|usage_limit_(reached|exceeded)|rate_limit_reached|hit your usage limit/i;
 
 // ── Small utilities ──────────────────────────────────────────────────────────
 
@@ -306,7 +377,18 @@ async function* promptStream(queue) {
 // ── The Session class ────────────────────────────────────────────────────────
 
 export class Session {
-  constructor({ id, repo, repos, env, nextSeq, mode, reopenEpoch, onUsageSignal, model }) {
+  constructor({
+    id,
+    repo,
+    repos,
+    env,
+    nextSeq,
+    mode,
+    reopenEpoch,
+    onUsageSignal,
+    model,
+    forkedFrom,
+  }) {
     this.id = id;
     // The repos this session checks out (Tom's ruling 2026-08-30: a session may
     // hold MORE THAN ONE). `repos` is the live field; `repo` is the single
@@ -321,14 +403,31 @@ export class Session {
     this.checkouts = [];
     this.env = env;
     // "interactive" (absent on old rows) or "autonomous" — drives maxTurns,
-    // the wall-clock cap, and the auto-end-after-result behavior. The
-    // permission posture is mode-independent (unified auto mode).
+    // the wall-clock cap, the auto-end-after-result behavior, and (since the
+    // 2026-09-04 ruling) whether the per-command checks in #canUseTool run.
     this.mode = mode ?? "interactive";
-    // Model policy (Tom 2026-08-29): workers run the account default (Opus);
-    // the planner tags a todo "fable" when the work needs high intelligence
-    // and the scheduler copies the tag onto the session row. Only that one
-    // escalation is honored here — anything else stays on the default.
-    this.model = model === "fable" ? "claude-fable-5" : undefined;
+    // The model NAME from SESSION_MODELS (the row's `model`; absent = the
+    // legacy "opus"). Its family picks the runner in startQuery; the id and
+    // effort are looked up there, never stored here, so a mid-session model
+    // change (processServerState) is one field. Cross-family changes never
+    // reach a live Session — the server forks a new row instead.
+    this.model = model ?? "opus";
+    this.family = modelFamily(this.model);
+    // The row keeps its name (so processServerState's compare stays quiet);
+    // the spec it resolves to is opus. Logged once here; startQuery writes
+    // the matching system row so the transcript says it too.
+    if (!knownModel(this.model)) {
+      log(`session ${id}: model ${this.model} unknown to this daemon — running as opus`);
+    }
+    this.modelFallbackNoted = false;
+    // Set when the server changed the model while a turn was running: the
+    // live query keeps its model until the turn ends, then is retired so the
+    // next turn starts on the new one.
+    this.modelSwitchPending = false;
+    // Provenance of a "reopen as" fork: the session this one continues. Its
+    // transcript is fetched into the workdir as .tts-transcript.md
+    // (#writeForkTranscript) so the new model can read where it left off.
+    this.forkedFrom = forkedFrom ?? undefined;
     // Host-provided callback for usage-limit signals (account auto-switch
     // lives in session-host.mjs — it is box-level, not per-session).
     this.onUsageSignal = onUsageSignal;
@@ -496,6 +595,14 @@ export class Session {
   // rebuild it and say so in a system row — the transcript must never imply
   // continuity the filesystem doesn't have.
   async ensureWorkdir({ forResume = false } = {}) {
+    await this.#ensureWorkdirTree(forResume);
+    // After the tree, before any query: a fork's transcript file lives in
+    // the workdir and the model must find it on its first turn. Written
+    // afresh at claim; a between-turns rebuild only replaces a lost copy.
+    if (this.forkedFrom) await this.#writeForkTranscript({ refresh: !forResume });
+  }
+
+  async #ensureWorkdirTree(forResume) {
     const base = path.join(SESSIONS_ROOT, String(this.id));
 
     if (this.repos.length === 0) {
@@ -585,6 +692,87 @@ export class Session {
       await git(dir, "checkout", "-b", branch);
     }
     return dir;
+  }
+
+  // ── fork transcript ────────────────────────────────────────────────────────
+  // A "reopen as" (forkSessionAs, 2026-09-04) is a NEW session row on a
+  // different model family — the old SDK/Codex thread cannot be resumed by
+  // the other runner, so the only continuity is the transcript itself. The
+  // daemon pages GET /sessions/transcript for the OLD id and writes a
+  // readable rendering into the workdir as FORK_TRANSCRIPT_FILE; the mission
+  // prompt tells the model the file may be there (and may be missing).
+  // Runs in the daemon with the ingest key — never from a session shell.
+  //
+  // WHEN IT IS WRITTEN. The poll walk (session-host.mjs) does not claim a
+  // fork while its source is still in the live list, so by the time this
+  // runs at claim the source has ended and the fetch below sees its WHOLE
+  // transcript, ending included — an earlier version snapshotted whatever
+  // the source had persisted so far and never refreshed, so the new model
+  // read a transcript that stopped mid-turn. `refresh` is true at claim (the
+  // file is (re)written unconditionally — a daemon that died mid-claim can
+  // leave a stale one behind) and false on a between-turns rebuild, which
+  // only re-creates a copy the rebuild lost, from the same fetch of the same
+  // terminal source.
+  //
+  // Never throws: a fork whose transcript could not be fetched still starts
+  // (the system row says so), because the alternative is a session that
+  // fails for a reason the model could have worked around by asking.
+  async #writeForkTranscript({ refresh }) {
+    if (!this.workdir) return;
+    const file = path.join(this.workdir, FORK_TRANSCRIPT_FILE);
+    // The file must never be committed: it is Convex's transcript copied
+    // onto a disposable disk, and a `git add -A` would ship it in a PR.
+    // .git/info/exclude is per-checkout and untracked, so this cannot leak
+    // into the repo's own .gitignore either. Every checkout gets it — with
+    // one repo the workdir IS the checkout, with several the file sits in
+    // the parent, but a relative-path exclude still guards each clone.
+    for (const { dir } of this.checkouts) {
+      try {
+        const exclude = path.join(dir, ".git", "info", "exclude");
+        fs.mkdirSync(path.dirname(exclude), { recursive: true });
+        const current = fs.existsSync(exclude)
+          ? fs.readFileSync(exclude, "utf8")
+          : "";
+        if (!current.split("\n").includes(FORK_TRANSCRIPT_FILE)) {
+          fs.appendFileSync(
+            exclude,
+            `${current.endsWith("\n") || current === "" ? "" : "\n"}${FORK_TRANSCRIPT_FILE}\n`,
+          );
+        }
+      } catch (err) {
+        log(`session ${this.id}: could not write .git/info/exclude (ignored):`, String(err?.message ?? err));
+      }
+    }
+    if (!refresh && fs.existsSync(file)) return; // the rebuild kept it
+    try {
+      const rows = [];
+      let cursor = null;
+      // 200 rows per page (server contract); a long session is a few dozen
+      // pages, each one round trip. No cap on pages — the transcript is the
+      // whole point of the fork.
+      for (;;) {
+        const page = await sessionsGet(this.env, "/sessions/transcript", {
+          sessionId: String(this.forkedFrom),
+          ...(cursor ? { cursor } : {}),
+        });
+        for (const r of page.rows ?? []) rows.push(r);
+        cursor = page.nextCursor ?? null;
+        if (!cursor) break;
+      }
+      fs.writeFileSync(
+        file,
+        renderTranscript(rows, { forkedFrom: String(this.forkedFrom) }),
+      );
+      this.finalizeRow("system", {
+        text: `transcript of session ${this.forkedFrom} (${rows.length} rows) written to ${FORK_TRANSCRIPT_FILE} in the workspace`,
+      });
+    } catch (err) {
+      const msg = truncated(String(err?.message ?? err), ERROR_TEXT_LIMIT).value;
+      log(`session ${this.id}: fork transcript fetch failed:`, msg);
+      this.finalizeRow("system", {
+        text: `the transcript of session ${this.forkedFrom} could not be fetched, so ${FORK_TRANSCRIPT_FILE} is missing from the workspace: ${msg}`,
+      });
+    }
   }
 
   // Last chance before the workdir is deleted (spec §20.2: stopping must never
@@ -713,59 +901,59 @@ export class Session {
 
   startQuery({ resume } = {}) {
     // The daemon's own secrets, dropped from the env the session's shell
-    // inherits. Under systemd they all arrive via EnvironmentFile=/etc/tts/
-    // worker.env, so without this destructure-drop `env` in any Bash call
-    // prints them: SESSIONS_WORKER_KEY authorizes transcript ingest (a
-    // confused session could rewrite ANY transcript) and GH_TOKEN is repo
-    // write for the whole account. Neither is reachable through the
-    // sanctioned pens, so nothing legitimate needs them IN THE ENV: git
+    // inherits — the list and the reasoning behind every name live in
+    // env-scrub.mjs (one home for this shell, the classifier's spawn and the
+    // daemon's Codex spawns). Under systemd they all arrive via
+    // EnvironmentFile=/etc/tts/worker.env, so without the scrub `env` in any
+    // Bash call prints them. Nothing legitimate needs them IN THE ENV: git
     // authenticates through the global credential helper and gh through
     // /root/.config/gh/hosts.yml (both installed by setup.sh, both outside
     // every work tree), so `git push` and `gh pr create` work in a shell
-    // that cannot print the token with `env`.
-    //
-    // TOMQUEST_AGENT_USERNAME/PASSWORD are the tom.quest sign-in the browser
-    // uses, and they are dropped for a DIFFERENT reason than the two above:
-    // not because a session must not act as that account — tts-browse still
-    // signs in as it — but because the password must not be printable. A
-    // session's whole transcript is stored in Convex, so one `env` or `echo`
-    // would write it there in plaintext, where narrowing the account's role
-    // later cannot take it back. tts-browse reads /etc/tts/worker.env itself
-    // (it runs as the same user), so the flag keeps working with the names
-    // absent from this env.
-    //
-    // The scrub and the role are INDEPENDENT defences and neither replaces
-    // the other: the role means a leak costs little, the scrub means there is
-    // nothing to leak.
-    //
-    // TURING_READ_KEY is deliberately NOT dropped. It is the cluster API's
-    // read-only credential (turing-api's verify_read_key: GET /gpu-report,
-    // GET /jobs, GET /sessions/{name}/output and nothing else), and the
-    // `tts-turing` command a session runs reads it straight from this env.
-    // That is the whole reason a second key exists: the full TURING_API_KEY
-    // also authorizes POST /sessions/{name}/run — arbitrary commands on the
-    // cluster — and must stay out of /etc/tts/worker.env entirely, so there
-    // is nothing here to scrub. If a write verb is ever added to turing-api
-    // under the read key, THIS inheritance is what makes it a session
-    // capability; that widening is a decision, not a refactor.
-    //
-    // TURING_API_KEY is scrubbed even though it SHOULD never be in
-    // worker.env: on 2026-08-30 a session's shell held a stale copy
-    // inherited from exactly that file (three, in fact), and staleness is
-    // not a control — the key authorizes arbitrary command execution on the
-    // WPI cluster. The env file has been cleaned; this line is what makes
-    // the mistake unrepeatable instead of merely repaired.
-    const {
-      SESSIONS_WORKER_KEY: _ingestKey,
-      GH_TOKEN: _ghToken,
-      TOMQUEST_AGENT_USERNAME: _browseUser,
-      TOMQUEST_AGENT_PASSWORD: _browsePassword,
-      TURING_API_KEY: _turingWriteKey,
-      ...inheritedEnv
-    } = process.env;
+    // that cannot print the token. keepTtsKey: ONLY the TTS worker key
+    // enters a session's shell — the pens below need it.
+    const inheritedEnv = scrubbedEnv({ keepTtsKey: true });
     this.queue = new TurnQueue();
     this.abort = new AbortController();
     this.interruptRequested = false;
+    this.modelSwitchPending = false;
+    const spec = modelSpec(this.model);
+    this.family = spec.family;
+    if (!knownModel(this.model) && !this.modelFallbackNoted) {
+      // The transcript's copy of the constructor's log line, once.
+      this.modelFallbackNoted = true;
+      this.finalizeRow("system", {
+        text: `model ${this.model} unknown to this daemon — running as opus`,
+      });
+    }
+    const sessionEnv = {
+      ...inheritedEnv,
+      CONVEX_SITE_URL: this.env.CONVEX_SITE_URL,
+      ...(this.env.TTS_WORKER_KEY
+        ? { TTS_WORKER_KEY: this.env.TTS_WORKER_KEY }
+        : {}),
+    };
+    if (spec.family === "codex") {
+      // The Codex runner speaks the SDK's message vocabulary (codex-query.mjs
+      // header), so everything below this branch — #readLoop, #handleMessage,
+      // the flush machinery — is shared. `resume` is the Codex thread id the
+      // first turn reported as sdkSessionId. No canUseTool: Codex reports
+      // commands after they ran; no maxTurns: Codex has no equivalent knob,
+      // and the autonomous wall-clock cap still applies.
+      const q = codexQuery({
+        prompt: promptStream(this.queue),
+        options: {
+          cwd: this.workdir,
+          env: sessionEnv,
+          model: spec.id,
+          effort: spec.effort,
+          abortController: this.abort,
+          ...(resume ? { resume } : {}),
+        },
+      });
+      this.q = q;
+      void this.#readLoop(q);
+      return;
+    }
     const q = query({
       prompt: promptStream(this.queue),
       options: {
@@ -790,22 +978,25 @@ export class Session {
         // enters a session's shell — its write surface (capture, prep,
         // briefs, batches, ruling-applied, session-outcome) is the same one
         // the cron jobs' agentic runs already expose to a model.
-        // SESSIONS_WORKER_KEY, GH_TOKEN and the two TOMQUEST_AGENT_* browse
-        // credentials are SCRUBBED above (inheritedEnv): inheriting them is
-        // not hypothetical — systemd puts all four in this process's env —
-        // and an ingest key reachable from the session's shell would let a
-        // confused session corrupt any transcript.
-        env: {
-          ...inheritedEnv,
-          CONVEX_SITE_URL: this.env.CONVEX_SITE_URL,
-          ...(this.env.TTS_WORKER_KEY
-            ? { TTS_WORKER_KEY: this.env.TTS_WORKER_KEY }
-            : {}),
-        },
+        // The daemon's own secrets are SCRUBBED above (inheritedEnv, the
+        // env-scrub.mjs list): inheriting them is not hypothetical — systemd
+        // puts every one in this process's env — and an ingest key reachable
+        // from the session's shell would let a confused session corrupt any
+        // transcript.
+        env: sessionEnv,
         // Autonomous missions are one long agentic turn — same budget as the
         // executor's agentic runs.
         ...(this.mode === "autonomous" ? { maxTurns: AUTO_MAX_TURNS } : {}),
-        ...(this.model ? { model: this.model } : {}),
+        // The model id from SESSION_MODELS, passed only when the name maps to
+        // one: "opus" is id null = the account default, exactly what every
+        // session ran before models existed.
+        // ASSUMPTION (unvalidated on the box as of 2026-09-04): `resume` with
+        // a DIFFERENT `model` continues the same conversation on the new
+        // model — the CLI's --resume + --model does — and the SDK does not
+        // silently keep the old one. processServerState relies on this for a
+        // same-family switch; if it proves false, the switch path needs a
+        // fresh query without resume plus a transcript file, like a fork.
+        ...(spec.id ? { model: spec.id } : {}),
         ...(resume ? { resume } : {}),
       },
     });
@@ -818,11 +1009,17 @@ export class Session {
     try {
       for await (const m of q) {
         if (this.dead) break;
+        // A RETIRED query (#retireQuery: model switch) may still drain a
+        // trailing message while its successor is live; those belong to
+        // nobody now and must not touch the successor's turn state.
+        if (this.q !== q) break;
         this.#handleMessage(m);
       }
-      // Generator ended cleanly (stop path) — #doStop owns the transitions.
+      // Generator ended cleanly (stop path, or retirement) — #doStop /
+      // #retireQuery own the transitions.
     } catch (err) {
       if (this.dead) return;
+      if (this.q !== q) return; // retired: its errors are nobody's turn
       if (this.interruptRequested || this.stopRequested) {
         // Expected: q.interrupt() resolves and then the iterator throws
         // ("error result"). The session is cleanly resumable by id.
@@ -845,19 +1042,46 @@ export class Session {
         // Kept for the autonomous outcomeSummary — usage-limit text reaching
         // the outcome is what makes the scheduler's circuit breaker live.
         this.lastTurnErrorText = msg;
-        if (USAGE_LIMIT_RE.test(msg)) {
-          this.onUsageSignal?.(msg.slice(0, 200), this);
-        }
+        this.#maybeUsageSignal(msg);
       }
     } finally {
+      // Only the LIVE query's end is a turn ending. A retired query's loop
+      // finishing must not touch status — its successor may be mid-turn.
       if (this.q === q) {
         this.q = null;
         this.queue = null;
-      }
-      if (!this.dead && !this.stopRequested && this.status !== "ended" && this.status !== "failed") {
-        void this.#turnDied(failedTurn);
+        if (!this.dead && !this.stopRequested && this.status !== "ended" && this.status !== "failed") {
+          void this.#turnDied(failedTurn);
+        }
       }
     }
+  }
+
+  // The Claude-account auto-switch (session-host.mjs maybeSwitchAccount)
+  // fires for family "claude" only: it flips the Max-account symlink, which
+  // means nothing to a Codex session. A Codex cap still reaches the
+  // autonomous outcomeSummary / error rows through lastTurnErrorText, where
+  // the server's breaker reads it keyed on the session's family.
+  #maybeUsageSignal(text) {
+    if (this.family !== "claude") return;
+    if (USAGE_LIMIT_RE.test(text)) this.onUsageSignal?.(text.slice(0, 200), this);
+  }
+
+  // Retire the live query WITHOUT ending the session: the next
+  // #deliverUserTurn finds no q and calls startQuery({ resume }) — which is
+  // where a changed model takes effect. Closing the input generator is the
+  // SDK's clean shutdown path and ends the Codex runner's turn loop the same
+  // way; this.q is nulled FIRST so the retired loop's finally (and any
+  // trailing message) sees it is no longer the live query and leaves status
+  // alone. Idle only — a running turn keeps its query until its result.
+  #retireQuery(why) {
+    const q = this.q;
+    if (!q) return;
+    this.q = null;
+    this.queue?.close();
+    this.queue = null;
+    this.modelSwitchPending = false;
+    log(`session ${this.id}: query retired (${why}); next turn starts a fresh one`);
   }
 
   // The current turn ended abnormally (interrupt or SDK error). Preserve any
@@ -1089,9 +1313,10 @@ export class Session {
             result: truncated(m.result ?? "").value,
             total_cost_usd: m.total_cost_usd,
           });
-          if (USAGE_LIMIT_RE.test(String(m.result ?? ""))) {
-            this.onUsageSignal?.(String(m.result ?? "").slice(0, 200), this);
-          }
+          // Kept for the autonomous outcomeSummary too: a Codex cap arrives
+          // as turn.failed → an error result, never as an iterator throw.
+          this.lastTurnErrorText = truncated(String(m.result ?? ""), ERROR_TEXT_LIMIT).value;
+          this.#maybeUsageSignal(String(m.result ?? ""));
         }
         if (this.activeUserTurnId) {
           this.outbox.inboundUpdates.push({
@@ -1110,10 +1335,33 @@ export class Session {
           // point are settled server-side when the terminal status lands.
           // void: the ending is async now (it pushes any local commits before
           // the workdir goes) and this handler is synchronous.
-          void this.#endAutonomous("autonomous run complete");
+          //
+          // An ERROR result ends errored with the text in the outcome, the
+          // same shape #turnDied gives an iterator error: that text is how
+          // the scheduler's circuit breaker sees a cap — and a Codex cap
+          // only ever arrives this way (turn.failed → error result), never
+          // as a throw. Family-agnostic on purpose; the server keys on the
+          // session's family.
+          const failed = m.is_error || (m.subtype && m.subtype !== "success");
+          void this.#endAutonomous(
+            failed ? "autonomous turn failed" : "autonomous run complete",
+            failed
+              ? {
+                  outcome: "errored",
+                  outcomeSummary: `autonomous turn failed: ${(this.lastTurnErrorText ?? "no error text").slice(0, 160)}`,
+                }
+              : undefined,
+          );
           break;
         }
         if (!this.stopRequested) this.setStatus("idle");
+        // A model change that arrived mid-turn applies here, at the turn
+        // boundary: retire the query BEFORE processCommands so the queued
+        // next turn starts a fresh one on the new model rather than being
+        // pushed into the old.
+        if (this.modelSwitchPending && !this.stopRequested) {
+          this.#retireQuery(`model changed to ${this.model}`);
+        }
         this.requestFlush(true);
         this.processCommands(); // a queued next turn delivers right away
         break;
@@ -1130,9 +1378,17 @@ export class Session {
     // session mode. The safety boundary is structural — throwaway workdir,
     // session/<id> branch namespace, Tom's merge gate, Tom-only ruling pens
     // — and every allowed call still lands as a tool-call transcript row.
-    // The one kept per-call check: edit tools must target the workdir.
     //
-    // Before it, the flat ban. `disallowedTools` already keeps these out of
+    // Tom's ruling of 2026-09-04 splits what is left by mode. Unconditional,
+    // every mode: the banned-tool deny (first) and the Tier-0 self-
+    // destruction guard (in the Bash block), because each protects something
+    // other than the session asking — the transcript's honesty and the OTHER
+    // live sessions. Autonomous only: the out-of-workdir edit denial and Bash
+    // tiers 1–3 — an interactive session's commands are authorized by Tom,
+    // who is steering it. Only the Claude runner reaches this gate at all
+    // (codex-query.mjs header).
+    //
+    // First, the flat ban. `disallowedTools` already keeps these out of
     // the model's context, so reaching here means some path put the call
     // through anyway (a resumed session carrying an older tool list, a
     // subagent, an SDK change). Denying with a corrective message — and a
@@ -1146,6 +1402,25 @@ export class Session {
       });
       this.requestFlush(false);
       return { behavior: "deny", message: banned };
+    }
+    // Tier 0 — self-destruction, EVERY mode: a session RUNS UNDER
+    // tts-session-host, so restarting or stopping that service (or killing
+    // this daemon) ends every live mission including the one asking — and
+    // Tom's interactive session is not the only one on the box. A worker on
+    // 2026-08-30 followed setup.sh's restart line and took the whole cohort
+    // down. Hard deny with the corrective, no classifier, no mode gate.
+    if (toolName === "Bash" && typeof input?.command === "string") {
+      if (DAEMON_SELF_DESTRUCT_RE.test(input.command)) {
+        return {
+          behavior: "deny",
+          message:
+            "denied: this session runs under tts-session-host — restarting or stopping it kills every live mission, including yours. Record the needed change in your outcome instead; the supervisor restarts the daemon.",
+        };
+      }
+    }
+    if (this.mode !== "autonomous") {
+      // Interactive: authorized by Tom (2026-09-04). Nothing below applies.
+      return { behavior: "allow", updatedInput: input };
     }
     if (EDIT_TOOLS.has(toolName)) {
       const target =
@@ -1177,25 +1452,9 @@ export class Session {
       }
     }
     // Bash: the three-tier classifier gate (see the constants above for why
-    // Bash alone gets one).
+    // Bash alone gets one). Autonomous only — the mode gate above.
     if (toolName === "Bash" && typeof input?.command === "string") {
       const command = input.command;
-      // Tier 0 — self-destruction: a session RUNS UNDER tts-session-host, so
-      // restarting or stopping that service (or killing this daemon) ends
-      // every live mission including the one asking. A worker on 2026-08-30
-      // followed setup.sh's restart line and took the whole cohort down.
-      // Hard deny with the corrective, no classifier.
-      if (
-        /systemctl\s+(?:restart|stop|kill)\s+\S*tts-session-host|service\s+tts-session-host\s+(?:restart|stop)|pkill\s+[^|;&]*session-host/.test(
-          command,
-        )
-      ) {
-        return {
-          behavior: "deny",
-          message:
-            "denied: this session runs under tts-session-host — restarting or stopping it kills every live mission, including yours. Record the needed change in your outcome instead; the supervisor restarts the daemon.",
-        };
-      }
       // Tier 1 — the system's own write pens: allow, no classifier, no row.
       // Only a LONE pen qualifies. The single-quoted -d '{…}' body is
       // stripped first so its JSON can't trip the check; anything with shell
@@ -1256,18 +1515,7 @@ export class Session {
         // big enough to blow the ~128KiB argv cap fails the spawn and lands
         // in the fail-open path below, which is the right answer anyway.
         {
-          env: (() => {
-            const {
-              SESSIONS_WORKER_KEY: _ingest,
-              GH_TOKEN: _gh,
-              TTS_WORKER_KEY: _tts,
-              TOMQUEST_AGENT_USERNAME: _browseUser,
-              TOMQUEST_AGENT_PASSWORD: _browsePassword,
-              TURING_API_KEY: _turingWriteKey,
-              ...rest
-            } = process.env;
-            return rest;
-          })(),
+          env: scrubbedEnv(),
           timeout: CLASSIFIER_TIMEOUT_MS,
           maxBuffer: CLASSIFIER_MAXBUFFER,
         },
@@ -1357,9 +1605,46 @@ export class Session {
     // Keep the epoch current so this session's future flushes are never
     // mistaken for a pre-reopen replay.
     this.reopenEpoch = row.reopenEpoch ?? this.reopenEpoch;
+    this.#applyModel(row.model);
     this.applyDecisions(row.permissions);
     this.serverInbound = row.pendingInbound ?? [];
     this.processCommands();
+  }
+
+  // The row's model is the truth (setSessionModel, 2026-09-04). A change
+  // within the same family takes effect on the NEXT turn: the live query is
+  // retired now if the session is idle, or at the end of the running turn
+  // (modelSwitchPending → the result handler), and the next
+  // #deliverUserTurn's startQuery({ resume }) reads this.model. A
+  // cross-family change never arrives here — the server forks a new session
+  // row instead, because neither runner can resume the other's thread.
+  #applyModel(name) {
+    if (name === undefined || name === null) return; // legacy row: unchanged
+    if (name === this.model) return;
+    if (!SESSION_MODELS[name]) {
+      log(`session ${this.id}: server model "${name}" unknown to this daemon — ignored`);
+      return;
+    }
+    const from = this.model;
+    this.model = name;
+    this.family = modelFamily(name);
+    this.finalizeRow("system", { text: `model changed to ${name}` });
+    if (this.q && (this.status === "idle" || this.status === "starting")) {
+      // "starting": the query exists but no turn has run, so there is no
+      // context to resume — drop the never-used id and go idle so the first
+      // turn starts a fresh query on the new model (processCommands only
+      // delivers from "starting" while a query is live, so leaving the
+      // status alone after retiring would wedge delivery forever).
+      const fresh = this.status === "starting";
+      this.#retireQuery(`model ${from} -> ${name}`);
+      if (fresh) {
+        this.sdkSessionId = undefined;
+        this.setStatus("idle");
+      }
+    } else if (this.q) {
+      this.modelSwitchPending = true; // applied at the turn boundary
+    }
+    this.requestFlush(true);
   }
 
   processCommands() {

@@ -22,9 +22,45 @@ export type SessionStatus = Session["status"];
 // mirrors are fenced by scripts/check-session-mirrors.mjs, which also fails if
 // a second LIVE_STATUSES reappears here.
 export { DAEMON_STALE_MS, LIVE_STATUSES, isLive } from "@/convex/ttsShared";
-import { NO_REPO, SESSION_REPO_NAMES } from "@/convex/ttsShared";
+import {
+  LEGACY_SESSION_MODEL,
+  NO_REPO,
+  SESSION_REPO_NAMES,
+} from "@/convex/ttsShared";
+import type { SessionModel } from "@/convex/ttsShared";
+
+// The model list, its default and its family test all come from the one home
+// (convex/ttsShared.ts) — this surface re-exports rather than re-listing, so a
+// new model appears in every picker the moment it is added there.
+export {
+  DEFAULT_SESSION_MODEL,
+  SESSION_MODEL_NAMES,
+  modelFamily,
+} from "@/convex/ttsShared";
+export type { SessionModel } from "@/convex/ttsShared";
 
 export const REPO_OPTIONS = [...SESSION_REPO_NAMES, NO_REPO] as const;
+
+/**
+ * Which model a session row runs on, for display. A row written before models
+ * existed has the field absent and ran on the Claude account default — which
+ * is exactly what ttsShared's modelFamily() reads absent as, so the surface
+ * shows that model's name rather than a blank. The name itself has one home
+ * (LEGACY_SESSION_MODEL), so it is never spelled twice.
+ */
+export function sessionModel(session: { model?: SessionModel }): SessionModel {
+  return session.model ?? LEGACY_SESSION_MODEL;
+}
+
+/**
+ * The model chip. Deliberately the SAME chip as `kind` and `autonomous`: the
+ * model NAME is the signal, and the family is legible from the name itself
+ * ("opus" vs "gpt-5.6-sol"). No family colour — colour alone would be the only
+ * signal for a reader who cannot see it, and the ratified rules reserve accent
+ * for state.
+ */
+export const MODEL_CHIP_CLASS =
+  "border border-border rounded px-1.5 py-0.5 text-xs text-text-muted";
 
 /** Token classes for the status chip — dark tokens only. */
 export function statusChipClass(status: SessionStatus): string {

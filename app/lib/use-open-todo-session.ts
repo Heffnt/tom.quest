@@ -11,6 +11,7 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { WRITING_SKILL } from "@/convex/ttsShared";
+import type { SessionModel } from "@/convex/ttsShared";
 import { useAuth } from "@/app/lib/auth";
 import {
   buildBatchSessionPrompt,
@@ -120,6 +121,14 @@ export function useOpenSession() {
     blockCategory?: string;
     /** Only when the caller genuinely knows — otherwise the server resolves. */
     repos?: string[];
+    /**
+     * Which model the session runs on (ttsShared SESSION_MODELS; the family
+     * behind the name picks the runner on the Jarvis Box). Same rule as
+     * `repos`: omitting it is a real answer — the server fills in
+     * DEFAULT_SESSION_MODEL. Only the /sessions form, where Tom picks from a
+     * dropdown, passes it; the TTS buttons take the default on purpose.
+     */
+    model?: SessionModel;
     /** A tab the caller reserved in its own click handler, before any await. */
     tab?: ReservedTab;
     /** Fired once the launch is committed to, before the round trip. */
@@ -143,6 +152,7 @@ export function useOpenSession() {
         batchId: args.batchId,
         blockCategory: args.blockCategory,
         repos: args.repos,
+        model: args.model,
         initialPrompt: args.initialPrompt,
       });
       tab.goto(id);

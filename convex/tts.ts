@@ -11,6 +11,7 @@ import { requireTom, requireTomOrAgent } from "./authRoles";
 import {
   DAY_MS,
   MAX_NEEDS,
+  SESSION_MODEL,
   TTS_PREP_NY_HOUR,
   goalCheckable,
   nyCalendarDayBoundsUtc,
@@ -108,10 +109,11 @@ const GRAPH_TASK = v.object({
   groundUpExplanation: v.optional(v.string()),
   evidence: v.optional(v.string()),
   status: v.optional(v.union(v.literal("active"), v.literal("done"))),
-  // The model tier this task needs (schema: dtsTodos.model). Absent means the
-  // default, which is Opus; the planner tags only the task whose difficulty
-  // warrants the stronger model.
-  model: v.optional(v.literal("fable")),
+  // The model this task needs (schema: dtsTodos.model; the union is
+  // ttsShared SESSION_MODELS). Absent means the fleet default the scheduler
+  // resolves; the planner tags only the task that needs a particular model.
+  // The HTTP route drops an unrecognized name before it reaches this union.
+  model: v.optional(SESSION_MODEL),
 });
 
 type Member = { todoId?: Id<"dtsTodos">; repo?: string; externalId?: string };

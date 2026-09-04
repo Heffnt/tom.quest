@@ -9,6 +9,7 @@ import {
   SESSION_REPO_NAMES,
   WRITING_SKILL,
   WRITING_STANDARD,
+  isSessionModel,
   nyCalendarDayBoundsUtc,
   ttsPrepDay,
 } from "./ttsShared";
@@ -1069,11 +1070,13 @@ function sanitizeGraphTask(
   if (GRAPH_STATUSES.includes(r.status as (typeof GRAPH_STATUSES)[number])) {
     out.status = r.status;
   }
-  // The model tier. Absent is the norm (workers run Opus); "fable" is the
-  // planner's tag for a task whose difficulty warrants the stronger model.
-  // Any other value is simply not carried — an unrecognized tier must not
-  // reach the mutation, and dropping the tag costs a default, not a task.
-  if (r.model === "fable") out.model = r.model;
+  // The model. Absent is the norm (the scheduler falls back to the fleet
+  // default); a name from SESSION_MODELS is the planner's tag for a task that
+  // needs a particular one. Any other value is simply NOT CARRIED — an
+  // unrecognized name would reach the mutation's closed union and cost the
+  // whole call, so one hallucinated word would lose a batch's entire graph
+  // instead of one default.
+  if (isSessionModel(r.model)) out.model = r.model;
   return out;
 }
 
@@ -1267,6 +1270,13 @@ const sessionsPoll = httpAction(async (ctx, request) => {
       typeof b.load === "object" && b.load !== null
         ? (b.load as never)
         : undefined,
+    // Codex account usage, same loose-shape posture as `load`: the mutation's
+    // arg validator is the final gate, so a malformed report surfaces as a
+    // named validator error rather than being half-stored here.
+    codexUsage:
+      typeof b.codexUsage === "object" && b.codexUsage !== null
+        ? (b.codexUsage as never)
+        : undefined,
   });
   return jsonResponse(200, result);
 });
@@ -1305,6 +1315,50 @@ http.route({
   path: "/sessions/ingest",
   method: "POST",
   handler: sessionsIngest,
+});
+
+// GET /sessions/transcript?sessionId=<id>&cursor=<opaque> — one page of a
+// session's finalized transcript, oldest first. The daemon walks it to write
+// .tts-transcript.md into a forked session's workspace before that session's
+// first turn (claudeSessions.forkSessionAs): a cross-family fork carries no
+// SDK state, so the previous conversation reaches the new model only as text
+// on disk. Same SESSIONS_WORKER_KEY door as poll/ingest — this is the daemon's
+// channel, and a whole transcript is exactly what must not be readable by the
+// key an agent's own shell holds.
+//
+// A GET with query params rather than a POST body: the daemon loops on
+// `nextCursor` until it is null, and a cursor in a URL is what makes that loop
+// resumable from a log line. Nothing personal rides in the params — a session
+// id and an opaque page cursor.
+const sessionsTranscript = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  const url = new URL(request.url);
+  const sessionId = url.searchParams.get("sessionId");
+  if (!sessionId) {
+    return jsonResponse(400, { error: "sessionId required" });
+  }
+  const cursor = url.searchParams.get("cursor");
+  try {
+    const result = await ctx.runQuery(
+      internal.claudeSessions.internalTranscriptPage,
+      {
+        sessionId: sessionId as never,
+        cursor: cursor ?? undefined,
+      },
+    );
+    return jsonResponse(200, result);
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({
+  path: "/sessions/transcript",
+  method: "GET",
+  handler: sessionsTranscript,
 });
 
 export default http;

@@ -17,6 +17,11 @@
 import { ENV_PATH, loadEnv as loadWorkerEnv } from "./worker-env.mjs";
 
 export { ENV_PATH };
+// The secret-name scrub every model-reachable spawn applies. Its body is
+// env-scrub.mjs — dependency-free so the repo's vitest can fence the list,
+// which it cannot do through this file (the worker-env symlink above is a
+// plain text file on a Windows checkout). Callers import it from here.
+export { scrubbedEnv, SCRUBBED_SECRET_NAMES } from "./env-scrub.mjs";
 
 export function loadEnv(path = ENV_PATH) {
   return loadWorkerEnv({
@@ -53,6 +58,31 @@ export async function sessionsFetch(env, path, body, { timeoutMs } = {}) {
       "Content-Type": "application/json",
     },
     body: redactGitHubTokens(JSON.stringify(body)),
+    ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    const err = new Error(`${path} -> HTTP ${res.status}: ${text.slice(0, 300)}`);
+    err.status = res.status;
+    err.bodyText = text.slice(0, 300);
+    throw err;
+  }
+  return JSON.parse(text);
+}
+
+// GET a /sessions/* endpoint with query parameters, same key and same error
+// contract as sessionsFetch. One caller today: the fork-transcript fetch
+// (GET /sessions/transcript?sessionId=&cursor=), which is a read and so a
+// GET by the server's contract. Runs in the daemon only — the ingest key
+// never enters a session shell.
+export async function sessionsGet(env, path, params = {}, { timeoutMs } = {}) {
+  const url = new URL(env.CONVEX_SITE_URL.replace(/\/+$/, "") + path);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+  }
+  const res = await fetch(url, {
+    method: "GET",
+    headers: { "X-Sessions-Key": env.SESSIONS_WORKER_KEY },
     ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
   });
   const text = await res.text();

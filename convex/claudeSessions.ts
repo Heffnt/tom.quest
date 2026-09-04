@@ -43,10 +43,15 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // fallback.
 import { skillText } from "./ttsSkills";
 import {
+  CODEX_FALLBACK_MODEL,
+  CODEX_USAGE_STALE_MS,
+  CODEX_WEEKLY_CAP_PERCENT,
   CODE_TODO_PATH,
   DAEMON_STALE_MS,
+  DEFAULT_SESSION_MODEL,
   LIVE_STATUSES,
   NO_REPO,
+  SESSION_MODEL,
   SESSION_REPO_NAMES,
   WRITING_SKILL,
   WRITING_STANDARD,
@@ -54,9 +59,11 @@ import {
   goalCheckable,
   isLive,
   isReady,
+  modelFamily,
   normalizeSessionRepos,
   tracksCodeTodos,
 } from "./ttsShared";
+import type { SessionModel } from "./ttsShared";
 export { DAEMON_STALE_MS };
 
 // Un-acked permission decisions for a session, bounded: newest 25 per decided
@@ -309,7 +316,12 @@ type SessionSeed = {
   batchId?: Id<"batches">;
   blockCategory?: string;
   mode?: "interactive" | "autonomous";
-  model?: "fable";
+  /** Absent = DEFAULT_SESSION_MODEL. Every row inserted from here carries an
+   * explicit model; only rows predating 2026-09-04 have the field absent. */
+  model?: SessionModel;
+  /** Provenance for a "reopen as": the session this one continues on another
+   * model (forkSessionAs). */
+  forkedFrom?: Id<"claudeSessions">;
   /**
    * The session's first turn. A BUILDER, not a string, because every prompt
    * this system writes names the session's own id (the outcome pen) and that
@@ -350,7 +362,12 @@ async function insertSession(
     batchId: seed.batchId,
     blockCategory: seed.kind === "block" ? seed.blockCategory : undefined,
     mode: seed.mode,
-    model: seed.model,
+    // EVERY new row carries an explicit model (Tom's ruling 2026-09-04: the
+    // model is the choice, and the family behind it picks the runner). Absent
+    // is reserved for rows written before models existed, which ran Opus —
+    // which is exactly what modelFamily() reads an absent field as.
+    model: seed.model ?? DEFAULT_SESSION_MODEL,
+    forkedFrom: seed.forkedFrom,
     status: "requested",
     statusChangedAt: now,
     nextSeq: 0,
@@ -428,6 +445,45 @@ export const internalListLive = internalQuery({
   },
 });
 
+/**
+ * One page of a session's finalized transcript, seq-ascending — what the
+ * daemon reads to write .tts-transcript.md for a fork (forkSessionAs). It is
+ * an internalQuery behind the key-authed GET /sessions/transcript route
+ * (convex/http.ts): getMessages next to it is Tom-gated and pages newest-first
+ * for the browser, and the daemon holds no identity and needs oldest-first.
+ *
+ * Paged rather than collected on purpose: a long session's transcript is
+ * thousands of rows, which is exactly the unbounded read the collect rule
+ * exists to stop.
+ */
+export const TRANSCRIPT_PAGE_SIZE = 200;
+export const internalTranscriptPage = internalQuery({
+  args: {
+    sessionId: v.id("claudeSessions"),
+    /** The opaque `nextCursor` of the previous page; absent = from the start. */
+    cursor: v.optional(v.string()),
+  },
+  handler: async (ctx, { sessionId, cursor }) => {
+    const page = await ctx.db
+      .query("claudeMessages")
+      .withIndex("by_session_seq", (q) => q.eq("sessionId", sessionId))
+      .order("asc")
+      .paginate({ numItems: TRANSCRIPT_PAGE_SIZE, cursor: cursor ?? null });
+    return {
+      rows: page.page.map((m) => ({
+        seq: m.seq,
+        turn: m.turn,
+        kind: m.kind,
+        content: m.content,
+        parentToolUseId: m.parentToolUseId,
+        createdAt: m.createdAt,
+      })),
+      // null, not the cursor, on the last page: the daemon's loop stops on it.
+      nextCursor: page.isDone ? null : page.continueCursor,
+    };
+  },
+});
+
 // ── Tom-facing mutations ─────────────────────────────────────────────────────
 
 export const createSession = mutation({
@@ -445,11 +501,24 @@ export const createSession = mutation({
     // declared repos directly instead of hoping to reach it through a todo.
     batchId: v.optional(v.id("batches")),
     blockCategory: v.optional(v.string()),
+    // Tom picks the model for his own sessions (ratified 2026-09-04). Absent
+    // takes DEFAULT_SESSION_MODEL, which insertSession supplies.
+    model: v.optional(SESSION_MODEL),
     initialPrompt: v.string(),
   },
   handler: async (
     ctx,
-    { title, kind, repos, repo, todoId, batchId, blockCategory, initialPrompt },
+    {
+      title,
+      kind,
+      repos,
+      repo,
+      todoId,
+      batchId,
+      blockCategory,
+      model,
+      initialPrompt,
+    },
   ) => {
     await requireTomId(ctx);
     if (initialPrompt.trim() === "") throw new Error("initialPrompt is empty");
@@ -481,6 +550,7 @@ export const createSession = mutation({
         todoId,
         batchId,
         blockCategory,
+        model,
         // The ratified rule is "every session ends with a written outcome
         // record". An INTERACTIVE session had no writer for its own outcome at
         // all until the footer was appended server-side, after the insert.
@@ -513,7 +583,9 @@ function outcomePenFooter(
           sessionId,
           `Work Tom asks for happens in this checkout, and session/${sessionId} is the ONLY branch this session may push — the command gate denies any other name.`,
         )}`
-      : "";
+      : // No checkout still means a shell on the box, so the daemon rule is
+        // stated on its own rather than skipped with the workspace paragraph.
+        `\n\n${DAEMON_RESTART_SENTENCE}`;
   return (
     workspace +
     `\n\n---\nThis session's id: ${sessionId}. When the session's work concludes (or you and Tom agree it is done), record the outcome:\n` +
@@ -595,6 +667,118 @@ export const renameSession = mutation({
     const trimmed = title.trim();
     if (trimmed === "") throw new Error("Title is empty");
     await ctx.db.patch(sessionId, { title: trimmed });
+  },
+});
+
+// ── Changing a live session's model (ratified by Tom, 2026-09-04) ────────────
+// He can always choose the model, at creation and mid-session. WITHIN A FAMILY
+// this is a patch and nothing else: the daemon re-reads `model` off every poll
+// and hands the next turn to the same runner with a different model id, so the
+// conversation continues unbroken.
+//
+// ACROSS families it cannot be a patch, and that is why this refuses one. A
+// Claude session's continuity IS its SDK session (sdkSessionId, the resume
+// key); Codex holds its own thread of the same kind. Neither can adopt the
+// other's, so a cross-family "change" is a new session that reads the old
+// one's transcript — forkSessionAs, below.
+export const setSessionModel = mutation({
+  args: { sessionId: v.id("claudeSessions"), model: SESSION_MODEL },
+  handler: async (ctx, { sessionId, model }) => {
+    await requireTomId(ctx);
+    const session = await getSessionOrThrow(ctx, sessionId);
+    if (!isLive(session.status)) {
+      throw new Error(
+        `Session is ${session.status} — the model of a finished session is history`,
+      );
+    }
+    if (modelFamily(session.model) !== modelFamily(model)) {
+      throw new Error("use forkSessionAs for a cross-family change");
+    }
+    await ctx.db.patch(sessionId, { model });
+  },
+});
+
+/**
+ * The first turn of a "reopen as": what the new session is, where the old
+ * conversation is, and what to do with it. The transcript file is the whole
+ * mechanism — a fork carries no SDK state across, so the previous session
+ * exists for it only as text on disk.
+ *
+ * COMPACTION IS THE AGENT'S OWN JUDGMENT, said here explicitly because the
+ * alternative was a server-side summarizer: nobody else compacts this, so a
+ * session that wants a shorter working copy writes one itself.
+ */
+function buildForkPrompt(
+  previousSessionId: Id<"claudeSessions">,
+  model: SessionModel,
+  text: string,
+): string {
+  return (
+    `This session continues session ${previousSessionId} on a different model (${model}). ` +
+    `The full transcript of that session — every turn of it, in order — is in the file .tts-transcript.md at the root of this workspace; ` +
+    `the worker wrote it there before this first turn. Read it before you do anything else, in parts if it is large enough that one read would not fit, ` +
+    `and then carry on from where it stops. Whether you also write yourself a shorter, compacted version of it is your own judgment: nothing and nobody else compacts it for you.` +
+    `\n\n---\n${text}`
+  );
+}
+
+// A cross-family model change: a NEW session that reads the old one's
+// transcript, and the old one ended normally so its outcome stays intact.
+// Returns the new session's id.
+export const forkSessionAs = mutation({
+  args: {
+    sessionId: v.id("claudeSessions"),
+    model: SESSION_MODEL,
+    text: v.string(),
+  },
+  handler: async (ctx, { sessionId, model, text }) => {
+    await requireTomId(ctx);
+    const session = await getSessionOrThrow(ctx, sessionId);
+    if (text.trim() === "") throw new Error("Message is empty");
+    const now = Date.now();
+    // The fork inherits the whole SUBJECT of the old session — its repos, the
+    // todo or batch it was opened on, its kind — because it is the same work
+    // being continued; only the model and the transcript-on-disk differ. Mode
+    // is interactive: Tom asked for this session by hand, whatever the old
+    // one's posture was.
+    const forkId = await insertSession(
+      ctx,
+      {
+        title: `${session.title} (as ${model})`,
+        kind: session.kind,
+        repos: session.repos ?? (session.repo === NO_REPO ? [] : [session.repo]),
+        todoId: session.todoId,
+        batchId: session.batchId,
+        blockCategory: session.blockCategory,
+        mode: "interactive",
+        model,
+        forkedFrom: sessionId,
+        prompt: () => buildForkPrompt(sessionId, model, text),
+      },
+      now,
+    );
+    // End the OLD session the ordinary way — the same pending "stop" row the
+    // browser's stop button enqueues — rather than patching it terminal here.
+    // The daemon owns every status transition it can see, and a server-side
+    // force-terminal would strand the process still holding the session and
+    // skip the outcome it is in the middle of writing.
+    if (isLive(session.status)) {
+      const pending = await ctx.db
+        .query("claudeInbound")
+        .withIndex("by_session_status", (q) =>
+          q.eq("sessionId", sessionId).eq("status", "pending"),
+        )
+        .collect();
+      if (!pending.some((p) => p.kind === "stop")) {
+        await ctx.db.insert("claudeInbound", {
+          sessionId,
+          kind: "stop",
+          status: "pending",
+          createdAt: now,
+        });
+      }
+    }
+    return forkId;
   },
 });
 
@@ -753,10 +937,32 @@ export const internalPoll = internalMutation({
         liveSessions: v.number(),
       }),
     ),
+    // Codex account usage, read off the Codex CLI by the daemon. The
+    // scheduler's weekly gate reads it back; absent is UNKNOWN, and so is a
+    // reading whose `readAt` is older than CODEX_USAGE_STALE_MS — the daemon
+    // keeps resending its last successful reading with that reading's OWN
+    // readAt while later reads fail, so age is the signal. Unknown admits: a
+    // daemon that cannot read the CLI must not freeze the fleet. Reported on
+    // the same throttled heartbeat as `load`.
+    codexUsage: v.optional(
+      v.object({
+        weeklyUsedPercent: v.number(),
+        fiveHourUsedPercent: v.number(),
+        weeklyResetsAt: v.optional(v.number()),
+        readAt: v.number(),
+      }),
+    ),
   },
   handler: async (
     ctx,
-    { version, activeAccount, daemonStartedAt, lastIngestError, load },
+    {
+      version,
+      activeAccount,
+      daemonStartedAt,
+      lastIngestError,
+      load,
+      codexUsage,
+    },
   ) => {
     const now = Date.now();
     const health = await ctx.db.query("claudeDaemonHealth").first();
@@ -774,6 +980,7 @@ export const internalPoll = internalMutation({
           version,
           activeAccount,
           ...(load !== undefined ? { load } : {}),
+          ...(codexUsage !== undefined ? { codexUsage } : {}),
           ...(lastIngestError !== undefined ? { lastIngestError } : {}),
         });
       }
@@ -784,6 +991,7 @@ export const internalPoll = internalMutation({
         version,
         activeAccount,
         load,
+        codexUsage,
       });
     }
 
@@ -830,10 +1038,16 @@ export const internalPoll = internalMutation({
           mode: s.mode,
           todoId: s.todoId,
           blockCategory: s.blockCategory,
-          // The model tier, when the claimed task asked for one. Absent is the
-          // default and the norm (a worker runs Opus); the daemon reads this
-          // and passes it to the SDK.
+          // The model this session runs on, re-read EVERY tick: setSessionModel
+          // patches the row mid-session and the daemon switches on the next
+          // poll. Its family picks the runner (Agent SDK vs Codex CLI); absent
+          // means a pre-2026-09-04 row, which ran Opus.
           model: s.model,
+          // The session this one continues on a different model. The daemon
+          // writes that session's transcript to .tts-transcript.md in the
+          // workspace before the first turn — the fork's prompt tells the agent
+          // to read it (forkSessionAs).
+          forkedFrom: s.forkedFrom,
           sdkSessionId: s.sdkSessionId,
           nextSeq: s.nextSeq,
           // The reopen protocol: reopenedAt tells the adopt path this session
@@ -1504,6 +1718,7 @@ const AUTO_DEFAULTS = {
   minFreeMemMb: 1024,
   maxLiveAutonomous: 8,
   maxNewPerTick: 2,
+  defaultModel: DEFAULT_SESSION_MODEL,
 } as const;
 
 const AUTO_CONFIG_FIELDS = {
@@ -1512,6 +1727,12 @@ const AUTO_CONFIG_FIELDS = {
   minFreeMemMb: v.number(),
   maxLiveAutonomous: v.number(),
   maxNewPerTick: v.number(),
+  // OPTIONAL, unlike the four knobs above: the pen predates the model field,
+  // and internalSetAutoConfig is typed at the Jarvis Box CLI by hand. An
+  // omitted value keeps whatever the row already holds (the patch below never
+  // writes undefined), so an old command line cannot silently reset the fleet
+  // default to Opus.
+  defaultModel: v.optional(SESSION_MODEL),
 };
 
 async function upsertAutoConfig(
@@ -1522,10 +1743,16 @@ async function upsertAutoConfig(
     minFreeMemMb: number;
     maxLiveAutonomous: number;
     maxNewPerTick: number;
+    defaultModel?: SessionModel;
   },
 ): Promise<void> {
   const existing = await ctx.db.query("claudeAutoConfig").first();
-  const row = { ...fields, updatedAt: Date.now() };
+  const { defaultModel, ...rest } = fields;
+  const row = {
+    ...rest,
+    ...(defaultModel !== undefined ? { defaultModel } : {}),
+    updatedAt: Date.now(),
+  };
   if (existing) {
     await ctx.db.patch(existing._id, row);
   } else {
@@ -1539,7 +1766,14 @@ export const getAutoConfig = query({
     await requireTomId(ctx);
     const row = await ctx.db.query("claudeAutoConfig").first();
     return row
-      ? { ...row, fromDefaults: false }
+      ? {
+          ...row,
+          // A row written before the field existed still has a default: the
+          // browser's picker must render the model the scheduler would
+          // actually use, not an empty control.
+          defaultModel: row.defaultModel ?? DEFAULT_SESSION_MODEL,
+          fromDefaults: false,
+        }
       : { ...AUTO_DEFAULTS, fromDefaults: true };
   },
 });
@@ -1607,6 +1841,14 @@ const BOX_TOOLS_PARAGRAPH = [
   "- `tts-turing health|gpus|jobs|output <name>` reads the WPI Turing cluster through the API's read-only key. It cannot allocate, cancel, run, or read files — those need Tom. A verb answering 401 means the read key is not installed yet; record that in your outcome instead of retrying.",
 ].join("\n");
 
+// The daemon that runs THIS session runs every other live session on the box
+// too, so an agent that restarts it to pick up its own change kills itself
+// mid-turn and takes the rest of the fleet with it. Named in every prompt
+// shape — checkout or empty scratch, autonomous or interactive — because the
+// one shape that goes unsaid is the one that does it.
+const DAEMON_RESTART_SENTENCE =
+  "Never restart, stop, or kill `tts-session-host` — it is the daemon running this session and every other live session on this box; if a change needs a restart, say so in your outcome and the supervisor restarts it.";
+
 function workspaceParagraph(
   repos: string[],
   sessionId: Id<"claudeSessions">,
@@ -1614,10 +1856,10 @@ function workspaceParagraph(
 ): string {
   const branch = `session/${sessionId}`;
   if (repos.length === 1) {
-    return `The workspace: your working directory is a fresh checkout of ${repos[0]} on branch ${branch}. ${work} Commit as you go and push the branch (the remote is already configured). Open a pull request with \`gh pr create\` ONLY when the work is merge-ready, and say so in the outcome summary.`;
+    return `The workspace: your working directory is a fresh checkout of ${repos[0]} on branch ${branch}. ${work} Commit as you go and push the branch (the remote is already configured). Open a pull request with \`gh pr create\` ONLY when the work is merge-ready, and say so in the outcome summary. ${DAEMON_RESTART_SENTENCE}`;
   }
   const list = repos.map((r) => `\`./${r}\``).join(" and ");
-  return `The workspace: your working directory holds ${repos.length} fresh checkouts, one per repository — ${list}. Each is on its own branch ${branch}. ${work} \`cd\` into the repository you are changing before running git: commit as you go and push ${branch} in EACH repository you touched (every remote is already configured), and open a pull request per repository with \`gh pr create\` ONLY when that repository's work is merge-ready. Name every branch and pull request you opened in the outcome summary.`;
+  return `The workspace: your working directory holds ${repos.length} fresh checkouts, one per repository — ${list}. Each is on its own branch ${branch}. ${work} \`cd\` into the repository you are changing before running git: commit as you go and push ${branch} in EACH repository you touched (every remote is already configured), and open a pull request per repository with \`gh pr create\` ONLY when that repository's work is merge-ready. Name every branch and pull request you opened in the outcome summary. ${DAEMON_RESTART_SENTENCE}`;
 }
 
 // Opening prompt for an AUTONOMOUS session (house voice: the ground-up
@@ -1706,7 +1948,10 @@ function buildAutoMissionPrompt(
     // the merge — the one gate the doctrine keeps for Tom.
     ...(repos.length === 0
       ? [
-          "Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. Never touch code — this session has an EMPTY scratch directory and no repository; anything that needs code goes into the plan as an open step instead.",
+          // No workspace paragraph in this posture, so the daemon sentence
+          // rides here instead — a session with no checkout still has a shell
+          // on the box and can still stop the daemon.
+          `Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. Never touch code — this session has an EMPTY scratch directory and no repository; anything that needs code goes into the plan as an open step instead. ${DAEMON_RESTART_SENTENCE}`,
         ]
       : [
           workspaceParagraph(
@@ -1900,7 +2145,9 @@ function buildWorkerPrompt(args: {
     "",
     ...(repos.length === 0
       ? [
-          "Prohibitions: never record a ruling and never change the status of anything but the one todo you claimed — verdicts are Tom's pens alone. Never touch code: this session has an EMPTY scratch directory and no repository, so anything needing code goes to Tom as a prepared task instead.",
+          // Same reason as the legacy builder's no-repo branch above: no
+          // workspace paragraph here, so the daemon sentence rides along.
+          `Prohibitions: never record a ruling and never change the status of anything but the one todo you claimed — verdicts are Tom's pens alone. Never touch code: this session has an EMPTY scratch directory and no repository, so anything needing code goes to Tom as a prepared task instead. ${DAEMON_RESTART_SENTENCE}`,
         ]
       : [
           workspaceParagraph(
@@ -2037,11 +2284,60 @@ function buildProspectMissionPrompt(
     "```",
     '"completed" is the right outcome whether you captured findings or none — say what you captured, or say "nothing new found" and mean it. Record "errored" only when something blocked the review itself (the checkout was unusable, /tts/state would not answer).',
     "",
-    `Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. Change no file in the checkout, commit nothing, push nothing, and open no pull request: this mission's only output is captured items. Do not capture a duplicate of something TTS already holds, and do not capture more than ${PROSPECT_CAPTURE_CAP} items.`,
+    // This prompt builds its own workspace sentence rather than calling
+    // workspaceParagraph (a prospector pushes nothing), so it names the daemon
+    // rule itself.
+    `Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. Change no file in the checkout, commit nothing, push nothing, and open no pull request: this mission's only output is captured items. Do not capture a duplicate of something TTS already holds, and do not capture more than ${PROSPECT_CAPTURE_CAP} items. ${DAEMON_RESTART_SENTENCE}`,
     "",
     "Ending: record the outcome via the /tts/session-outcome command, then simply stop responding — the daemon ends the session after your final turn.",
   );
   return lines.join("\n");
+}
+
+/**
+ * What the fleet knows about models when it starts a session: the fleet default
+ * and whether the Codex door is shut. Read once per tick and handed to every
+ * lane, so no lane can quietly answer the question for itself.
+ */
+type FleetModelContext = {
+  defaultModel?: SessionModel;
+  codexClosed: boolean;
+  codexWeeklyCapped: boolean;
+};
+
+/**
+ * WHICH MODEL a fleet-started session runs on — ONE HOME for the rule, because
+ * every lane that starts a session needs it and the prospecting lane drifted:
+ * it passed no model at all, so a prospector took insertSession's built-in
+ * default, ignoring both the fleet knob Tom sets and the Codex door the rest of
+ * the tick respects.
+ *
+ * The order is the todo's own tag (the planner's judgment about THAT task),
+ * then the fleet default, then the built-in default. When the Codex door is
+ * shut and that answer is a Codex model the two cases part ways: a TAGGED todo
+ * WAITS (undefined — the tag is a judgment, not a preference), while an
+ * untagged one falls back to Claude, logged so the morning's history says why
+ * the models differ. A prospecting mission carries no tag, so it is always the
+ * untagged case and never gets `undefined` back.
+ */
+async function resolveFleetModel(
+  ctx: MutationCtx,
+  fleet: FleetModelContext,
+  tagged?: SessionModel,
+  todoId?: Id<"dtsTodos">,
+): Promise<SessionModel | undefined> {
+  const model = tagged ?? fleet.defaultModel ?? DEFAULT_SESSION_MODEL;
+  if (!fleet.codexClosed || modelFamily(model) !== "codex") return model;
+  if (tagged !== undefined) return undefined;
+  await logEvent(ctx, "auto-model-fallback", todoId, {
+    ...(todoId !== undefined ? { todoId } : {}),
+    from: model,
+    to: CODEX_FALLBACK_MODEL,
+    reason: fleet.codexWeeklyCapped
+      ? `codex weekly usage at or past ${CODEX_WEEKLY_CAP_PERCENT}%`
+      : "a recent autonomous codex session ended on a usage limit",
+  });
+  return CODEX_FALLBACK_MODEL;
 }
 
 // The prospecting lane's whole body, called with whatever per-tick budget the
@@ -2052,6 +2348,7 @@ async function admitProspectMission(
   ctx: MutationCtx,
   now: number,
   liveSessions: Doc<"claudeSessions">[],
+  fleet: FleetModelContext,
 ): Promise<string | undefined> {
   // At most PROSPECT_MAX_LIVE prospectors alive at once. An autonomous session
   // with NO todoId is what a prospecting mission looks like — a mission for
@@ -2113,6 +2410,12 @@ async function admitProspectMission(
   }
   if (repo === undefined) return undefined;
 
+  // Same model rule as the work walk — a prospector is an ordinary autonomous
+  // session and runs on the fleet default, falling back off Codex when the
+  // door is shut. It carries no todo, so the tag argument is absent, the
+  // "wait" answer cannot come back, and the fallback event names no todoId.
+  const model = await resolveFleetModel(ctx, fleet);
+
   const sessionId = await insertSession(
     ctx,
     {
@@ -2124,6 +2427,7 @@ async function admitProspectMission(
       // the cooldown/fairness walk below is per-repo.
       repos: resolveSessionRepos({ explicit: [repo] }),
       mode: "autonomous",
+      model,
       prompt: (id) => buildProspectMissionPrompt(repo!, id),
       // The prospect prompt builds its own capture + outcome pens inline.
       outcomePen: false,
@@ -2185,8 +2489,16 @@ const AUTO_BATCH_SESSION_PAUSE_MS = 24 * 60 * 60 * 1000;
 // outcomeSummary on any abnormal autonomous turn end ("autonomous turn
 // failed: …"), which is what makes this breaker live: the usage-limit
 // wording actually reaches the fields tested below.
+//
+// PER FAMILY since 2026-09-04. The alternatives after "session limit" are
+// Codex's wordings — the Codex CLI reports a cap as usage_limit_reached /
+// rate_limit_reached rather than in Claude's prose — and the breaker now asks
+// WHICH family a tripped ending belonged to (modelFamily of its row's model).
+// Claude tripping still stands the whole tick down (nothing else can run a
+// Claude session); Codex tripping only closes the Codex door, exactly like the
+// weekly gate.
 // scripts/check-session-mirrors.mjs fails the build when the two homes drift.
-const AUTO_USAGE_RE = /usage.?limit|limit reached|session limit/i;
+const AUTO_USAGE_RE = /usage.?limit|limit reached|session limit|usage_limit_(reached|exceeded)|rate_limit_reached|hit your usage limit/i;
 
 // "This session RAN as an autonomous one" — the question every history read
 // below is actually asking. `mode` alone answers it wrongly for a reopened
@@ -2239,8 +2551,10 @@ export const internalAutoSchedule = internalMutation({
     ).length;
     if (liveAutonomous >= config.maxLiveAutonomous) return;
 
-    // (e) Usage circuit breaker: an autonomous ending in the last 3h that
-    // names usage/rate pressure means the whole tick stands down.
+    // (e) Usage circuit breaker, PER FAMILY: an autonomous ending in the last
+    // 3h that names usage pressure closes the door for the family THAT session
+    // ran on — the two accounts are separate, and a capped Codex account says
+    // nothing about the Claude one.
     const recentTerminal: Doc<"claudeSessions">[] = [];
     for (const status of ["ended", "failed"] as const) {
       recentTerminal.push(
@@ -2252,13 +2566,48 @@ export const internalAutoSchedule = internalMutation({
           .collect()),
       );
     }
-    const tripped = recentTerminal.some(
-      (s) =>
-        wasAutonomous(s) &&
-        (AUTO_USAGE_RE.test(s.endedReason ?? "") ||
-          AUTO_USAGE_RE.test(s.outcomeSummary ?? "")),
-    );
-    if (tripped) return;
+    const trippedFamilies = new Set<string>();
+    for (const s of recentTerminal) {
+      if (!wasAutonomous(s)) continue;
+      if (
+        AUTO_USAGE_RE.test(s.endedReason ?? "") ||
+        AUTO_USAGE_RE.test(s.outcomeSummary ?? "")
+      ) {
+        trippedFamilies.add(modelFamily(s.model));
+      }
+    }
+    // Claude capped = nothing runs: it is the fallback every Codex candidate
+    // lands on, so admitting anything at all would just re-hit the same wall.
+    if (trippedFamilies.has("claude")) return;
+    const codexTripped = trippedFamilies.has("codex");
+
+    // (f) The Codex WEEKLY gate (Tom, 2026-09-04). Read off the daemon's
+    // heartbeat; absent usage is UNKNOWN and unknown ADMITS, so a daemon that
+    // cannot read the CLI never silently freezes the fleet. The five-hour
+    // window is deliberately not gated — it refills on its own.
+    //
+    // A reading also EXPIRES. The daemon keeps resending its last successful
+    // reading, with that reading's original readAt, when a later read fails —
+    // so an old readAt is exactly the case "nobody has been able to ask Codex
+    // for a while", and it reads as UNKNOWN too. Without this, one 90% reading
+    // taken before the CLI broke would hold the Codex door shut for as long as
+    // the daemon stayed up.
+    const codexUsage = health.codexUsage;
+    const codexWeeklyCapped =
+      codexUsage !== undefined &&
+      now - codexUsage.readAt <= CODEX_USAGE_STALE_MS &&
+      codexUsage.weeklyUsedPercent >= CODEX_WEEKLY_CAP_PERCENT;
+    // Either signal shuts the same door, and the two behave identically: a
+    // candidate that ASKED for Codex waits (its tag is a judgment, not a
+    // preference), while one that only inherited the fleet default falls back.
+    const codexClosed = codexTripped || codexWeeklyCapped;
+    // Everything resolveFleetModel needs, decided once for the whole tick and
+    // handed to both lanes — the work walk below and the prospecting lane.
+    const fleet: FleetModelContext = {
+      defaultModel: config.defaultModel,
+      codexClosed,
+      codexWeeklyCapped,
+    };
 
     const capacity = Math.min(
       config.maxNewPerTick,
@@ -2647,6 +2996,13 @@ export const internalAutoSchedule = internalMutation({
     const picked = new Set<string>();
     const counts: Record<string, number> = {};
     const admit = async (c: Candidate): Promise<void> => {
+      // ── Which model does this session run on? ────────────────────────────
+      // resolveFleetModel is the one home for the rule (the prospecting lane
+      // asks it the same question). Resolved BEFORE picked.add, because the
+      // Codex door being shut can send a Codex-TAGGED candidate back to the
+      // queue — `undefined` — rather than into a session.
+      const model = await resolveFleetModel(ctx, fleet, c.todo.model, c.todo._id);
+      if (model === undefined) return;
       picked.add(c.todo._id);
       counts[c.lane] = (counts[c.lane] ?? 0) + 1;
 
@@ -2756,10 +3112,9 @@ export const internalAutoSchedule = internalMutation({
           todoId: c.todo._id,
           repos,
           mode: "autonomous",
-          // The model tier, carried from the task the planner tagged. Absent is
-          // the default and the norm: a worker runs Opus, and only a task
-          // marked "fable" writes anything here.
-          model: c.todo.model === "fable" ? "fable" : undefined,
+          // Resolved above: the todo's tag, else the fleet default, else the
+          // Codex fallback when the weekly cap or the breaker shut that door.
+          model,
           prompt,
           // Both autonomous prompts build their own outcome pen inline, with
           // mission-specific wording.
@@ -2801,7 +3156,7 @@ export const internalAutoSchedule = internalMutation({
     // ordinary autonomous session: it counts against maxLiveAutonomous on every
     // later tick, and against this tick's budget as the one pick it is.
     if (picked.size < capacity) {
-      await admitProspectMission(ctx, now, liveSessions);
+      await admitProspectMission(ctx, now, liveSessions, fleet);
     }
 
     // Quiet when idle: the scheduler event only exists when real work was

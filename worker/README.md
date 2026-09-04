@@ -69,9 +69,34 @@ To start a `needs-session` working session, from any CMT checkout:
 claude "Run the TTS session in dev/handoff/tts-session-<id>.md"
 ```
 
+## Codex
+
+Codex is the second session runner on this box: a session whose model is one of
+the `gpt-5.6-*` names runs OpenAI's Codex instead of Claude, and any session can
+hand a prompt to Codex with `echo "<prompt>" | tts-codex`, from any repo.
+`setup.sh` step 4 installs the pinned CLI (`@openai/codex@0.153.3` — the copy
+bundled with the Codex desktop app is too old to know the gpt-5.6 models) and
+writes `/root/.codex/config.toml` if it is absent: file-backed credentials, the
+fleet default `gpt-5.6-sol` at `xhigh` effort, and a subagent concurrency cap.
+Login is the one manual step (`codex login --device-auth`, once, after Tom
+enables device-code login in ChatGPT's security settings) and it must happen on
+this box: `auth.json` uses a rotating refresh token, so copying one in from
+another machine logs both machines out.
+
+Codex has native subagents (`spawn_agent`, types `explorer` and `worker`) and a
+spawned agent inherits the parent's model unless the parent names a cheaper one,
+which is exactly the delegation rule in `AGENTS.md`: the strong model keeps
+judgment and review, `gpt-5.6-terra` gets the reading and the mechanical edits.
+
+**Quota is shared, not extra.** Codex here draws on the same ChatGPT Plus rate
+windows as Tom's own laptop use — a busy fleet hour is an hour he finds his
+own Codex throttled. The fleet caps its own weekly Codex consumption at 90% of
+the window and falls back to Opus past that, so the ceiling is reached by
+sessions switching runner rather than by anything stopping.
+
 ## The browser
 
-Every session on this box can open a real page. `setup.sh` step 4 installs
+Every session on this box can open a real page. `setup.sh` step 5 installs
 Playwright globally and downloads Chromium once into
 `/root/.cache/ms-playwright`; because sessions run as root, they all share
 that one copy rather than each pulling 115MB. The interface is a single
@@ -183,6 +208,8 @@ nano /etc/tts/worker.env
 tts-account login
 tts-account login
 tts-account use gmail
+# 5. Log Codex in (once, on the box — never copy auth.json in):
+codex login --device-auth
 # Done. Cron is installed; the digest resumes tomorrow at 5.
 ```
 

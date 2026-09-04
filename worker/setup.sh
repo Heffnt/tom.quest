@@ -23,7 +23,7 @@ fi
 # work no matter what the current working directory is.
 WORKER_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "== [1/9] apt packages (curl, git, python3, gh) =="
+echo "== [1/10] apt packages (curl, git, python3, gh) =="
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y curl git ca-certificates
@@ -34,7 +34,7 @@ apt-get install -y curl git ca-certificates
 # stay fast and idempotent.
 apt-get install -y python3 python3-yaml python3-pytest gh
 
-echo "== [2/9] Node 22 (NodeSource) =="
+echo "== [2/10] Node 22 (NodeSource) =="
 # Only (re)install if node is missing or not major version 22 — keeps re-runs
 # fast and avoids needlessly touching apt sources.
 if ! command -v node >/dev/null 2>&1 || [ "$(node -v | cut -d. -f1)" != "v22" ]; then
@@ -43,12 +43,65 @@ if ! command -v node >/dev/null 2>&1 || [ "$(node -v | cut -d. -f1)" != "v22" ];
 fi
 echo "node: $(node -v)"
 
-echo "== [3/9] Claude Code CLI =="
+echo "== [3/10] Claude Code CLI =="
 # npm -g install is idempotent (re-running upgrades to latest).
 npm install -g @anthropic-ai/claude-code
 echo "claude: $(claude --version || true)"
 
-echo "== [4/9] headless browser (Playwright + Chromium) =="
+echo "== [4/10] Codex CLI (OpenAI) =="
+# Codex is a first-class session runner on this box, not only a second opinion:
+# a session whose model is one of the gpt-5.6-* names runs Codex instead of
+# Claude, and every session can reach Codex through `tts-codex` (installed in
+# step 7).
+#
+# PINNED ON PURPOSE. The copy bundled with the Codex desktop app is 0.130,
+# which predates the gpt-5.6 model family and refuses those model names, so
+# "whatever the desktop app ships" is not a floor this box can stand on.
+# 0.153.3 is the npm release that knows gpt-5.6-sol / gpt-5.6-terra and carries
+# the native subagent tool (spawn_agent) that the delegation rule in AGENTS.md
+# depends on, and it has a linux-arm64 build, which this box needs. Moving the
+# pin is a deliberate act: re-read the [agents] key names in the Codex config
+# docs when you do, because they have been renamed across releases once already
+# (agents.max_threads -> agents.max_concurrent_threads_per_session).
+npm install -g @openai/codex@0.153.3
+echo "codex: $(codex --version || true)"
+
+# Config: written ONLY if absent, on the same rule as worker.env — a re-run
+# must never clobber settings tuned by hand on the box.
+if [ ! -f /root/.codex/config.toml ]; then
+  mkdir -p /root/.codex
+  cat > /root/.codex/config.toml <<'CODEXCFG'
+# Codex on the Jarvis Box. Written once by worker/setup.sh; edit freely here.
+
+# Auth lands in a plain file under /root/.codex rather than a desktop keyring:
+# this box is headless and runs no keyring daemon at all.
+cli_auth_credentials_store = "file"
+
+# The fleet default (Tom, 2026-09-04): the strongest model at the highest
+# reasoning effort. scripts/codex-run.mjs passes the same pair explicitly; this
+# is what a bare `codex` and every session runner get.
+model = "gpt-5.6-sol"
+model_reasoning_effort = "xhigh"
+
+# No desktop notifier exists here, and an unanswered notify hook stalls a turn.
+notify = []
+
+# Native subagents. default_subagent_model is deliberately UNSET: a spawned
+# agent inherits the parent's model unless the parent names a cheaper one
+# (gpt-5.6-terra), which is exactly the delegation rule in AGENTS.md.
+[agents]
+max_concurrent_threads_per_session = 4
+CODEXCFG
+  echo "  wrote /root/.codex/config.toml"
+else
+  echo "  /root/.codex/config.toml already exists — left alone"
+fi
+
+# Login is interactive and cannot happen here; print where it stands so a
+# rebuild does not discover it only when the first Codex session fails.
+codex login status || echo "  codex is NOT logged in — see NEXT STEPS below"
+
+echo "== [5/10] headless browser (Playwright + Chromium) =="
 # A session that changes a tom.quest page can look at the result instead of
 # asking Tom to look. Playwright is installed GLOBALLY (not as a repo dep) and
 # its browsers land in /root/.cache/ms-playwright, so every session — each of
@@ -69,7 +122,7 @@ npm install -g playwright
 # Idempotent: re-downloads nothing when the pinned revision is already there.
 npx playwright install chromium
 
-echo "== [5/9] directories =="
+echo "== [6/10] directories =="
 # /opt/tts            — the job scripts (copied from the repo, below)
 # /var/lib/tts        — small local state: the Slack poll cursor, the
 #     brief-hash cursor, and the apply/execute lock dirs (all harmless to
@@ -84,13 +137,20 @@ echo "== [5/9] directories =="
 mkdir -p /opt/tts /var/lib/tts /var/cache/tts /etc/tts /var/log/tts \
   /root/.claude-accounts/gmail /root/.claude-accounts/wpi
 
-echo "== [6/9] install worker files =="
+echo "== [7/10] install worker files =="
 # Job scripts (plain Node ESM, zero npm deps — a copy is a deploy).
 cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
+# The Codex wrapper is a repo script, not a job, but sessions need it from ANY
+# repo — including checkouts that predate it, and repos that are not tom.quest
+# at all. One copy here is what `tts-codex` executes, so the flags and the
+# stdout contract have exactly one home (scripts/codex-run.mjs) whichever way a
+# session reaches Codex.
+cp "$WORKER_DIR"/../scripts/codex-run.mjs /opt/tts/codex-run.mjs
 # CLI helpers onto the PATH.
 cp "$WORKER_DIR"/bin/* /usr/local/bin/
 chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
-  /usr/local/bin/tts-turing /usr/local/bin/tts-git-credential
+  /usr/local/bin/tts-turing /usr/local/bin/tts-git-credential \
+  /usr/local/bin/tts-codex
 
 # GitHub credentials for sessions (ledger graduation sessions-cannot-open-prs,
 # 2026-08-31). Two consumers, one source of truth (GH_TOKEN in worker.env):
@@ -139,7 +199,7 @@ if [ ! -f /etc/tts/worker.env ]; then
 fi
 chmod 600 /etc/tts/worker.env
 
-echo "== [7/9] cron =="
+echo "== [8/10] cron =="
 # System cron runs in UTC and knows nothing about daylight saving, so
 # prepare-queue is scheduled at BOTH 08:30 and 09:30 UTC; the script itself
 # checks the New York wall-clock hour and proceeds only when it is the
@@ -271,7 +331,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 CRON
 chmod 644 /etc/cron.d/tts
 
-echo "== [8/9] session-host daemon =="
+echo "== [9/10] session-host daemon =="
 # The always-on daemon that runs interactive Claude Code sessions and streams
 # them into Convex (worker/session-host/README.md). Unlike the cron jobs it
 # carries the Jarvis Box's ONE sanctioned npm dependency (@anthropic-ai/
@@ -325,7 +385,7 @@ else
   echo "  systemctl enable --now tts-session-host)."
 fi
 
-echo "== [9/9] done =="
+echo "== [10/10] done =="
 cat <<'STEPS'
 
 NEXT STEPS (manual, in order):
@@ -365,11 +425,37 @@ NEXT STEPS (manual, in order):
   3. Pick the account the jobs run under:
        tts-account use gmail
 
-  4. Smoke-test the jobs by hand:
+  4. Log Codex in (interactive, ONCE — sessions on this box start Codex only
+     while `codex login status` says "Logged in"; until then every gpt-5.6-*
+     session and every `tts-codex` call fails at the first turn):
+
+       a. In ChatGPT (Tom's own browser): Settings -> Security -> turn ON
+          "Allow device code login". Device auth is refused outright until
+          that toggle is set, and the error does not say so.
+       b. On this box:
+            codex login --device-auth
+          It prints a short code and a URL; open the URL in a browser, enter
+          the code, approve. The credentials land in /root/.codex/auth.json.
+       c. Confirm:
+            codex login status
+
+     IF DEVICE AUTH IS UNAVAILABLE, tunnel the browser callback instead —
+     from YOUR machine:
+       ssh -L 1455:localhost:1455 root@<this box>
+     then, in that SSH session:
+       codex login
+     and open the printed localhost:1455 URL in your own browser.
+
+     DO NOT COPY /root/.codex/auth.json FROM ANOTHER MACHINE. The refresh
+     token rotates on use, so two machines sharing one auth file invalidate
+     each other and both end up logged out. Log in on the box, on the box.
+
+  5. Smoke-test the jobs by hand:
        node /opt/tts/poll-dump.mjs
        node /opt/tts/prepare-queue.mjs --force
+       echo "Reply with exactly: pong" | tts-codex --effort low
 
-  5. Check the session-host daemon (once SESSIONS_WORKER_KEY is set):
+  6. Check the session-host daemon (once SESSIONS_WORKER_KEY is set):
        systemctl status tts-session-host
        journalctl -u tts-session-host -f
 

@@ -3,9 +3,21 @@ import { describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
-import { WRITING_STANDARD } from "./ttsShared";
+import {
+  CODEX_USAGE_STALE_MS,
+  CODEX_WEEKLY_CAP_PERCENT,
+  DEFAULT_SESSION_MODEL,
+  WRITING_STANDARD,
+} from "./ttsShared";
+import type { SessionModel } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
+
+// The distinctive half of the one sentence every session prompt carries about
+// the daemon that runs it (DAEMON_RESTART_SENTENCE in convex/claudeSessions.ts).
+// Written out here rather than imported: a hard-coded expectation that goes red
+// when the prompt changes is the alarm working.
+const DAEMON_SENTENCE = "Never restart, stop, or kill `tts-session-host`";
 
 async function withTom(t: ReturnType<typeof convexTest>) {
   const tomId = await t.run(async (ctx) =>
@@ -93,6 +105,7 @@ async function enableAuto(
     minFreeMemMb: number;
     maxLiveAutonomous: number;
     maxNewPerTick: number;
+    defaultModel: SessionModel;
   }> = {},
 ) {
   await t.mutation(internal.claudeSessions.internalSetAutoConfig, {
@@ -834,6 +847,29 @@ describe("claude sessions", () => {
     // the ingest key, is named to a model-reachable shell.
     expect(text).toContain("TTS_WORKER_KEY");
     expect(text).not.toContain("SESSIONS_WORKER_KEY");
+    // An interactive session runs on the same daemon as every autonomous one,
+    // and this footer is the only server-written part of its prompt — so the
+    // "never restart tts-session-host" rule rides here. This session holds no
+    // checkout, which is the footer branch that skips the workspace paragraph.
+    expect(text).toContain(DAEMON_SENTENCE);
+  });
+
+  // The other footer branch: a session WITH a checkout gets the same rule from
+  // inside the workspace paragraph.
+  // witness: drop the sentence from workspaceParagraph and this goes red.
+  it("tells an interactive session with a checkout never to restart the daemon", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "one repo",
+      kind: "adhoc",
+      repos: ["tom.quest"],
+      initialPrompt: "the mission",
+    });
+    const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
+      sessionId,
+    });
+    expect(inbound[0].text ?? "").toContain(DAEMON_SENTENCE);
   });
 
   // witness: drop the `mode: "interactive"` line from reopenSession's patch in
@@ -1745,6 +1781,287 @@ describe("autonomous fleet config", () => {
     const off = await tom.query(api.claudeSessions.getAutoConfig, {});
     expect(off.enabled).toBe(false);
   });
+
+  // The fleet default model, which the four calls above never mentioned. It is
+  // OPTIONAL on the pen precisely so those calls keep working — and a row that
+  // never named one still reads as the built-in default, because the scheduler
+  // is going to use that default whether or not the row says so.
+  //
+  // witness: return `row.defaultModel` raw from getAutoConfig — the browser's
+  // picker would render empty on every config row written before 2026-09-04,
+  // while the fleet went on launching Codex sessions.
+  it("keeps the default model optional and reads an unset one as the built-in default", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    expect((await tom.query(api.claudeSessions.getAutoConfig, {})).defaultModel)
+      .toBe(DEFAULT_SESSION_MODEL);
+
+    // A pen call that says nothing about the model: the row is written, the
+    // field stays unset, and the read still answers.
+    await t.mutation(internal.claudeSessions.internalSetAutoConfig, {
+      enabled: true,
+      maxLoadPerCpu: 0.8,
+      minFreeMemMb: 1024,
+      maxLiveAutonomous: 8,
+      maxNewPerTick: 2,
+    });
+    const rows = await t.run(async (ctx) =>
+      ctx.db.query("claudeAutoConfig").collect(),
+    );
+    expect(rows[0].defaultModel).toBeUndefined();
+    expect((await tom.query(api.claudeSessions.getAutoConfig, {})).defaultModel)
+      .toBe(DEFAULT_SESSION_MODEL);
+
+    await tom.mutation(api.claudeSessions.setAutoConfig, {
+      enabled: true,
+      maxLoadPerCpu: 0.8,
+      minFreeMemMb: 1024,
+      maxLiveAutonomous: 8,
+      maxNewPerTick: 2,
+      defaultModel: "opus",
+    });
+    expect((await tom.query(api.claudeSessions.getAutoConfig, {})).defaultModel)
+      .toBe("opus");
+
+    // ...and an omitting call after that does NOT reset it: the knob is Tom's,
+    // and a hand-typed CLI command that forgot the field must not undo it.
+    await t.mutation(internal.claudeSessions.internalSetAutoConfig, {
+      enabled: true,
+      maxLoadPerCpu: 0.8,
+      minFreeMemMb: 1024,
+      maxLiveAutonomous: 8,
+      maxNewPerTick: 1,
+    });
+    expect((await tom.query(api.claudeSessions.getAutoConfig, {})).defaultModel)
+      .toBe("opus");
+  });
+});
+
+// ── Choosing a model for a live session (ratified by Tom, 2026-09-04) ────────
+// Two mutations, and the line between them is the model FAMILY: within one
+// family the runner is the same process and the model id is a per-turn
+// argument, so the change is a patch; across families there is no shared
+// resume key at all, so the change is a new session that reads the old one's
+// transcript off disk.
+
+describe("session model changes", () => {
+  const sessionRow = (t: ReturnType<typeof convexTest>, id: Id<"claudeSessions">) =>
+    t.run(async (ctx) => (await ctx.db.get(id))!);
+
+  // witness: drop the modelFamily comparison from setSessionModel — a live
+  // Claude session would be patched to a Codex name, and the daemon would try
+  // to resume a Codex thread that never existed.
+  it("patches a same-family change and refuses a cross-family one", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "test session",
+      kind: "adhoc",
+      repo: "none",
+      model: "opus",
+      initialPrompt: "hello",
+    });
+
+    await tom.mutation(api.claudeSessions.setSessionModel, {
+      sessionId,
+      model: "fable",
+    });
+    expect((await sessionRow(t, sessionId)).model).toBe("fable");
+    // The daemon learns of it the ordinary way: the poll carries the model
+    // fresh every tick, so the next turn runs on the new one.
+    const poll = await t.mutation(internal.claudeSessions.internalPoll, {
+      version: "test",
+      daemonStartedAt: 1,
+    });
+    const polled = poll.sessions as { id: string; model?: string }[];
+    expect(polled.find((s) => s.id === sessionId)?.model).toBe("fable");
+
+    await expect(
+      tom.mutation(api.claudeSessions.setSessionModel, {
+        sessionId,
+        model: "gpt-5.6-sol",
+      }),
+    ).rejects.toThrow("forkSessionAs");
+    expect((await sessionRow(t, sessionId)).model).toBe("fable");
+  });
+
+  // A row written before the model field existed ran Opus, so a change to
+  // another Claude model is same-family and allowed.
+  // witness: make modelFamily throw or return undefined on an absent model.
+  it("reads a legacy row with no model as opus", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await t.run(async (ctx) =>
+      ctx.db.insert("claudeSessions", {
+        title: "legacy session",
+        kind: "adhoc",
+        repo: "none",
+        status: "idle",
+        statusChangedAt: Date.now(),
+        nextSeq: 0,
+        createdAt: Date.now(),
+      }),
+    );
+    await tom.mutation(api.claudeSessions.setSessionModel, {
+      sessionId,
+      model: "sonnet",
+    });
+    expect((await sessionRow(t, sessionId)).model).toBe("sonnet");
+  });
+
+  it("refuses to change the model of a finished session", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await t.run(async (ctx) =>
+      ctx.db.patch(sessionId, { status: "ended", statusChangedAt: Date.now() }),
+    );
+    await expect(
+      tom.mutation(api.claudeSessions.setSessionModel, {
+        sessionId,
+        model: "opus",
+      }),
+    ).rejects.toThrow("ended");
+  });
+
+  // The fork carries the subject across and the transcript reaches the new
+  // model as a FILE — there is no SDK state to resume, so naming that file in
+  // the first turn is the entire mechanism.
+  //
+  // witness: drop `.tts-transcript.md` from buildForkPrompt, or the stop row
+  // at the end of forkSessionAs — the new session would start with no idea
+  // where its history is, or the old one would keep running beside it.
+  it("forks to another family with the transcript file named and the old session stopped", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const oldId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "the boolean sweep",
+      kind: "adhoc",
+      repos: ["tom.quest"],
+      model: "opus",
+      initialPrompt: "hello",
+    });
+
+    const forkId = await tom.mutation(api.claudeSessions.forkSessionAs, {
+      sessionId: oldId,
+      model: "gpt-5.6-sol",
+      text: "keep going from where that stopped",
+    });
+    const fork = await sessionRow(t, forkId);
+    expect(fork.model).toBe("gpt-5.6-sol");
+    expect(fork.forkedFrom).toBe(oldId);
+    expect(fork.title).toBe("the boolean sweep (as gpt-5.6-sol)");
+    expect(fork.mode).toBe("interactive");
+    // The subject rides across: same checkout, same kind.
+    expect(fork.repos).toEqual(["tom.quest"]);
+    expect(fork.kind).toBe("adhoc");
+
+    const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
+      sessionId: forkId,
+    });
+    const text = inbound[0].text ?? "";
+    expect(text).toContain(oldId);
+    expect(text).toContain(".tts-transcript.md");
+    expect(text).toContain("keep going from where that stopped");
+
+    // The OLD session ends the ordinary way — a pending stop row, exactly what
+    // the browser's stop button writes — so the daemon finishes it and its
+    // outcome stays intact. Nothing here patches it terminal.
+    const stops = await t.run(async (ctx) =>
+      (await ctx.db.query("claudeInbound").collect()).filter(
+        (row) => row.sessionId === oldId && row.kind === "stop",
+      ),
+    );
+    expect(stops).toHaveLength(1);
+    expect(stops[0].status).toBe("pending");
+    expect((await sessionRow(t, oldId)).status).toBe("requested");
+
+    // The fork also rides the poll, so the daemon knows which transcript to
+    // write into the new workspace.
+    const poll = await t.mutation(internal.claudeSessions.internalPoll, {
+      version: "test",
+      daemonStartedAt: 1,
+    });
+    const polled = poll.sessions as { id: string; forkedFrom?: string }[];
+    expect(polled.find((s) => s.id === forkId)?.forkedFrom).toBe(oldId);
+  });
+
+  it("does not enqueue a second stop when the old session already has one", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const oldId = await createBasicSession(tom);
+    await tom.mutation(api.claudeSessions.sendControl, {
+      sessionId: oldId,
+      kind: "stop",
+    });
+    await tom.mutation(api.claudeSessions.forkSessionAs, {
+      sessionId: oldId,
+      model: "gpt-5.6-terra",
+      text: "carry on",
+    });
+    const stops = await t.run(async (ctx) =>
+      (await ctx.db.query("claudeInbound").collect()).filter(
+        (row) => row.sessionId === oldId && row.kind === "stop",
+      ),
+    );
+    expect(stops).toHaveLength(1);
+  });
+});
+
+// ── The transcript the daemon copies into a fork's workspace ─────────────────
+// GET /sessions/transcript pages this internalQuery. Oldest-first and paged:
+// the file it builds is the whole conversation in order, and a long session's
+// transcript is thousands of rows — the read the collect rule exists to stop.
+
+describe("session transcript pages", () => {
+  // witness: order it "desc" (the browser's direction) or collect it whole —
+  // the file the daemon writes would be backwards, or the read would grow
+  // without bound with the session.
+  it("pages in seq order and stops on a null cursor", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    const total = 450; // more than two 200-row pages
+    await t.run(async (ctx) => {
+      for (let seq = 0; seq < total; seq++) {
+        await ctx.db.insert("claudeMessages", {
+          sessionId,
+          seq,
+          turn: Math.floor(seq / 10),
+          kind: "assistant-text",
+          content: `line ${seq}`,
+          parentToolUseId: seq === 3 ? "tool_abc" : undefined,
+          createdAt: 1_000 + seq,
+        });
+      }
+    });
+
+    const seqs: number[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    do {
+      const page = await t.query(
+        internal.claudeSessions.internalTranscriptPage,
+        { sessionId, cursor },
+      );
+      pages++;
+      seqs.push(...page.rows.map((r) => r.seq));
+      cursor = page.nextCursor ?? undefined;
+      if (pages === 1) {
+        expect(page.rows).toHaveLength(200);
+        // The shape the daemon writes the file from.
+        expect(page.rows[3]).toMatchObject({
+          seq: 3,
+          kind: "assistant-text",
+          content: "line 3",
+          parentToolUseId: "tool_abc",
+        });
+      }
+    } while (cursor !== undefined && pages < 10);
+
+    expect(pages).toBe(3);
+    expect(seqs).toEqual(Array.from({ length: total }, (_, i) => i));
+  });
 });
 
 // The LEGACY world's walk: the five lanes that schedule rows with no batch
@@ -2314,6 +2631,55 @@ describe("autonomous session scheduler", () => {
     });
     expect(inbound[0].text).toContain("EMPTY scratch directory");
     expect(inbound[0].text).not.toContain("NEVER merge");
+    // The no-checkout posture skips the workspace paragraph, so it has to
+    // carry the daemon rule itself — see the test below.
+    expect(inbound[0].text).toContain(DAEMON_SENTENCE);
+  });
+
+  // ── The daemon a session must not restart ────────────────────────────────
+  // tts-session-host is the process running THIS session and every other live
+  // session on the box. An agent that restarts it to pick up its own change
+  // kills itself mid-turn and takes the rest of the fleet with it, so every
+  // prompt shape names the rule: with a checkout (via workspaceParagraph) and
+  // without one (the empty-scratch prohibitions), autonomous and interactive.
+  //
+  // witness: drop the sentence from either branch of workspaceParagraph, or
+  // from the no-repo prohibitions line, and the matching half goes red.
+  it("tells every mission, checkout or not, never to restart the session daemon", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    // Three slots for two todos, so the leftover one becomes a prospector and
+    // this test covers the third prompt shape too.
+    await enableAuto(t, { maxNewPerTick: 3 });
+    await heartbeat(t);
+    // One todo whose own words name a repo (a checkout mission) and one that
+    // names none (the empty-scratch mission).
+    const withRepo = await eligibleTodo(tom, "fix the tom.quest deploy check");
+    const withoutRepo = await eligibleTodo(tom, "draft the reading list");
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    const checkout = sessions.find((s) => s.todoId === withRepo);
+    const scratch = sessions.find((s) => s.todoId === withoutRepo);
+    expect(checkout?.repo).toBe("tom.quest");
+    expect(scratch?.repo).toBe("none");
+
+    for (const session of [checkout!, scratch!]) {
+      const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
+        sessionId: session._id,
+      });
+      expect(inbound[0].text).toContain(DAEMON_SENTENCE);
+    }
+
+    // The prospecting mission this tick also created writes its own workspace
+    // wording, so it names the rule itself rather than inheriting it.
+    const prospectors = await prospectSessions(t);
+    expect(prospectors).toHaveLength(1);
+    const prospectInbound = await tom.query(
+      api.claudeSessions.getPendingInbound,
+      { sessionId: prospectors[0]._id },
+    );
+    expect(prospectInbound[0].text).toContain(DAEMON_SENTENCE);
   });
 
   // witness: drop the statement/brief substring fallback from pickMissionRepo
@@ -2615,6 +2981,67 @@ describe("prospecting lane", () => {
       expect(text).toContain("drop any finding it already names");
     }
   });
+
+  // ── A prospector is an ordinary autonomous session ───────────────────────
+  // It runs on the same model the work walk would have used: the fleet default
+  // Tom set, not insertSession's built-in default. This lane passed no model at
+  // all, so a fleet Tom had moved to Sonnet still started Codex prospectors.
+  //
+  // witness: drop the `model` field from admitProspectMission's insertSession
+  // seed and this goes red.
+  it("runs a prospector on the fleet default model", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t, { defaultModel: "sonnet" });
+    await heartbeat(t);
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const prospectors = await prospectSessions(t);
+    expect(prospectors).toHaveLength(1);
+    expect(prospectors[0].model).toBe("sonnet");
+  });
+
+  // ...and it respects the same Codex door. A prospector carries no model tag
+  // (there is no todo to tag it), so it is always the untagged case: it falls
+  // back to Claude rather than waiting, and the fallback is logged with no
+  // todoId because no item is involved.
+  //
+  // witness: resolve the prospector's model without the codexClosed branch and
+  // this goes red — every prospector would keep launching Codex against a
+  // capped account.
+  it("falls a prospector back to opus when the codex door is shut", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t, { defaultModel: "gpt-5.6-sol" });
+    await t.mutation(internal.claudeSessions.internalPoll, {
+      version: "test",
+      daemonStartedAt: 1,
+      load: HEALTHY_LOAD,
+      codexUsage: {
+        weeklyUsedPercent: CODEX_WEEKLY_CAP_PERCENT,
+        fiveHourUsedPercent: 3,
+        readAt: Date.now(),
+      },
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const prospectors = await prospectSessions(t);
+    expect(prospectors).toHaveLength(1);
+    expect(prospectors[0].model).toBe("opus");
+
+    const events = await t.run(async (ctx) =>
+      (await ctx.db.query("dtsEvents").collect()).filter(
+        (e) => e.kind === "auto-model-fallback",
+      ),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0].todoId).toBeUndefined();
+    expect(events[0].data).toEqual({
+      from: "gpt-5.6-sol",
+      to: "opus",
+      reason: `codex weekly usage at or past ${CODEX_WEEKLY_CAP_PERCENT}%`,
+    });
+  });
 });
 
 // ── The frontier scheduler (schema v2, ratified 2026-08-29) ──────────────────
@@ -2645,7 +3072,7 @@ describe("frontier scheduler", () => {
         groundUpExplanation?: string;
         evidence?: string;
         status?: "active" | "done";
-        model?: "fable";
+        model?: SessionModel;
       }[];
       goalIds?: string[];
       repos?: string[];
@@ -3341,11 +3768,10 @@ describe("frontier scheduler", () => {
 
   // witness: drop the model line from the session insert in
   // convex/claudeSessions.ts and this test goes red — the daemon reads the
-  // tier off the session row (session-host.mjs claimSession/adoptSession pass
-  // row.model into the Session, which maps "fable" to the SDK model id in
-  // session.mjs), so a task the planner marked as needing the stronger model
-  // would silently run on the default one.
-  it("carries a task's model tier onto the session row and the poll", async () => {
+  // model off the session row (session-host.mjs claimSession/adoptSession pass
+  // row.model into the Session, and its FAMILY picks the runner), so a task the
+  // planner tagged would silently run on something else.
+  it("carries a task's model onto the session row and the poll", async () => {
     const t = convexTest({ schema, modules });
     await withTom(t);
     await enableAuto(t, { maxNewPerTick: 2 });
@@ -3365,9 +3791,11 @@ describe("frontier scheduler", () => {
     const sessions = await workSessions(t);
     expect(sessions).toHaveLength(2);
     expect(sessions.find((s) => s.todoId === hard._id)?.model).toBe("fable");
-    // Absent is the default and the norm: an ordinary task writes nothing.
+    // The untagged task does NOT get an absent field: every row written since
+    // 2026-09-04 carries an explicit model, and an untagged one lands on the
+    // fleet default.
     expect(sessions.find((s) => s.todoId === ordinary._id)?.model).toBe(
-      undefined,
+      DEFAULT_SESSION_MODEL,
     );
 
     const poll = await t.mutation(internal.claudeSessions.internalPoll, {
@@ -3377,6 +3805,240 @@ describe("frontier scheduler", () => {
     });
     const polled = poll.sessions as { todoId?: string; model?: string }[];
     expect(polled.find((s) => s.todoId === hard._id)?.model).toBe("fable");
+    expect(polled.find((s) => s.todoId === ordinary._id)?.model).toBe(
+      DEFAULT_SESSION_MODEL,
+    );
+  });
+
+  // ── The fleet default (Tom, 2026-09-04) ──────────────────────────────────
+  // An untagged autonomous session runs on whatever claudeAutoConfig names;
+  // a tagged todo overrides it, because the tag is the planner's judgment
+  // about THAT task and the default is only what to do without one.
+  //
+  // witness: resolve the model as `c.todo.model ?? DEFAULT_SESSION_MODEL` in
+  // internalAutoSchedule (skipping config.defaultModel) — the fleet knob would
+  // become decoration and every untagged session would ignore it.
+  it("runs an untagged session on the fleet default and lets a tag override it", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 2, defaultModel: "sonnet" });
+    await heartbeat(t);
+    const batchId = await storeGraph(t, {
+      statement: "the mixed batch",
+      tasks: [
+        { statement: "prove the bound", actor: "agent", model: "fable" },
+        { statement: "tidy the notes", actor: "agent" },
+      ],
+    });
+    const rows = await batchTodos(t, batchId);
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(
+      sessions.find(
+        (s) => s.todoId === byStatement(rows, "tidy the notes")._id,
+      )?.model,
+    ).toBe("sonnet");
+    expect(
+      sessions.find(
+        (s) => s.todoId === byStatement(rows, "prove the bound")._id,
+      )?.model,
+    ).toBe("fable");
+  });
+
+  // ── The Codex weekly gate (Tom, 2026-09-04) ──────────────────────────────
+  // At or past the cap the fleet starts no Codex session. The two candidates
+  // part ways on WHO chose Codex: the fleet default is indifferent, so that
+  // work falls back to Opus and runs; a Codex-tagged todo asked for Codex
+  // specifically, so it waits for the cap to lift.
+  //
+  // witness: gate on the five-hour figure instead, or skip both cases alike —
+  // either turns a full week's Codex cap into a night with no fleet at all.
+  it("falls an untagged session back to opus at the codex weekly cap and makes a codex-tagged one wait", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 4, defaultModel: "gpt-5.6-sol" });
+    await t.mutation(internal.claudeSessions.internalPoll, {
+      version: "test",
+      daemonStartedAt: 1,
+      load: HEALTHY_LOAD,
+      codexUsage: {
+        weeklyUsedPercent: CODEX_WEEKLY_CAP_PERCENT,
+        // The five-hour window is nowhere near full — it is not what gates.
+        fiveHourUsedPercent: 3,
+        readAt: Date.now(),
+      },
+    });
+    const batchId = await storeGraph(t, {
+      statement: "the capped batch",
+      tasks: [
+        { statement: "tidy the notes", actor: "agent" },
+        { statement: "port the harness", actor: "agent", model: "gpt-5.6-sol" },
+      ],
+    });
+    const rows = await batchTodos(t, batchId);
+    const untagged = byStatement(rows, "tidy the notes");
+    const tagged = byStatement(rows, "port the harness");
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions.map((s) => s.todoId)).toEqual([untagged._id]);
+    expect(sessions[0].model).toBe("opus");
+    expect(sessions.some((s) => s.todoId === tagged._id)).toBe(false);
+
+    // And the night's history says WHY the models differ from what was asked.
+    // Scoped to the events that NAME a todo: the prospecting mission this
+    // tick's leftover budget also created falls back on the same rule, and
+    // its own event carries no todoId (it works no item).
+    const events = await t.run(async (ctx) =>
+      (await ctx.db.query("dtsEvents").collect()).filter(
+        (e) => e.kind === "auto-model-fallback" && e.todoId !== undefined,
+      ),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0].todoId).toBe(untagged._id);
+    expect(events[0].data).toMatchObject({
+      from: "gpt-5.6-sol",
+      to: "opus",
+    });
+  });
+
+  // Unknown usage ADMITS: a daemon that cannot read the Codex CLI reports
+  // nothing, and a missing reading must not read as "capped" — that would
+  // freeze the fleet on a telemetry failure.
+  // witness: default the missing weeklyUsedPercent to 100 instead of 0.
+  it("admits codex work when the daemon reported no usage at all", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1, defaultModel: "gpt-5.6-sol" });
+    await heartbeat(t); // no codexUsage in this heartbeat
+    await storeGraph(t, {
+      statement: "the ordinary batch",
+      tasks: [{ statement: "tidy the notes", actor: "agent" }],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].model).toBe("gpt-5.6-sol");
+  });
+
+  // A reading also EXPIRES. The daemon keeps resending its LAST SUCCESSFUL
+  // reading, carrying that reading's own readAt, while later reads fail — so an
+  // old readAt is the case "nobody has managed to ask Codex for a while", and
+  // it reads as UNKNOWN exactly like an absent one. Without this, one 90%
+  // reading taken before the CLI broke would hold the Codex door shut for as
+  // long as the daemon stayed up.
+  // witness: gate on weeklyUsedPercent alone and ignore readAt.
+  it("re-opens the codex door once the last usage reading has gone stale", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1, defaultModel: "gpt-5.6-sol" });
+    await t.mutation(internal.claudeSessions.internalPoll, {
+      version: "test",
+      daemonStartedAt: 1,
+      load: HEALTHY_LOAD,
+      codexUsage: {
+        // Full to the brim — but read a full window ago and one minute more.
+        weeklyUsedPercent: 100,
+        fiveHourUsedPercent: 100,
+        readAt: Date.now() - CODEX_USAGE_STALE_MS - 60_000,
+      },
+    });
+    await storeGraph(t, {
+      statement: "the ordinary batch",
+      tasks: [{ statement: "tidy the notes", actor: "agent" }],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].model).toBe("gpt-5.6-sol");
+    // Unknown is not a fallback: nothing was logged, because nothing changed.
+    const events = await t.run(async (ctx) =>
+      (await ctx.db.query("dtsEvents").collect()).filter(
+        (e) => e.kind === "auto-model-fallback",
+      ),
+    );
+    expect(events).toHaveLength(0);
+  });
+
+  // ── The usage breaker is per family ──────────────────────────────────────
+  // A capped CODEX account says nothing about the Claude one: the tick keeps
+  // running and only the Codex door shuts. (A capped CLAUDE account still
+  // stands the whole tick down — Opus is where every Codex fallback lands.)
+  //
+  // witness: go back to one boolean `tripped` for both families — a single
+  // Codex cap would stand the entire fleet down for three hours.
+  it("shuts only the codex door when a codex session ended on a usage limit", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 4, defaultModel: "gpt-5.6-sol" });
+    await heartbeat(t);
+    await t.run(async (ctx) =>
+      ctx.db.insert("claudeSessions", {
+        title: "past codex run",
+        kind: "focus-item",
+        repo: "none",
+        mode: "autonomous",
+        model: "gpt-5.6-sol",
+        status: "ended",
+        statusChangedAt: Date.now(),
+        endedReason: "usage_limit_reached",
+        nextSeq: 0,
+        createdAt: Date.now(),
+      }),
+    );
+    const batchId = await storeGraph(t, {
+      statement: "the mixed batch",
+      tasks: [
+        { statement: "tidy the notes", actor: "agent" },
+        { statement: "port the harness", actor: "agent", model: "gpt-5.6-sol" },
+      ],
+    });
+    const rows = await batchTodos(t, batchId);
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = (await workSessions(t)).filter(
+      (s) => s.title !== "past codex run",
+    );
+    expect(sessions.map((s) => s.todoId)).toEqual([
+      byStatement(rows, "tidy the notes")._id,
+    ]);
+    expect(sessions[0].model).toBe("opus");
+  });
+
+  // witness: read the tripped session's family off `mode` or drop the
+  // modelFamily() call — a capped CLAUDE account would only shut the Codex
+  // door and the fleet would keep launching into the same wall.
+  it("stands the whole tick down when a claude session ended on a usage limit", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 4, defaultModel: "gpt-5.6-sol" });
+    await heartbeat(t);
+    await t.run(async (ctx) =>
+      ctx.db.insert("claudeSessions", {
+        title: "past claude run",
+        kind: "focus-item",
+        repo: "none",
+        mode: "autonomous",
+        model: "opus",
+        status: "ended",
+        statusChangedAt: Date.now(),
+        endedReason: "Claude AI usage limit reached",
+        nextSeq: 0,
+        createdAt: Date.now(),
+      }),
+    );
+    await storeGraph(t, {
+      statement: "the ordinary batch",
+      tasks: [{ statement: "tidy the notes", actor: "agent" }],
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(
+      (await workSessions(t)).filter((s) => s.title !== "past claude run"),
+    ).toHaveLength(0);
   });
 
   // The whole worker contract in one read: what it claimed, why it is ready,

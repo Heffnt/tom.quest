@@ -13,6 +13,12 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 - Prefer text inputs over number spinners for numeric intervals.
 - After code changes, provide a commit message the user can use.
 
+## Delegation (ratified by Tom, 2026-09-04)
+
+- A session runs the strongest model available to it. That model's time is for judgment, design, and review — not for reading files, running searches, applying mechanical edits, or running tests.
+- Hand that menial work to subagents. In Codex, `spawn_agent` with agent type `explorer` (reading and searching) or `worker` (making changes and running things), asking for the cheap model `gpt-5.6-terra` by name — a spawned agent otherwise inherits the parent's strong model, which is the waste this rule exists to stop. In Claude Code, the equivalent subagents.
+- What never gets delegated: deciding what to do, designing how, and judging whether the result is right. A subagent reports; the parent concludes.
+
 ## UI Rules (ratified by Tom, 2026-08-29)
 
 - Clickable text not styled as a button is underlined at rest. Text that is not clickable is never underlined. Accent color alone never signals clickability — it also marks state.
@@ -126,6 +132,9 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 - Keep only durable project goals, vocabulary, and patterns here.
 - Put cross-project preferences in the global rules file, not here.
 - If loading breaks in one tool, fix the symlink or shim instead of duplicating content.
+- Codex is a first-class session runner here, not only a second opinion: a session's model name says which runner it gets, and the `gpt-5.6-*` names mean Codex.
+- Claude reaches Codex through the `codex` subagent (`.claude/agents/codex.md`), the `/codex` skill, or `agentType: 'codex'` in a Workflow script. All go through `scripts/codex-run.mjs` in this repo, or `tts-codex` — the same program on the Jarvis Box's PATH, for sessions in any repo.
+- Codex may edit files by default and runs at the fleet's strongest model and effort. Review paths ask for read-only explicitly.
 
 <!-- convex-ai-start -->
 

@@ -10,6 +10,7 @@ import {
   frontier,
   isReady,
 } from "./ttsShared";
+import type { SessionModel } from "./ttsShared";
 
 // Schema v2 (ratified 2026-08-29): a batch is its own row holding HOW a set of
 // todos gets completed; its contents are dtsTodos rows pointing back at it as
@@ -35,7 +36,7 @@ const graphTask = (
     groundUpExplanation: string;
     evidence: string;
     status: "active" | "done";
-    model: "fable";
+    model: SessionModel;
   }> = {},
 ) => ({ statement, actor: "agent" as const, ...over });
 
@@ -1368,10 +1369,11 @@ describe("TTS migration to the graph (internalMigrateToGraph)", () => {
 });
 
 // ── The model tag ────────────────────────────────────────────────────────────
-// The planner marks the rare task whose difficulty warrants the stronger model.
-// Absent is the default and the norm (workers run Opus), so the tag only ever
-// has to survive: it is written once and must not evaporate on the next
-// unchanged re-post.
+// The planner marks the task that needs a particular model. Absent is the norm
+// (the scheduler resolves the fleet default), so the tag only ever has to
+// survive: it is written once and must not evaporate on the next unchanged
+// re-post. Since 2026-09-04 the tag spans two families — a Codex name is as
+// storable as a Claude one.
 
 describe("TTS plan graph: the model tag", () => {
   it("persists the planner's tag and preserves it when a re-post omits it", async () => {
@@ -1405,6 +1407,22 @@ describe("TTS plan graph: the model tag", () => {
     // Nothing changed, so nothing was written.
     expect(res.unchanged).toBe(2);
     expect(res.updated).toBe(0);
+  });
+
+  // witness: narrow GRAPH_TASK's model back to v.literal("fable") in
+  // convex/tts.ts — a Codex name would be refused by the validator and cost
+  // the whole call, so one Codex-tagged task would lose the batch's graph.
+  it("stores a codex model name as readily as a claude one", async () => {
+    const t = convexTest({ schema, modules });
+    await storeGraph(t, {
+      tasks: [
+        graphTask("port the harness", { model: "gpt-5.6-sol" }),
+        graphTask("skim the logs", { model: "gpt-5.6-terra" }),
+      ],
+    });
+    const rows = await batchTodos(t, (await oneBatch(t))._id);
+    expect(byStatement(rows, "port the harness")?.model).toBe("gpt-5.6-sol");
+    expect(byStatement(rows, "skim the logs")?.model).toBe("gpt-5.6-terra");
   });
 });
 
@@ -1553,23 +1571,29 @@ describe("POST /tts/plan-graph", () => {
     expect(body.created).toBe(1);
   });
 
-  // witness: accept any string as the model — an unrecognized tier name would
-  // reach the mutation's validator and cost the WHOLE call, so one hallucinated
-  // word would lose a batch's entire graph instead of one default.
-  it("carries the fable tag and silently ignores any other tier", async () => {
+  // witness: accept any string as the model — an unrecognized name would reach
+  // the mutation's closed union and cost the WHOLE call, so one hallucinated
+  // word would lose a batch's entire graph instead of one default. "gpt-9" is
+  // not a model that exists; every name in SESSION_MODELS is carried, whichever
+  // family it belongs to.
+  it("carries any known model name and silently ignores any other", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
     const res = await postGraph(t, {
       statement: "ship the paper",
       tasks: [
         { statement: "design the sweep", actor: "agent", model: "fable" },
+        { statement: "port the harness", actor: "agent", model: "gpt-5.6-sol" },
         { statement: "run it", actor: "agent", model: "gpt-9" },
       ],
     });
     expect(res.status).toBe(200);
-    expect((await res.json()).created).toBe(2);
+    expect((await res.json()).created).toBe(3);
     const todos = await batchTodos(t, (await oneBatch(t))._id);
     expect(byStatement(todos, "design the sweep")?.model).toBe("fable");
+    expect(byStatement(todos, "port the harness")?.model).toBe("gpt-5.6-sol");
+    // The task still exists — dropping the tag costs a default, not a task.
+    expect(byStatement(todos, "run it")).toBeDefined();
     expect(byStatement(todos, "run it")?.model).toBeUndefined();
   });
 
