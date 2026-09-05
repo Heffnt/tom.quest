@@ -65,20 +65,58 @@ function mcpResultText(result) {
   return JSON.stringify(result);
 }
 
-// A collab_tool_call's agents_states, rendered as the tool result: one line
-// per child thread with its status and last message. This is ALL Codex
-// exposes about a native subagent — the children's inner steps (their
-// commands, edits, reasoning) never appear in the parent's event stream — so
-// the transcript shows what was delegated and what came back, and no more.
-function agentsStatesText(states) {
-  if (!states || typeof states !== "object") return "";
-  return Object.entries(states)
-    .map(([threadId, s]) => {
-      const status = s?.status ?? "unknown";
-      const message = typeof s?.message === "string" ? s.message : "";
-      return `${threadId}: ${status}${message ? ` — ${message}` : ""}`;
-    })
-    .join("\n");
+// WHAT CODEX ACTUALLY REPORTS ABOUT A NATIVE SUBAGENT (codex-cli 0.153.3,
+// multi_agent_version v2, verified against a real `codex exec --json` run):
+// almost nothing. Internally Codex has two turn items for collaboration —
+// CollabAgentToolCall and SubAgentActivity — but `codex exec --json`
+// serializes only eight item types (agent_message, reasoning,
+// command_execution, file_change, mcp_tool_call, collab_tool_call,
+// web_search, todo_list). SubAgentActivity is NOT one of them, and it is the
+// item that spawn_agent and send_message produce. So on this Codex:
+//
+//   * spawn_agent / send_message emit NO event on stdout at all;
+//   * only wait_agent surfaces, as collab_tool_call with tool "wait";
+//   * that item arrives with receiver_thread_ids: [], receiver_agents: [],
+//     prompt: null and agents_states: {} — the fields are declared but the
+//     v2 collaboration runtime never fills them in;
+//   * the child's answer reaches the parent as an internal message and shows
+//     up only inside the parent's next agent_message.
+//
+// A transcript therefore cannot show the spawn — the event does not exist to
+// translate. What it MUST NOT do is show a blank row: a `codex.wait` whose
+// result is the empty string reads as a broken runner. So the result text
+// falls back to the item's own tool/status/receivers when agents_states is
+// empty, and renders the per-child lines when a Codex that fills them in
+// (or a spawn item carrying the new child thread id) does arrive.
+//
+// The map's value is CollabAgentState { status, message }; status is one of
+// pending_init | running | interrupted | errored | shutdown | not_found.
+function agentsStatesLines(states) {
+  if (!states || typeof states !== "object") return [];
+  return Object.entries(states).map(([threadId, s]) => {
+    const status = s?.status ?? "unknown";
+    const message = typeof s?.message === "string" ? s.message : "";
+    return `${threadId}: ${status}${message ? ` — ${message}` : ""}`;
+  });
+}
+
+// Who the call was aimed at. receiver_agents carries agent paths
+// ("/root/explorer") and receiver_thread_ids the child thread ids; either
+// may be absent, and on v2 both are empty for a bare wait.
+function collabReceivers(item) {
+  const agents = Array.isArray(item.receiver_agents) ? item.receiver_agents : [];
+  const threads = Array.isArray(item.receiver_thread_ids)
+    ? item.receiver_thread_ids
+    : [];
+  return agents.length > 0 ? agents : threads;
+}
+
+function collabResultText(item) {
+  const lines = agentsStatesLines(item.agents_states);
+  if (lines.length > 0) return lines.join("\n");
+  const receivers = collabReceivers(item);
+  const who = receivers.length > 0 ? receivers.join(", ") : "any agent";
+  return `${item.tool ?? "collab"} ${item.status ?? "completed"} (${who})`;
 }
 
 const assistant = (blocks) => ({
@@ -137,12 +175,21 @@ function toolUsesFor(item) {
         },
       ];
     case "collab_tool_call": {
-      // Native Codex subagents: tool ∈ spawn_agent | send_input | wait |
-      // wait_agent | resume_agent | close_agent. The receivers are the child
-      // thread ids; the prompt is what was delegated (spawn/send only).
+      // Native Codex subagents. The tool field is one of exactly four values
+      // — spawn_agent | send_input | wait | close_agent — and on 0.153.3 only
+      // "wait" is ever emitted (see the note above agentsStatesLines). The
+      // receivers are the child agent paths or thread ids; the prompt is what
+      // was delegated, and is null on every v2 item observed so far.
+      const receivers = collabReceivers(item);
       const input = {
-        ...(typeof item.prompt === "string" ? { prompt: item.prompt } : {}),
-        receivers: item.receiver_thread_ids ?? [],
+        ...(typeof item.prompt === "string" && item.prompt
+          ? { prompt: item.prompt }
+          : {}),
+        receivers,
+        ...(typeof item.agent_type === "string"
+          ? { agent_type: item.agent_type }
+          : {}),
+        ...(typeof item.model === "string" ? { model: item.model } : {}),
       };
       return [
         {
@@ -208,7 +255,7 @@ function toolResultsFor(item) {
         {
           type: "tool_result",
           tool_use_id: item.id,
-          content: agentsStatesText(item.agents_states),
+          content: collabResultText(item),
           is_error: failed,
         },
       ];

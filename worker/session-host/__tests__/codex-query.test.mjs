@@ -161,6 +161,96 @@ describe("translateEvent", () => {
     expect(out[1].message.content[0]).toMatchObject({ type: "tool_result", tool_use_id: "c1", content: "a\n", is_error: true });
   });
 
+  // The two lines below are verbatim stdout from `codex exec --json` on
+  // codex-cli 0.153.3 (gpt-5.6-terra, 2026-09-04) for a turn that spawned an
+  // explorer subagent, waited for it, and reported what it said. They are the
+  // ONLY collab events the turn produced: spawn_agent is a SubAgentActivity
+  // item internally and exec --json does not serialize that type, so no
+  // Codex event exists for the spawn — and the wait carries no receivers, no
+  // prompt and no agent states. The bug this pins: the wait's result used to
+  // render as the empty string, so the transcript showed a naked tool row.
+  const REAL_WAIT_STARTED =
+    '{"type":"item.started","item":{"id":"item_1","type":"collab_tool_call","tool":"wait","sender_thread_id":"01a06ee4-ff63-7910-86d1-e3f8a6d607d2","receiver_thread_ids":[],"prompt":null,"agents_states":{},"status":"in_progress"}}';
+  const REAL_WAIT_COMPLETED =
+    '{"type":"item.completed","item":{"id":"item_1","type":"collab_tool_call","tool":"wait","sender_thread_id":"01a06ee4-ff63-7910-86d1-e3f8a6d607d2","receiver_thread_ids":[],"prompt":null,"agents_states":{},"status":"completed"}}';
+
+  it("a real 0.153.3 wait: one tool_use, one paired result, never empty", () => {
+    const seen = new Set();
+    const started = translateEvent(JSON.parse(REAL_WAIT_STARTED), seen);
+    expect(started.map((m) => m.type)).toEqual(["assistant"]);
+    expect(started[0].message.content[0]).toEqual({
+      type: "tool_use",
+      id: "item_1",
+      name: "codex.wait",
+      input: { receivers: [] },
+    });
+
+    const completed = translateEvent(JSON.parse(REAL_WAIT_COMPLETED), seen);
+    // The started event already emitted the tool_use: completion adds the
+    // result only, under the same id.
+    expect(completed.map((m) => m.type)).toEqual(["user"]);
+    expect(completed[0].message.content[0]).toEqual({
+      type: "tool_result",
+      tool_use_id: "item_1",
+      content: "wait completed (any agent)",
+      is_error: false,
+    });
+    expect(seen.has("item_1")).toBe(false);
+  });
+
+  it("a failed collab call with no agent states still says what failed", () => {
+    const [, res] = translateEvent({
+      type: "item.completed",
+      item: {
+        id: "c9",
+        type: "collab_tool_call",
+        tool: "close_agent",
+        sender_thread_id: "t-parent",
+        receiver_thread_ids: [],
+        receiver_agents: [],
+        prompt: null,
+        agents_states: {},
+        status: "failed",
+      },
+    });
+    expect(res.message.content[0]).toMatchObject({
+      tool_use_id: "c9",
+      content: "close_agent failed (any agent)",
+      is_error: true,
+    });
+  });
+
+  it("a collab call that does carry agent states renders one line per child", () => {
+    const out = translateEvent({
+      type: "item.completed",
+      item: {
+        id: "c10",
+        type: "collab_tool_call",
+        tool: "spawn_agent",
+        sender_thread_id: "t-parent",
+        receiver_thread_ids: ["child-1", "child-2"],
+        receiver_agents: ["/root/alpha", "/root/beta"],
+        prompt: "reply with PONG",
+        agents_states: {
+          "child-1": { status: "completed", message: "PONG" },
+          "child-2": { status: "running", message: null },
+        },
+        status: "completed",
+      },
+    });
+    expect(out[0].message.content[0]).toEqual({
+      type: "tool_use",
+      id: "c10",
+      name: "codex.spawn_agent",
+      // Agent paths win over thread ids: they are what the model named.
+      input: { prompt: "reply with PONG", receivers: ["/root/alpha", "/root/beta"] },
+    });
+    expect(out[1].message.content[0]).toMatchObject({
+      tool_use_id: "c10",
+      content: "child-1: completed — PONG\nchild-2: running",
+    });
+  });
+
   it("ignores turn.started and item.updated", () => {
     expect(translateEvent({ type: "turn.started" })).toEqual([]);
     expect(translateEvent({ type: "item.updated", item: { id: "x", type: "command_execution" } })).toEqual([]);
@@ -217,14 +307,23 @@ describe("codexQuery against the fake binary", () => {
     expect(systemTexts.some((t) => t.startsWith("codex plan:") && t.includes('"completed":false'))).toBe(true);
     expect(systemTexts.some((t) => t.startsWith("codex plan (final):") && t.includes('"completed":true'))).toBe(true);
 
-    // collab_tool_call → codex.<tool> with prompt + receivers; result = agents_states.
-    const spawn = uses.find((u) => u.id === "item_6");
-    expect(spawn).toMatchObject({ name: "codex.spawn_agent", input: { prompt: "review the diff", receivers: ["child-1"] } });
-    expect(uses.filter((u) => u.id === "item_6")).toHaveLength(1); // started + completed = one tool_use
-    expect(results.find((r) => r.tool_use_id === "item_6").content).toBe("child-1: running");
-    const wait = uses.find((u) => u.id === "item_7");
-    expect(wait).toMatchObject({ name: "codex.wait", input: { receivers: ["child-1"] } });
+    // collab_tool_call, as codex-cli 0.153.3 really emits it: a bare `wait`
+    // with nothing filled in. One tool_use (started + completed = one row),
+    // and a result that names the tool, its status and who it waited on
+    // rather than being the empty string.
+    const wait = uses.find((u) => u.id === "item_6");
+    expect(wait).toMatchObject({ name: "codex.wait", input: { receivers: [] } });
     expect(wait.input.prompt).toBeUndefined();
+    expect(uses.filter((u) => u.id === "item_6")).toHaveLength(1);
+    expect(results.find((r) => r.tool_use_id === "item_6").content).toBe("wait completed (any agent)");
+
+    // The populated form: receivers prefer the agent paths, and the result
+    // lists each child's status and final message.
+    const spawn = uses.find((u) => u.id === "item_7");
+    expect(spawn).toMatchObject({
+      name: "codex.spawn_agent",
+      input: { prompt: "review the diff", receivers: ["/root/explorer"] },
+    });
     expect(results.find((r) => r.tool_use_id === "item_7").content).toBe("child-1: completed — diff looks fine");
 
     // The advisory error is a system row, not a result — the turn went on.

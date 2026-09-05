@@ -4,9 +4,10 @@
 // appends the argv it was given to FAKE_CODEX_ARGS_FILE (one JSON line per
 // invocation, so the test can assert the exact resume flags), and prints
 // canned JSONL chosen by the PROMPT text — the prompt is the one channel a
-// test controls per turn. The shapes are copied from a real `codex exec
-// --json` run (codex-cli 0.130, 2026-09-04) plus the collab/todo/mcp item
-// shapes from the app-server protocol schema.
+// test controls per turn. The shapes are copied from real `codex exec --json`
+// runs (codex-cli 0.130 and, for the collab_tool_call events, 0.153.3 with
+// gpt-5.6-terra on 2026-09-04) plus the todo/mcp item shapes from the
+// app-server protocol schema.
 //
 // Never installed on the box: setup.sh copies worker/session-host/*.mjs one
 // level deep, and this file is two levels down on purpose.
@@ -118,17 +119,20 @@ if (prompt.includes("SCENARIO:full")) {
       items: [{ text: "write tests", completed: true }],
     },
   });
-  // Native subagents: spawn, then the wait that brings the children's
-  // states back.
+  // Native subagents, EXACTLY as codex-cli 0.153.3 emits them. A turn that
+  // spawned an explorer subagent and waited for it produced only this one
+  // pair of events: spawn_agent is a SubAgentActivity item internally and
+  // `codex exec --json` does not serialize that type, so the spawn is
+  // invisible, and the wait's receivers/prompt/agents_states are all empty.
   emit({
     type: "item.started",
     item: {
       id: "item_6",
       type: "collab_tool_call",
-      tool: "spawn_agent",
+      tool: "wait",
       sender_thread_id: threadId,
-      receiver_thread_ids: ["child-1"],
-      prompt: "review the diff",
+      receiver_thread_ids: [],
+      prompt: null,
       agents_states: {},
       status: "in_progress",
     },
@@ -138,22 +142,28 @@ if (prompt.includes("SCENARIO:full")) {
     item: {
       id: "item_6",
       type: "collab_tool_call",
-      tool: "spawn_agent",
+      tool: "wait",
       sender_thread_id: threadId,
-      receiver_thread_ids: ["child-1"],
-      prompt: "review the diff",
-      agents_states: { "child-1": { status: "running", message: null } },
+      receiver_thread_ids: [],
+      prompt: null,
+      agents_states: {},
       status: "completed",
     },
   });
+  // The populated form: the fields CollabAgentToolCallItem declares, filled
+  // in. 0.153.3's v2 collaboration runtime never fills them, but the item
+  // struct (receiver_agents, prompt, agents_states of CollabAgentState
+  // { status, message }) is its own, so this pins the per-child rendering.
   emit({
     type: "item.completed",
     item: {
       id: "item_7",
       type: "collab_tool_call",
-      tool: "wait",
+      tool: "spawn_agent",
       sender_thread_id: threadId,
       receiver_thread_ids: ["child-1"],
+      receiver_agents: ["/root/explorer"],
+      prompt: "review the diff",
       agents_states: {
         "child-1": { status: "completed", message: "diff looks fine" },
       },
