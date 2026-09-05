@@ -486,79 +486,109 @@ export const internalTranscriptPage = internalQuery({
 
 // ── Tom-facing mutations ─────────────────────────────────────────────────────
 
-export const createSession = mutation({
-  args: {
-    title: v.string(),
-    kind: SESSION_KIND,
-    // The live argument: the repos this session checks out. `repo` is the
-    // pre-ruling single-string form, still accepted so an older client (or a
-    // saved link) keeps working; both go through the same resolver.
-    repos: v.optional(v.array(v.string())),
-    repo: v.optional(v.string()),
-    todoId: v.optional(v.id("dtsTodos")),
-    // A session opened ON a batch names the batch itself (ledger graduation
-    // session-repos-need-batch-subject): the resolver reads the batch's
-    // declared repos directly instead of hoping to reach it through a todo.
-    batchId: v.optional(v.id("batches")),
-    blockCategory: v.optional(v.string()),
-    // Tom picks the model for his own sessions (ratified 2026-09-04). Absent
-    // takes DEFAULT_SESSION_MODEL, which insertSession supplies.
-    model: v.optional(SESSION_MODEL),
-    initialPrompt: v.string(),
+// The one argument shape and body behind BOTH doors below: Tom's browser
+// mutation (requireTomId) and the CLI pen (internalMutation, run with
+// `npx convex run claudeSessions:internalCreateSession '{…}'` against the
+// deployment — the same pattern as internalSetAutoConfig). One body, so the
+// two doors can never resolve repos or seed the row differently.
+const CREATE_SESSION_ARGS = {
+  title: v.string(),
+  kind: SESSION_KIND,
+  // The live argument: the repos this session checks out. `repo` is the
+  // pre-ruling single-string form, still accepted so an older client (or a
+  // saved link) keeps working; both go through the same resolver.
+  repos: v.optional(v.array(v.string())),
+  repo: v.optional(v.string()),
+  todoId: v.optional(v.id("dtsTodos")),
+  // A session opened ON a batch names the batch itself (ledger graduation
+  // session-repos-need-batch-subject): the resolver reads the batch's
+  // declared repos directly instead of hoping to reach it through a todo.
+  batchId: v.optional(v.id("batches")),
+  blockCategory: v.optional(v.string()),
+  // Tom picks the model for his own sessions (ratified 2026-09-04). Absent
+  // takes DEFAULT_SESSION_MODEL, which insertSession supplies.
+  model: v.optional(SESSION_MODEL),
+  initialPrompt: v.string(),
+};
+
+async function createSessionFrom(
+  ctx: MutationCtx,
+  {
+    title,
+    kind,
+    repos,
+    repo,
+    todoId,
+    batchId,
+    blockCategory,
+    model,
+    initialPrompt,
+  }: {
+    title: string;
+    kind: Doc<"claudeSessions">["kind"];
+    repos?: string[];
+    repo?: string;
+    todoId?: Id<"dtsTodos">;
+    batchId?: Id<"batches">;
+    blockCategory?: string;
+    model?: SessionModel;
+    initialPrompt: string;
   },
-  handler: async (
+): Promise<Id<"claudeSessions">> {
+  if (initialPrompt.trim() === "") throw new Error("initialPrompt is empty");
+  // A todo- or batch-scoped session with no repos named inherits the answer
+  // from its subject rather than silently landing on an empty scratch
+  // workspace — the failure this whole unification exists to stop. The
+  // batch is reached directly when the session names one, and through the
+  // todo otherwise.
+  const todo = todoId !== undefined ? await ctx.db.get(todoId) : null;
+  const batch =
+    batchId !== undefined
+      ? await ctx.db.get(batchId)
+      : todo?.batchId !== undefined
+        ? await ctx.db.get(todo.batchId)
+        : null;
+  return await insertSession(
     ctx,
     {
       title,
       kind,
-      repos,
-      repo,
+      repos: resolveSessionRepos({
+        explicit: repos ?? repo,
+        batch,
+        todo,
+        extraText: batch
+          ? `${batch.statement} ${batch.groundUpExplanation ?? ""}`
+          : "",
+      }),
       todoId,
       batchId,
       blockCategory,
       model,
-      initialPrompt,
+      // The ratified rule is "every session ends with a written outcome
+      // record". An INTERACTIVE session had no writer for its own outcome at
+      // all until the footer was appended server-side, after the insert.
+      prompt: () => initialPrompt,
     },
-  ) => {
+    Date.now(),
+  );
+}
+
+export const createSession = mutation({
+  args: CREATE_SESSION_ARGS,
+  handler: async (ctx, args) => {
     await requireTomId(ctx);
-    if (initialPrompt.trim() === "") throw new Error("initialPrompt is empty");
-    // A todo- or batch-scoped session with no repos named inherits the answer
-    // from its subject rather than silently landing on an empty scratch
-    // workspace — the failure this whole unification exists to stop. The
-    // batch is reached directly when the session names one, and through the
-    // todo otherwise.
-    const todo = todoId !== undefined ? await ctx.db.get(todoId) : null;
-    const batch =
-      batchId !== undefined
-        ? await ctx.db.get(batchId)
-        : todo?.batchId !== undefined
-          ? await ctx.db.get(todo.batchId)
-          : null;
-    return await insertSession(
-      ctx,
-      {
-        title,
-        kind,
-        repos: resolveSessionRepos({
-          explicit: repos ?? repo,
-          batch,
-          todo,
-          extraText: batch
-            ? `${batch.statement} ${batch.groundUpExplanation ?? ""}`
-            : "",
-        }),
-        todoId,
-        batchId,
-        blockCategory,
-        model,
-        // The ratified rule is "every session ends with a written outcome
-        // record". An INTERACTIVE session had no writer for its own outcome at
-        // all until the footer was appended server-side, after the insert.
-        prompt: () => initialPrompt,
-      },
-      Date.now(),
-    );
+    return await createSessionFrom(ctx, args);
   },
+});
+
+// The CLI pen (Tom, 2026-09-04: "you should be able to log in as tom" — an
+// agent never types his password, so it opens sessions through the deploy
+// credential instead). Internal, so only the Convex CLI or another function
+// can reach it; identical effect to the browser's Create session button.
+export const internalCreateSession = internalMutation({
+  args: CREATE_SESSION_ARGS,
+  handler: async (ctx, args) => await createSessionFrom(ctx, args),
 });
 
 // The interactive twin of the autonomous mission's pen #2 — same route, same
