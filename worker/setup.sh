@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# setup.sh — build (or rebuild) the Jarvis Box from a fresh Ubuntu 24.04
-# ARM64 server. Run as root from inside a clone of the tom.quest repo:
+# setup.sh — build (or rebuild) the Jarvis Box from a fresh Ubuntu server
+# (x86_64 Ubuntu 26.04 today; it began as an ARM64 24.04 box). Run as root
+# from inside a clone of the tom.quest repo:
 #
 #   git clone https://github.com/<owner>/tom.quest && cd tom.quest
 #   bash worker/setup.sh
@@ -59,7 +60,7 @@ echo "== [4/10] Codex CLI (OpenAI) =="
 # "whatever the desktop app ships" is not a floor this box can stand on.
 # 0.153.3 is the npm release that knows gpt-5.6-sol / gpt-5.6-terra and carries
 # the native subagent tool (spawn_agent) that the delegation rule in AGENTS.md
-# depends on, and it has a linux-arm64 build, which this box needs. Moving the
+# depends on, and it ships linux-x64 and linux-arm64 builds. Moving the
 # pin is a deliberate act: re-read the [agents] key names in the Codex config
 # docs when you do, because they have been renamed across releases once already
 # (agents.max_threads -> agents.max_concurrent_threads_per_session).
@@ -127,7 +128,16 @@ npm install -g playwright
 # cron and the session-host daemon were installed — a browser download must
 # never block the daemon rollout. tts-browse reports a missing Chromium at
 # launch time, which is the honest place for it.
-npx playwright install chromium || \
+# PLAYWRIGHT_HOST_PLATFORM_OVERRIDE: Playwright validates the host against a
+# supported-distro list even for the plain download and refuses Ubuntu 26.04
+# ("does not support chromium on ubuntu26.04-x64"). Naming the 24.04 build of
+# the same architecture downloads a binary that runs fine here (verified
+# 2026-09-05: tts-browse renders tom.quest with no console errors).
+case "$(uname -m)" in
+  aarch64|arm64) PW_ARCH=arm64 ;;
+  *) PW_ARCH=x64 ;;
+esac
+PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="ubuntu24.04-$PW_ARCH" npx playwright install chromium || \
   echo "  (Chromium download refused on this distro; tts-browse will report if launch fails)"
 
 echo "== [6/10] directories =="

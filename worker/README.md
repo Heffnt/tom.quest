@@ -1,7 +1,7 @@
 # The Jarvis Box
 
-The always-on home for TTS's scheduled headless-Claude jobs: a Hetzner CAX11
-(Ubuntu 24.04, ARM64) running three personal-todo jobs and three code-todo jobs
+The always-on home for TTS's scheduled headless-Claude jobs: a Hetzner VPS
+(today: x86_64, Ubuntu 26.04 — it began life as an ARM64 CAX11 on 24.04) running three personal-todo jobs and three code-todo jobs
 on a schedule:
 
 1. **poll-dump** (every 2 min) — reads new human messages from the Slack
@@ -196,7 +196,7 @@ Losing the whole Jarvis Box loses nothing but a paused digest and some re-work.
 ## Rebuild from scratch
 
 ```
-# 1. Create a Hetzner CAX11 (Ubuntu 24.04, ARM64), add the SSH key, log in as root.
+# 1. Create a Hetzner VPS (any arch; x86_64 Ubuntu 26.04 is what runs today), add the SSH key, log in as root.
 # 2. On the Jarvis Box:
 git clone https://github.com/<owner>/tom.quest
 bash tom.quest/worker/setup.sh

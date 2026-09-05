@@ -55,10 +55,6 @@ const DEFAULT_TIMEOUT_MS = 480_000;
 const DEFAULT_MODEL = "gpt-5.6-sol";
 const DEFAULT_EFFORT = "xhigh";
 const DEFAULT_SANDBOX = "workspace-write";
-// Last-resort binary on Tom's Windows machine: the copy bundled with the Codex
-// desktop app. It is an old build that predates the gpt-5.6 family and will
-// reject DEFAULT_MODEL, so reaching for it is warned about, loudly, below.
-const FALLBACK_BIN = "C:/Users/heffn/AppData/Local/OpenAI/Codex/bin/codex.exe";
 
 function fail(message, code = 2) {
   process.stderr.write(`codex-run: ${message}\n`);
@@ -100,8 +96,10 @@ function parseArgs(argv) {
   return opts;
 }
 
-// Binary lookup order: CODEX_BIN env var, then `codex` on PATH, then the copy
-// bundled with the Codex desktop app.
+// Binary lookup order: CODEX_BIN env var, then `codex` on PATH (the pinned npm
+// install, on the laptop and the box alike). The Codex desktop app's bundled
+// binary is deliberately NOT a fallback: it lags the npm release and rejects
+// the gpt-5.6 models.
 function resolveBinary() {
   if (process.env.CODEX_BIN) {
     if (!existsSync(process.env.CODEX_BIN)) fail(`CODEX_BIN=${process.env.CODEX_BIN} does not exist`);
@@ -115,16 +113,7 @@ function resolveBinary() {
       if (existsSync(candidate)) return candidate;
     }
   }
-  if (existsSync(FALLBACK_BIN)) {
-    process.stderr.write(
-      `codex-run: falling back to the Codex desktop app binary (${FALLBACK_BIN}).\n` +
-        "codex-run: that build predates the gpt-5.6 models and will reject them —\n" +
-        "codex-run: install the pinned CLI (npm i -g @openai/codex@0.153.3) or pass\n" +
-        "codex-run: --model gpt-5.5 to use this one.\n",
-    );
-    return FALLBACK_BIN;
-  }
-  fail("codex binary not found: set CODEX_BIN, or run `npm i -g @openai/codex`");
+  fail("codex binary not found: set CODEX_BIN, or run `npm i -g @openai/codex@0.153.3`");
 }
 
 function readStdin() {
