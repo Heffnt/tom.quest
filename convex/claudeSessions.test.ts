@@ -2008,6 +2008,173 @@ describe("session model changes", () => {
   });
 });
 
+// ── The CLI pens (Tom, 2026-09-04: "you should be able to log in as tom") ────
+// An agent never types Tom's password, so every Tom-facing session mutation has
+// an internalMutation twin reachable with the deploy credential
+// (`npx convex run claudeSessions:internalSendMessage '{…}'`). These pin the
+// contract that makes the pens safe to have at all: ONE shared body behind both
+// doors, so the pen cannot do more, less, or other than the browser button.
+//
+// witness: give any internalX its own copy of the handler and let the two drift
+// (skip a live check, drop the empty-text guard) — the matching test goes red.
+
+describe("Tom-facing mutations have CLI pens with identical effect", () => {
+  const inboundFor = (
+    t: ReturnType<typeof convexTest>,
+    sessionId: Id<"claudeSessions">,
+  ) =>
+    t.run(async (ctx) =>
+      (await ctx.db.query("claudeInbound").collect()).filter(
+        (row) => row.sessionId === sessionId,
+      ),
+    );
+
+  it("internalSendMessage enqueues the same pending user-turn, with the same guards", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+
+    await t.mutation(internal.claudeSessions.internalSendMessage, {
+      sessionId,
+      text: "from the CLI",
+    });
+    // Scoped by text: the session's own initial prompt is already a user-turn
+    // row, so counting the kind alone would count creation too.
+    const turns = (await inboundFor(t, sessionId)).filter(
+      (row) => row.kind === "user-turn" && row.text === "from the CLI",
+    );
+    expect(turns).toHaveLength(1);
+    expect(turns[0].status).toBe("pending");
+
+    // The shared body carries the validations, so the pen refuses exactly what
+    // the browser refuses: empty text, and a session that is no longer live.
+    await expect(
+      t.mutation(internal.claudeSessions.internalSendMessage, {
+        sessionId,
+        text: "   ",
+      }),
+    ).rejects.toThrow("Message is empty");
+    await t.run(async (ctx) =>
+      ctx.db.patch(sessionId, { status: "ended", statusChangedAt: Date.now() }),
+    );
+    await expect(
+      t.mutation(internal.claudeSessions.internalSendMessage, {
+        sessionId,
+        text: "too late",
+      }),
+    ).rejects.toThrow(/ended/);
+  });
+
+  it("internalSendControl enqueues a control and dedupes against the browser's", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+
+    await t.mutation(internal.claudeSessions.internalSendControl, {
+      sessionId,
+      kind: "interrupt",
+    });
+    // Same pending row either door writes, so the second one — through the
+    // browser this time — is the same no-op a second tap is.
+    await tom.mutation(api.claudeSessions.sendControl, {
+      sessionId,
+      kind: "interrupt",
+    });
+    const controls = (await inboundFor(t, sessionId)).filter(
+      (row) => row.kind === "interrupt",
+    );
+    expect(controls).toHaveLength(1);
+    expect(controls[0].status).toBe("pending");
+  });
+
+  it("internalSetSessionModel patches within a family and refuses across one", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "test session",
+      kind: "adhoc",
+      repo: "none",
+      model: "opus",
+      initialPrompt: "hello",
+    });
+
+    await t.mutation(internal.claudeSessions.internalSetSessionModel, {
+      sessionId,
+      model: "sonnet",
+    });
+    expect(
+      (await t.run(async (ctx) => (await ctx.db.get(sessionId))!)).model,
+    ).toBe("sonnet");
+
+    // The same error text the browser gets — one body, one message.
+    await expect(
+      t.mutation(internal.claudeSessions.internalSetSessionModel, {
+        sessionId,
+        model: "gpt-5.6-sol",
+      }),
+    ).rejects.toThrow("use forkSessionAs for a cross-family change");
+  });
+
+  it("internalForkSessionAs returns the new session, forkedFrom the old", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const oldId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "the boolean sweep",
+      kind: "adhoc",
+      repos: ["tom.quest"],
+      model: "opus",
+      initialPrompt: "hello",
+    });
+
+    const forkId = await t.mutation(
+      internal.claudeSessions.internalForkSessionAs,
+      { sessionId: oldId, model: "gpt-5.6-sol", text: "carry on" },
+    );
+    const fork = await t.run(async (ctx) => (await ctx.db.get(forkId))!);
+    expect(fork.forkedFrom).toBe(oldId);
+    expect(fork.model).toBe("gpt-5.6-sol");
+    expect(fork.repos).toEqual(["tom.quest"]);
+    // And the old one ends the ordinary way, exactly as through the browser.
+    const stops = (await inboundFor(t, oldId)).filter(
+      (row) => row.kind === "stop",
+    );
+    expect(stops).toHaveLength(1);
+  });
+
+  it("internalReopenSession revives an ended session and enqueues its turn", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      status: "ended",
+      endedReason: "stopped by Tom",
+    });
+
+    await t.mutation(internal.claudeSessions.internalReopenSession, {
+      sessionId,
+      text: "one more thing",
+    });
+    const row = await t.run(async (ctx) => (await ctx.db.get(sessionId))!);
+    expect(row.status).toBe("idle");
+    expect(row.mode).toBe("interactive");
+    expect(row.reopenEpoch).toBe(1);
+    const turns = (await inboundFor(t, sessionId)).filter(
+      (r) => r.kind === "user-turn" && r.text === "one more thing",
+    );
+    expect(turns).toHaveLength(1);
+
+    // The live check is the body's, not the browser door's: a live session is
+    // pushed back at the pen with the same "use sendMessage" answer.
+    await expect(
+      t.mutation(internal.claudeSessions.internalReopenSession, {
+        sessionId,
+        text: "again",
+      }),
+    ).rejects.toThrow(/sendMessage/);
+  });
+});
+
 // ── The transcript the daemon copies into a fork's workspace ─────────────────
 // GET /sessions/transcript pages this internalQuery. Oldest-first and paged:
 // the file it builds is the whole conversation in order, and a long session's

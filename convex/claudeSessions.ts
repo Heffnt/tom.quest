@@ -591,6 +591,14 @@ export const internalCreateSession = internalMutation({
   handler: async (ctx, args) => await createSessionFrom(ctx, args),
 });
 
+// Every Tom-facing session mutation below carries the same pen, built the same
+// way as createSession / internalCreateSession above: ONE args object, ONE body
+// function holding every validation, then two doors onto it — the browser
+// mutation (requireTomId, then the body) and the `internalX` twin (the body).
+// The pens are reopenSession, setSessionModel, forkSessionAs, sendMessage and
+// sendControl; the validations live in the body precisely so a pen can never
+// skip a check the browser enforces. Not repeated on each one.
+
 // The interactive twin of the autonomous mission's pen #2 — same route, same
 // key, same env contract (CONVEX_SITE_URL + TTS_WORKER_KEY are the only two
 // variables the daemon injects; SESSIONS_WORKER_KEY never enters a
@@ -627,64 +635,79 @@ function outcomePenFooter(
 // Re-entry (spec §9: an ended session accepts a follow-up turn and continues
 // with context intact). Before this, an ending was a dead end — the only way
 // back to a finished conversation was a NEW session with none of its context.
+const REOPEN_SESSION_ARGS = {
+  sessionId: v.id("claudeSessions"),
+  text: v.string(),
+};
+
+async function reopenSessionFrom(
+  ctx: MutationCtx,
+  { sessionId, text }: { sessionId: Id<"claudeSessions">; text: string },
+): Promise<void> {
+  const session = await getSessionOrThrow(ctx, sessionId);
+  if (session.status !== "ended" && session.status !== "failed") {
+    throw new Error(
+      `Session is ${session.status} — a live session takes a turn via sendMessage; reopen is for an ended or failed one`,
+    );
+  }
+  if (text.trim() === "") throw new Error("Message is empty");
+  const now = Date.now();
+  await ctx.db.patch(sessionId, {
+    status: "idle",
+    statusChangedAt: now,
+    // Reopening an autonomous session IS taking it over: Tom is now in the
+    // conversation, so the posture becomes interactive. Left as
+    // "autonomous", the daemon would re-apply the auto-end path (end the
+    // session after the agent's next final turn, under a wall-clock cap) and
+    // close the conversation out from under him.
+    mode: "interactive",
+    // ...but the flip must not ERASE the fact that this was an autonomous
+    // run: the scheduler's per-todo backoff walk reads history by
+    // `mode === "autonomous"`, and a reopened-then-ended run vanishing from
+    // that history re-admits work Tom just closed by hand. This field is the
+    // history signal `mode` can no longer carry.
+    ...(session.mode === "autonomous" ? { reopenedFromAutonomous: true } : {}),
+    // The two facts the DAEMON needs (see the note below): reopenedAt marks
+    // this re-entry into the live poll as a reopen rather than a restart, and
+    // reopenEpoch is the generation a pre-reopen ingest replay is measured
+    // against (internalIngest drops stale STATE).
+    reopenedAt: now,
+    reopenEpoch: (session.reopenEpoch ?? 0) + 1,
+    // endedReason / outcome / outcomeSummary are deliberately LEFT IN PLACE:
+    // they are the honest history of the PREVIOUS ending, not claims about
+    // the session's present state, and the transcript that follows keeps
+    // them honest. Clearing them would erase the record of how it ended.
+  });
+  await ctx.db.insert("claudeInbound", {
+    sessionId,
+    kind: "user-turn",
+    text,
+    status: "pending",
+    createdAt: now,
+  });
+  // A reopened session reappears in the poll's live scan, and delivery
+  // resumes from sdkSessionId (the SDK resume key persisted on the row).
+  // But the daemon DOES need the two fields above to handle it honestly:
+  // re-entering the live poll with no local Session is byte-identical to a
+  // daemon restart, so without reopenedAt the adoption writes a false
+  // "session-host restarted; previous turn interrupted" row; and if the
+  // daemon still holds a draining local for the ending it just reported, its
+  // blind flush retry would land as a stale ingest without reopenEpoch. Both
+  // are read in worker/session-host/session-host.mjs (poll loop +
+  // adoptSession); the epoch also rides every ingest payload.
+}
+
 export const reopenSession = mutation({
-  args: { sessionId: v.id("claudeSessions"), text: v.string() },
-  handler: async (ctx, { sessionId, text }) => {
+  args: REOPEN_SESSION_ARGS,
+  handler: async (ctx, args) => {
     await requireTomId(ctx);
-    const session = await getSessionOrThrow(ctx, sessionId);
-    if (session.status !== "ended" && session.status !== "failed") {
-      throw new Error(
-        `Session is ${session.status} — a live session takes a turn via sendMessage; reopen is for an ended or failed one`,
-      );
-    }
-    if (text.trim() === "") throw new Error("Message is empty");
-    const now = Date.now();
-    await ctx.db.patch(sessionId, {
-      status: "idle",
-      statusChangedAt: now,
-      // Reopening an autonomous session IS taking it over: Tom is now in the
-      // conversation, so the posture becomes interactive. Left as
-      // "autonomous", the daemon would re-apply the auto-end path (end the
-      // session after the agent's next final turn, under a wall-clock cap) and
-      // close the conversation out from under him.
-      mode: "interactive",
-      // ...but the flip must not ERASE the fact that this was an autonomous
-      // run: the scheduler's per-todo backoff walk reads history by
-      // `mode === "autonomous"`, and a reopened-then-ended run vanishing from
-      // that history re-admits work Tom just closed by hand. This field is the
-      // history signal `mode` can no longer carry.
-      ...(session.mode === "autonomous"
-        ? { reopenedFromAutonomous: true }
-        : {}),
-      // The two facts the DAEMON needs (see the note below): reopenedAt marks
-      // this re-entry into the live poll as a reopen rather than a restart, and
-      // reopenEpoch is the generation a pre-reopen ingest replay is measured
-      // against (internalIngest drops stale STATE).
-      reopenedAt: now,
-      reopenEpoch: (session.reopenEpoch ?? 0) + 1,
-      // endedReason / outcome / outcomeSummary are deliberately LEFT IN PLACE:
-      // they are the honest history of the PREVIOUS ending, not claims about
-      // the session's present state, and the transcript that follows keeps
-      // them honest. Clearing them would erase the record of how it ended.
-    });
-    await ctx.db.insert("claudeInbound", {
-      sessionId,
-      kind: "user-turn",
-      text,
-      status: "pending",
-      createdAt: now,
-    });
-    // A reopened session reappears in the poll's live scan, and delivery
-    // resumes from sdkSessionId (the SDK resume key persisted on the row).
-    // But the daemon DOES need the two fields above to handle it honestly:
-    // re-entering the live poll with no local Session is byte-identical to a
-    // daemon restart, so without reopenedAt the adoption writes a false
-    // "session-host restarted; previous turn interrupted" row; and if the
-    // daemon still holds a draining local for the ending it just reported, its
-    // blind flush retry would land as a stale ingest without reopenEpoch. Both
-    // are read in worker/session-host/session-host.mjs (poll loop +
-    // adoptSession); the epoch also rides every ingest payload.
+    await reopenSessionFrom(ctx, args);
   },
+});
+
+export const internalReopenSession = internalMutation({
+  args: REOPEN_SESSION_ARGS,
+  handler: async (ctx, args) => await reopenSessionFrom(ctx, args),
 });
 
 // Retitling is pure labelling — the title is Tom's handle on a session in the
@@ -711,21 +734,41 @@ export const renameSession = mutation({
 // key); Codex holds its own thread of the same kind. Neither can adopt the
 // other's, so a cross-family "change" is a new session that reads the old
 // one's transcript — forkSessionAs, below.
+const SET_SESSION_MODEL_ARGS = {
+  sessionId: v.id("claudeSessions"),
+  model: SESSION_MODEL,
+};
+
+async function setSessionModelFrom(
+  ctx: MutationCtx,
+  {
+    sessionId,
+    model,
+  }: { sessionId: Id<"claudeSessions">; model: SessionModel },
+): Promise<void> {
+  const session = await getSessionOrThrow(ctx, sessionId);
+  if (!isLive(session.status)) {
+    throw new Error(
+      `Session is ${session.status} — the model of a finished session is history`,
+    );
+  }
+  if (modelFamily(session.model) !== modelFamily(model)) {
+    throw new Error("use forkSessionAs for a cross-family change");
+  }
+  await ctx.db.patch(sessionId, { model });
+}
+
 export const setSessionModel = mutation({
-  args: { sessionId: v.id("claudeSessions"), model: SESSION_MODEL },
-  handler: async (ctx, { sessionId, model }) => {
+  args: SET_SESSION_MODEL_ARGS,
+  handler: async (ctx, args) => {
     await requireTomId(ctx);
-    const session = await getSessionOrThrow(ctx, sessionId);
-    if (!isLive(session.status)) {
-      throw new Error(
-        `Session is ${session.status} — the model of a finished session is history`,
-      );
-    }
-    if (modelFamily(session.model) !== modelFamily(model)) {
-      throw new Error("use forkSessionAs for a cross-family change");
-    }
-    await ctx.db.patch(sessionId, { model });
+    await setSessionModelFrom(ctx, args);
   },
+});
+
+export const internalSetSessionModel = internalMutation({
+  args: SET_SESSION_MODEL_ARGS,
+  handler: async (ctx, args) => await setSessionModelFrom(ctx, args),
 });
 
 /**
@@ -755,109 +798,165 @@ function buildForkPrompt(
 // A cross-family model change: a NEW session that reads the old one's
 // transcript, and the old one ended normally so its outcome stays intact.
 // Returns the new session's id.
-export const forkSessionAs = mutation({
-  args: {
-    sessionId: v.id("claudeSessions"),
-    model: SESSION_MODEL,
-    text: v.string(),
-  },
-  handler: async (ctx, { sessionId, model, text }) => {
-    await requireTomId(ctx);
-    const session = await getSessionOrThrow(ctx, sessionId);
-    if (text.trim() === "") throw new Error("Message is empty");
-    const now = Date.now();
-    // The fork inherits the whole SUBJECT of the old session — its repos, the
-    // todo or batch it was opened on, its kind — because it is the same work
-    // being continued; only the model and the transcript-on-disk differ. Mode
-    // is interactive: Tom asked for this session by hand, whatever the old
-    // one's posture was.
-    const forkId = await insertSession(
-      ctx,
-      {
-        title: `${session.title} (as ${model})`,
-        kind: session.kind,
-        repos: session.repos ?? (session.repo === NO_REPO ? [] : [session.repo]),
-        todoId: session.todoId,
-        batchId: session.batchId,
-        blockCategory: session.blockCategory,
-        mode: "interactive",
-        model,
-        forkedFrom: sessionId,
-        prompt: () => buildForkPrompt(sessionId, model, text),
-      },
-      now,
-    );
-    // End the OLD session the ordinary way — the same pending "stop" row the
-    // browser's stop button enqueues — rather than patching it terminal here.
-    // The daemon owns every status transition it can see, and a server-side
-    // force-terminal would strand the process still holding the session and
-    // skip the outcome it is in the middle of writing.
-    if (isLive(session.status)) {
-      const pending = await ctx.db
-        .query("claudeInbound")
-        .withIndex("by_session_status", (q) =>
-          q.eq("sessionId", sessionId).eq("status", "pending"),
-        )
-        .collect();
-      if (!pending.some((p) => p.kind === "stop")) {
-        await ctx.db.insert("claudeInbound", {
-          sessionId,
-          kind: "stop",
-          status: "pending",
-          createdAt: now,
-        });
-      }
-    }
-    return forkId;
-  },
-});
+const FORK_SESSION_AS_ARGS = {
+  sessionId: v.id("claudeSessions"),
+  model: SESSION_MODEL,
+  text: v.string(),
+};
 
-export const sendMessage = mutation({
-  args: { sessionId: v.id("claudeSessions"), text: v.string() },
-  handler: async (ctx, { sessionId, text }) => {
-    await requireTomId(ctx);
-    const session = await getSessionOrThrow(ctx, sessionId);
-    if (!isLive(session.status)) {
-      throw new Error(`Session is ${session.status} — messages cannot be sent`);
-    }
-    if (text.trim() === "") throw new Error("Message is empty");
-    await ctx.db.insert("claudeInbound", {
-      sessionId,
-      kind: "user-turn",
-      text,
-      status: "pending",
-      createdAt: Date.now(),
-    });
+async function forkSessionAsFrom(
+  ctx: MutationCtx,
+  {
+    sessionId,
+    model,
+    text,
+  }: {
+    sessionId: Id<"claudeSessions">;
+    model: SessionModel;
+    text: string;
   },
-});
-
-// interrupt = stop the current turn, keep the session; stop = end the session.
-export const sendControl = mutation({
-  args: {
-    sessionId: v.id("claudeSessions"),
-    kind: v.union(v.literal("interrupt"), v.literal("stop")),
-  },
-  handler: async (ctx, { sessionId, kind }) => {
-    await requireTomId(ctx);
-    const session = await getSessionOrThrow(ctx, sessionId);
-    if (!isLive(session.status)) {
-      throw new Error(`Session is ${session.status}`);
-    }
-    // Idempotent: a same-kind control already pending is not duplicated.
+): Promise<Id<"claudeSessions">> {
+  const session = await getSessionOrThrow(ctx, sessionId);
+  if (text.trim() === "") throw new Error("Message is empty");
+  const now = Date.now();
+  // The fork inherits the whole SUBJECT of the old session — its repos, the
+  // todo or batch it was opened on, its kind — because it is the same work
+  // being continued; only the model and the transcript-on-disk differ. Mode
+  // is interactive: Tom asked for this session by hand, whatever the old
+  // one's posture was.
+  const forkId = await insertSession(
+    ctx,
+    {
+      title: `${session.title} (as ${model})`,
+      kind: session.kind,
+      repos: session.repos ?? (session.repo === NO_REPO ? [] : [session.repo]),
+      todoId: session.todoId,
+      batchId: session.batchId,
+      blockCategory: session.blockCategory,
+      mode: "interactive",
+      model,
+      forkedFrom: sessionId,
+      prompt: () => buildForkPrompt(sessionId, model, text),
+    },
+    now,
+  );
+  // End the OLD session the ordinary way — the same pending "stop" row the
+  // browser's stop button enqueues — rather than patching it terminal here.
+  // The daemon owns every status transition it can see, and a server-side
+  // force-terminal would strand the process still holding the session and
+  // skip the outcome it is in the middle of writing.
+  if (isLive(session.status)) {
     const pending = await ctx.db
       .query("claudeInbound")
       .withIndex("by_session_status", (q) =>
         q.eq("sessionId", sessionId).eq("status", "pending"),
       )
       .collect();
-    if (pending.some((p) => p.kind === kind)) return;
-    await ctx.db.insert("claudeInbound", {
-      sessionId,
-      kind,
-      status: "pending",
-      createdAt: Date.now(),
-    });
+    if (!pending.some((p) => p.kind === "stop")) {
+      await ctx.db.insert("claudeInbound", {
+        sessionId,
+        kind: "stop",
+        status: "pending",
+        createdAt: now,
+      });
+    }
+  }
+  return forkId;
+}
+
+export const forkSessionAs = mutation({
+  args: FORK_SESSION_AS_ARGS,
+  handler: async (ctx, args) => {
+    await requireTomId(ctx);
+    return await forkSessionAsFrom(ctx, args);
   },
+});
+
+export const internalForkSessionAs = internalMutation({
+  args: FORK_SESSION_AS_ARGS,
+  handler: async (ctx, args) => await forkSessionAsFrom(ctx, args),
+});
+
+const SEND_MESSAGE_ARGS = {
+  sessionId: v.id("claudeSessions"),
+  text: v.string(),
+};
+
+async function sendMessageFrom(
+  ctx: MutationCtx,
+  { sessionId, text }: { sessionId: Id<"claudeSessions">; text: string },
+): Promise<void> {
+  const session = await getSessionOrThrow(ctx, sessionId);
+  if (!isLive(session.status)) {
+    throw new Error(`Session is ${session.status} — messages cannot be sent`);
+  }
+  if (text.trim() === "") throw new Error("Message is empty");
+  await ctx.db.insert("claudeInbound", {
+    sessionId,
+    kind: "user-turn",
+    text,
+    status: "pending",
+    createdAt: Date.now(),
+  });
+}
+
+export const sendMessage = mutation({
+  args: SEND_MESSAGE_ARGS,
+  handler: async (ctx, args) => {
+    await requireTomId(ctx);
+    await sendMessageFrom(ctx, args);
+  },
+});
+
+export const internalSendMessage = internalMutation({
+  args: SEND_MESSAGE_ARGS,
+  handler: async (ctx, args) => await sendMessageFrom(ctx, args),
+});
+
+// interrupt = stop the current turn, keep the session; stop = end the session.
+const SEND_CONTROL_ARGS = {
+  sessionId: v.id("claudeSessions"),
+  kind: v.union(v.literal("interrupt"), v.literal("stop")),
+};
+
+async function sendControlFrom(
+  ctx: MutationCtx,
+  {
+    sessionId,
+    kind,
+  }: { sessionId: Id<"claudeSessions">; kind: "interrupt" | "stop" },
+): Promise<void> {
+  const session = await getSessionOrThrow(ctx, sessionId);
+  if (!isLive(session.status)) {
+    throw new Error(`Session is ${session.status}`);
+  }
+  // Idempotent: a same-kind control already pending is not duplicated.
+  const pending = await ctx.db
+    .query("claudeInbound")
+    .withIndex("by_session_status", (q) =>
+      q.eq("sessionId", sessionId).eq("status", "pending"),
+    )
+    .collect();
+  if (pending.some((p) => p.kind === kind)) return;
+  await ctx.db.insert("claudeInbound", {
+    sessionId,
+    kind,
+    status: "pending",
+    createdAt: Date.now(),
+  });
+}
+
+export const sendControl = mutation({
+  args: SEND_CONTROL_ARGS,
+  handler: async (ctx, args) => {
+    await requireTomId(ctx);
+    await sendControlFrom(ctx, args);
+  },
+});
+
+export const internalSendControl = internalMutation({
+  args: SEND_CONTROL_ARGS,
+  handler: async (ctx, args) => await sendControlFrom(ctx, args),
 });
 
 export const decidePermission = mutation({
