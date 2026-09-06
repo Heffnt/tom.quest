@@ -501,6 +501,51 @@ describe("threaded replies from Tom", () => {
     expect(next).toMatchObject({ outcome: "tom-note", subject: { kind: "todo", id: todoId } });
   });
 
+  // witness: let a routing throw escape slackThreadReplyFrom and the route
+  // answers 500 — Slack retries three times, then drops the reply for good.
+  it("a reply whose routing throws is captured as a todo, recorded as a failure, and answered 200", async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    const sessionId = await t.mutation(internal.claudeSessions.internalCreateSession, {
+      title: "gone",
+      kind: "adhoc",
+      initialPrompt: "start",
+    });
+    await posted(t, "850.1", { kind: "session", id: sessionId }, "session needs you");
+    // The session row vanishes under its thread: sessionReply throws.
+    await t.run(async (ctx) => ctx.db.delete(sessionId));
+    const result = await postEvent(t, { channel: TTS, ts: "850.2", thread_ts: "850.1", text: "ship it" });
+    expect(result.outcome).toBe("captured");
+    const todoId = result.todoId as Id<"dtsTodos">;
+    const todo = await t.run(async (ctx) => ctx.db.get(todoId));
+    expect(todo).toMatchObject({
+      statement: "ship it",
+      source: "slack-reply",
+      provenance: `slack:thread channel=${TTS} thread_ts=850.1 ts=850.2`,
+    });
+    const failed = await events(t, "slack-reply-failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0].todoId).toBe(todoId);
+    expect(failed[0].data).toMatchObject({
+      text: "ship it",
+      subject: { kind: "session", id: sessionId },
+      capturedAs: todoId,
+    });
+    expect(String((failed[0].data as { error: string }).error)).toContain("Unknown session id");
+    const seen = await events(t, "slack-event");
+    expect(seen).toHaveLength(1);
+    expect(seen[0].data).toMatchObject({ outcome: "captured" });
+    expect((seen[0].data as { error?: string }).error).toContain("Unknown session id");
+    // The thread is answered with the capture line, once.
+    const sends = await scheduledSends(t);
+    expect(sends).toHaveLength(1);
+    expect(sends[0]).toMatchObject({ threadTs: "850.1", subject: { kind: "todo", id: todoId } });
+    // A redelivery of the same event is a duplicate, not a second capture.
+    const again = await postEvent(t, { channel: TTS, ts: "850.2", thread_ts: "850.1", text: "ship it" });
+    expect(again.outcome).toBe("duplicate");
+    expect(await t.run(async (ctx) => ctx.db.query("dtsTodos").collect())).toHaveLength(1);
+  });
+
   it("a threaded reply is routed whatever channel it is in; a top-level message captures only in #dump", async () => {
     slackEnv();
     const t = convexTest(schema, modules);

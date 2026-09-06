@@ -248,7 +248,32 @@ export async function slackThreadReplyFrom(
   const trimmed = text.trim();
   const subject = await threadSubject(ctx, channel, threadTs);
   const at = { channel, ts, threadTs };
-  const outcome = await routeReply(ctx, subject, trimmed, at);
+  // NOTHING IS EVER LOST. Routing runs as a sub-mutation so a throw anywhere
+  // in it (a session row gone, a refused turn, a seed that fails validation)
+  // rolls its writes back; the reply then takes the unknown-thread path — it
+  // becomes a todo whose provenance names the thread, and the thread is
+  // answered — and a "slack-reply-failed" row records what was tried. The
+  // route answers 200 either way: a 500 here would make Slack retry three
+  // times and then drop the event with nothing recorded.
+  let outcome: ThreadReplyOutcome;
+  let error: string | undefined;
+  try {
+    outcome = await ctx.runMutation(internal.ttsSlack.internalRouteReply, {
+      subject,
+      text: trimmed,
+      at,
+    });
+  } catch (e) {
+    error = e instanceof Error ? e.message : String(e);
+    outcome = await captureUnknown(ctx, trimmed, at);
+    await logEvent(ctx, "slack-reply-failed", outcome.todoId, {
+      ...at,
+      text: trimmed,
+      subject,
+      error,
+      capturedAs: outcome.todoId,
+    });
+  }
   await ctx.db.insert("dtsEvents", {
     at: Date.now(),
     kind: "slack-event",
@@ -259,10 +284,31 @@ export async function slackThreadReplyFrom(
         : outcome.outcome === "captured"
           ? outcome.todoId
           : undefined,
-    data: { ...at, user, text: trimmed, subject, outcome: outcome.outcome },
+    data: {
+      ...at,
+      user,
+      text: trimmed,
+      subject,
+      outcome: outcome.outcome,
+      ...(error !== undefined ? { error } : {}),
+    },
   });
   return outcome;
 }
+
+const THREAD_SUBJECT = v.union(SLACK_SUBJECT, v.object({ kind: v.literal("unknown") }));
+
+/** routeReply behind its own transaction boundary — see slackThreadReplyFrom.
+ * Internal: only that function calls it. */
+export const internalRouteReply = internalMutation({
+  args: {
+    subject: THREAD_SUBJECT,
+    text: v.string(),
+    at: v.object({ channel: v.string(), ts: v.string(), threadTs: v.string() }),
+  },
+  handler: async (ctx, { subject, text, at }): Promise<ThreadReplyOutcome> =>
+    await routeReply(ctx, subject, text, at),
+});
 
 async function routeReply(
   ctx: MutationCtx,
@@ -307,24 +353,33 @@ async function routeReply(
         ...at,
       });
       return { outcome: "learning-objection", id: subject.id };
-    case "unknown": {
-      // Nothing is lost: the reply becomes a todo whose provenance names the
-      // thread it came from. No slackTs on the row — the thread root is not
-      // this message, and the reply below is addressed to the thread by hand.
-      const todoId = await ctx.runMutation(internal.tts.internalCapture, {
-        statement: text,
-        source: "slack-reply",
-        provenance: `slack:thread channel=${at.channel} thread_ts=${at.threadTs} ts=${at.ts}`,
-      });
-      await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
-        channel: at.channel,
-        threadTs: at.threadTs,
-        text: captureReplyText(text, todoId),
-        subject: { kind: "todo", id: todoId },
-      });
-      return { outcome: "captured", todoId };
-    }
+    case "unknown":
+      return await captureUnknown(ctx, text, at);
   }
+}
+
+/** Nothing is lost: the reply becomes a todo whose provenance names the
+ * thread it came from, and the thread gets the one capture line. No slackTs
+ * on the row — the thread root is not this message, and the reply is
+ * addressed to the thread by hand. Also the landing place for a reply whose
+ * routing threw (slackThreadReplyFrom). */
+async function captureUnknown(
+  ctx: MutationCtx,
+  text: string,
+  at: { channel: string; ts: string; threadTs: string },
+): Promise<{ outcome: "captured"; todoId: Id<"dtsTodos"> }> {
+  const todoId = await ctx.runMutation(internal.tts.internalCapture, {
+    statement: text,
+    source: "slack-reply",
+    provenance: `slack:thread channel=${at.channel} thread_ts=${at.threadTs} ts=${at.ts}`,
+  });
+  await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
+    channel: at.channel,
+    threadTs: at.threadTs,
+    text: captureReplyText(text, todoId),
+    subject: { kind: "todo", id: todoId },
+  });
+  return { outcome: "captured", todoId };
 }
 
 /** A reply on a todo's thread, by its shape: "done" completes the todo, a
