@@ -89,11 +89,19 @@ async function postSlack(
     subject,
     channel,
     threadTs,
+    windowEnd,
   }: {
     text: string;
     subject: SlackSubject;
     channel?: string;
     threadTs?: string;
+    // THE COMPOSITION BOUNDARY, for a message composed against a window: the
+    // instant the caller read Convex up to. It is recorded on the failure row
+    // and nowhere else, because a resend of that row has to advance the window
+    // to the boundary the TEXT covers, not to the clock the failure was
+    // written at. Composing, retrying and recording take seconds, and every
+    // event inside them would otherwise fall between two digests.
+    windowEnd?: number;
   },
 ): Promise<SlackSendResult> {
   const token = process.env.SLACK_BOT_TOKEN;
@@ -126,6 +134,7 @@ async function postSlack(
       error,
       text,
       attempts,
+      windowEnd,
     });
     return { ok: false, error };
   }
@@ -226,7 +235,17 @@ export const sendDigest = internalAction({
     // hourly update's tick resends unchanged — that second owner is switched
     // ON as of the hourly piece (HOURLY_UPDATE_ENABLED), so a refused digest
     // now reaches Tom within the hour rather than not at all.
-    const posted = await postSlack(ctx, { text, subject: digestSubject(day) });
+    // windowEnd travels with the send so that a REFUSED one leaves the
+    // boundary behind on its failure row: the hourly update's resend posts
+    // this same text and marks the day sent with this same `now`, so tomorrow
+    // starts where today's reading actually stopped. Without it the resend
+    // would mark the day at the failure row's own clock and everything
+    // recorded between composing and failing would be reported by no digest.
+    const posted = await postSlack(ctx, {
+      text,
+      subject: digestSubject(day),
+      windowEnd: now,
+    });
     if (!posted.ok) return;
     await ctx.runMutation(internal.tts.internalMarkDigestSent, {
       day,
@@ -484,6 +503,21 @@ export const sendHourlyUpdate = internalAction({
         await ctx.runMutation(internal.tts.internalLogEvent, {
           kind: HOURLY_UPDATE_ABANDONED,
           data: { windowStart: since, windowEnd: now, error: sent.error },
+        });
+      } else if (lastEnd === null) {
+        // THE FIRST RUN, REFUSED. "Cover this window again next hour" needs a
+        // window to come back to, and the first run has no marker to read: the
+        // next run would compute its own now-minus-an-hour and the refused
+        // hour's oldest end would be gone for good. So the window START is
+        // recorded as a marker of its own — an abandoned window of zero width,
+        // reporting nothing, saying only where reporting begins. The next run
+        // reads it as its start and covers both hours.
+        //
+        // Only on a transient refusal, and only with no marker: a permanent
+        // one closes the hour above, and every later run already has a marker.
+        await ctx.runMutation(internal.tts.internalLogEvent, {
+          kind: HOURLY_UPDATE_ABANDONED,
+          data: { windowStart: since, windowEnd: since, error: sent.error },
         });
       }
       return;

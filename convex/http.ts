@@ -267,6 +267,8 @@ const SLACK_REPLAY_WINDOW_MS = 5 * 60 * 1000;
 // Log-once guard for an unset TOM_SLACK_USER_ID (per isolate — Convex may run
 // the route in more than one, so "once" is once per warm runtime).
 let warnedNoTomSlackUserId = false;
+// The same guard for an unset SLACK_DUMP_CHANNEL_ID, which admits no capture.
+let warnedNoDumpChannel = false;
 
 /** The channels a threaded reply is acted on in: the three TTS posts to.
  * Read per request so a value set after the isolate warmed up counts. */
@@ -414,8 +416,22 @@ const slackEvents = httpAction(async (ctx, request) => {
     return jsonResponse(200, { ok: true, ...result });
   }
 
-  // A top-level message is a capture only in #dump.
-  if (dumpChannel !== undefined && channel !== dumpChannel) {
+  // A top-level message is a capture only in #dump, and an UNSET id admits
+  // nothing — the same posture as TOM_SLACK_USER_ID above, and for the same
+  // reason. Read as "no channel is #dump yet", this used to read as "every
+  // channel is #dump": a message in any channel the app happens to be in
+  // became a todo and got a bot reply posted under it, TTS speaking where
+  // nobody asked it to. Logged once per isolate rather than per event.
+  if (!dumpChannel) {
+    if (!warnedNoDumpChannel) {
+      warnedNoDumpChannel = true;
+      console.warn(
+        "TTS slack events: SLACK_DUMP_CHANNEL_ID not configured — captures are ignored",
+      );
+    }
+    return jsonResponse(200, { ok: true, ignored: true });
+  }
+  if (channel !== dumpChannel) {
     return jsonResponse(200, { ok: true, ignored: true });
   }
 

@@ -76,6 +76,12 @@ async function keylessKindRange(
 // Both carry windowEnd, and the newest windowEnd of either is the next
 // window's start — so a MISSED cron tick loses nothing: the next update simply
 // covers two hours.
+//
+// An abandoned row of ZERO WIDTH (windowStart === windowEnd) is the third
+// shape and reports nothing at all: the FIRST run was refused transiently, and
+// with no marker to come back to the next run would have invented a fresh
+// now-minus-an-hour and lost the older half of the refused hour. It records
+// where reporting begins so the next run resumes there (convex/ttsSync.ts).
 export const HOURLY_UPDATE_SENT = "hourly-update-sent";
 export const HOURLY_UPDATE_ABANDONED = "hourly-update-abandoned";
 
@@ -329,10 +335,13 @@ export const internalChangedSince = internalQuery({
 // reposted UNCHANGED: the message Tom missed is the message he eventually
 // gets, not a message recomposed against a different hour's facts.
 //
-// windowEnd comes back with it: the digest's row is the start of the NEXT
-// digest's window, and the failed row's `at` is the instant that send was
-// composed against. Marking the resend with anything later would hide the
-// hours between from tomorrow's digest.
+// windowEnd comes back with it, and it is the SENDER'S number, carried on the
+// failure row (convex/ttsSync.ts postSlack): the instant the composer read
+// Convex up to. NOT the row's own `at`, which is stamped after composing, two
+// posts and a retry pause — every event in between would then be reported by
+// neither digest, because the resend would mark the day at the later instant
+// and tomorrow's window would start past them. A row written before the sender
+// carried the boundary has only its `at`, and falls back to it.
 //
 // Read defensively — these rows are two other pieces' bookkeeping.
 
@@ -358,11 +367,18 @@ export const internalDigestToResend = internalQuery({
       DIGEST_FAILURE_SCAN,
     );
     for (const row of failures) {
-      const data = (row.data ?? {}) as { subject?: { kind?: unknown; day?: unknown }; text?: unknown };
+      const data = (row.data ?? {}) as {
+        subject?: { kind?: unknown; day?: unknown };
+        text?: unknown;
+        windowEnd?: unknown;
+      };
       if (data.subject?.kind !== "digest" || data.subject.day !== day) continue;
       const text = str(data.text);
       if (text === null) continue;
-      return { text, windowEnd: row.at };
+      return {
+        text,
+        windowEnd: typeof data.windowEnd === "number" ? data.windowEnd : row.at,
+      };
     }
     return null;
   },
