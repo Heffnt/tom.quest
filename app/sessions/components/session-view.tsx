@@ -1,14 +1,25 @@
 "use client";
 
-// Session view: header facts, transcript, pending permission cards pinned
-// above the composer, composer. Fills the viewport below the site nav so the
-// transcript is the only scrolling region (phone-first).
+// Session view: header facts, transcript, composer. Fills the viewport below
+// the site nav so the transcript is the only scrolling region (phone-first).
+//
+// ONE COLUMN (the lifeos update, phase 7). Two things used to sit beside and
+// under the transcript, and both are gone:
+//   - the permission cards. Nothing parks on a permission any more — the
+//     unified auto gate decides — so the strip was a residual surface over a
+//     table the update retires (claudePermissions).
+//   - the agent panel. Every fact it showed is IN the transcript, quoted from
+//     the same rows: a subagent's work is its expandable fold, a background
+//     command is its tool-call and the results that answer it. A second
+//     rendering of the same rows, cut to a tail and pinned to one side, was a
+//     second thing to keep true.
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
+import Info from "@/app/tts/components/info";
 import type { SessionModel } from "../lib";
 import {
   ageText,
@@ -19,8 +30,6 @@ import {
   statusChipClass,
 } from "../lib";
 import Transcript from "./transcript";
-import AgentPanel from "./agent-panel";
-import PermissionCard from "./permission-card";
 import Composer from "./composer";
 import ModelSelect from "./model-select";
 import ForkDialog from "./fork-dialog";
@@ -44,9 +53,6 @@ export default function SessionView({
   onOpen: (id: Id<"claudeSessions">) => void;
 }) {
   const session = useQuery(api.claudeSessions.getSession, { id: sessionId });
-  const pendingPermissions = useQuery(api.claudeSessions.getPendingPermissions, {
-    sessionId,
-  });
   const renameSession = useMutation(api.claudeSessions.renameSession);
   const setSessionModel = useMutation(api.claudeSessions.setSessionModel);
   const forkSessionAs = useMutation(api.claudeSessions.forkSessionAs);
@@ -62,18 +68,6 @@ export default function SessionView({
   // blur it causes discards instead of saving.
   const [titleDraft, setTitleDraft] = useState<string | null>(null);
   const cancelRename = useRef(false);
-
-  // The agent panel holds a live Convex subscription, so `hidden sm:block`
-  // alone would still pay for it on a phone that never shows it — mount it
-  // only when the viewport is already wide. 640px is Tailwind's own sm.
-  // Read once at mount, with no resize tracking on purpose: the subscription
-  // cost is the point, and orientation flips across the breakpoint are rare
-  // (one reload picks the panel up). false until the effect runs, so the
-  // server render and the phone agree.
-  const [wideViewport, setWideViewport] = useState(false);
-  useEffect(() => {
-    setWideViewport(window.matchMedia("(min-width: 640px)").matches);
-  }, []);
 
   if (session === undefined) {
     return (
@@ -184,6 +178,12 @@ export default function SessionView({
               className="text-sm sm:text-base text-text min-w-0 flex-1 bg-transparent border-b border-accent/60 focus:outline-none"
             />
           )}
+          {/* The title IS the rename control, so its popover sits beside it. */}
+          <Info call="claudeSessions.renameSession({ sessionId, title })">
+            The title is the control: tap it and type. Leaving the box saves
+            the new title on the session row — nothing else about the session
+            changes, and the running session is not told.
+          </Info>
           {session.mode === "autonomous" && (
             <span className="shrink-0 border border-border rounded px-1.5 py-0.5 text-xs text-text-muted">
               autonomous
@@ -199,6 +199,13 @@ export default function SessionView({
             disabled={!live}
             onChange={changeModel}
           />
+          <Info call="claudeSessions.setSessionModel({ sessionId, model })">
+            Which model answers the next turn. Inside one family the running
+            session is simply repointed and keeps this transcript. Across
+            families — Claude Code to the Codex CLI or back — it cannot be, so
+            picking one opens a dialog that starts a new session from this
+            one&rsquo;s transcript instead.
+          </Info>
           <span
             className={`shrink-0 border rounded px-1.5 py-0.5 text-xs ${statusChipClass(session.status)}`}
           >
@@ -270,31 +277,9 @@ export default function SessionView({
         )}
       </header>
 
-      {/* Transcript + permission cards are the conversation column; the agent
-          panel is a sibling, not a floating overlay. Below sm the phone gets
-          the conversation alone (the panel's facts are all in the transcript
-          anyway) and the panel is never mounted; on wide viewports the
-          wrapper still collapses to zero width when there is no open tool
-          work, and keeps sm:block so a narrowed window hides it. */}
-      <div className="flex-1 min-h-0 flex flex-row">
-        <div className="flex-1 min-w-0 flex flex-col">
-          <Transcript sessionId={sessionId} sessionStatus={session.status} />
-
-          {pendingPermissions && pendingPermissions.length > 0 && (
-            // Cards may never crowd out the transcript (Tom's ruling): a
-            // compact strip that scrolls, not a half-screen tray.
-            <div className="border-t border-border px-3 sm:px-4 py-2 space-y-1.5 max-h-40 overflow-y-auto">
-              {pendingPermissions.map((p) => (
-                <PermissionCard key={p._id} permission={p} now={now} />
-              ))}
-            </div>
-          )}
-        </div>
-        {wideViewport && (
-          <div className="hidden sm:block shrink-0 min-h-0">
-            <AgentPanel sessionId={sessionId} />
-          </div>
-        )}
+      {/* The transcript is the whole work surface, at every width. */}
+      <div className="flex-1 min-h-0 flex flex-col">
+        <Transcript sessionId={sessionId} sessionStatus={session.status} />
       </div>
 
       <Composer session={session} daemonStale={daemonStale} />

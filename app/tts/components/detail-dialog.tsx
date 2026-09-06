@@ -4,11 +4,18 @@
 // everything known about the item, with its ground-up explanation, in one
 // fixed dialog. Understanding never requires opening a session.
 //
+// THE FULL NEEDS DETAIL IS HERE (the lifeos update, phase 7). The card outside
+// prints one reason — the first thing in the way — because a card that listed
+// every unmet need of every task would be a graph drawn in words. This dialog
+// is where the whole of it is: every need a task still waits on, and every
+// batch this batch waits on.
+//
 // Actions sit at the top (CLAUDE.md UI rules): where a ruling can be given —
 // on the batch always, on a task or goal whose todo is rulable (lib
 // isRulable) — the four verdict buttons come first, the same row the batch
 // card renders (verdict-buttons.tsx).
 import type { BatchGraph, GraphGoal, GraphTask } from "./batch-card";
+import { unmetBatchNeeds } from "./batch-card";
 import VerdictButtons from "./verdict-buttons";
 import { fmtDate, groundUpTeaser, type RulingVerdict } from "../lib";
 import { waitingReasonText, type WaitingReason } from "@/convex/ttsShared";
@@ -97,13 +104,31 @@ export default function DetailDialog({
                 ? "done"
                 : item.waiting === null || item.waiting.kind === "tom"
                   ? "ready"
-                  : "blocked"}
+                  : "waiting"}
             </Row>
             {item.waiting !== null && (
+              // BOTH, when there are both (review finding). The reason is the
+              // FIRST thing in the way, hard blocks first — a sleep, or a
+              // declined credential, outranks an unmet need — so printing the
+              // reason alone dropped the needs list from exactly the rows that
+              // have one, in the one dialog that exists to hold the whole of
+              // it. For a "need" reason the list IS the reason, spelled in
+              // full, so it replaces the line rather than repeating it.
               <Row label="waiting">
-                {item.waiting.kind === "need" && item.waitingOn.length > 1
-                  ? `waiting on: ${item.waitingOn.join(" · ")}`
-                  : waitingReasonText(item.waiting, fmtDate)}
+                {item.waiting.kind === "need" ? (
+                  `waiting on: ${item.waitingOn.join(" · ")}`
+                ) : (
+                  <>
+                    <span className="block">
+                      {waitingReasonText(item.waiting, fmtDate)}
+                    </span>
+                    {item.waitingOn.length > 0 && (
+                      <span className="block">
+                        waiting on: {item.waitingOn.join(" · ")}
+                      </span>
+                    )}
+                  </>
+                )}
               </Row>
             )}
             {item.task.evidence !== undefined && (
@@ -182,11 +207,6 @@ export default function DetailDialog({
               <VerdictButtons
                 subject="batch"
                 statement={item.graph.statement}
-                plan={item.graph.tasks.map((t) => ({
-                  text: t.statement,
-                  actor: t.actor,
-                  status: t.status === "done" ? ("done" as const) : ("open" as const),
-                }))}
                 error={error}
                 onRule={rule}
               />
@@ -203,6 +223,28 @@ export default function DetailDialog({
               >
                 {groundUpTeaser(item.graph.groundUp)}
               </button>
+            )}
+            {(item.graph.needs ?? []).length > 0 && (
+              <Row label="needs">
+                {(item.graph.needs ?? []).map((n) => (
+                  <div key={n.id}>
+                    {n.met ? "✓ " : "○ "}
+                    {n.statement}
+                  </div>
+                ))}
+              </Row>
+            )}
+            {unmetBatchNeeds(item.graph).length > 0 && (
+              <Row label="waiting">
+                {waitingReasonText(
+                  {
+                    kind: "need",
+                    id: unmetBatchNeeds(item.graph)[0].id,
+                    statement: unmetBatchNeeds(item.graph)[0].statement,
+                  },
+                  fmtDate,
+                )}
+              </Row>
             )}
             <Row label="tasks">{item.graph.tasks.length}</Row>
             <Row label="goals">{item.graph.goals.length}</Row>

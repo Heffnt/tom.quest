@@ -2119,7 +2119,7 @@ export const internalRecordOutcome = internalMutation({
   },
 });
 
-// ── Open tool work (P2 agent panel) ──────────────────────────────────────────
+// ── Open tool work (the subagent fold's live half) ──────────────────────────
 // What is this session's model DOING right now? Derived entirely from the
 // finalized tool-call / tool-result rows — the transcript is the only source;
 // nothing here is invented state. A Task call with no result is a running
@@ -2128,13 +2128,13 @@ export const internalRecordOutcome = internalMutation({
 
 const PREVIEW_CHARS = 200;
 // Evidence texts (launch results, latest checks) carry the FULL content text,
-// hard-capped — the panel promises verbatim evidence bounded by scroll, not a
+// hard-capped — this query promises verbatim evidence bounded by scroll, not a
 // preview.
 const EVIDENCE_CHARS = 2000;
 
-// The panel shows CURRENT work, so the reads are bounded newest-first windows
-// via by_session_kind: a Task or launch older than the window has scrolled out
-// of panel scope by construction — the transcript remains the full record.
+// This answers about CURRENT work, so the reads are bounded newest-first
+// windows via by_session_kind: a Task or launch older than the window is out
+// of scope by construction — the transcript remains the full record.
 // This keeps read cost constant for the life of a session.
 const TOOL_CALL_WINDOW = 500;
 const TOOL_RESULT_WINDOW = 800;
@@ -2193,7 +2193,7 @@ export const getOpenToolWork = query({
   handler: async (ctx, { sessionId }) => {
     await requireTomId(ctx);
     const session = await ctx.db.get(sessionId);
-    // A terminal session has no OPEN work by definition — empty panel.
+    // A terminal session has no OPEN work by definition — nothing to say.
     if (!session || !isLive(session.status)) {
       return { agents: [], commands: [], finished: [] };
     }
@@ -2232,7 +2232,14 @@ export const getOpenToolWork = query({
     }
 
     // ONE name per fact — this is the canonical field list, and the client
-    // agent-panel reads exactly these names (no aliases on either side).
+    // reads exactly these names (no aliases on either side). The reader is
+    // the transcript's subagent fold (app/sessions/components/transcript.tsx):
+    // it takes `agents` — the running ones, with their type, description,
+    // startedAt and current call — for its summary line, because those are
+    // facts about a live subagent that are not rows in the transcript. The
+    // agent panel this query was written for is gone (the lifeos update, phase
+    // 7); `finished` and `commands` are what it read and the fold does not,
+    // and docs/lifeos-retirement.md names them as the two losses.
     type AgentEntry = {
       toolUseId: string;
       subagentType: string;
@@ -2353,9 +2360,9 @@ export const getOpenToolWork = query({
       }
     }
 
-    // Panel history caps: newest 10 finished agents and newest 10 launches,
-    // newest last (both lists are call-order; end order matches closely
-    // enough for a panel history).
+    // History caps: newest 10 finished agents and newest 10 launches, newest
+    // last (both lists are call-order; end order matches closely enough for a
+    // tail).
     return {
       agents,
       commands: commands.slice(-10),
@@ -2366,9 +2373,22 @@ export const getOpenToolWork = query({
 
 // ── Autonomous-fleet config (P3) ─────────────────────────────────────────────
 
-// Defaults when no claudeAutoConfig row exists. enabled FALSE: the fleet runs
-// nothing until the enable pen is used deliberately.
-const AUTO_DEFAULTS = {
+// THE FOUR ADMISSION NUMBERS LIVE HERE, IN CODE (the lifeos update, phase 7).
+// They describe how hard the Jarvis Box may be pushed — the load and memory
+// ceilings admission is judged against, and the two runaway failsafes — and
+// they were set once and never touched again. A number nobody changes is not a
+// decision; it is mechanism, and mechanism belongs in code rather than in a
+// row Tom has to hold in his head to read the sessions page. So NO DOOR WRITES
+// THEM any more: both pens below write these values verbatim, and Tom's own
+// door (setAutoConfig) takes `enabled` alone.
+//
+// The columns stay in the schema until NARROW, and the scheduler still reads
+// the row, so a value written before this change keeps working until the next
+// press of the switch copies the code values over it. At NARROW the columns go
+// and every reader takes them from here.
+//
+// enabled FALSE: the fleet runs nothing until the switch is deliberately on.
+export const AUTO_DEFAULTS = {
   enabled: false,
   maxLoadPerCpu: 0.8,
   minFreeMemMb: 1024,
@@ -2377,35 +2397,26 @@ const AUTO_DEFAULTS = {
   defaultModel: DEFAULT_SESSION_MODEL,
 } as const;
 
-const AUTO_CONFIG_FIELDS = {
-  enabled: v.boolean(),
-  maxLoadPerCpu: v.number(),
-  minFreeMemMb: v.number(),
-  maxLiveAutonomous: v.number(),
-  maxNewPerTick: v.number(),
-  // OPTIONAL, unlike the four knobs above: the pen predates the model field,
-  // and internalSetAutoConfig is typed at the Jarvis Box CLI by hand. An
-  // omitted value keeps whatever the row already holds (the patch below never
-  // writes undefined), so an old command line cannot silently reset the fleet
-  // default to Opus.
-  defaultModel: v.optional(SESSION_MODEL),
-};
-
+/**
+ * The one writer of the singleton row. It takes the two things that are still
+ * decisions — whether the fleet runs, and which model it runs on — and writes
+ * the four admission numbers from AUTO_DEFAULTS every time, which is what
+ * makes those numbers code-owned while their columns are still in the schema.
+ * An omitted `defaultModel` keeps whatever the row already holds (undefined is
+ * never written), so a call that says nothing about the model cannot reset it.
+ */
 async function upsertAutoConfig(
   ctx: MutationCtx,
-  fields: {
-    enabled: boolean;
-    maxLoadPerCpu: number;
-    minFreeMemMb: number;
-    maxLiveAutonomous: number;
-    maxNewPerTick: number;
-    defaultModel?: SessionModel;
-  },
+  fields: { enabled: boolean; defaultModel?: SessionModel },
 ): Promise<void> {
   const existing = await ctx.db.query("claudeAutoConfig").first();
-  const { defaultModel, ...rest } = fields;
+  const { enabled, defaultModel } = fields;
   const row = {
-    ...rest,
+    maxLoadPerCpu: AUTO_DEFAULTS.maxLoadPerCpu,
+    minFreeMemMb: AUTO_DEFAULTS.minFreeMemMb,
+    maxLiveAutonomous: AUTO_DEFAULTS.maxLiveAutonomous,
+    maxNewPerTick: AUTO_DEFAULTS.maxNewPerTick,
+    enabled,
     ...(defaultModel !== undefined ? { defaultModel } : {}),
     updatedAt: Date.now(),
   };
@@ -2416,38 +2427,51 @@ async function upsertAutoConfig(
   }
 }
 
+// What the page reads. The four numbers come from the code, not from the row,
+// so the answer is what the scheduler will actually be admitting under once
+// the switch is next pressed — and so a row still carrying an older value
+// cannot show Tom a number nothing means to keep.
 export const getAutoConfig = query({
   args: {},
   handler: async (ctx) => {
     await requireTomId(ctx);
     const row = await ctx.db.query("claudeAutoConfig").first();
-    return row
-      ? {
-          ...row,
-          // A row written before the field existed still has a default: the
-          // browser's picker must render the model the scheduler would
-          // actually use, not an empty control.
-          defaultModel: row.defaultModel ?? DEFAULT_SESSION_MODEL,
-          fromDefaults: false,
-        }
-      : { ...AUTO_DEFAULTS, fromDefaults: true };
+    return {
+      ...AUTO_DEFAULTS,
+      ...(row === null
+        ? {}
+        : {
+            enabled: row.enabled,
+            // A row written before the field existed still has a default: the
+            // model named here is the one the scheduler would actually use.
+            defaultModel: row.defaultModel ?? DEFAULT_SESSION_MODEL,
+          }),
+      fromDefaults: row === null,
+    };
   },
 });
 
+// Tom's door, and the whole of it: ON or OFF. See the fleet strip in
+// app/sessions/components/session-list.tsx. The stored default model is
+// carried through untouched — a press of "stop" decides nothing about which
+// model the fleet runs on.
 export const setAutoConfig = mutation({
-  args: AUTO_CONFIG_FIELDS,
-  handler: async (ctx, fields) => {
+  args: { enabled: v.boolean() },
+  handler: async (ctx, { enabled }) => {
     await requireTomId(ctx);
-    await upsertAutoConfig(ctx, fields);
+    await upsertAutoConfig(ctx, { enabled });
   },
 });
 
 // The CLI pen for supervised enable at deploy:
-// `npx convex run claudeSessions:internalSetAutoConfig '{"enabled": true, ...}'`
-// — same upsert as setAutoConfig (which needs Tom's browser identity the Jarvis Box
-// does not hold). Use only while supervising the first ticks.
+// `npx convex run claudeSessions:internalSetAutoConfig '{"enabled": true}'`
+// — same upsert as setAutoConfig (which needs Tom's browser identity the
+// Jarvis Box does not hold), plus the fleet's default model, which has no
+// browser control. Use only while supervising the first ticks. It no longer
+// takes the four admission numbers: they are code-owned (AUTO_DEFAULTS), and
+// a command line that names one is refused rather than quietly ignored.
 export const internalSetAutoConfig = internalMutation({
-  args: AUTO_CONFIG_FIELDS,
+  args: { enabled: v.boolean(), defaultModel: v.optional(SESSION_MODEL) },
   handler: async (ctx, fields) => {
     await upsertAutoConfig(ctx, fields);
   },
@@ -3429,8 +3453,13 @@ export const internalAutoSchedule = internalMutation({
     const now = Date.now();
 
     // (a) Off unless deliberately enabled — no config row means disabled.
-    const config =
-      (await ctx.db.query("claudeAutoConfig").first()) ?? { ...AUTO_DEFAULTS };
+    // The row decides ONE thing (and names the fleet's model); the admission
+    // numbers come from the code (AUTO_DEFAULTS) unless the row still carries
+    // values written before they became code-owned, which the next press of
+    // the switch overwrites. At NARROW the columns go and this is just the
+    // constants.
+    const row = await ctx.db.query("claudeAutoConfig").first();
+    const config = { ...AUTO_DEFAULTS, ...(row ?? {}) };
     if (!config.enabled) return;
 
     // (b) A stale daemon cannot start sessions — admission needs a live box.

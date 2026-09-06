@@ -304,7 +304,7 @@ function digestSections(f: DigestFacts): Section[] {
   sections.push(
     f.due.length === 0
       ? { header: "*Due and overdue*", lines: ["- nothing"], count: 0, tab: null }
-      : section("*Due and overdue*", dueLines, "by-individual"),
+      : section("*Due and overdue*", dueLines, "everything"),
   );
 
   const spans = [
@@ -326,7 +326,7 @@ function digestSections(f: DigestFacts): Section[] {
 
   if (f.emailCaptures.length > 0) {
     sections.push(
-      section("*Captured from email*", f.emailCaptures.map(itemLine), "by-individual"),
+      section("*Captured from email*", f.emailCaptures.map(itemLine), "everything"),
     );
   }
 
@@ -365,7 +365,7 @@ function digestSections(f: DigestFacts): Section[] {
   }
 
   if (f.ready.length > 0) {
-    sections.push(section("*Ready for you*", f.ready.map(itemLine), "by-individual"));
+    sections.push(section("*Ready for you*", f.ready.map(itemLine), "everything"));
   }
 
   if (f.failures.length > 0) {

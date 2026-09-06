@@ -5,12 +5,17 @@
 // the writing standard. This file holds the SURFACE to the rule, in three
 // directions:
 //
-//   1. RENDERED. Every component under app/tts/components that has controls is
-//      rendered here, and every control it puts on screen either carries a
-//      popover naming a call, or fires nothing on the backend — which is
-//      checked by pressing it and watching the mutations. The table of
-//      components is closed against the directory, so a new file with a
-//      control has to be added to it.
+//   1. RENDERED. Every component under app/tts/components AND
+//      app/sessions/components that has controls is rendered here, and every
+//      control it puts on screen either carries a popover naming a call, or
+//      fires nothing on the backend — which is checked by pressing it and
+//      watching the mutations. The table of components is closed against BOTH
+//      directories, so a new file with a control has to be added to it.
+//      The sessions screens joined the closure with the lifeos update (phase
+//      7): they are the second surface Tom presses buttons on, their controls
+//      fire the session doors — send, interrupt, stop, force-close, rename,
+//      model change, fork, the autonomous-fleet switch — and nothing was
+//      holding them to the rule the TTS screens have been held to.
 //   2. FIRED → NAMED. Every mutation the screens fire is named, verbatim, by a
 //      popover somewhere on them, so a control wired to a mutation nobody
 //      explains fails CI even if it renders somewhere this file cannot reach.
@@ -24,9 +29,9 @@
 // verdict-buttons.tsx and every other verdict surface reads that same text.
 //
 // What counts as fired: `useMutation(api.<module>.<function>)` in any .tsx
-// under app/tts. What counts as named: the same `<module>.<function>` opening
-// a string literal — the `call=` of an Info, the `call:` of an info table, a
-// Caption's children — anywhere under app/tts.
+// under app/tts or app/sessions. What counts as named: the same
+// `<module>.<function>` opening a string literal — the `call=` of an Info, the
+// `call:` of an info table, a Caption's children — anywhere under those two.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -53,6 +58,13 @@ vi.mock("convex/react", async () => {
     useMutation: (ref: unknown) => async () => {
       convex.calls.push(name(ref as never));
     },
+    // The transcript pages its rows. CanLoadMore so its one control — "Load
+    // earlier" — is on screen to be pressed.
+    usePaginatedQuery: (ref: unknown) => ({
+      results: (convex.data[name(ref as never)] as unknown[]) ?? [],
+      status: "CanLoadMore",
+      loadMore: () => {},
+    }),
   };
 });
 
@@ -71,16 +83,25 @@ import DetailDialog from "./detail-dialog";
 import EverythingTab from "./everything-tab";
 import GroundUpView from "./ground-up-view";
 import OptionsRow from "./options-row";
-import PathsBar from "./paths-bar";
 import RepeatDialog from "./repeat-dialog";
 import RepeatsStrip from "./repeats-strip";
 import RulingDialog from "./ruling-dialog";
 import TimeNoteField from "./time-note-field";
 import TodoRow from "./todo-row";
 import VerdictButtons from "./verdict-buttons";
+import Composer from "@/app/sessions/components/composer";
+import ForkDialog from "@/app/sessions/components/fork-dialog";
+import ModelSelect from "@/app/sessions/components/model-select";
+import OverflowExpand from "@/app/sessions/components/overflow-expand";
+import SessionList from "@/app/sessions/components/session-list";
+import SessionView from "@/app/sessions/components/session-view";
+import Transcript from "@/app/sessions/components/transcript";
 
-const ROOT = join(__dirname, "..");
-const COMPONENTS = __dirname;
+const APP = join(__dirname, "..", "..");
+const TTS = join(APP, "tts");
+const SESSIONS = join(APP, "sessions");
+/** The two component directories the table of cases is closed against. */
+const COMPONENT_DIRS = [join(TTS, "components"), join(SESSIONS, "components")];
 
 function sources(dir: string): string[] {
   const out: string[] = [];
@@ -92,8 +113,11 @@ function sources(dir: string): string[] {
   return out;
 }
 
-const files = sources(ROOT).map((f) => ({
-  short: f.slice(f.indexOf("app")).replace(/\\/g, "/"),
+/** A file as this test names it: the path from `app/` down, forward slashes. */
+const shortOf = (f: string) => f.slice(f.indexOf("app")).replace(/\\/g, "/");
+
+const files = [...sources(TTS), ...sources(SESSIONS)].map((f) => ({
+  short: shortOf(f),
   src: readFileSync(f, "utf8"),
 }));
 
@@ -265,8 +289,39 @@ const NOTE = {
   createdAt: NOW,
 };
 
+// ── The sessions screens ────────────────────────────────────────────────────
+// One live session, mid-run and with a stale daemon, because that posture puts
+// every control on screen at once: send, interrupt, stop, and force close.
+const SESSION = {
+  _id: "s1",
+  _creationTime: 0,
+  title: "the lifeos update",
+  status: "running",
+  kind: "adhoc",
+  mode: "interactive",
+  repo: "tom.quest",
+  model: "gpt-5.6-sol",
+  createdAt: NOW,
+  statusChangedAt: NOW,
+};
+
+const AUTO_CONFIG = {
+  enabled: false,
+  defaultModel: "gpt-5.6-sol",
+  maxLoadPerCpu: 0.8,
+  minFreeMemMb: 1024,
+  maxLiveAutonomous: 8,
+  maxNewPerTick: 2,
+};
+
 function load() {
   convex.data = {
+    [getFunctionName(api.claudeSessions.getSession)]: SESSION,
+    [getFunctionName(api.claudeSessions.getAutoConfig)]: AUTO_CONFIG,
+    [getFunctionName(api.claudeSessions.getDaemonHealth)]: null,
+    [getFunctionName(api.claudeSessions.getMessages)]: [],
+    [getFunctionName(api.claudeSessions.getStreamBuf)]: null,
+    [getFunctionName(api.claudeSessions.getPendingInbound)]: [],
     [getFunctionName(api.tts.listTodos)]: [TODO],
     [getFunctionName(api.tts.listBatches)]: [BATCH],
     [getFunctionName(api.tts.listMirror)]: [MIRROR],
@@ -274,6 +329,10 @@ function load() {
     [getFunctionName(api.ttsRulings.listRulings)]: [],
     [getFunctionName(api.tts.listTimeNotes)]: [NOTE],
     [getFunctionName(api.tts.listBlocks)]: [],
+    // No tts.getToday: the calendar tab's today column is computed now, and
+    // the query went with the fallback queue (the lifeos update, phase 7
+    // jobs). An unanswered query reads as loading, which is what this fixture
+    // wants of it anyway.
     [getFunctionName(api.ttsRepeats.listRepeats)]: [REPEAT],
     [getFunctionName(api.ttsCalendar.listCalendarEvents)]: [],
   };
@@ -281,10 +340,10 @@ function load() {
 
 const noop = () => {};
 
-/** One entry per component under this directory that renders controls. */
+/** One entry per component under either directory that renders controls. */
 const CASES: { file: string; render: () => void }[] = [
   {
-    file: "batch-card.tsx",
+    file: "app/tts/components/batch-card.tsx",
     render: () =>
       void render(
         <BatchCard
@@ -299,10 +358,10 @@ const CASES: { file: string; render: () => void }[] = [
         />,
       ),
   },
-  { file: "batches-tab.tsx", render: () => void render(<BatchesTab />) },
-  { file: "calendar-tab.tsx", render: () => void render(<CalendarTab />) },
+  { file: "app/tts/components/batches-tab.tsx", render: () => void render(<BatchesTab />) },
+  { file: "app/tts/components/calendar-tab.tsx", render: () => void render(<CalendarTab />) },
   {
-    file: "code-todo-row.tsx",
+    file: "app/tts/components/code-todo-row.tsx",
     render: () =>
       void render(
         <CodeTodoRow
@@ -316,7 +375,7 @@ const CASES: { file: string; render: () => void }[] = [
       ),
   },
   {
-    file: "detail-dialog.tsx",
+    file: "app/tts/components/detail-dialog.tsx",
     render: () =>
       void render(
         <DetailDialog
@@ -328,38 +387,27 @@ const CASES: { file: string; render: () => void }[] = [
       ),
   },
   {
-    file: "everything-tab.tsx",
+    file: "app/tts/components/everything-tab.tsx",
     render: () => void render(<EverythingTab link={null} onLinkCleared={noop} />),
   },
   {
-    file: "ground-up-view.tsx",
+    file: "app/tts/components/ground-up-view.tsx",
     render: () =>
       void render(
         <GroundUpView title="t" content="<!DOCTYPE html><html></html>" onClose={noop} />,
       ),
   },
   {
-    file: "options-row.tsx",
+    file: "app/tts/components/options-row.tsx",
     render: () => void render(<OptionsRow todo={TODO as never} rulable />),
   },
   {
-    file: "paths-bar.tsx",
-    render: () =>
-      void render(
-        <PathsBar
-          paths={[{ name: "lifeos", count: 2 }]}
-          selected="lifeos"
-          onSelect={noop}
-        />,
-      ),
-  },
-  {
-    file: "repeat-dialog.tsx",
+    file: "app/tts/components/repeat-dialog.tsx",
     render: () => void render(<RepeatDialog rule={REPEAT as never} onClose={noop} />),
   },
-  { file: "repeats-strip.tsx", render: () => void render(<RepeatsStrip />) },
+  { file: "app/tts/components/repeats-strip.tsx", render: () => void render(<RepeatsStrip />) },
   {
-    file: "ruling-dialog.tsx",
+    file: "app/tts/components/ruling-dialog.tsx",
     render: () =>
       void render(
         <RulingDialog
@@ -376,14 +424,14 @@ const CASES: { file: string; render: () => void }[] = [
       ),
   },
   {
-    file: "time-note-field.tsx",
+    file: "app/tts/components/time-note-field.tsx",
     render: () =>
       void render(
         <TimeNoteField todoId={TODO._id as never} notes={[NOTE as never]} />,
       ),
   },
   {
-    file: "todo-row.tsx",
+    file: "app/tts/components/todo-row.tsx",
     render: () =>
       void render(
         <TodoRow
@@ -398,13 +446,71 @@ const CASES: { file: string; render: () => void }[] = [
       ),
   },
   {
-    file: "verdict-buttons.tsx",
+    file: "app/tts/components/verdict-buttons.tsx",
     render: () =>
       void render(<VerdictButtons subject="todo" statement="s" onRule={noop} />),
   },
+  {
+    file: "app/sessions/components/composer.tsx",
+    // daemonStale, so "Force close" is on screen with the rest.
+    render: () =>
+      void render(<Composer session={SESSION as never} daemonStale />),
+  },
+  {
+    file: "app/sessions/components/fork-dialog.tsx",
+    render: () =>
+      void render(
+        <ForkDialog
+          fromModel="gpt-5.6-sol"
+          toModel="gpt-5.6-terra"
+          onConfirm={async () => {}}
+          onClose={noop}
+        />,
+      ),
+  },
+  {
+    file: "app/sessions/components/model-select.tsx",
+    render: () =>
+      void render(
+        <ModelSelect ariaLabel="session model" value="gpt-5.6-sol" onChange={noop} />,
+      ),
+  },
+  {
+    file: "app/sessions/components/overflow-expand.tsx",
+    render: () =>
+      void render(
+        <OverflowExpand messageId={"m1" as never} fullByteLength={40_000} />,
+      ),
+  },
+  {
+    file: "app/sessions/components/session-list.tsx",
+    render: () =>
+      void render(
+        <SessionList sessions={[SESSION as never]} now={NOW} onOpen={noop} />,
+      ),
+  },
+  {
+    file: "app/sessions/components/session-view.tsx",
+    render: () =>
+      void render(
+        <SessionView
+          sessionId={"s1" as never}
+          now={NOW}
+          daemonStale={false}
+          daemonLastSeenAt={NOW}
+          onBack={noop}
+          onOpen={noop}
+        />,
+      ),
+  },
+  {
+    file: "app/sessions/components/transcript.tsx",
+    render: () =>
+      void render(<Transcript sessionId={"s1" as never} sessionStatus="running" />),
+  },
 ];
 
-describe("every control on the TTS screens names its call, or fires none", () => {
+describe("every control on the screens names its call, or fires none", () => {
   beforeEach(() => {
     convex.calls.length = 0;
     load();
@@ -413,14 +519,17 @@ describe("every control on the TTS screens names its call, or fires none", () =>
     vi.stubGlobal("open", () => null);
   });
 
-  it("has one case per component in this directory that has controls", () => {
-    const withControls = readdirSync(COMPONENTS)
-      .filter((f) => f.endsWith(".tsx") && !f.endsWith(".test.tsx"))
-      // info.tsx IS the mechanism: its two buttons are the ⓘ and the "more"
-      // that opens the ground-up document, neither of them a control the
-      // popover explains. info.test.tsx holds it to its own contract.
-      .filter((f) => f !== "info.tsx")
-      .filter((f) => /<button|<select/.test(readFileSync(join(COMPONENTS, f), "utf8")));
+  it("has one case per component in these directories that has controls", () => {
+    const withControls = COMPONENT_DIRS.flatMap((dir) =>
+      readdirSync(dir)
+        .filter((f) => f.endsWith(".tsx") && !f.endsWith(".test.tsx"))
+        // info.tsx IS the mechanism: its two buttons are the ⓘ and the "more"
+        // that opens the ground-up document, neither of them a control the
+        // popover explains. info.test.tsx holds it to its own contract.
+        .filter((f) => f !== "info.tsx")
+        .filter((f) => /<button|<select/.test(readFileSync(join(dir, f), "utf8")))
+        .map((f) => shortOf(join(dir, f))),
+    );
     expect(CASES.map((c) => c.file).sort()).toEqual(withControls.sort());
   });
 
@@ -495,12 +604,12 @@ function walk(dir: string, ext: RegExp, out: string[] = []): string[] {
   }
   return out;
 }
-for (const f of walk(join(ROOT, ".."), /\.tsx?$/)) {
+for (const f of walk(APP, /\.tsx?$/)) {
   for (const m of readFileSync(f, "utf8").matchAll(/api\.(\w+)\.(\w+)/g)) {
     real.add(`${m[1]}.${m[2]}`);
   }
 }
-const CONVEX = join(ROOT, "..", "..", "convex");
+const CONVEX = join(APP, "..", "convex");
 for (const f of readdirSync(CONVEX).filter((n) => n.endsWith(".ts"))) {
   const mod = f.slice(0, -3);
   for (const m of readFileSync(join(CONVEX, f), "utf8").matchAll(
@@ -510,7 +619,7 @@ for (const f of readdirSync(CONVEX).filter((n) => n.endsWith(".ts"))) {
   }
 }
 
-describe("every mutation the TTS screens fire is named by a popover", () => {
+describe("every mutation the screens fire is named by a popover", () => {
   it("finds fired mutations and named calls at all", () => {
     // A scan matching nothing would pass the assertions below while checking
     // nothing.

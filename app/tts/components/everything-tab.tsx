@@ -1,9 +1,18 @@
 "use client";
 
 // EVERYTHING tab — one unified filterable flat list of all life todos and all
-// code-mirror rows. Toolbar: text search, status chips, kind chips, a
-// ready-for-tom toggle, category select, sort select — counts on every chip.
-// Rows carry their own state chips; no sections.
+// code-mirror rows. Toolbar: text search, status chips, kind chips, category
+// select, sort select — counts on every chip. Rows carry their own state
+// chips; no sections.
+//
+// TWO FILTERS ARE GONE (the lifeos update, phase 7). The ready-for-tom toggle
+// filtered by readiness, which is no longer a thing to filter on: ready is
+// computed (prepared, active, awake, every need done) and what a reader wants
+// from a row that is not ready is the REASON, which every row now prints
+// (ttsShared.waitingReason). And "waiting" is no longer a status of its own —
+// a sleep is a wakeAt on an active row — so the four status chips are three,
+// and a row still carrying the stored status reads as active here, exactly as
+// the migration will rewrite it. Neither row is hidden by either change.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
@@ -17,7 +26,6 @@ import { waitingReason, type WaitingContext } from "@/convex/ttsShared";
 import {
   buildDoneSet,
   codeSubjectKey,
-  isReadyForTom,
   liveRulingsByKey,
   type MirrorRow,
   type Todo,
@@ -26,7 +34,7 @@ import {
 const inputCls =
   "bg-surface border border-border rounded-md px-2 py-1 text-sm text-text placeholder:text-text-faint focus:outline-none focus:border-accent/60";
 
-const STATUSES = ["active", "waiting", "done", "archived"] as const;
+const STATUSES = ["active", "done", "archived"] as const;
 type Status = (typeof STATUSES)[number];
 const KINDS = ["life", "code"] as const;
 type Kind = (typeof KINDS)[number];
@@ -47,8 +55,15 @@ const MAX = Number.MAX_SAFE_INTEGER;
 // A mirror row's repo-side status is only open|closed — "closed" cannot say
 // whether the item completed or was archived upstream, so a closed row
 // matches EITHER terminal chip rather than masquerading as done.
+//
+// A life row still carrying the stored status "waiting" reads as ACTIVE: a
+// sleep is a wakeAt on an active row (the widen), and the row's own waiting
+// line says it is asleep. Reading it as anything else would hide it — there
+// is no waiting chip left to match.
 function rowStatuses(r: Row): Status[] {
-  if (r.kind === "life") return [r.todo.status];
+  if (r.kind === "life") {
+    return [r.todo.status === "waiting" ? "active" : r.todo.status];
+  }
   return r.row.status === "open" ? ["active"] : ["done", "archived"];
 }
 function rowStatement(r: Row): string {
@@ -56,11 +71,6 @@ function rowStatement(r: Row): string {
 }
 function rowCategory(r: Row): string | undefined {
   return r.kind === "life" ? r.todo.category : "code";
-}
-// READY is computed (ruling 18): prepared, active, awake, every need done —
-// ttsShared.isReadyForTom, against the done set of every todo on the page.
-function rowReady(r: Row, doneSet: ReadonlySet<string>, now: number): boolean {
-  return r.kind === "life" && isReadyForTom(r.todo, doneSet, now);
 }
 function rowCreatedAt(r: Row): number {
   return r.kind === "life" ? r.todo.createdAt : r.row._creationTime;
@@ -123,12 +133,11 @@ export default function EverythingTab({
   // ── Filters ───────────────────────────────────────────────────────────────
   const [search, setSearch] = useState("");
   const [statuses, setStatuses] = useState<Set<Status>>(
-    () => new Set<Status>(["active", "waiting"]),
+    () => new Set<Status>(["active"]),
   );
   const [kinds, setKinds] = useState<Set<Kind>>(
     () => new Set<Kind>(["life", "code"]),
   );
-  const [readyOnly, setReadyOnly] = useState(false);
   const [category, setCategory] = useState("");
   const [sort, setSort] = useState<SortKey>("dueAt");
 
@@ -180,7 +189,6 @@ export default function EverythingTab({
   const byStatus = (r: Row) => rowStatuses(r).some((s) => statuses.has(s));
   const byKind = (r: Row) => kinds.has(r.kind);
   const doneSet = buildDoneSet(todos ?? []);
-  const byReady = (r: Row) => !readyOnly || rowReady(r, doneSet, now);
   // The waiting context every row's reason is computed against: the same
   // done set, and need names looked up here. Declined sources arrive with
   // phase 6 (the archived integration todos); until then none is declined.
@@ -200,7 +208,7 @@ export default function EverythingTab({
     const list = rows.filter(
       (r) =>
         isLinked(r) ||
-        (bySearch(r) && byStatus(r) && byKind(r) && byReady(r) && byCategory(r)),
+        (bySearch(r) && byStatus(r) && byKind(r) && byCategory(r)),
     );
     const cmp = (a: Row, b: Row): number => {
       if (sort === "dueAt") {
@@ -213,43 +221,20 @@ export default function EverythingTab({
     };
     return [...list].sort(cmp);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, q, statuses, kinds, readyOnly, category, sort, link]);
+  }, [rows, q, statuses, kinds, category, sort, link]);
 
   // Counts, each ignoring its own filter dimension.
   const statusCount = (s: Status) =>
     rows.filter(
-      (r) =>
-        bySearch(r) &&
-        byKind(r) &&
-        byReady(r) &&
-        byCategory(r) &&
-        rowStatuses(r).includes(s),
+      (r) => bySearch(r) && byKind(r) && byCategory(r) && rowStatuses(r).includes(s),
     ).length;
   const kindCount = (k: Kind) =>
     rows.filter(
-      (r) =>
-        bySearch(r) &&
-        byStatus(r) &&
-        byReady(r) &&
-        byCategory(r) &&
-        r.kind === k,
+      (r) => bySearch(r) && byStatus(r) && byCategory(r) && r.kind === k,
     ).length;
-  const readyCount = rows.filter(
-    (r) =>
-      bySearch(r) &&
-      byStatus(r) &&
-      byKind(r) &&
-      byCategory(r) &&
-      rowReady(r, doneSet, now),
-  ).length;
   const categoryCount = (c: string) =>
     rows.filter(
-      (r) =>
-        bySearch(r) &&
-        byStatus(r) &&
-        byKind(r) &&
-        byReady(r) &&
-        rowCategory(r) === c,
+      (r) => bySearch(r) && byStatus(r) && byKind(r) && rowCategory(r) === c,
     ).length;
 
   // Category options: every category on a todo, plus "code" for mirror rows.
@@ -360,13 +345,6 @@ export default function EverythingTab({
             onClick={() => setKinds((prev) => toggleSet(prev, k))}
           />
         ))}
-        <span className="text-text-faint text-xs">·</span>
-        <Chip
-          label="ready-for-tom"
-          count={readyCount}
-          on={readyOnly}
-          onClick={() => setReadyOnly((v) => !v)}
-        />
         <select
           value={category}
           onChange={(e) => setCategory(e.target.value)}

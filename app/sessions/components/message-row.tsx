@@ -9,12 +9,13 @@
 // knows the daemon's shape for its kind, so no row ever renders as the
 // serialized wrapper around its own payload.
 
-import type { Message } from "../lib";
+import type { TranscriptMessage } from "../lib";
 import {
   compactInput,
   contentToText,
   errorTextOf,
   isErrorOf,
+  modelOfTomHeadOf,
   previewLine,
   toolInputOf,
   toolNameOf,
@@ -23,12 +24,58 @@ import {
   toolUseIdOf,
 } from "../lib";
 import Markdown from "./markdown";
+import OverflowExpand from "./overflow-expand";
 
-/** The daemon's verbatim note about a payload it cut — never paraphrased. */
-function TruncationNote({ note }: { note: string | undefined }) {
-  if (note === undefined) return null;
+/**
+ * What the daemon cut, and the way back to it. Two halves, and a row can carry
+ * either: the note the daemon wrote about the cut, verbatim and never
+ * paraphrased, and — when the whole payload was stored beside the row
+ * (`hasOverflow`) — the control that reads it back (./overflow-expand). The
+ * rule this surface has is that everything the session did is on screen in
+ * full; a cut with no way past it was the one place that was not true.
+ */
+function Cut({ message }: { message: TranscriptMessage }) {
+  const note = truncationNoteOf(message.content);
+  if (note === undefined && message.hasOverflow !== true) return null;
   return (
-    <div className="mt-1 font-mono text-[10px] text-text-faint px-1">{note}</div>
+    <div className="px-1">
+      {note !== undefined && (
+        <div className="mt-1 font-mono text-[10px] text-text-faint">{note}</div>
+      )}
+      {message.hasOverflow === true && (
+        <OverflowExpand
+          messageId={message._id}
+          fullByteLength={message.fullByteLength}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * WHAT THE SESSION BEGAN WITH (the lifeos update, phase 7). Every opener is
+ * prepended with the model-of-tom files — the WikiTom pages every prompt
+ * begins with — under one header line naming the commit they were read at and
+ * listing their paths (convex/ttsSkills.ts modelOfTomText). That header is the
+ * transcript's record of it, so the row it arrives on says it as a fact of its
+ * own: which commit, and which files. The prompt itself still renders below,
+ * in full, header line and all.
+ */
+function ModelOfTomHead({ text }: { text: string }) {
+  const head = modelOfTomHeadOf(text);
+  if (head === null) return null;
+  return (
+    <div className="mb-1.5 border-b border-border pb-1.5 font-mono text-[10px] text-text-faint">
+      <div>
+        model-of-tom ·{" "}
+        {head.commit === null
+          ? "no WikiTom commit recorded"
+          : `WikiTom commit ${head.commit}`}
+      </div>
+      {head.paths.length > 0 && (
+        <div className="break-words">{head.paths.join(" · ")}</div>
+      )}
+    </div>
   );
 }
 
@@ -42,14 +89,15 @@ function CollapsedRow({
   suffix,
   preview,
   body,
-  note,
+  cut,
 }: {
   label: string;
   labelTone?: string;
   suffix?: string;
   preview: string;
   body: string;
-  note?: string;
+  /** The cut footer, if this row carries one (see Cut). */
+  cut?: React.ReactNode;
 }) {
   return (
     <details className="text-sm">
@@ -69,7 +117,7 @@ function CollapsedRow({
       <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-xs text-text-muted bg-surface-alt/50 border border-border rounded p-3 overflow-x-auto">
         {body}
       </pre>
-      <TruncationNote note={note} />
+      {cut}
     </details>
   );
 }
@@ -78,23 +126,25 @@ export default function MessageRow({
   message,
   toolNames,
 }: {
-  message: Message;
+  message: TranscriptMessage;
   // toolUseId → toolName, built by the transcript from the loaded tool-call
   // rows. Absent when the matching call has not been paged in — the row then
   // shows no name rather than a guessed one.
   toolNames?: ReadonlyMap<string, string>;
 }) {
   const { kind, content } = message;
-  const note = truncationNoteOf(content);
+  const cut = <Cut message={message} />;
 
   switch (kind) {
     case "user": {
+      const text = contentToText(content);
       return (
         <div className="border-l-2 border-accent bg-surface-alt/40 rounded-r px-3 py-2 ml-6 sm:ml-16">
+          <ModelOfTomHead text={text} />
           <pre className="whitespace-pre-wrap break-words font-sans text-sm text-text">
-            {contentToText(content)}
+            {text}
           </pre>
-          <TruncationNote note={note} />
+          {cut}
         </div>
       );
     }
@@ -102,7 +152,7 @@ export default function MessageRow({
       return (
         <div className="px-1">
           <Markdown text={contentToText(content)} />
-          <TruncationNote note={note} />
+          {cut}
         </div>
       );
     }
@@ -118,7 +168,7 @@ export default function MessageRow({
           <pre className="whitespace-pre-wrap break-words font-sans text-xs text-text-faint">
             {contentToText(content)}
           </pre>
-          <TruncationNote note={note} />
+          {cut}
         </div>
       );
     }
@@ -131,7 +181,7 @@ export default function MessageRow({
           label={name}
           preview={previewLine(body)}
           body={body}
-          note={note}
+          cut={cut}
         />
       );
     }
@@ -147,7 +197,7 @@ export default function MessageRow({
           suffix={name}
           preview={previewLine(text)}
           body={text}
-          note={note}
+          cut={cut}
         />
       );
     }
@@ -185,7 +235,7 @@ export default function MessageRow({
             <pre className="mt-1 text-left whitespace-pre-wrap break-words font-sans text-xs text-text-faint">
               {text}
             </pre>
-            <TruncationNote note={note} />
+            {cut}
           </details>
         );
       }
@@ -193,7 +243,7 @@ export default function MessageRow({
         <div className="text-center text-xs text-text-faint px-1">
           {mark}
           {preview}
-          <TruncationNote note={note} />
+          {cut}
         </div>
       );
     }
@@ -203,7 +253,7 @@ export default function MessageRow({
           <pre className="whitespace-pre-wrap break-words font-sans text-sm text-error">
             {errorTextOf(content)}
           </pre>
-          <TruncationNote note={note} />
+          {cut}
         </div>
       );
     }

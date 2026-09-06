@@ -253,7 +253,7 @@ describe("composeDigest", () => {
     expect(body[0]).toContain("|item 0>");
     expect(body[SECTION_ITEM_CAP - 1]).toContain("|item 11>");
     expect(body[SECTION_ITEM_CAP]).toBe(
-      `- <${ttsTabLink("by-individual")}|+18 more on the page>`,
+      `- <${ttsTabLink("everything")}|+18 more on the page>`,
     );
   });
 
@@ -274,7 +274,7 @@ describe("composeDigest", () => {
     expect(body[0]).toContain("|item 0>");
     expect(body[SECTION_ITEM_CAP - 1]).toContain("|item 11>");
     expect(body[SECTION_ITEM_CAP]).toBe(
-      `- <${ttsTabLink("by-individual")}|+2 more on the page>`,
+      `- <${ttsTabLink("everything")}|+2 more on the page>`,
     );
     expect(text).not.toContain("|item 13>"); // the newest is what goes
   });
@@ -376,7 +376,7 @@ describe("one Slack message", () => {
     );
     const ready = lines.indexOf("*Ready for you*");
     expect(lines[ready + 1]).toBe(
-      `- <${ttsTabLink("by-individual")}|+30 more on the page>`,
+      `- <${ttsTabLink("everything")}|+30 more on the page>`,
     );
     expect(lines[ready + 2]).toBe("");
   });
@@ -410,7 +410,7 @@ describe("one Slack message", () => {
     const lines = text.split("\n");
     const due = lines.slice(lines.indexOf("*Due and overdue*") + 1);
     expect(due.filter((l) => l.includes("tts?item="))).toHaveLength(SECTION_ITEM_CAP);
-    expect(text).toContain(`- <${ttsTabLink("by-individual")}|+48 more on the page>`);
+    expect(text).toContain(`- <${ttsTabLink("everything")}|+48 more on the page>`);
     // The two item caps left it just over, so the tail sections gave way too.
     expect(truncated).toBe(true);
   });

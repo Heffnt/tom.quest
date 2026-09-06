@@ -1318,7 +1318,12 @@ export default defineSchema({
   // throttle (Tom's ruling: no scalar cap as primary) — maxLiveAutonomous is a
   // runaway failsafe only, maxNewPerTick bounds a clone burst. When no row
   // exists the scheduler uses defaults with enabled FALSE, so nothing runs
-  // until the enable pen is used deliberately.
+  // until the switch is deliberately on.
+  //
+  // THE FOUR NUMBERS ARE CODE-OWNED (the lifeos update, phase 7): their values
+  // live in claudeSessions.AUTO_DEFAULTS, no door writes them any more (both
+  // pens copy the constants in), and the page shows what the code says. The
+  // columns stay until NARROW, when they and the row's last reader go.
   claudeAutoConfig: defineTable({
     enabled: v.boolean(),
     maxLoadPerCpu: v.number(), // admit while loadavg1 / cpus <= this

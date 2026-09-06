@@ -11,8 +11,20 @@ export type Session = Doc<"claudeSessions">;
 export type Message = Doc<"claudeMessages">;
 export type StreamBuf = Doc<"claudeStreamBuf">;
 export type InboundRow = Doc<"claudeInbound">;
-export type PermissionRow = Doc<"claudePermissions">;
 export type DaemonHealth = Doc<"claudeDaemonHealth">;
+
+/**
+ * A finalized row AS THE PAGE READS IT. claudeSessions.getMessages adds two
+ * fields to every row it returns, and both are about the daemon's 32 KB cut:
+ * whether anything was cut at all, and how many bytes the whole payload is —
+ * so a row can offer to fetch the rest without fetching it to find out.
+ * The bytes themselves come from claudeSessions.getMessageOverflow, a page at
+ * a time (./components/overflow-expand).
+ */
+export type TranscriptMessage = Message & {
+  hasOverflow?: boolean;
+  fullByteLength?: number;
+};
 
 export type SessionStatus = Session["status"];
 
@@ -27,6 +39,10 @@ import {
   NO_REPO,
   SESSION_REPO_NAMES,
 } from "@/convex/ttsShared";
+// The header line the prelude carries, spelled once in the client-safe home
+// (convex/ttsSkills.ts writes it into the prompt; modelOfTomHeadOf below reads
+// it back off the row).
+import { MODEL_OF_TOM_HEADER } from "@/convex/ttsShared";
 import type { SessionModel } from "@/convex/ttsShared";
 
 // The model list, its default and its family test all come from the one home
@@ -175,6 +191,22 @@ export function subagentTypeOf(content: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * What a Task tool-call said the subagent is for — the SDK's own `description`
+ * input, quoted as-is. It is the line the retired agent panel showed beside a
+ * running subagent; the transcript's fold shows it now, from the same row.
+ */
+export function taskDescriptionOf(content: unknown): string | undefined {
+  const input = toolInputOf(content);
+  if (typeof input === "object" && input !== null) {
+    const i = input as Record<string, unknown>;
+    if (typeof i.description === "string" && i.description !== "") {
+      return i.description;
+    }
+  }
+  return undefined;
+}
+
 // ── tool-result / error unwrapping ───────────────────────────────────────────
 // A tool-result row's content is the daemon's WRAPPER object
 // ({ toolUseId, content, isError?, truncationNote? }), not the tool output.
@@ -267,6 +299,90 @@ export function formatClock(ms: number): string {
   const d = new Date(ms);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// ── The cut payload, and what a reassembly is allowed to claim ──────────────
+// The daemon cuts any payload over 32 KB and stores the whole of it in chunks
+// (claudeMessageOverflow). One read returns up to 1 MB and hands back a cursor,
+// so a large payload takes several — and the page has to say, on the row,
+// whether what it is showing is the whole thing. Three claims, and they are
+// not the same claim:
+//   complete   — the read came back whole IN ONE CALL and the server checked
+//                its bytes AND its hash against the row's stamp
+//                (claudeSessions.messageOverflow). The strongest, and the only
+//                one that says the text was verified.
+//   whole      — every chunk came back over several reads and the bytes sum to
+//                the stamp's byteLength. The hash is not re-checked across
+//                pages, so this says so rather than borrowing the word.
+//   incomplete — the walk stopped at a missing chunk, or the bytes do not sum,
+//                or the hash was checked and did not match.
+// Counting chunks would call a hole complete, which is why every claim here is
+// about BYTES against the row's own stamp.
+//
+// THE MISMATCH (review finding). The server computes `complete` only when the
+// read started at index 0, reached the end, and the bytes summed — and then it
+// is the sha256 comparison itself (convex/claudeSessions.ts messageOverflow).
+// So a SINGLE read that ended, whose bytes equal the stamp, with complete
+// false, is not a payload the hash was never checked on: it is a payload whose
+// hash was checked and DID NOT MATCH. Saying "complete" there would be the
+// worst lie this function can tell — corrupted bytes announced as verified.
+
+export type OverflowProgress = {
+  /** UTF-8 bytes reassembled so far, summed by the caller across reads. */
+  bytes: number;
+  /** What the row's stamp says the whole payload is. */
+  byteLength?: number;
+  /** The last read reached the final chunk the row names. */
+  end: boolean;
+  /** The server verified the whole payload's bytes and hash in one read. */
+  complete: boolean;
+  /** How many reads it took. */
+  reads: number;
+  /** A read is still in flight. */
+  reading: boolean;
+};
+
+export function describeOverflow(p: OverflowProgress): string {
+  const of = p.byteLength === undefined ? "" : ` of ${p.byteLength}`;
+  if (p.reading) return `reading — ${p.bytes}${of} bytes so far`;
+  if (p.complete) return `complete — ${p.bytes} bytes, checked against the stored hash`;
+  if (p.end && p.byteLength !== undefined && p.bytes === p.byteLength) {
+    // One read, ended, bytes summed, and the server still said not complete:
+    // the hash was compared and came back different (see the note above).
+    if (p.reads <= 1) {
+      return `incomplete — ${p.bytes} bytes came back but they do not match the stored hash`;
+    }
+    return `complete — ${p.bytes} bytes in ${p.reads} reads; the hash is checked only when the whole payload comes back in one read`;
+  }
+  if (!p.end) {
+    return `incomplete — the stored chunks stop after ${p.bytes}${of} bytes; one is missing`;
+  }
+  return `incomplete — ${p.bytes}${of} bytes came back`;
+}
+
+// ── The model-of-tom prelude, as a transcript row reads it ──────────────────
+// Every session opener begins with the model-of-tom files, headed by one line
+// naming the WikiTom commit they were read at and listing their paths
+// (convex/ttsSkills.ts modelOfTomText). That header is how a transcript
+// records what the session began with, so the first row shows it as a fact of
+// its own instead of burying it in the first line of a long prompt.
+
+export type ModelOfTomHead = {
+  /** null while the fallback copy is serving (no commit was recorded). */
+  commit: string | null;
+  paths: string[];
+};
+
+/** The header of a prompt that carries the prelude, or null if it does not. */
+export function modelOfTomHeadOf(text: string): ModelOfTomHead | null {
+  const line = text.split("\n", 1)[0] ?? "";
+  if (!line.startsWith(MODEL_OF_TOM_HEADER)) return null;
+  const commit = /WikiTom commit ([0-9a-f]{7,40})/i.exec(line)?.[1] ?? null;
+  const paths = (/\):\s*(.+)$/.exec(line)?.[1] ?? "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter((p) => p !== "");
+  return { commit, paths };
 }
 
 /**

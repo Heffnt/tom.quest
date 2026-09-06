@@ -12,15 +12,21 @@
 // dialog (they record on the press). And the two STATUS ACTIONS on a life todo
 // (options-row.tsx): done with its note, archive with its unarchive condition.
 //
-// The dialog states where the subject stands (its steps, what is open on Tom)
-// before asking for the sentence; the confirm button's label is the exact
-// effect — "record revise", "mark done" — and its ⓘ names the call. Every word
-// of that comes from the caller: this component knows nothing about verdicts.
+// The dialog names the subject and asks for the sentence; the confirm button's
+// label is the exact effect — "record revise", "mark done" — and its ⓘ names
+// the call. Every word of that comes from the caller: this component knows
+// nothing about verdicts.
+//
+// It used to open with a progress line over the subject's plan — "3 of 7 steps
+// done · next: you — …". That plan is the retired v1 field, and its picture
+// was the plan bar, which went with the paths bar and the drawn graph (the
+// lifeos update, phase 7): where the work of a batch stands is the batch
+// card's business, and repeating it here told a reader nothing about the
+// sentence they were being asked for.
 import { useState } from "react";
 import Info from "./info";
 import { VERDICTS_EXPLANATION } from "../explanations";
-import { errMessage, planNeedsYou, type PlanStep } from "../lib";
-import { nextStep, planProgress } from "./plan-bar";
+import { errMessage } from "../lib";
 
 export type SentenceVerdict = "revise" | "archive";
 
@@ -32,7 +38,6 @@ export default function RulingDialog({
   call,
   effect,
   statement,
-  plan,
   onConfirm,
   onClose,
 }: {
@@ -49,19 +54,13 @@ export default function RulingDialog({
   /** What that call sets in motion — the popover's plain half. */
   effect: string;
   statement: string;
-  plan?: PlanStep[];
-  /** Records it. Absent = the dialog only closes (the mockup route). */
+  /** Records it. Absent = the dialog only closes. */
   onConfirm?: (sentence: string) => Promise<unknown> | unknown;
   onClose: () => void;
 }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { done, total } = planProgress(plan);
-  const next = nextStep(plan);
-  // "open on you" means exactly what the card's needs-you strip means, so it
-  // is read from the same function rather than filtered again here.
-  const openTom = planNeedsYou(plan).count;
 
   return (
     <div
@@ -73,20 +72,6 @@ export default function RulingDialog({
       <div className="w-[440px] max-w-full rounded-xl border border-[#3b4a66] bg-surface p-4">
         <h3 className="text-[15px] font-semibold">{action}</h3>
         <p className="mt-0.5 text-sm text-text">{statement}</p>
-
-        {total > 0 && (
-          <div className="mt-2 rounded-md bg-surface-alt/60 px-2.5 py-2 text-xs text-text-muted">
-            {done} of {total} steps done
-            {openTom > 0 && (
-              <span className="text-accent"> · {openTom} open on you</span>
-            )}
-            {next && (
-              <div className="mt-0.5 truncate">
-                next: {next.actor === "tom" ? "you" : "agents"} — {next.text}
-              </div>
-            )}
-          </div>
-        )}
 
         <textarea
           value={text}

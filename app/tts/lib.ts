@@ -9,7 +9,6 @@ export type MirrorRow = Doc<"dtsCodeTodoMirror">;
 export type CodeBrief = Doc<"dtsCodeBriefs">;
 export type Ruling = Doc<"dtsRulings">;
 
-export type PlanStep = NonNullable<Todo["plan"]>[number];
 export type Member = NonNullable<Todo["members"]>[number];
 
 // The closed verdict set — convex/ttsRulings.ts owns the union; this is the
@@ -95,26 +94,6 @@ export function clientMemberKey(m: Member): string {
   return m.todoId !== undefined
     ? rulingSubjectKey({ subjectType: "life", todoId: m.todoId })
     : codeSubjectKey(m.repo!, m.externalId!);
-}
-
-/**
- * Open actor-"tom" steps — what a plan is waiting on Tom for. THE one home for
- * that rule: ruling-dialog.tsx reads `count` for its "N open on you" line and
- * must not filter the plan again itself.
- *
- * `steps` has no caller yet. It is the shape a "needs you" strip would read,
- * and each entry keeps its index in the todo's plan array because that index
- * is what tts.setPlanStep({index}) addresses — a strip that recomputed the
- * index from a filtered list would check off the wrong step.
- */
-export function planNeedsYou(plan: PlanStep[] | undefined): {
-  count: number;
-  steps: { step: PlanStep; index: number }[];
-} {
-  const steps = (plan ?? [])
-    .map((step, index) => ({ step, index }))
-    .filter(({ step }) => step.actor === "tom" && step.status === "open");
-  return { count: steps.length, steps };
 }
 
 /**

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { convexTest } from "convex-test";
 import { describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
+import { AUTO_DEFAULTS } from "./claudeSessions";
 import type { MessageOverflowRead } from "./claudeSessions";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
@@ -99,6 +100,13 @@ async function heartbeat(
 }
 
 // The contract defaults, enabled — overrides name the one knob a test is about.
+//
+// It writes the singleton row DIRECTLY rather than through a pen, because
+// since the lifeos update (phase 7) no pen takes the four admission numbers:
+// they are code-owned (claudeSessions.AUTO_DEFAULTS), and the columns stay in
+// the schema only until NARROW. The scheduler still reads them off the row,
+// which is what a test steering admission — one clone per tick, one live
+// session at a time — needs to set.
 async function enableAuto(
   t: ReturnType<typeof convexTest>,
   overrides: Partial<{
@@ -110,13 +118,16 @@ async function enableAuto(
     defaultModel: SessionModel;
   }> = {},
 ) {
-  await t.mutation(internal.claudeSessions.internalSetAutoConfig, {
-    enabled: true,
-    maxLoadPerCpu: 0.8,
-    minFreeMemMb: 1024,
-    maxLiveAutonomous: 8,
-    maxNewPerTick: 2,
-    ...overrides,
+  await t.run(async (ctx) => {
+    const row = {
+      ...AUTO_DEFAULTS,
+      enabled: true,
+      ...overrides,
+      updatedAt: Date.now(),
+    };
+    const existing = await ctx.db.query("claudeAutoConfig").first();
+    if (existing) await ctx.db.patch(existing._id, row);
+    else await ctx.db.insert("claudeAutoConfig", row);
   });
 }
 
@@ -1820,34 +1831,58 @@ describe("autonomous fleet config", () => {
     expect(before.maxLiveAutonomous).toBe(8);
     expect(before.maxNewPerTick).toBe(2);
 
-    await tom.mutation(api.claudeSessions.setAutoConfig, {
-      enabled: true,
-      maxLoadPerCpu: 0.5,
-      minFreeMemMb: 2048,
-      maxLiveAutonomous: 4,
-      maxNewPerTick: 1,
-    });
+    // Tom's door is ON or OFF and nothing else (the lifeos update, phase 7):
+    // the numbers are code-owned defaults, and the switch writes them.
+    await tom.mutation(api.claudeSessions.setAutoConfig, { enabled: true });
     const after = await tom.query(api.claudeSessions.getAutoConfig, {});
     expect(after.fromDefaults).toBe(false);
     expect(after.enabled).toBe(true);
-    expect(after.maxLoadPerCpu).toBe(0.5);
-    expect(after.maxNewPerTick).toBe(1);
+    expect(after.maxLoadPerCpu).toBe(0.8);
+    expect(after.maxNewPerTick).toBe(2);
 
     // The CLI pen writes the SAME row, never a second singleton.
     await t.mutation(internal.claudeSessions.internalSetAutoConfig, {
       enabled: false,
-      maxLoadPerCpu: 0.9,
-      minFreeMemMb: 512,
-      maxLiveAutonomous: 2,
-      maxNewPerTick: 3,
     });
     const rows = await t.run(async (ctx) =>
       ctx.db.query("claudeAutoConfig").collect(),
     );
     expect(rows).toHaveLength(1);
-    expect(rows[0].maxLoadPerCpu).toBe(0.9);
     const off = await tom.query(api.claudeSessions.getAutoConfig, {});
     expect(off.enabled).toBe(false);
+  });
+
+  // witness: return the row's own numbers from getAutoConfig again — a row
+  // still carrying a value written before they became code-owned would show
+  // Tom a ceiling nothing means to keep, and the next press of the switch
+  // would change it under him.
+  it("answers with the code-owned numbers, whatever an older row still holds", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("claudeAutoConfig", {
+        enabled: true,
+        maxLoadPerCpu: 0.1,
+        minFreeMemMb: 99,
+        maxLiveAutonomous: 1,
+        maxNewPerTick: 1,
+        updatedAt: 1,
+      });
+    });
+    const config = await tom.query(api.claudeSessions.getAutoConfig, {});
+    expect(config.enabled).toBe(true); // the one thing the row decides
+    expect(config.maxLoadPerCpu).toBe(0.8);
+    expect(config.minFreeMemMb).toBe(1024);
+    expect(config.maxLiveAutonomous).toBe(8);
+    expect(config.maxNewPerTick).toBe(2);
+
+    // …and the next press of the switch copies the code values over the row.
+    await tom.mutation(api.claudeSessions.setAutoConfig, { enabled: false });
+    const row = await t.run(async (ctx) =>
+      ctx.db.query("claudeAutoConfig").first(),
+    );
+    expect(row?.maxLoadPerCpu).toBe(0.8);
+    expect(row?.maxNewPerTick).toBe(2);
   });
 
   // The fleet default model, which the four calls above never mentioned. It is
@@ -1868,10 +1903,6 @@ describe("autonomous fleet config", () => {
     // field stays unset, and the read still answers.
     await t.mutation(internal.claudeSessions.internalSetAutoConfig, {
       enabled: true,
-      maxLoadPerCpu: 0.8,
-      minFreeMemMb: 1024,
-      maxLiveAutonomous: 8,
-      maxNewPerTick: 2,
     });
     const rows = await t.run(async (ctx) =>
       ctx.db.query("claudeAutoConfig").collect(),
@@ -1880,14 +1911,20 @@ describe("autonomous fleet config", () => {
     expect((await tom.query(api.claudeSessions.getAutoConfig, {})).defaultModel)
       .toBe(DEFAULT_SESSION_MODEL);
 
-    await tom.mutation(api.claudeSessions.setAutoConfig, {
+    await t.mutation(internal.claudeSessions.internalSetAutoConfig, {
       enabled: true,
-      maxLoadPerCpu: 0.8,
-      minFreeMemMb: 1024,
-      maxLiveAutonomous: 8,
-      maxNewPerTick: 2,
       defaultModel: "opus",
     });
+    expect((await tom.query(api.claudeSessions.getAutoConfig, {})).defaultModel)
+      .toBe("opus");
+
+    // …and Tom's switch does not reset it either. It writes the code-owned
+    // numbers and the one field it is about; the model the fleet runs on is
+    // not a thing a press of "stop" decides.
+    // witness: drop the defaultModel carry-over in setAutoConfig — flipping
+    // the switch would silently move the whole fleet back to the built-in
+    // default model.
+    await tom.mutation(api.claudeSessions.setAutoConfig, { enabled: false });
     expect((await tom.query(api.claudeSessions.getAutoConfig, {})).defaultModel)
       .toBe("opus");
 
@@ -1895,10 +1932,6 @@ describe("autonomous fleet config", () => {
     // and a hand-typed CLI command that forgot the field must not undo it.
     await t.mutation(internal.claudeSessions.internalSetAutoConfig, {
       enabled: true,
-      maxLoadPerCpu: 0.8,
-      minFreeMemMb: 1024,
-      maxLiveAutonomous: 8,
-      maxNewPerTick: 1,
     });
     expect((await tom.query(api.claudeSessions.getAutoConfig, {})).defaultModel)
       .toBe("opus");

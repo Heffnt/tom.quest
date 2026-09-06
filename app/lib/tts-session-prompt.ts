@@ -162,8 +162,6 @@ export type BatchSessionContext = {
   id: Id<"batches">;
   statement: string;
   groundUp?: string;
-  /** The retired sequencing, shown while a batch still carries one. */
-  path?: { name: string; index: number };
   /** The statements of the batches this batch needs done first. */
   needs?: string[];
   tasks: {
@@ -215,9 +213,6 @@ export function buildBatchSessionPrompt(
     `THE BATCH ("${batch.statement}"):`,
     fact("id (batch subject)", batch.id),
     fact("ground-up explanation", batch.groundUp),
-    batch.path
-      ? `path: "${batch.path.name}", position ${batch.path.index}`
-      : null,
     batch.needs && batch.needs.length > 0
       ? `this batch needs (batches that must land first): ${batch.needs.map((n) => `"${n}"`).join(", ")}`
       : null,

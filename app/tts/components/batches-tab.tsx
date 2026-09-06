@@ -1,8 +1,14 @@
 "use client";
 
-// BATCHES — the default tab. The paths bar over the batch cards (the ratified
-// graph design), then the selectNeedsMe rows no batch claims, then the
-// ruled-but-not-yet-applied pipeline strip.
+// BATCHES — the default tab. The batch cards, then the selectNeedsMe rows no
+// batch claims, then the ruled-but-not-yet-applied pipeline strip.
+//
+// NO PATHS BAR (the lifeos update, phase 7). Sequencing between batches was a
+// named path with an index and an edge, picked from a chip row above the
+// cards; it is now `needs` — the same word as between todos — and a batch that
+// waits on another says so on its own face, in the sentence its card prints
+// where its ready work would be. So the cards are ONE list: the batches that
+// can be worked first, then by recency.
 //
 // A BATCH IS NOT A TODO (schema v2): it is its own row (the `batches` table)
 // holding how a set of todos gets completed. Its contents are dtsTodos rows
@@ -30,12 +36,13 @@ import {
 import type { BatchSessionContext } from "@/app/lib/tts-session-prompt";
 import CodeTodoRow from "./code-todo-row";
 import OptionsRow from "./options-row";
-import PathsBar, { type PathChip } from "./paths-bar";
 import BatchCard, {
   needNames,
   taskSets,
   taskWaiting,
+  unmetBatchNeeds,
   type BatchGraph,
+  type BatchNeed,
   type GraphTask,
 } from "./batch-card";
 import DetailDialog, { type DetailItem } from "./detail-dialog";
@@ -62,10 +69,6 @@ import {
 const chipCls =
   "text-xs text-text-faint border border-border rounded px-1 py-px";
 
-// The chip a batch with no path groups under. A real path name could collide
-// with it only if Tom named a path this, which the planner never does.
-const UNPATHED = "unpathed";
-
 function SectionHeader({ title, count }: { title: string; count: number }) {
   return (
     <div className="text-xs text-text-faint">
@@ -80,7 +83,13 @@ function SectionHeader({ title, count }: { title: string; count: number }) {
 // `kind !== "goal"` test. done and archived both read as done — the same rule
 // ttsShared.buildDoneSet uses for the frontier, so what the card calls ready is
 // what the scheduler calls ready.
-function toGraph(batch: Batch, contents: Todo[]): BatchGraph {
+function toGraph(
+  batch: Batch,
+  contents: Todo[],
+  /** The other batches, for this batch's own `needs` edges: a need is met
+   * when the batch it names is done or archived (buildDoneSet's rule). */
+  batchById: Map<string, Batch> = new Map(),
+): BatchGraph {
   const tasks: GraphTask[] = [];
   const goals: BatchGraph["goals"] = [];
   for (const t of contents) {
@@ -120,10 +129,21 @@ function toGraph(batch: Batch, contents: Todo[]): BatchGraph {
       });
     }
   }
+  const needs: BatchNeed[] = (batch.needs ?? []).map((id) => {
+    const needed = batchById.get(id);
+    return {
+      id,
+      statement: needed?.statement ?? id,
+      met: needed === undefined
+        ? false
+        : needed.status === "done" || needed.status === "archived",
+    };
+  });
   return {
     id: batch._id,
     statement: batch.statement,
     groundUp: batch.groundUpExplanation,
+    needs,
     tasks,
     goals,
   };
@@ -134,7 +154,6 @@ function sessionContext(
   batch: Batch,
   graph: BatchGraph,
   now: number,
-  batchStatement: (id: string) => string | undefined = () => undefined,
 ): BatchSessionContext {
   const { done, ready, blocked } = taskSets(graph.tasks, now);
   const byId = new Map(graph.tasks.map((t) => [t.id, t]));
@@ -153,12 +172,9 @@ function sessionContext(
     id: batch._id,
     statement: batch.statement,
     groundUp: batch.groundUpExplanation,
-    path: batch.path
-      ? { name: batch.path.name, index: batch.path.index }
-      : undefined,
-    needs: (batch.needs ?? [])
-      .map((id) => batchStatement(id))
-      .filter((s): s is string => s !== undefined),
+    // The batches that must land first, by statement — the same unmet needs
+    // the card prints, so the session is told what the page shows.
+    needs: unmetBatchNeeds(graph).map((n) => n.statement),
     tasks: [
       ...ready.map((t) => shape(t, "ready")),
       ...blocked.map((t) => shape(t, "blocked")),
@@ -288,13 +304,13 @@ function LifeRow({
 
 // Unbatched code rows are the shared CodeTodoRow (./code-todo-row) — brief,
 // evidence, the options row and the live ruling all come from that one row, so
-// a code item looks and behaves the same on this tab and on the by-individual
+// a code item looks and behaves the same on this tab and on the everything
 // tab.
 
 // ── The tab ─────────────────────────────────────────────────────────────────
 // No onOpenItem: on this tab every item — a task, a goal, the batch itself —
 // opens the detail dialog, which holds everything known about it. Nothing here
-// hands an item off to the by-individual tab any more.
+// hands an item off to the everything tab any more.
 export default function BatchesTab() {
   const { canReadSurface } = useAuth();
   // Read gate, not the write gate: Tom, plus the read-only `agent` role a TTS
@@ -321,10 +337,6 @@ export default function BatchesTab() {
   // a Date.now() read here would be a fresh dependency every render.
   const now = useCoarseNow();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  // A batch's needs name other batches by id; the session prompt says them.
-  const batchStatementOf = (id: string) =>
-    (batches ?? []).find((b) => b._id === id)?.statement;
   const [detail, setDetail] = useState<DetailItem | null>(null);
   const [groundUp, setGroundUp] = useState<{ title: string; content: string } | null>(null);
 
@@ -349,10 +361,11 @@ export default function BatchesTab() {
     [todos, mirror, briefs, rulings],
   );
 
-  // The graph cards, grouped by path. Within a path: path order (`index`).
-  // The batches on no path group under one "unpathed" chip, listed last and
-  // ordered by recency, which is the only order they have.
-  const { chips, byPath } = useMemo(() => {
+  // The graph cards: ONE list, ordered by needs and then by dates — the
+  // batches nothing is holding up first (a batch waiting on another batch
+  // cannot be worked yet), each group by recency. That is the whole ordering;
+  // there is no rating and no path.
+  const cards = useMemo(() => {
     const contents = new Map<string, Todo[]>();
     for (const t of todos ?? []) {
       if (t.batchId === undefined) continue;
@@ -360,42 +373,30 @@ export default function BatchesTab() {
       list.push(t);
       contents.set(t.batchId, list);
     }
-    const byPath = new Map<string, { batch: Batch; graph: BatchGraph }[]>();
-    for (const batch of batches ?? []) {
-      if (batch.status !== "active") continue;
-      const name = batch.path?.name ?? UNPATHED;
-      const list = byPath.get(name) ?? [];
-      list.push({ batch, graph: toGraph(batch, contents.get(batch._id) ?? []) });
-      byPath.set(name, list);
-    }
-    for (const [name, list] of byPath) {
-      list.sort((a, b) =>
-        name === UNPATHED
-          ? b.batch.updatedAt - a.batch.updatedAt
-          : (a.batch.path?.index ?? 0) - (b.batch.path?.index ?? 0),
-      );
-    }
-    const chips: PathChip[] = [...byPath.keys()]
-      .filter((n) => n !== UNPATHED)
-      .sort((a, b) => a.localeCompare(b))
-      .map((name) => ({ name, count: (byPath.get(name) ?? []).length }));
-    if (byPath.has(UNPATHED))
-      chips.push({
-        name: UNPATHED,
-        count: (byPath.get(UNPATHED) ?? []).length,
+    const batchById = new Map((batches ?? []).map((b) => [b._id as string, b]));
+    return (batches ?? [])
+      .filter((batch) => batch.status === "active")
+      .map((batch) => ({
+        batch,
+        graph: toGraph(batch, contents.get(batch._id) ?? [], batchById),
+      }))
+      .sort((a, b) => {
+        const blocked =
+          Number(unmetBatchNeeds(a.graph).length > 0) -
+          Number(unmetBatchNeeds(b.graph).length > 0);
+        return blocked !== 0 ? blocked : b.batch.updatedAt - a.batch.updatedAt;
       });
-    return { chips, byPath };
   }, [batches, todos]);
 
   // The open dialog's item, re-resolved against the live graphs (resolveDetail
   // above).
   const liveDetail = useMemo(
-    () => resolveDetail(detail, [...byPath.values()].flat().map((b) => b.graph), now),
-    [detail, byPath, now],
+    () => resolveDetail(detail, cards.map((c) => c.graph), now),
+    [detail, cards, now],
   );
 
   // Live ruling per subject — the shared derivation (app/tts/lib.ts), the same
-  // one the by-individual tab feeds CodeTodoRow.
+  // one the everything tab feeds CodeTodoRow.
   const liveRulingByKey = useMemo(
     () => liveRulingsByKey(rulings ?? []),
     [rulings],
@@ -469,7 +470,7 @@ export default function BatchesTab() {
           tab.close();
           throw e;
         }
-        await openBatchSession(sessionContext(batch, graph, now, batchStatementOf), {
+        await openBatchSession(sessionContext(batch, graph, now), {
           tab,
           ruling: { verdict, sentence: args.sentence },
         });
@@ -546,50 +547,31 @@ export default function BatchesTab() {
     return <div className="text-sm text-text-faint py-8">Loading…</div>;
   }
 
-  const shownPath =
-    selectedPath !== null && byPath.has(selectedPath)
-      ? selectedPath
-      : (chips[0]?.name ?? UNPATHED);
-  const list = byPath.get(shownPath) ?? [];
-
   return (
     <div className="space-y-6">
       <section className="space-y-2">
-        <PathsBar
-          paths={chips}
-          selected={shownPath}
-          onSelect={setSelectedPath}
-        />
-        <div className="flex flex-col">
-          {list.map(({ batch, graph }, i) => (
-            <div key={graph.id}>
-              {/* The connector is the path's own sequencing; the unpathed
-                  group has no order to draw. */}
-              {i > 0 && shownPath !== UNPATHED && (
-                <div className="flex justify-center py-0.5">
-                  <div className="h-3 w-px bg-[#2c3a52]" />
-                </div>
-              )}
-              <BatchCard
-                graph={graph}
-                now={now}
-                expanded={expanded.has(graph.id)}
-                onToggle={() =>
-                  toggle(graph.id, () => {
-                    void recordEvent({
-                      kind: "engaged",
-                      data: { via: "batches", batchId: graph.id },
-                    }).catch(() => {});
-                  })
-                }
-                onRule={ruleBatch(batch, graph)}
-                onDetail={setDetail}
-                onGroundUp={(title, content) => setGroundUp({ title, content })}
-                onOpenSession={() =>
-                  void openBatchSession(sessionContext(batch, graph, now, batchStatementOf))
-                }
-              />
-            </div>
+        <div className="flex flex-col gap-1.5">
+          {cards.map(({ batch, graph }) => (
+            <BatchCard
+              key={graph.id}
+              graph={graph}
+              now={now}
+              expanded={expanded.has(graph.id)}
+              onToggle={() =>
+                toggle(graph.id, () => {
+                  void recordEvent({
+                    kind: "engaged",
+                    data: { via: "batches", batchId: graph.id },
+                  }).catch(() => {});
+                })
+              }
+              onRule={ruleBatch(batch, graph)}
+              onDetail={setDetail}
+              onGroundUp={(title, content) => setGroundUp({ title, content })}
+              onOpenSession={() =>
+                void openBatchSession(sessionContext(batch, graph, now))
+              }
+            />
           ))}
         </div>
         {batchSessionError && (
