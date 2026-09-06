@@ -34,7 +34,7 @@ const todo = (over: Partial<Todo> = {}): Todo =>
     _creationTime: 1,
     statement: "renew the visa",
     status: "active",
-    readiness: "ready-for-tom",
+    readiness: "prepared",
     createdAt: 1000,
     updatedAt: 1000,
     ...over,
@@ -142,11 +142,13 @@ describe("selectNeedsMe: ruling-vs-subject timestamps", () => {
   // a half-finished write-up is never ready for Tom. Read it as prepared and
   // this goes red — the row would sit on his pile with no write-up to rule on.
   it("drops a life todo still spelled preparing", () => {
-    const { lifeRows } = selectNeedsMe([todo({ readiness: "preparing" })], [], [], []);
+    // The validator no longer stores either spelling (the lifeos update, phase
+    // 7); a reader still accepts them for one more release, so a bundle built
+    // before the narrow reads a row the same way. Hence the casts.
+    const retired = (r: string) => todo({ readiness: r as Todo["readiness"] });
+    const { lifeRows } = selectNeedsMe([retired("preparing")], [], [], []);
     expect(lifeRows).toEqual([]);
-    expect(
-      selectNeedsMe([todo({ readiness: "ready-for-tom" })], [], [], []).lifeRows,
-    ).toHaveLength(1);
+    expect(selectNeedsMe([retired("ready-for-tom")], [], [], []).lifeRows).toHaveLength(1);
   });
 
   it("drops a life todo whose ruling is strictly newer than its last update", () => {

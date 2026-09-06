@@ -231,7 +231,7 @@ const TODO = {
   actor: "tom",
   needs: [],
   status: "active",
-  readiness: "ready-for-tom",
+  readiness: "prepared",
   source: "tom",
   timingClass: "soon",
   brief: "the brief",

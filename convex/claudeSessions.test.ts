@@ -4675,28 +4675,6 @@ describe("frontier scheduler", () => {
     expect(text).not.toContain("YOU HAVE CLAIMED ONE TODO");
   });
 
-  // A stored "preparing" reads as unprepared (ttsShared.normalizeReadiness):
-  // an older box job left the write-up half done, and the lanes hand it out
-  // again. Read it as prepared and this goes red — the row would be neither
-  // worked nor ready for Tom, stranded until someone noticed.
-  it("hands out a row still spelled preparing", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    await enableAuto(t, { maxNewPerTick: 1 });
-    await heartbeat(t);
-    const todoId = await tom.mutation(api.tts.createTodo, {
-      statement: "draft the reading list",
-    });
-    await t.run(async (ctx) => {
-      await ctx.db.patch(todoId, { readiness: "preparing" });
-    });
-
-    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
-    const sessions = await workSessions(t);
-    expect(sessions).toHaveLength(1);
-    expect(sessions[0].todoId).toBe(todoId);
-  });
-
   // witness: drop the batch-status test from the frontier walk and this goes
   // red — the fleet would work the tasks of a batch Tom archived.
   it("ignores the ready tasks of an archived batch", async () => {

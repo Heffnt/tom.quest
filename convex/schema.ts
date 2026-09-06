@@ -5,8 +5,8 @@ import { v } from "convex/values";
 // the name implies its FAMILY, and the family is what picks the runner on the
 // Jarvis Box — Claude's Agent SDK or OpenAI's Codex CLI.
 import {
+  READINESS,
   SESSION_MODEL,
-  STORED_READINESS,
   STORED_RECOMMENDATION,
 } from "./ttsShared";
 
@@ -363,10 +363,9 @@ export default defineSchema({
   // convex/tts.ts is Tom-gated, so rows carry no userId.
   //
   // Vocabulary (spec §12.1) is stored literally:
-  //   readiness: unprepared | prepared (ruling 18, the lifeos update; the
-  //              retired spellings stay readable until NARROW, one reading
-  //              each — ready-for-tom as prepared, preparing as unprepared —
-  //              and ttsShared.ts is the one home)
+  //   readiness: unprepared | prepared (ruling 18, the lifeos update;
+  //              narrowed to the two values once the migration mapped every
+  //              row; ttsShared.ts is the one home)
   //   status:    active | waiting | archived | done
   //   timingClass: dated | condition-bound | whenever
   // Nothing is ever deleted (spec principle 2): terminal states are status
@@ -444,12 +443,12 @@ export default defineSchema({
   dtsTodos: defineTable({
     statement: v.string(),
     body: v.optional(v.string()),
-    // WIDENED (the lifeos update, phase 7): two values, unprepared |
-    // prepared, plus the two retired spellings until every row is migrated
-    // (ttsMigrations.internalMigrateReadiness) and the validator narrows.
-    // Whether a prepared row is READY for Tom is computed, never stored
-    // (ttsShared.isReadyForTom).
-    readiness: STORED_READINESS,
+    // NARROWED (the lifeos update, phase 7): two values, unprepared |
+    // prepared. The retired spellings were mapped by
+    // ttsMigrations.internalMigrateReadiness and verified gone on prod
+    // before the validator narrowed. Whether a prepared row is READY for
+    // Tom is computed, never stored (ttsShared.isReadyForTom).
+    readiness: READINESS,
     status: v.union(
       v.literal("active"),
       v.literal("waiting"),

@@ -5,8 +5,6 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { recordMissedKeepingDate } from "./tts";
 import {
   DAY_MS,
-  READINESS_VALUES,
-  RETIRED_READINESS_VALUES,
   buildDoneSet,
   countdownText,
   isPrepared,
@@ -843,21 +841,14 @@ export async function gatherDigestFacts(
 
   // 5. Ready for Tom (not already listed as due) — ruling 18's computation
   // (ttsShared.isReadyForTom: prepared, active, awake, every need done). Read
-  // on the readiness index for each spelling that READS as prepared (the
-  // value and, until NARROW, "ready-for-tom"; "preparing" reads as unprepared
-  // and is never listed), so the scan is the prepared list itself — the
-  // shortest list in the record. A row's needs are fetched by id (bounded
-  // by MAX_NEEDS) to build the done set, instead of collecting the table.
-  const preparedRows: Doc<"dtsTodos">[] = [];
-  for (const spelling of [...READINESS_VALUES, ...RETIRED_READINESS_VALUES]) {
-    if (!isPrepared(spelling)) continue;
-    preparedRows.push(
-      ...(await ctx.db
-        .query("dtsTodos")
-        .withIndex("by_readiness", (q) => q.eq("readiness", spelling))
-        .collect()),
-    );
-  }
+  // on the readiness index for "prepared", so the scan is the prepared list
+  // itself — the shortest list in the record. A row's needs are fetched by
+  // id (bounded by MAX_NEEDS) to build the done set, instead of collecting
+  // the table.
+  const preparedRows: Doc<"dtsTodos">[] = await ctx.db
+    .query("dtsTodos")
+    .withIndex("by_readiness", (q) => q.eq("readiness", "prepared"))
+    .collect();
   const ready: DigestFacts["ready"] = [];
   for (const t of preparedRows) {
     if (t.status !== "active" || dueIds.has(t._id as string)) continue;

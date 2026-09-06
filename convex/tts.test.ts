@@ -373,14 +373,21 @@ describe("TTS todos", () => {
       brief: "Tape for finger protection.",
       entryAction: "Open the retailer page",
       workDescription: "a two-minute errand",
-      // The retired spelling is still accepted from an older box job during
-      // the widen, and stored as the value (ruling 18).
-      readiness: "ready-for-tom",
+      readiness: "prepared",
     });
     const [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
     expect(todo.readiness).toBe("prepared");
     expect(todo.entryAction).toBe("Open the retailer page");
     expect(todo.statement).toBe("buy climbing tape"); // intent untouched
+    // The retired spelling is refused since the narrow (the lifeos update,
+    // phase 7): the pen's validator holds "prepared" alone, so an older box
+    // job cannot put a retired value back into the record.
+    await expect(
+      t.mutation(internal.tts.internalPrepareTodo, {
+        id: captured._id,
+        readiness: "ready-for-tom" as never,
+      }),
+    ).rejects.toThrow();
     await expect(
       t.mutation(internal.tts.internalPrepareTodo, { id: "bogus" }),
     ).rejects.toThrow(/Unknown todo id/);

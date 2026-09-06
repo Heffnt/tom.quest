@@ -14,12 +14,10 @@ import {
   DAY_MS,
   MAX_NEEDS,
   READINESS,
-  RETIRED_READINESS_VALUES,
   SESSION_MODEL,
   captureReplyText,
   goalCheckable,
   isPrepared,
-  normalizeReadiness,
   nyCalendarDayBoundsUtc,
   nyCalendarDayKey,
   normalizeSessionRepos,
@@ -1509,7 +1507,7 @@ export const internalCapture = internalMutation({
 });
 
 // The preparation path for LIFE todos (spec §15, swarm-lite): the worker's
-// preparer job advances an unprepared capture toward ready-for-tom by
+// preparer job advances an unprepared capture toward prepared by
 // attaching the ground-up brief, the smallest entry action, and a qualitative
 // work description. It never touches statement or status — those are Tom's
 // (or the capture's) and preparation must not rewrite intent. Since
@@ -1522,21 +1520,12 @@ export const internalPrepareTodo = internalMutation({
     brief: v.optional(v.string()),
     entryAction: v.optional(v.string()),
     workDescription: v.optional(v.string()),
-    // "prepared" is the value (ruling 18). The two retired spellings are still
-    // accepted from a worker written before the rename — a pen that rejected
-    // them would fail every box job until its deploy caught up — and stored
-    // as the value each reads as (ttsShared.normalizeReadiness): "ready-for-
-    // tom" as "prepared", "preparing" as "unprepared". The old job said
-    // "preparing" of a write-up it had not finished, so storing unprepared
-    // there is recording its own word, not erasing one; the preparer returns
-    // the row as prepared. The literal "unprepared" is refused: an agent must
+    // "prepared" is the value (ruling 18), and the only one this pen takes.
+    // The retired spellings a pre-rename box job wrote are refused since the
+    // narrow (the lifeos update, phase 7; the planner's prepare pass writes
+    // "prepared"). The literal "unprepared" is refused too: an agent must
     // never erase the record that a todo was written up.
-    readiness: v.optional(
-      v.union(
-        v.literal("prepared"),
-        ...RETIRED_READINESS_VALUES.map((r) => v.literal(r)),
-      ),
-    ),
+    readiness: v.optional(v.literal("prepared")),
     plan: v.optional(v.array(PLAN_STEP)),
     // ── The graph worker's three args (schema v2, 2026-08-29) ────────────────
     // A worker session claims ONE ready todo inside a batch and advances it by
@@ -1609,9 +1598,7 @@ export const internalPrepareTodo = internalMutation({
       }
       if (entryAction !== undefined) patch.entryAction = entryAction;
       if (workDescription !== undefined) patch.workDescription = workDescription;
-      if (readiness !== undefined) {
-        patch.readiness = normalizeReadiness(readiness);
-      }
+      if (readiness !== undefined) patch.readiness = readiness;
       if (dueAt !== undefined) {
         // Kept-dates rule (spec §8): a stored date moves only through
         // recordDateOutcome / a time note. The preparer gets the FIRST date
@@ -2465,7 +2452,7 @@ export const internalStorePlanGraph = internalMutation({
           doneAt: desired === "done" ? now : undefined,
           // A task is work inside a batch, not a gate: the BATCH is what Tom
           // rules on, so a fresh task is "unprepared" rather than
-          // "ready-for-tom" (which would flood the needs-me feed).
+          // "prepared" (which would flood the needs-me feed).
           readiness: "unprepared",
           timingClass: "whenever",
           source: "planner",

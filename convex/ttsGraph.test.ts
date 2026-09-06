@@ -1844,7 +1844,7 @@ describe("POST /tts/plan-graph", () => {
     const goalId = await t.run(async (ctx) =>
       ctx.db.insert("dtsTodos", {
         statement: "the lease is signed",
-        readiness: "ready-for-tom",
+        readiness: "prepared",
         status: "active",
         timingClass: "whenever",
         source: "manual",

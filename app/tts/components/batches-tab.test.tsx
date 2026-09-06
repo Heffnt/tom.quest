@@ -57,7 +57,7 @@ const TASK = {
   actor: "tom",
   needs: [],
   status: "active",
-  readiness: "ready-for-tom",
+  readiness: "prepared",
   updatedAt: 1,
 };
 
@@ -68,7 +68,7 @@ const CODE_GOAL = {
   kind: "goal",
   statement: "The session repo list is fenced",
   status: "active",
-  readiness: "ready-for-tom",
+  readiness: "prepared",
   codeRepo: "tom.quest",
   codeExternalId: "todo-14",
   updatedAt: 1,

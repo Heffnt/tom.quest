@@ -9,7 +9,6 @@ import { isRulingVerdict } from "./ttsRulings";
 import {
   DAY_MS,
   RECOMMENDATION_VALUES,
-  RETIRED_READINESS_VALUES,
   SESSION_REPO_NAMES,
   isSessionModel,
   isStoredRecommendation,
@@ -680,16 +679,10 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
   if (typeof b.id !== "string" || b.id.length === 0) {
     return jsonResponse(400, { error: "id (non-empty string) required" });
   }
-  // "prepared" (ruling 18); the two retired spellings are still accepted from
-  // a box job written before the rename, and the mutation stores each as the
-  // value it reads as: "ready-for-tom" as "prepared", "preparing" as
-  // "unprepared" (that job's own word for a write-up it had not finished).
-  // The literal "unprepared" is refused (an agent never erases a write-up).
-  if (
-    b.readiness !== undefined &&
-    b.readiness !== "prepared" &&
-    !(RETIRED_READINESS_VALUES as readonly unknown[]).includes(b.readiness)
-  ) {
+  // "prepared" (ruling 18) is the one value; the retired spellings are
+  // refused since the narrow (the lifeos update, phase 7). The literal
+  // "unprepared" is refused too (an agent never erases a write-up).
+  if (b.readiness !== undefined && b.readiness !== "prepared") {
     return jsonResponse(400, {
       error: 'readiness must be "prepared"',
     });
@@ -719,10 +712,7 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
       brief: str(b.brief),
       entryAction: str(b.entryAction),
       workDescription: str(b.workDescription),
-      readiness: b.readiness as
-        | "prepared"
-        | (typeof RETIRED_READINESS_VALUES)[number]
-        | undefined,
+      readiness: b.readiness as "prepared" | undefined,
       // The date the STATEMENT states, when it states one. The mutation is
       // the real gate: a first date only, never over an existing one.
       dueAt: b.dueAt as number | undefined,

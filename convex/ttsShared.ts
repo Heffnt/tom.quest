@@ -199,33 +199,32 @@ export function nyHhmm(at: number): string {
 //   prepared   — written up (brief, entry action, work description). Whether
 //                it is READY for Tom is then COMPUTED, never stored: see
 //                isReadyForTom below.
-// The two retired spellings, "preparing" and "ready-for-tom", stay READABLE
-// during the widen (every reader goes through normalizeReadiness / isPrepared,
-// so a row written before the migration reads the same as one written after)
-// and are mapped one to one by ttsMigrations.internalMigrateReadiness:
-// "preparing" → unprepared (the write-up was not finished), "ready-for-tom" →
-// prepared. They leave the validator at NARROW, once no row carries them.
+// NARROWED (the lifeos update, phase 7): the validator (READINESS below, the
+// one the schema and every pen use) holds exactly these two values. The two
+// retired spellings, "preparing" and "ready-for-tom", were mapped one to one
+// by ttsMigrations.internalMigrateReadiness ("preparing" → unprepared, the
+// write-up was not finished; "ready-for-tom" → prepared) and verified on prod
+// with a zero count on a second run, so no stored row carries them and no
+// writer may store them. normalizeReadiness / isPrepared still ACCEPT them on
+// read for one more release — a page bundle or a box job built before this
+// narrow can hold a row in memory in the old spelling — and then the retired
+// list goes too.
 export const READINESS_VALUES = ["unprepared", "prepared"] as const;
 export type Readiness = (typeof READINESS_VALUES)[number];
 export const RETIRED_READINESS_VALUES = ["preparing", "ready-for-tom"] as const;
+/** What a reader may still be handed: the two values, plus the two retired
+ * spellings for one more release (read-only; the validator refuses them). */
 export type StoredReadiness =
   | Readiness
   | (typeof RETIRED_READINESS_VALUES)[number];
-/** The stored form during the widen: the two values plus the two retired
- * spellings. convex/schema.ts and every pen that stores readiness use this. */
-export const STORED_READINESS = v.union(
-  ...[...READINESS_VALUES, ...RETIRED_READINESS_VALUES].map((r) =>
-    v.literal(r),
-  ),
-);
-/** The two-value form: what a Tom door may write, and what the page offers. */
+/** The stored form: the two values. convex/schema.ts, Tom's door, and every
+ * pen that stores readiness use this. */
 export const READINESS = v.union(...READINESS_VALUES.map((r) => v.literal(r)));
-/** One reading for every spelling. "ready-for-tom" meant "the write-up is
- * finished and only Tom is missing", so it reads as prepared. "preparing"
- * meant "an agent still has groundwork to do here" — a half-prepared row —
- * and a raw or half-prepared capture is never ready, so it reads as
- * unprepared: the preparer job picks it up again and returns it as
- * prepared. Each stored spelling has exactly one reading. */
+/** One reading for every spelling a reader can still meet. "ready-for-tom"
+ * meant "the write-up is finished and only Tom is missing", so it reads as
+ * prepared. "preparing" meant "an agent still has groundwork to do here" — a
+ * half-prepared row — and a raw or half-prepared capture is never ready, so
+ * it reads as unprepared. Each spelling has exactly one reading. */
 export function normalizeReadiness(readiness: StoredReadiness): Readiness {
   return readiness === "unprepared" || readiness === "preparing"
     ? "unprepared"

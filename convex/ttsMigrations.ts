@@ -24,6 +24,12 @@
 //     back on Tom's pile. A value mapping leaves the retired FIELD in place;
 //     emptying the field itself is the clearing walk at the bottom of this
 //     file, and it is what the narrow waits on.
+//   - LOOSE READS AFTER THE NARROW. Once a walk has run and been verified,
+//     the validator narrows past the shape it maps (docs/lifeos-retirement.md).
+//     A row on the deployment can still hold a value the schema no longer
+//     declares, and Convex returns it, so each walk reads its retired field
+//     through a loose view of the row rather than the generated Doc type —
+//     which is what keeps a re-run (the verification step) runnable.
 
 import { v } from "convex/values";
 import { internalMutation } from "./_generated/server";
@@ -36,6 +42,7 @@ import {
   MAX_NEEDS,
   normalizeReadiness,
   normalizeRecommendation,
+  type StoredReadiness,
   type StoredRecommendation,
 } from "./ttsShared";
 
@@ -122,6 +129,8 @@ async function walkTodos(
 // written up; it goes back to the preparer rather than onto Tom's pile, since
 // a half-prepared capture is never ready. Whether a prepared row is READY for
 // Tom is computed from then on (ttsShared.isReadyForTom).
+// RUN AND VERIFIED on prod (2026-09-06: 1392 rows, both retired counts zero on
+// the second run); the validator has narrowed to the two values since.
 export const READINESS_MIGRATION = "readiness";
 
 export const internalMigrateReadiness = internalMutation({
@@ -141,12 +150,13 @@ export const internalMigrateReadiness = internalMutation({
       internal.ttsMigrations.internalMigrateReadiness,
       page,
       async (row, dryRun) => {
-        const target = normalizeReadiness(row.readiness);
-        if (row.readiness === target) {
+        const stored = (row as { readiness: StoredReadiness }).readiness;
+        const target = normalizeReadiness(stored);
+        if (stored === target) {
           page[target]++;
           return;
         }
-        page[`${row.readiness}-to-${target}`]++;
+        page[`${stored}-to-${target}`]++;
         if (!dryRun) await ctx.db.patch(row._id, { readiness: target });
       },
     );
