@@ -38,10 +38,17 @@ export function integrationStatement(name: string): string {
  * and the name comes back lowercased and trimmed, because Tom types into Slack
  * on a phone: "Integration: Outlook" and "integration: outlook" are one ruling,
  * not two.
+ *
+ * THE SPACE AFTER THE COLON IS NOT PART OF THE RULING. A phone keyboard puts
+ * one there and a fast thumb does not, and "integration:outlook" is the same
+ * sentence Tom meant either way; requiring the space made the difference
+ * between a poller standing down and a poller running, with nothing anywhere
+ * saying why. Whatever follows the colon is trimmed, so both spellings — and
+ * "integration:   Canvas" — are one name.
  */
 export function integrationName(statement: string | undefined): string | null {
   const text = (statement ?? "").trim();
-  if (!text.toLowerCase().startsWith(`${INTEGRATION_PREFIX} `)) return null;
+  if (!text.toLowerCase().startsWith(INTEGRATION_PREFIX)) return null;
   const name = text.slice(INTEGRATION_PREFIX.length).trim().toLowerCase();
   // One word or a short phrase; a paragraph after the prefix is a note about
   // an integration, not a ruling on one.

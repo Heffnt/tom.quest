@@ -61,6 +61,14 @@ describe("the statement that declines an integration", () => {
     expect(integrationName("  integration:   Canvas  ")).toBe("canvas");
   });
 
+  it("does not make the space after the colon part of the ruling", () => {
+    // A fast thumb omits it. Requiring it decided whether a poller ran, with
+    // nothing anywhere saying why.
+    expect(integrationName("integration:outlook")).toBe("outlook");
+    expect(integrationName("Integration:Outlook")).toBe("outlook");
+    expect(integrationStatement("outlook")).toBe("integration: outlook");
+  });
+
   it("never turns a poller off from a todo that merely mentions one", () => {
     // A sentence about an integration is an ordinary todo.
     expect(integrationName("the outlook integration keeps timing out")).toBeNull();
