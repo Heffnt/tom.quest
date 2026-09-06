@@ -5,10 +5,13 @@
 //
 //   GET  /tts/export         one page of one table, for the nightly copy of
 //                            the record into WikiTom tts/snapshot/
-//   GET  /tts/learning-input what the learning step reads: yesterday's turns
-//                            Tom typed, his Slack replies, and his rulings
+//   GET  /tts/learning-input what the learning step reads: the turns Tom
+//                            typed since the last learning run with the
+//                            agent's replies around them, his Slack replies,
+//                            and his rulings
 //   POST /tts/event          one dtsEvents row — how the job records a
-//                            failed step, its learning run, and its summary
+//                            failed step, its learning run, each change it
+//                            made, and its summary
 //
 // The post of the model-of-tom files lives with the store (ttsSkills.ts).
 
@@ -130,22 +133,61 @@ export const internalExportPage = internalQuery({
 });
 
 // ── The learning input ───────────────────────────────────────────────────────
-// The learning step reads ONLY what Tom did: the turns he typed in sessions
+// The learning step reads what Tom did: the turns he typed in sessions
 // (claudeInbound rows authored "tom" — the browser door and Slack replies the
-// events route verified came from his user id), his threaded Slack replies
-// (the "slack-event" rows the events route writes), and his rulings — never
-// an agent's turns, never the spec (design section 4, "Learning"). Windowed
-// by the caller: the job asks for the day before its run.
+// events route verified came from his user id), the agent's reply on either
+// side of each (what he was answering and what came of it — the context his
+// words are read in, never a source of lines on their own), his threaded
+// Slack replies (the "slack-event" rows the events route writes), and his
+// rulings — never the spec (design section 4, "Learning").
+//
+// THE WINDOW starts where the last learning run's ended: `since` is optional
+// and defaults to the `until` of the newest "learning-run" row, so a night
+// the job did not run is read the next night rather than dropped; with no
+// run on record it is the day before. The reply says which (`sinceSource`).
+//
 // The cap is on what is RETURNED, never on what is looked at: a read that
 // takes N rows and filters them afterwards drops what it was looking for as
 // soon as the window holds more than N rows of anything else — and the
 // agents' turns and the instrumentation events outnumber Tom's by far. Each
 // read below either pins the value in an index or examines the whole window.
 export const LEARNING_INPUT_MAX = 2000;
+// The agent's replies are looked up per turn, two reads each pinned on the
+// session and the kind, for at most this many turns; past it a turn goes out
+// without them. A reply is clipped to LEARNING_REPLY_CHARS — it is context,
+// and one assistant-text row can be a 32KB essay.
+export const LEARNING_REPLY_TURNS = 300;
+export const LEARNING_REPLY_CHARS = 1500;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function clipReply(text: unknown): string | null {
+  if (typeof text !== "string" || text === "") return null;
+  return text.length > LEARNING_REPLY_CHARS ? `${text.slice(0, LEARNING_REPLY_CHARS)}…` : text;
+}
 
 export const internalLearningInput = internalQuery({
-  args: { since: v.number(), until: v.number() },
-  handler: async (ctx, { since, until }) => {
+  args: { since: v.optional(v.number()), until: v.number() },
+  handler: async (ctx, { since: givenSince, until }) => {
+    let since: number;
+    let sinceSource: "given" | "learning-run" | "default";
+    if (givenSince !== undefined) {
+      since = givenSince;
+      sinceSource = "given";
+    } else {
+      const last = await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_at", (q) => q.eq("kind", "learning-run"))
+        .order("desc")
+        .first();
+      const lastUntil = (last?.data as { until?: unknown } | undefined)?.until;
+      if (typeof lastUntil === "number" && lastUntil < until) {
+        since = lastUntil;
+        sinceSource = "learning-run";
+      } else {
+        since = until - DAY_MS;
+        sinceSource = "default";
+      }
+    }
     // by_author, so the window is Tom's rows — not the first N rows of
     // everyone's, most of which are an agent's.
     const inbound = await ctx.db
@@ -156,6 +198,7 @@ export const internalLearningInput = internalQuery({
       .take(LEARNING_INPUT_MAX);
     const tomTurns = [];
     const titles = new Map<string, string>();
+    let repliesLookedUp = 0;
     for (const row of inbound) {
       if (row.kind !== "user-turn") continue;
       let title = titles.get(row.sessionId);
@@ -163,12 +206,40 @@ export const internalLearningInput = internalQuery({
         title = (await ctx.db.get(row.sessionId))?.title ?? "";
         titles.set(row.sessionId, title);
       }
+      // The agent's text just before the turn and just after it. The index
+      // pins the session and the kind; the filter walks the rows on one side
+      // of the turn's instant and stops at the first.
+      let replyBefore: string | null = null;
+      let replyAfter: string | null = null;
+      if (repliesLookedUp < LEARNING_REPLY_TURNS) {
+        repliesLookedUp += 1;
+        const before = await ctx.db
+          .query("claudeMessages")
+          .withIndex("by_session_kind", (q) =>
+            q.eq("sessionId", row.sessionId).eq("kind", "assistant-text"),
+          )
+          .order("desc")
+          .filter((q) => q.lte(q.field("createdAt"), row.createdAt))
+          .first();
+        const after = await ctx.db
+          .query("claudeMessages")
+          .withIndex("by_session_kind", (q) =>
+            q.eq("sessionId", row.sessionId).eq("kind", "assistant-text"),
+          )
+          .order("asc")
+          .filter((q) => q.gt(q.field("createdAt"), row.createdAt))
+          .first();
+        replyBefore = clipReply((before?.content as { text?: unknown } | undefined)?.text);
+        replyAfter = clipReply((after?.content as { text?: unknown } | undefined)?.text);
+      }
       tomTurns.push({
         id: row._id,
         sessionId: row.sessionId,
         sessionTitle: title,
         text: row.text ?? "",
         at: row.createdAt,
+        replyBefore,
+        replyAfter,
       });
     }
     // by_kind_at, not by_at: the kind is pinned and `at` orders what comes
@@ -200,13 +271,13 @@ export const internalLearningInput = internalQuery({
       sentence: r.sentence,
       quote: r.provenance?.quote,
     }));
-    return { since, until, tomTurns, slackReplies, rulings };
+    return { since, sinceSource, until, tomTurns, slackReplies, rulings };
   },
 });
 
 // ── The event pen ────────────────────────────────────────────────────────────
 // The job's kinds are its own ("nightly-failure", "learning-run",
-// "nightly-run"); the pattern keeps the pen to lowercase kebab-case names
+// "learning-change", "nightly-run"); the pattern keeps the pen to lowercase kebab-case names
 // rather than letting a worker write, say, "slack-sent" and confuse the
 // digest's own bookkeeping — the route refuses the kinds Convex writes itself.
 export const EVENT_KIND_PATTERN = /^[a-z][a-z0-9-]{1,63}$/;

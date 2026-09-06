@@ -1410,17 +1410,23 @@ const ttsExport = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/export", method: "GET", handler: ttsExport });
 
-// GET /tts/learning-input?since=<epoch ms>&until=<epoch ms> — what the
-// learning step reads: the turns Tom typed, his Slack replies, his rulings,
-// in the window. Nothing an agent wrote.
+// GET /tts/learning-input?until=<epoch ms>[&since=<epoch ms>] — what the
+// learning step reads: the turns Tom typed with the agent's replies around
+// them, his Slack replies, his rulings, in the window. `since` omitted means
+// "where the last learning run stopped" (convex/ttsNightly.ts).
 const ttsLearningInput = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
   const params = new URL(request.url).searchParams;
-  const since = Number(params.get("since"));
-  const until = Number(params.get("until"));
-  if (!Number.isFinite(since) || !Number.isFinite(until) || since >= until) {
-    return jsonResponse(400, { error: "since and until (epoch ms, since < until) required" });
+  const sinceRaw = params.get("since");
+  const untilRaw = params.get("until");
+  const since = sinceRaw === null ? undefined : Number(sinceRaw);
+  const until = untilRaw === null ? NaN : Number(untilRaw);
+  if (
+    !Number.isFinite(until) ||
+    (since !== undefined && (!Number.isFinite(since) || since >= until))
+  ) {
+    return jsonResponse(400, { error: "until (epoch ms) required; since, if given, before it" });
   }
   const input = await ctx.runQuery(internal.ttsNightly.internalLearningInput, {
     since,
