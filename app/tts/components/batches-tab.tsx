@@ -154,6 +154,43 @@ function sessionContext(batch: Batch, graph: BatchGraph): BatchSessionContext {
   };
 }
 
+/**
+ * The item an open detail dialog is showing, READ LIVE. The dialog is opened
+ * with a DetailItem, but a ruling changes the row underneath it — archive
+ * takes a todo out of rulable (lib isRulable) and a batch out of the active
+ * list — and a held snapshot went on offering the four verdicts on a subject
+ * that had just been archived. So the snapshot is only an identity: it is
+ * looked up again in the current graphs on every render, and a subject no
+ * longer among them returns null, which closes the dialog.
+ */
+function resolveDetail(
+  item: DetailItem | null,
+  graphs: BatchGraph[],
+): DetailItem | null {
+  if (item === null) return null;
+  if (item.kind === "batch") {
+    const graph = graphs.find((g) => g.id === item.graph.id);
+    return graph ? { kind: "batch", graph } : null;
+  }
+  for (const graph of graphs) {
+    if (item.kind === "task") {
+      const task = graph.tasks.find((t) => t.id === item.task.id);
+      if (task) {
+        return {
+          kind: "task",
+          batchStatement: graph.statement,
+          task,
+          waitingOn: needNames(task, graph.tasks),
+        };
+      }
+    } else {
+      const goal = graph.goals.find((g) => g.id === item.goal.id);
+      if (goal) return { kind: "goal", batchStatement: graph.statement, goal };
+    }
+  }
+  return null;
+}
+
 // ── Unbatched life row (active · ready-for-tom, in no batch) ────────────────
 function LifeRow({
   todo,
@@ -323,38 +360,12 @@ export default function BatchesTab() {
     return { chips, byPath };
   }, [batches, todos]);
 
-  // THE OPEN DIALOG READS ITS ITEM LIVE. `detail` is the item as it was when
-  // it was clicked, and a ruling changes the row underneath it: archive takes
-  // a todo out of rulable (lib isRulable) and a batch out of the active list.
-  // Held as a snapshot, the dialog went on offering the four verdicts on a
-  // subject that had just been archived. So the snapshot is only an identity —
-  // re-resolved against the current graphs on every render, and the dialog
-  // closes when its subject is no longer among them.
-  const liveDetail = useMemo((): DetailItem | null => {
-    if (detail === null) return null;
-    const graphs = [...byPath.values()].flat().map((b) => b.graph);
-    if (detail.kind === "batch") {
-      const graph = graphs.find((g) => g.id === detail.graph.id);
-      return graph ? { kind: "batch", graph } : null;
-    }
-    for (const graph of graphs) {
-      if (detail.kind === "task") {
-        const task = graph.tasks.find((t) => t.id === detail.task.id);
-        if (task)
-          return {
-            kind: "task",
-            batchStatement: graph.statement,
-            task,
-            waitingOn: needNames(task, graph.tasks),
-          };
-      } else {
-        const goal = graph.goals.find((g) => g.id === detail.goal.id);
-        if (goal)
-          return { kind: "goal", batchStatement: graph.statement, goal };
-      }
-    }
-    return null;
-  }, [detail, byPath]);
+  // The open dialog's item, re-resolved against the live graphs (resolveDetail
+  // above).
+  const liveDetail = useMemo(
+    () => resolveDetail(detail, [...byPath.values()].flat().map((b) => b.graph)),
+    [detail, byPath],
+  );
 
   // Live ruling per subject — the shared derivation (app/tts/lib.ts), the same
   // one the by-individual tab feeds CodeTodoRow.
