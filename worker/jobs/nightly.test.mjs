@@ -36,6 +36,7 @@ import {
   learningChangeId,
   learningEvidenceIds,
   learningStep,
+  locateSection,
   matchObjection,
   parseLearningAnswer,
   planTableFiles,
@@ -447,7 +448,7 @@ describe("the learning step", () => {
     expect(run.learningRows[0].data).toMatchObject({
       id: "cccccccccccc",
       file,
-      reason: `the line is no longer on ${file} as written`,
+      reason: `the line is no longer in "Current state" on ${file} as written`,
       objectionId: "ev3",
     });
     expect(run.learningRows[1].data).toMatchObject({
@@ -520,13 +521,80 @@ describe("the learning step", () => {
   });
 
   it("reverts against the page's current text, and says when the line has moved on", () => {
-    const change = { file: "f", before: "", after: NEW_LINE };
+    const change = { file: "f", section: "Current state", before: "", after: NEW_LINE };
     const withLine = `## Current state\n\n- a\n${NEW_LINE}\n- b\n`;
     expect(revertLearningChange(withLine, change)).toEqual({ ok: true, text: "## Current state\n\n- a\n- b\n" });
     expect(revertLearningChange("## Current state\n\n- a\n- b\n", change)).toEqual({
       ok: false,
-      reason: "the line is no longer on f as written",
+      reason: 'the line is no longer in "Current state" on f as written',
     });
+    expect(revertLearningChange("## Other\n\n- a\n", change)).toEqual({
+      ok: false,
+      reason: 'no section "Current state" on f',
+    });
+  });
+
+  it("reverts only inside the change's own section: a copy Tom pasted into Must not break stays", async () => {
+    const dir = learningCheckout();
+    const file = "model-of-tom/areas/climbing.md";
+    // The line in Current state (where the job put it) AND in Must not break
+    // (where Tom copied it), the second copy first on the page's own terms
+    // of "first match" — it must still be the Current state one that goes.
+    write(
+      dir,
+      file,
+      CLIMBING.replace("## Ideal state", `${NEW_LINE}\n\n## Ideal state`).replace(
+        "- Team practices are fixed (session 47f04bc9, 2026-08-30).",
+        `${NEW_LINE}\n- Team practices are fixed (session 47f04bc9, 2026-08-30).`,
+      ),
+    );
+    const added = { id: "aaaaaaaaaaaa", file, section: "Current state", before: "", after: NEW_LINE };
+    const run = learningRun(dir);
+    const convex = fakeConvex(
+      learningInput({
+        tomTurns: [],
+        rulings: [],
+        objections: [{ eventId: "ev5", at: 1, id: "aaaaaaaaaaaa", text: "no" }],
+        changes: [added],
+      }),
+    );
+    const summary = await learningStep(run, { fetch: convex.fetch, model: vi.fn() });
+    expect(summary).toMatchObject({ reverted: 1, revertFailed: 0 });
+    const lines = fs.readFileSync(path.join(dir, file), "utf8").split("\n");
+    const copies = lines.map((l, i) => (l === NEW_LINE ? i : -1)).filter((i) => i !== -1);
+    expect(copies).toHaveLength(1);
+    expect(copies[0]).toBeGreaterThan(lines.indexOf("## Must not break"));
+    // A second objection to the same change finds nothing in Current state
+    // and does not go looking elsewhere.
+    const again = revertLearningChange(lines.join("\n"), added);
+    expect(again).toEqual({ ok: false, reason: `the line is no longer in "Current state" on ${file} as written` });
+  });
+
+  it("refuses a section nested under one of Tom's, on the way in and on the way back", async () => {
+    const dir = learningCheckout();
+    const file = "model-of-tom/areas/climbing.md";
+    const nested = "- Lead 5.12 by December (session 47f04bc9, 2026-08-30).";
+    write(dir, file, CLIMBING.replace("## Must not break", `### Training goals\n\n${nested}\n\n## Must not break`));
+    const before = fs.readFileSync(path.join(dir, file), "utf8");
+    const run = learningRun(dir);
+    const convex = fakeConvex(
+      learningInput({
+        objections: [{ eventId: "ev6", at: 1, id: "dddddddddddd", text: "no" }],
+        changes: [{ id: "dddddddddddd", file, section: "Training goals", before: "", after: nested }],
+      }),
+    );
+    const summary = await learningStep(run, {
+      fetch: convex.fetch,
+      model: answering([factChange({ section: "Training goals" })]),
+    });
+    const reason = '"Training goals" is under "Ideal state", Tom\'s section; an agent never writes it';
+    expect(summary).toMatchObject({ changes: 0, reverted: 0, revertFailed: 1 });
+    expect(summary.refused.map((r) => r.reason)).toEqual([reason]);
+    expect(run.learningRows[0]).toMatchObject({ kind: "learning-revert-failed", data: { reason } });
+    expect(fs.readFileSync(path.join(dir, file), "utf8")).toBe(before);
+    // The same walk, on the pure half.
+    expect(locateSection(before.split("\n"), file, "Training goals")).toEqual({ reason });
+    expect(locateSection(before.split("\n"), file, "Current state").span).toMatchObject({ level: 2 });
   });
 });
 

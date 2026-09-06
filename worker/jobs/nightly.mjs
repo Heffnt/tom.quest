@@ -58,7 +58,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { loadEnv, convexFetch, nyHour, runClaude, extractJsonObject, clip } from "./tts-lib.mjs";
 import { git } from "./tts-code-lib.mjs";
-import { extractSections, sectionSpan } from "./markdown-sections.mjs";
+import { enclosingHeadings, extractSections, sectionSpan } from "./markdown-sections.mjs";
 import { CHANGE_ID_CHARS, changeIdTokens, namedChange } from "./learning-change-names.mjs";
 
 // ── Where things are ─────────────────────────────────────────────────────────
@@ -534,9 +534,10 @@ export function syncSnapshot(snapshotDir, stagingDir, tables) {
 // THE JOB, NOT THE MODEL, DECIDES WHAT LANDS. A change is refused when it
 // names a file the step does not write (the spec, anything outside
 // writing.md, priorities.md and areas/), a section Tom owns (Directions,
-// Ideal state, Must not break — ruling 13), a line without evidence or whose
-// evidence names nothing in tonight's input, a replacement whose target is
-// not on the page verbatim, or a line already there. What lands is one
+// Ideal state, Must not break — ruling 13) or one nested under it, a line
+// without evidence or whose evidence names nothing in tonight's input, a
+// replacement whose target is not on the page verbatim, or a line already
+// there. What lands is one
 // "learning-change" row each — {id, file, section, before, after, evidence,
 // commit} — posted once the push step knows the commit, and the 5 a.m.
 // digest prints each with its id. Tom objects by replying on that line; the
@@ -666,6 +667,35 @@ export function parseLearningAnswer(answerText) {
 // means on the pages.
 const CITED = /(\([^()]+\))\.?$/;
 
+function isForbiddenSection(heading) {
+  const h = String(heading ?? "").trim().toLowerCase();
+  return FORBIDDEN_SECTIONS.some((s) => s.toLowerCase() === h);
+}
+
+/**
+ * Where a change's section is on a page, or why the step may not touch it:
+ * `{ span }` from sectionSpan, or `{ reason }` when the page has no such
+ * heading, the section is one of Tom's, or it sits UNDER one of Tom's — a
+ * "### Training goals" beneath "## Ideal state" is Ideal state's. THE ONE
+ * DOOR for both directions: a line lands through it (applyLearningChanges)
+ * and is taken back through it (revertLearningChange), so a revert can no
+ * more reach Tom's sections than a change can.
+ */
+export function locateSection(lines, file, section) {
+  const name = String(section ?? "").trim();
+  if (name === "") return { reason: "no section named" };
+  if (isForbiddenSection(name)) {
+    return { reason: `"${name}" is Tom's section; an agent never writes it` };
+  }
+  const span = sectionSpan(lines, name);
+  if (span === null) return { reason: `no section "${name}" on ${file}` };
+  const owner = enclosingHeadings(lines, span.start).find(isForbiddenSection);
+  if (owner !== undefined) {
+    return { reason: `"${name}" is under "${owner}", Tom's section; an agent never writes it` };
+  }
+  return { span };
+}
+
 /** Why one proposed change may not land, or null when it may. The checks
  * are the rules in the block comment above, in the order a reader of the
  * refusal would want them. */
@@ -675,7 +705,7 @@ function learningRefusal(c, texts, evidenceIds) {
   }
   if (!texts.has(c.file)) return `${c.file} is not in the checkout`;
   if (typeof c.section !== "string" || c.section.trim() === "") return "no section named";
-  if (FORBIDDEN_SECTIONS.some((s) => s.toLowerCase() === c.section.trim().toLowerCase())) {
+  if (isForbiddenSection(c.section)) {
     return `"${c.section.trim()}" is Tom's section; an agent never writes it`;
   }
   if (!LEARNING_KINDS.includes(c.kind)) return "kind must be fact, correction or inference";
@@ -746,11 +776,12 @@ export function applyLearningChanges(pages, changes, { day, evidenceIds = null }
     }
     const line = c.line.trim().startsWith("- ") ? c.line.trim() : `- ${c.line.trim()}`;
     const lines = texts.get(c.file).split("\n");
-    const span = sectionSpan(lines, c.section);
-    if (span === null) {
-      refuse(c, `no section "${c.section.trim()}" on ${c.file}`);
+    const located = locateSection(lines, c.file, c.section);
+    if (located.span === undefined) {
+      refuse(c, located.reason);
       continue;
     }
+    const { span } = located;
     if (lines.some((l) => l.trim() === line)) {
       refuse(c, "already on the page");
       continue;
@@ -798,14 +829,30 @@ export function applyLearningChanges(pages, changes, { day, evidenceIds = null }
  * addition's line is removed, a replacement's line becomes what it replaced.
  * When the line is no longer there as written — a later change replaced it,
  * or Tom edited the page — nothing is touched and the reason says so.
+ *
+ * ONLY WITHIN THE CHANGE'S OWN SECTION (locateSection): the line is looked
+ * for where the change put it and nowhere else, so a copy Tom pasted into
+ * Must not break or Directions — or anywhere — is never the one taken back.
  */
 export function revertLearningChange(text, change) {
   const after = String(change.after ?? "").trim();
   if (after === "") return { ok: false, reason: "the change records no line to look for" };
   const lines = text.split("\n");
-  const at = lines.findIndex((l) => l.trim() === after);
+  const located = locateSection(lines, change.file, change.section);
+  if (located.span === undefined) return { ok: false, reason: located.reason };
+  const { span } = located;
+  let at = -1;
+  for (let i = span.start + 1; i < span.end; i++) {
+    if (lines[i].trim() === after) {
+      at = i;
+      break;
+    }
+  }
   if (at === -1) {
-    return { ok: false, reason: `the line is no longer on ${change.file} as written` };
+    return {
+      ok: false,
+      reason: `the line is no longer in "${String(change.section).trim()}" on ${change.file} as written`,
+    };
   }
   const before = String(change.before ?? "").trim();
   if (before === "") lines.splice(at, 1);
