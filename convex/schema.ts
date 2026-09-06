@@ -5,9 +5,9 @@ import { v } from "convex/values";
 // the name implies its FAMILY, and the family is what picks the runner on the
 // Jarvis Box — Claude's Agent SDK or OpenAI's Codex CLI.
 import {
+  READINESS,
+  RECOMMENDATION,
   SESSION_MODEL,
-  STORED_READINESS,
-  STORED_RECOMMENDATION,
 } from "./ttsShared";
 
 // `agent` is not a rank between `user` and `admin`: it is a side branch that
@@ -363,12 +363,14 @@ export default defineSchema({
   // convex/tts.ts is Tom-gated, so rows carry no userId.
   //
   // Vocabulary (spec §12.1) is stored literally:
-  //   readiness: unprepared | prepared (ruling 18, the lifeos update; the
-  //              retired spellings stay readable until NARROW, one reading
-  //              each — ready-for-tom as prepared, preparing as unprepared —
-  //              and ttsShared.ts is the one home)
+  //   readiness: unprepared | prepared (ruling 18, the lifeos update;
+  //              narrowed to the two values once the migration mapped every
+  //              row; ttsShared.ts is the one home)
   //   status:    active | waiting | archived | done
-  //   timingClass: dated | condition-bound | whenever
+  //   timingClass: dated | whenever (the lifeos update, phase 7: the
+  //              condition-bound value is retired — a condition-bound row is
+  //              a task whose statement carries the condition and whose sleep
+  //              is wakeAt)
   // Nothing is ever deleted (spec principle 2): terminal states are status
   // "done" or "archived", both kept and visible.
   //
@@ -386,34 +388,22 @@ export default defineSchema({
   // `goal` (a checkable state of the world the batch is for).
   //
   // Vocabulary is Tom's and closed (UI = code): "needs" for dependencies
-  // between todos, "ready" for the todos whose needs are all done (the
-  // frontier — convex/ttsShared.ts owns the ONE implementation), "must"/"helps"
-  // for the edges between batches along a path, kind "task"/"goal".
+  // between todos and equally between batches, "ready" for the todos whose
+  // needs are all done (the frontier — convex/ttsShared.ts owns the ONE
+  // implementation), kind "task"/"goal".
   batches: defineTable({
     statement: v.string(), // display text
     groundUpExplanation: v.optional(v.string()), // the "more" layer
-    // Sequencing BETWEEN batches: a named path this batch sits on, at
-    // `index`. `edge` describes the link to the PREVIOUS batch in the path —
-    // "must" (that one has to land first) or "helps" (it only makes this
-    // easier). The first batch of a path has no edge.
-    // RETIRED (the lifeos update, phase 7): sequencing between batches is
-    // `needs` below. Kept readable during the widen; dropped at NARROW once
-    // ttsMigrations.internalMigrateBatchNeeds has derived the edges and the
-    // paths bar is gone.
-    path: v.optional(
-      v.object({
-        name: v.string(),
-        index: v.number(),
-        edge: v.optional(v.union(v.literal("must"), v.literal("helps"))),
-      }),
-    ),
     // Sequencing BETWEEN batches, the same word as between todos: this batch
     // is worked only once every batch named here is done or archived
-    // (ttsShared.buildDoneSet's rule). Derived from the retired path by the
-    // migration — a "must" edge becomes a need on the previous batch of the
-    // path; a "helps" edge becomes nothing, because "only makes this easier"
-    // is not a prerequisite and needs holds prerequisites only. Bounded at
-    // MAX_NEEDS; every id names a batch (enforced by the planner's pen).
+    // (ttsShared.buildDoneSet's rule). This is the ONLY sequencing between
+    // batches (the lifeos update, phase 7): the retired `path` (a name, a
+    // position and a "must"/"helps" edge to the previous batch) was derived
+    // into it by ttsMigrations.internalMigrateBatchNeeds — a "must" edge
+    // became a need on the previous batch of the path; a "helps" edge became
+    // nothing, because "only makes this easier" is not a prerequisite and
+    // needs holds prerequisites only. Bounded at MAX_NEEDS; every id names a
+    // batch (enforced by the planner's pen).
     needs: v.optional(v.array(v.id("batches"))),
     status: v.union(
       v.literal("active"),
@@ -444,23 +434,24 @@ export default defineSchema({
   dtsTodos: defineTable({
     statement: v.string(),
     body: v.optional(v.string()),
-    // WIDENED (the lifeos update, phase 7): two values, unprepared |
-    // prepared, plus the two retired spellings until every row is migrated
-    // (ttsMigrations.internalMigrateReadiness) and the validator narrows.
-    // Whether a prepared row is READY for Tom is computed, never stored
-    // (ttsShared.isReadyForTom).
-    readiness: STORED_READINESS,
+    // NARROWED (the lifeos update, phase 7): two values, unprepared |
+    // prepared. The retired spellings were mapped by
+    // ttsMigrations.internalMigrateReadiness and verified gone on prod
+    // before the validator narrowed. Whether a prepared row is READY for
+    // Tom is computed, never stored (ttsShared.isReadyForTom).
+    readiness: READINESS,
     status: v.union(
       v.literal("active"),
       v.literal("waiting"),
       v.literal("archived"),
       v.literal("done"),
     ),
-    timingClass: v.union(
-      v.literal("dated"),
-      v.literal("condition-bound"),
-      v.literal("whenever"),
-    ),
+    // NARROWED (the lifeos update, phase 7): two values, dated | whenever.
+    // ttsMigrations.internalMigrateTiming turned every condition-bound row
+    // into a task whose statement carries the condition sentence and whose
+    // sleep is wakeAt (latestSafeAt minus the 14-day window), and a second run
+    // counted zero, so no stored row carries the retired value.
+    timingClass: v.union(v.literal("dated"), v.literal("whenever")),
     // dated: dueAt + dateKind. Every date resolves to a recorded outcome
     // (kept-dates rule, spec §8) — history kept inline in dateOutcomes.
     dueAt: v.optional(v.number()),
@@ -481,20 +472,23 @@ export default defineSchema({
         }),
       ),
     ),
-    // Two readings, one field. (a) condition-bound timing: the trigger
-    // condition, alongside the conservative latest-safe estimate below.
-    // (b) schema v2: THE GOAL CONDITION — on a `kind: "goal"` row this is the
-    // checkable sentence about the world that says the goal is met ("the
-    // lease is signed", "cmt-014 is closed upstream"). One field, because the
-    // two readings are the same sentence: a statement about the world that is
-    // either true yet or not.
+    // THE GOAL CONDITION — on a `kind: "goal"` row this is the checkable
+    // sentence about the world that says the goal is met ("the lease is
+    // signed", "cmt-014 is closed upstream"). One reading now: the trigger
+    // reading went with timingClass "condition-bound" (the lifeos update,
+    // phase 7), so a condition on a goal is a completion test and nothing
+    // else — which is what makes goalCheckable a one-line rule.
     condition: v.optional(v.string()),
-    latestSafeAt: v.optional(v.number()),
-    // waiting: wake condition (prose) and/or a concrete wake time the daily
-    // prep job checks.
-    wakeCondition: v.optional(v.string()),
+    // waiting: a concrete wake time. The prose wake condition it used to sit
+    // beside is retired (the lifeos update, phase 7) — the migration carried
+    // every stored one into the row's own statement, so the sentence a reader
+    // needs is on the row and the sleep is a time.
     wakeAt: v.optional(v.number()),
     // archived: optional condition under which it should be proposed back.
+    // STAYS DECLARED past the phase-7 narrow: the archive verdict writes it
+    // (convex/ttsRulings.ts), Tom's archive control offers it, and
+    // tts.internalMigrateToGraph writes the GRAPH_SUPERSEDED pointer into it
+    // as its idempotence key — that migration is Tom's step and has not run.
     unarchiveCondition: v.optional(v.string()),
     // Category tag: lets one scheduled dtsBlocks row cover a set of todos
     // ("chores", …). Free string; "code" is reserved for the code-todo mirror.
@@ -532,21 +526,6 @@ export default defineSchema({
           evidence: v.optional(v.string()),
         }),
       ),
-    ),
-    // RETIRED (Tom's ruling 2026-08-29, "no importance guesses"); field kept
-    // only because production rows exist and prod is additive-only; nothing
-    // reads or writes it.
-    importance: v.optional(
-      v.object({
-        level: v.union(
-          v.literal("low"),
-          v.literal("medium"),
-          v.literal("high"),
-        ),
-        setBy: v.union(v.literal("agent"), v.literal("tom")),
-        setAt: v.number(),
-        rationale: v.optional(v.string()), // the agent's one-line justification
-      }),
     ),
     // Stamped by the Tom doors (updateTodo, setStatus, setPlanStep, ruling
     // life path, the pens). A batch with this set is
@@ -595,6 +574,12 @@ export default defineSchema({
     needs: v.optional(v.array(v.id("dtsTodos"))),
     // tasks: who does it. Same meaning as the plan-step actor it succeeds.
     actor: v.optional(v.union(v.literal("tom"), v.literal("agent"))),
+    // STAYS DECLARED past the phase-7 narrow: the planner writes it
+    // (tts.internalStorePlanGraph) and the auto-session scheduler reads it
+    // (claudeSessions.resolveFleetModel), where a tagged task WAITS rather
+    // than falling back when the Codex door is shut. Dropping it would
+    // silently re-dispatch tagged work to the fleet default.
+    //
     // The model an agent task needs, from the one union in ttsShared
     // (SESSION_MODELS: opus | sonnet | fable | gpt-5.6-sol | gpt-5.6-terra).
     // ABSENT IS THE NORM: the scheduler falls back to the fleet default
@@ -765,7 +750,7 @@ export default defineSchema({
   }).index("by_status_and_resolvedAt", ["status", "resolvedAt"]),
 
   // Tom's rulings, unified over life and code todos (ratified 2026-08-28;
-  // supersedes dtsCodeRulings below). APPEND-ONLY: a new ruling on the same
+  // superseded the retired dtsCodeRulings). APPEND-ONLY: a new ruling on the same
   // subject is a NEW row; the newest ruledAt is the live one. The closed
   // verdict set — every ruling button anywhere is one of these four:
   //   approve — execute as briefed (applied by worker/agent, appliedAt then set)
@@ -886,28 +871,6 @@ export default defineSchema({
     // wrong.
     .index("by_kind_at", ["kind", "at"]),
 
-  // One row per TTS day (5 a.m. America/New_York boundary, key YYYY-MM-DD).
-  // RETIRED (the lifeos update, phase 7): the day's queue used to be written
-  // here every morning — by the box's prepare-queue job or the fallback cron —
-  // and read by the calendar's today column and the digest. Today's view is
-  // computed from the record now (app/tts/lib.ts selectToday) and the digest
-  // dedupes on its own "digest-sent" event. NOTHING WRITES OR READS THIS TABLE;
-  // the declaration stays until NARROW because prod schema is additive-only
-  // (docs/lifeos-retirement.md).
-  dtsDailyQueues: defineTable({
-    day: v.string(),
-    entries: v.array(
-      v.object({
-        todoId: v.id("dtsTodos"),
-        reason: v.optional(v.string()), // "due" | "overdue" | "condition" | "stale" | "invitation" | worker-authored
-      }),
-    ),
-    digestText: v.optional(v.string()), // worker-prepared digest markdown
-    preparedAt: v.number(),
-    preparedBy: v.string(), // "worker" | "fallback"
-    digestSentAt: v.optional(v.number()),
-  }).index("by_day", ["day"]),
-
   // Read-only mirror of code todos from each repo's vqc/todos.yaml (link by
   // id, never copy — the repo stays the system of record; acting on one means
   // working in that repo). Refreshed by cron from GitHub default branches.
@@ -937,55 +900,16 @@ export default defineSchema({
     sourceHash: v.string(),
     brief: v.string(), // ground-up markdown
     // The four verdict words (the lifeos update): approve | revise | session
-    // | archive — the worker's read spelled in the words Tom rules in. The
-    // three retired spellings stay readable until NARROW; ttsShared is the
-    // one home (normalizeRecommendation).
-    recommendation: STORED_RECOMMENDATION,
+    // | archive — the worker's read spelled in the words Tom rules in.
+    // ttsShared is the one home; normalizeRecommendation there still reads the
+    // three retired spellings for one more release, but none may be stored.
+    recommendation: RECOMMENDATION,
+    // STAYS DECLARED past the phase-7 narrow: worker/jobs/plan-graphs.mjs
+    // classifies it on every brief and the brief line on the page prints it.
     execClass: v.union(v.literal("box"), v.literal("needs-turing")),
     evidence: v.optional(v.string()),
-    // RETIRED (Tom's ruling 2026-08-29, "no importance guesses"); field kept
-    // only because production rows exist and prod is additive-only; nothing
-    // reads or writes it.
-    importance: v.optional(
-      v.object({
-        level: v.union(
-          v.literal("low"),
-          v.literal("medium"),
-          v.literal("high"),
-        ),
-        setBy: v.union(v.literal("agent"), v.literal("tom")),
-        setAt: v.number(),
-        rationale: v.optional(v.string()),
-      }),
-    ),
     preparedAt: v.number(),
   }).index("by_repo_external", ["repo", "externalId"]),
-
-  // DEPRECATED (2026-08-28): superseded by the unified dtsRulings table above.
-  // Read-only history, no new writes: non-defer rows are copied into dtsRulings
-  // by ttsRulings.internalMigrateCodeRulings (run once at deploy). "defer" rows
-  // are NOT copied — defer is no longer a verdict (not ruling IS deferring) —
-  // so for those rows this table is the only copy.
-  // Removing the declaration is tracked separately rather than deferred to a
-  // named round: it requires emptying the table first (which discards the defer
-  // history), and the schema pushes straight to the one prod deployment.
-  dtsCodeRulings: defineTable({
-    repo: v.string(),
-    externalId: v.string(),
-    ruling: v.union(
-      v.literal("approve"),
-      v.literal("needs-session"),
-      v.literal("propose-archive"),
-      v.literal("stale-replan"),
-      v.literal("defer"),
-    ),
-    note: v.optional(v.string()),
-    ruledAt: v.number(),
-    appliedAt: v.optional(v.number()),
-    applyResult: v.optional(v.string()),
-  })
-    .index("by_repo_external", ["repo", "externalId"])
-    .index("by_ruled", ["ruledAt"]),
 
   // The model-of-tom files every prompt begins with (the lifeos update, phase
   // 4): one row per WikiTom file the nightly job posts to POST /tts/model-of-tom,
@@ -1062,17 +986,20 @@ export default defineSchema({
       v.union(v.literal("interactive"), v.literal("autonomous")),
     ),
     // Lifecycle: requested (browser) → starting → idle ⇄ running →
-    // ended | failed; reopenSession takes ended/failed back to idle.
-    // "awaiting-permission" is HISTORICAL (pre-auto-mode rows keep it; the
-    // unified auto gate never produces it — tts-spec:20.1). The browser owns:
-    // create, enqueue inbound, reopen, decide residual permissions, and
-    // stale-only forceClose. Everything else is daemon-reported fact.
+    // ended | failed; reopenSession takes ended/failed back to idle. The
+    // browser owns: create, enqueue inbound, reopen, and stale-only
+    // forceClose. Everything else is daemon-reported fact.
+    //
+    // "awaiting-permission" was a sixth value, retired with the permission
+    // table (the lifeos update, phase 7): the unified auto gate decides every
+    // tool call itself (tts-spec:20.1), so nothing has produced it since that
+    // gate landed. A pre-unification row still carrying the word reads as an
+    // undeclared value, which is what a dropped literal means here.
     status: v.union(
       v.literal("requested"),
       v.literal("starting"),
       v.literal("idle"),
       v.literal("running"),
-      v.literal("awaiting-permission"),
       v.literal("ended"),
       v.literal("failed"),
     ),
@@ -1259,36 +1186,6 @@ export default defineSchema({
     // and the agents write most of them.
     .index("by_author", ["author"]),
 
-  // Permission requests — HISTORICAL/RESIDUAL under the unified auto
-  // permission gate (tts-spec:20.2, ruling session-permission-posture
-  // 2026-08-29: nothing parks on Tom; the boundary is structural plus the
-  // Bash classifier). The table stays for pre-unification rows and any
-  // residual card; stop supersedes, daemon restart expires.
-  claudePermissions: defineTable({
-    sessionId: v.id("claudeSessions"),
-    requestId: v.string(), // daemon-minted uuid
-    toolName: v.string(),
-    input: v.any(), // truncated by the daemon like tool-calls
-    status: v.union(
-      v.literal("pending"),
-      v.literal("allowed"),
-      v.literal("denied"),
-      v.literal("superseded"),
-      v.literal("expired"),
-    ),
-    requestedAt: v.number(),
-    decidedAt: v.optional(v.number()),
-    // "tom" | "daemon-restart" | "session-reopen" | "stop" | "force-close" —
-    // who or what settled it. The daemon mints no NEW requests (the unified
-    // auto gate decides every call itself); these paths serve the historical
-    // rows that predate it.
-    decidedBy: v.optional(v.string()),
-    note: v.optional(v.string()), // Tom's optional message; a deny note reaches the model verbatim
-    appliedAt: v.optional(v.number()), // daemon acked applying the decision to the SDK
-  })
-    .index("by_session_status", ["sessionId", "status"])
-    .index("by_request", ["requestId"]),
-
   // Daemon heartbeat singleton — its own table so the frequent patch never
   // invalidates transcript queries. Staleness is computed at render:
   // lastSeenAt older than ~30s ⇒ "worker last heard from Xm ago".
@@ -1339,8 +1236,19 @@ export default defineSchema({
   //
   // THE FOUR NUMBERS ARE CODE-OWNED (the lifeos update, phase 7): their values
   // live in claudeSessions.AUTO_DEFAULTS, no door writes them any more (both
-  // pens copy the constants in), and the page shows what the code says. The
-  // columns stay until NARROW, when they and the row's last reader go.
+  // pens copy the constants in), and getAutoConfig answers with the constants
+  // whatever the row holds.
+  //
+  // THE COLUMNS DID NOT NARROW WITH THE REST OF PHASE 7, and this is why: the
+  // SCHEDULER still reads the row's copies (`{ ...AUTO_DEFAULTS, ...row }` in
+  // internalAutoSchedule), so a row written before the numbers became
+  // code-owned still steers real admission until the switch is next pressed —
+  // while the page, reading the same config through getAutoConfig, shows the
+  // constants. That disagreement is a bug to settle on its own terms, not
+  // under cover of a schema narrow: closing it changes which sessions the
+  // fleet admits. It is also the lever ~35 scheduler tests use to steer
+  // admission (one clone per tick, one live session at a time), which is the
+  // coverage that would have to be rebuilt first.
   claudeAutoConfig: defineTable({
     enabled: v.boolean(),
     maxLoadPerCpu: v.number(), // admit while loadavg1 / cpus <= this

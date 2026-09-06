@@ -51,7 +51,6 @@ const storeGraph = (
     batchId: string;
     statement: string;
     groundUpExplanation: string;
-    path: { name: string; index: number; edge?: "must" | "helps" };
     tasks: ReturnType<typeof graphTask>[];
     goalIds: string[];
     archive: boolean;
@@ -194,12 +193,13 @@ describe("ttsShared graph rules", () => {
     // wake: a future wakeAt, whatever else is true.
     expect(
       waitingReason({ ...base, readiness: "unprepared", wakeAt: NOW + 1, needs: ["b"] }, ctx),
-    ).toEqual({ kind: "wake", at: NOW + 1, condition: undefined });
-    // a stored "waiting" status reads as a sleep during the widen, with its
-    // condition in words when it has no time.
-    expect(
-      waitingReason({ ...base, status: "waiting", wakeCondition: "the landlord writes" }, ctx),
-    ).toEqual({ kind: "wake", at: undefined, condition: "the landlord writes" });
+    ).toEqual({ kind: "wake", at: NOW + 1 });
+    // a stored "waiting" status still reads as a sleep — a timeless one, since
+    // the prose wake condition it used to carry is retired.
+    expect(waitingReason({ ...base, status: "waiting" }, ctx)).toEqual({
+      kind: "wake",
+      at: undefined,
+    });
     // need: the first unmet need, named.
     expect(waitingReason({ ...base, needs: ["a", "b"] }, ctx)).toEqual({
       kind: "need",
@@ -259,7 +259,6 @@ describe("TTS plan graph (internalStorePlanGraph)", () => {
     const res = await storeGraph(t, {
       statement: "  sign the lease  ",
       groundUpExplanation: "why this matters, from the ground up",
-      path: { name: "housing", index: 0 },
       tasks: [
         graphTask("draft the questions"),
         graphTask("call the landlord", { actor: "tom", needs: [0] }),
@@ -279,7 +278,6 @@ describe("TTS plan graph (internalStorePlanGraph)", () => {
     expect(batch.groundUpExplanation).toBe(
       "why this matters, from the ground up",
     );
-    expect(batch.path).toEqual({ name: "housing", index: 0 });
     expect(batch.status).toBe("active");
     expect(batch.tomTouchedAt).toBeUndefined(); // an agent write is never a Tom touch
     expect(res.batchId).toBe(batch._id);
@@ -769,9 +767,8 @@ describe("TTS plan graph (internalStorePlanGraph)", () => {
   // THE COMPLETION PEN'S THREE BARS. witness: gate the `status: "done"` branch
   // of internalPrepareTodo on batchId alone (the pre-fix rule) and both
   // refusals go red — goal binding is explicitly allowed on Tom-touched rows,
-  // so every bound goal became a row an agent could close, and `condition`
-  // reads as the TRIGGER on a condition-bound row, which is the common case
-  // rather than the corner.
+  // so every bound goal became a row an agent could close, and a goal with no
+  // condition has nothing an agent can go and check.
   it("refuses the completion pen on a frozen task and an uncheckable goal", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
@@ -797,11 +794,9 @@ describe("TTS plan graph (internalStorePlanGraph)", () => {
       "Tom-touched (frozen) — only he closes a row he has ruled on",
     ]);
 
-    // (b) A goal whose `condition` is its TRIGGER, not a completion test.
+    // (b) A goal with no condition and no code subject: nothing to check.
     const triggerGoal = await tom.mutation(api.tts.createTodo, {
       statement: "renew the apartment lease",
-      timingClass: "condition-bound",
-      condition: "the landlord sends the renewal paperwork",
     });
     await storeGraph(t, {
       batchId: batch._id,
@@ -816,7 +811,7 @@ describe("TTS plan graph (internalStorePlanGraph)", () => {
     expect((await t.run(async (ctx) => ctx.db.get(triggerGoal)))?.status).toBe(
       "active",
     );
-    expect((await skips())[1]).toMatch(/goal condition/);
+    expect((await skips())[1]).toMatch(/checkable condition/);
 
     // (c) A CHECKABLE goal is the one thing an agent may close on a
     // Tom-touched row, and that is the design: checking the world and
@@ -1607,7 +1602,6 @@ describe("POST /tts/plan-graph", () => {
     const res = await postGraph(t, {
       statement: "  sign the lease  ",
       groundUpExplanation: "what this is, from the ground up",
-      path: { name: "housing", index: 0, edge: "must" },
       tasks: [
         { statement: "read the lease", actor: "tom" },
         { statement: "list the questions", actor: "agent", needs: [0] },
@@ -1617,7 +1611,6 @@ describe("POST /tts/plan-graph", () => {
     expect(await res.json()).toMatchObject({ created: 2, skipped: [] });
     const batch = await oneBatch(t);
     expect(batch.statement).toBe("sign the lease");
-    expect(batch.path).toEqual({ name: "housing", index: 0, edge: "must" });
     const todos = await batchTodos(t, batch._id);
     expect(byStatement(todos, "read the lease")?.actor).toBe("tom");
     expect(byStatement(todos, "list the questions")?.needs).toEqual([
@@ -1822,20 +1815,22 @@ describe("POST /tts/plan-graph", () => {
     expect((await allBatches(t)).find((x) => x._id === c)!.needs).toEqual([b, a]);
   });
 
-  // witness: pass a half-formed path straight through — the mutation's
-  // validator would refuse the object and cost the whole call, when an absent
-  // path simply preserves whatever is stored.
-  it("drops a broken path whole rather than costing the call", async () => {
+  // witness: forward an unknown key from the payload into the mutation and
+  // this goes red — the mutation's validator refuses an argument it does not
+  // declare, so one stale field in a plan the box has not yet stopped sending
+  // would cost the whole call. `path` is the retired sequencing (its edges are
+  // needs now), and it is the field a not-yet-rolled-out box would still send.
+  it("ignores the retired path rather than costing the call", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
     const res = await postGraph(t, {
       statement: "ship the paper",
-      path: { name: "research" }, // no index
+      path: { name: "research", index: 0, edge: "must" },
       tasks: [{ statement: "draft the section", actor: "agent" }],
     });
     expect(res.status).toBe(200);
     expect((await res.json()).created).toBe(1);
-    expect((await oneBatch(t)).path).toBeUndefined();
+    expect((await oneBatch(t)).statement).toBe("ship the paper");
   });
 
   it("binds goals, archives, and echoes a batch id", async () => {
@@ -1844,7 +1839,7 @@ describe("POST /tts/plan-graph", () => {
     const goalId = await t.run(async (ctx) =>
       ctx.db.insert("dtsTodos", {
         statement: "the lease is signed",
-        readiness: "ready-for-tom",
+        readiness: "prepared",
         status: "active",
         timingClass: "whenever",
         source: "manual",

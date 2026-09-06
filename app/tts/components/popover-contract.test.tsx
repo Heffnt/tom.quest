@@ -231,9 +231,9 @@ const TODO = {
   actor: "tom",
   needs: [],
   status: "active",
-  readiness: "ready-for-tom",
+  readiness: "prepared",
   source: "tom",
-  timingClass: "soon",
+  timingClass: "whenever",
   brief: "the brief",
   createdAt: NOW,
   updatedAt: NOW,
@@ -266,7 +266,7 @@ const BRIEF = {
   externalId: "todo-14",
   brief: "what it is",
   recommendation: "approve",
-  execClass: "small",
+  execClass: "box",
   preparedAt: NOW,
 };
 

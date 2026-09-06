@@ -14,12 +14,10 @@ import {
   DAY_MS,
   MAX_NEEDS,
   READINESS,
-  RETIRED_READINESS_VALUES,
   SESSION_MODEL,
   captureReplyText,
   goalCheckable,
   isPrepared,
-  normalizeReadiness,
   nyCalendarDayBoundsUtc,
   nyCalendarDayKey,
   normalizeSessionRepos,
@@ -55,11 +53,7 @@ const STATUS = v.union(
   v.literal("archived"),
   v.literal("done"),
 );
-const TIMING_CLASS = v.union(
-  v.literal("dated"),
-  v.literal("condition-bound"),
-  v.literal("whenever"),
-);
+const TIMING_CLASS = v.union(v.literal("dated"), v.literal("whenever"));
 const DATE_KIND = v.union(v.literal("external"), v.literal("self-imposed"));
 const DATE_OUTCOME = v.union(
   v.literal("done"),
@@ -82,13 +76,6 @@ const PLAN_STEP = v.object({
 });
 // ── Schema v2 graph shapes (ratified 2026-08-29) ─────────────────────────────
 const ACTOR = v.union(v.literal("tom"), v.literal("agent"));
-// Sequencing between batches; `edge` describes the link to the PREVIOUS batch
-// in the path. "must" / "helps" are Tom's words and the whole vocabulary.
-const BATCH_PATH = v.object({
-  name: v.string(),
-  index: v.number(),
-  edge: v.optional(v.union(v.literal("must"), v.literal("helps"))),
-});
 // A `needs` reference inside a plan-graph payload: a STRING is an existing
 // dtsTodos id; a NUMBER is the index of a task EARLIER in the same payload, so
 // a model can lay down a small graph in one call. The two are unambiguous (a
@@ -272,7 +259,6 @@ export const createTodo = mutation({
     dueAt: v.optional(v.number()),
     dateKind: v.optional(DATE_KIND),
     condition: v.optional(v.string()),
-    latestSafeAt: v.optional(v.number()),
     workDescription: v.optional(v.string()),
     entryAction: v.optional(v.string()),
     category: v.optional(v.string()),
@@ -290,7 +276,6 @@ export const createTodo = mutation({
       dueAt: args.dueAt,
       dateKind: args.dueAt ? (args.dateKind ?? "self-imposed") : undefined,
       condition: args.condition,
-      latestSafeAt: args.latestSafeAt,
       category: args.category,
       source: "manual",
       workDescription: args.workDescription,
@@ -315,8 +300,6 @@ export const updateTodo = mutation({
     dueAt: v.optional(v.union(v.number(), v.null())),
     dateKind: v.optional(DATE_KIND),
     condition: v.optional(v.string()),
-    latestSafeAt: v.optional(v.union(v.number(), v.null())),
-    wakeCondition: v.optional(v.string()),
     wakeAt: v.optional(v.union(v.number(), v.null())),
     unarchiveCondition: v.optional(v.string()),
     workDescription: v.optional(v.string()),
@@ -440,13 +423,12 @@ export async function applyStatusChange(
   todo: Doc<"dtsTodos">,
   args: {
     status: "active" | "waiting" | "archived" | "done";
-    wakeCondition?: string;
     wakeAt?: number;
     unarchiveCondition?: string;
     note?: string;
   },
 ) {
-  const { status, wakeCondition, wakeAt, unarchiveCondition, note } = args;
+  const { status, wakeAt, unarchiveCondition, note } = args;
   const now = Date.now();
   const patch: Record<string, unknown> = { status, updatedAt: now };
   if (status === "active") {
@@ -455,11 +437,12 @@ export async function applyStatusChange(
     patch.doneAt = undefined;
     patch.archivedAt = undefined;
     patch.unarchiveCondition = undefined;
-    patch.wakeCondition = undefined;
     patch.wakeAt = undefined;
   }
   if (status === "waiting") {
-    patch.wakeCondition = wakeCondition;
+    // A sleep is a TIME (the lifeos update, phase 7). The prose wake
+    // condition this branch used to store is retired: what a row is waiting
+    // for belongs in its statement, where every reader already looks.
     patch.wakeAt = wakeAt;
   }
   if (status === "archived") {
@@ -482,7 +465,6 @@ export const setStatus = mutation({
   args: {
     id: v.id("dtsTodos"),
     status: STATUS,
-    wakeCondition: v.optional(v.string()),
     wakeAt: v.optional(v.number()),
     unarchiveCondition: v.optional(v.string()),
     note: v.optional(v.string()),
@@ -512,7 +494,6 @@ export const internalTriage = internalMutation({
     id: v.string(),
     status: v.optional(STATUS),
     dueAt: v.optional(v.number()),
-    wakeCondition: v.optional(v.string()),
     wakeAt: v.optional(v.number()),
     unarchiveCondition: v.optional(v.string()),
     note: v.optional(v.string()),
@@ -1072,6 +1053,8 @@ const TIME_NOTE_ACTION = v.union(
   v.object({
     kind: v.literal("set-waiting"),
     wakeAt: v.optional(v.number()),
+    // The third of the three: taken so a box that has not rolled out yet
+    // still lands its whole flush, and dropped rather than stored.
     wakeCondition: v.optional(v.string()),
   }),
   v.object({ kind: v.literal("set-active") }),
@@ -1150,9 +1133,7 @@ export const internalPendingTimeNotes = internalQuery({
                 timingClass: todo.timingClass,
                 dueAt: todo.dueAt ?? null,
                 dateKind: todo.dateKind ?? null,
-                latestSafeAt: todo.latestSafeAt ?? null,
                 wakeAt: todo.wakeAt ?? null,
-                wakeCondition: todo.wakeCondition ?? null,
                 dateOutcomes: todo.dateOutcomes ?? [],
               },
             }
@@ -1509,7 +1490,7 @@ export const internalCapture = internalMutation({
 });
 
 // The preparation path for LIFE todos (spec §15, swarm-lite): the worker's
-// preparer job advances an unprepared capture toward ready-for-tom by
+// preparer job advances an unprepared capture toward prepared by
 // attaching the ground-up brief, the smallest entry action, and a qualitative
 // work description. It never touches statement or status — those are Tom's
 // (or the capture's) and preparation must not rewrite intent. Since
@@ -1522,21 +1503,12 @@ export const internalPrepareTodo = internalMutation({
     brief: v.optional(v.string()),
     entryAction: v.optional(v.string()),
     workDescription: v.optional(v.string()),
-    // "prepared" is the value (ruling 18). The two retired spellings are still
-    // accepted from a worker written before the rename — a pen that rejected
-    // them would fail every box job until its deploy caught up — and stored
-    // as the value each reads as (ttsShared.normalizeReadiness): "ready-for-
-    // tom" as "prepared", "preparing" as "unprepared". The old job said
-    // "preparing" of a write-up it had not finished, so storing unprepared
-    // there is recording its own word, not erasing one; the preparer returns
-    // the row as prepared. The literal "unprepared" is refused: an agent must
+    // "prepared" is the value (ruling 18), and the only one this pen takes.
+    // The retired spellings a pre-rename box job wrote are refused since the
+    // narrow (the lifeos update, phase 7; the planner's prepare pass writes
+    // "prepared"). The literal "unprepared" is refused too: an agent must
     // never erase the record that a todo was written up.
-    readiness: v.optional(
-      v.union(
-        v.literal("prepared"),
-        ...RETIRED_READINESS_VALUES.map((r) => v.literal(r)),
-      ),
-    ),
+    readiness: v.optional(v.literal("prepared")),
     plan: v.optional(v.array(PLAN_STEP)),
     // ── The graph worker's three args (schema v2, 2026-08-29) ────────────────
     // A worker session claims ONE ready todo inside a batch and advances it by
@@ -1609,9 +1581,7 @@ export const internalPrepareTodo = internalMutation({
       }
       if (entryAction !== undefined) patch.entryAction = entryAction;
       if (workDescription !== undefined) patch.workDescription = workDescription;
-      if (readiness !== undefined) {
-        patch.readiness = normalizeReadiness(readiness);
-      }
+      if (readiness !== undefined) patch.readiness = readiness;
       if (dueAt !== undefined) {
         // Kept-dates rule (spec §8): a stored date moves only through
         // recordDateOutcome / a time note. The preparer gets the FIRST date
@@ -1666,15 +1636,15 @@ export const internalPrepareTodo = internalMutation({
       //       A CHECKABLE goal is the one exception, and it is the design:
       //       checking the world and recording the answer is a goal's whole
       //       contract.
-      //   (c) a goal's condition is a GOAL CONDITION. `condition` reads two
-      //       ways (schema.ts): on a condition-bound row it is the TRIGGER
-      //       that says when the todo may start, not a completion test.
-      //       Closing on a fired trigger is closing Tom's todo for him.
+      //   (c) a goal's condition is a GOAL CONDITION — a sentence about the
+      //       world that is either true yet or not. A goal with no condition
+      //       and no code subject has nothing an agent can go and check, and
+      //       closing it would be closing Tom's todo for him.
       const why =
         fresh.batchId === undefined
           ? "only a todo inside a batch may be completed by the pen"
           : fresh.kind === "goal" && !goalCheckable(fresh)
-            ? "a goal is completed by the pen only when its condition is a goal condition (a condition-bound row's condition is its trigger)"
+            ? "a goal is completed by the pen only when it has a checkable condition or a code subject"
             : fresh.tomTouchedAt !== undefined && fresh.kind !== "goal"
               ? "Tom-touched (frozen) — only he closes a row he has ruled on"
               : null;
@@ -1984,10 +1954,8 @@ export const internalStorePlanGraph = internalMutation({
     batchId: v.optional(v.string()), // absent = create the batch
     statement: v.string(),
     groundUpExplanation: v.optional(v.string()),
-    // The retired sequencing (still accepted during the widen) and its
-    // successor: the batches this one needs done first. Absent PRESERVES the
-    // stored value for both, like every field on this pen.
-    path: v.optional(BATCH_PATH),
+    // Sequencing between batches: the batches this one needs done first.
+    // Absent PRESERVES the stored value, like every field on this pen.
     needs: v.optional(v.array(v.string())),
     // The repos this batch's work lives in (Tom's ruling 2026-08-30: a batch
     // DECLARES its repos; the session scheduler no longer guesses them from a
@@ -2354,7 +2322,6 @@ export const internalStorePlanGraph = internalMutation({
         statement,
         groundUpExplanation:
           args.groundUpExplanation ?? batch.groundUpExplanation,
-        path: args.path ?? batch.path,
         needs: batchNeeds ?? batch.needs,
         repos:
           args.repos === undefined
@@ -2364,7 +2331,6 @@ export const internalStorePlanGraph = internalMutation({
       const stored = {
         statement: batch.statement,
         groundUpExplanation: batch.groundUpExplanation,
-        path: batch.path,
         needs: batch.needs,
         repos: batch.repos,
       };
@@ -2375,7 +2341,6 @@ export const internalStorePlanGraph = internalMutation({
       result.batchId = await ctx.db.insert("batches", {
         statement,
         groundUpExplanation: args.groundUpExplanation,
-        path: args.path,
         needs: batchNeeds,
         repos:
           args.repos === undefined
@@ -2465,7 +2430,7 @@ export const internalStorePlanGraph = internalMutation({
           doneAt: desired === "done" ? now : undefined,
           // A task is work inside a batch, not a gate: the BATCH is what Tom
           // rules on, so a fresh task is "unprepared" rather than
-          // "ready-for-tom" (which would flood the needs-me feed).
+          // "prepared" (which would flood the needs-me feed).
           readiness: "unprepared",
           timingClass: "whenever",
           source: "planner",

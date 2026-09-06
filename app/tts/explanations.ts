@@ -148,7 +148,7 @@ ${WHAT_TTS_IS}
 <table>
   <tr><th>Value</th><th>What it says</th><th>The extra sentence it takes</th></tr>
   <tr><td class="mono">active</td><td>In play now. This is what every new todo starts as.</td><td>None.</td></tr>
-  <tr><td class="mono">waiting</td><td>Parked until a moment or a condition. It leaves the active list.</td><td>A wake condition in Tom's words, and optionally a concrete wake time.</td></tr>
+  <tr><td class="mono">waiting</td><td>Parked. It leaves the active list.</td><td>A concrete wake time, optionally.</td></tr>
   <tr><td class="mono">archived</td><td>Set aside without being finished. Kept and readable, never deleted.</td><td>The condition under which it should be proposed back.</td></tr>
   <tr><td class="mono">done</td><td>Finished.</td><td>A note recording how.</td></tr>
 </table>
@@ -164,12 +164,12 @@ ${WHAT_TTS_IS}
   <tr>
     <td class="mono">active</td>
     <td>The status, and the update time.</td>
-    <td>The completion time, the archive time, the unarchive condition, the wake condition and the wake time — all five. Reopening an item must not leave the reasons it was closed or parked lying on it.</td>
+    <td>The completion time, the archive time, the unarchive condition and the wake time — all four. Reopening an item must not leave the reasons it was closed or parked lying on it.</td>
   </tr>
   <tr>
     <td class="mono">waiting</td>
-    <td>The wake condition and wake time exactly as given.</td>
-    <td>Any previous wake condition or wake time not given again. Both fields are assigned unconditionally, so parking a todo a second time without a sentence erases the first one.</td>
+    <td>The wake time exactly as given.</td>
+    <td>Any previous wake time not given again. The field is assigned unconditionally, so parking a todo a second time without a time erases the first one.</td>
   </tr>
   <tr>
     <td class="mono">archived</td>
@@ -187,9 +187,9 @@ ${WHAT_TTS_IS}
 
 <h2>What brings a waiting todo back</h2>
 
-<p>One job, once a day. At 4:45 in the morning, New York time, a job in Convex prepares the coming day. Before anything else it reads every waiting todo and reactivates each one whose stored <span class="term">wake time</span> falls before the end of the day being prepared, clearing the wake time and the wake condition as it goes and recording an entry of kind <span class="mono">woke</span> in the append-only event record.</p>
+<p>Nothing writes the word back. A <span class="term">sleep</span> is a stored <span class="term">wake time</span> on a todo that is otherwise active: every surface reads that instant against the clock and treats the todo as awake once it has passed. No job rewrites the row, so there is no daily run to miss and no window in which the page and a message disagree.</p>
 
-<p>The consequence worth knowing: a todo parked with a condition in words but no concrete wake time is never woken by that job. It waits until Tom sets it active, or until a <span class="term">time note</span> — one sentence about timing, read by a separate job every two minutes — works out a concrete time and writes it. A wake condition alone is a note to a reader; a wake time is the thing a job can act on.</p>
+<p>The status word <span class="mono">waiting</span> is the older shape and is still stored on rows that carry it. Such a row is parked until Tom presses Set active — no clock reaches it. The way to give a parked todo a moment to come back at is a <span class="term">time note</span>: one sentence about timing, read by a job every two minutes, which works out the concrete instant and writes it. What the todo is waiting <em>for</em> belongs in its own statement, where every reader already looks.</p>
 
 <h2>What brings an archived todo back: nothing automatic</h2>
 
@@ -399,8 +399,7 @@ ${WHAT_TTS_IS}
   <tr><td>renegotiate a date</td><td>Records the old date as renegotiated and sets a new one.</td><td>Only before the old date has arrived.</td></tr>
   <tr><td>record a date missed</td><td>Records the old date as missed, with or without a replacement.</td><td>Only after the date has passed. A date still ahead is renegotiated, never missed.</td></tr>
   <tr><td>set the date kind</td><td>Whether the date came from outside or Tom set it himself.</td><td>Only on a todo that has a date.</td></tr>
-  <tr><td>set or clear the latest safe time</td><td>The conservative last moment a condition-bound todo can still be started.</td><td>Only on a note written on a todo.</td></tr>
-  <tr><td>set waiting, or set active</td><td>The todo's status, with a wake time and wake condition when parking it.</td><td>Fields not given are merged from what the todo already holds.</td></tr>
+  <tr><td>set waiting, or set active</td><td>The todo's status, with a wake time when parking it.</td><td>A wake time not given is merged from what the todo already holds.</td></tr>
   <tr><td>create, move or delete a block</td><td>A placed span of calendar time.</td><td>A span must end after it starts, and must target either one todo or one category.</td></tr>
 </table>
 

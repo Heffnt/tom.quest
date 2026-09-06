@@ -9,13 +9,12 @@ import { isRulingVerdict } from "./ttsRulings";
 import {
   DAY_MS,
   RECOMMENDATION_VALUES,
-  RETIRED_READINESS_VALUES,
   SESSION_REPO_NAMES,
+  isRecommendation,
   isSessionModel,
-  isStoredRecommendation,
   nyCalendarDayBoundsUtc,
   ttsPrepDay,
-  type StoredRecommendation,
+  type Recommendation,
 } from "./ttsShared";
 import { isModelOfTomPath } from "./ttsSkills";
 import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES, isExportTable } from "./ttsNightly";
@@ -680,16 +679,10 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
   if (typeof b.id !== "string" || b.id.length === 0) {
     return jsonResponse(400, { error: "id (non-empty string) required" });
   }
-  // "prepared" (ruling 18); the two retired spellings are still accepted from
-  // a box job written before the rename, and the mutation stores each as the
-  // value it reads as: "ready-for-tom" as "prepared", "preparing" as
-  // "unprepared" (that job's own word for a write-up it had not finished).
-  // The literal "unprepared" is refused (an agent never erases a write-up).
-  if (
-    b.readiness !== undefined &&
-    b.readiness !== "prepared" &&
-    !(RETIRED_READINESS_VALUES as readonly unknown[]).includes(b.readiness)
-  ) {
+  // "prepared" (ruling 18) is the one value; the retired spellings are
+  // refused since the narrow (the lifeos update, phase 7). The literal
+  // "unprepared" is refused too (an agent never erases a write-up).
+  if (b.readiness !== undefined && b.readiness !== "prepared") {
     return jsonResponse(400, {
       error: 'readiness must be "prepared"',
     });
@@ -719,10 +712,7 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
       brief: str(b.brief),
       entryAction: str(b.entryAction),
       workDescription: str(b.workDescription),
-      readiness: b.readiness as
-        | "prepared"
-        | (typeof RETIRED_READINESS_VALUES)[number]
-        | undefined,
+      readiness: b.readiness as "prepared" | undefined,
       // The date the STATEMENT states, when it states one. The mutation is
       // the real gate: a first date only, never over an existing one.
       dueAt: b.dueAt as number | undefined,
@@ -874,9 +864,10 @@ http.route({
 // todos, reads back Tom's pending rulings, and reports each application. The
 // worker never rules — recordCodeRuling is Tom-gated in ttsCode.ts.
 
-// A brief's recommendation is one of the four verdict words, or one of the
-// three retired spellings an older box job may still post (ttsShared is the
-// one home — isStoredRecommendation; the mutation stores the verdict word).
+// A brief's recommendation is one of the four verdict words and nothing else
+// (ttsShared is the one home). The three retired spellings were refused here
+// from the moment the box's own job stopped emitting them; now the validator
+// behind this route refuses them too.
 const CODE_EXEC_CLASSES = ["box", "needs-turing"] as const;
 
 type CodeBrief = {
@@ -884,7 +875,7 @@ type CodeBrief = {
   externalId: string;
   sourceHash: string;
   brief: string;
-  recommendation: StoredRecommendation;
+  recommendation: Recommendation;
   execClass: (typeof CODE_EXEC_CLASSES)[number];
   evidence?: string;
 };
@@ -902,7 +893,7 @@ function parseCodeBrief(item: unknown, i: number): CodeBrief | { error: string }
       return { error: `briefs[${i}].${field} (non-empty string) required` };
     }
   }
-  if (!isStoredRecommendation(b.recommendation)) {
+  if (!isRecommendation(b.recommendation)) {
     return {
       error: `briefs[${i}].recommendation must be one of ${RECOMMENDATION_VALUES.join(" | ")}`,
     };
@@ -1559,23 +1550,6 @@ const GRAPH_STATUSES = ["active", "done"] as const;
 
 type DroppedTask = { index: number; statement: string; why: string };
 
-// A path places this batch in a named sequence; `index` orders it and `edge`
-// describes the link to the previous batch ("must" = that one has to land
-// first, "helps" = it only makes this easier). A path missing either required
-// field is dropped whole — the mutation reads an absent path as "preserve the
-// stored one", which is the safe reading of a broken one too.
-function sanitizeBatchPath(p: unknown): Record<string, unknown> | undefined {
-  if (typeof p !== "object" || p === null) return undefined;
-  const r = p as Record<string, unknown>;
-  if (typeof r.name !== "string" || typeof r.index !== "number") {
-    return undefined;
-  }
-  if (!Number.isFinite(r.index)) return undefined;
-  const out: Record<string, unknown> = { name: r.name, index: r.index };
-  if (r.edge === "must" || r.edge === "helps") out.edge = r.edge;
-  return out;
-}
-
 function sanitizeGraphTask(
   item: unknown,
   index: number,
@@ -1660,7 +1634,6 @@ const ttsPlanGraph = httpAction(async (ctx, request) => {
   }
   const droppedTasks: DroppedTask[] = [];
   const tasks = b.tasks.map((task, i) => sanitizeGraphTask(task, i, droppedTasks));
-  const path = sanitizeBatchPath(b.path);
   try {
     const result = await ctx.runMutation(internal.tts.internalStorePlanGraph, {
       batchId: typeof b.batchId === "string" ? b.batchId : undefined,
@@ -1669,10 +1642,10 @@ const ttsPlanGraph = httpAction(async (ctx, request) => {
         typeof b.groundUpExplanation === "string"
           ? b.groundUpExplanation
           : undefined,
-      path: path as never,
-      // The batches this one needs done first (the lifeos update: the
-      // successor of path). Absent preserves; the mutation drops a name that
-      // is not a batch with a named skip.
+      // The batches this one needs done first. Absent preserves; the
+      // mutation drops a name that is not a batch with a named skip. A "path"
+      // in an older payload is IGNORED here rather than refused — the field is
+      // retired and its edges are already needs.
       needs: Array.isArray(b.needs)
         ? b.needs.filter((x): x is string => typeof x === "string")
         : undefined,

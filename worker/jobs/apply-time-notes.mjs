@@ -108,9 +108,7 @@ function renderContext(context) {
         timingClass: t.timingClass,
         due: nyLocal(t.dueAt),
         dateKind: t.dateKind,
-        latestSafe: nyLocal(t.latestSafeAt),
         wakeAt: nyLocal(t.wakeAt),
-        wakeCondition: t.wakeCondition,
         dateOutcomes: (t.dateOutcomes ?? []).map((o) => ({
           date: nyLocal(o.dueAt),
           outcome: o.outcome,
@@ -186,10 +184,10 @@ function prompt(note, clock) {
     `  {"kind":"set-date-kind","dateKind":"external"|"self-imposed"}`,
     `      The date STAYS; only whose deadline it is was wrong ("that's the`,
     `      landlord's date, not mine"). Needs a todo that already has a date.`,
-    `  {"kind":"set-latest-safe","date":"YYYY-MM-DD"}  — latest safe moment for`,
-    `      a condition-bound item.  {"kind":"clear-latest-safe"}`,
-    `  {"kind":"set-waiting","wakeDate":"YYYY-MM-DD","wakeCondition":"..."}`,
-    `      Put the todo to sleep (both fields optional).  {"kind":"set-active"}`,
+    `  {"kind":"set-waiting","wakeDate":"YYYY-MM-DD"}`,
+    `      Put the todo to sleep until that date (the date is optional; with`,
+    `      none it sleeps until Tom wakes it). What it is waiting FOR belongs`,
+    `      in the todo's own statement, not here.  {"kind":"set-active"}`,
     `      wakes it.`,
     `  {"kind":"create-block","start":"YYYY-MM-DDTHH:MM","end":"...",`,
     `   "todoId":"...","category":"..."}`,
@@ -258,20 +256,10 @@ function toWireAction(a) {
         );
       }
       return { kind: "set-date-kind", dateKind: a.dateKind };
-    case "set-latest-safe":
-      return {
-        kind: "set-latest-safe",
-        latestSafeAt: nyNoonUtcMs(String(a.date).trim()),
-      };
-    case "clear-latest-safe":
-      return { kind: "clear-latest-safe" };
     case "set-waiting":
       return {
         kind: "set-waiting",
         ...(a.wakeDate ? { wakeAt: nyNoonUtcMs(String(a.wakeDate).trim()) } : {}),
-        ...(typeof a.wakeCondition === "string" && a.wakeCondition.trim()
-          ? { wakeCondition: a.wakeCondition.trim() }
-          : {}),
       };
     case "set-active":
       return { kind: "set-active" };

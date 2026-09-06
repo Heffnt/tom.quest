@@ -1,6 +1,11 @@
 import { convexTest } from "convex-test";
 import { describe, expect, it, vi } from "vitest";
-import { defineSchema, defineTable } from "convex/server";
+import {
+  defineSchema,
+  defineTable,
+  type DataModelFromSchemaDefinition,
+  type DocumentByName,
+} from "convex/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -159,9 +164,18 @@ const wideSchema = defineSchema({
   ),
 });
 
+// Rows come back as the HARNESS holds them, not as the narrowed validator
+// declares them: a row on the deployment keeps the fields the validator
+// dropped, and these fixtures and assertions are about exactly those fields.
+type WideModel = DataModelFromSchemaDefinition<typeof wideSchema>;
+type WideTodo = DocumentByName<WideModel, "dtsTodos">;
+type WideBatch = DocumentByName<WideModel, "batches">;
+type WideBrief = DocumentByName<WideModel, "dtsCodeBriefs">;
+type WideSession = DocumentByName<WideModel, "claudeSessions">;
+
 const NOW = Date.UTC(2026, 8, 5, 12);
 
-type Seed = Partial<Doc<"dtsTodos">> & { statement: string };
+type Seed = Partial<WideTodo> & { statement: string };
 async function seedTodos(t: ReturnType<typeof convexTest>, rows: Seed[]) {
   return await t.run(async (ctx) => {
     const ids = [];
@@ -182,8 +196,13 @@ async function seedTodos(t: ReturnType<typeof convexTest>, rows: Seed[]) {
   });
 }
 
-async function allTodos(t: ReturnType<typeof convexTest>) {
-  return await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+// Rows come back as the HARNESS holds them (WideTodo), not as the narrowed
+// validator declares them: a row on the deployment keeps the fields the
+// validator dropped, and these assertions are about exactly those fields.
+async function allTodos(t: ReturnType<typeof convexTest>): Promise<WideTodo[]> {
+  return (await t.run(async (ctx) =>
+    ctx.db.query("dtsTodos").collect(),
+  )) as unknown as WideTodo[];
 }
 
 async function eventsOfKind(t: ReturnType<typeof convexTest>, kind: string) {
@@ -206,7 +225,7 @@ describe("readiness migration (ready-for-tom → prepared, preparing → unprepa
   // row was half written up: it goes back to the preparer, never onto Tom's
   // pile (a half-prepared capture is never ready).
   it("maps ready-for-tom to prepared and preparing to unprepared, one destination each", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     await seedTodos(t, seed());
     const report = await t.mutation(internal.ttsMigrations.internalMigrateReadiness, {});
     expect(report.done).toBe(true);
@@ -237,7 +256,7 @@ describe("readiness migration (ready-for-tom → prepared, preparing → unprepa
   // witness: patch a row inside the dryRun branch — the count would still
   // be right and the table would have moved before Tom saw the numbers.
   it("a dry run reports the same counts and writes no todo row, only the dry-run event", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     await seedTodos(t, seed());
     const report = await t.mutation(internal.ttsMigrations.internalMigrateReadiness, {
       dryRun: true,
@@ -261,7 +280,7 @@ describe("readiness migration (ready-for-tom → prepared, preparing → unprepa
   // witness: drop the cursor from the continuation args — a resumed run would
   // start from the top and count every row twice.
   it("resumes from a page's cursor, carrying the totals", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     await seedTodos(t, seed());
     const first = await t.mutation(internal.ttsMigrations.internalMigrateReadiness, {
       pageSize: 2,
@@ -288,7 +307,7 @@ describe("readiness migration (ready-for-tom → prepared, preparing → unprepa
   it("walks the table one page at a time, scheduling itself, and totals across pages", async () => {
     vi.useFakeTimers();
     try {
-      const t = convexTest({ schema, modules });
+      const t = convexTest({ schema: wideSchema, modules });
       await seedTodos(t, seed());
       const first = await t.mutation(internal.ttsMigrations.internalMigrateReadiness, {
         pageSize: 2,
@@ -315,7 +334,7 @@ describe("readiness migration (ready-for-tom → prepared, preparing → unprepa
   });
 
   it("is idempotent: a second run maps nothing", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     await seedTodos(t, seed());
     await t.mutation(internal.ttsMigrations.internalMigrateReadiness, {});
     const again = await t.mutation(internal.ttsMigrations.internalMigrateReadiness, {});
@@ -423,7 +442,7 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
   };
 
   /** Rows by the statement they had before any sentence was carried in. */
-  const byOriginal = (rows: Doc<"dtsTodos">[]) =>
+  const byOriginal = (rows: WideTodo[]) =>
     Object.fromEntries(rows.map((r) => [r.statement.split(" — when: ")[0], r]));
 
   it("carries a condition sentence into a statement exactly once", () => {
@@ -440,7 +459,7 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
   // witness: make the waiting mapping clear wakeAt (the way applyStatusChange
   // does on reopen) — the row would wake a month early.
   it("a waiting row becomes active with its wakeAt, and stays asleep until it", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     await seedTodos(t, seed());
     const report = await t.mutation(internal.ttsMigrations.internalMigrateTiming, {});
     expect(report.done).toBe(true);
@@ -469,7 +488,7 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
   // witness: write wakeAt = latestSafeAt instead of latestSafeAt minus the
   // window — the row would surface two weeks later than the queue used to.
   it("a condition-bound row becomes a task carrying its condition, asleep until latestSafeAt minus the window", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     await seedTodos(t, seed());
     await t.mutation(internal.ttsMigrations.internalMigrateTiming, {});
     const rows = await allTodos(t);
@@ -496,7 +515,7 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
   // in sequence lost the wait sentence the first carried in and overwrote a
   // wakeAt Tom had set; one patch carries both and writes the sleep once.
   it("a row both waiting and condition-bound gets one patch carrying both sentences", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     await seedTodos(t, seed());
     await t.mutation(internal.ttsMigrations.internalMigrateTiming, {});
     const rows = await allTodos(t);
@@ -523,7 +542,7 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
   });
 
   it("keeps a wakeAt Tom set, and writes no sleep on a finished row", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     await seedTodos(t, seed());
     const report = await t.mutation(internal.ttsMigrations.internalMigrateTiming, {});
     expect(report.totals["condition-wake-kept"]).toBe(1);
@@ -543,7 +562,7 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
   });
 
   it("leaves archived rows and v1 batches alone, counting them for the gather and the graph migration", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     await seedTodos(t, seed());
     await t.mutation(internal.ttsMigrations.internalMigrateTiming, {});
     const by = byOriginal(await allTodos(t));
@@ -555,7 +574,7 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
   });
 
   it("a dry run reports the same counts and writes no todo row, only the dry-run event", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     await seedTodos(t, seed());
     const report = await t.mutation(internal.ttsMigrations.internalMigrateTiming, {
       dryRun: true,
@@ -570,7 +589,7 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
   });
 
   it("is idempotent: a second run maps nothing and still counts what it only counts", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     await seedTodos(t, seed());
     await t.mutation(internal.ttsMigrations.internalMigrateTiming, {});
     const again = await t.mutation(internal.ttsMigrations.internalMigrateTiming, {});
@@ -587,7 +606,7 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
   });
 
   it("resumes across pages by cursor", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     await seedTodos(t, seed());
     const first = await t.mutation(internal.ttsMigrations.internalMigrateTiming, {
       pageSize: 4,
@@ -604,7 +623,7 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
 });
 
 describe("batch needs migration (path → needs edges between batches)", () => {
-  type BatchSeed = Partial<Doc<"batches">> & { statement: string };
+  type BatchSeed = Partial<WideBatch> & { statement: string };
   async function seedBatches(t: ReturnType<typeof convexTest>, rows: BatchSeed[]) {
     return await t.run(async (ctx) => {
       const ids: Record<string, Id<"batches">> = {};
@@ -619,8 +638,12 @@ describe("batch needs migration (path → needs edges between batches)", () => {
       return ids;
     });
   }
-  const allBatches = (t: ReturnType<typeof convexTest>) =>
-    t.run(async (ctx) => ctx.db.query("batches").collect());
+  const allBatches = async (
+    t: ReturnType<typeof convexTest>,
+  ): Promise<WideBatch[]> =>
+    (await t.run(async (ctx) =>
+      ctx.db.query("batches").collect(),
+    )) as unknown as WideBatch[];
 
   const seed = (): BatchSeed[] => [
     { statement: "release 0", path: { name: "release", index: 0 } },
@@ -655,7 +678,7 @@ describe("batch needs migration (path → needs edges between batches)", () => {
   // witness: derive a need for a "helps" edge too — "only makes this easier"
   // would block the batch until the other landed.
   it("a must edge becomes a need on the previous batch; helps becomes nothing", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     const ids = await seedBatches(t, seed());
     const report = await t.mutation(internal.ttsMigrations.internalMigrateBatchNeeds, {});
     expect(report.totals).toEqual(expectedCounts);
@@ -668,7 +691,8 @@ describe("batch needs migration (path → needs edges between batches)", () => {
     expect(by["paper 4"].needs).toBeUndefined();
     expect(by.unpathed.needs).toBeUndefined();
     expect(by["done 1"].needs).toEqual([ids["done 0"]]); // terminal rows mapped too
-    // The path stays until NARROW; updatedAt is untouched.
+    // The path the walk read is left on the row — this migration derives, it
+    // does not delete — and updatedAt is untouched.
     expect(by["release 1"].path).toEqual({ name: "release", index: 1, edge: "must" });
     for (const b of rows) expect(b.updatedAt).toBe(NOW);
     expect(await eventsOfKind(t, "batch-needs-derived")).toHaveLength(3);
@@ -676,7 +700,7 @@ describe("batch needs migration (path → needs edges between batches)", () => {
   });
 
   it("a dry run reports the same counts and writes no batch row, only the dry-run event", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     await seedBatches(t, seed());
     const report = await t.mutation(internal.ttsMigrations.internalMigrateBatchNeeds, {
       dryRun: true,
@@ -688,7 +712,7 @@ describe("batch needs migration (path → needs edges between batches)", () => {
   });
 
   it("is idempotent, and keeps a need the planner already wrote", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     const ids = await seedBatches(t, seed());
     // The planner already sequenced "release 3" on something else.
     await t.run(async (ctx) => {
@@ -729,8 +753,12 @@ describe("recommendation migration (code briefs → the four verdict words)", ()
       }
     });
   }
-  const allBriefs = (t: ReturnType<typeof convexTest>) =>
-    t.run(async (ctx) => ctx.db.query("dtsCodeBriefs").collect());
+  const allBriefs = async (
+    t: ReturnType<typeof convexTest>,
+  ): Promise<WideBrief[]> =>
+    (await t.run(async (ctx) =>
+      ctx.db.query("dtsCodeBriefs").collect(),
+    )) as unknown as WideBrief[];
   const expectedCounts = {
     scanned: 5,
     "stale-replan-to-revise": 1,
@@ -742,7 +770,7 @@ describe("recommendation migration (code briefs → the four verdict words)", ()
   // witness: map "stale-replan" to "session" in ttsShared — the counts name
   // each spelling's destination, so the one-to-one map cannot drift.
   it("maps each retired spelling to its verdict word", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     await seedBriefs(t);
     const report = await t.mutation(internal.ttsMigrations.internalMigrateRecommendations, {});
     expect(report.totals).toEqual(expectedCounts);
@@ -759,7 +787,7 @@ describe("recommendation migration (code briefs → the four verdict words)", ()
   });
 
   it("a dry run reports the same counts and writes no brief row; a second run maps nothing", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: wideSchema, modules });
     await seedBriefs(t);
     const dry = await t.mutation(internal.ttsMigrations.internalMigrateRecommendations, {
       dryRun: true,

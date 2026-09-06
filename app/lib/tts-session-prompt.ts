@@ -264,7 +264,7 @@ export function buildTodoSessionPrompt(
     FRAMING,
     "",
     kind === "gate"
-      ? "This is a tom-gate session: the item below is ready-for-tom and needs his input integrated. Walk him through it ground-up, take his ruling, and shape the result with him."
+      ? "This is a tom-gate session: the item below is prepared and needs his input integrated. Walk him through it ground-up, take his ruling, and shape the result with him."
       : "This is a focus session: Tom chose to begin this item now. Open with the smallest concrete first step and work it with him.",
     "",
     ...rulingLines(ruling),

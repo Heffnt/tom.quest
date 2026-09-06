@@ -712,7 +712,7 @@ describe("internalComposeDigest", () => {
       entryAction: "sign page 2",
     });
     await t.run(async (ctx) => {
-      await ctx.db.patch(ready, { readiness: "ready-for-tom" });
+      await ctx.db.patch(ready, { readiness: "prepared" });
       await ctx.db.insert("dtsEvents", {
         at: Date.now(),
         kind: LEARNING_CHANGE,
@@ -748,10 +748,10 @@ describe("internalComposeDigest", () => {
   });
 
   // The ready section is ttsShared.isReadyForTom, each conjunct on its own
-  // row: a stored "preparing" (reads as unprepared — a half-finished write-up
-  // is never ready), a prepared row with a need still open, and a prepared
-  // row asleep until tomorrow. None is listed; the plain prepared row is.
-  it("lists no preparing row, no row with an open need, and no sleeping row as ready", async () => {
+  // row: an unprepared row (a raw capture is never ready), a prepared row
+  // with a need still open, and a prepared row asleep until tomorrow. None
+  // is listed; the plain prepared row is.
+  it("lists no unprepared row, no row with an open need, and no sleeping row as ready", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);
     const t = convexTest(schema, modules);
@@ -762,7 +762,7 @@ describe("internalComposeDigest", () => {
     const asleep = await tom.mutation(api.tts.createTodo, { statement: "asleep till tomorrow" });
     const plain = await tom.mutation(api.tts.createTodo, { statement: "sign the form" });
     await t.run(async (ctx) => {
-      await ctx.db.patch(half, { readiness: "preparing" });
+      await ctx.db.patch(half, { readiness: "unprepared" });
       await ctx.db.patch(blocked, { readiness: "prepared", needs: [need] });
       await ctx.db.patch(asleep, { readiness: "prepared", wakeAt: Date.now() + DAY });
       await ctx.db.patch(plain, { readiness: "prepared" });
@@ -1052,7 +1052,7 @@ describe("sendDigest", () => {
         await ctx.db.insert("dtsTodos", {
           statement: `ready ${i}: ${long}`,
           status: "active",
-          readiness: "ready-for-tom",
+          readiness: "prepared",
           timingClass: "whenever",
           source: "tom",
           createdAt: FIVE_AM - 90 * DAY,

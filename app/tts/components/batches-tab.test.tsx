@@ -57,7 +57,7 @@ const TASK = {
   actor: "tom",
   needs: [],
   status: "active",
-  readiness: "ready-for-tom",
+  readiness: "prepared",
   updatedAt: 1,
 };
 
@@ -68,7 +68,7 @@ const CODE_GOAL = {
   kind: "goal",
   statement: "The session repo list is fenced",
   status: "active",
-  readiness: "ready-for-tom",
+  readiness: "prepared",
   codeRepo: "tom.quest",
   codeExternalId: "todo-14",
   updatedAt: 1,
@@ -113,31 +113,20 @@ function openDetail(statement: string) {
   fireEvent.click(screen.getAllByText(statement)[0]);
 }
 
-// A stored "waiting" row (still readable during the widen) is a sleep. The tab
-// once gave a wordless one a wakeAt of MAX_SAFE_INTEGER so isReady would hold
-// it back, and the card then printed "waiting until" the year 275760. The
-// task keeps status "waiting" instead; ttsShared.waitingReason reads it by its
-// words, and isReady already excludes it.
+// A stored "waiting" row is a sleep. The tab once gave a timeless one a wakeAt
+// of MAX_SAFE_INTEGER so isReady would hold it back, and the card then printed
+// "waiting until" the year 275760. The task keeps status "waiting" instead;
+// ttsShared.waitingReason reads it as a wake with no instant, and isReady
+// already excludes it. The prose wake condition such a row used to carry is
+// retired (the lifeos update, phase 7) — what a row waits FOR is in its
+// statement now.
 describe("a stored waiting task on the card", () => {
   beforeEach(() => {
     convex.calls.length = 0;
     vi.stubGlobal("open", () => null);
   });
 
-  it("reads as a sleep by its words, never as a made-up instant", () => {
-    load([{ ...TASK, status: "waiting", wakeCondition: "the landlord writes back" }]);
-    render(<BatchesTab />);
-    fireEvent.click(screen.getByText(BATCH.statement));
-    const text = document.body.textContent ?? "";
-    expect(text).toContain("waiting until: the landlord writes back");
-    expect(text).not.toContain("275760");
-    // …and the card says so where its ready work would be, in those words.
-    expect(text).toContain(
-      "no ready todo — waiting until: the landlord writes back",
-    );
-  });
-
-  it("a wordless sleep reads as waiting, with no date at all", () => {
+  it("reads as a sleep with no date at all, never as a made-up instant", () => {
     load([{ ...TASK, status: "waiting" }]);
     render(<BatchesTab />);
     fireEvent.click(screen.getByText(BATCH.statement));
@@ -145,6 +134,8 @@ describe("a stored waiting task on the card", () => {
     expect(text).toContain("· waiting");
     expect(text).not.toContain("waiting until");
     expect(text).not.toContain("275760");
+    // …and the card says so where its ready work would be.
+    expect(text).toContain("no ready todo — waiting");
   });
 });
 

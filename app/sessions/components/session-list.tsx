@@ -237,9 +237,8 @@ function NewSessionForm({
 }
 
 // The list is a triage surface — needs-you outranks recency. Bands, top to
-// bottom: waiting on Tom, running, spinning up, idle, over.
+// bottom: running, spinning up, idle, over.
 const TRIAGE_BAND: Record<SessionStatus, number> = {
-  "awaiting-permission": 0,
   running: 1,
   starting: 2,
   requested: 2,

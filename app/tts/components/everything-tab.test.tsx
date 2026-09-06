@@ -125,7 +125,6 @@ describe("the filters the lifeos update removed", () => {
         _id: "t-asleep",
         statement: "chase the landlord",
         status: "waiting",
-        wakeCondition: "the landlord writes back",
       }),
     ]);
     show();

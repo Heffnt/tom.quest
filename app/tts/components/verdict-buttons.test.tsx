@@ -59,7 +59,7 @@ const TODO = {
   _creationTime: 0,
   statement: "Ratify the amendment",
   status: "active",
-  readiness: "ready-for-tom",
+  readiness: "prepared",
 } as unknown as Todo;
 
 /** The action buttons in a container — every button that is not a ⓘ. */
@@ -504,7 +504,7 @@ describe("the options row", () => {
   });
 
   it("composes the status chips in the same dialog, not in the row", async () => {
-    const waiting = { ...TODO, readiness: "preparing" } as Todo;
+    const waiting = { ...TODO, readiness: "unprepared" } as Todo;
     const { container } = render(<OptionsRow todo={waiting} rulable={false} />);
     // Not rulable: the two status chips only, and archive here is the status
     // write rather than the verdict.

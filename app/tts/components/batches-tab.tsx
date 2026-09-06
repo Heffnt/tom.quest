@@ -115,13 +115,12 @@ function toGraph(
         actor: t.actor ?? "agent",
         // A stored "waiting" row stays "waiting" here: ttsShared.isReady
         // excludes it and waitingReason reads it as a wake — by its wakeAt
-        // when it has one, else by its condition in words. No instant is
-        // invented for a wordless sleep (a MAX_SAFE_INTEGER wakeAt rendered
-        // as "waiting until" the year 275760).
+        // when it has one, else as a bare sleep. No instant is invented for a
+        // timeless sleep (a MAX_SAFE_INTEGER wakeAt rendered as "waiting
+        // until" the year 275760).
         status: done ? "done" : t.status === "waiting" ? "waiting" : "active",
         needs: t.needs ?? [],
         wakeAt: t.wakeAt,
-        wakeCondition: t.wakeCondition,
         readiness: t.readiness,
         evidence: t.evidence,
         groundUp: t.groundUpExplanation,

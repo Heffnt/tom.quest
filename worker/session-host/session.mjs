@@ -477,8 +477,7 @@ export class Session {
     this.reopenEpoch = reopenEpoch ?? 0;
 
     // Local mirror of the daemon-reported status ("starting" | "idle" |
-    // "running" | "ended" | "failed"; "awaiting-permission" is historical —
-    // the unified auto gate no longer produces it).
+    // "running" | "ended" | "failed").
     this.status = "starting";
     this.sdkSessionId = undefined;
     this.workdir = undefined;
@@ -502,12 +501,9 @@ export class Session {
 
     // Outbox: everything awaiting ingest. Arrays are drained by flush and
     // re-prepended on failure (order matters for finalize: seq-ascending).
-    // permissionUpdates carries only ACKS of historical decided rows — the
-    // unified auto gate produces no new permission requests.
     this.outbox = {
       finalize: [],
       inboundUpdates: [],
-      permissionUpdates: [],
       // Payloads whose overflow copy could not be stored: reported to the
       // server so the loss becomes a dtsEvents row naming the file on disk
       // that still holds the bytes.
@@ -644,7 +640,6 @@ export class Session {
       !this.flushInFlight &&
       this.outbox.finalize.length === 0 &&
       this.outbox.inboundUpdates.length === 0 &&
-      this.outbox.permissionUpdates.length === 0 &&
       this.outbox.overflowFailures.length === 0 &&
       // A terminal session stays alive until its complete payloads are
       // stored: reaping mid-upload would lose exactly the bytes the overflow
@@ -1677,30 +1672,14 @@ export class Session {
     }
     return decision;
   }
-  // NOTE: applyDecisions below survives ack-only — this gate produces no
-  // pending cards, but historical decided rows can still arrive and must be
-  // acked so the server stops piggybacking them.
-
-  // Ack decided permission rows (from a poll row or an ingest piggyback).
-  // The unified auto gate parks nothing, so no waiter can exist — a decided
-  // row is always historical (pre-unification, or a dead prompting turn);
-  // ack `applied` so the server stops piggybacking it.
-  applyDecisions(rows = []) {
-    for (const row of rows ?? []) {
-      if (row.status !== "allowed" && row.status !== "denied") continue;
-      if (row.appliedAt !== undefined && row.appliedAt !== null) continue;
-      this.outbox.permissionUpdates.push({
-        requestId: row.requestId,
-        applied: true,
-      });
-      this.requestFlush(false);
-    }
-  }
+  // NOTE: the permission ack path that stood here is gone with the table (the
+  // lifeos update, phase 7). The unified auto gate allows or denies every tool
+  // call itself, so nothing has parked a request on Tom since it landed, and
+  // there is nothing left to ack or to piggyback back.
 
   // ── inbound commands ───────────────────────────────────────────────────────
 
-  // Full per-session server state from a poll row: decisions first (they can
-  // unblock an awaiting turn), then commands.
+  // Full per-session server state from a poll row.
   processServerState(row) {
     if (this.dead || this.status === "ended" || this.status === "failed") return;
     if (typeof row.nextSeq === "number" && row.nextSeq > this.nextSeq) {
@@ -1716,7 +1695,6 @@ export class Session {
     // mistaken for a pre-reopen replay.
     this.reopenEpoch = row.reopenEpoch ?? this.reopenEpoch;
     this.#applyModel(row.model);
-    this.applyDecisions(row.permissions);
     this.serverInbound = row.pendingInbound ?? [];
     this.processCommands();
   }
@@ -2068,7 +2046,6 @@ export class Session {
     this.outbox = {
       finalize: [],
       inboundUpdates: [],
-      permissionUpdates: [],
       overflowFailures: [],
     };
     this.bufDirty = false;
@@ -2240,12 +2217,6 @@ export class Session {
       this.outbox.inboundUpdates = [];
       any = true;
     }
-    if (this.outbox.permissionUpdates.length > 0) {
-      snap.permissionUpdates = payload.permissionUpdates =
-        this.outbox.permissionUpdates;
-      this.outbox.permissionUpdates = [];
-      any = true;
-    }
     if (this.outbox.overflowFailures.length > 0) {
       snap.overflowFailures = payload.overflowFailures =
         this.outbox.overflowFailures;
@@ -2293,11 +2264,6 @@ export class Session {
         this.outbox.inboundUpdates,
       );
     }
-    if (snap.permissionUpdates) {
-      this.outbox.permissionUpdates = snap.permissionUpdates.concat(
-        this.outbox.permissionUpdates,
-      );
-    }
     if (snap.overflowFailures) {
       this.outbox.overflowFailures = snap.overflowFailures.concat(
         this.outbox.overflowFailures,
@@ -2326,7 +2292,6 @@ export class Session {
       );
       this.nextSeq = res.nextSeq;
     }
-    this.applyDecisions(res.decisions);
     if (Array.isArray(res.pendingInbound)) {
       this.serverInbound = res.pendingInbound;
       this.processCommands();

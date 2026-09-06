@@ -38,29 +38,6 @@ async function createBasicSession(tom: Awaited<ReturnType<typeof withTom>>) {
   });
 }
 
-// A pending permission row, written straight into the table: the daemon has no
-// producer for one (its unified auto gate allows or denies every tool call
-// itself), so internalIngest takes no permissionRequests. The decide / ack /
-// expire paths still serve these HISTORICAL rows, which is what the tests
-// below exercise.
-async function insertPendingPermission(
-  t: ReturnType<typeof convexTest>,
-  sessionId: Id<"claudeSessions">,
-  requestId: string,
-  toolName = "Bash",
-) {
-  return await t.run(async (ctx) =>
-    ctx.db.insert("claudePermissions", {
-      sessionId,
-      requestId,
-      toolName,
-      input: { command: "git push" },
-      status: "pending" as const,
-      requestedAt: Date.now(),
-    }),
-  );
-}
-
 // The session event messages a mutation scheduled, read off the scheduler's own
 // system table — the observable effect of notifySessionEvent without reaching
 // into Slack. Rows persist through their run (convex-test patches state, never
@@ -316,44 +293,24 @@ describe("claude sessions", () => {
     expect(session?.nextSeq).toBe(2);
   });
 
-  it("permission round-trip: request → decide (CAS) → piggybacked decision → ack", async () => {
+  // The permission table and its round-trip are gone (the lifeos update,
+  // phase 7). What stays is the compatibility shim: a daemon on the box that
+  // has not rolled out yet still sends permissionUpdates, and a Convex
+  // mutation refuses an argument it does not declare — so the field must be
+  // accepted and ignored, or every flush from that daemon fails.
+  //
+  // witness: drop permissionUpdates from internalIngest's args and this goes
+  // red with a validator error.
+  it("accepts a not-yet-rolled-out daemon's permissionUpdates and ignores them", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const sessionId = await createBasicSession(tom);
-    await insertPendingPermission(t, sessionId, "req-1");
-    const pending = await tom.query(api.claudeSessions.getPendingPermissions, {
-      sessionId,
-    });
-    expect(pending).toHaveLength(1);
-
-    await tom.mutation(api.claudeSessions.decidePermission, {
-      requestId: "req-1",
-      decision: "denied",
-      note: "not yet",
-    });
-    // Second tap (other tab) is a no-op, not an error or overwrite.
-    await tom.mutation(api.claudeSessions.decidePermission, {
-      requestId: "req-1",
-      decision: "allowed",
-    });
-
     const res = await t.mutation(internal.claudeSessions.internalIngest, {
       sessionId,
       status: "running",
-    });
-    expect(res.decisions).toHaveLength(1);
-    const decision = res.decisions[0] as { status: string; note?: string };
-    expect(decision.status).toBe("denied");
-    expect(decision.note).toBe("not yet");
-
-    await t.mutation(internal.claudeSessions.internalIngest, {
-      sessionId,
       permissionUpdates: [{ requestId: "req-1", applied: true }],
     });
-    const after = await t.mutation(internal.claudeSessions.internalIngest, {
-      sessionId,
-    });
-    expect(after.decisions).toHaveLength(0); // acked — no longer delivered
+    expect(res.sessionStatus).toBe("running");
   });
 
   it("forceClose only when the daemon heartbeat is stale, and stays terminal", async () => {
@@ -399,23 +356,12 @@ describe("claude sessions", () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const sessionId = await createBasicSession(tom);
-    await insertPendingPermission(t, sessionId, "req-orphan");
     // No heartbeat row exists → daemon unconfirmed → forceClose permitted.
     await tom.mutation(api.claudeSessions.forceClose, { sessionId });
     const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
       sessionId,
     });
     expect(inbound).toHaveLength(0);
-    const permissions = await tom.query(
-      api.claudeSessions.getPendingPermissions,
-      { sessionId },
-    );
-    expect(permissions).toHaveLength(0);
-    const rows = await t.run(async (ctx) =>
-      ctx.db.query("claudePermissions").collect(),
-    );
-    expect(rows[0].status).toBe("expired");
-    expect(rows[0].decidedBy).toBe("force-close");
   });
 
   // witness: move the endedReason patch outside the `if (!terminal)` block in
@@ -4232,7 +4178,6 @@ describe("frontier scheduler", () => {
     args: {
       statement: string;
       groundUpExplanation?: string;
-      path?: { name: string; index: number; edge?: "must" | "helps" };
       tasks: {
         statement: string;
         actor: "tom" | "agent";
@@ -4522,39 +4467,40 @@ describe("frontier scheduler", () => {
     expect(await workSessions(t)).toHaveLength(0);
   });
 
-  // witness: delete the path comparison from the frontier sort in
+  // witness: delete the due comparison from the frontier sort in
   // convex/claudeSessions.ts and this test goes red — the tick's one admission
-  // would go to the later stage of the path, working ahead of the stage the
-  // path is actually waiting on.
-  it("walks the earlier position on a path first", async () => {
+  // would go by insertion order, and the dated work would wait behind it.
+  // Sequencing between batches is `needs`, and batchNeedsMet has already
+  // refused anything waiting on another batch by the time this sort runs, so
+  // dates are what orders the work that may all legitimately proceed (Tom's
+  // ruling 2026-08-29: needs and dates, never a rating).
+  it("walks the soonest-due ready task first", async () => {
     const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
+    await withTom(t);
     await enableAuto(t, { maxNewPerTick: 1 });
     await heartbeat(t);
-    // The LATER batch is created first, so an unsorted walk would reach it
+    // The UNDATED batch is created first, so an unsorted walk would reach it
     // first and this test would be answered by insertion order.
     await storeGraph(t, {
-      statement: "the second stage",
-      path: { name: "the release", index: 1, edge: "must" },
+      statement: "the unhurried batch",
       tasks: [{ statement: "cut the release notes", actor: "agent" }],
     });
-    const firstBatch = await storeGraph(t, {
-      statement: "the first stage",
-      path: { name: "the release", index: 0 },
+    const soon = await storeGraph(t, {
+      statement: "the dated batch",
       tasks: [{ statement: "freeze the branch", actor: "agent" }],
     });
+    const freeze = byStatement(await batchTodos(t, soon), "freeze the branch");
+    await t.run(async (ctx) =>
+      ctx.db.patch(freeze._id, {
+        dueAt: Date.now() + 86_400_000,
+        timingClass: "dated",
+      }),
+    );
 
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
     const sessions = await workSessions(t);
     expect(sessions).toHaveLength(1);
-    const freeze = byStatement(
-      await batchTodos(t, firstBatch),
-      "freeze the branch",
-    );
     expect(sessions[0].todoId).toBe(freeze._id);
-    // The mission states where the batch sits, in the path vocabulary.
-    const text = await missionText(tom, sessions[0]._id);
-    expect(text).toContain('path: "the release", position 0');
   });
 
   // witness: drop batchNeedsMet from the frontier walk — a batch whose need
@@ -4589,31 +4535,6 @@ describe("frontier scheduler", () => {
     expect(later.map((s) => s.todoId)).toContain(
       byStatement(await batchTodos(t, second.batchId as Id<"batches">), "cut the release notes")._id,
     );
-  });
-
-  // witness: drop the pathed-before-unpathed clause (the `pa === undefined`
-  // test) and this goes red — stated sequencing would lose to a batch that
-  // states none.
-  it("walks a batch on a path before a batch on none", async () => {
-    const t = convexTest({ schema, modules });
-    await withTom(t);
-    await enableAuto(t, { maxNewPerTick: 1 });
-    await heartbeat(t);
-    await storeGraph(t, {
-      statement: "the unsequenced batch",
-      tasks: [{ statement: "read the inbox", actor: "agent" }],
-    });
-    const pathed = await storeGraph(t, {
-      statement: "the sequenced batch",
-      path: { name: "the release", index: 0 },
-      tasks: [{ statement: "freeze the branch", actor: "agent" }],
-    });
-
-    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
-    const sessions = await workSessions(t);
-    expect(sessions).toHaveLength(1);
-    const freeze = byStatement(await batchTodos(t, pathed), "freeze the branch");
-    expect(sessions[0].todoId).toBe(freeze._id);
   });
 
   // witness: move the frontier walk below the legacy lanes in
@@ -4673,28 +4594,6 @@ describe("frontier scheduler", () => {
     const text = await missionText(tom, sessions[0]._id);
     expect(text).toContain("open plan step");
     expect(text).not.toContain("YOU HAVE CLAIMED ONE TODO");
-  });
-
-  // A stored "preparing" reads as unprepared (ttsShared.normalizeReadiness):
-  // an older box job left the write-up half done, and the lanes hand it out
-  // again. Read it as prepared and this goes red — the row would be neither
-  // worked nor ready for Tom, stranded until someone noticed.
-  it("hands out a row still spelled preparing", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    await enableAuto(t, { maxNewPerTick: 1 });
-    await heartbeat(t);
-    const todoId = await tom.mutation(api.tts.createTodo, {
-      statement: "draft the reading list",
-    });
-    await t.run(async (ctx) => {
-      await ctx.db.patch(todoId, { readiness: "preparing" });
-    });
-
-    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
-    const sessions = await workSessions(t);
-    expect(sessions).toHaveLength(1);
-    expect(sessions[0].todoId).toBe(todoId);
   });
 
   // witness: drop the batch-status test from the frontier walk and this goes
@@ -4842,20 +4741,16 @@ describe("frontier scheduler", () => {
     expect((await workSessions(t)).filter((s) => s.todoId === goalId)).toHaveLength(2);
   });
 
-  // witness: read `condition` as a completion test on every goal (drop the
-  // timingClass arm of goalCheckable in ttsShared.ts) and this goes red — a
-  // condition-bound todo's condition is its TRIGGER ("when the landlord sends
-  // the paperwork"), so a worker would find the trigger fired and close one of
-  // Tom's own todos, past the freeze every other agent write respects.
-  it("never hands a worker a condition-bound goal to check", async () => {
+  // witness: drop the goalCheckable gate on the frontier and this goes red —
+  // a goal with no condition and no code subject has nothing an agent can go
+  // and check, so a worker handed it would be inventing the answer.
+  it("never hands a worker a goal with nothing to check", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await enableAuto(t);
     await heartbeat(t);
     const goalId = await tom.mutation(api.tts.createTodo, {
       statement: "renew the apartment lease",
-      timingClass: "condition-bound",
-      condition: "the landlord sends the renewal paperwork",
     });
     await storeGraph(t, {
       statement: "the lease batch",

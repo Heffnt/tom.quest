@@ -24,6 +24,12 @@
 //     back on Tom's pile. A value mapping leaves the retired FIELD in place;
 //     emptying the field itself is the clearing walk at the bottom of this
 //     file, and it is what the narrow waits on.
+//   - LOOSE READS AFTER THE NARROW. Once a walk has run and been verified,
+//     the validator narrows past the shape it maps (docs/lifeos-retirement.md).
+//     A row on the deployment can still hold a value the schema no longer
+//     declares, and Convex returns it, so each walk reads its retired field
+//     through a loose view of the row rather than the generated Doc type —
+//     which is what keeps a re-run (the verification step) runnable.
 
 import { v } from "convex/values";
 import { internalMutation } from "./_generated/server";
@@ -36,6 +42,7 @@ import {
   MAX_NEEDS,
   normalizeReadiness,
   normalizeRecommendation,
+  type StoredReadiness,
   type StoredRecommendation,
 } from "./ttsShared";
 
@@ -122,6 +129,8 @@ async function walkTodos(
 // written up; it goes back to the preparer rather than onto Tom's pile, since
 // a half-prepared capture is never ready. Whether a prepared row is READY for
 // Tom is computed from then on (ttsShared.isReadyForTom).
+// RUN AND VERIFIED on prod (2026-09-06: 1392 rows, both retired counts zero on
+// the second run); the validator has narrowed to the two values since.
 export const READINESS_MIGRATION = "readiness";
 
 export const internalMigrateReadiness = internalMutation({
@@ -141,12 +150,13 @@ export const internalMigrateReadiness = internalMutation({
       internal.ttsMigrations.internalMigrateReadiness,
       page,
       async (row, dryRun) => {
-        const target = normalizeReadiness(row.readiness);
-        if (row.readiness === target) {
+        const stored = (row as { readiness: StoredReadiness }).readiness;
+        const target = normalizeReadiness(stored);
+        if (stored === target) {
           page[target]++;
           return;
         }
-        page[`${row.readiness}-to-${target}`]++;
+        page[`${stored}-to-${target}`]++;
         if (!dryRun) await ctx.db.patch(row._id, { readiness: target });
       },
     );
@@ -184,6 +194,17 @@ export const internalMigrateReadiness = internalMutation({
 //                     only counts the v1 batches still waiting for it.
 export const TIMING_MIGRATION = "timing";
 
+/** The retired shape, as a stored row still holds it. The validator no longer
+ * declares these three (the lifeos update, phase 7), and Convex returns an
+ * undeclared field on an existing row unchanged, so the walk reads them
+ * through this view rather than through Doc<"dtsTodos"> — which is what keeps
+ * a verification re-run possible after the narrow. */
+type RetiredTiming = {
+  timingClass: "dated" | "whenever" | "condition-bound";
+  latestSafeAt?: number;
+  wakeCondition?: string;
+};
+
 /** The statement with the condition sentence carried into it. Idempotent: a
  * statement that already carries the sentence is returned as it is. */
 export function carryCondition(statement: string, condition: string | undefined): string {
@@ -220,19 +241,20 @@ export const internalMigrateTiming = internalMutation({
         // same statement, so the second mapping cannot overwrite what the
         // first carried in, and one write lands both.
         const patch: Partial<Doc<"dtsTodos">> = {};
+        const retired = row as unknown as RetiredTiming;
         const terminal = row.status === "done" || row.status === "archived";
         let statement = row.statement;
         // (a) a stored waiting row becomes active with its wakeAt.
         if (row.status === "waiting") {
           page["waiting-to-active"]++;
           patch.status = "active";
-          if (row.wakeAt === undefined && row.wakeCondition !== undefined) {
+          if (row.wakeAt === undefined && retired.wakeCondition !== undefined) {
             page["waiting-condition-carried"]++;
-            statement = carryCondition(statement, row.wakeCondition);
+            statement = carryCondition(statement, retired.wakeCondition);
           }
         }
         // (b) a condition-bound row becomes a task carrying its condition.
-        if (row.timingClass === "condition-bound") {
+        if (retired.timingClass === "condition-bound") {
           const isGoal = row.kind === "goal";
           page[isGoal ? "condition-bound-goal-kept" : "condition-bound-to-task"]++;
           statement = carryCondition(statement, row.condition);
@@ -245,10 +267,10 @@ export const internalMigrateTiming = internalMutation({
           // retired value leaves the validator, but a wakeAt written on a
           // finished row would be read as a real sleep the day it is
           // reopened.
-          if (row.latestSafeAt !== undefined && !terminal) {
+          if (retired.latestSafeAt !== undefined && !terminal) {
             if (row.wakeAt === undefined) {
               page["condition-wake-set"]++;
-              patch.wakeAt = row.latestSafeAt - CONDITION_WINDOW_MS;
+              patch.wakeAt = retired.latestSafeAt - CONDITION_WINDOW_MS;
             } else {
               page["condition-wake-kept"]++;
             }
@@ -263,15 +285,15 @@ export const internalMigrateTiming = internalMutation({
               to: "active",
               note: "lifeos migration: a sleep is a wakeAt on an active row",
               wakeAt: row.wakeAt,
-              wakeCondition: row.wakeCondition,
+              wakeCondition: retired.wakeCondition,
             });
           }
-          if (row.timingClass === "condition-bound") {
+          if (retired.timingClass === "condition-bound") {
             await logEvent(ctx, "timing-mapped", row._id, {
               before: {
-                timingClass: row.timingClass,
+                timingClass: retired.timingClass,
                 condition: row.condition,
-                latestSafeAt: row.latestSafeAt,
+                latestSafeAt: retired.latestSafeAt,
                 wakeAt: row.wakeAt,
                 statement: row.statement,
               },
@@ -302,29 +324,36 @@ export const internalMigrateTiming = internalMutation({
 // batch on its path (the one with the greatest index below its own); a
 // "helps" edge becomes nothing — "only makes this easier" is not a
 // prerequisite, and needs holds prerequisites only; a first or unlinked
-// batch needs nothing. The path is left in place until NARROW.
+// batch needs nothing. The path itself is gone from the validator; a stored
+// one still comes back off the row, which is what keeps this walk re-runnable.
 //
 // One transaction: the batches table is human-scale (a few dozen rows for
 // years, per its schema comment), and deriving an edge needs the whole path
 // in view. Same dry run, counts, idempotence, and event as the walks above.
 export const BATCH_NEEDS_MIGRATION = "batch-needs";
 
+/** The retired shape, as a stored batch still holds it. The validator no
+ * longer declares `path` (the lifeos update, phase 7) and Convex returns an
+ * undeclared field on an existing row unchanged, so this walk reads it through
+ * a loose view — which is what lets a verification re-run stay possible after
+ * the narrow. */
+type RetiredPath = { path?: { name: string; index: number; edge?: string } };
+
 /** The previous batch on a path: the greatest index below `index`. Two
  * batches sharing that index (the planner never wrote one, but nothing
  * refused it) tie, and the first in `all` — table order, oldest first — wins:
  * the strict `>` below keeps the one already found. Stated so the derived
  * edge is the same on every run. */
-export function previousOnPath<T extends { path?: { name: string; index: number } }>(
-  batch: T,
-  all: readonly T[],
-): T | undefined {
-  const path = batch.path;
+export function previousOnPath<T>(batch: T, all: readonly T[]): T | undefined {
+  const pathOf = (b: T) => (b as RetiredPath).path;
+  const path = pathOf(batch);
   if (!path) return undefined;
   let best: T | undefined;
   for (const other of all) {
-    if (other === batch || !other.path || other.path.name !== path.name) continue;
-    if (other.path.index >= path.index) continue;
-    if (!best || other.path.index > best.path!.index) best = other;
+    const op = pathOf(other);
+    if (other === batch || !op || op.name !== path.name) continue;
+    if (op.index >= path.index) continue;
+    if (!best || op.index > pathOf(best)!.index) best = other;
   }
   return best;
 }
@@ -343,15 +372,16 @@ export const internalMigrateBatchNeeds = internalMutation({
       "no-path": 0,
     };
     for (const batch of all) {
-      if (!batch.path) {
+      const path = (batch as unknown as RetiredPath).path;
+      if (!path) {
         page["no-path"]++;
         continue;
       }
-      if (batch.path.edge === "helps") {
+      if (path.edge === "helps") {
         page["helps-dropped"]++;
         continue;
       }
-      if (batch.path.edge !== "must") {
+      if (path.edge !== "must") {
         page.unlinked++;
         continue;
       }
@@ -371,7 +401,7 @@ export const internalMigrateBatchNeeds = internalMutation({
         await logEvent(ctx, "batch-needs-derived", undefined, {
           batchId: batch._id,
           needs: previous._id,
-          path: batch.path,
+          path,
         });
       }
     }
@@ -389,6 +419,9 @@ export const internalMigrateBatchNeeds = internalMutation({
 // stale-replan → revise, needs-session → session, propose-archive → archive;
 // approve stays. One transaction: one brief per open code todo, a small
 // table. Same dry run, counts, idempotence, and event.
+// RUN AND VERIFIED on prod; the validator has narrowed to the four words
+// since, so the retired spelling a stored brief could carry is read here
+// through a loose view of the row — which is what keeps a re-run possible.
 export const RECOMMENDATION_MIGRATION = "recommendation";
 
 export const internalMigrateRecommendations = internalMutation({
@@ -403,12 +436,14 @@ export const internalMigrateRecommendations = internalMutation({
       "already-verdict-word": 0,
     };
     for (const brief of all) {
-      const target = normalizeRecommendation(brief.recommendation);
-      if (brief.recommendation === target) {
+      const stored = (brief as { recommendation: StoredRecommendation })
+        .recommendation;
+      const target = normalizeRecommendation(stored);
+      if (stored === target) {
         page["already-verdict-word"]++;
         continue;
       }
-      page[`${brief.recommendation}-to-${target}`]++;
+      page[`${stored}-to-${target}`]++;
       if (!dryRun) await ctx.db.patch(brief._id, { recommendation: target });
     }
     await logEvent(
