@@ -2583,6 +2583,70 @@ describe("message overflow (the complete payload)", () => {
     expect(rows.map((r) => r.text).sort()).toEqual(["abc", "def"]);
   });
 
+  // The re-ingest path (worker/session-host/reingest-overflow.mjs): the row
+  // landed unstamped when the live upload failed; later the chunks go up and
+  // the stamp is written from the file's own hash.
+  it("stamps an unstamped row once its chunks are up, and only then", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    const chunks = ["first half ", "second half"];
+    const stamp = stampFor(chunks);
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      finalize: [
+        {
+          seq: 0,
+          turn: 0,
+          kind: "tool-result" as const,
+          content: { toolUseId: "tool_1", content: "first half " },
+        },
+      ],
+    });
+    const stampIt = () =>
+      t.mutation(internal.claudeSessions.internalStampOverflow, {
+        sessionId,
+        seq: 0,
+        ...stamp,
+      });
+    // Before the chunks: refused, the row untouched.
+    expect(await stampIt()).toMatchObject({ ok: false, reason: "chunks incomplete" });
+    await uploadChunks(t, sessionId, 0, chunks);
+    expect(await stampIt()).toEqual({ ok: true, stamped: true });
+    // Again (a lost response, a re-run): a no-op, not a refusal.
+    expect(await stampIt()).toEqual({ ok: true, stamped: false });
+    // A different stamp for the same row: refused.
+    expect(
+      await t.mutation(internal.claudeSessions.internalStampOverflow, {
+        sessionId,
+        seq: 0,
+        ...stamp,
+        byteLength: stamp.byteLength + 1,
+      }),
+    ).toMatchObject({ ok: false, reason: "row already stamped" });
+    // No row under the seq at all: refused.
+    expect(
+      await t.mutation(internal.claudeSessions.internalStampOverflow, {
+        sessionId,
+        seq: 7,
+        ...stamp,
+      }),
+    ).toMatchObject({ ok: false, reason: "no message row" });
+
+    const page = await tom.query(api.claudeSessions.getMessages, {
+      sessionId,
+      paginationOpts: { numItems: 10, cursor: null },
+    });
+    expect(page.page[0]).toMatchObject({
+      hasOverflow: true,
+      fullByteLength: stamp.byteLength,
+    });
+    const whole = await tom.query(api.claudeSessions.getMessageOverflow, {
+      messageId: page.page[0]._id,
+    });
+    expect(whole).toMatchObject({ complete: true, text: chunks.join("") });
+  });
+
   // witness: drop the sweep from the seq floor — chunks uploaded for a row
   // the floor then dropped would sit under a seq whose landed row never
   // names them, unreadable and undeletable.
@@ -2729,6 +2793,16 @@ describe("message overflow (the complete payload)", () => {
       });
       expect(refused.status).toBe(409);
       expect(await refused.json()).toEqual({ error: "malformed chunk" });
+
+      const stamp = await post("/sessions/overflow/stamp", {
+        sessionId,
+        seq: 0,
+        sha256: "not hex",
+        byteLength: 1,
+        chunkCount: 1,
+      });
+      expect(stamp.status).toBe(400);
+      expect(await stamp.json()).toEqual({ error: "sha256 (64 hex chars) required" });
     } finally {
       delete process.env.SESSIONS_WORKER_KEY;
     }

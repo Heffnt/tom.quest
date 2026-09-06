@@ -1897,6 +1897,59 @@ export const internalIngestOverflow = internalMutation({
   },
 });
 
+// The re-ingest's second step, behind POST /sessions/overflow/stamp: the
+// row landed without its stamp when the live upload failed, the chunks are
+// up now, and this names them from the row. Refused when there is no row
+// under the seq, when the row is already stamped with something else, or
+// when the last chunk the stamp would name is not there (the uploads run in
+// order, so the last one standing means the set is whole). Stamping the same
+// values twice is a no-op, so a re-run after a lost response is safe.
+export const internalStampOverflow = internalMutation({
+  args: {
+    sessionId: v.id("claudeSessions"),
+    seq: v.number(),
+    sha256: v.string(),
+    byteLength: v.number(),
+    chunkCount: v.number(),
+  },
+  handler: async (ctx, args) => {
+    await getSessionOrThrow(ctx, args.sessionId);
+    const where = { sessionId: args.sessionId, seq: args.seq };
+    if (
+      !Number.isInteger(args.seq) ||
+      args.seq < 0 ||
+      !Number.isInteger(args.chunkCount) ||
+      args.chunkCount < 1 ||
+      !Number.isInteger(args.byteLength) ||
+      args.byteLength < 0 ||
+      !/^[0-9a-f]{64}$/.test(args.sha256)
+    ) {
+      return refuseOverflow("malformed stamp", where);
+    }
+    const row = await messageAt(ctx, args.sessionId, args.seq);
+    if (!row) return refuseOverflow("no message row", where);
+    const stamp = {
+      sha256: args.sha256,
+      byteLength: args.byteLength,
+      chunkCount: args.chunkCount,
+    };
+    if (row.overflow) {
+      const same =
+        row.overflow.sha256 === stamp.sha256 &&
+        row.overflow.byteLength === stamp.byteLength &&
+        row.overflow.chunkCount === stamp.chunkCount;
+      if (same) return { ok: true as const, stamped: false };
+      return refuseOverflow("row already stamped", where);
+    }
+    const last = await chunkAt(ctx, args.sessionId, args.seq, args.chunkCount - 1);
+    if (!last || last.chunkCount !== args.chunkCount) {
+      return refuseOverflow("chunks incomplete", where);
+    }
+    await ctx.db.patch(row._id, { overflow: stamp });
+    return { ok: true as const, stamped: true };
+  },
+});
+
 // Remove every chunk under (sessionId, seq): the one home for taking a
 // message's complete payload out, called by the seq floor above for a
 // stamped replay whose landed twin has no stamp, and what any future removal

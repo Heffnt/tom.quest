@@ -349,6 +349,14 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # /var/lib/tts/execute.lock (stale after 3h) stops overlap.
 45 * * * * root /usr/bin/node /opt/tts/execute-approved.mjs >> /var/log/tts/execute-approved.log 2>&1
 
+# Finish storing the complete transcript payloads the session-host daemon
+# could not (worker/session-host/reingest-overflow.mjs): every file under
+# /var/cache/tts/sessions/<id>/overflow/ goes up again and is deleted once the
+# server has stamped its row. Hourly at :23 (an odd minute, no collision);
+# flock because one upload can outlast a tick. Its log is the runbook — a
+# file named there run after run needs a hand.
+23 * * * * root /usr/bin/flock -n /var/lock/tts-reingest-overflow.lock /usr/bin/node /opt/tts/session-host/reingest-overflow.mjs >> /var/log/tts/reingest-overflow.log 2>&1
+
 # Log hygiene: truncate the TTS logs on the 1st of each month. Deliberately
 # crude — these logs are debugging convenience, not state, and the Jarvis Box keeps
 # nothing it can't lose.

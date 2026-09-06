@@ -1701,6 +1701,57 @@ http.route({
   handler: sessionsOverflow,
 });
 
+// POST /sessions/overflow/stamp — the second step of a re-ingest
+// (worker/session-host/reingest-overflow.mjs): the row landed without its
+// stamp when the live upload failed, the chunks are up now, and this names
+// them from the row. Same door, same posture: typed fields, fixed errors.
+const sessionsOverflowStamp = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.sessionId !== "string" || b.sessionId === "") {
+    return jsonResponse(400, { error: "sessionId required" });
+  }
+  for (const field of ["seq", "byteLength", "chunkCount"] as const) {
+    if (!nonNegativeInteger(b[field])) {
+      return jsonResponse(400, {
+        error: `${field} (non-negative integer) required`,
+      });
+    }
+  }
+  if (typeof b.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(b.sha256)) {
+    return jsonResponse(400, { error: "sha256 (64 hex chars) required" });
+  }
+  try {
+    const result = await ctx.runMutation(
+      internal.claudeSessions.internalStampOverflow,
+      {
+        sessionId: b.sessionId as Id<"claudeSessions">,
+        seq: b.seq as number,
+        sha256: b.sha256,
+        byteLength: b.byteLength as number,
+        chunkCount: b.chunkCount as number,
+      },
+    );
+    if (!result.ok) return jsonResponse(409, { error: result.reason });
+    return jsonResponse(200, result);
+  } catch {
+    return jsonResponse(400, { error: "overflow stamp rejected" });
+  }
+});
+
+http.route({
+  path: "/sessions/overflow/stamp",
+  method: "POST",
+  handler: sessionsOverflowStamp,
+});
+
 // GET /sessions/transcript?sessionId=<id>&cursor=<opaque> — one page of a
 // session's finalized transcript, oldest first. The daemon walks it to write
 // .tts-transcript.md into a forked session's workspace before that session's
