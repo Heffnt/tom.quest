@@ -249,6 +249,13 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # poll-gmail: the Claude triage call can outlast a tick.
 13,43 * * * * root /usr/bin/flock -n /var/lock/tts-poll-canvas.lock /usr/bin/node /opt/tts/poll-canvas.mjs >> /var/log/tts/poll-canvas.log 2>&1
 
+# Outlook mail — NO CRON LINE YET, on purpose. poll-outlook.mjs is a skeleton:
+# its Microsoft Graph half lands in the same change as the OUTLOOK_* credential
+# (a Tom step, see worker.env.example), and a scheduled job that can only ever
+# print one line is noise in the log every ten minutes. Uncomment this with
+# that change, not before.
+#*/10 * * * * root /usr/bin/flock -n /var/lock/tts-poll-outlook.lock /usr/bin/node /opt/tts/poll-outlook.mjs >> /var/log/tts/poll-outlook.log 2>&1
+
 # Read Tom's freeform TIME NOTES (the only time input left on the /tts page)
 # and turn each into concrete date/block changes, every 2 minutes so a note he
 # types is acted on while he is still looking at the page. The queue is

@@ -1,7 +1,7 @@
 # The Jarvis Box
 
 The always-on home for TTS's scheduled headless-Claude jobs: a Hetzner VPS
-(today: x86_64, Ubuntu 26.04 — it began life as an ARM64 CAX11 on 24.04) running three personal-todo jobs and three code-todo jobs
+(today: x86_64, Ubuntu 26.04 — it began life as an ARM64 CAX11 on 24.04) running five personal-todo jobs and three code-todo jobs
 on a schedule:
 
 1. **poll-dump** (every 2 min) — reads new human messages from the Slack
@@ -35,7 +35,17 @@ on a schedule:
    they shared `canvas` until the sync was found reading every announcement row
    and dropping it without a word. Quiet no-op until `CANVAS_TOKEN` exists in worker.env (WPI
    restricts token creation; Tom's request form is pending).
-4. **prepare-queue** (4:30 a.m. New York) — runs headless Claude Code to pick
+4. **poll-outlook** (not scheduled yet) — the Outlook counterpart of
+   poll-gmail (Tom, 2026-08-25: "outlook is where the most important mail comes
+   in"). It is a **skeleton**: the credential contract, the cursor's home and
+   the two strings a later reader depends on are settled, and the Microsoft
+   Graph half lands in the same change as the `OUTLOOK_*` credential, because
+   network code that can never be exercised is worse than an empty hand. It
+   has no cron line at all until then — the line is written and commented out
+   in `setup.sh`, with the reason next to it. Run by hand today it prints one
+   line naming the keys it is still waiting for. See "Outlook credentials"
+   below.
+5. **prepare-queue** (4:30 a.m. New York) — runs headless Claude Code to pick
    today's queue (≤7 items) and write the daily digest, and posts both to
    Convex. If it fails, the Convex-side fallback prep (4:45) still writes the
    day's queue. The digest text it writes has no reader any more: since the
@@ -43,9 +53,9 @@ on a schedule:
    Convex (`convex/ttsDigest.ts`) and sent by `sendDigest`, so a missing
    morning message is itself the monitoring signal. This job's digest half
    goes in phase 7 with the queue.
-5. **brief-code-todos** (every 2 h at :17) — see the ruling loop below.
-6. **apply-rulings** (every 10 min) — see the ruling loop below.
-7. **execute-approved** (hourly at :45) — see the ruling loop below.
+6. **brief-code-todos** (every 2 h at :17) — see the ruling loop below.
+7. **apply-rulings** (every 10 min) — see the ruling loop below.
+8. **execute-approved** (hourly at :45) — see the ruling loop below.
 
 ## The code-todo ruling loop
 
@@ -193,6 +203,9 @@ are all harmless to lose:
 - `/var/lib/tts/gmail-cursor` — timestamp of the newest email poll-gmail has
   processed (captured or skipped); losing it re-examines the last 24 hours,
   at worst re-capturing a few emails as duplicates Tom can archive.
+- `/var/lib/tts/outlook-cursor` — the same, for poll-outlook, in the same
+  one-integer format; it does not exist yet (the job has no cron line until
+  the `OUTLOOK_*` credential does).
 - `/var/lib/tts/canvas-announcements-cursor` — timestamp of the newest
   announcement poll-canvas has processed; losing it re-examines the last
   7 days, at worst re-capturing a few announcements as duplicates.
@@ -250,6 +263,29 @@ No credential value is ever printed — see the "never log secrets" rule in
 `worker/jobs/credential-file.mjs`, which is how they comply. The token lasts
 until it is revoked at `myaccount.google.com/permissions`. The script's own
 header carries the ten-minute console walkthrough.
+
+## Outlook credentials (one-time, not yet minted)
+
+poll-outlook needs three keys in `/etc/tts/worker.env` — `OUTLOOK_CLIENT_ID`,
+`OUTLOOK_CLIENT_SECRET`, `OUTLOOK_REFRESH_TOKEN` — and prints one line naming
+the missing ones until all three are there.
+
+The client id and secret come from an Entra ID (Azure AD) app registration in
+Tom's tenant, with the **delegated** Microsoft Graph permission `Mail.Read`
+plus `offline_access` (which is what makes a refresh token mintable at all).
+Read-only by construction: a leaked token cannot send mail as him.
+
+The refresh token is minted ONCE on Tom's own machine rather than on the
+Jarvis Box, because approving it needs a browser — the same one-time shape as
+`gmail-auth.mjs`. **That minting helper and the Microsoft Graph half of the
+job both land in the change that carries this credential**, together with the
+cron line, which sits commented out in `setup.sh` with the reason beside it
+until then. Network code that can never be exercised is worse than an empty
+hand, so what is in the repo today is only what could be settled without the
+token: the three key names, the cursor's home
+(`/var/lib/tts/outlook-cursor`, the same one-integer format as the Gmail
+cursor), the source id shape `outlook:message:<id>`, and the line a `#tts`
+thread opens with.
 
 ## Calendar credentials (one-time)
 
@@ -345,6 +381,7 @@ tts-account use wpi      # switch; takes effect on the next job run
 node /opt/tts/poll-dump.mjs               # capture anything new in #dump now
 node /opt/tts/poll-gmail.mjs              # triage + capture new inbox mail now
 node /opt/tts/poll-canvas.mjs             # triage + capture new announcements now
+node /opt/tts/poll-outlook.mjs            # prints the OUTLOOK_* keys still missing
 node /opt/tts/prepare-queue.mjs --force   # prep today's queue regardless of hour
 node /opt/tts/brief-code-todos.mjs        # brief changed CMT todos now
 node /opt/tts/brief-code-todos.mjs --force # re-brief EVERY open CMT todo
