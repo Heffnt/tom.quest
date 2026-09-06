@@ -1,0 +1,273 @@
+#!/usr/bin/env node
+// tts-slack-setup — one-off: make the #tts-hourly channel and find Tom's id.
+//
+// Run ONCE on the Jarvis Box (or anywhere SLACK_BOT_TOKEN is in reach):
+//
+//   tts-slack-setup                      # lists the human members and stops
+//   tts-slack-setup --user U012ABCDEF    # that member is Tom
+//   tts-slack-setup --email tom@…        # the member whose profile.email matches
+//
+// WHICH MEMBER IS TOM IS AN INPUT, not a guess. The id this prints becomes
+// TOM_SLACK_USER_ID, and that id is what the events route trusts to authorize
+// writes — a wrong guess hands another workspace member Tom's pen. So the
+// first form prints every human candidate and exits; one of the other two
+// names the account, and an id that is not in the list, or an email that
+// matches none or several, is refused.
+//
+// What it does, in order, with the TTS Slack app's bot token:
+//   1. conversations.list / conversations.create — a public channel named
+//      tts-hourly exists afterwards. The list INCLUDES archived channels: an
+//      archived tts-hourly is unarchived and reused, because creating over it
+//      fails name_taken and the run is meant to be repeatable. A newly created
+//      channel has the creator as a member; an existing one gets
+//      conversations.join for the bot. Needs channels:manage (create,
+//      unarchive) and channels:join (join; a refused join is reported, and the
+//      bot is then invited by hand).
+//   2. users.list — every human member (never a bot, never a deleted account),
+//      printed with name, id and whether it owns the workspace. --user or
+//      --email selects one of them.
+//   3. conversations.invite — Tom is a member of the channel. Needs
+//      channels:manage; "already_in_channel" counts as done.
+//
+// It prints exactly two lines to standard output, nothing else:
+//
+//   SLACK_TTS_HOURLY_CHANNEL_ID=C…
+//   TOM_SLACK_USER_ID=U…
+//
+// Both go into the Convex deployment's env (secrets/convex.env, then
+// `pnpm secrets:sync`; see worker/README.md). Progress goes to standard error.
+// The token is never printed — an agent session stores its own standard
+// output (AGENTS.md, "never log secrets").
+//
+// THE TOKEN: SLACK_BOT_TOKEN from the environment if set, else read straight
+// out of /etc/tts/worker.env — the same name the Convex side uses, so a box
+// with the file and a laptop with the Convex value both work. Only that one
+// key is read from the file (the parse mirrors tts-browse's: KEY=VALUE, '#'
+// comments and blank lines ignored).
+//
+// Exit codes: 0 ok · 3 no token in reach · 4 Slack refused a call (its error
+// name is printed) · 5 no account named, or the one named matched no human
+// member (the candidates are listed on standard error either way).
+"use strict";
+
+const fs = require("node:fs");
+
+const CHANNEL_NAME = "tts-hourly";
+const WORKER_ENV_PATH = "/etc/tts/worker.env";
+const PAGE_LIMIT = 200;
+const MAX_PAGES = 50; // 10,000 users or channels; a personal workspace has a handful
+
+function log(line) {
+  process.stderr.write(`tts-slack-setup: ${line}\n`);
+}
+
+function botToken() {
+  if (process.env.SLACK_BOT_TOKEN) return process.env.SLACK_BOT_TOKEN;
+  let text;
+  try {
+    text = fs.readFileSync(WORKER_ENV_PATH, "utf8");
+  } catch {
+    return undefined;
+  }
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq === -1) continue;
+    if (trimmed.slice(0, eq).trim() !== "SLACK_BOT_TOKEN") continue;
+    let value = trimmed.slice(eq + 1).trim();
+    if (
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'")))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (value) return value;
+  }
+  return undefined;
+}
+
+// One Slack Web API call. GETs carry their params in the query string, POSTs
+// as a JSON body. A non-ok answer is thrown with Slack's own error name (and
+// nothing else — the token is in a header, never in a message).
+async function slack(token, method, params, { post = false } = {}) {
+  let res;
+  if (post) {
+    res = await fetch(`https://slack.com/api/${method}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify(params),
+    });
+  } else {
+    const url = new URL(`https://slack.com/api/${method}`);
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined) url.searchParams.set(k, String(v));
+    }
+    res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  }
+  if (!res.ok) throw new Error(`${method} -> HTTP ${res.status}`);
+  const data = await res.json();
+  if (!data.ok) {
+    const err = new Error(`${method} -> ${data.error}`);
+    err.slackError = data.error;
+    throw err;
+  }
+  return data;
+}
+
+// Walk a cursor-paginated list method to the end, collecting `field`.
+async function listAll(token, method, params, field) {
+  const out = [];
+  let cursor;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const data = await slack(token, method, { ...params, limit: PAGE_LIMIT, cursor }, {});
+    out.push(...(data[field] ?? []));
+    cursor = data.response_metadata?.next_cursor;
+    if (!cursor) break;
+  }
+  return out;
+}
+
+async function ensureChannel(token) {
+  // Archived channels included on purpose: an archived #tts-hourly still holds
+  // the name, so conversations.create would fail name_taken and a second run
+  // of this script would get nowhere. Unarchive and reuse it instead.
+  const channels = await listAll(
+    token,
+    "conversations.list",
+    { types: "public_channel", exclude_archived: false },
+    "channels",
+  );
+  const existing = channels.find((c) => c.name === CHANNEL_NAME);
+  if (existing) {
+    if (existing.is_archived) {
+      log(`#${CHANNEL_NAME} exists but is archived (${existing.id}); unarchiving`);
+      await slack(token, "conversations.unarchive", { channel: existing.id }, { post: true });
+    }
+    log(`#${CHANNEL_NAME} exists (${existing.id}); joining the bot`);
+    try {
+      await slack(token, "conversations.join", { channel: existing.id }, { post: true });
+    } catch (err) {
+      // channels:join is not among the scopes this repo can vouch for. The
+      // channel id is still the answer; the bot can be let in by hand with
+      // `/invite @<the app>` in the channel.
+      log(`join refused (${err.message}); invite the bot from the channel by hand`);
+    }
+    return existing.id;
+  }
+  log(`#${CHANNEL_NAME} does not exist; creating it`);
+  const created = await slack(
+    token,
+    "conversations.create",
+    { name: CHANNEL_NAME, is_private: false },
+    { post: true },
+  );
+  return created.channel.id;
+}
+
+// --user <id> and --email <address>; anything else is refused rather than
+// ignored, so a typo cannot look like "no selection".
+function parseArgs(argv) {
+  const selection = { userId: undefined, email: undefined };
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--user" || arg === "--email") {
+      const value = argv[++i];
+      if (!value) {
+        log(`${arg} needs a value`);
+        process.exit(2);
+      }
+      if (arg === "--user") selection.userId = value;
+      else selection.email = value;
+      continue;
+    }
+    log(`unknown argument ${JSON.stringify(arg)}`);
+    process.exit(2);
+  }
+  return selection;
+}
+
+// Every human candidate, named. Emails are NOT printed — this output is stored
+// by whatever session runs the script, and the workspace's addresses are not
+// its business; --email matches against them without showing them.
+function listCandidates(humans) {
+  log(`${humans.length} human member(s):`);
+  for (const u of humans) {
+    const name = u.name ?? u.real_name ?? "(no name)";
+    log(`  ${u.id}  ${name}${u.is_owner ? "  is_owner" : ""}`);
+  }
+}
+
+// Tom is whichever member the operator named. Never a guess: the workspace
+// owner is often the app's installer rather than Tom, and this id authorizes
+// writes.
+async function findTom(token, selection) {
+  const members = await listAll(token, "users.list", {}, "members");
+  const humans = members.filter(
+    (u) => !u.deleted && !u.is_bot && u.id !== "USLACKBOT",
+  );
+  listCandidates(humans);
+
+  if (selection.userId !== undefined) {
+    const chosen = humans.find((u) => u.id === selection.userId);
+    if (!chosen) {
+      log(`--user ${selection.userId} is not one of the human members above`);
+      process.exit(5);
+    }
+    return chosen.id;
+  }
+  if (selection.email !== undefined) {
+    const wanted = selection.email.trim().toLowerCase();
+    const matches = humans.filter(
+      (u) => (u.profile?.email ?? "").trim().toLowerCase() === wanted,
+    );
+    if (matches.length !== 1) {
+      log(
+        `--email matched ${matches.length} of the human members above; name one with --user <id>`,
+      );
+      process.exit(5);
+    }
+    return matches[0].id;
+  }
+  log("no account named: re-run with --user <id> (or --email <address>)");
+  process.exit(5);
+}
+
+async function inviteTom(token, channel, userId) {
+  try {
+    await slack(token, "conversations.invite", { channel, users: userId }, { post: true });
+    log("invited Tom to the channel");
+  } catch (err) {
+    if (err.slackError === "already_in_channel") {
+      log("Tom is already in the channel");
+      return;
+    }
+    throw err;
+  }
+}
+
+async function main() {
+  const selection = parseArgs(process.argv.slice(2));
+  const token = botToken();
+  if (!token) {
+    log(`no SLACK_BOT_TOKEN in the environment or ${WORKER_ENV_PATH}`);
+    process.exit(3);
+  }
+  try {
+    // Tom first: the run that only lists candidates then changes nothing.
+    const tomId = await findTom(token, selection);
+    const channel = await ensureChannel(token);
+    await inviteTom(token, channel, tomId);
+    process.stdout.write(`SLACK_TTS_HOURLY_CHANNEL_ID=${channel}\n`);
+    process.stdout.write(`TOM_SLACK_USER_ID=${tomId}\n`);
+  } catch (err) {
+    log(`Slack refused: ${err.message}`);
+    process.exit(4);
+  }
+}
+
+main();
