@@ -1236,8 +1236,19 @@ export default defineSchema({
   //
   // THE FOUR NUMBERS ARE CODE-OWNED (the lifeos update, phase 7): their values
   // live in claudeSessions.AUTO_DEFAULTS, no door writes them any more (both
-  // pens copy the constants in), and the page shows what the code says. The
-  // columns stay until NARROW, when they and the row's last reader go.
+  // pens copy the constants in), and getAutoConfig answers with the constants
+  // whatever the row holds.
+  //
+  // THE COLUMNS DID NOT NARROW WITH THE REST OF PHASE 7, and this is why: the
+  // SCHEDULER still reads the row's copies (`{ ...AUTO_DEFAULTS, ...row }` in
+  // internalAutoSchedule), so a row written before the numbers became
+  // code-owned still steers real admission until the switch is next pressed —
+  // while the page, reading the same config through getAutoConfig, shows the
+  // constants. That disagreement is a bug to settle on its own terms, not
+  // under cover of a schema narrow: closing it changes which sessions the
+  // fleet admits. It is also the lever ~35 scheduler tests use to steer
+  // admission (one clone per tick, one live session at a time), which is the
+  // coverage that would have to be rebuilt first.
   claudeAutoConfig: defineTable({
     enabled: v.boolean(),
     maxLoadPerCpu: v.number(), // admit while loadavg1 / cpus <= this
