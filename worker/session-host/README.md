@@ -295,11 +295,13 @@ serve it (both installed by `setup.sh`, both outside every work tree):
   finishes. Every `gh` call pays a classifier verdict (`gh pr merge` and API
   writes past the session's own PR are denied — merging is Tom's gate).
 
-A GitHub-token-shaped string that still reaches an ingest payload is
-redacted by the daemon (`redactGitHubTokens` in lib.mjs) before it can land
-in a transcript row — on 2026-08-30 a session read the token out of
-.git/config, typed it inline, and the classifier's own verdict rows carried
-it verbatim into Convex.
+A credential-shaped string that still reaches an ingest payload is replaced
+with `[redacted:<kind>]` by the daemon (`redactSecrets` in redact.mjs,
+applied to the serialized body in `sessionsFetch` — GitHub, Slack,
+OpenAI/Anthropic, AWS, Google, Convex deploy keys, `Authorization: Bearer`
+values) before it can land in a transcript row — on 2026-08-30 a session read
+the token out of .git/config and typed it inline, and the 2026-09-05
+preservation audit found it in 363 stored messages across 121 sessions.
 
 ## Restart semantics
 

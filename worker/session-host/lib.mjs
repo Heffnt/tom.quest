@@ -15,8 +15,13 @@
 // fails loudly for private ones).
 
 import { ENV_PATH, loadEnv as loadWorkerEnv } from "./worker-env.mjs";
+import { redactSecrets } from "./redact.mjs";
 
 export { ENV_PATH };
+// The credential filter every persisted row passes through, applied in
+// sessionsFetch below. Its body is redact.mjs — dependency-free for the same
+// reason env-scrub.mjs is.
+export { redactSecrets } from "./redact.mjs";
 // The secret-name scrub every model-reachable spawn applies. Its body is
 // env-scrub.mjs — dependency-free so the repo's vitest can fence the list,
 // which it cannot do through this file (the worker-env symlink above is a
@@ -57,7 +62,10 @@ export async function sessionsFetch(env, path, body, { timeoutMs } = {}) {
       "X-Sessions-Key": env.SESSIONS_WORKER_KEY,
       "Content-Type": "application/json",
     },
-    body: redactGitHubTokens(JSON.stringify(body)),
+    // The one choke point: every row this daemon persists is serialized here,
+    // AFTER the 32KB cut below has already run, so the redaction marker is in
+    // the final bytes and cannot itself be sliced.
+    body: redactSecrets(JSON.stringify(body)),
     ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
   });
   const text = await res.text();
@@ -93,23 +101,6 @@ export async function sessionsGet(env, path, params = {}, { timeoutMs } = {}) {
     throw err;
   }
   return JSON.parse(text);
-}
-
-// Last line of defense against a GitHub token landing in a transcript row.
-// On 2026-08-30 a session read the token out of its clone's .git/config and
-// typed it inline in gh commands, and the classifier's verdict rows carried
-// it verbatim into Convex — where a transcript lives forever. The token no
-// longer sits in the clone (credential helper) or the shell env (scrub), but
-// this daemon persists model-authored text, so the ingest body itself is the
-// one choke point every row passes through. GitHub token shapes are prefixed
-// and unambiguous (gh?[pousr]_… / github_pat_…), so the replacement cannot
-// hit ordinary prose; the character class is JSON-escape-free, so replacing
-// inside a serialized string never breaks the JSON.
-export function redactGitHubTokens(text) {
-  return text.replace(
-    /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g,
-    "[REDACTED-GITHUB-TOKEN]",
-  );
 }
 
 // Retry delay: 1s, 2s, 4s, ... capped at 30s, with ±25% jitter so a fleet of
