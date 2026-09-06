@@ -1,0 +1,224 @@
+import { convexTest } from "convex-test";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import schema from "./schema";
+import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES } from "./ttsNightly";
+
+const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
+
+const KEY = "s3cret";
+
+function get(t: ReturnType<typeof convexTest>, path: string, key = KEY) {
+  return t.fetch(path, { method: "GET", headers: { "X-TTS-Key": key } });
+}
+
+function post(t: ReturnType<typeof convexTest>, path: string, body: unknown, key = KEY) {
+  return t.fetch(path, {
+    method: "POST",
+    headers: { "X-TTS-Key": key, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+describe("EXPORT_TABLES", () => {
+  // The six auth tables hold credentials and session secrets; the copy in
+  // WikiTom must never carry them. Everything else in the schema is copied,
+  // without a hand-kept list to forget a new table on.
+  it("is every schema table except the auth ones", () => {
+    const all = Object.keys(schema.tables);
+    const auth = all.filter((n) => n.startsWith("auth"));
+    expect(auth.length).toBe(6);
+    expect(EXPORT_TABLES).toEqual(all.filter((n) => !n.startsWith("auth")).sort());
+    expect(EXPORT_TABLES).toContain("dtsTodos");
+    expect(EXPORT_TABLES).toContain("claudeMessages");
+    expect(EXPORT_TABLES).toContain("ttsSkills");
+    for (const name of EXPORT_TABLES) expect(name.startsWith("auth")).toBe(false);
+  });
+});
+
+describe("GET /tts/export", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("lists the tables when none is named", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const res = await get(t, "/tts/export");
+    expect(res.status).toBe(200);
+    expect((await res.json()).tables).toEqual(EXPORT_TABLES);
+  });
+
+  it("pages a table in creation order up to the boundary", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const ids = await t.run(async (ctx) => {
+      const out = [];
+      for (const kind of ["a", "b", "c", "d", "e"]) {
+        out.push(await ctx.db.insert("dtsEvents", { at: 1, kind }));
+      }
+      return out;
+    });
+    const boundary = Date.now() + 60_000;
+    const first = await get(t, `/tts/export?table=dtsEvents&boundary=${boundary}&numItems=2`);
+    expect(first.status).toBe(200);
+    const p1 = await first.json();
+    expect(p1.rows.map((r: { _id: string }) => r._id)).toEqual(ids.slice(0, 2));
+    expect(p1.isDone).toBe(false);
+    const rest = await get(
+      t,
+      `/tts/export?table=dtsEvents&boundary=${boundary}&numItems=10&cursor=${encodeURIComponent(p1.continueCursor)}`,
+    );
+    const p2 = await rest.json();
+    expect(p2.rows.map((r: { _id: string }) => r._id)).toEqual(ids.slice(2));
+    expect(p2.isDone).toBe(true);
+    // The whole row rides — the copy is the record, not a projection.
+    expect(p2.rows[0].kind).toBe("c");
+    expect(typeof p2.rows[0]._creationTime).toBe("number");
+  });
+
+  // witness: without the boundary a row written mid-walk lands in a later
+  // page of an earlier instant, and the copy is of no single moment.
+  it("leaves out rows created after the boundary", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => ctx.db.insert("dtsEvents", { at: 1, kind: "old" }));
+    const boundary = (
+      await t.run(async (ctx) => ctx.db.query("dtsEvents").collect())
+    )[0]._creationTime;
+    await t.run(async (ctx) => ctx.db.insert("dtsEvents", { at: 1, kind: "new" }));
+    // boundary = the old row's own creation time: strictly-before excludes it
+    // too, so "just after" it admits exactly the old row.
+    const res = await get(t, `/tts/export?table=dtsEvents&boundary=${boundary + 0.5}`);
+    const page = await res.json();
+    expect(page.rows.map((r: { kind: string }) => r.kind)).toEqual(["old"]);
+  });
+
+  it("refuses the auth tables, an unknown table, a bad boundary, and a wrong key", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    expect((await get(t, "/tts/export?table=authSessions&boundary=5")).status).toBe(400);
+    expect((await get(t, "/tts/export?table=nope&boundary=5")).status).toBe(400);
+    expect((await get(t, "/tts/export?table=dtsTodos")).status).toBe(400);
+    expect((await get(t, "/tts/export?table=dtsTodos&boundary=5&numItems=0")).status).toBe(400);
+    expect((await get(t, "/tts/export?table=dtsTodos&boundary=5", "nope")).status).toBe(401);
+  });
+
+  it("defaults the page size", () => {
+    expect(EXPORT_PAGE_DEFAULT).toBe(200);
+  });
+});
+
+describe("POST /tts/event", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("writes one dtsEvents row with the kind and data", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const res = await post(t, "/tts/event", {
+      kind: "nightly-failure",
+      data: { step: "push", error: "rejected" },
+    });
+    expect(res.status).toBe(200);
+    const rows = await t.run(async (ctx) => ctx.db.query("dtsEvents").collect());
+    expect(rows).toHaveLength(1);
+    expect(rows[0].kind).toBe("nightly-failure");
+    expect(rows[0].data).toEqual({ step: "push", error: "rejected" });
+    expect(rows[0].at).toBeGreaterThan(0);
+  });
+
+  // The Slack bookkeeping kinds carry a `key` the events route looks up by;
+  // a worker row of those kinds without one would be a phantom send.
+  it("refuses a kind Convex writes itself, and a malformed kind", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    expect((await post(t, "/tts/event", { kind: "slack-sent" })).status).toBe(400);
+    expect((await post(t, "/tts/event", { kind: "Nightly Run" })).status).toBe(400);
+    expect((await post(t, "/tts/event", { data: {} })).status).toBe(400);
+    expect(await t.run(async (ctx) => ctx.db.query("dtsEvents").collect())).toEqual([]);
+  });
+});
+
+describe("GET /tts/learning-input", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("returns Tom's turns, his Slack replies and his rulings in the window, and nothing an agent wrote", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      const sessionId = await ctx.db.insert("claudeSessions", {
+        title: "the lease",
+        kind: "adhoc",
+        repo: "none",
+        repos: [],
+        status: "ended",
+        statusChangedAt: now,
+        nextSeq: 3,
+        createdAt: now,
+      });
+      const turn = (author: "tom" | "agent", text: string) =>
+        ctx.db.insert("claudeInbound", {
+          sessionId,
+          kind: "user-turn",
+          text,
+          author,
+          status: "done",
+          createdAt: now,
+        });
+      await turn("tom", "sign it Friday");
+      await turn("agent", "the code-built opener");
+      const todoId = await ctx.db.insert("dtsTodos", {
+        statement: "sign the lease",
+        readiness: "unprepared",
+        status: "active",
+        timingClass: "whenever",
+        source: "test",
+        createdAt: now,
+        updatedAt: now,
+      });
+      await ctx.db.insert("dtsEvents", {
+        at: now,
+        kind: "slack-event",
+        key: "Ev1",
+        todoId,
+        data: { text: "done", outcome: "completed" },
+      });
+      await ctx.db.insert("dtsEvents", { at: now, kind: "surfaced", todoId });
+      await ctx.db.insert("dtsRulings", {
+        subjectType: "life",
+        todoId,
+        verdict: "revise",
+        sentence: "ask for a shorter term",
+        ruledAt: now,
+        provenance: { from: "tom-words", inboundId: "x", quote: "ask for a shorter term" },
+      });
+      // Outside the window: yesterday's ruling belongs to yesterday's run.
+      await ctx.db.insert("dtsRulings", {
+        subjectType: "life",
+        todoId,
+        verdict: "approve",
+        ruledAt: now - 3 * 86_400_000,
+      });
+    });
+    const res = await get(t, `/tts/learning-input?since=${now - 3_600_000}&until=${now + 3_600_000}`);
+    expect(res.status).toBe(200);
+    const input = await res.json();
+    expect(input.tomTurns.map((x: { text: string }) => x.text)).toEqual(["sign it Friday"]);
+    expect(input.tomTurns[0].sessionTitle).toBe("the lease");
+    expect(input.slackReplies).toHaveLength(1);
+    expect(input.slackReplies[0].data.text).toBe("done");
+    expect(input.rulings.map((r: { verdict: string }) => r.verdict)).toEqual(["revise"]);
+    expect(input.rulings[0].quote).toBe("ask for a shorter term");
+  });
+
+  it("refuses a missing or inverted window", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    expect((await get(t, "/tts/learning-input")).status).toBe(400);
+    expect((await get(t, "/tts/learning-input?since=5&until=4")).status).toBe(400);
+  });
+});
