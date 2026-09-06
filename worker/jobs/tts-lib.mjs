@@ -73,9 +73,9 @@ function nyWallClock(ms) {
   return new Date(ms + nyUtcOffsetHours(ms) * 3_600_000);
 }
 
-// NY wall-clock hour (0-23) at the given instant. Used by prepare-queue.mjs
-// as the DST guard: cron fires at both 08:30 and 09:30 UTC, and exactly one
-// of those is the 4 a.m. NY hour depending on the season.
+// NY wall-clock hour (0-23) at the given instant. The nightly job's DST
+// guard (nightly.mjs): cron fires at both 08:00 and 09:00 UTC, and exactly
+// one of those is the 4 a.m. NY hour depending on the season.
 export function nyHour(ms) {
   return nyWallClock(ms).getUTCHours();
 }

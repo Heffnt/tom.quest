@@ -342,8 +342,9 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # WikiTom checkout (/root/wikitom, tts/snapshot/), the learning step, archive
 # this box's session files into sessions/, one locked commit-and-push over the
 # github.com-wikitom alias, then post the model-of-tom files and their commit
-# to Convex. Same two-slot DST pattern as prepare-queue above (08:00 UTC is
-# 4 a.m. EDT, 09:00 UTC is 4 a.m. EST; the job's own guard keeps one). flock
+# to Convex. Two cron slots for one run — 08:00 UTC is 4 a.m. EDT, 09:00 UTC
+# is 4 a.m. EST, and the job's own New York wall-clock guard (tts-lib.mjs
+# nyHour) exits the off-season one — so DST needs no cron edit. flock
 # -n on its own lock: the export can outlast an hour on a slow night, and a
 # second run would race the first for the checkout. The WikiTom writer lock
 # (/var/lock/tts-wikitom.lock) is taken inside the job, around the four steps
