@@ -22,6 +22,7 @@ import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { TableNames } from "./_generated/dataModel";
 import schema from "./schema";
+import { clip } from "../worker/jobs/clip.mjs";
 
 // ── The export ───────────────────────────────────────────────────────────────
 // Every table in the schema except the auth ones (the six @convex-dev/auth
@@ -167,9 +168,10 @@ export const LEARNING_OBJECTIONS_MAX = 200;
 export const LEARNING_CHANGES_MAX = 500;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** The agent's reply as the job shows it: clip() from worker/jobs/clip.mjs,
+ * the one clipping rule the jobs use, at LEARNING_REPLY_CHARS. */
 function clipReply(text: unknown): string | null {
-  if (typeof text !== "string" || text === "") return null;
-  return text.length > LEARNING_REPLY_CHARS ? `${text.slice(0, LEARNING_REPLY_CHARS)}…` : text;
+  return clip(text, LEARNING_REPLY_CHARS);
 }
 
 export const internalLearningInput = internalQuery({

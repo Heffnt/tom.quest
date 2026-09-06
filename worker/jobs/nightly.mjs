@@ -59,6 +59,7 @@ import { fileURLToPath } from "node:url";
 import { loadEnv, convexFetch, nyHour, runClaude, extractJsonObject, clip } from "./tts-lib.mjs";
 import { git } from "./tts-code-lib.mjs";
 import { extractSections, sectionSpan } from "./markdown-sections.mjs";
+import { CHANGE_ID_CHARS, changeIdTokens, namedChange } from "./learning-change-names.mjs";
 
 // ── Where things are ─────────────────────────────────────────────────────────
 export const WIKITOM_DIR = process.env.WIKITOM_DIR || "/root/wikitom";
@@ -572,9 +573,10 @@ export function isLearningFile(rel) {
 }
 
 /** The stable id of one change: the page, the section and the line it put
- * there. The same line proposed twice is the same change. */
+ * there. The same line proposed twice is the same change. Its length is the
+ * naming rule's (learning-change-names.mjs), which is how Tom names it back. */
 export function learningChangeId(file, section, line) {
-  return sha256(`${file}\n${section}\n${line}`).slice(0, 12);
+  return sha256(`${file}\n${section}\n${line}`).slice(0, CHANGE_ID_CHARS);
 }
 
 /**
@@ -766,19 +768,15 @@ export function revertLearningChange(text, change) {
 }
 
 /**
- * The change an objection names: by the change's id (or a prefix of at least
- * 8 hex characters of it, which is how the digest prints them and how Tom
- * types them back), else by the line's text quoted in the objection.
+ * The change an objection names: by the change's id — the row's own, or a
+ * name in the text by the one rule in learning-change-names.mjs, which is
+ * also how ttsSlack.ts read the reply — else by the line's text quoted in
+ * the objection.
  */
 export function matchObjection(objection, changes) {
   const text = String(objection.text ?? "");
-  const named = [objection.id, ...(text.match(/\b[0-9a-f]{8,12}\b/g) ?? [])].filter(
-    (x) => typeof x === "string" && x.length >= 8,
-  );
-  for (const token of named) {
-    const hit = changes.find((ch) => typeof ch.id === "string" && ch.id.startsWith(token));
-    if (hit) return hit;
-  }
+  const hit = namedChange([objection.id, ...changeIdTokens(text)], changes);
+  if (hit) return hit;
   for (const ch of changes) {
     const after = String(ch.after ?? "").trim().replace(/^- /, "");
     if (after.length >= 20 && text.includes(after)) return ch;

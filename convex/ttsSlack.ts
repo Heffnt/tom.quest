@@ -12,6 +12,7 @@ import {
   ttsSessionLink,
   type SlackSubject,
 } from "./ttsShared";
+import { changeIdTokens, namedChange } from "../worker/jobs/learning-change-names.mjs";
 
 // Slack, the Convex side (the lifeos update, phase 2). Two facts live here:
 //
@@ -504,27 +505,25 @@ async function captureUnknown(
 export const LEARNING_CHANGE_LOOKBACK = 500;
 
 /**
- * The full id of the learning change a reply names, if any. The digest
- * prints each model-of-Tom line as `[<12 hex>] file: ...`; Tom replies with
- * the bracketed id or at least 8 characters of it. The token is checked
- * against the recent "learning-change" rows, so a commit hash printed in
- * the same digest, or a word spelled in hex letters, names nothing.
+ * The full id of the learning change a reply names, if any. What a name is
+ * — the digest's `[<id>]`, or a bare prefix of it — is one rule in
+ * worker/jobs/learning-change-names.mjs, the nightly job's too; the token is
+ * checked against the recent "learning-change" rows, so a commit hash printed
+ * in the same digest, or a word spelled in hex letters, names nothing.
  */
 async function namedLearningChange(ctx: MutationCtx, text: string): Promise<string | undefined> {
-  const tokens = text.match(/\b[0-9a-f]{8,12}\b/g);
-  if (!tokens) return undefined;
+  const tokens = changeIdTokens(text);
+  if (tokens.length === 0) return undefined;
   const recent = await ctx.db
     .query("dtsEvents")
     .withIndex("by_kind_at", (q) => q.eq("kind", "learning-change"))
     .order("desc")
     .take(LEARNING_CHANGE_LOOKBACK);
-  for (const token of tokens) {
-    for (const row of recent) {
-      const id = (row.data as { id?: unknown } | undefined)?.id;
-      if (typeof id === "string" && id.startsWith(token)) return id;
-    }
-  }
-  return undefined;
+  const hit = namedChange(
+    tokens,
+    recent.map((row) => (row.data ?? {}) as { id?: unknown }),
+  );
+  return typeof hit?.id === "string" ? hit.id : undefined;
 }
 
 async function namedTodo(
