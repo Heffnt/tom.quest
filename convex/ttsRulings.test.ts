@@ -686,17 +686,27 @@ describe("TTS unified rulings", () => {
 // one subject once. witness: delete any one check in
 // internalRecordRulingFromTomWords (convex/ttsRulings.ts).
 describe("a ruling from Tom's words", () => {
-  async function sessionWithTurns(t: ReturnType<typeof convexTest>) {
+  // A session Tom typed one turn in, and the agent one. The session is ABOUT
+  // something (check 5 binds rulings to it): the dentist todo by default, the
+  // "code" block for code subjects, or nothing at all (adhoc).
+  async function sessionWithTurns(
+    t: ReturnType<typeof convexTest>,
+    about: "todo" | "code-block" | "adhoc" = "todo",
+  ) {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const tom = await withTom(t);
-    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
-      title: "talk",
-      kind: "adhoc",
-      repo: "none",
-      initialPrompt: "hello",
-    });
     const todoId = await tom.mutation(api.tts.createTodo, {
       statement: "call the dentist",
+    });
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "talk",
+      repo: "none",
+      initialPrompt: "hello",
+      ...(about === "todo"
+        ? { kind: "focus-item" as const, todoId }
+        : about === "code-block"
+          ? { kind: "block" as const, blockCategory: "code" }
+          : { kind: "adhoc" as const }),
     });
     await tom.mutation(api.claudeSessions.sendMessage, {
       sessionId,
@@ -933,7 +943,7 @@ describe("a ruling from Tom's words", () => {
   // runs.
   it("accepts a code subject that is open in the mirror and briefed, refuses one without a brief", async () => {
     const t = convexTest({ schema, modules });
-    const { tom, tomRow } = await sessionWithTurns(t);
+    const { tom, tomRow } = await sessionWithTurns(t, "code-block");
     await t.mutation(internal.tts.internalReplaceMirror, {
       repo: "ComplexMultiTrigger",
       rows: [
@@ -1060,7 +1070,7 @@ describe("a ruling from Tom's words", () => {
   // is consulted — so no approve can name a code todo Tom never saw.
   it("refuses a code subject with an unknown repo, and one the mirror does not hold", async () => {
     const t = convexTest({ schema, modules });
-    const { tom, tomRow } = await sessionWithTurns(t);
+    const { tom, tomRow } = await sessionWithTurns(t, "code-block");
     await t.mutation(internal.tts.internalReplaceMirror, {
       repo: "ComplexMultiTrigger",
       rows: [
@@ -1107,9 +1117,13 @@ describe("a ruling from Tom's words", () => {
     expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(0);
   });
 
-  // witness: key the one-ruling-per-row check on inboundId alone. One turn
-  // may rule on several subjects; it may not rule twice on one.
-  it("accepts the same turn ruling on a second, different subject", async () => {
+  // witness: drop check 5 (refuseUnlessSessionSubject) from
+  // internalRecordRulingFromTomWords. The dedupe is per subject, so without
+  // the binding one sentence Tom said about the dentist rules the passport
+  // todo as readily — a valid turn replayed against any subject in the
+  // record. The refusal is its own reason: the subject exists, the session
+  // was just not about it.
+  it("refuses a subject the turn's session was not about", async () => {
     const t = convexTest({ schema, modules });
     const { tom, todoId, tomRow } = await sessionWithTurns(t);
     const otherId = await tom.mutation(api.tts.createTodo, {
@@ -1121,10 +1135,124 @@ describe("a ruling from Tom's words", () => {
       subjectType: "life",
       quote: "archive the dentist one, I already went.",
     };
+    const other = await post(t, { ...body, subjectId: otherId });
+    expect(other.status).toBe(400);
+    expect((await other.json()).error).toMatch(
+      /session about the todo .*, not about this subject/,
+    );
+    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(0);
     expect((await post(t, { ...body, subjectId: todoId })).status).toBe(200);
-    expect((await post(t, { ...body, subjectId: otherId })).status).toBe(200);
+  });
+
+  // A session on a batch is about the batch AND the todos in it — one turn
+  // may rule on several of those (the dedupe stays per subject) — and about
+  // nothing outside it.
+  it("binds a batch session's turns to the batch and its member todos", async () => {
+    const t = convexTest({ schema, modules });
+    const { tom, todoId, tomRow } = await sessionWithTurns(t, "adhoc");
+    const memberId = await tom.mutation(api.tts.createTodo, {
+      statement: "find the insurance card",
+    });
+    const strayId = await tom.mutation(api.tts.createTodo, {
+      statement: "renew the passport",
+    });
+    const batchId = await t.run(async (ctx) => {
+      const now = Date.now();
+      const id = await ctx.db.insert("batches", {
+        statement: "the dentist visit",
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      });
+      await ctx.db.patch(todoId, { batchId: id });
+      await ctx.db.patch(memberId, { batchId: id });
+      return id;
+    });
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "the batch",
+      kind: "adhoc",
+      repo: "none",
+      batchId,
+      initialPrompt: "hello",
+    });
+    await tom.mutation(api.claudeSessions.sendMessage, {
+      sessionId,
+      text: "approve the whole dentist batch, both bits.",
+    });
+    const turn = (
+      await t.run(async (ctx) => ctx.db.query("claudeInbound").collect())
+    ).find((r) => r.sessionId === sessionId && r.author === "tom")!;
+    const body = {
+      inboundId: turn._id,
+      verdict: "approve",
+      quote: "approve the whole dentist batch, both bits.",
+    };
+    expect(
+      (await post(t, { ...body, subjectType: "batch", subjectId: batchId })).status,
+    ).toBe(200);
+    expect(
+      (await post(t, { ...body, subjectType: "life", subjectId: todoId })).status,
+    ).toBe(200);
+    expect(
+      (await post(t, { ...body, subjectType: "life", subjectId: memberId })).status,
+    ).toBe(200);
+    const stray = await post(t, { ...body, subjectType: "life", subjectId: strayId });
+    expect(stray.status).toBe(400);
+    expect((await stray.json()).error).toMatch(/session about the batch/);
     const rulings = await tom.query(api.ttsRulings.listRulings, {});
-    expect(rulings.map((r) => r.todoId).sort()).toEqual([todoId, otherId].sort());
-    expect(rulings.every((r) => r.provenance?.inboundId === tomRow._id)).toBe(true);
+    expect(rulings).toHaveLength(3);
+    expect(rulings.every((r) => r.provenance?.inboundId === turn._id)).toBe(true);
+    // The dentist turn from the adhoc session (no subject at all) rules nothing,
+    // not even the todo it names.
+    const adhoc = await post(t, {
+      inboundId: tomRow._id,
+      verdict: "archive",
+      subjectType: "life",
+      subjectId: todoId,
+      quote: "archive the dentist one, I already went.",
+    });
+    expect(adhoc.status).toBe(400);
+    expect((await adhoc.json()).error).toMatch(/about no todo, batch, or block/);
+  });
+
+  // A block session is about the todos of its category — those its opening
+  // prompt listed — and nothing else.
+  it("binds a block session's turns to the todos of its category", async () => {
+    const t = convexTest({ schema, modules });
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const tom = await withTom(t);
+    const choreId = await tom.mutation(api.tts.createTodo, {
+      statement: "descale the kettle",
+      category: "chores",
+    });
+    const otherId = await tom.mutation(api.tts.createTodo, {
+      statement: "renew the passport",
+      category: "admin",
+    });
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "chores block",
+      kind: "block",
+      blockCategory: "chores",
+      repo: "none",
+      initialPrompt: "hello",
+    });
+    await tom.mutation(api.claudeSessions.sendMessage, {
+      sessionId,
+      text: "archive the kettle one, it is fine now.",
+    });
+    const turn = (
+      await t.run(async (ctx) => ctx.db.query("claudeInbound").collect())
+    ).find((r) => r.author === "tom")!;
+    const body = {
+      inboundId: turn._id,
+      verdict: "archive",
+      subjectType: "life",
+      quote: "archive the kettle one, it is fine now.",
+    };
+    const other = await post(t, { ...body, subjectId: otherId });
+    expect(other.status).toBe(400);
+    expect((await other.json()).error).toMatch(/session about the "chores" block/);
+    expect((await post(t, { ...body, subjectId: choreId })).status).toBe(200);
+    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(1);
   });
 });

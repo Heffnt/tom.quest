@@ -347,14 +347,20 @@ export const internalRecordRuling = internalMutation({
 //      is open in the mirror and has a brief — a well-formed id from another
 //      table, an unknown repo, or an unmirrored externalId is refused, so no
 //      ruling (and no execute-approved run) can name a subject Tom never saw;
-//   5. the same row has not already ruled on the same subject;
-//   6. the ruling's own `sentence` is present on revise (the redirect) and
+//   5. the subject is what the turn's session was ABOUT — the todo, batch
+//      (and its todos), or block category on the claudeSessions row
+//      (refuseUnlessSessionSubject below). Without this one valid sentence
+//      could be replayed against any subject in the record: the dedupe in
+//      check 6 is per subject, so "archive the dentist one" ruled a passport
+//      todo as readily as the dentist one;
+//   6. the same row has not already ruled on the same subject;
+//   7. the ruling's own `sentence` is present on revise (the redirect) and
 //      absent on every other verdict — the quote is provenance, never the
 //      page's return condition or the worker's redirect. The redirect is
 //      held to check 3 as well: a whole unit of the same turn (it may be the
 //      quote), stored as the turn's own substring, so the line the preparing
 //      agent obeys is one Tom said and never one the agent composed;
-//   7. only then insertRuling, with provenance {from: "tom-words", inboundId,
+//   8. only then insertRuling, with provenance {from: "tom-words", inboundId,
 //      quote}, through the same apply path every button uses.
 //
 // approve on a code subject is NOT further gated here: a code todo has no
@@ -487,6 +493,50 @@ async function resolveSubject(
   return { repo, externalId };
 }
 
+// What a session's turns are ABOUT (check 5): the subject its opening prompt
+// named, as recorded on the claudeSessions row — its todo; or its batch and
+// the todos inside that batch; or, for a block session, the todos of its
+// category (the "code" block works the mirror, so its subjects are code
+// todos). An adhoc session names nothing, so none of its turns can rule. A
+// Slack reply reaches this door as a turn of the same session
+// (ttsSlack.sessionReply), so it is bound the same way. The refusal is its
+// own reason, distinct from "unknown subject": the subject exists, Tom was
+// just not talking about it in that session.
+async function refuseUnlessSessionSubject(
+  ctx: MutationCtx,
+  session: Doc<"claudeSessions">,
+  subjectType: "life" | "code" | "batch",
+  subject: { todoId?: Id<"dtsTodos">; batchId?: Id<"batches"> },
+): Promise<void> {
+  let about = false;
+  if (subjectType === "life" && subject.todoId !== undefined) {
+    const todo = await ctx.db.get(subject.todoId);
+    about =
+      session.todoId === subject.todoId ||
+      (session.batchId !== undefined && todo?.batchId === session.batchId) ||
+      (session.blockCategory !== undefined &&
+        session.blockCategory !== "code" &&
+        todo?.category === session.blockCategory);
+  } else if (subjectType === "batch") {
+    about = session.batchId !== undefined && session.batchId === subject.batchId;
+  } else if (subjectType === "code") {
+    about = session.blockCategory === "code";
+  }
+  if (about) return;
+  const named =
+    session.todoId !== undefined
+      ? `the todo ${session.todoId}`
+      : session.batchId !== undefined
+        ? `the batch ${session.batchId} and the todos in it`
+        : session.blockCategory !== undefined
+          ? `the "${session.blockCategory}" block`
+          : "no todo, batch, or block";
+  throw new Error(
+    `refused: that turn is from a session about ${named}, not about this subject — ` +
+      "a ruling names only what Tom was talking about",
+  );
+}
+
 export const internalRecordRulingFromTomWords = internalMutation({
   args: {
     inboundId: v.string(),
@@ -530,7 +580,11 @@ export const internalRecordRulingFromTomWords = internalMutation({
     if ("refused" in match) throw new Error(match.refused);
     // 4. the subject exists
     const subject = await resolveSubject(ctx, subjectType, subjectId);
-    // 5. one ruling per row per subject
+    // 5. the subject is what that session was about
+    const session = await ctx.db.get(row.sessionId);
+    if (!session) throw new Error(`Unknown session id: ${row.sessionId}`);
+    await refuseUnlessSessionSubject(ctx, session, subjectType, subject);
+    // 6. one ruling per row per subject
     const key = subjectKey({ subjectType, ...subject });
     const prior = await ctx.db
       .query("dtsRulings")
@@ -543,7 +597,7 @@ export const internalRecordRulingFromTomWords = internalMutation({
         "refused: that turn has already ruled on this subject",
       );
     }
-    // 6. the sentence: revise's redirect and nothing else — and, like the
+    // 7. the sentence: revise's redirect and nothing else — and, like the
     //    quote, one whole unit of the same turn (it may be the quote itself).
     //    The redirect is what the preparing agent obeys, so an agent-composed
     //    one would be the agent redirecting itself under Tom's name.
@@ -569,7 +623,7 @@ export const internalRecordRulingFromTomWords = internalMutation({
       }
       redirectSource = redirectMatch.source;
     }
-    // 7. the ruling, through the one apply path. No unarchiveCondition: an
+    // 8. the ruling, through the one apply path. No unarchiveCondition: an
     // archive from this door leaves the return condition unset (the quote is
     // in provenance and the digest), it never becomes what the page shows.
     return await insertRuling(ctx, {
