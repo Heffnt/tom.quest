@@ -6,8 +6,8 @@ import { v } from "convex/values";
 // Jarvis Box — Claude's Agent SDK or OpenAI's Codex CLI.
 import {
   READINESS,
+  RECOMMENDATION,
   SESSION_MODEL,
-  STORED_RECOMMENDATION,
 } from "./ttsShared";
 
 // `agent` is not a rank between `user` and `admin`: it is a side branch that
@@ -900,10 +900,10 @@ export default defineSchema({
     sourceHash: v.string(),
     brief: v.string(), // ground-up markdown
     // The four verdict words (the lifeos update): approve | revise | session
-    // | archive — the worker's read spelled in the words Tom rules in. The
-    // three retired spellings stay readable until NARROW; ttsShared is the
-    // one home (normalizeRecommendation).
-    recommendation: STORED_RECOMMENDATION,
+    // | archive — the worker's read spelled in the words Tom rules in.
+    // ttsShared is the one home; normalizeRecommendation there still reads the
+    // three retired spellings for one more release, but none may be stored.
+    recommendation: RECOMMENDATION,
     // STAYS DECLARED past the phase-7 narrow: worker/jobs/plan-graphs.mjs
     // classifies it on every brief and the brief line on the page prints it.
     execClass: v.union(v.literal("box"), v.literal("needs-turing")),

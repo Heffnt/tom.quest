@@ -17,14 +17,7 @@ const brief = (over: Partial<{
   externalId: string;
   sourceHash: string;
   brief: string;
-  recommendation:
-    | "approve"
-    | "revise"
-    | "session"
-    | "archive"
-    | "needs-session"
-    | "propose-archive"
-    | "stale-replan";
+  recommendation: "approve" | "revise" | "session" | "archive";
   execClass: "box" | "needs-turing";
   evidence: string;
 }> = {}) => ({
@@ -56,7 +49,7 @@ describe("TTS code-todo briefs", () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await t.mutation(internal.ttsCode.internalStoreBriefs, {
-      briefs: [brief(), brief({ externalId: "cmt-002", recommendation: "propose-archive", evidence: "commit abc123 closed this" })],
+      briefs: [brief(), brief({ externalId: "cmt-002", recommendation: "archive", evidence: "commit abc123 closed this" })],
     });
     await t.mutation(internal.ttsCode.internalStoreBriefs, {
       briefs: [brief({ sourceHash: "hash-b", brief: "rewritten after upstream edit" })],
@@ -68,8 +61,6 @@ describe("TTS code-todo briefs", () => {
     expect(first?.brief).toBe("rewritten after upstream edit");
     const second = rows.find((r) => r.externalId === "cmt-002");
     expect(second?.evidence).toBe("commit abc123 closed this");
-    // The retired spelling an older box job posts is stored as the verdict
-    // word (the lifeos update; ttsShared.normalizeRecommendation).
     expect(second?.recommendation).toBe("archive");
     const events = await tom.query(api.tts.listRecentEvents, {});
     const briefed = events.filter((e) => e.kind === "code-briefed");

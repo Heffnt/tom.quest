@@ -238,41 +238,43 @@ export function isPrepared(readiness: StoredReadiness): boolean {
 // ── Code-brief recommendation: the four verdict words (the lifeos update) ───
 // A code brief's `recommendation` is the worker's read of what Tom will most
 // likely rule, so it is spelled in the words he rules in — the four verdicts
-// (convex/ttsRulings.ts VERDICT). The three retired spellings map one to one:
-//   stale-replan    → revise
-//   needs-session   → session
-//   propose-archive → archive
-// They stay READABLE during the widen (normalizeRecommendation is the one
-// reading) and are rewritten by ttsMigrations.internalMigrateRecommendations;
-// they leave the validator at NARROW.
+// (convex/ttsRulings.ts VERDICT).
+//
+// NARROWED (the lifeos update, phase 7): RECOMMENDATION below — the validator
+// the schema, the brief pen and the route all use — holds exactly these four.
+// The three retired spellings mapped one to one, were rewritten by
+// ttsMigrations.internalMigrateRecommendations, and were verified on prod with
+// every count zero on a second run, so no stored brief carries them and no
+// writer may store them. normalizeRecommendation still ACCEPTS them on read
+// for one more release — a page bundle built before this narrow can hold a
+// brief in memory in the old spelling — and then the retired map goes too.
 export const RECOMMENDATION_VALUES = ["approve", "revise", "session", "archive"] as const;
 export type Recommendation = (typeof RECOMMENDATION_VALUES)[number];
+/** Read-only for one more release; the validator refuses all three. */
 export const RETIRED_RECOMMENDATION_MAP = {
   "stale-replan": "revise",
   "needs-session": "session",
   "propose-archive": "archive",
 } as const satisfies Record<string, Recommendation>;
+/** What a reader may still be handed: the four words, plus the three retired
+ * spellings for one more release. */
 export type StoredRecommendation =
   | Recommendation
   | keyof typeof RETIRED_RECOMMENDATION_MAP;
-export const STORED_RECOMMENDATION_VALUES = [
-  ...RECOMMENDATION_VALUES,
-  ...(Object.keys(RETIRED_RECOMMENDATION_MAP) as (keyof typeof RETIRED_RECOMMENDATION_MAP)[]),
-] as const;
-/** The stored form during the widen: the four words plus the three retired
- * spellings. convex/schema.ts and the brief pen use this. */
-export const STORED_RECOMMENDATION = v.union(
-  ...STORED_RECOMMENDATION_VALUES.map((r) => v.literal(r)),
+/** The stored form: the four verdict words. convex/schema.ts, the brief pen
+ * and POST /tts/code-briefs use this. */
+export const RECOMMENDATION = v.union(
+  ...RECOMMENDATION_VALUES.map((r) => v.literal(r)),
 );
+/** One reading for every spelling a reader can still meet. */
 export function normalizeRecommendation(r: StoredRecommendation): Recommendation {
   return r in RETIRED_RECOMMENDATION_MAP
     ? RETIRED_RECOMMENDATION_MAP[r as keyof typeof RETIRED_RECOMMENDATION_MAP]
     : (r as Recommendation);
 }
-export function isStoredRecommendation(x: unknown): x is StoredRecommendation {
+export function isRecommendation(x: unknown): x is Recommendation {
   return (
-    typeof x === "string" &&
-    (STORED_RECOMMENDATION_VALUES as readonly string[]).includes(x)
+    typeof x === "string" && (RECOMMENDATION_VALUES as readonly string[]).includes(x)
   );
 }
 

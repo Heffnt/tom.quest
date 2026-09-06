@@ -10,11 +10,11 @@ import {
   DAY_MS,
   RECOMMENDATION_VALUES,
   SESSION_REPO_NAMES,
+  isRecommendation,
   isSessionModel,
-  isStoredRecommendation,
   nyCalendarDayBoundsUtc,
   ttsPrepDay,
-  type StoredRecommendation,
+  type Recommendation,
 } from "./ttsShared";
 import { isModelOfTomPath } from "./ttsSkills";
 import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES, isExportTable } from "./ttsNightly";
@@ -864,9 +864,10 @@ http.route({
 // todos, reads back Tom's pending rulings, and reports each application. The
 // worker never rules — recordCodeRuling is Tom-gated in ttsCode.ts.
 
-// A brief's recommendation is one of the four verdict words, or one of the
-// three retired spellings an older box job may still post (ttsShared is the
-// one home — isStoredRecommendation; the mutation stores the verdict word).
+// A brief's recommendation is one of the four verdict words and nothing else
+// (ttsShared is the one home). The three retired spellings were refused here
+// from the moment the box's own job stopped emitting them; now the validator
+// behind this route refuses them too.
 const CODE_EXEC_CLASSES = ["box", "needs-turing"] as const;
 
 type CodeBrief = {
@@ -874,7 +875,7 @@ type CodeBrief = {
   externalId: string;
   sourceHash: string;
   brief: string;
-  recommendation: StoredRecommendation;
+  recommendation: Recommendation;
   execClass: (typeof CODE_EXEC_CLASSES)[number];
   evidence?: string;
 };
@@ -892,7 +893,7 @@ function parseCodeBrief(item: unknown, i: number): CodeBrief | { error: string }
       return { error: `briefs[${i}].${field} (non-empty string) required` };
     }
   }
-  if (!isStoredRecommendation(b.recommendation)) {
+  if (!isRecommendation(b.recommendation)) {
     return {
       error: `briefs[${i}].recommendation must be one of ${RECOMMENDATION_VALUES.join(" | ")}`,
     };

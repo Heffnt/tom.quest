@@ -19,7 +19,7 @@ const brief = (over: Partial<{
   externalId: string;
   sourceHash: string;
   brief: string;
-  recommendation: "approve" | "needs-session" | "propose-archive" | "stale-replan";
+  recommendation: "approve" | "revise" | "session" | "archive";
   execClass: "box" | "needs-turing";
 }> = {}) => ({
   repo: "ComplexMultiTrigger",

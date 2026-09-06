@@ -419,6 +419,9 @@ export const internalMigrateBatchNeeds = internalMutation({
 // stale-replan → revise, needs-session → session, propose-archive → archive;
 // approve stays. One transaction: one brief per open code todo, a small
 // table. Same dry run, counts, idempotence, and event.
+// RUN AND VERIFIED on prod; the validator has narrowed to the four words
+// since, so the retired spelling a stored brief could carry is read here
+// through a loose view of the row — which is what keeps a re-run possible.
 export const RECOMMENDATION_MIGRATION = "recommendation";
 
 export const internalMigrateRecommendations = internalMutation({
@@ -433,12 +436,14 @@ export const internalMigrateRecommendations = internalMutation({
       "already-verdict-word": 0,
     };
     for (const brief of all) {
-      const target = normalizeRecommendation(brief.recommendation);
-      if (brief.recommendation === target) {
+      const stored = (brief as { recommendation: StoredRecommendation })
+        .recommendation;
+      const target = normalizeRecommendation(stored);
+      if (stored === target) {
         page["already-verdict-word"]++;
         continue;
       }
-      page[`${brief.recommendation}-to-${target}`]++;
+      page[`${stored}-to-${target}`]++;
       if (!dryRun) await ctx.db.patch(brief._id, { recommendation: target });
     }
     await logEvent(

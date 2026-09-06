@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import { internalMutation, internalQuery, query } from "./_generated/server";
 import { requireTomOrAgent } from "./authRoles";
 import { logEvent } from "./tts";
-import { STORED_RECOMMENDATION, normalizeRecommendation } from "./ttsShared";
+import { RECOMMENDATION } from "./ttsShared";
 
 // TTS code-todo BRIEFS — the Jarvis Box writes ground-up briefs for each open
 // code todo (from the dtsCodeTodoMirror's repos); Tom's rulings on them live in
@@ -11,10 +11,6 @@ import { STORED_RECOMMENDATION, normalizeRecommendation } from "./ttsShared";
 // functions are Tom-gated (tts.ts pattern); everything the worker touches goes
 // through internal functions behind the key-authed /tts/code-* routes in http.ts.
 
-// The four verdict words (ttsShared.RECOMMENDATION_VALUES); the pen still
-// accepts the three retired spellings from an older box job and stores the
-// verdict word (normalizeRecommendation).
-const RECOMMENDATION = STORED_RECOMMENDATION;
 const EXEC_CLASS = v.union(v.literal("box"), v.literal("needs-turing"));
 
 // ── Tom-facing queries ───────────────────────────────────────────────────────
@@ -57,11 +53,10 @@ export const internalStoreBriefs = internalMutation({
           q.eq("repo", brief.repo).eq("externalId", brief.externalId),
         )
         .first();
-      const row = {
-        ...brief,
-        recommendation: normalizeRecommendation(brief.recommendation),
-        preparedAt: now,
-      };
+      // No normalizing left to do: the pen's validator holds the four verdict
+      // words, so what arrives is already what is stored (the lifeos update,
+      // phase 7).
+      const row = { ...brief, preparedAt: now };
       if (existing) {
         await ctx.db.patch(existing._id, row);
       } else {

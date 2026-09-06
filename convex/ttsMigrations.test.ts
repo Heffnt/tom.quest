@@ -753,8 +753,12 @@ describe("recommendation migration (code briefs → the four verdict words)", ()
       }
     });
   }
-  const allBriefs = (t: ReturnType<typeof convexTest>) =>
-    t.run(async (ctx) => ctx.db.query("dtsCodeBriefs").collect());
+  const allBriefs = async (
+    t: ReturnType<typeof convexTest>,
+  ): Promise<WideBrief[]> =>
+    (await t.run(async (ctx) =>
+      ctx.db.query("dtsCodeBriefs").collect(),
+    )) as unknown as WideBrief[];
   const expectedCounts = {
     scanned: 5,
     "stale-replan-to-revise": 1,
