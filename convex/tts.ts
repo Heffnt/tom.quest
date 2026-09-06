@@ -2911,8 +2911,12 @@ export const internalMarkDigestSent = internalMutation({
     day: v.string(),
     surfacedTodoIds: v.array(v.id("dtsTodos")),
     windowEnd: v.optional(v.number()),
+    // The digest was reduced to fit one Slack message (ttsDigest
+    // DIGEST_MAX_CHARS). Absent on a resend, which reposts a text already
+    // composed and whose row said so at the time.
+    truncated: v.optional(v.boolean()),
   },
-  handler: async (ctx, { day, surfacedTodoIds, windowEnd }) => {
+  handler: async (ctx, { day, surfacedTodoIds, windowEnd, truncated }) => {
     const now = Date.now();
     const existing = await ctx.db
       .query("dtsDailyQueues")
@@ -2932,7 +2936,7 @@ export const internalMarkDigestSent = internalMutation({
     for (const todoId of surfacedTodoIds) {
       await logEvent(ctx, "surfaced", todoId, { via: "digest", day });
     }
-    await logEvent(ctx, "digest-sent", undefined, { day, windowEnd });
+    await logEvent(ctx, "digest-sent", undefined, { day, windowEnd, truncated });
   },
 });
 

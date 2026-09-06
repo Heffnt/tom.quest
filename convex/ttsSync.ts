@@ -224,7 +224,7 @@ export const sendDigest = internalAction({
     // One window for the whole run: the composer reads Convex over it and the
     // WikiTom fetch reads GitHub over the same one.
     const wikitom = await fetchWikiTomCommits(since, now);
-    const { text, surfacedTodoIds } = await ctx.runQuery(
+    const { text, truncated, surfacedTodoIds } = await ctx.runQuery(
       internal.ttsDigest.internalComposeDigest,
       { day, now, since, wikitom },
     );
@@ -254,6 +254,9 @@ export const sendDigest = internalAction({
       // where this one's ended, and composing plus posting takes seconds that
       // would otherwise be reported by neither digest.
       windowEnd: now,
+      // The morning did not fit one Slack message and sections were reduced to
+      // their count line: on the row, so a week of them can be counted.
+      truncated,
     });
   },
 });
