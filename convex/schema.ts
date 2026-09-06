@@ -815,12 +815,17 @@ export default defineSchema({
     // week, and the model's most likely response to an instruction to fix
     // something already fixed is to restructure something else.
     consumedAt: v.optional(v.number()),
-    // The lookup key, set on exactly three kinds (convex/ttsSlack.ts):
+    // The lookup key, set on exactly four kinds (all convex/ttsSlack.ts):
     //   "slack-sent"  — `${channel}:${thread root ts}`, so a threaded reply
     //                   from Tom finds what it answers by (channel, thread_ts);
     //   "slack-event" — Slack's event_id, so a redelivered event is dropped;
     //   "needs-tom"   — the producer's own id for the thing that needs Tom
-    //                   (`gmail:message:<id>`), so one mail opens one thread.
+    //                   (`gmail:message:<id>`), so one mail opens one thread;
+    //   "slack-thread-claimed"
+    //                 — the same `${channel}:${thread ts}` as "slack-sent", so
+    //                   a replacement session claims the thread in the same
+    //                   transaction that creates it and a second reply joins
+    //                   it rather than opening a second replacement.
     // `data` is v.any() and cannot be indexed, which is why the key is its
     // own field: the events route must answer inside Slack's 3-second budget,
     // and a thread root can be days old, so a bounded scan is not enough.
@@ -829,7 +834,7 @@ export default defineSchema({
     .index("by_at", ["at"])
     .index("by_todo", ["todoId", "at"])
     // TWO shapes, one index. With `key` pinned, `at` is reachable — and only
-    // the three kinds above ever set a key, so every other kind pins it to
+    // the four kinds above ever set a key, so every other kind pins it to
     // undefined and reads as (kind, time):
     //   the row for one thread, event id or producer id — eq(kind), eq(key);
     //   one KEYLESS kind newest-first or over a time range — eq(kind),
@@ -838,7 +843,7 @@ export default defineSchema({
     //   and reported changes (convex/ttsHourly.ts) all read that way, instead
     //   of taking N rows off by_at and filtering: past N rows a by_at read
     //   silently answers wrong.
-    // Giving a third kind a key takes its rows out of the second shape.
+    // Giving a further kind a key takes its rows out of the second shape.
     .index("by_kind_key", ["kind", "key", "at"]),
 
   // One row per TTS day (5 a.m. America/New_York boundary, key YYYY-MM-DD).
