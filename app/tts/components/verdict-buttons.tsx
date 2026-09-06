@@ -78,7 +78,7 @@ export const VERDICT_EFFECT: Record<
     approve:
       "Marks this as decided your way: the ruling is stored and applied at once, and the todo is stamped as touched by you. Nothing executes a life todo — you are its executor — so this records your call and stops asking.",
     revise:
-      "Sends it back to be prepared again, with your sentence as the redirection: readiness drops to preparing, and the preparer re-writes the brief against what you said and returns it. Your sentence is the whole instruction, so it has to stand on its own.",
+      "Sends it back to be prepared again, with your sentence as the redirection: readiness drops to unprepared, and the preparer re-writes the brief against what you said and returns it as prepared. Your sentence is the whole instruction, so it has to stand on its own.",
     session:
       "Says this needs a conversation rather than a ruling, and opens the session in a new tab with the ruling in its opening prompt. The ruling is consumed the moment a session you open on it exists — an autonomous run that happens to claim the same item never consumes it, so the conversation you asked for still happens.",
     archive:

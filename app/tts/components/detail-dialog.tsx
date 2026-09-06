@@ -10,10 +10,20 @@
 // card renders (verdict-buttons.tsx).
 import type { BatchGraph, GraphGoal, GraphTask } from "./batch-card";
 import VerdictButtons from "./verdict-buttons";
-import { groundUpTeaser, type RulingVerdict } from "../lib";
+import { fmtDate, groundUpTeaser, type RulingVerdict } from "../lib";
+import { waitingReasonText, type WaitingReason } from "@/convex/ttsShared";
 
 export type DetailItem =
-  | { kind: "task"; batchStatement: string; task: GraphTask; waitingOn: string[] }
+  | {
+      kind: "task";
+      batchStatement: string;
+      task: GraphTask;
+      /** Why it waits (ttsShared.waitingReason via batch-card taskWaiting);
+       * null = waiting on nothing. */
+      waiting: WaitingReason | null;
+      /** Every unmet need by name — the reason names only the first. */
+      waitingOn: string[];
+    }
   | { kind: "goal"; batchStatement: string; goal: GraphGoal }
   | { kind: "batch"; graph: BatchGraph };
 
@@ -83,10 +93,18 @@ export default function DetailDialog({
               {item.task.actor === "tom" ? <span className="text-accent">you</span> : "agents"}
             </Row>
             <Row label="status">
-              {item.task.status === "done" ? "done" : item.waitingOn.length > 0 ? "blocked" : "ready"}
+              {item.task.status === "done"
+                ? "done"
+                : item.waiting === null || item.waiting.kind === "tom"
+                  ? "ready"
+                  : "blocked"}
             </Row>
-            {item.waitingOn.length > 0 && (
-              <Row label="waiting on">{item.waitingOn.join(" · ")}</Row>
+            {item.waiting !== null && (
+              <Row label="waiting">
+                {item.waiting.kind === "need" && item.waitingOn.length > 1
+                  ? `waiting on: ${item.waitingOn.join(" · ")}`
+                  : waitingReasonText(item.waiting, fmtDate)}
+              </Row>
             )}
             {item.task.evidence !== undefined && (
               <Row label="evidence">
@@ -135,6 +153,9 @@ export default function DetailDialog({
             <Row label="kind">goal — a condition about the world this batch must make true</Row>
             {item.goal.condition !== undefined && (
               <Row label="condition">{item.goal.condition}</Row>
+            )}
+            {item.goal.mustNotBreak !== undefined && item.goal.mustNotBreak.trim() !== "" && (
+              <Row label="must not break">{item.goal.mustNotBreak}</Row>
             )}
             <Row label="status">{item.goal.met ? "met" : "not yet met"}</Row>
             {item.goal.code !== undefined && (

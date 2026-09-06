@@ -51,7 +51,11 @@ const PER_ENTRY_TIMEOUT_MS = 10 * 60 * 1000;
 // plan still matches the tree, and each file read is a turn.
 const BRIEF_MAX_TURNS = 40;
 
-const RECOMMENDATIONS = new Set(["propose-archive", "stale-replan", "needs-session", "approve"]);
+// The four verdict words (the lifeos update): the recommendation is the
+// worker's read of what Tom will rule, spelled in the words he rules in.
+// convex/ttsShared.ts RECOMMENDATION_VALUES is the one home; this is the
+// box's literal mirror (Node never loads .ts).
+const RECOMMENDATIONS = new Set(["approve", "revise", "session", "archive"]);
 const EXEC_CLASSES = new Set(["needs-turing", "box"]);
 
 // Build the per-entry prompt. `entryYaml` is the entry's RAW block from
@@ -86,21 +90,22 @@ function briefPrompt(entryYaml, replanNote) {
     `- whether the plan still matches the CURRENT tree: check that the files and`,
     `  ledger entries it cites actually exist, and NAME anything stale.`,
     ``,
-    `End with a recommendation chosen by EXACTLY these criteria, in order —`,
+    `End with a recommendation — the verdict Tom will most likely rule, in`,
+    `the four words he rules in — chosen by EXACTLY these criteria, in order;`,
     `the first that applies wins:`,
     `1. The completion condition is already satisfied by landed work, or the`,
-    `   intent is moot/superseded -> "propose-archive", and set "evidence" to the`,
+    `   intent is moot/superseded -> "archive", and set "evidence" to the`,
     `   commits/files that prove it.`,
-    `2. The intent is live but the plan is stale against the tree -> "stale-replan".`,
+    `2. The intent is live but the plan is stale against the tree -> "revise".`,
     `3. The plan is live but embeds an open judgment call Tom has not made —`,
-    `   ALL tier-C entries land here by definition -> "needs-session".`,
+    `   ALL tier-C entries land here by definition -> "session".`,
     `4. All clean -> "approve".`,
     ``,
     `Also classify execClass: "needs-turing" if executing the plan requires the`,
     `SLURM cluster / GPUs, else "box" (runnable on an ordinary Linux box).`,
     ``,
     `Answer with ONLY a JSON object, no prose, no code fences:`,
-    `{"brief": "...", "recommendation": "propose-archive|stale-replan|needs-session|approve",`,
+    `{"brief": "...", "recommendation": "approve|revise|session|archive",`,
     ` "execClass": "needs-turing|box", "evidence": "..." (optional)}`,
   ].join("\n");
 }

@@ -123,7 +123,10 @@ export type BatchSessionContext = {
   id: Id<"batches">;
   statement: string;
   groundUp?: string;
+  /** The retired sequencing, shown while a batch still carries one. */
   path?: { name: string; index: number };
+  /** The statements of the batches this batch needs done first. */
+  needs?: string[];
   tasks: {
     /** The todo's own id — the life subject a ruling on this task names
      * (the card's graph carries it as a plain string; only printed here). */
@@ -139,6 +142,8 @@ export type BatchSessionContext = {
     id: string;
     statement: string;
     condition?: string;
+    /** Tom's own line on what the work toward this goal must not break. */
+    mustNotBreak?: string;
     met: boolean;
   }[];
 };
@@ -174,6 +179,9 @@ export function buildBatchSessionPrompt(
     batch.path
       ? `path: "${batch.path.name}", position ${batch.path.index}`
       : null,
+    batch.needs && batch.needs.length > 0
+      ? `this batch needs (batches that must land first): ${batch.needs.map((n) => `"${n}"`).join(", ")}`
+      : null,
   ];
 
   const say = (t: BatchSessionContext["tasks"][number]) =>
@@ -197,7 +205,7 @@ export function buildBatchSessionPrompt(
       lines.push(
         `- [${g.met ? "met" : "not yet met"}] "${g.statement}" (id ${g.id})${
           g.condition ? ` — condition: ${g.condition}` : ""
-        }`,
+        }${g.mustNotBreak ? ` — MUST NOT BREAK (Tom's own line, binding on every step toward this goal): ${g.mustNotBreak}` : ""}`,
       );
     }
   }
@@ -228,6 +236,7 @@ export function buildTodoSessionPrompt(
     ...rulingLines(ruling),
     `The item ("${todo.statement}"):`,
     fact("id (life subject)", todo._id),
+    fact("must not break (Tom's own line, binding)", todo.mustNotBreak),
     fact("timing", todo.timingClass),
     fact(
       "due",

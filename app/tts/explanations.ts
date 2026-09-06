@@ -125,37 +125,34 @@ const WHAT_TTS_IS = `<p><span class="term">TTS</span> is Toms Todo System: the w
 
 export const READINESS_EXPLANATION = page(
   "Readiness — the field this dropdown writes",
-  "Readiness: how far the preparing of this todo has got",
-  "The field behind the dropdown beside this caption, and everything that reads it.",
+  "Readiness: whether this todo has been written up",
+  "The field behind the dropdown beside this caption, everything that reads it, and the computed ready that follows from it.",
   `
 <h2>What this is</h2>
 
-<p><span class="term">TTS</span> is Toms Todo System: the web application that holds Tom's todos, groups them into batches, and asks him for rulings. A <span class="term">todo</span> is one stored row in it — one thing to be done, held with a set of separate fields. <span class="term">Readiness</span> is one of those fields. It holds exactly one of three words, and it says how far the <em>preparing</em> of the todo has got — nothing else. Preparing means writing, for that todo, the short explanation of what it is (the <span class="term">brief</span>), the smallest next action, a description of the work, and a plan.</p>
+<p><span class="term">TTS</span> is Toms Todo System: the web application that holds Tom's todos, groups them into batches, and asks him for rulings. A <span class="term">todo</span> is one stored row in it — one thing to be done, held with a set of separate fields. <span class="term">Readiness</span> is one of those fields. It holds exactly one of two words, and it says whether the <em>preparing</em> of the todo has happened — nothing else. Preparing means writing, for that todo, the short explanation of what it is (the <span class="term">brief</span>), the smallest next action, and a description of the work.</p>
 
 <p>The dropdown beside this caption writes that field directly. Picking a value calls <span class="mono">updateTodo</span>, a function in the file <span class="mono">convex/tts.ts</span>, passing the todo's identifier and the new readiness word. <span class="term">Convex</span> is the backend service TTS stores its data in, and a <span class="term">mutation</span> is one named function there that changes stored data. Nothing else about the todo changes: not its text, not whether it is active, not any ruling already recorded on it.</p>
 
 <p>Two other terms are used throughout below. An <span class="term">agent session</span> is one automated run of Claude on Tom's own machine, started by TTS, that reads a todo and writes results back into it. The <span class="term">worker pen</span> is the one way such a session writes: an address on the TTS server, <span class="mono">/tts/prepare-todo</span>, defined in the file <span class="mono">convex/http.ts</span>, which accepts a todo's identifier and the fields to change.</p>
 
-<h2>The three values</h2>
+<h2>The two values</h2>
 
 <table>
   <tr><th>Value</th><th>What it says</th><th>Who normally sets it</th></tr>
   <tr>
     <td class="mono">unprepared</td>
-    <td>Nothing has been written about this todo beyond the sentence that was typed into it.</td>
-    <td>TTS itself, on every todo it creates. After that, only this dropdown.</td>
+    <td>Nothing has been written about this todo beyond the sentence that was typed into it. A todo in this state is never ready, whatever else is true of it.</td>
+    <td>TTS itself, on every todo it creates. After that, the <span class="mono">revise</span> verdict, and this dropdown.</td>
   </tr>
   <tr>
-    <td class="mono">preparing</td>
-    <td>An agent session has the todo and is writing its brief, its entry action, its work description and its plan.</td>
-    <td>The agent session working on it, through the worker pen. Also the <span class="mono">revise</span> verdict.</td>
-  </tr>
-  <tr>
-    <td class="mono">ready-for-tom</td>
-    <td>The preparing is finished and what is left genuinely needs Tom — a ruling, a merge, a real-world action.</td>
-    <td>The agent session, when it stops at a question. Also repeat rules, which mint their instances already at this value.</td>
+    <td class="mono">prepared</td>
+    <td>The write-up exists: the brief, the entry action, the work description.</td>
+    <td>The agent session that wrote it, through the worker pen. Also repeat rules, which mint their instances already at this value.</td>
   </tr>
 </table>
+
+<p>Two older spellings, <span class="mono">preparing</span> and <span class="mono">ready-for-tom</span>, were stored before September 2026, and each reads as exactly one of the two values (the function <span class="mono">normalizeReadiness</span> in the file <span class="mono">convex/ttsShared.ts</span> is the one place that reading lives). <span class="mono">ready-for-tom</span> meant the write-up was finished, so it reads as <span class="mono">prepared</span>. <span class="mono">preparing</span> meant an agent had only half written it up, so it reads as <span class="mono">unprepared</span>: a half-prepared todo is never ready, and the preparer picks it up again. A migration rewrites each spelling to the value it reads as, so the spellings can be dropped.</p>
 
 <h2>Readiness is not status, and the two move independently</h2>
 
@@ -163,15 +160,23 @@ export const READINESS_EXPLANATION = page(
 
 <table>
   <tr><th>Field</th><th>Values</th><th>Question it answers</th><th>Changed on this screen by</th></tr>
-  <tr><td class="mono">readiness</td><td class="mono">unprepared · preparing · ready-for-tom</td><td>How far the writing-up has got.</td><td>This dropdown.</td></tr>
+  <tr><td class="mono">readiness</td><td class="mono">unprepared · prepared</td><td>Whether the writing-up has happened.</td><td>This dropdown.</td></tr>
   <tr><td class="mono">status</td><td class="mono">active · waiting · archived · done</td><td>Whether the todo is in play right now.</td><td>The Set waiting, Set active, done and archive controls.</td></tr>
 </table>
 
-<h2>Readiness is also not the other meaning of "ready" in TTS</h2>
+<h2>Ready is computed from readiness, never stored</h2>
 
-<p>The word collides, and the two meanings are unrelated. In the batch graph — the structure recording which todos cannot start before which others — a todo is called <span class="term">ready</span> when its status is <span class="mono">active</span> and every todo listed in its <span class="mono">needs</span> is already done or archived. That sense is computed on the spot by the function <span class="mono">isReady</span> in the file <span class="mono">convex/ttsShared.ts</span> and is never stored anywhere.</p>
+<p>Whether a todo is <span class="term">ready</span> for Tom is not a value anyone writes. It is computed on the spot, by the function <span class="mono">isReadyForTom</span> in the file <span class="mono">convex/ttsShared.ts</span>, from four facts about the row, and it is true only when all four hold:</p>
 
-<p>So this dropdown cannot make a todo ready in the graph sense, and a todo that is ready in the graph sense may still sit at <span class="mono">unprepared</span> here. Where this page says readiness without qualification it means the stored field, which is the one the dropdown writes.</p>
+<table>
+  <tr><th>Fact</th><th>Where it comes from</th></tr>
+  <tr><td>readiness is <span class="mono">prepared</span></td><td>This field.</td></tr>
+  <tr><td>status is <span class="mono">active</span></td><td>The status field, below.</td></tr>
+  <tr><td>the wake time is absent or has passed</td><td>The <span class="mono">wakeAt</span> field — a todo put to sleep until a date is not ready until that date.</td></tr>
+  <tr><td>every todo it needs is done</td><td>The <span class="mono">needs</span> field — the list of todos this one cannot start before, each of which must be done or archived.</td></tr>
+</table>
+
+<p>The batch graph uses the shorter form of the same rule: a todo is ready <em>in the graph</em> when it is active, awake and every need is done, without looking at readiness (the function <span class="mono">isReady</span>, same file). That is the set an agent session may pick work from, because an agent works from the raw sentence. Ready <em>for Tom</em> adds the first row of the table, because Tom is only shown items that have been written up.</p>
 
 <h2>What the stored value actually causes</h2>
 
@@ -179,45 +184,43 @@ export const READINESS_EXPLANATION = page(
   <tr><th>What reads it</th><th>What it does with the value</th></tr>
   <tr>
     <td>The verdict controls on this row</td>
-    <td>The approve, revise, session and archive controls appear only when status is <span class="mono">active</span> and readiness is <span class="mono">ready-for-tom</span>. Setting any other value here makes them disappear.</td>
+    <td>The approve, revise, session and archive controls appear only when status is <span class="mono">active</span> and readiness is <span class="mono">prepared</span>. Setting <span class="mono">unprepared</span> here makes them disappear.</td>
   </tr>
   <tr>
     <td>The Open session button on this row</td>
-    <td>At <span class="mono">ready-for-tom</span> it opens a session of kind <span class="mono">gate</span>, prompted to get Tom's decision made. At the other two values it opens kind <span class="mono">focus-item</span>, prompted to do the work.</td>
+    <td>At <span class="mono">prepared</span> it opens a session of kind <span class="mono">gate</span>, prompted to get Tom's decision made. At <span class="mono">unprepared</span> it opens kind <span class="mono">focus-item</span>, prompted to do the work.</td>
   </tr>
   <tr>
     <td>The picker that starts sessions on its own</td>
-    <td>It treats <span class="mono">unprepared</span> and <span class="mono">preparing</span> as todos still owed an agent's work, and hands them out. A todo at <span class="mono">ready-for-tom</span> is left alone, because the next move is Tom's.</td>
+    <td>It treats <span class="mono">unprepared</span> todos as still owed an agent's work, and hands them out. A <span class="mono">prepared</span> todo is left alone, because the next move is Tom's.</td>
   </tr>
   <tr>
     <td>The <span class="mono">revise</span> verdict</td>
-    <td>It is the one verdict that writes this field: it sets readiness back to <span class="mono">preparing</span> and hands the todo to an agent again, leaving the todo's own text untouched.</td>
+    <td>It is the one verdict that writes this field: it sets readiness back to <span class="mono">unprepared</span> and hands the todo to an agent again, leaving the todo's own text untouched. Until the agent returns it as <span class="mono">prepared</span>, it is not ready.</td>
   </tr>
   <tr>
-    <td>The daily digest</td>
-    <td>It counts active todos at <span class="mono">ready-for-tom</span> that no batch has claimed, and reports them as the items waiting on Tom. It is composed but not delivered: outbound messaging to Slack, the chat service, is switched off in TTS at present.</td>
+    <td>The ready filter, the needs-me list, and the daily digest</td>
+    <td>All three show the computed ready described above: prepared, active, awake, unblocked. The digest reports those as the items ready for Tom, each with its entry action.</td>
   </tr>
 </table>
 
-<h2>The one step this dropdown can take that nothing else can</h2>
+<h2>The cycle</h2>
 
 <div class="flow">
   <div class="box"><span class="mono">unprepared</span> <span class="muted">— the todo is created, holding only its sentence</span></div>
-  <div class="arrow">↓ <span class="muted">the picker hands it to an agent session</span></div>
-  <div class="box"><span class="mono">preparing</span> <span class="muted">— the session writes the brief, the entry action, the work description, the plan</span></div>
-  <div class="arrow">↓ <span class="muted">the session stops at what needs Tom</span></div>
-  <div class="box"><span class="mono">ready-for-tom</span> <span class="muted">— the verdict controls appear; the item is at a gate</span></div>
+  <div class="arrow">↓ <span class="muted">the preparer job, or the picker, hands it to an agent session, which writes the brief, the entry action, the work description</span></div>
+  <div class="box"><span class="mono">prepared</span> <span class="muted">— ready for Tom as soon as it is active, awake and unblocked; the verdict controls appear</span></div>
   <div class="arrow">↓ <span class="muted">the revise verdict, when the write-up is not good enough</span></div>
-  <div class="box"><span class="mono">preparing</span> <span class="muted">— back to an agent, and around again</span></div>
+  <div class="box"><span class="mono">unprepared</span> <span class="muted">— back to an agent, and around again</span></div>
 </div>
 
-<p>The worker pen accepts only <span class="mono">preparing</span> and <span class="mono">ready-for-tom</span>, and rejects <span class="mono">unprepared</span> outright. That is deliberate: an agent must never be able to erase the record that a todo was already written up. So the step back to <span class="mono">unprepared</span> exists only on this dropdown, and what it means is "throw away what was written and start the preparing again from the sentence".</p>
+<p>The worker pen accepts only <span class="mono">prepared</span> and rejects <span class="mono">unprepared</span> outright. That is deliberate: an agent must never be able to erase the record that a todo was already written up. So the step back to <span class="mono">unprepared</span> exists only on this dropdown and on the revise verdict, and what it means is "throw away what was written and start the preparing again from the sentence". (The pen still takes the two older spellings from a box job deployed before the rename, and stores each as the value it reads as: <span class="mono">ready-for-tom</span> as <span class="mono">prepared</span>, <span class="mono">preparing</span> as <span class="mono">unprepared</span> — that job's own word for "not finished yet".)</p>
 
 <h2>What happens next, and who does it</h2>
 
 <p>Choosing a value here writes the field and stops. Nothing is scheduled, no session is started, and no message is sent by the change itself.</p>
 
-<p>What follows depends on which value was chosen. At <span class="mono">unprepared</span> or <span class="mono">preparing</span>, the next run of the picker that starts sessions on its own — it runs every five minutes — may hand this todo to an agent, which writes its brief and returns it at <span class="mono">ready-for-tom</span>. At <span class="mono">ready-for-tom</span> the todo joins the items at a gate on the batches tab and its verdict controls appear, so the next move is Tom's ruling.</p>
+<p>What follows depends on which value was chosen. At <span class="mono">unprepared</span>, the next run of the preparer job on the Jarvis Box — it runs every two minutes — or of the picker that starts sessions on its own writes its brief and returns it at <span class="mono">prepared</span>. At <span class="mono">prepared</span> the todo is ready the moment it is active, awake and unblocked: it joins the items at a gate on the batches tab and its verdict controls appear, so the next move is Tom's ruling.</p>
 `,
 );
 
@@ -278,7 +281,7 @@ ${WHAT_TTS_IS}
 <div class="flow">
   <div class="box"><strong>It stamps the row as touched by Tom.</strong> <span class="muted">Every call to the mutation writes the current time into a field named <span class="mono">tomTouchedAt</span>. A job runs periodically to form batches and rewrite them as the corpus changes, and that job never rewrites or retires a row carrying this stamp. So editing any of the five fields freezes the todo's grouping against automatic revision, permanently.</span></div>
   <div class="arrow">↓</div>
-  <div class="box"><strong>It bumps the row's update time, which can reopen a settled question.</strong> <span class="muted">The list of items waiting on Tom includes any active, ready-for-tom todo whose newest ruling was recorded <em>before</em> its last update. Editing a field after ruling on the todo therefore makes it appear in that list again, because the rule reads as "a ruled item is answered until the preparer touches it again" and an edit is a touch.</span></div>
+  <div class="box"><strong>It bumps the row's update time, which can reopen a settled question.</strong> <span class="muted">The list of items waiting on Tom includes any ready todo (prepared, active, awake, unblocked) whose newest ruling was recorded <em>before</em> its last update. Editing a field after ruling on the todo therefore makes it appear in that list again, because the rule reads as "a ruled item is answered until the preparer touches it again" and an edit is a touch.</span></div>
 </div>
 
 <h2>What this panel cannot write</h2>
@@ -298,7 +301,7 @@ ${WHAT_TTS_IS}
 
 <p>Saving writes the field and stops. No session is started, nothing is scheduled, no message is sent. The change is visible immediately in every open view because Convex pushes it.</p>
 
-<p>The two consequences above take effect from that moment: the batch-forming job will leave this todo's grouping alone from now on, and if the todo had already been ruled on and is still active and ready-for-tom, it reappears among the items waiting on Tom.</p>
+<p>The two consequences above take effect from that moment: the batch-forming job will leave this todo's grouping alone from now on, and if the todo had already been ruled on and is still ready (prepared, active, awake, unblocked), it reappears among the items waiting on Tom.</p>
 `,
 );
 
@@ -313,7 +316,7 @@ ${WHAT_TTS_IS}
 
 <p><span class="term">Status</span> is the field saying whether a todo is in play. It holds exactly one of four words. The controls beside this caption — Set waiting, Set active, done, archive — all call the same mutation, <span class="mono">setStatus</span> in the file <span class="mono">convex/tts.ts</span>, with a different target value and, for two of them, one extra sentence.</p>
 
-<p>Status is not <span class="term">readiness</span>, the other short word on a todo. Readiness holds <span class="mono">unprepared</span>, <span class="mono">preparing</span> or <span class="mono">ready-for-tom</span> and says how far the writing-up of the todo has got. The two are independent: a fully written-up todo can be parked, and a parked todo can be unwritten.</p>
+<p>Status is not <span class="term">readiness</span>, the other short word on a todo. Readiness holds <span class="mono">unprepared</span> or <span class="mono">prepared</span> and says whether the writing-up of the todo has happened. The two are independent: a fully written-up todo can be parked, and a parked todo can be unwritten.</p>
 
 <h2>The four values</h2>
 
@@ -392,7 +395,7 @@ ${WHAT_TTS_IS}
 
 <h2>When these chips appear at all</h2>
 
-<p>A todo shows the four verdict chips only when its status is <span class="mono">active</span> and its readiness is <span class="mono">ready-for-tom</span>. Readiness is the field saying how far the writing-up of the todo has got, and <span class="mono">ready-for-tom</span> means an agent finished preparing it and what is left needs Tom. A todo in that state is called a <span class="term">gate item</span>, and a gate item can be ruled from wherever it is seen, not only on the batches tab.</p>
+<p>A todo shows the four verdict chips only when its status is <span class="mono">active</span> and its readiness is <span class="mono">prepared</span>. Readiness is the field saying whether the writing-up of the todo has happened, and <span class="mono">prepared</span> means an agent finished preparing it. A todo in that state is called a <span class="term">gate item</span>, and a gate item can be ruled from wherever it is seen, not only on the batches tab.</p>
 
 <p>Two further chips sit beside the four and are not verdicts: <span class="mono">done</span>, which marks the todo finished, and <span class="mono">archive</span>, which sets it aside without recording a ruling. The plain archive chip appears only when the four verdict chips do not, so the two ways of archiving are never offered at once.</p>
 
@@ -411,7 +414,7 @@ ${WHAT_TTS_IS}
   </tr>
   <tr>
     <td class="mono">revise</td>
-    <td>The todo's readiness back to <span class="mono">preparing</span>. The ruling row stays unapplied.</td>
+    <td>The todo's readiness back to <span class="mono">unprepared</span>. The ruling row stays unapplied.</td>
     <td>A job on the Jarvis Box — Tom's always-on machine — runs every two minutes, finds unapplied revise rulings, re-prepares the brief with the sentence in its prompt, and then marks the ruling applied. The sentence is the whole instruction the agent receives about what to change, so it has to stand on its own.</td>
   </tr>
   <tr>
@@ -452,7 +455,7 @@ ${WHAT_TTS_IS}
 
 <h2>What happens next, and who does it</h2>
 
-<p>Recording a ruling writes one row, writes one entry of kind <span class="mono">ruling</span> in the append-only event record, and — for approve and archive on a life todo — nothing further. For revise, an agent session re-prepares the brief within a couple of minutes and the item returns at <span class="mono">ready-for-tom</span> for another look. For session, the item waits until Tom opens the conversation. For approve on a code todo, a pull request appears within the hour and waits for his merge.</p>
+<p>Recording a ruling writes one row, writes one entry of kind <span class="mono">ruling</span> in the append-only event record, and — for approve and archive on a life todo — nothing further. For revise, an agent session re-prepares the brief within a couple of minutes and the item returns at <span class="mono">prepared</span> for another look. For session, the item waits until Tom opens the conversation. For approve on a code todo, a pull request appears within the hour and waits for his merge.</p>
 `,
 );
 
@@ -475,7 +478,7 @@ ${WHAT_TTS_IS}
 
 <table>
   <tr><th>Kind</th><th>Started from</th><th>What its prompt says</th></tr>
-  <tr><td class="mono">gate</td><td>A todo whose readiness is <span class="mono">ready-for-tom</span>.</td><td>That the item is ready and needs Tom's input integrated: walk him through it from the ground up, take his ruling, and shape the result with him.</td></tr>
+  <tr><td class="mono">gate</td><td>A todo whose readiness is <span class="mono">prepared</span>.</td><td>That the item is ready and needs Tom's input integrated: walk him through it from the ground up, take his ruling, and shape the result with him.</td></tr>
   <tr><td class="mono">focus-item</td><td>Any other todo, and any batch.</td><td>That Tom chose to begin this item now: open with the smallest concrete first step and work it with him.</td></tr>
   <tr><td class="mono">block</td><td>A placed span of calendar time that targets a category rather than one todo.</td><td>That Tom committed this span to the category, followed by a list of every active todo carrying that category, one line each with its timing, date, entry action and work description.</td></tr>
   <tr><td class="mono">weekly</td><td>The session list page only.</td><td>Nothing extra — the prompt is whatever was typed.</td></tr>
@@ -681,7 +684,7 @@ ${WHAT_TTS_IS}
   <tr><th>Field</th><th>Value</th></tr>
   <tr><td class="mono">statement</td><td>The rule's statement.</td></tr>
   <tr><td class="mono">status</td><td class="mono">active</td></tr>
-  <tr><td class="mono">readiness</td><td class="mono">ready-for-tom</td></tr>
+  <tr><td class="mono">readiness</td><td class="mono">prepared</td></tr>
   <tr><td class="mono">timingClass</td><td class="mono">dated</td></tr>
   <tr><td class="mono">dueAt</td><td>That day at the rule's time, or noon.</td></tr>
   <tr><td class="mono">dateKind</td><td class="mono">self-imposed</td></tr>
@@ -690,7 +693,7 @@ ${WHAT_TTS_IS}
   <tr><td class="mono">source</td><td class="mono">repeating</td></tr>
 </table>
 
-<p>The two rows worth pausing on are readiness and actor. A minted instance arrives already at <span class="mono">ready-for-tom</span> and marked as Tom's own work, which means no agent is sent to prepare it: it is a thing he already knows how to do, and the picker that hands todos to agents leaves it alone.</p>
+<p>The two rows worth pausing on are readiness and actor. A minted instance arrives already at <span class="mono">prepared</span> and marked as Tom's own work, which means no agent is sent to prepare it: it is a thing he already knows how to do, and the picker that hands todos to agents leaves it alone.</p>
 
 <h2>Why a rule cannot mint twice for the same day</h2>
 
@@ -761,5 +764,53 @@ ${WHAT_TTS_IS}
 <h2>What happens next, and who does it</h2>
 
 <p>Pressing the button writes the one change in its row and stops. Nothing is scheduled and no message is sent. A todo marked done or archived leaves the working views and stays readable; a recorded engagement is visible only in the event feed.</p>
+`,
+);
+
+export const MUST_NOT_BREAK_EXPLANATION = page(
+  "Must not break — Tom's line on a goal",
+  "Must not break: Tom's own line on what the work toward a goal must not break",
+  "The field behind the line under a goal on the batch card: who writes it, where it is read, and what it binds.",
+  `
+<h2>What this is</h2>
+
+${WHAT_TTS_IS}
+
+<p>A <span class="term">batch</span> is a stored row holding how a set of todos gets completed. Its contents are todos of two kinds: a <span class="term">task</span> is work someone does, and a <span class="term">goal</span> is a state of the world the batch is for, written as a condition that is either true yet or not. <span class="term">Must not break</span> is one field on a goal: one line, in Tom's own words, naming what the work toward that goal must not break — a constraint on every task planned or done in the goal's name.</p>
+
+<p>It is stored on the goal's row under the name <span class="mono">mustNotBreak</span>, and it exists only on goals: the one function that writes it, <span class="mono">updateTodo</span> in the file <span class="mono">convex/tts.ts</span>, refuses it on a task.</p>
+
+<h2>Who writes it</h2>
+
+<table>
+  <tr><th>Writer</th><th>Allowed</th><th>Why</th></tr>
+  <tr><td>Tom, through <span class="mono">updateTodo</span></td><td>Yes — the only writer.</td><td>The line is his intent about the world. An agent guessing it would be an agent inventing a constraint in his name.</td></tr>
+  <tr><td>The planner (the job that maintains the graph inside each batch)</td><td>No. It reads the line and never writes or rewrites it.</td><td>The planner proposes structure; it does not state what matters.</td></tr>
+  <tr><td>A worker session (an agent doing one task)</td><td>No. Its writing pen does not carry the field.</td><td>Same reason. A worker that finds the line wrong says so in its outcome summary, and Tom changes it.</td></tr>
+</table>
+
+<h2>Where it is read</h2>
+
+<table>
+  <tr><th>Reader</th><th>What it does with the line</th></tr>
+  <tr><td>The batch card and the goal's detail dialog</td><td>Show it under the goal, exactly as written.</td></tr>
+  <tr><td>The planner's prompt</td><td>Carries it beside the goal's statement. A task that would break the line is not a task to write, and a task's explanation must say how the line is kept.</td></tr>
+  <tr><td>A worker session's opening prompt</td><td>Lists every must-not-break line of the batch's goals before the task, as binding on that task.</td></tr>
+  <tr><td>A batch session or item session Tom opens</td><td>Prints it beside the goal, marked as his own binding line.</td></tr>
+</table>
+
+<h2>What it binds</h2>
+
+<div class="flow">
+  <div class="box">Tom writes the line on a goal <span class="muted">— one sentence, his words</span></div>
+  <div class="arrow">↓</div>
+  <div class="box">Every task the planner writes toward that goal is planned under it <span class="muted">— the prompt says a task that would break it is not written</span></div>
+  <div class="arrow">↓</div>
+  <div class="box">Every worker that takes one of those tasks reads it first <span class="muted">— a change that would break it is not made, whatever the task says</span></div>
+</div>
+
+<h2>What happens next, and who does it</h2>
+
+<p>Writing or changing the line writes one field and stops. Nothing is scheduled and no message is sent. The next planner run and the next worker session on the batch read the new line from the row; a session already open keeps the prompt it was opened with.</p>
 `,
 );

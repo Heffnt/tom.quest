@@ -18,6 +18,12 @@ import { v, type Infer } from "convex/values";
 const HOUR_MS = 3_600_000;
 export const DAY_MS = 86_400_000;
 
+/** How far ahead of a condition-bound todo's latest-safe date it surfaces:
+ * the fallback queue's window, and the sleep the lifeos migration writes
+ * (wakeAt = latestSafeAt minus this) when it turns such a row into a task
+ * with the condition in its statement. ONE HOME — it was an inline literal. */
+export const CONDITION_WINDOW_MS = 14 * DAY_MS;
+
 // The scheduling anchors (single source of truth for the guard hours; the UTC
 // cron times in convex/crons.ts and worker/setup.sh are derived as hour+4
 // (EDT) and hour+5 (EST) and say so in their comments).
@@ -185,6 +191,91 @@ export function nyHhmm(at: number): string {
   ).padStart(2, "0")}`;
 }
 
+// ── Readiness: two values (ruling 18, the lifeos update, 2026-09-05) ────────
+// THE ONE HOME for what the readiness field means. Tom, 2026-08-27: "theres no
+// functional difference between ready to ratify and needs session" — so the
+// field keeps exactly two values:
+//   unprepared — a raw capture; no one has written it up yet. Never ready.
+//   prepared   — written up (brief, entry action, work description). Whether
+//                it is READY for Tom is then COMPUTED, never stored: see
+//                isReadyForTom below.
+// The two retired spellings, "preparing" and "ready-for-tom", stay READABLE
+// during the widen (every reader goes through normalizeReadiness / isPrepared,
+// so a row written before the migration reads the same as one written after)
+// and are mapped one to one by ttsMigrations.internalMigrateReadiness:
+// "preparing" → unprepared (the write-up was not finished), "ready-for-tom" →
+// prepared. They leave the validator at NARROW, once no row carries them.
+export const READINESS_VALUES = ["unprepared", "prepared"] as const;
+export type Readiness = (typeof READINESS_VALUES)[number];
+export const RETIRED_READINESS_VALUES = ["preparing", "ready-for-tom"] as const;
+export type StoredReadiness =
+  | Readiness
+  | (typeof RETIRED_READINESS_VALUES)[number];
+/** The stored form during the widen: the two values plus the two retired
+ * spellings. convex/schema.ts and every pen that stores readiness use this. */
+export const STORED_READINESS = v.union(
+  ...[...READINESS_VALUES, ...RETIRED_READINESS_VALUES].map((r) =>
+    v.literal(r),
+  ),
+);
+/** The two-value form: what a Tom door may write, and what the page offers. */
+export const READINESS = v.union(...READINESS_VALUES.map((r) => v.literal(r)));
+/** One reading for every spelling. "ready-for-tom" meant "the write-up is
+ * finished and only Tom is missing", so it reads as prepared. "preparing"
+ * meant "an agent still has groundwork to do here" — a half-prepared row —
+ * and a raw or half-prepared capture is never ready, so it reads as
+ * unprepared: the preparer job picks it up again and returns it as
+ * prepared. Each stored spelling has exactly one reading. */
+export function normalizeReadiness(readiness: StoredReadiness): Readiness {
+  return readiness === "unprepared" || readiness === "preparing"
+    ? "unprepared"
+    : "prepared";
+}
+export function isPrepared(readiness: StoredReadiness): boolean {
+  return normalizeReadiness(readiness) === "prepared";
+}
+
+// ── Code-brief recommendation: the four verdict words (the lifeos update) ───
+// A code brief's `recommendation` is the worker's read of what Tom will most
+// likely rule, so it is spelled in the words he rules in — the four verdicts
+// (convex/ttsRulings.ts VERDICT). The three retired spellings map one to one:
+//   stale-replan    → revise
+//   needs-session   → session
+//   propose-archive → archive
+// They stay READABLE during the widen (normalizeRecommendation is the one
+// reading) and are rewritten by ttsMigrations.internalMigrateRecommendations;
+// they leave the validator at NARROW.
+export const RECOMMENDATION_VALUES = ["approve", "revise", "session", "archive"] as const;
+export type Recommendation = (typeof RECOMMENDATION_VALUES)[number];
+export const RETIRED_RECOMMENDATION_MAP = {
+  "stale-replan": "revise",
+  "needs-session": "session",
+  "propose-archive": "archive",
+} as const satisfies Record<string, Recommendation>;
+export type StoredRecommendation =
+  | Recommendation
+  | keyof typeof RETIRED_RECOMMENDATION_MAP;
+export const STORED_RECOMMENDATION_VALUES = [
+  ...RECOMMENDATION_VALUES,
+  ...(Object.keys(RETIRED_RECOMMENDATION_MAP) as (keyof typeof RETIRED_RECOMMENDATION_MAP)[]),
+] as const;
+/** The stored form during the widen: the four words plus the three retired
+ * spellings. convex/schema.ts and the brief pen use this. */
+export const STORED_RECOMMENDATION = v.union(
+  ...STORED_RECOMMENDATION_VALUES.map((r) => v.literal(r)),
+);
+export function normalizeRecommendation(r: StoredRecommendation): Recommendation {
+  return r in RETIRED_RECOMMENDATION_MAP
+    ? RETIRED_RECOMMENDATION_MAP[r as keyof typeof RETIRED_RECOMMENDATION_MAP]
+    : (r as Recommendation);
+}
+export function isStoredRecommendation(x: unknown): x is StoredRecommendation {
+  return (
+    typeof x === "string" &&
+    (STORED_RECOMMENDATION_VALUES as readonly string[]).includes(x)
+  );
+}
+
 // ── The todo graph: needs, done, ready (schema v2, ratified 2026-08-29) ──────
 // THE ONE HOME for the graph rules — convex/ and app/ both import from here,
 // so the server's frontier and the page's frontier cannot drift. Structural
@@ -195,11 +286,14 @@ export function nyHhmm(at: number): string {
 /** The bounded fan-in of one todo's `needs` (Convex unbounded-array rule). */
 export const MAX_NEEDS = 10;
 
-/** The slice of a todo the graph rules read. */
+/** The slice of a todo the graph rules read. `wakeAt` on an ACTIVE row is a
+ * sleep (the lifeos update: a stored "waiting" status becomes active with its
+ * wakeAt); until that instant the row is not ready for anyone. */
 export type GraphTodo = {
   _id: string;
   status: "active" | "waiting" | "archived" | "done";
   needs?: readonly string[];
+  wakeAt?: number;
 };
 
 /**
@@ -216,23 +310,150 @@ export function buildDoneSet(todos: readonly GraphTodo[]): Set<string> {
   return done;
 }
 
+/** Whether a row's sleep, if it has one, is over at `now`. */
+export function wakeAtPassed(todo: { wakeAt?: number }, now: number): boolean {
+  return todo.wakeAt === undefined || todo.wakeAt <= now;
+}
+
 /**
- * READY — Tom's word for the frontier: this todo is active and every id in its
- * `needs` is done. `waiting` is excluded on purpose (a sleeping todo is not
- * ready no matter what its needs say), as are done/archived rows. No needs at
- * all = ready the moment it is active.
+ * READY — Tom's word for the frontier: this todo is active, awake, and every
+ * id in its `needs` is done. The stored status `waiting` is excluded on
+ * purpose (a sleeping todo is not ready no matter what its needs say), and so
+ * is an active row whose wakeAt is still ahead — the same sleep, spelled the
+ * way it is after the lifeos migration. Done/archived rows are never ready.
+ * No needs at all = ready the moment it is active and awake.
+ *
+ * This is the frontier a WORKER may pick from, and it does not read the
+ * readiness field: an agent task is worked from raw. What is ready FOR TOM is
+ * the stricter isReadyForTom below.
  */
-export function isReady(todo: GraphTodo, doneSet: ReadonlySet<string>): boolean {
+export function isReady(
+  todo: GraphTodo,
+  doneSet: ReadonlySet<string>,
+  now: number,
+): boolean {
   return (
     todo.status === "active" &&
+    wakeAtPassed(todo, now) &&
     (todo.needs ?? []).every((id) => doneSet.has(id))
   );
 }
 
 /** The ready list, in the order given. */
-export function frontier<T extends GraphTodo>(todos: readonly T[]): T[] {
+export function frontier<T extends GraphTodo>(
+  todos: readonly T[],
+  now: number,
+): T[] {
   const doneSet = buildDoneSet(todos);
-  return todos.filter((t) => isReady(t, doneSet));
+  return todos.filter((t) => isReady(t, doneSet, now));
+}
+
+/** The slice of a todo the ready-for-Tom rule reads. */
+export type ReadyTodo = GraphTodo & { readiness: StoredReadiness };
+
+/**
+ * READY FOR TOM (ruling 18): prepared, active, wakeAt absent or passed, every
+ * need done. The one computation behind the page's ready filter, the needs-me
+ * list, the digest's "ready for him" section, and the session-kind choice. A
+ * raw capture (unprepared) is never ready, whatever else is true of it.
+ */
+export function isReadyForTom(
+  todo: ReadyTodo,
+  doneSet: ReadonlySet<string>,
+  now: number,
+): boolean {
+  return isPrepared(todo.readiness) && isReady(todo, doneSet, now);
+}
+
+// ── Waiting, computed with its reason (the lifeos update, phase 7) ──────────
+// "Waiting" is no longer a stored status: it is what an active todo that is
+// not ready is doing, and the reason is computed here — ONE function, so the
+// page's waiting line, the batch card's blocked rows, and the digest cannot
+// name different reasons for the same row. The stored status "waiting" is
+// still readable during the widen and reads as a sleep (its wakeAt, or its
+// wake condition in words when it has no time).
+//
+// The reasons, in the order they are checked — hard blocks first, then what
+// an agent clears on its own, then Tom:
+//   wake        — asleep: a stored "waiting" row, or an active row whose
+//                 wakeAt is still ahead.
+//   need        — an unmet need, named (the first in the todo's `needs` that
+//                 is not done).
+//   credential  — the todo comes from a source whose credential Tom has
+//                 declined (a declined integration is an archived todo with
+//                 his ruling on it; the caller passes that set), so nothing
+//                 can move it until the credential exists.
+//   unprepared  — a raw capture; the preparer job clears this on its own.
+//   tom         — prepared, and the actor is Tom: it waits on him. Also the
+//                 answer for a prepared todo with no actor field (a legacy
+//                 standalone todo, which Tom executes).
+//   null        — an agent task that is ready: waiting on nothing but a
+//                 worker's tick.
+export type WaitingReason =
+  | { kind: "wake"; at?: number; condition?: string }
+  | { kind: "need"; id: string; statement?: string }
+  | { kind: "credential"; source: string }
+  | { kind: "unprepared" }
+  | { kind: "tom" };
+
+/** The slice of a todo the waiting rule reads. */
+export type WaitingTodo = ReadyTodo & {
+  wakeCondition?: string;
+  actor?: "tom" | "agent";
+  source?: string;
+};
+
+export type WaitingContext = {
+  now: number;
+  doneSet: ReadonlySet<string>;
+  /** The display text of a need, by id — so the reason names it. */
+  statementOf?: (id: string) => string | undefined;
+  /** Source names whose credential Tom declined (empty until phase 6 feeds
+   * it from the archived integration todos). */
+  declinedSources?: ReadonlySet<string>;
+};
+
+export function waitingReason(
+  todo: WaitingTodo,
+  ctx: WaitingContext,
+): WaitingReason | null {
+  if (todo.status !== "active" && todo.status !== "waiting") return null;
+  if (todo.status === "waiting" || !wakeAtPassed(todo, ctx.now)) {
+    return { kind: "wake", at: todo.wakeAt, condition: todo.wakeCondition };
+  }
+  const unmet = (todo.needs ?? []).find((id) => !ctx.doneSet.has(id));
+  if (unmet !== undefined) {
+    return { kind: "need", id: unmet, statement: ctx.statementOf?.(unmet) };
+  }
+  if (todo.source !== undefined && ctx.declinedSources?.has(todo.source)) {
+    return { kind: "credential", source: todo.source };
+  }
+  if (!isPrepared(todo.readiness)) return { kind: "unprepared" };
+  if (todo.actor !== "agent") return { kind: "tom" };
+  return null;
+}
+
+/** The one spelling of a reason on a page or in a message. `date` renders an
+ * instant the way the surface does (the page's fmtDate, the digest's day). */
+export function waitingReasonText(
+  reason: WaitingReason,
+  date: (at: number) => string,
+): string {
+  switch (reason.kind) {
+    case "wake":
+      if (reason.at !== undefined) {
+        return `waiting until ${date(reason.at)}${reason.condition ? ` — ${reason.condition}` : ""}`;
+      }
+      return reason.condition ? `waiting until: ${reason.condition}` : "waiting";
+    case "need":
+      return `waiting on: ${reason.statement ?? reason.id}`;
+    case "credential":
+      return `waiting on a credential: ${reason.source} declined`;
+    case "unprepared":
+      return "waiting: unprepared";
+    case "tom":
+      return "waiting on you";
+  }
 }
 
 /** The slice of a todo the goal-condition rule reads. */

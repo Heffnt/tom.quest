@@ -22,13 +22,15 @@ export const VERDICTS: RulingVerdict[] = [
   "archive",
 ];
 
-// Where a todo can be ruled on from the page: active, and prepared to the
-// point of needing Tom. ONE definition — the todo row's verdict chips, the
-// detail dialog's verdict buttons and the needs-me selector all read it, so
-// the set of items offering the four verdicts cannot drift between surfaces.
+// Where a todo can be ruled on from the page: active and prepared (ruling 18:
+// readiness is two values, and ttsShared.isPrepared reads the retired
+// spellings too). ONE definition — the todo row's verdict chips and the detail
+// dialog's verdict buttons read it, so the set of items offering the four
+// verdicts cannot drift between surfaces. The needs-me selector is stricter:
+// it wants the COMPUTED ready (isReadyForTom — awake and unblocked as well).
 // (A batch is always rulable: it is its own row and has no readiness.)
 export function isRulable(t: Todo): boolean {
-  return t.status === "active" && t.readiness === "ready-for-tom";
+  return t.status === "active" && isPrepared(t.readiness);
 }
 
 // ── Ruling subject identity + live-ruling derivation ─────────────────────────
@@ -70,11 +72,15 @@ export function isBatch(t: Todo): boolean {
 // NOT redefined here: convex/ttsShared.ts is the ONE home for the graph rules,
 // so the server's frontier and the page's frontier cannot drift. This is only
 // the client's local name for them.
+import { buildDoneSet, isPrepared, isReadyForTom } from "@/convex/ttsShared";
 export {
   MAX_NEEDS,
   buildDoneSet,
+  isPrepared,
   isReady,
+  isReadyForTom,
   frontier,
+  normalizeReadiness,
 } from "@/convex/ttsShared";
 
 // Client mirror of convex/tts.ts memberKey — one definition of the key format,
@@ -149,8 +155,9 @@ export function liveRulingsByKey(rulings: Ruling[]): Map<string, Ruling> {
 
 // ── The needs-me selector (ONE definition; the tab renders it, the badge
 // counts it) ─────────────────────────────────────────────────────────────────
-// life: active + ready-for-tom, excluding todos whose live ruling is NEWER
-//   than the todo's last update — a ruled gate is answered until the preparer
+// life: READY FOR TOM (ruling 18, ttsShared.isReadyForTom: prepared, active,
+//   awake, every need done), excluding todos whose live ruling is NEWER than
+//   the todo's last update — a ruled gate is answered until the preparer
 //   touches the todo again (re-prep bumps updatedAt to at least ruledAt).
 // code: open + briefed, where the live ruling is missing or NOT NEWER than
 //   the brief — a re-brief after a revise ruling returns the item for a fresh
@@ -177,11 +184,13 @@ export function selectNeedsMe(
   mirror: MirrorRow[],
   briefs: CodeBrief[],
   rulings: Ruling[],
+  now: number = Date.now(),
 ): NeedsMe {
   const live = liveRulingsByKey(rulings);
+  const doneSet = buildDoneSet(todos);
 
   const lifeRows = todos.filter((t) => {
-    if (!isRulable(t)) return false;
+    if (!isReadyForTom(t, doneSet, now)) return false;
     const ruling = live.get(
       rulingSubjectKey({ subjectType: "life", todoId: t._id }),
     );

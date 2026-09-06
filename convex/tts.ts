@@ -11,12 +11,17 @@ import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { INTEGRATION_SOURCE, integrationName } from "./ttsIntegrations";
 import {
+  CONDITION_WINDOW_MS,
   DAY_MS,
   MAX_NEEDS,
+  READINESS,
+  RETIRED_READINESS_VALUES,
   SESSION_MODEL,
   TTS_PREP_NY_HOUR,
   captureReplyText,
   goalCheckable,
+  isPrepared,
+  normalizeReadiness,
   nyCalendarDayBoundsUtc,
   nyCalendarDayKey,
   normalizeSessionRepos,
@@ -25,6 +30,7 @@ import {
   ttsDayBoundsUtc,
   ttsDayKey,
   ttsPrepDay,
+  wakeAtPassed,
 } from "./ttsShared";
 
 // TTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
@@ -52,11 +58,9 @@ async function requireTomOrAgentId(
 // internalStoreWorkerPrep.
 const QUEUE_MAX = 7;
 
-const READINESS = v.union(
-  v.literal("unprepared"),
-  v.literal("preparing"),
-  v.literal("ready-for-tom"),
-);
+// Readiness is two values (ruling 18); READINESS, the two-value validator, is
+// imported from ttsShared — Tom's door writes only those. The worker's pen
+// below still ACCEPTS the retired spellings and stores them normalized.
 const STATUS = v.union(
   v.literal("active"),
   v.literal("waiting"),
@@ -356,11 +360,19 @@ export const updateTodo = mutation({
     category: v.optional(v.union(v.string(), v.null())),
     members: v.optional(v.union(v.array(MEMBER), v.null())),
     plan: v.optional(v.union(v.array(PLAN_STEP), v.null())),
+    // Tom's line on a GOAL (schema: mustNotBreak); null clears it. This door
+    // is the only writer — ruling 13.
+    mustNotBreak: v.optional(v.union(v.string(), v.null())),
   },
   handler: async (ctx, { id, ...fields }) => {
     await requireTomId(ctx);
     const todo = await ctx.db.get(id);
     if (!todo) throw new Error("TTS todo not found");
+    if (fields.mustNotBreak !== undefined && todo.kind !== "goal") {
+      throw new Error(
+        "mustNotBreak is a goal's field — this todo is not a goal",
+      );
+    }
     // Kept-dates rule (spec §8): a date never just disappears — the silent
     // slide is the one forbidden outcome. Clearing dueAt directly is refused;
     // dates leave via recordDateOutcome (done / renegotiated / missed).
@@ -1585,8 +1597,20 @@ export const internalPrepareTodo = internalMutation({
     brief: v.optional(v.string()),
     entryAction: v.optional(v.string()),
     workDescription: v.optional(v.string()),
+    // "prepared" is the value (ruling 18). The two retired spellings are still
+    // accepted from a worker written before the rename — a pen that rejected
+    // them would fail every box job until its deploy caught up — and stored
+    // as the value each reads as (ttsShared.normalizeReadiness): "ready-for-
+    // tom" as "prepared", "preparing" as "unprepared". The old job said
+    // "preparing" of a write-up it had not finished, so storing unprepared
+    // there is recording its own word, not erasing one; the preparer returns
+    // the row as prepared. The literal "unprepared" is refused: an agent must
+    // never erase the record that a todo was written up.
     readiness: v.optional(
-      v.union(v.literal("preparing"), v.literal("ready-for-tom")),
+      v.union(
+        v.literal("prepared"),
+        ...RETIRED_READINESS_VALUES.map((r) => v.literal(r)),
+      ),
     ),
     plan: v.optional(v.array(PLAN_STEP)),
     // ── The graph worker's three args (schema v2, 2026-08-29) ────────────────
@@ -1660,7 +1684,9 @@ export const internalPrepareTodo = internalMutation({
       }
       if (entryAction !== undefined) patch.entryAction = entryAction;
       if (workDescription !== undefined) patch.workDescription = workDescription;
-      if (readiness !== undefined) patch.readiness = readiness;
+      if (readiness !== undefined) {
+        patch.readiness = normalizeReadiness(readiness);
+      }
       if (dueAt !== undefined) {
         // Kept-dates rule (spec §8): a stored date moves only through
         // recordDateOutcome / a time note. The preparer gets the FIRST date
@@ -1908,7 +1934,7 @@ export const internalStoreBatches = internalMutation({
           brief: b.brief,
           members: b.members,
           plan: b.plan,
-          readiness: "ready-for-tom",
+          readiness: "prepared",
           status: "active",
           timingClass: "whenever",
           source: "batcher",
@@ -2033,7 +2059,11 @@ export const internalStorePlanGraph = internalMutation({
     batchId: v.optional(v.string()), // absent = create the batch
     statement: v.string(),
     groundUpExplanation: v.optional(v.string()),
+    // The retired sequencing (still accepted during the widen) and its
+    // successor: the batches this one needs done first. Absent PRESERVES the
+    // stored value for both, like every field on this pen.
     path: v.optional(BATCH_PATH),
+    needs: v.optional(v.array(v.string())),
     // The repos this batch's work lives in (Tom's ruling 2026-08-30: a batch
     // DECLARES its repos; the session scheduler no longer guesses them from a
     // substring search). Normalized here — an unknown name is dropped rather
@@ -2329,6 +2359,66 @@ export const internalStorePlanGraph = internalMutation({
       return false;
     });
 
+    // ── The batch's needs: ids of OTHER batches, bounded, known, acyclic ────
+    // A name that is not a batch id, or the batch itself, is dropped with a
+    // named skip rather than stored: an edge to nothing would block the batch
+    // forever, and an edge to itself would too. So would a cycle through
+    // other batches — A needs B and B needs A passes a self-need check, and
+    // then the scheduler's batchNeedsMet holds both back forever with nothing
+    // saying why. Each candidate need is walked transitively through the
+    // stored needs of every batch (ONE collect of a human-scale table), and
+    // one that reaches this batch is skipped naming the batch it names.
+    // Absent preserves.
+    let batchNeeds: Id<"batches">[] | undefined;
+    if (args.needs !== undefined) {
+      const allBatches = await ctx.db.query("batches").collect();
+      const batchByIdForNeeds = new Map(allBatches.map((b) => [b._id as string, b]));
+      /** Whether `from` reaches `target` along stored needs edges. */
+      const reaches = (from: string, target: string): boolean => {
+        const seen = new Set<string>();
+        const stack = [from];
+        while (stack.length > 0) {
+          const id = stack.pop()!;
+          if (id === target) return true;
+          if (seen.has(id)) continue;
+          seen.add(id);
+          stack.push(...(batchByIdForNeeds.get(id)?.needs ?? []));
+        }
+        return false;
+      };
+      batchNeeds = [];
+      const seen = new Set<string>();
+      for (const raw of args.needs) {
+        const id = ctx.db.normalizeId("batches", raw);
+        const target = id ? batchByIdForNeeds.get(id) : undefined;
+        if (!id || !target) {
+          result.skipped.push({ ref: raw, why: "needs names no batch" });
+          continue;
+        }
+        if (batch && id === batch._id) {
+          result.skipped.push({ ref: raw, why: "a batch cannot need itself" });
+          continue;
+        }
+        if (batch && reaches(id, batch._id)) {
+          result.skipped.push({
+            ref: raw,
+            why: `needs form a cycle: "${target.statement}" already needs this batch`,
+          });
+          continue;
+        }
+        if (seen.has(id)) continue;
+        seen.add(id);
+        batchNeeds.push(id);
+      }
+      if (batchNeeds.length > MAX_NEEDS) {
+        result.skipped.push({
+          ref: statement,
+          why: `needs holds at most ${MAX_NEEDS} batches — the rest are dropped`,
+        });
+        batchNeeds = batchNeeds.slice(0, MAX_NEEDS);
+      }
+    }
+
     // ── Write: the batch row, then its tasks in payload order ────────────────
     if (batch) {
       // An ABSENT field PRESERVES the stored value (internalStoreBriefs
@@ -2340,6 +2430,7 @@ export const internalStorePlanGraph = internalMutation({
         groundUpExplanation:
           args.groundUpExplanation ?? batch.groundUpExplanation,
         path: args.path ?? batch.path,
+        needs: batchNeeds ?? batch.needs,
         repos:
           args.repos === undefined
             ? batch.repos
@@ -2349,6 +2440,7 @@ export const internalStorePlanGraph = internalMutation({
         statement: batch.statement,
         groundUpExplanation: batch.groundUpExplanation,
         path: batch.path,
+        needs: batch.needs,
         repos: batch.repos,
       };
       if (JSON.stringify(projected) !== JSON.stringify(stored)) {
@@ -2359,6 +2451,7 @@ export const internalStorePlanGraph = internalMutation({
         statement,
         groundUpExplanation: args.groundUpExplanation,
         path: args.path,
+        needs: batchNeeds,
         repos:
           args.repos === undefined
             ? undefined
@@ -2554,7 +2647,7 @@ export const internalStorePlanGraph = internalMutation({
         if (row.status !== "active") continue;
         if (row.source !== "planner") continue;
         if (row.tomTouchedAt !== undefined) continue;
-        if (row.evidence !== undefined || row.readiness !== "unprepared") {
+        if (row.evidence !== undefined || isPrepared(row.readiness)) {
           result.skipped.push({
             ref: row.statement,
             why: "left in the batch: the planner did not re-emit it, and a session has already worked it",
@@ -2595,7 +2688,11 @@ export const internalStorePlanGraph = internalMutation({
 // world: a batches row, its plan steps as task todos chained by `needs`, its
 // members bound as goals. NOTHING IS EVER DELETED — the old row is archived
 // with a pointer to its successor, which is also the idempotence key.
-const GRAPH_SUPERSEDED = "superseded by graph batch ";
+/** The unarchiveCondition a v1 batch row carries once the graph migration
+ * has replaced it — its idempotence key, and what the weekly gather must
+ * skip when it lists archived rows whose sentence names a return condition
+ * (this one is a pointer, not a condition). */
+export const GRAPH_SUPERSEDED = "superseded by graph batch ";
 
 export const internalMigrateToGraph = internalMutation({
   args: {},
@@ -2981,6 +3078,9 @@ export const internalPrepareFallbackQueue = internalMutation({
       .first();
     if (existing && !force) return; // worker already prepared today
 
+    // The same instant the wake loop above uses: a sleep ending inside the
+    // day being prepared is over for that day's queue.
+    const endOfDayWake = bounds.end - 1;
     const active = (
       await ctx.db
         .query("dtsTodos")
@@ -2989,8 +3089,15 @@ export const internalPrepareFallbackQueue = internalMutation({
     ) // The dumb fallback cannot reason about batch/member overlap, so it
       // skips batches; the worker's Claude prep may queue them. A schema-v2
       // row (batchId set) is a task or goal INSIDE a batch — the batch is the
-      // unit Tom sees, so its parts never queue individually either.
-      .filter((t) => t.members === undefined && t.batchId === undefined);
+      // unit Tom sees, so its parts never queue individually either. An
+      // active row still asleep (wakeAt ahead — the lifeos spelling of
+      // "waiting") is not queued either, the way a waiting row never was.
+      .filter(
+        (t) =>
+          t.members === undefined &&
+          t.batchId === undefined &&
+          wakeAtPassed(t, endOfDayWake),
+      );
     const endOfToday = bounds.end; // 5 a.m. NY tomorrow, DST-correct
     const entries: { todoId: Id<"dtsTodos">; reason?: string }[] = [];
     const used = new Set<string>();
@@ -3012,7 +3119,7 @@ export const internalPrepareFallbackQueue = internalMutation({
         (t) =>
           t.timingClass === "condition-bound" &&
           t.latestSafeAt !== undefined &&
-          t.latestSafeAt <= now + 14 * 86_400_000,
+          t.latestSafeAt <= now + CONDITION_WINDOW_MS,
       )
       .sort((a, b) => (a.latestSafeAt ?? 0) - (b.latestSafeAt ?? 0));
     for (const t of conditionBound.slice(0, 2)) add(t, "condition");

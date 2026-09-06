@@ -714,6 +714,49 @@ describe("internalComposeDigest", () => {
     expect(surfacedTodoIds).toEqual([late, ready]);
   });
 
+  // The ready section is ttsShared.isReadyForTom, each conjunct on its own
+  // row: a stored "preparing" (reads as unprepared — a half-finished write-up
+  // is never ready), a prepared row with a need still open, and a prepared
+  // row asleep until tomorrow. None is listed; the plain prepared row is.
+  it("lists no preparing row, no row with an open need, and no sleeping row as ready", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    const half = await tom.mutation(api.tts.createTodo, { statement: "half written up" });
+    const need = await tom.mutation(api.tts.createTodo, { statement: "the need" });
+    const blocked = await tom.mutation(api.tts.createTodo, { statement: "waits on the need" });
+    const asleep = await tom.mutation(api.tts.createTodo, { statement: "asleep till tomorrow" });
+    const plain = await tom.mutation(api.tts.createTodo, { statement: "sign the form" });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(half, { readiness: "preparing" });
+      await ctx.db.patch(blocked, { readiness: "prepared", needs: [need] });
+      await ctx.db.patch(asleep, { readiness: "prepared", wakeAt: Date.now() + DAY });
+      await ctx.db.patch(plain, { readiness: "prepared" });
+    });
+    const { text, surfacedTodoIds } = await t.query(
+      internal.ttsDigest.internalComposeDigest,
+      { day: DAY_KEY, now: Date.now() + 1 },
+    );
+    expect(text).toContain(`<${ttsItemLink(plain)}|sign the form>`);
+    expect(text).not.toContain("half written up");
+    expect(text).not.toContain("waits on the need");
+    expect(text).not.toContain("asleep till tomorrow");
+    expect(surfacedTodoIds).toEqual([plain]);
+    // The need closes and the sleep passes: both are listed.
+    await t.run(async (ctx) => {
+      await ctx.db.patch(need, { status: "done", doneAt: Date.now() });
+      await ctx.db.patch(asleep, { wakeAt: Date.now() - 1 });
+    });
+    const later = await t.query(internal.ttsDigest.internalComposeDigest, {
+      day: DAY_KEY,
+      now: Date.now() + 1,
+    });
+    expect(later.text).toContain("waits on the need");
+    expect(later.text).toContain("asleep till tomorrow");
+    expect(later.text).not.toContain("half written up");
+  });
+
   it("lists a dated email capture once, under due", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);

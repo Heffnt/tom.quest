@@ -1,0 +1,421 @@
+// The lifeos update, phase 7 — the MIGRATE step of widen → migrate → narrow
+// (design revision 4, section 3, "TTS data model, phase 7 target"). One home
+// for every row mapping the retirement matrix (docs/lifeos-retirement.md)
+// calls for, so they share one shape:
+//
+//   - RESUMABLE. Each run maps ONE PAGE of rows (`pageSize`, default
+//     PAGE_SIZE) and, when the table has more, schedules itself with the
+//     page's continue cursor and the running totals. A crash mid-table costs
+//     one page; the next call from where it stopped, or a fresh call from the
+//     start, finishes the job, because every mapping is IDEMPOTENT — a row
+//     already in its target shape is counted and left alone.
+//   - DRY RUN. `dryRun: true` walks the same pages and produces the same
+//     counts without writing a row, so the numbers are known before anything
+//     moves. Run against the local test harness first (convex/
+//     ttsMigrations.test.ts), never against prod on a guess.
+//   - COUNTED. The totals of a finished walk are written as one dtsEvents row
+//     (kind `<name>-migrated`, or `<name>-dry-run`), which is how a scheduled
+//     chain reports when the CLI call that started it has long returned. A
+//     single call with a pageSize larger than the table finishes in one
+//     transaction and returns the totals directly:
+//       npx convex run ttsMigrations:internalMigrateReadiness '{"dryRun":true,"pageSize":5000}'
+//   - NOTHING DELETED, NOTHING RESURFACED. A mapping patches the fields it
+//     maps and never bumps updatedAt — a migration must not put settled items
+//     back on Tom's pile. Retired fields are left in place until NARROW.
+
+import { v } from "convex/values";
+import { internalMutation } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
+import type { Doc } from "./_generated/dataModel";
+import { internal } from "./_generated/api";
+import { GRAPH_SUPERSEDED, logEvent } from "./tts";
+import {
+  CONDITION_WINDOW_MS,
+  MAX_NEEDS,
+  normalizeReadiness,
+  normalizeRecommendation,
+} from "./ttsShared";
+
+/** Rows per transaction. dtsTodos is a few hundred rows; this keeps one page
+ * far inside Convex's per-transaction read and write limits. */
+export const PAGE_SIZE = 200;
+
+/** The one arg shape every migration here takes. */
+const MIGRATION_ARGS = {
+  cursor: v.optional(v.union(v.string(), v.null())),
+  dryRun: v.optional(v.boolean()),
+  pageSize: v.optional(v.number()),
+  /** Running totals carried across scheduled continuations; never passed by
+   * a caller. */
+  totals: v.optional(v.record(v.string(), v.number())),
+};
+type MigrationArgs = {
+  cursor?: string | null;
+  dryRun?: boolean;
+  pageSize?: number;
+  totals?: Record<string, number>;
+};
+
+/** Count keys are ASCII (a Convex record key), spelled "<from>-to-<to>". */
+type Counts = Record<string, number>;
+
+function addCounts(into: Counts, page: Counts): Counts {
+  const out = { ...into };
+  for (const [k, n] of Object.entries(page)) out[k] = (out[k] ?? 0) + n;
+  return out;
+}
+
+/** The report a run returns: this page's counts, the totals so far, and
+ * whether the walk is finished (else the cursor the continuation carries). */
+type MigrationReport = {
+  done: boolean;
+  dryRun: boolean;
+  page: Counts;
+  totals: Counts;
+  continueCursor: string | null;
+};
+
+/**
+ * One page of a dtsTodos walk: map each row, add the page to the totals,
+ * then either record the finished totals as one event or schedule `self`
+ * with the cursor and the totals.
+ */
+async function walkTodos(
+  ctx: MutationCtx,
+  args: MigrationArgs,
+  name: string,
+  self: typeof internal.ttsMigrations.internalMigrateReadiness,
+  page: Counts,
+  mapRow: (row: Doc<"dtsTodos">, dryRun: boolean) => Promise<void>,
+): Promise<MigrationReport> {
+  const dryRun = args.dryRun ?? false;
+  const pageSize = args.pageSize ?? PAGE_SIZE;
+  const result = await ctx.db
+    .query("dtsTodos")
+    .paginate({ cursor: args.cursor ?? null, numItems: pageSize });
+  for (const row of result.page) {
+    page.scanned = (page.scanned ?? 0) + 1;
+    await mapRow(row, dryRun);
+  }
+  const totals = addCounts(args.totals ?? {}, page);
+  if (result.isDone) {
+    await logEvent(ctx, dryRun ? `${name}-dry-run` : `${name}-migrated`, undefined, totals);
+    return { done: true, dryRun, page, totals, continueCursor: null };
+  }
+  await ctx.scheduler.runAfter(0, self, {
+    cursor: result.continueCursor,
+    dryRun,
+    pageSize,
+    totals,
+  });
+  return { done: false, dryRun, page, totals, continueCursor: result.continueCursor };
+}
+
+// ── 1. Readiness to two values (ruling 18) ──────────────────────────────────
+// ready-for-tom → prepared, preparing → unprepared; prepared and unprepared
+// stay. One reading per spelling (ttsShared.normalizeReadiness is the one
+// home, and this walk writes exactly what it reads), so the counts below name
+// each retired spelling's one destination. A "preparing" row was half
+// written up; it goes back to the preparer rather than onto Tom's pile, since
+// a half-prepared capture is never ready. Whether a prepared row is READY for
+// Tom is computed from then on (ttsShared.isReadyForTom).
+export const READINESS_MIGRATION = "readiness";
+
+export const internalMigrateReadiness = internalMutation({
+  args: MIGRATION_ARGS,
+  handler: async (ctx, args): Promise<MigrationReport> => {
+    const page: Counts = {
+      scanned: 0,
+      "ready-for-tom-to-prepared": 0,
+      "preparing-to-unprepared": 0,
+      prepared: 0,
+      unprepared: 0,
+    };
+    return await walkTodos(
+      ctx,
+      args,
+      READINESS_MIGRATION,
+      internal.ttsMigrations.internalMigrateReadiness,
+      page,
+      async (row, dryRun) => {
+        const target = normalizeReadiness(row.readiness);
+        if (row.readiness === target) {
+          page[target]++;
+          return;
+        }
+        page[`${row.readiness}-to-${target}`]++;
+        if (!dryRun) await ctx.db.patch(row._id, { readiness: target });
+      },
+    );
+  },
+});
+
+// ── 3. The retired timing fields (section 3, "row mapping") ─────────────────
+// Four mappings, one walk:
+//   waiting row     → status active, its wakeAt kept: the sleep is the wakeAt
+//                     on an active row (ttsShared.isReady honours it). A wait
+//                     in words alone (wakeCondition, no time) has no instant
+//                     to sleep until, so the sentence goes where every other
+//                     condition goes — into the statement — and the row is
+//                     awake: Tom sees it and decides.
+//   condition-bound → a task whose statement carries the condition sentence,
+//                     asleep until latestSafeAt minus the 14-day window when
+//                     latestSafeAt is set (the fallback queue's own horizon)
+//                     and the row has no wakeAt of its own (one it has is
+//                     Tom's and stays), and timingClass rewritten to what the
+//                     row's date says so no old reader files it under the
+//                     retired lane. A condition-bound GOAL keeps its kind:
+//                     its condition was a trigger (ttsShared.goalCheckable),
+//                     and it is carried the same way; only the kind is not
+//                     invented. A done or archived row is mapped for the
+//                     validator only — shape, never a sleep.
+//   both at once    → one patch: a row that is waiting AND condition-bound
+//                     carries both sentences, in that order.
+//   archived row    → its return condition (unarchiveCondition) stays where
+//                     it is; the weekly gather lists archived rows whose
+//                     sentence names one. Counted here, never written. The
+//                     graph migration's "superseded by graph batch" pointer is
+//                     not a return condition and is counted apart.
+//   members / plan  → the existing, tested graph migration
+//                     (tts.internalMigrateToGraph), run on its own; this walk
+//                     only counts the v1 batches still waiting for it.
+export const TIMING_MIGRATION = "timing";
+
+/** The statement with the condition sentence carried into it. Idempotent: a
+ * statement that already carries the sentence is returned as it is. */
+export function carryCondition(statement: string, condition: string | undefined): string {
+  const sentence = condition?.trim() ?? "";
+  if (sentence === "") return statement;
+  if (statement.includes(sentence)) return statement;
+  return `${statement} — when: ${sentence}`;
+}
+
+export const internalMigrateTiming = internalMutation({
+  args: MIGRATION_ARGS,
+  handler: async (ctx, args): Promise<MigrationReport> => {
+    const page: Counts = {
+      scanned: 0,
+      "waiting-to-active": 0,
+      "waiting-condition-carried": 0,
+      "condition-bound-to-task": 0,
+      "condition-bound-goal-kept": 0,
+      "condition-wake-set": 0,
+      "condition-wake-kept": 0,
+      "archived-with-return-condition": 0,
+      "archived-superseded-by-graph": 0,
+      "v1-batches-pending-graph-migration": 0,
+    };
+    return await walkTodos(
+      ctx,
+      args,
+      TIMING_MIGRATION,
+      internal.ttsMigrations.internalMigrateTiming,
+      page,
+      async (row, dryRun) => {
+        // ONE patch per row. A row can be both a stored waiting row and
+        // condition-bound; (a) and (b) each add to the same patch and the
+        // same statement, so the second mapping cannot overwrite what the
+        // first carried in, and one write lands both.
+        const patch: Partial<Doc<"dtsTodos">> = {};
+        const terminal = row.status === "done" || row.status === "archived";
+        let statement = row.statement;
+        // (a) a stored waiting row becomes active with its wakeAt.
+        if (row.status === "waiting") {
+          page["waiting-to-active"]++;
+          patch.status = "active";
+          if (row.wakeAt === undefined && row.wakeCondition !== undefined) {
+            page["waiting-condition-carried"]++;
+            statement = carryCondition(statement, row.wakeCondition);
+          }
+        }
+        // (b) a condition-bound row becomes a task carrying its condition.
+        if (row.timingClass === "condition-bound") {
+          const isGoal = row.kind === "goal";
+          page[isGoal ? "condition-bound-goal-kept" : "condition-bound-to-task"]++;
+          statement = carryCondition(statement, row.condition);
+          patch.timingClass = row.dueAt !== undefined ? "dated" : "whenever";
+          if (!isGoal) patch.kind = "task";
+          // The sleep is latestSafeAt minus the window — unless the row
+          // already has a wakeAt, which is Tom's (set by hand, or the time a
+          // waiting row was already sleeping until) and stays. A done or
+          // archived row gets no sleep at all: its shape is mapped so the
+          // retired value leaves the validator, but a wakeAt written on a
+          // finished row would be read as a real sleep the day it is
+          // reopened.
+          if (row.latestSafeAt !== undefined && !terminal) {
+            if (row.wakeAt === undefined) {
+              page["condition-wake-set"]++;
+              patch.wakeAt = row.latestSafeAt - CONDITION_WINDOW_MS;
+            } else {
+              page["condition-wake-kept"]++;
+            }
+          }
+        }
+        if (statement !== row.statement) patch.statement = statement;
+        if (!dryRun && Object.keys(patch).length > 0) {
+          await ctx.db.patch(row._id, patch);
+          if (row.status === "waiting") {
+            await logEvent(ctx, "status-changed", row._id, {
+              from: "waiting",
+              to: "active",
+              note: "lifeos migration: a sleep is a wakeAt on an active row",
+              wakeAt: row.wakeAt,
+              wakeCondition: row.wakeCondition,
+            });
+          }
+          if (row.timingClass === "condition-bound") {
+            await logEvent(ctx, "timing-mapped", row._id, {
+              before: {
+                timingClass: row.timingClass,
+                condition: row.condition,
+                latestSafeAt: row.latestSafeAt,
+                wakeAt: row.wakeAt,
+                statement: row.statement,
+              },
+              after: { ...patch },
+            });
+          }
+        }
+        // (c) an archived row's return condition stays; count it.
+        if (row.status === "archived" && (row.unarchiveCondition ?? "").trim() !== "") {
+          page[
+            row.unarchiveCondition!.startsWith(GRAPH_SUPERSEDED)
+              ? "archived-superseded-by-graph"
+              : "archived-with-return-condition"
+          ]++;
+        }
+        // (d) members and plan: the graph migration's own work; count it.
+        if (row.members !== undefined && row.status === "active") {
+          page["v1-batches-pending-graph-migration"]++;
+        }
+      },
+    );
+  },
+});
+
+// ── 4. batches.path → batches.needs ─────────────────────────────────────────
+// The retired path (name, index, edge to the previous batch) becomes needs
+// edges between batches: a batch whose edge is "must" needs the previous
+// batch on its path (the one with the greatest index below its own); a
+// "helps" edge becomes nothing — "only makes this easier" is not a
+// prerequisite, and needs holds prerequisites only; a first or unlinked
+// batch needs nothing. The path is left in place until NARROW.
+//
+// One transaction: the batches table is human-scale (a few dozen rows for
+// years, per its schema comment), and deriving an edge needs the whole path
+// in view. Same dry run, counts, idempotence, and event as the walks above.
+export const BATCH_NEEDS_MIGRATION = "batch-needs";
+
+/** The previous batch on a path: the greatest index below `index`. Two
+ * batches sharing that index (the planner never wrote one, but nothing
+ * refused it) tie, and the first in `all` — table order, oldest first — wins:
+ * the strict `>` below keeps the one already found. Stated so the derived
+ * edge is the same on every run. */
+export function previousOnPath<T extends { path?: { name: string; index: number } }>(
+  batch: T,
+  all: readonly T[],
+): T | undefined {
+  const path = batch.path;
+  if (!path) return undefined;
+  let best: T | undefined;
+  for (const other of all) {
+    if (other === batch || !other.path || other.path.name !== path.name) continue;
+    if (other.path.index >= path.index) continue;
+    if (!best || other.path.index > best.path!.index) best = other;
+  }
+  return best;
+}
+
+export const internalMigrateBatchNeeds = internalMutation({
+  args: { dryRun: v.optional(v.boolean()) },
+  handler: async (ctx, { dryRun = false }): Promise<MigrationReport> => {
+    const all = await ctx.db.query("batches").collect();
+    const page: Counts = {
+      scanned: all.length,
+      "must-to-need": 0,
+      "must-without-previous": 0,
+      "helps-dropped": 0,
+      "unlinked": 0,
+      "already-derived": 0,
+      "no-path": 0,
+    };
+    for (const batch of all) {
+      if (!batch.path) {
+        page["no-path"]++;
+        continue;
+      }
+      if (batch.path.edge === "helps") {
+        page["helps-dropped"]++;
+        continue;
+      }
+      if (batch.path.edge !== "must") {
+        page.unlinked++;
+        continue;
+      }
+      const previous = previousOnPath(batch, all);
+      if (!previous) {
+        page["must-without-previous"]++;
+        continue;
+      }
+      if ((batch.needs ?? []).includes(previous._id)) {
+        page["already-derived"]++;
+        continue;
+      }
+      page["must-to-need"]++;
+      if (!dryRun) {
+        const needs = [...(batch.needs ?? []), previous._id].slice(0, MAX_NEEDS);
+        await ctx.db.patch(batch._id, { needs });
+        await logEvent(ctx, "batch-needs-derived", undefined, {
+          batchId: batch._id,
+          needs: previous._id,
+          path: batch.path,
+        });
+      }
+    }
+    await logEvent(
+      ctx,
+      dryRun ? `${BATCH_NEEDS_MIGRATION}-dry-run` : `${BATCH_NEEDS_MIGRATION}-migrated`,
+      undefined,
+      page,
+    );
+    return { done: true, dryRun, page, totals: page, continueCursor: null };
+  },
+});
+
+// ── 6. Code-brief recommendation → the four verdict words ───────────────────
+// stale-replan → revise, needs-session → session, propose-archive → archive;
+// approve stays. One transaction: one brief per open code todo, a small
+// table. Same dry run, counts, idempotence, and event.
+export const RECOMMENDATION_MIGRATION = "recommendation";
+
+export const internalMigrateRecommendations = internalMutation({
+  args: { dryRun: v.optional(v.boolean()) },
+  handler: async (ctx, { dryRun = false }): Promise<MigrationReport> => {
+    const all = await ctx.db.query("dtsCodeBriefs").collect();
+    const page: Counts = {
+      scanned: all.length,
+      "stale-replan-to-revise": 0,
+      "needs-session-to-session": 0,
+      "propose-archive-to-archive": 0,
+      "already-verdict-word": 0,
+    };
+    for (const brief of all) {
+      const target = normalizeRecommendation(brief.recommendation);
+      if (brief.recommendation === target) {
+        page["already-verdict-word"]++;
+        continue;
+      }
+      page[`${brief.recommendation}-to-${target}`]++;
+      if (!dryRun) await ctx.db.patch(brief._id, { recommendation: target });
+    }
+    await logEvent(
+      ctx,
+      dryRun
+        ? `${RECOMMENDATION_MIGRATION}-dry-run`
+        : `${RECOMMENDATION_MIGRATION}-migrated`,
+      undefined,
+      page,
+    );
+    return { done: true, dryRun, page, totals: page, continueCursor: null };
+  },
+});

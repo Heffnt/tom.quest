@@ -8,7 +8,12 @@ import {
   WRITING_STANDARD,
   buildDoneSet,
   frontier,
+  isPrepared,
   isReady,
+  isReadyForTom,
+  normalizeReadiness,
+  waitingReason,
+  waitingReasonText,
 } from "./ttsShared";
 import type { SessionModel } from "./ttsShared";
 
@@ -79,11 +84,13 @@ const byStatement = (todos: Doc<"dtsTodos">[], statement: string) =>
 // ── The graph rules (convex/ttsShared.ts — the ONE home) ─────────────────────
 
 describe("ttsShared graph rules", () => {
+  const NOW = Date.UTC(2026, 8, 5, 12);
   const todo = (
     _id: string,
     status: Doc<"dtsTodos">["status"],
     needs?: string[],
-  ) => ({ _id, status, needs });
+    wakeAt?: number,
+  ) => ({ _id, status, needs, wakeAt });
 
   // witness: change isReady to ignore `needs` in convex/ttsShared.ts — every
   // blocked todo would report ready and the frontier would be the whole batch.
@@ -94,12 +101,12 @@ describe("ttsShared graph rules", () => {
       todo("c", "active", ["b"]),
     ];
     const done = buildDoneSet(rows);
-    expect(isReady(rows[1], done)).toBe(true);
-    expect(isReady(rows[2], done)).toBe(false);
+    expect(isReady(rows[1], done, NOW)).toBe(true);
+    expect(isReady(rows[2], done, NOW)).toBe(false);
     // No needs at all: ready the moment it is active.
-    expect(isReady(todo("d", "active"), done)).toBe(true);
+    expect(isReady(todo("d", "active"), done, NOW)).toBe(true);
     // EVERY need, not some: one unmet need is enough to block.
-    expect(isReady(todo("e", "active", ["a", "b"]), done)).toBe(false);
+    expect(isReady(todo("e", "active", ["a", "b"]), done, NOW)).toBe(false);
   });
 
   // witness: drop "archived" from buildDoneSet — a set-aside need would block
@@ -107,16 +114,26 @@ describe("ttsShared graph rules", () => {
   it("archived counts as done, matching memberProgress", () => {
     const rows = [todo("a", "archived"), todo("b", "active", ["a"])];
     expect(buildDoneSet(rows)).toEqual(new Set(["a"]));
-    expect(isReady(rows[1], buildDoneSet(rows))).toBe(true);
+    expect(isReady(rows[1], buildDoneSet(rows), NOW)).toBe(true);
   });
 
   // witness: let isReady accept status "waiting" — a sleeping todo would be
   // offered as ready work.
   it("waiting, done, and archived todos are never ready", () => {
     const done = new Set<string>();
-    expect(isReady(todo("a", "waiting"), done)).toBe(false);
-    expect(isReady(todo("b", "done"), done)).toBe(false);
-    expect(isReady(todo("c", "archived"), done)).toBe(false);
+    expect(isReady(todo("a", "waiting"), done, NOW)).toBe(false);
+    expect(isReady(todo("b", "done"), done, NOW)).toBe(false);
+    expect(isReady(todo("c", "archived"), done, NOW)).toBe(false);
+  });
+
+  // witness: drop wakeAtPassed from isReady — an active row put to sleep by
+  // the lifeos migration (waiting → active + wakeAt) would be offered as
+  // ready work before its wake time.
+  it("an active row whose wakeAt is ahead is asleep, not ready", () => {
+    const done = new Set<string>();
+    expect(isReady(todo("a", "active", [], NOW + 1), done, NOW)).toBe(false);
+    expect(isReady(todo("b", "active", [], NOW), done, NOW)).toBe(true);
+    expect(isReady(todo("c", "active", [], NOW - 1), done, NOW)).toBe(true);
   });
 
   it("frontier is the ready list, in the order given", () => {
@@ -126,8 +143,107 @@ describe("ttsShared graph rules", () => {
       todo("c", "active", ["b"]),
       todo("d", "waiting"),
       todo("e", "active"),
+      todo("f", "active", [], NOW + 60_000),
     ];
-    expect(frontier(rows).map((r) => r._id)).toEqual(["b", "e"]);
+    expect(frontier(rows, NOW).map((r) => r._id)).toEqual(["b", "e"]);
+  });
+
+  // ── Readiness, two values (ruling 18) ──────────────────────────────────────
+  // One reading per stored spelling. "ready-for-tom" was a finished write-up;
+  // "preparing" was a half-finished one, and a half-prepared capture is never
+  // ready — it reads as unprepared so the preparer picks it up again.
+  it("ready-for-tom reads as prepared, preparing as unprepared", () => {
+    expect(normalizeReadiness("unprepared")).toBe("unprepared");
+    expect(normalizeReadiness("prepared")).toBe("prepared");
+    expect(normalizeReadiness("preparing")).toBe("unprepared");
+    expect(normalizeReadiness("ready-for-tom")).toBe("prepared");
+    expect(isPrepared("unprepared")).toBe(false);
+    expect(isPrepared("preparing")).toBe(false);
+    expect(isPrepared("ready-for-tom")).toBe(true);
+  });
+
+  // witness: drop any one of the four conjuncts from isReadyForTom — a raw
+  // capture, a sleeping row, a blocked row, or a done row would be listed as
+  // ready for Tom.
+  it("ready for Tom = prepared, active, awake, every need done", () => {
+    const rows = [
+      { ...todo("a", "done"), readiness: "prepared" as const },
+      { ...todo("b", "active", ["a"]), readiness: "prepared" as const },
+      { ...todo("c", "active", ["a"]), readiness: "unprepared" as const },
+      { ...todo("d", "active", ["b"]), readiness: "prepared" as const },
+      { ...todo("e", "active", [], NOW + 1), readiness: "prepared" as const },
+      { ...todo("f", "waiting"), readiness: "prepared" as const },
+      { ...todo("g", "active"), readiness: "ready-for-tom" as const },
+    ];
+    const done = buildDoneSet(rows);
+    const ready = rows.filter((r) => isReadyForTom(r, done, NOW)).map((r) => r._id);
+    expect(ready).toEqual(["b", "g"]);
+  });
+
+  // ── Waiting, computed with its reason ─────────────────────────────────────
+  // witness: reorder the checks in waitingReason so `unprepared` comes before
+  // `wake` — a raw capture asleep until March would say "unprepared", and the
+  // preparer would look like the thing holding it.
+  it("names the one reason an active todo waits, hard blocks first", () => {
+    const ctx = {
+      now: NOW,
+      doneSet: new Set(["a"]),
+      statementOf: (id: string) => (id === "b" ? "the need" : undefined),
+    };
+    const base = { _id: "x", status: "active" as const, readiness: "prepared" as const };
+    // wake: a future wakeAt, whatever else is true.
+    expect(
+      waitingReason({ ...base, readiness: "unprepared", wakeAt: NOW + 1, needs: ["b"] }, ctx),
+    ).toEqual({ kind: "wake", at: NOW + 1, condition: undefined });
+    // a stored "waiting" status reads as a sleep during the widen, with its
+    // condition in words when it has no time.
+    expect(
+      waitingReason({ ...base, status: "waiting", wakeCondition: "the landlord writes" }, ctx),
+    ).toEqual({ kind: "wake", at: undefined, condition: "the landlord writes" });
+    // need: the first unmet need, named.
+    expect(waitingReason({ ...base, needs: ["a", "b"] }, ctx)).toEqual({
+      kind: "need",
+      id: "b",
+      statement: "the need",
+    });
+    // credential: the source is declined.
+    expect(
+      waitingReason(
+        { ...base, source: "email" },
+        { ...ctx, declinedSources: new Set(["email"]) },
+      ),
+    ).toEqual({ kind: "credential", source: "email" });
+    // unprepared: a raw capture with nothing else holding it.
+    expect(waitingReason({ ...base, readiness: "unprepared" }, ctx)).toEqual({
+      kind: "unprepared",
+    });
+    // tom: prepared, and his (an actor of "tom", or no actor at all).
+    expect(waitingReason({ ...base, actor: "tom" }, ctx)).toEqual({ kind: "tom" });
+    expect(waitingReason(base, ctx)).toEqual({ kind: "tom" });
+    // an agent task that is ready waits on nothing.
+    expect(waitingReason({ ...base, actor: "agent" }, ctx)).toBeNull();
+    // done and archived rows are not waiting.
+    expect(waitingReason({ ...base, status: "done" }, ctx)).toBeNull();
+    expect(waitingReason({ ...base, status: "archived" }, ctx)).toBeNull();
+  });
+
+  it("spells each reason one way", () => {
+    const date = (at: number) => `d${at}`;
+    expect(waitingReasonText({ kind: "wake", at: 5 }, date)).toBe("waiting until d5");
+    expect(waitingReasonText({ kind: "wake", at: 5, condition: "c" }, date)).toBe(
+      "waiting until d5 — c",
+    );
+    expect(waitingReasonText({ kind: "wake", condition: "c" }, date)).toBe("waiting until: c");
+    expect(waitingReasonText({ kind: "wake" }, date)).toBe("waiting");
+    expect(waitingReasonText({ kind: "need", id: "b", statement: "s" }, date)).toBe(
+      "waiting on: s",
+    );
+    expect(waitingReasonText({ kind: "need", id: "b" }, date)).toBe("waiting on: b");
+    expect(waitingReasonText({ kind: "credential", source: "email" }, date)).toBe(
+      "waiting on a credential: email declined",
+    );
+    expect(waitingReasonText({ kind: "unprepared" }, date)).toBe("waiting: unprepared");
+    expect(waitingReasonText({ kind: "tom" }, date)).toBe("waiting on you");
   });
 
   it("bounds a todo's fan-in", () => {
@@ -182,7 +298,7 @@ describe("TTS plan graph (internalStorePlanGraph)", () => {
     expect(call.needs).toEqual([draft._id]);
 
     // The frontier reads exactly what the pen wrote.
-    expect(frontier(todos).map((x) => x.statement)).toEqual([
+    expect(frontier(todos, Date.now()).map((x) => x.statement)).toEqual([
       "draft the questions",
     ]);
   });
@@ -1595,6 +1711,115 @@ describe("POST /tts/plan-graph", () => {
     // The task still exists — dropping the tag costs a default, not a task.
     expect(byStatement(todos, "run it")).toBeDefined();
     expect(byStatement(todos, "run it")?.model).toBeUndefined();
+  });
+
+  // ── mustNotBreak: Tom's line, goals only (the lifeos update) ─────────────
+  // witness: drop the kind check from updateTodo — a task could carry a
+  // must-not-break line, and the planner would read a constraint on nothing.
+  it("mustNotBreak is written by Tom's door on a goal only, and read where the goal is", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const goalId = await tom.mutation(api.tts.createTodo, { statement: "the lease is signed" });
+    const res = await postGraph(t, {
+      statement: "get the apartment",
+      goalIds: [goalId],
+      tasks: [{ statement: "call the landlord", actor: "agent" }],
+    });
+    expect(res.status).toBe(200);
+    await tom.mutation(api.tts.updateTodo, {
+      id: goalId,
+      mustNotBreak: "the current tenancy must not lapse before the new one starts",
+    });
+    const goal = await t.run(async (ctx) => ctx.db.get(goalId));
+    expect(goal?.mustNotBreak).toBe(
+      "the current tenancy must not lapse before the new one starts",
+    );
+    // A task refuses it.
+    const task = byStatement(await batchTodos(t, (await oneBatch(t))._id), "call the landlord")!;
+    await expect(
+      tom.mutation(api.tts.updateTodo, { id: task._id, mustNotBreak: "anything" }),
+    ).rejects.toThrow(/goal's field/);
+    // null clears it.
+    await tom.mutation(api.tts.updateTodo, { id: goalId, mustNotBreak: null });
+    expect((await t.run(async (ctx) => ctx.db.get(goalId)))?.mustNotBreak).toBeUndefined();
+  });
+
+  // ── batches.needs (the lifeos update: the successor of path) ─────────────
+  // witness: store `args.needs` without normalizing each id — a name that is
+  // not a batch would block the batch forever, with nothing saying why.
+  it("stores a batch's needs by id, drops what is not a batch, and preserves by omission", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const first = await postGraph(t, {
+      statement: "freeze the branch",
+      tasks: [{ statement: "tag it", actor: "agent" }],
+    });
+    const firstId = (await first.json()).batchId as string;
+    const second = await postGraph(t, {
+      statement: "cut the release",
+      needs: [firstId, "not-a-batch"],
+      tasks: [{ statement: "write the notes", actor: "agent" }],
+    });
+    const body = await second.json();
+    expect(body.skipped).toEqual([{ ref: "not-a-batch", why: "needs names no batch" }]);
+    const cut = (await allBatches(t)).find((b) => b.statement === "cut the release")!;
+    expect(cut.needs).toEqual([firstId]);
+    // A re-post that says nothing about needs keeps them; a batch cannot
+    // need itself.
+    const again = await postGraph(t, {
+      batchId: cut._id,
+      statement: "cut the release",
+      tasks: [{ statement: "write the notes", actor: "agent" }],
+    });
+    expect((await again.json()).unchanged).toBe(1);
+    expect((await allBatches(t)).find((b) => b._id === cut._id)!.needs).toEqual([firstId]);
+    const selfish = await postGraph(t, {
+      batchId: cut._id,
+      statement: "cut the release",
+      needs: [cut._id],
+      tasks: [],
+    });
+    expect((await selfish.json()).skipped).toEqual([
+      { ref: cut._id, why: "a batch cannot need itself" },
+    ]);
+    expect((await allBatches(t)).find((b) => b._id === cut._id)!.needs).toEqual([]);
+  });
+
+  // A needs B and B needs A passes a self-need check, and the scheduler's
+  // batchNeedsMet then holds both back forever with nothing saying why. The
+  // pen walks each need through the stored needs of every batch and refuses
+  // the edge that would close a cycle, naming the batch it names.
+  it("refuses a need that closes a cycle, direct or through another batch", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const store = async (body: Record<string, unknown>) =>
+      (await (await postGraph(t, body)).json()) as {
+        batchId: string;
+        skipped: { ref: string; why: string }[];
+      };
+    const task = (s: string) => [{ statement: s, actor: "agent" }];
+    const a = (await store({ statement: "a", tasks: task("do a") })).batchId;
+    const b = (await store({ statement: "b", needs: [a], tasks: task("do b") })).batchId;
+    const c = (await store({ statement: "c", needs: [b], tasks: task("do c") })).batchId;
+    // Direct: a needs b, and b already needs a.
+    const direct = await store({ batchId: a, statement: "a", needs: [b], tasks: task("do a") });
+    expect(direct.skipped).toEqual([
+      { ref: b, why: 'needs form a cycle: "b" already needs this batch' },
+    ]);
+    // Through another batch: a needs c, c needs b, b needs a.
+    const transitive = await store({ batchId: a, statement: "a", needs: [c], tasks: task("do a") });
+    expect(transitive.skipped).toEqual([
+      { ref: c, why: 'needs form a cycle: "c" already needs this batch' },
+    ]);
+    const byId = new Map((await allBatches(t)).map((x) => [x._id as string, x]));
+    expect(byId.get(a)!.needs).toEqual([]);
+    expect(byId.get(b)!.needs).toEqual([a]);
+    expect(byId.get(c)!.needs).toEqual([b]);
+    // The other way round is no cycle: c may need a as well as b.
+    const fine = await store({ batchId: c, statement: "c", needs: [b, a], tasks: task("do c") });
+    expect(fine.skipped).toEqual([]);
+    expect((await allBatches(t)).find((x) => x._id === c)!.needs).toEqual([b, a]);
   });
 
   // witness: pass a half-formed path straight through — the mutation's

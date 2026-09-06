@@ -137,6 +137,17 @@ describe("selectNeedsMe: ruling-vs-subject timestamps", () => {
   // a batch binding) deliberately leave updatedAt alone precisely so a ruled
   // gate stays answered, and a ruling recorded after the last content edit is
   // strictly newer than it.
+  // A stored "preparing" reads as unprepared (ttsShared.normalizeReadiness):
+  // a half-finished write-up is never ready for Tom. Read it as prepared and
+  // this goes red — the row would sit on his pile with no write-up to rule on.
+  it("drops a life todo still spelled preparing", () => {
+    const { lifeRows } = selectNeedsMe([todo({ readiness: "preparing" })], [], [], []);
+    expect(lifeRows).toEqual([]);
+    expect(
+      selectNeedsMe([todo({ readiness: "ready-for-tom" })], [], [], []).lifeRows,
+    ).toHaveLength(1);
+  });
+
   it("drops a life todo whose ruling is strictly newer than its last update", () => {
     const { lifeRows } = selectNeedsMe(
       [todo({ updatedAt: 1000 })],

@@ -196,11 +196,11 @@ tom.quest UI in seconds:
 - **brief-code-todos** refreshes a shallow cache clone of CMT, and for every
   OPEN todo entry whose YAML changed since its last brief (sha256 cursor in
   `/var/lib/tts/brief-hashes.json`), has headless Claude write a ground-up
-  brief against the current tree and a recommendation — `propose-archive`
-  (already done/moot, with evidence), `stale-replan` (intent live, plan
-  stale), `needs-session` (open judgment call; all tier C), or `approve` —
-  plus an exec class (`box` vs `needs-turing`). Briefs POST to Convex and are
-  also cached locally under `/var/cache/tts/briefs/`.
+  brief against the current tree and a recommendation in the four verdict
+  words — `archive` (already done/moot, with evidence), `revise` (intent
+  live, plan stale), `session` (open judgment call; all tier C), or
+  `approve` — plus an exec class (`box` vs `needs-turing`). Briefs POST to
+  Convex and are also cached locally under `/var/cache/tts/briefs/`.
 - Tom rules on each brief in the UI; Convex queues the rulings.
 - **apply-rulings** carries out the non-execution rulings: `defer` records
   it; `stale-replan` queues a re-brief that must propose a fresh plan;

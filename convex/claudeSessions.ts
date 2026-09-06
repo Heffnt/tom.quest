@@ -55,10 +55,12 @@ import {
   buildDoneSet,
   goalCheckable,
   isLive,
+  isPrepared,
   isReady,
   modelFamily,
   normalizeSessionRepos,
   tracksCodeTodos,
+  wakeAtPassed,
 } from "./ttsShared";
 import type { SessionModel } from "./ttsShared";
 export { DAEMON_STALE_MS };
@@ -2523,7 +2525,7 @@ function buildAutoMissionPrompt(
   }
   lines.push(
     "",
-    `The goal: do every open plan step with actor "agent" — research, draft, gather, and write what you produce into the item via the prepare pen below. Advance readiness to "ready-for-tom" ONLY when the remaining work genuinely needs Tom. For a batch, refine the plan and check off the agent steps you complete (always post the FULL updated plan, never a diff).`,
+    `The goal: do every open plan step with actor "agent" — research, draft, gather, and write what you produce into the item via the prepare pen below. Set readiness to "prepared" when the write-up is complete — and only then; a prepared item that is active, awake and unblocked is what TTS shows Tom as ready. For a batch, refine the plan and check off the agent steps you complete (always post the FULL updated plan, never a diff).`,
     "",
     // Ratified doctrine (Tom, 2026-08-29): his input gates PERSISTENCE, never
     // implementation — a session that halts at a decision leaves him nothing
@@ -2538,7 +2540,7 @@ function buildAutoMissionPrompt(
     "",
     "1. Write your work into the item:",
     "```",
-    `curl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "brief": "...", "entryAction": "...", "workDescription": "...", "readiness": "preparing", "plan": [{"text": "...", "actor": "agent", "status": "open"}]}'`,
+    `curl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "brief": "...", "entryAction": "...", "workDescription": "...", "readiness": "prepared", "plan": [{"text": "...", "actor": "agent", "status": "open"}]}'`,
     "```",
     'Every field except "id" is optional — send only what you produced. On a batch only "plan" lands (the server skips the other fields by design).',
     "",
@@ -2608,8 +2610,24 @@ function buildWorkerPrompt(args: {
   needs: GraphNeighbor[];
   dependents: GraphNeighbor[];
   siblings: GraphNeighbor[];
+  /** The statements of the batches this batch needs (all done by the time a
+   * worker is here — the scheduler admits no batch with an open need). */
+  batchNeeds?: string[];
+  /** Tom's must-not-break lines on this batch's goals, each with the goal it
+   * is on. Binding on every step toward those goals — so on this one. */
+  mustNotBreak?: { goal: string; line: string }[];
 }): string {
-  const { todo, batch, sessionId, repos, needs, dependents, siblings } = args;
+  const {
+    todo,
+    batch,
+    sessionId,
+    repos,
+    needs,
+    dependents,
+    siblings,
+    batchNeeds = [],
+    mustNotBreak = [],
+  } = args;
   const isGoal = todo.kind === "goal";
   const lines: (string | null)[] = [
     "You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.",
@@ -2620,8 +2638,8 @@ function buildWorkerPrompt(args: {
     "The vocabulary, which is closed — these words mean exactly this and nothing else:",
     "- A BATCH holds how a set of todos gets completed. It is not itself a todo and it is never worked directly.",
     "- A TASK is work someone does. A GOAL is a state of the world the batch is for, written as a condition that is either true yet or not.",
-    "- NEEDS are the todos a todo cannot proceed without. A todo is READY when every one of its needs is done (archived counts as done — a need that was set aside is not going to happen).",
-    "- A PATH is a named sequence of batches. A MUST edge means the previous batch has to land first; a HELPS edge means it only makes this one easier.",
+    "- NEEDS are the todos a todo cannot proceed without. A todo is READY when every one of its needs is done (archived counts as done — a need that was set aside is not going to happen). The same word sequences batches: a batch's needs are the batches that must land before its work is handed out.",
+    "- A PATH is the retired spelling of that sequence: a named sequence of batches, where a MUST edge meant the previous batch has to land first and a HELPS edge meant it only makes this one easier. A batch may still show one.",
     '- DISPLAY TEXT is the short line always on screen. A GROUND-UP EXPLANATION is the self-contained layer behind it: a complete HTML document, shown fullscreen, whose exact form the standard below specifies.',
     "",
     "Everything you write into TTS obeys the writing standard in the model-of-tom files this prompt begins with, verbatim.",
@@ -2635,11 +2653,24 @@ function buildWorkerPrompt(args: {
             : " (the first batch on it)"
         }`
       : null,
+    batchNeeds.length > 0
+      ? `this batch needs (every one of them done — that is why its work is open): ${batchNeeds
+          .map((n) => `"${n}"`)
+          .join(", ")}`
+      : null,
+    ...(mustNotBreak.length > 0
+      ? [
+          "",
+          "MUST NOT BREAK — Tom's own lines on this batch's goals. They bind every step toward those goals, so they bind this one; a change that would break one is not a change to make, whatever else the task says:",
+          ...mustNotBreak.map((m) => `- on the goal "${m.goal}": ${m.line}`),
+        ]
+      : []),
     "",
     `YOU HAVE CLAIMED ONE TODO IN THIS BATCH, and only this one ("${todo.statement}"):`,
     `kind: ${isGoal ? "goal" : "task"}`,
     isGoal ? null : `who does it: ${todo.actor ?? "agent"}`,
     promptFact("condition", todo.condition),
+    promptFact("must not break (Tom's own line, binding)", todo.mustNotBreak),
     promptFact("ground-up explanation", todo.groundUpExplanation),
     promptFact("work description", todo.workDescription),
     promptFact("entry action", todo.entryAction),
@@ -2692,7 +2723,7 @@ function buildWorkerPrompt(args: {
           "",
           "1. THE WORK IS YOURS TO DO. Do it, then record the task done with its evidence — the branch, the pull request, the file you wrote, the answer you established. Evidence is what makes the completion checkable by someone who was not here.",
           "",
-          "2. THE WORK TURNS OUT TO NEED TOM'S JUDGMENT. Do not stop at the question. Prepare it so completely that his part is one reply: write the ground-up explanation (self-contained, defining every term, complete for a reader who has none of this context), state the options as they actually stand, and give your recommendation with the one reason for it. Then set readiness to ready-for-tom and leave the task open. His input gates what PERSISTS — a merge, a ruling, a real-world action — never what you implement: where you can implement your best-judgment option and name what you passed over, do that instead of asking.",
+          "2. THE WORK TURNS OUT TO NEED TOM'S JUDGMENT. Do not stop at the question. Prepare it so completely that his part is one reply: write the ground-up explanation (self-contained, defining every term, complete for a reader who has none of this context), state the options as they actually stand, and give your recommendation with the one reason for it. Then set readiness to prepared and leave the task open. His input gates what PERSISTS — a merge, a ruling, a real-world action — never what you implement: where you can implement your best-judgment option and name what you passed over, do that instead of asking.",
           "",
           "THAT EXPLANATION IS A COMPLETE HTML DOCUMENT, not a paragraph — from \"<!DOCTYPE html>\" to \"</html>\", with its own inline <style> block and nothing loaded from outside: no script, no event handler, no external stylesheet, font, image, or URL. It renders fullscreen in a sandbox with no scripting and no network, so anything external is a hole in the page. Palette #0a0e17 background, #e2e8f0 text, #94a3b8 secondary, #e8a040 accent, #1e293b borders; about 15px body type, real <h1>/<h2> headings, short sections, a <table> for enumerable facts, bordered <div> boxes with → or ↓ arrows where a shape helps. The standard above says what it must cover; write the whole page, because there is no way to amend one and a fragment overwrites what is stored.",
         ]),
@@ -2711,13 +2742,13 @@ function buildWorkerPrompt(args: {
     "",
     "2. Or hand it to Tom, when only his judgment is left:",
     "```",
-    `curl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "readiness": "ready-for-tom", "groundUpExplanation": "...", "entryAction": "the smallest next action", "evidence": "what you produced on the way"}'`,
+    `curl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "readiness": "prepared", "groundUpExplanation": "...", "entryAction": "the smallest next action", "evidence": "what you produced on the way"}'`,
     "```",
     "Every field except \"id\" is optional — send only what you produced, and send both commands if you both produced something and finished.",
     "",
     "A groundUpExplanation is a whole HTML document and will not survive being typed inline in that command. Write the document to a file, build the request body from it, and post the file:",
     "```",
-    `# after writing the page to /tmp/explanation.html\njq -Rs --arg id '${todo._id}' '{id: $id, readiness: "ready-for-tom", groundUpExplanation: .}' < /tmp/explanation.html > /tmp/tts-body.json\ncurl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d @/tmp/tts-body.json`,
+    `# after writing the page to /tmp/explanation.html\njq -Rs --arg id '${todo._id}' '{id: $id, readiness: "prepared", groundUpExplanation: .}' < /tmp/explanation.html > /tmp/tts-body.json\ncurl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d @/tmp/tts-body.json`,
     "```",
     "Any equivalent works (node, python) — the point is that the JSON escaping is done by a tool and never by hand. Add the other fields to the jq object as you need them.",
     "",
@@ -3224,7 +3255,10 @@ export const internalAutoSchedule = internalMutation({
     const todoById = new Map<Id<"dtsTodos">, Doc<"dtsTodos">>(
       todos.map((t) => [t._id, t]),
     );
-    const active = todos.filter((t) => t.status === "active");
+    // Active AND awake: an active row whose wakeAt is ahead is the lifeos
+    // spelling of "waiting" (ttsShared.wakeAtPassed), and the lanes below
+    // never handed a waiting row to a worker.
+    const active = todos.filter((t) => t.status === "active" && wakeAtPassed(t, now));
     // THE DONE SET AND THE FRONTIER come from ttsShared — the ONE
     // implementation the /tts page also reads, so the fleet and the surface
     // cannot disagree about which todos are ready.
@@ -3253,8 +3287,10 @@ export const internalAutoSchedule = internalMutation({
 
     const hasOpenAgentStep = (t: Doc<"dtsTodos">): boolean =>
       (t.plan ?? []).some((s) => s.actor === "agent" && s.status === "open");
-    const unprepared = (t: Doc<"dtsTodos">): boolean =>
-      t.readiness === "unprepared" || t.readiness === "preparing";
+    // Two readiness values (ruling 18); ttsShared reads the retired spellings,
+    // and a stored "preparing" reads as unprepared — so a row an older box job
+    // left half written up is handed out here again, not stranded.
+    const unprepared = (t: Doc<"dtsTodos">): boolean => !isPrepared(t.readiness);
 
     // ── Per-candidate exclusions (cheapest first) ────────────────────────────
     const computeExcluded = async (t: Doc<"dtsTodos">): Promise<boolean> => {
@@ -3376,7 +3412,7 @@ export const internalAutoSchedule = internalMutation({
     const readyByBatch = new Map<string, Doc<"dtsTodos">[]>();
     for (const t of todos) {
       if (t.batchId === undefined) continue;
-      if (!isReady(t, doneSet)) continue;
+      if (!isReady(t, doneSet, now)) continue;
       const list = readyByBatch.get(t.batchId) ?? [];
       list.push(t);
       readyByBatch.set(t.batchId, list);
@@ -3384,12 +3420,23 @@ export const internalAutoSchedule = internalMutation({
     const agentWorkable = (t: Doc<"dtsTodos">): boolean =>
       t.kind === "goal" ? goalCheckable(t) : t.actor !== "tom";
 
+    // A batch's own needs (the lifeos update): every batch named there must
+    // be done or archived before any of this batch's work is handed out —
+    // the same rule as between todos, one level up. A batch on a retired
+    // path with no needs field keeps the path ORDER below during the widen.
+    const batchNeedsMet = (batch: Doc<"batches">): boolean =>
+      (batch.needs ?? []).every((id) => {
+        const need = batchById.get(id);
+        return need !== undefined && need.status !== "active";
+      });
+
     const graphCandidates: Candidate[] = [];
     for (const [batchId, ready] of readyByBatch) {
       const batch = batchById.get(batchId as Id<"batches">);
       // A batch that is done or archived is not work, and a row pointing at a
       // batch that is not there is not something to guess about.
       if (!batch || batch.status !== "active") continue;
+      if (!batchNeedsMet(batch)) continue;
       // The batch-level half of the pending-ruling exclusion: an unapplied
       // verdict means Tom has spoken and the fleet must not race him. A
       // "session" verdict asked for a conversation, and it is the one verdict
@@ -3500,14 +3547,17 @@ export const internalAutoSchedule = internalMutation({
       .collect();
     for (const block of blocks) {
       if (block.todoId !== undefined) {
+        // todoById, not `active`, because a block's subject may be a bound
+        // goal — but the sleep test `active` already applied has to be asked
+        // here too: a row whose wakeAt is still ahead is asleep, and a block
+        // on it does not wake it (no lane hands out a sleeping row).
         const t = todoById.get(block.todoId);
-        if (!t || t.status !== "active" || !legacyOrGoal(t)) continue;
-        // Not ready: a plain todo short of ready-for-tom, or a batch with
-        // open agent plan steps still to do.
+        if (!t || t.status !== "active" || !wakeAtPassed(t, now)) continue;
+        if (!legacyOrGoal(t)) continue;
+        // Not ready: a plain todo not yet prepared, or a batch with open
+        // agent plan steps still to do.
         const notReady =
-          t.members !== undefined
-            ? hasOpenAgentStep(t)
-            : t.readiness !== "ready-for-tom";
+          t.members !== undefined ? hasOpenAgentStep(t) : unprepared(t);
         if (notReady) candidates.push({ todo: t, lane: "block" });
       } else if (block.category !== undefined && block.category !== "code") {
         // Category block: the stalest NON-excluded unprepared todo in the
@@ -3642,6 +3692,19 @@ export const internalAutoSchedule = internalMutation({
         const siblings = (readyByBatch.get(c.todo.batchId as string) ?? [])
           .filter((t) => t._id !== c.todo._id)
           .map(asNeighbor);
+        const batchNeeds = (batch.needs ?? [])
+          .map((id) => batchById.get(id)?.statement)
+          .filter((s): s is string => s !== undefined);
+        // Tom's must-not-break lines on the batch's goals, where the goal's
+        // statement is: binding on every task toward them.
+        const mustNotBreak = todos
+          .filter(
+            (t) =>
+              t.batchId === batch._id &&
+              t.kind === "goal" &&
+              (t.mustNotBreak ?? "").trim() !== "",
+          )
+          .map((t) => ({ goal: t.statement, line: t.mustNotBreak!.trim() }));
         prompt = (sessionId) =>
           buildWorkerPrompt({
             todo: c.todo,
@@ -3651,6 +3714,8 @@ export const internalAutoSchedule = internalMutation({
             needs,
             dependents,
             siblings,
+            batchNeeds,
+            mustNotBreak,
           });
         extra = { batchId: batch._id };
       } else {

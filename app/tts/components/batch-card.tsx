@@ -13,16 +13,31 @@ import PlanBar from "./plan-bar";
 import GraphView from "./graph-view";
 import Info from "./info";
 import VerdictButtons from "./verdict-buttons";
-import { SESSIONS_EXPLANATION } from "../explanations";
-import { groundUpTeaser, type RulingVerdict } from "../lib";
+import { MUST_NOT_BREAK_EXPLANATION, SESSIONS_EXPLANATION } from "../explanations";
+import { fmtDate, groundUpTeaser, type RulingVerdict } from "../lib";
+import {
+  isReady,
+  waitingReason,
+  waitingReasonText,
+  type StoredReadiness,
+  type WaitingReason,
+} from "@/convex/ttsShared";
 import type { DetailItem } from "./detail-dialog";
 
 export type GraphTask = {
   id: string;
   statement: string;
   actor: "tom" | "agent";
-  status: "active" | "done";
+  /** "waiting" is the stored status, still readable during the widen: a
+   * sleep with no instant of its own (ttsShared.waitingReason reads it as a
+   * wake, by its condition in words). Never a made-up wakeAt. */
+  status: "active" | "waiting" | "done";
   needs: string[];
+  /** A sleep on an active task (the lifeos update); absent = awake. */
+  wakeAt?: number;
+  /** The sleep in words, when the row has one. */
+  wakeCondition?: string;
+  readiness: StoredReadiness;
   evidence?: string;
   groundUp?: string;
   /** Whether the todo behind it offers the four verdicts (lib isRulable). */
@@ -33,6 +48,8 @@ export type GraphGoal = {
   id: string;
   statement: string;
   condition?: string;
+  /** Tom's own line on what the work toward this goal must not break. */
+  mustNotBreak?: string;
   met: boolean;
   groundUp?: string;
   code?: { repo: string; externalId: string };
@@ -48,28 +65,65 @@ export type BatchGraph = {
   goals: GraphGoal[];
 };
 
-export function taskSets(tasks: GraphTask[]): {
+/** The card's done set: a task's status here is already collapsed to
+ * done/active by the tab (done and archived both read as done — the same rule
+ * ttsShared.buildDoneSet uses), so this is that set's local spelling. */
+function graphDoneSet(tasks: readonly GraphTask[]): Set<string> {
+  return new Set(tasks.filter((t) => t.status === "done").map((t) => t.id));
+}
+
+/** The graph slice ttsShared reads: a GraphTask's id under the `_id` name. */
+function asGraphTodo(t: GraphTask) {
+  return { _id: t.id, status: t.status, needs: t.needs, wakeAt: t.wakeAt };
+}
+
+/** Ready is ttsShared.isReady — active, awake, every need done — so the card
+ * and the scheduler agree on the frontier; blocked is the rest. */
+export function taskSets(
+  tasks: GraphTask[],
+  now: number,
+): {
   done: GraphTask[];
   ready: GraphTask[];
   blocked: GraphTask[];
 } {
-  const doneIds = new Set(tasks.filter((t) => t.status === "done").map((t) => t.id));
+  const doneIds = graphDoneSet(tasks);
   const done: GraphTask[] = [];
   const ready: GraphTask[] = [];
   const blocked: GraphTask[] = [];
   for (const t of tasks) {
     if (t.status === "done") done.push(t);
-    else if (t.needs.every((n) => doneIds.has(n))) ready.push(t);
+    else if (isReady(asGraphTodo(t), doneIds, now)) ready.push(t);
     else blocked.push(t);
   }
   return { done, ready, blocked };
 }
 
-/** The statements of everything a task still waits on — its unmet `needs`.
- * Exported because the detail dialog's "waiting on" row is the same list, and
- * the batches tab rebuilds it when it re-resolves an open dialog's item. */
+/** Why a task waits — ttsShared.waitingReason against this graph, naming the
+ * need it waits on. Exported because the detail dialog's "waiting on" row is
+ * the same reason, and the batches tab recomputes it when it re-resolves an
+ * open dialog's item. null = waiting on nothing. */
+export function taskWaiting(
+  t: GraphTask,
+  all: GraphTask[],
+  now: number,
+): WaitingReason | null {
+  const byId = new Map(all.map((x) => [x.id, x]));
+  return waitingReason(
+    {
+      ...asGraphTodo(t),
+      readiness: t.readiness,
+      actor: t.actor,
+      wakeCondition: t.wakeCondition,
+    },
+    { now, doneSet: graphDoneSet(all), statementOf: (id) => byId.get(id)?.statement },
+  );
+}
+
+/** The statements of everything a task still waits on — its unmet `needs`,
+ * every one of them (the reason names only the first). */
 export function needNames(t: GraphTask, all: GraphTask[]): string[] {
-  const doneIds = new Set(all.filter((x) => x.status === "done").map((x) => x.id));
+  const doneIds = graphDoneSet(all);
   const byId = new Map(all.map((x) => [x.id, x]));
   return t.needs
     .filter((n) => !doneIds.has(n))
@@ -78,6 +132,7 @@ export function needNames(t: GraphTask, all: GraphTask[]): string[] {
 
 export default function BatchCard({
   graph,
+  now,
   expanded,
   onToggle,
   onRule,
@@ -86,6 +141,7 @@ export default function BatchCard({
   onOpenSession,
 }: {
   graph: BatchGraph;
+  now: number;
   expanded: boolean;
   onToggle: () => void;
   /** ttsRulings.recordRuling on the batch with this verdict and sentence
@@ -95,7 +151,7 @@ export default function BatchCard({
   onGroundUp: (title: string, content: string) => void;
   onOpenSession: () => void;
 }) {
-  const { done, ready, blocked } = taskSets(graph.tasks);
+  const { done, ready, blocked } = taskSets(graph.tasks, now);
   const planForBar = graph.tasks.map((t) => ({
     text: t.statement,
     actor: t.actor,
@@ -107,6 +163,7 @@ export default function BatchCard({
     kind: "task",
     batchStatement: graph.statement,
     task: t,
+    waiting: taskWaiting(t, graph.tasks, now),
     waitingOn: needNames(t, graph.tasks),
   });
 
@@ -232,30 +289,35 @@ export default function BatchCard({
               <div className="mb-1 mt-2.5 text-[11px] uppercase tracking-wide text-text-faint">
                 blocked
               </div>
-              {blocked.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => onDetail(taskDetail(t))}
-                  className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-baseline gap-2 rounded px-1.5 py-0.5 text-left text-[13px] opacity-60 hover:bg-surface-alt/60 hover:opacity-90"
-                >
-                  <span className="text-text-faint">○</span>
-                  <span
-                    className={`w-10 shrink-0 text-[10px] uppercase tracking-wide ${
-                      t.actor === "tom" ? "text-accent" : "text-text-faint"
-                    }`}
+              {blocked.map((t) => {
+                const reason = taskWaiting(t, graph.tasks, now);
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => onDetail(taskDetail(t))}
+                    className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-baseline gap-2 rounded px-1.5 py-0.5 text-left text-[13px] opacity-60 hover:bg-surface-alt/60 hover:opacity-90"
                   >
-                    {t.actor === "tom" ? "you" : "agent"}
-                  </span>
-                  <span className="min-w-0 truncate">
-                    <span className="text-text-muted">{t.statement}</span>
-                    <span className="text-text-faint">
-                      {" "}
-                      · waiting on: {needNames(t, graph.tasks).join(", ")}
+                    <span className="text-text-faint">○</span>
+                    <span
+                      className={`w-10 shrink-0 text-[10px] uppercase tracking-wide ${
+                        t.actor === "tom" ? "text-accent" : "text-text-faint"
+                      }`}
+                    >
+                      {t.actor === "tom" ? "you" : "agent"}
                     </span>
-                  </span>
-                </button>
-              ))}
+                    <span className="min-w-0 truncate">
+                      <span className="text-text-muted">{t.statement}</span>
+                      {reason && (
+                        <span className="text-text-faint">
+                          {" "}
+                          · {waitingReasonText(reason, fmtDate)}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
             </>
           )}
 
@@ -291,19 +353,36 @@ export default function BatchCard({
                 goals · {graph.goals.filter((g) => g.met).length} of {graph.goals.length} met
               </div>
               {graph.goals.map((g) => (
-                <button
-                  key={g.id}
-                  type="button"
-                  onClick={() => onDetail({ kind: "goal", batchStatement: graph.statement, goal: g })}
-                  className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-baseline gap-2 rounded px-1.5 py-0.5 text-left text-[13px] hover:bg-surface-alt/60"
-                >
-                  <span className={g.met ? "text-success" : "text-text-faint"}>
-                    {g.met ? "✓" : "◇"}
-                  </span>
-                  <span className={`truncate ${g.met ? "text-text-faint" : "text-text-muted"}`}>
-                    {g.statement}
-                  </span>
-                </button>
+                <div key={g.id}>
+                  <button
+                    type="button"
+                    onClick={() => onDetail({ kind: "goal", batchStatement: graph.statement, goal: g })}
+                    className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-baseline gap-2 rounded px-1.5 py-0.5 text-left text-[13px] hover:bg-surface-alt/60"
+                  >
+                    <span className={g.met ? "text-success" : "text-text-faint"}>
+                      {g.met ? "✓" : "◇"}
+                    </span>
+                    <span className={`truncate ${g.met ? "text-text-faint" : "text-text-muted"}`}>
+                      {g.statement}
+                    </span>
+                  </button>
+                  {g.mustNotBreak !== undefined && g.mustNotBreak.trim() !== "" && (
+                    <div className="ml-4 flex items-baseline gap-1 text-[12px] text-text-faint">
+                      <span>
+                        must not break: <span className="text-text-muted">{g.mustNotBreak}</span>
+                      </span>
+                      <Info
+                        call="tts.updateTodo({ mustNotBreak })"
+                        explanation={MUST_NOT_BREAK_EXPLANATION}
+                        explanationTitle="must not break — Tom's line on a goal"
+                      >
+                        Your own line on what the work toward this goal must
+                        not break. Only you write it, and every agent working
+                        this batch reads it in its opening prompt.
+                      </Info>
+                    </div>
+                  )}
+                </div>
               ))}
             </>
           )}

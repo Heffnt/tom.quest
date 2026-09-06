@@ -10,10 +10,14 @@ import {
   CAPTURE_TRIAGE_RULES,
   CAPTURE_TRIAGE_SKILL,
   DAY_MS,
+  RECOMMENDATION_VALUES,
+  RETIRED_READINESS_VALUES,
   SESSION_REPO_NAMES,
   isSessionModel,
+  isStoredRecommendation,
   nyCalendarDayBoundsUtc,
   ttsPrepDay,
+  type StoredRecommendation,
 } from "./ttsShared";
 import { isModelOfTomPath } from "./ttsSkills";
 import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES, isExportTable } from "./ttsNightly";
@@ -715,13 +719,18 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
   if (typeof b.id !== "string" || b.id.length === 0) {
     return jsonResponse(400, { error: "id (non-empty string) required" });
   }
+  // "prepared" (ruling 18); the two retired spellings are still accepted from
+  // a box job written before the rename, and the mutation stores each as the
+  // value it reads as: "ready-for-tom" as "prepared", "preparing" as
+  // "unprepared" (that job's own word for a write-up it had not finished).
+  // The literal "unprepared" is refused (an agent never erases a write-up).
   if (
     b.readiness !== undefined &&
-    b.readiness !== "preparing" &&
-    b.readiness !== "ready-for-tom"
+    b.readiness !== "prepared" &&
+    !(RETIRED_READINESS_VALUES as readonly unknown[]).includes(b.readiness)
   ) {
     return jsonResponse(400, {
-      error: 'readiness must be "preparing" or "ready-for-tom"',
+      error: 'readiness must be "prepared"',
     });
   }
   if (
@@ -749,7 +758,10 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
       brief: str(b.brief),
       entryAction: str(b.entryAction),
       workDescription: str(b.workDescription),
-      readiness: b.readiness as "preparing" | "ready-for-tom" | undefined,
+      readiness: b.readiness as
+        | "prepared"
+        | (typeof RETIRED_READINESS_VALUES)[number]
+        | undefined,
       // The date the STATEMENT states, when it states one. The mutation is
       // the real gate: a first date only, never over an existing one.
       dueAt: b.dueAt as number | undefined,
@@ -902,12 +914,9 @@ http.route({
 // todos, reads back Tom's pending rulings, and reports each application. The
 // worker never rules — recordCodeRuling is Tom-gated in ttsCode.ts.
 
-const CODE_RECOMMENDATIONS = [
-  "approve",
-  "needs-session",
-  "propose-archive",
-  "stale-replan",
-] as const;
+// A brief's recommendation is one of the four verdict words, or one of the
+// three retired spellings an older box job may still post (ttsShared is the
+// one home — isStoredRecommendation; the mutation stores the verdict word).
 const CODE_EXEC_CLASSES = ["box", "needs-turing"] as const;
 
 type CodeBrief = {
@@ -915,7 +924,7 @@ type CodeBrief = {
   externalId: string;
   sourceHash: string;
   brief: string;
-  recommendation: (typeof CODE_RECOMMENDATIONS)[number];
+  recommendation: StoredRecommendation;
   execClass: (typeof CODE_EXEC_CLASSES)[number];
   evidence?: string;
 };
@@ -933,13 +942,9 @@ function parseCodeBrief(item: unknown, i: number): CodeBrief | { error: string }
       return { error: `briefs[${i}].${field} (non-empty string) required` };
     }
   }
-  if (
-    !CODE_RECOMMENDATIONS.includes(
-      b.recommendation as (typeof CODE_RECOMMENDATIONS)[number],
-    )
-  ) {
+  if (!isStoredRecommendation(b.recommendation)) {
     return {
-      error: `briefs[${i}].recommendation must be one of ${CODE_RECOMMENDATIONS.join(" | ")}`,
+      error: `briefs[${i}].recommendation must be one of ${RECOMMENDATION_VALUES.join(" | ")}`,
     };
   }
   if (
@@ -957,7 +962,7 @@ function parseCodeBrief(item: unknown, i: number): CodeBrief | { error: string }
     externalId: b.externalId as string,
     sourceHash: b.sourceHash as string,
     brief: b.brief as string,
-    recommendation: b.recommendation as (typeof CODE_RECOMMENDATIONS)[number],
+    recommendation: b.recommendation,
     execClass: b.execClass as (typeof CODE_EXEC_CLASSES)[number],
     evidence: b.evidence as string | undefined,
   };
@@ -1590,6 +1595,12 @@ const ttsPlanGraph = httpAction(async (ctx, request) => {
           ? b.groundUpExplanation
           : undefined,
       path: path as never,
+      // The batches this one needs done first (the lifeos update: the
+      // successor of path). Absent preserves; the mutation drops a name that
+      // is not a batch with a named skip.
+      needs: Array.isArray(b.needs)
+        ? b.needs.filter((x): x is string => typeof x === "string")
+        : undefined,
       // The batch's declared repos (Tom 2026-08-30). Absent PRESERVES the
       // stored value, the same rule every other field on this pen follows —
       // so a planner run that says nothing about repos never erases a

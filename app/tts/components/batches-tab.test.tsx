@@ -113,6 +113,38 @@ function openDetail(statement: string) {
   fireEvent.click(screen.getAllByText(statement)[0]);
 }
 
+// A stored "waiting" row (still readable during the widen) is a sleep. The tab
+// once gave a wordless one a wakeAt of MAX_SAFE_INTEGER so isReady would hold
+// it back, and the card then printed "waiting until" the year 275760. The
+// task keeps status "waiting" instead; ttsShared.waitingReason reads it by its
+// words, and isReady already excludes it.
+describe("a stored waiting task on the card", () => {
+  beforeEach(() => {
+    convex.calls.length = 0;
+    vi.stubGlobal("open", () => null);
+  });
+
+  it("reads as a sleep by its words, never as a made-up instant", () => {
+    load([{ ...TASK, status: "waiting", wakeCondition: "the landlord writes back" }]);
+    render(<BatchesTab />);
+    fireEvent.click(screen.getByText(BATCH.statement));
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("waiting until: the landlord writes back");
+    expect(text).not.toContain("275760");
+    expect(text).toContain("1 blocked");
+  });
+
+  it("a wordless sleep reads as waiting, with no date at all", () => {
+    load([{ ...TASK, status: "waiting" }]);
+    render(<BatchesTab />);
+    fireEvent.click(screen.getByText(BATCH.statement));
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("· waiting");
+    expect(text).not.toContain("waiting until");
+    expect(text).not.toContain("275760");
+  });
+});
+
 describe("the batches tab's detail dialog", () => {
   beforeEach(() => {
     convex.calls.length = 0;

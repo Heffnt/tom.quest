@@ -4195,6 +4195,40 @@ describe("frontier scheduler", () => {
     expect(text).toContain('path: "the release", position 0');
   });
 
+  // witness: drop batchNeedsMet from the frontier walk — a batch whose need
+  // is still open would hand out work the sequence said must wait.
+  it("hands out no work from a batch whose needs are open, and does once they close", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 2 });
+    await heartbeat(t);
+    const first = await storeGraph(t, {
+      statement: "the first stage",
+      tasks: [{ statement: "freeze the branch", actor: "agent" }],
+    });
+    const second = await t.mutation(internal.tts.internalStorePlanGraph, {
+      statement: "the second stage",
+      needs: [first],
+      tasks: [{ statement: "cut the release notes", actor: "agent" }],
+    });
+    expect(second.skipped).toEqual([]);
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].todoId).toBe(
+      byStatement(await batchTodos(t, first), "freeze the branch")._id,
+    );
+    // The need closes (the first batch is archived): the second is admitted.
+    await t.run(async (ctx) => {
+      await ctx.db.patch(first, { status: "archived" });
+    });
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const later = await workSessions(t);
+    expect(later.map((s) => s.todoId)).toContain(
+      byStatement(await batchTodos(t, second.batchId as Id<"batches">), "cut the release notes")._id,
+    );
+  });
+
   // witness: drop the pathed-before-unpathed clause (the `pa === undefined`
   // test) and this goes red — stated sequencing would lose to a batch that
   // states none.
@@ -4277,6 +4311,28 @@ describe("frontier scheduler", () => {
     const text = await missionText(tom, sessions[0]._id);
     expect(text).toContain("open plan step");
     expect(text).not.toContain("YOU HAVE CLAIMED ONE TODO");
+  });
+
+  // A stored "preparing" reads as unprepared (ttsShared.normalizeReadiness):
+  // an older box job left the write-up half done, and the lanes hand it out
+  // again. Read it as prepared and this goes red — the row would be neither
+  // worked nor ready for Tom, stranded until someone noticed.
+  it("hands out a row still spelled preparing", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    const todoId = await tom.mutation(api.tts.createTodo, {
+      statement: "draft the reading list",
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(todoId, { readiness: "preparing" });
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].todoId).toBe(todoId);
   });
 
   // witness: drop the batch-status test from the frontier walk and this goes
@@ -4478,6 +4534,42 @@ describe("frontier scheduler", () => {
     const sessions = await workSessions(t);
     expect(sessions).toHaveLength(1);
     expect(sessions[0].todoId).toBe(goalId);
+  });
+
+  // The block lane resolves its subject through todoById (a bound goal is not
+  // in the active set), so the sleep test the active set already applied has
+  // to be asked again there. Read the block's todo from `todoById` without
+  // wakeAtPassed and this goes red: a row asleep until next week would be
+  // handed groundwork tonight.
+  it("hands out no sleeping row from the block lane until its wakeAt passes", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    const now = Date.now();
+    const todoId = await tom.mutation(api.tts.createTodo, {
+      statement: "book the flights",
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(todoId, { wakeAt: now + 7 * 24 * 60 * 60 * 1000 });
+    });
+    await tom.mutation(api.tts.createBlock, {
+      start: now + 60 * 60 * 1000,
+      end: now + 2 * 60 * 60 * 1000,
+      todoId,
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await workSessions(t)).toHaveLength(0);
+
+    // Awake (the wakeAt is behind us): the same block admits it.
+    await t.run(async (ctx) => {
+      await ctx.db.patch(todoId, { wakeAt: now - 1 });
+    });
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].todoId).toBe(todoId);
   });
 
   // witness: push the frontier's candidates in with no quota (strict priority)
@@ -4848,6 +4940,36 @@ describe("frontier scheduler", () => {
     ).toHaveLength(0);
   });
 
+  // witness: drop `mustNotBreak` from the worker prompt's args in
+  // convex/claudeSessions.ts — Tom's binding line would reach the page and
+  // never the agent doing the work.
+  it("hands the worker Tom's must-not-break lines on the batch's goals", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    const goalId = await tom.mutation(api.tts.createTodo, {
+      statement: "the reading list is published",
+    });
+    await storeGraph(t, {
+      statement: "the reading-list batch",
+      goalIds: [goalId],
+      tasks: [{ statement: "write the summary", actor: "agent" }],
+    });
+    await tom.mutation(api.tts.updateTodo, {
+      id: goalId,
+      mustNotBreak: "every citation stays verbatim",
+    });
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    const text = await missionText(tom, sessions[0]._id);
+    expect(text).toContain("MUST NOT BREAK");
+    expect(text).toContain(
+      '- on the goal "the reading list is published": every citation stays verbatim',
+    );
+  });
+
   // The whole worker contract in one read: what it claimed, why it is ready,
   // what waits on it, what is moving beside it, the standard it writes to, and
   // the two pens. witness: remove any of these from buildWorkerPrompt in
@@ -4914,7 +5036,8 @@ describe("frontier scheduler", () => {
     expect(text).toContain("DEFERRED");
     expect(text).toContain("FAILED");
     expect(text).toContain("ABANDONED");
-    expect(text).toContain("ready-for-tom");
+    expect(text).toContain('"readiness": "prepared"');
+    expect(text).not.toContain("ready-for-tom"); // the retired spelling
     // Same env contract as every autonomous mission: the ingest key never
     // reaches a model-reachable environment.
     expect(text).toContain("TTS_WORKER_KEY");

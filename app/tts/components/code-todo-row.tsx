@@ -9,6 +9,7 @@
 
 import { useState } from "react";
 import type { Doc } from "@/convex/_generated/dataModel";
+import { normalizeRecommendation } from "@/convex/ttsShared";
 import OptionsRow from "./options-row";
 import { ageText, type MirrorRow } from "../lib";
 
@@ -74,7 +75,9 @@ export default function CodeTodoRow({
         <span className={chipCls}>{row.repo}</span>
         <span className={chipCls}>{row.status}</span>
         {brief && (
-          <span className={chipCls}>recommends: {brief.recommendation}</span>
+          <span className={chipCls}>
+            recommends: {normalizeRecommendation(brief.recommendation)}
+          </span>
         )}
         {ruling && (
           <span className="text-xs text-text-muted">

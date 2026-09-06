@@ -16,9 +16,11 @@
 // Tasks and goals are wired by `needs`: a todo is READY when every id in its
 // needs is done (archived counts as done — a need that was set aside is not
 // going to happen, and leaving it blocking would strand the graph forever).
-// Batches are sequenced by a named `path`: each batch sits at an `index` on
-// it, and its `edge` describes the link to the previous batch — "must" (that
-// one has to land first) or "helps" (it only makes this easier).
+// Batches are sequenced by `needs` too (the lifeos update, phase 7): a batch
+// lists the ids of the batches that must land before it, the same word as
+// between todos. The named `path` (index and a "must"/"helps" edge to the
+// previous batch) is RETIRED: still accepted from an older plan during the
+// widen, derived into needs by a migration, and dropped at NARROW.
 //
 // THE JOB'S ONE RESPONSIBILITY: for each batch, propose the graph. It executes
 // nothing and rules on nothing. Every gate lives on the server
@@ -78,7 +80,7 @@ import {
 const HASH_PATH = "/var/lib/tts/plan-input-hash";
 // Bump when the prompt changes semantics: it joins the input hash, so a new
 // prompt re-plans even inputs that have not changed.
-const PROMPT_VERSION = 2;
+const PROMPT_VERSION = 3;
 const CLAUDE_TIMEOUT_MS = 20 * 60 * 1000;
 
 // MAX_LIFE_PER_RUN (how many unbatched life todos one run offers as goal
@@ -151,18 +153,27 @@ function prompt(ctx) {
     `- task — a todo that is a piece of work someone does. Tasks are what you`,
     `  write.`,
     `- needs — the dependency edges. A todo lists the ids of the todos that`,
-    `  must be finished before it can start.`,
+    `  must be finished before it can start. The SAME word sequences batches:`,
+    `  a batch lists the ids of the batches that must land before any of its`,
+    `  work is handed out. Needs hold prerequisites only — something that`,
+    `  merely makes another batch easier is not a need.`,
     `- ready — a todo is ready when it is active and every todo in its needs is`,
     `  done. That set is the frontier: the work that can start right now.`,
-    `- path — the sequence BETWEEN batches. A batch sits at an index on a named`,
-    `  path, and its edge to the previous batch is either "must" (that batch`,
-    `  has to land first) or "helps" (it only makes this one easier).`,
+    `- path — RETIRED. Older batches still carry a named path with an index`,
+    `  and a "must"/"helps" edge to the previous batch; it is shown so you`,
+    `  know the sequence Tom once stated, and a "must" edge means the same as`,
+    `  a need on that previous batch. Do not write new paths; write needs.`,
     `- repos — the repositories a batch's work lives in, DECLARED by you on`,
     `  the batch. Every session TTS opens for this batch or for a task inside`,
     `  it checks out exactly this set, so a batch whose work touches two`,
     `  repositories declares both and gets one session holding both checkouts.`,
     `  The only legal names are ${ctx.sessionRepos.join(", ")}; a batch whose`,
     `  work needs no repository declares [].`,
+    `- mustNotBreak — Tom's own line on a goal: what the work toward it must`,
+    `  not break. Only Tom writes it; you never do, and you never rewrite it.`,
+    `  It binds every task you plan toward that goal: a task that would break`,
+    `  it is not a task to write, and its explanation must say how the line is`,
+    `  kept.`,
     `- display text — the short line always on screen (a statement).`,
     `- ground-up explanation — the self-contained layer behind a "more"`,
     `  control. It is a COMPLETE HTML DOCUMENT, rendered fullscreen; the`,
@@ -171,7 +182,9 @@ function prompt(ctx) {
     ctx.writingStandard,
     ``,
     `EXISTING BATCHES WITH THEIR GRAPHS (JSON). Each: id, statement,`,
-    `groundUpExplanationPreview, path, repos, frozen, tasks, goals. A task`,
+    `groundUpExplanationPreview, needs (batch ids), path (retired), repos,`,
+    `frozen, tasks, goals. A goal carries id, statement, condition, status,`,
+    `mustNotBreak (Tom's line, or null), codeRepo, codeExternalId. A task`,
     `carries id,`,
     `statement, actor, status, needs, condition, evidence, model, and its own`,
     `groundUpExplanationPreview. EVERY "...Preview" value is readable text`,
@@ -255,13 +268,11 @@ function prompt(ctx) {
     ``,
     `TASK — output the batches whose graphs you are writing this run. Rules:`,
     ``,
-    `EVERY BATCH CARRIES A PATH — no exceptions. Paths are the independent`,
-    `lanes of work; keep the set of path names SMALL and STABLE (reuse the`,
-    `names already on existing batches before inventing one), give each batch`,
-    `its index in its lane, and mark its edge to the previous batch "must"`,
-    `(has to land first) or "helps" (only makes this one easier). A batch`,
-    `without a path renders in an "unpathed" bucket Tom has told us he does`,
-    `not want to live in.`,
+    `SEQUENCE BATCHES WITH NEEDS. When a batch genuinely cannot start until`,
+    `another batch has landed, put that batch's id in its "needs". Most`,
+    `batches need nothing and run beside each other; a need is a true`,
+    `prerequisite, never "this would help". Never write a "path" — it is`,
+    `retired; an existing path is preserved by omission until it is dropped.`,
     ``,
     `GOALS ARE THE ACCUMULATED TODOS. A goal is an END STATE Tom wanted, and`,
     `it already exists as a todo — put its id in "goalIds". Never write a goal`,
@@ -359,7 +370,7 @@ function prompt(ctx) {
     `{"batches": [{"batchId": "...", "statement": "...",`,
     ` "groundUpExplanation": "<!DOCTYPE html><html><head><style>…</style>`,
     `</head><body>…</body></html>",`,
-    ` "path": {"name": "...", "index": 0, "edge": "must"},`,
+    ` "needs": ["<batch id>"],`,
     ` "repos": ["tom.quest"],`,
     ` "tasks": [{"id": "...", "statement": "...", "actor": "agent",`,
     `            "needs": ["<todo id>", 0], "condition": "...",`,
@@ -518,6 +529,7 @@ async function main() {
         b.groundUpExplanation,
         MAX_BATCH_PREVIEW_CHARS,
       ),
+      needs: b.needs ?? [],
       path: b.path ?? null,
       // null = never declared (omitting "repos" preserves that); [] = declared
       // as needing no checkout. The planner has to be able to tell them apart.
@@ -545,6 +557,7 @@ async function main() {
           id: t._id,
           statement: t.statement,
           condition: t.condition ?? null,
+          mustNotBreak: t.mustNotBreak ?? null,
           status: t.status,
           codeRepo: t.codeRepo ?? null,
           codeExternalId: t.codeExternalId ?? null,

@@ -4,7 +4,11 @@ import { v } from "convex/values";
 // The stored form of "which model does this run on". ONE HOME (ttsShared.ts):
 // the name implies its FAMILY, and the family is what picks the runner on the
 // Jarvis Box — Claude's Agent SDK or OpenAI's Codex CLI.
-import { SESSION_MODEL } from "./ttsShared";
+import {
+  SESSION_MODEL,
+  STORED_READINESS,
+  STORED_RECOMMENDATION,
+} from "./ttsShared";
 
 // `agent` is not a rank between `user` and `admin`: it is a side branch that
 // reads the surfaces in convex/agentSurfaces.ts and writes nothing. See
@@ -359,7 +363,10 @@ export default defineSchema({
   // convex/tts.ts is Tom-gated, so rows carry no userId.
   //
   // Vocabulary (spec §12.1) is stored literally:
-  //   readiness: unprepared | preparing | ready-for-tom
+  //   readiness: unprepared | prepared (ruling 18, the lifeos update; the
+  //              retired spellings stay readable until NARROW, one reading
+  //              each — ready-for-tom as prepared, preparing as unprepared —
+  //              and ttsShared.ts is the one home)
   //   status:    active | waiting | archived | done
   //   timingClass: dated | condition-bound | whenever
   // Nothing is ever deleted (spec principle 2): terminal states are status
@@ -389,6 +396,10 @@ export default defineSchema({
     // `index`. `edge` describes the link to the PREVIOUS batch in the path —
     // "must" (that one has to land first) or "helps" (it only makes this
     // easier). The first batch of a path has no edge.
+    // RETIRED (the lifeos update, phase 7): sequencing between batches is
+    // `needs` below. Kept readable during the widen; dropped at NARROW once
+    // ttsMigrations.internalMigrateBatchNeeds has derived the edges and the
+    // paths bar is gone.
     path: v.optional(
       v.object({
         name: v.string(),
@@ -396,6 +407,14 @@ export default defineSchema({
         edge: v.optional(v.union(v.literal("must"), v.literal("helps"))),
       }),
     ),
+    // Sequencing BETWEEN batches, the same word as between todos: this batch
+    // is worked only once every batch named here is done or archived
+    // (ttsShared.buildDoneSet's rule). Derived from the retired path by the
+    // migration — a "must" edge becomes a need on the previous batch of the
+    // path; a "helps" edge becomes nothing, because "only makes this easier"
+    // is not a prerequisite and needs holds prerequisites only. Bounded at
+    // MAX_NEEDS; every id names a batch (enforced by the planner's pen).
+    needs: v.optional(v.array(v.id("batches"))),
     status: v.union(
       v.literal("active"),
       v.literal("done"),
@@ -425,11 +444,12 @@ export default defineSchema({
   dtsTodos: defineTable({
     statement: v.string(),
     body: v.optional(v.string()),
-    readiness: v.union(
-      v.literal("unprepared"),
-      v.literal("preparing"),
-      v.literal("ready-for-tom"),
-    ),
+    // WIDENED (the lifeos update, phase 7): two values, unprepared |
+    // prepared, plus the two retired spellings until every row is migrated
+    // (ttsMigrations.internalMigrateReadiness) and the validator narrows.
+    // Whether a prepared row is READY for Tom is computed, never stored
+    // (ttsShared.isReadyForTom).
+    readiness: STORED_READINESS,
     status: v.union(
       v.literal("active"),
       v.literal("waiting"),
@@ -586,6 +606,13 @@ export default defineSchema({
     // Completion evidence — the artifact that shows the work happened (branch,
     // PR, brief). The plan-step field of the same name, per row.
     evidence: v.optional(v.string()),
+    // GOALS ONLY (the lifeos update, phase 7): Tom's own line on what the
+    // work toward this goal must not break. In his words, written only by his
+    // door (tts.updateTodo refuses it on a task; ruling 13: never written by
+    // an agent on its own judgement), shown on the batch card under the goal,
+    // and injected into every worker and planner prompt where the goal's
+    // statement is.
+    mustNotBreak: v.optional(v.string()),
     // The "more" layer, same as batches.groundUpExplanation.
     groundUpExplanation: v.optional(v.string()),
     // A goal may bind a CODE subject: "that upstream code todo is closed".
@@ -902,12 +929,11 @@ export default defineSchema({
     externalId: v.string(),
     sourceHash: v.string(),
     brief: v.string(), // ground-up markdown
-    recommendation: v.union(
-      v.literal("approve"),
-      v.literal("needs-session"),
-      v.literal("propose-archive"),
-      v.literal("stale-replan"),
-    ),
+    // The four verdict words (the lifeos update): approve | revise | session
+    // | archive — the worker's read spelled in the words Tom rules in. The
+    // three retired spellings stay readable until NARROW; ttsShared is the
+    // one home (normalizeRecommendation).
+    recommendation: STORED_RECOMMENDATION,
     execClass: v.union(v.literal("box"), v.literal("needs-turing")),
     evidence: v.optional(v.string()),
     // RETIRED (Tom's ruling 2026-08-29, "no importance guesses"); field kept

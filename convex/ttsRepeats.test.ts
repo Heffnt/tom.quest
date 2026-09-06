@@ -368,7 +368,7 @@ describe("internalGenerateRepeats", () => {
     expect(todo.provenance).toBe(repeatProvenance(ruleId, DAY));
     expect(todo.timingClass).toBe("dated");
     expect(todo.dateKind).toBe("self-imposed");
-    expect(todo.readiness).toBe("ready-for-tom");
+    expect(todo.readiness).toBe("prepared");
     expect(todo.status).toBe("active");
     expect(todo.kind).toBe("task");
     expect(todo.actor).toBe("tom");

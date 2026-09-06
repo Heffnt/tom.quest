@@ -18,6 +18,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import { useCoarseNow } from "@/app/lib/hooks/use-coarse-now";
 import type { Id } from "@/convex/_generated/dataModel";
 import { countdownText } from "@/convex/ttsShared";
 import { useAuth } from "@/app/lib/auth";
@@ -33,6 +34,7 @@ import PathsBar, { type PathChip } from "./paths-bar";
 import BatchCard, {
   needNames,
   taskSets,
+  taskWaiting,
   type BatchGraph,
   type GraphTask,
 } from "./batch-card";
@@ -88,6 +90,7 @@ function toGraph(batch: Batch, contents: Todo[]): BatchGraph {
         id: t._id,
         statement: t.statement,
         condition: t.condition,
+        mustNotBreak: t.mustNotBreak,
         met: done,
         groundUp: t.groundUpExplanation ?? t.brief,
         code:
@@ -101,8 +104,16 @@ function toGraph(batch: Batch, contents: Todo[]): BatchGraph {
         id: t._id,
         statement: t.statement,
         actor: t.actor ?? "agent",
-        status: done ? "done" : "active",
+        // A stored "waiting" row stays "waiting" here: ttsShared.isReady
+        // excludes it and waitingReason reads it as a wake — by its wakeAt
+        // when it has one, else by its condition in words. No instant is
+        // invented for a wordless sleep (a MAX_SAFE_INTEGER wakeAt rendered
+        // as "waiting until" the year 275760).
+        status: done ? "done" : t.status === "waiting" ? "waiting" : "active",
         needs: t.needs ?? [],
+        wakeAt: t.wakeAt,
+        wakeCondition: t.wakeCondition,
+        readiness: t.readiness,
         evidence: t.evidence,
         groundUp: t.groundUpExplanation,
         rulable: isRulable(t),
@@ -119,8 +130,13 @@ function toGraph(batch: Batch, contents: Todo[]): BatchGraph {
 }
 
 /** The graph as the session prompt reads it — the card's own three sets. */
-function sessionContext(batch: Batch, graph: BatchGraph): BatchSessionContext {
-  const { done, ready, blocked } = taskSets(graph.tasks);
+function sessionContext(
+  batch: Batch,
+  graph: BatchGraph,
+  now: number,
+  batchStatement: (id: string) => string | undefined = () => undefined,
+): BatchSessionContext {
+  const { done, ready, blocked } = taskSets(graph.tasks, now);
   const byId = new Map(graph.tasks.map((t) => [t.id, t]));
   const doneIds = new Set(done.map((t) => t.id));
   const shape = (t: GraphTask, state: "done" | "ready" | "blocked") => ({
@@ -140,6 +156,9 @@ function sessionContext(batch: Batch, graph: BatchGraph): BatchSessionContext {
     path: batch.path
       ? { name: batch.path.name, index: batch.path.index }
       : undefined,
+    needs: (batch.needs ?? [])
+      .map((id) => batchStatement(id))
+      .filter((s): s is string => s !== undefined),
     tasks: [
       ...ready.map((t) => shape(t, "ready")),
       ...blocked.map((t) => shape(t, "blocked")),
@@ -149,6 +168,7 @@ function sessionContext(batch: Batch, graph: BatchGraph): BatchSessionContext {
       id: g.id,
       statement: g.statement,
       condition: g.condition,
+      mustNotBreak: g.mustNotBreak,
       met: g.met,
     })),
   };
@@ -166,6 +186,7 @@ function sessionContext(batch: Batch, graph: BatchGraph): BatchSessionContext {
 function resolveDetail(
   item: DetailItem | null,
   graphs: BatchGraph[],
+  now: number,
 ): DetailItem | null {
   if (item === null) return null;
   if (item.kind === "batch") {
@@ -180,6 +201,7 @@ function resolveDetail(
           kind: "task",
           batchStatement: graph.statement,
           task,
+          waiting: taskWaiting(task, graph.tasks, now),
           waitingOn: needNames(task, graph.tasks),
         };
       }
@@ -295,9 +317,14 @@ export default function BatchesTab() {
   const { open: openTodoSession, error: todoSessionError } =
     useOpenTodoSession();
 
-  const now = Date.now();
+  // One `now` per minute, not per render: liveDetail below memoizes on it, and
+  // a Date.now() read here would be a fresh dependency every render.
+  const now = useCoarseNow();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  // A batch's needs name other batches by id; the session prompt says them.
+  const batchStatementOf = (id: string) =>
+    (batches ?? []).find((b) => b._id === id)?.statement;
   const [detail, setDetail] = useState<DetailItem | null>(null);
   const [groundUp, setGroundUp] = useState<{ title: string; content: string } | null>(null);
 
@@ -363,8 +390,8 @@ export default function BatchesTab() {
   // The open dialog's item, re-resolved against the live graphs (resolveDetail
   // above).
   const liveDetail = useMemo(
-    () => resolveDetail(detail, [...byPath.values()].flat().map((b) => b.graph)),
-    [detail, byPath],
+    () => resolveDetail(detail, [...byPath.values()].flat().map((b) => b.graph), now),
+    [detail, byPath, now],
   );
 
   // Live ruling per subject — the shared derivation (app/tts/lib.ts), the same
@@ -442,7 +469,7 @@ export default function BatchesTab() {
           tab.close();
           throw e;
         }
-        await openBatchSession(sessionContext(batch, graph), {
+        await openBatchSession(sessionContext(batch, graph, now, batchStatementOf), {
           tab,
           ruling: { verdict, sentence: args.sentence },
         });
@@ -545,6 +572,7 @@ export default function BatchesTab() {
               )}
               <BatchCard
                 graph={graph}
+                now={now}
                 expanded={expanded.has(graph.id)}
                 onToggle={() =>
                   toggle(graph.id, () => {
@@ -558,7 +586,7 @@ export default function BatchesTab() {
                 onDetail={setDetail}
                 onGroundUp={(title, content) => setGroundUp({ title, content })}
                 onOpenSession={() =>
-                  void openBatchSession(sessionContext(batch, graph))
+                  void openBatchSession(sessionContext(batch, graph, now, batchStatementOf))
                 }
               />
             </div>
