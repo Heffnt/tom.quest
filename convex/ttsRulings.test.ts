@@ -675,12 +675,17 @@ describe("TTS unified rulings", () => {
     expect(
       await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
     ).toBe(3);
-    // Any ruling — even unapplied — takes the item off the pile.
+    // Any ruling — even unapplied — takes the item off the pile. The two
+    // stamps are whole-millisecond Date.now() values written by two different
+    // mutations, and the predicate reads a TIE as "still awaiting", so a fast
+    // machine would count 3 here; setTimes pins them so this asserts the
+    // predicate rather than the clock.
     await tom.mutation(api.ttsRulings.recordRuling, {
       repo: "ComplexMultiTrigger",
       externalId: "ruled",
       verdict: "session",
     });
+    await setTimes(t, { preparedAt: 1000, ruledAt: 2000 });
     expect(
       await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
     ).toBe(2);
@@ -697,6 +702,7 @@ describe("TTS unified rulings", () => {
       todoId,
       verdict: "session",
     });
+    await setTimes(t, { preparedAt: 1000, ruledAt: 2000 });
     expect(
       await t.query(internal.ttsRulings.internalAwaitingRulingCount, {}),
     ).toBe(2);
