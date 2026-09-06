@@ -318,9 +318,11 @@ export type ThreadReplyOutcome =
  *   digest   → a "tom-note" event with the day — a fact, per the brief;
  *   hourly   → a "tom-note" event with the hour and day — a fact. For both,
  *              a reply that names a todo (link or id) and otherwise says only
- *              "done" or a date is that todo's reply, as above.
+ *              "done" or a date is that todo's reply, as above; and a reply
+ *              that names a model-of-Tom line by the id the digest printed
+ *              is a "learning-objection" to that line.
  *   learning → a "learning-objection" event with the learning change's id
- *              (phase 4's nightly job applies the inverse).
+ *              (the nightly job applies the inverse the next night).
  *   unknown  → a new todo whose provenance names the thread.
  */
 export async function slackThreadReplyFrom(
@@ -428,7 +430,19 @@ async function routeReply(
       // "captured as a fact") — the thread has no one todo for a date or a
       // "done" to land on. The one exception: a reply that NAMES a todo (its
       // link or id) and otherwise says only "done" or a date is that todo's
-      // reply, exactly as if it were in the todo's own thread.
+      // reply, exactly as if it were in the todo's own thread. A reply that
+      // names a model-of-Tom line by its id is an objection to that line —
+      // the nightly job applies the inverse the next night.
+      const objected = await namedLearningChange(ctx, text);
+      if (objected !== undefined) {
+        await logEvent(ctx, "learning-objection", undefined, {
+          id: objected,
+          text,
+          ...at,
+          subject,
+        });
+        return { outcome: "learning-objection", id: objected };
+      }
       const named = await namedTodo(ctx, text);
       if (named !== undefined) {
         const shape = replyShape(named.rest);
@@ -485,6 +499,34 @@ async function captureUnknown(
 /** The todo a reply names — by its page link (tts?item=<id>, Slack-wrapped
  * or bare) or a bare id — and the reply with that name taken out. The first
  * token that is an existing todo's id wins; a reply naming none is undefined. */
+// How many recent model-of-Tom changes a reply's id is matched against:
+// weeks of nights, inside Slack's 3-second budget.
+export const LEARNING_CHANGE_LOOKBACK = 500;
+
+/**
+ * The full id of the learning change a reply names, if any. The digest
+ * prints each model-of-Tom line as `[<12 hex>] file: ...`; Tom replies with
+ * the bracketed id or at least 8 characters of it. The token is checked
+ * against the recent "learning-change" rows, so a commit hash printed in
+ * the same digest, or a word spelled in hex letters, names nothing.
+ */
+async function namedLearningChange(ctx: MutationCtx, text: string): Promise<string | undefined> {
+  const tokens = text.match(/\b[0-9a-f]{8,12}\b/g);
+  if (!tokens) return undefined;
+  const recent = await ctx.db
+    .query("dtsEvents")
+    .withIndex("by_kind_at", (q) => q.eq("kind", "learning-change"))
+    .order("desc")
+    .take(LEARNING_CHANGE_LOOKBACK);
+  for (const token of tokens) {
+    for (const row of recent) {
+      const id = (row.data as { id?: unknown } | undefined)?.id;
+      if (typeof id === "string" && id.startsWith(token)) return id;
+    }
+  }
+  return undefined;
+}
+
 async function namedTodo(
   ctx: MutationCtx,
   text: string,
