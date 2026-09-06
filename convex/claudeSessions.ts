@@ -203,6 +203,10 @@ const OVERFLOW_READ_CHUNKS = 8;
 // row well inside it and is what bounds every read above.
 export const OVERFLOW_CHUNK_MAX_BYTES = 256 * 1024;
 
+// How many chunk rows one sweep deletes before scheduling itself again: the
+// same 2MB read bound as a page, because a delete reads the document too.
+const OVERFLOW_SWEEP_CHUNKS = 8;
+
 const utf8 = new TextEncoder();
 const utf8Bytes = (text: string) => utf8.encode(text).length;
 
@@ -1577,7 +1581,19 @@ export const internalIngest = internalMutation({
     if (args.finalize && args.finalize.length > 0) {
       let maxSeq = session.nextSeq - 1;
       for (const row of args.finalize) {
-        if (row.seq < session.nextSeq) continue; // retry replay — drop
+        if (row.seq < session.nextSeq) {
+          // Retry replay — drop. A retry's twin already landed under this seq
+          // with the same stamp, and the chunks are the twin's; only when the
+          // landed row carries NO stamp (a seq collision, not a retry) do the
+          // chunks this replay uploaded belong to nothing, and get swept.
+          if (row.overflow) {
+            const landed = await messageAt(ctx, args.sessionId, row.seq);
+            if (!landed?.overflow) {
+              await sweepMessageOverflow(ctx, args.sessionId, row.seq);
+            }
+          }
+          continue;
+        }
         await ctx.db.insert("claudeMessages", {
           sessionId: args.sessionId,
           seq: row.seq,
@@ -1878,6 +1894,41 @@ export const internalIngestOverflow = internalMutation({
       });
     }
     return { ok: true as const, index: args.index };
+  },
+});
+
+// Remove every chunk under (sessionId, seq): the one home for taking a
+// message's complete payload out, called by the seq floor above for a
+// stamped replay whose landed twin has no stamp, and what any future removal
+// of claudeMessages rows must call for each row that carried `overflow`
+// (nothing removes messages today). Deletes read their documents, so a
+// payload of hundreds of chunks goes in bounded steps, each scheduling the
+// next.
+export async function sweepMessageOverflow(
+  ctx: MutationCtx,
+  sessionId: Id<"claudeSessions">,
+  seq: number,
+) {
+  await ctx.scheduler.runAfter(0, internal.claudeSessions.internalSweepOverflow, {
+    sessionId,
+    seq,
+  });
+}
+
+export const internalSweepOverflow = internalMutation({
+  args: { sessionId: v.id("claudeSessions"), seq: v.number() },
+  handler: async (ctx, { sessionId, seq }) => {
+    const chunks = await ctx.db
+      .query("claudeMessageOverflow")
+      .withIndex("by_session_seq_index", (q) =>
+        q.eq("sessionId", sessionId).eq("seq", seq),
+      )
+      .take(OVERFLOW_SWEEP_CHUNKS);
+    for (const chunk of chunks) await ctx.db.delete(chunk._id);
+    if (chunks.length === OVERFLOW_SWEEP_CHUNKS) {
+      await sweepMessageOverflow(ctx, sessionId, seq);
+    }
+    return { deleted: chunks.length };
   },
 });
 

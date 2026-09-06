@@ -1137,8 +1137,12 @@ export default defineSchema({
   // uploads the bytes before internalIngest has inserted the row — seq is the
   // message's identity on the daemon's side of the wire, and unique per
   // session by the seq floor. Chunks rather than file storage: the read side
-  // is a QUERY (claudeSessions.internalMessageOverflow) and ctx.storage.get is
-  // reachable only from an action.
+  // is a QUERY (claudeSessions.getMessageOverflow) and ctx.storage.get is
+  // reachable only from an action. Each chunk is its own mutation, not part
+  // of the row's ingest; the daemon keeps the order (chunks first, then the
+  // row) by holding the row back until they are acknowledged, and nothing
+  // here removes chunks with a row — claudeSessions.sweepMessageOverflow is
+  // the one call that does.
   claudeMessageOverflow: defineTable({
     sessionId: v.id("claudeSessions"),
     seq: v.number(),

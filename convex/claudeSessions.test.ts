@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { convexTest } from "convex-test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { MessageOverflowRead } from "./claudeSessions";
 import type { Id } from "./_generated/dataModel";
@@ -2581,6 +2581,87 @@ describe("message overflow (the complete payload)", () => {
       ctx.db.query("claudeMessageOverflow").collect(),
     );
     expect(rows.map((r) => r.text).sort()).toEqual(["abc", "def"]);
+  });
+
+  // witness: drop the sweep from the seq floor — chunks uploaded for a row
+  // the floor then dropped would sit under a seq whose landed row never
+  // names them, unreadable and undeletable.
+  it("sweeps the chunks of a dropped stamped replay whose landed row has no stamp", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = convexTest({ schema, modules });
+      const tom = await withTom(t);
+      const sessionId = await createBasicSession(tom);
+      // What landed under seq 0: a plain row, no stamp.
+      await t.mutation(internal.claudeSessions.internalIngest, {
+        sessionId,
+        finalize: [
+          {
+            seq: 0,
+            turn: 0,
+            kind: "assistant-text" as const,
+            content: { text: "short" },
+          },
+        ],
+      });
+      // A second writer's chunks under the same seq, then its stamped row,
+      // which the floor drops.
+      const chunks = ["aaa", "bbb"];
+      await uploadChunks(t, sessionId, 0, chunks);
+      await t.mutation(internal.claudeSessions.internalIngest, {
+        sessionId,
+        finalize: [
+          {
+            seq: 0,
+            turn: 0,
+            kind: "tool-result" as const,
+            content: { toolUseId: "tool_1", content: "aaa" },
+            overflow: stampFor(chunks),
+          },
+        ],
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      const rows = await t.run(async (ctx) => ({
+        messages: await ctx.db.query("claudeMessages").collect(),
+        chunks: await ctx.db.query("claudeMessageOverflow").collect(),
+      }));
+      expect(rows.messages).toHaveLength(1);
+      expect(rows.messages[0].overflow).toBeUndefined();
+      expect(rows.chunks).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the chunks when the dropped replay is a retry of a stamped row", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = convexTest({ schema, modules });
+      const tom = await withTom(t);
+      const sessionId = await createBasicSession(tom);
+      const chunks = ["aaa", "bbb"];
+      await storeOversized(t, sessionId, chunks);
+      // The same row again — a blind retry after a lost response.
+      await t.mutation(internal.claudeSessions.internalIngest, {
+        sessionId,
+        finalize: [
+          {
+            seq: 0,
+            turn: 0,
+            kind: "tool-result" as const,
+            content: { toolUseId: "tool_1", content: "aaa" },
+            overflow: stampFor(chunks),
+          },
+        ],
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      const stored = await t.run(async (ctx) =>
+        ctx.db.query("claudeMessageOverflow").collect(),
+      );
+      expect(stored).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // The door itself (convex/http.ts): every field typed before the mutation

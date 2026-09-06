@@ -8,15 +8,31 @@
 // (sessionId, seq) — the message's identity at the moment the daemon writes
 // it, before Convex has given the row an _id.
 //
-// Chunks rather than Convex file storage, for three reasons:
-//   1. the read side is an internalQuery (claudeSessions.internalMessageOverflow);
-//      ctx.storage.get is only reachable from an action, so a file could never
-//      be reassembled by a query the way the transcript page needs;
-//   2. a chunk row is written INSIDE internalIngest's transaction, so the
-//      hash on the message row and the bytes it names commit together, and the
-//      seq floor that drops a replayed finalize row drops its chunks too;
-//   3. nothing in this repo stores files today (one unused `iconStorageId`),
+// Chunks rather than Convex file storage, for two reasons:
+//   1. the read side is a query (claudeSessions.getMessageOverflow and its
+//      internal twin); ctx.storage.get is only reachable from an action, so a
+//      file could never be reassembled by a query the way the transcript page
+//      needs;
+//   2. nothing in this repo stores files today (one unused `iconStorageId`),
 //      so a chunk table adds no new store to reason about.
+//
+// The ordering, and what holds it: each chunk is its own mutation on its own
+// route (POST /sessions/overflow), NOT part of internalIngest's transaction.
+// What makes the row and its bytes agree is the OverflowQueue below: the
+// finalize row that names the hash is HELD in the daemon's outbox — along
+// with every row after it, so seq order survives — until the last chunk has
+// been acknowledged, and only then stamped `overflow` and released to the
+// flush. A payload whose upload fails is released WITHOUT the stamp, goes to
+// disk, and is reported (an `error` row and a session-overflow-unstored
+// event naming the file) so reingest-overflow.mjs can finish the job later.
+// So a stamped row always points at chunks that were already stored, and a
+// row with no stamp never points at anything.
+//
+// Chunk rows are not tied to a message row's life by the database. The seq
+// floor in internalIngest drops a replayed finalize row; when that row was
+// stamped and the row that landed under its seq was not, the server sweeps
+// the chunks (internalSweepOverflow), and the same sweep is what anything
+// removing a message must call — nothing removes messages today.
 //
 // Redaction runs HERE, on the whole payload, before hashing and chunking —
 // not only at the ingest choke point (sessionsFetch). A credential straddling
