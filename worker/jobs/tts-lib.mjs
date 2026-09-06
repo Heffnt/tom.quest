@@ -137,6 +137,34 @@ export async function convexFetch(env, path, body = undefined) {
   return JSON.parse(text);
 }
 
+/**
+ * The link to one todo on the /tts page. ONE HOME in worker/ for the URL
+ * shape — convex/ttsShared.ts ttsItemLink is the same string on the server
+ * side, and a job that spells it itself is the drift this rule exists to stop.
+ */
+export function ttsItemLink(todoId) {
+  return `https://tom.quest/tts?item=${todoId}`;
+}
+
+// ---------------------------------------------------------------------------
+// Capture context — the rules a poller triages by (the lifeos update, phase 6)
+// ---------------------------------------------------------------------------
+//
+// Every capture poller (poll-gmail, poll-canvas, poll-outlook) makes the same
+// two judgements about an incoming message: does it imply an action by Tom,
+// and does it need him TODAY. The words for both come from the deployment, not
+// from any job: GET /tts/capture-context serves the synced WikiTom
+// capture-triage text with convex/ttsShared.ts's copy as the fallback.
+//
+// One read, one shape, so the three pollers cannot triage by three different
+// sets of rules. Fields grow here as later phases add them (the declined
+// integrations list is the next one).
+
+/** The capture rules and the state a poller checks before it runs. */
+export async function captureContext(env) {
+  return await convexFetch(env, "/tts/capture-context");
+}
+
 // ---------------------------------------------------------------------------
 // Slack Web API
 // ---------------------------------------------------------------------------

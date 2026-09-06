@@ -815,10 +815,12 @@ export default defineSchema({
     // week, and the model's most likely response to an instruction to fix
     // something already fixed is to restructure something else.
     consumedAt: v.optional(v.number()),
-    // The Slack lookup key, set on exactly two kinds (convex/ttsSlack.ts):
+    // The lookup key, set on exactly three kinds (convex/ttsSlack.ts):
     //   "slack-sent"  — `${channel}:${thread root ts}`, so a threaded reply
     //                   from Tom finds what it answers by (channel, thread_ts);
-    //   "slack-event" — Slack's event_id, so a redelivered event is dropped.
+    //   "slack-event" — Slack's event_id, so a redelivered event is dropped;
+    //   "needs-tom"   — the producer's own id for the thing that needs Tom
+    //                   (`gmail:message:<id>`), so one mail opens one thread.
     // `data` is v.any() and cannot be indexed, which is why the key is its
     // own field: the events route must answer inside Slack's 3-second budget,
     // and a thread root can be days old, so a bounded scan is not enough.
@@ -827,9 +829,9 @@ export default defineSchema({
     .index("by_at", ["at"])
     .index("by_todo", ["todoId", "at"])
     // TWO shapes, one index. With `key` pinned, `at` is reachable — and only
-    // two kinds ever set a key (above), so every other kind pins it to
+    // the three kinds above ever set a key, so every other kind pins it to
     // undefined and reads as (kind, time):
-    //   the row for one thread or one event id — eq(kind), eq(key);
+    //   the row for one thread, event id or producer id — eq(kind), eq(key);
     //   one KEYLESS kind newest-first or over a time range — eq(kind),
     //   eq(key, undefined), range on at. The digest's last "digest-sent" row
     //   (convex/ttsDigest.ts) and the hourly update's window, worker events

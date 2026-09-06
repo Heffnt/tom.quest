@@ -6,6 +6,8 @@ import { auth } from "./auth";
 import { nowContext } from "./tts";
 import { isRulingVerdict } from "./ttsRulings";
 import {
+  CAPTURE_TRIAGE_RULES,
+  CAPTURE_TRIAGE_SKILL,
   DAY_MS,
   SESSION_REPO_NAMES,
   WRITING_SKILL,
@@ -189,6 +191,73 @@ const ttsCapture = httpAction(async (ctx, request) => {
 });
 
 http.route({ path: "/tts/capture", method: "POST", handler: ttsCapture });
+
+// GET /tts/capture-context — what a capture poller on the Jarvis Box needs
+// BEFORE it captures anything (the lifeos update, phase 6). One read, shared
+// by poll-gmail, poll-canvas and poll-outlook, for the same reason
+// /tts/batch-context serves the writing standard: those jobs are Node ESM on a
+// box that can neither import TypeScript nor read a git checkout of WikiTom.
+//
+//   captureTriage — the two judgements a poller makes (does this imply an
+//     action by Tom; does it need him today), from the synced WikiTom skill,
+//     falling back to ttsShared.CAPTURE_TRIAGE_RULES until the sync has run.
+const ttsCaptureContext = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const triageSkill = await ctx.runQuery(internal.ttsSkills.internalGetSkill, {
+    name: CAPTURE_TRIAGE_SKILL,
+  });
+  const synced = triageSkill?.body.trim() ?? "";
+  return jsonResponse(200, {
+    captureTriage: synced === "" ? CAPTURE_TRIAGE_RULES : synced,
+  });
+});
+
+http.route({
+  path: "/tts/capture-context",
+  method: "GET",
+  handler: ttsCaptureContext,
+});
+
+// POST /tts/needs-tom — one thread in #tts for a todo that needs Tom TODAY.
+// Body: { todoId, text, key }. The ONE message shape for anything that needs
+// him: convex/ttsSlack.ts opens the thread through the one Slack door with the
+// todo as its subject, so his reply in it is already routed back to the row.
+// `key` is the producer's own id for the thing that needs him
+// (`gmail:message:<id>`), and it is what makes the thread open exactly once.
+const ttsNeedsTom = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.todoId !== "string" || b.todoId.length === 0) {
+    return jsonResponse(400, { error: "todoId (non-empty string) required" });
+  }
+  if (typeof b.text !== "string" || b.text.trim().length === 0) {
+    return jsonResponse(400, { error: "text (non-empty string) required" });
+  }
+  if (typeof b.key !== "string" || b.key.trim().length === 0) {
+    return jsonResponse(400, { error: "key (non-empty string) required" });
+  }
+  try {
+    const result = await ctx.runMutation(
+      internal.ttsSlack.internalOpenNeedsTomThread,
+      { todoId: b.todoId, text: b.text, key: b.key },
+    );
+    return jsonResponse(200, { ok: true, ...result });
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({ path: "/tts/needs-tom", method: "POST", handler: ttsNeedsTom });
 
 // POST /tts/calendar-event — the Jarvis Box's path through the ONE write door
 // to Tom's Google Calendar (convex/ttsCalendarWrite.ts owns the door; this

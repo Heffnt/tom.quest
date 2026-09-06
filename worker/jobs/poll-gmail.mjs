@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // poll-gmail.mjs — read new Gmail inbox mail, triage with headless Claude,
-// and capture the ACTION-IMPLYING messages as unprepared TTS todos
-// (source "email"). Spec: WikiTom tts/spec.md §17 post-MVP priority 1.
+// capture the ACTION-IMPLYING messages as unprepared TTS todos (source
+// "email"), and open ONE #tts thread for each one that needs Tom TODAY.
+// Spec: WikiTom tts/spec.md §17 post-MVP priority 1; the lifeos update,
+// phase 6.
 //
 // Run by cron every 10 minutes (see /etc/cron.d/tts). Also runnable by hand:
 //   node /opt/tts/poll-gmail.mjs
@@ -14,24 +16,75 @@
 //   GMAIL_REFRESH_TOKEN — minted ONCE by Tom on his own machine with
 //       worker/jobs/gmail-auth.mjs (scope gmail.readonly), then pasted here.
 //
-// TRIAGE: one non-agentic Claude call per batch decides which messages imply
-// an action by Tom and writes each one's capture statement. Judged from
-// headers + Gmail's snippet only (the first ~100 chars) — v1 deliberately
-// never downloads bodies. A capture is a todo, so a wrong "actionable" call
-// costs Tom one archive click; a wrong "skip" call costs a lost thread —
-// the prompt says to lean toward capturing when unsure.
+// TWO JUDGEMENTS, ONE CLAUDE CALL PER BATCH, and they are different questions:
+//
+//   1. does the mail imply an ACTION BY TOM? → capture it as a todo. Judged
+//      from headers + Gmail's snippet only (the first ~100 chars) — v1
+//      deliberately never downloads bodies. A capture is a todo, so a wrong
+//      "actionable" call costs Tom one archive click while a wrong "skip" call
+//      costs a lost thread; the prompt leans toward capturing.
+//   2. does it need TOM, TODAY? → open one thread in #tts on that todo, so his
+//      reply is the next turn. This is CAPTURE TRIAGE, not an importance
+//      rating: three facts and no others make it true (a deadline inside 48
+//      hours, a named person waiting on a reply, money or credentials), and
+//      everything else waits for the 5 a.m. digest, which reports every
+//      capture. Nothing is lost either way.
+//
+// The rules for both come from the deployment, not from this file: GET
+// /tts/capture-context serves the synced WikiTom capture-triage text (WikiTom
+// model-of-tom/priorities.md, through the ttsSkills row), falling back to the
+// copy in convex/ttsShared.ts until the sync has run. One home for the rules,
+// so poll-canvas and poll-outlook read the same words.
 //
 // STATE: /var/lib/tts/gmail-cursor holds the internalDate (epoch ms) of the
-// newest PROCESSED message (captured or skipped). Losing it re-examines the
-// last 24h, which at worst re-captures a few emails as duplicate todos —
-// same harmless-by-design trade as poll-dump's cursor.
+// newest PROCESSED message (captured or skipped). FORMAT UNCHANGED by phase 6
+// — still one epoch-ms integer, so no cursor migration is needed and a box
+// mid-upgrade keeps reading its own file. Losing it re-examines the last 24h,
+// which at worst re-captures a few emails as duplicate todos (the poll-dump
+// cursor trade) and CANNOT re-open a #tts thread: the thread is deduped
+// server-side on the Gmail message id, not on this cursor.
 
 import fs from "node:fs";
-import { loadEnv, convexFetch, runClaude, extractJsonObject } from "./tts-lib.mjs";
+import { fileURLToPath } from "node:url";
+import {
+  captureContext,
+  convexFetch,
+  extractJsonObject,
+  loadEnv,
+  runClaude,
+  ttsItemLink,
+} from "./tts-lib.mjs";
 
 const CURSOR_FILE = "/var/lib/tts/gmail-cursor";
 const FIRST_RUN_LOOKBACK_MS = 24 * 3600 * 1000;
 const MAX_CANDIDATES = 25; // per run; the 10-minute cadence drains any backlog
+
+/**
+ * Pure: the STABLE SOURCE ID of one Gmail message — the id first, then the
+ * link, the same "id + link" shape poll-canvas writes for announcements and
+ * convex/ttsCanvas.ts for assignments. The id leads so a reader can tell the
+ * producers apart by eye and so a machine can key on the message without
+ * parsing a URL fragment. (Before phase 6 this was the bare #all link, which
+ * carried the same id but only inside a URL.) The #all link resolves
+ * regardless of which label the thread has since moved to.
+ * Exported for tests.
+ */
+export function messageSourceId(id) {
+  return `gmail:message:${id}`;
+}
+export function messageProvenance(id) {
+  return `${messageSourceId(id)} https://mail.google.com/mail/u/0/#all/${id}`;
+}
+
+/**
+ * Pure: the ONE line a #tts thread opens with — who it is from, what it is
+ * about, and where the todo is. Nothing else: the thread exists so Tom can
+ * reply, and his reply is the next turn on that todo.
+ * Exported for tests.
+ */
+export function needsTomLine(from, subject, todoId) {
+  return `Needs you today — ${from}: ${subject}\n${ttsItemLink(todoId)}`;
+}
 
 async function gmailToken(env) {
   const res = await fetch("https://oauth2.googleapis.com/token", {
@@ -113,13 +166,13 @@ async function main() {
   candidates.sort((a, b) => a.internalDate - b.internalDate);
   const batch = candidates.slice(0, MAX_CANDIDATES);
 
+  // The deployment's own capture-triage rules, not a copy written here.
+  const { captureTriage } = await captureContext(env);
+
   const prompt = `You triage Tom's Gmail inbox for his todo system (TTS).
 Below is a JSON array of new emails (headers + a ~100-character snippet).
-Decide which ones imply an ACTION BY TOM — something he must reply to, submit,
-schedule, pay, sign, decide, or follow up on. Skip newsletters, promotions,
-automated notifications, receipts, and mass mail. When genuinely unsure, lean
-toward capturing: a wrong capture costs one archive click, a wrong skip loses
-the thread.
+
+${captureTriage}
 
 For each captured email write "statement": ONE line naming the action in plain
 words, starting with a verb, mentioning who it involves (e.g. "Reply to Sarah
@@ -127,8 +180,14 @@ Chen about the lab meeting time"). Do not invent details the snippet does not
 support — when the action is unclear, "Read and handle email from X: <subject>"
 is the honest statement.
 
+Also answer the second judgement for each captured email: set "needsTomToday"
+to true only when one of the three named facts holds, and in "why" name which
+one in a few words ("deadline Friday", "Sarah is waiting on a reply", "invoice
+due"). Set it to false and omit "why" otherwise. An email you do not capture
+has no second judgement at all.
+
 Answer with ONLY this JSON object, no fences, no commentary:
-{"captures": [{"id": "<gmail message id>", "statement": "<one line>"}]}
+{"captures": [{"id": "<gmail message id>", "statement": "<one line>", "needsTomToday": <true|false>, "why": "<a few words, only when true>"}]}
 An empty list is {"captures": []}.
 
 Emails:
@@ -137,35 +196,74 @@ ${JSON.stringify(batch.map(({ id, from, subject, snippet }) => ({ id, from, subj
   const answer = runClaude(prompt, { timeoutMs: 5 * 60 * 1000 });
   const { captures } = extractJsonObject(answer);
   if (!Array.isArray(captures)) throw new Error("triage answer has no captures array");
-  const statementById = new Map(
+  const verdictById = new Map(
     captures
       .filter((c) => c && typeof c.id === "string" && typeof c.statement === "string")
-      .map((c) => [c.id, c.statement]),
+      .map((c) => [
+        c.id,
+        {
+          statement: c.statement,
+          needsTomToday: c.needsTomToday === true,
+          why: typeof c.why === "string" ? c.why : "",
+        },
+      ]),
   );
 
   let captured = 0;
+  let threads = 0;
   for (const message of batch) {
-    const statement = statementById.get(message.id);
-    if (statement) {
+    const verdict = verdictById.get(message.id);
+    if (verdict) {
       const result = await convexFetch(env, "/tts/capture", {
-        statement,
+        statement: verdict.statement,
         source: "email",
-        // The #all link resolves regardless of which label the thread sits in.
-        provenance: `https://mail.google.com/mail/u/0/#all/${message.id}`,
+        provenance: messageProvenance(message.id),
       });
       captured++;
       console.log(
-        `[poll-gmail] captured id=${result.id ?? "?"} "${statement.slice(0, 70)}"`,
+        `[poll-gmail] captured id=${result.id ?? "?"} "${verdict.statement.slice(0, 70)}"`,
       );
+      // NEEDS TOM TODAY: one thread in #tts, deduped server-side on the Gmail
+      // message id. A thread that cannot be opened must not cost the capture
+      // that already landed, so a refusal is reported and the run continues —
+      // the item is still a todo and the morning digest still reports it.
+      if (verdict.needsTomToday && result.id) {
+        try {
+          const opened = await convexFetch(env, "/tts/needs-tom", {
+            todoId: result.id,
+            text: needsTomLine(message.from, message.subject, result.id),
+            key: messageSourceId(message.id),
+          });
+          if (opened.opened) threads++;
+          console.log(
+            `[poll-gmail] needs Tom (${verdict.why || "no reason given"}): thread ` +
+              `${opened.opened ? "opened" : "already open"} for ${result.id}`,
+          );
+        } catch (err) {
+          console.error(`[poll-gmail] thread for ${result.id} refused: ${err.message}`);
+        }
+      }
     }
     // Advance after EVERY processed message (captured or skipped), so a crash
     // mid-batch re-processes at most the one in flight.
     fs.writeFileSync(CURSOR_FILE, String(message.internalDate));
   }
-  console.log(`[poll-gmail] processed ${batch.length}, captured ${captured}`);
+  console.log(
+    `[poll-gmail] processed ${batch.length}, captured ${captured}, threads opened ${threads}`,
+  );
 }
 
-main().catch((err) => {
-  console.error(`[poll-gmail] FAILED: ${err.message}`);
-  process.exit(1);
-});
+// Run ONLY when node was pointed at this file — the same guard poll-canvas.mjs
+// carries, and for the same reason: a test that imports the pure helpers above
+// must not fire the job. worker/setup.sh copies the jobs to /opt/tts rather
+// than symlinking them, so realpath on both sides is the same real file.
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+
+if (invokedDirectly) {
+  main().catch((err) => {
+    console.error(`[poll-gmail] FAILED: ${err.message}`);
+    process.exit(1);
+  });
+}

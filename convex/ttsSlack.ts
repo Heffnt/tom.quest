@@ -118,6 +118,57 @@ export const internalRecordSlackFailed = internalMutation({
   },
 });
 
+// ── One thread in #tts for a todo that needs Tom (the lifeos update, phase 6)
+// ONE MESSAGE SHAPE for anything that needs him: a thread in #tts whose reply
+// is the next turn. A capture poller on the Jarvis Box (poll-gmail today) that
+// judges a captured item to need Tom TODAY calls POST /tts/needs-tom, which
+// lands here; the message goes out through the one door in convex/ttsSync.ts
+// with the todo as its subject, so his threaded reply already routes — "done"
+// completes it, a bare date is a time note, anything else is a fact on the row
+// (todoReply below).
+//
+// DEDUPED ON THE PRODUCER'S OWN ID, not on the todo. A poller's key is the
+// identity of the thing it read — `gmail:message:<id>` — so the same mail can
+// never open a second thread, not on a re-run, not after a lost cursor, not
+// after a redeployment. The marker is an ordinary dtsEvents row keyed like the
+// door's own rows; two concurrent calls with one key conflict on it in Convex
+// and the retry reads the marker the winner wrote.
+export const NEEDS_TOM = "needs-tom";
+
+export const internalOpenNeedsTomThread = internalMutation({
+  // todoId as a plain string, normalized here: the caller is an HTTP route
+  // carrying a worker's JSON, and this is where an unknown id becomes a named
+  // refusal rather than a validator error (the internalPrepareTodo pattern).
+  args: { todoId: v.string(), text: v.string(), key: v.string() },
+  handler: async (
+    ctx,
+    { todoId, text, key },
+  ): Promise<{ opened: boolean; key: string }> => {
+    // The todo first: a thread about a row that is not there is a message Tom
+    // cannot reply to, and the marker would suppress the real one for ever.
+    const id = ctx.db.normalizeId("dtsTodos", todoId);
+    const todo = id === null ? null : await ctx.db.get(id);
+    if (id === null || !todo) throw new Error(`Unknown todo id: ${todoId}`);
+    const seen = await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_kind_key", (q) => q.eq("kind", NEEDS_TOM).eq("key", key))
+      .first();
+    if (seen) return { opened: false, key };
+    await ctx.db.insert("dtsEvents", {
+      at: Date.now(),
+      kind: NEEDS_TOM,
+      key,
+      todoId: id,
+      data: { key, text },
+    });
+    await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
+      text,
+      subject: { kind: "todo", id },
+    });
+    return { opened: true, key };
+  },
+});
+
 // ── "done", a bare date, or a fact ───────────────────────────────────────────
 // A reply on a todo thread that says ONLY "done" completes the todo through
 // applyStatusChange — the one status writer, so the kept-dates rule resolves

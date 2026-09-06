@@ -237,6 +237,100 @@ describe("the reply at capture", () => {
 
 });
 
+describe("the #tts thread for a todo that needs Tom", () => {
+  // One shape for anything that needs him, and one thread per thing. The
+  // producer's own id is the dedupe key, so a poller that re-reads the same
+  // mail — a re-run, a lost cursor, a redeployment — never opens a second.
+  async function aTodo(t: ReturnType<typeof convexTest>) {
+    return await t.run(async (ctx) =>
+      ctx.db.insert("dtsTodos", {
+        statement: "Reply to Sarah Chen about the lab meeting time",
+        readiness: "unprepared",
+        status: "active",
+        timingClass: "whenever",
+        source: "email",
+        provenance: "gmail:message:18f0a1 https://mail.google.com/mail/u/0/#all/18f0a1",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+  }
+
+  const KEY = "gmail:message:18f0a1";
+
+  it("opens once, through the one door, with the todo as its subject", async () => {
+    const t = convexTest(schema, modules);
+    const id = await aTodo(t);
+    expect(
+      await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, {
+        todoId: id,
+        text: "Needs you today — Sarah Chen: Lab meeting Friday",
+        key: KEY,
+      }),
+    ).toEqual({ opened: true, key: KEY });
+
+    const sends = await scheduledSends(t);
+    expect(sends).toHaveLength(1);
+    // No channel: the door's default is #tts, which is where anything that
+    // needs Tom goes.
+    expect(sends[0].channel).toBeUndefined();
+    expect(sends[0].subject).toEqual({ kind: "todo", id });
+    expect(sends[0].text).toContain("Sarah Chen");
+
+    const markers = await events(t, "needs-tom");
+    expect(markers).toHaveLength(1);
+    expect(markers[0].key).toBe(KEY);
+    expect(markers[0].todoId).toBe(id);
+  });
+
+  it("never opens a second thread for the same producer id", async () => {
+    const t = convexTest(schema, modules);
+    const id = await aTodo(t);
+    const args = { todoId: id, text: "Needs you today", key: KEY };
+    await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, args);
+    expect(
+      await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, args),
+    ).toEqual({ opened: false, key: KEY });
+    expect(await scheduledSends(t)).toHaveLength(1);
+    expect(await events(t, "needs-tom")).toHaveLength(1);
+  });
+
+  it("keys on the mail, not the todo — a re-captured mail still opens none", async () => {
+    const t = convexTest(schema, modules);
+    const first = await aTodo(t);
+    await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, {
+      todoId: first,
+      text: "Needs you today",
+      key: KEY,
+    });
+    // The cursor was lost and the same message came back as a second todo.
+    const second = await aTodo(t);
+    expect(
+      await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, {
+        todoId: second,
+        text: "Needs you today",
+        key: KEY,
+      }),
+    ).toEqual({ opened: false, key: KEY });
+    expect(await scheduledSends(t)).toHaveLength(1);
+  });
+
+  it("refuses an unknown todo and leaves no marker behind", async () => {
+    const t = convexTest(schema, modules);
+    // A marker written before the row was checked would suppress the real
+    // thread for ever once the todo did exist.
+    await expect(
+      t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, {
+        todoId: "not-an-id",
+        text: "Needs you today",
+        key: KEY,
+      }),
+    ).rejects.toThrow(/Unknown todo id/);
+    expect(await events(t, "needs-tom")).toHaveLength(0);
+    expect(await scheduledSends(t)).toHaveLength(0);
+  });
+});
+
 describe("threaded replies from Tom", () => {
   it("drops a redelivered event and counts it", async () => {
     slackEnv();

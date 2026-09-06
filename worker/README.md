@@ -7,13 +7,24 @@ on a schedule:
 1. **poll-dump** (every 2 min) — reads new human messages from the Slack
    `#dump` channel and submits each one to Convex as an unprepared todo.
 2. **poll-gmail** (every 10 min) — lists new inbox mail and spends ONE headless
-   Claude call per batch deciding which messages imply an action by Tom, then
-   submits each of those to Convex as an unprepared todo with source `email`
-   (linked back to the thread). Judged from headers plus Gmail's ~100-character
-   snippet only — v1 never downloads bodies — and the prompt leans toward
-   capturing when unsure, because a wrong capture costs one archive click while
-   a wrong skip loses the thread. Until the Gmail credentials exist it is a
-   quiet no-op; see below.
+   Claude call per batch on TWO judgements. First: does the message imply an
+   action by Tom? If so it is submitted to Convex as an unprepared todo with
+   source `email` and the stable source id `gmail:message:<id>` in its
+   provenance, followed by the `#all` link. Judged from headers plus Gmail's
+   ~100-character snippet only — v1 never downloads bodies — and the prompt
+   leans toward capturing when unsure, because a wrong capture costs one
+   archive click while a wrong skip loses the thread. Second: does it need Tom
+   **today**? If so the job asks Convex to open one thread in `#tts` on that
+   todo (`POST /tts/needs-tom`), carrying one line — the sender, the subject,
+   the todo's link — so his reply in it is the next turn on the row. That
+   second judgement is capture triage, not an importance rating: three facts
+   and no others make it true (a deadline inside 48 hours, a named person
+   waiting on a reply, money or credentials), and the rules for both
+   judgements come from the deployment (`GET /tts/capture-context`, the synced
+   WikiTom capture-triage text), never from a copy in the job. The thread is
+   deduped on the Gmail message id, so one mail opens one thread however many
+   times the job re-reads it. Until the Gmail credentials exist it is a quiet
+   no-op; see below.
 3. **poll-canvas** (every 30 min) — lists new Canvas course announcements and
    spends ONE headless Claude call per batch deciding which imply an action
    by Tom (schedule changes, sign-ups, required responses), then submits
