@@ -846,10 +846,12 @@ http.route({
 // claudeInbound row Tom typed, one of the four verdicts, "life" | "code" |
 // "batch", the subject's id (a code subject is "<repo> <externalId>"), one
 // whole sentence of Tom's turn verbatim (provenance only), and — on revise
-// alone — the ruling's own sentence, the redirect. Same key as every worker
-// pen; the checks that make it Tom's pen and not the agent's — the row is
-// Tom-authored, the quote is a whole sentence of it, the subject exists, the
-// row has not ruled on this subject before — live in
+// alone — the ruling's own sentence, the redirect, which is another (or the
+// same) whole sentence of that turn. Same key as every worker pen; the
+// checks that make it Tom's pen and not the agent's — the row is
+// Tom-authored, the quote and the redirect are whole sentences of it, the
+// subject exists and is what the turn's session was about, the row has not
+// ruled on this subject before — live in
 // ttsRulings.internalRecordRulingFromTomWords, and each refusal comes back
 // as a 400 with its reason.
 const ttsRuling = httpAction(async (ctx, request) => {

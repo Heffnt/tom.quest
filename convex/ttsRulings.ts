@@ -339,18 +339,28 @@ export const internalRecordRuling = internalMutation({
 //      not an inbound row is refused as unknown;
 //   2. the row's author is "tom" — an agent-authored row (the CLI pen, the
 //      code-built opener) and a row that predates the author field are refused;
-//   3. the sentence is ONE WHOLE UNIT of the row's text (turnUnits below) of
+//   3. the sentence is ONE WHOLE UNIT of the row's text (turnSpans below) of
 //      at least two words — a substring check with no floor let "ok" pass
-//      against almost any turn, which made the pen the agent's;
+//      against almost any turn, which made the pen the agent's. Matching
+//      ignores the terminator; the STORED quote is the turn's own substring;
 //   4. the subject EXISTS: a dtsTodos row, a batches row, or a code todo that
 //      is open in the mirror and has a brief — a well-formed id from another
 //      table, an unknown repo, or an unmirrored externalId is refused, so no
 //      ruling (and no execute-approved run) can name a subject Tom never saw;
-//   5. the same row has not already ruled on the same subject;
-//   6. the ruling's own `sentence` is present on revise (the redirect) and
+//   5. the subject is what the turn's session was ABOUT — the todo, batch
+//      (and its todos), or block category on the claudeSessions row
+//      (refuseUnlessSessionSubject below). Without this one valid sentence
+//      could be replayed against any subject in the record: the dedupe in
+//      check 6 is per subject, so "archive the dentist one" ruled a passport
+//      todo as readily as the dentist one;
+//   6. the same row has not already ruled on the same subject;
+//   7. the ruling's own `sentence` is present on revise (the redirect) and
 //      absent on every other verdict — the quote is provenance, never the
-//      page's return condition or the worker's redirect;
-//   7. only then insertRuling, with provenance {from: "tom-words", inboundId,
+//      page's return condition or the worker's redirect. The redirect is
+//      held to check 3 as well: a whole unit of the same turn (it may be the
+//      quote), stored as the turn's own substring, so the line the preparing
+//      agent obeys is one Tom said and never one the agent composed;
+//   8. only then insertRuling, with provenance {from: "tom-words", inboundId,
 //      quote}, through the same apply path every button uses.
 //
 // approve on a code subject is NOT further gated here: a code todo has no
@@ -364,26 +374,44 @@ const SUBJECT_TYPE = v.union(
   v.literal("batch"),
 );
 
-// A turn's units: split at newlines and at a sentence terminator (. ! ?) that
+// A turn's spans: split at newlines and at a sentence terminator (. ! ?) that
 // is followed by whitespace or the end, so "1.5" and "tom.quest" stay whole.
-// One home for the rule — the quote is normalised by the same function, so
-// "archive it." and "archive it" are the same unit.
+// `unit` is the normalised form (no terminator, trimmed) that matching
+// compares on, so "archive it." and "archive it" are the same unit; `source`
+// is the exact substring of the turn the unit came from, terminator
+// included — the only text ever STORED as Tom's words. One home for the rule.
+export function turnSpans(text: string): { unit: string; source: string }[] {
+  // The capturing group keeps each separator next to the piece it ended.
+  const pieces = text.split(/(\n|[.!?]+(?=\s|$))/);
+  const spans: { unit: string; source: string }[] = [];
+  for (let i = 0; i < pieces.length; i += 2) {
+    const unit = pieces[i].trim();
+    if (unit === "") continue;
+    const terminator = pieces[i + 1] ?? "";
+    spans.push({
+      unit,
+      source: (pieces[i] + (terminator === "\n" ? "" : terminator)).trim(),
+    });
+  }
+  return spans;
+}
+
 export function turnUnits(text: string): string[] {
-  return text
-    .split(/\n|[.!?]+(?=\s|$)/)
-    .map((u) => u.trim())
-    .filter((u) => u !== "");
+  return turnSpans(text).map((s) => s.unit);
 }
 
 // The floor under a quote: a single word ("ok", "yes", "archive") is never a
 // ruling in Tom's words, whatever turn it sits in.
 const MIN_QUOTE_WORDS = 2;
 
-// The unit of `turn` that `quoted` is, or the reason it is none.
+// The span of `turn` that `quoted` is, or the reason it is none. Normalisation
+// only LOCATES the span: the caller stores `source`, the turn's own text, so
+// "Archive this?" cannot come back as "Archive this!" because the agent
+// retyped the terminator.
 export function matchQuotedUnit(
   turn: string,
   quoted: string,
-): { unit: string } | { refused: string } {
+): { unit: string; source: string } | { refused: string } {
   const units = turnUnits(quoted);
   if (units.length !== 1) {
     return {
@@ -395,13 +423,14 @@ export function matchQuotedUnit(
   if (unit.split(/\s+/).length < MIN_QUOTE_WORDS) {
     return { refused: "refused: a single word is not a ruling in Tom's words" };
   }
-  if (!turnUnits(turn).includes(unit)) {
+  const span = turnSpans(turn).find((s) => s.unit === unit);
+  if (span === undefined) {
     return {
       refused:
         "refused: the sentence is not a whole sentence or line of that turn",
     };
   }
-  return { unit };
+  return span;
 }
 
 // A code subject is spelled "<repo> <externalId>" — the tail of subjectKey
@@ -464,6 +493,50 @@ async function resolveSubject(
   return { repo, externalId };
 }
 
+// What a session's turns are ABOUT (check 5): the subject its opening prompt
+// named, as recorded on the claudeSessions row — its todo; or its batch and
+// the todos inside that batch; or, for a block session, the todos of its
+// category (the "code" block works the mirror, so its subjects are code
+// todos). An adhoc session names nothing, so none of its turns can rule. A
+// Slack reply reaches this door as a turn of the same session
+// (ttsSlack.sessionReply), so it is bound the same way. The refusal is its
+// own reason, distinct from "unknown subject": the subject exists, Tom was
+// just not talking about it in that session.
+async function refuseUnlessSessionSubject(
+  ctx: MutationCtx,
+  session: Doc<"claudeSessions">,
+  subjectType: "life" | "code" | "batch",
+  subject: { todoId?: Id<"dtsTodos">; batchId?: Id<"batches"> },
+): Promise<void> {
+  let about = false;
+  if (subjectType === "life" && subject.todoId !== undefined) {
+    const todo = await ctx.db.get(subject.todoId);
+    about =
+      session.todoId === subject.todoId ||
+      (session.batchId !== undefined && todo?.batchId === session.batchId) ||
+      (session.blockCategory !== undefined &&
+        session.blockCategory !== "code" &&
+        todo?.category === session.blockCategory);
+  } else if (subjectType === "batch") {
+    about = session.batchId !== undefined && session.batchId === subject.batchId;
+  } else if (subjectType === "code") {
+    about = session.blockCategory === "code";
+  }
+  if (about) return;
+  const named =
+    session.todoId !== undefined
+      ? `the todo ${session.todoId}`
+      : session.batchId !== undefined
+        ? `the batch ${session.batchId} and the todos in it`
+        : session.blockCategory !== undefined
+          ? `the "${session.blockCategory}" block`
+          : "no todo, batch, or block";
+  throw new Error(
+    `refused: that turn is from a session about ${named}, not about this subject — ` +
+      "a ruling names only what Tom was talking about",
+  );
+}
+
 export const internalRecordRulingFromTomWords = internalMutation({
   args: {
     inboundId: v.string(),
@@ -476,8 +549,10 @@ export const internalRecordRulingFromTomWords = internalMutation({
     // something a quote of Tom's turn should become by accident.
     quote: v.string(),
     // The ruling's own sentence, revise only (the redirect the verdict cannot
-    // exist without). Refused on every other verdict: archive does not need a
-    // return condition, and approve/session take no note from this door.
+    // exist without), and itself one whole sentence or line of the same turn
+    // — possibly the quote. Refused on every other verdict: archive does not
+    // need a return condition, and approve/session take no note from this
+    // door.
     sentence: v.optional(v.string()),
   },
   handler: async (
@@ -497,14 +572,19 @@ export const internalRecordRulingFromTomWords = internalMutation({
           `${row.author ?? "unset"}), so it cannot be a ruling in his words`,
       );
     }
-    // 3. one whole unit of the turn, at least two words
+    // 3. one whole unit of the turn, at least two words. What is stored is
+    //    the turn's own text for that unit, never the caller's retyping.
     const quoted = quote.trim();
     if (quoted === "") throw new Error("quote (non-empty string) required");
     const match = matchQuotedUnit(row.text ?? "", quoted);
     if ("refused" in match) throw new Error(match.refused);
     // 4. the subject exists
     const subject = await resolveSubject(ctx, subjectType, subjectId);
-    // 5. one ruling per row per subject
+    // 5. the subject is what that session was about
+    const session = await ctx.db.get(row.sessionId);
+    if (!session) throw new Error(`Unknown session id: ${row.sessionId}`);
+    await refuseUnlessSessionSubject(ctx, session, subjectType, subject);
+    // 6. one ruling per row per subject
     const key = subjectKey({ subjectType, ...subject });
     const prior = await ctx.db
       .query("dtsRulings")
@@ -517,11 +597,14 @@ export const internalRecordRulingFromTomWords = internalMutation({
         "refused: that turn has already ruled on this subject",
       );
     }
-    // 6. the sentence: revise's redirect and nothing else
+    // 7. the sentence: revise's redirect and nothing else — and, like the
+    //    quote, one whole unit of the same turn (it may be the quote itself).
+    //    The redirect is what the preparing agent obeys, so an agent-composed
+    //    one would be the agent redirecting itself under Tom's name.
     const redirect = sentence?.trim();
     if (verdict === "revise" && !redirect) {
       throw new Error(
-        "refused: revise needs a sentence — the one line that redirects the preparing agent",
+        "refused: revise needs a sentence — the one line of that turn that redirects the preparing agent",
       );
     }
     if (verdict !== "revise" && sentence !== undefined) {
@@ -529,14 +612,25 @@ export const internalRecordRulingFromTomWords = internalMutation({
         `refused: sentence is the revise redirect only; on ${verdict} the quote is the whole record`,
       );
     }
-    // 7. the ruling, through the one apply path. No unarchiveCondition: an
+    let redirectSource: string | undefined;
+    if (redirect !== undefined) {
+      const redirectMatch = matchQuotedUnit(row.text ?? "", redirect);
+      if ("refused" in redirectMatch) {
+        throw new Error(
+          "refused: the redirect must be a whole sentence or line of that turn, in Tom's words — " +
+            redirectMatch.refused.replace(/^refused: /, ""),
+        );
+      }
+      redirectSource = redirectMatch.source;
+    }
+    // 8. the ruling, through the one apply path. No unarchiveCondition: an
     // archive from this door leaves the return condition unset (the quote is
     // in provenance and the digest), it never becomes what the page shows.
     return await insertRuling(ctx, {
       ...subject,
       verdict,
-      sentence: verdict === "revise" ? redirect : undefined,
-      provenance: { from: "tom-words", inboundId: rowId, quote: quoted },
+      sentence: redirectSource,
+      provenance: { from: "tom-words", inboundId: rowId, quote: match.source },
     });
   },
 });
