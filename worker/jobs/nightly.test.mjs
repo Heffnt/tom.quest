@@ -342,6 +342,71 @@ describe("the learning step", () => {
     );
   });
 
+  it("replaces a hard-wrapped writing.md bullet whole, and reverts it whole", () => {
+    const file = "model-of-tom/writing.md";
+    const wrapped = [
+      "# Model of Tom's understanding",
+      "",
+      "## Calibration core",
+      "",
+      "- Assume fluent in ML at AI-PhD level: transformer structure, training,",
+      "  evaluation (tom.quest session `47f04bc9`, 2026-08-29).",
+      "- Assume absent: web-dev jargon of any kind (session 47f04bc9,",
+      "  2026-08-29).",
+      "",
+      "## How he reads and rules",
+      "",
+      "- Full sentences when explaining.",
+      "",
+    ].join("\n");
+    const line = `- Assume fluent in ML at AI-PhD level, and in Boolean Fourier analysis since 2026-09 (session ${SESSION}, 2026-09-05).`;
+    // The model quotes the bullet as the page wraps it.
+    const { pages, applied, refused } = applyLearningChanges(
+      new Map([[file, wrapped]]),
+      [
+        factChange({
+          file,
+          section: "Calibration core",
+          kind: "correction",
+          line,
+          replaces: wrapped.split("\n").slice(4, 6).join("\n"),
+        }),
+      ],
+      { day: "2026-09-06" },
+    );
+    expect(refused).toEqual([]);
+    const before = "- Assume fluent in ML at AI-PhD level: transformer structure, training, evaluation (tom.quest session `47f04bc9`, 2026-08-29).";
+    expect(applied[0]).toMatchObject({ before, after: line });
+    const text = pages.get(file);
+    const lines = text.split("\n");
+    // Both physical lines are gone, the new line is in their place, and the
+    // bullet after it is untouched.
+    expect(lines[4]).toBe(line);
+    expect(lines[5]).toBe("- Assume absent: web-dev jargon of any kind (session 47f04bc9,");
+    expect(lines[6]).toBe("  2026-08-29).");
+    expect(text).not.toContain("  evaluation (tom.quest");
+    // Quoting the bullet as one line matches the same unit; the wrapped
+    // bullet already there is "already on the page" however it is quoted.
+    expect(
+      applyLearningChanges(new Map([[file, wrapped]]), [factChange({ file, section: "Calibration core", line, replaces: before })], { day: "2026-09-06" }).applied,
+    ).toHaveLength(1);
+    expect(
+      applyLearningChanges(new Map([[file, wrapped]]), [factChange({ file, section: "Calibration core", line: before, evidence: ["session `47f04bc9`"] })], { day: "2026-09-06" }).refused[0].reason,
+    ).toBe("already on the page");
+    // A first line alone is not the bullet.
+    expect(
+      applyLearningChanges(new Map([[file, wrapped]]), [factChange({ file, section: "Calibration core", line, replaces: wrapped.split("\n")[4] })], { day: "2026-09-06" }).refused[0].reason,
+    ).toBe('the line to replace is not in "Calibration core" verbatim');
+    // The revert restores the bullet's words as one line.
+    const reverted = revertLearningChange(text, { file, section: "Calibration core", before, after: line });
+    expect(reverted.ok).toBe(true);
+    expect(reverted.text.split("\n").slice(4, 7)).toEqual([before, lines[5], lines[6]]);
+    // A line Tom re-wrapped since is still the job's line.
+    const rewrapped = text.replace(line, line.replace(" and in ", " and\n  in "));
+    expect(rewrapped).not.toBe(text);
+    expect(revertLearningChange(rewrapped, { file, section: "Calibration core", before, after: line }).text).toBe(reverted.text);
+  });
+
   it("rejects a malformed answer before applying anything", async () => {
     const dir = learningCheckout();
     const run = learningRun(dir);

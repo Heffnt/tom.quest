@@ -742,10 +742,60 @@ function learningRefusal(c, texts, evidenceIds) {
     return `the citation ${cited[1]} names none of the change's evidence`;
   }
   if (c.replaces !== null && c.replaces !== undefined) {
-    if (typeof c.replaces !== "string" || c.replaces.trim() === "" || /[\r\n]/.test(c.replaces)) {
-      return "replaces must be one existing line, or null";
+    // One bullet — which on writing.md may be quoted over the lines the
+    // page wraps it on (bulletUnits below).
+    if (typeof c.replaces !== "string" || c.replaces.trim() === "") {
+      return "replaces must be one existing bullet, or null";
     }
-    if (c.replaces.trim() === c.line.trim()) return "the replacement is the line it replaces";
+    if (oneLine(c.replaces) === oneLine(c.line)) return "the replacement is the line it replaces";
+  }
+  return null;
+}
+
+// ── The unit a change replaces or takes back: one bullet ─────────────────────
+// writing.md is hard-wrapped: one bullet runs over several physical lines,
+// the continuation lines indented. A replacement or a revert that worked on
+// physical lines would replace the first line of a bullet and leave its
+// tail as a stray, so the unit here is the bullet whole — the line that
+// starts it plus the indented, non-blank lines under it — and a bullet is
+// matched with whitespace normalized (the lines joined by one space), so
+// the model may quote it as the page wraps it or as one line, and a bullet
+// Tom re-wrapped still matches. The area pages' bullets are one line each,
+// which is the degenerate case. What the job writes is always one line, and
+// `before` records the replaced bullet as one line, so a revert restores its
+// words unwrapped.
+const BULLET = /^\s*[-*]\s+\S/;
+const CONTINUATION = /^\s+\S/;
+
+/** The bullets within `span` as [start, end) line ranges. */
+export function bulletUnits(lines, span) {
+  const units = [];
+  for (let i = span.start + 1; i < span.end; i++) {
+    if (!BULLET.test(lines[i])) continue;
+    let end = i + 1;
+    while (end < span.end && CONTINUATION.test(lines[end]) && !BULLET.test(lines[end])) end++;
+    units.push({ start: i, end });
+    i = end - 1;
+  }
+  return units;
+}
+
+/** A bullet's text (or any text) as one line: each line trimmed, joined by
+ * a space, runs of whitespace collapsed. The form bullets are compared in. */
+export function oneLine(text) {
+  return String(text ?? "")
+    .split("\n")
+    .map((l) => l.trim())
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** The unit within `span` whose one-line form equals `text`'s, or null. */
+function findBullet(lines, span, text) {
+  const wanted = oneLine(text);
+  for (const unit of bulletUnits(lines, span)) {
+    if (oneLine(lines.slice(unit.start, unit.end).join("\n")) === wanted) return unit;
   }
   return null;
 }
@@ -782,24 +832,20 @@ export function applyLearningChanges(pages, changes, { day, evidenceIds = null }
       continue;
     }
     const { span } = located;
-    if (lines.some((l) => l.trim() === line)) {
+    if (findBullet(lines, { start: -1, end: lines.length }, line) !== null) {
       refuse(c, "already on the page");
       continue;
     }
     const replaces = c.replaces ?? null;
+    let before = "";
     if (replaces !== null) {
-      let at = -1;
-      for (let i = span.start + 1; i < span.end; i++) {
-        if (lines[i].trim() === replaces.trim()) {
-          at = i;
-          break;
-        }
-      }
-      if (at === -1) {
+      const unit = findBullet(lines, span, replaces);
+      if (unit === null) {
         refuse(c, `the line to replace is not in "${c.section.trim()}" verbatim`);
         continue;
       }
-      lines[at] = line;
+      before = oneLine(lines.slice(unit.start, unit.end).join("\n"));
+      lines.splice(unit.start, unit.end - unit.start, line);
     } else {
       let last = span.start;
       for (let i = span.start + 1; i < span.end; i++) if (lines[i].trim() !== "") last = i;
@@ -812,7 +858,7 @@ export function applyLearningChanges(pages, changes, { day, evidenceIds = null }
       file: c.file,
       section: c.section.trim(),
       kind: c.kind,
-      before: replaces === null ? "" : replaces.trim(),
+      before,
       after: line,
       evidence: c.evidence.map((e) => e.trim()).join("; "),
       sources: c.evidence.map((e) => e.trim()),
@@ -841,22 +887,15 @@ export function revertLearningChange(text, change) {
   const located = locateSection(lines, change.file, change.section);
   if (located.span === undefined) return { ok: false, reason: located.reason };
   const { span } = located;
-  let at = -1;
-  for (let i = span.start + 1; i < span.end; i++) {
-    if (lines[i].trim() === after) {
-      at = i;
-      break;
-    }
-  }
-  if (at === -1) {
+  const unit = findBullet(lines, span, after);
+  if (unit === null) {
     return {
       ok: false,
       reason: `the line is no longer in "${String(change.section).trim()}" on ${change.file} as written`,
     };
   }
-  const before = String(change.before ?? "").trim();
-  if (before === "") lines.splice(at, 1);
-  else lines[at] = before;
+  const before = oneLine(change.before);
+  lines.splice(unit.start, unit.end - unit.start, ...(before === "" ? [] : [before]));
   return { ok: true, text: lines.join("\n") };
 }
 
@@ -940,7 +979,7 @@ export function learningPrompt(input, pages, day) {
     "- A change is one line for one section of one page. `kind` is what the line is: a fact about Tom, a correction of something a page says, or an inference. An inference is allowed and must say in the line that it is an inference and which facts it rests on.",
     "- Every line ends with its evidence, in the pages' citation style, in parentheses: (session <session>, YYYY-MM-DD) for a turn — `session` is the 8-character id the pages already cite, e.g. (session 47f04bc9, 2026-08-30) — (ruling <rulingId>, YYYY-MM-DD) for a ruling, (slack <ts>, YYYY-MM-DD) for a Slack reply; several joined with \"; \". The ids are the ones in the input, verbatim. `evidence` lists the same citations, and every one of them must appear in the line. A line whose evidence names nothing in the input is refused.",
     "- Only these pages: model-of-tom/writing.md, model-of-tom/priorities.md, model-of-tom/areas/<area>.md. Only a section that exists on the page, named by its heading. Never \"Directions\", never \"Ideal state\", never \"Must not break\" — those are Tom's own, and a change naming them is refused. Never the spec.",
-    "- A correction replaces: `replaces` is one existing line of that section, verbatim, and the new line supersedes it — the pages describe what is, never what was. An addition has `replaces: null`.",
+    "- A correction replaces: `replaces` is one existing bullet of that section, verbatim — where the page wraps a bullet over several lines, quote all of them — and the new line supersedes it — the pages describe what is, never what was. An addition has `replaces: null`.",
     "- Write to writing.md's own rules: plain statements, no comparisons or analogies, no evaluative language, one fixed term per concept, the date in the line. One line, starting with \"- \".",
     "- Nothing from the agent's words alone; nothing already on a page; nothing that restates a line. An empty list is the right answer on a night whose input changes nothing about the model of Tom, and that is most nights.",
     "",
