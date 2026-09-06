@@ -76,6 +76,12 @@ async function keylessKindRange(
 // Both carry windowEnd, and the newest windowEnd of either is the next
 // window's start — so a MISSED cron tick loses nothing: the next update simply
 // covers two hours.
+//
+// An abandoned row of ZERO WIDTH (windowStart === windowEnd) is the third
+// shape and reports nothing at all: the FIRST run was refused transiently, and
+// with no marker to come back to the next run would have invented a fresh
+// now-minus-an-hour and lost the older half of the refused hour. It records
+// where reporting begins so the next run resumes there (convex/ttsSync.ts).
 export const HOURLY_UPDATE_SENT = "hourly-update-sent";
 export const HOURLY_UPDATE_ABANDONED = "hourly-update-abandoned";
 

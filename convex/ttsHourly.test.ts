@@ -588,14 +588,53 @@ describe("sendHourlyUpdate", () => {
     "leaves the window where it was after a %s rejection",
     async (error) => {
       const t = convexTest(schema, modules);
+      // An hour already reported, so this is an ordinary run rather than the
+      // first one (whose window start has nowhere to live — next test).
+      const lastEnd = Date.now() - HOUR;
+      await insertEvent(t, lastEnd, HOURLY_UPDATE_SENT, undefined, {
+        windowStart: lastEnd - HOUR,
+        windowEnd: lastEnd,
+      });
       stubSlack(error);
 
       await t.action(internal.ttsSync.sendHourlyUpdate, {});
 
       expect(await rowsOfKind(t, SLACK_FAILED, HOURLY_SUBJECT)).toHaveLength(1);
       expect(await rowsOfKind(t, HOURLY_UPDATE_ABANDONED)).toHaveLength(0);
-      expect(await rowsOfKind(t, HOURLY_UPDATE_SENT)).toHaveLength(0);
-      expect(await t.query(internal.ttsHourly.internalLastHourlyWindowEnd, {})).toBeNull();
+      expect(await rowsOfKind(t, HOURLY_UPDATE_SENT)).toHaveLength(1); // the seeded one
+      expect(await t.query(internal.ttsHourly.internalLastHourlyWindowEnd, {})).toBe(lastEnd);
     },
   );
+
+  // witness: drop the zero-width marker and the second run below starts its own
+  // fresh now-minus-an-hour window — the older half of the refused hour is then
+  // reported by nobody, which is the whole first-run gap.
+  it("keeps the first run's window start when Slack refuses it transiently", async () => {
+    const t = convexTest(schema, modules);
+    stubSlack("ratelimited");
+    const before = Date.now();
+
+    await t.action(internal.ttsSync.sendHourlyUpdate, {});
+
+    // A marker that reports nothing: zero width, at the hour the refused run
+    // actually read from.
+    const anchors = await rowsOfKind(t, HOURLY_UPDATE_ABANDONED);
+    expect(anchors).toHaveLength(1);
+    const anchor = dataOf(anchors[0]) as { windowStart: number; windowEnd: number };
+    expect(anchor.windowEnd).toBe(anchor.windowStart);
+    expect(anchor.windowStart).toBeGreaterThanOrEqual(before - HOUR - 1000);
+    expect(anchor.windowStart).toBeLessThanOrEqual(before - HOUR + 1000);
+    expect(await rowsOfKind(t, HOURLY_UPDATE_SENT)).toHaveLength(0);
+    expect(await t.query(internal.ttsHourly.internalLastHourlyWindowEnd, {})).toBe(
+      anchor.windowStart,
+    );
+
+    // The next run resumes from it and covers both hours, rather than starting
+    // an hour before itself.
+    stubSlack();
+    await t.action(internal.ttsSync.sendHourlyUpdate, {});
+    const marker = await rowsOfKind(t, HOURLY_UPDATE_SENT);
+    expect(marker).toHaveLength(1);
+    expect(dataOf(marker[0]).windowStart).toBe(anchor.windowStart);
+  });
 });

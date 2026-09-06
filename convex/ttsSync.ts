@@ -504,6 +504,21 @@ export const sendHourlyUpdate = internalAction({
           kind: HOURLY_UPDATE_ABANDONED,
           data: { windowStart: since, windowEnd: now, error: sent.error },
         });
+      } else if (lastEnd === null) {
+        // THE FIRST RUN, REFUSED. "Cover this window again next hour" needs a
+        // window to come back to, and the first run has no marker to read: the
+        // next run would compute its own now-minus-an-hour and the refused
+        // hour's oldest end would be gone for good. So the window START is
+        // recorded as a marker of its own — an abandoned window of zero width,
+        // reporting nothing, saying only where reporting begins. The next run
+        // reads it as its start and covers both hours.
+        //
+        // Only on a transient refusal, and only with no marker: a permanent
+        // one closes the hour above, and every later run already has a marker.
+        await ctx.runMutation(internal.tts.internalLogEvent, {
+          kind: HOURLY_UPDATE_ABANDONED,
+          data: { windowStart: since, windowEnd: since, error: sent.error },
+        });
       }
       return;
     }
