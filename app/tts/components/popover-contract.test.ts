@@ -23,6 +23,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { VERDICTS } from "../lib";
 
 const ROOT = join(__dirname, "..");
 
@@ -73,15 +74,25 @@ describe("every mutation the TTS screens fire is named by a popover", () => {
   }
 
   it("names no verdict the mutation does not accept", () => {
-    // The closed set convex/ttsRulings.ts VERDICT accepts. "edit" and "defer"
-    // were both once labels on this page; neither is a verdict.
-    const allowed = new Set(["approve", "revise", "session", "archive"]);
+    // The closed set is lib.VERDICTS, the client's iterable of the union
+    // convex/ttsRulings.ts accepts — read from there rather than restated, so
+    // this test cannot go on allowing a word the mutation stopped taking.
+    // "edit" and "defer" were both once labels on this page; neither is a
+    // verdict.
+    const allowed = new Set<string>(VERDICTS);
     const offered = new Set<string>();
     for (const { src } of files) {
-      for (const m of src.matchAll(/recordRuling\(\{[^}]*verdict:\s*"(\w+)"/g)) {
-        offered.add(m[1]);
+      for (const m of src.matchAll(/verdict:\s*"([^"]+)"/g)) {
+        // The verdict row builds its call from a TEMPLATE — `verdict:
+        // "${verdict}"` — over lib.VERDICTS, so that form offers the four. A
+        // scan that only matched `"(\w+)"` matched none of it, which is how
+        // this assertion came to be checking nothing at all.
+        if (/^\$\{\w+\}$/.test(m[1])) for (const v of VERDICTS) offered.add(v);
+        else offered.add(m[1]);
       }
     }
+    // Four at least, or the scan found nothing and asserts nothing.
+    expect(offered.size).toBeGreaterThanOrEqual(4);
     expect([...offered].filter((v) => !allowed.has(v))).toEqual([]);
   });
 });
