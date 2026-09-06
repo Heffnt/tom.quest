@@ -323,6 +323,25 @@ export function toolResultText(content) {
   return JSON.stringify(content);
 }
 
+// What the model receives for one claudeInbound user-turn. A turn Tom typed
+// in the browser (row.author === "tom", set by claudeSessions.sendMessage)
+// carries its own row id on a last line, because that id is what the agent
+// hands POST /tts/ruling when Tom states a ruling in plain language: the
+// server loads the row by it, checks Tom authored it and that the quoted
+// sentence is in it, and only then writes the ruling (ruling 15, 2026-09-05;
+// the prompt side is app/lib/tts-session-prompt.ts RULING_PEN, which names
+// the same label). Every other turn — the code-built opener, the CLI pen — is
+// delivered as-is: the route would refuse its id anyway, so the model gains
+// nothing from it. The transcript's user row records this delivered text,
+// id line included (#deliverUserTurn).
+export const INBOUND_ROW_LABEL = "inbound row:";
+export function deliveredTurnText(row) {
+  const text = row.text ?? "";
+  return row.author === "tom"
+    ? `${text}\n\n${INBOUND_ROW_LABEL} ${row._id}`
+    : text;
+}
+
 // The verbatim error text the spec wants in endedReason: execFile's message
 // (command + exit code) plus git's stderr, which is where git actually says
 // what went wrong.
@@ -976,8 +995,9 @@ export class Session {
         // process env MINUS the daemon's own secrets (the SDK child still
         // needs PATH, HOME, CLAUDE_CONFIG_DIR…). ONLY the TTS worker key
         // enters a session's shell — its write surface (capture, prep,
-        // briefs, batches, ruling-applied, session-outcome) is the same one
-        // the cron jobs' agentic runs already expose to a model.
+        // briefs, batches, ruling-applied, session-outcome, and a ruling
+        // from Tom's own typed words via /tts/ruling) is the same one the
+        // cron jobs' agentic runs already expose to a model.
         // The daemon's own secrets are SCRUBBED above (inheritedEnv, the
         // env-scrub.mjs list): inheriting them is not hypothetical — systemd
         // puts every one in this process's env — and an ingest key reachable
@@ -1710,12 +1730,18 @@ export class Session {
       }
       this.turn += 1;
       this.segmentsSinceAssistant = 0;
-      this.finalizeRow("user", { text: row.text ?? "" });
+      // The transcript records what the model RECEIVED — for a turn Tom
+      // typed, his text plus the id line deliveredTurnText appends (the
+      // transcript principle: what the agent saw is what is recorded). Tom's
+      // text alone stays on the claudeInbound row.
+      const delivered = deliveredTurnText(row);
+      this.finalizeRow("user", { text: delivered });
       this.outbox.inboundUpdates.push({ id: row._id, status: "delivered" });
       this.activeUserTurnId = row._id;
-      // Kept for the SDK-echo dedupe in the "user" message handler.
-      this.activeUserTurnText = row.text ?? "";
-      this.queue.push(row.text ?? "");
+      // Kept for the SDK-echo dedupe in the "user" message handler — the
+      // echo is of what was delivered, id line included.
+      this.activeUserTurnText = delivered;
+      this.queue.push(delivered);
       this.setStatus("running");
       this.lastActivityAt = Date.now();
       if (this.mode === "autonomous") {

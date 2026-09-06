@@ -120,6 +120,7 @@ function sessionContext(batch: Batch, graph: BatchGraph): BatchSessionContext {
   const byId = new Map(graph.tasks.map((t) => [t.id, t]));
   const doneIds = new Set(done.map((t) => t.id));
   const shape = (t: GraphTask, state: "done" | "ready" | "blocked") => ({
+    id: t.id,
     statement: t.statement,
     actor: t.actor,
     state,
@@ -141,6 +142,7 @@ function sessionContext(batch: Batch, graph: BatchGraph): BatchSessionContext {
       ...done.map((t) => shape(t, "done")),
     ],
     goals: graph.goals.map((g) => ({
+      id: g.id,
       statement: g.statement,
       condition: g.condition,
       met: g.met,

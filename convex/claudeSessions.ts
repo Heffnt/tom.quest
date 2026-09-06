@@ -393,6 +393,14 @@ async function insertSession(
     text,
     // The opener is code-built, whoever asked for the session: it can never
     // be the source of a ruling in Tom's words (schema: author).
+    //
+    // FOLLOW-UP: an adhoc session's initialPrompt is text Tom typed in the
+    // browser, wrapped here in the code-built prompt, and it is stamped
+    // "agent" with the rest. That is the safe direction (a ruling in the
+    // opener is refused, never misattributed), and the prompt tells the agent
+    // to ask him to restate it in a later turn (app/lib/tts-session-prompt.ts
+    // RULING_PEN). Giving the opener a "tom" author means splitting Tom's
+    // words from the prompt around them, which is its own change.
     author: "agent",
     status: "pending",
     createdAt: now,
@@ -643,9 +651,12 @@ const REOPEN_SESSION_ARGS = {
   text: v.string(),
 };
 
+// TurnAuthor is declared with the send-message door below (schema:
+// claudeInbound.author) — one home for both turn writers.
 async function reopenSessionFrom(
   ctx: MutationCtx,
   { sessionId, text }: { sessionId: Id<"claudeSessions">; text: string },
+  author: TurnAuthor,
 ): Promise<void> {
   const session = await getSessionOrThrow(ctx, sessionId);
   if (session.status !== "ended" && session.status !== "failed") {
@@ -685,6 +696,7 @@ async function reopenSessionFrom(
     sessionId,
     kind: "user-turn",
     text,
+    author,
     status: "pending",
     createdAt: now,
   });
@@ -704,13 +716,13 @@ export const reopenSession = mutation({
   args: REOPEN_SESSION_ARGS,
   handler: async (ctx, args) => {
     await requireTomId(ctx);
-    await reopenSessionFrom(ctx, args);
+    await reopenSessionFrom(ctx, args, "tom");
   },
 });
 
 export const internalReopenSession = internalMutation({
   args: REOPEN_SESSION_ARGS,
-  handler: async (ctx, args) => await reopenSessionFrom(ctx, args),
+  handler: async (ctx, args) => await reopenSessionFrom(ctx, args, "agent"),
 });
 
 // Retitling is pure labelling — the title is Tom's handle on a session in the
@@ -884,7 +896,9 @@ export const internalForkSessionAs = internalMutation({
 // requireTomId, so it writes "tom". The internal door is the CLI pen and every
 // code path that relays a turn; it writes "agent" unless the caller can vouch
 // for Tom — the one such caller is ttsSlack.sessionReply, which has a reply the
-// events route verified came from TOM_SLACK_USER_ID and passes "tom".
+// events route verified came from TOM_SLACK_USER_ID and passes "tom". Only a
+// "tom" turn can become a ruling in his words (ruling 15,
+// ttsRulings.internalRecordRulingFromTomWords).
 const TURN_AUTHOR = v.union(v.literal("tom"), v.literal("agent"));
 type TurnAuthor = Infer<typeof TURN_AUTHOR>;
 

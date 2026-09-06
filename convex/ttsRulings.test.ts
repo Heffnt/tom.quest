@@ -1,7 +1,8 @@
 import { convexTest } from "convex-test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import { matchQuotedUnit, turnUnits } from "./ttsRulings";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -674,5 +675,371 @@ describe("TTS unified rulings", () => {
     expect(todos.find((x) => x._id === other)?.unarchiveCondition).toBe(
       "the explicit one",
     );
+  });
+});
+
+// ── Rulings from Tom's own words (ruling 15, 2026-09-05) ─────────────────────
+// POST /tts/ruling is the agent's door to write what Tom SAID as a ruling.
+// Every test here goes through the route with the worker key, because the
+// checks are what make the door Tom's pen and not the agent's: the turn must
+// be Tom-authored, the sentence must be in it verbatim, and one turn rules on
+// one subject once. witness: delete any one check in
+// internalRecordRulingFromTomWords (convex/ttsRulings.ts).
+describe("a ruling from Tom's words", () => {
+  async function sessionWithTurns(t: ReturnType<typeof convexTest>) {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const tom = await withTom(t);
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "talk",
+      kind: "adhoc",
+      repo: "none",
+      initialPrompt: "hello",
+    });
+    const todoId = await tom.mutation(api.tts.createTodo, {
+      statement: "call the dentist",
+    });
+    await tom.mutation(api.claudeSessions.sendMessage, {
+      sessionId,
+      text: "ok. archive the dentist one, I already went.",
+    });
+    await t.mutation(internal.claudeSessions.internalSendMessage, {
+      sessionId,
+      text: "archive the dentist one, I already went.",
+    });
+    const rows = await t.run(async (ctx) =>
+      ctx.db.query("claudeInbound").collect(),
+    );
+    const tomRow = rows.find((r) => r.author === "tom")!;
+    const agentRow = rows.find((r) => r.text?.startsWith("archive"))!;
+    return { tom, todoId, tomRow, agentRow };
+  }
+
+  const post = (t: ReturnType<typeof convexTest>, body: unknown) =>
+    t.fetch("/tts/ruling", {
+      method: "POST",
+      headers: { "X-TTS-Key": "s3cret", "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  it("writes the ruling with provenance and applies it, from a turn Tom typed", async () => {
+    const t = convexTest({ schema, modules });
+    const { tom, todoId, tomRow } = await sessionWithTurns(t);
+    const res = await post(t, {
+      inboundId: tomRow._id,
+      verdict: "archive",
+      subjectType: "life",
+      subjectId: todoId,
+      quote: "archive the dentist one, I already went.",
+    });
+    expect(res.status).toBe(200);
+    const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
+    expect(ruling.verdict).toBe("archive");
+    expect(ruling.todoId).toBe(todoId);
+    expect(ruling.provenance).toEqual({
+      from: "tom-words",
+      inboundId: tomRow._id,
+      quote: "archive the dentist one, I already went.",
+    });
+    // Applied through the same path as the archive button: the todo is
+    // archived and the ruling is marked applied.
+    expect(ruling.appliedAt).toBeDefined();
+    const [todo] = await tom.query(api.tts.listTodos, {});
+    expect(todo.status).toBe("archived");
+    // witness: pass the quote as `sentence` to insertRuling. The quote is
+    // provenance only — it never becomes the ruling's sentence, and archive
+    // through this door leaves the page's return condition unset.
+    expect(ruling.sentence).toBeUndefined();
+    expect(todo.unarchiveCondition).toBeUndefined();
+    // The digest reads events: the ruling event carries the provenance.
+    const events = await tom.query(api.tts.listRecentEvents, {});
+    const event = events.find((e) => e.kind === "ruling");
+    expect(event?.data?.provenance?.from).toBe("tom-words");
+  });
+
+  // witness: drop step 6 of internalRecordRulingFromTomWords. revise is the
+  // one verdict that cannot exist without the ruling's own sentence (the
+  // worker's redirect), so it is required there and refused everywhere else.
+  it("sentence is required on revise and refused on every other verdict", async () => {
+    const t = convexTest({ schema, modules });
+    const { tom, todoId, tomRow } = await sessionWithTurns(t);
+    const body = {
+      inboundId: tomRow._id,
+      subjectType: "life",
+      subjectId: todoId,
+      quote: "archive the dentist one, I already went.",
+    };
+    const bare = await post(t, { ...body, verdict: "revise" });
+    expect(bare.status).toBe(400);
+    expect((await bare.json()).error).toMatch(/revise needs a sentence/);
+    const noted = await post(t, {
+      ...body,
+      verdict: "archive",
+      sentence: "until the next check-up",
+    });
+    expect(noted.status).toBe(400);
+    expect((await noted.json()).error).toMatch(/revise redirect only/);
+    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(0);
+    const revised = await post(t, {
+      ...body,
+      verdict: "revise",
+      sentence: "book the hygienist, not the dentist",
+    });
+    expect(revised.status).toBe(200);
+    const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
+    expect(ruling.sentence).toBe("book the hygienist, not the dentist");
+    expect(ruling.provenance?.quote).toBe(
+      "archive the dentist one, I already went.",
+    );
+  });
+
+  it("refuses a turn the agent wrote (the pen, or the opener)", async () => {
+    const t = convexTest({ schema, modules });
+    const { tom, todoId, agentRow } = await sessionWithTurns(t);
+    const res = await post(t, {
+      inboundId: agentRow._id,
+      verdict: "archive",
+      subjectType: "life",
+      subjectId: todoId,
+      quote: "archive the dentist one, I already went.",
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/not typed by Tom/);
+    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(0);
+  });
+
+  // witness: put `row.text.includes(quoted)` back in place of matchQuotedUnit
+  // in convex/ttsRulings.ts. A fragment that IS in the turn ("the dentist one")
+  // is refused: the quote must be one whole sentence or line of the turn.
+  it("refuses a sentence that is not a whole sentence or line of the turn", async () => {
+    const t = convexTest({ schema, modules });
+    const { tom, todoId, tomRow } = await sessionWithTurns(t);
+    for (const sentence of [
+      "Archive the dentist one",
+      "the dentist one, I already went",
+      "ok. archive the dentist one, I already went.",
+    ]) {
+      const res = await post(t, {
+        inboundId: tomRow._id,
+        verdict: "archive",
+        subjectType: "life",
+        subjectId: todoId,
+        quote: sentence,
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/whole sentence|exactly one sentence/);
+    }
+    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(0);
+  });
+
+  // The terminator is not part of the unit, and a "." inside a token ("1.5",
+  // "tom.quest") does not split it.
+  it("turnUnits splits at newlines and sentence ends only", () => {
+    expect(
+      turnUnits("ok. archive it, I already went.\nship 1.5 to tom.quest!  fine?"),
+    ).toEqual(["ok", "archive it, I already went", "ship 1.5 to tom.quest", "fine"]);
+    expect(matchQuotedUnit("archive it, I already went.", "archive it, I already went")).toEqual({
+      unit: "archive it, I already went",
+    });
+  });
+
+  // witness: drop the mirror or brief lookups from resolveSubject. A code
+  // subject is accepted only when it is open in the mirror AND briefed — the
+  // brief is what Tom was shown, and approve here is what execute-approved
+  // runs.
+  it("accepts a code subject that is open in the mirror and briefed, refuses one without a brief", async () => {
+    const t = convexTest({ schema, modules });
+    const { tom, tomRow } = await sessionWithTurns(t);
+    await t.mutation(internal.tts.internalReplaceMirror, {
+      repo: "ComplexMultiTrigger",
+      rows: [
+        { externalId: "cmt-001", tier: "R", status: "open", statement: "s1", url: "u" },
+        { externalId: "cmt-002", tier: "R", status: "open", statement: "s2", url: "u" },
+      ],
+    });
+    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+      briefs: [brief({ externalId: "cmt-001" })],
+    });
+    const body = {
+      inboundId: tomRow._id,
+      verdict: "approve",
+      subjectType: "code",
+      quote: "archive the dentist one, I already went.",
+    };
+    const unbriefed = await post(t, { ...body, subjectId: "ComplexMultiTrigger cmt-002" });
+    expect(unbriefed.status).toBe(400);
+    expect((await unbriefed.json()).error).toMatch(/no brief/);
+    const briefed = await post(t, { ...body, subjectId: "ComplexMultiTrigger cmt-001" });
+    expect(briefed.status).toBe(200);
+    const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
+    expect(ruling).toMatchObject({
+      subjectType: "code",
+      repo: "ComplexMultiTrigger",
+      externalId: "cmt-001",
+      verdict: "approve",
+    });
+  });
+
+  it("refuses the same turn ruling twice on the same subject", async () => {
+    const t = convexTest({ schema, modules });
+    const { tom, todoId, tomRow } = await sessionWithTurns(t);
+    const body = {
+      inboundId: tomRow._id,
+      verdict: "session",
+      subjectType: "life",
+      subjectId: todoId,
+      quote: "archive the dentist one, I already went.",
+    };
+    expect((await post(t, body)).status).toBe(200);
+    const again = await post(t, { ...body, verdict: "approve" });
+    expect(again.status).toBe(400);
+    expect((await again.json()).error).toMatch(/already ruled/);
+    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(1);
+  });
+
+  it("refuses an unknown row, a bad verdict, and the wrong key", async () => {
+    const t = convexTest({ schema, modules });
+    const { todoId, tomRow } = await sessionWithTurns(t);
+    const body = {
+      inboundId: tomRow._id,
+      verdict: "archive",
+      subjectType: "life",
+      subjectId: todoId,
+      quote: "archive the dentist one, I already went.",
+    };
+    expect((await post(t, { ...body, inboundId: "not-a-row" })).status).toBe(400);
+    expect((await post(t, { ...body, verdict: "defer" })).status).toBe(400);
+    const wrongKey = await t.fetch("/tts/ruling", {
+      method: "POST",
+      headers: { "X-TTS-Key": "nope", "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    expect(wrongKey.status).toBe(401);
+  });
+
+  // witness: change `row.author !== "tom"` to `row.author === "agent"` in
+  // convex/ttsRulings.ts. A row from before the author field has no author,
+  // and no author is not Tom.
+  it("refuses a row whose author is unset", async () => {
+    const t = convexTest({ schema, modules });
+    const { tom, todoId, tomRow } = await sessionWithTurns(t);
+    const unsetId = await t.run(async (ctx) =>
+      ctx.db.insert("claudeInbound", {
+        sessionId: tomRow.sessionId,
+        kind: "user-turn",
+        text: "archive the dentist one, I already went.",
+        status: "pending",
+        createdAt: Date.now(),
+      }),
+    );
+    const res = await post(t, {
+      inboundId: unsetId,
+      verdict: "archive",
+      subjectType: "life",
+      subjectId: todoId,
+      quote: "archive the dentist one, I already went.",
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/author is unset/);
+    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(0);
+  });
+
+  // witness: drop the ctx.db.get after normalizeId in resolveSubject. A
+  // well-formed id that names a row in another table is not a subject.
+  it("refuses a well-formed id from another table as a subject", async () => {
+    const t = convexTest({ schema, modules });
+    const { tom, todoId, tomRow } = await sessionWithTurns(t);
+    const body = {
+      inboundId: tomRow._id,
+      verdict: "archive",
+      quote: "archive the dentist one, I already went.",
+    };
+    const inboundAsTodo = await post(t, {
+      ...body,
+      subjectType: "life",
+      subjectId: tomRow._id,
+    });
+    expect(inboundAsTodo.status).toBe(400);
+    expect((await inboundAsTodo.json()).error).toMatch(/Unknown todo id/);
+    const todoAsBatch = await post(t, {
+      ...body,
+      subjectType: "batch",
+      subjectId: todoId,
+    });
+    expect(todoAsBatch.status).toBe(400);
+    expect((await todoAsBatch.json()).error).toMatch(/Unknown batch id/);
+    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(0);
+  });
+
+  // witness: drop the mirror lookup from resolveSubject. An unknown repo and
+  // an externalId the mirror does not hold are both refused before any brief
+  // is consulted — so no approve can name a code todo Tom never saw.
+  it("refuses a code subject with an unknown repo, and one the mirror does not hold", async () => {
+    const t = convexTest({ schema, modules });
+    const { tom, tomRow } = await sessionWithTurns(t);
+    await t.mutation(internal.tts.internalReplaceMirror, {
+      repo: "ComplexMultiTrigger",
+      rows: [
+        { externalId: "cmt-001", tier: "R", status: "open", statement: "s1", url: "u" },
+      ],
+    });
+    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+      briefs: [brief({ externalId: "cmt-001" }), brief({ externalId: "cmt-999" })],
+    });
+    const body = {
+      inboundId: tomRow._id,
+      verdict: "approve",
+      subjectType: "code",
+      quote: "archive the dentist one, I already went.",
+    };
+    const unknownRepo = await post(t, { ...body, subjectId: "nowhere cmt-001" });
+    expect(unknownRepo.status).toBe(400);
+    expect((await unknownRepo.json()).error).toMatch(/Unknown repo/);
+    // Briefed but not mirrored: the brief alone does not make a subject.
+    const unmirrored = await post(t, {
+      ...body,
+      subjectId: "ComplexMultiTrigger cmt-999",
+    });
+    expect(unmirrored.status).toBe(400);
+    expect((await unmirrored.json()).error).toMatch(/Unknown code todo/);
+    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(0);
+  });
+
+  // witness: set MIN_QUOTE_WORDS to 1 in convex/ttsRulings.ts. "ok" is a
+  // whole unit of the turn ("ok. archive the dentist one, …") and is still
+  // refused.
+  it("refuses a single-word quote", async () => {
+    const t = convexTest({ schema, modules });
+    const { tom, todoId, tomRow } = await sessionWithTurns(t);
+    const res = await post(t, {
+      inboundId: tomRow._id,
+      verdict: "approve",
+      subjectType: "life",
+      subjectId: todoId,
+      quote: "ok",
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/single word/);
+    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(0);
+  });
+
+  // witness: key the one-ruling-per-row check on inboundId alone. One turn
+  // may rule on several subjects; it may not rule twice on one.
+  it("accepts the same turn ruling on a second, different subject", async () => {
+    const t = convexTest({ schema, modules });
+    const { tom, todoId, tomRow } = await sessionWithTurns(t);
+    const otherId = await tom.mutation(api.tts.createTodo, {
+      statement: "renew the passport",
+    });
+    const body = {
+      inboundId: tomRow._id,
+      verdict: "session",
+      subjectType: "life",
+      quote: "archive the dentist one, I already went.",
+    };
+    expect((await post(t, { ...body, subjectId: todoId })).status).toBe(200);
+    expect((await post(t, { ...body, subjectId: otherId })).status).toBe(200);
+    const rulings = await tom.query(api.ttsRulings.listRulings, {});
+    expect(rulings.map((r) => r.todoId).sort()).toEqual([todoId, otherId].sort());
+    expect(rulings.every((r) => r.provenance?.inboundId === tomRow._id)).toBe(true);
   });
 });

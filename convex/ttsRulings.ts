@@ -48,6 +48,22 @@ const VERDICT = v.union(
 
 export type RulingVerdict = "approve" | "revise" | "session" | "archive";
 
+const VERDICTS: readonly RulingVerdict[] = [
+  "approve",
+  "revise",
+  "session",
+  "archive",
+];
+export const isRulingVerdict = (x: unknown): x is RulingVerdict =>
+  typeof x === "string" && (VERDICTS as readonly string[]).includes(x);
+
+// Where a ruling came from when it was NOT a button (schema: dtsRulings.provenance).
+export type TomWordsProvenance = {
+  from: "tom-words";
+  inboundId: string;
+  quote: string;
+};
+
 // The ONE definition of a ruling subject's identity (repo names carry no
 // spaces; the type prefix keeps life, code, and batch keys disjoint). Client
 // code derives live rulings with the same rule via app/tts/lib.ts.
@@ -89,6 +105,7 @@ async function insertRuling(
     verdict,
     sentence,
     unarchiveCondition,
+    provenance,
   }: {
     todoId?: Id<"dtsTodos">;
     repo?: string;
@@ -97,6 +114,7 @@ async function insertRuling(
     verdict: RulingVerdict;
     sentence?: string;
     unarchiveCondition?: string;
+    provenance?: TomWordsProvenance;
   },
 ) {
   const isLife = todoId !== undefined;
@@ -236,6 +254,7 @@ async function insertRuling(
       ruledAt: now,
       appliedAt,
       applyResult,
+      provenance,
     });
     await logEvent(ctx, "ruling", todoId, {
       verdict,
@@ -243,6 +262,9 @@ async function insertRuling(
       externalId,
       batchId,
       sentence: trimmed || undefined,
+      // The digest reads the events table; a ruling in Tom's words is
+      // reported there quoted, so a misreading is his to object to.
+      provenance,
     });
     return id;
 }
@@ -297,6 +319,224 @@ export const internalRecordRuling = internalMutation({
       todoId: normalized,
       batchId: normalizedBatch,
       ...rest,
+    });
+  },
+});
+
+// ── A ruling from Tom's own words (ruling 15, 2026-09-05) ────────────────────
+// The pen behind POST /tts/ruling (http.ts). Tom states a ruling in plain
+// language in a session turn; the agent that read the turn decides it IS a
+// ruling and calls the route with the turn's claudeInbound id, the verdict,
+// the subject, and Tom's sentence verbatim. Ambiguity is the agent's problem,
+// never the server's: the server checks provenance, not meaning, and the
+// digest quotes every ruling written this way so a misreading is objected.
+//
+// The checks, in order, each a refusal with its reason in the error:
+//   1. the id names a claudeInbound user-turn — one lookup for every path a
+//      turn arrives by, because a threaded Slack reply the events route
+//      matched to TOM_SLACK_USER_ID is written as a claudeInbound row with
+//      author "tom" (ttsSlack.sessionReply), not stored apart; an id that is
+//      not an inbound row is refused as unknown;
+//   2. the row's author is "tom" — an agent-authored row (the CLI pen, the
+//      code-built opener) and a row that predates the author field are refused;
+//   3. the sentence is ONE WHOLE UNIT of the row's text (turnUnits below) of
+//      at least two words — a substring check with no floor let "ok" pass
+//      against almost any turn, which made the pen the agent's;
+//   4. the subject EXISTS: a dtsTodos row, a batches row, or a code todo that
+//      is open in the mirror and has a brief — a well-formed id from another
+//      table, an unknown repo, or an unmirrored externalId is refused, so no
+//      ruling (and no execute-approved run) can name a subject Tom never saw;
+//   5. the same row has not already ruled on the same subject;
+//   6. the ruling's own `sentence` is present on revise (the redirect) and
+//      absent on every other verdict — the quote is provenance, never the
+//      page's return condition or the worker's redirect;
+//   7. only then insertRuling, with provenance {from: "tom-words", inboundId,
+//      quote}, through the same apply path every button uses.
+//
+// approve on a code subject is NOT further gated here: a code todo has no
+// readiness field — its brief IS the prepared state (check 4 requires one),
+// and what approve triggers (worker/jobs/execute-approved.mjs) is a PR whose
+// merge is still Tom's own hand.
+
+const SUBJECT_TYPE = v.union(
+  v.literal("life"),
+  v.literal("code"),
+  v.literal("batch"),
+);
+
+// A turn's units: split at newlines and at a sentence terminator (. ! ?) that
+// is followed by whitespace or the end, so "1.5" and "tom.quest" stay whole.
+// One home for the rule — the quote is normalised by the same function, so
+// "archive it." and "archive it" are the same unit.
+export function turnUnits(text: string): string[] {
+  return text
+    .split(/\n|[.!?]+(?=\s|$)/)
+    .map((u) => u.trim())
+    .filter((u) => u !== "");
+}
+
+// The floor under a quote: a single word ("ok", "yes", "archive") is never a
+// ruling in Tom's words, whatever turn it sits in.
+const MIN_QUOTE_WORDS = 2;
+
+// The unit of `turn` that `quoted` is, or the reason it is none.
+export function matchQuotedUnit(
+  turn: string,
+  quoted: string,
+): { unit: string } | { refused: string } {
+  const units = turnUnits(quoted);
+  if (units.length !== 1) {
+    return {
+      refused:
+        "refused: the sentence must be exactly one sentence or line of the turn",
+    };
+  }
+  const [unit] = units;
+  if (unit.split(/\s+/).length < MIN_QUOTE_WORDS) {
+    return { refused: "refused: a single word is not a ruling in Tom's words" };
+  }
+  if (!turnUnits(turn).includes(unit)) {
+    return {
+      refused:
+        "refused: the sentence is not a whole sentence or line of that turn",
+    };
+  }
+  return { unit };
+}
+
+// A code subject is spelled "<repo> <externalId>" — the tail of subjectKey
+// (repo names carry no spaces, so the first space splits it). Every subject
+// must resolve to a row that exists (check 4 above).
+async function resolveSubject(
+  ctx: MutationCtx,
+  subjectType: "life" | "code" | "batch",
+  subjectId: string,
+): Promise<{
+  todoId?: Id<"dtsTodos">;
+  repo?: string;
+  externalId?: string;
+  batchId?: Id<"batches">;
+}> {
+  if (subjectType === "life") {
+    const todoId = ctx.db.normalizeId("dtsTodos", subjectId);
+    if (!todoId || !(await ctx.db.get(todoId))) {
+      throw new Error(`Unknown todo id: ${subjectId}`);
+    }
+    return { todoId };
+  }
+  if (subjectType === "batch") {
+    const batchId = ctx.db.normalizeId("batches", subjectId);
+    if (!batchId || !(await ctx.db.get(batchId))) {
+      throw new Error(`Unknown batch id: ${subjectId}`);
+    }
+    return { batchId };
+  }
+  const cut = subjectId.indexOf(" ");
+  if (cut <= 0 || cut === subjectId.length - 1) {
+    throw new Error(
+      `A code subject is spelled "<repo> <externalId>", got: ${subjectId}`,
+    );
+  }
+  const repo = subjectId.slice(0, cut);
+  const externalId = subjectId.slice(cut + 1);
+  const mirrored = await ctx.db
+    .query("dtsCodeTodoMirror")
+    .withIndex("by_repo_external", (q) => q.eq("repo", repo))
+    .collect();
+  if (mirrored.length === 0) {
+    throw new Error(`Unknown repo: ${repo} (no code todos are mirrored from it)`);
+  }
+  const entry = mirrored.find((r) => r.externalId === externalId);
+  if (!entry || entry.status !== "open") {
+    throw new Error(`Unknown code todo: ${subjectId} (not open in the mirror)`);
+  }
+  const brief = await ctx.db
+    .query("dtsCodeBriefs")
+    .withIndex("by_repo_external", (q) =>
+      q.eq("repo", repo).eq("externalId", externalId),
+    )
+    .unique();
+  if (!brief) {
+    throw new Error(
+      `refused: ${subjectId} has no brief yet, so Tom has not been shown it`,
+    );
+  }
+  return { repo, externalId };
+}
+
+export const internalRecordRulingFromTomWords = internalMutation({
+  args: {
+    inboundId: v.string(),
+    verdict: VERDICT,
+    subjectType: SUBJECT_TYPE,
+    subjectId: v.string(),
+    // Tom's words, verbatim: provenance only. It is never the ruling's
+    // `sentence` — on archive that field is shown on the page as the return
+    // condition and on revise it is the worker's redirect, and neither is
+    // something a quote of Tom's turn should become by accident.
+    quote: v.string(),
+    // The ruling's own sentence, revise only (the redirect the verdict cannot
+    // exist without). Refused on every other verdict: archive does not need a
+    // return condition, and approve/session take no note from this door.
+    sentence: v.optional(v.string()),
+  },
+  handler: async (
+    ctx,
+    { inboundId, verdict, subjectType, subjectId, quote, sentence },
+  ) => {
+    // 1. the row
+    const rowId = ctx.db.normalizeId("claudeInbound", inboundId);
+    const row = rowId === null ? null : await ctx.db.get(rowId);
+    if (rowId === null || !row || row.kind !== "user-turn") {
+      throw new Error(`Unknown inbound id: ${inboundId}`);
+    }
+    // 2. Tom wrote it
+    if (row.author !== "tom") {
+      throw new Error(
+        "refused: the turn was not typed by Tom (author is " +
+          `${row.author ?? "unset"}), so it cannot be a ruling in his words`,
+      );
+    }
+    // 3. one whole unit of the turn, at least two words
+    const quoted = quote.trim();
+    if (quoted === "") throw new Error("quote (non-empty string) required");
+    const match = matchQuotedUnit(row.text ?? "", quoted);
+    if ("refused" in match) throw new Error(match.refused);
+    // 4. the subject exists
+    const subject = await resolveSubject(ctx, subjectType, subjectId);
+    // 5. one ruling per row per subject
+    const key = subjectKey({ subjectType, ...subject });
+    const prior = await ctx.db
+      .query("dtsRulings")
+      .withIndex("by_provenance_inboundId", (q) =>
+        q.eq("provenance.inboundId", rowId),
+      )
+      .collect();
+    if (prior.some((r) => subjectKey(r) === key)) {
+      throw new Error(
+        "refused: that turn has already ruled on this subject",
+      );
+    }
+    // 6. the sentence: revise's redirect and nothing else
+    const redirect = sentence?.trim();
+    if (verdict === "revise" && !redirect) {
+      throw new Error(
+        "refused: revise needs a sentence — the one line that redirects the preparing agent",
+      );
+    }
+    if (verdict !== "revise" && sentence !== undefined) {
+      throw new Error(
+        `refused: sentence is the revise redirect only; on ${verdict} the quote is the whole record`,
+      );
+    }
+    // 7. the ruling, through the one apply path. No unarchiveCondition: an
+    // archive from this door leaves the return condition unset (the quote is
+    // in provenance and the digest), it never becomes what the page shows.
+    return await insertRuling(ctx, {
+      ...subject,
+      verdict,
+      sentence: verdict === "revise" ? redirect : undefined,
+      provenance: { from: "tom-words", inboundId: rowId, quote: quoted },
     });
   },
 });

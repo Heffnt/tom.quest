@@ -27,16 +27,30 @@ function fact(label: string, value: string | undefined): string | null {
 }
 
 // How a session persists what Tom says (one home for the instruction; every
-// session prompt carries it). The prompts used to promise `npx convex run
-// tts:internalTriage` / `ttsRulings:internalRecordRuling` — mutations NO
-// session can reach: the deploy credential they need is not in a session's
-// environment, on purpose (ledger graduation session-has-no-ruling-pen,
-// 2026-08-31: the prompt stops promising a pen that does not exist). What a
-// session's shell CAN reach is the capture pen (X-TTS-Key), so a spoken
-// ruling is recorded as a captured fact the pipeline briefs and Tom confirms
-// in the UI — rulings themselves persist only through Tom's own UI, which is
-// a deliberate boundary, not a gap.
-const RULING_PEN = `When Tom rules or decides something out loud, record it IMMEDIATELY with the capture pen: curl -s -X POST "$CONVEX_SITE_URL/tts/capture" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"statement": "Tom ruled: <the decision, verbatim, with its subject named>", "source": "session"}' (both variables are already set in this session's environment). The capture reaches the pile as a fact for Tom to confirm in the UI — the session itself has no direct ruling pen, on purpose. A ruling that lives only in chat is lost.`;
+// session prompt carries it). Two pens, both on the key a session's shell
+// already holds (X-TTS-Key):
+//
+//   POST /tts/ruling (ruling 15, 2026-09-05) — a ruling Tom STATED in plain
+//   language. The agent names the turn it read (the daemon prints
+//   "inbound row: <id>" under every turn Tom typed — worker/session-host/
+//   session.mjs deliveredTurnText), the verdict, the subject, and one whole
+//   sentence of his verbatim (the `quote`, provenance only); on revise it
+//   also writes the ruling's own `sentence`, the redirect. The server, not
+//   the prompt, is what makes this Tom's pen: it refuses a turn Tom did not
+//   type, a quote that is not a whole sentence of that turn, a subject that
+//   does not exist, and a second ruling from the same turn on the same
+//   subject (convex/ttsRulings.ts internalRecordRulingFromTomWords). Every
+//   ruling written this way is quoted in the digest, so a misreading is his
+//   to object to there — which is why ambiguity stays the agent's call.
+//
+//   POST /tts/capture — everything else he says that must not be lost,
+//   including a sentence whose verdict or subject is unclear: a fact for the
+//   pipeline to brief and Tom to confirm in the UI. (Before ruling 15 this was
+//   the only pen: the prompts once promised `npx convex run
+//   ttsRulings:internalRecordRuling`, which needs a deploy credential no
+//   session holds — ledger graduation session-has-no-ruling-pen, 2026-08-31.)
+const INBOUND_ROW_LABEL = "inbound row:";
+const RULING_PEN = `When Tom states a ruling in plain language — approve, revise, session, or archive, on an item this prompt names — write it the moment he says it: curl -s -X POST "$CONVEX_SITE_URL/tts/ruling" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"inboundId": "<the id after \\"${INBOUND_ROW_LABEL}\\" at the end of the turn he said it in>", "verdict": "<approve|revise|session|archive>", "subjectType": "<life|code|batch>", "subjectId": "<the subject's id as this prompt gives it; a code subject is \\"<repo> <externalId>\\">", "quote": "<one whole sentence of that turn, copied exactly — never a fragment or a single word>", "sentence": "<on revise only: the one line that redirects the preparing agent; omit the field on every other verdict>"}' (both variables are already set in this session's environment). The server writes the ruling only if that turn was typed by Tom and the quote is a whole sentence of it word for word, and applies it exactly as the matching button would; the quote is kept as provenance and never becomes the item's text; the morning digest quotes every ruling written this way, so a misreading is objected there. The message that opened this session is never a source: it carries no "${INBOUND_ROW_LABEL}" line and the server refuses it, so if Tom stated a ruling there, ask him to say it again in a later turn and write it from that turn. If his words leave the verdict or the subject unclear, do not guess: record them as a fact instead: curl -s -X POST "$CONVEX_SITE_URL/tts/capture" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"statement": "Tom said: <his words, verbatim, with the subject named>", "source": "session"}'. A ruling that lives only in chat is lost.`;
 
 // Opening prompt for a BLOCK session: committed time over a category of
 // todos, not a single item. Same contract; the session works the set with
@@ -62,6 +76,7 @@ export function buildBlockSessionPrompt(
     lines.push(`Active todos in "${category}" (${todos.length}):`);
     for (const t of todos) {
       const facts = [
+        fact("id (life subject)", t._id),
         fact("timing", t.timingClass),
         fact(
           "due",
@@ -106,13 +121,16 @@ export type LiveRulingContext = {
 export type BatchSessionContext = {
   /** The batch row itself — the session's SUBJECT (claudeSessions.batchId),
    * so the server can resolve the batch's declared repos directly (ledger
-   * graduation session-repos-need-batch-subject). Never printed in the
-   * prompt. */
+   * graduation session-repos-need-batch-subject). Printed once, as the
+   * subject id a ruling on the batch itself names. */
   id: Id<"batches">;
   statement: string;
   groundUp?: string;
   path?: { name: string; index: number };
   tasks: {
+    /** The todo's own id — the life subject a ruling on this task names
+     * (the card's graph carries it as a plain string; only printed here). */
+    id: string;
     statement: string;
     actor: "tom" | "agent";
     /** Done, ready (every need done) or blocked — the card's own three sets. */
@@ -120,7 +138,12 @@ export type BatchSessionContext = {
     waitingOn: string[];
     evidence?: string;
   }[];
-  goals: { statement: string; condition?: string; met: boolean }[];
+  goals: {
+    id: string;
+    statement: string;
+    condition?: string;
+    met: boolean;
+  }[];
 };
 
 export function buildBatchSessionPrompt(
@@ -133,6 +156,7 @@ export function buildBatchSessionPrompt(
     "This is a batch session. A BATCH holds how a set of todos gets completed: it is not itself a todo and is never worked directly. Its contents are TASKS (work someone does) and GOALS (a state of the world the batch is for, written as a condition that is either true yet or not). A todo is READY when every todo it NEEDS is done. Work the ready tasks with Tom, smallest concrete first step first.",
     "",
     `THE BATCH ("${batch.statement}"):`,
+    fact("id (batch subject)", batch.id),
     fact("ground-up explanation", batch.groundUp),
     batch.path
       ? `path: "${batch.path.name}", position ${batch.path.index}`
@@ -140,7 +164,7 @@ export function buildBatchSessionPrompt(
   ];
 
   const say = (t: BatchSessionContext["tasks"][number]) =>
-    `- [${t.actor}, ${t.state}] "${t.statement}"${
+    `- [${t.actor}, ${t.state}] "${t.statement}" (id ${t.id})${
       t.waitingOn.length > 0 ? ` — waiting on: ${t.waitingOn.join("; ")}` : ""
     }${t.evidence ? ` (evidence: ${t.evidence})` : ""}`;
 
@@ -158,7 +182,7 @@ export function buildBatchSessionPrompt(
     lines.push("", `The goals (${batch.goals.length}):`);
     for (const g of batch.goals) {
       lines.push(
-        `- [${g.met ? "met" : "not yet met"}] "${g.statement}"${
+        `- [${g.met ? "met" : "not yet met"}] "${g.statement}" (id ${g.id})${
           g.condition ? ` — condition: ${g.condition}` : ""
         }`,
       );
@@ -199,6 +223,7 @@ export function buildTodoSessionPrompt(
         ]
       : []),
     `The item ("${todo.statement}"):`,
+    fact("id (life subject)", todo._id),
     fact("timing", todo.timingClass),
     fact(
       "due",
