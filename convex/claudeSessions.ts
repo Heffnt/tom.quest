@@ -3547,8 +3547,13 @@ export const internalAutoSchedule = internalMutation({
       .collect();
     for (const block of blocks) {
       if (block.todoId !== undefined) {
+        // todoById, not `active`, because a block's subject may be a bound
+        // goal — but the sleep test `active` already applied has to be asked
+        // here too: a row whose wakeAt is still ahead is asleep, and a block
+        // on it does not wake it (no lane hands out a sleeping row).
         const t = todoById.get(block.todoId);
-        if (!t || t.status !== "active" || !legacyOrGoal(t)) continue;
+        if (!t || t.status !== "active" || !wakeAtPassed(t, now)) continue;
+        if (!legacyOrGoal(t)) continue;
         // Not ready: a plain todo not yet prepared, or a batch with open
         // agent plan steps still to do.
         const notReady =

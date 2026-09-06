@@ -4514,6 +4514,42 @@ describe("frontier scheduler", () => {
     expect(sessions[0].todoId).toBe(goalId);
   });
 
+  // The block lane resolves its subject through todoById (a bound goal is not
+  // in the active set), so the sleep test the active set already applied has
+  // to be asked again there. Read the block's todo from `todoById` without
+  // wakeAtPassed and this goes red: a row asleep until next week would be
+  // handed groundwork tonight.
+  it("hands out no sleeping row from the block lane until its wakeAt passes", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    const now = Date.now();
+    const todoId = await tom.mutation(api.tts.createTodo, {
+      statement: "book the flights",
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(todoId, { wakeAt: now + 7 * 24 * 60 * 60 * 1000 });
+    });
+    await tom.mutation(api.tts.createBlock, {
+      start: now + 60 * 60 * 1000,
+      end: now + 2 * 60 * 60 * 1000,
+      todoId,
+    });
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await workSessions(t)).toHaveLength(0);
+
+    // Awake (the wakeAt is behind us): the same block admits it.
+    await t.run(async (ctx) => {
+      await ctx.db.patch(todoId, { wakeAt: now - 1 });
+    });
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].todoId).toBe(todoId);
+  });
+
   // witness: push the frontier's candidates in with no quota (strict priority)
   // and this goes red — once the planner has been running there are routinely
   // more ready graph tasks than a tick has slots, and the walk never reaches
