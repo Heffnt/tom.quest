@@ -929,38 +929,67 @@ export const listTimeNotes = query({
   },
 });
 
+// One args object and one body behind two doors (the claudeSessions pattern):
+// Tom's browser mutation, and the internal twin a Slack reply that says only
+// "done" or a date goes through (convex/ttsSlack.ts) — a time note is Tom's
+// own written instruction either way, and the pen may never skip a check the
+// browser enforces.
+const CREATE_TIME_NOTE_ARGS = {
+  text: v.string(),
+  todoId: v.optional(v.id("dtsTodos")),
+  blockId: v.optional(v.id("dtsBlocks")),
+  day: v.optional(v.string()),
+};
+
+async function createTimeNoteFrom(
+  ctx: MutationCtx,
+  {
+    text,
+    todoId,
+    blockId,
+    day,
+  }: {
+    text: string;
+    todoId?: Id<"dtsTodos">;
+    blockId?: Id<"dtsBlocks">;
+    day?: string;
+  },
+): Promise<Id<"dtsTimeNotes">> {
+  const trimmed = text.trim();
+  if (trimmed === "") throw new Error("A time note needs text");
+  requireOneTimeNoteContext(todoId, blockId, day);
+  if (day !== undefined && !DAY_KEY_RE.test(day)) {
+    throw new Error(`A day is a calendar date, YYYY-MM-DD — got ${day}`);
+  }
+  if (todoId !== undefined && !(await ctx.db.get(todoId))) {
+    throw new Error("TTS todo not found");
+  }
+  if (blockId !== undefined && !(await ctx.db.get(blockId))) {
+    throw new Error("Block not found");
+  }
+  const id = await ctx.db.insert("dtsTimeNotes", {
+    text: trimmed,
+    todoId,
+    blockId,
+    day,
+    status: "pending",
+    createdAt: Date.now(),
+  });
+  await logEvent(ctx, "time-note", todoId, { text: trimmed, blockId, day });
+  return id;
+}
+
 export const createTimeNote = mutation({
-  args: {
-    text: v.string(),
-    todoId: v.optional(v.id("dtsTodos")),
-    blockId: v.optional(v.id("dtsBlocks")),
-    day: v.optional(v.string()),
-  },
-  handler: async (ctx, { text, todoId, blockId, day }) => {
+  args: CREATE_TIME_NOTE_ARGS,
+  handler: async (ctx, args) => {
     await requireTomId(ctx);
-    const trimmed = text.trim();
-    if (trimmed === "") throw new Error("A time note needs text");
-    requireOneTimeNoteContext(todoId, blockId, day);
-    if (day !== undefined && !DAY_KEY_RE.test(day)) {
-      throw new Error(`A day is a calendar date, YYYY-MM-DD — got ${day}`);
-    }
-    if (todoId !== undefined && !(await ctx.db.get(todoId))) {
-      throw new Error("TTS todo not found");
-    }
-    if (blockId !== undefined && !(await ctx.db.get(blockId))) {
-      throw new Error("Block not found");
-    }
-    const id = await ctx.db.insert("dtsTimeNotes", {
-      text: trimmed,
-      todoId,
-      blockId,
-      day,
-      status: "pending",
-      createdAt: Date.now(),
-    });
-    await logEvent(ctx, "time-note", todoId, { text: trimmed, blockId, day });
-    return id;
+    return await createTimeNoteFrom(ctx, args);
   },
+});
+
+export const internalCreateTimeNote = internalMutation({
+  args: CREATE_TIME_NOTE_ARGS,
+  handler: async (ctx, args) => await createTimeNoteFrom(ctx, args),
 });
 
 // Tom withdraws a note he no longer wants acted on. An APPLIED note is not
