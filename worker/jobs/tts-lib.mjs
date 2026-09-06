@@ -1,8 +1,7 @@
-// tts-lib.mjs — shared helpers for the TTS worker jobs (poll-dump.mjs,
-// prepare-queue.mjs, and the code-todo jobs brief-code-todos.mjs /
-// apply-rulings.mjs / execute-approved.mjs). Plain Node ESM, ZERO npm
-// dependencies: node:fs, node:child_process and the global fetch (Node >= 18,
-// the Jarvis Box runs Node 22) are all we use.
+// tts-lib.mjs — shared helpers for the TTS worker jobs (the pollers, the
+// planner plan-graphs.mjs, apply-time-notes.mjs, nightly.mjs). Plain Node
+// ESM, ZERO npm dependencies: node:fs, node:child_process and the global
+// fetch (Node >= 18, the Jarvis Box runs Node 22) are all we use.
 //
 // WHY no dependencies: the Jarvis Box owns no state and must be rebuildable by one
 // script with nothing but Node itself. No node_modules means no lockfile, no

@@ -1,24 +1,21 @@
-// tts-code-lib.mjs — shared helpers for the TTS CODE-TODO work on the box
-// (the planner's brief pass in plan-graphs.mjs, execute-approved.mjs). Plain
-// Node ESM, ZERO npm dependencies — same rules as tts-lib.mjs.
+// tts-code-lib.mjs — shared helpers for the planner's brief pass
+// (plan-graphs.mjs), the one reader of CMT's todo file on the box. Plain Node
+// ESM, ZERO npm dependencies — same rules as tts-lib.mjs.
 //
 // The code-todo loop in one breath: CMT (github.com/Heffnt/ComplexMultiTrigger)
 // keeps its standing intent in vqc/todos.yaml; the planner's brief pass
 // explains each open entry to Tom and recommends a ruling; Tom rules in the
 // tom.quest UI (stored in Convex, where every verdict's effect is applied —
-// convex/ttsRulings.ts); the executor implements ONE approved plan per hour
-// on a branch and opens a PR — merging that PR is the human gate.
+// convex/ttsRulings.ts); an approve or archive becomes a worker mission the
+// auto-session scheduler admits, which ends in a PR — merging that PR is the
+// human gate.
 //
 // STATE ON THE JARVIS BOX (all harmless to lose, per the no-state rule):
 //   /var/cache/tts/ComplexMultiTrigger — shallow cache clone; rebuilt from
 //       origin on every use, so deleting it costs one clone.
-//   /var/cache/tts/briefs/<repo>/<id>.md — local copy of each posted brief so
-//       the apply job can embed it in session agendas without a Convex read
-//       endpoint; rebuildable by re-briefing (--force).
 //   /var/lib/tts/brief-hashes.json — cursor: the source hash each entry was
 //       last briefed at. Losing it just re-briefs everything once (the Convex
 //       POST upserts, so duplicates cost only Claude time).
-//   /var/lib/tts/{apply,execute}.lock — mkdir-based cron serialization locks.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -29,13 +26,8 @@ export const CMT_REPO = "ComplexMultiTrigger";
 export const CMT_DEFAULT_BRANCH = "master";
 export const CMT_CACHE_DIR = "/var/cache/tts/ComplexMultiTrigger";
 export const TODOS_PATH = "vqc/todos.yaml"; // relative to the repo root
-// The guard test for todos.yaml — run from the CMT repo root. This ONE test
-// module (not the whole guard suite) is the contract for "todos.yaml is still
-// well-formed after my surgery".
-export const TODOS_GUARD_TEST = "tests/guards/test_bb_todos.py";
 
 export const BRIEF_HASHES_FILE = "/var/lib/tts/brief-hashes.json";
-export const BRIEF_CACHE_ROOT = "/var/cache/tts/briefs";
 
 // The first characters of the closed-todos banner line in vqc/todos.yaml.
 // Everything below this line is intent HISTORY; the live surface is above it.
@@ -148,15 +140,8 @@ export function writeBriefHashes(hashes) {
   fs.writeFileSync(BRIEF_HASHES_FILE, JSON.stringify(hashes, null, 2) + "\n");
 }
 
-// Where the local copy of a posted brief lives (markdown; see
-// plan-graphs.mjs briefCacheMarkdown for the layout, apply-rulings.mjs for
-// the reader).
-export function briefCachePath(repo, externalId) {
-  return path.join(BRIEF_CACHE_ROOT, repo, `${externalId}.md`);
-}
-
 // ---------------------------------------------------------------------------
-// todos.yaml text surgery support
+// todos.yaml entry lookup
 // ---------------------------------------------------------------------------
 
 // Locate one entry's raw text block in todos.yaml. Returns
@@ -195,46 +180,4 @@ export function findEntryBlock(text, id) {
     blockLines.pop();
   }
   return { startLine: start, endLine: end, block: blockLines.join("\n") };
-}
-
-// ---------------------------------------------------------------------------
-// mkdir-based cron locks
-// ---------------------------------------------------------------------------
-
-// Serialize overlapping cron runs with a lock DIRECTORY: mkdir is atomic on
-// every POSIX filesystem (it either creates or fails with EEXIST), which is
-// the whole trick — no flock(2) binding needed from Node. A lock older than
-// staleMs is presumed abandoned (the holder crashed without its finally
-// block) and is broken. Returns true when the lock is ours.
-export function acquireLock(lockDir, staleMs) {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      fs.mkdirSync(lockDir, { recursive: false });
-      return true;
-    } catch (err) {
-      if (err.code !== "EEXIST") throw err;
-      let ageMs = 0;
-      try {
-        ageMs = Date.now() - fs.statSync(lockDir).mtimeMs;
-      } catch {
-        continue; // vanished between mkdir and stat — retry the mkdir
-      }
-      if (ageMs < staleMs) return false; // genuinely held
-      console.log(`[lock] breaking stale lock ${lockDir} (age ${Math.round(ageMs / 60000)} min)`);
-      try {
-        fs.rmdirSync(lockDir);
-      } catch {
-        // Someone else broke or re-took it first — the retry decides.
-      }
-    }
-  }
-  return false;
-}
-
-export function releaseLock(lockDir) {
-  try {
-    fs.rmdirSync(lockDir);
-  } catch {
-    // Already gone (broken as stale by a later run) — nothing to do.
-  }
 }

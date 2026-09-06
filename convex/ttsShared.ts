@@ -821,21 +821,27 @@ export function isSessionRepo(name: string): boolean {
 export const CODE_TODO_PATH = "vqc/todos.yaml";
 
 /**
- * The repos that keep their own code todos in CODE_TODO_PATH, mapped to the
- * DEFAULT branch that copy is read from. THE list, with two readers that must
- * agree (VQC C1: one home):
+ * The repos that keep their own code todos in CODE_TODO_PATH, each with the
+ * DEFAULT branch that copy is read from and the repo's own GUARD — the one
+ * command that says the file is still well-formed. THE list, with three
+ * readers that must agree (VQC C1: one home):
  *   - the mirror cron (convex/ttsSync.ts refreshMirror) fetches each repo's
  *     file from that branch into dtsCodeTodoMirror;
  *   - the prospecting prompt (convex/claudeSessions.ts) tells a prospector in
  *     one of these checkouts to READ that file before capturing, so it cannot
- *     hand Tom a finding the repo already tracks.
+ *     hand Tom a finding the repo already tracks;
+ *   - the code mission prompt (convex/claudeSessions.ts) tells a worker that
+ *     closed an entry to RUN the guard before its pull request.
  * They drifted once: only ComplexMultiTrigger was named in the prompt, while
  * the cron mirrored tom.quest too, so tom.quest prospectors were blind to
  * tom.quest's own registry.
  */
 export const CODE_TODO_REPOS = {
-  ComplexMultiTrigger: "master",
-  "tom.quest": "main",
+  ComplexMultiTrigger: {
+    branch: "master",
+    guard: "python3 -m pytest tests/guards/test_bb_todos.py -q",
+  },
+  "tom.quest": { branch: "main", guard: "pnpm vitest run vqc/todos.test.ts" },
 } as const;
 
 /** Whether a repo tracks its own code todos in CODE_TODO_PATH. */

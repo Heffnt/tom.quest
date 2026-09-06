@@ -1024,8 +1024,8 @@ describe("a ruling from Tom's words", () => {
 
   // witness: drop the mirror or brief lookups from resolveSubject. A code
   // subject is accepted only when it is open in the mirror AND briefed — the
-  // brief is what Tom was shown, and approve here is what execute-approved
-  // runs.
+  // brief is what Tom was shown, and approve here is what the scheduler's code
+  // lane admits as a worker mission.
   it("accepts a code subject that is open in the mirror and briefed, refuses one without a brief", async () => {
     const t = convexTest({ schema, modules });
     const { tom, tomRow } = await sessionWithTurns(t, "code-block");

@@ -439,16 +439,16 @@ ${WHAT_TTS_IS}
 
 <h2>What approve means on a code todo</h2>
 
-<p>A <span class="term">code todo</span> is a todo that lives in a code repository and is mirrored into TTS, addressed by repository name plus an identifier rather than by a TTS row. The same four chips appear on it, and approve behaves completely differently: the ruling stays unapplied, because the repository, not TTS, is where code work is recorded.</p>
+<p>A <span class="term">code todo</span> is a todo that lives in a code repository and is mirrored into TTS, addressed by repository name plus an identifier rather than by a TTS row. The same four chips appear on it, and approve behaves completely differently: the ruling stays unapplied until a session exists to carry it out, because the repository, not TTS, is where code work is recorded.</p>
 
 <div class="flow">
   <div class="box">Tom presses approve on a code todo. <span class="muted">The ruling row is stored, unapplied.</span></div>
-  <div class="arrow">↓ <span class="muted">at 45 minutes past each hour</span></div>
-  <div class="box">A job on the Jarvis Box takes the single oldest unapplied approve, clones the repository fresh, and makes a branch named for the todo.</div>
-  <div class="arrow">↓ <span class="muted">one headless Claude run, capped at 45 minutes</span></div>
-  <div class="box">It pushes that branch and opens a pull request, then reports the pull request address back as the ruling's result.</div>
+  <div class="arrow">↓ <span class="muted">within five minutes, when the Jarvis Box has headroom</span></div>
+  <div class="box">The picker that starts agent sessions takes the single oldest unapplied approve (or archive) on a code todo and starts one autonomous session on a fresh checkout of that repository, on a branch named for the session. One code mission runs at a time; the ruling is marked applied with the session's id at that moment.</div>
+  <div class="arrow">↓ <span class="muted">one autonomous session</span></div>
+  <div class="box">It implements the plan (or, for archive, only closes the entry in the repository's todo file), runs that file's own guard test, pushes the branch and opens a pull request whose body begins with a change report.</div>
   <div class="arrow">↓</div>
-  <div class="box">Merging the pull request is Tom's, and nothing automates it. A failure marks the ruling with the reason; ruling approve again is the retry.</div>
+  <div class="box">Merging the pull request is Tom's, and nothing automates it. A session that fails is not retried by the picker; ruling again is the retry.</div>
 </div>
 
 <p>The other three verdicts on a code todo have no job of their own. Revise is consumed by the planner on the Jarvis Box, which runs every half hour: it re-writes the brief with a fresh plan, with Tom's sentence in the prompt, and marks the ruling applied once the new brief is stored. Session is applied the moment Tom opens the code block session from the calendar — the interactive session whose turns are about code todos. Archive is admitted by the same picker as approve, as a mission that closes the entry in the repository's own todo file and opens a pull request for it; merging that is Tom's.</p>

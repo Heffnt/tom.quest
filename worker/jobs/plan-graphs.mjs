@@ -110,7 +110,6 @@ import {
   sourceHash,
   readBriefHashes,
   writeBriefHashes,
-  briefCachePath,
   findEntryBlock,
 } from "./tts-code-lib.mjs";
 
@@ -415,8 +414,9 @@ export async function prepareLifeTodos(
 // and the Convex POST upserts) or when Tom ruled "revise" on it (the pending
 // ruling's sentence rides into the prompt as the replan note, and the ruling
 // is consumed once the fresh brief has posted). Each success is durable in
-// dependency order (Convex, then the local brief copy, then the cursor), so a
-// crash mid-run loses at most the entry in flight.
+// dependency order (Convex, then the cursor), so a crash mid-run loses at
+// most the entry in flight. Convex holds the one copy of a brief: the worker
+// mission that carries out an approve or archive reads it from there.
 
 // At most this many briefs per run (all pending with --force). Bounds the run:
 // 8 entries × the 10-minute per-entry timeout is 80 minutes worst case; the
@@ -488,20 +488,6 @@ export function briefPrompt(entryYaml, replanNote) {
   ].join("\n");
 }
 
-// The local brief-copy markdown layout (/var/cache/tts/briefs/<repo>/<id>.md).
-export function briefCacheMarkdown(externalId, parsed) {
-  return [
-    `# TTS brief — ${CMT_REPO}:${externalId}`,
-    ``,
-    `Recommendation: ${parsed.recommendation}`,
-    `Exec-class: ${parsed.execClass}`,
-    ...(parsed.evidence ? [`Evidence: ${parsed.evidence}`] : []),
-    ``,
-    parsed.brief,
-    ``,
-  ].join("\n");
-}
-
 /**
  * Which entries this run briefs: every open entry whose source hash moved
  * since its last brief, plus every open entry with a pending code "revise"
@@ -530,9 +516,9 @@ export function selectBriefTargets(entries, hashes, pending, { force = false } =
 /**
  * The brief pass. `repo` is the CMT checkout the model reads from: its
  * directory (the model's cwd), the raw todos.yaml text (for the entry blocks)
- * and the parsed OPEN entries. `io` adds three file-shaped hooks to the pass
- * contract — `readHashes()`, `writeHashes(map)` and `writeCache(externalId,
- * markdown)` — so the tests keep the cursor and the copy in memory.
+ * and the parsed OPEN entries. `io` adds two file-shaped hooks to the pass
+ * contract — `readHashes()` and `writeHashes(map)` — so the tests keep the
+ * cursor in memory.
  */
 export async function briefCodeTodos({ repo, pending, force = false }, io) {
   const hashes = io.readHashes();
@@ -577,8 +563,8 @@ export async function briefCodeTodos({ repo, pending, force = false }, io) {
           : undefined;
 
       // Durable in dependency order: Convex first (the system of record),
-      // then the local copy, then the cursor — so a crash can only leave us
-      // re-doing work, never believing work happened that didn't.
+      // then the cursor — so a crash can only leave us re-doing work, never
+      // believing work happened that didn't.
       await io.post("/tts/code-briefs", {
         briefs: [
           {
@@ -592,7 +578,6 @@ export async function briefCodeTodos({ repo, pending, force = false }, io) {
           },
         ],
       });
-      io.writeCache(entry.id, briefCacheMarkdown(entry.id, { ...parsed, evidence }));
       hashes[key] = hash;
       io.writeHashes(hashes);
       if (revise) {
@@ -1381,16 +1366,7 @@ async function main() {
           pending,
           force,
         },
-        {
-          ...io,
-          readHashes: readBriefHashes,
-          writeHashes: writeBriefHashes,
-          writeCache: (externalId, markdown) => {
-            const file = briefCachePath(CMT_REPO, externalId);
-            fs.mkdirSync(path.dirname(file), { recursive: true });
-            fs.writeFileSync(file, markdown);
-          },
-        },
+        { ...io, readHashes: readBriefHashes, writeHashes: writeBriefHashes },
       );
       failures += result.failed;
     } catch (err) {

@@ -108,7 +108,7 @@ const FLUSH_THROTTLE_MS = 400;
 // durable safety boundary is structural, not per-call — sessions work in
 // throwaway workdirs under /var/cache (deleted at end), pushes land only in
 // the session/<id> branch namespace, merging anything is Tom's gate (the
-// execute-approved PR-gate precedent), rulings can only come from Tom's
+// PR-gate precedent every code mission keeps), rulings can only come from Tom's
 // pens, and every allowed call still lands as a tool-call transcript row for
 // review.
 //

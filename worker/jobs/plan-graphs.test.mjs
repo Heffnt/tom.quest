@@ -257,14 +257,11 @@ const briefAnswer = (over = {}) =>
 
 function briefIo(answers, hashes = {}) {
   const queue = Array.isArray(answers) ? [...answers] : [answers];
-  const cache = new Map();
   return {
     runClaude: vi.fn(() => queue.shift() ?? briefAnswer()),
     post: vi.fn(async () => ({ ok: true })),
     readHashes: () => hashes,
     writeHashes: vi.fn(),
-    writeCache: vi.fn((id, md) => cache.set(id, md)),
-    cache,
     hashes,
   };
 }
@@ -307,7 +304,7 @@ describe("selectBriefTargets", () => {
 });
 
 describe("briefCodeTodos", () => {
-  it("posts the brief in the four-word shape, keeps a local copy, then advances the cursor", async () => {
+  it("posts the brief in the four-word shape, then advances the cursor", async () => {
     const io = briefIo(briefAnswer({ evidence: "commit abc" }));
     const result = await briefCodeTodos({ repo: repo([ENTRY_A]), pending: [] }, io);
     expect(result).toEqual({ briefed: 1, failed: 0 });
@@ -327,8 +324,6 @@ describe("briefCodeTodos", () => {
         },
       ],
     });
-    expect(io.cache.get("cmt-001")).toContain("Recommendation: approve");
-    expect(io.cache.get("cmt-001")).toContain("Evidence: commit abc");
     expect(io.writeHashes).toHaveBeenCalledWith({
       [`${CMT_REPO}:cmt-001`]: sourceHash(ENTRY_A),
     });

@@ -413,11 +413,10 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # by the auto-session scheduler as a worker mission, a session verdict when
 # Tom opens the session.
 
-# Execute ONE approved plan per hour at :45 (agentic Claude in a throwaway
-# clone, 45-min cap, PR as output — merging the PR is the human gate). One
-# per hour bounds Claude usage and keeps PRs reviewable in series;
-# /var/lib/tts/execute.lock (stale after 3h) stops overlap.
-45 * * * * root /usr/bin/node /opt/tts/execute-approved.mjs >> /var/log/tts/execute-approved.log 2>&1
+# An approved (or archived) code todo is EXECUTED by the session daemon
+# below, not by a cron line: the auto-session scheduler in Convex admits it
+# as a worker mission on a session/<id> branch, one at a time, and the PR it
+# opens is Tom's merge gate (convex/claudeSessions.ts, the code lane).
 
 # Finish storing the complete transcript payloads the session-host daemon
 # could not (worker/session-host/reingest-overflow.mjs): every file under

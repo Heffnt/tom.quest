@@ -79,8 +79,7 @@ on a schedule:
    Convex (`convex/ttsDigest.ts`) and sent by `sendDigest`, so a missing
    morning message is itself the monitoring signal. This job's digest half
    goes in phase 7 with the queue.
-8. **execute-approved** (hourly at :45) — see the ruling loop below.
-9. **nightly** (4:00 a.m. New York) — copies the Convex record and this
+8. **nightly** (4:00 a.m. New York) — copies the Convex record and this
    box's session files into WikiTom, runs the learning step, pushes, and
    posts the model-of-tom files back to Convex. See "The nightly job" below.
 
@@ -211,19 +210,24 @@ tom.quest UI in seconds:
   words — `archive` (already done/moot, with evidence), `revise` (intent
   live, plan stale), `session` (open judgment call; all tier C), or
   `approve` — plus an exec class (`box` vs `needs-turing`). Briefs POST to
-  Convex and are also cached locally under `/var/cache/tts/briefs/`.
+  Convex, the one copy.
 - Tom rules on each brief in the UI. There is no apply job: every verdict's
   effect is applied at write time in Convex (`convex/ttsRulings.ts`), or at
   the one moment its effect can exist. `revise` is consumed by the brief
   pass once the fresh brief has posted, with Tom's sentence as the replan
   note. `session` is applied when Tom opens the code block session from
-  the calendar. `archive` is admitted by the auto-session scheduler as a
-  worker mission that closes the entry in `vqc/todos.yaml` and opens a
-  pull request — the same lane as `approve`, below.
-- **execute-approved** takes ONE pending `approve` per hour, runs agentic
-  Claude in a throwaway full clone on a `tts/<id>` branch, verifies commits +
-  the todos guard, pushes, and opens a PR. **Merging the PR is the human
-  gate** — nothing lands on master autonomously.
+  the calendar.
+- **`approve` and `archive` are worker missions.** The auto-session
+  scheduler in Convex (`convex/claudeSessions.ts`, the code lane, every
+  5 minutes) takes the oldest unapplied one, admits an autonomous session on
+  that repo's checkout — one code mission at a time, under the same load
+  gate, circuit breaker and per-subject ceiling as every other mission —
+  and marks the ruling applied with the session id. The session implements
+  the plan (approve) or only closes the entry (archive), runs the registry's
+  own guard test, pushes `session/<id>`, and opens a PR whose body starts
+  with `CHANGE REPORT:`. **Merging the PR is the human gate** — nothing
+  lands on the default branch autonomously. A mission that fails is not
+  retried by the fleet; ruling again is the retry.
 
 ## Codex
 
@@ -347,9 +351,9 @@ are all harmless to lose:
   7 days, at worst re-capturing a few announcements as duplicates.
 - `/var/lib/tts/brief-hashes.json` — which todo version was last briefed;
   losing it re-briefs everything once (the Convex POST upserts).
-- `/var/cache/tts/` — rebuildable caches: the shallow CMT clone, the local
-  brief copies, the executor's throwaway clones, the nightly job's snapshot
-  staging directory.
+- `/var/cache/tts/` — rebuildable caches: the shallow CMT clone the brief
+  pass reads, the session daemon's per-session workdirs, the nightly job's
+  snapshot staging directory.
 - `/root/wikitom` — the WikiTom checkout the nightly job writes. Everything
   in it is pushed, or reproducible from Convex and the session files, except
   commits a refused push left local — those are lost with the box, and the
@@ -526,7 +530,6 @@ node /opt/tts/poll-outlook.mjs            # prints the OUTLOOK_* keys still miss
 node /opt/tts/prepare-queue.mjs --force   # prep today's queue regardless of hour
 node /opt/tts/plan-graphs.mjs             # prepare, brief, plan — now
 node /opt/tts/plan-graphs.mjs --force     # also re-prepare and re-brief EVERYTHING
-node /opt/tts/execute-approved.mjs        # execute one approved plan now
 node /opt/tts/nightly.mjs --force         # the nightly job, every step, now
 ```
 
@@ -537,5 +540,5 @@ whichever side of daylight saving we're on).
 ## Logs
 
 Cron output: one `/var/log/tts/<job>.log` per job (poll-dump, poll-gmail,
-poll-canvas, apply-time-notes, plan-graphs, prepare-queue, execute-approved,
-nightly), truncated monthly by cron — they are convenience, not state.
+poll-canvas, apply-time-notes, plan-graphs, prepare-queue, nightly),
+truncated monthly by cron — they are convenience, not state.

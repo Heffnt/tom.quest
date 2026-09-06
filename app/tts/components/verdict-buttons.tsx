@@ -86,7 +86,7 @@ export const VERDICT_EFFECT: Record<
   },
   code: {
     approve:
-      "Marks this as decided your way. The ruling waits for the executor on the Jarvis Box, which clones the repository, does the work on a branch, and opens a pull request; merging stays yours.",
+      "Marks this as decided your way. The ruling waits for the picker on the Jarvis Box, which starts a session on a fresh checkout of the repository, does the work on the session's branch, and opens a pull request; merging stays yours. The ruling is marked applied the moment that session is started.",
     revise:
       "Sends it back to be planned again, with your sentence as the redirection: the planner on the Jarvis Box re-writes the brief with a fresh plan against what you said on its next half-hourly run, and the ruling is marked applied once the new brief is stored. Your sentence is the whole instruction, so it has to stand on its own.",
     session:

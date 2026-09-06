@@ -547,7 +547,7 @@ export const sendHourlyUpdate = internalAction({
 // Which repos, and which branch each file is read from, comes from the one
 // home in ttsShared — the prospecting prompt reads the same list to know which
 // checkouts hold a registry a prospector must not re-capture from.
-const MIRROR_SOURCES = Object.entries(CODE_TODO_REPOS).map(([repo, branch]) => ({
+const MIRROR_SOURCES = Object.entries(CODE_TODO_REPOS).map(([repo, { branch }]) => ({
   repo,
   branch,
 }));
