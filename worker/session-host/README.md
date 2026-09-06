@@ -57,15 +57,31 @@ before Convex has given the row an `_id` — and the finalize row carries
 `overflow: { sha256, byteLength, chunkCount }`. `sha256` is of the redacted
 text, so it fences reassembly, not provenance.
 
+Chunks first, then the row — and what holds that order. Each chunk is its own
+mutation on its own route, not part of the row's ingest, so the database
+cannot make the two agree; the daemon does. `OverflowQueue` (`overflow.mjs`)
+HOLDS the finalize row in the outbox — and every row behind it, so seq order
+survives — until the last chunk is acknowledged, then stamps it `overflow`
+and releases it to the flush (`#takeOutbox` asks the queue how many leading
+rows may go). A payload whose upload fails releases its row WITHOUT the stamp.
+So a stamped row always follows its bytes, and an unstamped row promises
+nothing. The route checks every field by type and answers with fixed strings
+(a validator error would spell the arguments — payload text included — into
+what the daemon stores and logs), and the daemon records a failure as its
+HTTP status, never the response body.
+
 Chunk rows rather than Convex file storage because the read side is a QUERY
-(`claudeSessions.internalMessageOverflow`) and `ctx.storage.get` is reachable
-only from an action.
+(`claudeSessions.getMessageOverflow`) and `ctx.storage.get` is reachable only
+from an action.
 
 Reading it back: every row `getMessages` returns says `hasOverflow` and
 `fullByteLength`, and `getMessageOverflow` (Tom) / `internalMessageOverflow`
-(the daemon) reassemble one message's chunks in order, ~1MB per read with a
-`nextIndex` to continue, reporting `complete: false` rather than a silent hole
-when a chunk the row names is missing.
+(the daemon) reassemble one message's chunks in order — one ranged index
+scan, ~1MB per read with a `nextIndex` to continue. A page says its `bytes`
+and whether the walk reached the last chunk (`end`); `complete` is claimed
+only when it was checked: the whole payload in one call, its bytes summing to
+`byteLength` and hashing to `sha256`. A paged reader sums `bytes` itself.
+Counting chunks would call a hole complete.
 
 The delivered turn goes the same way, which is what makes a session's OPENING
 row complete: that row is the mission prompt with the model-of-Tom files
@@ -75,12 +91,31 @@ to the model. It used to go in whole and unbounded, so a prompt past Convex's
 row carries the cut and the overflow carries the rest.
 
 A payload that cannot be stored is never lost in silence: the chunk upload
-retries transient failures, and on a permanent rejection (or attempts spent)
-writes the bytes to `/var/cache/tts/sessions/<id>/overflow/<seq>` on the box,
-writes an `error` row naming that file, and reports the failure to the server,
-which records a `session-overflow-unstored` event. That directory is the ONE
-exception to "losing a session dir loses nothing durable": when it holds
-files, `cleanupWorkdir` deletes everything beside it and keeps it.
+retries transient failures, and on a permanent rejection (or attempts spent,
+or a force-kill mid-upload) writes the bytes to
+`/var/cache/tts/sessions/<id>/overflow/<seq>` on the box, releases the row
+unstamped, writes an `error` row naming that file, and reports the failure to
+the server, which records a `session-overflow-unstored` event naming it too.
+That directory is the ONE exception to "losing a session dir loses nothing
+durable": when it holds files, `cleanupWorkdir` deletes everything beside it
+and keeps it.
+
+What reads it: `reingest-overflow.mjs`, hourly by cron. Each file goes up
+again through the same route (an upsert), then `POST /sessions/overflow/stamp`
+names the chunks from the row, and only after the stamp is acknowledged is the
+file deleted. Files under a minute old are left alone (still being written).
+A file the server still refuses stays, and the job's log
+(`/var/log/tts/reingest-overflow.log`) names it with the stage and status —
+that log is the runbook: a file named there run after run needs a hand
+(`internalStampOverflow` refuses when no row landed under the seq, or the row
+is already stamped with something else).
+
+Chunk rows are not tied to a row's life by the database. When the seq floor
+drops a stamped replay whose landed twin carries no stamp (a seq collision,
+not a retry — a retry's twin is stamped the same and the chunks are its), the
+server sweeps the chunks (`internalSweepOverflow`, in bounded scheduled
+steps); `sweepMessageOverflow` is what anything removing a message must call
+too — nothing removes messages today.
 
 ## Autonomous sessions
 
@@ -165,10 +200,15 @@ surfaces the decision in the PR, rather than stopping to wait.
   truncation (`truncated`) and the same cut with the complete payload beside
   it (`cutWithOverflow`).
 - `overflow.mjs` — the complete payload behind that cut: redaction of the
-  WHOLE text, its sha256, the ≤256KB chunking, the upload loop and the
-  on-disk last resort. Dependency-free for the same reason `redact.mjs` is,
-  so `__tests__/overflow.test.mjs` can fence it; `lib.mjs` re-exports it.
-  See "Complete transcripts" below.
+  WHOLE text, its sha256, the ≤256KB chunking, the upload loop, the on-disk
+  last resort, and `OverflowQueue` — the hold that keeps a finalize row out
+  of the flush until its chunks are stored. Dependency-free for the same
+  reason `redact.mjs` is, so `__tests__/overflow.test.mjs` can fence it;
+  `lib.mjs` re-exports it. See "Complete transcripts" below.
+- `reingest-overflow.mjs` — the cron job that finishes storing the payloads
+  the daemon could not (`__tests__/reingest-overflow.test.mjs`). Here rather
+  than in `worker/jobs/` because it is the daemon's own last step and opens
+  the daemon's door with the daemon's key.
 - `fork-transcript.mjs` — the `.tts-transcript.md` filename and its
   rendering, dependency-free for the same reason `banned-tools.mjs` is
   (`__tests__/fork-transcript.test.mjs` pins it).
@@ -381,9 +421,11 @@ Restarts are a designed-for non-event (`Restart=always`, `RestartSec=5`):
   visible server-side, not just in journald. One verdict for both paths:
   `isPermanentStatus` in `overflow.mjs`.
 - **A complete payload that cannot be stored** goes to disk instead
-  (`/var/cache/tts/sessions/<id>/overflow/<seq>`), with an `error` row naming
-  the file and a `session-overflow-unstored` event on the server. A terminal
-  session is not reaped until its overflow queue has drained.
+  (`/var/cache/tts/sessions/<id>/overflow/<seq>`), its row goes up without
+  the stamp, with an `error` row naming the file and a
+  `session-overflow-unstored` event on the server — the force-kill path
+  included. A terminal session is not reaped until its overflow queue has
+  drained; `reingest-overflow.mjs` retries the file hourly.
 - **Error text is capped at 8KB** (git failures, SDK errors) before it goes
   into `error` rows or `endedReason` — git runs with an 8MB output buffer,
   and an untruncated failure report could itself be rejected at ingest.
