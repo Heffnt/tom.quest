@@ -3661,6 +3661,35 @@ describe("the code lane", () => {
     expect(inbound[0].text).toContain('TOM RULED "archive"');
     expect(inbound[0].text).toContain("Do NOT implement it");
     expect(inbound[0].text).toContain("landed in #90");
+    // The mirror keeps saying "open" until the PR merges: the mission is
+    // told, so its PR body tells Tom why a second archive would double up.
+    expect(inbound[0].text).toContain(
+      'a second "archive" ruling on it would open a second pull request',
+    );
+  });
+
+  // witness: drop the archive-first key from admitCodeMissions' sort — an
+  // hour-long approve mission would hold a one-edit set-aside behind it.
+  it("admits an archive ahead of an older approve", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await briefedCodeTodos(t, ["cmt-approve", "cmt-archive"]);
+    await rule(tom, "cmt-approve", "approve");
+    await rule(tom, "cmt-archive", "archive");
+    // The approve is the OLDER ruling.
+    await t.run(async (ctx) => {
+      for (const r of await ctx.db.query("dtsRulings").collect()) {
+        await ctx.db.patch(r._id, { ruledAt: r.verdict === "approve" ? 1000 : 2000 });
+      }
+    });
+    await enableAuto(t, { maxNewPerTick: 4 });
+    await heartbeat(t);
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await codeSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].codeExternalId).toBe("cmt-archive");
+    const pending = await t.query(internal.ttsRulings.internalPendingRulings, {});
+    expect(pending.map((r) => r.externalId)).toEqual(["cmt-approve"]);
   });
 
   // witness: drop the verdict filter in admitCodeMissions — a revise (the

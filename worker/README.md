@@ -229,7 +229,7 @@ tom.quest UI in seconds:
   for reaches the session.
 - **`approve` and `archive` are worker missions.** The auto-session
   scheduler in Convex (`convex/claudeSessions.ts`, the code lane, every
-  5 minutes) takes the oldest unapplied one, admits an autonomous session on
+  5 minutes) takes the oldest unapplied one (an archive ahead of any approve: setting work aside is one edit, and should not wait behind an hour of implementing), admits an autonomous session on
   that repo's checkout — one code mission at a time, under the same load
   gate, circuit breaker and per-subject ceiling as every other mission —
   and marks the ruling applied with the session id. The session implements

@@ -2880,7 +2880,7 @@ function buildCodeMissionPrompt(args: {
     "",
     verdict === "approve"
       ? `TOM RULED "approve": the entry's attached plan is the ratified decision, not a suggestion. Implement it faithfully. Where the plan is silent, follow the repository's existing conventions and do not widen scope. Close the entry in ${CODE_TODO_PATH} in this same body of work, per that file's own discipline: move it below the closed-todos banner, keeping its full body, adding a \`closed: <today>\` date and a \`resolution:\` describing what landed.`
-      : `TOM RULED "archive": the entry is set aside — already done, moot, or superseded. Do NOT implement it. Close it in ${CODE_TODO_PATH} per that file's own discipline: move the entry below the closed-todos banner, keeping its full body, adding a \`closed: <today>\` date and a \`resolution:\` that says it was archived by Tom's TTS ruling${sentence ? " and quotes his sentence" : ""}, with the evidence the brief names if it names any.`,
+      : `TOM RULED "archive": the entry is set aside — already done, moot, or superseded. Do NOT implement it. Close it in ${CODE_TODO_PATH} per that file's own discipline: move the entry below the closed-todos banner, keeping its full body, adding a \`closed: <today>\` date and a \`resolution:\` that says it was archived by Tom's TTS ruling${sentence ? " and quotes his sentence" : ""}, with the evidence the brief names if it names any. Until your pull request merges, the TTS mirror of ${CODE_TODO_PATH} still says the entry is open, so a second "archive" ruling on it would open a second pull request for the same close — say so in the pull request body, so Tom merges rather than re-rules.`,
     promptFact("Tom's sentence with the ruling", sentence),
     "",
     "THE BRIEF Tom ruled from (written against the tree as it stood then; verify against the tree in front of you, and name in your pull request anything that has moved):",
@@ -2917,8 +2917,8 @@ const CODE_MISSIONS_MAX_LIVE = 1;
 
 /**
  * The code lane: Tom's live, unapplied approve and archive rulings on code
- * todos, oldest ruling first, each admitted as a worker mission on its repo's
- * checkout. A ruling applies AT ADMISSION with the session id — a failed
+ * todos — archives first, then oldest ruling first — each admitted as a
+ * worker mission on its repo's checkout. A ruling applies AT ADMISSION with the session id — a failed
  * mission is not retried by the fleet; Tom re-rules to retry, as with the
  * executor before. Returns how many it admitted (0 or 1).
  *
@@ -2954,7 +2954,16 @@ async function admitCodeMissions(
         r.repo !== undefined &&
         r.externalId !== undefined,
     )
-    .sort((a, b) => a.ruledAt - b.ruledAt);
+    // Archives first, then oldest ruling first: closing an entry is one
+    // registry edit and a pull request, cheap and short, and it is Tom
+    // setting work ASIDE — an approve behind it can implement for an hour,
+    // and holding a set-aside behind that, one mission at a time, leaves the
+    // entry open in the mirror (and on Tom's plate) for no reason.
+    .sort(
+      (a, b) =>
+        (a.verdict === "archive" ? 0 : 1) - (b.verdict === "archive" ? 0 : 1) ||
+        a.ruledAt - b.ruledAt,
+    );
 
   let admitted = 0;
   for (const ruling of rulings) {
