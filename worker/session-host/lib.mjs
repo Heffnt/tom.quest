@@ -32,6 +32,8 @@ export { scrubbedEnv, SCRUBBED_SECRET_NAMES } from "./env-scrub.mjs";
 // for the same reason, and re-exported here so session.mjs has one import.
 export {
   OVERFLOW_CHUNK_BYTES,
+  OverflowQueue,
+  SESSIONS_ROOT,
   chunkUtf8,
   isPermanentStatus,
   overflowFor,

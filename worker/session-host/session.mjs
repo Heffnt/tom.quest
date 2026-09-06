@@ -26,8 +26,8 @@ import {
   truncated,
   cutWithOverflow,
   isPermanentStatus,
-  sendOverflow,
-  writeOverflowFallback,
+  OverflowQueue,
+  SESSIONS_ROOT,
   ERROR_TEXT_LIMIT,
   scrubbedEnv,
 } from "./lib.mjs";
@@ -41,7 +41,9 @@ const execFile = promisify(execFileCb);
 // under /var/cache/tts is rebuildable, so `rm -rf` of any of it is harmless
 // (the no-state rule). A session's real output leaves through git pushes /
 // whatever Tom asks the model to do — never through files that stay here.
-export const SESSIONS_ROOT = "/var/cache/tts/sessions";
+// Named in overflow.mjs (reingest-overflow.mjs walks it without the daemon);
+// re-exported so the poll loop keeps its one import.
+export { SESSIONS_ROOT };
 
 // The repos a session may check out (claudeSessions.repo). Everything is
 // under github.com/Heffnt — same owner the code-todo jobs use.
@@ -511,12 +513,22 @@ export class Session {
       // that still holds the bytes.
       overflowFailures: [],
     };
-    // Complete payloads awaiting POST /sessions/overflow, in seq order, and
-    // the one-at-a-time pump that drains them. Kept OFF the ingest body: the
-    // flush cadence is ~400ms and a blind retry re-sends its whole payload,
-    // so a multi-megabyte tool result riding along would wreck both.
-    this.overflowQueue = [];
-    this.overflowSending = false;
+    // Complete payloads awaiting POST /sessions/overflow, in seq order, one
+    // at a time, and the HOLD that keeps each one's finalize row (and every
+    // row after it) out of the flush until its chunks are stored — see
+    // #takeOutbox. Kept OFF the ingest body: the flush cadence is ~400ms and
+    // a blind retry re-sends its whole payload, so a multi-megabyte tool
+    // result riding along would wreck both.
+    this.overflow = new OverflowQueue({
+      post: (body) => sessionsFetch(this.env, "/sessions/overflow", body),
+      sessionId: id,
+      sessionsRoot: SESSIONS_ROOT,
+      sleep,
+      backoffMs,
+      log,
+      onStored: () => this.requestFlush(true),
+      onUnstored: (failure) => this.#overflowUnstored(failure),
+    });
     this.statusToSend = undefined;
     this.outcomeToSend = undefined; // { outcome, outcomeSummary } — daemon-stamped ending
     this.endedReasonToSend = undefined;
@@ -569,13 +581,17 @@ export class Session {
   }
 
   // `overflow` is what cutWithOverflow returned when the 32KB cut fired: the
-  // complete redacted payload with its hash. The row carries the hash, byte
-  // length and chunk count; the bytes themselves go up their own route (see
-  // #pumpOverflow), so the row stays small and the full payload stays
-  // retrievable.
+  // complete redacted payload with its hash. The row goes into the outbox
+  // now, so its seq is fixed, but HELD there: the bytes go up their own
+  // route first, and the queue stamps the row `overflow: { sha256,
+  // byteLength, chunkCount }` and releases it only once the last chunk is
+  // acknowledged (OverflowQueue in overflow.mjs). So the row stays small, the
+  // full payload stays retrievable, and a row never reaches Convex before
+  // its chunks. A payload that cannot be stored releases the row without a
+  // stamp and reports the loss (#overflowUnstored).
   finalizeRow(kind, content, parentToolUseId, overflow) {
     const seq = this.nextSeq++;
-    this.outbox.finalize.push({
+    const row = {
       seq,
       turn: this.turn,
       kind,
@@ -584,70 +600,32 @@ export class Session {
       // (absent = top-level). The panel and transcript grouping derive from
       // this — the daemon records the SDK's fact, nothing more.
       ...(parentToolUseId ? { parentToolUseId } : {}),
-      ...(overflow
-        ? {
-            overflow: {
-              sha256: overflow.sha256,
-              byteLength: overflow.byteLength,
-              chunkCount: overflow.chunkCount,
-            },
-          }
-        : {}),
-    });
-    if (overflow) {
-      this.overflowQueue.push({ seq, overflow });
-      void this.#pumpOverflow();
-    }
+    };
+    this.outbox.finalize.push(row);
+    if (overflow) this.overflow.hold(row, overflow);
     return seq;
   }
 
-  // Drain the overflow queue, one message's payload at a time. Never throws
-  // and never blocks a flush: a failure here costs the FULL copy of one
-  // payload, not the transcript row, and sendOverflow keeps the bytes on disk
-  // when Convex refuses them so nothing is lost silently.
-  async #pumpOverflow() {
-    if (this.overflowSending) return;
-    this.overflowSending = true;
-    try {
-      while (this.overflowQueue.length > 0 && !this.dead) {
-        const { seq, overflow } = this.overflowQueue.shift();
-        let res;
-        try {
-          res = await sendOverflow({
-            post: (body) =>
-              sessionsFetch(this.env, "/sessions/overflow", body),
-            sessionId: this.id,
-            seq,
-            overflow,
-            sessionsRoot: SESSIONS_ROOT,
-            sleep,
-            backoffMs,
-            log,
-          });
-        } catch (err) {
-          // sendOverflow handles HTTP failure itself; anything reaching here
-          // is a bug or an out-of-memory, and must not kill the daemon.
-          res = { ok: false, error: String(err?.message ?? err), path: null };
-        }
-        if (!res.ok) {
-          this.outbox.overflowFailures.push({
-            seq,
-            error: String(res.error ?? "").slice(0, 300),
-            ...(res.path ? { path: res.path } : {}),
-            byteLength: overflow.byteLength,
-          });
-          this.finalizeRow("error", {
-            message:
-              `the complete payload for message ${seq} could not be stored ` +
-              `(${overflow.byteLength} bytes): ${String(res.error ?? "").slice(0, 200)}` +
-              (res.path ? ` — kept on the box at ${res.path}` : ""),
-          });
-          this.requestFlush(true);
-        }
-      }
-    } finally {
-      this.overflowSending = false;
-    }
+  // A complete payload the queue could not store: the row is already
+  // released without its stamp, the bytes are on disk at `path`, and this is
+  // where the loss becomes a record — an `error` row in the transcript naming
+  // the file, and an overflowFailures entry the server turns into a
+  // session-overflow-unstored event. Also the force-kill path (abandon), in
+  // which case the flush request is a no-op and the final flush carries it.
+  #overflowUnstored({ seq, byteLength, error, path }) {
+    this.outbox.overflowFailures.push({
+      seq,
+      error,
+      ...(path ? { path } : {}),
+      byteLength,
+    });
+    this.finalizeRow("error", {
+      message:
+        `the complete payload for message ${seq} could not be stored ` +
+        `(${byteLength} bytes): ${error}` +
+        (path ? ` — kept on the box at ${path}` : ""),
+    });
+    this.requestFlush(true);
   }
 
   // SDK produced something: update the lastSdkEventAt fact (rides along on
@@ -670,9 +648,8 @@ export class Session {
       this.outbox.overflowFailures.length === 0 &&
       // A terminal session stays alive until its complete payloads are
       // stored: reaping mid-upload would lose exactly the bytes the overflow
-      // path exists to keep.
-      this.overflowQueue.length === 0 &&
-      !this.overflowSending &&
+      // path exists to keep (and their held rows with them).
+      this.overflow.idle &&
       this.statusToSend === undefined &&
       this.outcomeToSend === undefined &&
       !this.bufDirty
@@ -2066,6 +2043,13 @@ export class Session {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
     }
+    // Complete payloads still unstored go to disk FIRST, each reported the
+    // way a failed upload is (#overflowUnstored: an error row naming the
+    // file, an overflowFailures entry for the session-overflow-unstored
+    // event), and their held rows are released unstamped — so the one final
+    // flush below carries the rows, the loss reports, and the ending
+    // together, and nothing about the kill is silent.
+    this.overflow.abandon("unstored at force-kill");
     // Best-effort final flush of whatever was pending: short timeout, errors
     // ignored (the server already considers us terminal; this only tries to
     // land the tail of the transcript). Fire-and-forget — never blocks.
@@ -2080,21 +2064,6 @@ export class Session {
         );
       });
     }
-    // Whatever complete payloads never made it up go to disk before the
-    // queue is dropped: the row already names their hash, and the bytes are
-    // the one thing that cannot be reconstructed later.
-    for (const { seq, overflow } of this.overflowQueue) {
-      const file = writeOverflowFallback(
-        SESSIONS_ROOT,
-        this.id,
-        seq,
-        overflow.text,
-      );
-      log(
-        `session ${this.id}: overflow seq ${seq} unstored at force-kill — kept at ${file ?? "(write failed)"}`,
-      );
-    }
-    this.overflowQueue = [];
     // Drop everything local so the reaper can delete this entry.
     this.outbox = {
       finalize: [],
@@ -2244,9 +2213,15 @@ export class Session {
       this.cwdToSend = undefined;
       any = true;
     }
-    if (this.outbox.finalize.length > 0) {
-      snap.finalize = payload.finalize = this.outbox.finalize;
-      this.outbox.finalize = [];
+    // Only the rows not waiting on an overflow upload go, and nothing past
+    // the first one that is: a row must not reach Convex before its chunks,
+    // and the server's seq floor would drop a row that arrived after a later
+    // one. The held rows stay at the head of the outbox until the queue
+    // releases them (stamped, or unstamped with the loss reported).
+    const ready = this.overflow.readyCount(this.outbox.finalize);
+    if (ready > 0) {
+      snap.finalize = payload.finalize = this.outbox.finalize.slice(0, ready);
+      this.outbox.finalize = this.outbox.finalize.slice(ready);
       any = true;
     }
     if (this.bufDirty) {

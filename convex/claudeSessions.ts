@@ -1493,9 +1493,12 @@ export const internalIngest = internalMutation({
           // Subagent parentage: on a tool-call emitted inside a running Task
           // subagent, the parent Task's toolUseId.
           parentToolUseId: v.optional(v.string()),
-          // The 32KB cut fired and the complete payload was uploaded to
-          // claudeMessageOverflow under this (sessionId, seq) before this
-          // flush. Metadata only — the bytes never ride the ingest body.
+          // The 32KB cut fired and the complete payload is in
+          // claudeMessageOverflow under this (sessionId, seq): the daemon
+          // holds a row back from the flush until its last chunk has been
+          // acknowledged (OverflowQueue in worker/session-host/overflow.mjs),
+          // so a stamped row always follows its chunks. Metadata only — the
+          // bytes never ride the ingest body.
           overflow: v.optional(
             v.object({
               sha256: v.string(),

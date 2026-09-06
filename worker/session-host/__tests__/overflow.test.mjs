@@ -1,8 +1,12 @@
 // The complete payload behind the 32KB cut (worker/session-host/overflow.mjs).
 // What these pin: a cut payload comes back byte-identical under its recorded
 // hash; the redaction runs on the WHOLE text and so cannot be defeated by a
-// credential lying across a chunk boundary; and a payload Convex refuses ends
-// up on disk instead of nowhere.
+// credential lying across a chunk boundary; a payload Convex refuses ends up
+// on disk instead of nowhere; and the ORDER — the finalize row that names the
+// bytes is held out of the flush until the last chunk is acknowledged, and
+// released unstamped when they never are. session.mjs cannot be loaded here
+// (the Agent SDK is installed only on the box), so the hold lives in
+// OverflowQueue, which session.mjs drives and these tests drive the same way.
 //
 // `lib.mjs` is imported through a mocked `worker-env.mjs`: that module is a
 // symlink to ../jobs/worker-env.mjs, which a Windows checkout materializes as
@@ -25,6 +29,7 @@ vi.mock("../worker-env.mjs", () => ({
 
 import {
   OVERFLOW_CHUNK_BYTES,
+  OverflowQueue,
   chunkUtf8,
   isPermanentStatus,
   overflowFor,
@@ -162,12 +167,14 @@ describe("sendOverflow", () => {
       overflow.chunks.map((_, i) => i),
     );
     expect(posted.map((p) => p.text).join("")).toBe(overflow.text);
-    expect(posted[0]).toMatchObject({
+    // One shape on the wire: the hash and byte length belong to the row's
+    // stamp, written once the chunks are up, not to every chunk.
+    expect(posted[0]).toEqual({
       sessionId: "sess1",
       seq: 7,
+      index: 0,
       chunkCount: overflow.chunkCount,
-      sha256: overflow.sha256,
-      byteLength: overflow.byteLength,
+      text: overflow.chunks[0],
     });
     // Nothing on disk when nothing was refused.
     expect(fs.existsSync(path.join(root, "sess1"))).toBe(false);
@@ -196,7 +203,10 @@ describe("sendOverflow", () => {
 
     expect(calls).toBe(1); // permanent: not retried
     expect(res.ok).toBe(false);
-    expect(res.error).toBe("too big");
+    // The status, never the response body: this string lands in an error
+    // row, an event and journald, and a body could carry payload text.
+    expect(res.error).toBe("HTTP 400");
+    expect(res.error).not.toContain("too big");
     const file = overflowPath(root, "sess2", 12);
     expect(res.path).toBe(file);
     const onDisk = fs.readFileSync(file, "utf8");
@@ -261,5 +271,177 @@ describe("isPermanentStatus", () => {
     expect(isPermanentStatus(429)).toBe(false);
     expect(isPermanentStatus(503)).toBe(false);
     expect(isPermanentStatus(undefined)).toBe(false);
+  });
+});
+
+// The hold: what session.mjs asks the queue on every flush (#takeOutbox →
+// readyCount) and what the queue does to the row it was handed (hold →
+// stamp on success, release unstamped and report on failure, abandon on
+// force-kill). Rows here are the outbox's own objects, seqs assigned.
+describe("OverflowQueue (the row waits for its chunks)", () => {
+  function tmpRoot() {
+    return fs.mkdtempSync(path.join(os.tmpdir(), "tts-overflow-queue-"));
+  }
+
+  /** A post whose every call waits until the test lets it through. */
+  function gatedPost() {
+    const posted = [];
+    let release;
+    const gate = new Promise((resolve) => (release = resolve));
+    return {
+      posted,
+      release,
+      post: async (body) => {
+        await gate;
+        posted.push(body);
+      },
+    };
+  }
+
+  function queueFor(root, post, hooks = {}) {
+    const stored = [];
+    const unstored = [];
+    const queue = new OverflowQueue({
+      post,
+      sessionId: "sessQ",
+      sessionsRoot: root,
+      sleep: noSleep,
+      backoffMs: noBackoff,
+      onStored: (row) => stored.push(row),
+      onUnstored: (failure) => unstored.push(failure),
+      ...hooks,
+    });
+    return { queue, stored, unstored };
+  }
+
+  // witness: push the row to the flush as soon as it is finalized (the
+  // stamp riding along) — the row would reach Convex naming chunks that are
+  // not there yet, and if they never arrive the stamp would be a lie.
+  it("holds the row, and every row after it, until the last chunk is acknowledged", async () => {
+    const root = tmpRoot();
+    const { posted, release, post } = gatedPost();
+    const { queue, stored } = queueFor(root, post);
+    const overflow = overflowFor(bigResult(), 100_000);
+    expect(overflow.chunkCount).toBeGreaterThan(1);
+
+    // The outbox as session.mjs keeps it: the cut row, then a later row.
+    const cut = { seq: 5, kind: "tool-result", content: { content: "cut…" } };
+    const later = { seq: 6, kind: "assistant-text", content: { text: "ok" } };
+    const outbox = [cut, later];
+    queue.hold(cut, overflow);
+
+    // A flush now takes nothing: not the held row, not the one behind it
+    // (seq order — the server's floor would drop 5 if 6 landed first).
+    expect(queue.readyCount(outbox)).toBe(0);
+    expect(queue.idle).toBe(false);
+    expect(cut.overflow).toBeUndefined();
+    await Promise.resolve();
+    expect(queue.readyCount(outbox)).toBe(0);
+
+    release();
+    await queue.settled;
+
+    // Every chunk went, in order, and only then was the row stamped and
+    // released — remove the pump and this is where it fails.
+    expect(posted.map((p) => p.index)).toEqual(
+      overflow.chunks.map((_, i) => i),
+    );
+    expect(cut.overflow).toEqual({
+      sha256: overflow.sha256,
+      byteLength: overflow.byteLength,
+      chunkCount: overflow.chunkCount,
+    });
+    expect(queue.readyCount(outbox)).toBe(2);
+    expect(queue.idle).toBe(true);
+    expect(stored).toEqual([cut]);
+    expect(fs.existsSync(path.join(root, "sessQ"))).toBe(false);
+  });
+
+  it("releases the rows ahead of a held one, and rows behind it stay", () => {
+    const { queue } = queueFor(tmpRoot(), gatedPost().post);
+    const rows = [{ seq: 1 }, { seq: 2 }, { seq: 3 }, { seq: 4 }];
+    queue.hold(rows[2], overflowFor(bigResult(1000)));
+    expect(queue.readyCount(rows)).toBe(2);
+    expect(queue.readyCount(rows.slice(2))).toBe(0);
+    expect(queue.readyCount([])).toBe(0);
+  });
+
+  // witness: leave the stamp on a row whose upload failed — a reader would
+  // find a hole under a hash that promises otherwise, forever.
+  it("releases an unstored row WITHOUT a stamp and reports the loss with the file", async () => {
+    const root = tmpRoot();
+    const { queue, stored, unstored } = queueFor(root, async () => {
+      const err = new Error("/sessions/overflow -> HTTP 400: too big");
+      err.status = 400;
+      err.bodyText = "too big";
+      throw err;
+    });
+    const overflow = overflowFor(bigResult(1000));
+    const cut = { seq: 9, kind: "thinking", content: { text: "cut…" } };
+    const outbox = [cut];
+    queue.hold(cut, overflow);
+    expect(queue.readyCount(outbox)).toBe(0);
+
+    await queue.settled;
+
+    expect(cut.overflow).toBeUndefined();
+    expect(queue.readyCount(outbox)).toBe(1);
+    expect(stored).toEqual([]);
+    const file = overflowPath(root, "sessQ", 9);
+    expect(unstored).toEqual([
+      { seq: 9, byteLength: overflow.byteLength, error: "HTTP 400", path: file },
+    ]);
+    expect(fs.readFileSync(file, "utf8")).toBe(overflow.text);
+    expect(queue.idle).toBe(true);
+  });
+
+  // witness: drop the queue at force-kill with a log line — the bytes would
+  // be on disk with no error row, no event and no file named anywhere the
+  // server can see (the finding this pins).
+  it("abandon() at force-kill keeps every unstored payload on disk and reports each", async () => {
+    const root = tmpRoot();
+    const { posted, release, post } = gatedPost();
+    const { queue, stored, unstored } = queueFor(root, post);
+    const first = overflowFor(bigResult(1000));
+    const second = overflowFor(bigResult(2000));
+    const rowA = { seq: 3, kind: "tool-result", content: {} };
+    const rowB = { seq: 4, kind: "tool-result", content: {} };
+    const outbox = [rowA, rowB];
+    queue.hold(rowA, first); // in flight, waiting on the gate
+    queue.hold(rowB, second); // queued behind it
+    expect(queue.readyCount(outbox)).toBe(0);
+
+    queue.abandon("unstored at force-kill");
+
+    // Both released unstamped for the final flush, both on disk, both
+    // reported — the in-flight one included.
+    expect(queue.readyCount(outbox)).toBe(2);
+    expect(queue.idle).toBe(true);
+    expect(rowA.overflow).toBeUndefined();
+    expect(rowB.overflow).toBeUndefined();
+    expect(unstored).toEqual([
+      {
+        seq: 3,
+        byteLength: first.byteLength,
+        error: "unstored at force-kill",
+        path: overflowPath(root, "sessQ", 3),
+      },
+      {
+        seq: 4,
+        byteLength: second.byteLength,
+        error: "unstored at force-kill",
+        path: overflowPath(root, "sessQ", 4),
+      },
+    ]);
+    expect(fs.readFileSync(overflowPath(root, "sessQ", 3), "utf8")).toBe(first.text);
+    expect(fs.readFileSync(overflowPath(root, "sessQ", 4), "utf8")).toBe(second.text);
+
+    // The upload that was in flight completes late: it must not stamp a row
+    // that already went up unstamped, nor call anything stored.
+    release();
+    await queue.settled;
+    expect(rowA.overflow).toBeUndefined();
+    expect(stored).toEqual([]);
+    expect(posted.length).toBeLessThanOrEqual(1);
   });
 });
