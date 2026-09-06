@@ -185,6 +185,45 @@ export function nyHhmm(at: number): string {
   ).padStart(2, "0")}`;
 }
 
+// ── Readiness: two values (ruling 18, the lifeos update, 2026-09-05) ────────
+// THE ONE HOME for what the readiness field means. Tom, 2026-08-27: "theres no
+// functional difference between ready to ratify and needs session" — so the
+// field keeps exactly two values:
+//   unprepared — a raw capture; no one has written it up yet. Never ready.
+//   prepared   — written up (brief, entry action, work description). Whether
+//                it is READY for Tom is then COMPUTED, never stored: see
+//                isReadyForTom below.
+// The two retired spellings, "preparing" and "ready-for-tom", stay READABLE
+// during the widen (every reader goes through normalizeReadiness / isPrepared,
+// so a row written before the migration reads the same as one written after)
+// and are mapped to "prepared" by ttsMigrations.internalMigrateReadiness. They
+// leave the validator at NARROW, once no row carries them.
+export const READINESS_VALUES = ["unprepared", "prepared"] as const;
+export type Readiness = (typeof READINESS_VALUES)[number];
+export const RETIRED_READINESS_VALUES = ["preparing", "ready-for-tom"] as const;
+export type StoredReadiness =
+  | Readiness
+  | (typeof RETIRED_READINESS_VALUES)[number];
+/** The stored form during the widen: the two values plus the two retired
+ * spellings. convex/schema.ts and every pen that stores readiness use this. */
+export const STORED_READINESS = v.union(
+  ...[...READINESS_VALUES, ...RETIRED_READINESS_VALUES].map((r) =>
+    v.literal(r),
+  ),
+);
+/** The two-value form: what a Tom door may write, and what the page offers. */
+export const READINESS = v.union(...READINESS_VALUES.map((r) => v.literal(r)));
+/** One reading for every spelling. "preparing" and "ready-for-tom" both
+ * meant "someone wrote this up" — the distinction between them was whether
+ * an agent could still usefully do groundwork first, a swarm feature that
+ * never came — so both read as prepared. Only "unprepared" is unprepared. */
+export function normalizeReadiness(readiness: StoredReadiness): Readiness {
+  return readiness === "unprepared" ? "unprepared" : "prepared";
+}
+export function isPrepared(readiness: StoredReadiness): boolean {
+  return normalizeReadiness(readiness) === "prepared";
+}
+
 // ── The todo graph: needs, done, ready (schema v2, ratified 2026-08-29) ──────
 // THE ONE HOME for the graph rules — convex/ and app/ both import from here,
 // so the server's frontier and the page's frontier cannot drift. Structural
@@ -195,11 +234,14 @@ export function nyHhmm(at: number): string {
 /** The bounded fan-in of one todo's `needs` (Convex unbounded-array rule). */
 export const MAX_NEEDS = 10;
 
-/** The slice of a todo the graph rules read. */
+/** The slice of a todo the graph rules read. `wakeAt` on an ACTIVE row is a
+ * sleep (the lifeos update: a stored "waiting" status becomes active with its
+ * wakeAt); until that instant the row is not ready for anyone. */
 export type GraphTodo = {
   _id: string;
   status: "active" | "waiting" | "archived" | "done";
   needs?: readonly string[];
+  wakeAt?: number;
 };
 
 /**
@@ -216,23 +258,59 @@ export function buildDoneSet(todos: readonly GraphTodo[]): Set<string> {
   return done;
 }
 
+/** Whether a row's sleep, if it has one, is over at `now`. */
+export function wakeAtPassed(todo: { wakeAt?: number }, now: number): boolean {
+  return todo.wakeAt === undefined || todo.wakeAt <= now;
+}
+
 /**
- * READY — Tom's word for the frontier: this todo is active and every id in its
- * `needs` is done. `waiting` is excluded on purpose (a sleeping todo is not
- * ready no matter what its needs say), as are done/archived rows. No needs at
- * all = ready the moment it is active.
+ * READY — Tom's word for the frontier: this todo is active, awake, and every
+ * id in its `needs` is done. The stored status `waiting` is excluded on
+ * purpose (a sleeping todo is not ready no matter what its needs say), and so
+ * is an active row whose wakeAt is still ahead — the same sleep, spelled the
+ * way it is after the lifeos migration. Done/archived rows are never ready.
+ * No needs at all = ready the moment it is active and awake.
+ *
+ * This is the frontier a WORKER may pick from, and it does not read the
+ * readiness field: an agent task is worked from raw. What is ready FOR TOM is
+ * the stricter isReadyForTom below.
  */
-export function isReady(todo: GraphTodo, doneSet: ReadonlySet<string>): boolean {
+export function isReady(
+  todo: GraphTodo,
+  doneSet: ReadonlySet<string>,
+  now: number,
+): boolean {
   return (
     todo.status === "active" &&
+    wakeAtPassed(todo, now) &&
     (todo.needs ?? []).every((id) => doneSet.has(id))
   );
 }
 
 /** The ready list, in the order given. */
-export function frontier<T extends GraphTodo>(todos: readonly T[]): T[] {
+export function frontier<T extends GraphTodo>(
+  todos: readonly T[],
+  now: number,
+): T[] {
   const doneSet = buildDoneSet(todos);
-  return todos.filter((t) => isReady(t, doneSet));
+  return todos.filter((t) => isReady(t, doneSet, now));
+}
+
+/** The slice of a todo the ready-for-Tom rule reads. */
+export type ReadyTodo = GraphTodo & { readiness: StoredReadiness };
+
+/**
+ * READY FOR TOM (ruling 18): prepared, active, wakeAt absent or passed, every
+ * need done. The one computation behind the page's ready filter, the needs-me
+ * list, the digest's "ready for him" section, and the session-kind choice. A
+ * raw capture (unprepared) is never ready, whatever else is true of it.
+ */
+export function isReadyForTom(
+  todo: ReadyTodo,
+  doneSet: ReadonlySet<string>,
+  now: number,
+): boolean {
+  return isPrepared(todo.readiness) && isReady(todo, doneSet, now);
 }
 
 /** The slice of a todo the goal-condition rule reads. */

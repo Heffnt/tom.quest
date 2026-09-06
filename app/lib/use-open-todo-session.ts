@@ -10,6 +10,7 @@ import { useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
+import { isPrepared } from "@/convex/ttsShared";
 import type { SessionModel } from "@/convex/ttsShared";
 import {
   buildBatchSessionPrompt,
@@ -205,9 +206,9 @@ export function useOpenTodoSession() {
       ruling?: LiveRulingContext;
     },
   ) => {
-    // A ready-for-tom item is worked as a gate session (spec §15);
-    // anything else is a focus-item session.
-    const kind = todo.readiness === "ready-for-tom" ? "gate" : "focus-item";
+    // A prepared item is worked as a gate session (spec §15); a raw one is a
+    // focus-item session. ttsShared.isPrepared reads the retired spellings too.
+    const kind = isPrepared(todo.readiness) ? "gate" : "focus-item";
     await openSession({
       title: todo.statement,
       kind,

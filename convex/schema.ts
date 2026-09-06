@@ -4,7 +4,7 @@ import { v } from "convex/values";
 // The stored form of "which model does this run on". ONE HOME (ttsShared.ts):
 // the name implies its FAMILY, and the family is what picks the runner on the
 // Jarvis Box — Claude's Agent SDK or OpenAI's Codex CLI.
-import { SESSION_MODEL } from "./ttsShared";
+import { SESSION_MODEL, STORED_READINESS } from "./ttsShared";
 
 // `agent` is not a rank between `user` and `admin`: it is a side branch that
 // reads the surfaces in convex/agentSurfaces.ts and writes nothing. See
@@ -359,7 +359,9 @@ export default defineSchema({
   // convex/tts.ts is Tom-gated, so rows carry no userId.
   //
   // Vocabulary (spec §12.1) is stored literally:
-  //   readiness: unprepared | preparing | ready-for-tom
+  //   readiness: unprepared | prepared (ruling 18, the lifeos update; the
+  //              retired spellings preparing | ready-for-tom stay readable
+  //              until NARROW — ttsShared.ts is the one home)
   //   status:    active | waiting | archived | done
   //   timingClass: dated | condition-bound | whenever
   // Nothing is ever deleted (spec principle 2): terminal states are status
@@ -425,11 +427,12 @@ export default defineSchema({
   dtsTodos: defineTable({
     statement: v.string(),
     body: v.optional(v.string()),
-    readiness: v.union(
-      v.literal("unprepared"),
-      v.literal("preparing"),
-      v.literal("ready-for-tom"),
-    ),
+    // WIDENED (the lifeos update, phase 7): two values, unprepared |
+    // prepared, plus the two retired spellings until every row is migrated
+    // (ttsMigrations.internalMigrateReadiness) and the validator narrows.
+    // Whether a prepared row is READY for Tom is computed, never stored
+    // (ttsShared.isReadyForTom).
+    readiness: STORED_READINESS,
     status: v.union(
       v.literal("active"),
       v.literal("waiting"),

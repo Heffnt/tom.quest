@@ -5,7 +5,12 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { recordMissedKeepingDate } from "./tts";
 import {
   DAY_MS,
+  READINESS_VALUES,
+  RETIRED_READINESS_VALUES,
+  buildDoneSet,
   countdownText,
+  isPrepared,
+  isReadyForTom,
   nyCalendarDayBoundsUtc,
   nyHhmm,
   ttsItemLink,
@@ -794,17 +799,33 @@ export async function gatherDigestFacts(
     }
   }
 
-  // 5. Ready for Tom (not already listed as due). Read on the readiness index,
-  // so the scan is the ready list itself — the shortest list in the record,
-  // because a row leaves it the moment Tom rules on it.
-  const ready = (
-    await ctx.db
-      .query("dtsTodos")
-      .withIndex("by_readiness", (q) => q.eq("readiness", "ready-for-tom"))
-      .collect()
-  )
-    .filter((t) => t.status === "active" && !dueIds.has(t._id as string))
-    .map((t) => ({ id: t._id as string, statement: t.statement, entryAction: t.entryAction }));
+  // 5. Ready for Tom (not already listed as due) — ruling 18's computation
+  // (ttsShared.isReadyForTom: prepared, active, awake, every need done). Read
+  // on the readiness index for each PREPARED spelling (the value and, until
+  // NARROW, the two retired ones), so the scan is the prepared list itself —
+  // the shortest list in the record. A row's needs are fetched by id (bounded
+  // by MAX_NEEDS) to build the done set, instead of collecting the table.
+  const preparedRows: Doc<"dtsTodos">[] = [];
+  for (const spelling of [...READINESS_VALUES, ...RETIRED_READINESS_VALUES]) {
+    if (!isPrepared(spelling)) continue;
+    preparedRows.push(
+      ...(await ctx.db
+        .query("dtsTodos")
+        .withIndex("by_readiness", (q) => q.eq("readiness", spelling))
+        .collect()),
+    );
+  }
+  const ready: DigestFacts["ready"] = [];
+  for (const t of preparedRows) {
+    if (t.status !== "active" || dueIds.has(t._id as string)) continue;
+    const needRows: Doc<"dtsTodos">[] = [];
+    for (const id of t.needs ?? []) {
+      const need = await ctx.db.get(id);
+      if (need) needRows.push(need);
+    }
+    if (!isReadyForTom(t, buildDoneSet(needRows), now)) continue;
+    ready.push({ id: t._id as string, statement: t.statement, entryAction: t.entryAction });
+  }
 
   // 7. Rulings from Tom's words since the last digest.
   const rulingRows = await ctx.db

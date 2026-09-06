@@ -10,6 +10,7 @@ import {
   CAPTURE_TRIAGE_RULES,
   CAPTURE_TRIAGE_SKILL,
   DAY_MS,
+  RETIRED_READINESS_VALUES,
   SESSION_REPO_NAMES,
   isSessionModel,
   nyCalendarDayBoundsUtc,
@@ -715,13 +716,16 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
   if (typeof b.id !== "string" || b.id.length === 0) {
     return jsonResponse(400, { error: "id (non-empty string) required" });
   }
+  // "prepared" (ruling 18); the two retired spellings are still accepted from
+  // a box job written before the rename, and the mutation stores them as
+  // "prepared". "unprepared" is refused (an agent never erases a write-up).
   if (
     b.readiness !== undefined &&
-    b.readiness !== "preparing" &&
-    b.readiness !== "ready-for-tom"
+    b.readiness !== "prepared" &&
+    !(RETIRED_READINESS_VALUES as readonly unknown[]).includes(b.readiness)
   ) {
     return jsonResponse(400, {
-      error: 'readiness must be "preparing" or "ready-for-tom"',
+      error: 'readiness must be "prepared"',
     });
   }
   if (
@@ -749,7 +753,10 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
       brief: str(b.brief),
       entryAction: str(b.entryAction),
       workDescription: str(b.workDescription),
-      readiness: b.readiness as "preparing" | "ready-for-tom" | undefined,
+      readiness: b.readiness as
+        | "prepared"
+        | (typeof RETIRED_READINESS_VALUES)[number]
+        | undefined,
       // The date the STATEMENT states, when it states one. The mutation is
       // the real gate: a first date only, never over an existing one.
       dueAt: b.dueAt as number | undefined,

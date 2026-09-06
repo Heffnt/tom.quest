@@ -18,7 +18,13 @@
 import { useEffect, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { countdownText } from "@/convex/ttsShared";
+import {
+  READINESS_VALUES,
+  countdownText,
+  isPrepared,
+  normalizeReadiness,
+  type Readiness,
+} from "@/convex/ttsShared";
 import { useOpenTodoSession } from "@/app/lib/use-open-todo-session";
 import Info from "./info";
 import {
@@ -333,7 +339,7 @@ export default function TodoRow({
         {todo.members !== undefined && (
           <span className={chipCls}>batch · {todo.members.length} members</span>
         )}
-        <span className={chipCls}>{todo.readiness}</span>
+        <span className={chipCls}>{normalizeReadiness(todo.readiness)}</span>
         {todo.status !== "active" && (
           <span className={chipCls}>{todo.status}</span>
         )}
@@ -396,7 +402,7 @@ export default function TodoRow({
                   explanationTitle="opening a session — what is created and where it runs"
                 >
                   {`claudeSessions.createSession({ kind: "${
-                    todo.readiness === "ready-for-tom" ? "gate" : "focus-item"
+                    isPrepared(todo.readiness) ? "gate" : "focus-item"
                   }" })`}
                 </Caption>
               </div>
@@ -484,7 +490,7 @@ export default function TodoRow({
                   <div className="flex items-baseline gap-2">
                     <span className="text-xs text-text-faint">readiness</span>
                     <Caption
-                      explains="Sets how far the preparing of this item has got, and nothing else. Dropping it to preparing hands it back to an agent, which re-writes the brief within a couple of minutes and returns it — the item, and what you have already decided about it, are untouched."
+                      explains="Sets whether this item has been written up, and nothing else. Dropping it to unprepared hands it back to an agent, which re-writes the brief within a couple of minutes and returns it as prepared — the item, and what you have already decided about it, are untouched. Whether a prepared item is ready for you is computed from it: active, awake, and nothing it needs still open."
                       explanation={READINESS_EXPLANATION}
                       explanationTitle="readiness — the field this dropdown writes"
                     >
@@ -492,20 +498,22 @@ export default function TodoRow({
                     </Caption>
                   </div>
                   <select
-                    value={todo.readiness}
+                    value={normalizeReadiness(todo.readiness)}
                     onChange={(e) =>
                       void run(() =>
                         updateTodo({
                           id: todo._id,
-                          readiness: e.target.value as Todo["readiness"],
+                          readiness: e.target.value as Readiness,
                         }),
                       )
                     }
                     className={inputCls}
                   >
-                    <option value="unprepared">unprepared</option>
-                    <option value="preparing">preparing</option>
-                    <option value="ready-for-tom">ready-for-tom</option>
+                    {READINESS_VALUES.map((r) => (
+                      <option key={r} value={r}>
+                        {r}
+                      </option>
+                    ))}
                   </select>
                 </div>
               </div>
@@ -571,7 +579,7 @@ export default function TodoRow({
 
               {/* full fact grid */}
               <div className="grid sm:grid-cols-2 gap-x-6 gap-y-1 text-xs">
-                <Fact label="readiness">{todo.readiness}</Fact>
+                <Fact label="readiness">{normalizeReadiness(todo.readiness)}</Fact>
                 <Fact label="status">{todo.status}</Fact>
                 <Fact label="timingClass">{todo.timingClass}</Fact>
                 {todo.category && (

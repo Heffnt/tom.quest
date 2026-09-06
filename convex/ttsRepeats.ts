@@ -291,7 +291,7 @@ export const internalGenerateRepeats = internalMutation({
         body: rule.body,
         // Ready by construction: the rule already carries everything an
         // instance needs, so the preparer never churns on these.
-        readiness: "ready-for-tom",
+        readiness: "prepared",
         status: "active",
         timingClass: "dated",
         dueAt,

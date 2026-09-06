@@ -13,10 +13,14 @@ import { INTEGRATION_SOURCE, integrationName } from "./ttsIntegrations";
 import {
   DAY_MS,
   MAX_NEEDS,
+  READINESS,
+  RETIRED_READINESS_VALUES,
   SESSION_MODEL,
   TTS_PREP_NY_HOUR,
   captureReplyText,
   goalCheckable,
+  isPrepared,
+  normalizeReadiness,
   nyCalendarDayBoundsUtc,
   nyCalendarDayKey,
   normalizeSessionRepos,
@@ -52,11 +56,9 @@ async function requireTomOrAgentId(
 // internalStoreWorkerPrep.
 const QUEUE_MAX = 7;
 
-const READINESS = v.union(
-  v.literal("unprepared"),
-  v.literal("preparing"),
-  v.literal("ready-for-tom"),
-);
+// Readiness is two values (ruling 18); READINESS, the two-value validator, is
+// imported from ttsShared — Tom's door writes only those. The worker's pen
+// below still ACCEPTS the retired spellings and stores them normalized.
 const STATUS = v.union(
   v.literal("active"),
   v.literal("waiting"),
@@ -1585,8 +1587,16 @@ export const internalPrepareTodo = internalMutation({
     brief: v.optional(v.string()),
     entryAction: v.optional(v.string()),
     workDescription: v.optional(v.string()),
+    // "prepared" is the value (ruling 18). The two retired spellings are still
+    // accepted from a worker written before the rename and stored as
+    // "prepared" — a pen that rejected them would fail every box job until its
+    // deploy caught up. "unprepared" is refused: an agent must never erase the
+    // record that a todo was written up.
     readiness: v.optional(
-      v.union(v.literal("preparing"), v.literal("ready-for-tom")),
+      v.union(
+        v.literal("prepared"),
+        ...RETIRED_READINESS_VALUES.map((r) => v.literal(r)),
+      ),
     ),
     plan: v.optional(v.array(PLAN_STEP)),
     // ── The graph worker's three args (schema v2, 2026-08-29) ────────────────
@@ -1660,7 +1670,9 @@ export const internalPrepareTodo = internalMutation({
       }
       if (entryAction !== undefined) patch.entryAction = entryAction;
       if (workDescription !== undefined) patch.workDescription = workDescription;
-      if (readiness !== undefined) patch.readiness = readiness;
+      if (readiness !== undefined) {
+        patch.readiness = normalizeReadiness(readiness);
+      }
       if (dueAt !== undefined) {
         // Kept-dates rule (spec §8): a stored date moves only through
         // recordDateOutcome / a time note. The preparer gets the FIRST date
@@ -1908,7 +1920,7 @@ export const internalStoreBatches = internalMutation({
           brief: b.brief,
           members: b.members,
           plan: b.plan,
-          readiness: "ready-for-tom",
+          readiness: "prepared",
           status: "active",
           timingClass: "whenever",
           source: "batcher",
@@ -2554,7 +2566,7 @@ export const internalStorePlanGraph = internalMutation({
         if (row.status !== "active") continue;
         if (row.source !== "planner") continue;
         if (row.tomTouchedAt !== undefined) continue;
-        if (row.evidence !== undefined || row.readiness !== "unprepared") {
+        if (row.evidence !== undefined || isPrepared(row.readiness)) {
           result.skipped.push({
             ref: row.statement,
             why: "left in the batch: the planner did not re-emit it, and a session has already worked it",

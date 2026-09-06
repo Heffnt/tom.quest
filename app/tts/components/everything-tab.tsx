@@ -14,7 +14,9 @@ import TodoRow from "./todo-row";
 import CodeTodoRow from "./code-todo-row";
 import { groupTimeNotes, NO_NOTES } from "./time-note-field";
 import {
+  buildDoneSet,
   codeSubjectKey,
+  isReadyForTom,
   liveRulingsByKey,
   type MirrorRow,
   type Todo,
@@ -54,8 +56,10 @@ function rowStatement(r: Row): string {
 function rowCategory(r: Row): string | undefined {
   return r.kind === "life" ? r.todo.category : "code";
 }
-function rowReady(r: Row): boolean {
-  return r.kind === "life" && r.todo.readiness === "ready-for-tom";
+// READY is computed (ruling 18): prepared, active, awake, every need done —
+// ttsShared.isReadyForTom, against the done set of every todo on the page.
+function rowReady(r: Row, doneSet: ReadonlySet<string>, now: number): boolean {
+  return r.kind === "life" && isReadyForTom(r.todo, doneSet, now);
 }
 function rowCreatedAt(r: Row): number {
   return r.kind === "life" ? r.todo.createdAt : r.row._creationTime;
@@ -174,7 +178,8 @@ export default function EverythingTab({
     q === "" || rowStatement(r).toLowerCase().includes(q);
   const byStatus = (r: Row) => rowStatuses(r).some((s) => statuses.has(s));
   const byKind = (r: Row) => kinds.has(r.kind);
-  const byReady = (r: Row) => !readyOnly || rowReady(r);
+  const doneSet = buildDoneSet(todos ?? []);
+  const byReady = (r: Row) => !readyOnly || rowReady(r, doneSet, now);
   const byCategory = (r: Row) =>
     category === "" || rowCategory(r) === category;
 
@@ -221,7 +226,11 @@ export default function EverythingTab({
     ).length;
   const readyCount = rows.filter(
     (r) =>
-      bySearch(r) && byStatus(r) && byKind(r) && byCategory(r) && rowReady(r),
+      bySearch(r) &&
+      byStatus(r) &&
+      byKind(r) &&
+      byCategory(r) &&
+      rowReady(r, doneSet, now),
   ).length;
   const categoryCount = (c: string) =>
     rows.filter(

@@ -4914,7 +4914,8 @@ describe("frontier scheduler", () => {
     expect(text).toContain("DEFERRED");
     expect(text).toContain("FAILED");
     expect(text).toContain("ABANDONED");
-    expect(text).toContain("ready-for-tom");
+    expect(text).toContain('"readiness": "prepared"');
+    expect(text).not.toContain("ready-for-tom"); // the retired spelling
     // Same env contract as every autonomous mission: the ingest key never
     // reaches a model-reachable environment.
     expect(text).toContain("TTS_WORKER_KEY");

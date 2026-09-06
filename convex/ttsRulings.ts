@@ -154,7 +154,11 @@ async function insertRuling(
         await ctx.db.patch(todoId, { tomTouchedAt: now });
       }
       if (verdict === "revise") {
-        await ctx.db.patch(todoId, { readiness: "preparing", updatedAt: now });
+        // Two readiness values (ruling 18): revise hands the write-up back, so
+        // the row is unprepared — preparation is owed again — until the
+        // preparer returns it as prepared. It is therefore not ready for Tom
+        // in the meantime (ttsShared.isReadyForTom).
+        await ctx.db.patch(todoId, { readiness: "unprepared", updatedAt: now });
       }
       if (verdict === "archive") {
         await applyStatusChange(ctx, todo, {

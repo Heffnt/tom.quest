@@ -55,6 +55,7 @@ import {
   buildDoneSet,
   goalCheckable,
   isLive,
+  isPrepared,
   isReady,
   modelFamily,
   normalizeSessionRepos,
@@ -2523,7 +2524,7 @@ function buildAutoMissionPrompt(
   }
   lines.push(
     "",
-    `The goal: do every open plan step with actor "agent" — research, draft, gather, and write what you produce into the item via the prepare pen below. Advance readiness to "ready-for-tom" ONLY when the remaining work genuinely needs Tom. For a batch, refine the plan and check off the agent steps you complete (always post the FULL updated plan, never a diff).`,
+    `The goal: do every open plan step with actor "agent" — research, draft, gather, and write what you produce into the item via the prepare pen below. Set readiness to "prepared" when the write-up is complete — and only then; a prepared item that is active, awake and unblocked is what TTS shows Tom as ready. For a batch, refine the plan and check off the agent steps you complete (always post the FULL updated plan, never a diff).`,
     "",
     // Ratified doctrine (Tom, 2026-08-29): his input gates PERSISTENCE, never
     // implementation — a session that halts at a decision leaves him nothing
@@ -2538,7 +2539,7 @@ function buildAutoMissionPrompt(
     "",
     "1. Write your work into the item:",
     "```",
-    `curl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "brief": "...", "entryAction": "...", "workDescription": "...", "readiness": "preparing", "plan": [{"text": "...", "actor": "agent", "status": "open"}]}'`,
+    `curl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "brief": "...", "entryAction": "...", "workDescription": "...", "readiness": "prepared", "plan": [{"text": "...", "actor": "agent", "status": "open"}]}'`,
     "```",
     'Every field except "id" is optional — send only what you produced. On a batch only "plan" lands (the server skips the other fields by design).',
     "",
@@ -2692,7 +2693,7 @@ function buildWorkerPrompt(args: {
           "",
           "1. THE WORK IS YOURS TO DO. Do it, then record the task done with its evidence — the branch, the pull request, the file you wrote, the answer you established. Evidence is what makes the completion checkable by someone who was not here.",
           "",
-          "2. THE WORK TURNS OUT TO NEED TOM'S JUDGMENT. Do not stop at the question. Prepare it so completely that his part is one reply: write the ground-up explanation (self-contained, defining every term, complete for a reader who has none of this context), state the options as they actually stand, and give your recommendation with the one reason for it. Then set readiness to ready-for-tom and leave the task open. His input gates what PERSISTS — a merge, a ruling, a real-world action — never what you implement: where you can implement your best-judgment option and name what you passed over, do that instead of asking.",
+          "2. THE WORK TURNS OUT TO NEED TOM'S JUDGMENT. Do not stop at the question. Prepare it so completely that his part is one reply: write the ground-up explanation (self-contained, defining every term, complete for a reader who has none of this context), state the options as they actually stand, and give your recommendation with the one reason for it. Then set readiness to prepared and leave the task open. His input gates what PERSISTS — a merge, a ruling, a real-world action — never what you implement: where you can implement your best-judgment option and name what you passed over, do that instead of asking.",
           "",
           "THAT EXPLANATION IS A COMPLETE HTML DOCUMENT, not a paragraph — from \"<!DOCTYPE html>\" to \"</html>\", with its own inline <style> block and nothing loaded from outside: no script, no event handler, no external stylesheet, font, image, or URL. It renders fullscreen in a sandbox with no scripting and no network, so anything external is a hole in the page. Palette #0a0e17 background, #e2e8f0 text, #94a3b8 secondary, #e8a040 accent, #1e293b borders; about 15px body type, real <h1>/<h2> headings, short sections, a <table> for enumerable facts, bordered <div> boxes with → or ↓ arrows where a shape helps. The standard above says what it must cover; write the whole page, because there is no way to amend one and a fragment overwrites what is stored.",
         ]),
@@ -2711,13 +2712,13 @@ function buildWorkerPrompt(args: {
     "",
     "2. Or hand it to Tom, when only his judgment is left:",
     "```",
-    `curl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "readiness": "ready-for-tom", "groundUpExplanation": "...", "entryAction": "the smallest next action", "evidence": "what you produced on the way"}'`,
+    `curl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "readiness": "prepared", "groundUpExplanation": "...", "entryAction": "the smallest next action", "evidence": "what you produced on the way"}'`,
     "```",
     "Every field except \"id\" is optional — send only what you produced, and send both commands if you both produced something and finished.",
     "",
     "A groundUpExplanation is a whole HTML document and will not survive being typed inline in that command. Write the document to a file, build the request body from it, and post the file:",
     "```",
-    `# after writing the page to /tmp/explanation.html\njq -Rs --arg id '${todo._id}' '{id: $id, readiness: "ready-for-tom", groundUpExplanation: .}' < /tmp/explanation.html > /tmp/tts-body.json\ncurl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d @/tmp/tts-body.json`,
+    `# after writing the page to /tmp/explanation.html\njq -Rs --arg id '${todo._id}' '{id: $id, readiness: "prepared", groundUpExplanation: .}' < /tmp/explanation.html > /tmp/tts-body.json\ncurl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d @/tmp/tts-body.json`,
     "```",
     "Any equivalent works (node, python) — the point is that the JSON escaping is done by a tool and never by hand. Add the other fields to the jq object as you need them.",
     "",
@@ -3253,8 +3254,8 @@ export const internalAutoSchedule = internalMutation({
 
     const hasOpenAgentStep = (t: Doc<"dtsTodos">): boolean =>
       (t.plan ?? []).some((s) => s.actor === "agent" && s.status === "open");
-    const unprepared = (t: Doc<"dtsTodos">): boolean =>
-      t.readiness === "unprepared" || t.readiness === "preparing";
+    // Two readiness values (ruling 18); ttsShared reads the retired spellings.
+    const unprepared = (t: Doc<"dtsTodos">): boolean => !isPrepared(t.readiness);
 
     // ── Per-candidate exclusions (cheapest first) ────────────────────────────
     const computeExcluded = async (t: Doc<"dtsTodos">): Promise<boolean> => {
@@ -3376,7 +3377,7 @@ export const internalAutoSchedule = internalMutation({
     const readyByBatch = new Map<string, Doc<"dtsTodos">[]>();
     for (const t of todos) {
       if (t.batchId === undefined) continue;
-      if (!isReady(t, doneSet)) continue;
+      if (!isReady(t, doneSet, now)) continue;
       const list = readyByBatch.get(t.batchId) ?? [];
       list.push(t);
       readyByBatch.set(t.batchId, list);
@@ -3502,12 +3503,10 @@ export const internalAutoSchedule = internalMutation({
       if (block.todoId !== undefined) {
         const t = todoById.get(block.todoId);
         if (!t || t.status !== "active" || !legacyOrGoal(t)) continue;
-        // Not ready: a plain todo short of ready-for-tom, or a batch with
-        // open agent plan steps still to do.
+        // Not ready: a plain todo not yet prepared, or a batch with open
+        // agent plan steps still to do.
         const notReady =
-          t.members !== undefined
-            ? hasOpenAgentStep(t)
-            : t.readiness !== "ready-for-tom";
+          t.members !== undefined ? hasOpenAgentStep(t) : unprepared(t);
         if (notReady) candidates.push({ todo: t, lane: "block" });
       } else if (block.category !== undefined && block.category !== "code") {
         // Category block: the stalest NON-excluded unprepared todo in the

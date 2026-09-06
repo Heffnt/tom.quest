@@ -24,16 +24,15 @@
 // filed as one Tom chose. Everything vaguer than an explicit date stays
 // undated; Tom's time notes are how dates move after that.
 //
-// readiness after preparation:
-//   ready-for-tom  — a self-contained personal task: the only missing thing
-//                    is Tom doing/deciding it.
-//   preparing      — genuinely needs more agent work (research, drafting)
-//                    before Tom's attention is well spent. Still gets the
-//                    fields; deeper preparation is a later swarm feature.
+// readiness after preparation: "prepared" (ruling 18, the lifeos update —
+// readiness is two values, unprepared | prepared; the old split between
+// "ready-for-tom" and "preparing" was a promise of deeper agent preparation
+// that never came). Whether a prepared todo is READY for Tom is computed on
+// the server (convex/ttsShared.ts isReadyForTom), never written here.
 //
 // REVISE RULINGS: Tom can rule "revise" on a prepared life todo with one
 // written sentence that redirects the preparation (the server drops the
-// todo's readiness back to "preparing" when he does). This job reads the
+// todo's readiness back to "unprepared" when he does). This job reads the
 // unified rulings feed at /tts/rulings, takes the LIFE rows with verdict
 // "revise", re-prepares each such todo with Tom's sentence embedded in the
 // prompt, and POSTs /tts/ruling-applied so the ruling is consumed and
@@ -91,10 +90,7 @@ function prompt(todo, reviseSentence, today) {
     `3. "workDescription" — the kind/size of engagement, qualitatively, a few`,
     `   words (e.g. "a two-minute errand", "a short ruling", "a session's`,
     `   worth of writing"). NEVER a numeric time estimate.`,
-    `4. "readiness" — "ready-for-tom" if the only missing ingredient is Tom`,
-    `   acting or deciding; "preparing" if an agent could still usefully do`,
-    `   groundwork first (research, drafting, gathering links).`,
-    `5. "dueDate" — ONLY when the statement ITSELF names an explicit date`,
+    `4. "dueDate" — ONLY when the statement ITSELF names an explicit date`,
     `   ("pay rent sept 3", "call the bank on Friday the 12th"). Then give it`,
     `   as "YYYY-MM-DD"; today is ${today} in New York, which is how you`,
     `   resolve a bare month+day or weekday to a year. Otherwise give null.`,
@@ -102,7 +98,7 @@ function prompt(todo, reviseSentence, today) {
     `   next week". A date you were not told in the statement is a date that`,
     `   does not exist. Only the words in "statement" count; a date mentioned`,
     `   anywhere else is not this item's date.`,
-    `6. "dateKind" — ONLY when you gave a dueDate. "external" if the statement`,
+    `5. "dateKind" — ONLY when you gave a dueDate. "external" if the statement`,
     `   shows the deadline was imposed by someone or something else (a bill, a`,
     `   landlord, a booking window, a court date); "self-imposed" if it reads`,
     `   as Tom's own choice of when. When the statement does not say, answer`,
@@ -110,7 +106,7 @@ function prompt(todo, reviseSentence, today) {
     ``,
     `Answer ONLY a JSON object:`,
     `{"brief": "...", "entryAction": "...", "workDescription": "...",`,
-    ` "readiness": "...", "dueDate": null, "dateKind": null}`,
+    ` "dueDate": null, "dateKind": null}`,
   ].join("\n");
 }
 
@@ -139,19 +135,20 @@ async function main() {
   }
 
   // Unprepared active todos — plus revise-ruled todos REGARDLESS of status
-  // (a revise verdict drops readiness to "preparing" server-side; the sentence
-  // is what pulls the todo back into the batch, and preparation only touches
-  // brief/entryAction/workDescription, so re-preparing a waiting or archived
-  // todo is safe — an active-only filter would strand the ruling pending
-  // forever if Tom changed the status after ruling). --force also re-prepares
-  // "preparing" items (useful after improving this prompt).
+  // (a revise verdict drops readiness to "unprepared" server-side; the
+  // sentence is what pulls the todo back into the batch, and preparation only
+  // touches brief/entryAction/workDescription, so re-preparing a waiting or
+  // archived todo is safe — an active-only filter would strand the ruling
+  // pending forever if Tom changed the status after ruling). --force also
+  // re-prepares already-prepared items, BATCH_MAX per run (useful after
+  // improving this prompt).
   //
   // members === undefined on BOTH branches: a members-bearing todo is a batch,
   // and batches are prepared (and re-formed on revise) by form-batches.mjs.
   // A schema-v2 TASK (a row carrying batchId whose kind is not "goal") is
   // excluded for the same reason one schema version later: it is a step inside
   // a batches row, "unprepared" is this job's INBOX rather than a resting
-  // state, and briefing one would advance it to "ready-for-tom" and flood the
+  // state, and briefing one would advance it to "prepared" and flood the
   // needs-me feed with plan steps.
   //
   // A GOAL IS NOT EXCLUDED. A goal is one of Tom's own todos that the planner
@@ -165,9 +162,7 @@ async function main() {
       t.members === undefined &&
       !isGraphTask(t) &&
       (reviseByTodo.has(t._id) ||
-        (t.status === "active" &&
-          (t.readiness === "unprepared" ||
-            (force && t.readiness === "preparing")))),
+        (t.status === "active" && (t.readiness === "unprepared" || force))),
   );
   if (targets.length === 0) return; // quiet when idle
 
@@ -189,8 +184,7 @@ async function main() {
       if (
         typeof parsed.brief !== "string" ||
         typeof parsed.entryAction !== "string" ||
-        typeof parsed.workDescription !== "string" ||
-        (parsed.readiness !== "ready-for-tom" && parsed.readiness !== "preparing")
+        typeof parsed.workDescription !== "string"
       ) {
         throw new Error(`bad shape: ${JSON.stringify(parsed).slice(0, 120)}`);
       }
@@ -221,7 +215,8 @@ async function main() {
         brief: parsed.brief,
         entryAction: parsed.entryAction,
         workDescription: parsed.workDescription,
-        readiness: parsed.readiness,
+        // The one value preparation produces (ruling 18); ready is computed.
+        readiness: "prepared",
         ...(dueAt !== undefined ? { dueAt, dateKind } : {}),
       });
       if (revise) {
@@ -233,7 +228,7 @@ async function main() {
         });
       }
       console.log(
-        `[prepare-life-todos] prepared ${todo._id} -> ${parsed.readiness}` +
+        `[prepare-life-todos] prepared ${todo._id}` +
           `${revise ? " (revise ruling applied)" : ""} ` +
           `"${todo.statement.slice(0, 50).replace(/\s+/g, " ")}"`,
       );

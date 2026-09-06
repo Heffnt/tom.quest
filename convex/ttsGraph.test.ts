@@ -8,7 +8,10 @@ import {
   WRITING_STANDARD,
   buildDoneSet,
   frontier,
+  isPrepared,
   isReady,
+  isReadyForTom,
+  normalizeReadiness,
 } from "./ttsShared";
 import type { SessionModel } from "./ttsShared";
 
@@ -79,11 +82,13 @@ const byStatement = (todos: Doc<"dtsTodos">[], statement: string) =>
 // ── The graph rules (convex/ttsShared.ts — the ONE home) ─────────────────────
 
 describe("ttsShared graph rules", () => {
+  const NOW = Date.UTC(2026, 8, 5, 12);
   const todo = (
     _id: string,
     status: Doc<"dtsTodos">["status"],
     needs?: string[],
-  ) => ({ _id, status, needs });
+    wakeAt?: number,
+  ) => ({ _id, status, needs, wakeAt });
 
   // witness: change isReady to ignore `needs` in convex/ttsShared.ts — every
   // blocked todo would report ready and the frontier would be the whole batch.
@@ -94,12 +99,12 @@ describe("ttsShared graph rules", () => {
       todo("c", "active", ["b"]),
     ];
     const done = buildDoneSet(rows);
-    expect(isReady(rows[1], done)).toBe(true);
-    expect(isReady(rows[2], done)).toBe(false);
+    expect(isReady(rows[1], done, NOW)).toBe(true);
+    expect(isReady(rows[2], done, NOW)).toBe(false);
     // No needs at all: ready the moment it is active.
-    expect(isReady(todo("d", "active"), done)).toBe(true);
+    expect(isReady(todo("d", "active"), done, NOW)).toBe(true);
     // EVERY need, not some: one unmet need is enough to block.
-    expect(isReady(todo("e", "active", ["a", "b"]), done)).toBe(false);
+    expect(isReady(todo("e", "active", ["a", "b"]), done, NOW)).toBe(false);
   });
 
   // witness: drop "archived" from buildDoneSet — a set-aside need would block
@@ -107,16 +112,26 @@ describe("ttsShared graph rules", () => {
   it("archived counts as done, matching memberProgress", () => {
     const rows = [todo("a", "archived"), todo("b", "active", ["a"])];
     expect(buildDoneSet(rows)).toEqual(new Set(["a"]));
-    expect(isReady(rows[1], buildDoneSet(rows))).toBe(true);
+    expect(isReady(rows[1], buildDoneSet(rows), NOW)).toBe(true);
   });
 
   // witness: let isReady accept status "waiting" — a sleeping todo would be
   // offered as ready work.
   it("waiting, done, and archived todos are never ready", () => {
     const done = new Set<string>();
-    expect(isReady(todo("a", "waiting"), done)).toBe(false);
-    expect(isReady(todo("b", "done"), done)).toBe(false);
-    expect(isReady(todo("c", "archived"), done)).toBe(false);
+    expect(isReady(todo("a", "waiting"), done, NOW)).toBe(false);
+    expect(isReady(todo("b", "done"), done, NOW)).toBe(false);
+    expect(isReady(todo("c", "archived"), done, NOW)).toBe(false);
+  });
+
+  // witness: drop wakeAtPassed from isReady — an active row put to sleep by
+  // the lifeos migration (waiting → active + wakeAt) would be offered as
+  // ready work before its wake time.
+  it("an active row whose wakeAt is ahead is asleep, not ready", () => {
+    const done = new Set<string>();
+    expect(isReady(todo("a", "active", [], NOW + 1), done, NOW)).toBe(false);
+    expect(isReady(todo("b", "active", [], NOW), done, NOW)).toBe(true);
+    expect(isReady(todo("c", "active", [], NOW - 1), done, NOW)).toBe(true);
   });
 
   it("frontier is the ready list, in the order given", () => {
@@ -126,8 +141,39 @@ describe("ttsShared graph rules", () => {
       todo("c", "active", ["b"]),
       todo("d", "waiting"),
       todo("e", "active"),
+      todo("f", "active", [], NOW + 60_000),
     ];
-    expect(frontier(rows).map((r) => r._id)).toEqual(["b", "e"]);
+    expect(frontier(rows, NOW).map((r) => r._id)).toEqual(["b", "e"]);
+  });
+
+  // ── Readiness, two values (ruling 18) ──────────────────────────────────────
+  // witness: make normalizeReadiness read "preparing" as unprepared — every
+  // row written before the migration would drop off Tom's ready list.
+  it("the two retired spellings both read as prepared", () => {
+    expect(normalizeReadiness("unprepared")).toBe("unprepared");
+    expect(normalizeReadiness("prepared")).toBe("prepared");
+    expect(normalizeReadiness("preparing")).toBe("prepared");
+    expect(normalizeReadiness("ready-for-tom")).toBe("prepared");
+    expect(isPrepared("unprepared")).toBe(false);
+    expect(isPrepared("ready-for-tom")).toBe(true);
+  });
+
+  // witness: drop any one of the four conjuncts from isReadyForTom — a raw
+  // capture, a sleeping row, a blocked row, or a done row would be listed as
+  // ready for Tom.
+  it("ready for Tom = prepared, active, awake, every need done", () => {
+    const rows = [
+      { ...todo("a", "done"), readiness: "prepared" as const },
+      { ...todo("b", "active", ["a"]), readiness: "prepared" as const },
+      { ...todo("c", "active", ["a"]), readiness: "unprepared" as const },
+      { ...todo("d", "active", ["b"]), readiness: "prepared" as const },
+      { ...todo("e", "active", [], NOW + 1), readiness: "prepared" as const },
+      { ...todo("f", "waiting"), readiness: "prepared" as const },
+      { ...todo("g", "active"), readiness: "ready-for-tom" as const },
+    ];
+    const done = buildDoneSet(rows);
+    const ready = rows.filter((r) => isReadyForTom(r, done, NOW)).map((r) => r._id);
+    expect(ready).toEqual(["b", "g"]);
   });
 
   it("bounds a todo's fan-in", () => {
@@ -182,7 +228,7 @@ describe("TTS plan graph (internalStorePlanGraph)", () => {
     expect(call.needs).toEqual([draft._id]);
 
     // The frontier reads exactly what the pen wrote.
-    expect(frontier(todos).map((x) => x.statement)).toEqual([
+    expect(frontier(todos, Date.now()).map((x) => x.statement)).toEqual([
       "draft the questions",
     ]);
   });

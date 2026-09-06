@@ -131,7 +131,7 @@ describe("TTS unified rulings", () => {
 
   // witness: drop the readiness patch from recordRuling's revise branch in
   // convex/ttsRulings.ts
-  it("revise on a life todo drops readiness to preparing", async () => {
+  it("revise on a life todo drops readiness to unprepared", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, {
@@ -139,7 +139,7 @@ describe("TTS unified rulings", () => {
     });
     await tom.mutation(api.tts.updateTodo, {
       id: todoId,
-      readiness: "ready-for-tom",
+      readiness: "prepared",
     });
     await tom.mutation(api.ttsRulings.recordRuling, {
       todoId,
@@ -147,7 +147,7 @@ describe("TTS unified rulings", () => {
       sentence: "  ask about the Friday slot instead  ",
     });
     const [todo] = await tom.query(api.tts.listTodos, {});
-    expect(todo.readiness).toBe("preparing");
+    expect(todo.readiness).toBe("unprepared");
     const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
     expect(ruling.subjectType).toBe("life");
     expect(ruling.sentence).toBe("ask about the Friday slot instead"); // trimmed
@@ -250,7 +250,7 @@ describe("TTS unified rulings", () => {
     });
     const todo = await t.run(async (ctx) => ctx.db.get(todoId));
     expect(todo?.tomTouchedAt).toBeUndefined();
-    expect(todo?.readiness).toBe("preparing"); // the revise effect still landed
+    expect(todo?.readiness).toBe("unprepared"); // the revise effect still landed
   });
 
   // witness: same guard — a revised batch must stay rewritable, which is the
@@ -391,7 +391,7 @@ describe("TTS unified rulings", () => {
     const todo = await t.run(async (ctx) =>
       ctx.db.get((await ctx.db.query("dtsTodos").collect())[0]._id),
     );
-    expect(todo?.readiness).toBe("preparing");
+    expect(todo?.readiness).toBe("unprepared");
     await expect(
       t.mutation(internal.ttsRulings.internalRecordRuling, {
         todoId: "not-a-real-id",

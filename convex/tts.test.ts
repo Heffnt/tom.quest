@@ -401,10 +401,12 @@ describe("TTS todos", () => {
       brief: "Tape for finger protection.",
       entryAction: "Open the retailer page",
       workDescription: "a two-minute errand",
+      // The retired spelling is still accepted from an older box job during
+      // the widen, and stored as the value (ruling 18).
       readiness: "ready-for-tom",
     });
     const [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
-    expect(todo.readiness).toBe("ready-for-tom");
+    expect(todo.readiness).toBe("prepared");
     expect(todo.entryAction).toBe("Open the retailer page");
     expect(todo.statement).toBe("buy climbing tape"); // intent untouched
     await expect(
@@ -756,7 +758,7 @@ describe("TTS batches and annotations", () => {
     const batch = await findBatch(t);
     expect(batch?.statement).toBe("trip logistics");
     expect(batch?.source).toBe("batcher");
-    expect(batch?.readiness).toBe("ready-for-tom");
+    expect(batch?.readiness).toBe("prepared");
     expect(batch?.status).toBe("active");
     expect(batch?.timingClass).toBe("whenever");
     expect(batch?.members).toHaveLength(2);
@@ -1169,14 +1171,14 @@ describe("TTS batches and annotations", () => {
       brief: "a preparer's brief",
       entryAction: "open the first one",
       workDescription: "an afternoon",
-      readiness: "preparing",
+      readiness: "prepared",
       plan: [step("do the first member")],
     });
     const fresh = await findBatch(t);
     expect(fresh?.brief).toBe("why these belong together"); // the batcher's
     expect(fresh?.entryAction).toBeUndefined();
     expect(fresh?.workDescription).toBeUndefined();
-    expect(fresh?.readiness).toBe("ready-for-tom"); // untouched
+    expect(fresh?.readiness).toBe("prepared"); // untouched
     expect(fresh?.plan).toHaveLength(1); // the plan is the one field that lands
     const events = await tom.query(api.tts.listRecentEvents, {});
     const skipped = events.find((e) => e.kind === "prepare-skipped-batch");
