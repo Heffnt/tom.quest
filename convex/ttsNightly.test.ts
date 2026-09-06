@@ -154,7 +154,12 @@ describe("GET /tts/export", () => {
       const url = `/tts/export?table=claudeMessages&boundary=${boundary}&numItems=200${
         cursor === null ? "" : `&cursor=${encodeURIComponent(cursor)}`
       }`;
-      const page = await (await get(t, url)).json();
+      const page: {
+        rows: { _id: string }[];
+        bytes: number;
+        isDone: boolean;
+        continueCursor: string;
+      } = await (await get(t, url)).json();
       pages += 1;
       expect(page.rows.length).toBeGreaterThan(0);
       expect(page.bytes).toBeLessThanOrEqual(EXPORT_PAGE_BYTES);
