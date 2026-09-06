@@ -18,9 +18,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   AREA_SECTIONS,
+  FORBIDDEN_SECTIONS,
   MODEL_OF_TOM_FIRST,
   SPLIT_BYTES,
   abortStaleRebase,
+  applyLearningChanges,
+  bumpUpdated,
   claudeEntry,
   codexMetaOf,
   codexMetaOfBuffer,
@@ -28,10 +31,16 @@ import {
   commitTree,
   discoverSessionFiles,
   indexManifests,
+  isLearningFile,
   isTableFile,
+  learningChangeId,
+  learningStep,
+  matchObjection,
+  parseLearningAnswer,
   planTableFiles,
   readManifests,
   rebaseInProgress,
+  revertLearningChange,
   serializeRow,
   sessionDateOf,
   sessionDateOfBuffer,
@@ -58,6 +67,413 @@ function write(dir, rel, content) {
   fs.writeFileSync(abs, content);
   return abs;
 }
+
+// ── The learning step ────────────────────────────────────────────────────────
+// The step runs here end to end against a checkout in a temp dir, with the
+// Convex call and the model call handed in (learningStep's `deps`): what is
+// pinned is what lands, what is refused and why, what a failed answer leaves
+// behind (nothing), and what an objection undoes.
+
+const CLIMBING = [
+  "---",
+  "updated: 2026-09-01",
+  "reviewed:",
+  "window_days: 30",
+  "---",
+  "",
+  "## Current state",
+  "",
+  "- Climbing for 16 years; on the WPI climbing team (session 47f04bc9, 2026-08-30).",
+  "- Ankle: minor chronic pain from jumping down off the wall (session 47f04bc9, 2026-08-30).",
+  "",
+  "## Ideal state",
+  "",
+  "- \"help me design a workout plan\" (session 47f04bc9, 2026-08-30).",
+  "",
+  "## Must not break",
+  "",
+  "- Team practices are fixed (session 47f04bc9, 2026-08-30).",
+  "",
+].join("\n");
+
+const PRIORITIES = [
+  "# Priorities",
+  "",
+  "## Directions",
+  "",
+  "Tom writes this section himself; no agent adds to it or edits it.",
+  "",
+  "## Rules learned from corrections",
+  "",
+  "- **No importance guesses.** Tom, 2026-08-29, session `47f04bc9`.",
+  "",
+  "## What becomes a todo",
+  "",
+  "- Capture whatever implies an action by Tom.",
+  "",
+].join("\n");
+
+function learningCheckout() {
+  const dir = tmp();
+  write(dir, "model-of-tom/writing.md", "# Model of Tom's understanding\n\n## Calibration core\n\n- Assume fluent in ML.\n");
+  write(dir, "model-of-tom/priorities.md", PRIORITIES);
+  write(dir, "model-of-tom/areas/climbing.md", CLIMBING);
+  write(dir, "tts/spec.md", "# Spec\n\n## Rules\n\n- the spec's own line\n");
+  return dir;
+}
+
+const SESSION = "k97abc123def456ghi789jkl012mno34";
+const TURN = "turn0001turn0001turn0001turn0001";
+const RULING = "rul0001rul0001rul0001rul0001rul0";
+
+function learningInput(over = {}) {
+  return {
+    since: Date.UTC(2026, 8, 5, 8),
+    sinceSource: "learning-run",
+    until: Date.UTC(2026, 8, 6, 8),
+    tomTurns: [
+      {
+        id: TURN,
+        sessionId: SESSION,
+        sessionTitle: "training plan",
+        text: "thursday practice moved to 6pm this term",
+        at: Date.UTC(2026, 8, 5, 20),
+        replyBefore: "Which practice moved?",
+        replyAfter: "Noted: Thursday at 6 p.m.",
+      },
+    ],
+    slackReplies: [],
+    rulings: [{ id: RULING, at: Date.UTC(2026, 8, 5, 21), verdict: "approve", subjectType: "life" }],
+    objections: [],
+    changes: [],
+    ...over,
+  };
+}
+
+/** A Convex that answers the learning read with `input`, accepts every post,
+ * and keeps them. */
+function fakeConvex(input) {
+  const posts = [];
+  return {
+    posts,
+    fetch: async (_env, route, body) => {
+      if (body === undefined) {
+        expect(route.startsWith("/tts/learning-input?until=")).toBe(true);
+        return input;
+      }
+      posts.push({ route, body });
+      return { ok: true };
+    },
+  };
+}
+
+function learningRun(dir) {
+  return {
+    env: {},
+    now: Date.UTC(2026, 8, 6, 8),
+    day: "2026-09-06",
+    dir,
+    commits: [],
+    learningRows: [],
+    failures: [],
+    results: {},
+  };
+}
+
+const NEW_LINE = `- Thursday practice is at 6 p.m. this term (session ${SESSION}, 2026-09-05).`;
+const factChange = (over = {}) => ({
+  file: "model-of-tom/areas/climbing.md",
+  section: "Current state",
+  kind: "fact",
+  line: NEW_LINE,
+  replaces: null,
+  evidence: [`session ${SESSION}`],
+  ...over,
+});
+
+const answering = (changes) => () => JSON.stringify({ changes });
+
+describe("the learning step", () => {
+  it("lands a fact with evidence at the end of its section, bumps updated:, and queues its row and commit", async () => {
+    const dir = learningCheckout();
+    const convex = fakeConvex(learningInput());
+    const run = learningRun(dir);
+    const modelCalls = [];
+    const model = (prompt, opts) => {
+      modelCalls.push({ prompt, opts });
+      return `Here you go:\n\`\`\`json\n${JSON.stringify({ changes: [factChange()] })}\n\`\`\``;
+    };
+    const summary = await learningStep(run, { fetch: convex.fetch, model });
+
+    const page = fs.readFileSync(path.join(dir, "model-of-tom/areas/climbing.md"), "utf8");
+    const lines = page.split("\n");
+    expect(lines[1]).toBe("updated: 2026-09-06");
+    expect(lines[2]).toBe("reviewed:");
+    const at = lines.indexOf(NEW_LINE);
+    expect(at).toBeGreaterThan(lines.indexOf("## Current state"));
+    expect(at).toBeLessThan(lines.indexOf("## Ideal state"));
+    expect(lines[at - 1]).toContain("Ankle:");
+    expect(lines[at + 1]).toBe("");
+
+    expect(summary.changes).toBe(1);
+    expect(summary.refused).toEqual([]);
+    expect(summary.model).toBe("opus");
+    expect(run.learningRows).toHaveLength(1);
+    expect(run.learningRows[0]).toEqual({
+      kind: "learning-change",
+      data: {
+        id: learningChangeId("model-of-tom/areas/climbing.md", "Current state", NEW_LINE),
+        file: "model-of-tom/areas/climbing.md",
+        section: "Current state",
+        kind: "fact",
+        before: "",
+        after: NEW_LINE,
+        evidence: `session ${SESSION}`,
+        sources: [`session ${SESSION}`],
+      },
+    });
+    expect(run.learningRows[0].data.id).toMatch(/^[0-9a-f]{12}$/);
+    expect(run.commits).toEqual([
+      {
+        paths: ["model-of-tom"],
+        message: "learning: 2026-09-06 — 1 line from Tom's turns, replies and rulings",
+      },
+    ]);
+    // The run row, written by the step itself.
+    expect(convex.posts).toHaveLength(1);
+    expect(convex.posts[0].route).toBe("/tts/event");
+    expect(convex.posts[0].body.kind).toBe("learning-run");
+    expect(convex.posts[0].body.data).toMatchObject({ changes: 1, tomTurns: 1, rulings: 1, reverted: 0 });
+    // One model call, the Opus tier, over the pages and the input.
+    expect(modelCalls).toHaveLength(1);
+    expect(modelCalls[0].opts).toMatchObject({ model: "opus", cwd: dir });
+    expect(modelCalls[0].prompt).toContain("thursday practice moved to 6pm this term");
+    expect(modelCalls[0].prompt).toContain("=== model-of-tom/areas/climbing.md ===");
+    expect(modelCalls[0].prompt).toContain("Which practice moved?");
+    // The other pages are untouched.
+    expect(fs.readFileSync(path.join(dir, "model-of-tom/priorities.md"), "utf8")).toBe(PRIORITIES);
+  });
+
+  it("refuses Tom's sections, the spec, a missing replacement target and a line without evidence, and touches nothing", async () => {
+    const dir = learningCheckout();
+    const before = new Map(
+      ["model-of-tom/areas/climbing.md", "model-of-tom/priorities.md", "model-of-tom/writing.md", "tts/spec.md"].map(
+        (rel) => [rel, fs.readFileSync(path.join(dir, rel), "utf8")],
+      ),
+    );
+    const run = learningRun(dir);
+    const convex = fakeConvex(learningInput());
+    const summary = await learningStep(run, {
+      fetch: convex.fetch,
+      model: answering([
+        factChange({ section: "Ideal state" }),
+        factChange({ section: "Must not break" }),
+        factChange({ file: "model-of-tom/priorities.md", section: "Directions" }),
+        factChange({ file: "tts/spec.md", section: "Rules" }),
+        factChange({ replaces: "- A line that is not on the page (session x, 2026-01-01)." }),
+        factChange({ evidence: [] }),
+        factChange({ evidence: ["session deadbeef"] }),
+        factChange({ line: "- Thursday practice is at 6 p.m. this term." }),
+        factChange({ kind: "inference", line: `- He trains Thursdays (session ${SESSION}, 2026-09-05).` }),
+      ]),
+    });
+    expect(summary.changes).toBe(0);
+    expect(summary.refused.map((r) => r.reason)).toEqual([
+      '"Ideal state" is Tom\'s section; an agent never writes it',
+      '"Must not break" is Tom\'s section; an agent never writes it',
+      '"Directions" is Tom\'s section; an agent never writes it',
+      "tts/spec.md is not a page the learning step writes",
+      'the line to replace is not in "Current state" verbatim',
+      "no evidence",
+      'evidence "session deadbeef" names nothing in tonight\'s input',
+      "the line does not end with its evidence citation",
+      "an inference must say it is one, in the line",
+    ]);
+    for (const [rel, text] of before) {
+      expect(fs.readFileSync(path.join(dir, rel), "utf8")).toBe(text);
+    }
+    expect(run.learningRows).toEqual([]);
+    expect(run.commits).toEqual([]);
+    expect(convex.posts.map((p) => p.body.kind)).toEqual(["learning-run"]);
+  });
+
+  it("applies a replacement whose target is on the page verbatim, and records what it replaced", () => {
+    const pages = new Map([["model-of-tom/areas/climbing.md", CLIMBING]]);
+    const old = "- Ankle: minor chronic pain from jumping down off the wall (session 47f04bc9, 2026-08-30).";
+    const line = `- Ankle: pain gone since 2026-09-01 (session ${SESSION}, 2026-09-05).`;
+    const { pages: after, applied, refused } = applyLearningChanges(
+      pages,
+      [factChange({ kind: "correction", line, replaces: old })],
+      { day: "2026-09-06" },
+    );
+    expect(refused).toEqual([]);
+    expect(applied[0]).toMatchObject({ before: old, after: line, kind: "correction" });
+    const text = after.get("model-of-tom/areas/climbing.md");
+    expect(text).not.toContain(old);
+    expect(text).toContain(line);
+    expect(text.startsWith("---\nupdated: 2026-09-06\n")).toBe(true);
+    // The same line proposed again is already there.
+    expect(applyLearningChanges(after, [factChange({ line })], { day: "2026-09-06" }).refused[0].reason).toBe(
+      "already on the page",
+    );
+  });
+
+  it("rejects a malformed answer before applying anything", async () => {
+    const dir = learningCheckout();
+    const run = learningRun(dir);
+    const convex = fakeConvex(learningInput());
+    await expect(
+      learningStep(run, { fetch: convex.fetch, model: () => "I could not decide. {changes: [" }),
+    ).rejects.toThrow();
+    await expect(
+      learningStep(run, { fetch: convex.fetch, model: () => '{"lines": []}' }),
+    ).rejects.toThrow(/changes/);
+    expect(() => parseLearningAnswer('{"changes": [1]}')).toThrow(/not an object/);
+    expect(fs.readFileSync(path.join(dir, "model-of-tom/areas/climbing.md"), "utf8")).toBe(CLIMBING);
+    expect(run.learningRows).toEqual([]);
+    expect(run.commits).toEqual([]);
+    // No run row either: the next night reads the same window again.
+    expect(convex.posts).toEqual([]);
+  });
+
+  it("makes no model call on a night with nothing of Tom's in the window", async () => {
+    const dir = learningCheckout();
+    const run = learningRun(dir);
+    const convex = fakeConvex(learningInput({ tomTurns: [], rulings: [] }));
+    const model = vi.fn();
+    const summary = await learningStep(run, { fetch: convex.fetch, model });
+    expect(model).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({ changes: 0, model: null, tomTurns: 0 });
+    expect(convex.posts.map((p) => p.body.kind)).toEqual(["learning-run"]);
+  });
+
+  it("reverts an addition and a replacement on Tom's objection, by id and by the line's text", async () => {
+    const dir = learningCheckout();
+    const file = "model-of-tom/areas/climbing.md";
+    const old = "- Ankle: minor chronic pain from jumping down off the wall (session 47f04bc9, 2026-08-30).";
+    const replaced = `- Ankle: pain gone since 2026-09-01 (session ${SESSION}, 2026-09-05).`;
+    // The page as an earlier night left it: the addition present, the
+    // replacement in place of the old line.
+    write(dir, file, CLIMBING.replace(old, replaced).replace("## Ideal state", `${NEW_LINE}\n\n## Ideal state`));
+    const added = { id: "aaaaaaaaaaaa", file, section: "Current state", before: "", after: NEW_LINE };
+    const changed = { id: "bbbbbbbbbbbb", file, section: "Current state", before: old, after: replaced };
+    const run = learningRun(dir);
+    const convex = fakeConvex(
+      learningInput({
+        tomTurns: [],
+        rulings: [],
+        objections: [
+          { eventId: "ev1", at: 1, id: "aaaaaaaa", text: "no, that was one week" },
+          { eventId: "ev2", at: 2, id: null, text: `wrong: "${replaced}" — it still hurts` },
+        ],
+        changes: [added, changed],
+      }),
+    );
+    const summary = await learningStep(run, { fetch: convex.fetch, model: vi.fn() });
+    const page = fs.readFileSync(path.join(dir, file), "utf8");
+    expect(page).not.toContain(NEW_LINE);
+    expect(page).not.toContain(replaced);
+    expect(page).toContain(old);
+    expect(page.startsWith("---\nupdated: 2026-09-06\n")).toBe(true);
+    expect(summary).toMatchObject({ objections: 2, reverted: 2, revertFailed: 0, changes: 0 });
+    expect(run.learningRows.map((r) => r.kind)).toEqual(["learning-reverted", "learning-reverted"]);
+    expect(run.learningRows[0].data).toMatchObject({
+      id: "aaaaaaaaaaaa",
+      file,
+      before: NEW_LINE,
+      after: "",
+      objectionId: "ev1",
+      objection: "no, that was one week",
+    });
+    expect(run.learningRows[1].data).toMatchObject({ id: "bbbbbbbbbbbb", before: replaced, after: old });
+    expect(run.commits).toEqual([
+      { paths: ["model-of-tom"], message: "learning: 2026-09-06 — 2 lines reverted on Tom's objection" },
+    ]);
+    // Both objections consumed, in one call, before the run row.
+    expect(convex.posts.map((p) => p.route)).toEqual(["/tts/learning-objections-consumed", "/tts/event"]);
+    expect(convex.posts[0].body).toEqual({ ids: ["ev1", "ev2"] });
+  });
+
+  it("records a revert that cannot apply, with the reason, and consumes the objection", async () => {
+    const dir = learningCheckout();
+    const file = "model-of-tom/areas/climbing.md";
+    const stale = { id: "cccccccccccc", file, section: "Current state", before: "", after: NEW_LINE };
+    const run = learningRun(dir);
+    const convex = fakeConvex(
+      learningInput({
+        tomTurns: [],
+        rulings: [],
+        objections: [
+          { eventId: "ev3", at: 1, id: "cccccccccccc", text: "no" },
+          { eventId: "ev4", at: 2, id: null, text: "that line about mornings is wrong" },
+        ],
+        changes: [stale],
+      }),
+    );
+    const summary = await learningStep(run, { fetch: convex.fetch, model: vi.fn() });
+    expect(fs.readFileSync(path.join(dir, file), "utf8")).toBe(CLIMBING);
+    expect(summary).toMatchObject({ reverted: 0, revertFailed: 2 });
+    expect(run.learningRows.map((r) => r.kind)).toEqual(["learning-revert-failed", "learning-revert-failed"]);
+    expect(run.learningRows[0].data).toMatchObject({
+      id: "cccccccccccc",
+      file,
+      reason: `the line is no longer on ${file} as written`,
+      objectionId: "ev3",
+    });
+    expect(run.learningRows[1].data).toMatchObject({
+      reason: "no learning change matches the objection",
+      objectionId: "ev4",
+    });
+    expect(run.commits).toEqual([]);
+    expect(convex.posts[0]).toEqual({ route: "/tts/learning-objections-consumed", body: { ids: ["ev3", "ev4"] } });
+  });
+
+  it("names the pages it writes, and the sections it never does", () => {
+    expect(isLearningFile("model-of-tom/writing.md")).toBe(true);
+    expect(isLearningFile("model-of-tom/priorities.md")).toBe(true);
+    expect(isLearningFile("model-of-tom/areas/health-and-food.md")).toBe(true);
+    expect(isLearningFile("model-of-tom/schedule.md")).toBe(false);
+    expect(isLearningFile("tts/spec.md")).toBe(false);
+    expect(isLearningFile("model-of-tom/areas/../../tts/spec.md")).toBe(false);
+    expect(FORBIDDEN_SECTIONS).toEqual(["Directions", "Ideal state", "Must not break"]);
+  });
+
+  it("bumps updated: only where a frontmatter carries one", () => {
+    expect(bumpUpdated(CLIMBING, "2026-09-06").split("\n").slice(0, 3)).toEqual([
+      "---",
+      "updated: 2026-09-06",
+      "reviewed:",
+    ]);
+    expect(bumpUpdated(PRIORITIES, "2026-09-06")).toBe(PRIORITIES);
+    expect(bumpUpdated("---\nwindow_days: 30\n---\n\nbody", "2026-09-06")).toBe("---\nwindow_days: 30\n---\n\nbody");
+  });
+
+  it("matches an objection by the id, a prefix of it in the text, or the line's text — and by nothing else", () => {
+    const changes = [
+      { id: "0123456789ab", file: "f", before: "", after: "- He climbs Thursdays at 6 p.m. (session s, 2026-09-05)." },
+      { id: "fedcba987654", file: "f", before: "- old", after: "- new" },
+    ];
+    expect(matchObjection({ id: "fedcba987654", text: "no" }, changes)).toBe(changes[1]);
+    expect(matchObjection({ id: null, text: "[01234567] is wrong" }, changes)).toBe(changes[0]);
+    expect(matchObjection({ id: null, text: "He climbs Thursdays at 6 p.m. (session s, 2026-09-05). — no" }, changes)).toBe(
+      changes[0],
+    );
+    // A short line's text is not enough to name it, and a hex-looking word
+    // that prefixes no change names nothing.
+    expect(matchObjection({ id: null, text: "new" }, changes)).toBeNull();
+    expect(matchObjection({ id: null, text: "the deadbeef line" }, changes)).toBeNull();
+  });
+
+  it("reverts against the page's current text, and says when the line has moved on", () => {
+    const change = { file: "f", before: "", after: NEW_LINE };
+    const withLine = `## Current state\n\n- a\n${NEW_LINE}\n- b\n`;
+    expect(revertLearningChange(withLine, change)).toEqual({ ok: true, text: "## Current state\n\n- a\n- b\n" });
+    expect(revertLearningChange("## Current state\n\n- a\n- b\n", change)).toEqual({
+      ok: false,
+      reason: "the line is no longer on f as written",
+    });
+  });
+});
 
 describe("serializeRow", () => {
   // Phase 1's spacing, keys sorted at every level: the same row gives the

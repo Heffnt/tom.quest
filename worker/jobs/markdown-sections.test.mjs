@@ -6,9 +6,27 @@
 
 import { describe, expect, it } from "vitest";
 
-import { extractSections } from "./markdown-sections.mjs";
+import { extractSections, sectionSpan } from "./markdown-sections.mjs";
 
 const AREA = ["Current state", "Must not break"];
+
+describe("sectionSpan", () => {
+  const lines = [
+    "# Page",
+    "## Current state",
+    "- a",
+    "### Detail",
+    "- b",
+    "## Must Not Break",
+    "- c",
+  ];
+  it("runs from the heading to the next heading of the same or a higher level, case-insensitively", () => {
+    expect(sectionSpan(lines, "current state")).toEqual({ start: 1, end: 5, level: 2 });
+    expect(sectionSpan(lines, "Detail")).toEqual({ start: 3, end: 5, level: 3 });
+    expect(sectionSpan(lines, "must not break")).toEqual({ start: 5, end: 7, level: 2 });
+    expect(sectionSpan(lines, "Ideal state")).toBeNull();
+  });
+});
 
 describe("extractSections", () => {
   const page = [

@@ -756,6 +756,35 @@ describe("threaded replies from Tom", () => {
     expect(timeNotes[0].day).toBeUndefined();
   });
 
+  it("a digest-thread reply naming a model-of-Tom line by its id is an objection to that line", async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now() - 3_600_000,
+        kind: "learning-change",
+        data: { id: "0123456789ab", file: "model-of-tom/areas/climbing.md", before: "", after: "- a line" },
+      });
+    });
+    await posted(t, "750.1", { kind: "digest", day: "2026-09-06" });
+    // The id as the digest prints it, and as a bare prefix.
+    const bracketed = await postEvent(t, { channel: TTS, ts: "750.2", thread_ts: "750.1", text: "[0123456789ab] no, that was one week" });
+    expect(bracketed).toMatchObject({ outcome: "learning-objection", id: "0123456789ab" });
+    const prefix = await postEvent(t, { channel: TTS, ts: "750.3", thread_ts: "750.1", text: "01234567 is wrong" });
+    expect(prefix).toMatchObject({ outcome: "learning-objection", id: "0123456789ab" });
+    const objections = await events(t, "learning-objection");
+    expect(objections).toHaveLength(2);
+    expect(objections[0].data).toMatchObject({
+      id: "0123456789ab",
+      text: "[0123456789ab] no, that was one week",
+      subject: { kind: "digest", day: "2026-09-06" },
+    });
+    // A hex-looking word that prefixes no change is a fact, as before.
+    const fact = await postEvent(t, { channel: TTS, ts: "750.4", thread_ts: "750.1", text: "the deadbeef commit looks fine" });
+    expect(fact).toMatchObject({ outcome: "tom-note", subject: { kind: "digest" } });
+    expect(await events(t, "learning-objection")).toHaveLength(2);
+  });
+
   it("a learning thread writes a learning-objection with the change's id", async () => {
     slackEnv();
     const t = convexTest(schema, modules);
