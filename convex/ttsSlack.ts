@@ -91,7 +91,10 @@ export const internalRecordSlackSent = internalMutation({
  * One row per SEND, not per attempt — the door has already retried, and
  * `attempts` says how many times it tried. The row carries the composed `text`
  * because that is what a later resend posts unchanged: the message Tom missed
- * is the message he eventually gets. */
+ * is the message he eventually gets. It carries `windowEnd` for the same
+ * reason one step further out: a message composed against a window records the
+ * instant it was composed against, so the resend advances the window to what
+ * the text covers rather than to the hour the failure was written. */
 export const internalRecordSlackFailed = internalMutation({
   args: {
     channel: v.optional(v.string()),
@@ -100,13 +103,17 @@ export const internalRecordSlackFailed = internalMutation({
     error: v.string(),
     text: v.optional(v.string()),
     attempts: v.optional(v.number()),
+    windowEnd: v.optional(v.number()),
   },
-  handler: async (ctx, { channel, threadTs, subject, error, text, attempts }) => {
+  handler: async (
+    ctx,
+    { channel, threadTs, subject, error, text, attempts, windowEnd },
+  ) => {
     await logEvent(
       ctx,
       "slack-send-failed",
       subject.kind === "todo" ? subject.id : undefined,
-      { channel, threadTs, subject, error, text, attempts },
+      { channel, threadTs, subject, error, text, attempts, windowEnd },
     );
   },
 });

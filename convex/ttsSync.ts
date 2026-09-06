@@ -89,11 +89,19 @@ async function postSlack(
     subject,
     channel,
     threadTs,
+    windowEnd,
   }: {
     text: string;
     subject: SlackSubject;
     channel?: string;
     threadTs?: string;
+    // THE COMPOSITION BOUNDARY, for a message composed against a window: the
+    // instant the caller read Convex up to. It is recorded on the failure row
+    // and nowhere else, because a resend of that row has to advance the window
+    // to the boundary the TEXT covers, not to the clock the failure was
+    // written at. Composing, retrying and recording take seconds, and every
+    // event inside them would otherwise fall between two digests.
+    windowEnd?: number;
   },
 ): Promise<SlackSendResult> {
   const token = process.env.SLACK_BOT_TOKEN;
@@ -126,6 +134,7 @@ async function postSlack(
       error,
       text,
       attempts,
+      windowEnd,
     });
     return { ok: false, error };
   }
@@ -226,7 +235,17 @@ export const sendDigest = internalAction({
     // hourly update's tick resends unchanged — that second owner is switched
     // ON as of the hourly piece (HOURLY_UPDATE_ENABLED), so a refused digest
     // now reaches Tom within the hour rather than not at all.
-    const posted = await postSlack(ctx, { text, subject: digestSubject(day) });
+    // windowEnd travels with the send so that a REFUSED one leaves the
+    // boundary behind on its failure row: the hourly update's resend posts
+    // this same text and marks the day sent with this same `now`, so tomorrow
+    // starts where today's reading actually stopped. Without it the resend
+    // would mark the day at the failure row's own clock and everything
+    // recorded between composing and failing would be reported by no digest.
+    const posted = await postSlack(ctx, {
+      text,
+      subject: digestSubject(day),
+      windowEnd: now,
+    });
     if (!posted.ok) return;
     await ctx.runMutation(internal.tts.internalMarkDigestSent, {
       day,

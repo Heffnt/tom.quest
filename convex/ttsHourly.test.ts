@@ -331,13 +331,21 @@ describe("the digest resend", () => {
   const DAY_END = DAY_START + 24 * HOUR;
   const args = { day: DAY, dayStart: DAY_START, dayEnd: DAY_END };
 
-  const failedDigest = (at: number, text: string, day = DAY) =>
+  // The sender's two instants, kept DISTINCT everywhere below: the digest was
+  // composed against COMPOSED_AT and the failure row was written at FAILED_AT,
+  // minutes later — two posts and a retry pause apart. Equal timestamps would
+  // hide the whole finding.
+  const COMPOSED_AT = DAY_START + 60_000;
+  const FAILED_AT = COMPOSED_AT + 5 * 60_000;
+
+  const failedDigest = (windowEnd: number, text: string, day = DAY) =>
     ({
       channel: "C1",
       error: "ratelimited",
       subject: { kind: DIGEST_SUBJECT, day },
       text,
       attempts: 2,
+      windowEnd,
     }) as const;
 
   it("is nothing when today's digest never failed", async () => {
@@ -345,25 +353,52 @@ describe("the digest resend", () => {
     expect(await t.query(internal.ttsHourly.internalDigestToResend, args)).toBeNull();
   });
 
-  it("is the failed row's own text, with the instant it was composed against", async () => {
+  // witness: return `row.at` here instead of the sender's windowEnd and every
+  // event recorded between composing and failing is reported by no digest —
+  // this one already went out, and tomorrow's window starts after them.
+  it("is the failed row's own text, with the instant the sender composed against", async () => {
     const t = convexTest(schema, modules);
-    const at = DAY_START + 60_000;
-    await insertEvent(t, at, SLACK_FAILED, undefined, failedDigest(at, "the composed digest"));
+    await insertEvent(
+      t,
+      FAILED_AT,
+      SLACK_FAILED,
+      undefined,
+      failedDigest(COMPOSED_AT, "the composed digest"),
+    );
     expect(await t.query(internal.ttsHourly.internalDigestToResend, args)).toEqual({
       text: "the composed digest",
-      // The next digest's window starts where this one's ended, so the resend
-      // carries the failed send's own instant rather than the hour it landed.
-      windowEnd: at,
+      windowEnd: COMPOSED_AT,
+    });
+  });
+
+  it("falls back to the row's own time for a row written before the sender carried the boundary", async () => {
+    const t = convexTest(schema, modules);
+    // The row as the door wrote it before it carried the boundary.
+    await insertEvent(t, FAILED_AT, SLACK_FAILED, undefined, {
+      channel: "C1",
+      error: "ratelimited",
+      subject: { kind: DIGEST_SUBJECT, day: DAY },
+      text: "an old digest",
+      attempts: 2,
+    });
+    expect(await t.query(internal.ttsHourly.internalDigestToResend, args)).toEqual({
+      text: "an old digest",
+      windowEnd: FAILED_AT,
     });
   });
 
   it("is nothing once the day is marked digest-sent, however it was sent", async () => {
     const t = convexTest(schema, modules);
-    const at = DAY_START + 60_000;
-    await insertEvent(t, at, SLACK_FAILED, undefined, failedDigest(at, "the composed digest"));
-    await insertEvent(t, DAY_START + 120_000, "digest-sent", undefined, {
+    await insertEvent(
+      t,
+      FAILED_AT,
+      SLACK_FAILED,
+      undefined,
+      failedDigest(COMPOSED_AT, "the composed digest"),
+    );
+    await insertEvent(t, FAILED_AT + 60_000, "digest-sent", undefined, {
       day: DAY,
-      windowEnd: at,
+      windowEnd: COMPOSED_AT,
     });
     expect(await t.query(internal.ttsHourly.internalDigestToResend, args)).toBeNull();
   });
@@ -459,15 +494,20 @@ describe("sendHourlyUpdate", () => {
   it("reposts today's refused digest to #tts before its own post, unchanged, and marks the day sent", async () => {
     const t = convexTest(schema, modules);
     const day = ttsDayKey(Date.now());
-    const composedAt = Date.now() - 60_000;
+    // The two instants the sender leaves behind, minutes apart: what the text
+    // was composed against, and when the refusal was recorded.
+    const composedAt = Date.now() - 6 * 60_000;
+    const failedAt = composedAt + 5 * 60_000;
     // What the 5 a.m. digest left behind when Slack refused it: the door's
-    // failure row, carrying the text it composed.
-    await insertEvent(t, composedAt, SLACK_FAILED, undefined, {
+    // failure row, carrying the text it composed and the boundary that text
+    // covers.
+    await insertEvent(t, failedAt, SLACK_FAILED, undefined, {
       channel: TTS_CHANNEL,
       subject: { kind: DIGEST_SUBJECT, day },
       error: "ratelimited",
       text: "the morning digest",
       attempts: 2,
+      windowEnd: composedAt,
     });
     const posts = stubSlack();
 
@@ -481,6 +521,9 @@ describe("sendHourlyUpdate", () => {
     expect(await rowsOfKind(t, SLACK_SENT, DIGEST_SUBJECT)).toHaveLength(1);
     const marks = await rowsOfKind(t, "digest-sent");
     expect(marks).toHaveLength(1);
+    // The COMPOSITION boundary, not the failure row's own clock: tomorrow's
+    // digest starts where this text's reading stopped, so the minutes Slack
+    // spent refusing are still somebody's to report.
     expect(dataOf(marks[0])).toMatchObject({ day, windowEnd: composedAt });
 
     // That marker is what stops the next tick reposting it.

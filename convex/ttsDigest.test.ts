@@ -812,6 +812,41 @@ describe("sendDigest", () => {
     expect(events.some((e) => e.kind === DIGEST_SENT)).toBe(false);
   });
 
+  // witness: drop `windowEnd` from sendDigest's postSlack call and the row
+  // carries only its own `at` — the hourly update's resend then marks the day
+  // at that later instant, and everything recorded while Slack was refusing is
+  // reported by neither digest.
+  it("records the composition boundary on the failed row, not the clock the failure was written at", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    // Every Slack call costs a minute of clock, so composing, the retry and
+    // the row are three distinct instants rather than one.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        vi.setSystemTime(Date.now() + 60_000);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ ok: false, error: "channel_not_found" }),
+        };
+      }),
+    );
+    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
+    vi.stubEnv("SLACK_TTS_CHANNEL_ID", "C0TTS");
+    vi.stubEnv("GITHUB_MIRROR_TOKEN", undefined);
+
+    await t.action(internal.ttsSync.sendDigest, {});
+
+    const events = await tom.query(api.tts.listRecentEvents, {});
+    const failed = events.filter((e) => e.kind === SLACK_FAILED);
+    expect(failed).toHaveLength(1);
+    expect(failed[0].at).toBeGreaterThan(FIVE_AM); // two calls later
+    expect((failed[0].data as { windowEnd: number }).windowEnd).toBe(FIVE_AM);
+  });
+
   it("treats a network error as a failed send", async () => {
     const t = convexTest(schema, modules);
     const tom = await withTom(t);
