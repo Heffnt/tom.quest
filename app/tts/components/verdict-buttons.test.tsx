@@ -191,6 +191,20 @@ describe("the verdict row", () => {
     ).toBeTruthy();
   });
 
+  it("shows an error the caller holds instead of throwing", () => {
+    // The session launch hooks catch their own failures into state; a session
+    // verdict whose session never opened has to say so on this row.
+    render(
+      <VerdictButtons
+        subject="batch"
+        statement="s"
+        error="the session did not open"
+        onRule={() => {}}
+      />,
+    );
+    expect(screen.getByText("the session did not open")).toBeTruthy();
+  });
+
   it("shows a refused ruling under the row instead of swallowing it", async () => {
     const onRule = vi.fn(async () => {
       throw new Error("Not authorised: TTS");
@@ -283,6 +297,21 @@ describe("the detail dialog", () => {
     render(<DetailDialog item={item} onClose={noop} onGroundUp={noop} onRule={onRule} />);
     fireEvent.click(screen.getByRole("button", { name: "approve" }));
     expect(onRule).toHaveBeenCalledWith(item, "approve", "");
+  });
+
+  it("shows a session that failed to open, which the overlay would hide", () => {
+    // The dialog covers the page, including the error line the tab prints
+    // under its cards — so the tab's hook error is handed in here instead.
+    render(
+      <DetailDialog
+        item={{ kind: "batch", graph: GRAPH }}
+        onClose={noop}
+        onGroundUp={noop}
+        onRule={() => {}}
+        error="the session did not open"
+      />,
+    );
+    expect(screen.getByText("the session did not open")).toBeTruthy();
   });
 
   it("offers no verdicts when nothing records them (the mockup route)", () => {

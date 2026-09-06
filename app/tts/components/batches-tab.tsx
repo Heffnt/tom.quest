@@ -586,6 +586,14 @@ export default function BatchesTab() {
           onClose={() => setDetail(null)}
           onGroundUp={(title, content) => setGroundUp({ title, content })}
           onRule={ruleDetail}
+          // The session verdict records the ruling and then opens the session,
+          // and the launch hooks keep their failures in state rather than
+          // throwing. Under this overlay the error lines at the foot of the
+          // page are invisible, so the dialog's subject's hook is handed in
+          // and the verdict row prints it.
+          error={
+            detail.kind === "batch" ? batchSessionError : todoSessionError
+          }
         />
       )}
       {groundUp && (

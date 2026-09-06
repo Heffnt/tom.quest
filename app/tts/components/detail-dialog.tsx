@@ -33,10 +33,19 @@ export default function DetailDialog({
   onClose,
   onGroundUp,
   onRule,
+  error,
 }: {
   item: DetailItem;
   onClose: () => void;
   onGroundUp: (title: string, content: string) => void;
+  /**
+   * A failure the caller is holding rather than throwing. The session verdict
+   * records the ruling and THEN opens the session, and the launch hooks catch
+   * their own failures into state (app/lib/use-open-todo-session.ts) — so a
+   * session that did not open has no other way to be seen from in here, where
+   * this overlay covers the page the caller would otherwise print it on.
+   */
+  error?: string | null;
   /** ttsRulings.recordRuling on the item's subject — the batch row, or the
    * task's or goal's todo — with this verdict and sentence. Absent = no
    * verdicts are offered (the mockup route). */
@@ -65,6 +74,7 @@ export default function DetailDialog({
               <VerdictButtons
                 subject="todo"
                 statement={item.task.statement}
+                error={error}
                 onRule={rule}
               />
             )}
@@ -113,6 +123,7 @@ export default function DetailDialog({
               <VerdictButtons
                 subject="todo"
                 statement={item.goal.statement}
+                error={error}
                 onRule={rule}
               />
             )}
@@ -151,6 +162,7 @@ export default function DetailDialog({
                   actor: t.actor,
                   status: t.status === "done" ? ("done" as const) : ("open" as const),
                 }))}
+                error={error}
                 onRule={rule}
               />
             )}
