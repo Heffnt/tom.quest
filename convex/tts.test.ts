@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
+import { RETIRED_ACTION_IGNORED } from "./tts";
 import {
   countdownText,
   nyCalendarDayBoundsUtc,
@@ -1697,13 +1698,12 @@ describe("TTS time notes", () => {
     await apply(
       t,
       sleep,
-      [{ kind: "set-waiting", wakeAt, wakeCondition: "lease renews" }],
+      [{ kind: "set-waiting", wakeAt }],
       "asleep until the lease renews",
     );
     let [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.status).toBe("waiting");
     expect(todo.wakeAt).toBe(wakeAt);
-    expect(todo.wakeCondition).toBe("lease renews");
     const wake = await tom.mutation(api.tts.createTimeNote, {
       text: "wake it now",
       todoId,
@@ -1712,7 +1712,6 @@ describe("TTS time notes", () => {
     [todo] = await tom.query(api.tts.listTodos, {});
     expect(todo.status).toBe("active");
     expect(todo.wakeAt).toBeUndefined();
-    expect(todo.wakeCondition).toBeUndefined();
   });
 
   // witness: stop routing the block actions through insertBlock/patchBlock —
@@ -1952,10 +1951,10 @@ describe("TTS time notes", () => {
     expect(todo.dateOutcomes?.[0].note).toBe("was travelling");
   });
 
-  // witness: write `wakeAt: action.wakeAt` straight through — a note that only
-  // moves the wake DATE would erase the wake CONDITION Tom never mentioned
-  // (applyStatusChange writes both fields unconditionally).
-  it("set-waiting preserves the fields the note did not mention", async () => {
+  // witness: write `wakeAt: action.wakeAt` straight through — a note that says
+  // nothing about the time would erase the sleep Tom never mentioned
+  // (applyStatusChange writes the field unconditionally).
+  it("set-waiting preserves the sleep the note did not mention", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, { statement: "lease" });
@@ -1964,36 +1963,70 @@ describe("TTS time notes", () => {
       todoId,
     });
     const wakeAt = Date.now() + 30 * DAY;
-    await apply(
-      t,
-      asleep,
-      [{ kind: "set-waiting", wakeAt, wakeCondition: "lease renews" }],
-      "asleep",
-    );
-    // Only the date moves; the condition is not mentioned and must survive.
-    const later = await tom.mutation(api.tts.createTimeNote, {
-      text: "make that the 15th instead",
-      todoId,
-    });
-    const moved = wakeAt + 14 * DAY;
-    await apply(t, later, [{ kind: "set-waiting", wakeAt: moved }], "moved");
-    let [todo] = await tom.query(api.tts.listTodos, {});
-    expect(todo.wakeAt).toBe(moved);
-    expect(todo.wakeCondition).toBe("lease renews");
-    // …and the mirror: a condition-only note keeps the date.
+    await apply(t, asleep, [{ kind: "set-waiting", wakeAt }], "asleep");
+    // A second note that names no time keeps the one already stored.
     const reworded = await tom.mutation(api.tts.createTimeNote, {
       text: "really it's when the landlord writes back",
       todoId,
     });
+    await apply(t, reworded, [{ kind: "set-waiting" }], "reworded");
+    const [todo] = await tom.query(api.tts.listTodos, {});
+    expect(todo.status).toBe("waiting");
+    expect(todo.wakeAt).toBe(wakeAt);
+  });
+
+  // THE ROLL-OUT SHIM (the lifeos update, phase 7). The Jarvis Box rolls out
+  // separately from a Convex deploy, and worker/jobs/apply-time-notes.mjs
+  // still emits the two latest-safe actions and the wakeCondition key until
+  // worker/setup.sh has run. A Convex mutation refuses an argument it does not
+  // declare, so undeclaring them would fail the WHOLE flush of a box that has
+  // not caught up — while writing them would put back the retired fields the
+  // clearing migration takes off every row, which is what the deploy
+  // validates. So they are accepted and do nothing.
+  //
+  // witness: delete the two case labels — every time note the box sends until
+  // setup.sh runs fails on an unrecognized action; store action.wakeCondition
+  // again — the narrow's deploy is blocked by the rows this puts it back on.
+  it("accepts the retired time-note actions, stores nothing, and records the ignore", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "lease" });
+    const note = await tom.mutation(api.tts.createTimeNote, {
+      text: "safe until the 1st, and wait for the landlord",
+      todoId,
+    });
+    const latestSafeAt = Date.now() + 30 * DAY;
+    const wakeAt = Date.now() + DAY;
     await apply(
       t,
-      reworded,
-      [{ kind: "set-waiting", wakeCondition: "landlord writes back" }],
-      "reworded",
+      note,
+      [
+        { kind: "set-latest-safe", latestSafeAt },
+        { kind: "set-waiting", wakeAt, wakeCondition: "the landlord writes" },
+        { kind: "clear-latest-safe" },
+      ],
+      "noted",
     );
-    [todo] = await tom.query(api.tts.listTodos, {});
-    expect(todo.wakeAt).toBe(moved);
-    expect(todo.wakeCondition).toBe("landlord writes back");
+    const [todo] = await tom.query(api.tts.listTodos, {});
+    // The note applied — the flush landed — and the sleep it carried is a
+    // time. Neither retired field is on the row.
+    expect(todo.status).toBe("waiting");
+    expect(todo.wakeAt).toBe(wakeAt);
+    expect(todo.latestSafeAt).toBeUndefined();
+    expect(todo.wakeCondition).toBeUndefined();
+    const ignored = await t.run(async (ctx) =>
+      (await ctx.db.query("dtsEvents").collect()).filter(
+        (e) => e.kind === RETIRED_ACTION_IGNORED,
+      ),
+    );
+    expect(ignored.map((e) => (e.data as { action: string }).action)).toEqual([
+      "set-latest-safe",
+      "set-waiting.wakeCondition",
+      "clear-latest-safe",
+    ]);
+    expect((ignored[1].data as { value: string }).value).toBe(
+      "the landlord writes",
+    );
   });
 
   // witness: drop the set-date-kind branch (or its dueAt check) — "that's the

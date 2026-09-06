@@ -21,12 +21,14 @@
 //       npx convex run ttsMigrations:internalMigrateReadiness '{"dryRun":true,"pageSize":5000}'
 //   - NOTHING DELETED, NOTHING RESURFACED. A mapping patches the fields it
 //     maps and never bumps updatedAt — a migration must not put settled items
-//     back on Tom's pile. Retired fields are left in place until NARROW.
+//     back on Tom's pile. A value mapping leaves the retired FIELD in place;
+//     emptying the field itself is the clearing walk at the bottom of this
+//     file, and it is what the narrow waits on.
 
 import { v } from "convex/values";
 import { internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { GRAPH_SUPERSEDED, logEvent } from "./tts";
 import {
@@ -34,6 +36,7 @@ import {
   MAX_NEEDS,
   normalizeReadiness,
   normalizeRecommendation,
+  type StoredRecommendation,
 } from "./ttsShared";
 
 /** Rows per transaction. dtsTodos is a few hundred rows; this keeps one page
@@ -417,5 +420,273 @@ export const internalMigrateRecommendations = internalMutation({
       page,
     );
     return { done: true, dryRun, page, totals: page, continueCursor: null };
+  },
+});
+
+// ── 7. The clearing walk: every retired value out of every row ──────────────
+// THE DEPLOY GATE. `convex/schema.ts` calls `defineSchema` with
+// `schemaValidation` left at its default, which is TRUE: `convex deploy`
+// validates EVERY existing document of a still-declared table against the
+// validator being deployed, and a document carrying a field the validator no
+// longer declares — or a union literal it no longer lists — is rejected. The
+// deploy fails and the site does not update. Convex's removal order is
+// therefore three steps, not two: make the field optional, CLEAR IT FROM EVERY
+// ROW, then drop the declaration. A whole TABLE is the exception (AGENTS.md,
+// "Deployment"): an undeclared table is not validated at all, so dropping one
+// is non-destructive and needs no clearing.
+//
+// The value walks above deliberately left the retired fields where they were —
+// they mapped what a field MEANT into its successor and said so. This walk is
+// the second step, for the five shapes the narrow removes, and it is the
+// prerequisite of that pull request:
+//
+//   dtsTodos        latestSafeAt, wakeCondition, importance  → unset
+//   batches         path                                     → unset
+//   claudeSessions  status "awaiting-permission"             → ended
+//   dtsCodeBriefs   importance → unset; a retired recommendation spelling →
+//                   its verdict word (ttsShared.normalizeRecommendation)
+//
+// NOTHING IS LOST. Every value goes into a `retired-field-cleared` dtsEvents
+// row before it leaves — the whole `path` object, `helps` edges and unlinked
+// path names included; the whole `importance` object with its rationale; the
+// wake sentence; the instant — so what the row said outlives the field. Same
+// dry run, same counts, same idempotence, same event as the walks above, and
+// updatedAt is never bumped: clearing a retired field is not news about a todo
+// and must not put a settled item back on Tom's pile.
+export const CLEAR_MIGRATION = "clear-retired";
+
+/** The per-value record every clearing writes: one row per field, carrying the
+ * value that is about to leave. */
+export const RETIRED_FIELD_CLEARED = "retired-field-cleared";
+
+/** Rows per transaction. Larger than PAGE_SIZE because a clearing reads a row
+ * and writes at most one patch and three events; still far inside Convex's
+ * per-transaction limits on the two tables that are not human-scale. */
+export const CLEAR_PAGE_SIZE = 250;
+
+/** The tables the walk visits, in order. One page of one table per
+ * transaction; the end of a table schedules the next, so a single call with a
+ * pageSize larger than the biggest table walks all four and reports the whole
+ * totals as one event. */
+export const CLEAR_TABLES = [
+  "dtsTodos",
+  "batches",
+  "claudeSessions",
+  "dtsCodeBriefs",
+] as const;
+export type ClearTable = (typeof CLEAR_TABLES)[number];
+
+/** The three retired fields on dtsTodos, cleared one event each. */
+const RETIRED_TODO_FIELDS = ["latestSafeAt", "wakeCondition", "importance"] as const;
+
+/** Every count key, so a report names every field even on a page where none of
+ * them was set: a missing key and a zero must not read the same. */
+const CLEAR_COUNT_KEYS = [
+  ...CLEAR_TABLES.map((t) => `${t}-scanned`),
+  ...RETIRED_TODO_FIELDS.map((f) => `${f}-cleared`),
+  "path-cleared",
+  "awaiting-permission-ended",
+  "brief-importance-cleared",
+  "recommendation-normalized",
+];
+
+/** What a session left in the retired status is ended with, when it carries no
+ * reason of its own. It names the retirement, so a reader of the row a year
+ * from now is not left guessing why a pre-auto-mode session ended on the day
+ * the schema narrowed. */
+export const RETIRED_STATUS_ENDED_REASON =
+  "ended by the lifeos phase-7 clearing migration: the awaiting-permission " +
+  "status is retired (the unified auto gate decides every tool call itself)";
+
+/** A clearing report says which table this page walked and which one the
+ * continuation takes, so a hand-driven resume needs nothing else. */
+type ClearReport = MigrationReport & {
+  table: ClearTable;
+  nextTable: ClearTable | null;
+};
+
+/** The retired shapes, as a stored row still holds them. Read through this
+ * rather than through the generated Doc types: after the narrow the validator
+ * no longer declares them, Convex still returns them off an existing row, and
+ * the verification re-run has to be able to see one. */
+type RetiredFields = {
+  latestSafeAt?: number;
+  wakeCondition?: string;
+  importance?: unknown;
+  path?: unknown;
+};
+
+export const internalClearRetiredFields = internalMutation({
+  args: {
+    ...MIGRATION_ARGS,
+    /** Which table this call walks. Omitted = start at the first and chain
+     * through all four. */
+    table: v.optional(v.union(...CLEAR_TABLES.map((t) => v.literal(t)))),
+  },
+  handler: async (ctx, args): Promise<ClearReport> => {
+    const dryRun = args.dryRun ?? false;
+    const pageSize = args.pageSize ?? CLEAR_PAGE_SIZE;
+    const table: ClearTable = args.table ?? CLEAR_TABLES[0];
+    const page: Counts = Object.fromEntries(CLEAR_COUNT_KEYS.map((k) => [k, 0]));
+    const opts = { cursor: args.cursor ?? null, numItems: pageSize };
+
+    /** The value on the record before it leaves. `subject` names the row in
+     * the words its own table uses; a todo's id also fills the indexed column,
+     * so a todo's history reads the clearing off by_todo like every other
+     * event about it. */
+    const record = async (
+      subject: { todoId?: Id<"dtsTodos"> } & Record<string, unknown>,
+      field: string,
+      value: unknown,
+    ) => {
+      await logEvent(ctx, RETIRED_FIELD_CLEARED, subject.todoId, {
+        table,
+        field,
+        value,
+        ...subject,
+      });
+    };
+
+    let isDone: boolean;
+    let continueCursor: string;
+    switch (table) {
+      case "dtsTodos": {
+        const result = await ctx.db.query("dtsTodos").paginate(opts);
+        for (const row of result.page) {
+          page["dtsTodos-scanned"]++;
+          const retired = row as unknown as RetiredFields;
+          const patch: Record<string, undefined> = {};
+          for (const field of RETIRED_TODO_FIELDS) {
+            const value = retired[field];
+            if (value === undefined) continue;
+            page[`${field}-cleared`]++;
+            if (dryRun) continue;
+            await record({ todoId: row._id }, field, value);
+            patch[field] = undefined;
+          }
+          if (Object.keys(patch).length > 0) {
+            await ctx.db.patch(row._id, patch as Partial<Doc<"dtsTodos">>);
+          }
+        }
+        ({ isDone, continueCursor } = result);
+        break;
+      }
+      case "batches": {
+        const result = await ctx.db.query("batches").paginate(opts);
+        for (const row of result.page) {
+          page["batches-scanned"]++;
+          const path = (row as unknown as RetiredFields).path;
+          if (path === undefined) continue;
+          page["path-cleared"]++;
+          if (dryRun) continue;
+          // The WHOLE object, not just the edge the needs migration derived
+          // from: a "helps" edge became nothing and an unlinked batch's path
+          // name was never an edge at all, and both are part of what the row
+          // said about where its work sat.
+          await record({ batchId: row._id }, "path", path);
+          await ctx.db.patch(row._id, {
+            path: undefined,
+          } as Partial<Doc<"batches">>);
+        }
+        ({ isDone, continueCursor } = result);
+        break;
+      }
+      case "claudeSessions": {
+        const result = await ctx.db.query("claudeSessions").paginate(opts);
+        for (const row of result.page) {
+          page["claudeSessions-scanned"]++;
+          if ((row.status as string) !== "awaiting-permission") continue;
+          page["awaiting-permission-ended"]++;
+          if (dryRun) continue;
+          await record({ sessionId: row._id }, "status", {
+            status: "awaiting-permission",
+            // Spread, never a key set to undefined: `data` is v.any() and an
+            // undefined member is not a storable Convex value.
+            ...(row.endedReason === undefined
+              ? {}
+              : { endedReason: row.endedReason }),
+          });
+          // statusChangedAt is NOT bumped. Every one of these rows is
+          // historical — the unified auto gate has never produced one — and
+          // stamping them "changed now" would sort long-dead sessions to the
+          // top of the sessions list as though something had just happened.
+          await ctx.db.patch(row._id, {
+            status: "ended",
+            endedReason: row.endedReason ?? RETIRED_STATUS_ENDED_REASON,
+          });
+        }
+        ({ isDone, continueCursor } = result);
+        break;
+      }
+      case "dtsCodeBriefs": {
+        const result = await ctx.db.query("dtsCodeBriefs").paginate(opts);
+        for (const row of result.page) {
+          page["dtsCodeBriefs-scanned"]++;
+          const importance = (row as unknown as RetiredFields).importance;
+          if (importance !== undefined) {
+            page["brief-importance-cleared"]++;
+            if (!dryRun) {
+              await record({ briefId: row._id }, "importance", importance);
+              await ctx.db.patch(row._id, {
+                importance: undefined,
+              } as Partial<Doc<"dtsCodeBriefs">>);
+            }
+          }
+          // The same one-to-one map section 6 applied, re-applied here: a
+          // brief written between that run and this one by a box job that had
+          // not been redeployed yet must not hold the narrow up.
+          const stored = (row as { recommendation: StoredRecommendation })
+            .recommendation;
+          const target = normalizeRecommendation(stored);
+          if (stored === target) continue;
+          page["recommendation-normalized"]++;
+          if (dryRun) continue;
+          await record({ briefId: row._id }, "recommendation", stored);
+          await ctx.db.patch(row._id, { recommendation: target });
+        }
+        ({ isDone, continueCursor } = result);
+        break;
+      }
+    }
+
+    const totals = addCounts(args.totals ?? {}, page);
+    // Not finished with this table: continue where the page stopped. Finished
+    // with it: the next table from the top, or — past the last one — the
+    // finished totals as one event.
+    const nextTable = isDone
+      ? (CLEAR_TABLES[CLEAR_TABLES.indexOf(table) + 1] ?? null)
+      : table;
+    if (nextTable === null) {
+      await logEvent(
+        ctx,
+        dryRun ? `${CLEAR_MIGRATION}-dry-run` : `${CLEAR_MIGRATION}-migrated`,
+        undefined,
+        totals,
+      );
+      return {
+        done: true,
+        dryRun,
+        page,
+        totals,
+        continueCursor: null,
+        table,
+        nextTable: null,
+      };
+    }
+    const cursor = isDone ? null : continueCursor;
+    await ctx.scheduler.runAfter(
+      0,
+      internal.ttsMigrations.internalClearRetiredFields,
+      { table: nextTable, cursor, dryRun, pageSize, totals },
+    );
+    return {
+      done: false,
+      dryRun,
+      page,
+      totals,
+      continueCursor: cursor,
+      table,
+      nextTable,
+    };
   },
 });
