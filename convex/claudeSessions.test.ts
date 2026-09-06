@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
+import type { MessageOverflowRead } from "./claudeSessions";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
@@ -2236,6 +2238,236 @@ describe("Tom-facing mutations have CLI pens with identical effect", () => {
         text: "again",
       }),
     ).rejects.toThrow(/sendMessage/);
+  });
+});
+
+// ── The complete payload behind the 32KB cut ─────────────────────────────────
+// The transcript principle (lifeos update §1): a rendered view may be short,
+// the full bytes must stay retrievable. The daemon uploads a cut payload's
+// complete text as ordered chunks (POST /sessions/overflow) BEFORE the
+// finalize row that names their hash; these pin what a reader gets back.
+
+describe("message overflow (the complete payload)", () => {
+  const CHUNKS = 4;
+  const CHUNK_CHARS = 400_000; // 4 of these cross OVERFLOW_READ_BYTES
+
+  /** A payload in `CHUNKS` chunks, each distinguishable from its neighbours. */
+  function payloadChunks() {
+    return Array.from({ length: CHUNKS }, (_, i) =>
+      String.fromCharCode(97 + i).repeat(CHUNK_CHARS),
+    );
+  }
+
+  const sha256 = (text: string) =>
+    createHash("sha256").update(text, "utf8").digest("hex");
+
+  /** The daemon's order: every chunk up, then the row that names them. */
+  async function storeOversized(
+    t: ReturnType<typeof convexTest>,
+    sessionId: Id<"claudeSessions">,
+    chunks: string[],
+    { dropIndex }: { dropIndex?: number } = {},
+  ) {
+    const full = chunks.join("");
+    const overflow = {
+      sha256: sha256(full),
+      byteLength: Buffer.byteLength(full, "utf8"),
+      chunkCount: chunks.length,
+    };
+    for (const [index, text] of chunks.entries()) {
+      if (index === dropIndex) continue;
+      await t.mutation(internal.claudeSessions.internalIngestOverflow, {
+        sessionId,
+        seq: 0,
+        index,
+        chunkCount: chunks.length,
+        sha256: overflow.sha256,
+        byteLength: overflow.byteLength,
+        text,
+      });
+    }
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      finalize: [
+        {
+          seq: 0,
+          turn: 0,
+          kind: "tool-result" as const,
+          content: { toolUseId: "tool_1", content: full.slice(0, 32 * 1024) },
+          overflow,
+        },
+      ],
+    });
+    const messageId = await t.run(async (ctx) => {
+      const row = await ctx.db.query("claudeMessages").first();
+      return row!._id;
+    });
+    return { messageId, full, overflow };
+  }
+
+  // witness: drop the overflow chunks (or the row's hash) and an oversized
+  // tool result is gone for good — the cut is all that was ever kept.
+  it("reassembles an oversized tool result byte-identical, under its hash", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    const { messageId, full, overflow } = await storeOversized(
+      t,
+      sessionId,
+      payloadChunks(),
+    );
+
+    let text = "";
+    let fromIndex: number | undefined = undefined;
+    let reads = 0;
+    do {
+      // Annotated: the loop feeds the previous read's nextIndex back in as
+      // fromIndex, which TS cannot infer through without a cycle.
+      const page: MessageOverflowRead | null = await t.query(
+        internal.claudeSessions.internalMessageOverflow,
+        { messageId, fromIndex },
+      );
+      reads++;
+      expect(page).toMatchObject({
+        hasOverflow: true,
+        sha256: overflow.sha256,
+        byteLength: overflow.byteLength,
+        chunkCount: CHUNKS,
+      });
+      text += page!.text;
+      fromIndex = page!.nextIndex ?? undefined;
+      if (fromIndex === undefined) expect(page!.complete).toBe(true);
+    } while (fromIndex !== undefined && reads < 10);
+
+    expect(reads).toBeGreaterThan(1); // the read is paged, not unbounded
+    expect(text).toBe(full);
+    expect(sha256(text)).toBe(overflow.sha256);
+    expect(Buffer.byteLength(text, "utf8")).toBe(overflow.byteLength);
+  });
+
+  it("tells the transcript a row was cut, and how much is behind it", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    const { overflow } = await storeOversized(t, sessionId, payloadChunks());
+    const page = await tom.query(api.claudeSessions.getMessages, {
+      sessionId,
+      paginationOpts: { numItems: 10, cursor: null },
+    });
+    expect(page.page[0]).toMatchObject({
+      hasOverflow: true,
+      fullByteLength: overflow.byteLength,
+    });
+  });
+
+  // witness: return a prefix and call it the payload — a hole would read as
+  // the whole thing, which is the failure this path exists to prevent.
+  it("says so when a chunk the row names never landed", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    const { messageId } = await storeOversized(t, sessionId, payloadChunks(), {
+      dropIndex: 1,
+    });
+    const page = await tom.query(api.claudeSessions.getMessageOverflow, {
+      messageId,
+    });
+    expect(page).toMatchObject({ hasOverflow: true, complete: false });
+    expect(page!.text).toHaveLength(CHUNK_CHARS); // chunk 0 only
+  });
+
+  it("stores nothing for a message that fits", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      finalize: [
+        {
+          seq: 0,
+          turn: 0,
+          kind: "tool-result" as const,
+          content: { toolUseId: "tool_1", content: "ok" },
+        },
+      ],
+    });
+    const chunks = await t.run(async (ctx) =>
+      ctx.db.query("claudeMessageOverflow").collect(),
+    );
+    expect(chunks).toHaveLength(0);
+    const page = await tom.query(api.claudeSessions.getMessages, {
+      sessionId,
+      paginationOpts: { numItems: 10, cursor: null },
+    });
+    expect(page.page[0].hasOverflow).toBe(false);
+    expect(page.page[0].fullByteLength).toBeUndefined();
+    const messageId = page.page[0]._id;
+    expect(
+      await tom.query(api.claudeSessions.getMessageOverflow, { messageId }),
+    ).toMatchObject({ hasOverflow: false });
+  });
+
+  // witness: drop the overflowFailures loop from internalIngest — a payload
+  // Convex refused would sit on the box with nothing pointing at it.
+  it("records an event when the daemon could not store a payload", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      finalize: [
+        {
+          seq: 0,
+          turn: 0,
+          kind: "error" as const,
+          content: { message: "the complete payload for message 0 …" },
+        },
+      ],
+      overflowFailures: [
+        {
+          seq: 0,
+          error: "too big",
+          path: "/var/cache/tts/sessions/abc/overflow/0",
+          byteLength: 9_000_000,
+        },
+      ],
+    });
+    const events = await t.run(async (ctx) =>
+      ctx.db.query("dtsEvents").collect(),
+    );
+    const unstored = events.filter(
+      (e) => e.kind === "session-overflow-unstored",
+    );
+    expect(unstored).toHaveLength(1);
+    expect(unstored[0].data).toMatchObject({
+      sessionId,
+      seq: 0,
+      error: "too big",
+      path: "/var/cache/tts/sessions/abc/overflow/0",
+      byteLength: 9_000_000,
+    });
+  });
+
+  // witness: insert instead of upsert — a blind retry of one chunk would
+  // double it and the reassembly would no longer match its hash.
+  it("upserts a re-sent chunk instead of doubling it", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    const chunk = {
+      sessionId,
+      seq: 3,
+      index: 0,
+      chunkCount: 1,
+      text: "the payload",
+    };
+    await t.mutation(internal.claudeSessions.internalIngestOverflow, chunk);
+    await t.mutation(internal.claudeSessions.internalIngestOverflow, chunk);
+    const rows = await t.run(async (ctx) =>
+      ctx.db.query("claudeMessageOverflow").collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].text).toBe("the payload");
   });
 });
 

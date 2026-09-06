@@ -202,19 +202,39 @@ export const OVERFLOW_READ_BYTES = 1024 * 1024;
  * upload that failed permanently leaves the row's promise unkept, and saying
  * so is better than handing back a hole.
  */
+export type MessageOverflowRead = {
+  /** False = nothing was cut and `content` on the row IS the whole payload. */
+  hasOverflow: boolean;
+  sessionId: Id<"claudeSessions">;
+  seq: number;
+  /** Of the stored text, so a reassembly can be checked against it. */
+  sha256?: string;
+  byteLength?: number;
+  chunkCount?: number;
+  fromIndex: number;
+  /** Where to continue; null = the payload ends here. */
+  nextIndex: number | null;
+  /** Every chunk the row names was found. */
+  complete: boolean;
+  text: string;
+};
+
 async function messageOverflow(
   ctx: QueryCtx,
   messageId: Id<"claudeMessages">,
   fromIndex: number,
-) {
+): Promise<MessageOverflowRead | null> {
   const message = await ctx.db.get(messageId);
   if (!message) return null;
   if (!message.overflow) {
-    // Nothing was cut: `content` on the row IS the whole payload.
     return {
-      hasOverflow: false as const,
+      hasOverflow: false,
       sessionId: message.sessionId,
       seq: message.seq,
+      fromIndex: 0,
+      nextIndex: null,
+      complete: true,
+      text: "",
     };
   }
   const { sha256, byteLength, chunkCount } = message.overflow;
@@ -244,7 +264,7 @@ async function messageOverflow(
     }
   }
   return {
-    hasOverflow: true as const,
+    hasOverflow: true,
     sessionId: message.sessionId,
     seq: message.seq,
     sha256,
