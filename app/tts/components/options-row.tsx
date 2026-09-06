@@ -164,7 +164,6 @@ export default function OptionsRow({
         <VerdictButtons
           subject={subject}
           statement={heading}
-          plan={todo?.plan}
           onRule={rule}
         />
       )}
@@ -200,7 +199,6 @@ export default function OptionsRow({
             call={STATUS_INFO[status].call}
             effect={STATUS_INFO[status].body}
             statement={heading}
-            plan={todo.plan}
             // A rejection propagates: the dialog stays open and shows it,
             // which is the only place a refused status write can be read.
             onConfirm={(text) =>

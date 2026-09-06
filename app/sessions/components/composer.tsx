@@ -10,6 +10,7 @@
 import { useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import Info from "@/app/tts/components/info";
 import type { Session } from "../lib";
 import { isLive } from "../lib";
 
@@ -103,14 +104,29 @@ export default function Composer({
         placeholder="message the session"
         className="flex-1 min-w-0 resize-none bg-surface-alt border border-border rounded px-3 py-2 text-sm placeholder:text-text-faint focus:outline-none focus:border-accent"
       />
-      <button
-        type="button"
-        onClick={() => void send(reopen)}
-        disabled={sending || text.trim() === ""}
-        className="shrink-0 rounded px-4 py-2 text-sm border border-accent text-accent hover:bg-surface-alt disabled:opacity-50"
-      >
-        {label}
-      </button>
+      <span className="inline-flex shrink-0 items-center gap-0.5">
+        <button
+          type="button"
+          onClick={() => void send(reopen)}
+          disabled={sending || text.trim() === ""}
+          className="shrink-0 rounded px-4 py-2 text-sm border border-accent text-accent hover:bg-surface-alt disabled:opacity-50"
+        >
+          {label}
+        </button>
+        {reopen ? (
+          <Info call="claudeSessions.reopenSession({ sessionId, text })">
+            Puts this session back in the queue with your message as its next
+            turn. The daemon on the Jarvis Box picks the row up on its next
+            poll and resumes the same conversation — the transcript above is
+            continued, not restarted.
+          </Info>
+        ) : (
+          <Info call="claudeSessions.sendMessage({ sessionId, text })">
+            Queues your message for the running session. It is delivered at the
+            end of the current turn, and appears above as queued until then.
+          </Info>
+        )}
+      </span>
     </div>
   );
 
@@ -136,13 +152,20 @@ export default function Composer({
             supersedes the parked permission request. */}
         {(session.status === "running" ||
           session.status === "awaiting-permission") && (
-          <button
-            type="button"
-            onClick={() => void control("interrupt")}
-            className="rounded px-2.5 py-1 border border-border text-text-muted hover:bg-surface-alt"
-          >
-            Interrupt
-          </button>
+          <span className="inline-flex items-center gap-0.5">
+            <button
+              type="button"
+              onClick={() => void control("interrupt")}
+              className="rounded px-2.5 py-1 border border-border text-text-muted hover:bg-surface-alt"
+            >
+              Interrupt
+            </button>
+            <Info call='claudeSessions.sendControl({ sessionId, kind: "interrupt" })'>
+              Cuts the turn the session is in the middle of. The session stays
+              open and keeps everything it has done; the next thing you send is
+              answered from where it stopped.
+            </Info>
+          </span>
         )}
         {confirmingStop ? (
           <span className="flex flex-wrap items-center gap-2">
@@ -150,13 +173,20 @@ export default function Composer({
               stop? committed work is pushed to the session branch; uncommitted
               changes are discarded
             </span>
-            <button
-              type="button"
-              onClick={() => void control("stop")}
-              className="rounded px-2.5 py-1 border border-error/60 text-error hover:bg-surface-alt"
-            >
-              Stop
-            </button>
+            <span className="inline-flex items-center gap-0.5">
+              <button
+                type="button"
+                onClick={() => void control("stop")}
+                className="rounded px-2.5 py-1 border border-error/60 text-error hover:bg-surface-alt"
+              >
+                Stop
+              </button>
+              <Info call='claudeSessions.sendControl({ sessionId, kind: "stop" })'>
+                Ends the session. The daemon pushes whatever the session
+                committed to its own branch and discards what it never
+                committed; the transcript stays, and sending again reopens it.
+              </Info>
+            </span>
             <button
               type="button"
               onClick={() => setConfirmingStop(false)}
@@ -175,13 +205,21 @@ export default function Composer({
           </button>
         )}
         {daemonStale && (
-          <button
-            type="button"
-            onClick={() => void doForceClose()}
-            className="rounded px-2.5 py-1 border border-error/60 text-error hover:bg-surface-alt"
-          >
-            Force close
-          </button>
+          <span className="inline-flex items-center gap-0.5">
+            <button
+              type="button"
+              onClick={() => void doForceClose()}
+              className="rounded px-2.5 py-1 border border-error/60 text-error hover:bg-surface-alt"
+            >
+              Force close
+            </button>
+            <Info call="claudeSessions.forceClose({ sessionId })">
+              Marks the row ended from here, for a session whose daemon has
+              stopped reporting. It asks the box for nothing — if the daemon
+              turns out to be alive, the call is refused rather than leaving a
+              running session marked dead.
+            </Info>
+          </span>
         )}
       </div>
     </div>

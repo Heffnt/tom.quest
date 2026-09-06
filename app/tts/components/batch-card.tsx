@@ -1,22 +1,36 @@
 "use client";
 
-// The batch card, graph model. A batch is not a todo: it is the container
-// holding how todos get completed. Its plan is a graph of task- and
-// goal-todos; a todo is ready when everything it needs is done.
-// Collapsed = statement · task progress (amber = Tom's, green = agents') ·
-// what's ready now. Expanded = display text (whole block clickable → the
-// ground-up explanation) → actions (open a session; the four verdicts) →
-// ready now → blocked (visible, never hidden) → done → goals. Every item opens
-// a detail dialog; nothing shifts the page, and everything clickable changes
-// on hover.
-import PlanBar from "./plan-bar";
-import GraphView from "./graph-view";
+// The batch card. A batch is not a todo: it is the container holding how todos
+// get completed. Its contents are a graph of task- and goal-todos; a todo is
+// ready when everything it needs is done.
+//
+// WHAT THE CARD SAYS (the lifeos update, phase 7). Four things, and nothing
+// else:
+//   PURPOSE      — the statement, and the ground-up explanation behind it.
+//   MUST NOT BREAK — Tom's own lines, from the batch's goals. They are the
+//                  constraint every session on this batch reads, so they are
+//                  on the face of the card and not folded into a goal row.
+//   READY WORK   — what can be picked up now. An empty ready list says so in
+//                  those words and names what is in the way.
+//   WAITING      — every task that is not ready, with its reason in the one
+//                  spelling (ttsShared.waitingReasonText). Visible, never
+//                  hidden: a card that showed only ready work would be a card
+//                  that never says why nothing is.
+// Gone with the same change: the drawn graph, the plan bar, and the paths bar
+// above the cards — three pictures of sequencing, replaced by the sentence
+// that says what is actually in the way. FULL NEEDS DETAIL — every unmet need
+// of a task, and the batches this batch waits on — lives one click away in the
+// detail dialog, where an item's whole record is.
+//
+// Every item opens that dialog; nothing shifts the page, and everything
+// clickable changes on hover.
 import Info from "./info";
 import VerdictButtons from "./verdict-buttons";
 import { MUST_NOT_BREAK_EXPLANATION, SESSIONS_EXPLANATION } from "../explanations";
 import { fmtDate, groundUpTeaser, type RulingVerdict } from "../lib";
 import {
   isReady,
+  isReadyForTom,
   waitingReason,
   waitingReasonText,
   type StoredReadiness,
@@ -57,10 +71,17 @@ export type GraphGoal = {
   rulable: boolean;
 };
 
+/** One batch this batch needs done first — the sequencing that replaced the
+ * path (convex/schema.ts batches.needs). `met` is the buildDoneSet rule: the
+ * needed batch is done or archived. */
+export type BatchNeed = { id: string; statement: string; met: boolean };
+
 export type BatchGraph = {
   id: string;
   statement: string;
   groundUp?: string;
+  /** The batches that must land first. Absent = this batch waits on none. */
+  needs?: BatchNeed[];
   tasks: GraphTask[];
   goals: GraphGoal[];
 };
@@ -77,8 +98,18 @@ function asGraphTodo(t: GraphTask) {
   return { _id: t.id, status: t.status, needs: t.needs, wakeAt: t.wakeAt };
 }
 
-/** Ready is ttsShared.isReady — active, awake, every need done — so the card
- * and the scheduler agree on the frontier; blocked is the rest. */
+/**
+ * Ready, BY WHOSE FRONTIER (review finding). The two are not the same rule and
+ * the card must ask the one that belongs to the row's actor:
+ *   an agent task — ttsShared.isReady: active, awake, every need done. That is
+ *     the frontier a worker picks from, and it does not read readiness,
+ *     because an agent works a capture from raw.
+ *   one of Tom's — ttsShared.isReadyForTom: all of that AND prepared. A raw
+ *     capture is never ready for him (ruling 18), and listing one under "ready
+ *     now" told him to go and do a todo nobody has written up yet.
+ * Blocked is the rest, and an unprepared row of his says so there in the one
+ * spelling ("waiting: unprepared") — the preparer job clears it on its own.
+ */
 export function taskSets(
   tasks: GraphTask[],
   now: number,
@@ -92,8 +123,16 @@ export function taskSets(
   const ready: GraphTask[] = [];
   const blocked: GraphTask[] = [];
   for (const t of tasks) {
+    const isReadyNow =
+      t.actor === "tom"
+        ? isReadyForTom(
+            { ...asGraphTodo(t), readiness: t.readiness },
+            doneIds,
+            now,
+          )
+        : isReady(asGraphTodo(t), doneIds, now);
     if (t.status === "done") done.push(t);
-    else if (isReady(asGraphTodo(t), doneIds, now)) ready.push(t);
+    else if (isReadyNow) ready.push(t);
     else blocked.push(t);
   }
   return { done, ready, blocked };
@@ -130,6 +169,53 @@ export function needNames(t: GraphTask, all: GraphTask[]): string[] {
     .map((n) => byId.get(n)?.statement ?? n);
 }
 
+/** The batches this one still waits on — every unmet need, by statement. */
+export function unmetBatchNeeds(graph: BatchGraph): BatchNeed[] {
+  return (graph.needs ?? []).filter((n) => !n.met);
+}
+
+/**
+ * WHY NOTHING IS READY, in one sentence — the line the card prints where the
+ * ready list would be. A batch that waits on another batch says so first:
+ * none of its own tasks can move until that one lands, whatever their own
+ * needs look like. Otherwise it is the first waiting task's own reason. null =
+ * nothing is in the way (every task is done, or there are none).
+ */
+export function noReadyReason(
+  graph: BatchGraph,
+  now: number,
+): string | null {
+  const batchNeed = unmetBatchNeeds(graph)[0];
+  if (batchNeed !== undefined) {
+    return waitingReasonText(
+      { kind: "need", id: batchNeed.id, statement: batchNeed.statement },
+      fmtDate,
+    );
+  }
+  const { blocked } = taskSets(graph.tasks, now);
+  for (const t of blocked) {
+    const reason = taskWaiting(t, graph.tasks, now);
+    if (reason !== null) return waitingReasonText(reason, fmtDate);
+  }
+  return null;
+}
+
+const SECTION = "mb-1 text-[11px] uppercase tracking-wide text-text-faint";
+const ITEM =
+  "-mx-1.5 flex w-[calc(100%+0.75rem)] items-baseline gap-2 rounded px-1.5 py-0.5 text-left text-[13px] hover:bg-surface-alt/60";
+
+function Who({ actor, dim }: { actor: "tom" | "agent"; dim?: boolean }) {
+  return (
+    <span
+      className={`w-10 shrink-0 text-[10px] uppercase tracking-wide ${
+        actor === "tom" ? (dim ? "text-accent/70" : "text-accent") : "text-text-faint"
+      }`}
+    >
+      {actor === "tom" ? "you" : "agent"}
+    </span>
+  );
+}
+
 export default function BatchCard({
   graph,
   now,
@@ -152,12 +238,11 @@ export default function BatchCard({
   onOpenSession: () => void;
 }) {
   const { done, ready, blocked } = taskSets(graph.tasks, now);
-  const planForBar = graph.tasks.map((t) => ({
-    text: t.statement,
-    actor: t.actor,
-    status: t.status === "done" ? ("done" as const) : ("open" as const),
-  }));
   const next = ready[0];
+  const stuck = noReadyReason(graph, now);
+  const mustNotBreak = graph.goals.filter(
+    (g) => (g.mustNotBreak ?? "").trim() !== "",
+  );
 
   const taskDetail = (t: GraphTask): DetailItem => ({
     kind: "task",
@@ -174,7 +259,7 @@ export default function BatchCard({
       <button
         type="button"
         onClick={onToggle}
-        className="grid w-full grid-cols-[14px_minmax(0,1fr)_auto] items-center gap-x-3 rounded-lg px-3 py-2 text-left hover:bg-surface-alt/40"
+        className="grid w-full grid-cols-[14px_minmax(0,1fr)] items-center gap-x-3 rounded-lg px-3 py-2 text-left hover:bg-surface-alt/40"
       >
         <span className="text-[11px] text-text-faint">{expanded ? "▾" : "▸"}</span>
         <span className="min-w-0">
@@ -190,17 +275,14 @@ export default function BatchCard({
                 <span className="text-text-faint"> · +{ready.length - 1} more ready</span>
               )}
             </span>
-          ) : blocked.length > 0 ? (
+          ) : (
+            // The words, and then what is in the way. A batch with nothing
+            // ready and nothing waiting has finished its work.
             <span className="block truncate text-xs text-text-faint">
-              nothing ready — {blocked.length} blocked
+              no ready todo{stuck !== null ? ` — ${stuck}` : ""}
             </span>
-          ) : null}
+          )}
         </span>
-        {graph.tasks.length > 0 && (
-          <span className="text-right">
-            <PlanBar plan={planForBar} />
-          </span>
-        )}
       </button>
 
       {expanded && (
@@ -215,19 +297,27 @@ export default function BatchCard({
             </button>
           )}
 
-          <GraphView
-            tasks={graph.tasks}
-            goals={graph.goals}
-            onPick={(id) => {
-              const t = graph.tasks.find((x) => x.id === id);
-              if (t) onDetail(taskDetail(t));
-              else {
-                const g = graph.goals.find((x) => x.id === id);
-                if (g)
-                  onDetail({ kind: "goal", batchStatement: graph.statement, goal: g });
-              }
-            }}
-          />
+          {mustNotBreak.length > 0 && (
+            <div className="mb-2.5">
+              <div className="flex items-baseline gap-1">
+                <span className={SECTION}>must not break</span>
+                <Info
+                  call="tts.updateTodo({ mustNotBreak })"
+                  explanation={MUST_NOT_BREAK_EXPLANATION}
+                  explanationTitle="must not break — Tom's line on a goal"
+                >
+                  Your own line on what the work toward this batch&rsquo;s goals
+                  must not break. Only you write it, and every agent working
+                  this batch reads it in its opening prompt.
+                </Info>
+              </div>
+              {mustNotBreak.map((g) => (
+                <div key={g.id} className="text-[13px] text-text-muted">
+                  {g.mustNotBreak}
+                </div>
+              ))}
+            </div>
+          )}
 
           <div className="mb-3 flex flex-wrap items-start gap-x-3 gap-y-1.5">
             <span className="inline-flex items-center gap-0.5">
@@ -244,7 +334,7 @@ export default function BatchCard({
                 explanationTitle="opening a session — what is created and where it runs"
               >
                 Opens a Claude session on the Jarvis Box in a new tab, with this
-                graph — its ready, blocked and done tasks and its goals — in the
+                graph — its ready and waiting tasks and its goals — in the
                 opening prompt. It checks out the repositories the batch
                 declares and can only push to its own branch. No ruling is
                 recorded.
@@ -253,42 +343,33 @@ export default function BatchCard({
             <VerdictButtons
               subject="batch"
               statement={graph.statement}
-              plan={planForBar}
               onRule={onRule}
             />
           </div>
 
-          {ready.length > 0 && (
-            <>
-              <div className="mb-1 text-[11px] uppercase tracking-wide text-text-faint">
-                ready now
-              </div>
-              {ready.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => onDetail(taskDetail(t))}
-                  className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-baseline gap-2 rounded px-1.5 py-0.5 text-left text-[13px] hover:bg-surface-alt/60"
-                >
-                  <span className="text-text-faint">○</span>
-                  <span
-                    className={`w-10 shrink-0 text-[10px] uppercase tracking-wide ${
-                      t.actor === "tom" ? "text-accent" : "text-text-faint"
-                    }`}
-                  >
-                    {t.actor === "tom" ? "you" : "agent"}
-                  </span>
-                  <span className="truncate text-text">{t.statement}</span>
-                </button>
-              ))}
-            </>
+          <div className={SECTION}>ready now</div>
+          {ready.length > 0 ? (
+            ready.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => onDetail(taskDetail(t))}
+                className={ITEM}
+              >
+                <span className="text-text-faint">○</span>
+                <Who actor={t.actor} />
+                <span className="truncate text-text">{t.statement}</span>
+              </button>
+            ))
+          ) : (
+            <div className="text-[13px] text-text-faint">
+              no ready todo{stuck !== null ? ` — ${stuck}` : ""}
+            </div>
           )}
 
           {blocked.length > 0 && (
             <>
-              <div className="mb-1 mt-2.5 text-[11px] uppercase tracking-wide text-text-faint">
-                blocked
-              </div>
+              <div className={`${SECTION} mt-2.5`}>waiting</div>
               {blocked.map((t) => {
                 const reason = taskWaiting(t, graph.tasks, now);
                 return (
@@ -296,16 +377,10 @@ export default function BatchCard({
                     key={t.id}
                     type="button"
                     onClick={() => onDetail(taskDetail(t))}
-                    className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-baseline gap-2 rounded px-1.5 py-0.5 text-left text-[13px] opacity-60 hover:bg-surface-alt/60 hover:opacity-90"
+                    className={`${ITEM} opacity-60 hover:opacity-90`}
                   >
                     <span className="text-text-faint">○</span>
-                    <span
-                      className={`w-10 shrink-0 text-[10px] uppercase tracking-wide ${
-                        t.actor === "tom" ? "text-accent" : "text-text-faint"
-                      }`}
-                    >
-                      {t.actor === "tom" ? "you" : "agent"}
-                    </span>
+                    <Who actor={t.actor} />
                     <span className="min-w-0 truncate">
                       <span className="text-text-muted">{t.statement}</span>
                       {reason && (
@@ -323,24 +398,16 @@ export default function BatchCard({
 
           {done.length > 0 && (
             <>
-              <div className="mb-1 mt-2.5 text-[11px] uppercase tracking-wide text-text-faint">
-                done
-              </div>
+              <div className={`${SECTION} mt-2.5`}>done</div>
               {done.map((t) => (
                 <button
                   key={t.id}
                   type="button"
                   onClick={() => onDetail(taskDetail(t))}
-                  className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-baseline gap-2 rounded px-1.5 py-0.5 text-left text-[13px] hover:bg-surface-alt/60"
+                  className={ITEM}
                 >
                   <span className="text-success">✓</span>
-                  <span
-                    className={`w-10 shrink-0 text-[10px] uppercase tracking-wide ${
-                      t.actor === "tom" ? "text-accent/70" : "text-text-faint"
-                    }`}
-                  >
-                    {t.actor === "tom" ? "you" : "agent"}
-                  </span>
+                  <Who actor={t.actor} dim />
                   <span className="truncate text-text-faint">{t.statement}</span>
                 </button>
               ))}
@@ -349,40 +416,23 @@ export default function BatchCard({
 
           {graph.goals.length > 0 && (
             <>
-              <div className="mb-1 mt-3 text-[11px] uppercase tracking-wide text-text-faint">
+              <div className={`${SECTION} mt-3`}>
                 goals · {graph.goals.filter((g) => g.met).length} of {graph.goals.length} met
               </div>
               {graph.goals.map((g) => (
-                <div key={g.id}>
-                  <button
-                    type="button"
-                    onClick={() => onDetail({ kind: "goal", batchStatement: graph.statement, goal: g })}
-                    className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-baseline gap-2 rounded px-1.5 py-0.5 text-left text-[13px] hover:bg-surface-alt/60"
-                  >
-                    <span className={g.met ? "text-success" : "text-text-faint"}>
-                      {g.met ? "✓" : "◇"}
-                    </span>
-                    <span className={`truncate ${g.met ? "text-text-faint" : "text-text-muted"}`}>
-                      {g.statement}
-                    </span>
-                  </button>
-                  {g.mustNotBreak !== undefined && g.mustNotBreak.trim() !== "" && (
-                    <div className="ml-4 flex items-baseline gap-1 text-[12px] text-text-faint">
-                      <span>
-                        must not break: <span className="text-text-muted">{g.mustNotBreak}</span>
-                      </span>
-                      <Info
-                        call="tts.updateTodo({ mustNotBreak })"
-                        explanation={MUST_NOT_BREAK_EXPLANATION}
-                        explanationTitle="must not break — Tom's line on a goal"
-                      >
-                        Your own line on what the work toward this goal must
-                        not break. Only you write it, and every agent working
-                        this batch reads it in its opening prompt.
-                      </Info>
-                    </div>
-                  )}
-                </div>
+                <button
+                  key={g.id}
+                  type="button"
+                  onClick={() => onDetail({ kind: "goal", batchStatement: graph.statement, goal: g })}
+                  className={ITEM}
+                >
+                  <span className={g.met ? "text-success" : "text-text-faint"}>
+                    {g.met ? "✓" : "◇"}
+                  </span>
+                  <span className={`truncate ${g.met ? "text-text-faint" : "text-text-muted"}`}>
+                    {g.statement}
+                  </span>
+                </button>
               ))}
             </>
           )}

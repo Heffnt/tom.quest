@@ -45,6 +45,7 @@ import {
   CAPTURE_TRIAGE_SKILL,
   MODEL_OF_TOM_AREAS_DIR,
   MODEL_OF_TOM_FIRST,
+  MODEL_OF_TOM_HEADER,
   MODEL_OF_TOM_PRIORITIES,
   MODEL_OF_TOM_WRITING,
   WRITING_SKILL,
@@ -114,7 +115,9 @@ export async function modelOfTomState(
 }
 
 // The header is the first line of every prompt, and so of every transcript.
-export const MODEL_OF_TOM_HEADER = "MODEL-OF-TOM FILES";
+// Its text lives in ttsShared (client-safe): the sessions page reads it back
+// off the transcript row, and cannot import this module.
+export { MODEL_OF_TOM_HEADER };
 export const MODEL_OF_TOM_FALLBACK_HEADER = `${MODEL_OF_TOM_HEADER}: none stored yet — the hardcoded writing standard (convex/ttsShared.ts WRITING_STANDARD) stands in until the nightly job's first post.`;
 
 /** The text every prompt begins with: the header naming the commit and the

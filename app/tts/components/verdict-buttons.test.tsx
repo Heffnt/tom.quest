@@ -238,9 +238,9 @@ describe("the verdict row", () => {
 });
 
 describe("the batch card", () => {
-  // witness: drop the mustNotBreak line from the goals list in batch-card.tsx
-  // — Tom's constraint would be stored and shown nowhere on the page.
-  it("shows Tom's must-not-break line under its goal, with the popover naming the pen", () => {
+  // witness: drop the must-not-break block from batch-card.tsx — Tom's
+  // constraint would be stored and shown nowhere on the page.
+  it("shows Tom's must-not-break lines on the card, with the popover naming the pen", () => {
     render(
       <BatchCard
         graph={{
@@ -258,9 +258,8 @@ describe("the batch card", () => {
         onOpenSession={() => {}}
       />,
     );
-    const line = screen.getByText("the citations stay verbatim");
-    expect(line).toBeTruthy();
-    fireEvent.click(infoBeside(line.closest("div")!.querySelector("span")!));
+    expect(screen.getByText("the citations stay verbatim")).toBeTruthy();
+    fireEvent.click(infoBeside(screen.getByText("must not break")));
     expect(screen.getByText("tts.updateTodo({ mustNotBreak })")).toBeTruthy();
   });
 

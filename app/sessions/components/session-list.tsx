@@ -23,56 +23,26 @@ import {
   statusChipClass,
 } from "../lib";
 
-const inputCls =
-  "bg-surface border border-border rounded-md px-2 py-1 text-xs text-text placeholder:text-text-faint focus:outline-none focus:border-accent/60";
 const btnCls =
   "border border-border rounded-md px-2.5 py-1 text-xs text-text-muted hover:text-text hover:border-accent/60 disabled:opacity-50 disabled:pointer-events-none";
 
-// ── Autonomous fleet: the scheduler's admission settings + the Jarvis Box load
-// they are compared against. Load-based admission is the primary throttle;
-// maxLiveAutonomous is a runaway failsafe and maxNewPerTick a clone-burst
-// bound, which is why the load line sits next to the switch ────────────────
-type Draft = {
-  enabled: boolean;
-  defaultModel: SessionModel;
-  maxLoadPerCpu: string;
-  minFreeMemMb: string;
-  maxLiveAutonomous: string;
-  maxNewPerTick: string;
-};
-
-// The label IS the schema field name — the caption behind ⓘ names the call
-// (UI = code), so the fields need no prose of their own.
-function NumField({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="flex items-baseline gap-1.5">
-      <span className="text-[10px] font-mono text-text-faint w-32 shrink-0">
-        {label}
-      </span>
-      <input
-        type="text"
-        inputMode="decimal"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className={`${inputCls} w-24`}
-      />
-    </label>
-  );
-}
-
+// ── Autonomous workers: ONE CONTROL (the lifeos update, phase 7) ────────────
+// This strip used to be an editor over five stored numbers — the load and
+// memory ceilings the scheduler admits under, the two runaway failsafes, and
+// the fleet's default model. Four of them were mechanism, not a decision: they
+// describe how hard a machine may be pushed, they were never touched after
+// they were set, and a number Tom has to hold in his head to read this page is
+// exactly what the update is removing. They are code-owned defaults now
+// (claudeSessions.AUTO_DEFAULTS), and this is the one thing left that is a
+// decision: are the autonomous workers running.
+//
+// The Jarvis Box's own load still reads beside the switch, because that is the
+// fact the answer depends on, and the model the fleet runs on reads as a chip:
+// both are facts, neither is a control.
 function AutoFleetStrip() {
   const config = useQuery(api.claudeSessions.getAutoConfig, {});
   const health = useQuery(api.claudeSessions.getDaemonHealth, {});
   const setAutoConfig = useMutation(api.claudeSessions.setAutoConfig);
-  const [draft, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -80,41 +50,12 @@ function AutoFleetStrip() {
   // a falsy value here means the query has not landed yet.
   if (!config) return null;
 
-  // Opening seeds the editor from the stored config; a live update while a
-  // field is being typed must not clobber the draft.
-  const openEditor = () => {
-    setError(null);
-    setDraft({
-      enabled: config.enabled,
-      defaultModel: config.defaultModel,
-      maxLoadPerCpu: String(config.maxLoadPerCpu),
-      minFreeMemMb: String(config.minFreeMemMb),
-      maxLiveAutonomous: String(config.maxLiveAutonomous),
-      maxNewPerTick: String(config.maxNewPerTick),
-    });
-  };
-
-  const save = async () => {
-    if (draft === null || busy) return;
-    const numbers = {
-      maxLoadPerCpu: Number(draft.maxLoadPerCpu),
-      minFreeMemMb: Number(draft.minFreeMemMb),
-      maxLiveAutonomous: Number(draft.maxLiveAutonomous),
-      maxNewPerTick: Number(draft.maxNewPerTick),
-    };
-    if (Object.values(numbers).some((n) => !Number.isFinite(n))) {
-      setError("numbers only");
-      return;
-    }
+  const flip = async () => {
+    if (busy) return;
     setBusy(true);
     setError(null);
     try {
-      await setAutoConfig({
-        enabled: draft.enabled,
-        defaultModel: draft.defaultModel,
-        ...numbers,
-      });
-      setDraft(null);
+      await setAutoConfig({ enabled: !config.enabled });
     } catch (e) {
       setError(e instanceof Error ? e.message : "save failed");
     } finally {
@@ -127,14 +68,37 @@ function AutoFleetStrip() {
   return (
     <div className="border border-border rounded-lg bg-surface/40 px-3 py-2 space-y-1.5">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span className="inline-flex items-baseline gap-1">
+          {/* The label is the state it moves to, which is the ratified rule
+              for an action label: it names its exact effect. */}
+          <button
+            type="button"
+            onClick={() => void flip()}
+            disabled={busy}
+            className={`rounded-md border px-2.5 py-1 text-xs disabled:opacity-50 ${
+              config.enabled
+                ? "border-accent/60 bg-accent-dim text-accent hover:border-accent"
+                : "border-border text-text-muted hover:text-text hover:border-accent/60"
+            }`}
+          >
+            {config.enabled ? "stop autonomous workers" : "start autonomous workers"}
+          </button>
+          <Info call="claudeSessions.setAutoConfig({ enabled })">
+            Whether the box works on its own. While this is on, every five
+            minutes the scheduler walks your open work, claims what is ready
+            and opens a session for it — but only while the Jarvis Box is under
+            the load and memory ceilings, which are fixed in the code, not
+            here. Turning it off starts nothing new; sessions already running
+            are left alone.
+          </Info>
+        </span>
         <span
           className={`text-xs ${config.enabled ? "text-accent" : "text-text-muted"}`}
         >
           auto {config.enabled ? "on" : "off"}
         </span>
         {/* The model an autonomous session runs on when the todo it claimed
-            named none of its own — a fact of the fleet, so it reads in the
-            strip beside the switch, not only inside the editor. */}
+            named none of its own — a fact of the fleet, beside the switch. */}
         <span className={MODEL_CHIP_CLASS}>{config.defaultModel}</span>
         {load && (
           <span className="font-mono text-[10px] text-text-faint">
@@ -143,83 +107,8 @@ function AutoFleetStrip() {
             sessions
           </span>
         )}
-        <button
-          type="button"
-          onClick={draft === null ? openEditor : () => setDraft(null)}
-          className="ml-auto text-[10px] text-text-faint hover:text-text-muted"
-        >
-          {draft === null ? "edit" : "close"}
-        </button>
       </div>
-      {draft !== null && (
-        <div className="space-y-1.5 border-t border-border pt-1.5">
-          <label className="flex items-baseline gap-1.5">
-            <span className="text-[10px] font-mono text-text-faint w-32 shrink-0">
-              enabled
-            </span>
-            <input
-              type="checkbox"
-              checked={draft.enabled}
-              onChange={(e) =>
-                setDraft({ ...draft, enabled: e.target.checked })
-              }
-              className="accent-accent"
-            />
-          </label>
-          {/* Same label-is-the-field-name shape as the numbers: the schema
-              field is `defaultModel`, and the ⓘ below names the call. */}
-          <label className="flex items-baseline gap-1.5">
-            <span className="text-[10px] font-mono text-text-faint w-32 shrink-0">
-              defaultModel
-            </span>
-            <ModelSelect
-              ariaLabel="fleet default model"
-              compact
-              value={draft.defaultModel}
-              onChange={(m) => setDraft({ ...draft, defaultModel: m })}
-            />
-          </label>
-          <NumField
-            label="maxLoadPerCpu"
-            value={draft.maxLoadPerCpu}
-            onChange={(v) => setDraft({ ...draft, maxLoadPerCpu: v })}
-          />
-          <NumField
-            label="minFreeMemMb"
-            value={draft.minFreeMemMb}
-            onChange={(v) => setDraft({ ...draft, minFreeMemMb: v })}
-          />
-          <NumField
-            label="maxLiveAutonomous"
-            value={draft.maxLiveAutonomous}
-            onChange={(v) => setDraft({ ...draft, maxLiveAutonomous: v })}
-          />
-          <NumField
-            label="maxNewPerTick"
-            value={draft.maxNewPerTick}
-            onChange={(v) => setDraft({ ...draft, maxNewPerTick: v })}
-          />
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => void save()}
-              disabled={busy}
-              className={btnCls}
-            >
-              Save
-            </button>
-            <Info call="claudeSessions.setAutoConfig({ enabled, defaultModel, maxLoadPerCpu, minFreeMemMb, maxLiveAutonomous, maxNewPerTick })">
-              How hard the fleet is allowed to work, and which model it works
-              on. Every five minutes the scheduler walks your open work and
-              opens sessions for it, but only while the Jarvis Box is under
-              these load and memory numbers — load is the real throttle, the
-              two counts are runaway failsafes. defaultModel is what a session
-              runs on when the item it claimed named no model of its own.
-            </Info>
-          </div>
-          {error && <div className="text-xs text-error">{error}</div>}
-        </div>
-      )}
+      {error && <div className="text-xs text-error">{error}</div>}
     </div>
   );
 }

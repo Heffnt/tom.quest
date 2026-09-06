@@ -517,6 +517,13 @@ export const MODEL_OF_TOM_FIRST = [
 // kept identical by being written identically.
 export const MODEL_OF_TOM_AREAS_DIR = "model-of-tom/areas";
 
+/** The first line of every prompt that carries the prelude, and so of every
+ * transcript: convex/ttsSkills.ts writes it with the commit and the paths
+ * after it; the sessions page reads it back off the row (app/sessions/lib.ts
+ * modelOfTomHeadOf) to show what the session began with. Here, not there,
+ * because the page cannot import a module that pulls in the Convex server. */
+export const MODEL_OF_TOM_HEADER = "MODEL-OF-TOM FILES";
+
 // ── The writing standard — THE FALLBACK COPY (Tom's ruling, 2026-08-29) ─────
 // EVERY piece of natural language TTS shows Tom — a batch statement, a task
 // statement, a ground-up explanation, a digest line, a decision list — is
@@ -957,10 +964,11 @@ export function slackHourKey(utcMs: number): string {
 }
 
 /** A tab of the /tts page, in the page's own `?tab=` vocabulary
- * (app/tts/tts-client.tsx): the calendar, the batches, the items one by one.
- * The one spelling of a tab link, for every Slack message that sends Tom to
- * the page for the rest of a list. */
-export type TtsTab = "calendar" | "batches" | "by-individual";
+ * (app/tts/tts-client.tsx): the calendar, the batches, everything. The one
+ * spelling of a tab link, for every Slack message that sends Tom to the page
+ * for the rest of a list. The page still accepts the retired spellings
+ * `by-individual` and `needs-me` from older links; nothing writes them. */
+export type TtsTab = "calendar" | "batches" | "everything";
 export function ttsTabLink(tab: TtsTab): string {
   return `https://tom.quest/tts?tab=${tab}`;
 }

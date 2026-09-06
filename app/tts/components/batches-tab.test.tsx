@@ -131,7 +131,10 @@ describe("a stored waiting task on the card", () => {
     const text = document.body.textContent ?? "";
     expect(text).toContain("waiting until: the landlord writes back");
     expect(text).not.toContain("275760");
-    expect(text).toContain("1 blocked");
+    // …and the card says so where its ready work would be, in those words.
+    expect(text).toContain(
+      "no ready todo — waiting until: the landlord writes back",
+    );
   });
 
   it("a wordless sleep reads as waiting, with no date at all", () => {

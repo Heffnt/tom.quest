@@ -27,12 +27,7 @@ import { createPortal } from "react-dom";
 import Info from "./info";
 import RulingDialog, { type SentenceVerdict } from "./ruling-dialog";
 import { VERDICTS_EXPLANATION } from "../explanations";
-import {
-  errMessage,
-  VERDICTS,
-  type PlanStep,
-  type RulingVerdict,
-} from "../lib";
+import { errMessage, VERDICTS, type RulingVerdict } from "../lib";
 
 /** What the ruling is on. A batch is its own row; a todo is a dtsTodos row;
  * a code subject is a repo plus its id in that repo's todo file. */
@@ -109,15 +104,12 @@ const btnCls =
 export default function VerdictButtons({
   subject,
   statement,
-  plan,
   error: externalError,
   onRule,
 }: {
   subject: VerdictSubject;
   /** The subject's statement, for the dialog's heading. */
   statement: string;
-  /** The subject's steps, for the dialog's progress line (a batch's tasks). */
-  plan?: PlanStep[];
   /**
    * A failure the CALLER is holding rather than throwing — the session hooks
    * catch their own errors into state (app/lib/use-open-todo-session.ts), and
@@ -200,7 +192,6 @@ export default function VerdictButtons({
             call={verdictCall(subject, dialog)}
             effect={VERDICT_EFFECT[subject][dialog]}
             statement={statement}
-            plan={plan}
             onConfirm={(sentence) => onRule(dialog, sentence)}
             onClose={() => setDialog(null)}
           />,

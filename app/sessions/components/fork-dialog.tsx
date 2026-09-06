@@ -8,9 +8,12 @@
 // not a silent select.
 //
 // Fixed overlay, same shape as the TTS ruling dialog: nothing behind it moves
-// (the ratified rule), and the confirm button names the call it fires.
+// (the ratified rule), the confirm button names the call it fires, and the ⓘ
+// beside it is the one info mechanism carrying that call in full with the
+// plain sentence for what it does.
 
 import { useState } from "react";
+import Info from "@/app/tts/components/info";
 import type { SessionModel } from "../lib";
 
 export default function ForkDialog({
@@ -44,10 +47,6 @@ export default function ForkDialog({
           This session is stopped and ends normally. A new session on {toModel}{" "}
           then starts from its full transcript, and the view moves to that one.
         </p>
-        <div className="mt-0.5 font-mono text-[10px] text-text-faint">
-          claudeSessions.forkSessionAs(&#123; sessionId, model, text &#125;)
-        </div>
-
         <textarea
           value={text}
           autoFocus
@@ -85,6 +84,12 @@ export default function ForkDialog({
           >
             forkSessionAs(sessionId, &quot;{toModel}&quot;)
           </button>
+          <Info call="claudeSessions.forkSessionAs({ sessionId, model, text })">
+            Ends this session normally and writes a new one on {toModel},
+            seeded with this session&rsquo;s whole transcript and the first
+            message above. The view moves to the new session; this one stays
+            readable as history.
+          </Info>
         </div>
         {error && <div className="mt-2 text-xs text-error">{error}</div>}
       </div>

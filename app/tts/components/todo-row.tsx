@@ -29,13 +29,7 @@ import {
 } from "@/convex/ttsShared";
 import { useOpenTodoSession } from "@/app/lib/use-open-todo-session";
 import Info from "./info";
-import {
-  LINK_INTENT_EXPLANATION,
-  READINESS_EXPLANATION,
-  SESSIONS_EXPLANATION,
-  STATUS_EXPLANATION,
-  TODO_FIELDS_EXPLANATION,
-} from "../explanations";
+import { SESSIONS_EXPLANATION, STATUS_EXPLANATION } from "../explanations";
 import OptionsRow from "./options-row";
 import TimeNoteField, { type TimeNote } from "./time-note-field";
 import {
@@ -61,14 +55,19 @@ const chipCls =
  * The ⓘ beside a control, naming the mutation it fires.
  *
  * `children` is the call; `explains` is the plain-language half the ratified
- * info rule requires. Every caller in app/tts now passes both halves plus an
- * `explanation`, so a caption rendering the bare call no longer exists — a new
- * caller with no `explains` is an oversight rather than acknowledged debt.
+ * info rule requires. Every caller passes both, so a caption rendering the
+ * bare call no longer exists — a new caller with no `explains` is an oversight
+ * rather than acknowledged debt.
  *
  * `explanation` is the second register: one complete HTML document (see
- * ../explanations) shown fullscreen behind the popover's "more" control, for
- * a caption whose mechanism has to be taught rather than named. A caption
- * without one shows no "more".
+ * ../explanations) shown fullscreen behind the popover's "more" control, for a
+ * control whose MECHANISM has to be taught rather than named — status, the
+ * verdicts, sessions, time notes, blocks, repeats. A control that writes one
+ * text field on one row (the editors below, the readiness dropdown, the intent
+ * bar's confirm) has no mechanism behind it to teach: what it does is what the
+ * plain half says, and the document that used to sit behind those three
+ * taught a reader how to read this screen, which is explainer text (the lifeos
+ * update, phase 7). Those captions carry the two halves and no "more".
  */
 function Caption({
   children,
@@ -96,8 +95,8 @@ function Caption({
 // All five fields this renders are the same mechanism — one updateTodo call
 // writing one text field, with the same two invisible consequences (the row is
 // stamped as Tom-touched, which freezes its grouping; its update time bumps,
-// which can reopen a ruled item). So the ground-up document is fixed here and
-// only `explains` differs per field.
+// which can reopen a ruled item). Those two consequences are what `explains`
+// has to carry per field.
 function FieldEditor({
   label,
   caption,
@@ -132,13 +131,7 @@ function FieldEditor({
     <div className="space-y-1">
       <div className="flex items-baseline gap-2">
         <span className="text-xs text-text-faint">{label}</span>
-        <Caption
-          explains={explains}
-          explanation={TODO_FIELDS_EXPLANATION}
-          explanationTitle="the five text fields of a todo"
-        >
-          {caption}
-        </Caption>
+        <Caption explains={explains}>{caption}</Caption>
       </div>
       <div className="flex gap-2 items-start">
         {multiline ? (
@@ -369,11 +362,7 @@ export default function TodoRow({
                 >
                   Confirm {intent}
                 </button>
-                <Caption
-                  explains="Carries out what the link proposed. The link itself changed nothing — an address that is merely fetched must never change stored data, or a chat client generating a preview would mark this done for you."
-                  explanation={LINK_INTENT_EXPLANATION}
-                  explanationTitle="the intent bar — a link that proposes an action"
-                >
+                <Caption explains="Carries out what the link proposed. The link itself changed nothing — an address that is merely fetched must never change stored data, or a chat client generating a preview would mark this done for you.">
                   {intentCaption}
                 </Caption>
               </div>
@@ -495,11 +484,7 @@ export default function TodoRow({
                 <div className="space-y-1">
                   <div className="flex items-baseline gap-2">
                     <span className="text-xs text-text-faint">readiness</span>
-                    <Caption
-                      explains="Sets whether this item has been written up, and nothing else. Dropping it to unprepared hands it back to an agent, which re-writes the brief within a couple of minutes and returns it as prepared — the item, and what you have already decided about it, are untouched. Whether a prepared item is ready for you is computed from it: active, awake, and nothing it needs still open."
-                      explanation={READINESS_EXPLANATION}
-                      explanationTitle="readiness — the field this dropdown writes"
-                    >
+                    <Caption explains="Sets whether this item has been written up, and nothing else. Dropping it to unprepared hands it back to an agent, which re-writes the brief within a couple of minutes and returns it as prepared — the item, and what you have already decided about it, are untouched. Whether a prepared item is ready for you is computed from it: active, awake, and nothing it needs still open.">
                       {"tts.updateTodo({ readiness })"}
                     </Caption>
                   </div>

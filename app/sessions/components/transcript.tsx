@@ -17,12 +17,15 @@ import {
 import { usePaginatedQuery, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import type { Message } from "../lib";
+import type { TranscriptMessage } from "../lib";
 import {
   compactInput,
   formatClock,
+  isLive,
   previewLine,
+  shortAge,
   subagentTypeOf,
+  taskDescriptionOf,
   toolInputOf,
   toolNameOf,
   toolUseIdOf,
@@ -46,11 +49,11 @@ const lastReadKey = (sessionId: string) => `tts.sessions.lastReadSeq.${sessionId
 type AgentGroup = {
   kind: "agent";
   parentToolUseId: string;
-  messages: Message[];
+  messages: TranscriptMessage[];
 };
-type Group = { kind: "row"; message: Message } | AgentGroup;
+type Group = { kind: "row"; message: TranscriptMessage } | AgentGroup;
 
-function groupRows(messages: Message[]): Group[] {
+function groupRows(messages: TranscriptMessage[]): Group[] {
   const groups: Group[] = [];
   const byParent = new Map<string, AgentGroup>();
   for (const message of messages) {
@@ -75,25 +78,37 @@ function groupRows(messages: Message[]): Group[] {
   return groups;
 }
 
-// toolUseId → subagent_type, read off the Task tool-calls in the loaded
-// window. A group whose Task row has not been paged in yet keeps the bare id
-// as its label — an invented name would be worse than the literal one.
-function subagentTypeIndex(messages: Message[]): Map<string, string> {
-  const types = new Map<string, string>();
+// toolUseId → what its Task tool-call said the subagent is: its type, and the
+// description the call gave it. Read off the Task rows in the loaded window; a
+// group whose Task row has not been paged in yet falls back to the open-work
+// query below, and keeps the bare id only when neither knows it — an invented
+// name would be worse than the literal one.
+//
+// The description is here because the agent panel is gone (the lifeos update,
+// phase 7): what it showed beside a running subagent was this same field off
+// this same row, and the fold that holds the subagent's work is where it
+// belongs.
+type TaskLabel = { type?: string; description?: string };
+
+function subagentIndex(messages: TranscriptMessage[]): Map<string, TaskLabel> {
+  const labels = new Map<string, TaskLabel>();
   for (const message of messages) {
     if (message.kind !== "tool-call") continue;
     const id = toolUseIdOf(message.content);
     if (id === undefined) continue;
     const type = subagentTypeOf(message.content);
-    if (type !== undefined) types.set(id, type);
+    const description = taskDescriptionOf(message.content);
+    if (type !== undefined || description !== undefined) {
+      labels.set(id, { type, description });
+    }
   }
-  return types;
+  return labels;
 }
 
 // toolUseId → toolName over the loaded window, so a tool-result row can name
 // the call it answers. A result whose call has not been paged in yet shows no
 // name — never an invented one.
-function toolNameIndex(messages: Message[]): Map<string, string> {
+function toolNameIndex(messages: TranscriptMessage[]): Map<string, string> {
   const names = new Map<string, string>();
   for (const message of messages) {
     if (message.kind !== "tool-call") continue;
@@ -124,7 +139,7 @@ function TurnDivider({ at }: { at: number }) {
 // returned): the live tail then renders nothing rather than inventing a state
 // the rows do not show.
 function openToolCall(
-  messages: Message[],
+  messages: TranscriptMessage[],
 ): { name: string; preview: string } | null {
   const answered = new Set<string>();
   for (const m of messages) {
@@ -144,6 +159,85 @@ function openToolCall(
     };
   }
   return null;
+}
+
+// ── The fold's live half (the lifeos update, phase 7) ──────────────────────
+// A subagent's fold holds every row it produced. Three facts about a RUNNING
+// one are not rows and never were — whether it is still going, how long it has
+// been going, and the tool call it is inside right now — and the agent panel
+// was where Tom read them. They come from the same query the panel read
+// (claudeSessions.getOpenToolWork), which walks the newest tool calls of the
+// session rather than the page's loaded window, so a fold whose Task row has
+// been paged out still says them. The query answers only for a live session;
+// a finished subagent's outcome is its Task result row, in the transcript.
+
+/**
+ * How long a running subagent has been going, ticking on its own 15s interval.
+ * The interval is HERE and not in the transcript on purpose: the transcript is
+ * memoized against the parent's age tick because it shows no ages, and a tick
+ * hoisted up there would re-render every row in the pane once a minute.
+ */
+function Elapsed({ startedAt }: { startedAt: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 15_000);
+    return () => clearInterval(t);
+  }, []);
+  return <>{shortAge(startedAt, now)}</>;
+}
+
+/** One running subagent, as claudeSessions.getOpenToolWork names it. */
+type OpenAgent = {
+  toolUseId: string;
+  subagentType: string;
+  description: string;
+  startedAt: number;
+  current?: { toolName: string; inputPreview: string };
+};
+
+/** The first of these that says something. The open-work query spells an
+ * absent field as "", so a plain ?? chain would take the empty one. */
+function firstText(...values: (string | undefined)[]): string | undefined {
+  return values.find((v) => v !== undefined && v.trim() !== "");
+}
+
+/** The line on the closed fold: who, what it was sent to do, how many rows —
+ * and, while it is still going, that it is running, for how long, and the
+ * call it is inside. */
+function AgentSummary({
+  label,
+  description,
+  rows,
+  open,
+}: {
+  label: string;
+  description?: string;
+  rows: number;
+  /** Absent = the subagent has returned (or the session is over). */
+  open?: OpenAgent;
+}) {
+  return (
+    <summary className="cursor-pointer list-none text-xs text-text-faint px-1 hover:text-text-muted">
+      agent <span className="text-text-muted">{label}</span> — {rows} rows
+      {description !== undefined && (
+        <span>
+          {" · "}
+          {previewLine(description, 80)}
+        </span>
+      )}
+      {open !== undefined && (
+        <span className="text-accent">
+          {" · running "}
+          <Elapsed startedAt={open.startedAt} />
+        </span>
+      )}
+      {open?.current !== undefined && (
+        <span className="block font-mono text-[10px] text-text-faint break-words">
+          now: {open.current.toolName} {previewLine(open.current.inputPreview, 80)}
+        </span>
+      )}
+    </summary>
+  );
 }
 
 function UnreadDivider() {
@@ -184,6 +278,12 @@ const Transcript = memo(function Transcript({
   const pendingInbound = useQuery(api.claudeSessions.getPendingInbound, {
     sessionId,
   });
+  // The open subagents, for the fold summaries (see "the fold's live half").
+  // A terminal session has none by definition, so it is not asked.
+  const openWork = useQuery(
+    api.claudeSessions.getOpenToolWork,
+    isLive(sessionStatus) ? { sessionId } : "skip",
+  );
 
   // results are seq-descending (newest first); display ascending. The stream
   // buf re-renders this component several times a second, so the reverse and
@@ -191,8 +291,13 @@ const Transcript = memo(function Transcript({
   // redone until a page or a finalized message actually lands.
   const messages = useMemo(() => [...results].reverse(), [results]);
   const groups = useMemo(() => groupRows(messages), [messages]);
-  const subagentTypes = useMemo(() => subagentTypeIndex(messages), [messages]);
+  const subagents = useMemo(() => subagentIndex(messages), [messages]);
   const toolNames = useMemo(() => toolNameIndex(messages), [messages]);
+  // toolUseId → the subagent that is still running under it.
+  const running = useMemo(
+    () => new Map((openWork?.agents ?? []).map((a) => [a.toolUseId, a])),
+    [openWork],
+  );
   const pendingTurns = (pendingInbound ?? []).filter(
     (row) => row.kind === "user-turn",
   );
@@ -397,11 +502,26 @@ const Transcript = memo(function Transcript({
                 <MessageRow message={g.message} toolNames={toolNames} />
               ) : (
                 <details className="text-sm">
-                  <summary className="cursor-pointer list-none text-xs text-text-faint px-1 hover:text-text-muted">
-                    agent{" "}
-                    {subagentTypes.get(g.parentToolUseId) ?? g.parentToolUseId}{" "}
-                    — {g.messages.length} rows
-                  </summary>
+                  {/* The fold IS the agent panel now: who it is, what it was
+                      sent to do (the Task call's own description), how much it
+                      has done so far, and — while it is still going — that it
+                      is running, for how long, and the call it is inside right
+                      now. Then every row it produced, in full, one press
+                      away. */}
+                  <AgentSummary
+                    label={
+                      firstText(
+                        subagents.get(g.parentToolUseId)?.type,
+                        running.get(g.parentToolUseId)?.subagentType,
+                      ) ?? g.parentToolUseId
+                    }
+                    description={firstText(
+                      subagents.get(g.parentToolUseId)?.description,
+                      running.get(g.parentToolUseId)?.description,
+                    )}
+                    rows={g.messages.length}
+                    open={running.get(g.parentToolUseId)}
+                  />
                   <div className="mt-1 space-y-2 border-l border-border pl-3">
                     {g.messages.map((m) => (
                       <MessageRow key={m._id} message={m} toolNames={toolNames} />

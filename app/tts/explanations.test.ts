@@ -97,14 +97,25 @@ describe("caption ground-up explanations", () => {
   }
 });
 
-// ── THE OTHER HALF OF THE MIGRATION ─────────────────────────────────────────
+// ── THE OTHER HALF: THE CALL SITES ──────────────────────────────────────────
 //
-// The rule above is about the documents. This one is about the call sites: as
-// of 2026-08-31 every caption in app/tts carries a ground-up document, and a
-// new caption that forgets one is the regression this catches. It is a source
-// scan rather than a render test because there is no single screen that mounts
-// all of them, and mounting each surface to count its captions would test the
-// surfaces rather than the rule.
+// The rule above is about the documents. This one is about where they are
+// opened from, and it changed with the lifeos update (phase 7). It used to be
+// "every caption carries a document", which was true while a document existed
+// for every caption — including three that taught a reader how to read a
+// screen. Those three are gone (readiness, the todo's text fields, the intent
+// bar): pages never explain themselves, and a "more" control in front of page
+// explainer text is still page explainer text. A caption on a control that
+// writes one field on one row now carries its two plain sentences and no
+// document, which is complete.
+//
+// What is left to hold is the other direction, and it is the one that rots
+// silently: EVERY DOCUMENT IN THE MODULE IS OPENED FROM SOMEWHERE. A document
+// no caption names is 10 kB shipped to the browser that no reader can reach,
+// and nothing else would notice it. It is a source scan rather than a render
+// test because there is no single screen that mounts every caption, and
+// mounting each surface to count them would test the surfaces rather than the
+// rule.
 //
 // `<Info>` is the caption control (./components/info); `<Caption>` is the thin
 // wrapper todo-row.tsx puts around it. Both are checked. info.tsx itself is
@@ -151,34 +162,113 @@ function openingTag(src: string, from: number): string {
   return src.slice(from);
 }
 
-describe("every caption in app/tts carries a ground-up explanation", () => {
+/**
+ * What sits between the opening tag starting at `from` and its matching close
+ * — "" when the tag closes itself. Same-name nesting is counted, so an Info
+ * inside an Info would not end the outer one early.
+ */
+function childrenOf(
+  src: string,
+  from: number,
+  name: string,
+  tag: string,
+): string {
+  if (tag.trimEnd().endsWith("/>")) return "";
+  const open = `<${name}`;
+  const close = `</${name}>`;
+  const start = from + tag.length;
+  let i = start;
+  let depth = 1;
+  while (i < src.length) {
+    const nextOpen = src.indexOf(open, i);
+    const nextClose = src.indexOf(close, i);
+    if (nextClose === -1) break; // unbalanced source: the whole tail
+    if (nextOpen !== -1 && nextOpen < nextClose) {
+      depth += 1;
+      i = nextOpen + open.length;
+      continue;
+    }
+    depth -= 1;
+    if (depth === 0) return src.slice(start, nextClose);
+    i = nextClose + close.length;
+  }
+  return src.slice(start);
+}
+
+/** Whether children amount to a sentence. A JSX comment is not one, and
+ * neither is a lone {" "} — which is why this asks for letters and not for a
+ * non-empty string. */
+function saysSomething(children: string): boolean {
+  return /[A-Za-z]/.test(children.replace(/\{\s*\/\*[\s\S]*?\*\/\s*\}/g, ""));
+}
+
+describe("every document is opened from a caption, and every caption explains", () => {
   const files = captionSources(join(__dirname));
+  const sources = files.map((f) => ({
+    short: f.slice(f.indexOf("app/tts")).replace(/\\/g, "/"),
+    src: readFileSync(f, "utf8"),
+  }));
+
+  /** Every `<Info …>` / `<Caption …>` call site on the screens: the opening
+   * tag, and what sits between it and its close. */
+  type CaptionTag = { name: "Info" | "Caption"; tag: string; children: string };
+
+  const tagsIn = (src: string): CaptionTag[] => {
+    const tags: CaptionTag[] = [];
+    for (const name of ["Info", "Caption"] as const) {
+      const open = `<${name}`;
+      for (
+        let i = src.indexOf(open);
+        i !== -1;
+        i = src.indexOf(open, i + 1)
+      ) {
+        if (!/[\s>]/.test(src[i + open.length] ?? "")) continue;
+        const tag = openingTag(src, i);
+        tags.push({ name, tag, children: childrenOf(src, i, name, tag) });
+      }
+    }
+    return tags;
+  };
 
   it("finds the caption call sites at all", () => {
     // A scan that matches nothing would pass every assertion below while
     // checking nothing at all.
-    const total = files.reduce(
-      (n, f) => n + (readFileSync(f, "utf8").match(/<(Info|Caption)[\s>]/g)?.length ?? 0),
-      0,
-    );
+    const total = sources.reduce((n, f) => n + tagsIn(f.src).length, 0);
     expect(total).toBeGreaterThan(10);
   });
 
-  for (const file of files) {
-    const src = readFileSync(file, "utf8");
-    const short = file.slice(file.indexOf("app/tts"));
-    const tags: string[] = [];
-    for (let i = src.indexOf("<Info"); i !== -1; i = src.indexOf("<Info", i + 1)) {
-      if (/[\s>]/.test(src[i + 5] ?? "")) tags.push(openingTag(src, i));
-    }
-    for (let i = src.indexOf("<Caption"); i !== -1; i = src.indexOf("<Caption", i + 1)) {
-      if (/[\s>]/.test(src[i + 8] ?? "")) tags.push(openingTag(src, i));
-    }
-    if (tags.length === 0) continue;
+  for (const [name] of documents) {
+    it(`${name} is opened from at least one caption`, () => {
+      const opened = sources.filter((f) =>
+        f.src.includes(`explanation={${name}}`),
+      );
+      expect(opened.map((f) => f.short).length).toBeGreaterThan(0);
+    });
+  }
 
-    it(`${short} passes explanation= on all ${tags.length}`, () => {
-      const missing = tags.filter((t) => !t.includes("explanation="));
-      expect(missing).toEqual([]);
+  for (const { short, src } of sources) {
+    const tags = tagsIn(src);
+    if (tags.length === 0) continue;
+    // The plain half is not optional: a popover carrying the bare call tells a
+    // reader who already knows the codebase what they knew, and everyone else
+    // nothing — which is the tooltip the one info mechanism replaced.
+    //
+    // WHERE THE PLAIN HALF LIVES differs between the two, so the question does
+    // too (review finding). `<Info>` carries it as its CHILDREN, so an Info is
+    // bare when it has none — and closing itself is only one way to have none:
+    // `<Info call="x"></Info>`, or one holding nothing but whitespace and a
+    // {" "}, is the same bare call and used to pass. `<Caption>` is the
+    // wrapper todo-row puts around Info, whose children are the CALL and whose
+    // plain half is the `explains` prop, so that is what it is asked for.
+    it(`${short} explains all ${tags.length} of its captions in plain words`, () => {
+      const bare = tags
+        .filter((t) =>
+          t.name === "Caption"
+            ? !t.tag.includes("explains=")
+            : !saysSomething(t.children),
+        )
+        .map((t) => t.tag);
+      expect(bare).toEqual([]);
     });
   }
 });
