@@ -4,6 +4,9 @@
 // each one recording a "nightly-failure" dtsEvents row if it fails and then
 // letting the next one run:
 //
+// Steps 1 to 4 write the checkout and run under /var/lock/tts-wikitom.lock,
+// taken once around all four (the post reads HEAD and takes no lock):
+//
 //   1. snapshot — copies every Convex table (the six auth tables excepted)
 //      into the WikiTom checkout at tts/snapshot/, one JSON-lines file per
 //      table, deterministic, written only where the bytes changed.
@@ -14,8 +17,8 @@
 //   3. sessions — archives every Codex rollout and Claude SDK session file on
 //      this box that WikiTom's sessions/ does not already hold at that
 //      content, in phase 1's layout, and appends the manifest.
-//   4. push — under /var/lock/tts-wikitom.lock: one commit per step that
-//      changed something, `git pull --rebase`, `git push` over the
+//   4. push — one commit per step that changed something, plus whatever an
+//      earlier run left modified, `git pull --rebase`, `git push` over the
 //      github.com-wikitom SSH alias. A refused pull or push is a failure row
 //      and the commits stay local for the next night; nothing is retried.
 //   5. post — reads the model-of-tom files at HEAD (writing.md,
@@ -94,6 +97,8 @@ export const GIT_IDENTITY = [
 ];
 
 const STEPS = ["snapshot", "learning", "sessions", "push", "post"];
+// The four that write the WikiTom checkout, and so run under one lock.
+const LOCKED_STEPS = ["snapshot", "learning", "sessions", "push"];
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // ── Small pure helpers (tested in nightly.test.mjs) ──────────────────────────
@@ -763,21 +768,27 @@ export function writeArchived(checkoutDir, manifestPath, entry, raw, index) {
   return record;
 }
 
-// ── 4. the locked push ───────────────────────────────────────────────────────
+// ── 4. the push ──────────────────────────────────────────────────────────────
 /**
  * Hold /var/lock/tts-wikitom.lock for the duration of `fn`. The lock is the
  * open file description: `flock` takes it on our inherited descriptor and
  * exits, and the kernel keeps it for us until we close the descriptor — the
  * `exec 3>lock; flock 3` idiom, from Node. Every other writer of the
  * checkout (the weekly job, a session-end archive) takes the same lock.
+ *
+ * THE LOCK COVERS THE WRITES, not only the push: main() holds it around steps
+ * 1 to 4 together. A lock held around the commit alone protects nothing —
+ * another writer committing its own work while this job is still writing
+ * tts/snapshot/ and sessions/ would carry half of tonight's tree into its
+ * commit, and `git pull --rebase` would meet a dirty tree it did not make.
  */
-export function withWikiTomLock(fn, lockPath = WIKITOM_LOCK) {
+export async function withWikiTomLock(fn, lockPath = WIKITOM_LOCK) {
   const fd = fs.openSync(lockPath, "w");
   try {
     execFileSync("flock", ["-w", String(LOCK_WAIT_SECONDS), "3"], {
       stdio: ["ignore", "inherit", "inherit", fd],
     });
-    return fn();
+    return await fn();
   } finally {
     fs.closeSync(fd);
   }
@@ -785,43 +796,41 @@ export function withWikiTomLock(fn, lockPath = WIKITOM_LOCK) {
 
 async function pushStep(run) {
   const dir = run.dir;
-  const result = withWikiTomLock(() => {
-    const made = [];
-    for (const c of run.commits) {
-      git(dir, "add", "-A", "--", ...c.paths);
-      if (!stagedChanges(dir)) continue;
-      git(dir, ...GIT_IDENTITY, "commit", "-q", "-m", c.message);
-      made.push(c.message);
-    }
-    // Local commits from earlier nights whose push was refused are ahead of
-    // origin too; the rebase and the push carry them together.
-    let pulled = false;
-    let pushed = false;
-    const failures = [];
+  const made = [];
+  for (const c of run.commits) {
+    git(dir, "add", "-A", "--", ...c.paths);
+    if (!stagedChanges(dir)) continue;
+    git(dir, ...GIT_IDENTITY, "commit", "-q", "-m", c.message);
+    made.push(c.message);
+  }
+  // Local commits from earlier nights whose push was refused are ahead of
+  // origin too; the rebase and the push carry them together.
+  let pulled = false;
+  let pushed = false;
+  const failures = [];
+  try {
+    // The identity again: a rebase of local commits onto origin re-commits
+    // them, and git refuses to without one.
+    gitCapture(dir, ...GIT_IDENTITY, "pull", "--rebase", "--quiet");
+    pulled = true;
+  } catch (err) {
+    failures.push({ step: "pull", error: gitError(err) });
+    // A rebase left half-done would block every later commit: abort it.
     try {
-      // The identity again: a rebase of local commits onto origin re-commits
-      // them, and git refuses to without one.
-      gitCapture(dir, ...GIT_IDENTITY, "pull", "--rebase", "--quiet");
-      pulled = true;
+      execFileSync("git", ["-C", dir, "rebase", "--abort"], { stdio: "ignore" });
+    } catch {
+      // no rebase in progress
+    }
+  }
+  if (pulled) {
+    try {
+      gitCapture(dir, "push", "--quiet");
+      pushed = true;
     } catch (err) {
-      failures.push({ step: "pull", error: gitError(err) });
-      // A rebase left half-done would block every later commit: abort it.
-      try {
-        execFileSync("git", ["-C", dir, "rebase", "--abort"], { stdio: "ignore" });
-      } catch {
-        // no rebase in progress
-      }
+      failures.push({ step: "push", error: gitError(err) });
     }
-    if (pulled) {
-      try {
-        gitCapture(dir, "push", "--quiet");
-        pushed = true;
-      } catch (err) {
-        failures.push({ step: "push", error: gitError(err) });
-      }
-    }
-    return { made, pulled, pushed, failures };
-  });
+  }
+  const result = { made, pulled, pushed, failures };
   for (const f of result.failures) await recordFailure(run, f.step, new Error(f.error));
   console.log(
     `[nightly] push: ${result.made.length} commit(s) made, pull ${result.pulled ? "ok" : "FAILED"}, push ${result.pushed ? "ok" : "not done — commits stay local"}`,
@@ -926,14 +935,29 @@ async function main() {
     push: pushStep,
     post: postStep,
   };
-  for (const name of STEPS) {
-    if (!only.includes(name)) continue;
+  const runStep = async (name) => {
     try {
       run.results[name] = await steps[name](run);
     } catch (err) {
       await recordFailure(run, name, err);
     }
+  };
+  // Steps 1 to 4 WRITE the checkout, so the lock covers all four (see
+  // withWikiTomLock). The post is a read of HEAD and takes no lock, which is
+  // also what lets `--only=post` run while another writer holds it.
+  const locked = LOCKED_STEPS.filter((name) => only.includes(name));
+  if (locked.length > 0) {
+    try {
+      await withWikiTomLock(async () => {
+        for (const name of locked) await runStep(name);
+      });
+    } catch (err) {
+      // The lock itself was refused — another writer held it past the wait.
+      // Every step it covers is skipped; the post below still runs.
+      await recordFailure(run, "lock", err);
+    }
   }
+  if (only.includes("post")) await runStep("post");
   const summary = {
     day: run.day,
     steps: only,

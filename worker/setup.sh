@@ -310,7 +310,8 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # 4 a.m. EDT, 09:00 UTC is 4 a.m. EST; the job's own guard keeps one). flock
 # -n on its own lock: the export can outlast an hour on a slow night, and a
 # second run would race the first for the checkout. The WikiTom writer lock
-# (/var/lock/tts-wikitom.lock) is taken inside the job, around the push only.
+# (/var/lock/tts-wikitom.lock) is taken inside the job, around the four steps
+# that write the checkout — snapshot, learning, sessions and the push.
 0 8 * * * root /usr/bin/flock -n /var/lock/tts-nightly.lock /usr/bin/node /opt/tts/nightly.mjs >> /var/log/tts/nightly.log 2>&1
 0 9 * * * root /usr/bin/flock -n /var/lock/tts-nightly.lock /usr/bin/node /opt/tts/nightly.mjs >> /var/log/tts/nightly.log 2>&1
 

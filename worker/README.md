@@ -119,7 +119,10 @@ made by `setup.sh` over the SSH alias `github.com-wikitom` (a `Host` entry
 in `/root/.ssh/config` pointing at the deploy key `/root/.ssh/wikitom`,
 readable by root only). Five steps, in order; a step that fails writes one
 `nightly-failure` row to `dtsEvents` (`POST /tts/event`, naming the step and
-git's or the server's own words) and the next step runs anyway:
+git's or the server's own words) and the next step runs anyway. Steps 1 to 4
+write the checkout and run under one hold of `/var/lock/tts-wikitom.lock` —
+the lock every writer of the checkout takes — taken around all four together,
+never around the commit alone; step 5 only reads `HEAD` and takes no lock:
 
 1. **snapshot** — every Convex table except the six `auth*` ones, read by
    pages from `GET /tts/export` against one boundary instant, into
@@ -145,11 +148,11 @@ git's or the server's own words) and the next step runs anyway:
    own timestamps (mtime when there is none); one line per file is appended
    to `sessions/manifest-box-<day>.jsonl`, phase 1's columns. A file that
    grew since it was archived is archived again.
-4. **push** — under `/var/lock/tts-wikitom.lock` (the one lock every writer
-   of the checkout takes; the job holds it the way `exec 3>lock; flock 3`
-   does): one commit per step that changed something, authored
-   `tts-nightly` so the digest tells the box's commits from Tom's, then
-   `git pull --rebase` and `git push` over the alias. A refused pull or
+4. **push** — one commit per step that changed something, authored
+   `tts-nightly` (an identity `setup.sh` also writes into the checkout's own
+   config, because the rebase commits under it) so the digest tells the box's
+   commits from Tom's, then `git pull --rebase` and `git push` over the
+   alias. A refused pull or
    push is a failure row and the commits stay local, to go with the next
    night's. **Until Tom adds the deploy key's public half to the WikiTom
    repository, every push is refused and this is the row the digest shows.**
