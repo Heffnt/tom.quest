@@ -426,7 +426,9 @@ describe("threaded replies from Tom", () => {
     expect(await events(t, "status-changed")).toHaveLength(1);
   });
 
-  it("a digest thread takes a fact with the day, and a bare date as a time note on the day", async () => {
+  // witness: give the digest case a day-scoped time-note branch again and
+  // "tomorrow" below stops being a fact with the day.
+  it("a digest thread takes every reply as a fact with the day, unless it names a todo and says done or a date", async () => {
     slackEnv();
     const t = convexTest(schema, modules);
     await posted(t, "500.1", { kind: "digest", day: "2026-09-05" }, "TTS digest");
@@ -440,15 +442,41 @@ describe("threaded replies from Tom", () => {
     const notes = await events(t, "tom-note");
     expect(notes[0].data).toMatchObject({ day: "2026-09-05", subject: { kind: "digest" } });
 
+    // A bare date with no todo to land on is a fact too, with the day.
     const dated = await postEvent(t, { channel: TTS, ts: "500.3", thread_ts: "500.1", text: "tomorrow" });
-    expect(dated.outcome).toBe("time-note");
-    const timeNotes = await t.run(async (ctx) => ctx.db.query("dtsTimeNotes").collect());
-    expect(timeNotes).toHaveLength(1);
-    expect(timeNotes[0]).toMatchObject({ text: "tomorrow", day: "2026-09-05", status: "pending" });
-    expect(timeNotes[0].todoId).toBeUndefined();
+    expect(dated).toMatchObject({ outcome: "tom-note", subject: { kind: "digest", day: "2026-09-05" } });
+    expect(await t.run(async (ctx) => ctx.db.query("dtsTimeNotes").collect())).toHaveLength(0);
+    expect((await events(t, "tom-note"))[1].data).toMatchObject({ text: "tomorrow", day: "2026-09-05" });
+
+    // Naming a todo by its link and saying "done" completes THAT todo, as a
+    // reply in its own thread would.
+    const todoId = await t.mutation(internal.tts.internalCapture, {
+      statement: "book the dentist",
+      source: "slack-capture",
+    });
+    const done = await postEvent(t, {
+      channel: TTS,
+      ts: "500.4",
+      thread_ts: "500.1",
+      text: `done <https://tom.quest/tts?item=${todoId}|https://tom.quest/tts?item=${todoId}>`,
+    });
+    expect(done).toMatchObject({ outcome: "done", todoId });
+    expect((await t.run(async (ctx) => ctx.db.get(todoId)))?.status).toBe("done");
+    // Naming a todo inside a sentence is still a fact on the digest day —
+    // the todo it names is recorded on the row.
+    const sentence = await postEvent(t, {
+      channel: TTS,
+      ts: "500.5",
+      thread_ts: "500.1",
+      text: `${todoId} was easier than the line made it sound`,
+    });
+    expect(sentence).toMatchObject({ outcome: "tom-note", subject: { kind: "digest" } });
+    const last = (await events(t, "tom-note")).at(-1);
+    expect(last?.todoId).toBe(todoId);
+    expect(last?.data).toMatchObject({ day: "2026-09-05" });
   });
 
-  it("an hourly thread takes a fact with the hour", async () => {
+  it("an hourly thread takes every reply as a fact with the hour, unless it names a todo and says a date", async () => {
     slackEnv();
     const t = convexTest(schema, modules);
     const hour = slackHourKey(Date.UTC(2026, 8, 5, 18, 30)); // 14:30 EDT
@@ -458,6 +486,20 @@ describe("threaded replies from Tom", () => {
     expect(result).toMatchObject({ outcome: "tom-note", subject: { kind: "hourly", hour } });
     const notes = await events(t, "tom-note");
     expect(notes[0].data).toMatchObject({ hour, day: "2026-09-05" });
+    const dated = await postEvent(t, { channel: TTS, ts: "600.3", thread_ts: "600.1", text: "friday" });
+    expect(dated.outcome).toBe("tom-note");
+    expect(await t.run(async (ctx) => ctx.db.query("dtsTimeNotes").collect())).toHaveLength(0);
+
+    const todoId = await t.mutation(internal.tts.internalCapture, {
+      statement: "renew the passport",
+      source: "slack-capture",
+    });
+    const onTodo = await postEvent(t, { channel: TTS, ts: "600.4", thread_ts: "600.1", text: `${todoId} by friday` });
+    expect(onTodo.outcome).toBe("time-note");
+    const timeNotes = await t.run(async (ctx) => ctx.db.query("dtsTimeNotes").collect());
+    expect(timeNotes).toHaveLength(1);
+    expect(timeNotes[0]).toMatchObject({ text: `${todoId} by friday`, todoId, status: "pending" });
+    expect(timeNotes[0].day).toBeUndefined();
   });
 
   it("a learning thread writes a learning-objection with the change's id", async () => {

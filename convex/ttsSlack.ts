@@ -216,8 +216,10 @@ export type ThreadReplyOutcome =
  *   todo     → "done" completes the todo (applyStatusChange, the reply as the
  *              note); a bare date is a time note on the todo; anything else
  *              is a "tom-note" event on the todo.
- *   digest   → the same two shapes, on the digest's day.
- *   hourly   → a "tom-note" event with the hour.
+ *   digest   → a "tom-note" event with the day — a fact, per the brief;
+ *   hourly   → a "tom-note" event with the hour and day — a fact. For both,
+ *              a reply that names a todo (link or id) and otherwise says only
+ *              "done" or a date is that todo's reply, as above.
  *   learning → a "learning-objection" event with the learning change's id
  *              (phase 4's nightly job applies the inverse).
  *   unknown  → a new todo whose provenance names the thread.
@@ -321,31 +323,30 @@ async function routeReply(
       return await sessionReply(ctx, subject.id, text, at);
     case "todo":
       return await todoReply(ctx, subject.id, text, at);
-    case "digest": {
-      if (replyShape(text) === "date") {
-        const timeNoteId = await ctx.runMutation(
-          internal.tts.internalCreateTimeNote,
-          { text, day: subject.day },
-        );
-        return { outcome: "time-note", timeNoteId };
+    case "digest":
+    case "hourly": {
+      // A reply to a digest or an hourly update is a fact (the brief's
+      // "captured as a fact") — the thread has no one todo for a date or a
+      // "done" to land on. The one exception: a reply that NAMES a todo (its
+      // link or id) and otherwise says only "done" or a date is that todo's
+      // reply, exactly as if it were in the todo's own thread.
+      const named = await namedTodo(ctx, text);
+      if (named !== undefined) {
+        const shape = replyShape(named.rest);
+        if (shape !== "fact") {
+          return await todoReply(ctx, named.todoId, text, at, shape);
+        }
       }
-      await logEvent(ctx, "tom-note", undefined, {
+      await logEvent(ctx, "tom-note", named?.todoId, {
         text,
         ...at,
         subject,
-        day: subject.day,
+        ...(subject.kind === "digest"
+          ? { day: subject.day }
+          : { hour: subject.hour, day: subject.hour.slice(0, 10) }),
       });
       return { outcome: "tom-note", subject };
     }
-    case "hourly":
-      await logEvent(ctx, "tom-note", undefined, {
-        text,
-        ...at,
-        subject,
-        hour: subject.hour,
-        day: subject.hour.slice(0, 10),
-      });
-      return { outcome: "tom-note", subject };
     case "learning":
       await logEvent(ctx, "learning-objection", undefined, {
         id: subject.id,
@@ -382,20 +383,39 @@ async function captureUnknown(
   return { outcome: "captured", todoId };
 }
 
+/** The todo a reply names — by its page link (tts?item=<id>, Slack-wrapped
+ * or bare) or a bare id — and the reply with that name taken out. The first
+ * token that is an existing todo's id wins; a reply naming none is undefined. */
+async function namedTodo(
+  ctx: MutationCtx,
+  text: string,
+): Promise<{ todoId: Id<"dtsTodos">; rest: string } | undefined> {
+  for (const token of text.split(/\s+/)) {
+    const bare = token.replace(/^<|>$/g, "").split("|")[0];
+    const candidate = /[?&]item=([A-Za-z0-9]+)/.exec(bare)?.[1] ?? bare.replace(/[.,;:!)]+$/, "");
+    const todoId = ctx.db.normalizeId("dtsTodos", candidate);
+    if (todoId === null || !(await ctx.db.get(todoId))) continue;
+    return { todoId, rest: text.replace(token, " ").replace(/\s+/g, " ").trim() };
+  }
+  return undefined;
+}
+
 /** A reply on a todo's thread, by its shape: "done" completes the todo, a
  * bare date is a time note on it, anything else is a fact on it. A todo that
  * is already done takes a second "done" as a fact — nothing to complete, and
- * the words are still kept. */
+ * the words are still kept. The shape is the reply's own unless the caller
+ * read it off the reply with the todo's name taken out (namedTodo). */
 async function todoReply(
   ctx: MutationCtx,
   todoId: Id<"dtsTodos">,
   text: string,
   at: { channel: string; ts: string; threadTs: string },
+  shape: ReplyShape = replyShape(text),
 ): Promise<ThreadReplyOutcome> {
   const todo = await ctx.db.get(todoId);
   if (!todo) throw new Error(`Unknown todo id: ${todoId}`);
   const subject: SlackSubject = { kind: "todo", id: todoId };
-  switch (replyShape(text)) {
+  switch (shape) {
     case "done":
       if (todo.status !== "done") {
         await applyStatusChange(ctx, todo, { status: "done", note: text });
