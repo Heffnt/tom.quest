@@ -96,7 +96,7 @@ describe("readiness migration (ready-for-tom → prepared, preparing → unprepa
 
   // witness: patch a row inside the dryRun branch — the count would still
   // be right and the table would have moved before Tom saw the numbers.
-  it("a dry run reports the same counts and writes no row", async () => {
+  it("a dry run reports the same counts and writes no todo row, only the dry-run event", async () => {
     const t = convexTest({ schema, modules });
     await seedTodos(t, seed());
     const report = await t.mutation(internal.ttsMigrations.internalMigrateReadiness, {
@@ -414,7 +414,7 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
     expect(by.plain.statement).toBe("plain");
   });
 
-  it("a dry run reports the same counts and writes no row", async () => {
+  it("a dry run reports the same counts and writes no todo row, only the dry-run event", async () => {
     const t = convexTest({ schema, modules });
     await seedTodos(t, seed());
     const report = await t.mutation(internal.ttsMigrations.internalMigrateTiming, {
@@ -535,7 +535,7 @@ describe("batch needs migration (path → needs edges between batches)", () => {
     expect(await eventsOfKind(t, `${BATCH_NEEDS_MIGRATION}-migrated`)).toHaveLength(1);
   });
 
-  it("a dry run reports the same counts and writes no row", async () => {
+  it("a dry run reports the same counts and writes no batch row, only the dry-run event", async () => {
     const t = convexTest({ schema, modules });
     await seedBatches(t, seed());
     const report = await t.mutation(internal.ttsMigrations.internalMigrateBatchNeeds, {
@@ -618,7 +618,7 @@ describe("recommendation migration (code briefs → the four verdict words)", ()
     expect(await eventsOfKind(t, `${RECOMMENDATION_MIGRATION}-migrated`)).toHaveLength(1);
   });
 
-  it("a dry run reports the same counts and writes no row; a second run maps nothing", async () => {
+  it("a dry run reports the same counts and writes no brief row; a second run maps nothing", async () => {
     const t = convexTest({ schema, modules });
     await seedBriefs(t);
     const dry = await t.mutation(internal.ttsMigrations.internalMigrateRecommendations, {

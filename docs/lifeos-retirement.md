@@ -61,6 +61,7 @@ Non-negotiables that hold through every state: nothing is deleted from the todo 
 
 1. **Dry run against the local harness** (`convex/ttsMigrations.test.ts` holds the counts each mapping produces on its fixtures), then against prod with `dryRun: true` and a page size larger than the table, so the totals return in one call:
    `npx convex run ttsMigrations:internalMigrateReadiness '{"dryRun":true,"pageSize":5000}'`
+   A dry run writes no todo row (and no batch or brief row); it does write one `dtsEvents` row, kind `<name>-dry-run`, holding the counts, so the numbers Tom saw are on record. Terminal rows (done, archived) are walked and counted like the rest and their shape is mapped so the retired value leaves the validator; nothing that reads as live — a sleep, a status — is written on them.
 2. **Run** without `dryRun`. A scheduled chain reports its totals as one `dtsEvents` row (`<name>-migrated`); a single large page returns them directly. Rollback point: the export the preserve phase made, plus the per-row events every mapping writes (`status-changed`, `timing-mapped`, `batch-needs-derived`).
 3. **Verify** with a second run: every mapping count is zero and the only non-zero counts are the ones a walk only counts.
 4. **Narrow** in one commit per row of this matrix, once the gate holds, updating the status column in the same commit.

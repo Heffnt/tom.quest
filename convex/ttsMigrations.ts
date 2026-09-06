@@ -306,7 +306,11 @@ export const internalMigrateTiming = internalMutation({
 // in view. Same dry run, counts, idempotence, and event as the walks above.
 export const BATCH_NEEDS_MIGRATION = "batch-needs";
 
-/** The previous batch on a path: the greatest index below `index`. */
+/** The previous batch on a path: the greatest index below `index`. Two
+ * batches sharing that index (the planner never wrote one, but nothing
+ * refused it) tie, and the first in `all` — table order, oldest first — wins:
+ * the strict `>` below keeps the one already found. Stated so the derived
+ * edge is the same on every run. */
 export function previousOnPath<T extends { path?: { name: string; index: number } }>(
   batch: T,
   all: readonly T[],

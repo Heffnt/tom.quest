@@ -18,6 +18,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import { useCoarseNow } from "@/app/lib/hooks/use-coarse-now";
 import type { Id } from "@/convex/_generated/dataModel";
 import { countdownText } from "@/convex/ttsShared";
 import { useAuth } from "@/app/lib/auth";
@@ -316,7 +317,9 @@ export default function BatchesTab() {
   const { open: openTodoSession, error: todoSessionError } =
     useOpenTodoSession();
 
-  const now = Date.now();
+  // One `now` per minute, not per render: liveDetail below memoizes on it, and
+  // a Date.now() read here would be a fresh dependency every render.
+  const now = useCoarseNow();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   // A batch's needs name other batches by id; the session prompt says them.
