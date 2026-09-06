@@ -30,6 +30,8 @@
 
 import { v } from "convex/values";
 import { internalMutation } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
+import type { MutationCtx } from "./_generated/server";
 import { applyDateOutcome, applyStatusChange, logEvent } from "./tts";
 
 export const ASSIGNMENT_INPUT = v.object({
@@ -60,6 +62,51 @@ export function canvasProvenance(externalId: string, htmlUrl: string): string {
 export function provenanceExternalId(provenance: string | undefined): string | null {
   const match = /^canvas:assignment:(\S+)/.exec(provenance ?? "");
   return match ? match[1] : null;
+}
+
+/**
+ * True when this row was completed once and its status has been moved since —
+ * which is Tom REOPENING it, and the one thing the submission fact must not
+ * overrule.
+ *
+ * Canvas keeps saying "submitted" for ever. The sync reads that as a reason to
+ * complete an open todo, so a row Tom deliberately put back (the submission
+ * was the wrong file, the professor asked for a resubmission, the grade came
+ * back and the work is not finished) was completed again by the next tick —
+ * within thirty minutes, with no message anywhere, and his reopening was
+ * simply gone. A submission is a fact about Canvas; whether the work is done
+ * is Tom's, and once he has said so his answer is the newer one.
+ *
+ * Read on by_todo, which is (todoId, at) — this row's own events, in time
+ * order, and no more.
+ */
+async function reopenedSinceCompletion(
+  ctx: MutationCtx,
+  todoId: Id<"dtsTodos">,
+): Promise<boolean> {
+  const events = await ctx.db
+    .query("dtsEvents")
+    .withIndex("by_todo", (q) => q.eq("todoId", todoId))
+    .collect();
+  // The FIRST completion, either door: applyStatusChange logs "status-changed"
+  // (to "done"), applyDateOutcome logs "date-outcome" (outcome "done") and
+  // logs no status change at all, though it sets the status.
+  let completedAt: number | null = null;
+  for (const e of events) {
+    const d = (e.data ?? {}) as { to?: unknown; outcome?: unknown };
+    if (
+      (e.kind === "status-changed" && d.to === "done") ||
+      (e.kind === "date-outcome" && d.outcome === "done")
+    ) {
+      completedAt = e.at;
+      break;
+    }
+  }
+  if (completedAt === null) return false;
+  // Any status change AFTER that completion is somebody deciding this row's
+  // state later than the completion did. Strictly after: the completion's own
+  // "status-changed" row carries that same instant.
+  return events.some((e) => e.kind === "status-changed" && e.at > completedAt);
 }
 
 // ── The sync half ────────────────────────────────────────────────────────────
@@ -96,6 +143,7 @@ export const internalSyncCanvasTodos = internalMutation({
     let created = 0;
     let completed = 0;
     let dateMoved = 0;
+    let reopened = 0;
     for (const a of assignments) {
       const todo = byExternalId.get(a.externalId);
       if (!todo) {
@@ -144,6 +192,12 @@ export const internalSyncCanvasTodos = internalMutation({
         dateMoved++;
       }
       if (open && a.submitted) {
+        // Reopened after a completion: Tom's answer is newer than Canvas's
+        // fact, and re-completing here would erase it every half hour.
+        if (await reopenedSinceCompletion(ctx, todo._id)) {
+          reopened++;
+          continue;
+        }
         const fresh = await ctx.db.get(todo._id);
         if (!fresh) continue;
         // Both doors log their own events ("date-outcome" / "status-changed").
@@ -161,6 +215,15 @@ export const internalSyncCanvasTodos = internalMutation({
         completed++;
       }
     }
-    return { seen: assignments.length, created, completed, dateMoved, foreign };
+    return {
+      seen: assignments.length,
+      created,
+      completed,
+      dateMoved,
+      // Submitted on Canvas, but Tom put the row back after it was completed:
+      // left open, and counted so the job's log says it rather than nothing.
+      reopened,
+      foreign,
+    };
   },
 });

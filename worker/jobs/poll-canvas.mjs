@@ -229,6 +229,8 @@ async function syncAssignments(env, courses) {
   console.log(
     `[poll-canvas] assignments: seen ${result.seen ?? 0}, created ${result.created ?? 0}, ` +
       `completed ${result.completed ?? 0}, date moved ${result.dateMoved ?? 0}` +
+      // Submitted on Canvas but reopened by Tom since: left open on purpose.
+      (result.reopened ? `, left reopened ${result.reopened}` : "") +
       (result.foreign ? `, foreign rows ${result.foreign}` : ""),
   );
 }

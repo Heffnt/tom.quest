@@ -1,6 +1,6 @@
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import schema from "./schema";
 import {
@@ -40,6 +40,14 @@ const allTodos = (t: ReturnType<typeof convexTest>) =>
   t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
 const allEvents = (t: ReturnType<typeof convexTest>) =>
   t.run(async (ctx) => ctx.db.query("dtsEvents").collect());
+
+/** Tom, for the reopen tests: setStatus is his door and it is gated on him. */
+async function withTom(t: ReturnType<typeof convexTest>) {
+  const tomId = await t.run(async (ctx) =>
+    ctx.db.insert("users", { name: "tom", email: "tom@tom.quest", role: "tom" }),
+  );
+  return t.withIdentity({ subject: tomId });
+}
 
 describe("canvas provenance", () => {
   it("round-trips the assignment id through the provenance string", () => {
@@ -181,6 +189,57 @@ describe("internalSyncCanvasTodos", () => {
     const t = convexTest({ schema, modules });
     await sync(t, [assignment()]);
     expect(await sync(t, [assignment()])).toMatchObject({ foreign: 0 });
+  });
+
+  // TOM'S ANSWER IS THE NEWER ONE. Canvas keeps saying "submitted" for ever,
+  // so a row he deliberately put back — wrong file, a resubmission asked for,
+  // the work not actually finished — was completed again by the next tick,
+  // within thirty minutes and with no message anywhere.
+  it("does not re-complete an assignment Tom reopened after it was completed", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await sync(t, [assignment()]);
+    await sync(t, [assignment({ submitted: true })]);
+    const id = (await allTodos(t))[0]._id;
+    expect((await allTodos(t))[0].status).toBe("done");
+
+    await tom.mutation(api.tts.setStatus, { id, status: "active" });
+    const reopenedAt = (await allTodos(t))[0].updatedAt;
+    const eventCount = (await allEvents(t)).length;
+
+    // Canvas still reports the submission, every half hour, for ever.
+    const result = await sync(t, [assignment({ submitted: true })]);
+    expect(result).toMatchObject({ completed: 0, reopened: 1 });
+    const todo = (await allTodos(t))[0];
+    expect(todo.status).toBe("active");
+    expect(todo.doneAt).toBeUndefined();
+    expect(todo.updatedAt).toBe(reopenedAt); // not touched at all
+    expect(await allEvents(t)).toHaveLength(eventCount);
+
+    // And it stays reopened however many ticks Canvas gets.
+    expect(await sync(t, [assignment({ submitted: true })])).toMatchObject({
+      completed: 0,
+      reopened: 1,
+    });
+    expect((await allTodos(t))[0].status).toBe("active");
+  });
+
+  it("still completes a submitted assignment that has never been completed", async () => {
+    // The guard is about a completion Tom answered, not about any status
+    // change: an ordinary row archived and made active again has no completion
+    // behind it, and its submission is still the fact that finishes it.
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await sync(t, [assignment()]);
+    const id = (await allTodos(t))[0]._id;
+    await tom.mutation(api.tts.setStatus, { id, status: "archived" });
+    await tom.mutation(api.tts.setStatus, { id, status: "active" });
+
+    expect(await sync(t, [assignment({ submitted: true })])).toMatchObject({
+      completed: 1,
+      reopened: 0,
+    });
+    expect((await allTodos(t))[0].status).toBe("done");
   });
 
   it("leaves an already-done todo untouched on later syncs", async () => {
