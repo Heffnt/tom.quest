@@ -2047,7 +2047,11 @@ export const internalStorePlanGraph = internalMutation({
     batchId: v.optional(v.string()), // absent = create the batch
     statement: v.string(),
     groundUpExplanation: v.optional(v.string()),
+    // The retired sequencing (still accepted during the widen) and its
+    // successor: the batches this one needs done first. Absent PRESERVES the
+    // stored value for both, like every field on this pen.
     path: v.optional(BATCH_PATH),
+    needs: v.optional(v.array(v.string())),
     // The repos this batch's work lives in (Tom's ruling 2026-08-30: a batch
     // DECLARES its repos; the session scheduler no longer guesses them from a
     // substring search). Normalized here — an unknown name is dropped rather
@@ -2343,6 +2347,38 @@ export const internalStorePlanGraph = internalMutation({
       return false;
     });
 
+    // ── The batch's needs: ids of OTHER batches, bounded, known ─────────────
+    // A name that is not a batch id, or the batch itself, is dropped with a
+    // named skip rather than stored: an edge to nothing would block the batch
+    // forever, and an edge to itself would too. Absent preserves.
+    let batchNeeds: Id<"batches">[] | undefined;
+    if (args.needs !== undefined) {
+      batchNeeds = [];
+      const seen = new Set<string>();
+      for (const raw of args.needs) {
+        const id = ctx.db.normalizeId("batches", raw);
+        const target = id ? await ctx.db.get(id) : null;
+        if (!id || !target) {
+          result.skipped.push({ ref: raw, why: "needs names no batch" });
+          continue;
+        }
+        if (batch && id === batch._id) {
+          result.skipped.push({ ref: raw, why: "a batch cannot need itself" });
+          continue;
+        }
+        if (seen.has(id)) continue;
+        seen.add(id);
+        batchNeeds.push(id);
+      }
+      if (batchNeeds.length > MAX_NEEDS) {
+        result.skipped.push({
+          ref: statement,
+          why: `needs holds at most ${MAX_NEEDS} batches — the rest are dropped`,
+        });
+        batchNeeds = batchNeeds.slice(0, MAX_NEEDS);
+      }
+    }
+
     // ── Write: the batch row, then its tasks in payload order ────────────────
     if (batch) {
       // An ABSENT field PRESERVES the stored value (internalStoreBriefs
@@ -2354,6 +2390,7 @@ export const internalStorePlanGraph = internalMutation({
         groundUpExplanation:
           args.groundUpExplanation ?? batch.groundUpExplanation,
         path: args.path ?? batch.path,
+        needs: batchNeeds ?? batch.needs,
         repos:
           args.repos === undefined
             ? batch.repos
@@ -2363,6 +2400,7 @@ export const internalStorePlanGraph = internalMutation({
         statement: batch.statement,
         groundUpExplanation: batch.groundUpExplanation,
         path: batch.path,
+        needs: batch.needs,
         repos: batch.repos,
       };
       if (JSON.stringify(projected) !== JSON.stringify(stored)) {
@@ -2373,6 +2411,7 @@ export const internalStorePlanGraph = internalMutation({
         statement,
         groundUpExplanation: args.groundUpExplanation,
         path: args.path,
+        needs: batchNeeds,
         repos:
           args.repos === undefined
             ? undefined

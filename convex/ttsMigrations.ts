@@ -29,7 +29,7 @@ import type { MutationCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { GRAPH_SUPERSEDED, logEvent } from "./tts";
-import { CONDITION_WINDOW_MS, normalizeReadiness } from "./ttsShared";
+import { CONDITION_WINDOW_MS, MAX_NEEDS, normalizeReadiness } from "./ttsShared";
 
 /** Rows per transaction. dtsTodos is a few hundred rows; this keeps one page
  * far inside Convex's per-transaction read and write limits. */
@@ -256,5 +256,90 @@ export const internalMigrateTiming = internalMutation({
         }
       },
     );
+  },
+});
+
+// ── 4. batches.path → batches.needs ─────────────────────────────────────────
+// The retired path (name, index, edge to the previous batch) becomes needs
+// edges between batches: a batch whose edge is "must" needs the previous
+// batch on its path (the one with the greatest index below its own); a
+// "helps" edge becomes nothing — "only makes this easier" is not a
+// prerequisite, and needs holds prerequisites only; a first or unlinked
+// batch needs nothing. The path is left in place until NARROW.
+//
+// One transaction: the batches table is human-scale (a few dozen rows for
+// years, per its schema comment), and deriving an edge needs the whole path
+// in view. Same dry run, counts, idempotence, and event as the walks above.
+export const BATCH_NEEDS_MIGRATION = "batch-needs";
+
+/** The previous batch on a path: the greatest index below `index`. */
+export function previousOnPath<T extends { path?: { name: string; index: number } }>(
+  batch: T,
+  all: readonly T[],
+): T | undefined {
+  const path = batch.path;
+  if (!path) return undefined;
+  let best: T | undefined;
+  for (const other of all) {
+    if (other === batch || !other.path || other.path.name !== path.name) continue;
+    if (other.path.index >= path.index) continue;
+    if (!best || other.path.index > best.path!.index) best = other;
+  }
+  return best;
+}
+
+export const internalMigrateBatchNeeds = internalMutation({
+  args: { dryRun: v.optional(v.boolean()) },
+  handler: async (ctx, { dryRun = false }): Promise<MigrationReport> => {
+    const all = await ctx.db.query("batches").collect();
+    const page: Counts = {
+      scanned: all.length,
+      "must-to-need": 0,
+      "must-without-previous": 0,
+      "helps-dropped": 0,
+      "unlinked": 0,
+      "already-derived": 0,
+      "no-path": 0,
+    };
+    for (const batch of all) {
+      if (!batch.path) {
+        page["no-path"]++;
+        continue;
+      }
+      if (batch.path.edge === "helps") {
+        page["helps-dropped"]++;
+        continue;
+      }
+      if (batch.path.edge !== "must") {
+        page.unlinked++;
+        continue;
+      }
+      const previous = previousOnPath(batch, all);
+      if (!previous) {
+        page["must-without-previous"]++;
+        continue;
+      }
+      if ((batch.needs ?? []).includes(previous._id)) {
+        page["already-derived"]++;
+        continue;
+      }
+      page["must-to-need"]++;
+      if (!dryRun) {
+        const needs = [...(batch.needs ?? []), previous._id].slice(0, MAX_NEEDS);
+        await ctx.db.patch(batch._id, { needs });
+        await logEvent(ctx, "batch-needs-derived", undefined, {
+          batchId: batch._id,
+          needs: previous._id,
+          path: batch.path,
+        });
+      }
+    }
+    await logEvent(
+      ctx,
+      dryRun ? `${BATCH_NEEDS_MIGRATION}-dry-run` : `${BATCH_NEEDS_MIGRATION}-migrated`,
+      undefined,
+      page,
+    );
+    return { done: true, dryRun, page, totals: page, continueCursor: null };
   },
 });

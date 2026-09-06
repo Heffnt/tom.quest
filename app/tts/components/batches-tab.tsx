@@ -128,6 +128,7 @@ function sessionContext(
   batch: Batch,
   graph: BatchGraph,
   now: number,
+  batchStatement: (id: string) => string | undefined = () => undefined,
 ): BatchSessionContext {
   const { done, ready, blocked } = taskSets(graph.tasks, now);
   const byId = new Map(graph.tasks.map((t) => [t.id, t]));
@@ -149,6 +150,9 @@ function sessionContext(
     path: batch.path
       ? { name: batch.path.name, index: batch.path.index }
       : undefined,
+    needs: (batch.needs ?? [])
+      .map((id) => batchStatement(id))
+      .filter((s): s is string => s !== undefined),
     tasks: [
       ...ready.map((t) => shape(t, "ready")),
       ...blocked.map((t) => shape(t, "blocked")),
@@ -309,6 +313,9 @@ export default function BatchesTab() {
   const now = Date.now();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  // A batch's needs name other batches by id; the session prompt says them.
+  const batchStatementOf = (id: string) =>
+    (batches ?? []).find((b) => b._id === id)?.statement;
   const [detail, setDetail] = useState<DetailItem | null>(null);
   const [groundUp, setGroundUp] = useState<{ title: string; content: string } | null>(null);
 
@@ -453,7 +460,7 @@ export default function BatchesTab() {
           tab.close();
           throw e;
         }
-        await openBatchSession(sessionContext(batch, graph, now), {
+        await openBatchSession(sessionContext(batch, graph, now, batchStatementOf), {
           tab,
           ruling: { verdict, sentence: args.sentence },
         });
@@ -570,7 +577,7 @@ export default function BatchesTab() {
                 onDetail={setDetail}
                 onGroundUp={(title, content) => setGroundUp({ title, content })}
                 onOpenSession={() =>
-                  void openBatchSession(sessionContext(batch, graph, now))
+                  void openBatchSession(sessionContext(batch, graph, now, batchStatementOf))
                 }
               />
             </div>

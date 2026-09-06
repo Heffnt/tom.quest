@@ -4195,6 +4195,40 @@ describe("frontier scheduler", () => {
     expect(text).toContain('path: "the release", position 0');
   });
 
+  // witness: drop batchNeedsMet from the frontier walk — a batch whose need
+  // is still open would hand out work the sequence said must wait.
+  it("hands out no work from a batch whose needs are open, and does once they close", async () => {
+    const t = convexTest({ schema, modules });
+    await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 2 });
+    await heartbeat(t);
+    const first = await storeGraph(t, {
+      statement: "the first stage",
+      tasks: [{ statement: "freeze the branch", actor: "agent" }],
+    });
+    const second = await t.mutation(internal.tts.internalStorePlanGraph, {
+      statement: "the second stage",
+      needs: [first],
+      tasks: [{ statement: "cut the release notes", actor: "agent" }],
+    });
+    expect(second.skipped).toEqual([]);
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].todoId).toBe(
+      byStatement(await batchTodos(t, first), "freeze the branch")._id,
+    );
+    // The need closes (the first batch is archived): the second is admitted.
+    await t.run(async (ctx) => {
+      await ctx.db.patch(first, { status: "archived" });
+    });
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const later = await workSessions(t);
+    expect(later.map((s) => s.todoId)).toContain(
+      byStatement(await batchTodos(t, second.batchId as Id<"batches">), "cut the release notes")._id,
+    );
+  });
+
   // witness: drop the pathed-before-unpathed clause (the `pa === undefined`
   // test) and this goes red — stated sequencing would lose to a batch that
   // states none.

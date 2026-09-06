@@ -1711,6 +1711,47 @@ describe("POST /tts/plan-graph", () => {
     expect(byStatement(todos, "run it")?.model).toBeUndefined();
   });
 
+  // ── batches.needs (the lifeos update: the successor of path) ─────────────
+  // witness: store `args.needs` without normalizing each id — a name that is
+  // not a batch would block the batch forever, with nothing saying why.
+  it("stores a batch's needs by id, drops what is not a batch, and preserves by omission", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const first = await postGraph(t, {
+      statement: "freeze the branch",
+      tasks: [{ statement: "tag it", actor: "agent" }],
+    });
+    const firstId = (await first.json()).batchId as string;
+    const second = await postGraph(t, {
+      statement: "cut the release",
+      needs: [firstId, "not-a-batch"],
+      tasks: [{ statement: "write the notes", actor: "agent" }],
+    });
+    const body = await second.json();
+    expect(body.skipped).toEqual([{ ref: "not-a-batch", why: "needs names no batch" }]);
+    const cut = (await allBatches(t)).find((b) => b.statement === "cut the release")!;
+    expect(cut.needs).toEqual([firstId]);
+    // A re-post that says nothing about needs keeps them; a batch cannot
+    // need itself.
+    const again = await postGraph(t, {
+      batchId: cut._id,
+      statement: "cut the release",
+      tasks: [{ statement: "write the notes", actor: "agent" }],
+    });
+    expect((await again.json()).unchanged).toBe(1);
+    expect((await allBatches(t)).find((b) => b._id === cut._id)!.needs).toEqual([firstId]);
+    const selfish = await postGraph(t, {
+      batchId: cut._id,
+      statement: "cut the release",
+      needs: [cut._id],
+      tasks: [],
+    });
+    expect((await selfish.json()).skipped).toEqual([
+      { ref: cut._id, why: "a batch cannot need itself" },
+    ]);
+    expect((await allBatches(t)).find((b) => b._id === cut._id)!.needs).toEqual([]);
+  });
+
   // witness: pass a half-formed path straight through — the mutation's
   // validator would refuse the object and cost the whole call, when an absent
   // path simply preserves whatever is stored.

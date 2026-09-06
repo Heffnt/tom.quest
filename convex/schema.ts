@@ -391,6 +391,10 @@ export default defineSchema({
     // `index`. `edge` describes the link to the PREVIOUS batch in the path —
     // "must" (that one has to land first) or "helps" (it only makes this
     // easier). The first batch of a path has no edge.
+    // RETIRED (the lifeos update, phase 7): sequencing between batches is
+    // `needs` below. Kept readable during the widen; dropped at NARROW once
+    // ttsMigrations.internalMigrateBatchNeeds has derived the edges and the
+    // paths bar is gone.
     path: v.optional(
       v.object({
         name: v.string(),
@@ -398,6 +402,14 @@ export default defineSchema({
         edge: v.optional(v.union(v.literal("must"), v.literal("helps"))),
       }),
     ),
+    // Sequencing BETWEEN batches, the same word as between todos: this batch
+    // is worked only once every batch named here is done or archived
+    // (ttsShared.buildDoneSet's rule). Derived from the retired path by the
+    // migration — a "must" edge becomes a need on the previous batch of the
+    // path; a "helps" edge becomes nothing, because "only makes this easier"
+    // is not a prerequisite and needs holds prerequisites only. Bounded at
+    // MAX_NEEDS; every id names a batch (enforced by the planner's pen).
+    needs: v.optional(v.array(v.id("batches"))),
     status: v.union(
       v.literal("active"),
       v.literal("done"),

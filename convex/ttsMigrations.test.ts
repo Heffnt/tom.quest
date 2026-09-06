@@ -1,9 +1,15 @@
 import { convexTest } from "convex-test";
 import { describe, expect, it, vi } from "vitest";
 import { internal } from "./_generated/api";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
-import { READINESS_MIGRATION, TIMING_MIGRATION, carryCondition } from "./ttsMigrations";
+import {
+  BATCH_NEEDS_MIGRATION,
+  READINESS_MIGRATION,
+  TIMING_MIGRATION,
+  carryCondition,
+  previousOnPath,
+} from "./ttsMigrations";
 import { CONDITION_WINDOW_MS, DAY_MS, buildDoneSet, isReady } from "./ttsShared";
 
 // The phase-7 row mappings (convex/ttsMigrations.ts): resumable, dry-runnable,
@@ -373,5 +379,108 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
     });
     expect(second.done).toBe(true);
     expect(second.totals).toEqual(expectedTotals);
+  });
+});
+
+describe("batch needs migration (path → needs edges between batches)", () => {
+  type BatchSeed = Partial<Doc<"batches">> & { statement: string };
+  async function seedBatches(t: ReturnType<typeof convexTest>, rows: BatchSeed[]) {
+    return await t.run(async (ctx) => {
+      const ids: Record<string, Id<"batches">> = {};
+      for (const row of rows) {
+        ids[row.statement] = await ctx.db.insert("batches", {
+          status: "active",
+          createdAt: NOW,
+          updatedAt: NOW,
+          ...row,
+        });
+      }
+      return ids;
+    });
+  }
+  const allBatches = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => ctx.db.query("batches").collect());
+
+  const seed = (): BatchSeed[] => [
+    { statement: "release 0", path: { name: "release", index: 0 } },
+    { statement: "release 1", path: { name: "release", index: 1, edge: "must" } },
+    // index 2 is missing: the previous of 3 is 1, not "index minus one".
+    { statement: "release 3", path: { name: "release", index: 3, edge: "must" } },
+    { statement: "release 5", path: { name: "release", index: 5, edge: "helps" } },
+    { statement: "paper 4", path: { name: "paper", index: 4, edge: "must" } }, // no previous
+    { statement: "unpathed" },
+    { statement: "done 0", path: { name: "done", index: 0 }, status: "done" },
+    { statement: "done 1", path: { name: "done", index: 1, edge: "must" }, status: "done" },
+  ];
+  const expectedCounts = {
+    scanned: 8,
+    "must-to-need": 3,
+    "must-without-previous": 1,
+    "helps-dropped": 1,
+    unlinked: 2,
+    "already-derived": 0,
+    "no-path": 1,
+  };
+
+  it("finds the previous batch on a path by the greatest lower index", () => {
+    const rows = seed().map((s) => ({ ...s }));
+    const by = Object.fromEntries(rows.map((r) => [r.statement, r]));
+    expect(previousOnPath(by["release 3"], rows)?.statement).toBe("release 1");
+    expect(previousOnPath(by["release 0"], rows)).toBeUndefined();
+    expect(previousOnPath(by["paper 4"], rows)).toBeUndefined();
+    expect(previousOnPath(by.unpathed, rows)).toBeUndefined();
+  });
+
+  // witness: derive a need for a "helps" edge too — "only makes this easier"
+  // would block the batch until the other landed.
+  it("a must edge becomes a need on the previous batch; helps becomes nothing", async () => {
+    const t = convexTest({ schema, modules });
+    const ids = await seedBatches(t, seed());
+    const report = await t.mutation(internal.ttsMigrations.internalMigrateBatchNeeds, {});
+    expect(report.totals).toEqual(expectedCounts);
+    const rows = await allBatches(t);
+    const by = Object.fromEntries(rows.map((b) => [b.statement, b]));
+    expect(by["release 1"].needs).toEqual([ids["release 0"]]);
+    expect(by["release 3"].needs).toEqual([ids["release 1"]]);
+    expect(by["release 5"].needs).toBeUndefined();
+    expect(by["release 0"].needs).toBeUndefined();
+    expect(by["paper 4"].needs).toBeUndefined();
+    expect(by.unpathed.needs).toBeUndefined();
+    expect(by["done 1"].needs).toEqual([ids["done 0"]]); // terminal rows mapped too
+    // The path stays until NARROW; updatedAt is untouched.
+    expect(by["release 1"].path).toEqual({ name: "release", index: 1, edge: "must" });
+    for (const b of rows) expect(b.updatedAt).toBe(NOW);
+    expect(await eventsOfKind(t, "batch-needs-derived")).toHaveLength(3);
+    expect(await eventsOfKind(t, `${BATCH_NEEDS_MIGRATION}-migrated`)).toHaveLength(1);
+  });
+
+  it("a dry run reports the same counts and writes no row", async () => {
+    const t = convexTest({ schema, modules });
+    await seedBatches(t, seed());
+    const report = await t.mutation(internal.ttsMigrations.internalMigrateBatchNeeds, {
+      dryRun: true,
+    });
+    expect(report.totals).toEqual(expectedCounts);
+    expect((await allBatches(t)).every((b) => b.needs === undefined)).toBe(true);
+    expect(await eventsOfKind(t, "batch-needs-derived")).toHaveLength(0);
+    expect(await eventsOfKind(t, `${BATCH_NEEDS_MIGRATION}-dry-run`)).toHaveLength(1);
+  });
+
+  it("is idempotent, and keeps a need the planner already wrote", async () => {
+    const t = convexTest({ schema, modules });
+    const ids = await seedBatches(t, seed());
+    // The planner already sequenced "release 3" on something else.
+    await t.run(async (ctx) => {
+      await ctx.db.patch(ids["release 3"], { needs: [ids.unpathed] });
+    });
+    await t.mutation(internal.ttsMigrations.internalMigrateBatchNeeds, {});
+    const again = await t.mutation(internal.ttsMigrations.internalMigrateBatchNeeds, {});
+    expect(again.totals).toEqual({
+      ...expectedCounts,
+      "must-to-need": 0,
+      "already-derived": 3,
+    });
+    const by = Object.fromEntries((await allBatches(t)).map((b) => [b.statement, b]));
+    expect(by["release 3"].needs).toEqual([ids.unpathed, ids["release 1"]]);
   });
 });

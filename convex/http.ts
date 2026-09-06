@@ -1597,6 +1597,12 @@ const ttsPlanGraph = httpAction(async (ctx, request) => {
           ? b.groundUpExplanation
           : undefined,
       path: path as never,
+      // The batches this one needs done first (the lifeos update: the
+      // successor of path). Absent preserves; the mutation drops a name that
+      // is not a batch with a named skip.
+      needs: Array.isArray(b.needs)
+        ? b.needs.filter((x): x is string => typeof x === "string")
+        : undefined,
       // The batch's declared repos (Tom 2026-08-30). Absent PRESERVES the
       // stored value, the same rule every other field on this pen follows —
       // so a planner run that says nothing about repos never erases a

@@ -2610,8 +2610,20 @@ function buildWorkerPrompt(args: {
   needs: GraphNeighbor[];
   dependents: GraphNeighbor[];
   siblings: GraphNeighbor[];
+  /** The statements of the batches this batch needs (all done by the time a
+   * worker is here — the scheduler admits no batch with an open need). */
+  batchNeeds?: string[];
 }): string {
-  const { todo, batch, sessionId, repos, needs, dependents, siblings } = args;
+  const {
+    todo,
+    batch,
+    sessionId,
+    repos,
+    needs,
+    dependents,
+    siblings,
+    batchNeeds = [],
+  } = args;
   const isGoal = todo.kind === "goal";
   const lines: (string | null)[] = [
     "You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.",
@@ -2622,8 +2634,8 @@ function buildWorkerPrompt(args: {
     "The vocabulary, which is closed — these words mean exactly this and nothing else:",
     "- A BATCH holds how a set of todos gets completed. It is not itself a todo and it is never worked directly.",
     "- A TASK is work someone does. A GOAL is a state of the world the batch is for, written as a condition that is either true yet or not.",
-    "- NEEDS are the todos a todo cannot proceed without. A todo is READY when every one of its needs is done (archived counts as done — a need that was set aside is not going to happen).",
-    "- A PATH is a named sequence of batches. A MUST edge means the previous batch has to land first; a HELPS edge means it only makes this one easier.",
+    "- NEEDS are the todos a todo cannot proceed without. A todo is READY when every one of its needs is done (archived counts as done — a need that was set aside is not going to happen). The same word sequences batches: a batch's needs are the batches that must land before its work is handed out.",
+    "- A PATH is the retired spelling of that sequence: a named sequence of batches, where a MUST edge meant the previous batch has to land first and a HELPS edge meant it only makes this one easier. A batch may still show one.",
     '- DISPLAY TEXT is the short line always on screen. A GROUND-UP EXPLANATION is the self-contained layer behind it: a complete HTML document, shown fullscreen, whose exact form the standard below specifies.',
     "",
     "Everything you write into TTS obeys the writing standard in the model-of-tom files this prompt begins with, verbatim.",
@@ -2636,6 +2648,11 @@ function buildWorkerPrompt(args: {
             ? `, linked to the previous batch by a "${batch.path.edge}" edge`
             : " (the first batch on it)"
         }`
+      : null,
+    batchNeeds.length > 0
+      ? `this batch needs (every one of them done — that is why its work is open): ${batchNeeds
+          .map((n) => `"${n}"`)
+          .join(", ")}`
       : null,
     "",
     `YOU HAVE CLAIMED ONE TODO IN THIS BATCH, and only this one ("${todo.statement}"):`,
@@ -3389,12 +3406,23 @@ export const internalAutoSchedule = internalMutation({
     const agentWorkable = (t: Doc<"dtsTodos">): boolean =>
       t.kind === "goal" ? goalCheckable(t) : t.actor !== "tom";
 
+    // A batch's own needs (the lifeos update): every batch named there must
+    // be done or archived before any of this batch's work is handed out —
+    // the same rule as between todos, one level up. A batch on a retired
+    // path with no needs field keeps the path ORDER below during the widen.
+    const batchNeedsMet = (batch: Doc<"batches">): boolean =>
+      (batch.needs ?? []).every((id) => {
+        const need = batchById.get(id);
+        return need !== undefined && need.status !== "active";
+      });
+
     const graphCandidates: Candidate[] = [];
     for (const [batchId, ready] of readyByBatch) {
       const batch = batchById.get(batchId as Id<"batches">);
       // A batch that is done or archived is not work, and a row pointing at a
       // batch that is not there is not something to guess about.
       if (!batch || batch.status !== "active") continue;
+      if (!batchNeedsMet(batch)) continue;
       // The batch-level half of the pending-ruling exclusion: an unapplied
       // verdict means Tom has spoken and the fleet must not race him. A
       // "session" verdict asked for a conversation, and it is the one verdict
@@ -3645,6 +3673,9 @@ export const internalAutoSchedule = internalMutation({
         const siblings = (readyByBatch.get(c.todo.batchId as string) ?? [])
           .filter((t) => t._id !== c.todo._id)
           .map(asNeighbor);
+        const batchNeeds = (batch.needs ?? [])
+          .map((id) => batchById.get(id)?.statement)
+          .filter((s): s is string => s !== undefined);
         prompt = (sessionId) =>
           buildWorkerPrompt({
             todo: c.todo,
@@ -3654,6 +3685,7 @@ export const internalAutoSchedule = internalMutation({
             needs,
             dependents,
             siblings,
+            batchNeeds,
           });
         extra = { batchId: batch._id };
       } else {
