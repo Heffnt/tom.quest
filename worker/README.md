@@ -279,6 +279,46 @@ including the empty ones, so a `GOOGLE_CALENDAR_CLIENT_ID=` left blank there —
 the shape it has in `secrets/convex.env.example` — silently overwrites a
 working token with an empty string on the next sync.
 
+## The hourly update channel (one-time)
+
+Every hour, 24/7, `internal.ttsSync.sendHourlyUpdate` posts to `#tts-hourly`:
+what the box is running now, which batches were worked since the last update,
+what changed since the last update (captures, completions, archives, rulings,
+date outcomes, failures, each with its link) — or one line saying nothing did.
+It goes through the one Slack door in `convex/ttsSync.ts` like every other
+message, so each send leaves the door's `slack-sent` row and each refusal its
+`slack-send-failed` row. The update also carries one duty for the digest: if
+today's 5 a.m. digest was composed and refused, its text is reposted unchanged
+here first — to `#tts` (`SLACK_TTS_CHANNEL_ID`), the channel the digest belongs
+to, not the hourly one.
+
+It posts to `SLACK_TTS_HOURLY_CHANNEL_ID` on the Convex deployment, and until
+that is set every hour logs one line and sends nothing. The id comes from a
+one-off run on this box, which reads `SLACK_BOT_TOKEN` from
+`/etc/tts/worker.env` (or the environment):
+
+```
+tts-slack-setup                     # lists the human members and stops
+tts-slack-setup --user U012ABCDEF   # that member is Tom
+```
+
+The first form prints every human member (id, name, whether it owns the
+workspace) and changes nothing: which account is Tom is an input, because
+`TOM_SLACK_USER_ID` is the id the events route trusts to authorize writes.
+`--email <address>` selects by `profile.email` instead when exactly one member
+matches. With the account named it creates the public channel `tts-hourly` if
+it does not exist (unarchiving an archived one), joins the bot, invites Tom,
+and prints exactly two lines:
+
+```
+SLACK_TTS_HOURLY_CHANNEL_ID=C…
+TOM_SLACK_USER_ID=U…
+```
+
+Both go into `secrets/convex.env` under those names, then `pnpm secrets:sync`.
+`TOM_SLACK_USER_ID` is the one Slack user whose threaded replies the events
+route acts on. The token is never printed.
+
 ## Switching Claude accounts
 
 Jobs run under `CLAUDE_CONFIG_DIR=/root/.claude-accounts/active`, a symlink:

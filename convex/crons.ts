@@ -35,9 +35,11 @@ crons.cron("tts queue prep (est)", "45 9 * * *", internal.tts.internalPrepareFal
 crons.cron("tts digest (edt)", "0 9 * * *", internal.ttsSync.sendDigest, {});
 crons.cron("tts digest (est)", "0 10 * * *", internal.ttsSync.sendDigest, {});
 
-// The HOURLY UPDATE (Tom's ruling 2026-08-30): schedule + agents working +
-// what happened since the last one. Registered here but gated by its OWN
-// switch inside the action (HOURLY_UPDATE_ENABLED in convex/ttsSync.ts) — a
+// The HOURLY UPDATE (Tom's ruling 2026-08-30; the lifeos update, phase 2):
+// what the box is running, which batches were worked, what changed since the
+// last one — or one line saying nothing did — every hour, 24/7, in #tts-hourly
+// (SLACK_TTS_HOURLY_CHANNEL_ID; unset = one log line, no send). Its OWN switch
+// inside the action (HOURLY_UPDATE_ENABLED in convex/ttsSync.ts, ON) — a
 // separate switch from the 5 a.m. digest's, so turning this on does not turn
 // that back on. Plain interval, not a cron pair: this message has no local-hour
 // anchor to defend against DST.

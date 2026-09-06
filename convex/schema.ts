@@ -809,6 +809,17 @@ export default defineSchema({
   })
     .index("by_at", ["at"])
     .index("by_todo", ["todoId", "at"])
+    // TWO shapes, one index. With `key` pinned, `at` is reachable — and only
+    // two kinds ever set a key (above), so every other kind pins it to
+    // undefined and reads as (kind, time):
+    //   the row for one thread or one event id — eq(kind), eq(key);
+    //   one KEYLESS kind newest-first or over a time range — eq(kind),
+    //   eq(key, undefined), range on at. The digest's last "digest-sent" row
+    //   (convex/ttsDigest.ts) and the hourly update's window, worker events
+    //   and reported changes (convex/ttsHourly.ts) all read that way, instead
+    //   of taking N rows off by_at and filtering: past N rows a by_at read
+    //   silently answers wrong.
+    // Giving a third kind a key takes its rows out of the second shape.
     .index("by_kind_key", ["kind", "key", "at"]),
 
   // One row per TTS day (5 a.m. America/New_York boundary, key YYYY-MM-DD).

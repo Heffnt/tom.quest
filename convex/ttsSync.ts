@@ -11,16 +11,23 @@ import {
   SLACK_SUBJECT,
   TTS_DIGEST_NY_HOUR,
   slackHourKey,
+  ttsDayBoundsUtc,
   ttsDayKey,
   ttsSessionLink,
-  nyHhmm,
   nyLocalHour,
   type SlackSubject,
 } from "./ttsShared";
 import { digestSubject, type WikiTomCommit } from "./ttsDigest";
+import { HOURLY_UPDATE_ABANDONED, HOURLY_UPDATE_SENT } from "./ttsHourly";
+import {
+  composeHourlyUpdate,
+  isQuietHour,
+  type HourlyFacts,
+} from "./ttsHourlyText";
 
-// TTS actions that reach outside Convex: the 5 a.m. Slack digest and the
-// GitHub vqc/todos.yaml mirror refresh. Spec: WikiTom tts/spec.md §7, §5.3.
+// TTS actions that reach outside Convex: the 5 a.m. Slack digest, the hourly
+// update, and the GitHub vqc/todos.yaml mirror refresh.
+// Spec: WikiTom tts/spec.md §7, §5.3.
 
 const SLACK_POST_URL = "https://slack.com/api/chat.postMessage";
 
@@ -153,7 +160,8 @@ export const sendSlack = internalAction({
 //   DIGEST_ENABLED                 the 5 a.m. digest (on: phase 2, this file)
 //   SESSION_EVENT_MESSAGES_ENABLED per-session event lines (off: the events
 //                                  route replaces them)
-//   HOURLY_UPDATE_ENABLED          the hourly update, below (the hourly piece)
+//   HOURLY_UPDATE_ENABLED          the hourly update, below (on: the hourly
+//                                  piece, in #tts-hourly)
 const DIGEST_ENABLED: boolean = true;
 const SESSION_EVENT_MESSAGES_ENABLED: boolean = false;
 
@@ -215,9 +223,9 @@ export const sendDigest = internalAction({
     // TWO LINES OF DEFENCE against a Slack blip, because the digest is the one
     // message Tom's morning depends on: the door's one in-run retry, and the
     // "slack-send-failed" row it writes when the retry fails too, which the
-    // hourly update's tick resends unchanged. That second owner is switched
-    // OFF today (HOURLY_UPDATE_ENABLED), which is why the retry is not
-    // optional.
+    // hourly update's tick resends unchanged — that second owner is switched
+    // ON as of the hourly piece (HOURLY_UPDATE_ENABLED), so a refused digest
+    // now reaches Tom within the hour rather than not at all.
     const posted = await postSlack(ctx, { text, subject: digestSubject(day) });
     if (!posted.ok) return;
     await ctx.runMutation(internal.tts.internalMarkDigestSent, {
@@ -333,32 +341,59 @@ export const internalSessionEventMessage = internalAction({
   },
 });
 
-// ── The hourly update (Tom's ruling 2026-08-30) ──────────────────────────────
-// Three parts, in this order, every hour:
-//   (a) what Tom is scheduled to be doing AT THAT MOMENT,
-//   (b) every agent currently working on TTS,
-//   (c) what has happened since the last update.
+// ── The hourly update (Tom's ruling 2026-08-30; the lifeos update, phase 2) ──
+// Every hour, 24/7, in #tts-hourly (SLACK_TTS_HOURLY_CHANNEL_ID — its OWN
+// channel, not #tts): what the box is running now, which batches were worked
+// since the last update, what changed since the last update — or ONE line
+// saying nothing did. The facts are read by convex/ttsHourly.ts and the text
+// composed by convex/ttsHourlyText.ts; this action is the send, and it sends
+// through the one door above like every other message.
 //
 // SENDS EVEN WHEN EMPTY, on the same reasoning as the digest
 // (digest-env-missing-is-quiet, vqc/adoption.md): a quiet hour is a fact worth
-// stating, and the ABSENT message is then the alarm. An hour with nothing in
-// any of the three parts still posts "nothing scheduled / no agents / nothing
-// since the last update".
+// stating, and the ABSENT message is then the alarm.
 //
 // ITS OWN SWITCH (see the per-kind switches at the top): a different message
 // with a different ruling behind it, so turning the digest on did not turn
-// this on.
-const HOURLY_UPDATE_ENABLED: boolean = false;
+// this on, and this being on does not turn the session event lines on.
+const HOURLY_UPDATE_ENABLED: boolean = true;
 
-// The window's own bookkeeping. A dtsEvents row is written after each send, and
-// the newest one is read before composing — so the window is [last sent, now]
-// and a MISSED cron tick loses nothing: the next update simply covers two
-// hours. Without it the window would be a hardcoded hour, and every skipped
-// tick would silently drop an hour of history.
-const HOURLY_UPDATE_SENT = "hourly-update-sent";
 // The first run has no marker to read back. One hour, so a fresh deployment's
 // first update is an ordinary one rather than a dump of all history.
 const HOURLY_UPDATE_FIRST_WINDOW_MS = 60 * 60 * 1000;
+
+// The refusals that will not change. Slack's misconfiguration vocabulary: the
+// channel is gone or unjoined or archived, the token is dead, the message is
+// too long. Retrying one of these next hour retries it every hour for ever,
+// against a window that never advances — so the hour is closed unreported (the
+// "hourly-update-abandoned" marker) and the door's "slack-send-failed" row is
+// what says the hour was lost and why.
+//
+// NAMED EXPLICITLY, and everything else counts as transient — including a
+// thrown fetch, whose message is whatever the runtime said. Guessing wrong
+// this way costs a longer message next hour (and the section caps bound even
+// that); guessing wrong the other way throws away an hour Tom never sees.
+//
+// The door has ALREADY retried once by the time an error reaches here, so this
+// classifies a refusal that survived a retry, not one attempt.
+const PERMANENT_SLACK_ERRORS = new Set([
+  "channel_not_found",
+  "not_in_channel",
+  "is_archived",
+  "invalid_auth",
+  "not_authed",
+  "account_inactive",
+  "token_revoked",
+  "token_expired",
+  "no_permission",
+  "restricted_action",
+  "org_login_required",
+  "msg_too_long",
+  "invalid_arguments",
+  // The door's own word when neither the token nor a channel is configured.
+  // Nothing about the next hour makes that different.
+  "not configured",
+]);
 
 export const sendHourlyUpdate = internalAction({
   args: { force: v.optional(v.boolean()) },
@@ -366,96 +401,96 @@ export const sendHourlyUpdate = internalAction({
     if (!HOURLY_UPDATE_ENABLED && !force) return;
     const now = Date.now();
 
-    // ── The window ───────────────────────────────────────────────────────────
-    const lastSent = await ctx.runQuery(internal.tts.internalLastEventAt, {
-      kind: HOURLY_UPDATE_SENT,
-    });
-    const since = lastSent ?? now - HOURLY_UPDATE_FIRST_WINDOW_MS;
-
-    // ── (a) What Tom is scheduled to be doing right now ──────────────────────
-    // Two sources, read separately so an empty answer says WHICH half was
-    // empty: the blocks Tom placed, and the read-only ICS calendar mirror.
-    const blocks = await ctx.runQuery(internal.tts.internalScheduleAt, {
-      at: now,
-    });
-    const events = await ctx.runQuery(
-      internal.ttsCalendar.internalListEventsInRange,
-      { start: now, end: now + 1 },
-    );
-    const scheduleLines = [
-      ...blocks.map(
-        (b) =>
-          `- ${nyHhmm(b.start)}–${nyHhmm(b.end)} ${
-            b.statement ?? b.category ?? b.note ?? "block"
-          }`,
-      ),
-      ...events.map((e) => `- ${nyHhmm(e.start)}–${nyHhmm(e.end)} ${e.title}`),
-    ];
-
-    // ── (b) Every agent currently working on TTS ─────────────────────────────
-    const live = await ctx.runQuery(
-      internal.claudeSessions.internalListLive,
-      {},
-    );
-
-    // ── (c) What has happened since the last update ──────────────────────────
-    const since_events = await ctx.runQuery(internal.tts.internalEventsInRange, {
-      start: since,
-      end: now,
-    });
-    // The kinds worth a line in Slack. dtsEvents is busy instrumentation —
-    // every surfacing and queue cycle lands there — so reporting all of it
-    // would bury the three or four facts that matter in an hour.
-    const REPORTABLE: Record<string, string> = {
-      captured: "captured",
-      "session-created": "session opened",
-      "session-outcome": "session finished",
-      "session-ended": "session ended",
-      ruling: "you ruled",
-      "plan-repair": "plan repair reported",
-      "batches-stored": "batches re-formed",
-      "graph-batch-formed": "batch formed",
-    };
-    const counts = new Map<string, number>();
-    for (const e of since_events) {
-      const label = REPORTABLE[e.kind];
-      if (label === undefined) continue;
-      counts.set(label, (counts.get(label) ?? 0) + 1);
+    // The hourly channel is a SECOND channel the door does not default to, so
+    // it is checked here rather than left to the door's own env check. Missing
+    // = one log line and no send (the sanctioned log-and-return, ruling
+    // digest-env-missing-is-quiet): a cron that throws adds no louder channel
+    // than this line, and the missing message is itself the signal.
+    // worker/bin/tts-slack-setup prints the id.
+    const channel = process.env.SLACK_TTS_HOURLY_CHANNEL_ID;
+    if (!process.env.SLACK_BOT_TOKEN || !channel) {
+      console.error(
+        "TTS hourly update: SLACK_BOT_TOKEN / SLACK_TTS_HOURLY_CHANNEL_ID not configured — skipped",
+      );
+      return;
     }
 
-    const text = [
-      `*TTS — ${nyHhmm(now)}*`,
-      ``,
-      `*Now*`,
-      ...(scheduleLines.length > 0 ? scheduleLines : ["- nothing scheduled"]),
-      ``,
-      `*Agents working*`,
-      ...(live.length > 0
-        ? live.map(
-            (s) =>
-              `- ${s.title} (${s.status}, ${s.mode}${
-                s.repos.length > 0 ? `, ${s.repos.join(" + ")}` : ""
-              })`,
-          )
-        : ["- none"]),
-      ``,
-      `*Since ${nyHhmm(since)}*`,
-      ...(counts.size > 0
-        ? [...counts].map(([label, n]) => `- ${label}: ${n}`)
-        : ["- nothing"]),
-    ].join("\n");
-
-    // The marker below is NOT written on a failed send, on purpose: the next
-    // update then covers this window too, so a Slack outage delays the
-    // history rather than losing it.
-    const sent = await postSlack(ctx, {
-      text,
-      subject: { kind: "hourly", hour: slackHourKey(now) },
+    // ── The digest resend ────────────────────────────────────────────────────
+    // The one duty this message owes another: today's digest, if it was
+    // composed and refused, goes out here before anything else — the SAME
+    // text, unchanged. It goes to the DIGEST's channel, #tts (the door's
+    // default), because the digest is Tom's morning message and #tts-hourly is
+    // a different room; a resend into #tts-hourly would deliver it where he is
+    // not reading it. Marking the day sent is what stops the next tick
+    // resending it.
+    const day = ttsDayKey(now);
+    const bounds = ttsDayBoundsUtc(day);
+    const owed = await ctx.runQuery(internal.ttsHourly.internalDigestToResend, {
+      day,
+      dayStart: bounds.start,
+      dayEnd: bounds.end,
     });
-    if (!sent.ok) return;
+    if (owed !== null) {
+      const resent = await postSlack(ctx, {
+        text: owed.text,
+        subject: digestSubject(day),
+      });
+      if (resent.ok) {
+        await ctx.runMutation(internal.tts.internalMarkDigestSent, {
+          day,
+          // The composer's list of surfaced todos did not survive the failed
+          // send, and the digest's text did. Reposting the text Tom missed
+          // matters; re-emitting the "surfaced" instrumentation does not.
+          surfacedTodoIds: [],
+          windowEnd: owed.windowEnd,
+        });
+      }
+      // A refused resend needs nothing here: the door wrote a fresh
+      // "slack-send-failed" row carrying the same text, so the next tick owes
+      // the same digest again.
+    }
+
+    // ── The window ───────────────────────────────────────────────────────────
+    const lastEnd: number | null = await ctx.runQuery(
+      internal.ttsHourly.internalLastHourlyWindowEnd,
+      {},
+    );
+    const since = lastEnd ?? now - HOURLY_UPDATE_FIRST_WINDOW_MS;
+
+    const facts: HourlyFacts = {
+      now,
+      since,
+      running: await ctx.runQuery(internal.ttsHourly.internalRunningNow, { now }),
+      batches: await ctx.runQuery(internal.ttsHourly.internalBatchesWorked, {
+        since,
+        now,
+      }),
+      changes: await ctx.runQuery(internal.ttsHourly.internalChangedSince, {
+        start: since,
+        end: now,
+      }),
+    };
+
+    const sent = await postSlack(ctx, {
+      text: composeHourlyUpdate(facts),
+      subject: { kind: "hourly", hour: slackHourKey(now) },
+      channel,
+    });
+    // The marker below is what advances the window, so it is NOT written on a
+    // transient refusal: the next update then covers this window too, and a
+    // Slack outage delays the history rather than losing it.
+    if (!sent.ok) {
+      if (PERMANENT_SLACK_ERRORS.has(sent.error)) {
+        await ctx.runMutation(internal.tts.internalLogEvent, {
+          kind: HOURLY_UPDATE_ABANDONED,
+          data: { windowStart: since, windowEnd: now, error: sent.error },
+        });
+      }
+      return;
+    }
     await ctx.runMutation(internal.tts.internalLogEvent, {
       kind: HOURLY_UPDATE_SENT,
-      data: { windowStart: since, windowEnd: now },
+      data: { windowStart: since, windowEnd: now, quiet: isQuietHour(facts) },
     });
   },
 });

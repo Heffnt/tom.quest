@@ -638,3 +638,7 @@ export function slackThreadKey(channel: string, threadRootTs: string): string {
 export function slackHourKey(utcMs: number): string {
   return `${nyCalendarDayKey(utcMs)}T${String(nyLocalHour(utcMs)).padStart(2, "0")}`;
 }
+
+/** The batches tab of the /tts page. There is no per-batch URL, so a batch
+ * named in Slack links here. */
+export const TTS_BATCHES_LINK = "https://tom.quest/tts?tab=batches";
