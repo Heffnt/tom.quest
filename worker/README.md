@@ -224,7 +224,9 @@ tom.quest UI in seconds:
   the one moment its effect can exist. `revise` is consumed by the brief
   pass once the fresh brief has posted, with Tom's sentence as the replan
   note. `session` is applied when Tom opens the code block session from
-  the calendar.
+  the calendar; that session's opening prompt names each code todo whose
+  verdict it consumed, with Tom's sentence, so the conversation he asked
+  for reaches the session.
 - **`approve` and `archive` are worker missions.** The auto-session
   scheduler in Convex (`convex/claudeSessions.ts`, the code lane, every
   5 minutes) takes the oldest unapplied one, admits an autonomous session on

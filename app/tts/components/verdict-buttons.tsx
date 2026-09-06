@@ -90,7 +90,7 @@ export const VERDICT_EFFECT: Record<
     revise:
       "Sends it back to be planned again, with your sentence as the redirection: the planner on the Jarvis Box re-writes the brief with a fresh plan against what you said on its next half-hourly run, and the ruling is marked applied once the new brief is stored. Your sentence is the whole instruction, so it has to stand on its own.",
     session:
-      "Says this needs a conversation rather than a ruling. No session opens from here: the ruling is applied the moment you open the code block session from the calendar, and the item waits for you until then.",
+      "Says this needs a conversation rather than a ruling. No session opens from here: the ruling is applied the moment you open the code block session from the calendar — its opening prompt names this item and your note — and the item waits for you until then.",
     archive:
       "Sets it aside: the ruling waits for the picker on the Jarvis Box, which starts a session that closes the entry in the repository's own todo file and opens a pull request for it; merging stays yours. Your sentence is kept with the ruling as the condition to propose it back.",
   },

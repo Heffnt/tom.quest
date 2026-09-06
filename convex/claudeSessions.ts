@@ -11,12 +11,14 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireTom } from "./authRoles";
 import {
+  liveCodeSessionRulings,
   liveRulings,
-  markLiveCodeSessionRulingsApplied,
+  markCodeSessionRulingsApplied,
   markLiveSessionRulingApplied,
   subjectKey,
 } from "./ttsRulings";
 import { logEvent } from "./tts";
+import { codeSessionRulingLines } from "../app/lib/tts-session-prompt";
 
 // Claude Code session surface — the Convex half of the web wrapper around
 // headless Claude Code sessions on the Jarvis Box. CANONICAL DESIGN HOME:
@@ -609,13 +611,40 @@ async function insertSession(
   // The code twin: a "session" verdict on a code todo is applied when Tom
   // opens the CODE BLOCK session — the interactive session whose turns are
   // about code todos (ttsRulings.refuseUnlessSessionSubject reads it that
-  // way). Same interactive-only reason as above.
+  // way). Same interactive-only reason as above. (The block lane skips a
+  // "code" category block by name, so no autonomous block session on code
+  // exists today; the mode check is the guard should one ever be made.)
+  //
+  // A verdict is consumed ONLY IF THE OPENER NAMES IT: the prompt Tom's
+  // browser built cannot know which code todos carry a live session verdict,
+  // so the set is read here, each subject and Tom's sentence are appended to
+  // the opener below, and exactly that set is marked — one read, one list,
+  // one mark, so what the session is told and what the record says it
+  // consumed cannot differ.
+  let codeSessionLines: string[] = [];
   if (
     seed.kind === "block" &&
     seed.blockCategory === "code" &&
     seed.mode !== "autonomous"
   ) {
-    await markLiveCodeSessionRulingsApplied(ctx, sessionId);
+    const consumed = await liveCodeSessionRulings(ctx);
+    const subjects = [];
+    for (const r of consumed) {
+      const mirrored = await ctx.db
+        .query("dtsCodeTodoMirror")
+        .withIndex("by_repo_external", (q) =>
+          q.eq("repo", r.repo!).eq("externalId", r.externalId!),
+        )
+        .first();
+      subjects.push({
+        repo: r.repo!,
+        externalId: r.externalId!,
+        statement: mirrored?.statement,
+        sentence: r.sentence,
+      });
+    }
+    codeSessionLines = codeSessionRulingLines(subjects);
+    await markCodeSessionRulingsApplied(ctx, consumed, sessionId);
   }
   // EVERY opener begins with the model-of-tom files (the lifeos update, phase
   // 4): the browser-built prompts, the worker missions, the CLI pen, a fork —
@@ -628,6 +657,7 @@ async function insertSession(
     (await modelOfTomPrelude(ctx)) +
     "\n\n" +
     seed.prompt(sessionId, repos) +
+    (codeSessionLines.length > 0 ? "\n\n" + codeSessionLines.join("\n") : "") +
     (seed.outcomePen === false ? "" : outcomePenFooter(sessionId, repos));
   await ctx.db.insert("claudeInbound", {
     sessionId,

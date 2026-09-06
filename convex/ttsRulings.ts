@@ -50,8 +50,9 @@ import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
 //            way), and the ruling applies at admission with the session id;
 //            revise is consumed by the planner's brief pass once the fresh
 //            brief has posted; session applies the moment Tom opens an
-//            interactive session on the code block
-//            (markLiveCodeSessionRulingsApplied).
+//            interactive session on the code block, whose opener names each
+//            subject and sentence it consumes (liveCodeSessionRulings +
+//            markCodeSessionRulingsApplied, from claudeSessions.insertSession).
 // appliedAt/applyResult record the application either way; a newer ruling on
 // the same subject supersedes an older unapplied one (append-only, history
 // kept).
@@ -730,26 +731,39 @@ export async function markLiveSessionRulingApplied(
  * A "session" verdict on a CODE subject is applied the moment Tom opens an
  * interactive session on the code block — the one kind of session whose turns
  * are about code todos (refuseUnlessSessionSubject above reads a "code" block
- * session that way). Every live, unapplied code session ruling is marked with
- * that session, since the block holds them all. Called by
- * claudeSessions.insertSession, the twin of markLiveSessionRulingApplied.
+ * session that way). The twin of markLiveSessionRulingApplied, in two halves
+ * so the session's prompt can NAME what it consumes: liveCodeSessionRulings
+ * is the set (every live, unapplied code session ruling, oldest first — the
+ * block holds them all), and markCodeSessionRulingsApplied stamps exactly
+ * the rows it is handed. claudeSessions.insertSession reads the set, writes
+ * each subject and Tom's sentence into the opener, then marks that same set
+ * — a verdict is never consumed without its conversation reaching the
+ * session, and never named without being consumed.
  */
-export async function markLiveCodeSessionRulingsApplied(
+export async function liveCodeSessionRulings(
   ctx: MutationCtx,
+): Promise<Doc<"dtsRulings">[]> {
+  const all = await ctx.db.query("dtsRulings").collect();
+  return [...liveRulings(all).values()]
+    .filter(
+      (live) =>
+        live.subjectType === "code" &&
+        live.verdict === "session" &&
+        live.appliedAt === undefined,
+    )
+    .sort((a, b) => a.ruledAt - b.ruledAt);
+}
+
+export async function markCodeSessionRulingsApplied(
+  ctx: MutationCtx,
+  rulings: readonly Doc<"dtsRulings">[],
   sessionId: string,
 ): Promise<void> {
-  const all = await ctx.db.query("dtsRulings").collect();
-  for (const live of liveRulings(all).values()) {
-    if (
-      live.subjectType === "code" &&
-      live.verdict === "session" &&
-      live.appliedAt === undefined
-    ) {
-      await ctx.db.patch(live._id, {
-        appliedAt: Date.now(),
-        applyResult: `session ${sessionId}`,
-      });
-    }
+  for (const ruling of rulings) {
+    await ctx.db.patch(ruling._id, {
+      appliedAt: Date.now(),
+      applyResult: `session ${sessionId}`,
+    });
   }
 }
 

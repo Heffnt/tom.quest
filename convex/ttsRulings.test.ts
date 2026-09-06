@@ -269,7 +269,7 @@ describe("TTS unified rulings", () => {
     expect(pending.map((r) => r.verdict)).toEqual(["revise"]);
   });
 
-  // witness: drop the code branch of markLiveCodeSessionRulingsApplied, or the
+  // witness: drop the code-session block from claudeSessions.insertSession, or the
   // call to it in claudeSessions.insertSession.
   it("code: revise waits for the planner's brief pass; session applies when the code block session opens; approve and archive wait for the scheduler", async () => {
     const t = convexTest({ schema, modules });
@@ -311,6 +311,68 @@ describe("TTS unified rulings", () => {
     expect(pending.map((r) => r.externalId).sort()).toEqual(
       ["c-approve", "c-archive", "c-revise"],
     );
+  });
+
+  // witness: drop the codeSessionRulingLines append from
+  // claudeSessions.insertSession, or mark a ruling the opener did not name —
+  // a verdict would be consumed without the conversation Tom asked for ever
+  // reaching the session.
+  it("the code block session names every code session verdict it consumes, with Tom's sentence, and consumes only those", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const code = (externalId: string) => ({ repo: "ComplexMultiTrigger", externalId });
+    await t.mutation(internal.tts.internalReplaceMirror, {
+      repo: "ComplexMultiTrigger",
+      rows: [
+        { externalId: "c-one", tier: "R", status: "open", statement: "drop the CLI flag", url: "u" },
+      ],
+    });
+    // Two live session verdicts, one with a note; one superseded by a newer
+    // approve; one already applied by an earlier block session.
+    await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-one"), verdict: "session", sentence: "talk me through the flag" });
+    await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-two"), verdict: "session" });
+    await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-old"), verdict: "session" });
+    await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-old"), verdict: "approve" });
+    const doneId = await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-done"), verdict: "session" });
+    await t.run(async (ctx) => {
+      // Rulings on one subject must order by ruledAt; the fake clock can
+      // give the two c-old rows the same millisecond.
+      const rows = await ctx.db.query("dtsRulings").collect();
+      for (const r of rows) {
+        if (r.externalId === "c-old" && r.verdict === "approve") {
+          await ctx.db.patch(r._id, { ruledAt: r.ruledAt + 1 });
+        }
+      }
+      await ctx.db.patch(doneId, { appliedAt: 1, applyResult: "session earlier" });
+    });
+
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "code block",
+      kind: "block",
+      blockCategory: "code",
+      repo: "ComplexMultiTrigger",
+      initialPrompt: "hello",
+    });
+    const [inbound] = await tom.query(api.claudeSessions.getPendingInbound, { sessionId });
+    const text = inbound.text ?? "";
+    expect(text).toContain('Tom ruled "session" on these code todos (2)');
+    expect(text).toContain(
+      '- ComplexMultiTrigger c-one "drop the CLI flag" — he wrote: talk me through the flag',
+    );
+    expect(text).toContain("- ComplexMultiTrigger c-two — no note written");
+    expect(text).not.toContain("c-old");
+    expect(text).not.toContain("c-done");
+
+    const rulings = await tom.query(api.ttsRulings.listRulings, {});
+    const by = (externalId: string, verdict: string) =>
+      rulings.find((r) => r.externalId === externalId && r.verdict === verdict)!;
+    expect(by("c-one", "session").applyResult).toBe(`session ${sessionId}`);
+    expect(by("c-two", "session").applyResult).toBe(`session ${sessionId}`);
+    expect(by("c-old", "session").appliedAt).toBeUndefined(); // superseded history
+    expect(by("c-old", "approve").appliedAt).toBeUndefined(); // the scheduler's
+    expect(by("c-done", "session").applyResult).toBe("session earlier");
+    const pending = await t.query(internal.ttsRulings.internalPendingRulings, {});
+    expect(pending.map((r) => `${r.externalId} ${r.verdict}`)).toEqual(["c-old approve"]);
   });
 
   // witness: drop the life-approve instant-apply branch from insertRuling in

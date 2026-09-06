@@ -451,7 +451,7 @@ ${WHAT_TTS_IS}
   <div class="box">Merging the pull request is Tom's, and nothing automates it. A session that fails is not retried by the picker; ruling again is the retry.</div>
 </div>
 
-<p>The other three verdicts on a code todo have no job of their own. Revise is consumed by the planner on the Jarvis Box, which runs every half hour: it re-writes the brief with a fresh plan, with Tom's sentence in the prompt, and marks the ruling applied once the new brief is stored. Session is applied the moment Tom opens the code block session from the calendar — the interactive session whose turns are about code todos. Archive is admitted by the same picker as approve, as a mission that closes the entry in the repository's own todo file and opens a pull request for it; merging that is Tom's.</p>
+<p>The other three verdicts on a code todo have no job of their own. Revise is consumed by the planner on the Jarvis Box, which runs every half hour: it re-writes the brief with a fresh plan, with Tom's sentence in the prompt, and marks the ruling applied once the new brief is stored. Session is applied the moment Tom opens the code block session from the calendar — the interactive session whose turns are about code todos; its opening prompt names each code todo it consumed, with Tom's sentence. Archive is admitted by the same picker as approve, as a mission that closes the entry in the repository's own todo file and opens a pull request for it; merging that is Tom's.</p>
 
 <h2>What happens next, and who does it</h2>
 
