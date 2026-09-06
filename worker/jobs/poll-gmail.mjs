@@ -36,6 +36,15 @@
 // copy in convex/ttsShared.ts until the sync has run. One home for the rules,
 // so poll-canvas and poll-outlook read the same words.
 //
+// ONE VERDICT PER MAIL, and the cursor never passes a mail without one. The
+// model echoes the ids it was given, so it can garble one, invent one, or say
+// nothing about a mail at all. Silence used to read as "skip": the mail was
+// passed over and the cursor moved past it, which lost it for good. The answer
+// is now reconciled against the batch (tts-lib.mjs reconcileVerdicts), every
+// unanswered mail and every id that was not in the batch is reported through
+// POST /tts/job-failed keyed on the mail, and the run stops at the oldest
+// unanswered one so the next run reads it again.
+//
 // STATE: /var/lib/tts/gmail-cursor holds the internalDate (epoch ms) of the
 // newest PROCESSED message (captured or skipped). FORMAT UNCHANGED by phase 6
 // — still one epoch-ms integer, so no cursor migration is needed and a box
@@ -53,6 +62,8 @@ import {
   declinedLine,
   extractJsonObject,
   loadEnv,
+  reconcileVerdicts,
+  reportUntriaged,
   runClaude,
   ttsItemLink,
 } from "./tts-lib.mjs";
@@ -202,34 +213,51 @@ one in a few words ("deadline Friday", "Sarah is waiting on a reply", "invoice
 due"). Set it to false and omit "why" otherwise. An email you do not capture
 has no second judgement at all.
 
+ANSWER FOR EVERY EMAIL BELOW — one entry each, in the order given, with "id"
+copied EXACTLY as it appears. An email you are not capturing is
+{"id": "...", "capture": false} and nothing else. Leaving an email out is not
+a "no": a missing or misspelled id is a lost verdict, it is reported, and the
+run stops there rather than passing the email over.
+
 Answer with ONLY this JSON object, no fences, no commentary:
-{"captures": [{"id": "<gmail message id>", "statement": "<one line>", "needsTomToday": <true|false>, "why": "<a few words, only when true>"}]}
-An empty list is {"captures": []}.
+{"verdicts": [{"id": "<gmail message id>", "capture": <true|false>, "statement": "<one line, only when capture is true>", "needsTomToday": <true|false>, "why": "<a few words, only when needsTomToday is true>"}]}
 
 Emails:
 ${JSON.stringify(batch.map(({ id, from, subject, snippet }) => ({ id, from, subject, snippet })), null, 2)}`;
 
   const answer = runClaude(prompt, { timeoutMs: 5 * 60 * 1000 });
-  const { captures } = extractJsonObject(answer);
-  if (!Array.isArray(captures)) throw new Error("triage answer has no captures array");
-  const verdictById = new Map(
-    captures
-      .filter((c) => c && typeof c.id === "string" && typeof c.statement === "string")
-      .map((c) => [
-        c.id,
-        {
-          statement: c.statement,
-          needsTomToday: c.needsTomToday === true,
-          why: typeof c.why === "string" ? c.why : "",
-        },
-      ]),
+  const { verdicts } = extractJsonObject(answer);
+  if (!Array.isArray(verdicts)) throw new Error("triage answer has no verdicts array");
+  // What the model said about what it was given — and what it did not say.
+  const { byId, unmatched, unresolved } = reconcileVerdicts(
+    batch.map((m) => m.id),
+    verdicts,
   );
+  const byMessageId = new Map(batch.map((m) => [m.id, m]));
+  // Reported BEFORE anything is processed: a crash in the loop below must not
+  // cost Tom the news that the model lost a mail.
+  await reportUntriaged(env, "poll-gmail", {
+    untriaged: unresolved.map((id) => {
+      const m = byMessageId.get(id);
+      return {
+        sourceId: messageSourceId(id),
+        label: `"${m.subject || "(no subject)"}" from ${m.from || "(no sender)"}`,
+      };
+    }),
+    unmatched,
+  });
+  const untriaged = new Set(unresolved);
 
   let captured = 0;
   let threads = 0;
+  let processed = 0;
   for (const message of batch) {
-    const verdict = verdictById.get(message.id);
-    if (verdict) {
+    // THE CURSOR NEVER PASSES AN UNTRIAGED MAIL. Everything after it waits for
+    // the next run too — advancing past it and coming back later would
+    // re-capture what this run already captured.
+    if (untriaged.has(message.id)) break;
+    const verdict = byId.get(message.id);
+    if (verdict.capture) {
       const result = await convexFetch(env, "/tts/capture", {
         statement: verdict.statement,
         source: "email",
@@ -263,9 +291,15 @@ ${JSON.stringify(batch.map(({ id, from, subject, snippet }) => ({ id, from, subj
     // Advance after EVERY processed message (captured or skipped), so a crash
     // mid-batch re-processes at most the one in flight.
     fs.writeFileSync(CURSOR_FILE, String(message.internalDate));
+    processed++;
   }
   console.log(
-    `[poll-gmail] processed ${batch.length}, captured ${captured}, threads opened ${threads}`,
+    `[poll-gmail] processed ${processed} of ${batch.length}, captured ${captured}, ` +
+      `threads opened ${threads}` +
+      (unresolved.length > 0
+        ? `, held at ${unresolved.length} untriaged (reported to TTS)`
+        : "") +
+      (unmatched.length > 0 ? `, ${unmatched.length} unmatched id(s) in the answer` : ""),
   );
 }
 

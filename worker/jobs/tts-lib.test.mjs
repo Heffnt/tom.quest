@@ -16,9 +16,15 @@ import {
   declinedLine,
   MAX_BRIEF_CHARS,
   MAX_LIFE_PER_RUN,
+  NO_ID,
+  reconcileVerdicts,
   reportJobFailed,
   reportJobOk,
   ttsItemLink,
+  unmatchedIdKey,
+  unmatchedIdMessage,
+  untriagedKey,
+  untriagedMessage,
 } from "./tts-lib.mjs";
 
 describe("clip", () => {
@@ -177,6 +183,112 @@ describe("reportJobFailed / reportJobOk", () => {
     );
     expect(await reportJobFailed(env, { job: "poll-canvas", error: "x" })).toBeNull();
     expect(await reportJobOk(env, { job: "poll-canvas", key: "k" })).toBeNull();
+  });
+});
+
+// SILENCE USED TO MEAN "SKIP". Each poller looked its batch up in a map keyed
+// by the ids the MODEL returned, and a miss read as "not captured" — so a
+// garbled id dropped a mail, the cursor advanced past it, and the only trace
+// was a count one lower.
+describe("reconcileVerdicts", () => {
+  const yes = (id, statement) => ({ id, capture: true, statement });
+  const no = (id) => ({ id, capture: false });
+
+  it("gives every answered item its verdict and leaves nothing unresolved", () => {
+    const { byId, unmatched, unresolved } = reconcileVerdicts(
+      ["a", "b", "c"],
+      [yes("a", "Reply to Sarah"), no("b"), yes("c", "Pay the invoice")],
+    );
+    expect(unresolved).toEqual([]);
+    expect(unmatched).toEqual([]);
+    expect(byId.get("a")).toMatchObject({ capture: true, statement: "Reply to Sarah" });
+    expect(byId.get("b")).toEqual({ capture: false });
+  });
+
+  it("names the item a garbled id lost AND the garbled id itself", () => {
+    // "b1" for "b": the mail has no verdict and the answer carries an id that
+    // was never in the batch. Both are facts, and both are reported.
+    const { byId, unmatched, unresolved } = reconcileVerdicts(
+      ["a", "b", "c"],
+      [no("a"), yes("b1", "Reply to Sarah"), no("c")],
+    );
+    expect(unresolved).toEqual(["b"]);
+    expect(unmatched).toEqual(["b1"]);
+    expect(byId.has("b")).toBe(false);
+  });
+
+  it("leaves an item the model simply did not mention unresolved", () => {
+    const { unresolved, unmatched } = reconcileVerdicts(["a", "b"], [no("a")]);
+    expect(unresolved).toEqual(["b"]);
+    expect(unmatched).toEqual([]);
+  });
+
+  it("keeps the batch's own order, so the caller can stop at the oldest", () => {
+    expect(reconcileVerdicts(["a", "b", "c", "d"], [no("c")]).unresolved).toEqual([
+      "a",
+      "b",
+      "d",
+    ]);
+  });
+
+  it("treats a claim with no statement as no verdict at all", () => {
+    // "capture: true" with nothing to write claims an action and names none.
+    // Reading it as a skip would lose the item exactly the way silence did.
+    for (const answer of [
+      { id: "a", capture: true },
+      { id: "a", capture: true, statement: "   " },
+      { id: "a" },
+      { id: "a", capture: "yes" },
+    ]) {
+      expect(reconcileVerdicts(["a"], [answer]).unresolved).toEqual(["a"]);
+    }
+    // Whereas an explicit no is a complete verdict.
+    expect(reconcileVerdicts(["a"], [no("a")]).unresolved).toEqual([]);
+  });
+
+  it("collects an answer that names no id under one stand-in, deduped", () => {
+    const { unmatched, unresolved } = reconcileVerdicts(
+      ["a"],
+      [{ capture: false }, { id: "", capture: false }, { id: "zz", capture: false }],
+    );
+    expect(unmatched).toEqual([NO_ID, "zz"]);
+    expect(unresolved).toEqual(["a"]);
+  });
+
+  it("survives an answer that is not a list of objects", () => {
+    expect(reconcileVerdicts(["a"], undefined).unresolved).toEqual(["a"]);
+    expect(reconcileVerdicts(["a"], [null, 7, "b"]).unresolved).toEqual(["a"]);
+  });
+});
+
+describe("what an untriaged item is reported as", () => {
+  it("is keyed on the item, so a mail retried every tick is one row", () => {
+    // The cursor holds at the oldest untriaged item, so the same mail comes
+    // back every ten minutes until a run answers for it. Keyed on the mail,
+    // that is one row (convex/ttsJobs.ts); keyed on the run it would be one
+    // row every ten minutes, for ever.
+    expect(untriagedKey("poll-gmail", "gmail:message:18f0a1")).toBe(
+      "poll-gmail:untriaged:gmail:message:18f0a1",
+    );
+    expect(unmatchedIdKey("poll-gmail", "18f0a1x")).toBe(
+      "poll-gmail:unmatched-id:18f0a1x",
+    );
+    // Model output, clipped: an id can come back arbitrarily long.
+    expect(unmatchedIdKey("poll-gmail", "x".repeat(500))).toHaveLength(
+      "poll-gmail:unmatched-id:".length + 80,
+    );
+  });
+
+  it("says what was skipped and what the cursor is doing about it", () => {
+    const message = untriagedMessage(
+      "poll-gmail",
+      '"Lab meeting Friday" from Sarah Chen',
+      "gmail:message:18f0a1",
+    );
+    expect(message).toContain("Lab meeting Friday");
+    expect(message).toContain("gmail:message:18f0a1");
+    expect(message).toContain("read again next run");
+    expect(unmatchedIdMessage("poll-canvas", "991x")).toContain('"991x"');
   });
 });
 

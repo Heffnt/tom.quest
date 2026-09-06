@@ -51,6 +51,14 @@
 // WikiTom text with a fallback copy in convex/ttsShared.ts. The same words
 // poll-gmail triages by; no job keeps its own set.
 //
+// ONE VERDICT PER ANNOUNCEMENT, and the cursor never passes one without a
+// verdict. The model echoes the ids it was given, so it can garble one, invent
+// one, or say nothing about an announcement at all; silence used to read as
+// "skip", which lost it for good behind an advancing cursor. The answer is
+// reconciled against the batch (tts-lib.mjs reconcileVerdicts), whatever is
+// unanswered is reported through POST /tts/job-failed keyed on the item, and
+// the run stops at the oldest unanswered one.
+//
 // STATE: /var/lib/tts/canvas-announcements-cursor holds the posted_at epoch
 // ms of the newest PROCESSED announcement. Losing it re-examines the last
 // 7 days — at worst a few duplicate captures Tom can archive (the poll-dump
@@ -68,8 +76,10 @@ import {
   declinedLine,
   extractJsonObject,
   loadEnv,
+  reconcileVerdicts,
   reportJobFailed,
   reportJobOk,
+  reportUntriaged,
   runClaude,
 } from "./tts-lib.mjs";
 
@@ -348,42 +358,73 @@ For each captured announcement write "statement": ONE line naming the action in
 plain words, starting with a verb, naming the course (e.g. "Sign up for the
 CS 4241 project demo slot"). Do not invent details the text does not support.
 
+ANSWER FOR EVERY ANNOUNCEMENT BELOW — one entry each, in the order given, with
+"id" copied EXACTLY as it appears. One you are not capturing is
+{"id": "...", "capture": false} and nothing else. Leaving one out is not a
+"no": a missing or misspelled id is a lost verdict, it is reported, and the run
+stops there rather than passing the announcement over.
+
 Answer with ONLY this JSON object, no fences, no commentary:
-{"captures": [{"id": "<announcement id>", "statement": "<one line>"}]}
-An empty list is {"captures": []}.
+{"verdicts": [{"id": "<announcement id>", "capture": <true|false>, "statement": "<one line, only when capture is true>"}]}
 
 Announcements:
 ${JSON.stringify(candidates.map(({ id, courseCode, title, body }) => ({ id, courseCode, title, body })), null, 2)}`;
 
   const answer = runClaude(prompt, { timeoutMs: 5 * 60 * 1000 });
-  const { captures } = extractJsonObject(answer);
-  if (!Array.isArray(captures)) throw new Error("triage answer has no captures array");
-  const statementById = new Map(
-    captures
-      .filter((c) => c && typeof c.id === "string" && typeof c.statement === "string")
-      .map((c) => [c.id, c.statement]),
+  const { verdicts } = extractJsonObject(answer);
+  if (!Array.isArray(verdicts)) throw new Error("triage answer has no verdicts array");
+  // What the model said about what it was given — and what it did not say.
+  const { byId, unmatched, unresolved } = reconcileVerdicts(
+    candidates.map((a) => a.id),
+    verdicts,
   );
+  const byAnnouncementId = new Map(candidates.map((a) => [a.id, a]));
+  // Reported BEFORE anything is processed: a crash in the loop below must not
+  // cost Tom the news that the model lost an announcement.
+  await reportUntriaged(env, "poll-canvas", {
+    untriaged: unresolved.map((id) => {
+      const a = byAnnouncementId.get(id);
+      return {
+        // The id alone, which is what announcementProvenance leads with.
+        sourceId: announcementProvenance(id, ""),
+        label: `"${a.title}"${a.courseCode ? ` in ${a.courseCode}` : ""}`,
+      };
+    }),
+    unmatched,
+  });
+  const untriaged = new Set(unresolved);
 
   let captured = 0;
+  let processed = 0;
   for (const a of candidates) {
-    const statement = statementById.get(a.id);
-    if (statement) {
+    // THE CURSOR NEVER PASSES AN UNTRIAGED ANNOUNCEMENT. Everything after it
+    // waits for the next run too — advancing past it and coming back later
+    // would re-capture what this run already captured.
+    if (untriaged.has(a.id)) break;
+    const verdict = byId.get(a.id);
+    if (verdict.capture) {
       const result = await convexFetch(env, "/tts/capture", {
-        statement,
+        statement: verdict.statement,
         source: ANNOUNCEMENT_SOURCE,
         provenance: announcementProvenance(a.id, a.htmlUrl),
       });
       captured++;
       console.log(
-        `[poll-canvas] captured id=${result.id ?? "?"} "${statement.slice(0, 70)}"`,
+        `[poll-canvas] captured id=${result.id ?? "?"} "${verdict.statement.slice(0, 70)}"`,
       );
     }
     // Advance after EVERY processed announcement, so a crash mid-batch
     // re-processes at most the one in flight.
     fs.writeFileSync(CURSOR_FILE, String(a.postedAt));
+    processed++;
   }
   console.log(
-    `[poll-canvas] announcements: processed ${candidates.length}, captured ${captured}`,
+    `[poll-canvas] announcements: processed ${processed} of ${candidates.length}, ` +
+      `captured ${captured}` +
+      (unresolved.length > 0
+        ? `, held at ${unresolved.length} untriaged (reported to TTS)`
+        : "") +
+      (unmatched.length > 0 ? `, ${unmatched.length} unmatched id(s) in the answer` : ""),
   );
 }
 
