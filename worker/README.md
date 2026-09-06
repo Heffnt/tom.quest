@@ -27,12 +27,11 @@ on a schedule:
 4. **prepare-queue** (4:30 a.m. New York) — runs headless Claude Code to pick
    today's queue (≤7 items) and write the daily digest, and posts both to
    Convex. If it fails, the Convex-side fallback prep (4:45) still writes the
-   day's queue. The digest half of that split is OFF — Tom ruled outbound Slack
-   off on 2026-08-29, so the 5 a.m. digest crons are unregistered
-   (`convex/crons.ts:32-35`) and `sendDigest` returns on
-   `OUTBOUND_SLACK_ENABLED = false`. The queue and digest text are still
-   written and read in the app; nothing is sent, so there is no send-or-silence
-   monitoring signal today.
+   day's queue. The digest text it writes has no reader any more: since the
+   lifeos update (phase 2) the 5 a.m. digest is composed deterministically in
+   Convex (`convex/ttsDigest.ts`) and sent by `sendDigest`, so a missing
+   morning message is itself the monitoring signal. This job's digest half
+   goes in phase 7 with the queue.
 5. **brief-code-todos** (every 2 h at :17) — see the ruling loop below.
 6. **apply-rulings** (every 10 min) — see the ruling loop below.
 7. **execute-approved** (hourly at :45) — see the ruling loop below.

@@ -173,6 +173,18 @@ export function countdownText(dueAt: number, now: number): string {
   return `${-dayDiff} days overdue`;
 }
 
+/**
+ * New York wall-clock "HH:MM" of an instant. The Slack messages (the digest,
+ * the hourly update) print block and calendar spans with it; one home so the
+ * plain-runtime composer and the "use node" sender agree on the clock.
+ */
+export function nyHhmm(at: number): string {
+  const d = new Date(at + nyOffsetHours(at) * HOUR_MS);
+  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(
+    d.getUTCMinutes(),
+  ).padStart(2, "0")}`;
+}
+
 // ── The todo graph: needs, done, ready (schema v2, ratified 2026-08-29) ──────
 // THE ONE HOME for the graph rules — convex/ and app/ both import from here,
 // so the server's frontier and the page's frontier cannot drift. Structural

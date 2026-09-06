@@ -671,6 +671,38 @@ export async function applyDateOutcome(
   await logEvent(ctx, "date-outcome", todo._id, { outcome, newDueAt, note });
 }
 
+// The 5 a.m. rollover's OWN door (ruling 14, the lifeos update) — deliberately
+// NOT applyDateOutcome above, because the rollover is not Tom resolving a date.
+// It records that a date passed unanswered and changes NOTHING else:
+//   - the date stays, so the item is still listed overdue with its own date;
+//   - dateKind stays exactly as it was. Going through applyDateOutcome with
+//     newDueAt = todo.dueAt would stamp "self-imposed" on any row that had no
+//     dateKind (line 663 above), quietly rewriting an unlabelled external
+//     deadline as one Tom set himself;
+//   - updatedAt is NOT bumped. This is an annotation by a cron, not a content
+//     edit, and the needs-me predicate resurfaces an already-ruled gate when
+//     ruledAt < updatedAt (same reasoning as setPlanStep and internalBulkUpdate).
+// The outcome row itself is written in the one shape every reader knows.
+export async function recordMissedKeepingDate(
+  ctx: MutationCtx,
+  todo: Doc<"dtsTodos">,
+  note?: string,
+) {
+  if (todo.dueAt === undefined) throw new Error("Todo has no date to resolve");
+  const now = Date.now();
+  await ctx.db.patch(todo._id, {
+    dateOutcomes: [
+      ...(todo.dateOutcomes ?? []),
+      { dueAt: todo.dueAt, outcome: "missed" as const, recordedAt: now, note },
+    ],
+  });
+  await logEvent(ctx, "date-outcome", todo._id, {
+    outcome: "missed",
+    newDueAt: todo.dueAt,
+    note,
+  });
+}
+
 export const recordDateOutcome = mutation({
   args: {
     id: v.id("dtsTodos"),
@@ -2861,8 +2893,16 @@ export const internalGetDay = internalQuery({
 });
 
 export const internalMarkDigestSent = internalMutation({
-  args: { day: v.string(), surfacedTodoIds: v.array(v.id("dtsTodos")) },
-  handler: async (ctx, { day, surfacedTodoIds }) => {
+  // windowEnd: the instant the digest was composed against. It is the start of
+  // the NEXT digest's window (convex/ttsDigest.ts digestWindowStart), and this
+  // row's `day` is the once-a-day dedupe key — so the two facts a digest run
+  // needs from the last one live on one row.
+  args: {
+    day: v.string(),
+    surfacedTodoIds: v.array(v.id("dtsTodos")),
+    windowEnd: v.optional(v.number()),
+  },
+  handler: async (ctx, { day, surfacedTodoIds, windowEnd }) => {
     const now = Date.now();
     const existing = await ctx.db
       .query("dtsDailyQueues")
@@ -2882,7 +2922,7 @@ export const internalMarkDigestSent = internalMutation({
     for (const todoId of surfacedTodoIds) {
       await logEvent(ctx, "surfaced", todoId, { via: "digest", day });
     }
-    await logEvent(ctx, "digest-sent", undefined, { day });
+    await logEvent(ctx, "digest-sent", undefined, { day, windowEnd });
   },
 });
 

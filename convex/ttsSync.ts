@@ -10,16 +10,14 @@ import {
   CODE_TODO_REPOS,
   SLACK_SUBJECT,
   TTS_DIGEST_NY_HOUR,
-  countdownText,
   slackHourKey,
   ttsDayKey,
-  ttsItemLink,
   ttsSessionLink,
+  nyHhmm,
   nyLocalHour,
-  nyOffsetHours,
   type SlackSubject,
 } from "./ttsShared";
-import type { Doc } from "./_generated/dataModel";
+import { digestSubject, type WikiTomCommit } from "./ttsDigest";
 
 // TTS actions that reach outside Convex: the 5 a.m. Slack digest and the
 // GitHub vqc/todos.yaml mirror refresh. Spec: WikiTom tts/spec.md §7, §5.3.
@@ -39,9 +37,43 @@ const SLACK_POST_URL = "https://slack.com/api/chat.postMessage";
 //
 // Missing env is log-and-return (ruling digest-env-missing-is-quiet,
 // vqc/adoption.md, 2026-08-27). The channel defaults to #tts.
+//
+// ONE IN-RUN RETRY, at the door rather than in any caller: most refusals here
+// are a rate limit or a dropped connection that the second attempt fixes, and
+// the digest is the one message Tom's morning depends on. The failure row is
+// written once, after the retry, and says how many attempts it took.
 type SlackSendResult =
   | { ok: true; ts: string }
   | { ok: false; error: string };
+
+// The pause before the retry. Long enough for a rate limit or a dropped
+// connection to clear, short enough that a 5 a.m. action does not sit waiting.
+export const SLACK_RETRY_DELAY_MS = 2_000;
+
+async function postOnce(
+  token: string,
+  target: string,
+  { text, threadTs }: { text: string; threadTs?: string },
+): Promise<{ ok: boolean; ts?: string; error?: string }> {
+  try {
+    const res = await fetch(SLACK_POST_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify({
+        channel: target,
+        text,
+        unfurl_links: false,
+        ...(threadTs !== undefined ? { thread_ts: threadTs } : {}),
+      }),
+    });
+    return (await res.json()) as { ok: boolean; ts?: string; error?: string };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
 
 async function postSlack(
   ctx: ActionCtx,
@@ -65,33 +97,28 @@ async function postSlack(
     );
     return { ok: false, error: "not configured" };
   }
-  let result: { ok: boolean; ts?: string; error?: string };
-  try {
-    const res = await fetch(SLACK_POST_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json; charset=utf-8",
-      },
-      body: JSON.stringify({
-        channel: target,
-        text,
-        unfurl_links: false,
-        ...(threadTs !== undefined ? { thread_ts: threadTs } : {}),
-      }),
-    });
-    result = (await res.json()) as { ok: boolean; ts?: string; error?: string };
-  } catch (err) {
-    result = { ok: false, error: err instanceof Error ? err.message : String(err) };
+  let result = await postOnce(token, target, { text, threadTs });
+  let attempts = 1;
+  if (!result.ok || typeof result.ts !== "string") {
+    console.error(
+      `TTS slack (${subject.kind}): Slack rejected the post: ${result.error ?? "no ts in Slack's answer"} — retrying once`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, SLACK_RETRY_DELAY_MS));
+    result = await postOnce(token, target, { text, threadTs });
+    attempts = 2;
   }
   if (!result.ok || typeof result.ts !== "string") {
     const error = result.error ?? "no ts in Slack's answer";
     console.error(`TTS slack (${subject.kind}): Slack rejected the post: ${error}`);
+    // The text goes on the failure row: it is what a later resend posts
+    // unchanged, so the message Tom missed is the message he eventually gets.
     await ctx.runMutation(internal.ttsSlack.internalRecordSlackFailed, {
       channel: target,
       threadTs,
       subject,
       error,
+      text,
+      attempts,
     });
     return { ok: false, error };
   }
@@ -118,57 +145,166 @@ export const sendSlack = internalAction({
     await postSlack(ctx, args),
 });
 
-// Tom 2026-08-29: outbound Slack is OFF — Slack is inbound dump only until the messaging shape is redesigned.
-// One switch for every chat.postMessage site in this file. The senders and their
-// composition logic stay intact (this is "off for now", not a removal); flip to
-// true to turn the messages back on, and re-register the digest crons in
-// convex/crons.ts. The INBOUND path (worker/jobs/poll-dump.mjs → /tts/capture)
-// is untouched.
-const OUTBOUND_SLACK_ENABLED: boolean = false;
+// ONE SWITCH PER MESSAGE KIND. Tom 2026-08-29 turned outbound Slack off as a
+// whole ("inbound dump only until the messaging shape is redesigned"); the
+// lifeos update (2026-09-05) turns the shapes back on one at a time, each
+// behind its own switch, so turning one on never turns another on. The
+// INBOUND path (worker/jobs/poll-dump.mjs → /tts/capture) is untouched.
+//   DIGEST_ENABLED                 the 5 a.m. digest (on: phase 2, this file)
+//   SESSION_EVENT_MESSAGES_ENABLED per-session event lines (off: the events
+//                                  route replaces them)
+//   HOURLY_UPDATE_ENABLED          the hourly update, below (the hourly piece)
+const DIGEST_ENABLED: boolean = true;
+const SESSION_EVENT_MESSAGES_ENABLED: boolean = false;
 
-// ── Daily digest (spec §7) ───────────────────────────────────────────────────
+// ── Daily digest (the lifeos update, phase 2; spec §7) ──────────────────────
 // Scheduled at two UTC times with a local-hour guard so DST needs no cron
-// edits; only the run landing in the 5 a.m. New York hour proceeds, and
-// digestSentAt makes it once-per-day. ALWAYS sent, even when empty
-// (sends-even-when-empty rule): a missing digest means Convex/Slack breakage,
-// a digest that reports missing prep means worker breakage.
-// NOW OFF (see OUTBOUND_SLACK_ENABLED above): the crons are unregistered and
-// this returns before anything reads, so no digest is composed or posted.
+// edits; a run proceeds when it is at or after 5 a.m. New York and today's
+// digest has not gone out, so a tick that misses the 5 a.m. hour still sends
+// the day's digest late rather than skipping the day. ALWAYS sent, even when
+// short (sends-even-when-empty rule): a missing digest means Convex/Slack
+// breakage.
+//
+// The run, in order:
+//   1. the missed rollover (ttsDigest.internalRollMissed): every active dated
+//      todo whose date passed with no outcome gets "missed" once, date kept;
+//   2. read the window start, fetch WikiTom's commits over it from GitHub (the
+//      one read outside Convex the digest needs), then compose
+//      (ttsDigest.internalComposeDigest): deterministic, from queries, no model
+//      call, no dtsDailyQueues.digestText;
+//   3. post through the one door above, subject {kind: "digest", day} — which
+//      records the "slack-sent" row a threaded reply from Tom is matched
+//      against, retries once on a refusal, and on a second refusal records a
+//      "slack-send-failed" row carrying the text the hourly update's tick
+//      resends unchanged once that message is switched on;
+//   4. mark the day sent: the "digest-sent" row {day, windowEnd} is BOTH the
+//      dedupe key for a rerun and the start of the NEXT digest's window — the
+//      digest's own bookkeeping, the same shape the hourly update keeps, and
+//      separate from the door's row, which belongs to reply routing.
 export const sendDigest = internalAction({
   args: { force: v.optional(v.boolean()) },
   handler: async (ctx, { force }) => {
-    // Tom 2026-08-29: outbound Slack is OFF — Slack is inbound dump only until the messaging shape is redesigned.
-    if (!OUTBOUND_SLACK_ENABLED) return;
+    if (!DIGEST_ENABLED && !force) return;
     const now = Date.now();
-    if (!force && nyLocalHour(now) !== TTS_DIGEST_NY_HOUR) return;
+    // NOT YET SENT TODAY, AND IT IS PAST 5 A.M. — not "it is the 5 a.m. hour".
+    // Both UTC crons can miss that hour (a deployment, a Convex delay, a clock
+    // an hour out), and an equality guard turns a missed hour into a silently
+    // skipped morning. The day key already rolls at 5 (ttsDayKey), so a later
+    // tick names today, and the already-sent check below is what keeps it to
+    // one send a day. Before 5 the key still names yesterday, whose digest has
+    // gone out — the guard is what stops it re-sending under yesterday's key.
+    if (!force && nyLocalHour(now) < TTS_DIGEST_NY_HOUR) return;
     const day = ttsDayKey(now);
-    const row = await ctx.runQuery(internal.tts.internalGetDay, { day });
-    if (row?.digestSentAt && !force) return;
+    // One read for both facts the last digest leaves behind: which day it
+    // covered, and where this run's window starts.
+    const { lastDay, since } = await ctx.runQuery(
+      internal.ttsDigest.internalDigestWindow,
+      { now },
+    );
+    if (lastDay === day && !force) return;
 
-    // The full-table reads are only needed when composing the fallback text —
-    // the worker-prepared happy path skips them (review finding: this is the
-    // one daily payload that would otherwise grow with the never-pruned
-    // archive).
-    const text =
-      row?.digestText ??
-      composeFallbackDigest(
-        day,
-        row ?? null,
-        await ctx.runQuery(internal.tts.internalListTodos, {}),
-        now,
-        await ctx.runQuery(internal.ttsRulings.internalAwaitingRulingCount, {}),
-      );
+    await ctx.runMutation(internal.ttsDigest.internalRollMissed, { day });
+    // One window for the whole run: the composer reads Convex over it and the
+    // WikiTom fetch reads GitHub over the same one.
+    const wikitom = await fetchWikiTomCommits(since, now);
+    const { text, surfacedTodoIds } = await ctx.runQuery(
+      internal.ttsDigest.internalComposeDigest,
+      { day, now, since, wikitom },
+    );
 
-    const sent = await postSlack(ctx, { text, subject: { kind: "digest", day } });
-    if (!sent.ok) return;
-    // Entry ids are validated at intake (internalStoreWorkerPrep) and nothing
-    // is ever deleted, so the queue's ids are surfaced as-is.
+    // TWO LINES OF DEFENCE against a Slack blip, because the digest is the one
+    // message Tom's morning depends on: the door's one in-run retry, and the
+    // "slack-send-failed" row it writes when the retry fails too, which the
+    // hourly update's tick resends unchanged. That second owner is switched
+    // OFF today (HOURLY_UPDATE_ENABLED), which is why the retry is not
+    // optional.
+    const posted = await postSlack(ctx, { text, subject: digestSubject(day) });
+    if (!posted.ok) return;
     await ctx.runMutation(internal.tts.internalMarkDigestSent, {
       day,
-      surfacedTodoIds: (row?.entries ?? []).map((e) => e.todoId),
+      surfacedTodoIds,
+      // windowEnd, not the row's own `at`: the next digest starts its window
+      // where this one's ended, and composing plus posting takes seconds that
+      // would otherwise be reported by neither digest.
+      windowEnd: now,
     });
   },
 });
+
+// ── WikiTom commits for the digest (plan §3) ─────────────────────────────────
+// Every commit pushed to WikiTom's default branch inside the digest's window,
+// with its author. Read with GITHUB_MIRROR_TOKEN — the one GitHub credential
+// this deployment has (the same one the code-todo mirror and the skill sync
+// use). It is scoped to ComplexMultiTrigger and tom.quest today, so WikiTom
+// answers 403/404 until Tom widens it; every unreadable case (no token, a
+// refusal, a network error, a shape that is not a commit list) returns null,
+// and the digest prints WIKITOM_UNREADABLE so the gap is visible rather than
+// looking like a quiet week.
+//
+// CAP: one page of 100. A night with more commits than that is a bulk import,
+// and the digest is a morning read, not a changelog.
+const WIKITOM_REPO = "Heffnt/WikiTom";
+const WIKITOM_COMMIT_CAP = 100;
+
+async function fetchWikiTomCommits(
+  since: number,
+  until: number,
+): Promise<WikiTomCommit[] | null> {
+  const token = process.env.GITHUB_MIRROR_TOKEN;
+  if (!token) return null;
+  try {
+    const url =
+      `https://api.github.com/repos/${WIKITOM_REPO}/commits` +
+      `?since=${new Date(since).toISOString()}&until=${new Date(until).toISOString()}` +
+      `&per_page=${WIKITOM_COMMIT_CAP}`;
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "tts-digest",
+      },
+    });
+    if (!res.ok) {
+      console.error(`TTS digest: WikiTom commits unreadable (${res.status})`);
+      return null;
+    }
+    const body = (await res.json()) as unknown;
+    if (!Array.isArray(body)) {
+      console.error("TTS digest: WikiTom commits response is not a list");
+      return null;
+    }
+    return body.map((entry) => {
+      const e = (entry ?? {}) as {
+        sha?: unknown;
+        html_url?: unknown;
+        commit?: { message?: unknown; author?: { name?: unknown } };
+        author?: { login?: unknown };
+      };
+      const sha = typeof e.sha === "string" ? e.sha : "";
+      const message =
+        typeof e.commit?.message === "string" ? e.commit.message.split("\n")[0] : "";
+      const author =
+        (typeof e.commit?.author?.name === "string" ? e.commit.author.name : "") ||
+        (typeof e.author?.login === "string" ? e.author.login : "") ||
+        "unknown author";
+      return {
+        sha,
+        message,
+        author,
+        url:
+          typeof e.html_url === "string"
+            ? e.html_url
+            : `https://github.com/${WIKITOM_REPO}/commit/${sha}`,
+      };
+    });
+  } catch (err) {
+    console.error(
+      `TTS digest: WikiTom commit read error: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
+}
+
 
 // ── Session event messages (todo tts-session-needs-you-notify) ───────────────
 // The OUTBOUND half of spec §7's two-way event messages: one Slack line the
@@ -185,10 +321,9 @@ export const sendDigest = internalAction({
 export const internalSessionEventMessage = internalAction({
   args: { sessionId: v.id("claudeSessions"), text: v.string() },
   handler: async (ctx, { sessionId, text }) => {
-    // Tom 2026-08-29: outbound Slack is OFF — Slack is inbound dump only until the messaging shape is redesigned.
     // Callers still SCHEDULE this action on their edge transitions (the trigger
-    // wiring is what the tests cover); it just posts nothing.
-    if (!OUTBOUND_SLACK_ENABLED) return;
+    // wiring is what the tests cover); it posts nothing while the switch is off.
+    if (!SESSION_EVENT_MESSAGES_ENABLED) return;
     // The link is the point: the message says what happened, the URL is where
     // to act on it.
     await postSlack(ctx, {
@@ -197,103 +332,6 @@ export const internalSessionEventMessage = internalAction({
     });
   },
 });
-
-function composeFallbackDigest(
-  day: string,
-  row: Doc<"dtsDailyQueues"> | null,
-  todos: Doc<"dtsTodos">[],
-  now: number,
-  awaitingRulingCount: number,
-): string {
-  const byId = new Map(todos.map((t) => [t._id, t]));
-  const lines: string[] = [`*TTS digest — ${day}*`];
-
-  const active = todos.filter((t) => t.status === "active");
-  const dated = active
-    .filter((t) => t.dueAt !== undefined)
-    .sort((a, b) => (a.dueAt ?? 0) - (b.dueAt ?? 0));
-  if (dated.length > 0) {
-    lines.push("", "*Dated:*");
-    for (const t of dated) {
-      lines.push(
-        `• <${ttsItemLink(t._id)}|${t.statement}> — ${countdownText(t.dueAt ?? now, now)}`,
-      );
-    }
-  }
-
-  const queueTodos = (row?.entries ?? []).flatMap((e) => {
-    const todo = byId.get(e.todoId);
-    // Dated items are already listed above.
-    return todo && todo.dueAt === undefined ? [{ todo, reason: e.reason }] : [];
-  });
-  if (queueTodos.length > 0) {
-    // Explicit ?tab=calendar — bare /tts lands on the batches tab (default).
-    lines.push(
-      "",
-      "*Today's queue* (also on <https://tom.quest/tts?tab=calendar|the calendar tab>):",
-    );
-    for (const { todo, reason } of queueTodos) {
-      // Every reminder carries its entry action (spec §9) and a direct link.
-      const entry = todo.entryAction ? ` — ${todo.entryAction}` : "";
-      lines.push(
-        `• <${ttsItemLink(todo._id)}|${todo.statement}>${entry}${reason ? ` _(${reason})_` : ""}`,
-      );
-    }
-  }
-
-  // Tom-gate items surface on the batches tab (the /tts default tab), where
-  // they sit as batches awaiting a ruling or as unbatched singletons.
-  // A todo claimed as a member of a non-terminal batch does not count on its
-  // own — the batch row is the unit awaiting the ruling (mirrors selectBatches
-  // client-side); the batch row itself still counts.
-  const claimed = new Set<string>();
-  for (const t of todos) {
-    if (t.members === undefined) continue;
-    if (t.status !== "active" && t.status !== "waiting") continue;
-    for (const m of t.members) {
-      if (m.todoId !== undefined) claimed.add(m.todoId);
-    }
-  }
-  const atGate = todos.filter(
-    (t) =>
-      t.status === "active" &&
-      t.readiness === "ready-for-tom" &&
-      !claimed.has(t._id),
-  );
-  if (atGate.length > 0) {
-    lines.push(
-      "",
-      `*Waiting on you:* ${atGate.length} item${atGate.length === 1 ? "" : "s"} at a tom-gate — <https://tom.quest/tts|the batches tab>`,
-    );
-  }
-  // Briefed code todos with no ruling yet sit next to the tom-gate line — the
-  // same "waiting on you" area, descriptive, no verdicts; same batches-tab
-  // landing (bare /tts defaults there).
-  if (awaitingRulingCount > 0) {
-    lines.push(
-      "",
-      `*Code rulings:* ${awaitingRulingCount} briefed item${awaitingRulingCount === 1 ? "" : "s"} awaiting your ruling — <https://tom.quest/tts|the batches tab>`,
-    );
-  }
-
-  if (
-    dated.length === 0 &&
-    queueTodos.length === 0 &&
-    atGate.length === 0 &&
-    awaitingRulingCount === 0
-  ) {
-    lines.push("", "Nothing today.");
-  }
-
-  const note =
-    row === null
-      ? "_Queue prep did not run — this is the bare fallback digest (worker + fallback both missed)._"
-      : row.preparedBy === "fallback"
-        ? "_Queue prepared by fallback rules (no worker prep arrived)._"
-        : null;
-  if (note) lines.push("", note);
-  return lines.join("\n");
-}
 
 // ── The hourly update (Tom's ruling 2026-08-30) ──────────────────────────────
 // Three parts, in this order, every hour:
@@ -307,9 +345,9 @@ function composeFallbackDigest(
 // any of the three parts still posts "nothing scheduled / no agents / nothing
 // since the last update".
 //
-// ITS OWN SWITCH, deliberately not OUTBOUND_SLACK_ENABLED: Tom turned the 5 a.m.
-// digest off and this is a different message with a different ruling behind it,
-// so turning one on must not turn the other on.
+// ITS OWN SWITCH (see the per-kind switches at the top): a different message
+// with a different ruling behind it, so turning the digest on did not turn
+// this on.
 const HOURLY_UPDATE_ENABLED: boolean = false;
 
 // The window's own bookkeeping. A dtsEvents row is written after each send, and
@@ -321,14 +359,6 @@ const HOURLY_UPDATE_SENT = "hourly-update-sent";
 // The first run has no marker to read back. One hour, so a fresh deployment's
 // first update is an ordinary one rather than a dump of all history.
 const HOURLY_UPDATE_FIRST_WINDOW_MS = 60 * 60 * 1000;
-
-function hhmm(at: number): string {
-  const offset = nyOffsetHours(at);
-  const d = new Date(at + offset * 3_600_000);
-  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(
-    d.getUTCMinutes(),
-  ).padStart(2, "0")}`;
-}
 
 export const sendHourlyUpdate = internalAction({
   args: { force: v.optional(v.boolean()) },
@@ -355,11 +385,11 @@ export const sendHourlyUpdate = internalAction({
     const scheduleLines = [
       ...blocks.map(
         (b) =>
-          `- ${hhmm(b.start)}–${hhmm(b.end)} ${
+          `- ${nyHhmm(b.start)}–${nyHhmm(b.end)} ${
             b.statement ?? b.category ?? b.note ?? "block"
           }`,
       ),
-      ...events.map((e) => `- ${hhmm(e.start)}–${hhmm(e.end)} ${e.title}`),
+      ...events.map((e) => `- ${nyHhmm(e.start)}–${nyHhmm(e.end)} ${e.title}`),
     ];
 
     // ── (b) Every agent currently working on TTS ─────────────────────────────
@@ -394,7 +424,7 @@ export const sendHourlyUpdate = internalAction({
     }
 
     const text = [
-      `*TTS — ${hhmm(now)}*`,
+      `*TTS — ${nyHhmm(now)}*`,
       ``,
       `*Now*`,
       ...(scheduleLines.length > 0 ? scheduleLines : ["- nothing scheduled"]),
@@ -409,7 +439,7 @@ export const sendHourlyUpdate = internalAction({
           )
         : ["- none"]),
       ``,
-      `*Since ${hhmm(since)}*`,
+      `*Since ${nyHhmm(since)}*`,
       ...(counts.size > 0
         ? [...counts].map(([label, n]) => `- ${label}: ${n}`)
         : ["- nothing"]),
