@@ -237,42 +237,6 @@ http.route({
   handler: ttsCalendarEvent,
 });
 
-// POST /tts/slack-replied — the worker reports that it posted its ONE threaded
-// reply to the #dump message a todo came from. Body: { id, replyTs? }. Separate
-// from /tts/prepare-todo because the reply happens AFTER preparation lands: the
-// reply names the brief, so it cannot be written before there is one.
-const ttsSlackReplied = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.id !== "string" || b.id === "") {
-    return jsonResponse(400, { error: "id (non-empty string) required" });
-  }
-  try {
-    const result = await ctx.runMutation(internal.ttsSlack.internalMarkSlackReplied, {
-      id: b.id,
-      replyTs: typeof b.replyTs === "string" ? b.replyTs : undefined,
-    });
-    return jsonResponse(200, { ok: true, ...result });
-  } catch (e) {
-    return jsonResponse(400, {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
-});
-
-http.route({
-  path: "/tts/slack-replied",
-  method: "POST",
-  handler: ttsSlackReplied,
-});
-
 // ── POST /slack/events — Slack PUSHES #dump messages to TTS ──────────────────
 // Tom's ruling 2026-08-30: Slack pushes instead of TTS polling every two
 // minutes. worker/jobs/poll-dump.mjs STAYS as the reconciliation backstop

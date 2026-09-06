@@ -158,9 +158,9 @@ describe("the reply at capture", () => {
     expect(sends[0].text).not.toContain("\n");
   });
 
-  // witness: drop the todo patch from recordSlackSent and prepare-life-todos
-  // posts a second reply under every message.
-  it("the door records the send and stamps slackReplyTs, so the worker stays quiet", async () => {
+  // witness: let recordSlackSent re-stamp slackReplyTs on every send in the
+  // thread and the todo stops pointing at the reply that exists in Slack.
+  it("the door records the send and stamps slackReplyTs once", async () => {
     const calls = slackAccepts();
     const t = convexTest(schema, modules);
     // Inserted directly: a capture would schedule the door itself, and this
@@ -198,12 +198,16 @@ describe("the reply at capture", () => {
       ts: "9000.1",
       subject: { kind: "todo", id },
     });
-    // The worker's pen, arriving late, does not re-point the first reply.
-    const late = await t.mutation(internal.ttsSlack.internalMarkSlackReplied, {
-      id,
-      replyTs: "9999.9",
+    // A later send in the same thread (a thread notice) is recorded, but the
+    // todo keeps pointing at the reply that exists first in Slack.
+    await t.mutation(internal.ttsSlack.internalRecordSlackSent, {
+      channel: DUMP,
+      ts: "9999.9",
+      threadTs: "1700000000.000200",
+      subject: { kind: "todo", id },
+      text: "a later notice",
     });
-    expect(late.alreadyReplied).toBe(true);
+    expect(await events(t, "slack-sent")).toHaveLength(2);
     expect((await t.run(async (ctx) => ctx.db.get(id)))?.slackReplyTs).toBe("9000.1");
   });
 
@@ -230,20 +234,6 @@ describe("the reply at capture", () => {
     });
   });
 
-  it("the worker's reply pen records the same slack-sent row a Convex send does", async () => {
-    const t = convexTest(schema, modules);
-    const id = await t.mutation(internal.tts.internalCapture, {
-      statement: "worker replied",
-      source: "slack-capture",
-      slackChannel: DUMP,
-      slackTs: "1700000000.000300",
-    });
-    await t.mutation(internal.ttsSlack.internalMarkSlackReplied, { id, replyTs: "1700000001.1" });
-    const sent = await events(t, "slack-sent");
-    expect(sent).toHaveLength(1);
-    expect(sent[0].key).toBe(slackThreadKey(DUMP, "1700000000.000300"));
-    expect(sent[0].data).toMatchObject({ subject: { kind: "todo", id } });
-  });
 });
 
 describe("threaded replies from Tom", () => {

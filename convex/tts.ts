@@ -1454,7 +1454,9 @@ export const internalCapture = internalMutation({
     // above — so a Slack retry, which returns the existing id, never
     // schedules a second one, and no reply exists for a capture that rolled
     // back. The door (ttsSync.sendSlack) records the send and stamps
-    // slackReplyTs; prepare-life-todos.mjs reads that stamp and stays quiet.
+    // slackReplyTs. This is the ONE reply a #dump message gets: no worker
+    // posts its own (a second sender reading a stale copy of the stamp is how
+    // a message got two replies), and a refused send is a recorded failure.
     if (slackChannel !== undefined && slackTs !== undefined) {
       await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
         channel: slackChannel,

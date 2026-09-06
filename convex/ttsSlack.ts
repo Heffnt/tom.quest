@@ -105,36 +105,6 @@ export const internalRecordSlackFailed = internalMutation({
   },
 });
 
-// The worker's reply pen (POST /tts/slack-replied): prepare-life-todos.mjs
-// posted its one threaded reply and records it here. The same first-reply-only
-// rule as recordSlackSent, which it goes through — so a worker send leaves the
-// same "slack-sent" row as a Convex send.
-export const internalMarkSlackReplied = internalMutation({
-  args: { id: v.string(), replyTs: v.optional(v.string()) },
-  handler: async (ctx, { id, replyTs }) => {
-    const normalized = ctx.db.normalizeId("dtsTodos", id);
-    const todo = normalized && (await ctx.db.get(normalized));
-    if (!todo) throw new Error(`Unknown todo id: ${id}`);
-    if (todo.slackRepliedAt !== undefined) return { alreadyReplied: true };
-    if (todo.slackChannel !== undefined && replyTs !== undefined) {
-      await recordSlackSent(ctx, {
-        channel: todo.slackChannel,
-        ts: replyTs,
-        threadTs: todo.slackTs,
-        subject: { kind: "todo", id: todo._id },
-        text: "(posted by prepare-life-todos.mjs)",
-      });
-    } else {
-      // No coordinates to key a thread on: stamp the guard and nothing else.
-      await ctx.db.patch(todo._id, {
-        slackRepliedAt: Date.now(),
-        slackReplyTs: replyTs,
-      });
-    }
-    return { alreadyReplied: false };
-  },
-});
-
 // ── "done" or a bare date: the time-note path ────────────────────────────────
 // A reply on a todo or digest thread that says ONLY a date, or only "done",
 // is a time note (dtsTimeNotes), not a fact: worker/jobs/apply-time-notes.mjs

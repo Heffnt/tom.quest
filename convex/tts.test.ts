@@ -385,34 +385,6 @@ describe("TTS todos", () => {
     expect(after).toHaveLength(3);
   });
 
-  // Tom's ruling is EXACTLY ONE reply per #dump message, and this job
-  // re-prepares on --force and on every revise ruling.
-  // witness: drop the `slackRepliedAt !== undefined` early return from
-  // internalMarkSlackReplied and the second stamp overwrites the first, losing
-  // the ts of the reply that actually exists in Slack.
-  it("records the threaded reply once and never re-points it", async () => {
-    const t = convexTest({ schema, modules });
-    const id = await t.mutation(internal.tts.internalCapture, {
-      statement: "reply to me",
-      source: "slack-capture",
-      slackChannel: "C0DUMP",
-      slackTs: "111.000001",
-    });
-    const first = await t.mutation(internal.ttsSlack.internalMarkSlackReplied, {
-      id,
-      replyTs: "222.000002",
-    });
-    expect(first.alreadyReplied).toBe(false);
-    const second = await t.mutation(internal.ttsSlack.internalMarkSlackReplied, {
-      id,
-      replyTs: "333.000003",
-    });
-    expect(second.alreadyReplied).toBe(true);
-    const todo = await t.run(async (ctx) => ctx.db.get(id));
-    expect(todo?.slackReplyTs).toBe("222.000002");
-    expect(todo?.slackRepliedAt).toBeDefined();
-  });
-
   // witness: make internalPrepareTodo patch `statement` too, and the
   // preserved-statement assertion below goes red.
   it("preparer attaches fields and advances readiness without touching intent", async () => {

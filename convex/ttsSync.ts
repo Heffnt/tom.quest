@@ -33,8 +33,9 @@ const SLACK_POST_URL = "https://slack.com/api/chat.postMessage";
 // caller has to remember: a message names its subject; a delivered message is
 // recorded as a dtsEvents "slack-sent" row (channel, ts, thread, subject,
 // text) so Tom's threaded reply can be routed back to what it answers; a
-// refused one is recorded as "slack-send-failed". The worker's own reply
-// (prepare-life-todos.mjs) records through POST /tts/slack-replied instead.
+// refused one is recorded as "slack-send-failed". No worker posts to Slack on
+// its own: the capture is the one replier to a #dump message, and a refused
+// reply stays a recorded failure rather than a second sender's turn.
 //
 // Missing env is log-and-return (ruling digest-env-missing-is-quiet,
 // vqc/adoption.md, 2026-08-27). The channel defaults to #tts.
