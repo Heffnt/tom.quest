@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import {
+  DIGEST_MAX_CHARS,
   DIGEST_SENT,
   ITEM_TEXT_CHARS,
   LEARNING_CHANGE,
@@ -57,14 +58,14 @@ const emptyFacts = (): DigestFacts => ({
 
 describe("composeDigest", () => {
   it("always carries the first section and omits every empty one", () => {
-    const text = composeDigest(emptyFacts());
+    const { text } = composeDigest(emptyFacts());
     expect(text).toBe(
       ["*TTS digest — 2026-09-05*", "", "*Due and overdue*", "- nothing"].join("\n"),
     );
   });
 
   it("lists every WikiTom commit with its author", () => {
-    const text = composeDigest({
+    const { text } = composeDigest({
       ...emptyFacts(),
       wikitom: [
         {
@@ -84,16 +85,16 @@ describe("composeDigest", () => {
   // An unreadable repo is not the same fact as a quiet one, so the section
   // stays and says which it is.
   it("says so when WikiTom cannot be read, and omits the section when it is quiet", () => {
-    expect(composeDigest({ ...emptyFacts(), wikitom: null })).toContain(
+    expect(composeDigest({ ...emptyFacts(), wikitom: null }).text).toContain(
       WIKITOM_UNREADABLE,
     );
-    expect(composeDigest(emptyFacts())).not.toContain("WikiTom");
+    expect(composeDigest(emptyFacts()).text).not.toContain("WikiTom");
   });
 
   it("orders the sections and links every item", () => {
     const yesterdayNoon = Date.UTC(2026, 8, 4, 16);
     const todayNoon = Date.UTC(2026, 8, 5, 16);
-    const text = composeDigest({
+    const { text } = composeDigest({
       ...emptyFacts(),
       due: [
         { id: "t2", statement: "call the bank", dueAt: todayNoon, entryAction: "dial 555" , missed: false },
@@ -171,7 +172,7 @@ describe("composeDigest", () => {
     const long =
       "Rework the credential file helper so the one-time auth path writes the minted values to an owner-only file and prints only that file's path and the variable names, because an agent session stores its own standard output and a printed token is a leaked token forever afterwards.";
     expect(long.length).toBeGreaterThan(260);
-    const text = composeDigest({
+    const { text } = composeDigest({
       ...emptyFacts(),
       ready: [{ id: "t1", statement: long }],
     });
@@ -199,7 +200,7 @@ describe("composeDigest", () => {
   });
 
   it("cuts the entry action the same way", () => {
-    const text = composeDigest({
+    const { text } = composeDigest({
       ...emptyFacts(),
       ready: [
         {
@@ -218,7 +219,7 @@ describe("composeDigest", () => {
   // A section is a morning read, not the list: past the cap it names the count
   // and links to the tab of the /tts page where the rest is read.
   it("prints twelve items and then the count line", () => {
-    const text = composeDigest({
+    const { text } = composeDigest({
       ...emptyFacts(),
       ready: Array.from({ length: 30 }, (_, i) => ({
         id: `t${i}`,
@@ -239,7 +240,7 @@ describe("composeDigest", () => {
   // What the cap drops is the NEWEST date: an item three weeks late is the one
   // the morning has to name.
   it("orders due and overdue longest-overdue first, so the cut is the newest", () => {
-    const text = composeDigest({
+    const { text } = composeDigest({
       ...emptyFacts(),
       due: Array.from({ length: 14 }, (_, i) => ({
         id: `t${i}`,
@@ -260,7 +261,7 @@ describe("composeDigest", () => {
 
   // The batch headings are not items: the cap counts the events under them.
   it("caps the overnight section across its batches", () => {
-    const text = composeDigest({
+    const { text } = composeDigest({
       ...emptyFacts(),
       overnight: Array.from({ length: 20 }, (_, i) => ({
         batch: i < 8 ? "the lease" : "the move",
@@ -276,7 +277,7 @@ describe("composeDigest", () => {
   // Job failures, WikiTom commits and model-of-Tom lines are not on the /tts
   // page, so their count line links nowhere rather than somewhere wrong.
   it("counts without a link for the sections the page does not hold", () => {
-    const text = composeDigest({
+    const { text } = composeDigest({
       ...emptyFacts(),
       failures: Array.from({ length: 15 }, (_, i) => ({
         at: FIVE_AM - i * 60_000,
@@ -288,7 +289,7 @@ describe("composeDigest", () => {
   });
 
   it("escapes Slack's reserved characters in statements", () => {
-    const text = composeDigest({
+    const { text } = composeDigest({
       ...emptyFacts(),
       ready: [{ id: "t1", statement: "a <b> & c" }],
     });
@@ -320,6 +321,81 @@ describe("provenanceText", () => {
   });
 });
 
+// Slack cuts a message over 4,000 characters into several, which is how the
+// first live digest arrived as ten. The whole composition is capped below that
+// and the reduction is recorded, so a week of digests can say how often the
+// morning did not fit.
+describe("one Slack message", () => {
+  const statement = (i: number) =>
+    `Item ${i}: rework the credential helper so the one-time auth path writes the minted values to an owner-only file and prints only that file's path and the variable names, because an agent session stores its own standard output.`;
+
+  it("reduces the sections after the first and flags the digest", () => {
+    const many = (n: number, from = 0) =>
+      Array.from({ length: n }, (_, i) => ({
+        id: `t${from + i}`,
+        statement: statement(from + i),
+      }));
+    const { text, truncated } = composeDigest({
+      ...emptyFacts(),
+      due: many(30).map((x, i) => ({ ...x, dueAt: FIVE_AM - (30 - i) * DAY, missed: true })),
+      emailCaptures: many(30, 100),
+      ready: many(30, 200),
+      failures: Array.from({ length: 30 }, (_, i) => ({
+        at: FIVE_AM - i * 60_000,
+        text: statement(i),
+      })),
+    });
+    expect(truncated).toBe(true);
+    expect(text.length).toBeLessThanOrEqual(DIGEST_MAX_CHARS);
+    // The first section keeps its twelve items; a reduced one is its header
+    // and one count line.
+    const lines = text.split("\n");
+    const due = lines.slice(lines.indexOf("*Due and overdue*") + 1);
+    expect(due.filter((l) => l.startsWith("- <https://tom.quest/tts?item="))).toHaveLength(
+      SECTION_ITEM_CAP,
+    );
+    const ready = lines.indexOf("*Ready for you*");
+    expect(lines[ready + 1]).toBe(
+      `- <${ttsTabLink("by-individual")}|+30 more on the page>`,
+    );
+    expect(lines[ready + 2]).toBe("");
+  });
+
+  // The morning that broke: about sixty due-and-overdue items, most of them
+  // code todos with 300-character statements.
+  it("fits the 2026-09-06 shape in one message", () => {
+    const { text, truncated } = composeDigest({
+      ...emptyFacts(),
+      due: Array.from({ length: 60 }, (_, i) => ({
+        id: `t${i}`,
+        statement: statement(i),
+        entryAction: `open the file and read the helper before touching it, ${i}`,
+        dueAt: FIVE_AM - (60 - i) * DAY,
+        missed: true,
+      })),
+      overnight: Array.from({ length: 20 }, (_, i) => ({
+        batch: "the credential round",
+        text: `session completed: run ${i}`,
+      })),
+      ready: Array.from({ length: 8 }, (_, i) => ({
+        id: `r${i}`,
+        statement: statement(i),
+      })),
+      wikitom: null,
+    });
+    // One message, where the morning of 2026-09-06 was ten.
+    expect(text.length).toBeLessThanOrEqual(DIGEST_MAX_CHARS);
+    // Due and overdue is never the section that gets reduced: twelve items and
+    // the count line, whatever else had to go.
+    const lines = text.split("\n");
+    const due = lines.slice(lines.indexOf("*Due and overdue*") + 1);
+    expect(due.filter((l) => l.includes("tts?item="))).toHaveLength(SECTION_ITEM_CAP);
+    expect(text).toContain(`- <${ttsTabLink("by-individual")}|+48 more on the page>`);
+    // The two item caps left it just over, so the tail sections gave way too.
+    expect(truncated).toBe(true);
+  });
+});
+
 // The digest is how Tom catches a misread sentence, so the quotation marks
 // hold HIS words only: provenance.quote (the sentence the route verified
 // against his turn). The ruling's own sentence — the redirect an agent acts
@@ -327,7 +403,7 @@ describe("provenanceText", () => {
 // r.redirect between the quotation marks, or drop the quote from the line.
 describe("rulings from Tom's words in the digest", () => {
   it("prints the quote as the quotation and the redirect separately", () => {
-    const text = composeDigest({
+    const { text } = composeDigest({
       ...emptyFacts(),
       rulings: [
         {
@@ -863,13 +939,61 @@ describe("sendDigest", () => {
     // The digest's own row carries the day and where the window ended.
     const marked = events.filter((e) => e.kind === DIGEST_SENT);
     expect(marked).toHaveLength(1);
-    expect(marked[0].data).toMatchObject({ day: DAY_KEY });
+    expect(marked[0].data).toMatchObject({ day: DAY_KEY, truncated: false });
     expect((marked[0].data as { windowEnd: number }).windowEnd).toBe(Date.now());
     expect(events.some((e) => e.kind === "surfaced" && e.todoId === late)).toBe(true);
 
     // The same day again: the digest-sent row is the dedupe key, nothing posts.
     await t.action(internal.ttsSync.sendDigest, {});
     expect(slack).toHaveLength(1);
+  });
+
+  // The morning of 2026-09-06: about sixty due-and-overdue items, most of them
+  // code todos. Slack cut that digest into ten messages; it is one now, and the
+  // row says the sections were reduced to fit.
+  it("posts one message for a sixty-item morning and records the truncation", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    const long =
+      "Rework the credential file helper so the one-time auth path writes the minted values to an owner-only file and prints only that file's path and the variable names, because an agent session stores its own standard output and a printed token is a leaked token forever afterwards.";
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 60; i++) {
+        await ctx.db.insert("dtsTodos", {
+          statement: `${i}: ${long}`,
+          entryAction: `open the file and read the helper before touching it, ${i}`,
+          status: "active",
+          readiness: "unprepared",
+          timingClass: "dated",
+          source: "tom",
+          dueAt: FIVE_AM - (60 - i) * DAY,
+          createdAt: FIVE_AM - 90 * DAY,
+          updatedAt: FIVE_AM - 90 * DAY,
+        });
+      }
+      for (let i = 0; i < 30; i++) {
+        await ctx.db.insert("dtsTodos", {
+          statement: `ready ${i}: ${long}`,
+          status: "active",
+          readiness: "ready-for-tom",
+          timingClass: "whenever",
+          source: "tom",
+          createdAt: FIVE_AM - 90 * DAY,
+          updatedAt: FIVE_AM - 90 * DAY,
+        });
+      }
+    });
+    const { slack } = stubSlack({ ok: true, ts: "1" });
+
+    await t.action(internal.ttsSync.sendDigest, {});
+
+    expect(slack).toHaveLength(1);
+    expect(slack[0].body.text.length).toBeLessThanOrEqual(DIGEST_MAX_CHARS);
+    const events = await tom.query(api.tts.listRecentEvents, {});
+    const marked = events.filter((e) => e.kind === DIGEST_SENT);
+    expect(marked).toHaveLength(1);
+    expect(marked[0].data).toMatchObject({ day: DAY_KEY, truncated: true });
   });
 
   it("stays quiet before 5 a.m., when the day key still names yesterday", async () => {

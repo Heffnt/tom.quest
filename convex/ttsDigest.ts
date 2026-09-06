@@ -416,8 +416,35 @@ function render(day: string, sections: Section[]): string {
   return lines.join("\n");
 }
 
-export function composeDigest(f: DigestFacts): string {
-  return render(f.day, digestSections(f));
+// ── One Slack message ────────────────────────────────────────────────────────
+// Slack takes 4,000 characters in a message and cuts what is longer into more
+// of them: the first live digest (2026-09-06) arrived as TEN. The two caps
+// above make that unlikely; this one makes it impossible. Composition is
+// finished first, and if the whole thing is still over DIGEST_MAX_CHARS the
+// sections are reduced to their count line from the LAST one back — due and
+// overdue, the first, is never reduced, and the sections nearest it are the
+// ones Tom reads. `truncated` travels to the "digest-sent" row so a week of
+// digests can say how often the morning did not fit.
+export const DIGEST_MAX_CHARS = 3_900;
+
+export function composeDigest(f: DigestFacts): {
+  text: string;
+  truncated: boolean;
+} {
+  const sections = digestSections(f);
+  let text = render(f.day, sections);
+  if (text.length <= DIGEST_MAX_CHARS) return { text, truncated: false };
+  for (let i = sections.length - 1; i >= 1; i--) {
+    const s = sections[i];
+    if (s.lines.length <= 1) continue; // already one line, or none
+    sections[i] = { ...s, lines: [moreLine(s.count, s.tab)] };
+    text = render(f.day, sections);
+    if (text.length <= DIGEST_MAX_CHARS) return { text, truncated: true };
+  }
+  // Every section but the first reduced and still over: the first section alone
+  // is longer than a Slack message, so it is cut at the character. Twelve items
+  // cannot reach this today; a change to SECTION_ITEM_CAP could.
+  return { text: `${text.slice(0, DIGEST_MAX_CHARS - 1)}…`, truncated: true };
 }
 
 // ── Gathering the facts ──────────────────────────────────────────────────────
@@ -846,8 +873,12 @@ export const internalComposeDigest = internalQuery({
   handler: async (ctx, { day, now, since: givenSince, wikitom }) => {
     const since = givenSince ?? (await digestWindowStart(ctx, now));
     const facts = await gatherDigestFacts(ctx, { day, now, since, wikitom });
+    const { text, truncated } = composeDigest(facts);
     return {
-      text: composeDigest(facts),
+      text,
+      // Whether sections were reduced to a count line to fit one Slack
+      // message; the sender records it on the "digest-sent" row.
+      truncated,
       since,
       // Every todo the digest showed, for the "surfaced" instrumentation.
       surfacedTodoIds: [
