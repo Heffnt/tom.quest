@@ -188,11 +188,17 @@ describe("a turn Tom typed carries its inbound row id to the model", () => {
   });
   // witness: record row.text in finalizeRow instead of the delivered text.
   // The transcript principle: what the agent saw is what is recorded, so the
-  // user row carries the id line the model received.
+  // user row carries the id line the model received — through the same
+  // cut-with-overflow path as every other payload, because the opening turn
+  // is the mission prompt with the model-of-Tom files in front of it and the
+  // model gets ALL of it.
   it("the delivery records, pushes, and dedupes the echo on the same delivered text", () => {
     const deliver = between(sessionSource, "async #deliverUserTurn(row)", "} catch (err) {");
     expect(deliver).toMatch(/const delivered = deliveredTurnText\(row\)/);
-    expect(deliver).toMatch(/finalizeRow\("user", \{ text: delivered \}\)/);
+    expect(deliver).toMatch(/const cut = cutWithOverflow\(delivered\)/);
+    expect(deliver).toMatch(/finalizeRow\(\s*"user",/);
+    expect(deliver).toMatch(/text: cut\.value,/);
+    expect(deliver).toMatch(/cut\.overflow,/);
     expect(deliver).not.toMatch(/finalizeRow\("user", \{ text: row\.text/);
     expect(deliver).toMatch(/this\.activeUserTurnText = delivered/);
     expect(deliver).toMatch(/this\.queue\.push\(delivered\)/);

@@ -158,6 +158,11 @@ export const getSession = query({
 
 // Finalized transcript, seq-ascending, paginated — history rows never change,
 // so pages are cache-friendly forever.
+//
+// Every row says whether the 32KB cut hid anything (`hasOverflow`) and how
+// many bytes the whole payload is (`fullByteLength`), so the page can offer an
+// expand without fetching a single oversized payload to find out. The bytes
+// themselves come from getMessageOverflow below, one message at a time.
 export const getMessages = query({
   args: {
     sessionId: v.id("claudeSessions"),
@@ -165,11 +170,221 @@ export const getMessages = query({
   },
   handler: async (ctx, { sessionId, paginationOpts }) => {
     await requireTomId(ctx);
-    return await ctx.db
+    const page = await ctx.db
       .query("claudeMessages")
       .withIndex("by_session_seq", (q) => q.eq("sessionId", sessionId))
       .order("desc") // newest page first; client reverses within a page
       .paginate(paginationOpts);
+    return {
+      ...page,
+      page: page.page.map((m) => ({
+        ...m,
+        hasOverflow: m.overflow !== undefined,
+        fullByteLength: m.overflow?.byteLength,
+      })),
+    };
+  },
+});
+
+// How much reassembled payload one read returns before it hands back a cursor.
+// A message's overflow can be hundreds of megabytes; a query that collected
+// all of it would simply fail, and silently returning a prefix would be the
+// truncation this whole path exists to undo.
+export const OVERFLOW_READ_BYTES = 1024 * 1024;
+
+// The most chunk rows one read scans: one ranged index scan, bounded at 2MB
+// of documents by the chunk cap below whatever the byte budget says. The
+// budget normally stops the walk first.
+const OVERFLOW_READ_CHUNKS = 8;
+
+// The largest chunk the overflow route accepts — OVERFLOW_CHUNK_BYTES in
+// worker/session-host/overflow.mjs, spelled again here because no import
+// crosses that boundary. Convex caps a document at ~1MB; this keeps a chunk
+// row well inside it and is what bounds every read above.
+export const OVERFLOW_CHUNK_MAX_BYTES = 256 * 1024;
+
+// How many chunk rows one sweep deletes before scheduling itself again: the
+// same 2MB read bound as a page, because a delete reads the document too.
+const OVERFLOW_SWEEP_CHUNKS = 8;
+
+const utf8 = new TextEncoder();
+const utf8Bytes = (text: string) => utf8.encode(text).length;
+
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", utf8.encode(text));
+  return Array.from(new Uint8Array(digest), (b) =>
+    b.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+/** The finalized row at (sessionId, seq), if it has landed. */
+async function messageAt(
+  ctx: QueryCtx,
+  sessionId: Id<"claudeSessions">,
+  seq: number,
+) {
+  return await ctx.db
+    .query("claudeMessages")
+    .withIndex("by_session_seq", (q) =>
+      q.eq("sessionId", sessionId).eq("seq", seq),
+    )
+    .first();
+}
+
+/** One chunk row of a message's complete payload, if it has landed. */
+async function chunkAt(
+  ctx: QueryCtx,
+  sessionId: Id<"claudeSessions">,
+  seq: number,
+  index: number,
+) {
+  return await ctx.db
+    .query("claudeMessageOverflow")
+    .withIndex("by_session_seq_index", (q) =>
+      q.eq("sessionId", sessionId).eq("seq", seq).eq("index", index),
+    )
+    .first();
+}
+
+/**
+ * The complete payload behind one message, chunks reassembled in order.
+ *
+ * `fromIndex` continues a previous read at its `nextIndex`; concatenating the
+ * `text` of every page in order reproduces exactly what the daemon stored.
+ * A page says how many UTF-8 bytes it carries (`bytes`) and whether the walk
+ * reached the last chunk the row names (`end`); `complete` is the stronger
+ * claim, made only when it was checked: the whole payload came back in this
+ * one call, its bytes sum to the row's `byteLength`, and it hashes to the
+ * row's `sha256`. A paged reader gets `end` on its last page and sums `bytes`
+ * against `byteLength` itself — counting chunks would call a hole complete.
+ */
+export type MessageOverflowRead = {
+  /** False = nothing was cut and `content` on the row IS the whole payload. */
+  hasOverflow: boolean;
+  sessionId: Id<"claudeSessions">;
+  seq: number;
+  /** Of the stored text, so a reassembly can be checked against it. */
+  sha256?: string;
+  byteLength?: number;
+  chunkCount?: number;
+  fromIndex: number;
+  /** Where to continue; null = the walk stopped (at the end, or at a hole). */
+  nextIndex: number | null;
+  /** UTF-8 bytes of `text` — what a paged reader sums against `byteLength`. */
+  bytes: number;
+  /** The walk reached the last chunk the row names with no index missing. */
+  end: boolean;
+  /** Read whole in this call AND its bytes and hash match the row's stamp. */
+  complete: boolean;
+  text: string;
+};
+
+async function messageOverflow(
+  ctx: QueryCtx,
+  messageId: Id<"claudeMessages">,
+  fromIndex: number,
+): Promise<MessageOverflowRead | null> {
+  const message = await ctx.db.get(messageId);
+  if (!message) return null;
+  if (!message.overflow) {
+    return {
+      hasOverflow: false,
+      sessionId: message.sessionId,
+      seq: message.seq,
+      fromIndex: 0,
+      nextIndex: null,
+      bytes: 0,
+      end: true,
+      complete: true,
+      text: "",
+    };
+  }
+  const { sha256, byteLength, chunkCount } = message.overflow;
+  const parts: string[] = [];
+  let bytes = 0;
+  let end = false;
+  let nextIndex: number | null = null;
+  let expected = fromIndex;
+  if (Number.isInteger(fromIndex) && fromIndex >= 0 && fromIndex < chunkCount) {
+    // One ranged scan from `fromIndex` up, never one point read per index.
+    const chunks = await ctx.db
+      .query("claudeMessageOverflow")
+      .withIndex("by_session_seq_index", (q) =>
+        q
+          .eq("sessionId", message.sessionId)
+          .eq("seq", message.seq)
+          .gte("index", fromIndex),
+      )
+      .take(OVERFLOW_READ_CHUNKS);
+    for (const chunk of chunks) {
+      if (chunk.index !== expected) break; // a hole — reported, never papered over
+      parts.push(chunk.text);
+      bytes += utf8Bytes(chunk.text);
+      expected += 1;
+      if (expected === chunkCount) {
+        end = true;
+        break;
+      }
+      if (bytes >= OVERFLOW_READ_BYTES) {
+        nextIndex = expected;
+        break;
+      }
+    }
+    // The window was consumed whole with neither the end nor the budget
+    // reached: more chunks may lie past it. A shorter window means the index
+    // simply had no more rows — a hole, and nextIndex stays null.
+    if (
+      !end &&
+      nextIndex === null &&
+      parts.length === chunks.length &&
+      chunks.length === OVERFLOW_READ_CHUNKS
+    ) {
+      nextIndex = expected;
+    }
+  }
+  const text = parts.join("");
+  // Verified, not counted: the stamp's byte length and hash, on the whole.
+  const complete =
+    end && fromIndex === 0 && bytes === byteLength
+      ? (await sha256Hex(text)) === sha256
+      : false;
+  return {
+    hasOverflow: true,
+    sessionId: message.sessionId,
+    seq: message.seq,
+    sha256,
+    byteLength,
+    chunkCount,
+    fromIndex,
+    nextIndex,
+    bytes,
+    end,
+    complete,
+    text,
+  };
+}
+
+// Tom's door: what the sessions page expands a cut row into.
+export const getMessageOverflow = query({
+  args: {
+    messageId: v.id("claudeMessages"),
+    fromIndex: v.optional(v.number()),
+  },
+  handler: async (ctx, { messageId, fromIndex }) => {
+    await requireTomId(ctx);
+    return await messageOverflow(ctx, messageId, fromIndex ?? 0);
+  },
+});
+
+// The daemon's door (no identity): the same body behind the session-host key,
+// for the archive sweep that writes raw transcripts into WikiTom.
+export const internalMessageOverflow = internalQuery({
+  args: {
+    messageId: v.id("claudeMessages"),
+    fromIndex: v.optional(v.number()),
+  },
+  handler: async (ctx, { messageId, fromIndex }) => {
+    return await messageOverflow(ctx, messageId, fromIndex ?? 0);
   },
 });
 
@@ -487,6 +702,10 @@ export const internalTranscriptPage = internalQuery({
         kind: m.kind,
         content: m.content,
         parentToolUseId: m.parentToolUseId,
+        // Metadata only, as on the browser's rows: the fork's transcript file
+        // renders the cut, and this says what the cut hid and how to ask for
+        // it (claudeMessageOverflow under this sessionId + seq).
+        overflow: m.overflow,
         createdAt: m.createdAt,
       })),
       // null, not the cursor, on the last page: the daemon's loop stops on it.
@@ -1278,6 +1497,32 @@ export const internalIngest = internalMutation({
           // Subagent parentage: on a tool-call emitted inside a running Task
           // subagent, the parent Task's toolUseId.
           parentToolUseId: v.optional(v.string()),
+          // The 32KB cut fired and the complete payload is in
+          // claudeMessageOverflow under this (sessionId, seq): the daemon
+          // holds a row back from the flush until its last chunk has been
+          // acknowledged (OverflowQueue in worker/session-host/overflow.mjs),
+          // so a stamped row always follows its chunks. Metadata only — the
+          // bytes never ride the ingest body.
+          overflow: v.optional(
+            v.object({
+              sha256: v.string(),
+              byteLength: v.number(),
+              chunkCount: v.number(),
+            }),
+          ),
+        }),
+      ),
+    ),
+    // Complete payloads the daemon could NOT store (a permanent rejection, or
+    // retries spent). Each becomes a dtsEvents row naming the file on the box
+    // that still holds the bytes — a payload is never dropped in silence.
+    overflowFailures: v.optional(
+      v.array(
+        v.object({
+          seq: v.number(),
+          error: v.string(),
+          path: v.optional(v.string()),
+          byteLength: v.optional(v.number()),
         }),
       ),
     ),
@@ -1336,7 +1581,19 @@ export const internalIngest = internalMutation({
     if (args.finalize && args.finalize.length > 0) {
       let maxSeq = session.nextSeq - 1;
       for (const row of args.finalize) {
-        if (row.seq < session.nextSeq) continue; // retry replay — drop
+        if (row.seq < session.nextSeq) {
+          // Retry replay — drop. A retry's twin already landed under this seq
+          // with the same stamp, and the chunks are the twin's; only when the
+          // landed row carries NO stamp (a seq collision, not a retry) do the
+          // chunks this replay uploaded belong to nothing, and get swept.
+          if (row.overflow) {
+            const landed = await messageAt(ctx, args.sessionId, row.seq);
+            if (!landed?.overflow) {
+              await sweepMessageOverflow(ctx, args.sessionId, row.seq);
+            }
+          }
+          continue;
+        }
         await ctx.db.insert("claudeMessages", {
           sessionId: args.sessionId,
           seq: row.seq,
@@ -1344,11 +1601,26 @@ export const internalIngest = internalMutation({
           kind: row.kind,
           content: row.content,
           parentToolUseId: row.parentToolUseId,
+          overflow: row.overflow,
           createdAt: now,
         });
         if (row.seq > maxSeq) maxSeq = row.seq;
       }
       patch.nextSeq = maxSeq + 1;
+    }
+
+    // A complete payload that never reached storage is a hole in the record,
+    // so it is recorded as one: the transcript already carries the daemon's
+    // error row, and this is the event the digest and the weekly gather read.
+    for (const failure of args.overflowFailures ?? []) {
+      await logEvent(ctx, "session-overflow-unstored", session.todoId, {
+        sessionId: args.sessionId,
+        title: session.title,
+        seq: failure.seq,
+        error: failure.error,
+        path: failure.path,
+        byteLength: failure.byteLength,
+      });
     }
 
     // Terminal sessions (forceClose is browser-owned) accept FINALIZE rows —
@@ -1543,6 +1815,173 @@ export const internalIngest = internalMutation({
       pendingInbound,
       decisions,
     };
+  },
+});
+
+// ── Internal: overflow chunks (the complete payload) ─────────────────────────
+// One chunk of one message's full payload, ≤256KB, behind POST
+// /sessions/overflow. Each chunk is its own mutation: nothing here is inside
+// internalIngest's transaction. The ordering — chunks first, then the row that
+// names them — is the daemon's to keep, and it keeps it by holding the row out
+// of the flush until the last chunk is acknowledged (OverflowQueue in
+// worker/session-host/overflow.mjs). A row whose upload failed lands with no
+// `overflow` stamp, its failure arrives as an overflowFailures entry above,
+// and reingest-overflow.mjs on the box later uploads the chunks again and
+// stamps the row through internalStampOverflow below.
+//
+// Upsert by (sessionId, seq, index): the daemon retries blindly, and a
+// re-sent chunk must overwrite rather than double the payload. A chunk is
+// REFUSED — { ok: false, reason }, which the route returns as 409 so the
+// daemon stops re-sending it — when its shape is wrong or when a row already
+// stamped under this seq names a different chunkCount: that chunk is not part
+// of the payload the row promises, and storing it would corrupt one.
+
+/** A refusal's shape, and the one place the reason is logged (never text). */
+function refuseOverflow(
+  reason: string,
+  where: { sessionId: Id<"claudeSessions">; seq: number; index?: number },
+) {
+  console.warn(
+    `overflow refused: ${reason} (session ${where.sessionId}, seq ${where.seq}` +
+      (where.index === undefined ? ")" : `, chunk ${where.index})`),
+  );
+  return { ok: false as const, reason };
+}
+
+export const internalIngestOverflow = internalMutation({
+  args: {
+    sessionId: v.id("claudeSessions"),
+    seq: v.number(),
+    index: v.number(),
+    chunkCount: v.number(),
+    text: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await getSessionOrThrow(ctx, args.sessionId);
+    const where = { sessionId: args.sessionId, seq: args.seq, index: args.index };
+    if (
+      !Number.isInteger(args.seq) ||
+      args.seq < 0 ||
+      !Number.isInteger(args.chunkCount) ||
+      args.chunkCount < 1 ||
+      !Number.isInteger(args.index) ||
+      args.index < 0 ||
+      args.index >= args.chunkCount
+    ) {
+      return refuseOverflow("malformed chunk", where);
+    }
+    if (utf8Bytes(args.text) > OVERFLOW_CHUNK_MAX_BYTES) {
+      return refuseOverflow("chunk too large", where);
+    }
+    const row = await messageAt(ctx, args.sessionId, args.seq);
+    if (row?.overflow && row.overflow.chunkCount !== args.chunkCount) {
+      return refuseOverflow("chunkCount disagrees with the row's stamp", where);
+    }
+    const existing = await chunkAt(ctx, args.sessionId, args.seq, args.index);
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        chunkCount: args.chunkCount,
+        text: args.text,
+      });
+    } else {
+      await ctx.db.insert("claudeMessageOverflow", {
+        sessionId: args.sessionId,
+        seq: args.seq,
+        index: args.index,
+        chunkCount: args.chunkCount,
+        text: args.text,
+        createdAt: Date.now(),
+      });
+    }
+    return { ok: true as const, index: args.index };
+  },
+});
+
+// The re-ingest's second step, behind POST /sessions/overflow/stamp: the
+// row landed without its stamp when the live upload failed, the chunks are
+// up now, and this names them from the row. Refused when there is no row
+// under the seq, when the row is already stamped with something else, or
+// when the last chunk the stamp would name is not there (the uploads run in
+// order, so the last one standing means the set is whole). Stamping the same
+// values twice is a no-op, so a re-run after a lost response is safe.
+export const internalStampOverflow = internalMutation({
+  args: {
+    sessionId: v.id("claudeSessions"),
+    seq: v.number(),
+    sha256: v.string(),
+    byteLength: v.number(),
+    chunkCount: v.number(),
+  },
+  handler: async (ctx, args) => {
+    await getSessionOrThrow(ctx, args.sessionId);
+    const where = { sessionId: args.sessionId, seq: args.seq };
+    if (
+      !Number.isInteger(args.seq) ||
+      args.seq < 0 ||
+      !Number.isInteger(args.chunkCount) ||
+      args.chunkCount < 1 ||
+      !Number.isInteger(args.byteLength) ||
+      args.byteLength < 0 ||
+      !/^[0-9a-f]{64}$/.test(args.sha256)
+    ) {
+      return refuseOverflow("malformed stamp", where);
+    }
+    const row = await messageAt(ctx, args.sessionId, args.seq);
+    if (!row) return refuseOverflow("no message row", where);
+    const stamp = {
+      sha256: args.sha256,
+      byteLength: args.byteLength,
+      chunkCount: args.chunkCount,
+    };
+    if (row.overflow) {
+      const same =
+        row.overflow.sha256 === stamp.sha256 &&
+        row.overflow.byteLength === stamp.byteLength &&
+        row.overflow.chunkCount === stamp.chunkCount;
+      if (same) return { ok: true as const, stamped: false };
+      return refuseOverflow("row already stamped", where);
+    }
+    const last = await chunkAt(ctx, args.sessionId, args.seq, args.chunkCount - 1);
+    if (!last || last.chunkCount !== args.chunkCount) {
+      return refuseOverflow("chunks incomplete", where);
+    }
+    await ctx.db.patch(row._id, { overflow: stamp });
+    return { ok: true as const, stamped: true };
+  },
+});
+
+// Remove every chunk under (sessionId, seq): the one home for taking a
+// message's complete payload out, called by the seq floor above for a
+// stamped replay whose landed twin has no stamp, and what any future removal
+// of claudeMessages rows must call for each row that carried `overflow`
+// (nothing removes messages today). Deletes read their documents, so a
+// payload of hundreds of chunks goes in bounded steps, each scheduling the
+// next.
+export async function sweepMessageOverflow(
+  ctx: MutationCtx,
+  sessionId: Id<"claudeSessions">,
+  seq: number,
+) {
+  await ctx.scheduler.runAfter(0, internal.claudeSessions.internalSweepOverflow, {
+    sessionId,
+    seq,
+  });
+}
+
+export const internalSweepOverflow = internalMutation({
+  args: { sessionId: v.id("claudeSessions"), seq: v.number() },
+  handler: async (ctx, { sessionId, seq }) => {
+    const chunks = await ctx.db
+      .query("claudeMessageOverflow")
+      .withIndex("by_session_seq_index", (q) =>
+        q.eq("sessionId", sessionId).eq("seq", seq),
+      )
+      .take(OVERFLOW_SWEEP_CHUNKS);
+    for (const chunk of chunks) await ctx.db.delete(chunk._id);
+    if (chunks.length === OVERFLOW_SWEEP_CHUNKS) {
+      await sweepMessageOverflow(ctx, sessionId, seq);
+    }
+    return { deleted: chunks.length };
   },
 });
 

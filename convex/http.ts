@@ -2,6 +2,7 @@ import { httpRouter } from "convex/server";
 import type { FunctionArgs } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { auth } from "./auth";
 import { nowContext } from "./tts";
 import { isRulingVerdict } from "./ttsRulings";
@@ -1633,6 +1634,122 @@ http.route({
   path: "/sessions/ingest",
   method: "POST",
   handler: sessionsIngest,
+});
+
+// POST /sessions/overflow — one ≤256KB chunk of a message's COMPLETE payload
+// (the transcript principle: the 32KB cut is what the page renders, not what
+// is stored). Its own route rather than a field on the ingest body: the flush
+// cadence is ~400ms and a failed flush re-sends its whole payload, so a
+// multi-megabyte tool result riding along would wreck both. Same
+// SESSIONS_WORKER_KEY door as poll/ingest.
+//
+// Every field is checked HERE, by type, and every error this route returns
+// is a fixed string. The body carries payload text, and a validator error
+// from the mutation would spell its arguments — text included — into a
+// message the daemon would then store in an error row and print to journald.
+// So the mutation is only ever reached with well-typed arguments, and
+// whatever it throws is reported as one constant.
+const nonNegativeInteger = (value: unknown): value is number =>
+  typeof value === "number" && Number.isInteger(value) && value >= 0;
+
+const sessionsOverflow = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.sessionId !== "string" || b.sessionId === "") {
+    return jsonResponse(400, { error: "sessionId required" });
+  }
+  for (const field of ["seq", "index", "chunkCount"] as const) {
+    if (!nonNegativeInteger(b[field])) {
+      return jsonResponse(400, {
+        error: `${field} (non-negative integer) required`,
+      });
+    }
+  }
+  if (typeof b.text !== "string") {
+    return jsonResponse(400, { error: "text (string) required" });
+  }
+  try {
+    const result = await ctx.runMutation(
+      internal.claudeSessions.internalIngestOverflow,
+      {
+        sessionId: b.sessionId as Id<"claudeSessions">,
+        seq: b.seq as number,
+        index: b.index as number,
+        chunkCount: b.chunkCount as number,
+        text: b.text,
+      },
+    );
+    // A refusal is permanent by the daemon's rule (4xx other than 408/429):
+    // re-sending the same chunk cannot change the verdict.
+    if (!result.ok) return jsonResponse(409, { error: result.reason });
+    return jsonResponse(200, result);
+  } catch {
+    return jsonResponse(400, { error: "overflow chunk rejected" });
+  }
+});
+
+http.route({
+  path: "/sessions/overflow",
+  method: "POST",
+  handler: sessionsOverflow,
+});
+
+// POST /sessions/overflow/stamp — the second step of a re-ingest
+// (worker/session-host/reingest-overflow.mjs): the row landed without its
+// stamp when the live upload failed, the chunks are up now, and this names
+// them from the row. Same door, same posture: typed fields, fixed errors.
+const sessionsOverflowStamp = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.sessionId !== "string" || b.sessionId === "") {
+    return jsonResponse(400, { error: "sessionId required" });
+  }
+  for (const field of ["seq", "byteLength", "chunkCount"] as const) {
+    if (!nonNegativeInteger(b[field])) {
+      return jsonResponse(400, {
+        error: `${field} (non-negative integer) required`,
+      });
+    }
+  }
+  if (typeof b.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(b.sha256)) {
+    return jsonResponse(400, { error: "sha256 (64 hex chars) required" });
+  }
+  try {
+    const result = await ctx.runMutation(
+      internal.claudeSessions.internalStampOverflow,
+      {
+        sessionId: b.sessionId as Id<"claudeSessions">,
+        seq: b.seq as number,
+        sha256: b.sha256,
+        byteLength: b.byteLength as number,
+        chunkCount: b.chunkCount as number,
+      },
+    );
+    if (!result.ok) return jsonResponse(409, { error: result.reason });
+    return jsonResponse(200, result);
+  } catch {
+    return jsonResponse(400, { error: "overflow stamp rejected" });
+  }
+});
+
+http.route({
+  path: "/sessions/overflow/stamp",
+  method: "POST",
+  handler: sessionsOverflowStamp,
 });
 
 // GET /sessions/transcript?sessionId=<id>&cursor=<opaque> — one page of a

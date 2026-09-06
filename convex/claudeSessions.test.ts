@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { convexTest } from "convex-test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
+import type { MessageOverflowRead } from "./claudeSessions";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
@@ -2236,6 +2238,574 @@ describe("Tom-facing mutations have CLI pens with identical effect", () => {
         text: "again",
       }),
     ).rejects.toThrow(/sendMessage/);
+  });
+});
+
+// ── The complete payload behind the 32KB cut ─────────────────────────────────
+// The transcript principle (lifeos update §1): a rendered view may be short,
+// the full bytes must stay retrievable. The daemon uploads a cut payload's
+// complete text as ordered chunks (POST /sessions/overflow) and only then
+// releases the finalize row that names their hash (the hold in
+// worker/session-host/overflow.mjs); these pin what a reader gets back, what
+// the chunk door refuses, and how a payload that missed the live upload is
+// finished later.
+
+describe("message overflow (the complete payload)", () => {
+  const CHUNKS = 6;
+  // Each under the 256KB chunk cap; six of them cross OVERFLOW_READ_BYTES, so
+  // the read below has to page.
+  const CHUNK_CHARS = 250_000;
+
+  /** A payload in `CHUNKS` chunks, each distinguishable from its neighbours. */
+  function payloadChunks() {
+    return Array.from({ length: CHUNKS }, (_, i) =>
+      String.fromCharCode(97 + i).repeat(CHUNK_CHARS),
+    );
+  }
+
+  const sha256 = (text: string) =>
+    createHash("sha256").update(text, "utf8").digest("hex");
+
+  const stampFor = (chunks: string[]) => {
+    const full = chunks.join("");
+    return {
+      sha256: sha256(full),
+      byteLength: Buffer.byteLength(full, "utf8"),
+      chunkCount: chunks.length,
+    };
+  };
+
+  async function uploadChunks(
+    t: ReturnType<typeof convexTest>,
+    sessionId: Id<"claudeSessions">,
+    seq: number,
+    chunks: string[],
+    { dropIndex }: { dropIndex?: number } = {},
+  ) {
+    for (const [index, text] of chunks.entries()) {
+      if (index === dropIndex) continue;
+      const res = await t.mutation(
+        internal.claudeSessions.internalIngestOverflow,
+        { sessionId, seq, index, chunkCount: chunks.length, text },
+      );
+      expect(res.ok).toBe(true);
+    }
+  }
+
+  /** The daemon's order: every chunk up, then the row that names them. */
+  async function storeOversized(
+    t: ReturnType<typeof convexTest>,
+    sessionId: Id<"claudeSessions">,
+    chunks: string[],
+    { dropIndex }: { dropIndex?: number } = {},
+  ) {
+    const full = chunks.join("");
+    const overflow = stampFor(chunks);
+    await uploadChunks(t, sessionId, 0, chunks, { dropIndex });
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      finalize: [
+        {
+          seq: 0,
+          turn: 0,
+          kind: "tool-result" as const,
+          content: { toolUseId: "tool_1", content: full.slice(0, 32 * 1024) },
+          overflow,
+        },
+      ],
+    });
+    const messageId = await t.run(async (ctx) => {
+      const row = await ctx.db.query("claudeMessages").first();
+      return row!._id;
+    });
+    return { messageId, full, overflow };
+  }
+
+  /** Every page of one message's overflow, the way the sessions page reads it. */
+  async function readAll(
+    t: ReturnType<typeof convexTest>,
+    messageId: Id<"claudeMessages">,
+  ) {
+    const pages: MessageOverflowRead[] = [];
+    let fromIndex: number | undefined = undefined;
+    do {
+      // Annotated: the loop feeds the previous read's nextIndex back in as
+      // fromIndex, which TS cannot infer through without a cycle.
+      const page: MessageOverflowRead | null = await t.query(
+        internal.claudeSessions.internalMessageOverflow,
+        { messageId, fromIndex },
+      );
+      pages.push(page!);
+      fromIndex = page!.nextIndex ?? undefined;
+    } while (fromIndex !== undefined && pages.length < 10);
+    return pages;
+  }
+
+  // witness: drop the overflow chunks (or the row's hash) and an oversized
+  // tool result is gone for good — the cut is all that was ever kept.
+  it("reassembles an oversized tool result byte-identical over paged reads", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    const { messageId, full, overflow } = await storeOversized(
+      t,
+      sessionId,
+      payloadChunks(),
+    );
+
+    const pages = await readAll(t, messageId);
+    expect(pages.length).toBeGreaterThan(1); // the read is paged, not unbounded
+    for (const page of pages) {
+      expect(page).toMatchObject({
+        hasOverflow: true,
+        sha256: overflow.sha256,
+        byteLength: overflow.byteLength,
+        chunkCount: CHUNKS,
+      });
+      // A paged read never claims the whole: that check is the reader's.
+      expect(page.complete).toBe(false);
+    }
+    expect(pages.at(-1)!.end).toBe(true);
+    const text = pages.map((p) => p.text).join("");
+    expect(text).toBe(full);
+    expect(sha256(text)).toBe(overflow.sha256);
+    // What the page sums to decide the payload is whole.
+    const bytes = pages.reduce((n, p) => n + p.bytes, 0);
+    expect(bytes).toBe(overflow.byteLength);
+    expect(Buffer.byteLength(text, "utf8")).toBe(overflow.byteLength);
+  });
+
+  // witness: count the chunks instead of checking the bytes — a chunk whose
+  // text is not what the row promised would read as complete.
+  it("calls a payload complete only when its bytes and hash match the stamp", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    const chunks = ["héllo ", "wörld"]; // multibyte: bytes ≠ chars
+    const { messageId, full } = await storeOversized(t, sessionId, chunks);
+
+    const whole = await tom.query(api.claudeSessions.getMessageOverflow, {
+      messageId,
+    });
+    expect(whole).toMatchObject({
+      complete: true,
+      end: true,
+      nextIndex: null,
+      bytes: Buffer.byteLength(full, "utf8"),
+      text: full,
+    });
+
+    // Every chunk present, one of them not the bytes the row named.
+    await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("claudeMessageOverflow")
+        .withIndex("by_session_seq_index", (q) =>
+          q.eq("sessionId", sessionId).eq("seq", 0).eq("index", 1),
+        )
+        .first();
+      await ctx.db.patch(row!._id, { text: "w0rld" });
+    });
+    const altered = await tom.query(api.claudeSessions.getMessageOverflow, {
+      messageId,
+    });
+    expect(altered).toMatchObject({ end: true, complete: false });
+  });
+
+  it("tells the transcript a row was cut, and how much is behind it", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    const { overflow } = await storeOversized(t, sessionId, payloadChunks());
+    const page = await tom.query(api.claudeSessions.getMessages, {
+      sessionId,
+      paginationOpts: { numItems: 10, cursor: null },
+    });
+    expect(page.page[0]).toMatchObject({
+      hasOverflow: true,
+      fullByteLength: overflow.byteLength,
+    });
+  });
+
+  // witness: return a prefix and call it the payload — a hole would read as
+  // the whole thing, which is the failure this path exists to prevent.
+  it("says so when a chunk the row names never landed", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    const { messageId } = await storeOversized(t, sessionId, payloadChunks(), {
+      dropIndex: 1,
+    });
+    const page = await tom.query(api.claudeSessions.getMessageOverflow, {
+      messageId,
+    });
+    expect(page).toMatchObject({
+      hasOverflow: true,
+      end: false,
+      complete: false,
+      nextIndex: null,
+    });
+    expect(page!.text).toHaveLength(CHUNK_CHARS); // chunk 0 only
+  });
+
+  it("stores nothing for a message that fits", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      finalize: [
+        {
+          seq: 0,
+          turn: 0,
+          kind: "tool-result" as const,
+          content: { toolUseId: "tool_1", content: "ok" },
+        },
+      ],
+    });
+    const chunks = await t.run(async (ctx) =>
+      ctx.db.query("claudeMessageOverflow").collect(),
+    );
+    expect(chunks).toHaveLength(0);
+    const page = await tom.query(api.claudeSessions.getMessages, {
+      sessionId,
+      paginationOpts: { numItems: 10, cursor: null },
+    });
+    expect(page.page[0].hasOverflow).toBe(false);
+    expect(page.page[0].fullByteLength).toBeUndefined();
+    const messageId = page.page[0]._id;
+    expect(
+      await tom.query(api.claudeSessions.getMessageOverflow, { messageId }),
+    ).toMatchObject({ hasOverflow: false, complete: true });
+  });
+
+  // witness: drop the overflowFailures loop from internalIngest — a payload
+  // Convex refused would sit on the box with nothing pointing at it.
+  it("records an event naming the file when the daemon could not store a payload", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      finalize: [
+        {
+          seq: 0,
+          turn: 0,
+          kind: "error" as const,
+          content: { message: "the complete payload for message 0 …" },
+        },
+      ],
+      overflowFailures: [
+        {
+          seq: 0,
+          error: "HTTP 400",
+          path: "/var/cache/tts/sessions/abc/overflow/0",
+          byteLength: 9_000_000,
+        },
+      ],
+    });
+    const events = await t.run(async (ctx) =>
+      ctx.db.query("dtsEvents").collect(),
+    );
+    const unstored = events.filter(
+      (e) => e.kind === "session-overflow-unstored",
+    );
+    expect(unstored).toHaveLength(1);
+    expect(unstored[0].data).toMatchObject({
+      sessionId,
+      seq: 0,
+      error: "HTTP 400",
+      path: "/var/cache/tts/sessions/abc/overflow/0",
+      byteLength: 9_000_000,
+    });
+  });
+
+  // witness: insert instead of upsert — a blind retry of one chunk would
+  // double it and the reassembly would no longer match its hash.
+  it("upserts a re-sent chunk instead of doubling it", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    const chunk = {
+      sessionId,
+      seq: 3,
+      index: 0,
+      chunkCount: 1,
+      text: "the payload",
+    };
+    await t.mutation(internal.claudeSessions.internalIngestOverflow, chunk);
+    await t.mutation(internal.claudeSessions.internalIngestOverflow, chunk);
+    const rows = await t.run(async (ctx) =>
+      ctx.db.query("claudeMessageOverflow").collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].text).toBe("the payload");
+  });
+
+  // witness: accept any chunk under a stamped seq — a chunk from a different
+  // chunking of the payload would overwrite one the row's stamp names.
+  it("refuses a chunk that disagrees with the row's stamp, or is malformed", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    const chunks = ["abc", "def"];
+    await storeOversized(t, sessionId, chunks);
+
+    const send = (body: {
+      seq: number;
+      index: number;
+      chunkCount: number;
+      text: string;
+    }) =>
+      t.mutation(internal.claudeSessions.internalIngestOverflow, {
+        sessionId,
+        ...body,
+      });
+    // Same chunking as the stamp: a replay, accepted.
+    expect(await send({ seq: 0, index: 1, chunkCount: 2, text: "def" })).toMatchObject({ ok: true });
+    // A different chunkCount under the stamped seq: refused.
+    expect(await send({ seq: 0, index: 0, chunkCount: 3, text: "ab" })).toMatchObject({
+      ok: false,
+      reason: "chunkCount disagrees with the row's stamp",
+    });
+    // Out of range or not an integer: refused whatever the seq.
+    expect(await send({ seq: 9, index: 2, chunkCount: 2, text: "x" })).toMatchObject({
+      ok: false,
+      reason: "malformed chunk",
+    });
+    expect(await send({ seq: 9, index: 0.5, chunkCount: 1, text: "x" })).toMatchObject({
+      ok: false,
+      reason: "malformed chunk",
+    });
+    // Nothing of the refused ones landed.
+    const rows = await t.run(async (ctx) =>
+      ctx.db.query("claudeMessageOverflow").collect(),
+    );
+    expect(rows.map((r) => r.text).sort()).toEqual(["abc", "def"]);
+  });
+
+  // The re-ingest path (worker/session-host/reingest-overflow.mjs): the row
+  // landed unstamped when the live upload failed; later the chunks go up and
+  // the stamp is written from the file's own hash.
+  it("stamps an unstamped row once its chunks are up, and only then", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    const chunks = ["first half ", "second half"];
+    const stamp = stampFor(chunks);
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      finalize: [
+        {
+          seq: 0,
+          turn: 0,
+          kind: "tool-result" as const,
+          content: { toolUseId: "tool_1", content: "first half " },
+        },
+      ],
+    });
+    const stampIt = () =>
+      t.mutation(internal.claudeSessions.internalStampOverflow, {
+        sessionId,
+        seq: 0,
+        ...stamp,
+      });
+    // Before the chunks: refused, the row untouched.
+    expect(await stampIt()).toMatchObject({ ok: false, reason: "chunks incomplete" });
+    await uploadChunks(t, sessionId, 0, chunks);
+    expect(await stampIt()).toEqual({ ok: true, stamped: true });
+    // Again (a lost response, a re-run): a no-op, not a refusal.
+    expect(await stampIt()).toEqual({ ok: true, stamped: false });
+    // A different stamp for the same row: refused.
+    expect(
+      await t.mutation(internal.claudeSessions.internalStampOverflow, {
+        sessionId,
+        seq: 0,
+        ...stamp,
+        byteLength: stamp.byteLength + 1,
+      }),
+    ).toMatchObject({ ok: false, reason: "row already stamped" });
+    // No row under the seq at all: refused.
+    expect(
+      await t.mutation(internal.claudeSessions.internalStampOverflow, {
+        sessionId,
+        seq: 7,
+        ...stamp,
+      }),
+    ).toMatchObject({ ok: false, reason: "no message row" });
+
+    const page = await tom.query(api.claudeSessions.getMessages, {
+      sessionId,
+      paginationOpts: { numItems: 10, cursor: null },
+    });
+    expect(page.page[0]).toMatchObject({
+      hasOverflow: true,
+      fullByteLength: stamp.byteLength,
+    });
+    const whole = await tom.query(api.claudeSessions.getMessageOverflow, {
+      messageId: page.page[0]._id,
+    });
+    expect(whole).toMatchObject({ complete: true, text: chunks.join("") });
+  });
+
+  // witness: drop the sweep from the seq floor — chunks uploaded for a row
+  // the floor then dropped would sit under a seq whose landed row never
+  // names them, unreadable and undeletable.
+  it("sweeps the chunks of a dropped stamped replay whose landed row has no stamp", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = convexTest({ schema, modules });
+      const tom = await withTom(t);
+      const sessionId = await createBasicSession(tom);
+      // What landed under seq 0: a plain row, no stamp.
+      await t.mutation(internal.claudeSessions.internalIngest, {
+        sessionId,
+        finalize: [
+          {
+            seq: 0,
+            turn: 0,
+            kind: "assistant-text" as const,
+            content: { text: "short" },
+          },
+        ],
+      });
+      // A second writer's chunks under the same seq, then its stamped row,
+      // which the floor drops.
+      const chunks = ["aaa", "bbb"];
+      await uploadChunks(t, sessionId, 0, chunks);
+      await t.mutation(internal.claudeSessions.internalIngest, {
+        sessionId,
+        finalize: [
+          {
+            seq: 0,
+            turn: 0,
+            kind: "tool-result" as const,
+            content: { toolUseId: "tool_1", content: "aaa" },
+            overflow: stampFor(chunks),
+          },
+        ],
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      const rows = await t.run(async (ctx) => ({
+        messages: await ctx.db.query("claudeMessages").collect(),
+        chunks: await ctx.db.query("claudeMessageOverflow").collect(),
+      }));
+      expect(rows.messages).toHaveLength(1);
+      expect(rows.messages[0].overflow).toBeUndefined();
+      expect(rows.chunks).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the chunks when the dropped replay is a retry of a stamped row", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = convexTest({ schema, modules });
+      const tom = await withTom(t);
+      const sessionId = await createBasicSession(tom);
+      const chunks = ["aaa", "bbb"];
+      await storeOversized(t, sessionId, chunks);
+      // The same row again — a blind retry after a lost response.
+      await t.mutation(internal.claudeSessions.internalIngest, {
+        sessionId,
+        finalize: [
+          {
+            seq: 0,
+            turn: 0,
+            kind: "tool-result" as const,
+            content: { toolUseId: "tool_1", content: "aaa" },
+            overflow: stampFor(chunks),
+          },
+        ],
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      const stored = await t.run(async (ctx) =>
+        ctx.db.query("claudeMessageOverflow").collect(),
+      );
+      expect(stored).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The door itself (convex/http.ts): every field typed before the mutation
+  // is reached, and every error a fixed string — a validator error would
+  // spell the arguments, payload text included, into what the daemon logs.
+  it("POST /sessions/overflow validates by type and never echoes the body", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    process.env.SESSIONS_WORKER_KEY = "test-sessions-key";
+    try {
+      const post = (path: string, body: unknown) =>
+        t.fetch(path, {
+          method: "POST",
+          headers: {
+            "X-Sessions-Key": "test-sessions-key",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        });
+      const secret = "the payload text that must not come back";
+      const bad = await post("/sessions/overflow", {
+        sessionId,
+        seq: "0",
+        index: 0,
+        chunkCount: 1,
+        text: secret,
+      });
+      expect(bad.status).toBe(400);
+      const badBody = await bad.text();
+      expect(badBody).toBe(JSON.stringify({ error: "seq (non-negative integer) required" }));
+      expect(badBody).not.toContain(secret);
+
+      // A sessionId of the wrong shape reaches the mutation's own validator;
+      // what comes back is still the constant, not the arguments.
+      const wrongId = await post("/sessions/overflow", {
+        sessionId: "not-an-id",
+        seq: 0,
+        index: 0,
+        chunkCount: 1,
+        text: secret,
+      });
+      expect(wrongId.status).toBe(400);
+      const wrongBody = await wrongId.text();
+      expect(wrongBody).toBe(JSON.stringify({ error: "overflow chunk rejected" }));
+      expect(wrongBody).not.toContain(secret);
+
+      const ok = await post("/sessions/overflow", {
+        sessionId,
+        seq: 0,
+        index: 0,
+        chunkCount: 1,
+        text: secret,
+      });
+      expect(ok.status).toBe(200);
+      expect(await ok.json()).toEqual({ ok: true, index: 0 });
+
+      // A refusal is a 409: permanent by the daemon's rule, fixed string.
+      const refused = await post("/sessions/overflow", {
+        sessionId,
+        seq: 0,
+        index: 1,
+        chunkCount: 1,
+        text: secret,
+      });
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toEqual({ error: "malformed chunk" });
+
+      const stamp = await post("/sessions/overflow/stamp", {
+        sessionId,
+        seq: 0,
+        sha256: "not hex",
+        byteLength: 1,
+        chunkCount: 1,
+      });
+      expect(stamp.status).toBe(400);
+      expect(await stamp.json()).toEqual({ error: "sha256 (64 hex chars) required" });
+    } finally {
+      delete process.env.SESSIONS_WORKER_KEY;
+    }
   });
 });
 
