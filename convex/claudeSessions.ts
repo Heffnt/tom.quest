@@ -3985,7 +3985,7 @@ export const internalAutoSchedule = internalMutation({
 
     // (2) Active batches with open agent plan steps, stalest first — the same
     // updatedAt ordering the whenever lane below uses. Ordering comes from
-    // paths and dates, never a rating (Tom's ruling 2026-08-29).
+    // needs and dates, never a rating (Tom's ruling 2026-08-29).
     const v1Batches = active.filter(
       (t) => t.members !== undefined && legacy(t) && hasOpenAgentStep(t),
     );
