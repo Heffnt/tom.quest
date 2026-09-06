@@ -7,6 +7,7 @@ import {
   ITEM_TEXT_CHARS,
   LEARNING_CHANGE,
   ROLLOVER_NOTE,
+  SECTION_ITEM_CAP,
   SLACK_FAILED,
   SLACK_SENT,
   WIKITOM_UNREADABLE,
@@ -17,7 +18,12 @@ import {
   provenanceText,
   type DigestFacts,
 } from "./ttsDigest";
-import { nyCalendarDayBoundsUtc, ttsDayKey, ttsItemLink } from "./ttsShared";
+import {
+  nyCalendarDayBoundsUtc,
+  ttsDayKey,
+  ttsItemLink,
+  ttsTabLink,
+} from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -207,6 +213,78 @@ describe("composeDigest", () => {
     expect(line).toContain("— open page 2 and read it");
     expect(line.endsWith("…")).toBe(true);
     expect(line.length).toBeLessThan(200);
+  });
+
+  // A section is a morning read, not the list: past the cap it names the count
+  // and links to the tab of the /tts page where the rest is read.
+  it("prints twelve items and then the count line", () => {
+    const text = composeDigest({
+      ...emptyFacts(),
+      ready: Array.from({ length: 30 }, (_, i) => ({
+        id: `t${i}`,
+        statement: `item ${i}`,
+      })),
+    });
+    const lines = text.split("\n");
+    const start = lines.indexOf("*Ready for you*");
+    const body = lines.slice(start + 1);
+    expect(body).toHaveLength(SECTION_ITEM_CAP + 1);
+    expect(body[0]).toContain("|item 0>");
+    expect(body[SECTION_ITEM_CAP - 1]).toContain("|item 11>");
+    expect(body[SECTION_ITEM_CAP]).toBe(
+      `- <${ttsTabLink("by-individual")}|+18 more on the page>`,
+    );
+  });
+
+  // What the cap drops is the NEWEST date: an item three weeks late is the one
+  // the morning has to name.
+  it("orders due and overdue longest-overdue first, so the cut is the newest", () => {
+    const text = composeDigest({
+      ...emptyFacts(),
+      due: Array.from({ length: 14 }, (_, i) => ({
+        id: `t${i}`,
+        statement: `item ${i}`,
+        dueAt: FIVE_AM - (14 - i) * DAY, // item 0 is the oldest
+        missed: false,
+      })),
+    });
+    const lines = text.split("\n");
+    const body = lines.slice(lines.indexOf("*Due and overdue*") + 1);
+    expect(body[0]).toContain("|item 0>");
+    expect(body[SECTION_ITEM_CAP - 1]).toContain("|item 11>");
+    expect(body[SECTION_ITEM_CAP]).toBe(
+      `- <${ttsTabLink("by-individual")}|+2 more on the page>`,
+    );
+    expect(text).not.toContain("|item 13>"); // the newest is what goes
+  });
+
+  // The batch headings are not items: the cap counts the events under them.
+  it("caps the overnight section across its batches", () => {
+    const text = composeDigest({
+      ...emptyFacts(),
+      overnight: Array.from({ length: 20 }, (_, i) => ({
+        batch: i < 8 ? "the lease" : "the move",
+        text: `event ${i}`,
+      })),
+    });
+    const lines = text.split("\n");
+    const body = lines.slice(lines.indexOf("*Overnight, by batch*") + 1);
+    expect(body.filter((l) => l.startsWith("- event "))).toHaveLength(SECTION_ITEM_CAP);
+    expect(body.at(-1)).toBe(`- <${ttsTabLink("batches")}|+8 more on the page>`);
+  });
+
+  // Job failures, WikiTom commits and model-of-Tom lines are not on the /tts
+  // page, so their count line links nowhere rather than somewhere wrong.
+  it("counts without a link for the sections the page does not hold", () => {
+    const text = composeDigest({
+      ...emptyFacts(),
+      failures: Array.from({ length: 15 }, (_, i) => ({
+        at: FIVE_AM - i * 60_000,
+        text: `job-failed: ${i}`,
+      })),
+    });
+    expect(text).toContain("- +3 more");
+    expect(text).not.toContain("+3 more on the page");
   });
 
   it("escapes Slack's reserved characters in statements", () => {

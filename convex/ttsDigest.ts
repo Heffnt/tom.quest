@@ -9,7 +9,9 @@ import {
   nyCalendarDayBoundsUtc,
   nyHhmm,
   ttsItemLink,
+  ttsTabLink,
   type SlackSubject,
+  type TtsTab,
 } from "./ttsShared";
 
 // ── The digest (the lifeos update, phase 2; rulings 13, 14) ──────────────────
@@ -34,6 +36,10 @@ import {
 //   8. rulings recorded from Tom's own words since the last digest
 //   9. model-of-Tom lines the nightly job wrote (kind "learning-change";
 //      empty until phase 4)
+//
+// A digest is a morning read, not the list: an item is one line (clipToLine)
+// and a section prints at most SECTION_ITEM_CAP of them before naming what is
+// left on the /tts page.
 
 // ── The digest's own bookkeeping row (dtsEvents) ─────────────────────────────
 // TWO KINDS OF ROW come out of a sent digest, and they answer different
@@ -236,36 +242,78 @@ function itemLine(item: { id: string; statement: string; entryAction?: string })
   return `- <${ttsItemLink(item.id)}|${slackEscape(clipToLine(item.statement))}>${entry}`;
 }
 
-export function composeDigest(f: DigestFacts): string {
-  const lines: string[] = [`*TTS digest — ${f.day}*`, "", "*Due and overdue*"];
+// ── A section, and what it leaves for the page ───────────────────────────────
+// The digest is a morning read; the full list lives on the /tts page. So a
+// section prints at most SECTION_ITEM_CAP items and then ONE line saying how
+// many it did not print, linking to the tab of the page where the rest is read.
+// The three sections whose items are not on that page — job failures, WikiTom
+// commits, model-of-Tom lines — say the count and link nowhere.
+export const SECTION_ITEM_CAP = 12;
 
-  if (f.due.length === 0) {
-    lines.push("- nothing");
+type Section = {
+  header: string;
+  lines: string[]; // already capped, count line included
+  count: number; // items the section holds, printed or not
+  tab: TtsTab | null; // where the rest is read
+};
+
+function moreLine(hidden: number, tab: TtsTab | null): string {
+  return tab === null
+    ? `- +${hidden} more`
+    : `- <${ttsTabLink(tab)}|+${hidden} more on the page>`;
+}
+
+function section(header: string, items: string[], tab: TtsTab | null): Section {
+  const lines = items.slice(0, SECTION_ITEM_CAP);
+  if (items.length > lines.length) {
+    lines.push(moreLine(items.length - lines.length, tab));
   }
-  for (const d of [...f.due].sort((a, b) => a.dueAt - b.dueAt)) {
-    const replyPath = d.missed ? " — missed: reply done, or a new date" : "";
-    lines.push(`${itemLine(d)} — ${countdownText(d.dueAt, f.now)}${replyPath}`);
-  }
+  return { header, lines, count: items.length, tab };
+}
+
+function digestSections(f: DigestFacts): Section[] {
+  const sections: Section[] = [];
+
+  // OVERDUE-LONGEST FIRST (ascending date), because this section is the one
+  // that overflows and what the cap drops has to be the newest: an item three
+  // weeks late is the one Tom needs named in the morning.
+  const dueLines = [...f.due]
+    .sort((a, b) => a.dueAt - b.dueAt)
+    .map((d) => {
+      const replyPath = d.missed ? " — missed: reply done, or a new date" : "";
+      return `${itemLine(d)} — ${countdownText(d.dueAt, f.now)}${replyPath}`;
+    });
+  // The one section that is printed even when empty (sends-even-when-empty).
+  sections.push(
+    f.due.length === 0
+      ? { header: "*Due and overdue*", lines: ["- nothing"], count: 0, tab: null }
+      : section("*Due and overdue*", dueLines, "by-individual"),
+  );
 
   const spans = [
     ...f.blocks.map((b) => ({ start: b.start, end: b.end, text: b.label, allDay: false })),
     ...f.calendar.map((e) => ({ start: e.start, end: e.end, text: e.title, allDay: e.allDay })),
   ].sort((a, b) => a.start - b.start);
   if (spans.length > 0) {
-    lines.push("", "*Blocks and calendar*");
-    for (const s of spans) {
-      const when = s.allDay ? "all day" : `${nyHhmm(s.start)}–${nyHhmm(s.end)}`;
-      lines.push(`- ${when} ${slackEscape(s.text)}`);
-    }
+    sections.push(
+      section(
+        "*Blocks and calendar*",
+        spans.map((s) => {
+          const when = s.allDay ? "all day" : `${nyHhmm(s.start)}–${nyHhmm(s.end)}`;
+          return `- ${when} ${slackEscape(clipToLine(s.text))}`;
+        }),
+        "calendar",
+      ),
+    );
   }
 
   if (f.emailCaptures.length > 0) {
-    lines.push("", "*Captured from email*");
-    for (const c of f.emailCaptures) lines.push(itemLine(c));
+    sections.push(
+      section("*Captured from email*", f.emailCaptures.map(itemLine), "by-individual"),
+    );
   }
 
   if (f.overnight.length > 0) {
-    lines.push("", "*Overnight, by batch*");
     const groups = new Map<string | null, string[]>();
     for (const o of f.overnight) {
       const list = groups.get(o.batch) ?? [];
@@ -276,56 +324,100 @@ export function composeDigest(f: DigestFacts): string {
     const keys = [...groups.keys()].sort((a, b) =>
       a === null ? 1 : b === null ? -1 : 0,
     );
+    // The cap counts EVENTS, not the batch headings between them: a heading is
+    // printed only when at least one of its events fits under the cap.
+    const lines: string[] = [];
+    let shown = 0;
     for (const key of keys) {
+      const room = SECTION_ITEM_CAP - shown;
+      if (room <= 0) break;
+      const texts = groups.get(key) ?? [];
       lines.push(`_${key === null ? "no batch" : slackEscape(key)}_`);
-      for (const text of groups.get(key) ?? []) lines.push(`- ${text}`);
+      for (const text of texts.slice(0, room)) lines.push(`- ${text}`);
+      shown += Math.min(room, texts.length);
     }
+    if (f.overnight.length > shown) {
+      lines.push(moreLine(f.overnight.length - shown, "batches"));
+    }
+    sections.push({
+      header: "*Overnight, by batch*",
+      lines,
+      count: f.overnight.length,
+      tab: "batches",
+    });
   }
 
   if (f.ready.length > 0) {
-    lines.push("", "*Ready for you*");
-    for (const r of f.ready) lines.push(itemLine(r));
+    sections.push(section("*Ready for you*", f.ready.map(itemLine), "by-individual"));
   }
 
   if (f.failures.length > 0) {
-    lines.push("", "*Job failures*");
-    for (const x of [...f.failures].sort((a, b) => a.at - b.at)) {
-      lines.push(`- ${nyHhmm(x.at)} ${x.text}`);
-    }
+    sections.push(
+      section(
+        "*Job failures*",
+        [...f.failures]
+          .sort((a, b) => a.at - b.at)
+          .map((x) => `- ${nyHhmm(x.at)} ${x.text}`),
+        null,
+      ),
+    );
   }
 
   if (f.wikitom === null) {
-    lines.push("", WIKITOM_UNREADABLE);
+    sections.push({ header: WIKITOM_UNREADABLE, lines: [], count: 0, tab: null });
   } else if (f.wikitom.length > 0) {
-    lines.push("", "*WikiTom commits*");
-    for (const c of f.wikitom) {
-      lines.push(
-        `- <${c.url}|${slackEscape(c.sha.slice(0, 7))}> ${slackEscape(c.message)} — ${slackEscape(c.author)}`,
-      );
-    }
+    sections.push(
+      section(
+        "*WikiTom commits*",
+        f.wikitom.map(
+          (c) =>
+            `- <${c.url}|${slackEscape(c.sha.slice(0, 7))}> ${slackEscape(c.message)} — ${slackEscape(c.author)}`,
+        ),
+        null,
+      ),
+    );
   }
 
   if (f.rulings.length > 0) {
-    lines.push("", "*Rulings from your words*");
-    for (const r of f.rulings) {
-      const quote = r.quote ? `: "${slackEscape(r.quote)}"` : "";
-      const redirect = r.redirect ? ` — redirect: ${slackEscape(r.redirect)}` : "";
-      lines.push(
-        `- ${r.verdict} on ${r.subject}${quote}${redirect} (${slackEscape(r.provenance)})`,
-      );
-    }
+    sections.push(
+      section(
+        "*Rulings from your words*",
+        f.rulings.map((r) => {
+          const quote = r.quote ? `: "${slackEscape(r.quote)}"` : "";
+          const redirect = r.redirect
+            ? ` — redirect: ${slackEscape(r.redirect)}`
+            : "";
+          return `- ${r.verdict} on ${r.subject}${quote}${redirect} (${slackEscape(r.provenance)})`;
+        }),
+        "batches",
+      ),
+    );
   }
 
   if (f.learning.length > 0) {
-    lines.push("", "*Model of Tom*");
-    for (const l of f.learning) {
-      lines.push(
-        `- [${slackEscape(l.id)}] ${slackEscape(l.file)}: "${slackEscape(l.before)}" → "${slackEscape(l.after)}" (${slackEscape(l.evidence)})`,
-      );
-    }
+    sections.push(
+      section(
+        "*Model of Tom*",
+        f.learning.map(
+          (l) =>
+            `- [${slackEscape(l.id)}] ${slackEscape(l.file)}: "${slackEscape(l.before)}" → "${slackEscape(l.after)}" (${slackEscape(l.evidence)})`,
+        ),
+        null,
+      ),
+    );
   }
 
+  return sections;
+}
+
+function render(day: string, sections: Section[]): string {
+  const lines: string[] = [`*TTS digest — ${day}*`];
+  for (const s of sections) lines.push("", s.header, ...s.lines);
   return lines.join("\n");
+}
+
+export function composeDigest(f: DigestFacts): string {
+  return render(f.day, digestSections(f));
 }
 
 // ── Gathering the facts ──────────────────────────────────────────────────────
