@@ -453,6 +453,13 @@ export const sendHourlyUpdate = internalAction({
       const resent = await postSlack(ctx, {
         text: owed.text,
         subject: digestSubject(day),
+        // The boundary travels with the RESEND too, not just the first send:
+        // a refused resend writes a fresh "slack-send-failed" row, and that
+        // row is the newest one internalDigestToResend reads next hour. Drop
+        // it here and the second row carries only its own `at`, so a retry
+        // that keeps failing walks the boundary forward an hour at a time and
+        // tomorrow's digest starts after events no digest ever reported.
+        windowEnd: owed.windowEnd,
       });
       if (resent.ok) {
         await ctx.runMutation(internal.tts.internalMarkDigestSent, {
@@ -465,8 +472,8 @@ export const sendHourlyUpdate = internalAction({
         });
       }
       // A refused resend needs nothing here: the door wrote a fresh
-      // "slack-send-failed" row carrying the same text, so the next tick owes
-      // the same digest again.
+      // "slack-send-failed" row carrying the same text and the same boundary,
+      // so the next tick owes the same digest against the same window.
     }
 
     // ── The window ───────────────────────────────────────────────────────────

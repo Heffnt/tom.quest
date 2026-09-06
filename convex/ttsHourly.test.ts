@@ -14,6 +14,7 @@ import { HOURLY_UPDATE_ABANDONED, HOURLY_UPDATE_SENT } from "./ttsHourly";
 import {
   TTS_BATCHES_LINK,
   nyHhmm,
+  ttsDayBoundsUtc,
   ttsDayKey,
   ttsItemLink,
   ttsSessionLink,
@@ -530,6 +531,54 @@ describe("sendHourlyUpdate", () => {
     await t.action(internal.ttsSync.sendHourlyUpdate, {});
     expect(posts.filter((p) => p.channel === TTS_CHANNEL)).toHaveLength(1);
   });
+
+  // witness: drop `windowEnd` from the RESEND's postSlack call in
+  // convex/ttsSync.ts and the second failure row carries only its own `at`,
+  // which is what the next tick reads — the drift PR #148 closed reopens one
+  // retry in.
+  it("carries the composition boundary onto a refused resend's own failure row", async () => {
+    const t = convexTest(schema, modules);
+    const day = ttsDayKey(Date.now());
+    const composedAt = Date.now() - 6 * 60_000;
+    const failedAt = composedAt + 5 * 60_000;
+    await insertEvent(t, failedAt, SLACK_FAILED, undefined, {
+      channel: TTS_CHANNEL,
+      subject: { kind: DIGEST_SUBJECT, day },
+      error: "ratelimited",
+      text: "the morning digest",
+      attempts: 2,
+      windowEnd: composedAt,
+    });
+    // Slack refuses this hour too — transiently, so the digest is still owed.
+    stubSlack("ratelimited");
+
+    await t.action(internal.ttsSync.sendHourlyUpdate, {});
+
+    // The resend left a second failure row, newer than the first.
+    const failures = await rowsOfKind(t, SLACK_FAILED, DIGEST_SUBJECT);
+    expect(failures).toHaveLength(2);
+    const newest = failures.reduce((a, b) => (b.at >= a.at ? b : a));
+    expect(newest.at).toBeGreaterThanOrEqual(failedAt);
+    expect(dataOf(newest)).toMatchObject({
+      text: "the morning digest",
+      windowEnd: composedAt,
+    });
+    // Nothing was marked sent, so the digest is still owed.
+    expect(await rowsOfKind(t, "digest-sent")).toHaveLength(0);
+
+    // The next tick reads the NEWEST failure row, and it still names the
+    // instant the text was composed against — not the hour it kept failing.
+    const bounds = ttsDayBoundsUtc(day);
+    expect(
+      await t.query(internal.ttsHourly.internalDigestToResend, {
+        day,
+        dayStart: bounds.start,
+        dayEnd: bounds.end,
+      }),
+    ).toEqual({ text: "the morning digest", windowEnd: composedAt });
+    // Two refused sends here, and the door sleeps SLACK_RETRY_DELAY_MS before
+    // each retry — past the default per-test budget.
+  }, 15_000);
 
   it("posts one line when nothing is running and nothing changed, its own bookkeeping included", async () => {
     const t = convexTest(schema, modules);
