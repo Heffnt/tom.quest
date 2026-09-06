@@ -31,6 +31,7 @@ import CodeTodoRow from "./code-todo-row";
 import OptionsRow from "./options-row";
 import PathsBar, { type PathChip } from "./paths-bar";
 import BatchCard, {
+  needNames,
   taskSets,
   type BatchGraph,
   type GraphTask,
@@ -322,6 +323,39 @@ export default function BatchesTab() {
     return { chips, byPath };
   }, [batches, todos]);
 
+  // THE OPEN DIALOG READS ITS ITEM LIVE. `detail` is the item as it was when
+  // it was clicked, and a ruling changes the row underneath it: archive takes
+  // a todo out of rulable (lib isRulable) and a batch out of the active list.
+  // Held as a snapshot, the dialog went on offering the four verdicts on a
+  // subject that had just been archived. So the snapshot is only an identity —
+  // re-resolved against the current graphs on every render, and the dialog
+  // closes when its subject is no longer among them.
+  const liveDetail = useMemo((): DetailItem | null => {
+    if (detail === null) return null;
+    const graphs = [...byPath.values()].flat().map((b) => b.graph);
+    if (detail.kind === "batch") {
+      const graph = graphs.find((g) => g.id === detail.graph.id);
+      return graph ? { kind: "batch", graph } : null;
+    }
+    for (const graph of graphs) {
+      if (detail.kind === "task") {
+        const task = graph.tasks.find((t) => t.id === detail.task.id);
+        if (task)
+          return {
+            kind: "task",
+            batchStatement: graph.statement,
+            task,
+            waitingOn: needNames(task, graph.tasks),
+          };
+      } else {
+        const goal = graph.goals.find((g) => g.id === detail.goal.id);
+        if (goal)
+          return { kind: "goal", batchStatement: graph.statement, goal };
+      }
+    }
+    return null;
+  }, [detail, byPath]);
+
   // Live ruling per subject — the shared derivation (app/tts/lib.ts), the same
   // one the by-individual tab feeds CodeTodoRow.
   const liveRulingByKey = useMemo(
@@ -602,9 +636,9 @@ export default function BatchesTab() {
         ))}
       </section>
 
-      {detail && (
+      {liveDetail && (
         <DetailDialog
-          item={detail}
+          item={liveDetail}
           onClose={() => setDetail(null)}
           onGroundUp={(title, content) => setGroundUp({ title, content })}
           onRule={ruleDetail}
@@ -614,7 +648,7 @@ export default function BatchesTab() {
           // page are invisible, so the dialog's subject's hook is handed in
           // and the verdict row prints it.
           error={
-            detail.kind === "batch" ? batchSessionError : todoSessionError
+            liveDetail.kind === "batch" ? batchSessionError : todoSessionError
           }
         />
       )}

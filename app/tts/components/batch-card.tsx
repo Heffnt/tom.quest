@@ -65,7 +65,10 @@ export function taskSets(tasks: GraphTask[]): {
   return { done, ready, blocked };
 }
 
-function needNames(t: GraphTask, all: GraphTask[]): string[] {
+/** The statements of everything a task still waits on — its unmet `needs`.
+ * Exported because the detail dialog's "waiting on" row is the same list, and
+ * the batches tab rebuilds it when it re-resolves an open dialog's item. */
+export function needNames(t: GraphTask, all: GraphTask[]): string[] {
   const doneIds = new Set(all.filter((x) => x.status === "done").map((x) => x.id));
   const byId = new Map(all.map((x) => [x.id, x]));
   return t.needs
