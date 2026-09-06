@@ -1388,13 +1388,18 @@ const ttsExport = httpAction(async (ctx, request) => {
   if (!Number.isFinite(numItems) || numItems < 1) {
     return jsonResponse(400, { error: "numItems must be a positive number" });
   }
-  const page = await ctx.runQuery(internal.ttsNightly.internalExportPage, {
-    table,
-    boundary,
-    cursor: params.get("cursor"),
-    numItems,
-  });
-  return jsonResponse(200, page);
+  try {
+    const page = await ctx.runQuery(internal.ttsNightly.internalExportPage, {
+      table,
+      boundary,
+      cursor: params.get("cursor"),
+      numItems,
+    });
+    return jsonResponse(200, page);
+  } catch (e) {
+    // A cursor this route did not write (an old run's, a hand-typed one).
+    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 http.route({ path: "/tts/export", method: "GET", handler: ttsExport });

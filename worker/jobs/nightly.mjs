@@ -452,6 +452,13 @@ async function snapshotStep(run) {
       const page = await convexFetch(env, `/tts/export?${params}`);
       for (const row of page.rows) rows.push(row);
       if (page.isDone) break;
+      // EXPORT_PAGE is a ceiling, not a promise: the server ends a page at its
+      // byte budget too (a table of 256KB rows would otherwise ask for more
+      // than one query may read), so a page can be one row. The cursor must
+      // move every time — a server that stopped advancing it would spin here.
+      if (page.continueCursor === cursor) {
+        throw new Error(`/tts/export did not advance its cursor for ${table} — stopped at ${rows.length} rows`);
+      }
       cursor = page.continueCursor;
     }
     counts[table] = rows.length;

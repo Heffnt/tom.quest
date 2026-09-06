@@ -31,11 +31,51 @@ export function isExportTable(name: unknown): name is TableNames {
   return typeof name === "string" && EXPORT_TABLES.includes(name);
 }
 
-// Page-size bounds. A claudeMessages row is up to ~32KB (the daemon's cut), so
-// the default keeps a page well inside a query's read budget; the ceiling is
-// for the small tables.
+// Page bounds. ROWS ARE NOT THE UNIT THAT MATTERS: a dtsTodos row is a few
+// hundred bytes, a claudeMessages row up to ~32KB (the daemon's cut), and a
+// claudeMessageOverflow chunk 256KB — so a fixed 200 rows is 40KB of one table
+// and 50MB of another, past what one query may read. A page that cannot be
+// read is not a slow copy, it is no copy of that table at all, every night.
+// So a page ends at whichever comes first: `numItems` rows, or
+// EXPORT_PAGE_BYTES of row bytes. One row always goes out, however big, so a
+// single oversized row can never stall the walk.
 export const EXPORT_PAGE_DEFAULT = 200;
 export const EXPORT_PAGE_MAX = 1000;
+export const EXPORT_PAGE_BYTES = 2 * 1024 * 1024;
+
+/**
+ * The cursor: the last row of the page, by (_creationTime, _id) — the order
+ * the by_creation_time index reads in, _id breaking a tie. Convex's own
+ * pagination cursor cannot be used here because a page ends where the bytes
+ * run out, not where a fixed row count does.
+ */
+export function exportCursor(row: { _creationTime: number; _id: string }): string {
+  return JSON.stringify({ t: row._creationTime, id: row._id });
+}
+
+export function parseExportCursor(cursor: string | null): { t: number; id: string } | null {
+  if (cursor === null || cursor === "") return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cursor);
+  } catch {
+    throw new Error("not an export cursor");
+  }
+  const c = (parsed ?? {}) as { t?: unknown; id?: unknown };
+  if (typeof c.t !== "number" || typeof c.id !== "string") {
+    throw new Error("not an export cursor");
+  }
+  return { t: c.t, id: c.id };
+}
+
+/** What one row costs the page's budget: the bytes of its JSON, which is what
+ * the job writes and what the read budget is spent on. */
+export function rowBytes(row: unknown): number {
+  const json = JSON.stringify(row, (_key, value) =>
+    typeof value === "bigint" ? value.toString() : value,
+  );
+  return typeof json === "string" ? new TextEncoder().encode(json).length : 0;
+}
 
 // One page, in creation order, of the rows created BEFORE `boundary` — the
 // job fixes the boundary at the instant it starts, so a row written while
@@ -52,18 +92,40 @@ export const internalExportPage = internalQuery({
   handler: async (ctx, { table, boundary, cursor, numItems }) => {
     if (!isExportTable(table)) throw new Error(`not an exported table: ${table}`);
     const size = Math.max(1, Math.min(EXPORT_PAGE_MAX, Math.floor(numItems)));
+    const from = parseExportCursor(cursor);
     // The built-in creation-time index exists on every table; the table name
     // is a runtime value here, which the typed query builder cannot narrow.
-    const result = await ctx.db
+    // The range starts AT the cursor's instant rather than after it, and the
+    // rows at that instant are skipped by id below — a tie there would
+    // otherwise drop a row from the copy silently.
+    const stream = ctx.db
       .query(table as "dtsEvents")
-      .withIndex("by_creation_time", (q) => q.lt("_creationTime", boundary))
-      .order("asc")
-      .paginate({ numItems: size, cursor });
-    return {
-      rows: result.page as unknown[],
-      isDone: result.isDone,
-      continueCursor: result.continueCursor,
-    };
+      .withIndex("by_creation_time", (q) =>
+        from === null
+          ? q.lt("_creationTime", boundary)
+          : q.gte("_creationTime", from.t).lt("_creationTime", boundary),
+      )
+      .order("asc");
+    const rows: unknown[] = [];
+    let bytes = 0;
+    let isDone = true;
+    let continueCursor = cursor ?? "";
+    // Read one row at a time: a page that stops at its byte budget must not
+    // have read the whole of a fixed-size page to get there.
+    for await (const row of stream) {
+      if (from !== null && (row._creationTime < from.t || (row._creationTime === from.t && row._id <= from.id))) {
+        continue;
+      }
+      const size_ = rowBytes(row);
+      if (rows.length > 0 && (rows.length >= size || bytes + size_ > EXPORT_PAGE_BYTES)) {
+        isDone = false;
+        break;
+      }
+      rows.push(row);
+      bytes += size_;
+      continueCursor = exportCursor(row);
+    }
+    return { rows, isDone, continueCursor, bytes };
   },
 });
 

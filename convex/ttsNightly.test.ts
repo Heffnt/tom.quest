@@ -1,7 +1,7 @@
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import schema from "./schema";
-import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES } from "./ttsNightly";
+import { EXPORT_PAGE_BYTES, EXPORT_PAGE_DEFAULT, EXPORT_TABLES } from "./ttsNightly";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -105,6 +105,95 @@ describe("GET /tts/export", () => {
 
   it("defaults the page size", () => {
     expect(EXPORT_PAGE_DEFAULT).toBe(200);
+  });
+
+  // witness: bounded by rows alone, 200 rows of a big-row table (claudeMessages
+  // at the daemon's 32KB cut, claudeMessageOverflow at 256KB a chunk) is tens
+  // of megabytes in one query — past the read budget, so that table has no copy
+  // at all, every night, while the small tables look fine.
+  it("ends a page at its byte budget, and the pages still cover the table in order", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const body = "x".repeat(300 * 1024); // a big row, of the shape that breaks it
+    const ids = await t.run(async (ctx) => {
+      const sessionId = await ctx.db.insert("claudeSessions", {
+        title: "big",
+        kind: "adhoc",
+        repo: "none",
+        repos: [],
+        status: "ended",
+        statusChangedAt: 1,
+        nextSeq: 1,
+        createdAt: 1,
+      });
+      const out = [];
+      for (let i = 0; i < 12; i++) {
+        out.push(
+          await ctx.db.insert("claudeMessages", {
+            sessionId,
+            seq: i,
+            turn: 1,
+            kind: "tool-result",
+            content: { text: body },
+            createdAt: 1,
+          }),
+        );
+      }
+      return out;
+    });
+    const boundary = Date.now() + 60_000;
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    for (;;) {
+      const url = `/tts/export?table=claudeMessages&boundary=${boundary}&numItems=200${
+        cursor === null ? "" : `&cursor=${encodeURIComponent(cursor)}`
+      }`;
+      const page = await (await get(t, url)).json();
+      pages += 1;
+      expect(page.rows.length).toBeGreaterThan(0);
+      expect(page.bytes).toBeLessThanOrEqual(EXPORT_PAGE_BYTES);
+      for (const row of page.rows) seen.push(row._id);
+      if (page.isDone) break;
+      expect(page.continueCursor).not.toBe(cursor);
+      cursor = page.continueCursor;
+      expect(pages).toBeLessThan(20); // a walk that cannot end is the other bug
+    }
+    // 12 rows of ~300KB against a 2 MiB budget: more than one page, and every
+    // row exactly once, in creation order.
+    expect(pages).toBeGreaterThan(1);
+    expect(seen).toEqual(ids);
+  });
+
+  it("gives one row its own page when the row alone exceeds the budget", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      for (const size of [EXPORT_PAGE_BYTES + 1024, 10]) {
+        await ctx.db.insert("dtsEvents", { at: 1, kind: "big", data: { body: "y".repeat(size) } });
+      }
+    });
+    const boundary = Date.now() + 60_000;
+    const first = await (await get(t, `/tts/export?table=dtsEvents&boundary=${boundary}`)).json();
+    expect(first.rows).toHaveLength(1);
+    expect(first.bytes).toBeGreaterThan(EXPORT_PAGE_BYTES);
+    expect(first.isDone).toBe(false);
+    const rest = await (
+      await get(
+        t,
+        `/tts/export?table=dtsEvents&boundary=${boundary}&cursor=${encodeURIComponent(first.continueCursor)}`,
+      )
+    ).json();
+    expect(rest.rows).toHaveLength(1);
+    expect(rest.isDone).toBe(true);
+  });
+
+  it("refuses a cursor it did not write", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const res = await get(t, `/tts/export?table=dtsEvents&boundary=${Date.now()}&cursor=nonsense`);
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/cursor/);
   });
 });
 
