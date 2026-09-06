@@ -334,18 +334,99 @@ describe("POST /tts/job-failed", () => {
     });
   }
 
+  async function ok(t: ReturnType<typeof convexTest>, body: unknown, key = "s3cret") {
+    return await t.fetch("/tts/job-ok", {
+      method: "POST",
+      headers: { "X-TTS-Key": key, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  const failures = async (t: ReturnType<typeof convexTest>) =>
+    (await allEvents(t)).filter((e) => e.kind === "job-failed");
+
   it("records the job and its plain message as a digest-readable failure", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
     const error = "Canvas rejected the access token (HTTP 401)";
     expect((await report(t, { job: "poll-canvas", error })).status).toBe(200);
 
-    const rows = (await allEvents(t)).filter((e) => e.kind === "job-failed");
+    const rows = await failures(t);
     expect(rows).toHaveLength(1);
     // The kind ends in "-failed", which is the whole rule convex/ttsDigest.ts
     // reads to put a row in the morning digest's failures section.
     expect(rows[0].kind.endsWith("-failed")).toBe(true);
     expect(rows[0].data).toEqual({ job: "poll-canvas", error });
+    expect(rows[0].key).toBeUndefined(); // an unkeyed report is per call
+  });
+
+  // A DEAD CREDENTIAL IS DEAD FOR DAYS, and the job reporting it runs every
+  // thirty minutes. Unkeyed that was a row every half hour for ever: the
+  // morning digest listed each one and the hourly update repeated the same
+  // sentence around the clock, burying the one fact Tom needed under its own
+  // repetitions.
+  it("writes one row per condition, however many ticks report it", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const failure = {
+      job: "poll-canvas",
+      error: "Canvas rejected the access token (HTTP 401)",
+      key: "poll-canvas:canvas-auth",
+    };
+    expect(await (await report(t, failure)).json()).toMatchObject({ reported: true });
+    for (let tick = 0; tick < 5; tick++) {
+      expect(await (await report(t, failure)).json()).toMatchObject({
+        reported: false,
+      });
+    }
+    const rows = await failures(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].key).toBe("poll-canvas:canvas-auth");
+  });
+
+  it("reports the next expiry, because the clean run in between closed the last", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const key = "poll-canvas:canvas-auth";
+    const failure = { job: "poll-canvas", error: "HTTP 401", key };
+    await report(t, failure);
+
+    // Tom minted a new token and the job read Canvas again.
+    const recovery = await ok(t, { job: "poll-canvas", key });
+    expect(recovery.status).toBe(200);
+    expect(await recovery.json()).toMatchObject({ recovered: true });
+    // A clean run that ends nothing is not news and writes nothing.
+    expect(await (await ok(t, { job: "poll-canvas", key })).json()).toMatchObject({
+      recovered: false,
+    });
+    const recovered = (await allEvents(t)).filter((e) => e.kind === "job-recovered");
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0].key).toBe(key);
+
+    // Months later the new token expires too, and that is a second fact.
+    expect(await (await report(t, failure)).json()).toMatchObject({ reported: true });
+    expect(await failures(t)).toHaveLength(2);
+  });
+
+  it("keeps two conditions apart, and an unkeyed report out of both", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    await report(t, { job: "poll-canvas", error: "HTTP 401", key: "a" });
+    await report(t, { job: "poll-gmail", error: "no verdict", key: "b" });
+    await report(t, { job: "poll-canvas", error: "one bad run" });
+    await report(t, { job: "poll-canvas", error: "another bad run" });
+    expect(await failures(t)).toHaveLength(4);
+  });
+
+  it("refuses a blank key on either route, and an unnamed clean run", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    expect((await report(t, { job: "j", error: "e", key: "  " })).status).toBe(400);
+    expect((await report(t, { job: "j", error: "e", key: 17 })).status).toBe(400);
+    expect((await ok(t, { job: "j" })).status).toBe(400);
+    expect((await ok(t, { key: "a" })).status).toBe(400);
+    expect((await ok(t, { job: "j", key: "a" }, "nope")).status).toBe(401);
+    expect(await allEvents(t)).toHaveLength(0);
   });
 
   it("refuses a report that names no job or no error", async () => {

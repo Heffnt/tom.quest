@@ -16,6 +16,8 @@ import {
   declinedLine,
   MAX_BRIEF_CHARS,
   MAX_LIFE_PER_RUN,
+  reportJobFailed,
+  reportJobOk,
   ttsItemLink,
 } from "./tts-lib.mjs";
 
@@ -132,6 +134,49 @@ describe("captureContext", () => {
     expect(String(fetchMock.mock.calls[0][0])).toBe(
       "https://x.convex.site/tts/capture-context",
     );
+  });
+});
+
+// A job's report about itself must never become a second unreported failure,
+// and telling Tom about a bad run must never cost the run's real work.
+describe("reportJobFailed / reportJobOk", () => {
+  const env = { CONVEX_SITE_URL: "https://x.convex.site", TTS_WORKER_KEY: "k" };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("posts the job, the words and the condition key", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ ok: true, reported: true }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(
+      await reportJobFailed(env, {
+        job: "poll-canvas",
+        error: "the token is dead",
+        key: "poll-canvas:canvas-auth",
+      }),
+    ).toEqual({ ok: true, reported: true });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe("https://x.convex.site/tts/job-failed");
+    expect(JSON.parse(init.body)).toEqual({
+      job: "poll-canvas",
+      error: "the token is dead",
+      key: "poll-canvas:canvas-auth",
+    });
+  });
+
+  it("swallows a refusal rather than failing twice over one failure", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 500, text: async () => "boom" })),
+    );
+    expect(await reportJobFailed(env, { job: "poll-canvas", error: "x" })).toBeNull();
+    expect(await reportJobOk(env, { job: "poll-canvas", key: "k" })).toBeNull();
   });
 });
 

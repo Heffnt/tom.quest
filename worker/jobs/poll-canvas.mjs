@@ -36,11 +36,15 @@
 //                      in the Convex env.
 //   CANVAS_BASE_URL  — optional; defaults to https://canvas.wpi.edu.
 //
-// A DEAD TOKEN IS REPORTED, NOT BURIED. A Canvas access token expires or is
-// revoked and Canvas answers 401/403; the job then writes a dtsEvents
-// "job-failed" row (POST /tts/job-failed) whose message says in plain words
-// what happened and what to do, so it reaches Tom in the morning digest
-// instead of sitting in /var/log/tts where nobody reads it.
+// A DEAD TOKEN IS REPORTED, NOT BURIED — ONCE PER EXPIRY. A Canvas access
+// token expires or is revoked and Canvas answers 401/403; the job then writes
+// a dtsEvents "job-failed" row (POST /tts/job-failed) whose message says in
+// plain words what happened and what to do, so it reaches Tom in the morning
+// digest instead of sitting in /var/log/tts where nobody reads it. The row is
+// keyed on the CONDITION (CANVAS_AUTH_KEY), so the days it takes him to mint a
+// new token are one row and not one every thirty minutes; the first run that
+// gets an answer out of Canvas says so (POST /tts/job-ok), which records the
+// recovery and re-arms the report for the next expiry.
 //
 // TRIAGE (announcements): one non-agentic Claude call per batch, under the
 // deployment's own capture-triage rules — GET /tts/capture-context, the synced
@@ -64,6 +68,8 @@ import {
   declinedLine,
   extractJsonObject,
   loadEnv,
+  reportJobFailed,
+  reportJobOk,
   runClaude,
 } from "./tts-lib.mjs";
 
@@ -124,6 +130,20 @@ export function canvasUrl(env, path, params = {}) {
 
 /** The HTTP statuses that mean the TOKEN is the problem, not the request. */
 export const CANVAS_AUTH_STATUSES = new Set([401, 403]);
+
+/**
+ * The CONDITION a dead token is reported under, not the run it was noticed in.
+ *
+ * A revoked Canvas token stays revoked until Tom mints a new one, which is
+ * days; this job runs every thirty minutes. Reported per run that is one
+ * dtsEvents row every half hour for ever — the morning digest lists every one
+ * of them and the hourly update repeats the same sentence around the clock,
+ * which buries the single fact he needed under its own repetitions. Keyed,
+ * it is one row until the token works again, and the clean run that follows
+ * writes the recovery and re-arms it for the next expiry (convex/ttsJobs.ts).
+ * Exported for tests.
+ */
+export const CANVAS_AUTH_KEY = "poll-canvas:canvas-auth";
 
 /**
  * Pure: the plain words a dead Canvas token is reported in. It reaches Tom in
@@ -393,6 +413,13 @@ async function main() {
     enrollment_state: "active",
     per_page: 100,
   });
+  // The token answered, which is the whole of what CANVAS_AUTH_KEY reports on.
+  // Said here rather than at the end of the run so the two halves' own
+  // failures — a Convex refusal, a triage timeout — cannot hold back the news
+  // that the credential Tom replaced is working. Writes a row only when it
+  // closes a reported failure.
+  const ok = await reportJobOk(env, { job: "poll-canvas", key: CANVAS_AUTH_KEY });
+  if (ok?.recovered) console.log("[poll-canvas] the Canvas token works again");
   if (courses.length === 0) {
     console.log("[poll-canvas] no active courses");
     return;
@@ -424,16 +451,15 @@ if (invokedDirectly) {
     // the morning digest carries it. Everything else stays a log line and a
     // non-zero exit — the cron tick is the retry.
     if (CANVAS_AUTH_STATUSES.has(err.status)) {
-      try {
-        await convexFetch(loadEnv(), "/tts/job-failed", {
-          job: "poll-canvas",
-          error: tokenExpiredMessage(err.status),
-        });
-        console.error("[poll-canvas] reported the dead token to TTS");
-      } catch (reportErr) {
-        // Reporting a failure must not become a second unreported failure.
-        console.error(`[poll-canvas] could not report it: ${reportErr.message}`);
-      }
+      // Keyed on the condition: one row until the token works again, not one
+      // every thirty minutes for the days it takes Tom to mint a new one.
+      const result = await reportJobFailed(loadEnv(), {
+        job: "poll-canvas",
+        error: tokenExpiredMessage(err.status),
+        key: CANVAS_AUTH_KEY,
+      });
+      if (result?.reported) console.error("[poll-canvas] reported the dead token to TTS");
+      else if (result) console.error("[poll-canvas] the dead token is already reported");
     }
     process.exit(1);
   });

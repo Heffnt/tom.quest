@@ -192,6 +192,44 @@ export function declined(context, name) {
   return (context?.declinedIntegrations ?? []).find((d) => d.name === target) ?? null;
 }
 
+// ---------------------------------------------------------------------------
+// A job's own report about itself (the lifeos update, phase 6)
+// ---------------------------------------------------------------------------
+//
+// A cron job's only voice used to be /var/log/tts, which Tom does not read.
+// These two calls are the voice he does read: POST /tts/job-failed writes a
+// dtsEvents row the morning digest and the hourly update both carry, and POST
+// /tts/job-ok closes one.
+//
+// `key` NAMES THE CONDITION, NOT THE RUN — `poll-canvas:canvas-auth`. A
+// condition already reported and not since recovered is not reported again
+// (convex/ttsJobs.ts), so a credential that is dead for a week is one row and
+// not one row a tick. Omit the key for a failure that is about this run alone.
+//
+// NEITHER CALL THROWS. Reporting a failure must not become a second unreported
+// failure, and telling Tom about a bad run is never worth losing the run's
+// real work — so a refusal is logged here and the caller carries on.
+
+/** Report this job's failure in plain words. Returns null if the report failed. */
+export async function reportJobFailed(env, { job, error, key }) {
+  try {
+    return await convexFetch(env, "/tts/job-failed", { job, error, key });
+  } catch (err) {
+    console.error(`[${job}] could not report the failure: ${err.message}`);
+    return null;
+  }
+}
+
+/** Say this job just ran clean, which re-arms the keyed report above. */
+export async function reportJobOk(env, { job, key }) {
+  try {
+    return await convexFetch(env, "/tts/job-ok", { job, key });
+  } catch (err) {
+    console.error(`[${job}] could not report the clean run: ${err.message}`);
+    return null;
+  }
+}
+
 /** The one line a poller prints when it stands down. Exported for tests. */
 export function declinedLine(job, ruling) {
   const on = new Date(ruling.ruledAt).toISOString().slice(0, 10);

@@ -15,6 +15,7 @@ import {
   ANNOUNCEMENTS_CONTEXT_LIMIT,
   ANNOUNCEMENTS_CONTEXT_PARAM,
   ANNOUNCEMENT_SOURCE,
+  CANVAS_AUTH_KEY,
   CANVAS_AUTH_STATUSES,
   FUTURE_WINDOW_DAYS,
   MAX_LOOKBACK_MS,
@@ -192,6 +193,14 @@ describe("mapCanvasAssignments", () => {
 describe("a dead Canvas token", () => {
   it("is the two statuses that mean the token, not the request", () => {
     expect([...CANVAS_AUTH_STATUSES].sort()).toEqual([401, 403]);
+  });
+
+  it("is reported under the CONDITION, not under the run that noticed it", () => {
+    // A revoked token stays revoked for the days it takes Tom to mint a new
+    // one, and this job runs every thirty minutes. Keyed, that is one row
+    // until the token works again (convex/ttsJobs.ts); unkeyed it was one row
+    // every half hour, and the morning digest listed every one of them.
+    expect(CANVAS_AUTH_KEY).toBe("poll-canvas:canvas-auth");
   });
 
   it("is reported in words that say what to do, not as a status line", () => {

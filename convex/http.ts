@@ -313,7 +313,7 @@ http.route({
 });
 
 // POST /tts/job-failed — a box job reporting its own failure in plain words
-// (the lifeos update, phase 6). Body: { job, error }.
+// (the lifeos update, phase 6). Body: { job, error, key? }.
 //
 // This is the channel convex/ttsDigest.ts already reads: every "-failed" event
 // kind becomes a line in the morning digest's job-failures section, and
@@ -324,6 +324,12 @@ http.route({
 //
 // A REPORT, NOT A TODO. The row records what broke and what to do about it;
 // deciding whether it is worth Tom's morning is the digest's job.
+//
+// `key` names the CONDITION rather than the run — `poll-canvas:canvas-auth`.
+// A condition already reported and not since recovered is not reported again
+// (convex/ttsJobs.ts), because a dead credential is dead for days and a row a
+// tick would bury the one fact under its own repetitions. A report without a
+// key is unconditional: one row per call.
 const ttsJobFailed = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -340,14 +346,51 @@ const ttsJobFailed = httpAction(async (ctx, request) => {
   if (typeof b.error !== "string" || b.error.trim().length === 0) {
     return jsonResponse(400, { error: "error (non-empty string) required" });
   }
-  await ctx.runMutation(internal.tts.internalLogEvent, {
-    kind: "job-failed",
-    data: { job: b.job, error: b.error },
+  if (b.key !== undefined && (typeof b.key !== "string" || b.key.trim() === "")) {
+    return jsonResponse(400, { error: "key, when given, is a non-empty string" });
+  }
+  const result = await ctx.runMutation(internal.ttsJobs.internalReportJobFailed, {
+    job: b.job,
+    error: b.error,
+    key: typeof b.key === "string" ? b.key : undefined,
   });
-  return jsonResponse(200, { ok: true });
+  return jsonResponse(200, { ok: true, ...result });
 });
 
 http.route({ path: "/tts/job-failed", method: "POST", handler: ttsJobFailed });
+
+// POST /tts/job-ok — the same box job saying it just ran clean. Body:
+// { job, key }.
+//
+// The other half of the keyed report above, and the only thing that re-arms
+// it: a run that ends a reported failure writes the recovery row and the next
+// expiry of the same credential is reported afresh. A run that ends nothing
+// writes nothing — a job running clean every thirty minutes must not become a
+// row every thirty minutes.
+const ttsJobOk = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.job !== "string" || b.job.trim().length === 0) {
+    return jsonResponse(400, { error: "job (non-empty string) required" });
+  }
+  if (typeof b.key !== "string" || b.key.trim().length === 0) {
+    return jsonResponse(400, { error: "key (non-empty string) required" });
+  }
+  const result = await ctx.runMutation(internal.ttsJobs.internalReportJobOk, {
+    job: b.job,
+    key: b.key,
+  });
+  return jsonResponse(200, { ok: true, ...result });
+});
+
+http.route({ path: "/tts/job-ok", method: "POST", handler: ttsJobOk });
 
 // POST /tts/calendar-event — the Jarvis Box's path through the ONE write door
 // to Tom's Google Calendar (convex/ttsCalendarWrite.ts owns the door; this
