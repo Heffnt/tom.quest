@@ -1,6 +1,7 @@
 import { convexTest } from "convex-test";
 import { describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { matchQuotedUnit, turnSpans, turnUnits } from "./ttsRulings";
 
@@ -197,6 +198,90 @@ describe("TTS unified rulings", () => {
     expect(rulings).toHaveLength(2);
     expect(rulings.every((r) => r.appliedAt === undefined)).toBe(true);
     expect(rulings.every((r) => r.applyResult === undefined)).toBe(true);
+  });
+
+  // ── Every verdict's effect at write time (the lifeos update, phase 7: there
+  // is no apply job on the box) ────────────────────────────────────────────
+  // witness: drop any one of the four life branches in insertRuling.
+  it("life: approve ratifies, archive archives, revise hands back, session waits for Tom's session", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const ids: Record<string, Id<"dtsTodos">> = {};
+    for (const verdict of ["approve", "archive", "revise", "session"] as const) {
+      ids[verdict] = await tom.mutation(api.tts.createTodo, { statement: verdict });
+      await tom.mutation(api.ttsRulings.recordRuling, {
+        todoId: ids[verdict],
+        verdict,
+        sentence: verdict === "revise" ? "shorter" : undefined,
+      });
+    }
+    const rulings = await tom.query(api.ttsRulings.listRulings, {});
+    const by = (verdict: string) => rulings.find((r) => r.verdict === verdict)!;
+    expect(by("approve").applyResult).toBe("plan ratified");
+    expect(by("archive").applyResult).toBe("status archived");
+    expect((await t.run(async (ctx) => ctx.db.get(ids.archive)))?.status).toBe("archived");
+    // revise: readiness dropped here; the planner's prepare pass consumes it.
+    expect(by("revise").appliedAt).toBeUndefined();
+    expect((await t.run(async (ctx) => ctx.db.get(ids.revise)))?.readiness).toBe("unprepared");
+    // session: applied the moment Tom opens a session on the todo.
+    expect(by("session").appliedAt).toBeUndefined();
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "talk",
+      kind: "focus-item",
+      repo: "none",
+      todoId: ids.session,
+      initialPrompt: "hello",
+    });
+    const after = (await tom.query(api.ttsRulings.listRulings, {})).find(
+      (r) => r.verdict === "session",
+    )!;
+    expect(after.applyResult).toBe(`session ${sessionId}`);
+    const pending = await t.query(internal.ttsRulings.internalPendingRulings, {});
+    expect(pending.map((r) => r.verdict)).toEqual(["revise"]);
+  });
+
+  // witness: drop the code branch of markLiveCodeSessionRulingsApplied, or the
+  // call to it in claudeSessions.insertSession.
+  it("code: revise waits for the planner's brief pass; session applies when the code block session opens; approve and archive wait for the scheduler", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const code = (externalId: string) => ({ repo: "ComplexMultiTrigger", externalId });
+    await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-revise"), verdict: "revise", sentence: "again" });
+    await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-session"), verdict: "session" });
+    await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-approve"), verdict: "approve" });
+    await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-archive"), verdict: "archive" });
+    let pending = await t.query(internal.ttsRulings.internalPendingRulings, {});
+    expect(pending.map((r) => r.externalId).sort()).toEqual(
+      ["c-approve", "c-archive", "c-revise", "c-session"],
+    );
+    // A block session on ANOTHER category, and an autonomous mission, apply
+    // nothing on the code subject.
+    await tom.mutation(api.claudeSessions.createSession, {
+      title: "admin block",
+      kind: "block",
+      blockCategory: "admin",
+      repo: "none",
+      initialPrompt: "hello",
+    });
+    pending = await t.query(internal.ttsRulings.internalPendingRulings, {});
+    expect(pending.some((r) => r.externalId === "c-session")).toBe(true);
+    // The code block session is the conversation Tom asked for.
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "code block",
+      kind: "block",
+      blockCategory: "code",
+      repo: "ComplexMultiTrigger",
+      initialPrompt: "hello",
+    });
+    const rulings = await tom.query(api.ttsRulings.listRulings, {});
+    const session = rulings.find((r) => r.externalId === "c-session")!;
+    expect(session.applyResult).toBe(`session ${sessionId}`);
+    // The other three still ride the feed for their consumers: the planner's
+    // brief pass (revise) and the auto-session scheduler (approve, archive).
+    pending = await t.query(internal.ttsRulings.internalPendingRulings, {});
+    expect(pending.map((r) => r.externalId).sort()).toEqual(
+      ["c-approve", "c-archive", "c-revise"],
+    );
   });
 
   // witness: drop the life-approve instant-apply branch from insertRuling in

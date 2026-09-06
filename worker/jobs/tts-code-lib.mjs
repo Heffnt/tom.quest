@@ -1,14 +1,13 @@
 // tts-code-lib.mjs — shared helpers for the TTS CODE-TODO work on the box
-// (the planner's brief pass in plan-graphs.mjs, apply-rulings.mjs,
-// execute-approved.mjs). Plain Node ESM, ZERO npm dependencies — same rules
-// as tts-lib.mjs.
+// (the planner's brief pass in plan-graphs.mjs, execute-approved.mjs). Plain
+// Node ESM, ZERO npm dependencies — same rules as tts-lib.mjs.
 //
 // The code-todo loop in one breath: CMT (github.com/Heffnt/ComplexMultiTrigger)
 // keeps its standing intent in vqc/todos.yaml; the planner's brief pass
 // explains each open entry to Tom and recommends a ruling; Tom rules in the
-// tom.quest UI (stored in Convex); the apply job carries out non-execution
-// rulings; the executor implements ONE approved plan per hour on a branch and
-// opens a PR — merging that PR is the human gate.
+// tom.quest UI (stored in Convex, where every verdict's effect is applied —
+// convex/ttsRulings.ts); the executor implements ONE approved plan per hour
+// on a branch and opens a PR — merging that PR is the human gate.
 //
 // STATE ON THE JARVIS BOX (all harmless to lose, per the no-state rule):
 //   /var/cache/tts/ComplexMultiTrigger — shallow cache clone; rebuilt from
@@ -37,13 +36,6 @@ export const TODOS_GUARD_TEST = "tests/guards/test_bb_todos.py";
 
 export const BRIEF_HASHES_FILE = "/var/lib/tts/brief-hashes.json";
 export const BRIEF_CACHE_ROOT = "/var/cache/tts/briefs";
-
-// A "replan-requested" sentinel used to ride the cursor file so a revise
-// ruling forced a re-brief. The planner's brief pass no longer reads it: it
-// takes the pending revise rulings from /tts/rulings itself and consumes each
-// once the fresh brief has posted. Still written by apply-rulings.mjs until
-// that job goes — a non-hash value still forces one re-brief, harmlessly.
-export const REPLAN_SENTINEL = "replan-requested";
 
 // The first characters of the closed-todos banner line in vqc/todos.yaml.
 // Everything below this line is intent HISTORY; the live surface is above it.

@@ -79,9 +79,8 @@ on a schedule:
    Convex (`convex/ttsDigest.ts`) and sent by `sendDigest`, so a missing
    morning message is itself the monitoring signal. This job's digest half
    goes in phase 7 with the queue.
-8. **apply-rulings** (every 10 min) — see the ruling loop below.
-9. **execute-approved** (hourly at :45) — see the ruling loop below.
-10. **nightly** (4:00 a.m. New York) — copies the Convex record and this
+8. **execute-approved** (hourly at :45) — see the ruling loop below.
+9. **nightly** (4:00 a.m. New York) — copies the Convex record and this
    box's session files into WikiTom, runs the learning step, pushes, and
    posts the model-of-tom files back to Convex. See "The nightly job" below.
 
@@ -213,24 +212,18 @@ tom.quest UI in seconds:
   live, plan stale), `session` (open judgment call; all tier C), or
   `approve` — plus an exec class (`box` vs `needs-turing`). Briefs POST to
   Convex and are also cached locally under `/var/cache/tts/briefs/`.
-- Tom rules on each brief in the UI; Convex queues the rulings. A `revise`
-  is consumed by the brief pass once the fresh brief has posted.
-- **apply-rulings** carries out the non-execution rulings: `defer` records
-  it; `stale-replan` queues a re-brief that must propose a fresh plan;
-  `needs-session` pushes a session-agenda file to CMT master; and
-  `propose-archive` closes the entry in `vqc/todos.yaml` (text surgery, then
-  CMT's own todos guard test — a red guard reverts and reports instead of
-  pushing).
+- Tom rules on each brief in the UI. There is no apply job: every verdict's
+  effect is applied at write time in Convex (`convex/ttsRulings.ts`), or at
+  the one moment its effect can exist. `revise` is consumed by the brief
+  pass once the fresh brief has posted, with Tom's sentence as the replan
+  note. `session` is applied when Tom opens the code block session from
+  the calendar. `archive` is admitted by the auto-session scheduler as a
+  worker mission that closes the entry in `vqc/todos.yaml` and opens a
+  pull request — the same lane as `approve`, below.
 - **execute-approved** takes ONE pending `approve` per hour, runs agentic
   Claude in a throwaway full clone on a `tts/<id>` branch, verifies commits +
   the todos guard, pushes, and opens a PR. **Merging the PR is the human
   gate** — nothing lands on master autonomously.
-
-To start a `needs-session` working session, from any CMT checkout:
-
-```
-claude "Run the TTS session in dev/handoff/tts-session-<id>.md"
-```
 
 ## Codex
 
@@ -533,7 +526,6 @@ node /opt/tts/poll-outlook.mjs            # prints the OUTLOOK_* keys still miss
 node /opt/tts/prepare-queue.mjs --force   # prep today's queue regardless of hour
 node /opt/tts/plan-graphs.mjs             # prepare, brief, plan — now
 node /opt/tts/plan-graphs.mjs --force     # also re-prepare and re-brief EVERYTHING
-node /opt/tts/apply-rulings.mjs           # apply pending rulings now
 node /opt/tts/execute-approved.mjs        # execute one approved plan now
 node /opt/tts/nightly.mjs --force         # the nightly job, every step, now
 ```
@@ -545,6 +537,5 @@ whichever side of daylight saving we're on).
 ## Logs
 
 Cron output: one `/var/log/tts/<job>.log` per job (poll-dump, poll-gmail,
-poll-canvas, apply-time-notes, plan-graphs, prepare-queue, apply-rulings,
-execute-approved, nightly), truncated monthly by cron — they are convenience,
-not state.
+poll-canvas, apply-time-notes, plan-graphs, prepare-queue, execute-approved,
+nightly), truncated monthly by cron — they are convenience, not state.

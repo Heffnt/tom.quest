@@ -12,6 +12,7 @@ import { internal } from "./_generated/api";
 import { requireTom } from "./authRoles";
 import {
   liveRulings,
+  markLiveCodeSessionRulingsApplied,
   markLiveSessionRulingApplied,
   subjectKey,
 } from "./ttsRulings";
@@ -597,6 +598,17 @@ async function insertSession(
   // happen while the ruling read as satisfied.
   if (seed.todoId !== undefined && seed.mode !== "autonomous") {
     await markLiveSessionRulingApplied(ctx, seed.todoId, sessionId);
+  }
+  // The code twin: a "session" verdict on a code todo is applied when Tom
+  // opens the CODE BLOCK session — the interactive session whose turns are
+  // about code todos (ttsRulings.refuseUnlessSessionSubject reads it that
+  // way). Same interactive-only reason as above.
+  if (
+    seed.kind === "block" &&
+    seed.blockCategory === "code" &&
+    seed.mode !== "autonomous"
+  ) {
+    await markLiveCodeSessionRulingsApplied(ctx, sessionId);
   }
   // EVERY opener begins with the model-of-tom files (the lifeos update, phase
   // 4): the browser-built prompts, the worker missions, the CLI pen, a fork —

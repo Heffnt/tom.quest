@@ -407,11 +407,11 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # line above at cutover.
 27,57 * * * * root /usr/bin/flock -n /var/lock/tts-plan-graphs.lock /usr/bin/node /opt/tts/plan-graphs.mjs >> /var/log/tts/plan-graphs.log 2>&1
 
-# Apply Tom's non-execution rulings (defer / stale-replan / needs-session /
-# propose-archive) every 10 minutes, so a ruling made in the UI takes effect
-# within minutes. The job serializes itself via /var/lib/tts/apply.lock —
-# overlapping cron ticks exit immediately instead of double-applying.
-*/10 * * * * root /usr/bin/node /opt/tts/apply-rulings.mjs >> /var/log/tts/apply-rulings.log 2>&1
+# Tom's rulings need no apply job: every verdict's effect is applied at write
+# time in Convex (convex/ttsRulings.ts), or at the one moment its effect can
+# exist — a code revise by the planner's brief pass, a code approve or archive
+# by the auto-session scheduler as a worker mission, a session verdict when
+# Tom opens the session.
 
 # Execute ONE approved plan per hour at :45 (agentic Claude in a throwaway
 # clone, 45-min cap, PR as output — merging the PR is the human gate). One

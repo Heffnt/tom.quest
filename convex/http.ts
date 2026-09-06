@@ -997,14 +997,16 @@ const ttsCodeBriefs = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/code-briefs", method: "POST", handler: ttsCodeBriefs });
 
-// GET /tts/rulings — the rulings a worker job should act on (unapplied
-// and not superseded by a newer ruling on the same subject), from the unified
+// GET /tts/rulings — the rulings a box job should act on (unapplied and not
+// superseded by a newer ruling on the same subject), from the unified
 // ttsRulings table. ALL THREE subject types ride the one feed: rows carry
-// subjectType ("code" → the apply job; "life" with verdict "revise" → the
-// preparer, or form-batches when the subject is a v1 batch; "batch" with
-// verdict "revise" → the planner, worker/jobs/plan-graphs.mjs). Each job
-// filters for its own kind and consumes only those. Each row carries its _id,
-// which the worker echoes back to /tts/ruling-applied.
+// subjectType, and the planner (worker/jobs/plan-graphs.mjs) filters for its
+// own kinds — a "life" revise → its prepare pass, a "code" revise → its brief
+// pass, a "batch" revise → its plan pass (and form-batches takes a "life"
+// revise whose subject is a v1 batch) — consuming only what it served. A
+// "code" approve or archive rides the feed too but is consumed by the
+// auto-session scheduler in Convex. Each row carries its _id, which the
+// planner echoes back to /tts/ruling-applied.
 const ttsRulingsFeed = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -1017,9 +1019,8 @@ const ttsRulingsFeed = httpAction(async (ctx, request) => {
 
 // /tts/rulings is the only path. The feed carries every subject type, so there
 // is no code-scoped variant: a /tts/code-rulings alias pointed at this same
-// handler for workers predating the unified feed, and was removed once all
-// five callers (apply-rulings, execute-approved, form-batches,
-// prepare-life-todos, plan-graphs) had moved to /tts/rulings.
+// handler for workers predating the unified feed, and was removed once every
+// caller had moved to /tts/rulings.
 http.route({ path: "/tts/rulings", method: "GET", handler: ttsRulingsFeed });
 
 // POST /tts/code-ruling-applied — the worker's apply report. Body: { id,
