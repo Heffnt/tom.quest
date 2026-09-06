@@ -1,31 +1,34 @@
 "use client";
 
-// The dialog the two SENTENCE verdicts open — a fixed overlay, so nothing on
-// the page moves (CLAUDE.md UI rules: anything composed opens in a fixed
-// dialog). revise requires its sentence: it is the whole redirection the
-// agent receives, and convex/ttsRulings.ts refuses a revise without one.
-// archive takes an optional sentence: the condition under which the subject
-// should be proposed back. approve and session take no sentence from here
-// and never open this dialog (verdict-buttons.tsx records them on the press).
+// THE ONE PLACE ANYTHING IS COMPOSED on /tts — a fixed overlay, so nothing on
+// the page moves (CLAUDE.md UI rules: interactions never shift layout; anything
+// composed opens in a fixed dialog, never an inline form between controls).
+//
+// Two callers, one mechanism. The two SENTENCE VERDICTS (verdict-buttons.tsx):
+// revise requires its sentence — it is the whole redirection the agent
+// receives, and convex/ttsRulings.ts refuses a revise without one — and archive
+// takes an optional sentence, the condition under which the subject should be
+// proposed back. approve and session take no sentence and never open this
+// dialog (they record on the press). And the two STATUS ACTIONS on a life todo
+// (options-row.tsx): done with its note, archive with its unarchive condition.
 //
 // The dialog states where the subject stands (its steps, what is open on Tom)
 // before asking for the sentence; the confirm button's label is the exact
-// effect — "record revise", "record archive" — and its ⓘ names the call.
+// effect — "record revise", "mark done" — and its ⓘ names the call. Every word
+// of that comes from the caller: this component knows nothing about verdicts.
 import { useState } from "react";
 import Info from "./info";
 import { VERDICTS_EXPLANATION } from "../explanations";
-import { planNeedsYou, type PlanStep } from "../lib";
+import { errMessage, planNeedsYou, type PlanStep } from "../lib";
 import { nextStep, planProgress } from "./plan-bar";
 
 export type SentenceVerdict = "revise" | "archive";
 
-const PLACEHOLDER: Record<SentenceVerdict, string> = {
-  revise: "the sentence that redirects the agent (required)",
-  archive: "propose it back when… (optional)",
-};
-
 export default function RulingDialog({
-  verdict,
+  action,
+  confirm,
+  placeholder,
+  required = false,
   call,
   effect,
   statement,
@@ -33,15 +36,21 @@ export default function RulingDialog({
   onConfirm,
   onClose,
 }: {
-  verdict: SentenceVerdict;
-  /** The exact call the confirm fires — the popover's mono line. The verdict
-   * row that opened this dialog (verdict-buttons.tsx) owns both texts. */
+  /** The heading: the word for what is being composed ("revise", "done"). */
+  action: string;
+  /** The confirm button's label — its exact backend effect, in words. */
+  confirm: string;
+  placeholder: string;
+  /** The sentence is required (revise — the server refuses an empty one). */
+  required?: boolean;
+  /** The exact call the confirm fires — the popover's mono line. The control
+   * that opened this dialog owns both texts. */
   call: string;
   /** What that call sets in motion — the popover's plain half. */
   effect: string;
   statement: string;
   plan?: PlanStep[];
-  /** Records the ruling. Absent = the dialog only closes (the mockup route). */
+  /** Records it. Absent = the dialog only closes (the mockup route). */
   onConfirm?: (sentence: string) => Promise<unknown> | unknown;
   onClose: () => void;
 }) {
@@ -62,7 +71,7 @@ export default function RulingDialog({
       }}
     >
       <div className="w-[440px] max-w-full rounded-xl border border-[#3b4a66] bg-surface p-4">
-        <h3 className="text-[15px] font-semibold">{verdict}</h3>
+        <h3 className="text-[15px] font-semibold">{action}</h3>
         <p className="mt-0.5 text-sm text-text">{statement}</p>
 
         {total > 0 && (
@@ -82,7 +91,7 @@ export default function RulingDialog({
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder={PLACEHOLDER[verdict]}
+          placeholder={placeholder}
           autoFocus
           className="mt-2.5 min-h-16 w-full resize-y rounded-md border border-border bg-bg px-2.5 py-1.5 text-[13px] text-text placeholder:text-text-faint"
         />
@@ -99,7 +108,7 @@ export default function RulingDialog({
             type="button"
             // revise REQUIRES its sentence — the server refuses an empty one,
             // so the button is not offered until there is one.
-            disabled={busy || (verdict === "revise" && text.trim() === "")}
+            disabled={busy || (required && text.trim() === "")}
             onClick={() => {
               if (!onConfirm) {
                 onClose();
@@ -112,14 +121,14 @@ export default function RulingDialog({
                   await onConfirm(text.trim());
                   onClose();
                 } catch (e) {
-                  setError(e instanceof Error ? e.message : String(e));
+                  setError(errMessage(e));
                   setBusy(false);
                 }
               })();
             }}
             className="rounded-md border border-accent bg-accent-dim px-3 py-1 text-[13px] text-accent hover:opacity-80 disabled:opacity-40 disabled:pointer-events-none"
           >
-            record {verdict}
+            {confirm}
           </button>
           <Info
             call={call}

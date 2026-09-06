@@ -102,6 +102,7 @@ export default function CodeTodoRow({
             )}
             <OptionsRow
               code={{ repo: row.repo, externalId: row.externalId }}
+              statement={row.statement}
               rulable={row.status === "open" && changeOpen}
             />
           </div>

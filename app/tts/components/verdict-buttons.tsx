@@ -17,10 +17,10 @@
 // has to be reserved inside the press (window.open only works in the gesture
 // stack), which is why onRule is called synchronously from the click.
 //
-// This one component is what the batch card and the detail dialog both render,
-// so the verdict row cannot drift between them. The todo row and the code row
-// keep OptionsRow (their row also carries done and the plain archive); the
-// call and effect text for a verdict is defined HERE and OptionsRow reads it.
+// This one component is EVERY verdict row on /tts — the batch card, the detail
+// dialog, and OptionsRow (which renders it beside the two status chips a life
+// todo also carries). There is no second way to give a verdict, so the row
+// cannot drift between surfaces and no surface composes a sentence inline.
 
 import { useState } from "react";
 import { createPortal } from "react-dom";
@@ -96,6 +96,13 @@ export const VERDICT_EFFECT: Record<
   },
 };
 
+// What the dialog asks for, per sentence verdict. revise's sentence is the
+// whole redirection; archive's is the condition to propose the subject back.
+const PLACEHOLDER: Record<SentenceVerdict, string> = {
+  revise: "the sentence that redirects the agent (required)",
+  archive: "propose it back when… (optional)",
+};
+
 const btnCls =
   "rounded-md border border-border bg-surface-alt px-2.5 py-1 text-xs text-text-muted hover:border-text-faint hover:text-text disabled:opacity-50 disabled:pointer-events-none";
 
@@ -103,13 +110,21 @@ export default function VerdictButtons({
   subject,
   statement,
   plan,
+  error: externalError,
   onRule,
 }: {
-  subject: "batch" | "todo";
+  subject: VerdictSubject;
   /** The subject's statement, for the dialog's heading. */
   statement: string;
   /** The subject's steps, for the dialog's progress line (a batch's tasks). */
   plan?: PlanStep[];
+  /**
+   * A failure the CALLER is holding rather than throwing — the session hooks
+   * catch their own errors into state (app/lib/use-open-todo-session.ts), and
+   * a session that failed to open after a session verdict has nowhere else to
+   * be seen from inside a dialog. Shown on the same line as a refused ruling.
+   */
+  error?: string | null;
   /**
    * Records the ruling: ttsRulings.recordRuling on the subject with this
    * verdict and sentence (empty for approve and session). Called synchronously
@@ -168,7 +183,9 @@ export default function VerdictButtons({
           </span>
         ))}
       </div>
-      {error && <div className="text-xs text-error">{error}</div>}
+      {(error ?? externalError) && (
+        <div className="text-xs text-error">{error ?? externalError}</div>
+      )}
       {dialog &&
         typeof document !== "undefined" &&
         // Sent to <body>: the row sits inside a card, or inside the detail
@@ -176,7 +193,10 @@ export default function VerdictButtons({
         // or stacked by either.
         createPortal(
           <RulingDialog
-            verdict={dialog}
+            action={dialog}
+            confirm={`record ${dialog}`}
+            placeholder={PLACEHOLDER[dialog]}
+            required={dialog === "revise"}
             call={verdictCall(subject, dialog)}
             effect={VERDICT_EFFECT[subject][dialog]}
             statement={statement}

@@ -9,13 +9,58 @@
 // popover names another verdict, a revise that records with no sentence, or
 // a detail item that offers verdicts it cannot rule all compile.
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
+import { getFunctionName } from "convex/server";
+import { api } from "@/convex/_generated/api";
 import VerdictButtons from "./verdict-buttons";
 import BatchCard, { type BatchGraph } from "./batch-card";
 import DetailDialog from "./detail-dialog";
+import OptionsRow from "./options-row";
+import { VERDICTS as LIB_VERDICTS, type Todo } from "../lib";
 
+// The four words, spelled out once. lib.VERDICTS is asserted equal to them
+// below, which is what lets the popover contract test derive its allowed set
+// from lib rather than restating the literals a third time.
 const VERDICTS = ["approve", "revise", "session", "archive"] as const;
+
+// OptionsRow is the one component here that talks to Convex. The mutations are
+// spies: what matters is which call each chip fires and with what.
+const mutations = vi.hoisted(() => ({
+  calls: [] as { ref: unknown; args: unknown }[],
+  /** Set to a message to make the next call refuse, as Convex does. */
+  refuse: null as string | null,
+}));
+
+vi.mock("convex/react", () => ({
+  useQuery: () => undefined,
+  useMutation: (ref: unknown) => async (args: unknown) => {
+    if (mutations.refuse !== null) throw new Error(mutations.refuse);
+    mutations.calls.push({ ref, args });
+  },
+}));
+
+// The row reaches the session launcher, which reaches app/lib/auth, whose
+// Sentry import does not load under jsdom. Nothing here reads the auth state:
+// every mutation on this surface is refused by Convex, not by the client.
+vi.mock("@/app/lib/auth", () => ({
+  useAuth: () => ({ isTom: true, canReadSurface: () => true }),
+}));
+
+/** The arguments each call to `api.<module>.<function>` was fired with. */
+function fired(fn: unknown): unknown[] {
+  return mutations.calls
+    .filter((c) => getFunctionName(c.ref as never) === getFunctionName(fn as never))
+    .map((c) => c.args);
+}
+
+const TODO = {
+  _id: "todo-1",
+  _creationTime: 0,
+  statement: "Ratify the amendment",
+  status: "active",
+  readiness: "ready-for-tom",
+} as unknown as Todo;
 
 /** The action buttons in a container — every button that is not a ⓘ. */
 function actions(container: HTMLElement | Document = document.body): HTMLButtonElement[] {
@@ -59,6 +104,12 @@ const GRAPH: BatchGraph = {
 };
 
 describe("the verdict row", () => {
+  it("is the same four words lib.VERDICTS holds, in the same order", () => {
+    // Everything else in this file, and the popover contract test, reads the
+    // set from lib. This is the one place the four words are written out.
+    expect(LIB_VERDICTS).toEqual([...VERDICTS]);
+  });
+
   it("is exactly the four verdict words, in the mutation's order — no edit", () => {
     render(<VerdictButtons subject="batch" statement="s" onRule={() => {}} />);
     expect(actions().map((b) => b.textContent)).toEqual([...VERDICTS]);
@@ -241,5 +292,128 @@ describe("the detail dialog", () => {
     for (const v of VERDICTS) {
       expect(screen.queryByRole("button", { name: v })).toBeNull();
     }
+  });
+});
+
+// ── The options row ─────────────────────────────────────────────────────────
+// The row a life todo and a code item carry. It renders the SAME verdict row
+// the batch card and the detail dialog do — not a second set of chips — and it
+// composes nothing between its chips: the row sits inside an expanded panel,
+// and an input appearing there moves everything under it (CLAUDE.md UI rules:
+// interactions never shift layout; anything composed opens in a fixed dialog).
+describe("the options row", () => {
+  beforeEach(() => {
+    mutations.calls.length = 0;
+    mutations.refuse = null;
+    // reserveSessionTab claims the tab inside the press; jsdom has no real one.
+    vi.stubGlobal("open", () => null);
+  });
+
+  it("offers the four verdicts plus done, each with a popover", () => {
+    render(<OptionsRow todo={TODO} rulable />);
+    expect(actions().map((b) => b.textContent)).toEqual([...VERDICTS, "done"]);
+    for (const b of actions()) infoBeside(b);
+  });
+
+  it("names recordRuling on the todo in every verdict's popover", () => {
+    render(<OptionsRow todo={TODO} rulable />);
+    for (const verdict of VERDICTS) {
+      fireEvent.click(infoBeside(screen.getByRole("button", { name: verdict })));
+      expect(
+        screen.getByText(
+          `ttsRulings.recordRuling({ todoId, verdict: "${verdict}", sentence })`,
+        ),
+      ).toBeTruthy();
+      fireEvent.keyDown(document, { key: "Escape" });
+    }
+  });
+
+  it("names recordRuling on the repository entry for a code subject", () => {
+    render(
+      <OptionsRow
+        code={{ repo: "tom.quest", externalId: "todo-14" }}
+        statement="Fence the session repo list"
+        rulable
+      />,
+    );
+    fireEvent.click(infoBeside(screen.getByRole("button", { name: "revise" })));
+    expect(
+      screen.getByText(
+        'ttsRulings.recordRuling({ repo, externalId, verdict: "revise", sentence })',
+      ),
+    ).toBeTruthy();
+  });
+
+  it("composes revise in the fixed dialog, never in the row", async () => {
+    const { container } = render(<OptionsRow todo={TODO} rulable />);
+    fireEvent.click(screen.getByRole("button", { name: "revise" }));
+    // The row itself gained nothing: no input appeared between the chips.
+    expect(within(container).queryByRole("textbox")).toBeNull();
+    // The dialog is a fixed overlay outside the row's own subtree.
+    const confirm = screen.getByRole("button", { name: "record revise" });
+    expect(container.contains(confirm)).toBe(false);
+    expect(confirm.hasAttribute("disabled")).toBe(true);
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "  split the turing items out  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "record revise" }));
+    await vi.waitFor(() =>
+      expect(fired(api.ttsRulings.recordRuling)).toEqual([
+        {
+          todoId: TODO._id,
+          verdict: "revise",
+          sentence: "split the turing items out",
+        },
+      ]),
+    );
+  });
+
+  it("records the session verdict, then hands the reserved tab on", async () => {
+    const afterSession = vi.fn();
+    render(<OptionsRow todo={TODO} rulable afterSession={afterSession} />);
+    fireEvent.click(screen.getByRole("button", { name: "session" }));
+    await vi.waitFor(() => expect(afterSession).toHaveBeenCalledTimes(1));
+    expect(fired(api.ttsRulings.recordRuling)).toEqual([
+      { todoId: TODO._id, verdict: "session", sentence: undefined },
+    ]);
+    expect(afterSession.mock.calls[0][1]).toEqual({
+      verdict: "session",
+      sentence: undefined,
+    });
+  });
+
+  it("composes the status chips in the same dialog, not in the row", async () => {
+    const waiting = { ...TODO, readiness: "preparing" } as Todo;
+    const { container } = render(<OptionsRow todo={waiting} rulable={false} />);
+    // Not rulable: the two status chips only, and archive here is the status
+    // write rather than the verdict.
+    expect(actions().map((b) => b.textContent)).toEqual(["done", "archive"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "archive" }));
+    expect(within(container).queryByRole("textbox")).toBeNull();
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "when the box is back" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "archive it" }));
+    await vi.waitFor(() =>
+      expect(fired(api.tts.setStatus)).toEqual([
+        {
+          id: waiting._id,
+          status: "archived",
+          unarchiveCondition: "when the box is back",
+        },
+      ]),
+    );
+  });
+
+  it("shows a refused status write in the dialog it was composed in", async () => {
+    render(<OptionsRow todo={TODO} rulable={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "done" }));
+    mutations.refuse = "Not authorised: TTS";
+    fireEvent.click(screen.getByRole("button", { name: "mark done" }));
+    await vi.waitFor(() =>
+      expect(screen.getByText("Not authorised: TTS")).toBeTruthy(),
+    );
   });
 });
