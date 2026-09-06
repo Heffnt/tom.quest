@@ -398,12 +398,12 @@ describe("TTS todos", () => {
       slackChannel: "C0DUMP",
       slackTs: "111.000001",
     });
-    const first = await t.mutation(internal.tts.internalMarkSlackReplied, {
+    const first = await t.mutation(internal.ttsSlack.internalMarkSlackReplied, {
       id,
       replyTs: "222.000002",
     });
     expect(first.alreadyReplied).toBe(false);
-    const second = await t.mutation(internal.tts.internalMarkSlackReplied, {
+    const second = await t.mutation(internal.ttsSlack.internalMarkSlackReplied, {
       id,
       replyTs: "333.000003",
     });

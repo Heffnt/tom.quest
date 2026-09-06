@@ -255,7 +255,7 @@ const ttsSlackReplied = httpAction(async (ctx, request) => {
     return jsonResponse(400, { error: "id (non-empty string) required" });
   }
   try {
-    const result = await ctx.runMutation(internal.tts.internalMarkSlackReplied, {
+    const result = await ctx.runMutation(internal.ttsSlack.internalMarkSlackReplied, {
       id: b.id,
       replyTs: typeof b.replyTs === "string" ? b.replyTs : undefined,
     });

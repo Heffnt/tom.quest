@@ -13,7 +13,7 @@
 //                       used for due-date arithmetic, where '2 a.m. belongs to
 //                       yesterday' would be wrong.
 
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
 
 const HOUR_MS = 3_600_000;
 export const DAY_MS = 86_400_000;
@@ -583,4 +583,46 @@ export function isLive(status: string): boolean {
 export type TtsLinkIntent = "done" | "archive" | "engage";
 export function ttsItemLink(todoId: string, intent?: TtsLinkIntent): string {
   return `https://tom.quest/tts?item=${todoId}${intent ? `&intent=${intent}` : ""}`;
+}
+
+/** The one reply line at capture (Tom's ruling 2026-08-30, one reply per
+ * #dump message; the lifeos update: at capture, no model call): what was
+ * created, as captured, and where it lives. */
+export function captureReplyText(statement: string, todoId: string): string {
+  return `Captured as a todo: ${statement.trim()} — ${ttsItemLink(todoId)}`;
+}
+
+/** Deep link to one session on the /sessions page — the one spelling every
+ * Slack message about a session carries. */
+export function ttsSessionLink(sessionId: string): string {
+  return `https://www.tom.quest/sessions?session=${sessionId}`;
+}
+
+// ── Slack subjects (the lifeos update, phase 2) ──────────────────────────────
+// Every outbound Slack message names WHAT it is about, and the record of the
+// send (a dtsEvents row of kind "slack-sent", written by the one door in
+// convex/ttsSync.ts) carries that subject — so a threaded reply from Tom is
+// routed by what he answered (convex/ttsSlack.ts): a session gets its next
+// turn, a todo or a digest day gets a fact or a time note, a learning line
+// gets an objection. One closed union; a message with no subject cannot be
+// sent.
+export const SLACK_SUBJECT = v.union(
+  v.object({ kind: v.literal("digest"), day: v.string() }),
+  v.object({ kind: v.literal("hourly"), hour: v.string() }),
+  v.object({ kind: v.literal("todo"), id: v.id("dtsTodos") }),
+  v.object({ kind: v.literal("session"), id: v.id("claudeSessions") }),
+  v.object({ kind: v.literal("learning"), id: v.string() }),
+);
+export type SlackSubject = Infer<typeof SLACK_SUBJECT>;
+
+/** The lookup key of a Slack THREAD: the channel and the thread root's ts —
+ * a message's own ts when it is a root, its thread_ts when it is a reply.
+ * Tom's reply events carry (channel, thread_ts); this is what they match. */
+export function slackThreadKey(channel: string, threadRootTs: string): string {
+  return `${channel}:${threadRootTs}`;
+}
+
+/** The hourly update's subject key: NY calendar date and hour, "YYYY-MM-DDTHH". */
+export function slackHourKey(utcMs: number): string {
+  return `${nyCalendarDayKey(utcMs)}T${String(nyLocalHour(utcMs)).padStart(2, "0")}`;
 }

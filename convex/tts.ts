@@ -1422,29 +1422,6 @@ export const internalCapture = internalMutation({
   },
 });
 
-// The reply pen: prepare-life-todos.mjs posted its one threaded reply to the
-// #dump message this todo came from, and records that here so it never posts a
-// second one. Tom's ruling is EXACTLY ONE reply per message, and this job
-// re-prepares on --force and on every revise ruling, so the guard has to be
-// durable rather than a variable inside one run.
-export const internalMarkSlackReplied = internalMutation({
-  args: { id: v.string(), replyTs: v.optional(v.string()) },
-  handler: async (ctx, { id, replyTs }) => {
-    const normalized = ctx.db.normalizeId("dtsTodos", id);
-    const todo = normalized && (await ctx.db.get(normalized));
-    if (!todo) throw new Error(`Unknown todo id: ${id}`);
-    // Never overwrite the FIRST reply's ts: if this is somehow called twice,
-    // the reply that exists in Slack is the first one, and pointing the field
-    // at a second would lose the editable message.
-    if (todo.slackRepliedAt !== undefined) return { alreadyReplied: true };
-    await ctx.db.patch(todo._id, {
-      slackRepliedAt: Date.now(),
-      slackReplyTs: replyTs,
-    });
-    return { alreadyReplied: false };
-  },
-});
-
 export const internalStoreWorkerPrep = internalMutation({
   args: {
     day: v.string(),

@@ -3,16 +3,21 @@
 import { v } from "convex/values";
 import { load as loadYaml } from "js-yaml";
 import { internalAction } from "./_generated/server";
+import type { ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import {
   CODE_TODO_PATH,
   CODE_TODO_REPOS,
+  SLACK_SUBJECT,
   TTS_DIGEST_NY_HOUR,
   countdownText,
+  slackHourKey,
   ttsDayKey,
   ttsItemLink,
+  ttsSessionLink,
   nyLocalHour,
   nyOffsetHours,
+  type SlackSubject,
 } from "./ttsShared";
 import type { Doc } from "./_generated/dataModel";
 
@@ -20,6 +25,97 @@ import type { Doc } from "./_generated/dataModel";
 // GitHub vqc/todos.yaml mirror refresh. Spec: WikiTom tts/spec.md §7, §5.3.
 
 const SLACK_POST_URL = "https://slack.com/api/chat.postMessage";
+
+// ── The one door to Slack (the lifeos update, phase 2) ───────────────────────
+// EVERY chat.postMessage in Convex goes through postSlack: the digest, the
+// hourly update, session event lines, the reply at capture, and the thread
+// notices convex/ttsSlack.ts schedules. What the door guarantees, and no
+// caller has to remember: a message names its subject; a delivered message is
+// recorded as a dtsEvents "slack-sent" row (channel, ts, thread, subject,
+// text) so Tom's threaded reply can be routed back to what it answers; a
+// refused one is recorded as "slack-send-failed". The worker's own reply
+// (prepare-life-todos.mjs) records through POST /tts/slack-replied instead.
+//
+// Missing env is log-and-return (ruling digest-env-missing-is-quiet,
+// vqc/adoption.md, 2026-08-27). The channel defaults to #tts.
+type SlackSendResult =
+  | { ok: true; ts: string }
+  | { ok: false; error: string };
+
+async function postSlack(
+  ctx: ActionCtx,
+  {
+    text,
+    subject,
+    channel,
+    threadTs,
+  }: {
+    text: string;
+    subject: SlackSubject;
+    channel?: string;
+    threadTs?: string;
+  },
+): Promise<SlackSendResult> {
+  const token = process.env.SLACK_BOT_TOKEN;
+  const target = channel ?? process.env.SLACK_TTS_CHANNEL_ID;
+  if (!token || !target) {
+    console.error(
+      `TTS slack (${subject.kind}): SLACK_BOT_TOKEN / SLACK_TTS_CHANNEL_ID not configured`,
+    );
+    return { ok: false, error: "not configured" };
+  }
+  let result: { ok: boolean; ts?: string; error?: string };
+  try {
+    const res = await fetch(SLACK_POST_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify({
+        channel: target,
+        text,
+        unfurl_links: false,
+        ...(threadTs !== undefined ? { thread_ts: threadTs } : {}),
+      }),
+    });
+    result = (await res.json()) as { ok: boolean; ts?: string; error?: string };
+  } catch (err) {
+    result = { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  if (!result.ok || typeof result.ts !== "string") {
+    const error = result.error ?? "no ts in Slack's answer";
+    console.error(`TTS slack (${subject.kind}): Slack rejected the post: ${error}`);
+    await ctx.runMutation(internal.ttsSlack.internalRecordSlackFailed, {
+      channel: target,
+      threadTs,
+      subject,
+      error,
+    });
+    return { ok: false, error };
+  }
+  await ctx.runMutation(internal.ttsSlack.internalRecordSlackSent, {
+    channel: target,
+    ts: result.ts,
+    threadTs,
+    subject,
+    text,
+  });
+  return { ok: true, ts: result.ts };
+}
+
+/** The door as a schedulable function, for mutations (a capture, a thread
+ * reply) that cannot do network I/O themselves. Same effect as postSlack. */
+export const sendSlack = internalAction({
+  args: {
+    text: v.string(),
+    subject: SLACK_SUBJECT,
+    channel: v.optional(v.string()),
+    threadTs: v.optional(v.string()),
+  },
+  handler: async (ctx, args): Promise<SlackSendResult> =>
+    await postSlack(ctx, args),
+});
 
 // Tom 2026-08-29: outbound Slack is OFF — Slack is inbound dump only until the messaging shape is redesigned.
 // One switch for every chat.postMessage site in this file. The senders and their
@@ -48,13 +144,6 @@ export const sendDigest = internalAction({
     const row = await ctx.runQuery(internal.tts.internalGetDay, { day });
     if (row?.digestSentAt && !force) return;
 
-    const token = process.env.SLACK_BOT_TOKEN;
-    const channel = process.env.SLACK_TTS_CHANNEL_ID;
-    if (!token || !channel) {
-      console.error("TTS digest: SLACK_BOT_TOKEN / SLACK_TTS_CHANNEL_ID not configured");
-      return;
-    }
-
     // The full-table reads are only needed when composing the fallback text —
     // the worker-prepared happy path skips them (review finding: this is the
     // one daily payload that would otherwise grow with the never-pruned
@@ -69,19 +158,8 @@ export const sendDigest = internalAction({
         await ctx.runQuery(internal.ttsRulings.internalAwaitingRulingCount, {}),
       );
 
-    const res = await fetch(SLACK_POST_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json; charset=utf-8",
-      },
-      body: JSON.stringify({ channel, text, unfurl_links: false }),
-    });
-    const result = (await res.json()) as { ok: boolean; error?: string };
-    if (!result.ok) {
-      console.error(`TTS digest: Slack rejected the post: ${result.error}`);
-      return;
-    }
+    const sent = await postSlack(ctx, { text, subject: { kind: "digest", day } });
+    if (!sent.ok) return;
     // Entry ids are validated at intake (internalStoreWorkerPrep) and nothing
     // is ever deleted, so the queue's ids are surfaced as-is.
     await ctx.runMutation(internal.tts.internalMarkDigestSent, {
@@ -96,46 +174,26 @@ export const sendDigest = internalAction({
 // moment a session needs Tom (a permission decision) or records what it did
 // (an outcome, or a failure), each carrying a deep link to the session.
 //
-// Same plumbing as the digest above — chat.postMessage with SLACK_BOT_TOKEN,
-// posting to SLACK_TTS_CHANNEL_ID. Missing env is log-and-return, following
-// the sanctioned ruling `digest-env-missing-is-quiet` (vqc/adoption.md,
-// 2026-08-27): a scheduled job that throws adds no louder channel than the
-// console line, and the session surface in the browser carries the same facts
-// regardless of whether Slack was reachable.
+// Through the one door above, to #tts, with the session as its subject — so
+// Tom's reply in the message's thread becomes the session's next turn
+// (convex/ttsSlack.ts).
 //
 // The CALLERS decide when to send (convex/claudeSessions.ts schedules this on
 // edge-triggered transitions only, so a session that polls for an hour while
 // blocked still produces exactly one message). Nothing here dedupes.
 export const internalSessionEventMessage = internalAction({
-  args: { sessionId: v.string(), text: v.string() },
-  handler: async (_ctx, { sessionId, text }) => {
+  args: { sessionId: v.id("claudeSessions"), text: v.string() },
+  handler: async (ctx, { sessionId, text }) => {
     // Tom 2026-08-29: outbound Slack is OFF — Slack is inbound dump only until the messaging shape is redesigned.
     // Callers still SCHEDULE this action on their edge transitions (the trigger
     // wiring is what the tests cover); it just posts nothing.
     if (!OUTBOUND_SLACK_ENABLED) return;
-    const token = process.env.SLACK_BOT_TOKEN;
-    const channel = process.env.SLACK_TTS_CHANNEL_ID;
-    if (!token || !channel) {
-      console.error(
-        "TTS session event: SLACK_BOT_TOKEN / SLACK_TTS_CHANNEL_ID not configured",
-      );
-      return;
-    }
     // The link is the point: the message says what happened, the URL is where
     // to act on it.
-    const body = `${text}\nhttps://www.tom.quest/sessions?session=${sessionId}`;
-    const res = await fetch(SLACK_POST_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json; charset=utf-8",
-      },
-      body: JSON.stringify({ channel, text: body, unfurl_links: false }),
+    await postSlack(ctx, {
+      text: `${text}\n${ttsSessionLink(sessionId)}`,
+      subject: { kind: "session", id: sessionId },
     });
-    const result = (await res.json()) as { ok: boolean; error?: string };
-    if (!result.ok) {
-      console.error(`TTS session event: Slack rejected the post: ${result.error}`);
-    }
   },
 });
 
@@ -277,18 +335,6 @@ export const sendHourlyUpdate = internalAction({
     if (!HOURLY_UPDATE_ENABLED && !force) return;
     const now = Date.now();
 
-    const token = process.env.SLACK_BOT_TOKEN;
-    const channel = process.env.SLACK_TTS_CHANNEL_ID;
-    if (!token || !channel) {
-      // Sanctioned log-and-return (ruling digest-env-missing-is-quiet): a cron
-      // that throws adds no louder channel than this line, and the missing
-      // message is itself the signal.
-      console.error(
-        "TTS hourly update: SLACK_BOT_TOKEN / SLACK_TTS_CHANNEL_ID not configured",
-      );
-      return;
-    }
-
     // ── The window ───────────────────────────────────────────────────────────
     const lastSent = await ctx.runQuery(internal.tts.internalLastEventAt, {
       kind: HOURLY_UPDATE_SENT,
@@ -368,22 +414,14 @@ export const sendHourlyUpdate = internalAction({
         : ["- nothing"]),
     ].join("\n");
 
-    const res = await fetch(SLACK_POST_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json; charset=utf-8",
-      },
-      body: JSON.stringify({ channel, text, unfurl_links: false }),
+    // The marker below is NOT written on a failed send, on purpose: the next
+    // update then covers this window too, so a Slack outage delays the
+    // history rather than losing it.
+    const sent = await postSlack(ctx, {
+      text,
+      subject: { kind: "hourly", hour: slackHourKey(now) },
     });
-    const result = (await res.json()) as { ok: boolean; error?: string };
-    if (!result.ok) {
-      // The marker is NOT written on a failed send, on purpose: the next
-      // update then covers this window too, so a Slack outage delays the
-      // history rather than losing it.
-      console.error(`TTS hourly update: Slack rejected the post: ${result.error}`);
-      return;
-    }
+    if (!sent.ok) return;
     await ctx.runMutation(internal.tts.internalLogEvent, {
       kind: HOURLY_UPDATE_SENT,
       data: { windowStart: since, windowEnd: now },
