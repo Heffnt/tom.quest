@@ -15,9 +15,14 @@ import {
   ANNOUNCEMENTS_CONTEXT_LIMIT,
   ANNOUNCEMENTS_CONTEXT_PARAM,
   ANNOUNCEMENT_SOURCE,
+  CANVAS_AUTH_STATUSES,
+  FUTURE_WINDOW_DAYS,
   MAX_LOOKBACK_MS,
+  PAST_GRACE_DAYS,
   announcementProvenance,
   canvasUrl,
+  mapCanvasAssignments,
+  tokenExpiredMessage,
   windowStart,
 } from "./poll-canvas.mjs";
 
@@ -97,5 +102,105 @@ describe("what an announcement todo is labelled", () => {
     );
     // No html_url in the payload still leaves an id to identify the row by.
     expect(announcementProvenance("991", "")).toBe("canvas:announcement:991");
+  });
+});
+
+// ── Assignments (the lifeos update, phase 6) ─────────────────────────────────
+// This mapping used to live in convex/ttsCanvas.ts, where a Convex cron action
+// held a second copy of CANVAS_TOKEN. One job and one credential copy own
+// Canvas now, so the fetch and the window came here with it. The mutation that
+// writes todos stayed in Convex — writing todos has to be one — and its own
+// tests are convex/ttsCanvas.test.ts.
+describe("mapCanvasAssignments", () => {
+  const URL_15 = "https://canvas.wpi.edu/courses/1/assignments/15";
+  const now = Date.UTC(2026, 7, 27, 12); // window: 2026-08-13 .. 2026-10-26
+
+  it("windows 14 days back and 60 days on, the recently overdue included", () => {
+    // Recently overdue still needs handling; an exam two months out is not
+    // today's obligation and would sit in the list for weeks.
+    expect(PAST_GRACE_DAYS).toBe(14);
+    expect(FUTURE_WINDOW_DAYS).toBe(60);
+  });
+
+  it("keeps only published, dated, in-window assignments", () => {
+    const courses = [
+      { id: 1, course_code: "CS4241", name: "Webware" },
+      { id: 2, name: "Mathematical Modeling" }, // no course_code -> name
+    ];
+    const byCourse = new Map([
+      [
+        1,
+        [
+          { id: 10, name: "draft", due_at: "2026-08-30T03:59:00Z", published: false },
+          { id: 11, name: "no date", due_at: null, published: true },
+          { id: 12, name: "final exam", due_at: "2026-12-01T05:00:00Z" }, // past windowEnd
+          { id: 13, name: "week 1", due_at: "2026-07-20T05:00:00Z" }, // before windowStart
+          { id: 14, name: "unparseable", due_at: "not a date" },
+          {
+            id: 15,
+            name: "Project 3",
+            html_url: URL_15,
+            due_at: "2026-08-30T03:59:00Z",
+            published: true,
+            submission: { submitted_at: null },
+          },
+        ],
+      ],
+      [
+        2,
+        [
+          {
+            id: 20,
+            name: "HW 5",
+            html_url: "https://canvas.wpi.edu/courses/2/assignments/20",
+            due_at: "2026-08-25T03:59:00Z",
+            submission: { submitted_at: "2026-08-24T18:02:00Z" },
+          },
+        ],
+      ],
+    ]);
+
+    const out = mapCanvasAssignments(courses, byCourse, now);
+    expect(out.map((a) => a.externalId)).toEqual(["15", "20"]);
+    expect(out[0]).toEqual({
+      externalId: "15",
+      courseCode: "CS4241",
+      name: "Project 3",
+      htmlUrl: URL_15,
+      dueAt: Date.UTC(2026, 7, 30, 3, 59),
+      submitted: false,
+    });
+    // course_code absent -> the course name stands in as the statement prefix.
+    expect(out[1].courseCode).toBe("Mathematical Modeling");
+    expect(out[1].submitted).toBe(true);
+  });
+
+  it("posts the whole window every run — the sync is what dedupes", () => {
+    // No cursor on this half: it is a full reconciliation, and the sync keys
+    // each row by its canvas:assignment:<id> provenance. Two identical runs
+    // therefore produce identical payloads, which is what makes a replay safe.
+    const courses = [{ id: 1, course_code: "CS4241" }];
+    const byCourse = new Map([
+      [1, [{ id: 15, name: "Project 3", html_url: URL_15, due_at: "2026-08-30T03:59:00Z" }]],
+    ]);
+    expect(mapCanvasAssignments(courses, byCourse, now)).toEqual(
+      mapCanvasAssignments(courses, byCourse, now),
+    );
+  });
+});
+
+describe("a dead Canvas token", () => {
+  it("is the two statuses that mean the token, not the request", () => {
+    expect([...CANVAS_AUTH_STATUSES].sort()).toEqual([401, 403]);
+  });
+
+  it("is reported in words that say what to do, not as a status line", () => {
+    // This message reaches Tom in the morning digest, so it has to be
+    // actionable on its own — he is not going to read /var/log/tts.
+    const message = tokenExpiredMessage(401);
+    expect(message).toContain("expired or been revoked");
+    expect(message).toContain("CANVAS_TOKEN");
+    expect(message).toContain("/etc/tts/worker.env");
+    expect(message).toContain("HTTP 401");
   });
 });

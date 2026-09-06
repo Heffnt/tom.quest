@@ -67,14 +67,6 @@ crons.interval(
   {},
 );
 
-// Canvas assignment sync (quiet no-op until CANVAS_TOKEN is set).
-crons.interval(
-  "tts canvas refresh",
-  { hours: 6 },
-  internal.ttsCanvas.internalRefreshCanvas,
-  {},
-);
-
 // ── TTS autonomous fleet (P3) ───────────────────────────────────────────────
 // Load-based admission of autonomous groundwork sessions. Off by default
 // (claudeAutoConfig.enabled, no row = false), so the interval is safe to ship

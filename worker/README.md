@@ -25,16 +25,31 @@ on a schedule:
    deduped on the Gmail message id, so one mail opens one thread however many
    times the job re-reads it. Until the Gmail credentials exist it is a quiet
    no-op; see below.
-3. **poll-canvas** (every 30 min) — lists new Canvas course announcements and
-   spends ONE headless Claude call per batch deciding which imply an action
-   by Tom (schedule changes, sign-ups, required responses), then submits
-   those to Convex as unprepared todos with source `canvas-announcement`,
-   linked to the announcement. Assignments are NOT this job's business — the
-   Convex-side sync (convex/ttsCanvas.ts) owns those under the source `canvas`,
-   with due dates and auto-done on submission. Two producers, two source names:
-   they shared `canvas` until the sync was found reading every announcement row
-   and dropping it without a word. Quiet no-op until `CANVAS_TOKEN` exists in worker.env (WPI
-   restricts token creation; Tom's request form is pending).
+3. **poll-canvas** (every 30 min) — the one job that owns Canvas, in two
+   halves on one tick. **Assignments**: every published, dated assignment
+   within 14 days back and 60 days on is posted to
+   `POST /tts/canvas-assignments`, which keeps one todo per assignment (source
+   `canvas`, `dateKind: "external"`, provenance `canvas:assignment:<id> <url>`)
+   — the instructor's date is a fact and moves the todo with it, and a
+   submission on Canvas completes the todo. No Claude call: an assignment with
+   a due date *is* an obligation, there is nothing to judge, and posting the
+   whole window every run is safe because the sync keys each row by its
+   assignment id. **Announcements**: ONE headless Claude call per batch, under
+   the deployment's own capture-triage rules (`GET /tts/capture-context`, the
+   same words poll-gmail uses), deciding which imply an action by Tom
+   (schedule changes, sign-ups, required responses); those are captured as
+   unprepared todos with source `canvas-announcement`, linked to the
+   announcement. Two source names for two facts: they shared `canvas` until the
+   sync was found reading every announcement row and dropping it without a
+   word. Quiet no-op until `CANVAS_TOKEN` exists in worker.env (WPI restricts
+   token creation; Tom's request form is pending), and an expired or revoked
+   token is reported to TTS as a job failure so it reaches him in the morning
+   digest instead of dying in `/var/log/tts`.
+
+   **One credential copy.** The assignments half used to be a Convex cron
+   action with a second `CANVAS_TOKEN` in the deployment env. It is gone; the
+   token lives only in `/etc/tts/worker.env`, and what stayed in Convex is the
+   mutation that writes todos, because writing todos has to be one.
 4. **poll-outlook** (not scheduled yet) — the Outlook counterpart of
    poll-gmail (Tom, 2026-08-25: "outlook is where the most important mail comes
    in"). It is a **skeleton**: the credential contract, the cursor's home and

@@ -259,6 +259,87 @@ const ttsNeedsTom = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/needs-tom", method: "POST", handler: ttsNeedsTom });
 
+// POST /tts/canvas-assignments — the Canvas assignments worker/jobs/
+// poll-canvas.mjs read this run (the lifeos update, phase 6). Body:
+// { assignments: [{ externalId, courseCode, name, htmlUrl, dueAt, submitted }] }.
+//
+// The job owns the FETCH (one job and one CANVAS_TOKEN copy, in
+// /etc/tts/worker.env); convex/ttsCanvas.ts owns what a fetched assignment
+// DOES to a todo — insert, move the date, complete on submission — because
+// that is a mutation. The mutation's own validators are the gate on the array;
+// this route only carries the traffic and names a refusal.
+//
+// REPLAYING THE SAME ASSIGNMENTS CHANGES NOTHING: the sync keys every row by
+// its `canvas:assignment:<id>` provenance, so a re-run creates no second todo.
+const ttsCanvasAssignments = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (!Array.isArray(b.assignments)) {
+    return jsonResponse(400, { error: "assignments (array) required" });
+  }
+  try {
+    const result = await ctx.runMutation(
+      internal.ttsCanvas.internalSyncCanvasTodos,
+      { assignments: b.assignments as never },
+    );
+    return jsonResponse(200, { ok: true, ...result });
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({
+  path: "/tts/canvas-assignments",
+  method: "POST",
+  handler: ttsCanvasAssignments,
+});
+
+// POST /tts/job-failed — a box job reporting its own failure in plain words
+// (the lifeos update, phase 6). Body: { job, error }.
+//
+// This is the channel convex/ttsDigest.ts already reads: every "-failed" event
+// kind becomes a line in the morning digest's job-failures section, and
+// convex/ttsHourly.ts names "job-failed" among the kinds the hourly update
+// reports. Until now nothing on the Jarvis Box could write one — a cron job's
+// only voice was /var/log/tts, which Tom does not read. An expired Canvas
+// token is the first thing that speaks through here.
+//
+// A REPORT, NOT A TODO. The row records what broke and what to do about it;
+// deciding whether it is worth Tom's morning is the digest's job.
+const ttsJobFailed = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.job !== "string" || b.job.trim().length === 0) {
+    return jsonResponse(400, { error: "job (non-empty string) required" });
+  }
+  if (typeof b.error !== "string" || b.error.trim().length === 0) {
+    return jsonResponse(400, { error: "error (non-empty string) required" });
+  }
+  await ctx.runMutation(internal.tts.internalLogEvent, {
+    kind: "job-failed",
+    data: { job: b.job, error: b.error },
+  });
+  return jsonResponse(200, { ok: true });
+});
+
+http.route({ path: "/tts/job-failed", method: "POST", handler: ttsJobFailed });
+
 // POST /tts/calendar-event — the Jarvis Box's path through the ONE write door
 // to Tom's Google Calendar (convex/ttsCalendarWrite.ts owns the door; this
 // route only carries the traffic). Body: { title, start, end, description?,
