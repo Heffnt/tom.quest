@@ -350,7 +350,10 @@ export const internalRecordRuling = internalMutation({
 //   5. the same row has not already ruled on the same subject;
 //   6. the ruling's own `sentence` is present on revise (the redirect) and
 //      absent on every other verdict — the quote is provenance, never the
-//      page's return condition or the worker's redirect;
+//      page's return condition or the worker's redirect. The redirect is
+//      held to check 3 as well: a whole unit of the same turn (it may be the
+//      quote), stored as the turn's own substring, so the line the preparing
+//      agent obeys is one Tom said and never one the agent composed;
 //   7. only then insertRuling, with provenance {from: "tom-words", inboundId,
 //      quote}, through the same apply path every button uses.
 //
@@ -496,8 +499,10 @@ export const internalRecordRulingFromTomWords = internalMutation({
     // something a quote of Tom's turn should become by accident.
     quote: v.string(),
     // The ruling's own sentence, revise only (the redirect the verdict cannot
-    // exist without). Refused on every other verdict: archive does not need a
-    // return condition, and approve/session take no note from this door.
+    // exist without), and itself one whole sentence or line of the same turn
+    // — possibly the quote. Refused on every other verdict: archive does not
+    // need a return condition, and approve/session take no note from this
+    // door.
     sentence: v.optional(v.string()),
   },
   handler: async (
@@ -538,11 +543,14 @@ export const internalRecordRulingFromTomWords = internalMutation({
         "refused: that turn has already ruled on this subject",
       );
     }
-    // 6. the sentence: revise's redirect and nothing else
+    // 6. the sentence: revise's redirect and nothing else — and, like the
+    //    quote, one whole unit of the same turn (it may be the quote itself).
+    //    The redirect is what the preparing agent obeys, so an agent-composed
+    //    one would be the agent redirecting itself under Tom's name.
     const redirect = sentence?.trim();
     if (verdict === "revise" && !redirect) {
       throw new Error(
-        "refused: revise needs a sentence — the one line that redirects the preparing agent",
+        "refused: revise needs a sentence — the one line of that turn that redirects the preparing agent",
       );
     }
     if (verdict !== "revise" && sentence !== undefined) {
@@ -550,13 +558,24 @@ export const internalRecordRulingFromTomWords = internalMutation({
         `refused: sentence is the revise redirect only; on ${verdict} the quote is the whole record`,
       );
     }
+    let redirectSource: string | undefined;
+    if (redirect !== undefined) {
+      const redirectMatch = matchQuotedUnit(row.text ?? "", redirect);
+      if ("refused" in redirectMatch) {
+        throw new Error(
+          "refused: the redirect must be a whole sentence or line of that turn, in Tom's words — " +
+            redirectMatch.refused.replace(/^refused: /, ""),
+        );
+      }
+      redirectSource = redirectMatch.source;
+    }
     // 7. the ruling, through the one apply path. No unarchiveCondition: an
     // archive from this door leaves the return condition unset (the quote is
     // in provenance and the digest), it never becomes what the page shows.
     return await insertRuling(ctx, {
       ...subject,
       verdict,
-      sentence: verdict === "revise" ? redirect : undefined,
+      sentence: redirectSource,
       provenance: { from: "tom-words", inboundId: rowId, quote: match.source },
     });
   },

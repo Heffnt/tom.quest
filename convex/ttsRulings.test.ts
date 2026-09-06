@@ -711,7 +711,7 @@ describe("a ruling from Tom's words", () => {
     );
     const tomRow = rows.find((r) => r.author === "tom")!;
     const agentRow = rows.find((r) => r.text?.startsWith("archive"))!;
-    return { tom, todoId, tomRow, agentRow };
+    return { tom, todoId, tomRow, agentRow, sessionId };
   }
 
   const post = (t: ReturnType<typeof convexTest>, body: unknown) =>
@@ -779,17 +779,71 @@ describe("a ruling from Tom's words", () => {
     expect(noted.status).toBe(400);
     expect((await noted.json()).error).toMatch(/revise redirect only/);
     expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(0);
+    // The quote may be the redirect itself.
     const revised = await post(t, {
       ...body,
       verdict: "revise",
-      sentence: "book the hygienist, not the dentist",
+      sentence: "archive the dentist one, I already went.",
     });
     expect(revised.status).toBe(200);
     const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
-    expect(ruling.sentence).toBe("book the hygienist, not the dentist");
+    expect(ruling.sentence).toBe("archive the dentist one, I already went.");
     expect(ruling.provenance?.quote).toBe(
       "archive the dentist one, I already went.",
     );
+  });
+
+  // witness: store `redirect` (the caller's text) instead of the matched span
+  // in step 6. The redirect is what the preparing agent obeys, so a line the
+  // agent composed would be the agent redirecting itself under Tom's name:
+  // it is held to the same check as the quote — a whole sentence of the same
+  // turn, stored as the turn's own text.
+  it("refuses a revise redirect the agent composed; accepts one that is Tom's own sentence", async () => {
+    const t = convexTest({ schema, modules });
+    const { tom, todoId, tomRow, sessionId } = await sessionWithTurns(t);
+    const composed = await post(t, {
+      inboundId: tomRow._id,
+      verdict: "revise",
+      subjectType: "life",
+      subjectId: todoId,
+      quote: "archive the dentist one, I already went.",
+      sentence: "book the hygienist, not the dentist",
+    });
+    expect(composed.status).toBe(400);
+    expect((await composed.json()).error).toMatch(/redirect must be a whole sentence/);
+    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(0);
+    // A second turn of Tom's, with the redirect as its own sentence.
+    await tom.mutation(api.claudeSessions.sendMessage, {
+      sessionId,
+      text: "no wait, revise it. book the hygienist, not the dentist!",
+    });
+    const second = (
+      await t.run(async (ctx) => ctx.db.query("claudeInbound").collect())
+    ).find((r) => r.text?.startsWith("no wait"))!;
+    const spoken = await post(t, {
+      inboundId: second._id,
+      verdict: "revise",
+      subjectType: "life",
+      subjectId: todoId,
+      quote: "no wait, revise it",
+      // A fragment of the redirect sentence is refused like a fragment of the quote.
+      sentence: "book the hygienist",
+    });
+    expect(spoken.status).toBe(400);
+    expect((await spoken.json()).error).toMatch(/redirect must be a whole sentence/);
+    const whole = await post(t, {
+      inboundId: second._id,
+      verdict: "revise",
+      subjectType: "life",
+      subjectId: todoId,
+      quote: "no wait, revise it",
+      sentence: "book the hygienist, not the dentist",
+    });
+    expect(whole.status).toBe(200);
+    const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
+    // Both stored as the turn's own text, terminators included.
+    expect(ruling.sentence).toBe("book the hygienist, not the dentist!");
+    expect(ruling.provenance?.quote).toBe("no wait, revise it.");
   });
 
   it("refuses a turn the agent wrote (the pen, or the opener)", async () => {
