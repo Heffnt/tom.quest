@@ -4,7 +4,7 @@ import { createHmac, webcrypto } from "node:crypto";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
-import { replyShape } from "./ttsSlack";
+import { SLACK_THREAD_CLAIMED, replyShape } from "./ttsSlack";
 import { captureReplyText, slackHourKey, slackThreadKey } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -370,6 +370,88 @@ describe("threaded replies from Tom", () => {
       subject: { kind: "session", id: newId },
     });
     expect(sends[0].text).toContain(newId);
+  });
+
+  // witness: drop the claim insert from sessionReply and the second reply
+  // opens a SECOND replacement — before it, the thread changed hands only when
+  // the scheduled notice reached Slack, and Tom's two lines land well inside
+  // that gap.
+  it("a second reply arriving before the notice posts joins the same new session", async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    const oldId = await t.mutation(internal.claudeSessions.internalCreateSession, {
+      title: "design the thing",
+      kind: "adhoc",
+      initialPrompt: "start",
+    });
+    await t.run(async (ctx) => ctx.db.patch(oldId, { status: "ended" }));
+    await posted(t, "310.1", { kind: "session", id: oldId }, "session finished");
+
+    const first = await postEvent(t, {
+      channel: TTS,
+      ts: "310.2",
+      thread_ts: "310.1",
+      text: "one more pass on the wording",
+    });
+    expect(first.outcome).toBe("session-reopened");
+    const newId = first.sessionId as Id<"claudeSessions">;
+    // The notice is still only SCHEDULED: nothing has reached Slack, so the
+    // door has recorded nothing since the ended session's own message.
+    expect(await scheduledSends(t)).toHaveLength(1);
+    expect(await events(t, "slack-sent")).toHaveLength(1);
+    // The claim is what carries the thread in the meantime, keyed exactly as
+    // the door keys its own rows — the two are read against each other.
+    const claims = await events(t, SLACK_THREAD_CLAIMED);
+    expect(claims).toHaveLength(1);
+    expect(claims[0].key).toBe(slackThreadKey(TTS, "310.1"));
+    expect(claims[0].data).toMatchObject({
+      subject: { kind: "session", id: newId },
+      replaces: oldId,
+    });
+
+    const second = await postEvent(t, {
+      channel: TTS,
+      ts: "310.3",
+      thread_ts: "310.1",
+      text: "and shorten the title",
+    });
+    expect(second).toMatchObject({ outcome: "session-turn", sessionId: newId });
+
+    // One replacement, not two, and both of Tom's lines are its turns.
+    const sessions = await t.run(async (ctx) => ctx.db.query("claudeSessions").collect());
+    expect(sessions.map((s) => s._id).sort()).toEqual([oldId, newId].sort());
+    const turns = await t.run(async (ctx) =>
+      ctx.db
+        .query("claudeInbound")
+        .withIndex("by_session_status", (q) =>
+          q.eq("sessionId", newId).eq("status", "pending"),
+        )
+        .collect(),
+    );
+    expect(turns.map((x) => [x.text, x.author])).toEqual([
+      [turns[0].text, "agent"], // the code-built seed carrying the thread
+      ["one more pass on the wording", "tom"],
+      ["and shorten the title", "tom"],
+    ]);
+    // And one notice, not one per reply.
+    expect(await scheduledSends(t)).toHaveLength(1);
+
+    // Once the notice does land, the thread reads the same way: the door's row
+    // and the claim name the same session.
+    await t.mutation(internal.ttsSlack.internalRecordSlackSent, {
+      channel: TTS,
+      ts: "310.4",
+      threadTs: "310.1",
+      subject: { kind: "session", id: newId },
+      text: "continued in a new session",
+    });
+    const third = await postEvent(t, {
+      channel: TTS,
+      ts: "310.5",
+      thread_ts: "310.1",
+      text: "and the summary line",
+    });
+    expect(third).toMatchObject({ outcome: "session-turn", sessionId: newId });
   });
 
   // witness: send "done" down the time-note path instead of applyStatusChange

@@ -168,23 +168,58 @@ export function replyShape(text: string): ReplyShape {
 
 type ThreadSubject = SlackSubject | { kind: "unknown" };
 
-/** The newest "slack-sent" row in this thread decides its subject; a thread
- * with none is a #dump message that was captured without a recorded reply,
- * found by the todo's own slackTs; otherwise the thread is unknown. */
+/**
+ * A thread's subject taken WITHOUT waiting for a message to reach Slack.
+ *
+ * A send tells the thread its subject only once the post lands and the door
+ * records it, which is a scheduled action away. That is too late for the one
+ * case where a reply CREATES the thing the thread now belongs to: a reply to
+ * an ended session opens the replacement, and a second reply arriving in the
+ * seconds before the "continued in a new session" notice posts would find the
+ * ended session still owning the thread and open a second replacement.
+ *
+ * So the replacement claims the thread in the same transaction that creates
+ * it (sessionReply below), and this row is what the claim writes. Convex
+ * serializes the two replies against it: whichever runs second reads the claim
+ * — or conflicts on it and retries into reading it — and joins the session the
+ * first one opened.
+ *
+ * Keyed like the door's own rows, on the thread, so both are one read apart.
+ */
+export const SLACK_THREAD_CLAIMED = "slack-thread-claimed";
+
+/** The newest row of one kind in this thread, and the subject it names. */
+async function threadRow(
+  ctx: MutationCtx,
+  kind: string,
+  key: string,
+): Promise<{ at: number; subject: SlackSubject } | null> {
+  const row = await ctx.db
+    .query("dtsEvents")
+    .withIndex("by_kind_key", (q) => q.eq("kind", kind).eq("key", key))
+    .order("desc")
+    .first();
+  const subject = (row?.data as { subject?: SlackSubject } | undefined)?.subject;
+  return row !== null && subject !== undefined ? { at: row.at, subject } : null;
+}
+
+/** The newest record in this thread decides its subject — the door's
+ * "slack-sent" row, or a claim written ahead of one. A thread with neither is
+ * a #dump message that was captured without a recorded reply, found by the
+ * todo's own slackTs; otherwise the thread is unknown. */
 async function threadSubject(
   ctx: MutationCtx,
   channel: string,
   threadTs: string,
 ): Promise<ThreadSubject> {
-  const sent = await ctx.db
-    .query("dtsEvents")
-    .withIndex("by_kind_key", (q) =>
-      q.eq("kind", "slack-sent").eq("key", slackThreadKey(channel, threadTs)),
-    )
-    .order("desc")
-    .first();
-  const subject = (sent?.data as { subject?: SlackSubject } | undefined)
-    ?.subject;
+  const key = slackThreadKey(channel, threadTs);
+  const sent = await threadRow(ctx, "slack-sent", key);
+  const claimed = await threadRow(ctx, SLACK_THREAD_CLAIMED, key);
+  // Newest wins, so an ordinary later send in the thread still re-points it.
+  const subject =
+    sent === null || (claimed !== null && claimed.at > sent.at)
+      ? claimed?.subject
+      : sent.subject;
   if (subject !== undefined) return subject;
   const todo = await ctx.db
     .query("dtsTodos")
@@ -450,9 +485,17 @@ async function todoReply(
 }
 
 /** Live session: the reply is its next turn. Ended or failed: a new session
- * of the same kind (same subject, repos, model) seeded with the thread, and
- * one line in the thread saying so — recorded with the NEW session as its
- * subject, so the next reply in the same thread reaches the new session.
+ * of the same kind (same subject, repos, model) seeded with the thread, which
+ * takes the thread over IN THIS TRANSACTION, and one line in the thread saying
+ * so.
+ *
+ * The claim is what makes the replacement single. Tom types two lines in a row
+ * — the second lands while the first's notice is still a scheduled action — and
+ * before the claim both replies read an ended session under the thread and each
+ * opened its own replacement, two sessions on one thread with his words split
+ * between them. The claim is written next to the session that answers for the
+ * thread from now on, so the second reply is that session's next turn. Slack
+ * delivery is then only the part Tom can see, not the part the fork depended on.
  *
  * The turn Tom's reply becomes is written with author "tom" on both paths:
  * the events route verified the reply's user is TOM_SLACK_USER_ID, so the
@@ -491,6 +534,19 @@ async function sessionReply(
       ),
     },
   );
+  // Before the turn and before the notice: the thread belongs to the new
+  // session the moment the new session exists.
+  await ctx.db.insert("dtsEvents", {
+    at: Date.now(),
+    kind: SLACK_THREAD_CLAIMED,
+    key: slackThreadKey(at.channel, at.threadTs),
+    data: {
+      channel: at.channel,
+      threadTs: at.threadTs,
+      subject: { kind: "session", id: newId },
+      replaces: sessionId,
+    },
+  });
   await ctx.runMutation(internal.claudeSessions.internalSendMessage, {
     sessionId: newId,
     text,
