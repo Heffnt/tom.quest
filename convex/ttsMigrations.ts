@@ -112,9 +112,13 @@ async function walkTodos(
 }
 
 // ── 1. Readiness to two values (ruling 18) ──────────────────────────────────
-// ready-for-tom → prepared, preparing → prepared, unprepared stays. The
-// stored value moves; whether a prepared row is READY for Tom is computed
-// from then on (ttsShared.isReadyForTom).
+// ready-for-tom → prepared, preparing → unprepared; prepared and unprepared
+// stay. One reading per spelling (ttsShared.normalizeReadiness is the one
+// home, and this walk writes exactly what it reads), so the counts below name
+// each retired spelling's one destination. A "preparing" row was half
+// written up; it goes back to the preparer rather than onto Tom's pile, since
+// a half-prepared capture is never ready. Whether a prepared row is READY for
+// Tom is computed from then on (ttsShared.isReadyForTom).
 export const READINESS_MIGRATION = "readiness";
 
 export const internalMigrateReadiness = internalMutation({
@@ -123,7 +127,7 @@ export const internalMigrateReadiness = internalMutation({
     const page: Counts = {
       scanned: 0,
       "ready-for-tom-to-prepared": 0,
-      "preparing-to-prepared": 0,
+      "preparing-to-unprepared": 0,
       prepared: 0,
       unprepared: 0,
     };

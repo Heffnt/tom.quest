@@ -801,9 +801,10 @@ export async function gatherDigestFacts(
 
   // 5. Ready for Tom (not already listed as due) — ruling 18's computation
   // (ttsShared.isReadyForTom: prepared, active, awake, every need done). Read
-  // on the readiness index for each PREPARED spelling (the value and, until
-  // NARROW, the two retired ones), so the scan is the prepared list itself —
-  // the shortest list in the record. A row's needs are fetched by id (bounded
+  // on the readiness index for each spelling that READS as prepared (the
+  // value and, until NARROW, "ready-for-tom"; "preparing" reads as unprepared
+  // and is never listed), so the scan is the prepared list itself — the
+  // shortest list in the record. A row's needs are fetched by id (bounded
   // by MAX_NEEDS) to build the done set, instead of collecting the table.
   const preparedRows: Doc<"dtsTodos">[] = [];
   for (const spelling of [...READINESS_VALUES, ...RETIRED_READINESS_VALUES]) {

@@ -202,8 +202,9 @@ export function nyHhmm(at: number): string {
 // The two retired spellings, "preparing" and "ready-for-tom", stay READABLE
 // during the widen (every reader goes through normalizeReadiness / isPrepared,
 // so a row written before the migration reads the same as one written after)
-// and are mapped to "prepared" by ttsMigrations.internalMigrateReadiness. They
-// leave the validator at NARROW, once no row carries them.
+// and are mapped one to one by ttsMigrations.internalMigrateReadiness:
+// "preparing" → unprepared (the write-up was not finished), "ready-for-tom" →
+// prepared. They leave the validator at NARROW, once no row carries them.
 export const READINESS_VALUES = ["unprepared", "prepared"] as const;
 export type Readiness = (typeof READINESS_VALUES)[number];
 export const RETIRED_READINESS_VALUES = ["preparing", "ready-for-tom"] as const;
@@ -219,12 +220,16 @@ export const STORED_READINESS = v.union(
 );
 /** The two-value form: what a Tom door may write, and what the page offers. */
 export const READINESS = v.union(...READINESS_VALUES.map((r) => v.literal(r)));
-/** One reading for every spelling. "preparing" and "ready-for-tom" both
- * meant "someone wrote this up" — the distinction between them was whether
- * an agent could still usefully do groundwork first, a swarm feature that
- * never came — so both read as prepared. Only "unprepared" is unprepared. */
+/** One reading for every spelling. "ready-for-tom" meant "the write-up is
+ * finished and only Tom is missing", so it reads as prepared. "preparing"
+ * meant "an agent still has groundwork to do here" — a half-prepared row —
+ * and a raw or half-prepared capture is never ready, so it reads as
+ * unprepared: the preparer job picks it up again and returns it as
+ * prepared. Each stored spelling has exactly one reading. */
 export function normalizeReadiness(readiness: StoredReadiness): Readiness {
-  return readiness === "unprepared" ? "unprepared" : "prepared";
+  return readiness === "unprepared" || readiness === "preparing"
+    ? "unprepared"
+    : "prepared";
 }
 export function isPrepared(readiness: StoredReadiness): boolean {
   return normalizeReadiness(readiness) === "prepared";

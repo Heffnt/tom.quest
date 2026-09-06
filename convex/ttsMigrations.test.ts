@@ -52,7 +52,7 @@ async function eventsOfKind(t: ReturnType<typeof convexTest>, kind: string) {
   );
 }
 
-describe("readiness migration (ready-for-tom | preparing → prepared)", () => {
+describe("readiness migration (ready-for-tom → prepared, preparing → unprepared)", () => {
   const seed = (): Seed[] => [
     { statement: "raw", readiness: "unprepared" },
     { statement: "briefed", readiness: "ready-for-tom" },
@@ -61,10 +61,11 @@ describe("readiness migration (ready-for-tom | preparing → prepared)", () => {
     { statement: "done long ago", readiness: "ready-for-tom", status: "done" },
   ];
 
-  // witness: map "preparing" to "unprepared" in ttsMigrations — the counts
-  // below name each spelling's destination, so the mapping cannot drift
-  // from ttsShared.normalizeReadiness unnoticed.
-  it("maps both retired spellings to prepared and leaves unprepared alone", async () => {
+  // The counts name each retired spelling's one destination, so the walk
+  // cannot drift from ttsShared.normalizeReadiness unnoticed. A "preparing"
+  // row was half written up: it goes back to the preparer, never onto Tom's
+  // pile (a half-prepared capture is never ready).
+  it("maps ready-for-tom to prepared and preparing to unprepared, one destination each", async () => {
     const t = convexTest({ schema, modules });
     await seedTodos(t, seed());
     const report = await t.mutation(internal.ttsMigrations.internalMigrateReadiness, {});
@@ -72,7 +73,7 @@ describe("readiness migration (ready-for-tom | preparing → prepared)", () => {
     expect(report.totals).toEqual({
       scanned: 5,
       "ready-for-tom-to-prepared": 2,
-      "preparing-to-prepared": 1,
+      "preparing-to-unprepared": 1,
       prepared: 1,
       unprepared: 1,
     });
@@ -80,7 +81,7 @@ describe("readiness migration (ready-for-tom | preparing → prepared)", () => {
     const byStatement = Object.fromEntries(rows.map((r) => [r.statement, r]));
     expect(byStatement.raw.readiness).toBe("unprepared");
     expect(byStatement.briefed.readiness).toBe("prepared");
-    expect(byStatement.half.readiness).toBe("prepared");
+    expect(byStatement.half.readiness).toBe("unprepared");
     expect(byStatement.already.readiness).toBe("prepared");
     // Terminal rows are mapped too — the value leaves the validator at NARROW
     // and every row must be inside it by then. Nothing else on the row moves:
@@ -105,7 +106,7 @@ describe("readiness migration (ready-for-tom | preparing → prepared)", () => {
     expect(report.totals).toEqual({
       scanned: 5,
       "ready-for-tom-to-prepared": 2,
-      "preparing-to-prepared": 1,
+      "preparing-to-unprepared": 1,
       prepared: 1,
       unprepared: 1,
     });
@@ -139,7 +140,7 @@ describe("readiness migration (ready-for-tom | preparing → prepared)", () => {
     expect(second.page.scanned).toBe(3);
     expect(second.totals.scanned).toBe(5);
     expect(second.totals["ready-for-tom-to-prepared"]).toBe(2);
-    expect(second.totals["preparing-to-prepared"]).toBe(1);
+    expect(second.totals["preparing-to-unprepared"]).toBe(1);
   });
 
   // witness: drop the scheduler.runAfter continuation — a table larger than
@@ -164,7 +165,7 @@ describe("readiness migration (ready-for-tom | preparing → prepared)", () => {
       expect(events[0].data).toEqual({
         scanned: 5,
         "ready-for-tom-to-prepared": 2,
-        "preparing-to-prepared": 1,
+        "preparing-to-unprepared": 1,
         prepared: 1,
         unprepared: 1,
       });
@@ -181,9 +182,9 @@ describe("readiness migration (ready-for-tom | preparing → prepared)", () => {
     expect(again.totals).toEqual({
       scanned: 5,
       "ready-for-tom-to-prepared": 0,
-      "preparing-to-prepared": 0,
-      prepared: 4,
-      unprepared: 1,
+      "preparing-to-unprepared": 0,
+      prepared: 3,
+      unprepared: 2,
     });
   });
 });

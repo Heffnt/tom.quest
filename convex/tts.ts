@@ -1598,10 +1598,14 @@ export const internalPrepareTodo = internalMutation({
     entryAction: v.optional(v.string()),
     workDescription: v.optional(v.string()),
     // "prepared" is the value (ruling 18). The two retired spellings are still
-    // accepted from a worker written before the rename and stored as
-    // "prepared" — a pen that rejected them would fail every box job until its
-    // deploy caught up. "unprepared" is refused: an agent must never erase the
-    // record that a todo was written up.
+    // accepted from a worker written before the rename — a pen that rejected
+    // them would fail every box job until its deploy caught up — and stored
+    // as the value each reads as (ttsShared.normalizeReadiness): "ready-for-
+    // tom" as "prepared", "preparing" as "unprepared". The old job said
+    // "preparing" of a write-up it had not finished, so storing unprepared
+    // there is recording its own word, not erasing one; the preparer returns
+    // the row as prepared. The literal "unprepared" is refused: an agent must
+    // never erase the record that a todo was written up.
     readiness: v.optional(
       v.union(
         v.literal("prepared"),

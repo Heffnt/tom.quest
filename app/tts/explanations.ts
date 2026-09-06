@@ -152,7 +152,7 @@ export const READINESS_EXPLANATION = page(
   </tr>
 </table>
 
-<p>Two older spellings, <span class="mono">preparing</span> and <span class="mono">ready-for-tom</span>, were stored before September 2026. A row still carrying one reads as <span class="mono">prepared</span> everywhere (the function <span class="mono">normalizeReadiness</span> in the file <span class="mono">convex/ttsShared.ts</span> is the one place that reading lives), and a migration rewrites them to <span class="mono">prepared</span> so the spellings can be dropped.</p>
+<p>Two older spellings, <span class="mono">preparing</span> and <span class="mono">ready-for-tom</span>, were stored before September 2026, and each reads as exactly one of the two values (the function <span class="mono">normalizeReadiness</span> in the file <span class="mono">convex/ttsShared.ts</span> is the one place that reading lives). <span class="mono">ready-for-tom</span> meant the write-up was finished, so it reads as <span class="mono">prepared</span>. <span class="mono">preparing</span> meant an agent had only half written it up, so it reads as <span class="mono">unprepared</span>: a half-prepared todo is never ready, and the preparer picks it up again. A migration rewrites each spelling to the value it reads as, so the spellings can be dropped.</p>
 
 <h2>Readiness is not status, and the two move independently</h2>
 
@@ -214,7 +214,7 @@ export const READINESS_EXPLANATION = page(
   <div class="box"><span class="mono">unprepared</span> <span class="muted">— back to an agent, and around again</span></div>
 </div>
 
-<p>The worker pen accepts only <span class="mono">prepared</span> and rejects <span class="mono">unprepared</span> outright. That is deliberate: an agent must never be able to erase the record that a todo was already written up. So the step back to <span class="mono">unprepared</span> exists only on this dropdown and on the revise verdict, and what it means is "throw away what was written and start the preparing again from the sentence".</p>
+<p>The worker pen accepts only <span class="mono">prepared</span> and rejects <span class="mono">unprepared</span> outright. That is deliberate: an agent must never be able to erase the record that a todo was already written up. So the step back to <span class="mono">unprepared</span> exists only on this dropdown and on the revise verdict, and what it means is "throw away what was written and start the preparing again from the sentence". (The pen still takes the two older spellings from a box job deployed before the rename, and stores each as the value it reads as: <span class="mono">ready-for-tom</span> as <span class="mono">prepared</span>, <span class="mono">preparing</span> as <span class="mono">unprepared</span> — that job's own word for "not finished yet".)</p>
 
 <h2>What happens next, and who does it</h2>
 

@@ -364,8 +364,9 @@ export default defineSchema({
   //
   // Vocabulary (spec §12.1) is stored literally:
   //   readiness: unprepared | prepared (ruling 18, the lifeos update; the
-  //              retired spellings preparing | ready-for-tom stay readable
-  //              until NARROW — ttsShared.ts is the one home)
+  //              retired spellings stay readable until NARROW, one reading
+  //              each — ready-for-tom as prepared, preparing as unprepared —
+  //              and ttsShared.ts is the one home)
   //   status:    active | waiting | archived | done
   //   timingClass: dated | condition-bound | whenever
   // Nothing is ever deleted (spec principle 2): terminal states are status

@@ -720,8 +720,10 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
     return jsonResponse(400, { error: "id (non-empty string) required" });
   }
   // "prepared" (ruling 18); the two retired spellings are still accepted from
-  // a box job written before the rename, and the mutation stores them as
-  // "prepared". "unprepared" is refused (an agent never erases a write-up).
+  // a box job written before the rename, and the mutation stores each as the
+  // value it reads as: "ready-for-tom" as "prepared", "preparing" as
+  // "unprepared" (that job's own word for a write-up it had not finished).
+  // The literal "unprepared" is refused (an agent never erases a write-up).
   if (
     b.readiness !== undefined &&
     b.readiness !== "prepared" &&

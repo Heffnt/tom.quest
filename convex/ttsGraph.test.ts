@@ -149,14 +149,16 @@ describe("ttsShared graph rules", () => {
   });
 
   // ── Readiness, two values (ruling 18) ──────────────────────────────────────
-  // witness: make normalizeReadiness read "preparing" as unprepared — every
-  // row written before the migration would drop off Tom's ready list.
-  it("the two retired spellings both read as prepared", () => {
+  // One reading per stored spelling. "ready-for-tom" was a finished write-up;
+  // "preparing" was a half-finished one, and a half-prepared capture is never
+  // ready — it reads as unprepared so the preparer picks it up again.
+  it("ready-for-tom reads as prepared, preparing as unprepared", () => {
     expect(normalizeReadiness("unprepared")).toBe("unprepared");
     expect(normalizeReadiness("prepared")).toBe("prepared");
-    expect(normalizeReadiness("preparing")).toBe("prepared");
+    expect(normalizeReadiness("preparing")).toBe("unprepared");
     expect(normalizeReadiness("ready-for-tom")).toBe("prepared");
     expect(isPrepared("unprepared")).toBe(false);
+    expect(isPrepared("preparing")).toBe(false);
     expect(isPrepared("ready-for-tom")).toBe(true);
   });
 

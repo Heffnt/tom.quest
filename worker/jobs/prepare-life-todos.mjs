@@ -27,8 +27,10 @@
 // readiness after preparation: "prepared" (ruling 18, the lifeos update —
 // readiness is two values, unprepared | prepared; the old split between
 // "ready-for-tom" and "preparing" was a promise of deeper agent preparation
-// that never came). Whether a prepared todo is READY for Tom is computed on
-// the server (convex/ttsShared.ts isReadyForTom), never written here.
+// that never came, and the server now reads the old "preparing" as
+// unprepared: a half-finished write-up comes back here). Whether a prepared
+// todo is READY for Tom is computed on the server (convex/ttsShared.ts
+// isReadyForTom), never written here.
 //
 // REVISE RULINGS: Tom can rule "revise" on a prepared life todo with one
 // written sentence that redirects the preparation (the server drops the

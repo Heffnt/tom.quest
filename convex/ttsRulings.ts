@@ -27,7 +27,7 @@ import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
 // prompt, the preparer prompt, and the session's opening prompt.
 //
 // Life-subject verdicts take their immediate effect here (revise drops
-// readiness to "preparing"; archive archives). Code subjects are applied by
+// readiness to "unprepared"; archive archives). Code subjects are applied by
 // the worker's apply job (repo is the system of record). appliedAt/applyResult
 // record the application either way; a newer ruling on the same subject
 // supersedes an older unapplied one (append-only, history kept).

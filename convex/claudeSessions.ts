@@ -3287,7 +3287,9 @@ export const internalAutoSchedule = internalMutation({
 
     const hasOpenAgentStep = (t: Doc<"dtsTodos">): boolean =>
       (t.plan ?? []).some((s) => s.actor === "agent" && s.status === "open");
-    // Two readiness values (ruling 18); ttsShared reads the retired spellings.
+    // Two readiness values (ruling 18); ttsShared reads the retired spellings,
+    // and a stored "preparing" reads as unprepared — so a row an older box job
+    // left half written up is handed out here again, not stranded.
     const unprepared = (t: Doc<"dtsTodos">): boolean => !isPrepared(t.readiness);
 
     // ── Per-candidate exclusions (cheapest first) ────────────────────────────
