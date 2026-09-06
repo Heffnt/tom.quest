@@ -10,10 +10,13 @@
 //   1. snapshot — copies every Convex table (the six auth tables excepted)
 //      into the WikiTom checkout at tts/snapshot/, one JSON-lines file per
 //      table, deterministic, written only where the bytes changed.
-//   2. learning — SKELETON: reads what Tom did yesterday (his session turns,
-//      his Slack replies, his rulings) and records a "learning-run" row with
-//      the counts and zero changes. What the full step will do is written
-//      above learningStep below.
+//   2. learning — applies Tom's objections from the digest thread (the
+//      inverse of each named change, or a row saying why not), then reads
+//      what he did since the last learning run (his session turns with the
+//      agent's replies around them, his Slack replies, his rulings), makes
+//      one model call over the model-of-tom pages, and applies the lines it
+//      proposes that the rules allow — one "learning-change" row each, with
+//      the commit, once the push has made it. See learningStep.
 //   3. sessions — archives every Codex rollout and Claude SDK session file on
 //      this box that WikiTom's sessions/ does not already hold at that
 //      content, in phase 1's layout, and appends the manifest.
@@ -53,9 +56,10 @@ import crypto from "node:crypto";
 import zlib from "node:zlib";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { loadEnv, convexFetch, nyHour } from "./tts-lib.mjs";
+import { loadEnv, convexFetch, nyHour, runClaude, extractJsonObject, clip } from "./tts-lib.mjs";
 import { git } from "./tts-code-lib.mjs";
-import { extractSections } from "./markdown-sections.mjs";
+import { enclosingHeadings, extractSections, sectionSpan } from "./markdown-sections.mjs";
+import { CHANGE_ID_CHARS, changeIdTokens, namedChange } from "./learning-change-names.mjs";
 
 // ── Where things are ─────────────────────────────────────────────────────────
 export const WIKITOM_DIR = process.env.WIKITOM_DIR || "/root/wikitom";
@@ -103,8 +107,6 @@ export const GIT_IDENTITY = [
 const STEPS = ["snapshot", "learning", "sessions", "push", "post"];
 // The four that write the WikiTom checkout, and so run under one lock.
 const LOCKED_STEPS = ["snapshot", "learning", "sessions", "push"];
-const DAY_MS = 24 * 60 * 60 * 1000;
-
 // ── Small pure helpers (tested in nightly.test.mjs) ──────────────────────────
 
 export function sha256(bytes) {
@@ -519,46 +521,665 @@ export function syncSnapshot(snapshotDir, stagingDir, tables) {
   return changed.sort();
 }
 
-// ── 2. learning (skeleton) ───────────────────────────────────────────────────
-// WHAT THE FULL STEP WILL DO (design section 4, "Learning"; a later PR): for
-// each of yesterday's sessions Tom took part in, each threaded Slack reply of
-// his, and each ruling, one model call proposes lines for the model-of-tom
-// files — factual lines with the date and the evidence (the turn, the reply,
-// the ruling, quoted) — never Tom's directions section, never an ideal-state
-// or must-not-break line, never the spec. Each accepted change is one
-// "learning-change" dtsEvents row with an id, the file, the base hash, the
-// text before and after, its source, and the commit it lands in; the 5 a.m.
-// digest lists every line with its evidence; an objection reply in the
-// digest thread writes an event, and the NEXT night applies the inverse
-// first and the next digest reports the reversal. Auto-compact and
-// auto-memory stay off in learning runs (ruling 10).
+// ── 2. learning ──────────────────────────────────────────────────────────────
+// Design section 4, "Learning", and rulings 5 and 13. The step reads what Tom
+// did since the last learning run — the turns he typed (with the agent's text
+// on either side, as context), his threaded Slack replies, his rulings — and
+// makes ONE model call over the model-of-tom pages asking for the lines those
+// inputs justify. Each proposed change is a line for one section of one
+// page: a fact, a correction, or an inference (which must say it is one),
+// ending with its evidence in the pages' citation style, and either added to
+// the section or replacing one existing line verbatim.
 //
-// THIS PR: the read, and a "learning-run" row with the counts and zero
-// changes, so the digest's "what the nightly job wrote" has a row to read
-// from the first night.
-async function learningStep(run) {
-  const until = run.now;
-  const since = until - DAY_MS;
-  const input = await convexFetch(
-    run.env,
-    `/tts/learning-input?since=${since}&until=${until}`,
+// THE JOB, NOT THE MODEL, DECIDES WHAT LANDS. A change is refused when it
+// names a file the step does not write (the spec, anything outside
+// writing.md, priorities.md and areas/), a section Tom owns (Directions,
+// Ideal state, Must not break — ruling 13) or one nested under it, a line
+// without evidence or whose evidence names nothing in tonight's input, a
+// replacement whose target is not on the page verbatim, or a line already
+// there. What lands is one
+// "learning-change" row each — {id, file, section, before, after, evidence,
+// modelOfTomCommit} — posted once the push step has made the commit, and the 5 a.m.
+// digest prints each with its id. Tom objects by replying on that line; the
+// NEXT night applies the inverse first (learningObjections below), records
+// "learning-reverted" or, when the text has moved on, "learning-revert-
+// failed" with the reason, and the digest reports it. Report and object is
+// the default: nothing waits on him.
+//
+// Every write happens at the end of the step, after the whole answer has
+// been checked, so a refused answer leaves the checkout untouched. Auto-
+// compact and auto-memory stay off in learning runs (ruling 10): the call is
+// one headless `claude -p`, which has neither.
+
+export const MODEL_OF_TOM_DIR = "model-of-tom";
+// The pages the step writes. The spec and everything else in the checkout is
+// refused by not being here.
+export const LEARNING_FILES_FIRST = ["model-of-tom/writing.md", "model-of-tom/priorities.md"];
+// The sections an agent never writes (ruling 13). Matched by heading,
+// case-insensitively, on any page.
+export const FORBIDDEN_SECTIONS = ["Directions", "Ideal state", "Must not break"];
+export const LEARNING_KINDS = ["fact", "correction", "inference"];
+// runClaude's --model. The Opus tier: this is judgment over Tom's words, not
+// a mechanical parse. Overridable per box without a deploy.
+export const LEARNING_MODEL = process.env.TTS_LEARNING_MODEL || "opus";
+export const LEARNING_TIMEOUT_MS = 20 * 60 * 1000;
+// A turn of Tom's is shown to the model up to this many characters.
+export const LEARNING_TURN_CHARS = 4000;
+
+export function isLearningFile(rel) {
+  return (
+    LEARNING_FILES_FIRST.includes(rel) ||
+    /^model-of-tom\/areas\/[a-z0-9-]+\.md$/.test(String(rel))
   );
+}
+
+/** The stable id of one change: the page, the section and the line it put
+ * there. The same line proposed twice is the same change. Its length is the
+ * naming rule's (learning-change-names.mjs), which is how Tom names it back. */
+export function learningChangeId(file, section, line) {
+  return sha256(`${file}\n${section}\n${line}`).slice(0, CHANGE_ID_CHARS);
+}
+
+/**
+ * `updated: <day>` in a page's frontmatter (the area pages carry one; a page
+ * without frontmatter, or without an `updated:` line in it, is returned as
+ * it is). `reviewed:` is never touched — only Tom sets it.
+ */
+export function bumpUpdated(text, day) {
+  if (!text.startsWith("---\n")) return text;
+  const end = text.indexOf("\n---", 4);
+  if (end === -1) return text;
+  const front = text.slice(4, end);
+  if (!/^updated:.*$/m.test(front)) return text;
+  return text.slice(0, 4) + front.replace(/^updated:.*$/m, `updated: ${day}`) + text.slice(end);
+}
+
+/**
+ * The id a page cites a session by: the first 8 hex characters of the SDK
+ * session id ("session 47f04bc9" on the pages; WikiTom's sessions/ archive is
+ * keyed by the whole of it, `sessions/YYYY/MM/DD/claude-<id>/`). A session
+ * that never reported one — the SDK had not started — is cited by its Convex
+ * row id, which is the only name it has.
+ */
+export function sessionCitation(turn) {
+  const sdk = typeof turn.sdkSessionId === "string" ? turn.sdkSessionId.toLowerCase() : "";
+  return /^[0-9a-f]{8}/.test(sdk) ? sdk.slice(0, 8) : turn.sessionId;
+}
+
+/** Every id in tonight's input that a line's evidence may name. A session is
+ * named by its citation (the 8-hex prefix), by the whole SDK id, or by its
+ * Convex row id — the prompt shows the first; the others are accepted. */
+export function learningEvidenceIds(input) {
+  const ids = new Set();
+  const add = (x) => {
+    if (typeof x === "string" && x.length >= 6) ids.add(x);
+  };
+  for (const t of input.tomTurns ?? []) {
+    add(t.id);
+    add(t.sessionId);
+    add(t.sdkSessionId);
+    add(sessionCitation(t));
+  }
+  for (const r of input.slackReplies ?? []) {
+    add(r.id);
+    add(r.data?.ts);
+    add(r.data?.threadTs);
+  }
+  for (const r of input.rulings ?? []) add(r.id);
+  return ids;
+}
+
+/**
+ * The model's answer as a list of raw changes. Malformed JSON, or an object
+ * without a `changes` array, throws — and the step applies nothing.
+ *
+ * THE THROWN MESSAGE IS A REASON, NEVER THE ANSWER: extractJsonObject's own
+ * error quotes the head of the text, and a failure here becomes a
+ * "nightly-failure" row the digest prints. The model's words about Tom do
+ * not go to Slack through an error; the cron log has them (stderr, below).
+ */
+export function parseLearningAnswer(answerText) {
+  let obj;
+  try {
+    obj = extractJsonObject(answerText);
+  } catch (err) {
+    console.error(`[nightly] learning: the answer could not be parsed: ${err.message}`);
+    throw new Error(
+      err instanceof SyntaxError
+        ? "the learning answer is not valid JSON"
+        : "the learning answer holds no JSON object",
+    );
+  }
+  if (obj === null || typeof obj !== "object" || !Array.isArray(obj.changes)) {
+    throw new Error("the learning answer has no `changes` array");
+  }
+  obj.changes.forEach((c, i) => {
+    if (c === null || typeof c !== "object" || Array.isArray(c)) {
+      throw new Error(`learning change ${i} is not an object`);
+    }
+  });
+  return obj.changes;
+}
+
+// The trailing parenthetical of a line — its citation. A parenthetical
+// alone is not a citation: what makes it one is that it names the change's
+// evidence (learningRefusal), which is what "every line cites its evidence"
+// means on the pages.
+const CITED = /(\([^()]+\))\.?$/;
+
+function isForbiddenSection(heading) {
+  const h = String(heading ?? "").trim().toLowerCase();
+  return FORBIDDEN_SECTIONS.some((s) => s.toLowerCase() === h);
+}
+
+/**
+ * Where a change's section is on a page, or why the step may not touch it:
+ * `{ span }` from sectionSpan, or `{ reason }` when the page has no such
+ * heading, the section is one of Tom's, or it sits UNDER one of Tom's — a
+ * "### Training goals" beneath "## Ideal state" is Ideal state's. THE ONE
+ * DOOR for both directions: a line lands through it (applyLearningChanges)
+ * and is taken back through it (revertLearningChange), so a revert can no
+ * more reach Tom's sections than a change can.
+ */
+export function locateSection(lines, file, section) {
+  const name = String(section ?? "").trim();
+  if (name === "") return { reason: "no section named" };
+  if (isForbiddenSection(name)) {
+    return { reason: `"${name}" is Tom's section; an agent never writes it` };
+  }
+  const span = sectionSpan(lines, name);
+  if (span === null) return { reason: `no section "${name}" on ${file}` };
+  const owner = enclosingHeadings(lines, span.start).find(isForbiddenSection);
+  if (owner !== undefined) {
+    return { reason: `"${name}" is under "${owner}", Tom's section; an agent never writes it` };
+  }
+  return { span };
+}
+
+/** Why one proposed change may not land, or null when it may. The checks
+ * are the rules in the block comment above, in the order a reader of the
+ * refusal would want them. */
+function learningRefusal(c, texts, evidenceIds) {
+  if (typeof c.file !== "string" || !isLearningFile(c.file)) {
+    return `${String(c.file)} is not a page the learning step writes`;
+  }
+  if (!texts.has(c.file)) return `${c.file} is not in the checkout`;
+  if (typeof c.section !== "string" || c.section.trim() === "") return "no section named";
+  if (isForbiddenSection(c.section)) {
+    return `"${c.section.trim()}" is Tom's section; an agent never writes it`;
+  }
+  if (!LEARNING_KINDS.includes(c.kind)) return "kind must be fact, correction or inference";
+  if (typeof c.line !== "string" || c.line.trim() === "" || /[\r\n]/.test(c.line)) {
+    return "the line must be one non-empty line";
+  }
+  const cited = CITED.exec(c.line.trim());
+  if (cited === null) return "the line does not end with its evidence citation";
+  if (c.kind === "inference" && !/inference/i.test(c.line)) {
+    return "an inference must say it is one, in the line";
+  }
+  if (
+    !Array.isArray(c.evidence) ||
+    c.evidence.length === 0 ||
+    !c.evidence.every((e) => typeof e === "string" && e.trim() !== "")
+  ) {
+    return "no evidence";
+  }
+  const evidence = c.evidence.map((e) => e.trim());
+  if (evidenceIds !== null) {
+    for (const e of evidence) {
+      if (![...evidenceIds].some((id) => e.includes(id))) {
+        return `evidence "${e}" names nothing in tonight's input`;
+      }
+    }
+  }
+  // The citation IS the evidence: every entry is in the line, and the
+  // trailing parenthetical names at least one of them — "(probably)" at the
+  // end of a line that never says where it came from is not a citation.
+  for (const e of evidence) {
+    if (!c.line.includes(e)) return `the line does not cite its evidence "${e}"`;
+  }
+  if (!evidence.some((e) => cited[1].includes(e))) {
+    return `the citation ${cited[1]} names none of the change's evidence`;
+  }
+  if (c.replaces !== null && c.replaces !== undefined) {
+    // One bullet — which on writing.md may be quoted over the lines the
+    // page wraps it on (bulletUnits below).
+    if (typeof c.replaces !== "string" || c.replaces.trim() === "") {
+      return "replaces must be one existing bullet, or null";
+    }
+    if (oneLine(c.replaces) === oneLine(c.line)) return "the replacement is the line it replaces";
+  }
+  return null;
+}
+
+// ── The unit a change replaces or takes back: one bullet ─────────────────────
+// writing.md is hard-wrapped: one bullet runs over several physical lines,
+// the continuation lines indented. A replacement or a revert that worked on
+// physical lines would replace the first line of a bullet and leave its
+// tail as a stray, so the unit here is the bullet whole — the line that
+// starts it plus the indented, non-blank lines under it — and a bullet is
+// matched with whitespace normalized (the lines joined by one space), so
+// the model may quote it as the page wraps it or as one line, and a bullet
+// Tom re-wrapped still matches. The area pages' bullets are one line each,
+// which is the degenerate case. What the job writes is always one line, and
+// `before` records the replaced bullet as one line, so a revert restores its
+// words unwrapped.
+const BULLET = /^\s*[-*]\s+\S/;
+const CONTINUATION = /^\s+\S/;
+
+/** The bullets within `span` as [start, end) line ranges. */
+export function bulletUnits(lines, span) {
+  const units = [];
+  for (let i = span.start + 1; i < span.end; i++) {
+    if (!BULLET.test(lines[i])) continue;
+    let end = i + 1;
+    while (end < span.end && CONTINUATION.test(lines[end]) && !BULLET.test(lines[end])) end++;
+    units.push({ start: i, end });
+    i = end - 1;
+  }
+  return units;
+}
+
+/** A bullet's text (or any text) as one line: each line trimmed, joined by
+ * a space, runs of whitespace collapsed. The form bullets are compared in. */
+export function oneLine(text) {
+  return String(text ?? "")
+    .split("\n")
+    .map((l) => l.trim())
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** The unit within `span` whose one-line form equals `text`'s, or null. */
+function findBullet(lines, span, text) {
+  const wanted = oneLine(text);
+  for (const unit of bulletUnits(lines, span)) {
+    if (oneLine(lines.slice(unit.start, unit.end).join("\n")) === wanted) return unit;
+  }
+  return null;
+}
+
+/**
+ * Apply proposed changes to the pages (a Map of file → text), pure. Returns
+ * the new texts, the changes that landed (each with its id and the digest's
+ * fields), and the ones refused with the reason. `evidenceIds` is the set a
+ * line's evidence must name — null skips that check. Every page that took
+ * a change gets `updated: day`.
+ */
+export function applyLearningChanges(pages, changes, { day, evidenceIds = null } = {}) {
+  const texts = new Map(pages);
+  const applied = [];
+  const refused = [];
+  const refuse = (c, reason) =>
+    refused.push({
+      file: typeof c.file === "string" ? c.file : null,
+      section: typeof c.section === "string" ? c.section : null,
+      line: typeof c.line === "string" ? c.line : null,
+      reason,
+    });
+  for (const c of changes) {
+    const why = learningRefusal(c, texts, evidenceIds);
+    if (why !== null) {
+      refuse(c, why);
+      continue;
+    }
+    const line = c.line.trim().startsWith("- ") ? c.line.trim() : `- ${c.line.trim()}`;
+    const lines = texts.get(c.file).split("\n");
+    const located = locateSection(lines, c.file, c.section);
+    if (located.span === undefined) {
+      refuse(c, located.reason);
+      continue;
+    }
+    const { span } = located;
+    if (findBullet(lines, { start: -1, end: lines.length }, line) !== null) {
+      refuse(c, "already on the page");
+      continue;
+    }
+    const replaces = c.replaces ?? null;
+    let before = "";
+    if (replaces !== null) {
+      const unit = findBullet(lines, span, replaces);
+      if (unit === null) {
+        refuse(c, `the line to replace is not in "${c.section.trim()}" verbatim`);
+        continue;
+      }
+      before = oneLine(lines.slice(unit.start, unit.end).join("\n"));
+      lines.splice(unit.start, unit.end - unit.start, line);
+    } else {
+      let last = span.start;
+      for (let i = span.start + 1; i < span.end; i++) if (lines[i].trim() !== "") last = i;
+      if (last === span.start) lines.splice(last + 1, 0, "", line);
+      else lines.splice(last + 1, 0, line);
+    }
+    texts.set(c.file, lines.join("\n"));
+    applied.push({
+      id: learningChangeId(c.file, c.section.trim(), line),
+      file: c.file,
+      section: c.section.trim(),
+      kind: c.kind,
+      before,
+      after: line,
+      evidence: c.evidence.map((e) => e.trim()).join("; "),
+      sources: c.evidence.map((e) => e.trim()),
+    });
+  }
+  for (const file of new Set(applied.map((a) => a.file))) {
+    texts.set(file, bumpUpdated(texts.get(file), day));
+  }
+  return { pages: texts, applied, refused };
+}
+
+/**
+ * The inverse of one recorded change against a page's CURRENT text: an
+ * addition's line is removed, a replacement's line becomes what it replaced.
+ * When the line is no longer there as written — a later change replaced it,
+ * or Tom edited the page — nothing is touched and the reason says so.
+ *
+ * ONLY WITHIN THE CHANGE'S OWN SECTION (locateSection): the line is looked
+ * for where the change put it and nowhere else, so a copy Tom pasted into
+ * Must not break or Directions — or anywhere — is never the one taken back.
+ */
+export function revertLearningChange(text, change) {
+  const after = String(change.after ?? "").trim();
+  if (after === "") return { ok: false, reason: "the change records no line to look for" };
+  const lines = text.split("\n");
+  const located = locateSection(lines, change.file, change.section);
+  if (located.span === undefined) return { ok: false, reason: located.reason };
+  const { span } = located;
+  const unit = findBullet(lines, span, after);
+  if (unit === null) {
+    return {
+      ok: false,
+      reason: `the line is no longer in "${String(change.section).trim()}" on ${change.file} as written`,
+    };
+  }
+  const before = oneLine(change.before);
+  lines.splice(unit.start, unit.end - unit.start, ...(before === "" ? [] : [before]));
+  return { ok: true, text: lines.join("\n") };
+}
+
+/**
+ * The change an objection names: by the change's id — the row's own, or a
+ * name in the text by the one rule in learning-change-names.mjs, which is
+ * also how ttsSlack.ts read the reply — else by the line's text quoted in
+ * the objection.
+ */
+export function matchObjection(objection, changes) {
+  const text = String(objection.text ?? "");
+  const hit = namedChange([objection.id, ...changeIdTokens(text)], changes);
+  if (hit) return hit;
+  for (const ch of changes) {
+    const after = String(ch.after ?? "").trim().replace(/^- /, "");
+    if (after.length >= 20 && text.includes(after)) return ch;
+  }
+  return null;
+}
+
+/** The pages the step writes, as a Map of checkout-relative path → text. */
+export function readLearningPages(dir) {
+  const pages = new Map();
+  for (const rel of LEARNING_FILES_FIRST) {
+    const abs = path.join(dir, rel);
+    if (fs.existsSync(abs)) pages.set(rel, fs.readFileSync(abs, "utf8"));
+  }
+  const areas = path.join(dir, MODEL_OF_TOM_AREAS_DIR);
+  if (fs.existsSync(areas)) {
+    for (const name of fs.readdirSync(areas).filter((n) => n.endsWith(".md")).sort()) {
+      const rel = `${MODEL_OF_TOM_AREAS_DIR}/${name}`;
+      if (isLearningFile(rel)) pages.set(rel, fs.readFileSync(path.join(areas, name), "utf8"));
+    }
+  }
+  return pages;
+}
+
+/** The one prompt. The pages' own rules (writing.md) travel with the pages;
+ * what is here is the contract of the answer and what the job refuses. */
+export function learningPrompt(input, pages, day) {
+  const shown = {
+    window: { since: new Date(input.since).toISOString(), until: new Date(input.until).toISOString() },
+    tomTurns: (input.tomTurns ?? []).map((t) => ({
+      turnId: t.id,
+      session: sessionCitation(t),
+      sessionTitle: t.sessionTitle,
+      date: utcDay(t.at),
+      agentBefore: t.replyBefore ?? null,
+      tom: clip(t.text, LEARNING_TURN_CHARS),
+      agentAfter: t.replyAfter ?? null,
+    })),
+    slackReplies: (input.slackReplies ?? []).map((r) => ({
+      eventId: r.id,
+      ts: r.data?.ts ?? null,
+      threadTs: r.data?.threadTs ?? null,
+      date: utcDay(r.at),
+      subject: r.data?.subject ?? null,
+      outcome: r.data?.outcome ?? null,
+      tom: clip(r.data?.text, LEARNING_TURN_CHARS),
+    })),
+    rulings: (input.rulings ?? []).map((r) => ({
+      rulingId: r.id,
+      date: utcDay(r.at),
+      verdict: r.verdict,
+      subjectType: r.subjectType,
+      todoId: r.todoId ?? null,
+      batchId: r.batchId ?? null,
+      repo: r.repo ?? null,
+      externalId: r.externalId ?? null,
+      sentence: r.sentence ?? null,
+      quote: r.quote ?? null,
+    })),
+  };
+  const pageText = [...pages]
+    .map(([file, text]) => `=== ${file} ===\n${text}`)
+    .join("\n\n");
+  return [
+    "You maintain the model-of-tom pages of WikiTom: the files every agent prompt about Tom begins with. Tonight's input is what Tom did since the last learning run — the turns he typed in sessions (each with the agent's text just before and just after it, which is context for reading his words and never a source of a line), his threaded Slack replies, and his rulings. Propose the changes those inputs justify to the pages below, and nothing else.",
+    "",
+    "RULES",
+    "- A change is one line for one section of one page. `kind` is what the line is: a fact about Tom, a correction of something a page says, or an inference. An inference is allowed and must say in the line that it is an inference and which facts it rests on.",
+    "- Every line ends with its evidence, in the pages' citation style, in parentheses: (session <session>, YYYY-MM-DD) for a turn — `session` is the 8-character id the pages already cite, e.g. (session 47f04bc9, 2026-08-30) — (ruling <rulingId>, YYYY-MM-DD) for a ruling, (slack <ts>, YYYY-MM-DD) for a Slack reply; several joined with \"; \". The ids are the ones in the input, verbatim. `evidence` lists the same citations, and every one of them must appear in the line. A line whose evidence names nothing in the input is refused.",
+    "- Only these pages: model-of-tom/writing.md, model-of-tom/priorities.md, model-of-tom/areas/<area>.md. Only a section that exists on the page, named by its heading. Never \"Directions\", never \"Ideal state\", never \"Must not break\" — those are Tom's own, and a change naming them is refused. Never the spec.",
+    "- A correction replaces: `replaces` is one existing bullet of that section, verbatim — where the page wraps a bullet over several lines, quote all of them — and the new line supersedes it — the pages describe what is, never what was. An addition has `replaces: null`.",
+    "- Write to writing.md's own rules: plain statements, no comparisons or analogies, no evaluative language, one fixed term per concept, the date in the line. One line, starting with \"- \".",
+    "- Nothing from the agent's words alone; nothing already on a page; nothing that restates a line. An empty list is the right answer on a night whose input changes nothing about the model of Tom, and that is most nights.",
+    "",
+    "Answer with ONE JSON object and nothing else, no code fence:",
+    '{"changes":[{"file":"model-of-tom/areas/climbing.md","section":"Current state","kind":"fact","line":"- ... (session <session>, YYYY-MM-DD).","replaces":null,"evidence":["session <session>"]}]}',
+    "",
+    `Tonight is ${day} (UTC).`,
+    "",
+    "INPUT",
+    JSON.stringify(shown, null, 1),
+    "",
+    "PAGES",
+    pageText,
+  ].join("\n");
+}
+
+/**
+ * Tom's objections, applied before tonight's learning. Each unconsumed
+ * "learning-objection" row names a change (by id or by the line's text); the
+ * inverse is applied to the page's current text and one row records it
+ * either way. Every objection is consumed here once, so a night that could
+ * not revert says so once and the digest shows it once.
+ */
+async function learningObjections(run, input, fetchConvex) {
+  const outcome = { reverted: 0, failed: 0 };
+  const consumed = [];
+  // The rows that go in the reverts' commit: tagged with its message below,
+  // once the count is known, so recordLearningRows finds the commit by it.
+  const revertedRows = [];
+  for (const objection of input.objections ?? []) {
+    const change = matchObjection(objection, input.changes ?? []);
+    const note = { objectionId: objection.eventId, objection: clip(objection.text, 400) };
+    if (change === null) {
+      run.learningRows.push({
+        kind: "learning-revert-failed",
+        data: { ...note, id: objection.id, reason: "no learning change matches the objection" },
+      });
+      outcome.failed += 1;
+    } else {
+      const abs = path.join(run.dir, change.file);
+      const result =
+        typeof change.file === "string" && isLearningFile(change.file) && fs.existsSync(abs)
+          ? revertLearningChange(fs.readFileSync(abs, "utf8"), change)
+          : { ok: false, reason: `${change.file} is not a page in the checkout` };
+      const named = { id: change.id, file: change.file, section: change.section ?? null };
+      if (result.ok) {
+        fs.writeFileSync(abs, bumpUpdated(result.text, run.day));
+        const row = {
+          kind: "learning-reverted",
+          data: { ...note, ...named, before: change.after, after: change.before },
+        };
+        run.learningRows.push(row);
+        revertedRows.push(row);
+        outcome.reverted += 1;
+      } else {
+        run.learningRows.push({
+          kind: "learning-revert-failed",
+          data: { ...note, ...named, reason: result.reason },
+        });
+        outcome.failed += 1;
+      }
+    }
+    consumed.push(objection.eventId);
+  }
+  if (consumed.length > 0) {
+    await fetchConvex(run.env, "/tts/learning-objections-consumed", { ids: consumed });
+  }
+  if (outcome.reverted > 0) {
+    const message = `learning: ${run.day} — ${outcome.reverted} line${outcome.reverted === 1 ? "" : "s"} reverted on Tom's objection`;
+    for (const row of revertedRows) row.commitMessage = message;
+    run.commits.push({ paths: [MODEL_OF_TOM_DIR], message });
+  }
+  return outcome;
+}
+
+/**
+ * The step. `deps` is for the tests: the Convex call and the model call,
+ * defaulting to the real ones. The rows this step produces go to
+ * run.learningRows and are posted by recordLearningRows once the push has
+ * given them a commit.
+ */
+export async function learningStep(run, deps = {}) {
+  const fetchConvex = deps.fetch ?? convexFetch;
+  const askModel = deps.model ?? runClaude;
+  run.learningRows ??= [];
+  const until = run.now;
+  const input = await fetchConvex(run.env, `/tts/learning-input?until=${until}`);
   const summary = {
     day: run.day,
-    since,
+    since: input.since,
+    sinceSource: input.sinceSource ?? null,
     until,
     tomTurns: input.tomTurns.length,
     sessions: new Set(input.tomTurns.map((t) => t.sessionId)).size,
     slackReplies: input.slackReplies.length,
     rulings: input.rulings.length,
+    objections: (input.objections ?? []).length,
+    reverted: 0,
+    revertFailed: 0,
+    model: null,
     changes: 0,
-    note: "skeleton — reads the inputs and writes no learning-change rows yet",
+    refused: [],
   };
-  await convexFetch(run.env, "/tts/event", { kind: "learning-run", data: summary });
+  const objections = await learningObjections(run, input, fetchConvex);
+  summary.reverted = objections.reverted;
+  summary.revertFailed = objections.failed;
+
+  if (summary.tomTurns + summary.slackReplies + summary.rulings > 0) {
+    const pages = readLearningPages(run.dir);
+    if (pages.size === 0) throw new Error(`no model-of-tom pages under ${run.dir}`);
+    summary.model = LEARNING_MODEL;
+    const answer = askModel(learningPrompt(input, pages, run.day), {
+      cwd: run.dir,
+      model: LEARNING_MODEL,
+      timeoutMs: LEARNING_TIMEOUT_MS,
+      maxTurns: 4,
+    });
+    const result = applyLearningChanges(pages, parseLearningAnswer(answer), {
+      day: run.day,
+      evidenceIds: learningEvidenceIds(input),
+    });
+    for (const [file, text] of result.pages) {
+      if (text !== pages.get(file)) fs.writeFileSync(path.join(run.dir, file), text);
+    }
+    summary.changes = result.applied.length;
+    summary.refused = result.refused.map((r) => ({ ...r, line: clip(r.line, 200) }));
+    const message = `learning: ${run.day} — ${result.applied.length} line${result.applied.length === 1 ? "" : "s"} from Tom's turns, replies and rulings`;
+    for (const a of result.applied) {
+      run.learningRows.push({ kind: "learning-change", data: a, commitMessage: message });
+    }
+    if (result.applied.length > 0) run.commits.push({ paths: [MODEL_OF_TOM_DIR], message });
+  }
+  await fetchConvex(run.env, "/tts/event", { kind: "learning-run", data: summary });
   console.log(
-    `[nightly] learning: ${summary.tomTurns} turns of Tom's in ${summary.sessions} sessions, ${summary.slackReplies} Slack replies, ${summary.rulings} rulings — 0 changes (skeleton)`,
+    `[nightly] learning: ${summary.tomTurns} turns of Tom's in ${summary.sessions} sessions, ${summary.slackReplies} Slack replies, ${summary.rulings} rulings — ${summary.changes} change(s), ${summary.refused.length} refused, ${summary.reverted} reverted, ${summary.revertFailed} revert(s) failed`,
   );
   return summary;
+}
+
+/**
+ * The commit under model-of-tom/ that a learning row's change is in, found
+ * after the push has made it (and the rebase has given it its final hash):
+ * the newest commit touching model-of-tom/ whose message starts with the
+ * one the row was tagged with. When no commit carries that message — the
+ * push step folds two entries naming model-of-tom/ into the first (a night
+ * with reverts AND new lines is one commit under the reverts' message) —
+ * the newest model-of-tom/ commit THIS RUN made is the one that holds it;
+ * an older commit is never named, and null says nothing was found.
+ */
+export function modelOfTomCommit(dir, message, notBefore) {
+  try {
+    const bySubject = git(
+      dir, "log", "-1", "--format=%H", "--fixed-strings", `--grep=${message}`, "--", MODEL_OF_TOM_DIR,
+    ).trim();
+    if (bySubject !== "") return bySubject;
+    const newest = git(dir, "log", "-1", "--format=%H %at", "--", MODEL_OF_TOM_DIR).trim();
+    const [hash, authoredAt] = newest.split(" ");
+    return hash && Number(authoredAt) * 1000 >= notBefore - 60_000 ? hash : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Post the rows the learning step produced, each with the commit its change
+ * is in (`modelOfTomCommit`, above — the row's own commit, not HEAD, which by
+ * now is the sessions commit or the sweep). A row that wrote nothing (a
+ * revert that could not apply) names none. Called after the locked steps,
+ * whether or not the push ran: the commit is the pushed one, or the local one
+ * when the push was refused — the run's `pushed` says which. `deps.fetch` is
+ * for the tests.
+ */
+export async function recordLearningRows(run, deps = {}) {
+  const fetchConvex = deps.fetch ?? convexFetch;
+  const rows = run.learningRows ?? [];
+  if (rows.length === 0) return;
+  const byMessage = new Map();
+  const commitFor = (message) => {
+    if (typeof message !== "string") return null;
+    if (!byMessage.has(message)) byMessage.set(message, modelOfTomCommit(run.dir, message, run.now));
+    return byMessage.get(message);
+  };
+  const failed = [];
+  for (const row of rows) {
+    try {
+      await fetchConvex(run.env, "/tts/event", {
+        kind: row.kind,
+        data: { ...row.data, day: run.day, modelOfTomCommit: commitFor(row.commitMessage) },
+      });
+    } catch (err) {
+      failed.push(err);
+    }
+  }
+  if (failed.length > 0) {
+    await recordFailure(
+      run,
+      "learning-rows",
+      new Error(`${failed.length} of ${rows.length} learning rows not recorded: ${failed[0].message}`),
+    );
+  }
 }
 
 // ── 3. sessions ──────────────────────────────────────────────────────────────
@@ -881,7 +1502,7 @@ export function abortStaleRebase(dir) {
 /**
  * Commit the checkout: one commit per step that changed something, and then —
  * ALWAYS, whatever this run's own change list says — everything still modified
- * under tts/snapshot/ and sessions/.
+ * under tts/snapshot/, sessions/ and model-of-tom/.
  *
  * WHY THE SWEEP: a run that died after writing files (a crashed export, a
  * killed process, a step whose failure row was recorded and skipped) leaves
@@ -890,6 +1511,9 @@ export function abortStaleRebase(dir) {
  * checkout ever reaching GitHub again. Committing the leftovers is what makes
  * the next night recoverable; the snapshot is deterministic and the archive is
  * append-only, so committing them is never wrong, only sometimes redundant.
+ * A model-of-tom page the learning step wrote before dying is committed the
+ * same way: the digest lists every WikiTom commit, so the line is seen even
+ * when its "learning-change" row was never posted.
  *
  * A rebase left in progress by an earlier run is aborted first, as its own
  * failure row: while one is in progress git refuses to commit at all.
@@ -903,7 +1527,7 @@ export function commitTree(dir, commits, day) {
     git(dir, ...GIT_IDENTITY, "commit", "-q", "-m", c.message);
     made.push(c.message);
   }
-  addPaths(dir, [SNAPSHOT_DIR, SESSIONS_DIR]);
+  addPaths(dir, [SNAPSHOT_DIR, SESSIONS_DIR, MODEL_OF_TOM_DIR]);
   if (stagedChanges(dir)) {
     const message = `nightly: ${day} — changes an earlier run left uncommitted`;
     git(dir, ...GIT_IDENTITY, "commit", "-q", "-m", message);
@@ -1053,6 +1677,9 @@ async function main() {
     day: utcDay(now),
     dir: WIKITOM_DIR,
     commits: [],
+    // The learning step's rows, posted by recordLearningRows once the push
+    // has given them a commit.
+    learningRows: [],
     failures: [],
     results: {},
   };
@@ -1102,6 +1729,9 @@ async function main() {
       // Every step it covers is skipped; the post below still runs.
       await recordFailure(run, "lock", err);
     }
+    // The learning step's rows wait for this: their commits exist now, with
+    // their final hashes (pushed, or local when the push was refused).
+    await recordLearningRows(run);
   }
   if (only.includes("post")) await runStep("post");
   await recordSummary(run, only);
@@ -1124,7 +1754,13 @@ async function recordSummary(run, only) {
       : null,
     sessions: run.results.sessions ?? null,
     learning: run.results.learning
-      ? { changes: run.results.learning.changes, tomTurns: run.results.learning.tomTurns }
+      ? {
+          changes: run.results.learning.changes,
+          refused: run.results.learning.refused.length,
+          reverted: run.results.learning.reverted,
+          revertFailed: run.results.learning.revertFailed,
+          tomTurns: run.results.learning.tomTurns,
+        }
       : null,
     posted: run.results.post?.files ?? null,
     failures: run.failures,

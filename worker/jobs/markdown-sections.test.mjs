@@ -6,9 +6,50 @@
 
 import { describe, expect, it } from "vitest";
 
-import { extractSections } from "./markdown-sections.mjs";
+import { enclosingHeadings, extractSections, sectionSpan } from "./markdown-sections.mjs";
 
 const AREA = ["Current state", "Must not break"];
+
+describe("sectionSpan", () => {
+  const lines = [
+    "# Page",
+    "## Current state",
+    "- a",
+    "### Detail",
+    "- b",
+    "## Must Not Break",
+    "- c",
+  ];
+  it("runs from the heading to the next heading of the same or a higher level, case-insensitively", () => {
+    expect(sectionSpan(lines, "current state")).toEqual({ start: 1, end: 5, level: 2 });
+    expect(sectionSpan(lines, "Detail")).toEqual({ start: 3, end: 5, level: 3 });
+    expect(sectionSpan(lines, "must not break")).toEqual({ start: 5, end: 7, level: 2 });
+    expect(sectionSpan(lines, "Ideal state")).toBeNull();
+  });
+});
+
+describe("enclosingHeadings", () => {
+  const lines = [
+    "# Page",
+    "## Ideal state",
+    "- a",
+    "### Training goals",
+    "#### By December",
+    "- b",
+    "## Must not break",
+    "- c",
+  ];
+  it("walks up from a heading to every heading above it of a higher level, nearest first", () => {
+    expect(enclosingHeadings(lines, 4)).toEqual(["Training goals", "Ideal state", "Page"]);
+    expect(enclosingHeadings(lines, 3)).toEqual(["Ideal state", "Page"]);
+    expect(enclosingHeadings(lines, 6)).toEqual(["Page"]);
+    expect(enclosingHeadings(lines, 0)).toEqual([]);
+  });
+  it("treats a body line as under the nearest heading of any level", () => {
+    expect(enclosingHeadings(lines, 5)).toEqual(["By December", "Training goals", "Ideal state", "Page"]);
+    expect(enclosingHeadings(lines, 7)).toEqual(["Must not break", "Page"]);
+  });
+});
 
 describe("extractSections", () => {
   const page = [

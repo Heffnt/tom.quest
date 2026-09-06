@@ -6,6 +6,7 @@ import {
   EXPORT_PAGE_DEFAULT,
   EXPORT_TABLES,
   LEARNING_INPUT_MAX,
+  LEARNING_REPLY_CHARS,
 } from "./ttsNightly";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -258,6 +259,7 @@ describe("GET /tts/learning-input", () => {
         statusChangedAt: now,
         nextSeq: 3,
         createdAt: now,
+        sdkSessionId: "47f04bc9-1111-4222-8333-444444444444",
       });
       const turn = (author: "tom" | "agent", text: string) =>
         ctx.db.insert("claudeInbound", {
@@ -308,10 +310,126 @@ describe("GET /tts/learning-input", () => {
     const input = await res.json();
     expect(input.tomTurns.map((x: { text: string }) => x.text)).toEqual(["sign it Friday"]);
     expect(input.tomTurns[0].sessionTitle).toBe("the lease");
+    // The SDK session id rides each turn: the pages cite its 8-hex prefix.
+    expect(input.tomTurns[0].sdkSessionId).toBe("47f04bc9-1111-4222-8333-444444444444");
     expect(input.slackReplies).toHaveLength(1);
     expect(input.slackReplies[0].data.text).toBe("done");
     expect(input.rulings.map((r: { verdict: string }) => r.verdict)).toEqual(["revise"]);
     expect(input.rulings[0].quote).toBe("ask for a shorter term");
+  });
+
+  it("carries the agent's text on either side of each of Tom's turns", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      const sessionId = await ctx.db.insert("claudeSessions", {
+        title: "the lease",
+        kind: "adhoc",
+        repo: "none",
+        repos: [],
+        status: "ended",
+        statusChangedAt: now,
+        nextSeq: 5,
+        createdAt: now,
+      });
+      const say = (seq: number, at: number, text: string) =>
+        ctx.db.insert("claudeMessages", {
+          sessionId,
+          seq,
+          turn: seq,
+          kind: "assistant-text",
+          content: { text },
+          createdAt: at,
+        });
+      await say(1, now - 3000, "an earlier answer");
+      await say(2, now - 1000, "Which lease?");
+      await ctx.db.insert("claudeInbound", {
+        sessionId,
+        kind: "user-turn",
+        text: "the apartment one",
+        author: "tom",
+        status: "done",
+        createdAt: now,
+      });
+      await say(3, now + 1000, `Noted. ${"x".repeat(2000)}`);
+      await say(4, now + 3000, "a later answer");
+    });
+    const res = await get(t, `/tts/learning-input?since=${now - 3_600_000}&until=${now + 3_600_000}`);
+    const input = await res.json();
+    expect(input.tomTurns).toHaveLength(1);
+    // A session the SDK never reported an id for carries null, not a
+    // missing field.
+    expect(input.tomTurns[0].sdkSessionId).toBeNull();
+    expect(input.tomTurns[0].replyBefore).toBe("Which lease?");
+    expect(input.tomTurns[0].replyAfter.startsWith("Noted. xxx")).toBe(true);
+    expect(input.tomTurns[0].replyAfter.length).toBe(LEARNING_REPLY_CHARS + 1);
+    expect(input.tomTurns[0].replyAfter.endsWith("…")).toBe(true);
+  });
+
+  it("starts where the last learning run stopped when since is not given", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const until = Date.now();
+    // No run on record: the day before.
+    const first = await (await get(t, `/tts/learning-input?until=${until}`)).json();
+    expect(first.sinceSource).toBe("default");
+    expect(first.since).toBe(until - 86_400_000);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: until - 50_000_000,
+        kind: "learning-run",
+        data: { until: until - 40_000_000, changes: 0 },
+      });
+      await ctx.db.insert("dtsEvents", {
+        at: until - 30_000_000,
+        kind: "learning-run",
+        data: { until: until - 20_000_000, changes: 1 },
+      });
+    });
+    const next = await (await get(t, `/tts/learning-input?until=${until}`)).json();
+    expect(next.sinceSource).toBe("learning-run");
+    expect(next.since).toBe(until - 20_000_000);
+    const given = await (await get(t, `/tts/learning-input?since=${until - 5}&until=${until}`)).json();
+    expect(given).toMatchObject({ since: until - 5, sinceSource: "given" });
+  });
+
+  it("returns the objections not yet consumed with the recent changes, and the consumed door stamps them", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    const { objectionId, consumedId } = await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: now - 90_000_000,
+        kind: "learning-change",
+        data: { id: "0123456789ab", file: "model-of-tom/areas/climbing.md", before: "", after: "- a line" },
+      });
+      const objectionId = await ctx.db.insert("dtsEvents", {
+        at: now - 10_000,
+        kind: "learning-objection",
+        data: { id: "0123456789ab", text: "no" },
+      });
+      const consumedId = await ctx.db.insert("dtsEvents", {
+        at: now - 20_000,
+        kind: "learning-objection",
+        data: { id: "0123456789ab", text: "an earlier no" },
+        consumedAt: now - 15_000,
+      });
+      return { objectionId, consumedId };
+    });
+    const input = await (await get(t, `/tts/learning-input?until=${now}`)).json();
+    expect(input.objections).toEqual([
+      { eventId: objectionId, at: now - 10_000, id: "0123456789ab", text: "no" },
+    ]);
+    expect(input.changes).toHaveLength(1);
+    expect(input.changes[0]).toMatchObject({ id: "0123456789ab", file: "model-of-tom/areas/climbing.md", after: "- a line" });
+
+    const res = await post(t, "/tts/learning-objections-consumed", { ids: [objectionId, consumedId, "not-an-id"] });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, consumed: 1 });
+    const again = await (await get(t, `/tts/learning-input?until=${now}`)).json();
+    expect(again.objections).toEqual([]);
+    expect((await post(t, "/tts/learning-objections-consumed", { ids: "x" })).status).toBe(400);
   });
 
   // witness: the reads used to take 2000 rows off a time index and filter

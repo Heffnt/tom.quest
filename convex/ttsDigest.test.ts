@@ -117,7 +117,7 @@ describe("composeDigest", () => {
         { verdict: "archive", subject: "old thing", quote: "drop it", provenance: "slack 1757000000.000100" },
       ],
       learning: [
-        { id: "lc-1", file: "schedule.md", before: "up at 7", after: "up at 6", evidence: "three sessions before 7" },
+        { status: "changed", id: "lc-1", file: "schedule.md", before: "up at 7", after: "up at 6", evidence: "three sessions before 7" },
       ],
     });
     const lines = text.split("\n");
@@ -162,6 +162,26 @@ describe("composeDigest", () => {
     expect(lines).toContain(
       '- [lc-1] schedule.md: "up at 7" → "up at 6" (three sessions before 7)',
     );
+  });
+
+  it("prints a model-of-Tom line with its id — an addition, a reversal, and a reversal that failed", () => {
+    const { text } = composeDigest({
+      ...emptyFacts(),
+      learning: [
+        { status: "changed", id: "0123456789ab", file: "areas/climbing.md", before: "", after: "- Thursday at 6", evidence: "session s1" },
+        { status: "reverted", id: "fedcba987654", file: "areas/climbing.md", before: "- Thursday at 6", after: "", evidence: "" },
+        { status: "reverted", id: "aaaaaaaaaaaa", file: "writing.md", before: "- new", after: "- old", evidence: "" },
+        { status: "revert-failed", id: "bbbbbbbbbbbb", file: "writing.md", before: "", after: "", evidence: "", reason: "the line is no longer on writing.md as written" },
+      ],
+    });
+    const lines = text.split("\n");
+    const start = lines.indexOf("*Model of Tom*");
+    expect(lines.slice(start + 1, start + 5)).toEqual([
+      '- [0123456789ab] areas/climbing.md: + "- Thursday at 6" (session s1)',
+      '- [fedcba987654] areas/climbing.md: reverted on your objection — "- Thursday at 6"',
+      '- [aaaaaaaaaaaa] writing.md: reverted on your objection — "- new" → "- old"',
+      "- [bbbbbbbbbbbb] writing.md: NOT reverted — the line is no longer on writing.md as written",
+    ]);
   });
 
   // The first live digest (2026-09-06) printed every statement in full, and a

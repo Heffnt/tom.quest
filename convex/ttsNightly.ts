@@ -5,10 +5,16 @@
 //
 //   GET  /tts/export         one page of one table, for the nightly copy of
 //                            the record into WikiTom tts/snapshot/
-//   GET  /tts/learning-input what the learning step reads: yesterday's turns
-//                            Tom typed, his Slack replies, and his rulings
+//   GET  /tts/learning-input what the learning step reads: the turns Tom
+//                            typed since the last learning run with the
+//                            agent's replies around them, his Slack replies,
+//                            his rulings, and the objections not yet applied
 //   POST /tts/event          one dtsEvents row — how the job records a
-//                            failed step, its learning run, and its summary
+//                            failed step, its learning run, each change it
+//                            made, each reversal, and its summary
+//   POST /tts/learning-objections-consumed
+//                            stamps the objections the job has acted on, so
+//                            the next night does not act on them again
 //
 // The post of the model-of-tom files lives with the store (ttsSkills.ts).
 
@@ -16,6 +22,7 @@ import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { TableNames } from "./_generated/dataModel";
 import schema from "./schema";
+import { clip } from "../worker/jobs/clip.mjs";
 
 // ── The export ───────────────────────────────────────────────────────────────
 // Every table in the schema except the auth ones (the six @convex-dev/auth
@@ -130,22 +137,66 @@ export const internalExportPage = internalQuery({
 });
 
 // ── The learning input ───────────────────────────────────────────────────────
-// The learning step reads ONLY what Tom did: the turns he typed in sessions
+// The learning step reads what Tom did: the turns he typed in sessions
 // (claudeInbound rows authored "tom" — the browser door and Slack replies the
-// events route verified came from his user id), his threaded Slack replies
-// (the "slack-event" rows the events route writes), and his rulings — never
-// an agent's turns, never the spec (design section 4, "Learning"). Windowed
-// by the caller: the job asks for the day before its run.
+// events route verified came from his user id), the agent's reply on either
+// side of each (what he was answering and what came of it — the context his
+// words are read in, never a source of lines on their own), his threaded
+// Slack replies (the "slack-event" rows the events route writes), and his
+// rulings — never the spec (design section 4, "Learning").
+//
+// THE WINDOW starts where the last learning run's ended: `since` is optional
+// and defaults to the `until` of the newest "learning-run" row, so a night
+// the job did not run is read the next night rather than dropped; with no
+// run on record it is the day before. The reply says which (`sinceSource`).
+//
 // The cap is on what is RETURNED, never on what is looked at: a read that
 // takes N rows and filters them afterwards drops what it was looking for as
 // soon as the window holds more than N rows of anything else — and the
 // agents' turns and the instrumentation events outnumber Tom's by far. Each
 // read below either pins the value in an index or examines the whole window.
 export const LEARNING_INPUT_MAX = 2000;
+// The agent's replies are looked up per turn, two reads each pinned on the
+// session and the kind, for at most this many turns; past it a turn goes out
+// without them. A reply is clipped to LEARNING_REPLY_CHARS — it is context,
+// and one assistant-text row can be a 32KB essay.
+export const LEARNING_REPLY_TURNS = 300;
+export const LEARNING_REPLY_CHARS = 1500;
+// The objections not yet acted on, and the changes an objection can name:
+// the newest of each, more than a week of nights.
+export const LEARNING_OBJECTIONS_MAX = 200;
+export const LEARNING_CHANGES_MAX = 500;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** The agent's reply as the job shows it: clip() from worker/jobs/clip.mjs,
+ * the one clipping rule the jobs use, at LEARNING_REPLY_CHARS. */
+function clipReply(text: unknown): string | null {
+  return clip(text, LEARNING_REPLY_CHARS);
+}
 
 export const internalLearningInput = internalQuery({
-  args: { since: v.number(), until: v.number() },
-  handler: async (ctx, { since, until }) => {
+  args: { since: v.optional(v.number()), until: v.number() },
+  handler: async (ctx, { since: givenSince, until }) => {
+    let since: number;
+    let sinceSource: "given" | "learning-run" | "default";
+    if (givenSince !== undefined) {
+      since = givenSince;
+      sinceSource = "given";
+    } else {
+      const last = await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_at", (q) => q.eq("kind", "learning-run"))
+        .order("desc")
+        .first();
+      const lastUntil = (last?.data as { until?: unknown } | undefined)?.until;
+      if (typeof lastUntil === "number" && lastUntil < until) {
+        since = lastUntil;
+        sinceSource = "learning-run";
+      } else {
+        since = until - DAY_MS;
+        sinceSource = "default";
+      }
+    }
     // by_author, so the window is Tom's rows — not the first N rows of
     // everyone's, most of which are an agent's.
     const inbound = await ctx.db
@@ -155,20 +206,55 @@ export const internalLearningInput = internalQuery({
       )
       .take(LEARNING_INPUT_MAX);
     const tomTurns = [];
-    const titles = new Map<string, string>();
+    // Per session, read once: the title, and the SDK session id — the id the
+    // pages cite a session by (its first 8 hex characters; WikiTom's
+    // sessions/ archive is keyed by the whole of it), which the session host
+    // stores on the row as sdkSessionId once the SDK reports it.
+    const sessions = new Map<string, { title: string; sdkSessionId: string | null }>();
+    let repliesLookedUp = 0;
     for (const row of inbound) {
       if (row.kind !== "user-turn") continue;
-      let title = titles.get(row.sessionId);
-      if (title === undefined) {
-        title = (await ctx.db.get(row.sessionId))?.title ?? "";
-        titles.set(row.sessionId, title);
+      let session = sessions.get(row.sessionId);
+      if (session === undefined) {
+        const s = await ctx.db.get(row.sessionId);
+        session = { title: s?.title ?? "", sdkSessionId: s?.sdkSessionId ?? null };
+        sessions.set(row.sessionId, session);
+      }
+      // The agent's text just before the turn and just after it. The index
+      // pins the session and the kind; the filter walks the rows on one side
+      // of the turn's instant and stops at the first.
+      let replyBefore: string | null = null;
+      let replyAfter: string | null = null;
+      if (repliesLookedUp < LEARNING_REPLY_TURNS) {
+        repliesLookedUp += 1;
+        const before = await ctx.db
+          .query("claudeMessages")
+          .withIndex("by_session_kind", (q) =>
+            q.eq("sessionId", row.sessionId).eq("kind", "assistant-text"),
+          )
+          .order("desc")
+          .filter((q) => q.lte(q.field("createdAt"), row.createdAt))
+          .first();
+        const after = await ctx.db
+          .query("claudeMessages")
+          .withIndex("by_session_kind", (q) =>
+            q.eq("sessionId", row.sessionId).eq("kind", "assistant-text"),
+          )
+          .order("asc")
+          .filter((q) => q.gt(q.field("createdAt"), row.createdAt))
+          .first();
+        replyBefore = clipReply((before?.content as { text?: unknown } | undefined)?.text);
+        replyAfter = clipReply((after?.content as { text?: unknown } | undefined)?.text);
       }
       tomTurns.push({
         id: row._id,
         sessionId: row.sessionId,
-        sessionTitle: title,
+        sdkSessionId: session.sdkSessionId,
+        sessionTitle: session.title,
         text: row.text ?? "",
         at: row.createdAt,
+        replyBefore,
+        replyAfter,
       });
     }
     // by_kind_at, not by_at: the kind is pinned and `at` orders what comes
@@ -200,12 +286,62 @@ export const internalLearningInput = internalQuery({
       sentence: r.sentence,
       quote: r.provenance?.quote,
     }));
-    return { since, until, tomTurns, slackReplies, rulings };
+    // The objections Tom has raised that no night has acted on yet (an
+    // objection is consumed once, whichever way it went), oldest first, and
+    // the changes an objection can name — by the change's id or by the
+    // line's text; the job does the matching.
+    const objections = (
+      await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_at", (q) => q.eq("kind", "learning-objection"))
+        .order("desc")
+        .take(LEARNING_OBJECTIONS_MAX)
+    )
+      .filter((e) => e.consumedAt === undefined)
+      .reverse()
+      .map((e) => {
+        const d = (e.data ?? {}) as { id?: unknown; text?: unknown };
+        return {
+          eventId: e._id,
+          at: e.at,
+          id: typeof d.id === "string" ? d.id : null,
+          text: typeof d.text === "string" ? d.text : "",
+        };
+      });
+    const changes = (
+      await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_at", (q) => q.eq("kind", "learning-change"))
+        .order("desc")
+        .take(LEARNING_CHANGES_MAX)
+    ).map((e) => ({ eventId: e._id, at: e.at, ...((e.data ?? {}) as Record<string, unknown>) }));
+    return { since, sinceSource, until, tomTurns, slackReplies, rulings, objections, changes };
+  },
+});
+
+/** Stamp the objections the job has acted on, whichever way it went. An id
+ * that is not an unconsumed "learning-objection" row is skipped rather than
+ * an error: the list came from the read above, and a stale id costs nothing. */
+export const internalConsumeLearningObjections = internalMutation({
+  args: { ids: v.array(v.string()) },
+  handler: async (ctx, { ids }) => {
+    const now = Date.now();
+    let consumed = 0;
+    for (const raw of ids) {
+      const id = ctx.db.normalizeId("dtsEvents", raw);
+      if (id === null) continue;
+      const row = await ctx.db.get(id);
+      if (!row || row.kind !== "learning-objection" || row.consumedAt !== undefined) continue;
+      await ctx.db.patch(id, { consumedAt: now });
+      consumed += 1;
+    }
+    return { consumed };
   },
 });
 
 // ── The event pen ────────────────────────────────────────────────────────────
 // The job's kinds are its own ("nightly-failure", "learning-run",
+// "learning-change", "learning-reverted", "learning-revert-failed",
 // "nightly-run"); the pattern keeps the pen to lowercase kebab-case names
 // rather than letting a worker write, say, "slack-sent" and confuse the
 // digest's own bookkeeping — the route refuses the kinds Convex writes itself.

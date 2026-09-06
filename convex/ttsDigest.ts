@@ -39,8 +39,10 @@ import {
 //      the deployment's token cannot read WikiTom the section is one line
 //      saying so, because a silently absent section reads as "no commits")
 //   8. rulings recorded from Tom's own words since the last digest
-//   9. model-of-Tom lines the nightly job wrote (kind "learning-change";
-//      empty until phase 4)
+//   9. model-of-Tom lines the nightly job wrote (kind "learning-change"),
+//      each with its id — a reply in this thread naming the id is the
+//      objection — and the lines it reverted or could not revert on an
+//      earlier objection ("learning-reverted", "learning-revert-failed")
 //
 // A digest is a morning read, not the list: an item is one line (clipToLine)
 // and a section prints at most SECTION_ITEM_CAP of them before naming what is
@@ -84,10 +86,15 @@ function slackSubjectLabel(raw: unknown): string {
   return ` (${s.kind}${named === undefined ? "" : ` ${named as string}`})`;
 }
 
-// The nightly job's model-of-Tom lines (phase 4 writes them; the digest reads
-// them from day one so the section is live the morning the job first runs).
-//   kind "learning-change", data { id, file, before, after, evidence }
+// The nightly job's model-of-Tom lines (worker/jobs/nightly.mjs learningStep
+// writes them; the digest prints each with its id, which is what a reply in
+// the digest thread names to object — convex/ttsSlack.ts).
+//   kind "learning-change",        data { id, file, section, before, after, evidence, modelOfTomCommit }
+//   kind "learning-reverted",      data { id, file, before, after, objection, modelOfTomCommit }
+//   kind "learning-revert-failed", data { id?, file?, reason, objection }
 export const LEARNING_CHANGE = "learning-change";
+export const LEARNING_REVERTED = "learning-reverted";
+export const LEARNING_REVERT_FAILED = "learning-revert-failed";
 
 // The note the rollover writes on the outcome row, so the row says who wrote
 // it when Tom reads the item's history.
@@ -198,11 +205,16 @@ export type DigestFacts = {
     provenance: string;
   }[];
   learning: {
+    // "changed": a line the job wrote; "reverted": one it took back on
+    // Tom's objection (before is the learned line, after what it restored);
+    // "revert-failed": an objection it could not apply, with the reason.
+    status: "changed" | "reverted" | "revert-failed";
     id: string;
     file: string;
     before: string;
     after: string;
     evidence: string;
+    reason?: string;
   }[];
 };
 
@@ -403,10 +415,20 @@ function digestSections(f: DigestFacts): Section[] {
     sections.push(
       section(
         "*Model of Tom*",
-        f.learning.map(
-          (l) =>
-            `- [${slackEscape(l.id)}] ${slackEscape(l.file)}: "${slackEscape(l.before)}" → "${slackEscape(l.after)}" (${slackEscape(l.evidence)})`,
-        ),
+        f.learning.map((l) => {
+          const id = `[${slackEscape(l.id)}]`;
+          const file = slackEscape(l.file);
+          switch (l.status) {
+            case "reverted":
+              return `- ${id} ${file}: reverted on your objection — "${slackEscape(l.before)}"${l.after === "" ? "" : ` → "${slackEscape(l.after)}"`}`;
+            case "revert-failed":
+              return `- ${id} ${file}: NOT reverted — ${slackEscape(l.reason ?? "")}`;
+            default:
+              return l.before === ""
+                ? `- ${id} ${file}: + "${slackEscape(l.after)}" (${slackEscape(l.evidence)})`
+                : `- ${id} ${file}: "${slackEscape(l.before)}" → "${slackEscape(l.after)}" (${slackEscape(l.evidence)})`;
+          }
+        }),
         null,
       ),
     );
@@ -774,12 +796,21 @@ export async function gatherDigestFacts(
         });
         break;
       case LEARNING_CHANGE:
+      case LEARNING_REVERTED:
+      case LEARNING_REVERT_FAILED:
         learning.push({
-          id: str(d.id) ?? "",
+          status:
+            e.kind === LEARNING_CHANGE
+              ? "changed"
+              : e.kind === LEARNING_REVERTED
+                ? "reverted"
+                : "revert-failed",
+          id: str(d.id) ?? "?",
           file: str(d.file) ?? "",
           before: str(d.before) ?? "",
           after: str(d.after) ?? "",
           evidence: str(d.evidence) ?? "",
+          reason: str(d.reason),
         });
         break;
       default:
