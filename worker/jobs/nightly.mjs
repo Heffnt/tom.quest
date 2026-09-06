@@ -25,7 +25,10 @@
 //      priorities.md, schedule.md, and the "Current state" and "Must not
 //      break" sections of every page under areas/) and posts them with the
 //      commit hash and time to POST /tts/model-of-tom — whether or not the
-//      push succeeded, so every prompt names the commit it began with.
+//      push succeeded, so every prompt names the commit it began with. A
+//      named file missing or empty is a failure row and NO post: the store
+//      is replaced whole, so a partial post would drop that file from every
+//      prompt.
 //
 // Then one "nightly-run" row with the summary, which the digest reads.
 //
@@ -971,12 +974,22 @@ async function postStep(run) {
   const commit = git(dir, "rev-parse", "HEAD").trim();
   const committedAt = Number(git(dir, "log", "-1", "--format=%ct").trim()) * 1000;
   const { files, missing } = collectModelOfTomFiles(dir);
+  // A NAMED FILE MISSING MEANS NO POST. The store is replaced whole, so
+  // posting the rest would take the missing file out of every prompt until a
+  // night that reads it again — and for writing.md that is every sentence
+  // written to no standard at all (the server refuses that post outright).
+  // A missing file is a layout change or a half-read checkout, never a
+  // decision of Tom's: last night's text keeps serving, and this is the row
+  // the digest shows.
   if (missing.length > 0) {
     await recordFailure(
       run,
       "post",
-      new Error(`model-of-tom files missing or empty at ${commit.slice(0, 12)}: ${missing.join(", ")}`),
+      new Error(
+        `model-of-tom files missing or empty at ${commit.slice(0, 12)}: ${missing.join(", ")} — not posting, the store keeps what it has`,
+      ),
     );
+    return { commit, files: null, missing };
   }
   if (files.length === 0) throw new Error("no model-of-tom files to post");
   const res = await convexFetch(run.env, "/tts/model-of-tom", {

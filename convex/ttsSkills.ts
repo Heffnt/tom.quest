@@ -42,6 +42,7 @@ import type { Doc } from "./_generated/dataModel";
 import {
   MODEL_OF_TOM_AREAS_DIR,
   MODEL_OF_TOM_FIRST,
+  MODEL_OF_TOM_WRITING,
   WRITING_SKILL,
   WRITING_STANDARD,
 } from "./ttsShared";
@@ -167,6 +168,14 @@ export function isModelOfTomPath(path: unknown): path is string {
 // reaching prompts — nothing-is-lost governs Tom's todos, not this copy. An
 // empty post is refused here rather than emptying the store: a job that read
 // nothing has hit a layout change, not a decision of Tom's.
+//
+// AND A POST WITHOUT writing.md IS REFUSED for the same reason, one file
+// stronger: the replace is wholesale, so a post that read every file but that
+// one would take the writing standard out of every prompt — and the store
+// carries no memory of the file it dropped, so nothing would put it back
+// until the next night that read it. A missing writing.md is a layout change
+// or a half-read checkout; the previous night's text keeps serving, which is
+// the only outcome that leaves prose written to a standard.
 export const internalReplaceModelOfTom = internalMutation({
   args: {
     commit: v.string(),
@@ -182,6 +191,11 @@ export const internalReplaceModelOfTom = internalMutation({
       if (!isModelOfTomPath(f.path)) throw new Error(`not a model-of-tom path: ${f.path}`);
       if (seen.has(f.path)) throw new Error(`path posted twice: ${f.path}`);
       seen.add(f.path);
+    }
+    if (!seen.has(MODEL_OF_TOM_WRITING)) {
+      throw new Error(
+        `${MODEL_OF_TOM_WRITING} is missing from the post — store left as it was, so prompts keep the writing standard`,
+      );
     }
     const existing = await ctx.db.query("ttsSkills").collect();
     for (const row of existing) await ctx.db.delete(row._id);

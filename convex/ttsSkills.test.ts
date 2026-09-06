@@ -132,6 +132,25 @@ describe("internalReplaceModelOfTom", () => {
     expect(await allRows(t)).toHaveLength(3);
   });
 
+  // witness: the replace is wholesale, so a post that read every file but
+  // writing.md would put every prompt from then on — every sentence TTS shows
+  // Tom — on no writing standard at all, and nothing would put it back until
+  // a night that read the file again.
+  it("refuses a post without the writing standard and leaves the store as it was", async () => {
+    const t = convexTest({ schema, modules });
+    await post(t, THREE);
+    await expect(
+      post(t, [
+        { path: "model-of-tom/priorities.md", body: PRIORITIES },
+        { path: "model-of-tom/areas/research.md", body: RESEARCH },
+      ]),
+    ).rejects.toThrow(/model-of-tom\/writing\.md is missing/);
+    const rows = await allRows(t);
+    expect(rows.map((r) => r.name).sort()).toEqual(["priorities", "schedule", "writing"]);
+    const text = await t.run(async (ctx) => modelOfTomPrelude(ctx));
+    expect(text).toContain(WRITING);
+  });
+
   it("refuses a path outside model-of-tom/ and a path posted twice", async () => {
     const t = convexTest({ schema, modules });
     await expect(post(t, [{ path: "tts/spec.md", body: "x" }])).rejects.toThrow(

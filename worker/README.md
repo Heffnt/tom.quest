@@ -167,8 +167,11 @@ never around the commit alone; step 5 only reads `HEAD` and takes no lock:
    exist, the three alone), posted with the commit hash and the commit's
    time to `POST /tts/model-of-tom`. Convex replaces the `ttsSkills` table
    whole and every prompt from then on begins with those files under a
-   header naming that commit. A named file that is missing is a failure row;
-   the post still goes out with the rest.
+   header naming that commit. A named file that is missing or empty is a
+   failure row and NO post goes out: the replace is wholesale, so posting the
+   rest would take that file — `writing.md`, the writing standard itself —
+   out of every prompt until a night that reads it again. Convex refuses a
+   post without `writing.md` on its own account.
 
 Then one `nightly-run` row with the summary (commit, pushed or not, table
 and row counts, files archived, the failures). By hand:

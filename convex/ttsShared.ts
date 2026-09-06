@@ -277,8 +277,14 @@ export function goalCheckable(todo: GoalTodo): boolean {
 // "Must not break" sections (the job extracts them by heading; the server
 // only orders). The job cannot import this file (Node ESM on the box), so it
 // posts in the order it reads and the server's order is the authority.
+//
+// writing.md is the one file no prompt may go without: it IS the writing
+// standard every sentence TTS shows Tom obeys. A post that lacks it is
+// refused whole (convex/ttsSkills.ts), because replacing the table with the
+// rest would leave every prompt from then on written to no standard at all.
+export const MODEL_OF_TOM_WRITING = "model-of-tom/writing.md";
 export const MODEL_OF_TOM_FIRST = [
-  "model-of-tom/writing.md",
+  MODEL_OF_TOM_WRITING,
   "model-of-tom/priorities.md",
   "model-of-tom/schedule.md",
 ] as const;
