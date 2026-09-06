@@ -776,10 +776,27 @@ export default defineSchema({
     ruledAt: v.number(),
     appliedAt: v.optional(v.number()),
     applyResult: v.optional(v.string()),
+    // Set when the ruling was written from Tom's own words in a session turn
+    // rather than from a button (ruling 15, 2026-09-05): `inboundId` is the
+    // claudeInbound row the words came from and `quote` is the one whole
+    // sentence or line of that row the agent read as the ruling. Provenance
+    // only: it is never copied into `sentence` above (the archive return
+    // condition the page shows, the revise redirect the worker reads).
+    // Absent on every ruling recorded through the UI. The digest quotes these
+    // so a misreading is objected; the same row never rules on the same
+    // subject twice (checked in ttsRulings.ts, by the index below).
+    provenance: v.optional(
+      v.object({
+        from: v.literal("tom-words"),
+        inboundId: v.string(),
+        quote: v.string(),
+      }),
+    ),
   })
     .index("by_todo", ["todoId"])
     .index("by_repo_external", ["repo", "externalId"])
-    .index("by_ruled", ["ruledAt"]),
+    .index("by_ruled", ["ruledAt"])
+    .index("by_provenance_inboundId", ["provenance.inboundId"]),
 
   // Append-only instrumentation (spec §10) — every surfacing, engagement,
   // queue cycle, status change, and date outcome, recorded from the first
@@ -1110,6 +1127,10 @@ export default defineSchema({
     // a Slack reply the events route verified came from TOM_SLACK_USER_ID),
     // "agent" for the CLI pen and the code-built opener. A row from before
     // the field has no author and counts as not Tom.
+    //
+    // Only a "tom" row can be the source of a ruling written from his words
+    // (ruling 15, ttsRulings.internalRecordRulingFromTomWords); the other two
+    // values are refused there, so an agent cannot author its own ruling.
     author: v.optional(v.union(v.literal("tom"), v.literal("agent"))),
     status: v.union(
       v.literal("pending"),

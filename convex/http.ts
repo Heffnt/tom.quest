@@ -4,6 +4,7 @@ import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { auth } from "./auth";
 import { nowContext } from "./tts";
+import { isRulingVerdict } from "./ttsRulings";
 import {
   DAY_MS,
   SESSION_REPO_NAMES,
@@ -151,7 +152,9 @@ http.route({ path: "/pool", method: "GET", handler: poolRead });
 // pattern: TTS_WORKER_KEY lives only in the Convex env and shares nothing with
 // the other keys. The worker may capture items, post the day's prepared
 // queue+digest, and read state to prepare from — never rule, archive, or
-// delete (those are Tom-gated mutations).
+// delete (those are Tom-gated mutations). The one ruling door on this key,
+// POST /tts/ruling, writes only what Tom himself typed: it takes the id of a
+// turn he authored and his sentence verbatim, and refuses anything else.
 
 function ttsAuth(request: Request): Response | null {
   return keyAuth(request, "TTS_WORKER_KEY", "X-TTS-Key");
@@ -837,6 +840,71 @@ http.route({
   method: "POST",
   handler: ttsCodeRulingApplied,
 });
+
+// POST /tts/ruling — a ruling from Tom's own words (ruling 15, 2026-09-05).
+// Body: { inboundId, verdict, subjectType, subjectId, quote, sentence? }: the
+// claudeInbound row Tom typed, one of the four verdicts, "life" | "code" |
+// "batch", the subject's id (a code subject is "<repo> <externalId>"), one
+// whole sentence of Tom's turn verbatim (provenance only), and — on revise
+// alone — the ruling's own sentence, the redirect. Same key as every worker
+// pen; the checks that make it Tom's pen and not the agent's — the row is
+// Tom-authored, the quote is a whole sentence of it, the subject exists, the
+// row has not ruled on this subject before — live in
+// ttsRulings.internalRecordRulingFromTomWords, and each refusal comes back
+// as a 400 with its reason.
+const ttsRuling = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.inboundId !== "string" || b.inboundId === "") {
+    return jsonResponse(400, { error: "inboundId (non-empty string) required" });
+  }
+  if (!isRulingVerdict(b.verdict)) {
+    return jsonResponse(400, {
+      error: "verdict must be one of approve, revise, session, archive",
+    });
+  }
+  if (b.subjectType !== "life" && b.subjectType !== "code" && b.subjectType !== "batch") {
+    return jsonResponse(400, {
+      error: "subjectType must be one of life, code, batch",
+    });
+  }
+  if (typeof b.subjectId !== "string" || b.subjectId === "") {
+    return jsonResponse(400, { error: "subjectId (non-empty string) required" });
+  }
+  if (typeof b.quote !== "string" || b.quote.trim() === "") {
+    return jsonResponse(400, { error: "quote (non-empty string) required" });
+  }
+  if (b.sentence !== undefined && typeof b.sentence !== "string") {
+    return jsonResponse(400, { error: "sentence must be a string when given" });
+  }
+  try {
+    const id = await ctx.runMutation(
+      internal.ttsRulings.internalRecordRulingFromTomWords,
+      {
+        inboundId: b.inboundId,
+        verdict: b.verdict,
+        subjectType: b.subjectType,
+        subjectId: b.subjectId,
+        quote: b.quote,
+        sentence: b.sentence,
+      },
+    );
+    return jsonResponse(200, { ok: true, id });
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({ path: "/tts/ruling", method: "POST", handler: ttsRuling });
 
 // ── TTS batches (ratified 2026-08-28) ────────────────────────────────────────
 // Same TTS_WORKER_KEY path: the batcher job reads context, then posts its

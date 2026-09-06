@@ -50,8 +50,15 @@ abnormal turn end (SDK error) or a daemon restart also ENDS an autonomous
 session, errored — the interactive park-idle recovery assumes Tom will send
 the next turn, and autonomous sessions have no Tom; the scheduler's backoff
 owns retries. The agent records its own outcome via the key-authed pen
-`POST $CONVEX_SITE_URL/tts/session-outcome` (X-TTS-Key), and writes prep
-via `POST $CONVEX_SITE_URL/tts/prepare-todo` (X-TTS-Key) — the daemon passes
+`POST $CONVEX_SITE_URL/tts/session-outcome` (X-TTS-Key), writes prep
+via `POST $CONVEX_SITE_URL/tts/prepare-todo` (X-TTS-Key), and writes a
+ruling Tom stated in plain language via `POST $CONVEX_SITE_URL/tts/ruling`
+(X-TTS-Key) — naming the turn by the `inbound row: <id>` line the daemon
+appends to every turn Tom typed (`deliveredTurnText` in `session.mjs`; the
+transcript records that delivered text, id line included, because what the
+agent saw is what is recorded), so the server can check the row is his and
+his quoted sentence is a whole sentence of it before writing anything — the
+daemon passes
 CONVEX_SITE_URL and TTS_WORKER_KEY (only — the sessions ingest key never
 enters a model-reachable shell) into every session's environment so those
 curls work. Those two are the only keys passed EXPLICITLY; the rest of the

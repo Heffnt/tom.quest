@@ -803,6 +803,58 @@ describe("claude sessions", () => {
     );
   });
 
+  // witness: drop the `author` argument from sendMessageFrom / reopenSessionFrom
+  // in convex/claudeSessions.ts, or pass "tom" from the internal pen. Ruling 15
+  // (2026-09-05): only a turn Tom typed in the browser can become a ruling in
+  // his words, so every user-turn says who wrote it — the browser door "tom",
+  // the CLI pen and the code-built opener "agent".
+  it("every user-turn records its author: browser = tom, pen and opener = agent", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    await tom.mutation(api.claudeSessions.sendMessage, {
+      sessionId,
+      text: "typed by Tom",
+    });
+    await t.mutation(internal.claudeSessions.internalSendMessage, {
+      sessionId,
+      text: "typed through the pen",
+    });
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      status: "ended",
+      endedReason: "done",
+    });
+    await tom.mutation(api.claudeSessions.reopenSession, {
+      sessionId,
+      text: "Tom reopens",
+    });
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId,
+      status: "ended",
+      endedReason: "done again",
+    });
+    await t.mutation(internal.claudeSessions.internalReopenSession, {
+      sessionId,
+      text: "the pen reopens",
+    });
+    const rows = await t.run(async (ctx) =>
+      ctx.db.query("claudeInbound").collect(),
+    );
+    const authorOf = (head: string) =>
+      rows.find((r) => r.text?.startsWith(head))?.author;
+    expect(authorOf("hello")).toBe("agent");
+    expect(authorOf("typed by Tom")).toBe("tom");
+    expect(authorOf("typed through the pen")).toBe("agent");
+    expect(authorOf("Tom reopens")).toBe("tom");
+    expect(authorOf("the pen reopens")).toBe("agent");
+  });
+
+  // A turn Tom wrote outside the browser (a threaded Slack reply the events
+  // route matched to TOM_SLACK_USER_ID) reaches the same internal pen with
+  // author "tom" — that argument is the whole mechanism, and the pen's own
+  // default of "agent" is asserted where the pen is tested.
+
   // The outcome pen POST /tts/session-outcome reaches exactly this mutation
   // (the route is thin: auth + body shape). Route-level auth is out of this
   // harness's scope; the semantics it depends on are here.

@@ -169,3 +169,39 @@ describe("codex binary has one home (finding 5)", () => {
     expect(query).not.toMatch(/from "node:child_process"/);
   });
 });
+
+// Ruling 15 (2026-09-05): a ruling from Tom's words is written by POST
+// /tts/ruling with the id of the turn he typed. The daemon is where the model
+// learns that id — a last line under every Tom-authored turn — and the
+// prompt (app/lib/tts-session-prompt.ts) is where it is told to read it. The
+// two must spell the label the same way, and the transcript row must keep
+// Tom's text alone.
+describe("a turn Tom typed carries its inbound row id to the model", () => {
+  const promptSource = fs.readFileSync(
+    path.join(here, "..", "..", "..", "app", "lib", "tts-session-prompt.ts"),
+    "utf8",
+  );
+  it("deliveredTurnText appends the id only when author is tom", () => {
+    const helper = between(sessionSource, "export function deliveredTurnText", "\n}\n");
+    expect(helper).toMatch(/row\.author === "tom"/);
+    expect(helper).toMatch(/\$\{INBOUND_ROW_LABEL\} \$\{row\._id\}/);
+  });
+  // witness: record row.text in finalizeRow instead of the delivered text.
+  // The transcript principle: what the agent saw is what is recorded, so the
+  // user row carries the id line the model received.
+  it("the delivery records, pushes, and dedupes the echo on the same delivered text", () => {
+    const deliver = between(sessionSource, "async #deliverUserTurn(row)", "} catch (err) {");
+    expect(deliver).toMatch(/const delivered = deliveredTurnText\(row\)/);
+    expect(deliver).toMatch(/finalizeRow\("user", \{ text: delivered \}\)/);
+    expect(deliver).not.toMatch(/finalizeRow\("user", \{ text: row\.text/);
+    expect(deliver).toMatch(/this\.activeUserTurnText = delivered/);
+    expect(deliver).toMatch(/this\.queue\.push\(delivered\)/);
+  });
+  it("the prompt names the same label and the same route", () => {
+    const label = sessionSource.match(/export const INBOUND_ROW_LABEL = "([^"]+)"/)?.[1];
+    expect(label).toBe("inbound row:");
+    expect(promptSource).toMatch(new RegExp(`const INBOUND_ROW_LABEL = "${label}"`));
+    expect(promptSource).toMatch(/\$CONVEX_SITE_URL\/tts\/ruling/);
+    expect(promptSource).toMatch(/"inboundId"/);
+  });
+});
