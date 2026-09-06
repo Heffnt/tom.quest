@@ -160,12 +160,17 @@ export const internalMigrateReadiness = internalMutation({
 //                     awake: Tom sees it and decides.
 //   condition-bound → a task whose statement carries the condition sentence,
 //                     asleep until latestSafeAt minus the 14-day window when
-//                     latestSafeAt is set (the fallback queue's own horizon),
-//                     and timingClass rewritten to what the row's date says so
-//                     no old reader files it under the retired lane. A
-//                     condition-bound GOAL keeps its kind: its condition was a
-//                     trigger (ttsShared.goalCheckable), and it is carried the
-//                     same way; only the kind is not invented.
+//                     latestSafeAt is set (the fallback queue's own horizon)
+//                     and the row has no wakeAt of its own (one it has is
+//                     Tom's and stays), and timingClass rewritten to what the
+//                     row's date says so no old reader files it under the
+//                     retired lane. A condition-bound GOAL keeps its kind:
+//                     its condition was a trigger (ttsShared.goalCheckable),
+//                     and it is carried the same way; only the kind is not
+//                     invented. A done or archived row is mapped for the
+//                     validator only — shape, never a sleep.
+//   both at once    → one patch: a row that is waiting AND condition-bound
+//                     carries both sentences, in that order.
 //   archived row    → its return condition (unarchiveCondition) stays where
 //                     it is; the weekly gather lists archived rows whose
 //                     sentence names one. Counted here, never written. The
@@ -195,6 +200,7 @@ export const internalMigrateTiming = internalMutation({
       "condition-bound-to-task": 0,
       "condition-bound-goal-kept": 0,
       "condition-wake-set": 0,
+      "condition-wake-kept": 0,
       "archived-with-return-condition": 0,
       "archived-superseded-by-graph": 0,
       "v1-batches-pending-graph-migration": 0,
@@ -206,16 +212,49 @@ export const internalMigrateTiming = internalMutation({
       internal.ttsMigrations.internalMigrateTiming,
       page,
       async (row, dryRun) => {
+        // ONE patch per row. A row can be both a stored waiting row and
+        // condition-bound; (a) and (b) each add to the same patch and the
+        // same statement, so the second mapping cannot overwrite what the
+        // first carried in, and one write lands both.
+        const patch: Partial<Doc<"dtsTodos">> = {};
+        const terminal = row.status === "done" || row.status === "archived";
+        let statement = row.statement;
         // (a) a stored waiting row becomes active with its wakeAt.
         if (row.status === "waiting") {
           page["waiting-to-active"]++;
-          const patch: Partial<Doc<"dtsTodos">> = { status: "active" };
+          patch.status = "active";
           if (row.wakeAt === undefined && row.wakeCondition !== undefined) {
             page["waiting-condition-carried"]++;
-            patch.statement = carryCondition(row.statement, row.wakeCondition);
+            statement = carryCondition(statement, row.wakeCondition);
           }
-          if (!dryRun) {
-            await ctx.db.patch(row._id, patch);
+        }
+        // (b) a condition-bound row becomes a task carrying its condition.
+        if (row.timingClass === "condition-bound") {
+          const isGoal = row.kind === "goal";
+          page[isGoal ? "condition-bound-goal-kept" : "condition-bound-to-task"]++;
+          statement = carryCondition(statement, row.condition);
+          patch.timingClass = row.dueAt !== undefined ? "dated" : "whenever";
+          if (!isGoal) patch.kind = "task";
+          // The sleep is latestSafeAt minus the window — unless the row
+          // already has a wakeAt, which is Tom's (set by hand, or the time a
+          // waiting row was already sleeping until) and stays. A done or
+          // archived row gets no sleep at all: its shape is mapped so the
+          // retired value leaves the validator, but a wakeAt written on a
+          // finished row would be read as a real sleep the day it is
+          // reopened.
+          if (row.latestSafeAt !== undefined && !terminal) {
+            if (row.wakeAt === undefined) {
+              page["condition-wake-set"]++;
+              patch.wakeAt = row.latestSafeAt - CONDITION_WINDOW_MS;
+            } else {
+              page["condition-wake-kept"]++;
+            }
+          }
+        }
+        if (statement !== row.statement) patch.statement = statement;
+        if (!dryRun && Object.keys(patch).length > 0) {
+          await ctx.db.patch(row._id, patch);
+          if (row.status === "waiting") {
             await logEvent(ctx, "status-changed", row._id, {
               from: "waiting",
               to: "active",
@@ -224,27 +263,13 @@ export const internalMigrateTiming = internalMutation({
               wakeCondition: row.wakeCondition,
             });
           }
-        }
-        // (b) a condition-bound row becomes a task carrying its condition.
-        if (row.timingClass === "condition-bound") {
-          const isGoal = row.kind === "goal";
-          page[isGoal ? "condition-bound-goal-kept" : "condition-bound-to-task"]++;
-          const patch: Partial<Doc<"dtsTodos">> = {
-            statement: carryCondition(row.statement, row.condition),
-            timingClass: row.dueAt !== undefined ? "dated" : "whenever",
-          };
-          if (!isGoal) patch.kind = "task";
-          if (row.latestSafeAt !== undefined) {
-            page["condition-wake-set"]++;
-            patch.wakeAt = row.latestSafeAt - CONDITION_WINDOW_MS;
-          }
-          if (!dryRun) {
-            await ctx.db.patch(row._id, patch);
+          if (row.timingClass === "condition-bound") {
             await logEvent(ctx, "timing-mapped", row._id, {
               before: {
                 timingClass: row.timingClass,
                 condition: row.condition,
                 latestSafeAt: row.latestSafeAt,
+                wakeAt: row.wakeAt,
                 statement: row.statement,
               },
               after: { ...patch },

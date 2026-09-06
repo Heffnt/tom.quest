@@ -218,6 +218,33 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
       kind: "goal",
       latestSafeAt: LATEST_SAFE,
     },
+    // (a)+(b) one row, both mappings: the sentences are carried in order and
+    // the sleep comes from latestSafeAt, in ONE patch.
+    {
+      statement: "wait for the visa office",
+      status: "waiting",
+      wakeCondition: "the visa office reopens",
+      timingClass: "condition-bound",
+      condition: "the passport arrives",
+      latestSafeAt: LATEST_SAFE,
+    },
+    // (b) with a wakeAt Tom already set: his instant stays.
+    {
+      statement: "a wake Tom set",
+      timingClass: "condition-bound",
+      condition: "the grant opens",
+      latestSafeAt: LATEST_SAFE,
+      wakeAt: NOW + 3 * DAY_MS,
+    },
+    // (b) on a finished row: the shape is mapped for the validator, no sleep.
+    {
+      statement: "finished long ago",
+      status: "done",
+      doneAt: NOW,
+      timingClass: "condition-bound",
+      condition: "the box is rebuilt",
+      latestSafeAt: LATEST_SAFE,
+    },
     // (c) archived rows
     {
       statement: "set aside",
@@ -243,12 +270,13 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
   ];
 
   const expectedTotals = {
-    scanned: 9,
-    "waiting-to-active": 2,
-    "waiting-condition-carried": 1,
-    "condition-bound-to-task": 2,
+    scanned: 12,
+    "waiting-to-active": 3,
+    "waiting-condition-carried": 2,
+    "condition-bound-to-task": 5,
     "condition-bound-goal-kept": 1,
-    "condition-wake-set": 2,
+    "condition-wake-set": 3,
+    "condition-wake-kept": 1,
     "archived-with-return-condition": 1,
     "archived-superseded-by-graph": 1,
     "v1-batches-pending-graph-migration": 1,
@@ -294,7 +322,7 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
     // updatedAt untouched on every row; the change is an event.
     for (const r of rows) expect(r.updatedAt).toBe(NOW);
     const changes = await eventsOfKind(t, "status-changed");
-    expect(changes).toHaveLength(2);
+    expect(changes).toHaveLength(3);
     expect(changes.every((e) => (e.data as { from: string }).from === "waiting")).toBe(true);
   });
 
@@ -321,7 +349,57 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
     expect(goal.kind).toBe("goal");
     expect(goal.statement).toBe("a goal with a trigger — when: the grant opens");
     expect(goal.wakeAt).toBe(LATEST_SAFE - CONDITION_WINDOW_MS);
-    expect(await eventsOfKind(t, "timing-mapped")).toHaveLength(3);
+    expect(await eventsOfKind(t, "timing-mapped")).toHaveLength(6);
+  });
+
+  // A row that is BOTH a stored waiting row and condition-bound. Two patches
+  // in sequence lost the wait sentence the first carried in and overwrote a
+  // wakeAt Tom had set; one patch carries both and writes the sleep once.
+  it("a row both waiting and condition-bound gets one patch carrying both sentences", async () => {
+    const t = convexTest({ schema, modules });
+    await seedTodos(t, seed());
+    await t.mutation(internal.ttsMigrations.internalMigrateTiming, {});
+    const rows = await allTodos(t);
+    const visa = byOriginal(rows)["wait for the visa office"];
+    expect(visa.status).toBe("active");
+    expect(visa.kind).toBe("task");
+    expect(visa.statement).toBe(
+      "wait for the visa office — when: the visa office reopens — when: the passport arrives",
+    );
+    expect(visa.wakeAt).toBe(LATEST_SAFE - CONDITION_WINDOW_MS);
+    expect(visa.wakeCondition).toBe("the visa office reopens"); // kept until NARROW
+    expect(visa.condition).toBe("the passport arrives");
+    // Both events, from the one write: the status change and the mapping,
+    // whose `after` is the whole patch.
+    const mapped = (await eventsOfKind(t, "timing-mapped")).find((e) => e.todoId === visa._id);
+    expect((mapped!.data as { after: Partial<Doc<"dtsTodos">> }).after).toEqual({
+      status: "active",
+      kind: "task",
+      timingClass: "whenever",
+      wakeAt: LATEST_SAFE - CONDITION_WINDOW_MS,
+      statement: visa.statement,
+    });
+    expect((await eventsOfKind(t, "status-changed")).some((e) => e.todoId === visa._id)).toBe(true);
+  });
+
+  it("keeps a wakeAt Tom set, and writes no sleep on a finished row", async () => {
+    const t = convexTest({ schema, modules });
+    await seedTodos(t, seed());
+    const report = await t.mutation(internal.ttsMigrations.internalMigrateTiming, {});
+    expect(report.totals["condition-wake-kept"]).toBe(1);
+    const by = byOriginal(await allTodos(t));
+    const toms = by["a wake Tom set"];
+    expect(toms.wakeAt).toBe(NOW + 3 * DAY_MS);
+    expect(toms.kind).toBe("task");
+    expect(toms.statement).toBe("a wake Tom set — when: the grant opens");
+    // Terminal rows are mapped for the validator only: the retired shape
+    // leaves, and nothing that reads as a live sleep is written on them.
+    const finished = by["finished long ago"];
+    expect(finished.status).toBe("done");
+    expect(finished.kind).toBe("task");
+    expect(finished.timingClass).toBe("whenever");
+    expect(finished.statement).toBe("finished long ago — when: the box is rebuilt");
+    expect(finished.wakeAt).toBeUndefined();
   });
 
   it("leaves archived rows and v1 batches alone, counting them for the gather and the graph migration", async () => {
@@ -344,8 +422,8 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
     });
     expect(report.totals).toEqual(expectedTotals);
     const rows = await allTodos(t);
-    expect(rows.filter((r) => r.status === "waiting")).toHaveLength(2);
-    expect(rows.filter((r) => r.timingClass === "condition-bound")).toHaveLength(3);
+    expect(rows.filter((r) => r.status === "waiting")).toHaveLength(3);
+    expect(rows.filter((r) => r.timingClass === "condition-bound")).toHaveLength(6);
     expect(await eventsOfKind(t, "status-changed")).toHaveLength(0);
     expect(await eventsOfKind(t, "timing-mapped")).toHaveLength(0);
     expect(await eventsOfKind(t, `${TIMING_MIGRATION}-dry-run`)).toHaveLength(1);
@@ -363,8 +441,9 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
       "condition-bound-to-task": 0,
       "condition-bound-goal-kept": 0,
       "condition-wake-set": 0,
+      "condition-wake-kept": 0,
     });
-    expect(await eventsOfKind(t, "status-changed")).toHaveLength(2);
+    expect(await eventsOfKind(t, "status-changed")).toHaveLength(3);
   });
 
   it("resumes across pages by cursor", async () => {
