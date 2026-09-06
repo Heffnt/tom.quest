@@ -151,14 +151,13 @@ export function rowText(value) {
   return json === undefined ? null : json;
 }
 
-// Truncate a value destined for a Convex row. Returns { value, note? }:
-// `value` passes through untouched when small enough; otherwise it becomes a
-// sliced STRING (of the raw text for strings, of the JSON for everything
-// else) and `note` says explicitly what was cut — the explicit truncation
-// note the spec requires, so the UI can say "truncated" instead of silently
-// showing a mangled tail.
-export function truncated(value, limit = TRUNCATE_LIMIT) {
-  const text = rowText(value);
+// The cut itself, on text rowText already produced: `value` passes through
+// untouched when small enough; otherwise it becomes a sliced STRING and
+// `note` says explicitly what was cut — the explicit truncation note the spec
+// requires, so the UI can say "truncated" instead of silently showing a
+// mangled tail. One body for the two entry points below, which differ only
+// in whether the complete payload is kept beside the cut.
+function cutRow(text, value, limit) {
   if (text === null) return { value: null }; // e.g. bare undefined
   if (text.length <= limit) return { value };
   const kind = typeof value === "string" ? "" : " (JSON)";
@@ -168,19 +167,26 @@ export function truncated(value, limit = TRUNCATE_LIMIT) {
   };
 }
 
+// Truncate a value destined for a Convex row. Returns { value, note? }.
+export function truncated(value, limit = TRUNCATE_LIMIT) {
+  return cutRow(rowText(value), value, limit);
+}
+
 // The same cut, plus the complete payload for the rows whose content IS the
 // agent's context (thinking, assistant text, tool inputs, tool results,
 // delivered turns). `overflow` is present exactly when the cut fired, and
 // carries the redacted full text with its sha256, byte length and chunks —
 // session.mjs stores it through POST /sessions/overflow and stamps the hash
-// on the row, so a short rendered view keeps the full bytes retrievable
-// (the transcript principle).
+// on the row once every chunk is up, so a short rendered view keeps the full
+// bytes retrievable (the transcript principle). The payload is serialized
+// ONCE: the cut and the overflow are both taken from the same `text`.
 //
 // Deliberately NOT used for the ERROR_TEXT_LIMIT cut: those strings are the
 // daemon's own failure reports, not anything a model read, and their 8KB
 // bound exists so the failure path cannot itself be rejected.
 export function cutWithOverflow(value, limit = TRUNCATE_LIMIT) {
-  const cut = truncated(value, limit);
+  const text = rowText(value);
+  const cut = cutRow(text, value, limit);
   if (!cut.note) return cut;
-  return { ...cut, overflow: overflowFor(rowText(value)) };
+  return { ...cut, overflow: overflowFor(text) };
 }
