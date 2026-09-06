@@ -135,6 +135,9 @@ export const internalRecordSlackFailed = internalMutation({
 // door's own rows; two concurrent calls with one key conflict on it in Convex
 // and the retry reads the marker the winner wrote.
 export const NEEDS_TOM = "needs-tom";
+/** A reply Tom typed in a thread that could not be routed (the row records
+ * what was tried; the reply is captured as a todo instead). */
+export const SLACK_REPLY_FAILED = "slack-reply-failed";
 
 export const internalOpenNeedsTomThread = internalMutation({
   // todoId as a plain string, normalized here: the caller is an HTTP route
@@ -370,7 +373,7 @@ export async function slackThreadReplyFrom(
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
     outcome = await captureUnknown(ctx, trimmed, at);
-    await logEvent(ctx, "slack-reply-failed", outcome.todoId, {
+    await logEvent(ctx, SLACK_REPLY_FAILED, outcome.todoId, {
       ...at,
       text: trimmed,
       subject,

@@ -775,7 +775,11 @@ describe("collectModelOfTomFiles", () => {
     write(dir, "model-of-tom/schedule.md", "# Schedule\n");
     write(dir, "model-of-tom/README.md", "not posted\n");
     write(dir, "model-of-tom/areas/social.md", "## Current state\n\n- friends\n\n## Ideal state\n\nx\n");
-    write(dir, "model-of-tom/areas/admin.md", "## Must not break\n\n- taxes\n");
+    write(
+      dir,
+      "model-of-tom/areas/admin.md",
+      "---\nupdated: 2026-09-06\nreviewed:\nwindow_days: 30\n---\n# Admin\n\n## Must not break\n\n- taxes\n",
+    );
     write(dir, "model-of-tom/areas/empty.md", "# Empty\n\nno sections yet\n");
     const { files, missing } = collectModelOfTomFiles(dir);
     expect(missing).toEqual([]);
@@ -785,7 +789,11 @@ describe("collectModelOfTomFiles", () => {
       "model-of-tom/areas/social.md",
     ]);
     expect(files[4].body).toBe("## Current state\n\n- friends");
-    expect(files[3].body).toBe("## Must not break\n\n- taxes");
+    // The frontmatter rides ahead of the sections: it is where the weekly
+    // gather reads `reviewed:` and the window from.
+    expect(files[3].body).toBe(
+      "---\nupdated: 2026-09-06\nreviewed:\nwindow_days: 30\n---\n\n## Must not break\n\n- taxes",
+    );
   });
 
   // areas/ arrives with the content half of phase 4; until then the three.

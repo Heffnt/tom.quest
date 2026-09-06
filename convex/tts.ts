@@ -203,12 +203,16 @@ export async function logEvent(
   kind: string,
   todoId?: Id<"dtsTodos">,
   data?: unknown,
+  // The indexed lookup key (schema: dtsEvents.key) — set on the kinds the
+  // schema comment lists, and on no other.
+  key?: string,
 ) {
   await ctx.db.insert("dtsEvents", {
     at: Date.now(),
     kind,
     todoId,
     data: data === undefined ? undefined : data,
+    key,
   });
 }
 
@@ -670,10 +674,14 @@ export async function recordMissedKeepingDate(
       { dueAt: todo.dueAt, outcome: "missed" as const, recordedAt: now, note },
     ],
   });
+  // `rollover: true` marks the row as the system's, not Tom's: the weekly
+  // gather counts a date outcome as a touch of his unless it carries this
+  // (convex/ttsWeekly.ts isTomTouch).
   await logEvent(ctx, "date-outcome", todo._id, {
     outcome: "missed",
     newDueAt: todo.dueAt,
     note,
+    rollover: true,
   });
 }
 

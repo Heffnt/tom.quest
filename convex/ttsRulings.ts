@@ -547,6 +547,14 @@ async function resolveSubject(
 // (ttsSlack.sessionReply), so it is bound the same way. The refusal is its
 // own reason, distinct from "unknown subject": the subject exists, Tom was
 // just not talking about it in that session.
+//
+// THE WEEKLY SESSION IS ABOUT WHAT ITS AGENDA NAMES (spec §11; the lifeos
+// update, phase 8): the Friday job stores the todo and batch ids its forks
+// name on the row (claudeSessions.agendaSubjects), and Tom rules on those
+// there by number. A "weekly" session's turns rule on exactly that list —
+// not on any todo, and never on code (the agenda is built from the life
+// record). A weekly session with no list (one opened from the page) rules on
+// nothing.
 async function refuseUnlessSessionSubject(
   ctx: MutationCtx,
   session: Doc<"claudeSessions">,
@@ -554,7 +562,15 @@ async function refuseUnlessSessionSubject(
   subject: { todoId?: Id<"dtsTodos">; batchId?: Id<"batches"> },
 ): Promise<void> {
   let about = false;
-  if (subjectType === "life" && subject.todoId !== undefined) {
+  if (session.kind === "weekly") {
+    const id =
+      subjectType === "life"
+        ? subject.todoId
+        : subjectType === "batch"
+          ? subject.batchId
+          : undefined;
+    about = id !== undefined && (session.agendaSubjects ?? []).includes(id);
+  } else if (subjectType === "life" && subject.todoId !== undefined) {
     const todo = await ctx.db.get(subject.todoId);
     about =
       session.todoId === subject.todoId ||
@@ -569,13 +585,15 @@ async function refuseUnlessSessionSubject(
   }
   if (about) return;
   const named =
-    session.todoId !== undefined
-      ? `the todo ${session.todoId}`
-      : session.batchId !== undefined
-        ? `the batch ${session.batchId} and the todos in it`
-        : session.blockCategory !== undefined
-          ? `the "${session.blockCategory}" block`
-          : "no todo, batch, or block";
+    session.kind === "weekly"
+      ? `the ${(session.agendaSubjects ?? []).length} subject(s) its agenda names, never code`
+      : session.todoId !== undefined
+        ? `the todo ${session.todoId}`
+        : session.batchId !== undefined
+          ? `the batch ${session.batchId} and the todos in it`
+          : session.blockCategory !== undefined
+            ? `the "${session.blockCategory}" block`
+            : "no todo, batch, or block";
   throw new Error(
     `refused: that turn is from a session about ${named}, not about this subject — ` +
       "a ruling names only what Tom was talking about",

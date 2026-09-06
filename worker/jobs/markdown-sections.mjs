@@ -89,3 +89,82 @@ export function extractSections(markdown, headings) {
   }
   return found.join("\n\n");
 }
+
+// ── Frontmatter ──────────────────────────────────────────────────────────────
+// The same rule as extractSections, for the block at the top of an area page:
+// two sides read it (convex/ttsWeekly.ts reads `reviewed:` and the window off
+// the body the nightly job posted; worker/jobs/weekly.mjs sets `reviewed:` in
+// the checkout when Tom confirms a page) and they must agree on where the
+// block is and what a line in it means.
+
+const FRONTMATTER_FENCE = "---";
+
+/** The block itself — the opening fence line through the closing one — or
+ * "" when the page does not open with one. What the nightly job keeps ahead
+ * of an area page's posted sections. */
+export function frontmatterBlock(markdown) {
+  const lines = String(markdown ?? "").split(/\r?\n/);
+  if (lines[0]?.trim() !== FRONTMATTER_FENCE) return "";
+  const end = lines.findIndex((l, i) => i > 0 && l.trim() === FRONTMATTER_FENCE);
+  if (end === -1) return "";
+  return lines.slice(0, end + 1).join("\n");
+}
+
+/**
+ * The `key: value` lines between the two `---` fences that open a page, as an
+ * object of strings (values trimmed, an empty value ""), and the rest of the
+ * page as `body`. A page that does not open with a fence has no fields and is
+ * its own body. Only the first fence pair is read; nothing is parsed inside a
+ * value.
+ */
+export function parseFrontmatter(markdown) {
+  const text = String(markdown ?? "");
+  const lines = text.split(/\r?\n/);
+  if (lines[0]?.trim() !== FRONTMATTER_FENCE) return { fields: {}, body: text };
+  const end = lines.findIndex((l, i) => i > 0 && l.trim() === FRONTMATTER_FENCE);
+  if (end === -1) return { fields: {}, body: text };
+  const fields = {};
+  for (const line of lines.slice(1, end)) {
+    const m = /^([A-Za-z0-9_-]+)\s*:\s*(.*)$/.exec(line);
+    if (m) fields[m[1]] = m[2].trim();
+  }
+  return { fields, body: lines.slice(end + 1).join("\n") };
+}
+
+/**
+ * Whether `s` is a real calendar day spelled YYYY-MM-DD. The regex alone is
+ * not enough: Date.parse("2026-02-30") is March 2nd, not NaN, so the check
+ * is the round trip — the parsed instant, written back as a UTC date, must
+ * be the same ten characters. Both the frontmatter `reviewed:` line
+ * (convex/ttsWeekly.ts frontmatterDate) and the weekly job's day arguments
+ * (worker/jobs/weekly.mjs isDay) read here.
+ */
+export function isIsoDay(s) {
+  if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const ms = Date.parse(s);
+  return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === s;
+}
+
+/**
+ * The page with `key: value` set in its frontmatter: the existing line
+ * replaced in place, a missing key appended before the closing fence, and a
+ * page with no frontmatter given one. Everything else is byte-for-byte what
+ * it was, so the diff of a `reviewed:` edit is one line.
+ */
+export function setFrontmatterField(markdown, key, value) {
+  const text = String(markdown ?? "");
+  const lines = text.split("\n");
+  const entry = `${key}: ${value}`;
+  const end =
+    lines[0]?.trim() === FRONTMATTER_FENCE
+      ? lines.findIndex((l, i) => i > 0 && l.trim() === FRONTMATTER_FENCE)
+      : -1;
+  if (end === -1) {
+    return [FRONTMATTER_FENCE, entry, FRONTMATTER_FENCE, ...lines].join("\n");
+  }
+  const pattern = new RegExp(`^${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*:`);
+  const at = lines.findIndex((l, i) => i > 0 && i < end && pattern.test(l));
+  if (at !== -1) lines[at] = entry;
+  else lines.splice(end, 0, entry);
+  return lines.join("\n");
+}

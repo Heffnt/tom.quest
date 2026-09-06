@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import {
+  AREA_REVIEWED,
   DIGEST_MAX_CHARS,
   DIGEST_SENT,
   ITEM_TEXT_CHARS,
@@ -546,9 +547,11 @@ describe("the missed rollover", () => {
       { dueAt: passed, outcome: "done", recordedAt: expect.any(Number) },
     ]);
     const events = await tom.query(api.tts.listRecentEvents, {});
-    expect(
-      events.filter((e) => e.kind === "date-outcome" && e.todoId === late),
-    ).toHaveLength(1);
+    const outcomes = events.filter((e) => e.kind === "date-outcome" && e.todoId === late);
+    expect(outcomes).toHaveLength(1);
+    // The row says it is the rollover's, so the weekly gather never reads it
+    // as Tom touching the item (convex/ttsWeekly.ts isTomTouch).
+    expect(outcomes[0].data).toMatchObject({ outcome: "missed", rollover: true });
   });
 
   // Ruling 14 keeps the DATE, not a kind for it, and the mark is an annotation
@@ -720,10 +723,20 @@ describe("internalComposeDigest", () => {
         kind: "poll-gmail-failed",
         data: { error: "token expired" },
       });
+      // The weekly session's record that Tom confirmed an area page.
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: AREA_REVIEWED,
+        key: "model-of-tom/areas/research.md",
+        data: { path: "model-of-tom/areas/research.md", reviewedOn: "2026-09-04" },
+      });
     });
     const { text, surfacedTodoIds } = await t.query(
       internal.ttsDigest.internalComposeDigest,
       { day: DAY_KEY, now: Date.now() + 1 },
+    );
+    expect(text).toContain(
+      "- area page reviewed with Tom: model-of-tom/areas/research.md (reviewed 2026-09-04)",
     );
     expect(text).toContain(
       `- <${ttsItemLink(late)}|pay rent> — 1 day overdue — missed: reply done, or a new date`,
