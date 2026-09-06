@@ -1,23 +1,163 @@
 import { convexTest } from "convex-test";
 import { describe, expect, it, vi } from "vitest";
+import { defineSchema, defineTable } from "convex/server";
+import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
   BATCH_NEEDS_MIGRATION,
+  CLEAR_MIGRATION,
   READINESS_MIGRATION,
   RECOMMENDATION_MIGRATION,
+  RETIRED_FIELD_CLEARED,
+  RETIRED_STATUS_ENDED_REASON,
   TIMING_MIGRATION,
   carryCondition,
   previousOnPath,
 } from "./ttsMigrations";
-import { CONDITION_WINDOW_MS, DAY_MS, buildDoneSet, isReady } from "./ttsShared";
+import {
+  CONDITION_WINDOW_MS,
+  DAY_MS,
+  READINESS_VALUES,
+  RECOMMENDATION_VALUES,
+  RETIRED_READINESS_VALUES,
+  RETIRED_RECOMMENDATION_MAP,
+  buildDoneSet,
+  isReady,
+} from "./ttsShared";
 
 // The phase-7 row mappings (convex/ttsMigrations.ts): resumable, dry-runnable,
 // idempotent, and counted. These tests are the local harness the design says
 // every dry run is measured against BEFORE anything runs on prod.
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
+
+// ── THE HARNESS SCHEMA ───────────────────────────────────────────────────────
+// The record prod holds while a migration runs, which is NOT the record the
+// validator declares once the narrow lands: a retired readiness spelling, a
+// condition-bound timing class, a latest-safe instant, a wake condition in
+// words, a batch's named path, a brief's importance and retired recommendation
+// spelling, and a session left in "awaiting-permission" all stop inserting
+// under convex/schema.ts the day the declarations go. The fixtures here are
+// exactly those rows, so they go in under a copy of the schema with the
+// retired declarations put back — today identical to what the schema itself
+// still declares, and unchanged by the narrow that removes them.
+//
+// Every walk reads its retired field through a loose view of the row
+// (convex/ttsMigrations.ts), which is what keeps a verification re-run
+// possible on a deployment whose validator has moved on.
+
+/** The retired importance object, on dtsTodos and dtsCodeBriefs alike. */
+const RETIRED_IMPORTANCE = v.optional(
+  v.object({
+    level: v.union(v.literal("low"), v.literal("medium"), v.literal("high")),
+    setBy: v.union(v.literal("agent"), v.literal("tom")),
+    setAt: v.number(),
+    rationale: v.optional(v.string()),
+  }),
+);
+
+type IndexChain = { indexDescriptor: string; fields: string[] }[];
+type Indexed = { " indexes"(): IndexChain };
+type Chainable = { index(name: string, fields: string[]): Chainable };
+
+/** `defineTable(v.object(...))` starts a table with NO indexes: the `.index()`
+ * chain lives on the TableDefinition, not on the validator it is rebuilt from.
+ * A rebuilt table therefore silently loses every index the real one declares,
+ * and the first `withIndex()` read any tested function makes fails against the
+ * harness while passing in production. Carry the source's chain across.
+ * (`" indexes"()` is convex/server's own accessor — experimental, and the only
+ * way to read a chain back off a table.) */
+function carryIndexes<T>(rebuilt: T, source: Indexed): T {
+  let table = rebuilt as unknown as Chainable;
+  for (const { indexDescriptor, fields } of source[" indexes"]()) {
+    table = table.index(indexDescriptor, fields);
+  }
+  return table as unknown as T;
+}
+
+const {
+  dtsTodos: schemaTodos,
+  batches: schemaBatches,
+  claudeSessions: schemaSessions,
+  dtsCodeBriefs: schemaBriefs,
+  ...otherTables
+} = schema.tables;
+
+const wideSchema = defineSchema({
+  ...otherTables,
+  dtsTodos: carryIndexes(
+    defineTable(
+      v.object({
+        ...schemaTodos.validator.fields,
+        readiness: v.union(
+          ...[...READINESS_VALUES, ...RETIRED_READINESS_VALUES].map((r) =>
+            v.literal(r),
+          ),
+        ),
+        timingClass: v.union(
+          v.literal("dated"),
+          v.literal("condition-bound"),
+          v.literal("whenever"),
+        ),
+        latestSafeAt: v.optional(v.number()),
+        wakeCondition: v.optional(v.string()),
+        importance: RETIRED_IMPORTANCE,
+      }),
+    ),
+    schemaTodos,
+  ),
+  batches: carryIndexes(
+    defineTable(
+      v.object({
+        ...schemaBatches.validator.fields,
+        path: v.optional(
+          v.object({
+            name: v.string(),
+            index: v.number(),
+            edge: v.optional(v.union(v.literal("must"), v.literal("helps"))),
+          }),
+        ),
+      }),
+    ),
+    schemaBatches,
+  ),
+  claudeSessions: carryIndexes(
+    defineTable(
+      v.object({
+        ...schemaSessions.validator.fields,
+        status: v.union(
+          v.literal("requested"),
+          v.literal("starting"),
+          v.literal("idle"),
+          v.literal("running"),
+          v.literal("awaiting-permission"),
+          v.literal("ended"),
+          v.literal("failed"),
+        ),
+      }),
+    ),
+    schemaSessions,
+  ),
+  dtsCodeBriefs: carryIndexes(
+    defineTable(
+      v.object({
+        ...schemaBriefs.validator.fields,
+        recommendation: v.union(
+          ...[
+            ...RECOMMENDATION_VALUES,
+            ...(Object.keys(
+              RETIRED_RECOMMENDATION_MAP,
+            ) as (keyof typeof RETIRED_RECOMMENDATION_MAP)[]),
+          ].map((r) => v.literal(r)),
+        ),
+        importance: RETIRED_IMPORTANCE,
+      }),
+    ),
+    schemaBriefs,
+  ),
+});
 
 const NOW = Date.UTC(2026, 8, 5, 12);
 
@@ -638,4 +778,361 @@ describe("recommendation migration (code briefs → the four verdict words)", ()
       "already-verdict-word": 5,
     });
   });
+});
+
+describe("the harness schema", () => {
+  // witness: drop carryIndexes() and rebuild a table from its validator alone
+  // — every index the real table declares would be missing from the harness,
+  // and the first withIndex() read a tested function makes would fail here
+  // while passing in production. defineTable(v.object(...)) carries the
+  // fields; the .index() chain lives on the table, not on the validator.
+  it("rebuilds each widened table with the index chain the schema declares", () => {
+    for (const name of [
+      "dtsTodos",
+      "batches",
+      "claudeSessions",
+      "dtsCodeBriefs",
+    ] as const) {
+      const wide = wideSchema.tables[name] as unknown as Indexed;
+      const real = schema.tables[name] as unknown as Indexed;
+      expect(wide[" indexes"]()).toEqual(real[" indexes"]());
+      expect(real[" indexes"]().length).toBeGreaterThan(0);
+    }
+  });
+});
+
+// The CLEARING walk (convex/ttsMigrations.ts section 7): the step between the
+// value mappings above and the narrow. `convex deploy` validates every stored
+// document against the validator being deployed, so a field or a union literal
+// leaves the schema only after it has left every row.
+describe("clearing walk (retired fields and the retired session status)", () => {
+  const RETIRED_IMPORTANCE_VALUE = {
+    level: "high" as const,
+    setBy: "agent" as const,
+    setAt: NOW,
+    rationale: "the agent guessed",
+  };
+  const MUST_PATH = { name: "release", index: 1, edge: "must" as const };
+  const HELPS_PATH = { name: "release", index: 2, edge: "helps" as const };
+  const UNLINKED_PATH = { name: "paper", index: 0 };
+
+  const todoSeed = (): Seed[] => [
+    {
+      statement: "all three",
+      latestSafeAt: NOW + 30 * DAY_MS,
+      wakeCondition: "the landlord writes back",
+      importance: RETIRED_IMPORTANCE_VALUE,
+    },
+    { statement: "just the instant", latestSafeAt: NOW + DAY_MS },
+    { statement: "nothing retired" },
+    // A finished row is cleared like the rest: the validator does not care
+    // that a row is done, and one such row left behind fails the deploy.
+    {
+      statement: "finished long ago",
+      status: "done",
+      doneAt: NOW,
+      importance: RETIRED_IMPORTANCE_VALUE,
+    },
+  ];
+
+  async function seedRest(t: ReturnType<typeof convexTest>) {
+    return await t.run(async (ctx) => {
+      const batches = {
+        must: await ctx.db.insert("batches", {
+          statement: "must edge",
+          status: "active",
+          path: MUST_PATH,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+        helps: await ctx.db.insert("batches", {
+          statement: "helps edge",
+          status: "active",
+          path: HELPS_PATH,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+        unlinked: await ctx.db.insert("batches", {
+          statement: "unlinked",
+          status: "done",
+          path: UNLINKED_PATH,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+        none: await ctx.db.insert("batches", {
+          statement: "no path",
+          status: "active",
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      };
+      const session = (
+        title: string,
+        status: "awaiting-permission" | "running",
+        endedReason?: string,
+      ) =>
+        ctx.db.insert("claudeSessions", {
+          title,
+          kind: "adhoc" as const,
+          repo: "tom.quest",
+          status,
+          statusChangedAt: NOW,
+          endedReason,
+          nextSeq: 0,
+          createdAt: NOW,
+        });
+      const sessions = {
+        parked: await session("parked on a permission", "awaiting-permission"),
+        withReason: await session(
+          "parked, and already said why",
+          "awaiting-permission",
+          "the daemon lost the box",
+        ),
+        live: await session("still running", "running"),
+      };
+      const brief = (externalId: string, extra: Record<string, unknown>) =>
+        ctx.db.insert("dtsCodeBriefs", {
+          repo: "ComplexMultiTrigger",
+          externalId,
+          sourceHash: `h-${externalId}`,
+          brief: "a brief",
+          recommendation: "approve",
+          execClass: "box" as const,
+          preparedAt: NOW,
+          ...extra,
+        });
+      const briefs = {
+        retired: await brief("cmt-100", {
+          recommendation: "stale-replan",
+          importance: RETIRED_IMPORTANCE_VALUE,
+        }),
+        clean: await brief("cmt-101", {}),
+      };
+      return { batches, sessions, briefs };
+    });
+  }
+
+  const expectedTotals = {
+    "dtsTodos-scanned": 4,
+    "batches-scanned": 4,
+    "claudeSessions-scanned": 3,
+    "dtsCodeBriefs-scanned": 2,
+    "latestSafeAt-cleared": 2,
+    "wakeCondition-cleared": 1,
+    "importance-cleared": 2,
+    "path-cleared": 3,
+    "awaiting-permission-ended": 2,
+    "brief-importance-cleared": 1,
+    "recommendation-normalized": 1,
+  };
+  const nothingLeft = {
+    ...expectedTotals,
+    "latestSafeAt-cleared": 0,
+    "wakeCondition-cleared": 0,
+    "importance-cleared": 0,
+    "path-cleared": 0,
+    "awaiting-permission-ended": 0,
+    "brief-importance-cleared": 0,
+    "recommendation-normalized": 0,
+  };
+
+  /** One call, walking all four tables: a pageSize past the biggest table
+   * finishes each in one page, and the chain runs to the end. */
+  async function clearAll(
+    t: ReturnType<typeof convexTest>,
+    args: { dryRun?: boolean } = {},
+  ) {
+    vi.useFakeTimers();
+    try {
+      await t.mutation(internal.ttsMigrations.internalClearRetiredFields, {
+        pageSize: 100,
+        ...args,
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    } finally {
+      vi.useRealTimers();
+    }
+    const kind = args.dryRun
+      ? `${CLEAR_MIGRATION}-dry-run`
+      : `${CLEAR_MIGRATION}-migrated`;
+    // The chain's totals are the event the LAST call writes — the CLI call
+    // that started it returned when its own page was done.
+    const events = await eventsOfKind(t, kind);
+    expect(events.length).toBeGreaterThan(0);
+    return events[events.length - 1].data as Record<string, number>;
+  }
+
+  const wideRows = async (t: ReturnType<typeof convexTest>) =>
+    await t.run(async (ctx) => ({
+      todos: await ctx.db.query("dtsTodos").collect(),
+      batches: await ctx.db.query("batches").collect(),
+      sessions: await ctx.db.query("claudeSessions").collect(),
+      briefs: await ctx.db.query("dtsCodeBriefs").collect(),
+    }));
+
+  // witness: clear a field without logging its value first — the deploy would
+  // pass and the record of what the row said would be gone with no trace.
+  it("clears each retired field once, recording every value it takes out", async () => {
+    const t = convexTest({ schema: wideSchema, modules });
+    await seedTodos(t, todoSeed());
+    const ids = await seedRest(t);
+    expect(await clearAll(t)).toEqual(expectedTotals);
+
+    const rows = await wideRows(t);
+    for (const todo of rows.todos) {
+      expect(todo.latestSafeAt).toBeUndefined();
+      expect(todo.wakeCondition).toBeUndefined();
+      expect(todo.importance).toBeUndefined();
+      // Nothing else on the row moved: updatedAt is untouched, so clearing a
+      // retired field puts no settled item back on Tom's pile.
+      expect(todo.updatedAt).toBe(NOW);
+    }
+    for (const batch of rows.batches) {
+      expect(batch.path).toBeUndefined();
+      expect(batch.updatedAt).toBe(NOW);
+    }
+    const sessions = Object.fromEntries(rows.sessions.map((s) => [s.title, s]));
+    expect(sessions["parked on a permission"].status).toBe("ended");
+    expect(sessions["parked on a permission"].endedReason).toBe(
+      RETIRED_STATUS_ENDED_REASON,
+    );
+    // A session that already said why it stopped keeps its own sentence — the
+    // migration ends it, it does not rewrite what happened to it.
+    expect(sessions["parked, and already said why"].endedReason).toBe(
+      "the daemon lost the box",
+    );
+    expect(sessions["still running"].status).toBe("running");
+    // statusChangedAt is untouched: these rows are historical and must not
+    // sort to the top of the sessions list as if they had just ended.
+    for (const s of rows.sessions) expect(s.statusChangedAt).toBe(NOW);
+    const briefs = Object.fromEntries(rows.briefs.map((b) => [b.externalId, b]));
+    expect(briefs["cmt-100"].recommendation).toBe("revise");
+    expect(briefs["cmt-100"].importance).toBeUndefined();
+    expect(briefs["cmt-101"].recommendation).toBe("approve");
+    expect(briefs["cmt-100"].preparedAt).toBe(NOW);
+
+    // One event per value, carrying the value itself.
+    const cleared = await eventsOfKind(t, RETIRED_FIELD_CLEARED);
+    expect(cleared).toHaveLength(12);
+    const byField = (field: string) =>
+      cleared
+        .map((e) => e.data as { field: string; value: unknown })
+        .filter((d) => d.field === field)
+        .map((d) => d.value);
+    expect(byField("latestSafeAt")).toEqual([NOW + 30 * DAY_MS, NOW + DAY_MS]);
+    expect(byField("wakeCondition")).toEqual(["the landlord writes back"]);
+    expect(byField("importance")).toEqual([
+      RETIRED_IMPORTANCE_VALUE,
+      RETIRED_IMPORTANCE_VALUE,
+      RETIRED_IMPORTANCE_VALUE,
+    ]);
+    // The WHOLE path object, helps edges and unlinked names included: what
+    // the needs migration derived from is not all a path said.
+    expect(byField("path")).toEqual([MUST_PATH, HELPS_PATH, UNLINKED_PATH]);
+    expect(byField("recommendation")).toEqual(["stale-replan"]);
+    // A todo's clearing is on its own history (the indexed column), and every
+    // row names the table and the row it came out of.
+    const todoEvents = cleared.filter((e) => e.todoId !== undefined);
+    expect(todoEvents).toHaveLength(5);
+    const pathEvent = cleared.find(
+      (e) => (e.data as { field: string }).field === "path",
+    )!;
+    expect((pathEvent.data as { table: string }).table).toBe("batches");
+    expect((pathEvent.data as { batchId: string }).batchId).toBe(ids.batches.must);
+    const statusEvent = cleared.find(
+      (e) => (e.data as { field: string }).field === "status",
+    )!;
+    expect((statusEvent.data as { sessionId: string }).sessionId).toBe(
+      ids.sessions.parked,
+    );
+    expect((statusEvent.data as { value: unknown }).value).toEqual({
+      status: "awaiting-permission",
+    });
+  });
+
+  // witness: patch a row inside the dryRun branch — the counts would still be
+  // right and every row would have moved before Tom saw the numbers.
+  it("a dry run reports the same counts and writes nothing but the dry-run event", async () => {
+    const t = convexTest({ schema: wideSchema, modules });
+    await seedTodos(t, todoSeed());
+    await seedRest(t);
+    expect(await clearAll(t, { dryRun: true })).toEqual(expectedTotals);
+    const rows = await wideRows(t);
+    expect(rows.todos.filter((r) => r.latestSafeAt !== undefined)).toHaveLength(2);
+    expect(rows.todos.filter((r) => r.importance !== undefined)).toHaveLength(2);
+    expect(rows.batches.filter((b) => b.path !== undefined)).toHaveLength(3);
+    expect(
+      rows.sessions.filter((s) => s.status === "awaiting-permission"),
+    ).toHaveLength(2);
+    expect(rows.briefs[0].recommendation).toBe("stale-replan");
+    expect(await eventsOfKind(t, RETIRED_FIELD_CLEARED)).toHaveLength(0);
+  });
+
+  // The verification step: the gate the narrow waits on is this run reporting
+  // zero for every cleared count.
+  it("is idempotent: a second run clears nothing and reports zero for every field", async () => {
+    const t = convexTest({ schema: wideSchema, modules });
+    await seedTodos(t, todoSeed());
+    await seedRest(t);
+    await clearAll(t);
+    expect(await clearAll(t)).toEqual(nothingLeft);
+    // And it wrote no second record of a value: nine values left the rows,
+    // once, on the first run.
+    expect(await eventsOfKind(t, RETIRED_FIELD_CLEARED)).toHaveLength(12);
+  });
+
+  // witness: drop the cursor from the continuation and a resumed run starts
+  // the table again; drop the table hand-off and three of the four tables are
+  // never walked while the call reports done.
+  it("resumes within a table by cursor, and hands off table by table", async () => {
+    // Fake timers throughout: each call below schedules its own continuation,
+    // and this test drives them by hand instead. Left on real timers the
+    // continuations fire after the test has finished, against a transaction
+    // that is already committed.
+    vi.useFakeTimers();
+    try {
+      await resumeByHand();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  async function resumeByHand() {
+    const t = convexTest({ schema: wideSchema, modules });
+    await seedTodos(t, todoSeed());
+    await seedRest(t);
+    const first = await t.mutation(
+      internal.ttsMigrations.internalClearRetiredFields,
+      { pageSize: 2, dryRun: true },
+    );
+    expect(first.done).toBe(false);
+    expect(first.table).toBe("dtsTodos");
+    expect(first.nextTable).toBe("dtsTodos");
+    expect(first.page["dtsTodos-scanned"]).toBe(2);
+    expect(first.continueCursor).not.toBeNull();
+    // The hand-driven continuation, which is what a crash and resume looks
+    // like from the CLI: the same table from its cursor, carrying the totals.
+    const second = await t.mutation(
+      internal.ttsMigrations.internalClearRetiredFields,
+      {
+        pageSize: 100,
+        dryRun: true,
+        table: first.nextTable ?? undefined,
+        cursor: first.continueCursor,
+        totals: first.totals,
+      },
+    );
+    expect(second.done).toBe(false);
+    expect(second.nextTable).toBe("batches");
+    expect(second.totals["dtsTodos-scanned"]).toBe(4);
+    expect(second.totals["latestSafeAt-cleared"]).toBe(2);
+    // And one table on its own, for the run that only has to finish one.
+    const briefsOnly = await t.mutation(
+      internal.ttsMigrations.internalClearRetiredFields,
+      { pageSize: 100, dryRun: true, table: "dtsCodeBriefs" },
+    );
+    expect(briefsOnly.done).toBe(true);
+    expect(briefsOnly.totals["recommendation-normalized"]).toBe(1);
+    expect(briefsOnly.totals["dtsTodos-scanned"]).toBe(0);
+  }
 });
