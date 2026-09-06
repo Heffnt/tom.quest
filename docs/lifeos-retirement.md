@@ -7,6 +7,11 @@ The ledger the phase-7 counts derive from (design revision 4, section 6). One ro
 - **cleared** — the retired field is off every row, or the retired union value is on none: `ttsMigrations.internalClearRetiredFields` has run and a second run reports zero. Whole tables skip this state; nothing else may.
 - **narrowed** — the old field, table, or job is deleted from the schema, the crons, or the box. The gate column names what must be true first.
 
+A row whose status reads **not narrowed** has a reader or a writer still
+standing, and its status column says which one and what would have to happen
+first. That is the whole rule: a field or a table narrows when nothing reads or
+writes it, and never on a schedule.
+
 ## Why clearing is its own state
 
 `convex/schema.ts` calls `defineSchema` with `schemaValidation` at its default, which is **true**. `convex deploy` therefore validates every existing document of a still-declared table against the validator being deployed, and rejects one carrying a field the validator no longer declares or a union literal it no longer lists. The deploy fails; the site does not update. So Convex's removal order for a field or a value is three steps, not two:
@@ -24,17 +29,17 @@ Non-negotiables that hold through every state: nothing is deleted from the todo 
 | Removed | Readers and writers today | Destination | Gate | Status |
 |---|---|---|---|---|
 | readiness values `preparing`, `ready-for-tom` | none: the validator (`ttsShared.READINESS`, the schema, the worker pen, `POST /tts/prep`) holds the two values and refuses the retired spellings; `normalizeReadiness` / `isPrepared` still read them for one more release, so a bundle or box job built before the narrow reads a row the same way | `prepared` or `unprepared`, as read, + computed ready (`ttsShared.isReadyForTom`: prepared, active, wakeAt passed or absent, every need done) | `internalMigrateReadiness` run on prod with a zero count for both retired spellings on a second run (`ready-for-tom-to-prepared`, `preparing-to-unprepared`) — held 2026-09-06 (1392 rows, only `unprepared` and `prepared`) | **narrowed** (the validator; the read-side acceptance goes next release) |
-| status value `waiting` | `ttsShared.waitingReason` reads it as a sleep; `isReady` excludes it; the fallback queue's wake loop still reads it | active + `wakeAt` (a sleep is a wakeAt on an active row; `isReady` and `wakeAtPassed` honour it) | `internalMigrateTiming` run on prod, `waiting-to-active` zero on a second run; the wake loop and the "Set waiting" control removed | widened (the everything tab's waiting chip removed on this branch — a stored row reads as active there and prints its computed waiting reason) |
+| status value `waiting` | `ttsShared.waitingReason` reads it as a sleep and `isReady` excludes it; the wake loop that rewrote such rows every morning is gone with the fallback prep job, and Tom's "Set waiting" control still writes the word | active + `wakeAt` (a sleep is a wakeAt on an active row; `isReady` and `wakeAtPassed` honour it) | `internalMigrateTiming` run on prod, `waiting-to-active` zero on a second run; the wake loop and the "Set waiting" control removed | **not narrowed**: the control is still Tom's way to park a todo by hand, and while it writes the word the two readers have to keep reading it. Removing it is a page decision, not a schema one. The everything tab's waiting chip is already gone — a stored row reads as active there and prints its computed waiting reason |
 | `timingClass` value `condition-bound` | none: the validator holds `dated` and `whenever`; the fallback queue's condition lane is gone (a woken row reaches a worker through the whenever lane), `goalCheckable` reads the condition as a completion test with no arm for a trigger, and the page prints the two remaining values | the row's date (`dueAt`) and its sleep (`wakeAt`); a condition-bound row became a task whose statement carries the condition sentence | `internalMigrateTiming` run, `condition-bound-to-task` and `condition-bound-goal-kept` zero on a second run — held 2026-09-06; no row left in the retired value | **cleared, then narrowed** |
 | `latestSafeAt` | none: the condition lane, the fact grid row and the time-note context are gone, and the `set-latest-safe` / `clear-latest-safe` time-note actions are the roll-out SHIM — still declared, doing nothing, recording one `retired-action-ignored` event each, because `worker/jobs/apply-time-notes.mjs` still emits them and a Convex mutation refuses an argument it does not declare (**exit:** once `worker/setup.sh` has rolled out); `internalMigrateTiming` reads the field through `RetiredTiming`, a loose view of the row | `wakeAt = latestSafeAt − CONDITION_WINDOW_MS` written by the migration on an active row that has no wakeAt of its own (one Tom set stays, counted `condition-wake-kept`); a done or archived row is mapped for the validator only | migration run; the time-note actions retired and the fact removed — held 2026-09-06; **and the field off every row** (`internalClearRetiredFields`, `latestSafeAt-cleared` zero on a second run), without which this deploy fails | **cleared, then narrowed** |
 | `wakeCondition` | none: `applyStatusChange` writes a sleep as a time alone, the `set-waiting` action stores no sentence (it takes one for the same roll-out shim and drops it), the page's Set waiting control takes none, `waitingReason` returns a wake with an instant or without one, and the calendar's wake mark prints the time; `internalMigrateTiming` reads it through `RetiredTiming` | the statement (carried in as "— when: …" when the row had no wake time); the sleep itself is `wakeAt` | migration run, `waiting-condition-carried` zero on a second run; the field dropped from `applyStatusChange` and the time-note action — held 2026-09-06; **and the field off every row** (`wakeCondition-cleared` zero on a second run) | **cleared, then narrowed** |
 | `unarchiveCondition` | six writers (`applyStatusChange`, the archive verdict, the planner's retirement, the graph migration's pointer), the page's archived line, the graph migration's idempotence key | left in place on the row; the weekly gather (phase 8) lists archived rows whose sentence names a return condition, skipping the `GRAPH_SUPERSEDED` pointer | the weekly job live and listing them for a week | **not narrowed, and not next**: the destination is the row itself. `tts.internalMigrateToGraph` writes `GRAPH_SUPERSEDED` into it as its idempotence key and that migration has not run, and the archive verdict writes Tom's sentence into it on every archive. Counted by `internalMigrateTiming` (`archived-with-return-condition`, `archived-superseded-by-graph`) |
-| `members`, `plan` | the v1 batch paths: `internalStoreBatches`, `setPlanStep`, the scheduler's legacy lanes, the v1 session prompt, `form-batches.mjs` (the page's `plan` readers — the plan bar, `planNeedsYou`, the ruling dialog's progress line — are gone) | the graph (`batches` + `batchId`/`needs`), through `tts.internalMigrateToGraph` (existing, tested; counted by `internalMigrateTiming` as `v1-batches-pending-graph-migration`) | `internalMigrateToGraph` re-run on prod with `batches: 0`; `form-batches.mjs` removed | widened |
+| `members`, `plan` | the v1 batch paths: `internalStoreBatches`, `setPlanStep`, the scheduler's legacy lanes, the v1 session prompt (the page's `plan` readers — the plan bar, `planNeedsYou`, the ruling dialog's progress line — are gone) | the graph (`batches` + `batchId`/`needs`), through `tts.internalMigrateToGraph` (existing, tested; counted by `internalMigrateTiming` as `v1-batches-pending-graph-migration`) | `internalMigrateToGraph` re-run on prod with `batches: 0` | **not narrowed, and cannot be**: 61 v1 batches are still active in prod and the graph migration that moves them is Tom's step, not this branch's. Both fields, the v1 pen `internalStoreBatches` and `POST /tts/batches` stay declared until it has run and reported `batches: 0` on a second run |
 | `importance` (todos, code briefs) | none: no mutation writes it and no query, route or component reads it | `mustNotBreak` on goals | the column empty ON THE ROWS, not only in the readers: `internalClearRetiredFields` recorded each object with its rationale and unset it (`importance-cleared` and `brief-importance-cleared` zero on a second run) | **cleared, then narrowed** on both tables (the two guard tests go with it — the validator is the guard now) |
 | `model` (todos) | LIVE both ends: `tts.internalStorePlanGraph` writes the planner's per-task tag, `claudeSessions.resolveFleetModel` reads it, and a tagged task WAITS rather than falling back when the Codex door is shut | the fleet default (`claudeAutoConfig.defaultModel`) | `model` readers moved to the fleet default | **not narrowed**: the exit criterion is unmet. Dropping it now would silently re-dispatch every Codex-tagged task to the fleet default |
 | `execClass` (code briefs) | LIVE both ends: `worker/jobs/plan-graphs.mjs` classifies it on every brief, the route and the pen validate it, and the brief line on the page prints it | the worker decides execution | nothing reads it | **not narrowed**: the ledger's earlier "nothing live reads `execClass`" was wrong — `app/tts/components/code-todo-row.tsx` prints it |
-| `body`, `brief`, `workDescription` | the preparer pen, the prompts, the page's fact grid, the batch card's goal fallback (`groundUpExplanation ?? brief`) | `groundUpExplanation` | rows merged by a migration not yet written | not started |
-| `dateOutcomes` array | `recordDateOutcome`, the kept-dates resolution, the missed rollover | append-only `dtsEvents` rows | exported and replayed; a migration not yet written | not started |
+| `body`, `brief`, `workDescription` | the preparer pen, the prompts, the page's fact grid, the batch card's goal fallback (`groundUpExplanation ?? brief`) | `groundUpExplanation` | rows merged by a migration not yet written | **not narrowed**: the merge migration is unwritten, so no row has moved and every reader is live |
+| `dateOutcomes` array | `recordDateOutcome`, the kept-dates resolution, the missed rollover | append-only `dtsEvents` rows | exported and replayed; a migration not yet written | **not narrowed**: the migration is unwritten. Every date outcome stays — that is a non-negotiable above — so this one moves only when the replay is proven |
 
 ## Fields on `batches`
 
@@ -67,7 +72,7 @@ Non-negotiables that hold through every state: nothing is deleted from the todo 
 | `apply-rulings.mjs` and its 10-minute cron | the box's cron; it consumed code revise/session/archive rulings | every verdict's effect at write time in `convex/ttsRulings.ts`, or at the one moment it can exist: a code revise → the planner's brief pass (consumed once the fresh brief posts); a code session → applied when Tom opens the code block session (`liveCodeSessionRulings` + `markCodeSessionRulingsApplied`: the opener names each subject and Tom's sentence, and exactly that set is marked); a code archive → a worker mission admitted by the auto-session scheduler, closing the entry in the repo's todo file into a pull request (the next row) | the replacements live for a week | narrowed (this branch) |
 | `execute-approved.mjs`, its hourly cron, its lock and its throwaway clones; the local brief copies under `/var/cache/tts/briefs/` | the box's cron; it consumed code approve rulings | the auto-session scheduler's code lane (`convex/claudeSessions.ts` `admitCodeMissions`): an approve or archive ruling on a code todo is admitted as a worker mission on a `session/<id>` branch that ends in a pull request, one code mission at a time, under the load gate, the circuit breaker and the per-subject ceiling (`claudeSessions.by_code_subject`); the ruling applies at admission with the session id | the lane live for a week | narrowed (this branch) |
 | `form-batches.mjs` and its 2-hourly cron | the box's cron; it wrote v1 batches (a todo row with `members` and a plan) and consumed life revise rulings on them | `plan-graphs.mjs`, the one batcher (every new batch is a graph). The 61 v1 batches still active in prod go through `tts:internalMigrateToGraph` — the caller's step, not this branch's; a read-only count on 2026-09-06 says a real run inserts 61 `batches` rows and 605 task rows (317 already done), binds 234 members as goals, inserts 31 code goals, and archives the 61 rows as superseded (0 missing members, 0 already bound, 0 Tom-touched; 39 batches were superseded by an earlier run). The v1 pen `internalStoreBatches` and `POST /tts/batches` stay until the `members`/`plan` narrow | the graph migration run and verified (`batches: 0` on a second run) | narrowed (this branch); the migration pending |
-| the model-of-Tom refresh cron and its read token, the Convex Canvas sync | `ttsSkills`, `ttsCanvas` | the nightly job's post, `poll-canvas.mjs` | replacement live for a week | not started |
+| the model-of-Tom refresh cron and its read token, the Convex Canvas sync | `ttsSkills`, `ttsCanvas` | the nightly job's post, `poll-canvas.mjs` | replacement live for a week | **not narrowed**: phase 4's and phase 6's replacements landed only days ago and the gate is a week of them running |
 
 ## Page
 
@@ -87,6 +92,40 @@ The panel is retired against the transcript, and most of what it showed is on th
 - **A background command paired with its latest check.** The panel matched a `run_in_background` Bash launch to the newest `BashOutput`/`KillShell` whose input carried that launch's shell id, and printed the two together. The transcript holds every one of those rows in full and in order, but the pairing is the reader's to make: nothing on the page says which check answers which launch.
 
 Both are recoverable from the same query if they are wanted back; neither is a row Tom can no longer reach.
+
+## Counts, before and after the narrow
+
+Measured off `convex/schema.ts` at `origin/main` (e7834a6, the clearing) and at
+the head of this branch. "Tables" counts the TTS family — `batches`, `dts*`, `tts*`,
+`claude*` — which is what the design's 20-to-17 line meant; the whole schema
+went 40 to 37 over the same three.
+
+| | before | after |
+|---|---|---|
+| TTS tables | 21 | **18** |
+| whole schema, all tables | 40 | **37** |
+| fields on `dtsTodos` | 41 | **38** |
+| fields on `batches` | 10 | **9** |
+| fields on `dtsCodeBriefs` | 9 | **8** |
+
+Tables gone: `dtsDailyQueues`, `dtsCodeRulings`, `claudePermissions`.
+Fields gone: `importance` (from `dtsTodos` and `dtsCodeBriefs`), `latestSafeAt`,
+`wakeCondition`, `batches.path`.
+Values gone from a union: readiness `preparing` and `ready-for-tom` (already
+narrowed); `timingClass` `condition-bound`; the session status
+`awaiting-permission`; the recommendations `stale-replan`, `needs-session` and
+`propose-archive`.
+
+Nothing above deletes data, and the two halves get there differently. A whole
+TABLE drops freely: an undeclared table is not validated at all, so its rows
+stay on the deployment exactly as they were and the declaration goes in one
+step. A FIELD or a union VALUE cannot: `convex deploy` validates every stored
+document of a still-declared table against the validator being deployed, so
+each field and value listed above had to leave every row FIRST — that is
+`ttsMigrations.internalClearRetiredFields`, which ran on prod before this
+branch could deploy at all (see "Why clearing is its own state"). What the rows
+said is not lost either: every value it took out is on record as a
+`retired-field-cleared` event.
 
 ## How a row moves
 
