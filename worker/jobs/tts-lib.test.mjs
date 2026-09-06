@@ -10,6 +10,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  captureContext,
   clip,
   declined,
   declinedLine,
@@ -70,7 +71,6 @@ describe("the item link", () => {
 // (convex/ttsIntegrations.ts). Every poller asks this first and stands down
 // when the answer is not null.
 describe("declined", () => {
-  const env = { CONVEX_SITE_URL: "https://x.convex.site", TTS_WORKER_KEY: "k" };
   const outlook = {
     name: "outlook",
     todoId: "k1",
@@ -78,42 +78,60 @@ describe("declined", () => {
     sentence: "not worth the credential",
   };
 
-  function serving(body) {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => ({
-        ok: true,
-        status: 200,
-        text: async () => JSON.stringify(body),
-      })),
-    );
-  }
+  it("finds the ruling for this job's own name", () => {
+    expect(
+      declined({ captureTriage: "rules", declinedIntegrations: [outlook] }, "outlook"),
+    ).toEqual(outlook);
+  });
+
+  it("is null for a job Tom has not declined", () => {
+    expect(
+      declined({ captureTriage: "rules", declinedIntegrations: [outlook] }, "gmail"),
+    ).toBeNull();
+    expect(
+      declined({ captureTriage: "rules", declinedIntegrations: [] }, "outlook"),
+    ).toBeNull();
+  });
+
+  it("matches the name however the caller spelled it", () => {
+    expect(
+      declined({ captureTriage: "rules", declinedIntegrations: [outlook] }, " Outlook "),
+    ).toEqual(outlook);
+  });
+
+  it("survives a deployment that does not serve the field yet", () => {
+    // A box running ahead of the deployment must not crash every poller.
+    expect(declined({ captureTriage: "rules" }, "outlook")).toBeNull();
+    expect(declined(undefined, "outlook")).toBeNull();
+  });
+});
+
+// ONE READ PER RUN. Both things a poller needs from the deployment ride one
+// payload, and `declined` takes that payload rather than fetching its own:
+// a run that asked twice asked the same deployment the same question twice a
+// tick, for ever.
+describe("captureContext", () => {
+  const env = { CONVEX_SITE_URL: "https://x.convex.site", TTS_WORKER_KEY: "k" };
 
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("finds the ruling for this job's own name", async () => {
-    serving({ captureTriage: "rules", declinedIntegrations: [outlook] });
-    expect(await declined(env, "outlook")).toEqual(outlook);
-  });
+  it("is the single GET both the rules and the declined list come from", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ captureTriage: "rules", declinedIntegrations: [] }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
 
-  it("is null for a job Tom has not declined", async () => {
-    serving({ captureTriage: "rules", declinedIntegrations: [outlook] });
-    expect(await declined(env, "gmail")).toBeNull();
-    serving({ captureTriage: "rules", declinedIntegrations: [] });
-    expect(await declined(env, "outlook")).toBeNull();
-  });
-
-  it("matches the name however the caller spelled it", async () => {
-    serving({ captureTriage: "rules", declinedIntegrations: [outlook] });
-    expect(await declined(env, " Outlook ")).toEqual(outlook);
-  });
-
-  it("survives a deployment that does not serve the field yet", async () => {
-    // A box running ahead of the deployment must not crash every poller.
-    serving({ captureTriage: "rules" });
-    expect(await declined(env, "outlook")).toBeNull();
+    const context = await captureContext(env);
+    expect(declined(context, "gmail")).toBeNull();
+    expect(context.captureTriage).toBe("rules");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      "https://x.convex.site/tts/capture-context",
+    );
   });
 });
 

@@ -8,26 +8,31 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
-import { integrationName, integrationStatement } from "./ttsIntegrations";
+import {
+  INTEGRATION_SOURCE,
+  integrationName,
+  integrationStatement,
+} from "./ttsIntegrations";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
+// A todo the way the capture door writes one. The source is decided from the
+// statement AT CAPTURE (convex/tts.ts internalCapture), which is what makes
+// the poller's read a handful of rows instead of the whole archive — so these
+// tests go through that door rather than inserting a row of their own.
 async function declineable(
   t: ReturnType<typeof convexTest>,
   statement: string,
   status: "active" | "archived" = "archived",
 ) {
-  return await t.run(async (ctx) =>
-    ctx.db.insert("dtsTodos", {
-      statement,
-      readiness: "unprepared",
-      status,
-      timingClass: "whenever",
-      source: "slack-capture",
-      createdAt: 1,
-      updatedAt: 1,
-    }),
-  );
+  const id: Id<"dtsTodos"> = await t.mutation(internal.tts.internalCapture, {
+    statement,
+    source: "slack-capture",
+  });
+  if (status !== "active") {
+    await t.run(async (ctx) => ctx.db.patch(id, { status }));
+  }
+  return id;
 }
 
 async function rule(
@@ -82,7 +87,65 @@ describe("the statement that declines an integration", () => {
   });
 });
 
+describe("the source a ruling about an integration is captured under", () => {
+  it("is stamped at capture, from the statement", async () => {
+    const t = convexTest(schema, modules);
+    const id = await declineable(t, "integration: outlook", "active");
+    const row = await t.run(async (ctx) => ctx.db.get(id));
+    // The producer asked for "slack-capture" — #dump is where he types it —
+    // and the statement is what decides. Nothing downstream has to re-read
+    // the sentence to find these rows.
+    expect(row?.source).toBe(INTEGRATION_SOURCE);
+    // And the capture event says the same thing the row does.
+    const captured = await t.run(async (ctx) =>
+      ctx.db
+        .query("dtsEvents")
+        .filter((q) => q.eq(q.field("kind"), "captured"))
+        .collect(),
+    );
+    expect(captured.map((e) => (e.data as { source: string }).source)).toEqual([
+      INTEGRATION_SOURCE,
+    ]);
+  });
+
+  it("leaves every other capture's source exactly as its producer named it", async () => {
+    const t = convexTest(schema, modules);
+    const id: Id<"dtsTodos"> = await t.mutation(internal.tts.internalCapture, {
+      statement: "the outlook integration keeps timing out",
+      source: "slack-capture",
+    });
+    expect((await t.run(async (ctx) => ctx.db.get(id)))?.source).toBe("slack-capture");
+  });
+});
+
 describe("internalDeclinedIntegrations", () => {
+  it("reads the rulings, not the archive", async () => {
+    // The read runs on every poller tick, several times per ten minutes,
+    // for ever. Walking the archive to test each statement would make the
+    // cost of asking "is this integration off?" the size of Tom's history.
+    const t = convexTest(schema, modules);
+    for (let i = 0; i < 5; i++) {
+      const other: Id<"dtsTodos"> = await t.mutation(internal.tts.internalCapture, {
+        statement: `finished thing ${i}`,
+        source: "slack-capture",
+      });
+      await t.run(async (ctx) => ctx.db.patch(other, { status: "archived" }));
+    }
+    const id = await declineable(t, "integration: canvas");
+    await rule(t, id, "archive");
+
+    const rows = await t.run(async (ctx) =>
+      ctx.db
+        .query("dtsTodos")
+        .withIndex("by_source", (q) => q.eq("source", INTEGRATION_SOURCE))
+        .collect(),
+    );
+    expect(rows).toHaveLength(1); // the whole scan, whatever the archive holds
+    expect((await declined(t)).map((d: { name: string }) => d.name)).toEqual([
+      "canvas",
+    ]);
+  });
+
   it("returns the name, the date and his sentence", async () => {
     const t = convexTest(schema, modules);
     const id = await declineable(t, "integration: outlook");

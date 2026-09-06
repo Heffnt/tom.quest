@@ -24,6 +24,17 @@ import { internalQuery } from "./_generated/server";
 /** The one shape a declining todo's statement has. */
 export const INTEGRATION_PREFIX = "integration:";
 
+/**
+ * The source a todo whose statement IS such a ruling carries.
+ *
+ * Stamped at capture (convex/tts.ts internalCapture), because a statement
+ * prefix cannot be indexed and this read runs on every poller tick. Without
+ * it the only way to find these rows was to collect every archived todo and
+ * look at each statement — a scan that grows with the archive for ever to find
+ * the two or three rows that are rulings about integrations.
+ */
+export const INTEGRATION_SOURCE = "integration";
+
 /** The statement Tom dumps to decline an integration. */
 export function integrationStatement(name: string): string {
   return `${INTEGRATION_PREFIX} ${name}`;
@@ -73,16 +84,25 @@ export type DeclinedIntegration = {
  * the archive ruling in the history, and the row's status is what says which
  * ruling is in force. Read together they mean one thing, which is why they are
  * read in one place.
+ *
+ * READ ON THE SOURCE, not on the status. Every poller on the Jarvis Box makes
+ * this read before it does anything, so it runs several times every ten
+ * minutes for ever; taking the archive — which is where every finished todo
+ * ends up, growing without bound — and testing each statement made the cost of
+ * asking "is this integration off?" the size of Tom's whole history. The
+ * source is stamped at capture (INTEGRATION_SOURCE above), so the rows read
+ * here are exactly the rulings about integrations: a handful, for ever.
  */
 export const internalDeclinedIntegrations = internalQuery({
   args: {},
   handler: async (ctx): Promise<DeclinedIntegration[]> => {
-    const archived = await ctx.db
+    const rows = await ctx.db
       .query("dtsTodos")
-      .withIndex("by_status", (q) => q.eq("status", "archived"))
+      .withIndex("by_source", (q) => q.eq("source", INTEGRATION_SOURCE))
       .collect();
     const out: DeclinedIntegration[] = [];
-    for (const todo of archived) {
+    for (const todo of rows) {
+      if (todo.status !== "archived") continue;
       const name = integrationName(todo.statement);
       if (name === null) continue;
       const rulings = await ctx.db

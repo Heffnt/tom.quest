@@ -249,7 +249,7 @@ function textOfHtml(html) {
     .trim();
 }
 
-async function pollAnnouncements(env, courses) {
+async function pollAnnouncements(env, courses, captureTriage) {
   let cursor = 0;
   try {
     cursor = Number(fs.readFileSync(CURSOR_FILE, "utf8").trim()) || 0;
@@ -308,9 +308,6 @@ async function pollAnnouncements(env, courses) {
     .sort((a, b) => a.postedAt - b.postedAt)
     .slice(0, MAX_CANDIDATES);
   if (candidates.length === 0) return;
-
-  // The deployment's own capture-triage rules, not a copy written here.
-  const { captureTriage } = await captureContext(env);
 
   const prompt = `You triage Canvas course announcements for Tom's todo system (TTS).
 Below is a JSON array of new announcements (course, title, first 500 characters
@@ -373,9 +370,12 @@ export const INTEGRATION_NAME = "canvas";
 
 async function main() {
   const env = loadEnv();
+  // ONE read of the capture context per run — the declined list and the triage
+  // rules the announcements half prompts with are the same payload.
+  const context = await captureContext(env);
   // FIRST, before the credential and before any read: an integration Tom has
   // declined does not run (worker/jobs/tts-lib.mjs declined()).
-  const ruling = await declined(env, INTEGRATION_NAME);
+  const ruling = declined(context, INTEGRATION_NAME);
   if (ruling) {
     console.log(declinedLine("poll-canvas", ruling));
     return;
@@ -401,7 +401,8 @@ async function main() {
   // triage call that can time out. In that order a bad triage run costs only
   // the announcements, and the cursor makes the next tick pick them up again.
   await syncAssignments(env, courses);
-  await pollAnnouncements(env, courses);
+  // The deployment's own capture-triage rules, not a copy written here.
+  await pollAnnouncements(env, courses, context.captureTriage);
 }
 
 // Run ONLY when node was pointed at this file (cron: `node /opt/tts/poll-canvas

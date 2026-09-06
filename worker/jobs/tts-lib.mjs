@@ -160,13 +160,21 @@ export function ttsItemLink(todoId) {
 // sets of rules. Fields grow here as later phases add them (the declined
 // integrations list is the next one).
 
-/** The capture rules and the state a poller checks before it runs. */
+/**
+ * The capture rules and the state a poller checks before it runs.
+ *
+ * ONE READ PER RUN. Both things a poller needs from the deployment ride this
+ * payload — the triage rules and the declined list — and a run that fetched it
+ * twice (once to ask whether it was declined, once to get the rules) asked the
+ * same question of the same deployment twice a tick, forever.
+ */
 export async function captureContext(env) {
   return await convexFetch(env, "/tts/capture-context");
 }
 
 /**
- * Tom's ruling declining this integration, or null.
+ * Tom's ruling declining this integration, or null. PURE: it reads the context
+ * the run already fetched (captureContext above), not a second GET.
  *
  * AN INTEGRATION HE DECLINES IS AN ARCHIVED TODO WITH HIS RULING ON IT
  * (convex/ttsIntegrations.ts): he dumps the line `integration: outlook` and
@@ -179,10 +187,9 @@ export async function captureContext(env) {
  * null. The returned row is `{ name, todoId, ruledAt, sentence }`; the caller
  * prints the date and the sentence so the log says why, not just that.
  */
-export async function declined(env, name) {
-  const { declinedIntegrations } = await captureContext(env);
+export function declined(context, name) {
   const target = String(name).trim().toLowerCase();
-  return (declinedIntegrations ?? []).find((d) => d.name === target) ?? null;
+  return (context?.declinedIntegrations ?? []).find((d) => d.name === target) ?? null;
 }
 
 /** The one line a poller prints when it stands down. Exported for tests. */

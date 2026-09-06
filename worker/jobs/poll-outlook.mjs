@@ -48,7 +48,13 @@
 
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { declined, declinedLine, loadEnv, ttsItemLink } from "./tts-lib.mjs";
+import {
+  captureContext,
+  declined,
+  declinedLine,
+  loadEnv,
+  ttsItemLink,
+} from "./tts-lib.mjs";
 
 export const CURSOR_FILE = "/var/lib/tts/outlook-cursor";
 export const FIRST_RUN_LOOKBACK_MS = 24 * 3600 * 1000;
@@ -100,7 +106,7 @@ async function main() {
   // credential he has not minted yet — so the check has to come before the
   // "still waiting for the keys" line, or a declined integration would keep
   // asking for them.
-  const ruling = await declined(env, INTEGRATION_NAME);
+  const ruling = declined(await captureContext(env), INTEGRATION_NAME);
   if (ruling) {
     console.log(declinedLine("poll-outlook", ruling));
     return;

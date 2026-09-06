@@ -129,9 +129,12 @@ export const INTEGRATION_NAME = "gmail";
 
 async function main() {
   const env = loadEnv();
+  // ONE read of the capture context per run — the declined list and the triage
+  // rules the prompt below is built from are the same payload.
+  const context = await captureContext(env);
   // FIRST, before the credential and before any read: an integration Tom has
   // declined does not run (worker/jobs/tts-lib.mjs declined()).
-  const ruling = await declined(env, INTEGRATION_NAME);
+  const ruling = declined(context, INTEGRATION_NAME);
   if (ruling) {
     console.log(declinedLine("poll-gmail", ruling));
     return;
@@ -178,8 +181,9 @@ async function main() {
   candidates.sort((a, b) => a.internalDate - b.internalDate);
   const batch = candidates.slice(0, MAX_CANDIDATES);
 
-  // The deployment's own capture-triage rules, not a copy written here.
-  const { captureTriage } = await captureContext(env);
+  // The deployment's own capture-triage rules, not a copy written here — off
+  // the one context this run already read.
+  const { captureTriage } = context;
 
   const prompt = `You triage Tom's Gmail inbox for his todo system (TTS).
 Below is a JSON array of new emails (headers + a ~100-character snippet).
