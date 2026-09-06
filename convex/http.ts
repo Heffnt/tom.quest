@@ -10,11 +10,14 @@ import {
   CAPTURE_TRIAGE_RULES,
   CAPTURE_TRIAGE_SKILL,
   DAY_MS,
+  RECOMMENDATION_VALUES,
   RETIRED_READINESS_VALUES,
   SESSION_REPO_NAMES,
   isSessionModel,
+  isStoredRecommendation,
   nyCalendarDayBoundsUtc,
   ttsPrepDay,
+  type StoredRecommendation,
 } from "./ttsShared";
 import { isModelOfTomPath } from "./ttsSkills";
 import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES, isExportTable } from "./ttsNightly";
@@ -909,12 +912,9 @@ http.route({
 // todos, reads back Tom's pending rulings, and reports each application. The
 // worker never rules — recordCodeRuling is Tom-gated in ttsCode.ts.
 
-const CODE_RECOMMENDATIONS = [
-  "approve",
-  "needs-session",
-  "propose-archive",
-  "stale-replan",
-] as const;
+// A brief's recommendation is one of the four verdict words, or one of the
+// three retired spellings an older box job may still post (ttsShared is the
+// one home — isStoredRecommendation; the mutation stores the verdict word).
 const CODE_EXEC_CLASSES = ["box", "needs-turing"] as const;
 
 type CodeBrief = {
@@ -922,7 +922,7 @@ type CodeBrief = {
   externalId: string;
   sourceHash: string;
   brief: string;
-  recommendation: (typeof CODE_RECOMMENDATIONS)[number];
+  recommendation: StoredRecommendation;
   execClass: (typeof CODE_EXEC_CLASSES)[number];
   evidence?: string;
 };
@@ -940,13 +940,9 @@ function parseCodeBrief(item: unknown, i: number): CodeBrief | { error: string }
       return { error: `briefs[${i}].${field} (non-empty string) required` };
     }
   }
-  if (
-    !CODE_RECOMMENDATIONS.includes(
-      b.recommendation as (typeof CODE_RECOMMENDATIONS)[number],
-    )
-  ) {
+  if (!isStoredRecommendation(b.recommendation)) {
     return {
-      error: `briefs[${i}].recommendation must be one of ${CODE_RECOMMENDATIONS.join(" | ")}`,
+      error: `briefs[${i}].recommendation must be one of ${RECOMMENDATION_VALUES.join(" | ")}`,
     };
   }
   if (
@@ -964,7 +960,7 @@ function parseCodeBrief(item: unknown, i: number): CodeBrief | { error: string }
     externalId: b.externalId as string,
     sourceHash: b.sourceHash as string,
     brief: b.brief as string,
-    recommendation: b.recommendation as (typeof CODE_RECOMMENDATIONS)[number],
+    recommendation: b.recommendation,
     execClass: b.execClass as (typeof CODE_EXEC_CLASSES)[number],
     evidence: b.evidence as string | undefined,
   };

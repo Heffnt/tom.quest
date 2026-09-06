@@ -29,7 +29,12 @@ import type { MutationCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { GRAPH_SUPERSEDED, logEvent } from "./tts";
-import { CONDITION_WINDOW_MS, MAX_NEEDS, normalizeReadiness } from "./ttsShared";
+import {
+  CONDITION_WINDOW_MS,
+  MAX_NEEDS,
+  normalizeReadiness,
+  normalizeRecommendation,
+} from "./ttsShared";
 
 /** Rows per transaction. dtsTodos is a few hundred rows; this keeps one page
  * far inside Convex's per-transaction read and write limits. */
@@ -337,6 +342,44 @@ export const internalMigrateBatchNeeds = internalMutation({
     await logEvent(
       ctx,
       dryRun ? `${BATCH_NEEDS_MIGRATION}-dry-run` : `${BATCH_NEEDS_MIGRATION}-migrated`,
+      undefined,
+      page,
+    );
+    return { done: true, dryRun, page, totals: page, continueCursor: null };
+  },
+});
+
+// ── 6. Code-brief recommendation → the four verdict words ───────────────────
+// stale-replan → revise, needs-session → session, propose-archive → archive;
+// approve stays. One transaction: one brief per open code todo, a small
+// table. Same dry run, counts, idempotence, and event.
+export const RECOMMENDATION_MIGRATION = "recommendation";
+
+export const internalMigrateRecommendations = internalMutation({
+  args: { dryRun: v.optional(v.boolean()) },
+  handler: async (ctx, { dryRun = false }): Promise<MigrationReport> => {
+    const all = await ctx.db.query("dtsCodeBriefs").collect();
+    const page: Counts = {
+      scanned: all.length,
+      "stale-replan-to-revise": 0,
+      "needs-session-to-session": 0,
+      "propose-archive-to-archive": 0,
+      "already-verdict-word": 0,
+    };
+    for (const brief of all) {
+      const target = normalizeRecommendation(brief.recommendation);
+      if (brief.recommendation === target) {
+        page["already-verdict-word"]++;
+        continue;
+      }
+      page[`${brief.recommendation}-to-${target}`]++;
+      if (!dryRun) await ctx.db.patch(brief._id, { recommendation: target });
+    }
+    await logEvent(
+      ctx,
+      dryRun
+        ? `${RECOMMENDATION_MIGRATION}-dry-run`
+        : `${RECOMMENDATION_MIGRATION}-migrated`,
       undefined,
       page,
     );

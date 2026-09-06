@@ -6,6 +6,7 @@ import schema from "./schema";
 import {
   BATCH_NEEDS_MIGRATION,
   READINESS_MIGRATION,
+  RECOMMENDATION_MIGRATION,
   TIMING_MIGRATION,
   carryCondition,
   previousOnPath,
@@ -482,5 +483,79 @@ describe("batch needs migration (path → needs edges between batches)", () => {
     });
     const by = Object.fromEntries((await allBatches(t)).map((b) => [b.statement, b]));
     expect(by["release 3"].needs).toEqual([ids.unpathed, ids["release 1"]]);
+  });
+});
+
+describe("recommendation migration (code briefs → the four verdict words)", () => {
+  async function seedBriefs(t: ReturnType<typeof convexTest>) {
+    const spellings = [
+      "approve",
+      "stale-replan",
+      "needs-session",
+      "propose-archive",
+      "revise",
+    ] as const;
+    await t.run(async (ctx) => {
+      for (const [i, recommendation] of spellings.entries()) {
+        await ctx.db.insert("dtsCodeBriefs", {
+          repo: "ComplexMultiTrigger",
+          externalId: `cmt-00${i}`,
+          sourceHash: `h${i}`,
+          brief: "a brief",
+          recommendation,
+          execClass: "box",
+          preparedAt: NOW,
+        });
+      }
+    });
+  }
+  const allBriefs = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => ctx.db.query("dtsCodeBriefs").collect());
+  const expectedCounts = {
+    scanned: 5,
+    "stale-replan-to-revise": 1,
+    "needs-session-to-session": 1,
+    "propose-archive-to-archive": 1,
+    "already-verdict-word": 2,
+  };
+
+  // witness: map "stale-replan" to "session" in ttsShared — the counts name
+  // each spelling's destination, so the one-to-one map cannot drift.
+  it("maps each retired spelling to its verdict word", async () => {
+    const t = convexTest({ schema, modules });
+    await seedBriefs(t);
+    const report = await t.mutation(internal.ttsMigrations.internalMigrateRecommendations, {});
+    expect(report.totals).toEqual(expectedCounts);
+    const by = Object.fromEntries((await allBriefs(t)).map((b) => [b.externalId, b]));
+    expect(by["cmt-000"].recommendation).toBe("approve");
+    expect(by["cmt-001"].recommendation).toBe("revise");
+    expect(by["cmt-002"].recommendation).toBe("session");
+    expect(by["cmt-003"].recommendation).toBe("archive");
+    expect(by["cmt-004"].recommendation).toBe("revise");
+    // preparedAt untouched: a re-spelled brief is not a re-brief, so it does
+    // not return an item Tom already ruled on to his pile.
+    for (const b of await allBriefs(t)) expect(b.preparedAt).toBe(NOW);
+    expect(await eventsOfKind(t, `${RECOMMENDATION_MIGRATION}-migrated`)).toHaveLength(1);
+  });
+
+  it("a dry run reports the same counts and writes no row; a second run maps nothing", async () => {
+    const t = convexTest({ schema, modules });
+    await seedBriefs(t);
+    const dry = await t.mutation(internal.ttsMigrations.internalMigrateRecommendations, {
+      dryRun: true,
+    });
+    expect(dry.totals).toEqual(expectedCounts);
+    expect((await allBriefs(t)).map((b) => b.recommendation).sort()).toEqual(
+      ["approve", "needs-session", "propose-archive", "revise", "stale-replan"].sort(),
+    );
+    await t.mutation(internal.ttsMigrations.internalMigrateRecommendations, {});
+    const again = await t.mutation(internal.ttsMigrations.internalMigrateRecommendations, {});
+    expect(again.totals).toEqual({
+      scanned: 5,
+      "stale-replan-to-revise": 0,
+      "needs-session-to-session": 0,
+      "propose-archive-to-archive": 0,
+      "already-verdict-word": 5,
+    });
   });
 });

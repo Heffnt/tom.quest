@@ -230,6 +230,47 @@ export function isPrepared(readiness: StoredReadiness): boolean {
   return normalizeReadiness(readiness) === "prepared";
 }
 
+// ── Code-brief recommendation: the four verdict words (the lifeos update) ───
+// A code brief's `recommendation` is the worker's read of what Tom will most
+// likely rule, so it is spelled in the words he rules in — the four verdicts
+// (convex/ttsRulings.ts VERDICT). The three retired spellings map one to one:
+//   stale-replan    → revise
+//   needs-session   → session
+//   propose-archive → archive
+// They stay READABLE during the widen (normalizeRecommendation is the one
+// reading) and are rewritten by ttsMigrations.internalMigrateRecommendations;
+// they leave the validator at NARROW.
+export const RECOMMENDATION_VALUES = ["approve", "revise", "session", "archive"] as const;
+export type Recommendation = (typeof RECOMMENDATION_VALUES)[number];
+export const RETIRED_RECOMMENDATION_MAP = {
+  "stale-replan": "revise",
+  "needs-session": "session",
+  "propose-archive": "archive",
+} as const satisfies Record<string, Recommendation>;
+export type StoredRecommendation =
+  | Recommendation
+  | keyof typeof RETIRED_RECOMMENDATION_MAP;
+export const STORED_RECOMMENDATION_VALUES = [
+  ...RECOMMENDATION_VALUES,
+  ...(Object.keys(RETIRED_RECOMMENDATION_MAP) as (keyof typeof RETIRED_RECOMMENDATION_MAP)[]),
+] as const;
+/** The stored form during the widen: the four words plus the three retired
+ * spellings. convex/schema.ts and the brief pen use this. */
+export const STORED_RECOMMENDATION = v.union(
+  ...STORED_RECOMMENDATION_VALUES.map((r) => v.literal(r)),
+);
+export function normalizeRecommendation(r: StoredRecommendation): Recommendation {
+  return r in RETIRED_RECOMMENDATION_MAP
+    ? RETIRED_RECOMMENDATION_MAP[r as keyof typeof RETIRED_RECOMMENDATION_MAP]
+    : (r as Recommendation);
+}
+export function isStoredRecommendation(x: unknown): x is StoredRecommendation {
+  return (
+    typeof x === "string" &&
+    (STORED_RECOMMENDATION_VALUES as readonly string[]).includes(x)
+  );
+}
+
 // ── The todo graph: needs, done, ready (schema v2, ratified 2026-08-29) ──────
 // THE ONE HOME for the graph rules — convex/ and app/ both import from here,
 // so the server's frontier and the page's frontier cannot drift. Structural

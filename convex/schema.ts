@@ -4,7 +4,11 @@ import { v } from "convex/values";
 // The stored form of "which model does this run on". ONE HOME (ttsShared.ts):
 // the name implies its FAMILY, and the family is what picks the runner on the
 // Jarvis Box — Claude's Agent SDK or OpenAI's Codex CLI.
-import { SESSION_MODEL, STORED_READINESS } from "./ttsShared";
+import {
+  SESSION_MODEL,
+  STORED_READINESS,
+  STORED_RECOMMENDATION,
+} from "./ttsShared";
 
 // `agent` is not a rank between `user` and `admin`: it is a side branch that
 // reads the surfaces in convex/agentSurfaces.ts and writes nothing. See
@@ -924,12 +928,11 @@ export default defineSchema({
     externalId: v.string(),
     sourceHash: v.string(),
     brief: v.string(), // ground-up markdown
-    recommendation: v.union(
-      v.literal("approve"),
-      v.literal("needs-session"),
-      v.literal("propose-archive"),
-      v.literal("stale-replan"),
-    ),
+    // The four verdict words (the lifeos update): approve | revise | session
+    // | archive — the worker's read spelled in the words Tom rules in. The
+    // three retired spellings stay readable until NARROW; ttsShared is the
+    // one home (normalizeRecommendation).
+    recommendation: STORED_RECOMMENDATION,
     execClass: v.union(v.literal("box"), v.literal("needs-turing")),
     evidence: v.optional(v.string()),
     // RETIRED (Tom's ruling 2026-08-29, "no importance guesses"); field kept

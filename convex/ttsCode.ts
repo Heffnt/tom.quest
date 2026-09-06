@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import { internalMutation, internalQuery, query } from "./_generated/server";
 import { requireTomOrAgent } from "./authRoles";
 import { logEvent } from "./tts";
+import { STORED_RECOMMENDATION, normalizeRecommendation } from "./ttsShared";
 
 // TTS code-todo BRIEFS — the Jarvis Box writes ground-up briefs for each open
 // code todo (from the dtsCodeTodoMirror's repos); Tom's rulings on them live in
@@ -10,12 +11,10 @@ import { logEvent } from "./tts";
 // functions are Tom-gated (tts.ts pattern); everything the worker touches goes
 // through internal functions behind the key-authed /tts/code-* routes in http.ts.
 
-const RECOMMENDATION = v.union(
-  v.literal("approve"),
-  v.literal("needs-session"),
-  v.literal("propose-archive"),
-  v.literal("stale-replan"),
-);
+// The four verdict words (ttsShared.RECOMMENDATION_VALUES); the pen still
+// accepts the three retired spellings from an older box job and stores the
+// verdict word (normalizeRecommendation).
+const RECOMMENDATION = STORED_RECOMMENDATION;
 const EXEC_CLASS = v.union(v.literal("box"), v.literal("needs-turing"));
 
 // ── Tom-facing queries ───────────────────────────────────────────────────────
@@ -58,10 +57,15 @@ export const internalStoreBriefs = internalMutation({
           q.eq("repo", brief.repo).eq("externalId", brief.externalId),
         )
         .first();
+      const row = {
+        ...brief,
+        recommendation: normalizeRecommendation(brief.recommendation),
+        preparedAt: now,
+      };
       if (existing) {
-        await ctx.db.patch(existing._id, { ...brief, preparedAt: now });
+        await ctx.db.patch(existing._id, row);
       } else {
-        await ctx.db.insert("dtsCodeBriefs", { ...brief, preparedAt: now });
+        await ctx.db.insert("dtsCodeBriefs", row);
       }
     }
     await logEvent(ctx, "code-briefed", undefined, { count: briefs.length });
