@@ -196,8 +196,13 @@ async function seedTodos(t: ReturnType<typeof convexTest>, rows: Seed[]) {
   });
 }
 
-async function allTodos(t: ReturnType<typeof convexTest>) {
-  return await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
+// Rows come back as the HARNESS holds them (WideTodo), not as the narrowed
+// validator declares them: a row on the deployment keeps the fields the
+// validator dropped, and these assertions are about exactly those fields.
+async function allTodos(t: ReturnType<typeof convexTest>): Promise<WideTodo[]> {
+  return (await t.run(async (ctx) =>
+    ctx.db.query("dtsTodos").collect(),
+  )) as unknown as WideTodo[];
 }
 
 async function eventsOfKind(t: ReturnType<typeof convexTest>, kind: string) {
@@ -437,7 +442,7 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
   };
 
   /** Rows by the statement they had before any sentence was carried in. */
-  const byOriginal = (rows: Doc<"dtsTodos">[]) =>
+  const byOriginal = (rows: WideTodo[]) =>
     Object.fromEntries(rows.map((r) => [r.statement.split(" — when: ")[0], r]));
 
   it("carries a condition sentence into a statement exactly once", () => {

@@ -477,7 +477,7 @@ export default function CalendarTab({
                   <div
                     key={`wake-${t._id}`}
                     className="px-1 text-[11px] text-text-muted truncate"
-                    title={`wakes ${new Date(t.wakeAt ?? 0).toLocaleString()}${t.wakeCondition ? ` — ${t.wakeCondition}` : ""} — ${t.statement}`}
+                    title={`wakes ${new Date(t.wakeAt ?? 0).toLocaleString()} — ${t.statement}`}
                   >
                     <span className="text-text-faint">○ wakes</span>{" "}
                     {t.statement}

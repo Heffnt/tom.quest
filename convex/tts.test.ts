@@ -417,11 +417,10 @@ describe("TTS todos", () => {
       id: captured._id,
       status: "waiting",
       wakeAt: due,
-      wakeCondition: "closer to the date",
     });
     [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
     expect(todo.status).toBe("waiting");
-    expect(todo.wakeCondition).toBe("closer to the date");
+    expect(todo.wakeAt).toBe(due);
   });
 
   it("mirror replace upserts and drops vanished rows", async () => {
@@ -888,29 +887,12 @@ describe("TTS batches and annotations", () => {
     expect(fresh?.tomTouchedAt).toBeUndefined(); // agent action, not a Tom touch
   });
 
-  // Importance is RETIRED (Tom's ruling 2026-08-29, "no importance guesses").
-  // witness: give internalStoreBatches an importance arg again in convex/tts.ts
-  // and write it — a batcher rewrite would put a rating back on the row.
-  it("a rewrite writes no importance, and leaves a historical one alone", async () => {
-    const t = convexTest({ schema, modules });
-    await storeBatch(t, { statement: "v1" });
-    const batch = await findBatch(t);
-    // A row from before the retirement: prod is additive-only, so old values
-    // stay on disk and nothing may resurrect or rewrite them.
-    await t.run(async (ctx) =>
-      ctx.db.patch(batch!._id, {
-        importance: { level: "high", setBy: "tom", setAt: Date.now() },
-      }),
-    );
-    const res = await storeBatch(t, {
-      id: batch!._id,
-      statement: "regrouped anyway",
-    });
-    expect(res).toMatchObject({ created: 0, updated: 1 });
-    const fresh = await findBatch(t);
-    expect(fresh?.statement).toBe("regrouped anyway"); // content rewrite landed
-    expect(fresh?.importance).toMatchObject({ level: "high", setBy: "tom" });
-  });
+  // Importance is RETIRED (Tom's ruling 2026-08-29, "no importance guesses")
+  // and NARROWED (the lifeos update, phase 7): the field is gone from the
+  // dtsTodos validator, so the schema itself now refuses a rating and the two
+  // guard tests that stood here have nothing left to witness. Historical
+  // values stay on the rows that carry them — prod is additive-only and
+  // dropping a field deletes nothing.
 
   // witness: in internalStoreBatches's rewrite branch, replace
   // `plan: b.plan ?? todo.plan` with `plan: b.plan` — an LLM omission would
@@ -1224,36 +1206,6 @@ describe("TTS batches and annotations", () => {
     ).rejects.toThrow(/Unknown todo id/);
   });
 
-  // Importance is RETIRED (Tom's ruling 2026-08-29, "no importance guesses").
-  // witness: give internalPrepareTodo an importance arg again in convex/tts.ts
-  // and write it — the preparer would put an agent's rating back on the row.
-  it("the preparer writes no importance and logs no importance event", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    await t.mutation(internal.tts.internalCapture, {
-      statement: "captured",
-      source: "slack-capture",
-    });
-    const [captured] = await t.run(async (ctx) =>
-      ctx.db.query("dtsTodos").collect(),
-    );
-    const step = {
-      text: "look it up",
-      actor: "agent" as const,
-      status: "open" as const,
-    };
-    await t.mutation(internal.tts.internalPrepareTodo, {
-      id: captured._id,
-      plan: [step],
-    });
-    const [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
-    expect(todo.importance).toBeUndefined();
-    expect(todo.plan).toHaveLength(1);
-    const events = await tom.query(api.tts.listRecentEvents, {});
-    expect(events.some((e) => e.kind === "importance-skipped")).toBe(false);
-    expect(events.some((e) => e.kind === "importance-set")).toBe(false);
-  });
-
   // witness: reintroduce ANY plan gate in internalPrepareTodo (convex/dts.ts)
   // — a tom-step check, a Tom-touched check, either one — and this test goes
   // red. Ratified doctrine (Tom, 2026-08-29): his input gates what PERSISTS
@@ -1374,7 +1326,7 @@ describe("TTS batches and annotations", () => {
     await t.mutation(internal.tts.internalTriage, {
       id: batch!._id,
       status: "waiting",
-      wakeCondition: "after the trip",
+      wakeAt: Date.now() + 86_400_000,
     });
     expect((await findBatch(t))?.tomTouchedAt).toBeDefined();
   });
@@ -1971,15 +1923,22 @@ describe("TTS time notes", () => {
     });
     const wakeAt = Date.now() + 30 * DAY;
     await apply(t, asleep, [{ kind: "set-waiting", wakeAt }], "asleep");
-    // A second note that names no time keeps the one already stored.
-    const reworded = await tom.mutation(api.tts.createTimeNote, {
-      text: "really it's when the landlord writes back",
+    const later = await tom.mutation(api.tts.createTimeNote, {
+      text: "make that the 15th instead",
       todoId,
     });
-    await apply(t, reworded, [{ kind: "set-waiting" }], "reworded");
-    const [todo] = await tom.query(api.tts.listTodos, {});
-    expect(todo.status).toBe("waiting");
-    expect(todo.wakeAt).toBe(wakeAt);
+    const moved = wakeAt + 14 * DAY;
+    await apply(t, later, [{ kind: "set-waiting", wakeAt: moved }], "moved");
+    let [todo] = await tom.query(api.tts.listTodos, {});
+    expect(todo.wakeAt).toBe(moved);
+    // …and the mirror: a note that names no time keeps the one the row has.
+    const reparked = await tom.mutation(api.tts.createTimeNote, {
+      text: "keep waiting on it",
+      todoId,
+    });
+    await apply(t, reparked, [{ kind: "set-waiting" }], "reparked");
+    [todo] = await tom.query(api.tts.listTodos, {});
+    expect(todo.wakeAt).toBe(moved);
   });
 
   // THE ROLL-OUT SHIM (the lifeos update, phase 7). The Jarvis Box rolls out
@@ -2016,11 +1975,14 @@ describe("TTS time notes", () => {
     );
     const [todo] = await tom.query(api.tts.listTodos, {});
     // The note applied — the flush landed — and the sleep it carried is a
-    // time. Neither retired field is on the row.
+    // time. Neither retired field is on the row. (Read loosely: the validator
+    // has narrowed past both, and the point of this test is that nothing put
+    // them back.)
     expect(todo.status).toBe("waiting");
     expect(todo.wakeAt).toBe(wakeAt);
-    expect(todo.latestSafeAt).toBeUndefined();
-    expect(todo.wakeCondition).toBeUndefined();
+    const stored = todo as { latestSafeAt?: number; wakeCondition?: string };
+    expect(stored.latestSafeAt).toBeUndefined();
+    expect(stored.wakeCondition).toBeUndefined();
     const ignored = await t.run(async (ctx) =>
       (await ctx.db.query("dtsEvents").collect()).filter(
         (e) => e.kind === RETIRED_ACTION_IGNORED,

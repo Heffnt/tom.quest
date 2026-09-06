@@ -18,10 +18,11 @@ import { v, type Infer } from "convex/values";
 const HOUR_MS = 3_600_000;
 export const DAY_MS = 86_400_000;
 
-/** How far ahead of a condition-bound todo's latest-safe date it surfaces:
- * the fallback queue's window, and the sleep the lifeos migration writes
- * (wakeAt = latestSafeAt minus this) when it turns such a row into a task
- * with the condition in its statement. ONE HOME — it was an inline literal. */
+/** The window a retired condition-bound row's sleep was set by: the lifeos
+ * migration writes wakeAt = its latest-safe instant minus this when it turns
+ * such a row into a task with the condition in its statement. Kept because
+ * ttsMigrations still computes that sleep on a re-run; nothing else reads it
+ * now that the fallback queue's condition lane is gone. */
 export const CONDITION_WINDOW_MS = 14 * DAY_MS;
 
 // The scheduling anchors (single source of truth for the guard hours; the UTC
@@ -397,7 +398,6 @@ export type WaitingReason =
 
 /** The slice of a todo the waiting rule reads. */
 export type WaitingTodo = ReadyTodo & {
-  wakeCondition?: string;
   actor?: "tom" | "agent";
   source?: string;
 };
@@ -418,7 +418,7 @@ export function waitingReason(
 ): WaitingReason | null {
   if (todo.status !== "active" && todo.status !== "waiting") return null;
   if (todo.status === "waiting" || !wakeAtPassed(todo, ctx.now)) {
-    return { kind: "wake", at: todo.wakeAt, condition: todo.wakeCondition };
+    return { kind: "wake", at: todo.wakeAt };
   }
   const unmet = (todo.needs ?? []).find((id) => !ctx.doneSet.has(id));
   if (unmet !== undefined) {
@@ -459,7 +459,7 @@ export function waitingReasonText(
 export type GoalTodo = {
   kind?: "task" | "goal";
   condition?: string;
-  timingClass?: "dated" | "condition-bound" | "whenever";
+  timingClass?: "dated" | "whenever";
   codeRepo?: string;
   codeExternalId?: string;
 };
@@ -472,19 +472,18 @@ export type GoalTodo = {
  *
  * The bar is a GOAL CONDITION — a sentence about the world that is either true
  * yet or not ("the lease is signed"), or a code subject whose upstream status
- * answers the same question. `condition` is a TWO-READING field (schema.ts):
- * on a `timingClass: "condition-bound"` row it is the TRIGGER that says when
- * the todo may start ("when the landlord sends the paperwork"), which is not a
- * completion test at all. Reading a trigger as a completion test is how an
- * agent closes one of Tom's own todos the moment the trigger fires — so a
- * condition-bound row is checkable ONLY through a code subject.
+ * answers the same question. `condition` used to read two ways, and the second
+ * reading — the TRIGGER on a `timingClass: "condition-bound"` row, which says
+ * when a todo may START and is not a completion test — is why this function
+ * once had a third arm. The lifeos update retired that value: the migration
+ * moved every trigger sentence into its row's statement, so a `condition` left
+ * on a row is a completion test and nothing else.
  */
 export function goalCheckable(todo: GoalTodo): boolean {
   if (todo.kind !== "goal") return false;
   if (todo.codeRepo !== undefined && todo.codeExternalId !== undefined) {
     return true;
   }
-  if (todo.timingClass === "condition-bound") return false;
   return (todo.condition ?? "").trim() !== "";
 }
 

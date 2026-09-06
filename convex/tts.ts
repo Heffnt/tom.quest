@@ -53,11 +53,7 @@ const STATUS = v.union(
   v.literal("archived"),
   v.literal("done"),
 );
-const TIMING_CLASS = v.union(
-  v.literal("dated"),
-  v.literal("condition-bound"),
-  v.literal("whenever"),
-);
+const TIMING_CLASS = v.union(v.literal("dated"), v.literal("whenever"));
 const DATE_KIND = v.union(v.literal("external"), v.literal("self-imposed"));
 const DATE_OUTCOME = v.union(
   v.literal("done"),
@@ -270,7 +266,6 @@ export const createTodo = mutation({
     dueAt: v.optional(v.number()),
     dateKind: v.optional(DATE_KIND),
     condition: v.optional(v.string()),
-    latestSafeAt: v.optional(v.number()),
     workDescription: v.optional(v.string()),
     entryAction: v.optional(v.string()),
     category: v.optional(v.string()),
@@ -288,7 +283,6 @@ export const createTodo = mutation({
       dueAt: args.dueAt,
       dateKind: args.dueAt ? (args.dateKind ?? "self-imposed") : undefined,
       condition: args.condition,
-      latestSafeAt: args.latestSafeAt,
       category: args.category,
       source: "manual",
       workDescription: args.workDescription,
@@ -313,8 +307,6 @@ export const updateTodo = mutation({
     dueAt: v.optional(v.union(v.number(), v.null())),
     dateKind: v.optional(DATE_KIND),
     condition: v.optional(v.string()),
-    latestSafeAt: v.optional(v.union(v.number(), v.null())),
-    wakeCondition: v.optional(v.string()),
     wakeAt: v.optional(v.union(v.number(), v.null())),
     unarchiveCondition: v.optional(v.string()),
     workDescription: v.optional(v.string()),
@@ -438,13 +430,12 @@ export async function applyStatusChange(
   todo: Doc<"dtsTodos">,
   args: {
     status: "active" | "waiting" | "archived" | "done";
-    wakeCondition?: string;
     wakeAt?: number;
     unarchiveCondition?: string;
     note?: string;
   },
 ) {
-  const { status, wakeCondition, wakeAt, unarchiveCondition, note } = args;
+  const { status, wakeAt, unarchiveCondition, note } = args;
   const now = Date.now();
   const patch: Record<string, unknown> = { status, updatedAt: now };
   if (status === "active") {
@@ -453,11 +444,12 @@ export async function applyStatusChange(
     patch.doneAt = undefined;
     patch.archivedAt = undefined;
     patch.unarchiveCondition = undefined;
-    patch.wakeCondition = undefined;
     patch.wakeAt = undefined;
   }
   if (status === "waiting") {
-    patch.wakeCondition = wakeCondition;
+    // A sleep is a TIME (the lifeos update, phase 7). The prose wake
+    // condition this branch used to store is retired: what a row is waiting
+    // for belongs in its statement, where every reader already looks.
     patch.wakeAt = wakeAt;
   }
   if (status === "archived") {
@@ -480,7 +472,6 @@ export const setStatus = mutation({
   args: {
     id: v.id("dtsTodos"),
     status: STATUS,
-    wakeCondition: v.optional(v.string()),
     wakeAt: v.optional(v.number()),
     unarchiveCondition: v.optional(v.string()),
     note: v.optional(v.string()),
@@ -510,7 +501,6 @@ export const internalTriage = internalMutation({
     id: v.string(),
     status: v.optional(STATUS),
     dueAt: v.optional(v.number()),
-    wakeCondition: v.optional(v.string()),
     wakeAt: v.optional(v.number()),
     unarchiveCondition: v.optional(v.string()),
     note: v.optional(v.string()),
@@ -1070,6 +1060,8 @@ const TIME_NOTE_ACTION = v.union(
   v.object({
     kind: v.literal("set-waiting"),
     wakeAt: v.optional(v.number()),
+    // The third of the three: taken so a box that has not rolled out yet
+    // still lands its whole flush, and dropped rather than stored.
     wakeCondition: v.optional(v.string()),
   }),
   v.object({ kind: v.literal("set-active") }),
@@ -1148,9 +1140,7 @@ export const internalPendingTimeNotes = internalQuery({
                 timingClass: todo.timingClass,
                 dueAt: todo.dueAt ?? null,
                 dateKind: todo.dateKind ?? null,
-                latestSafeAt: todo.latestSafeAt ?? null,
                 wakeAt: todo.wakeAt ?? null,
-                wakeCondition: todo.wakeCondition ?? null,
                 dateOutcomes: todo.dateOutcomes ?? [],
               },
             }
@@ -1653,15 +1643,15 @@ export const internalPrepareTodo = internalMutation({
       //       A CHECKABLE goal is the one exception, and it is the design:
       //       checking the world and recording the answer is a goal's whole
       //       contract.
-      //   (c) a goal's condition is a GOAL CONDITION. `condition` reads two
-      //       ways (schema.ts): on a condition-bound row it is the TRIGGER
-      //       that says when the todo may start, not a completion test.
-      //       Closing on a fired trigger is closing Tom's todo for him.
+      //   (c) a goal's condition is a GOAL CONDITION — a sentence about the
+      //       world that is either true yet or not. A goal with no condition
+      //       and no code subject has nothing an agent can go and check, and
+      //       closing it would be closing Tom's todo for him.
       const why =
         fresh.batchId === undefined
           ? "only a todo inside a batch may be completed by the pen"
           : fresh.kind === "goal" && !goalCheckable(fresh)
-            ? "a goal is completed by the pen only when its condition is a goal condition (a condition-bound row's condition is its trigger)"
+            ? "a goal is completed by the pen only when it has a checkable condition or a code subject"
             : fresh.tomTouchedAt !== undefined && fresh.kind !== "goal"
               ? "Tom-touched (frozen) — only he closes a row he has ruled on"
               : null;

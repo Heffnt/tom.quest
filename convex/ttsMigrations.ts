@@ -194,6 +194,17 @@ export const internalMigrateReadiness = internalMutation({
 //                     only counts the v1 batches still waiting for it.
 export const TIMING_MIGRATION = "timing";
 
+/** The retired shape, as a stored row still holds it. The validator no longer
+ * declares these three (the lifeos update, phase 7), and Convex returns an
+ * undeclared field on an existing row unchanged, so the walk reads them
+ * through this view rather than through Doc<"dtsTodos"> — which is what keeps
+ * a verification re-run possible after the narrow. */
+type RetiredTiming = {
+  timingClass: "dated" | "whenever" | "condition-bound";
+  latestSafeAt?: number;
+  wakeCondition?: string;
+};
+
 /** The statement with the condition sentence carried into it. Idempotent: a
  * statement that already carries the sentence is returned as it is. */
 export function carryCondition(statement: string, condition: string | undefined): string {
@@ -230,19 +241,20 @@ export const internalMigrateTiming = internalMutation({
         // same statement, so the second mapping cannot overwrite what the
         // first carried in, and one write lands both.
         const patch: Partial<Doc<"dtsTodos">> = {};
+        const retired = row as unknown as RetiredTiming;
         const terminal = row.status === "done" || row.status === "archived";
         let statement = row.statement;
         // (a) a stored waiting row becomes active with its wakeAt.
         if (row.status === "waiting") {
           page["waiting-to-active"]++;
           patch.status = "active";
-          if (row.wakeAt === undefined && row.wakeCondition !== undefined) {
+          if (row.wakeAt === undefined && retired.wakeCondition !== undefined) {
             page["waiting-condition-carried"]++;
-            statement = carryCondition(statement, row.wakeCondition);
+            statement = carryCondition(statement, retired.wakeCondition);
           }
         }
         // (b) a condition-bound row becomes a task carrying its condition.
-        if (row.timingClass === "condition-bound") {
+        if (retired.timingClass === "condition-bound") {
           const isGoal = row.kind === "goal";
           page[isGoal ? "condition-bound-goal-kept" : "condition-bound-to-task"]++;
           statement = carryCondition(statement, row.condition);
@@ -255,10 +267,10 @@ export const internalMigrateTiming = internalMutation({
           // retired value leaves the validator, but a wakeAt written on a
           // finished row would be read as a real sleep the day it is
           // reopened.
-          if (row.latestSafeAt !== undefined && !terminal) {
+          if (retired.latestSafeAt !== undefined && !terminal) {
             if (row.wakeAt === undefined) {
               page["condition-wake-set"]++;
-              patch.wakeAt = row.latestSafeAt - CONDITION_WINDOW_MS;
+              patch.wakeAt = retired.latestSafeAt - CONDITION_WINDOW_MS;
             } else {
               page["condition-wake-kept"]++;
             }
@@ -273,15 +285,15 @@ export const internalMigrateTiming = internalMutation({
               to: "active",
               note: "lifeos migration: a sleep is a wakeAt on an active row",
               wakeAt: row.wakeAt,
-              wakeCondition: row.wakeCondition,
+              wakeCondition: retired.wakeCondition,
             });
           }
-          if (row.timingClass === "condition-bound") {
+          if (retired.timingClass === "condition-bound") {
             await logEvent(ctx, "timing-mapped", row._id, {
               before: {
-                timingClass: row.timingClass,
+                timingClass: retired.timingClass,
                 condition: row.condition,
-                latestSafeAt: row.latestSafeAt,
+                latestSafeAt: retired.latestSafeAt,
                 wakeAt: row.wakeAt,
                 statement: row.statement,
               },

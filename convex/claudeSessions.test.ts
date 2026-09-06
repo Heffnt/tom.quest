@@ -4820,20 +4820,16 @@ describe("frontier scheduler", () => {
     expect((await workSessions(t)).filter((s) => s.todoId === goalId)).toHaveLength(2);
   });
 
-  // witness: read `condition` as a completion test on every goal (drop the
-  // timingClass arm of goalCheckable in ttsShared.ts) and this goes red — a
-  // condition-bound todo's condition is its TRIGGER ("when the landlord sends
-  // the paperwork"), so a worker would find the trigger fired and close one of
-  // Tom's own todos, past the freeze every other agent write respects.
-  it("never hands a worker a condition-bound goal to check", async () => {
+  // witness: drop the goalCheckable gate on the frontier and this goes red —
+  // a goal with no condition and no code subject has nothing an agent can go
+  // and check, so a worker handed it would be inventing the answer.
+  it("never hands a worker a goal with nothing to check", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await enableAuto(t);
     await heartbeat(t);
     const goalId = await tom.mutation(api.tts.createTodo, {
       statement: "renew the apartment lease",
-      timingClass: "condition-bound",
-      condition: "the landlord sends the renewal paperwork",
     });
     await storeGraph(t, {
       statement: "the lease batch",

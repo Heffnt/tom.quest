@@ -367,7 +367,10 @@ export default defineSchema({
   //              narrowed to the two values once the migration mapped every
   //              row; ttsShared.ts is the one home)
   //   status:    active | waiting | archived | done
-  //   timingClass: dated | condition-bound | whenever
+  //   timingClass: dated | whenever (the lifeos update, phase 7: the
+  //              condition-bound value is retired — a condition-bound row is
+  //              a task whose statement carries the condition and whose sleep
+  //              is wakeAt)
   // Nothing is ever deleted (spec principle 2): terminal states are status
   // "done" or "archived", both kept and visible.
   //
@@ -455,11 +458,12 @@ export default defineSchema({
       v.literal("archived"),
       v.literal("done"),
     ),
-    timingClass: v.union(
-      v.literal("dated"),
-      v.literal("condition-bound"),
-      v.literal("whenever"),
-    ),
+    // NARROWED (the lifeos update, phase 7): two values, dated | whenever.
+    // ttsMigrations.internalMigrateTiming turned every condition-bound row
+    // into a task whose statement carries the condition sentence and whose
+    // sleep is wakeAt (latestSafeAt minus the 14-day window), and a second run
+    // counted zero, so no stored row carries the retired value.
+    timingClass: v.union(v.literal("dated"), v.literal("whenever")),
     // dated: dueAt + dateKind. Every date resolves to a recorded outcome
     // (kept-dates rule, spec §8) — history kept inline in dateOutcomes.
     dueAt: v.optional(v.number()),
@@ -480,20 +484,23 @@ export default defineSchema({
         }),
       ),
     ),
-    // Two readings, one field. (a) condition-bound timing: the trigger
-    // condition, alongside the conservative latest-safe estimate below.
-    // (b) schema v2: THE GOAL CONDITION — on a `kind: "goal"` row this is the
-    // checkable sentence about the world that says the goal is met ("the
-    // lease is signed", "cmt-014 is closed upstream"). One field, because the
-    // two readings are the same sentence: a statement about the world that is
-    // either true yet or not.
+    // THE GOAL CONDITION — on a `kind: "goal"` row this is the checkable
+    // sentence about the world that says the goal is met ("the lease is
+    // signed", "cmt-014 is closed upstream"). One reading now: the trigger
+    // reading went with timingClass "condition-bound" (the lifeos update,
+    // phase 7), so a condition on a goal is a completion test and nothing
+    // else — which is what makes goalCheckable a one-line rule.
     condition: v.optional(v.string()),
-    latestSafeAt: v.optional(v.number()),
-    // waiting: wake condition (prose) and/or a concrete wake time the daily
-    // prep job checks.
-    wakeCondition: v.optional(v.string()),
+    // waiting: a concrete wake time. The prose wake condition it used to sit
+    // beside is retired (the lifeos update, phase 7) — the migration carried
+    // every stored one into the row's own statement, so the sentence a reader
+    // needs is on the row and the sleep is a time.
     wakeAt: v.optional(v.number()),
     // archived: optional condition under which it should be proposed back.
+    // STAYS DECLARED past the phase-7 narrow: the archive verdict writes it
+    // (convex/ttsRulings.ts), Tom's archive control offers it, and
+    // tts.internalMigrateToGraph writes the GRAPH_SUPERSEDED pointer into it
+    // as its idempotence key — that migration is Tom's step and has not run.
     unarchiveCondition: v.optional(v.string()),
     // Category tag: lets one scheduled dtsBlocks row cover a set of todos
     // ("chores", …). Free string; "code" is reserved for the code-todo mirror.
@@ -531,21 +538,6 @@ export default defineSchema({
           evidence: v.optional(v.string()),
         }),
       ),
-    ),
-    // RETIRED (Tom's ruling 2026-08-29, "no importance guesses"); field kept
-    // only because production rows exist and prod is additive-only; nothing
-    // reads or writes it.
-    importance: v.optional(
-      v.object({
-        level: v.union(
-          v.literal("low"),
-          v.literal("medium"),
-          v.literal("high"),
-        ),
-        setBy: v.union(v.literal("agent"), v.literal("tom")),
-        setAt: v.number(),
-        rationale: v.optional(v.string()), // the agent's one-line justification
-      }),
     ),
     // Stamped by the Tom doors (updateTodo, setStatus, setPlanStep, ruling
     // life path, the pens). A batch with this set is
@@ -594,6 +586,12 @@ export default defineSchema({
     needs: v.optional(v.array(v.id("dtsTodos"))),
     // tasks: who does it. Same meaning as the plan-step actor it succeeds.
     actor: v.optional(v.union(v.literal("tom"), v.literal("agent"))),
+    // STAYS DECLARED past the phase-7 narrow: the planner writes it
+    // (tts.internalStorePlanGraph) and the auto-session scheduler reads it
+    // (claudeSessions.resolveFleetModel), where a tagged task WAITS rather
+    // than falling back when the Codex door is shut. Dropping it would
+    // silently re-dispatch tagged work to the fleet default.
+    //
     // The model an agent task needs, from the one union in ttsShared
     // (SESSION_MODELS: opus | sonnet | fable | gpt-5.6-sol | gpt-5.6-terra).
     // ABSENT IS THE NORM: the scheduler falls back to the fleet default
@@ -940,23 +938,10 @@ export default defineSchema({
     // three retired spellings stay readable until NARROW; ttsShared is the
     // one home (normalizeRecommendation).
     recommendation: STORED_RECOMMENDATION,
+    // STAYS DECLARED past the phase-7 narrow: worker/jobs/plan-graphs.mjs
+    // classifies it on every brief and the brief line on the page prints it.
     execClass: v.union(v.literal("box"), v.literal("needs-turing")),
     evidence: v.optional(v.string()),
-    // RETIRED (Tom's ruling 2026-08-29, "no importance guesses"); field kept
-    // only because production rows exist and prod is additive-only; nothing
-    // reads or writes it.
-    importance: v.optional(
-      v.object({
-        level: v.union(
-          v.literal("low"),
-          v.literal("medium"),
-          v.literal("high"),
-        ),
-        setBy: v.union(v.literal("agent"), v.literal("tom")),
-        setAt: v.number(),
-        rationale: v.optional(v.string()),
-      }),
-    ),
     preparedAt: v.number(),
   }).index("by_repo_external", ["repo", "externalId"]),
 

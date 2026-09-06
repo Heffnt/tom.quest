@@ -205,9 +205,6 @@ export default function TodoRow({
   const [busy, setBusy] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
 
-  // Edit-disclosure draft (dates never come from this row — see the time note)
-  const [wakeConditionDraft, setWakeConditionDraft] = useState("");
-
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     setError(null);
@@ -264,25 +261,6 @@ export default function TodoRow({
         </span>
       </span>,
     );
-  }
-  if (todo.timingClass === "condition-bound") {
-    if (todo.condition) {
-      facts.push(
-        <span key="cond" className="text-text-muted">
-          when: {todo.condition}
-        </span>,
-      );
-    }
-    if (todo.latestSafeAt !== undefined) {
-      facts.push(
-        <span key="safe">
-          <span className="text-text-muted">
-            latest safe {countdownText(todo.latestSafeAt, now)}
-          </span>{" "}
-          <span className="text-text-faint">{fmtDate(todo.latestSafeAt)}</span>
-        </span>,
-      );
-    }
   }
   if (noDateFlag) {
     facts.push(
@@ -511,22 +489,11 @@ export default function TodoRow({
 
               {todo.status !== "waiting" && (
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-                  <input
-                    value={wakeConditionDraft}
-                    onChange={(e) => setWakeConditionDraft(e.target.value)}
-                    placeholder="wake condition (optional)"
-                    className={`${inputCls} w-64`}
-                  />
                   <div className="flex items-center gap-1">
                     <button
                       onClick={() =>
                         void run(() =>
-                          setStatus({
-                            id: todo._id,
-                            status: "waiting",
-                            wakeCondition:
-                              wakeConditionDraft.trim() || undefined,
-                          }),
+                          setStatus({ id: todo._id, status: "waiting" }),
                         )
                       }
                       disabled={busy}
@@ -535,7 +502,7 @@ export default function TodoRow({
                       Set waiting
                     </button>
                     <Caption
-                      explains="Parks it until the date or condition you gave. It leaves your active list, and the 4:45 a.m. run brings back anything whose stored wake TIME has arrived — a condition in words alone has nothing for that job to act on, so it waits for you."
+                      explains="Parks it: it leaves your active list and stays parked until you set it active again. A wake TIME is set on a time note instead, and a row with one comes back on its own when that time passes."
                       explanation={STATUS_EXPLANATION}
                       explanationTitle="status — the four states a todo can be in"
                     >
@@ -595,15 +562,6 @@ export default function TodoRow({
                 )}
                 {todo.condition && (
                   <Fact label="condition">{todo.condition}</Fact>
-                )}
-                {todo.latestSafeAt !== undefined && (
-                  <Fact label="latestSafeAt">
-                    {countdownText(todo.latestSafeAt, now)} ·{" "}
-                    {fmtDate(todo.latestSafeAt)}
-                  </Fact>
-                )}
-                {todo.wakeCondition && (
-                  <Fact label="wakeCondition">{todo.wakeCondition}</Fact>
                 )}
                 {todo.wakeAt !== undefined && (
                   <Fact label="wakeAt">

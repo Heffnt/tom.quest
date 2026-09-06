@@ -3784,13 +3784,7 @@ export const internalAutoSchedule = internalMutation({
     // created session's kind and the scheduler event's counts.
     type Candidate = {
       todo: Doc<"dtsTodos">;
-      lane:
-        | "graph"
-        | "block"
-        | "batch"
-        | "dated"
-        | "condition-bound"
-        | "whenever";
+      lane: "graph" | "block" | "batch" | "dated" | "whenever";
       blockCategory?: string;
       batch?: Doc<"batches">;
     };
@@ -4001,22 +3995,11 @@ export const internalAutoSchedule = internalMutation({
     dated.sort((a, b) => (a.dueAt ?? Infinity) - (b.dueAt ?? Infinity));
     for (const t of dated) candidates.push({ todo: t, lane: "dated" });
 
-    // (4) Condition-bound actives, tightest latest-safe first.
-    const conditionBound = active.filter(
-      (t) =>
-        t.members === undefined &&
-        legacy(t) &&
-        t.timingClass === "condition-bound" &&
-        unprepared(t),
-    );
-    conditionBound.sort(
-      (a, b) => (a.latestSafeAt ?? Infinity) - (b.latestSafeAt ?? Infinity),
-    );
-    for (const t of conditionBound) {
-      candidates.push({ todo: t, lane: "condition-bound" });
-    }
-
-    // (5) Whenever actives, stalest first.
+    // (4) Whenever actives, stalest first. The condition-bound lane that used
+    // to sit here is gone with the value it read (the lifeos update, phase 7):
+    // a row that was condition-bound is now a task carrying its condition in
+    // its statement, asleep until its wake time, and it reaches a worker
+    // through this lane once it wakes.
     const whenever = active.filter(
       (t) =>
         t.members === undefined &&

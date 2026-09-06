@@ -77,10 +77,12 @@ describe("TTS code-todo briefs", () => {
     expect(briefed.some((e) => (e.data as { count: number }).count === 2)).toBe(true);
   });
 
-  // Importance is RETIRED (Tom's ruling 2026-08-29, "no importance guesses").
-  // witness: give internalStoreBriefs an importance arg again in
-  // convex/ttsCode.ts and write it — a stored brief would carry a rating.
-  it("stores no importance: the retired field stays absent on every brief", async () => {
+  // witness: drop the upsert and insert a second row — the page would show
+  // two briefs for one code todo and the fresher one would not be findable.
+  // (The importance guard that stood alongside this is gone with the field:
+  // the lifeos update dropped it from the dtsCodeBriefs validator, so the
+  // schema itself now refuses a rating.)
+  it("re-briefing one code todo replaces the row rather than adding one", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await t.mutation(internal.ttsCode.internalStoreBriefs, {
@@ -89,11 +91,9 @@ describe("TTS code-todo briefs", () => {
     await t.mutation(internal.ttsCode.internalStoreBriefs, {
       briefs: [brief({ sourceHash: "hash-b" })],
     });
-    const [row] = await tom.query(api.ttsCode.listCodeBriefs, {});
-    expect(row.sourceHash).toBe("hash-b"); // the re-brief itself landed
-    expect(row.importance).toBeUndefined();
-    const events = await tom.query(api.tts.listRecentEvents, {});
-    expect(events.some((e) => e.kind === "importance-skipped")).toBe(false);
+    const rows = await tom.query(api.ttsCode.listCodeBriefs, {});
+    expect(rows).toHaveLength(1);
+    expect(rows[0].sourceHash).toBe("hash-b"); // the re-brief itself landed
   });
 
   it("internalListBriefs returns every stored brief for the worker", async () => {
