@@ -275,6 +275,19 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 30 8 * * * root /usr/bin/node /opt/tts/prepare-queue.mjs >> /var/log/tts/prepare-queue.log 2>&1
 30 9 * * * root /usr/bin/node /opt/tts/prepare-queue.mjs >> /var/log/tts/prepare-queue.log 2>&1
 
+# THE NIGHTLY JOB (the lifeos update, phase 4) at 4:00 a.m. New York — before
+# the 5 a.m. digest, which reads its rows: copy every Convex table into the
+# WikiTom checkout (/root/wikitom, tts/snapshot/), the learning step, archive
+# this box's session files into sessions/, one locked commit-and-push over the
+# github.com-wikitom alias, then post the model-of-tom files and their commit
+# to Convex. Same two-slot DST pattern as prepare-queue above (08:00 UTC is
+# 4 a.m. EDT, 09:00 UTC is 4 a.m. EST; the job's own guard keeps one). flock
+# -n on its own lock: the export can outlast an hour on a slow night, and a
+# second run would race the first for the checkout. The WikiTom writer lock
+# (/var/lock/tts-wikitom.lock) is taken inside the job, around the push only.
+0 8 * * * root /usr/bin/flock -n /var/lock/tts-nightly.lock /usr/bin/node /opt/tts/nightly.mjs >> /var/log/tts/nightly.log 2>&1
+0 9 * * * root /usr/bin/flock -n /var/lock/tts-nightly.lock /usr/bin/node /opt/tts/nightly.mjs >> /var/log/tts/nightly.log 2>&1
+
 # CODE-TODO RULING LOOP (CMT's vqc/todos.yaml -> briefs -> Tom rules -> apply/execute):
 
 # Brief open CMT code todos via headless Claude, every 2nd hour at :17 (an
