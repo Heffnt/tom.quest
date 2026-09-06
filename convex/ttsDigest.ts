@@ -7,7 +7,6 @@ import {
   DAY_MS,
   buildDoneSet,
   countdownText,
-  isPrepared,
   isReadyForTom,
   nyCalendarDayBoundsUtc,
   nyHhmm,

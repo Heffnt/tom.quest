@@ -71,28 +71,6 @@ import {
 import type { SessionModel } from "./ttsShared";
 export { DAEMON_STALE_MS };
 
-// Un-acked permission decisions for a session, bounded: newest 25 per decided
-// status, filtered to appliedAt-unset. Correct in practice because un-acked
-// decisions are by construction the most recent rows (the daemon acks within
-// a poll cycle); acked history beyond the window is irrelevant.
-async function recentUnappliedDecisions(
-  ctx: QueryCtx | MutationCtx,
-  sessionId: Id<"claudeSessions">,
-): Promise<Doc<"claudePermissions">[]> {
-  const out: Doc<"claudePermissions">[] = [];
-  for (const status of ["allowed", "denied"] as const) {
-    const rows = await ctx.db
-      .query("claudePermissions")
-      .withIndex("by_session_status", (q) =>
-        q.eq("sessionId", sessionId).eq("status", status),
-      )
-      .order("desc")
-      .take(25);
-    out.push(...rows.filter((p) => p.appliedAt === undefined));
-  }
-  return out;
-}
-
 async function getSessionOrThrow(
   ctx: QueryCtx | MutationCtx,
   id: Id<"claudeSessions">,
@@ -417,19 +395,6 @@ export const getPendingInbound = query({
         q.eq("sessionId", sessionId).eq("status", "pending"),
       )
       .collect(); // bounded: pending commands are transient and few
-  },
-});
-
-export const getPendingPermissions = query({
-  args: { sessionId: v.id("claudeSessions") },
-  handler: async (ctx, { sessionId }) => {
-    await requireTomId(ctx);
-    return await ctx.db
-      .query("claudePermissions")
-      .withIndex("by_session_status", (q) =>
-        q.eq("sessionId", sessionId).eq("status", "pending"),
-      )
-      .collect(); // bounded: a session blocks while one is pending
   },
 });
 
@@ -1331,30 +1296,6 @@ export const internalSendControl = internalMutation({
   handler: async (ctx, args) => await sendControlFrom(ctx, args),
 });
 
-export const decidePermission = mutation({
-  args: {
-    requestId: v.string(),
-    decision: v.union(v.literal("allowed"), v.literal("denied")),
-    note: v.optional(v.string()),
-  },
-  handler: async (ctx, { requestId, decision, note }) => {
-    await requireTomId(ctx);
-    const row = await ctx.db
-      .query("claudePermissions")
-      .withIndex("by_request", (q) => q.eq("requestId", requestId))
-      .first();
-    if (!row) throw new Error("Permission request not found");
-    // Compare-and-set: only pending → decided. A second tab's tap is a no-op.
-    if (row.status !== "pending") return;
-    await ctx.db.patch(row._id, {
-      status: decision,
-      decidedAt: Date.now(),
-      decidedBy: "tom",
-      note,
-    });
-  },
-});
-
 // Force-close is the last resort for a session whose daemon is unreachable:
 // allowed ONLY when the heartbeat is stale (a reachable daemon should execute
 // a stop command instead, so state stays daemon-reported fact).
@@ -1388,19 +1329,6 @@ export const forceClose = mutation({
       .collect();
     for (const row of pendingInbound) {
       await ctx.db.patch(row._id, { status: "interrupted" });
-    }
-    const pendingPermissions = await ctx.db
-      .query("claudePermissions")
-      .withIndex("by_session_status", (q) =>
-        q.eq("sessionId", sessionId).eq("status", "pending"),
-      )
-      .collect();
-    for (const row of pendingPermissions) {
-      await ctx.db.patch(row._id, {
-        status: "expired",
-        decidedAt: now,
-        decidedBy: "force-close",
-      });
     }
     const buf = await ctx.db
       .query("claudeStreamBuf")
@@ -1509,20 +1437,6 @@ export const internalPoll = internalMutation({
             q.eq("sessionId", s._id).eq("status", "pending"),
           )
           .collect();
-        // Decisions the daemon has not yet applied to the SDK (decided but
-        // no appliedAt) — plus pending ones so a restarted daemon can
-        // re-register its local promise bookkeeping. Bounded with take(25)
-        // newest-first (review finding: a plain collect re-reads the
-        // session's whole decision HISTORY on the hot path; un-acked rows
-        // are always recent and 0-1 in number).
-        const permissions = (
-          await ctx.db
-            .query("claudePermissions")
-            .withIndex("by_session_status", (q) =>
-              q.eq("sessionId", s._id).eq("status", "pending"),
-            )
-            .collect()
-        ).concat(await recentUnappliedDecisions(ctx, s._id));
         sessions.push({
           id: s._id,
           status: s.status,
@@ -1559,7 +1473,6 @@ export const internalPoll = internalMutation({
           reopenedAt: s.reopenedAt,
           reopenEpoch: s.reopenEpoch ?? 0,
           pendingInbound,
-          permissions,
         });
       }
     }
@@ -1598,7 +1511,6 @@ export const internalIngest = internalMutation({
         v.literal("starting"),
         v.literal("idle"),
         v.literal("running"),
-        v.literal("awaiting-permission"),
         v.literal("ended"),
         v.literal("failed"),
       ),
@@ -1676,12 +1588,14 @@ export const internalIngest = internalMutation({
         }),
       ),
     ),
-    // There is no permissionRequests arg: under the unified auto gate the
-    // daemon parks nothing for Tom (#canUseTool returns allow or deny on every
-    // path), so nothing ever produced one. The permissionUpdates ack loop below
-    // stays — historical pending rows still need expiring and acking.
-    // Daemon acks that a decision reached the SDK; also used to mark
-    // pending rows expired/superseded on restart or stop.
+    // ACCEPTED AND IGNORED for one release. The permission table is gone (the
+    // lifeos update, phase 7): under the unified auto gate the daemon parks
+    // nothing for Tom (#canUseTool returns allow or deny on every path), so
+    // nothing had produced a request since that gate landed and these acks had
+    // nothing left to ack. A daemon on the box that has not yet rolled out
+    // this change still sends the field, and a Convex mutation refuses an
+    // argument it does not declare — so it is declared here, read by nothing,
+    // and goes once worker/setup.sh has run.
     permissionUpdates: v.optional(
       v.array(
         v.object({
@@ -1912,24 +1826,11 @@ export const internalIngest = internalMutation({
     // needs-you edges are the failed ending above and the first outcome record;
     // a genuine "this session needs Tom" signal has to be wired to a reachable
     // edge (a turn that ends with a question), which is new work.
-    for (const upd of args.permissionUpdates ?? []) {
-      const row = await ctx.db
-        .query("claudePermissions")
-        .withIndex("by_request", (q) => q.eq("requestId", upd.requestId))
-        .first();
-      if (!row || row.sessionId !== args.sessionId) continue;
-      const p: Record<string, unknown> = {};
-      if (upd.applied) p.appliedAt = now;
-      if (upd.status !== undefined && row.status === "pending") {
-        p.status = upd.status;
-        p.decidedAt = now;
-        p.decidedBy = upd.decidedBy ?? "daemon";
-      }
-      if (Object.keys(p).length > 0) await ctx.db.patch(row._id, p);
-    }
+    // The ack loop that stood here went with the permission table (the lifeos
+    // update, phase 7).
 
-    // Piggyback: this session's pending commands and undelivered decisions
-    // ride back on the flush response (~400ms latency while streaming).
+    // Piggyback: this session's pending commands ride back on the flush
+    // response (~400ms latency while streaming).
     const pendingInbound = await ctx.db
       .query("claudeInbound")
       .withIndex("by_session_status", (q) =>
@@ -1937,12 +1838,10 @@ export const internalIngest = internalMutation({
       )
       .collect();
     const fresh = await ctx.db.get(args.sessionId);
-    const decisions = await recentUnappliedDecisions(ctx, args.sessionId);
     return {
       nextSeq: fresh?.nextSeq ?? session.nextSeq,
       sessionStatus: fresh?.status ?? session.status,
       pendingInbound,
-      decisions,
     };
   },
 });

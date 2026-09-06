@@ -38,29 +38,6 @@ async function createBasicSession(tom: Awaited<ReturnType<typeof withTom>>) {
   });
 }
 
-// A pending permission row, written straight into the table: the daemon has no
-// producer for one (its unified auto gate allows or denies every tool call
-// itself), so internalIngest takes no permissionRequests. The decide / ack /
-// expire paths still serve these HISTORICAL rows, which is what the tests
-// below exercise.
-async function insertPendingPermission(
-  t: ReturnType<typeof convexTest>,
-  sessionId: Id<"claudeSessions">,
-  requestId: string,
-  toolName = "Bash",
-) {
-  return await t.run(async (ctx) =>
-    ctx.db.insert("claudePermissions", {
-      sessionId,
-      requestId,
-      toolName,
-      input: { command: "git push" },
-      status: "pending" as const,
-      requestedAt: Date.now(),
-    }),
-  );
-}
-
 // The session event messages a mutation scheduled, read off the scheduler's own
 // system table — the observable effect of notifySessionEvent without reaching
 // into Slack. Rows persist through their run (convex-test patches state, never
@@ -316,44 +293,24 @@ describe("claude sessions", () => {
     expect(session?.nextSeq).toBe(2);
   });
 
-  it("permission round-trip: request → decide (CAS) → piggybacked decision → ack", async () => {
+  // The permission table and its round-trip are gone (the lifeos update,
+  // phase 7). What stays is the compatibility shim: a daemon on the box that
+  // has not rolled out yet still sends permissionUpdates, and a Convex
+  // mutation refuses an argument it does not declare — so the field must be
+  // accepted and ignored, or every flush from that daemon fails.
+  //
+  // witness: drop permissionUpdates from internalIngest's args and this goes
+  // red with a validator error.
+  it("accepts a not-yet-rolled-out daemon's permissionUpdates and ignores them", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const sessionId = await createBasicSession(tom);
-    await insertPendingPermission(t, sessionId, "req-1");
-    const pending = await tom.query(api.claudeSessions.getPendingPermissions, {
-      sessionId,
-    });
-    expect(pending).toHaveLength(1);
-
-    await tom.mutation(api.claudeSessions.decidePermission, {
-      requestId: "req-1",
-      decision: "denied",
-      note: "not yet",
-    });
-    // Second tap (other tab) is a no-op, not an error or overwrite.
-    await tom.mutation(api.claudeSessions.decidePermission, {
-      requestId: "req-1",
-      decision: "allowed",
-    });
-
     const res = await t.mutation(internal.claudeSessions.internalIngest, {
       sessionId,
       status: "running",
-    });
-    expect(res.decisions).toHaveLength(1);
-    const decision = res.decisions[0] as { status: string; note?: string };
-    expect(decision.status).toBe("denied");
-    expect(decision.note).toBe("not yet");
-
-    await t.mutation(internal.claudeSessions.internalIngest, {
-      sessionId,
       permissionUpdates: [{ requestId: "req-1", applied: true }],
     });
-    const after = await t.mutation(internal.claudeSessions.internalIngest, {
-      sessionId,
-    });
-    expect(after.decisions).toHaveLength(0); // acked — no longer delivered
+    expect(res.sessionStatus).toBe("running");
   });
 
   it("forceClose only when the daemon heartbeat is stale, and stays terminal", async () => {
@@ -399,23 +356,12 @@ describe("claude sessions", () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const sessionId = await createBasicSession(tom);
-    await insertPendingPermission(t, sessionId, "req-orphan");
     // No heartbeat row exists → daemon unconfirmed → forceClose permitted.
     await tom.mutation(api.claudeSessions.forceClose, { sessionId });
     const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
       sessionId,
     });
     expect(inbound).toHaveLength(0);
-    const permissions = await tom.query(
-      api.claudeSessions.getPendingPermissions,
-      { sessionId },
-    );
-    expect(permissions).toHaveLength(0);
-    const rows = await t.run(async (ctx) =>
-      ctx.db.query("claudePermissions").collect(),
-    );
-    expect(rows[0].status).toBe("expired");
-    expect(rows[0].decidedBy).toBe("force-close");
   });
 
   // witness: move the endedReason patch outside the `if (!terminal)` block in

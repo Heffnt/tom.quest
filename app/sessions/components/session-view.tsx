@@ -7,7 +7,7 @@
 // under the transcript, and both are gone:
 //   - the permission cards. Nothing parks on a permission any more — the
 //     unified auto gate decides — so the strip was a residual surface over a
-//     table the update retires (claudePermissions).
+//     table the update has since retired (claudePermissions).
 //   - the agent panel. Every fact it showed is IN the transcript, quoted from
 //     the same rows: a subagent's work is its expandable fold, a background
 //     command is its tool-call and the results that answer it. A second

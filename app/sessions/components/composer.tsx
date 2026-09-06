@@ -3,9 +3,9 @@
 // Composer + session controls. Enter inserts a newline; Ctrl/Cmd+Enter sends;
 // the Send button always works. On an ended/failed session the same box stays,
 // with the descriptive status line above it and a send that reopens the
-// session (the daemon resumes the SDK session by id). Interrupt while running
-// or awaiting-permission; Stop with an inline confirm; Force close only when
-// the worker heartbeat is stale.
+// session (the daemon resumes the SDK session by id). Interrupt while running;
+// Stop with an inline confirm; Force close only when the worker heartbeat is
+// stale.
 
 import { useRef, useState } from "react";
 import { useMutation } from "convex/react";
@@ -148,10 +148,7 @@ export default function Composer({
       {error && <div className="text-xs text-error">{error}</div>}
       {textRow("Send", false)}
       <div className="flex flex-wrap items-center gap-2 text-xs">
-        {/* The daemon supports interrupt while awaiting-permission too — it
-            supersedes the parked permission request. */}
-        {(session.status === "running" ||
-          session.status === "awaiting-permission") && (
+        {session.status === "running" && (
           <span className="inline-flex items-center gap-0.5">
             <button
               type="button"

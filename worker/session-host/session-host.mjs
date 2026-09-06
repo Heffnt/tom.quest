@@ -45,7 +45,7 @@ const VERSION = "0.3.0";
 const DAEMON_STARTED_AT = Date.now();
 
 // Poll cadence (adaptive):
-//   1s  — a turn is live (running / awaiting-permission) or something
+//   1s  — a turn is live (running) or something
 //         happened in the last 30s: commands and decisions should feel
 //         push-like (the ingest piggyback covers the mid-turn case; this
 //         covers idle-but-warm).
@@ -486,26 +486,6 @@ function adoptSession(env, sessions, row) {
   // record, and Tom's reopening turn lands right after it — an adoption note
   // would describe daemon bookkeeping, not anything that happened in the
   // conversation.
-  for (const p of row.permissions ?? []) {
-    if (p.status === "pending") {
-      // A permission card nobody can answer anymore — expire it explicitly
-      // (never leave Tom staring at a dead card).
-      s.outbox.permissionUpdates.push({
-        requestId: p.requestId,
-        status: "expired",
-        // Say which of the two adoptions expired it; "daemon-restart" on a
-        // reopen would be a fabricated cause.
-        decidedBy: reopened ? "session-reopen" : "daemon-restart",
-      });
-    } else if (
-      (p.status === "allowed" || p.status === "denied") &&
-      (p.appliedAt === undefined || p.appliedAt === null)
-    ) {
-      // Decided while no daemon was listening — the prompting turn is gone,
-      // so the decision is unactionable; ack applied to clear the queue.
-      s.outbox.permissionUpdates.push({ requestId: p.requestId, applied: true });
-    }
-  }
   // NOTE: a user-turn that was DELIVERED mid-turn when the old daemon died
   // should read "interrupted", but /sessions/poll carries only PENDING
   // inbound rows, so it cannot be reached from here — the restart row above

@@ -83,8 +83,6 @@ export function statusChipClass(status: SessionStatus): string {
   switch (status) {
     case "running":
       return "border-accent/60 text-accent";
-    case "awaiting-permission":
-      return "border-accent text-accent bg-accent-dim";
     case "idle":
       return "border-border text-text";
     case "requested":

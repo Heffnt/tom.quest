@@ -898,7 +898,6 @@ export const LIVE_STATUSES = [
   "starting",
   "idle",
   "running",
-  "awaiting-permission",
 ] as const;
 
 export type LiveSessionStatus = (typeof LIVE_STATUSES)[number];

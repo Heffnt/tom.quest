@@ -879,56 +879,10 @@ export const internalAwaitingRulingCount = internalQuery({
   },
 });
 
-// One-time migration (run at deploy: `npx convex run ttsRulings:internalMigrateCodeRulings`):
-// copy dtsCodeRulings history into the unified table under the ratified
-// verdict mapping. "defer" rows are NOT copied — defer is no longer a verdict
-// (not ruling is deferring); they stay in the deprecated table as history.
-// Idempotent: a row whose (repo, externalId, ruledAt) already exists is skipped.
-export const internalMigrateCodeRulings = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    const MAP: Record<string, RulingVerdict | undefined> = {
-      approve: "approve",
-      "stale-replan": "revise",
-      "needs-session": "session",
-      "propose-archive": "archive",
-      defer: undefined,
-    };
-    const old = await ctx.db.query("dtsCodeRulings").collect();
-    const existing = await ctx.db.query("dtsRulings").collect();
-    const seen = new Set(
-      existing
-        .filter((r) => r.subjectType === "code")
-        .map((r) => `${r.repo} ${r.externalId} ${r.ruledAt}`),
-    );
-    let copied = 0;
-    let skippedDefer = 0;
-    for (const row of old) {
-      const verdict = MAP[row.ruling];
-      if (verdict === undefined) {
-        skippedDefer++;
-        continue;
-      }
-      const key = `${row.repo} ${row.externalId} ${row.ruledAt}`;
-      if (seen.has(key)) continue;
-      await ctx.db.insert("dtsRulings", {
-        subjectType: "code",
-        repo: row.repo,
-        externalId: row.externalId,
-        verdict,
-        // revise requires a sentence (recordRuling invariant) — a note-less
-        // stale-replan row gets an honest placeholder rather than minting a
-        // sentence-less revise ruling.
-        sentence:
-          verdict === "revise" && !row.note
-            ? "(migrated stale-replan ruling — no note was recorded)"
-            : row.note,
-        ruledAt: row.ruledAt,
-        appliedAt: row.appliedAt,
-        applyResult: row.applyResult,
-      });
-      copied++;
-    }
-    return { copied, skippedDefer, total: old.length };
-  },
-});
+// The one-time copy of dtsCodeRulings into this table (run at deploy,
+// `npx convex run ttsRulings:internalMigrateCodeRulings`) is gone with the
+// table it read (the lifeos update, phase 7). It had run, its "defer" rows
+// were deliberately not copied — defer is no longer a verdict; not ruling IS
+// deferring — and WikiTom tts/snapshot holds every row of the old table, so
+// the defer history it alone carried is readable there. The rows themselves
+// persist on the deployment as an undeclared table; nothing was deleted.

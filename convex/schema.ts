@@ -750,7 +750,7 @@ export default defineSchema({
   }).index("by_status_and_resolvedAt", ["status", "resolvedAt"]),
 
   // Tom's rulings, unified over life and code todos (ratified 2026-08-28;
-  // supersedes dtsCodeRulings below). APPEND-ONLY: a new ruling on the same
+  // superseded the retired dtsCodeRulings). APPEND-ONLY: a new ruling on the same
   // subject is a NEW row; the newest ruledAt is the live one. The closed
   // verdict set — every ruling button anywhere is one of these four:
   //   approve — execute as briefed (applied by worker/agent, appliedAt then set)
@@ -871,28 +871,6 @@ export default defineSchema({
     // wrong.
     .index("by_kind_at", ["kind", "at"]),
 
-  // One row per TTS day (5 a.m. America/New_York boundary, key YYYY-MM-DD).
-  // RETIRED (the lifeos update, phase 7): the day's queue used to be written
-  // here every morning — by the box's prepare-queue job or the fallback cron —
-  // and read by the calendar's today column and the digest. Today's view is
-  // computed from the record now (app/tts/lib.ts selectToday) and the digest
-  // dedupes on its own "digest-sent" event. NOTHING WRITES OR READS THIS TABLE;
-  // the declaration stays until NARROW because prod schema is additive-only
-  // (docs/lifeos-retirement.md).
-  dtsDailyQueues: defineTable({
-    day: v.string(),
-    entries: v.array(
-      v.object({
-        todoId: v.id("dtsTodos"),
-        reason: v.optional(v.string()), // "due" | "overdue" | "condition" | "stale" | "invitation" | worker-authored
-      }),
-    ),
-    digestText: v.optional(v.string()), // worker-prepared digest markdown
-    preparedAt: v.number(),
-    preparedBy: v.string(), // "worker" | "fallback"
-    digestSentAt: v.optional(v.number()),
-  }).index("by_day", ["day"]),
-
   // Read-only mirror of code todos from each repo's vqc/todos.yaml (link by
   // id, never copy — the repo stays the system of record; acting on one means
   // working in that repo). Refreshed by cron from GitHub default branches.
@@ -932,32 +910,6 @@ export default defineSchema({
     evidence: v.optional(v.string()),
     preparedAt: v.number(),
   }).index("by_repo_external", ["repo", "externalId"]),
-
-  // DEPRECATED (2026-08-28): superseded by the unified dtsRulings table above.
-  // Read-only history, no new writes: non-defer rows are copied into dtsRulings
-  // by ttsRulings.internalMigrateCodeRulings (run once at deploy). "defer" rows
-  // are NOT copied — defer is no longer a verdict (not ruling IS deferring) —
-  // so for those rows this table is the only copy.
-  // Removing the declaration is tracked separately rather than deferred to a
-  // named round: it requires emptying the table first (which discards the defer
-  // history), and the schema pushes straight to the one prod deployment.
-  dtsCodeRulings: defineTable({
-    repo: v.string(),
-    externalId: v.string(),
-    ruling: v.union(
-      v.literal("approve"),
-      v.literal("needs-session"),
-      v.literal("propose-archive"),
-      v.literal("stale-replan"),
-      v.literal("defer"),
-    ),
-    note: v.optional(v.string()),
-    ruledAt: v.number(),
-    appliedAt: v.optional(v.number()),
-    applyResult: v.optional(v.string()),
-  })
-    .index("by_repo_external", ["repo", "externalId"])
-    .index("by_ruled", ["ruledAt"]),
 
   // The model-of-tom files every prompt begins with (the lifeos update, phase
   // 4): one row per WikiTom file the nightly job posts to POST /tts/model-of-tom,
@@ -1034,17 +986,20 @@ export default defineSchema({
       v.union(v.literal("interactive"), v.literal("autonomous")),
     ),
     // Lifecycle: requested (browser) → starting → idle ⇄ running →
-    // ended | failed; reopenSession takes ended/failed back to idle.
-    // "awaiting-permission" is HISTORICAL (pre-auto-mode rows keep it; the
-    // unified auto gate never produces it — tts-spec:20.1). The browser owns:
-    // create, enqueue inbound, reopen, decide residual permissions, and
-    // stale-only forceClose. Everything else is daemon-reported fact.
+    // ended | failed; reopenSession takes ended/failed back to idle. The
+    // browser owns: create, enqueue inbound, reopen, and stale-only
+    // forceClose. Everything else is daemon-reported fact.
+    //
+    // "awaiting-permission" was a sixth value, retired with the permission
+    // table (the lifeos update, phase 7): the unified auto gate decides every
+    // tool call itself (tts-spec:20.1), so nothing has produced it since that
+    // gate landed. A pre-unification row still carrying the word reads as an
+    // undeclared value, which is what a dropped literal means here.
     status: v.union(
       v.literal("requested"),
       v.literal("starting"),
       v.literal("idle"),
       v.literal("running"),
-      v.literal("awaiting-permission"),
       v.literal("ended"),
       v.literal("failed"),
     ),
@@ -1230,36 +1185,6 @@ export default defineSchema({
     // dropped Tom's turns on any day the agents wrote more than N rows —
     // and the agents write most of them.
     .index("by_author", ["author"]),
-
-  // Permission requests — HISTORICAL/RESIDUAL under the unified auto
-  // permission gate (tts-spec:20.2, ruling session-permission-posture
-  // 2026-08-29: nothing parks on Tom; the boundary is structural plus the
-  // Bash classifier). The table stays for pre-unification rows and any
-  // residual card; stop supersedes, daemon restart expires.
-  claudePermissions: defineTable({
-    sessionId: v.id("claudeSessions"),
-    requestId: v.string(), // daemon-minted uuid
-    toolName: v.string(),
-    input: v.any(), // truncated by the daemon like tool-calls
-    status: v.union(
-      v.literal("pending"),
-      v.literal("allowed"),
-      v.literal("denied"),
-      v.literal("superseded"),
-      v.literal("expired"),
-    ),
-    requestedAt: v.number(),
-    decidedAt: v.optional(v.number()),
-    // "tom" | "daemon-restart" | "session-reopen" | "stop" | "force-close" —
-    // who or what settled it. The daemon mints no NEW requests (the unified
-    // auto gate decides every call itself); these paths serve the historical
-    // rows that predate it.
-    decidedBy: v.optional(v.string()),
-    note: v.optional(v.string()), // Tom's optional message; a deny note reaches the model verbatim
-    appliedAt: v.optional(v.number()), // daemon acked applying the decision to the SDK
-  })
-    .index("by_session_status", ["sessionId", "status"])
-    .index("by_request", ["requestId"]),
 
   // Daemon heartbeat singleton — its own table so the frequent patch never
   // invalidates transcript queries. Staleness is computed at render:
