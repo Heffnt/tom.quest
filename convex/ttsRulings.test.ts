@@ -159,6 +159,35 @@ describe("TTS unified rulings", () => {
     ).toBe(true);
   });
 
+  // witness: drop the `todo.members !== undefined` branch from insertRuling's
+  // revise path in convex/ttsRulings.ts — the ruling would ride the pending
+  // feed forever (the planner's prepare pass skips v1 batch rows by name, and
+  // the v1 batcher is gone), and the row would lose its readiness for good.
+  it("revise on a v1 batch row is refused by name, readiness untouched, nothing parked", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, {
+      statement: "the passport batch",
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(todoId, { readiness: "prepared", members: [] });
+    });
+    await tom.mutation(api.ttsRulings.recordRuling, {
+      todoId,
+      verdict: "revise",
+      sentence: "split the renewal out",
+    });
+    const todo = await t.run(async (ctx) => ctx.db.get(todoId));
+    expect(todo?.readiness).toBe("prepared");
+    const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
+    expect(ruling.sentence).toBe("split the renewal out"); // on the record
+    expect(ruling.appliedAt).toBeDefined();
+    expect(ruling.applyResult).toMatch(/^refused: .*internalMigrateToGraph/);
+    expect(
+      await t.query(internal.ttsRulings.internalPendingRulings, {}),
+    ).toHaveLength(0);
+  });
+
   // witness: drop the applyStatusChange call from recordRuling's archive
   // branch in convex/ttsRulings.ts
   it("archive on a life todo archives it immediately", async () => {
