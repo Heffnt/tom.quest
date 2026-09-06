@@ -67,6 +67,13 @@ Reading it back: every row `getMessages` returns says `hasOverflow` and
 `nextIndex` to continue, reporting `complete: false` rather than a silent hole
 when a chunk the row names is missing.
 
+The delivered turn goes the same way, which is what makes a session's OPENING
+row complete: that row is the mission prompt with the model-of-Tom files
+prepended and the `inbound row: <id>` line appended — exactly the text handed
+to the model. It used to go in whole and unbounded, so a prompt past Convex's
+~1MB document limit was a permanent rejection that dropped the flush; now the
+row carries the cut and the overflow carries the rest.
+
 A payload that cannot be stored is never lost in silence: the chunk upload
 retries transient failures, and on a permanent rejection (or attempts spent)
 writes the bytes to `/var/cache/tts/sessions/<id>/overflow/<seq>` on the box,

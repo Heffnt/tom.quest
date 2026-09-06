@@ -1847,8 +1847,26 @@ export class Session {
       // typed, his text plus the id line deliveredTurnText appends (the
       // transcript principle: what the agent saw is what is recorded). Tom's
       // text alone stays on the claudeInbound row.
+      //
+      // Through the cut-with-overflow path like every other payload the model
+      // read, and this is the one that matters most: a session's OPENING turn
+      // is the mission prompt with the model-of-Tom files prepended to it
+      // (the prompt builder in convex/claudeSessions.ts, which records the
+      // WikiTom commit hash those files came from). Before this it went in
+      // whole and unbounded — a prompt past Convex's ~1MB document limit was
+      // a permanent 400 that dropped the flush, so the biggest prompts were
+      // the ones least likely to be recorded at all.
       const delivered = deliveredTurnText(row);
-      this.finalizeRow("user", { text: delivered });
+      const cut = cutWithOverflow(delivered);
+      this.finalizeRow(
+        "user",
+        {
+          text: cut.value,
+          ...(cut.note ? { truncationNote: cut.note } : {}),
+        },
+        undefined,
+        cut.overflow,
+      );
       this.outbox.inboundUpdates.push({ id: row._id, status: "delivered" });
       this.activeUserTurnId = row._id;
       // Kept for the SDK-echo dedupe in the "user" message handler — the
