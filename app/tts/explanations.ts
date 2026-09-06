@@ -123,8 +123,6 @@ ${body}
 // self-contained.
 const WHAT_TTS_IS = `<p><span class="term">TTS</span> is Toms Todo System: the web application that holds Tom's todos, groups them into batches, and asks him for rulings. A <span class="term">todo</span> is one stored row in it — one thing to be done, held as a set of separate fields. TTS stores its data in <span class="term">Convex</span>, a hosted backend service; a <span class="term">mutation</span> is one named function there that changes stored data, and every control on these screens fires exactly one.</p>`;
 
-const WHAT_A_SESSION_IS = `<p>An <span class="term">agent session</span> is one run of Claude Code started by TTS on the machine the code calls the <span class="term">Jarvis Box</span> — Tom's own always-on machine. A session reads a todo, does work, and writes results back through the <span class="term">worker pen</span>: an address on the TTS server, <span class="mono">/tts/prepare-todo</span>, defined in <span class="mono">convex/http.ts</span>, which accepts a todo's identifier and the fields to change.</p>`;
-
 export const READINESS_EXPLANATION = page(
   "Readiness — the field this dropdown writes",
   "Readiness: how far the preparing of this todo has got",
@@ -220,71 +218,6 @@ export const READINESS_EXPLANATION = page(
 <p>Choosing a value here writes the field and stops. Nothing is scheduled, no session is started, and no message is sent by the change itself.</p>
 
 <p>What follows depends on which value was chosen. At <span class="mono">unprepared</span> or <span class="mono">preparing</span>, the next run of the picker that starts sessions on its own — it runs every five minutes — may hand this todo to an agent, which writes its brief and returns it at <span class="mono">ready-for-tom</span>. At <span class="mono">ready-for-tom</span> the todo joins the items at a gate on the batches tab and its verdict controls appear, so the next move is Tom's ruling.</p>
-`,
-);
-
-export const CREATE_TODO_EXPLANATION = page(
-  "Adding a todo — what the Add button stores",
-  "Adding a todo: the fields the Add button writes, and what picks it up",
-  "The capture box at the top of the TTS screens, and everything that happens after it.",
-  `
-<h2>What this is</h2>
-
-${WHAT_TTS_IS}
-
-<p>The box beside this caption is the capture box: a text field for the sentence, a second smaller field for a category, and an Add button. Pressing Add calls the mutation <span class="mono">createTodo</span> in the file <span class="mono">convex/tts.ts</span>, passing the trimmed sentence and, if the second field is not empty, the trimmed category. Nothing else on the screen is read.</p>
-
-<p>The point of the box is that capture is one action. There is no form to fill in, no date picker, no priority, no estimate. Everything that would go on such a form is written afterwards, either by Tom in the edit panel of the todo's own row, or by an agent session, described at the end of this page.</p>
-
-<h2>Exactly what is stored</h2>
-
-<p>The mutation accepts more arguments than this box sends. Below is every field written on a row created from this box, with the value it gets. A field not listed is left unset, which is not the same as empty: an unset field is absent from the row entirely, and every reader treats it as "nothing was said".</p>
-
-<table>
-  <tr><th>Field</th><th>Value from this box</th><th>What it is</th></tr>
-  <tr><td class="mono">statement</td><td>The typed sentence, trimmed</td><td>The display text shown wherever the todo appears.</td></tr>
-  <tr><td class="mono">category</td><td>The second field, trimmed; unset when empty</td><td>A free-text tag. It groups todos so that one placed span of calendar time can cover a set of them.</td></tr>
-  <tr><td class="mono">readiness</td><td class="mono">unprepared</td><td>How far the writing-up of the todo has got. Fixed here — this box cannot create a todo at any other value.</td></tr>
-  <tr><td class="mono">status</td><td class="mono">active</td><td>Whether the todo is in play. The other three values are <span class="mono">waiting</span>, <span class="mono">archived</span> and <span class="mono">done</span>.</td></tr>
-  <tr><td class="mono">timingClass</td><td class="mono">whenever</td><td>How the todo is timed. It would be <span class="mono">dated</span> if a due date had been passed, but this box passes none, so it is always <span class="mono">whenever</span> here. The third value is <span class="mono">condition-bound</span>.</td></tr>
-  <tr><td class="mono">source</td><td class="mono">manual</td><td>Where the todo came from. Other rows carry <span class="mono">slack-capture</span>, <span class="mono">repeating</span>, <span class="mono">prospecting</span> or <span class="mono">session</span>.</td></tr>
-  <tr><td class="mono">createdAt</td><td>The moment of the press</td><td>Milliseconds since 1970. Never changes again.</td></tr>
-  <tr><td class="mono">updatedAt</td><td>The same moment</td><td>Bumped by every later edit. Several jobs order work by it, oldest first.</td></tr>
-</table>
-
-<p>Not written, and worth naming because their absence is what makes a fresh todo a fresh todo: no <span class="mono">brief</span>, no <span class="mono">entryAction</span>, no <span class="mono">workDescription</span>, no <span class="mono">plan</span>, no <span class="mono">dueAt</span>, no <span class="mono">batchId</span> — so the todo belongs to no batch — and no <span class="mono">tomTouchedAt</span>, the stamp marking a row as edited by Tom and therefore frozen against the job that forms batches.</p>
-
-<h2>The one side effect</h2>
-
-<p>Creating a todo writes exactly one other row: an entry in <span class="mono">dtsEvents</span>, the append-only record of everything that has happened, of kind <span class="mono">created</span>. No message is sent, no session is started, nothing is scheduled. The screen updates because Convex pushes the new row to every open view, not because anything was triggered.</p>
-
-<h2>What picks it up, and under what conditions</h2>
-
-<p>A job called the <span class="term">autonomous picker</span> runs every five minutes inside Convex. It looks for todos that still owe an agent's work and starts a session on one or two of them. A todo created here is a candidate, but the picker refuses to run at all unless several conditions hold at once, so it is honest to say a fresh todo is picked up within minutes only when they do.</p>
-
-<table>
-  <tr><th>Condition</th><th>What it means</th></tr>
-  <tr><td>Autonomous scheduling is switched on</td><td>A stored configuration row. If there is no row, the picker is off.</td></tr>
-  <tr><td>The program on the Jarvis Box has reported in within 90 seconds</td><td>The Jarvis Box is Tom's always-on machine, and the program on it that actually runs sessions polls TTS constantly; silence means no session could start.</td></tr>
-  <tr><td>The machine is not loaded</td><td>Load per processor under a configured limit, and free memory above one.</td></tr>
-  <tr><td>Fewer than the configured number of sessions are already live</td><td>The default cap is eight, with at most two started per five-minute tick.</td></tr>
-  <tr><td>No recent session hit a usage limit</td><td>A session that ended reporting a usage limit stands the whole picker down for three hours.</td></tr>
-  <tr><td>The category is not <span class="mono">code</span></td><td>That category is reserved for the mirror of code work, which has its own pipeline.</td></tr>
-</table>
-
-<p>When the picker does take a todo that belongs to no batch, it takes the one that has gone longest without an update in whichever lane the todo falls into: dated todos by soonest date, condition-bound todos by tightest deadline, and everything else — including a todo created here — in the lane that takes the oldest untouched row.</p>
-
-<h2>What the session writes back</h2>
-
-${WHAT_A_SESSION_IS}
-
-<p>What a preparing session writes into the todo is exactly the set of fields the capture box left unset: the <span class="term">brief</span> (a short written explanation of what the todo is), the <span class="term">entry action</span> (the smallest concrete first step), the <span class="term">work description</span> (what the work involves, in words, never as a number of hours), and a <span class="term">plan</span> (a list of steps, each marked as Tom's or an agent's). It then sets readiness to <span class="mono">ready-for-tom</span>.</p>
-
-<p>The pen refuses to set readiness back to <span class="mono">unprepared</span>. An agent may move a todo forward through the preparing states and no further back, so the record that a todo was written up cannot be erased by the thing that wrote it.</p>
-
-<h2>What happens next, and who does it</h2>
-
-<p>The todo is stored and visible immediately, on the batches tab under the unbatched heading and in the by-individual list. If the conditions above hold, an agent session writes its brief within minutes and returns it at <span class="mono">ready-for-tom</span>, at which point its four verdict controls — approve, revise, session, archive — appear and the next move is Tom's ruling. If they do not hold, the todo sits at <span class="mono">unprepared</span> until they do, or until Tom opens it himself.</p>
 `,
 );
 

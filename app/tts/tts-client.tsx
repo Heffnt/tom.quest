@@ -1,10 +1,14 @@
 "use client";
 
-// TTS (tts) — the one todo page: QuickAdd capture bar, three tabs
-// (calendar · batches · by individual), the active tab below. Tab state rides
-// ?tab=; ?item= (produced by ttsItemLink) forces the by-individual tab and is
-// handed to it as the link prop. Each tab fetches its own data with useQuery —
-// Convex dedupes subscriptions, so the shell's badge-count queries are free.
+// TTS (tts) — the one todo page: three tabs (calendar · batches · by
+// individual), the active tab below. Tab state rides ?tab=; ?item= (produced
+// by ttsItemLink) forces the by-individual tab and is handed to it as the link
+// prop. Each tab fetches its own data with useQuery — Convex dedupes
+// subscriptions, so the shell's badge-count queries are free.
+//
+// The page has no capture control (ruling 2026-09-05, "no capture bar"):
+// todos are captured from Slack through the events route, and this page is
+// where they are read and ruled on.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -15,12 +19,7 @@ import TomGate from "@/app/components/tom-gate";
 import CalendarTab from "./components/calendar-tab";
 import BatchesTab from "./components/batches-tab";
 import EverythingTab from "./components/everything-tab";
-import Info from "./components/info";
-import { CREATE_TODO_EXPLANATION } from "./explanations";
 import { selectBatches, type LinkIntent } from "./lib";
-
-const inputCls =
-  "bg-surface border border-border rounded-md px-3 py-1.5 text-sm text-text placeholder:text-text-faint focus:outline-none focus:border-accent/60";
 
 type Tab = "calendar" | "batches" | "by-individual";
 
@@ -29,71 +28,6 @@ const TABS: Array<{ value: Tab; label: string }> = [
   { value: "batches", label: "batches" },
   { value: "by-individual", label: "by individual" },
 ];
-
-function QuickAdd() {
-  const createTodo = useMutation(api.tts.createTodo);
-  const [statement, setStatement] = useState("");
-  const [category, setCategory] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = statement.trim();
-    if (!trimmed || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await createTodo({
-        statement: trimmed,
-        category: category.trim() || undefined,
-      });
-      setStatement("");
-      setCategory("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="sticky top-0 z-20 -mx-6 px-6 py-3 bg-bg/95 backdrop-blur border-b border-border">
-      <form onSubmit={submit} className="flex flex-wrap gap-2 items-center">
-        <input
-          value={statement}
-          onChange={(e) => setStatement(e.target.value)}
-          placeholder="Add a todo…"
-          className={`${inputCls} flex-1 min-w-48`}
-        />
-        <input
-          value={category}
-          onChange={(e) => setCategory(e.target.value)}
-          placeholder="category"
-          className={`${inputCls} w-32`}
-        />
-        <button
-          type="submit"
-          disabled={!statement.trim() || busy}
-          className="bg-accent text-bg rounded-md px-4 py-1.5 text-sm font-medium hover:opacity-90 disabled:opacity-50"
-        >
-          Add
-        </button>
-        <Info
-          call="tts.createTodo({ statement })"
-          explanation={CREATE_TODO_EXPLANATION}
-          explanationTitle="adding a todo — what the Add button stores"
-        >
-          Files what you typed as a new todo, unprepared and active. An agent
-          picks it up within a couple of minutes and writes its brief, its
-          smallest way in, and how much work it looks like — then it comes back
-          to you ready to rule on.
-        </Info>
-      </form>
-      {error && <div className="text-xs text-error mt-1">{error}</div>}
-    </div>
-  );
-}
 
 export default function TtsClient() {
   // canRead gates the queries ("skip" idiom); TomGate owns the gate JSX.
@@ -185,8 +119,6 @@ export default function TtsClient() {
   return (
     <TomGate label="TTS">
       <div className="max-w-5xl mx-auto px-6 pb-16">
-        <QuickAdd />
-
         <div className="flex items-end gap-1 border-b border-border mt-4">
           {TABS.map(({ value, label }) => (
             <button
