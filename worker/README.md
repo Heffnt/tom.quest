@@ -330,8 +330,9 @@ full-key-only.
 (and, for code todos, in the CMT repo itself). The local files with memory
 are all harmless to lose:
 
-- `/var/lib/tts/dump-cursor` — Slack poll cursor; losing it re-captures up to
-  24 hours of `#dump` messages as duplicates Tom can archive.
+- `/var/lib/tts/dump-cursor` — Slack poll cursor; losing it re-offers up to
+  24 hours of `#dump` messages, each deduped server-side on its ts, so the
+  cost is one day of Slack reads and no duplicate.
 - `/var/lib/tts/gmail-cursor` — timestamp of the newest email poll-gmail has
   processed (captured or skipped); losing it re-examines the last 24 hours,
   at worst re-capturing a few emails as duplicates Tom can archive.

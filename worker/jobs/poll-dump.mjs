@@ -2,17 +2,24 @@
 // poll-dump.mjs — poll the Slack #dump channel and submit every new human
 // message to Convex as an unprepared TTS capture.
 //
-// Run by cron every 2 minutes (see /etc/cron.d/tts). Also runnable by hand:
+// RECOVERY ONLY (Tom 2026-08-30; the lifeos update, phase 7). A #dump message
+// normally reaches TTS the moment it is posted: Slack pushes it to
+// POST /slack/events, which captures it and posts the one threaded reply.
+// Slack's event delivery is best-effort, so this job runs HOURLY behind the
+// push route and re-offers everything since its cursor; the server dedupes on
+// the message ts, so a message the route already took costs nothing and a
+// message it missed is captured at most an hour late.
+//
+// Run by cron hourly at :07 (see /etc/cron.d/tts). Also runnable by hand:
 //   node /opt/tts/poll-dump.mjs
 //
-// STATE: the ONLY local state on the Jarvis Box is the cursor file
+// STATE: the ONLY local state this job keeps is the cursor file
 // /var/lib/tts/dump-cursor, holding the Slack ts of the last captured
 // message. Everything durable lives in Convex (the no-state rule). Losing
 // the cursor is harmless-by-design: on the next run with no cursor we only
-// look back 24 hours, so at worst the last day of #dump messages is captured
-// AGAIN as duplicate todos, which Tom can simply archive. That trade
-// (rare, visible, manually fixable duplication) is deliberately preferred
-// over any clever server-side dedup machinery.
+// look back 24 hours, and every message re-offered is deduped server-side on
+// its ts (tts.internalCapture returns the existing todo), so a lost cursor
+// costs one day of Slack reads and no duplicate.
 //
 // The cursor is advanced after EVERY successful capture (not once at the
 // end), so a crash mid-batch re-captures at most one message.
