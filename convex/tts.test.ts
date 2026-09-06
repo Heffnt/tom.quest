@@ -482,6 +482,32 @@ describe("TTS todos", () => {
     ).toBe(true);
   });
 
+  // witness: drop wakeAtPassed from the fallback queue's active filter — an
+  // active row the lifeos migration put to sleep (waiting → active + wakeAt)
+  // would be queued the morning after it was parked.
+  it("the fallback queue leaves an active row asleep on its wakeAt alone", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const now = Date.now();
+    const asleep = await tom.mutation(api.tts.createTodo, {
+      statement: "not yet",
+      dueAt: now - 86_400_000, // overdue, and yet asleep
+    });
+    const awake = await tom.mutation(api.tts.createTodo, {
+      statement: "overdue and awake",
+      dueAt: now - 86_400_000,
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(asleep, { wakeAt: now + 30 * 86_400_000 });
+      await ctx.db.patch(awake, { wakeAt: now - 60_000 }); // a sleep that ended
+    });
+    await t.mutation(internal.tts.internalPrepareFallbackQueue, { force: true });
+    const [queue] = await t.run(async (ctx) => ctx.db.query("dtsDailyQueues").collect());
+    const queued = queue.entries.map((e) => e.todoId);
+    expect(queued).toContain(awake);
+    expect(queued).not.toContain(asleep);
+  });
+
   it("worker prep overwrites the fallback queue for the same day", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);

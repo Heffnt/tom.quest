@@ -18,6 +18,12 @@ import { v, type Infer } from "convex/values";
 const HOUR_MS = 3_600_000;
 export const DAY_MS = 86_400_000;
 
+/** How far ahead of a condition-bound todo's latest-safe date it surfaces:
+ * the fallback queue's window, and the sleep the lifeos migration writes
+ * (wakeAt = latestSafeAt minus this) when it turns such a row into a task
+ * with the condition in its statement. ONE HOME — it was an inline literal. */
+export const CONDITION_WINDOW_MS = 14 * DAY_MS;
+
 // The scheduling anchors (single source of truth for the guard hours; the UTC
 // cron times in convex/crons.ts and worker/setup.sh are derived as hour+4
 // (EDT) and hour+5 (EST) and say so in their comments).

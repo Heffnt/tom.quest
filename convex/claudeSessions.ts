@@ -60,6 +60,7 @@ import {
   modelFamily,
   normalizeSessionRepos,
   tracksCodeTodos,
+  wakeAtPassed,
 } from "./ttsShared";
 import type { SessionModel } from "./ttsShared";
 export { DAEMON_STALE_MS };
@@ -3225,7 +3226,10 @@ export const internalAutoSchedule = internalMutation({
     const todoById = new Map<Id<"dtsTodos">, Doc<"dtsTodos">>(
       todos.map((t) => [t._id, t]),
     );
-    const active = todos.filter((t) => t.status === "active");
+    // Active AND awake: an active row whose wakeAt is ahead is the lifeos
+    // spelling of "waiting" (ttsShared.wakeAtPassed), and the lanes below
+    // never handed a waiting row to a worker.
+    const active = todos.filter((t) => t.status === "active" && wakeAtPassed(t, now));
     // THE DONE SET AND THE FRONTIER come from ttsShared — the ONE
     // implementation the /tts page also reads, so the fleet and the surface
     // cannot disagree about which todos are ready.

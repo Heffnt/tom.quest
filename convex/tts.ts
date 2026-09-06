@@ -11,6 +11,7 @@ import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { INTEGRATION_SOURCE, integrationName } from "./ttsIntegrations";
 import {
+  CONDITION_WINDOW_MS,
   DAY_MS,
   MAX_NEEDS,
   READINESS,
@@ -29,6 +30,7 @@ import {
   ttsDayBoundsUtc,
   ttsDayKey,
   ttsPrepDay,
+  wakeAtPassed,
 } from "./ttsShared";
 
 // TTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
@@ -2607,7 +2609,11 @@ export const internalStorePlanGraph = internalMutation({
 // world: a batches row, its plan steps as task todos chained by `needs`, its
 // members bound as goals. NOTHING IS EVER DELETED — the old row is archived
 // with a pointer to its successor, which is also the idempotence key.
-const GRAPH_SUPERSEDED = "superseded by graph batch ";
+/** The unarchiveCondition a v1 batch row carries once the graph migration
+ * has replaced it — its idempotence key, and what the weekly gather must
+ * skip when it lists archived rows whose sentence names a return condition
+ * (this one is a pointer, not a condition). */
+export const GRAPH_SUPERSEDED = "superseded by graph batch ";
 
 export const internalMigrateToGraph = internalMutation({
   args: {},
@@ -2993,6 +2999,9 @@ export const internalPrepareFallbackQueue = internalMutation({
       .first();
     if (existing && !force) return; // worker already prepared today
 
+    // The same instant the wake loop above uses: a sleep ending inside the
+    // day being prepared is over for that day's queue.
+    const endOfDayWake = bounds.end - 1;
     const active = (
       await ctx.db
         .query("dtsTodos")
@@ -3001,8 +3010,15 @@ export const internalPrepareFallbackQueue = internalMutation({
     ) // The dumb fallback cannot reason about batch/member overlap, so it
       // skips batches; the worker's Claude prep may queue them. A schema-v2
       // row (batchId set) is a task or goal INSIDE a batch — the batch is the
-      // unit Tom sees, so its parts never queue individually either.
-      .filter((t) => t.members === undefined && t.batchId === undefined);
+      // unit Tom sees, so its parts never queue individually either. An
+      // active row still asleep (wakeAt ahead — the lifeos spelling of
+      // "waiting") is not queued either, the way a waiting row never was.
+      .filter(
+        (t) =>
+          t.members === undefined &&
+          t.batchId === undefined &&
+          wakeAtPassed(t, endOfDayWake),
+      );
     const endOfToday = bounds.end; // 5 a.m. NY tomorrow, DST-correct
     const entries: { todoId: Id<"dtsTodos">; reason?: string }[] = [];
     const used = new Set<string>();
@@ -3024,7 +3040,7 @@ export const internalPrepareFallbackQueue = internalMutation({
         (t) =>
           t.timingClass === "condition-bound" &&
           t.latestSafeAt !== undefined &&
-          t.latestSafeAt <= now + 14 * 86_400_000,
+          t.latestSafeAt <= now + CONDITION_WINDOW_MS,
       )
       .sort((a, b) => (a.latestSafeAt ?? 0) - (b.latestSafeAt ?? 0));
     for (const t of conditionBound.slice(0, 2)) add(t, "condition");
