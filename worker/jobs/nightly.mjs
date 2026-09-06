@@ -539,7 +539,7 @@ export function syncSnapshot(snapshotDir, stagingDir, tables) {
 // replacement whose target is not on the page verbatim, or a line already
 // there. What lands is one
 // "learning-change" row each — {id, file, section, before, after, evidence,
-// commit} — posted once the push step knows the commit, and the 5 a.m.
+// modelOfTomCommit} — posted once the push step has made the commit, and the 5 a.m.
 // digest prints each with its id. Tom objects by replying on that line; the
 // NEXT night applies the inverse first (learningObjections below), records
 // "learning-reverted" or, when the text has moved on, "learning-revert-
@@ -1006,6 +1006,9 @@ export function learningPrompt(input, pages, day) {
 async function learningObjections(run, input, fetchConvex) {
   const outcome = { reverted: 0, failed: 0 };
   const consumed = [];
+  // The rows that go in the reverts' commit: tagged with its message below,
+  // once the count is known, so recordLearningRows finds the commit by it.
+  const revertedRows = [];
   for (const objection of input.objections ?? []) {
     const change = matchObjection(objection, input.changes ?? []);
     const note = { objectionId: objection.eventId, objection: clip(objection.text, 400) };
@@ -1024,10 +1027,12 @@ async function learningObjections(run, input, fetchConvex) {
       const named = { id: change.id, file: change.file, section: change.section ?? null };
       if (result.ok) {
         fs.writeFileSync(abs, bumpUpdated(result.text, run.day));
-        run.learningRows.push({
+        const row = {
           kind: "learning-reverted",
           data: { ...note, ...named, before: change.after, after: change.before },
-        });
+        };
+        run.learningRows.push(row);
+        revertedRows.push(row);
         outcome.reverted += 1;
       } else {
         run.learningRows.push({
@@ -1043,10 +1048,9 @@ async function learningObjections(run, input, fetchConvex) {
     await fetchConvex(run.env, "/tts/learning-objections-consumed", { ids: consumed });
   }
   if (outcome.reverted > 0) {
-    run.commits.push({
-      paths: [MODEL_OF_TOM_DIR],
-      message: `learning: ${run.day} — ${outcome.reverted} line${outcome.reverted === 1 ? "" : "s"} reverted on Tom's objection`,
-    });
+    const message = `learning: ${run.day} — ${outcome.reverted} line${outcome.reverted === 1 ? "" : "s"} reverted on Tom's objection`;
+    for (const row of revertedRows) row.commitMessage = message;
+    run.commits.push({ paths: [MODEL_OF_TOM_DIR], message });
   }
   return outcome;
 }
@@ -1102,13 +1106,11 @@ export async function learningStep(run, deps = {}) {
     }
     summary.changes = result.applied.length;
     summary.refused = result.refused.map((r) => ({ ...r, line: clip(r.line, 200) }));
-    for (const a of result.applied) run.learningRows.push({ kind: "learning-change", data: a });
-    if (result.applied.length > 0) {
-      run.commits.push({
-        paths: [MODEL_OF_TOM_DIR],
-        message: `learning: ${run.day} — ${result.applied.length} line${result.applied.length === 1 ? "" : "s"} from Tom's turns, replies and rulings`,
-      });
+    const message = `learning: ${run.day} — ${result.applied.length} line${result.applied.length === 1 ? "" : "s"} from Tom's turns, replies and rulings`;
+    for (const a of result.applied) {
+      run.learningRows.push({ kind: "learning-change", data: a, commitMessage: message });
     }
+    if (result.applied.length > 0) run.commits.push({ paths: [MODEL_OF_TOM_DIR], message });
   }
   await fetchConvex(run.env, "/tts/event", { kind: "learning-run", data: summary });
   console.log(
@@ -1118,26 +1120,54 @@ export async function learningStep(run, deps = {}) {
 }
 
 /**
- * Post the rows the learning step produced, each with the commit they are
- * in: HEAD after the push (the pushed commit, or the local one when the push
- * was refused — the rows say which through the run's `pushed`). Called after
- * the locked steps, whether or not the push ran.
+ * The commit under model-of-tom/ that a learning row's change is in, found
+ * after the push has made it (and the rebase has given it its final hash):
+ * the newest commit touching model-of-tom/ whose message starts with the
+ * one the row was tagged with. When no commit carries that message — the
+ * push step folds two entries naming model-of-tom/ into the first (a night
+ * with reverts AND new lines is one commit under the reverts' message) —
+ * the newest model-of-tom/ commit THIS RUN made is the one that holds it;
+ * an older commit is never named, and null says nothing was found.
  */
-async function recordLearningRows(run) {
+export function modelOfTomCommit(dir, message, notBefore) {
+  try {
+    const bySubject = git(
+      dir, "log", "-1", "--format=%H", "--fixed-strings", `--grep=${message}`, "--", MODEL_OF_TOM_DIR,
+    ).trim();
+    if (bySubject !== "") return bySubject;
+    const newest = git(dir, "log", "-1", "--format=%H %at", "--", MODEL_OF_TOM_DIR).trim();
+    const [hash, authoredAt] = newest.split(" ");
+    return hash && Number(authoredAt) * 1000 >= notBefore - 60_000 ? hash : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Post the rows the learning step produced, each with the commit its change
+ * is in (`modelOfTomCommit`, above — the row's own commit, not HEAD, which by
+ * now is the sessions commit or the sweep). A row that wrote nothing (a
+ * revert that could not apply) names none. Called after the locked steps,
+ * whether or not the push ran: the commit is the pushed one, or the local one
+ * when the push was refused — the run's `pushed` says which. `deps.fetch` is
+ * for the tests.
+ */
+export async function recordLearningRows(run, deps = {}) {
+  const fetchConvex = deps.fetch ?? convexFetch;
   const rows = run.learningRows ?? [];
   if (rows.length === 0) return;
-  let commit = null;
-  try {
-    commit = git(run.dir, "rev-parse", "HEAD").trim();
-  } catch {
-    // no HEAD to name; the row says so with null
-  }
+  const byMessage = new Map();
+  const commitFor = (message) => {
+    if (typeof message !== "string") return null;
+    if (!byMessage.has(message)) byMessage.set(message, modelOfTomCommit(run.dir, message, run.now));
+    return byMessage.get(message);
+  };
   const failed = [];
   for (const row of rows) {
     try {
-      await convexFetch(run.env, "/tts/event", {
+      await fetchConvex(run.env, "/tts/event", {
         kind: row.kind,
-        data: { ...row.data, day: run.day, commit },
+        data: { ...row.data, day: run.day, modelOfTomCommit: commitFor(row.commitMessage) },
       });
     } catch (err) {
       failed.push(err);
@@ -1699,8 +1729,8 @@ async function main() {
       // Every step it covers is skipped; the post below still runs.
       await recordFailure(run, "lock", err);
     }
-    // The learning step's rows wait for this: HEAD is now the commit they
-    // are in (pushed, or local when the push was refused).
+    // The learning step's rows wait for this: their commits exist now, with
+    // their final hashes (pushed, or local when the push was refused).
     await recordLearningRows(run);
   }
   if (only.includes("post")) await runStep("post");

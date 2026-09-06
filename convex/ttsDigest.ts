@@ -89,8 +89,8 @@ function slackSubjectLabel(raw: unknown): string {
 // The nightly job's model-of-Tom lines (worker/jobs/nightly.mjs learningStep
 // writes them; the digest prints each with its id, which is what a reply in
 // the digest thread names to object — convex/ttsSlack.ts).
-//   kind "learning-change",        data { id, file, section, before, after, evidence, commit }
-//   kind "learning-reverted",      data { id, file, before, after, objection, commit }
+//   kind "learning-change",        data { id, file, section, before, after, evidence, modelOfTomCommit }
+//   kind "learning-reverted",      data { id, file, before, after, objection, modelOfTomCommit }
 //   kind "learning-revert-failed", data { id?, file?, reason, objection }
 export const LEARNING_CHANGE = "learning-change";
 export const LEARNING_REVERTED = "learning-reverted";

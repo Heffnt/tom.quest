@@ -38,10 +38,12 @@ import {
   learningStep,
   locateSection,
   matchObjection,
+  modelOfTomCommit,
   parseLearningAnswer,
   planTableFiles,
   readManifests,
   rebaseInProgress,
+  recordLearningRows,
   revertLearningChange,
   serializeRow,
   sessionCitation,
@@ -240,6 +242,8 @@ describe("the learning step", () => {
         evidence: `session ${SESSION}`,
         sources: [`session ${SESSION}`],
       },
+      // The commit the row will name, found by this message once made.
+      commitMessage: "learning: 2026-09-06 — 1 line from Tom's turns, replies and rulings",
     });
     expect(run.learningRows[0].data.id).toMatch(/^[0-9a-f]{12}$/);
     expect(run.commits).toEqual([
@@ -1080,6 +1084,80 @@ describe("the git half", { timeout: 60_000 }, () => {
   const status = (dir) => run(dir, "status", "--porcelain").trim();
   const subjects = (dir) => run(dir, "log", "--format=%s").trim().split("\n");
   const committers = (dir) => run(dir, "log", "--format=%cn|%an").trim().split("\n");
+
+  it("records on each learning row the commit that holds its line, not HEAD", async () => {
+    const dir = repo();
+    const file = "model-of-tom/areas/climbing.md";
+    write(dir, file, CLIMBING);
+    run(dir, "add", "-A");
+    run(dir, "commit", "-q", "-m", "pages");
+    const r = { ...learningRun(dir), now: Date.now() };
+    const convex = fakeConvex(learningInput());
+    await learningStep(r, { fetch: convex.fetch, model: answering([factChange()]) });
+    commitTree(dir, r.commits, r.day);
+    const learningCommit = run(dir, "rev-parse", "HEAD").trim();
+    expect(subjects(dir)[0]).toBe("learning: 2026-09-06 — 1 line from Tom's turns, replies and rulings");
+    // The sessions step's commit lands after it, so HEAD is not the learning
+    // commit by the time the rows are posted.
+    write(dir, "sessions/manifest-box-2026-09-06.jsonl", "{}\n");
+    run(dir, "add", "-A");
+    run(dir, "commit", "-q", "-m", "sessions");
+    expect(run(dir, "rev-parse", "HEAD").trim()).not.toBe(learningCommit);
+
+    await recordLearningRows(r, { fetch: convex.fetch });
+    const rows = convex.posts.filter((p) => p.body.kind === "learning-change");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].body.data.modelOfTomCommit).toBe(learningCommit);
+    expect(rows[0].body.data.commit).toBeUndefined();
+    expect(rows[0].body.data.day).toBe("2026-09-06");
+  });
+
+  it("names the one commit a folded revert-and-learn night made, and none for a revert that could not apply", async () => {
+    const dir = repo();
+    const file = "model-of-tom/areas/climbing.md";
+    const old = "- Ankle: minor chronic pain from jumping down off the wall (session 47f04bc9, 2026-08-30).";
+    const earlier = "- Rest days are Mondays (session 47f04bc9, 2026-08-30).";
+    write(dir, file, CLIMBING.replace(old, `${old}\n${earlier}`));
+    run(dir, "add", "-A");
+    run(dir, "commit", "-q", "-m", "pages");
+    const r = { ...learningRun(dir), now: Date.now() };
+    const convex = fakeConvex(
+      learningInput({
+        objections: [
+          { eventId: "ev7", at: 1, id: "eeeeeeeeeeee", text: "no" },
+          { eventId: "ev8", at: 2, id: "ffffffffffff", text: "no" },
+        ],
+        changes: [
+          { id: "eeeeeeeeeeee", file, section: "Current state", before: "", after: earlier },
+          { id: "ffffffffffff", file, section: "Current state", before: "", after: "- gone already (session x, 2026-01-01)." },
+        ],
+      }),
+    );
+    await learningStep(r, { fetch: convex.fetch, model: answering([factChange()]) });
+    expect(r.commits.map((c) => c.message)).toEqual([
+      "learning: 2026-09-06 — 1 line reverted on Tom's objection",
+      "learning: 2026-09-06 — 1 line from Tom's turns, replies and rulings",
+    ]);
+    // Both entries name model-of-tom/, so the push step's first commit takes
+    // both writes and the second finds nothing staged: one commit.
+    const made = commitTree(dir, r.commits, r.day);
+    expect(made.made).toEqual(["learning: 2026-09-06 — 1 line reverted on Tom's objection"]);
+    const theCommit = run(dir, "rev-parse", "HEAD").trim();
+    write(dir, "sessions/manifest-box-2026-09-06.jsonl", "{}\n");
+    run(dir, "add", "-A");
+    run(dir, "commit", "-q", "-m", "sessions");
+
+    await recordLearningRows(r, { fetch: convex.fetch });
+    const byKind = Object.fromEntries(
+      convex.posts.filter((p) => p.route === "/tts/event" && p.body.kind !== "learning-run").map((p) => [p.body.kind, p.body.data]),
+    );
+    expect(byKind["learning-reverted"].modelOfTomCommit).toBe(theCommit);
+    expect(byKind["learning-change"].modelOfTomCommit).toBe(theCommit);
+    expect(byKind["learning-revert-failed"].modelOfTomCommit).toBeNull();
+    // An older commit is never the answer: with nothing of this run's under
+    // model-of-tom/, the row says null.
+    expect(modelOfTomCommit(dir, "no such message", Date.now() + 3_600_000)).toBeNull();
+  });
 
   it("commits under the job's identity where the checkout has none configured", () => {
     const dir = repo();
