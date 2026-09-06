@@ -615,9 +615,24 @@ export function learningEvidenceIds(input) {
 /**
  * The model's answer as a list of raw changes. Malformed JSON, or an object
  * without a `changes` array, throws — and the step applies nothing.
+ *
+ * THE THROWN MESSAGE IS A REASON, NEVER THE ANSWER: extractJsonObject's own
+ * error quotes the head of the text, and a failure here becomes a
+ * "nightly-failure" row the digest prints. The model's words about Tom do
+ * not go to Slack through an error; the cron log has them (stderr, below).
  */
 export function parseLearningAnswer(answerText) {
-  const obj = extractJsonObject(answerText);
+  let obj;
+  try {
+    obj = extractJsonObject(answerText);
+  } catch (err) {
+    console.error(`[nightly] learning: the answer could not be parsed: ${err.message}`);
+    throw new Error(
+      err instanceof SyntaxError
+        ? "the learning answer is not valid JSON"
+        : "the learning answer holds no JSON object",
+    );
+  }
   if (obj === null || typeof obj !== "object" || !Array.isArray(obj.changes)) {
     throw new Error("the learning answer has no `changes` array");
   }

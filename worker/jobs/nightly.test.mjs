@@ -322,12 +322,19 @@ describe("the learning step", () => {
     const dir = learningCheckout();
     const run = learningRun(dir);
     const convex = fakeConvex(learningInput());
+    // The reason, never the answer: the message becomes a failure row the
+    // digest prints.
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
     await expect(
-      learningStep(run, { fetch: convex.fetch, model: () => "I could not decide. {changes: [" }),
-    ).rejects.toThrow();
+      learningStep(run, { fetch: convex.fetch, model: () => "I could not decide. {changes: [}" }),
+    ).rejects.toThrow(/^the learning answer is not valid JSON$/);
+    await expect(
+      learningStep(run, { fetch: convex.fetch, model: () => "Tom said something private about his ankle." }),
+    ).rejects.toThrow(/^the learning answer holds no JSON object$/);
     await expect(
       learningStep(run, { fetch: convex.fetch, model: () => '{"lines": []}' }),
     ).rejects.toThrow(/changes/);
+    quiet.mockRestore();
     expect(() => parseLearningAnswer('{"changes": [1]}')).toThrow(/not an object/);
     expect(fs.readFileSync(path.join(dir, "model-of-tom/areas/climbing.md"), "utf8")).toBe(CLIMBING);
     expect(run.learningRows).toEqual([]);
