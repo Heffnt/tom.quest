@@ -158,6 +158,11 @@ export const getSession = query({
 
 // Finalized transcript, seq-ascending, paginated — history rows never change,
 // so pages are cache-friendly forever.
+//
+// Every row says whether the 32KB cut hid anything (`hasOverflow`) and how
+// many bytes the whole payload is (`fullByteLength`), so the page can offer an
+// expand without fetching a single oversized payload to find out. The bytes
+// themselves come from getMessageOverflow below, one message at a time.
 export const getMessages = query({
   args: {
     sessionId: v.id("claudeSessions"),
@@ -165,11 +170,116 @@ export const getMessages = query({
   },
   handler: async (ctx, { sessionId, paginationOpts }) => {
     await requireTomId(ctx);
-    return await ctx.db
+    const page = await ctx.db
       .query("claudeMessages")
       .withIndex("by_session_seq", (q) => q.eq("sessionId", sessionId))
       .order("desc") // newest page first; client reverses within a page
       .paginate(paginationOpts);
+    return {
+      ...page,
+      page: page.page.map((m) => ({
+        ...m,
+        hasOverflow: m.overflow !== undefined,
+        fullByteLength: m.overflow?.byteLength,
+      })),
+    };
+  },
+});
+
+// How much reassembled payload one read returns before it hands back a cursor.
+// A message's overflow can be hundreds of megabytes; a query that collected
+// all of it would simply fail, and silently returning a prefix would be the
+// truncation this whole path exists to undo.
+export const OVERFLOW_READ_BYTES = 1024 * 1024;
+
+/**
+ * The complete payload behind one message, chunks reassembled in order.
+ *
+ * `fromIndex` continues a previous read at its `nextIndex`; concatenating the
+ * `text` of every page in order reproduces exactly what the daemon stored, and
+ * `sha256` (of that same stored text) is what a caller checks it against.
+ * `complete` says whether every chunk the row names is actually here — an
+ * upload that failed permanently leaves the row's promise unkept, and saying
+ * so is better than handing back a hole.
+ */
+async function messageOverflow(
+  ctx: QueryCtx,
+  messageId: Id<"claudeMessages">,
+  fromIndex: number,
+) {
+  const message = await ctx.db.get(messageId);
+  if (!message) return null;
+  if (!message.overflow) {
+    // Nothing was cut: `content` on the row IS the whole payload.
+    return {
+      hasOverflow: false as const,
+      sessionId: message.sessionId,
+      seq: message.seq,
+    };
+  }
+  const { sha256, byteLength, chunkCount } = message.overflow;
+  let stored = 0;
+  let bytes = 0;
+  let nextIndex: number | null = null;
+  const parts: string[] = [];
+  for (let index = fromIndex; index < chunkCount; index++) {
+    const chunk = await ctx.db
+      .query("claudeMessageOverflow")
+      .withIndex("by_session_seq_index", (q) =>
+        q
+          .eq("sessionId", message.sessionId)
+          .eq("seq", message.seq)
+          .eq("index", index),
+      )
+      .first();
+    if (!chunk) break; // an incomplete set — reported, never papered over
+    stored += 1;
+    parts.push(chunk.text);
+    // Character count, not byte count — a budget, and UTF-8 bytes are never
+    // fewer, so a page can overshoot by at most one chunk.
+    bytes += chunk.text.length;
+    if (bytes >= OVERFLOW_READ_BYTES && index + 1 < chunkCount) {
+      nextIndex = index + 1;
+      break;
+    }
+  }
+  return {
+    hasOverflow: true as const,
+    sessionId: message.sessionId,
+    seq: message.seq,
+    sha256,
+    byteLength,
+    chunkCount,
+    fromIndex,
+    // Read this far and stop; null means the payload ends here.
+    nextIndex,
+    // True only when this read walked to the last chunk and found them all.
+    complete: nextIndex === null && fromIndex + stored === chunkCount,
+    text: parts.join(""),
+  };
+}
+
+// Tom's door: what the sessions page expands a cut row into.
+export const getMessageOverflow = query({
+  args: {
+    messageId: v.id("claudeMessages"),
+    fromIndex: v.optional(v.number()),
+  },
+  handler: async (ctx, { messageId, fromIndex }) => {
+    await requireTomId(ctx);
+    return await messageOverflow(ctx, messageId, fromIndex ?? 0);
+  },
+});
+
+// The daemon's door (no identity): the same body behind the session-host key,
+// for the archive sweep that writes raw transcripts into WikiTom.
+export const internalMessageOverflow = internalQuery({
+  args: {
+    messageId: v.id("claudeMessages"),
+    fromIndex: v.optional(v.number()),
+  },
+  handler: async (ctx, { messageId, fromIndex }) => {
+    return await messageOverflow(ctx, messageId, fromIndex ?? 0);
   },
 });
 
@@ -487,6 +597,10 @@ export const internalTranscriptPage = internalQuery({
         kind: m.kind,
         content: m.content,
         parentToolUseId: m.parentToolUseId,
+        // Metadata only, as on the browser's rows: the fork's transcript file
+        // renders the cut, and this says what the cut hid and how to ask for
+        // it (claudeMessageOverflow under this sessionId + seq).
+        overflow: m.overflow,
         createdAt: m.createdAt,
       })),
       // null, not the cursor, on the last page: the daemon's loop stops on it.

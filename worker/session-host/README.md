@@ -61,6 +61,12 @@ Chunk rows rather than Convex file storage because the read side is a QUERY
 (`claudeSessions.internalMessageOverflow`) and `ctx.storage.get` is reachable
 only from an action.
 
+Reading it back: every row `getMessages` returns says `hasOverflow` and
+`fullByteLength`, and `getMessageOverflow` (Tom) / `internalMessageOverflow`
+(the daemon) reassemble one message's chunks in order, ~1MB per read with a
+`nextIndex` to continue, reporting `complete: false` rather than a silent hole
+when a chunk the row names is missing.
+
 A payload that cannot be stored is never lost in silence: the chunk upload
 retries transient failures, and on a permanent rejection (or attempts spent)
 writes the bytes to `/var/cache/tts/sessions/<id>/overflow/<seq>` on the box,
