@@ -2,6 +2,7 @@ import { httpRouter } from "convex/server";
 import type { FunctionArgs } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { auth } from "./auth";
 import { nowContext } from "./tts";
 import { isRulingVerdict } from "./ttsRulings";
@@ -1641,6 +1642,16 @@ http.route({
 // cadence is ~400ms and a failed flush re-sends its whole payload, so a
 // multi-megabyte tool result riding along would wreck both. Same
 // SESSIONS_WORKER_KEY door as poll/ingest.
+//
+// Every field is checked HERE, by type, and every error this route returns
+// is a fixed string. The body carries payload text, and a validator error
+// from the mutation would spell its arguments — text included — into a
+// message the daemon would then store in an error row and print to journald.
+// So the mutation is only ever reached with well-typed arguments, and
+// whatever it throws is reported as one constant.
+const nonNegativeInteger = (value: unknown): value is number =>
+  typeof value === "number" && Number.isInteger(value) && value >= 0;
+
 const sessionsOverflow = httpAction(async (ctx, request) => {
   const denied = sessionsAuth(request);
   if (denied) return denied;
@@ -1654,19 +1665,33 @@ const sessionsOverflow = httpAction(async (ctx, request) => {
   if (typeof b.sessionId !== "string" || b.sessionId === "") {
     return jsonResponse(400, { error: "sessionId required" });
   }
+  for (const field of ["seq", "index", "chunkCount"] as const) {
+    if (!nonNegativeInteger(b[field])) {
+      return jsonResponse(400, {
+        error: `${field} (non-negative integer) required`,
+      });
+    }
+  }
   if (typeof b.text !== "string") {
     return jsonResponse(400, { error: "text (string) required" });
   }
   try {
     const result = await ctx.runMutation(
       internal.claudeSessions.internalIngestOverflow,
-      b as never,
+      {
+        sessionId: b.sessionId as Id<"claudeSessions">,
+        seq: b.seq as number,
+        index: b.index as number,
+        chunkCount: b.chunkCount as number,
+        text: b.text,
+      },
     );
+    // A refusal is permanent by the daemon's rule (4xx other than 408/429):
+    // re-sending the same chunk cannot change the verdict.
+    if (!result.ok) return jsonResponse(409, { error: result.reason });
     return jsonResponse(200, result);
-  } catch (e) {
-    return jsonResponse(400, {
-      error: e instanceof Error ? e.message : String(e),
-    });
+  } catch {
+    return jsonResponse(400, { error: "overflow chunk rejected" });
   }
 });
 

@@ -2583,6 +2583,75 @@ describe("message overflow (the complete payload)", () => {
     expect(rows.map((r) => r.text).sort()).toEqual(["abc", "def"]);
   });
 
+  // The door itself (convex/http.ts): every field typed before the mutation
+  // is reached, and every error a fixed string — a validator error would
+  // spell the arguments, payload text included, into what the daemon logs.
+  it("POST /sessions/overflow validates by type and never echoes the body", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const sessionId = await createBasicSession(tom);
+    process.env.SESSIONS_WORKER_KEY = "test-sessions-key";
+    try {
+      const post = (path: string, body: unknown) =>
+        t.fetch(path, {
+          method: "POST",
+          headers: {
+            "X-Sessions-Key": "test-sessions-key",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        });
+      const secret = "the payload text that must not come back";
+      const bad = await post("/sessions/overflow", {
+        sessionId,
+        seq: "0",
+        index: 0,
+        chunkCount: 1,
+        text: secret,
+      });
+      expect(bad.status).toBe(400);
+      const badBody = await bad.text();
+      expect(badBody).toBe(JSON.stringify({ error: "seq (non-negative integer) required" }));
+      expect(badBody).not.toContain(secret);
+
+      // A sessionId of the wrong shape reaches the mutation's own validator;
+      // what comes back is still the constant, not the arguments.
+      const wrongId = await post("/sessions/overflow", {
+        sessionId: "not-an-id",
+        seq: 0,
+        index: 0,
+        chunkCount: 1,
+        text: secret,
+      });
+      expect(wrongId.status).toBe(400);
+      const wrongBody = await wrongId.text();
+      expect(wrongBody).toBe(JSON.stringify({ error: "overflow chunk rejected" }));
+      expect(wrongBody).not.toContain(secret);
+
+      const ok = await post("/sessions/overflow", {
+        sessionId,
+        seq: 0,
+        index: 0,
+        chunkCount: 1,
+        text: secret,
+      });
+      expect(ok.status).toBe(200);
+      expect(await ok.json()).toEqual({ ok: true, index: 0 });
+
+      // A refusal is a 409: permanent by the daemon's rule, fixed string.
+      const refused = await post("/sessions/overflow", {
+        sessionId,
+        seq: 0,
+        index: 1,
+        chunkCount: 1,
+        text: secret,
+      });
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toEqual({ error: "malformed chunk" });
+    } finally {
+      delete process.env.SESSIONS_WORKER_KEY;
+    }
+  });
 });
 
 // ── The transcript the daemon copies into a fork's workspace ─────────────────
