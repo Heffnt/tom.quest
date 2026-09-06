@@ -623,7 +623,7 @@ describe("timing migration (waiting, condition-bound, return conditions, v1 batc
 });
 
 describe("batch needs migration (path → needs edges between batches)", () => {
-  type BatchSeed = Partial<Doc<"batches">> & { statement: string };
+  type BatchSeed = Partial<WideBatch> & { statement: string };
   async function seedBatches(t: ReturnType<typeof convexTest>, rows: BatchSeed[]) {
     return await t.run(async (ctx) => {
       const ids: Record<string, Id<"batches">> = {};
@@ -638,8 +638,12 @@ describe("batch needs migration (path → needs edges between batches)", () => {
       return ids;
     });
   }
-  const allBatches = (t: ReturnType<typeof convexTest>) =>
-    t.run(async (ctx) => ctx.db.query("batches").collect());
+  const allBatches = async (
+    t: ReturnType<typeof convexTest>,
+  ): Promise<WideBatch[]> =>
+    (await t.run(async (ctx) =>
+      ctx.db.query("batches").collect(),
+    )) as unknown as WideBatch[];
 
   const seed = (): BatchSeed[] => [
     { statement: "release 0", path: { name: "release", index: 0 } },
@@ -687,7 +691,8 @@ describe("batch needs migration (path → needs edges between batches)", () => {
     expect(by["paper 4"].needs).toBeUndefined();
     expect(by.unpathed.needs).toBeUndefined();
     expect(by["done 1"].needs).toEqual([ids["done 0"]]); // terminal rows mapped too
-    // The path stays until NARROW; updatedAt is untouched.
+    // The path the walk read is left on the row — this migration derives, it
+    // does not delete — and updatedAt is untouched.
     expect(by["release 1"].path).toEqual({ name: "release", index: 1, edge: "must" });
     for (const b of rows) expect(b.updatedAt).toBe(NOW);
     expect(await eventsOfKind(t, "batch-needs-derived")).toHaveLength(3);

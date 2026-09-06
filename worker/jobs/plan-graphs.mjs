@@ -32,9 +32,8 @@
 // going to happen, and leaving it blocking would strand the graph forever).
 // Batches are sequenced by `needs` too (the lifeos update, phase 7): a batch
 // lists the ids of the batches that must land before it, the same word as
-// between todos. The named `path` (index and a "must"/"helps" edge to the
-// previous batch) is RETIRED: still accepted from an older plan during the
-// widen, derived into needs by a migration, and dropped at NARROW.
+// between todos. That is the only sequencing there is — the named `path` it
+// succeeded was derived into needs by a migration and dropped.
 //
 // THE PLAN PASS'S ONE RESPONSIBILITY: for each batch, propose the graph. It
 // executes nothing and rules on nothing. Every gate lives on the server
@@ -628,10 +627,6 @@ function prompt(ctx) {
     `  merely makes another batch easier is not a need.`,
     `- ready — a todo is ready when it is active and every todo in its needs is`,
     `  done. That set is the frontier: the work that can start right now.`,
-    `- path — RETIRED. Older batches still carry a named path with an index`,
-    `  and a "must"/"helps" edge to the previous batch; it is shown so you`,
-    `  know the sequence Tom once stated, and a "must" edge means the same as`,
-    `  a need on that previous batch. Do not write new paths; write needs.`,
     `- repos — the repositories a batch's work lives in, DECLARED by you on`,
     `  the batch. Every session TTS opens for this batch or for a task inside`,
     `  it checks out exactly this set, so a batch whose work touches two`,
@@ -651,7 +646,7 @@ function prompt(ctx) {
     ctx.writingStandard,
     ``,
     `EXISTING BATCHES WITH THEIR GRAPHS (JSON). Each: id, statement,`,
-    `groundUpExplanationPreview, needs (batch ids), path (retired), repos,`,
+    `groundUpExplanationPreview, needs (batch ids), repos,`,
     `frozen, tasks, goals. A goal carries id, statement, condition, status,`,
     `mustNotBreak (Tom's line, or null), codeRepo, codeExternalId. A task`,
     `carries id,`,
@@ -740,8 +735,7 @@ function prompt(ctx) {
     `SEQUENCE BATCHES WITH NEEDS. When a batch genuinely cannot start until`,
     `another batch has landed, put that batch's id in its "needs". Most`,
     `batches need nothing and run beside each other; a need is a true`,
-    `prerequisite, never "this would help". Never write a "path" — it is`,
-    `retired; an existing path is preserved by omission until it is dropped.`,
+    `prerequisite, never "this would help".`,
     ``,
     `GOALS ARE THE ACCUMULATED TODOS. A goal is an END STATE Tom wanted, and`,
     `it already exists as a todo — put its id in "goalIds". Never write a goal`,
@@ -963,7 +957,6 @@ export async function planGraphs(context, pending, io) {
         MAX_BATCH_PREVIEW_CHARS,
       ),
       needs: b.needs ?? [],
-      path: b.path ?? null,
       // null = never declared (omitting "repos" preserves that); [] = declared
       // as needing no checkout. The planner has to be able to tell them apart.
       repos: b.repos ?? null,

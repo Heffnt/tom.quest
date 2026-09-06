@@ -388,34 +388,22 @@ export default defineSchema({
   // `goal` (a checkable state of the world the batch is for).
   //
   // Vocabulary is Tom's and closed (UI = code): "needs" for dependencies
-  // between todos, "ready" for the todos whose needs are all done (the
-  // frontier — convex/ttsShared.ts owns the ONE implementation), "must"/"helps"
-  // for the edges between batches along a path, kind "task"/"goal".
+  // between todos and equally between batches, "ready" for the todos whose
+  // needs are all done (the frontier — convex/ttsShared.ts owns the ONE
+  // implementation), kind "task"/"goal".
   batches: defineTable({
     statement: v.string(), // display text
     groundUpExplanation: v.optional(v.string()), // the "more" layer
-    // Sequencing BETWEEN batches: a named path this batch sits on, at
-    // `index`. `edge` describes the link to the PREVIOUS batch in the path —
-    // "must" (that one has to land first) or "helps" (it only makes this
-    // easier). The first batch of a path has no edge.
-    // RETIRED (the lifeos update, phase 7): sequencing between batches is
-    // `needs` below. Kept readable during the widen; dropped at NARROW once
-    // ttsMigrations.internalMigrateBatchNeeds has derived the edges and the
-    // paths bar is gone.
-    path: v.optional(
-      v.object({
-        name: v.string(),
-        index: v.number(),
-        edge: v.optional(v.union(v.literal("must"), v.literal("helps"))),
-      }),
-    ),
     // Sequencing BETWEEN batches, the same word as between todos: this batch
     // is worked only once every batch named here is done or archived
-    // (ttsShared.buildDoneSet's rule). Derived from the retired path by the
-    // migration — a "must" edge becomes a need on the previous batch of the
-    // path; a "helps" edge becomes nothing, because "only makes this easier"
-    // is not a prerequisite and needs holds prerequisites only. Bounded at
-    // MAX_NEEDS; every id names a batch (enforced by the planner's pen).
+    // (ttsShared.buildDoneSet's rule). This is the ONLY sequencing between
+    // batches (the lifeos update, phase 7): the retired `path` (a name, a
+    // position and a "must"/"helps" edge to the previous batch) was derived
+    // into it by ttsMigrations.internalMigrateBatchNeeds — a "must" edge
+    // became a need on the previous batch of the path; a "helps" edge became
+    // nothing, because "only makes this easier" is not a prerequisite and
+    // needs holds prerequisites only. Bounded at MAX_NEEDS; every id names a
+    // batch (enforced by the planner's pen).
     needs: v.optional(v.array(v.id("batches"))),
     status: v.union(
       v.literal("active"),

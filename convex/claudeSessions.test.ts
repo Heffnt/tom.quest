@@ -4232,7 +4232,6 @@ describe("frontier scheduler", () => {
     args: {
       statement: string;
       groundUpExplanation?: string;
-      path?: { name: string; index: number; edge?: "must" | "helps" };
       tasks: {
         statement: string;
         actor: "tom" | "agent";
@@ -4522,39 +4521,40 @@ describe("frontier scheduler", () => {
     expect(await workSessions(t)).toHaveLength(0);
   });
 
-  // witness: delete the path comparison from the frontier sort in
+  // witness: delete the due comparison from the frontier sort in
   // convex/claudeSessions.ts and this test goes red — the tick's one admission
-  // would go to the later stage of the path, working ahead of the stage the
-  // path is actually waiting on.
-  it("walks the earlier position on a path first", async () => {
+  // would go by insertion order, and the dated work would wait behind it.
+  // Sequencing between batches is `needs`, and batchNeedsMet has already
+  // refused anything waiting on another batch by the time this sort runs, so
+  // dates are what orders the work that may all legitimately proceed (Tom's
+  // ruling 2026-08-29: needs and dates, never a rating).
+  it("walks the soonest-due ready task first", async () => {
     const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
+    await withTom(t);
     await enableAuto(t, { maxNewPerTick: 1 });
     await heartbeat(t);
-    // The LATER batch is created first, so an unsorted walk would reach it
+    // The UNDATED batch is created first, so an unsorted walk would reach it
     // first and this test would be answered by insertion order.
     await storeGraph(t, {
-      statement: "the second stage",
-      path: { name: "the release", index: 1, edge: "must" },
+      statement: "the unhurried batch",
       tasks: [{ statement: "cut the release notes", actor: "agent" }],
     });
-    const firstBatch = await storeGraph(t, {
-      statement: "the first stage",
-      path: { name: "the release", index: 0 },
+    const soon = await storeGraph(t, {
+      statement: "the dated batch",
       tasks: [{ statement: "freeze the branch", actor: "agent" }],
     });
+    const freeze = byStatement(await batchTodos(t, soon), "freeze the branch");
+    await t.run(async (ctx) =>
+      ctx.db.patch(freeze._id, {
+        dueAt: Date.now() + 86_400_000,
+        timingClass: "dated",
+      }),
+    );
 
     await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
     const sessions = await workSessions(t);
     expect(sessions).toHaveLength(1);
-    const freeze = byStatement(
-      await batchTodos(t, firstBatch),
-      "freeze the branch",
-    );
     expect(sessions[0].todoId).toBe(freeze._id);
-    // The mission states where the batch sits, in the path vocabulary.
-    const text = await missionText(tom, sessions[0]._id);
-    expect(text).toContain('path: "the release", position 0');
   });
 
   // witness: drop batchNeedsMet from the frontier walk — a batch whose need
@@ -4589,31 +4589,6 @@ describe("frontier scheduler", () => {
     expect(later.map((s) => s.todoId)).toContain(
       byStatement(await batchTodos(t, second.batchId as Id<"batches">), "cut the release notes")._id,
     );
-  });
-
-  // witness: drop the pathed-before-unpathed clause (the `pa === undefined`
-  // test) and this goes red — stated sequencing would lose to a batch that
-  // states none.
-  it("walks a batch on a path before a batch on none", async () => {
-    const t = convexTest({ schema, modules });
-    await withTom(t);
-    await enableAuto(t, { maxNewPerTick: 1 });
-    await heartbeat(t);
-    await storeGraph(t, {
-      statement: "the unsequenced batch",
-      tasks: [{ statement: "read the inbox", actor: "agent" }],
-    });
-    const pathed = await storeGraph(t, {
-      statement: "the sequenced batch",
-      path: { name: "the release", index: 0 },
-      tasks: [{ statement: "freeze the branch", actor: "agent" }],
-    });
-
-    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
-    const sessions = await workSessions(t);
-    expect(sessions).toHaveLength(1);
-    const freeze = byStatement(await batchTodos(t, pathed), "freeze the branch");
-    expect(sessions[0].todoId).toBe(freeze._id);
   });
 
   // witness: move the frontier walk below the legacy lanes in

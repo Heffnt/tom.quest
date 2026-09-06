@@ -51,7 +51,6 @@ const storeGraph = (
     batchId: string;
     statement: string;
     groundUpExplanation: string;
-    path: { name: string; index: number; edge?: "must" | "helps" };
     tasks: ReturnType<typeof graphTask>[];
     goalIds: string[];
     archive: boolean;
@@ -260,7 +259,6 @@ describe("TTS plan graph (internalStorePlanGraph)", () => {
     const res = await storeGraph(t, {
       statement: "  sign the lease  ",
       groundUpExplanation: "why this matters, from the ground up",
-      path: { name: "housing", index: 0 },
       tasks: [
         graphTask("draft the questions"),
         graphTask("call the landlord", { actor: "tom", needs: [0] }),
@@ -280,7 +278,6 @@ describe("TTS plan graph (internalStorePlanGraph)", () => {
     expect(batch.groundUpExplanation).toBe(
       "why this matters, from the ground up",
     );
-    expect(batch.path).toEqual({ name: "housing", index: 0 });
     expect(batch.status).toBe("active");
     expect(batch.tomTouchedAt).toBeUndefined(); // an agent write is never a Tom touch
     expect(res.batchId).toBe(batch._id);
@@ -1605,7 +1602,6 @@ describe("POST /tts/plan-graph", () => {
     const res = await postGraph(t, {
       statement: "  sign the lease  ",
       groundUpExplanation: "what this is, from the ground up",
-      path: { name: "housing", index: 0, edge: "must" },
       tasks: [
         { statement: "read the lease", actor: "tom" },
         { statement: "list the questions", actor: "agent", needs: [0] },
@@ -1615,7 +1611,6 @@ describe("POST /tts/plan-graph", () => {
     expect(await res.json()).toMatchObject({ created: 2, skipped: [] });
     const batch = await oneBatch(t);
     expect(batch.statement).toBe("sign the lease");
-    expect(batch.path).toEqual({ name: "housing", index: 0, edge: "must" });
     const todos = await batchTodos(t, batch._id);
     expect(byStatement(todos, "read the lease")?.actor).toBe("tom");
     expect(byStatement(todos, "list the questions")?.needs).toEqual([
@@ -1820,20 +1815,22 @@ describe("POST /tts/plan-graph", () => {
     expect((await allBatches(t)).find((x) => x._id === c)!.needs).toEqual([b, a]);
   });
 
-  // witness: pass a half-formed path straight through — the mutation's
-  // validator would refuse the object and cost the whole call, when an absent
-  // path simply preserves whatever is stored.
-  it("drops a broken path whole rather than costing the call", async () => {
+  // witness: forward an unknown key from the payload into the mutation and
+  // this goes red — the mutation's validator refuses an argument it does not
+  // declare, so one stale field in a plan the box has not yet stopped sending
+  // would cost the whole call. `path` is the retired sequencing (its edges are
+  // needs now), and it is the field a not-yet-rolled-out box would still send.
+  it("ignores the retired path rather than costing the call", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
     const res = await postGraph(t, {
       statement: "ship the paper",
-      path: { name: "research" }, // no index
+      path: { name: "research", index: 0, edge: "must" },
       tasks: [{ statement: "draft the section", actor: "agent" }],
     });
     expect(res.status).toBe(200);
     expect((await res.json()).created).toBe(1);
-    expect((await oneBatch(t)).path).toBeUndefined();
+    expect((await oneBatch(t)).statement).toBe("ship the paper");
   });
 
   it("binds goals, archives, and echoes a batch id", async () => {

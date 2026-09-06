@@ -1549,23 +1549,6 @@ const GRAPH_STATUSES = ["active", "done"] as const;
 
 type DroppedTask = { index: number; statement: string; why: string };
 
-// A path places this batch in a named sequence; `index` orders it and `edge`
-// describes the link to the previous batch ("must" = that one has to land
-// first, "helps" = it only makes this easier). A path missing either required
-// field is dropped whole — the mutation reads an absent path as "preserve the
-// stored one", which is the safe reading of a broken one too.
-function sanitizeBatchPath(p: unknown): Record<string, unknown> | undefined {
-  if (typeof p !== "object" || p === null) return undefined;
-  const r = p as Record<string, unknown>;
-  if (typeof r.name !== "string" || typeof r.index !== "number") {
-    return undefined;
-  }
-  if (!Number.isFinite(r.index)) return undefined;
-  const out: Record<string, unknown> = { name: r.name, index: r.index };
-  if (r.edge === "must" || r.edge === "helps") out.edge = r.edge;
-  return out;
-}
-
 function sanitizeGraphTask(
   item: unknown,
   index: number,
@@ -1650,7 +1633,6 @@ const ttsPlanGraph = httpAction(async (ctx, request) => {
   }
   const droppedTasks: DroppedTask[] = [];
   const tasks = b.tasks.map((task, i) => sanitizeGraphTask(task, i, droppedTasks));
-  const path = sanitizeBatchPath(b.path);
   try {
     const result = await ctx.runMutation(internal.tts.internalStorePlanGraph, {
       batchId: typeof b.batchId === "string" ? b.batchId : undefined,
@@ -1659,10 +1641,10 @@ const ttsPlanGraph = httpAction(async (ctx, request) => {
         typeof b.groundUpExplanation === "string"
           ? b.groundUpExplanation
           : undefined,
-      path: path as never,
-      // The batches this one needs done first (the lifeos update: the
-      // successor of path). Absent preserves; the mutation drops a name that
-      // is not a batch with a named skip.
+      // The batches this one needs done first. Absent preserves; the
+      // mutation drops a name that is not a batch with a named skip. A "path"
+      // in an older payload is IGNORED here rather than refused — the field is
+      // retired and its edges are already needs.
       needs: Array.isArray(b.needs)
         ? b.needs.filter((x): x is string => typeof x === "string")
         : undefined,

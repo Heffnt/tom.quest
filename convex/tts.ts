@@ -76,13 +76,6 @@ const PLAN_STEP = v.object({
 });
 // ── Schema v2 graph shapes (ratified 2026-08-29) ─────────────────────────────
 const ACTOR = v.union(v.literal("tom"), v.literal("agent"));
-// Sequencing between batches; `edge` describes the link to the PREVIOUS batch
-// in the path. "must" / "helps" are Tom's words and the whole vocabulary.
-const BATCH_PATH = v.object({
-  name: v.string(),
-  index: v.number(),
-  edge: v.optional(v.union(v.literal("must"), v.literal("helps"))),
-});
 // A `needs` reference inside a plan-graph payload: a STRING is an existing
 // dtsTodos id; a NUMBER is the index of a task EARLIER in the same payload, so
 // a model can lay down a small graph in one call. The two are unambiguous (a
@@ -1961,10 +1954,8 @@ export const internalStorePlanGraph = internalMutation({
     batchId: v.optional(v.string()), // absent = create the batch
     statement: v.string(),
     groundUpExplanation: v.optional(v.string()),
-    // The retired sequencing (still accepted during the widen) and its
-    // successor: the batches this one needs done first. Absent PRESERVES the
-    // stored value for both, like every field on this pen.
-    path: v.optional(BATCH_PATH),
+    // Sequencing between batches: the batches this one needs done first.
+    // Absent PRESERVES the stored value, like every field on this pen.
     needs: v.optional(v.array(v.string())),
     // The repos this batch's work lives in (Tom's ruling 2026-08-30: a batch
     // DECLARES its repos; the session scheduler no longer guesses them from a
@@ -2331,7 +2322,6 @@ export const internalStorePlanGraph = internalMutation({
         statement,
         groundUpExplanation:
           args.groundUpExplanation ?? batch.groundUpExplanation,
-        path: args.path ?? batch.path,
         needs: batchNeeds ?? batch.needs,
         repos:
           args.repos === undefined
@@ -2341,7 +2331,6 @@ export const internalStorePlanGraph = internalMutation({
       const stored = {
         statement: batch.statement,
         groundUpExplanation: batch.groundUpExplanation,
-        path: batch.path,
         needs: batch.needs,
         repos: batch.repos,
       };
@@ -2352,7 +2341,6 @@ export const internalStorePlanGraph = internalMutation({
       result.batchId = await ctx.db.insert("batches", {
         statement,
         groundUpExplanation: args.groundUpExplanation,
-        path: args.path,
         needs: batchNeeds,
         repos:
           args.repos === undefined

@@ -324,29 +324,36 @@ export const internalMigrateTiming = internalMutation({
 // batch on its path (the one with the greatest index below its own); a
 // "helps" edge becomes nothing — "only makes this easier" is not a
 // prerequisite, and needs holds prerequisites only; a first or unlinked
-// batch needs nothing. The path is left in place until NARROW.
+// batch needs nothing. The path itself is gone from the validator; a stored
+// one still comes back off the row, which is what keeps this walk re-runnable.
 //
 // One transaction: the batches table is human-scale (a few dozen rows for
 // years, per its schema comment), and deriving an edge needs the whole path
 // in view. Same dry run, counts, idempotence, and event as the walks above.
 export const BATCH_NEEDS_MIGRATION = "batch-needs";
 
+/** The retired shape, as a stored batch still holds it. The validator no
+ * longer declares `path` (the lifeos update, phase 7) and Convex returns an
+ * undeclared field on an existing row unchanged, so this walk reads it through
+ * a loose view — which is what lets a verification re-run stay possible after
+ * the narrow. */
+type RetiredPath = { path?: { name: string; index: number; edge?: string } };
+
 /** The previous batch on a path: the greatest index below `index`. Two
  * batches sharing that index (the planner never wrote one, but nothing
  * refused it) tie, and the first in `all` — table order, oldest first — wins:
  * the strict `>` below keeps the one already found. Stated so the derived
  * edge is the same on every run. */
-export function previousOnPath<T extends { path?: { name: string; index: number } }>(
-  batch: T,
-  all: readonly T[],
-): T | undefined {
-  const path = batch.path;
+export function previousOnPath<T>(batch: T, all: readonly T[]): T | undefined {
+  const pathOf = (b: T) => (b as RetiredPath).path;
+  const path = pathOf(batch);
   if (!path) return undefined;
   let best: T | undefined;
   for (const other of all) {
-    if (other === batch || !other.path || other.path.name !== path.name) continue;
-    if (other.path.index >= path.index) continue;
-    if (!best || other.path.index > best.path!.index) best = other;
+    const op = pathOf(other);
+    if (other === batch || !op || op.name !== path.name) continue;
+    if (op.index >= path.index) continue;
+    if (!best || op.index > pathOf(best)!.index) best = other;
   }
   return best;
 }
@@ -365,15 +372,16 @@ export const internalMigrateBatchNeeds = internalMutation({
       "no-path": 0,
     };
     for (const batch of all) {
-      if (!batch.path) {
+      const path = (batch as unknown as RetiredPath).path;
+      if (!path) {
         page["no-path"]++;
         continue;
       }
-      if (batch.path.edge === "helps") {
+      if (path.edge === "helps") {
         page["helps-dropped"]++;
         continue;
       }
-      if (batch.path.edge !== "must") {
+      if (path.edge !== "must") {
         page.unlinked++;
         continue;
       }
@@ -393,7 +401,7 @@ export const internalMigrateBatchNeeds = internalMutation({
         await logEvent(ctx, "batch-needs-derived", undefined, {
           batchId: batch._id,
           needs: previous._id,
-          path: batch.path,
+          path,
         });
       }
     }

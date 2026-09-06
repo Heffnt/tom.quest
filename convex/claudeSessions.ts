@@ -2791,20 +2791,12 @@ function buildWorkerPrompt(args: {
     "- A BATCH holds how a set of todos gets completed. It is not itself a todo and it is never worked directly.",
     "- A TASK is work someone does. A GOAL is a state of the world the batch is for, written as a condition that is either true yet or not.",
     "- NEEDS are the todos a todo cannot proceed without. A todo is READY when every one of its needs is done (archived counts as done — a need that was set aside is not going to happen). The same word sequences batches: a batch's needs are the batches that must land before its work is handed out.",
-    "- A PATH is the retired spelling of that sequence: a named sequence of batches, where a MUST edge meant the previous batch has to land first and a HELPS edge meant it only makes this one easier. A batch may still show one.",
     '- DISPLAY TEXT is the short line always on screen. A GROUND-UP EXPLANATION is the self-contained layer behind it: a complete HTML document, shown fullscreen, whose exact form the standard below specifies.',
     "",
     "Everything you write into TTS obeys the writing standard in the model-of-tom files this prompt begins with, verbatim.",
     "",
     `THE BATCH ("${batch.statement}"):`,
     promptFact("ground-up explanation", batch.groundUpExplanation),
-    batch.path
-      ? `path: "${batch.path.name}", position ${batch.path.index}${
-          batch.path.edge !== undefined
-            ? `, linked to the previous batch by a "${batch.path.edge}" edge`
-            : " (the first batch on it)"
-        }`
-      : null,
     batchNeeds.length > 0
       ? `this batch needs (every one of them done — that is why its work is open): ${batchNeeds
           .map((n) => `"${n}"`)
@@ -3873,29 +3865,14 @@ export const internalAutoSchedule = internalMutation({
         }
       }
     }
-    // THE ORDER: where the work sits on a path first, then how soon it is due,
-    // then how long it has sat. Paths are the sequencing Tom stated between
-    // batches, so they outrank everything else: candidates are grouped by path
-    // name, and inside a path the earliest position comes first (that is the
-    // stage the path is actually waiting on). At one position a "must" link
-    // beats a "helps" link — a must-linked batch is on the critical line of
-    // the path and a helps-linked one is not. A batch on no path sorts after
-    // every batch that is on one: a stated sequence is a stronger signal than
-    // no sequence at all.
-    const edgeRank = (edge?: string): number => (edge === "must" ? 0 : 1);
+    // THE ORDER: how soon the work is due, then how long it has sat. The
+    // sequencing Tom stated between batches is not a tiebreak here — it is
+    // `needs`, and batchNeedsMet above has already refused every candidate
+    // whose batch is waiting on another. What reaches this sort is work that
+    // may all legitimately proceed, so dates order it (Tom's ruling
+    // 2026-08-29: ordering comes from needs and dates, never a rating). The
+    // retired `path` sorted here by name, then position, then must-over-helps.
     graphCandidates.sort((a, b) => {
-      const pa = a.batch?.path;
-      const pb = b.batch?.path;
-      if ((pa === undefined) !== (pb === undefined)) {
-        return pa === undefined ? 1 : -1;
-      }
-      if (pa && pb) {
-        if (pa.name !== pb.name) return pa.name < pb.name ? -1 : 1;
-        if (pa.index !== pb.index) return pa.index - pb.index;
-        if (edgeRank(pa.edge) !== edgeRank(pb.edge)) {
-          return edgeRank(pa.edge) - edgeRank(pb.edge);
-        }
-      }
       const dueA = a.todo.dueAt ?? Infinity;
       const dueB = b.todo.dueAt ?? Infinity;
       if (dueA !== dueB) return dueA - dueB;
