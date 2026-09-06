@@ -600,6 +600,13 @@ export default defineSchema({
     archivedAt: v.optional(v.number()),
   })
     .index("by_status", ["status", "updatedAt"])
+    // The dated reads: the 5 a.m. missed rollover ("active rows whose date is
+    // before the new day") and the digest's due-and-overdue section ("active
+    // rows due by the end of today"). Both used to scan every active row, or
+    // the whole table, and filter in code. Undated rows sort BEFORE every
+    // number in the index, so a range starting at gte("dueAt", 0) reads the
+    // dated ones only.
+    .index("by_status_and_due", ["status", "dueAt"])
     .index("by_readiness", ["readiness"])
     .index("by_batch", ["batchId"])
     // Ingestion lookups: the Canvas ASSIGNMENT sync and the repeating-todo
@@ -806,12 +813,11 @@ export default defineSchema({
 
   // One row per TTS day (5 a.m. America/New_York boundary, key YYYY-MM-DD).
   // The Jarvis Box posts a Claude-prepared queue + digest text before 5;
-  // a fallback cron builds a simple-rules queue if none arrived. The digest
-  // SEND is OFF since Tom's 2026-08-29 outbound-Slack ruling: the digest crons
-  // are unregistered (convex/crons.ts:32-35) and sendDigest returns on
-  // OUTBOUND_SLACK_ENABLED=false, so digestSentAt is no longer stamped and
-  // there is no send-or-silence monitoring signal. The queue and digest text
-  // are still written here every morning and read on the TTS pages.
+  // a fallback cron builds a simple-rules queue if none arrived. Since the
+  // lifeos update (phase 2) the digest is composed deterministically by
+  // convex/ttsDigest.ts and `digestText` has no reader; the queue is still
+  // written every morning and read on the TTS pages, and digestSentAt is
+  // stamped again by each sent digest. Both go in phase 7.
   dtsDailyQueues: defineTable({
     day: v.string(),
     entries: v.array(

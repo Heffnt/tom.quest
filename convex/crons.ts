@@ -29,10 +29,11 @@ crons.cron("tts repeats (est)", "30 9 * * *", internal.ttsRepeats.internalGenera
 crons.cron("tts queue prep (edt)", "45 8 * * *", internal.tts.internalPrepareFallbackQueue, {});
 crons.cron("tts queue prep (est)", "45 9 * * *", internal.tts.internalPrepareFallbackQueue, {});
 
-// Tom 2026-08-29: outbound Slack is OFF — Slack is inbound dump only until the messaging shape is redesigned.
-// The 5 a.m. digest crons ("0 9" EDT / "0 10" EST → internal.ttsSync.sendDigest)
-// are unregistered; sendDigest itself also returns early. Re-add these two lines
-// to restore the sends-even-when-empty digest.
+// The 5 a.m. digest (the lifeos update, phase 2): the missed rollover, then the
+// deterministic composer, then one post to #tts — every day, even when short.
+// Behind DIGEST_ENABLED in convex/ttsSync.ts (its own switch, per message kind).
+crons.cron("tts digest (edt)", "0 9 * * *", internal.ttsSync.sendDigest, {});
+crons.cron("tts digest (est)", "0 10 * * *", internal.ttsSync.sendDigest, {});
 
 // The HOURLY UPDATE (Tom's ruling 2026-08-30): schedule + agents working +
 // what happened since the last one. Registered here but gated by its OWN

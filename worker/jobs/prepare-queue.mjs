@@ -9,11 +9,9 @@
 //
 // RELIABILITY SPLIT (why failure here is acceptable): this worker job is the
 // smart-but-optional half. The Convex side runs a dumb fallback queue prep at
-// 4:45 a.m. NY. The digest half of that split has been OFF since Tom's
-// 2026-08-29 outbound-Slack ruling — the digest crons are unregistered
-// (convex/crons.ts:32-35) and sendDigest returns on
-// OUTBOUND_SLACK_ENABLED=false — so nothing is sent and no send-or-silence
-// signal exists today; the 4:45 fallback prep still covers the queue.
+// 4:45 a.m. NY, and the 5 a.m. digest no longer depends on this script at all
+// — it is composed deterministically in Convex (convex/ttsDigest.ts) and sent
+// by ttsSync.sendDigest, so the digest text written here has no reader.
 // Consequently, on ANY failure this script just logs and exits 1 — no retries,
 // no heroics.
 //

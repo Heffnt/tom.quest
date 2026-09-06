@@ -87,20 +87,26 @@ export const internalRecordSlackSent = internalMutation({
 });
 
 /** A send Slack refused (or that never reached Slack) is a fact too: one
- * "slack-send-failed" row with the subject, so the digest can report it. */
+ * "slack-send-failed" row with the subject, so the digest can report it.
+ * One row per SEND, not per attempt — the door has already retried, and
+ * `attempts` says how many times it tried. The row carries the composed `text`
+ * because that is what a later resend posts unchanged: the message Tom missed
+ * is the message he eventually gets. */
 export const internalRecordSlackFailed = internalMutation({
   args: {
     channel: v.optional(v.string()),
     threadTs: v.optional(v.string()),
     subject: SLACK_SUBJECT,
     error: v.string(),
+    text: v.optional(v.string()),
+    attempts: v.optional(v.number()),
   },
-  handler: async (ctx, { channel, threadTs, subject, error }) => {
+  handler: async (ctx, { channel, threadTs, subject, error, text, attempts }) => {
     await logEvent(
       ctx,
       "slack-send-failed",
       subject.kind === "todo" ? subject.id : undefined,
-      { channel, threadTs, subject, error },
+      { channel, threadTs, subject, error, text, attempts },
     );
   },
 });
