@@ -410,7 +410,10 @@ export default function BatchesTab() {
       const args = { todoId, verdict, sentence: sentence || undefined };
       if (verdict !== "session") return recordRuling(args);
       const todo = (todos ?? []).find((t) => t._id === todoId);
-      if (!todo) return recordRuling(args);
+      // Recording the ruling anyway would be the worst of both: a "session"
+      // ruling nothing consumes, holding the todo in "ruled, applying" until
+      // Tom rules again. The verdict row shows this instead.
+      if (!todo) throw new Error("TTS todo not found — reload the page");
       const tab = reserveSessionTab();
       return (async () => {
         try {

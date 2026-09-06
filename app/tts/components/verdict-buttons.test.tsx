@@ -191,6 +191,24 @@ describe("the verdict row", () => {
     ).toBeTruthy();
   });
 
+  it("shows a handler that refuses synchronously, before any await", async () => {
+    // What the batches tab does when the todo behind an item is gone: it
+    // throws rather than recording a session ruling it cannot open a session
+    // for, which would pin the item in "ruled, applying" for good. onRule is
+    // called inside the press, so the throw arrives before the first await.
+    const onRule = vi.fn(() => {
+      throw new Error("TTS todo not found — reload the page");
+    });
+    render(<VerdictButtons subject="todo" statement="s" onRule={onRule} />);
+    const session = screen.getByRole("button", { name: "session" });
+    fireEvent.click(session);
+    await vi.waitFor(() =>
+      expect(screen.getByText("TTS todo not found — reload the page")).toBeTruthy(),
+    );
+    // And the row is usable again rather than stuck busy.
+    expect(session.hasAttribute("disabled")).toBe(false);
+  });
+
   it("shows an error the caller holds instead of throwing", () => {
     // The session launch hooks catch their own failures into state; a session
     // verdict whose session never opened has to say so on this row.
