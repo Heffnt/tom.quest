@@ -48,7 +48,7 @@
 
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { loadEnv, ttsItemLink } from "./tts-lib.mjs";
+import { declined, declinedLine, loadEnv, ttsItemLink } from "./tts-lib.mjs";
 
 export const CURSOR_FILE = "/var/lib/tts/outlook-cursor";
 export const FIRST_RUN_LOOKBACK_MS = 24 * 3600 * 1000;
@@ -90,8 +90,21 @@ export function missingKeys(env) {
   return OUTLOOK_KEYS.filter((key) => !env[key]);
 }
 
+/** The name Tom declines this job by: `integration: outlook`. */
+export const INTEGRATION_NAME = "outlook";
+
 async function main() {
   const env = loadEnv();
+  // FIRST, before the credential: an integration Tom has declined does not
+  // run. This is the job most likely to be declined — it is the one whose
+  // credential he has not minted yet — so the check has to come before the
+  // "still waiting for the keys" line, or a declined integration would keep
+  // asking for them.
+  const ruling = await declined(env, INTEGRATION_NAME);
+  if (ruling) {
+    console.log(declinedLine("poll-outlook", ruling));
+    return;
+  }
   const missing = missingKeys(env);
   if (missing.length > 0) {
     console.log(

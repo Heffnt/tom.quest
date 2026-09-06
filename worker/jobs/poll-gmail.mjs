@@ -49,6 +49,8 @@ import { fileURLToPath } from "node:url";
 import {
   captureContext,
   convexFetch,
+  declined,
+  declinedLine,
   extractJsonObject,
   loadEnv,
   runClaude,
@@ -122,8 +124,18 @@ function header(message, name) {
   return h?.value ?? "";
 }
 
+/** The name Tom declines this job by: `integration: gmail`. */
+export const INTEGRATION_NAME = "gmail";
+
 async function main() {
   const env = loadEnv();
+  // FIRST, before the credential and before any read: an integration Tom has
+  // declined does not run (worker/jobs/tts-lib.mjs declined()).
+  const ruling = await declined(env, INTEGRATION_NAME);
+  if (ruling) {
+    console.log(declinedLine("poll-gmail", ruling));
+    return;
+  }
   if (!env.GMAIL_CLIENT_ID || !env.GMAIL_CLIENT_SECRET || !env.GMAIL_REFRESH_TOKEN) {
     console.log("[poll-gmail] not configured (GMAIL_* missing) — skipping");
     return;

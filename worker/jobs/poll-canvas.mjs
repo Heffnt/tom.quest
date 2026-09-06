@@ -60,6 +60,8 @@ import { fileURLToPath } from "node:url";
 import {
   captureContext,
   convexFetch,
+  declined,
+  declinedLine,
   extractJsonObject,
   loadEnv,
   runClaude,
@@ -366,8 +368,18 @@ ${JSON.stringify(candidates.map(({ id, courseCode, title, body }) => ({ id, cour
   );
 }
 
+/** The name Tom declines this job by: `integration: canvas`. Both halves. */
+export const INTEGRATION_NAME = "canvas";
+
 async function main() {
   const env = loadEnv();
+  // FIRST, before the credential and before any read: an integration Tom has
+  // declined does not run (worker/jobs/tts-lib.mjs declined()).
+  const ruling = await declined(env, INTEGRATION_NAME);
+  if (ruling) {
+    console.log(declinedLine("poll-canvas", ruling));
+    return;
+  }
   if (!env.CANVAS_TOKEN) {
     console.log("[poll-canvas] not configured (CANVAS_TOKEN missing) — skipping");
     return;

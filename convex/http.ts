@@ -201,15 +201,24 @@ http.route({ path: "/tts/capture", method: "POST", handler: ttsCapture });
 //   captureTriage — the two judgements a poller makes (does this imply an
 //     action by Tom; does it need him today), from the synced WikiTom skill,
 //     falling back to ttsShared.CAPTURE_TRIAGE_RULES until the sync has run.
+//   declinedIntegrations — the integrations Tom has declined, each with the
+//     date and his sentence (convex/ttsIntegrations.ts). A poller checks its
+//     own name against this list BEFORE anything else and exits when it is
+//     there: an integration he declined does not run, and the ruling that says
+//     so is the same kind of record as every other decision of his.
 const ttsCaptureContext = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  const triageSkill = await ctx.runQuery(internal.ttsSkills.internalGetSkill, {
-    name: CAPTURE_TRIAGE_SKILL,
-  });
+  const [triageSkill, declinedIntegrations] = await Promise.all([
+    ctx.runQuery(internal.ttsSkills.internalGetSkill, {
+      name: CAPTURE_TRIAGE_SKILL,
+    }),
+    ctx.runQuery(internal.ttsIntegrations.internalDeclinedIntegrations, {}),
+  ]);
   const synced = triageSkill?.body.trim() ?? "";
   return jsonResponse(200, {
     captureTriage: synced === "" ? CAPTURE_TRIAGE_RULES : synced,
+    declinedIntegrations,
   });
 });
 

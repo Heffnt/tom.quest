@@ -165,6 +165,36 @@ export async function captureContext(env) {
   return await convexFetch(env, "/tts/capture-context");
 }
 
+/**
+ * Tom's ruling declining this integration, or null.
+ *
+ * AN INTEGRATION HE DECLINES IS AN ARCHIVED TODO WITH HIS RULING ON IT
+ * (convex/ttsIntegrations.ts): he dumps the line `integration: outlook` and
+ * archives it with the archive verdict, and the optional sentence on that
+ * verdict is his reason. There is no enabled flag anywhere — the thing that
+ * already records a decision of his records this one, so it keeps his words,
+ * its date, and its place in everything that reads rulings.
+ *
+ * Every poller asks this FIRST and exits with one line when the answer is not
+ * null. The returned row is `{ name, todoId, ruledAt, sentence }`; the caller
+ * prints the date and the sentence so the log says why, not just that.
+ */
+export async function declined(env, name) {
+  const { declinedIntegrations } = await captureContext(env);
+  const target = String(name).trim().toLowerCase();
+  return (declinedIntegrations ?? []).find((d) => d.name === target) ?? null;
+}
+
+/** The one line a poller prints when it stands down. Exported for tests. */
+export function declinedLine(job, ruling) {
+  const on = new Date(ruling.ruledAt).toISOString().slice(0, 10);
+  return (
+    `[${job}] declined by Tom on ${on}` +
+    (ruling.sentence ? `: ${ruling.sentence}` : "") +
+    " — skipping"
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Slack Web API
 // ---------------------------------------------------------------------------

@@ -72,6 +72,41 @@ on a schedule:
 7. **apply-rulings** (every 10 min) — see the ruling loop below.
 8. **execute-approved** (hourly at :45) — see the ruling loop below.
 
+## Declining an integration
+
+**An integration Tom declines is an archived todo with his ruling on it.**
+There is no integrations table, no enabled flag, no config page: the thing that
+already records a decision of his records this one too, so it keeps his own
+words, its date, and its place in everything that reads rulings.
+
+To decline one, dump the line into `#dump` and archive it with the **archive**
+verdict:
+
+```
+integration: outlook
+```
+
+The optional sentence on that verdict is the reason. Every poller asks
+`declined(env, "<its name>")` before anything else — before its credential
+check, before any read — and exits with one line naming the date and the
+sentence:
+
+```
+[poll-outlook] declined by Tom on 2026-09-05: not worth the credential — skipping
+```
+
+The names are `gmail`, `canvas` (both halves) and `outlook`; the prefix is
+matched case-insensitively, so `Integration: Outlook` is the same ruling.
+
+Both halves are required — the row must be **archived** *and* its newest ruling
+must be **archive**. An archived row alone is not a decision of his (a cleanup
+or a batch archive can archive a row), and a ruling alone is not either. Ruling
+again takes the decline back: an approve after an archive re-enables the
+integration and leaves the history of having declined it. The Friday weekly
+gather lists integrations by state, with the ruling date.
+
+The one home for all of that is `convex/ttsIntegrations.ts`.
+
 ## The code-todo ruling loop
 
 CMT (`github.com/Heffnt/ComplexMultiTrigger`) keeps its standing intent in
