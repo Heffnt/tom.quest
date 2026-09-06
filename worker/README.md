@@ -117,7 +117,10 @@ York, an hour before the 5 a.m. digest reads what it wrote. It works in the
 WikiTom checkout at `/root/wikitom` — a full clone, `sessions/` included,
 made by `setup.sh` over the SSH alias `github.com-wikitom` (a `Host` entry
 in `/root/.ssh/config` pointing at the deploy key `/root/.ssh/wikitom`,
-readable by root only). Five steps, in order; a step that fails writes one
+readable by root only). `setup.sh` also puts github.com's host keys in
+`/root/.ssh/known_hosts`, each verified against GitHub's published
+fingerprints before it is trusted — a rebuild has no terminal to answer a
+host-key prompt with — and reports git's own words when a clone is refused. Five steps, in order; a step that fails writes one
 `nightly-failure` row to `dtsEvents` (`POST /tts/event`, naming the step and
 git's or the server's own words) and the next step runs anyway. Steps 1 to 4
 write the checkout and run under one hold of `/var/lock/tts-wikitom.lock` —

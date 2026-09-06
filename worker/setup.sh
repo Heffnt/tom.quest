@@ -218,10 +218,53 @@ fi
 # which is tolerated here in one line: the job then records a failure row
 # each night and nothing else on this box is held up. Never re-cloned on a
 # re-run: the checkout may hold commits a refused push left local.
+#
+# First, github.com's SSH host keys in root's known_hosts. A bare rebuild has
+# an empty known_hosts and no terminal to answer StrictHostKeyChecking's
+# prompt with, so the first ssh — this clone, and every later push — is
+# refused for a reason no log here would name. The keys are fetched with
+# ssh-keyscan and TRUSTED ONLY IF their fingerprint is one GitHub publishes
+# (below); an unexpected key is reported and not written, because a
+# keyscan on its own trusts whatever answers.
+GITHUB_SSH_FINGERPRINTS="SHA256:uNiVztksCsDhcc0u9e8BujQXVUpKZIDTMczCvj3tD2s
+SHA256:p2QAMXNIC1TJYWeIOttrVc98/R1BUFWu3/LiyKgUfQM
+SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+touch /root/.ssh/known_hosts
+chmod 600 /root/.ssh/known_hosts
+GITHUB_KEYS="$(mktemp)"
+if ssh-keyscan -t rsa,ecdsa,ed25519 github.com > "$GITHUB_KEYS" 2>/dev/null && [ -s "$GITHUB_KEYS" ]; then
+  KEYS_ADDED=0
+  while IFS= read -r KEY_LINE; do
+    case "$KEY_LINE" in ""|\#*) continue ;; esac
+    KEY_FP="$(printf '%s\n' "$KEY_LINE" | ssh-keygen -lf - 2>/dev/null | awk '{print $2}')"
+    if [ -z "$KEY_FP" ]; then
+      echo "  a github.com key from ssh-keyscan could not be fingerprinted — not trusting it"
+      continue
+    fi
+    case "$GITHUB_SSH_FINGERPRINTS" in
+      *"$KEY_FP"*) ;;
+      *) echo "  github.com offered an unpublished host key ($KEY_FP) — NOT trusting it"; continue ;;
+    esac
+    if ! grep -qF "$KEY_LINE" /root/.ssh/known_hosts; then
+      printf '%s\n' "$KEY_LINE" >> /root/.ssh/known_hosts
+      KEYS_ADDED=$((KEYS_ADDED + 1))
+    fi
+  done < "$GITHUB_KEYS"
+  echo "  github.com host keys verified; $KEYS_ADDED added to /root/.ssh/known_hosts"
+else
+  echo "  ssh-keyscan github.com failed — the first WikiTom clone or push will refuse the host key"
+fi
+rm -f "$GITHUB_KEYS"
+
 if [ ! -d /root/wikitom/.git ]; then
-  git clone --quiet git@github.com-wikitom:Heffnt/WikiTom.git /root/wikitom 2>/dev/null \
+  # git's own words on one line, so a refused clone says WHY (a missing deploy
+  # key, an unknown host, a network). Nothing secret is in them: the key is a
+  # file ssh reads, never a string in the URL.
+  CLONE_ERROR="$(git clone --quiet git@github.com-wikitom:Heffnt/WikiTom.git /root/wikitom 2>&1 >/dev/null)" \
     && echo "  cloned WikiTom into /root/wikitom" \
-    || echo "  WikiTom clone refused (deploy key not on GitHub yet?) — the nightly job records a failure until it is; re-run setup.sh after"
+    || echo "  WikiTom clone refused — git said: $(printf '%s' "$CLONE_ERROR" | tr '\n' ' ' | cut -c1-300) — the nightly job records a failure until this works; re-run setup.sh after"
 fi
 # The committer identity every git command in that checkout writes with. The
 # nightly job passes it to the commands it names itself, but `git pull
