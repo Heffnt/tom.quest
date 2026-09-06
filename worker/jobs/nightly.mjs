@@ -10,12 +10,13 @@
 //   1. snapshot — copies every Convex table (the six auth tables excepted)
 //      into the WikiTom checkout at tts/snapshot/, one JSON-lines file per
 //      table, deterministic, written only where the bytes changed.
-//   2. learning — reads what Tom did since the last learning run (his
-//      session turns with the agent's replies around them, his Slack
-//      replies, his rulings), makes one model call over the model-of-tom
-//      pages, and applies the lines it proposes that the rules allow — one
-//      "learning-change" row each, with the commit, once the push has made
-//      it. See learningStep.
+//   2. learning — applies Tom's objections from the digest thread (the
+//      inverse of each named change, or a row saying why not), then reads
+//      what he did since the last learning run (his session turns with the
+//      agent's replies around them, his Slack replies, his rulings), makes
+//      one model call over the model-of-tom pages, and applies the lines it
+//      proposes that the rules allow — one "learning-change" row each, with
+//      the commit, once the push has made it. See learningStep.
 //   3. sessions — archives every Codex rollout and Claude SDK session file on
 //      this box that WikiTom's sessions/ does not already hold at that
 //      content, in phase 1's layout, and appends the manifest.
@@ -538,8 +539,10 @@ export function syncSnapshot(snapshotDir, stagingDir, tables) {
 // "learning-change" row each — {id, file, section, before, after, evidence,
 // commit} — posted once the push step knows the commit, and the 5 a.m.
 // digest prints each with its id. Tom objects by replying on that line; the
-// NEXT night applies the inverse first (a later commit). Report and object
-// is the default: nothing waits on him.
+// NEXT night applies the inverse first (learningObjections below), records
+// "learning-reverted" or, when the text has moved on, "learning-revert-
+// failed" with the reason, and the digest reports it. Report and object is
+// the default: nothing waits on him.
 //
 // Every write happens at the end of the step, after the whole answer has
 // been checked, so a refused answer leaves the checkout untouched. Auto-
@@ -742,6 +745,47 @@ export function applyLearningChanges(pages, changes, { day, evidenceIds = null }
   return { pages: texts, applied, refused };
 }
 
+/**
+ * The inverse of one recorded change against a page's CURRENT text: an
+ * addition's line is removed, a replacement's line becomes what it replaced.
+ * When the line is no longer there as written — a later change replaced it,
+ * or Tom edited the page — nothing is touched and the reason says so.
+ */
+export function revertLearningChange(text, change) {
+  const after = String(change.after ?? "").trim();
+  if (after === "") return { ok: false, reason: "the change records no line to look for" };
+  const lines = text.split("\n");
+  const at = lines.findIndex((l) => l.trim() === after);
+  if (at === -1) {
+    return { ok: false, reason: `the line is no longer on ${change.file} as written` };
+  }
+  const before = String(change.before ?? "").trim();
+  if (before === "") lines.splice(at, 1);
+  else lines[at] = before;
+  return { ok: true, text: lines.join("\n") };
+}
+
+/**
+ * The change an objection names: by the change's id (or a prefix of at least
+ * 8 hex characters of it, which is how the digest prints them and how Tom
+ * types them back), else by the line's text quoted in the objection.
+ */
+export function matchObjection(objection, changes) {
+  const text = String(objection.text ?? "");
+  const named = [objection.id, ...(text.match(/\b[0-9a-f]{8,12}\b/g) ?? [])].filter(
+    (x) => typeof x === "string" && x.length >= 8,
+  );
+  for (const token of named) {
+    const hit = changes.find((ch) => typeof ch.id === "string" && ch.id.startsWith(token));
+    if (hit) return hit;
+  }
+  for (const ch of changes) {
+    const after = String(ch.after ?? "").trim().replace(/^- /, "");
+    if (after.length >= 20 && text.includes(after)) return ch;
+  }
+  return null;
+}
+
 /** The pages the step writes, as a Map of checkout-relative path → text. */
 export function readLearningPages(dir) {
   const pages = new Map();
@@ -823,6 +867,61 @@ export function learningPrompt(input, pages, day) {
 }
 
 /**
+ * Tom's objections, applied before tonight's learning. Each unconsumed
+ * "learning-objection" row names a change (by id or by the line's text); the
+ * inverse is applied to the page's current text and one row records it
+ * either way. Every objection is consumed here once, so a night that could
+ * not revert says so once and the digest shows it once.
+ */
+async function learningObjections(run, input, fetchConvex) {
+  const outcome = { reverted: 0, failed: 0 };
+  const consumed = [];
+  for (const objection of input.objections ?? []) {
+    const change = matchObjection(objection, input.changes ?? []);
+    const note = { objectionId: objection.eventId, objection: clip(objection.text, 400) };
+    if (change === null) {
+      run.learningRows.push({
+        kind: "learning-revert-failed",
+        data: { ...note, id: objection.id, reason: "no learning change matches the objection" },
+      });
+      outcome.failed += 1;
+    } else {
+      const abs = path.join(run.dir, change.file);
+      const result =
+        typeof change.file === "string" && isLearningFile(change.file) && fs.existsSync(abs)
+          ? revertLearningChange(fs.readFileSync(abs, "utf8"), change)
+          : { ok: false, reason: `${change.file} is not a page in the checkout` };
+      const named = { id: change.id, file: change.file, section: change.section ?? null };
+      if (result.ok) {
+        fs.writeFileSync(abs, bumpUpdated(result.text, run.day));
+        run.learningRows.push({
+          kind: "learning-reverted",
+          data: { ...note, ...named, before: change.after, after: change.before },
+        });
+        outcome.reverted += 1;
+      } else {
+        run.learningRows.push({
+          kind: "learning-revert-failed",
+          data: { ...note, ...named, reason: result.reason },
+        });
+        outcome.failed += 1;
+      }
+    }
+    consumed.push(objection.eventId);
+  }
+  if (consumed.length > 0) {
+    await fetchConvex(run.env, "/tts/learning-objections-consumed", { ids: consumed });
+  }
+  if (outcome.reverted > 0) {
+    run.commits.push({
+      paths: [MODEL_OF_TOM_DIR],
+      message: `learning: ${run.day} — ${outcome.reverted} line${outcome.reverted === 1 ? "" : "s"} reverted on Tom's objection`,
+    });
+  }
+  return outcome;
+}
+
+/**
  * The step. `deps` is for the tests: the Convex call and the model call,
  * defaulting to the real ones. The rows this step produces go to
  * run.learningRows and are posted by recordLearningRows once the push has
@@ -843,12 +942,16 @@ export async function learningStep(run, deps = {}) {
     sessions: new Set(input.tomTurns.map((t) => t.sessionId)).size,
     slackReplies: input.slackReplies.length,
     rulings: input.rulings.length,
+    objections: (input.objections ?? []).length,
     reverted: 0,
     revertFailed: 0,
     model: null,
     changes: 0,
     refused: [],
   };
+  const objections = await learningObjections(run, input, fetchConvex);
+  summary.reverted = objections.reverted;
+  summary.revertFailed = objections.failed;
 
   if (summary.tomTurns + summary.slackReplies + summary.rulings > 0) {
     const pages = readLearningPages(run.dir);

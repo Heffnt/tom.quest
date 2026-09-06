@@ -1412,7 +1412,8 @@ http.route({ path: "/tts/export", method: "GET", handler: ttsExport });
 
 // GET /tts/learning-input?until=<epoch ms>[&since=<epoch ms>] — what the
 // learning step reads: the turns Tom typed with the agent's replies around
-// them, his Slack replies, his rulings, in the window. `since` omitted means
+// them, his Slack replies, his rulings, in the window; and the objections
+// not yet acted on with the changes they can name. `since` omitted means
 // "where the last learning run stopped" (convex/ttsNightly.ts).
 const ttsLearningInput = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
@@ -1436,6 +1437,34 @@ const ttsLearningInput = httpAction(async (ctx, request) => {
 });
 
 http.route({ path: "/tts/learning-input", method: "GET", handler: ttsLearningInput });
+
+// POST /tts/learning-objections-consumed — body { ids: [<dtsEvents id>] }.
+// The job stamps each objection it acted on (reverted, or could not revert
+// and said so), so the next night's read does not return it again.
+const ttsLearningObjectionsConsumed = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const ids = (body as { ids?: unknown } | null)?.ids;
+  if (!Array.isArray(ids) || !ids.every((x) => typeof x === "string")) {
+    return jsonResponse(400, { error: "ids (array of strings) required" });
+  }
+  const result = await ctx.runMutation(internal.ttsNightly.internalConsumeLearningObjections, {
+    ids,
+  });
+  return jsonResponse(200, { ok: true, ...result });
+});
+
+http.route({
+  path: "/tts/learning-objections-consumed",
+  method: "POST",
+  handler: ttsLearningObjectionsConsumed,
+});
 
 // POST /tts/event — one dtsEvents row from the worker. Body: { kind, data? }.
 // The job records a failed step ("nightly-failure"), its learning run

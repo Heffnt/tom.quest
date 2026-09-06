@@ -8,10 +8,13 @@
 //   GET  /tts/learning-input what the learning step reads: the turns Tom
 //                            typed since the last learning run with the
 //                            agent's replies around them, his Slack replies,
-//                            and his rulings
+//                            his rulings, and the objections not yet applied
 //   POST /tts/event          one dtsEvents row — how the job records a
 //                            failed step, its learning run, each change it
-//                            made, and its summary
+//                            made, each reversal, and its summary
+//   POST /tts/learning-objections-consumed
+//                            stamps the objections the job has acted on, so
+//                            the next night does not act on them again
 //
 // The post of the model-of-tom files lives with the store (ttsSkills.ts).
 
@@ -158,6 +161,10 @@ export const LEARNING_INPUT_MAX = 2000;
 // and one assistant-text row can be a 32KB essay.
 export const LEARNING_REPLY_TURNS = 300;
 export const LEARNING_REPLY_CHARS = 1500;
+// The objections not yet acted on, and the changes an objection can name:
+// the newest of each, more than a week of nights.
+export const LEARNING_OBJECTIONS_MAX = 200;
+export const LEARNING_CHANGES_MAX = 500;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function clipReply(text: unknown): string | null {
@@ -271,13 +278,63 @@ export const internalLearningInput = internalQuery({
       sentence: r.sentence,
       quote: r.provenance?.quote,
     }));
-    return { since, sinceSource, until, tomTurns, slackReplies, rulings };
+    // The objections Tom has raised that no night has acted on yet (an
+    // objection is consumed once, whichever way it went), oldest first, and
+    // the changes an objection can name — by the change's id or by the
+    // line's text; the job does the matching.
+    const objections = (
+      await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_at", (q) => q.eq("kind", "learning-objection"))
+        .order("desc")
+        .take(LEARNING_OBJECTIONS_MAX)
+    )
+      .filter((e) => e.consumedAt === undefined)
+      .reverse()
+      .map((e) => {
+        const d = (e.data ?? {}) as { id?: unknown; text?: unknown };
+        return {
+          eventId: e._id,
+          at: e.at,
+          id: typeof d.id === "string" ? d.id : null,
+          text: typeof d.text === "string" ? d.text : "",
+        };
+      });
+    const changes = (
+      await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_at", (q) => q.eq("kind", "learning-change"))
+        .order("desc")
+        .take(LEARNING_CHANGES_MAX)
+    ).map((e) => ({ eventId: e._id, at: e.at, ...((e.data ?? {}) as Record<string, unknown>) }));
+    return { since, sinceSource, until, tomTurns, slackReplies, rulings, objections, changes };
+  },
+});
+
+/** Stamp the objections the job has acted on, whichever way it went. An id
+ * that is not an unconsumed "learning-objection" row is skipped rather than
+ * an error: the list came from the read above, and a stale id costs nothing. */
+export const internalConsumeLearningObjections = internalMutation({
+  args: { ids: v.array(v.string()) },
+  handler: async (ctx, { ids }) => {
+    const now = Date.now();
+    let consumed = 0;
+    for (const raw of ids) {
+      const id = ctx.db.normalizeId("dtsEvents", raw);
+      if (id === null) continue;
+      const row = await ctx.db.get(id);
+      if (!row || row.kind !== "learning-objection" || row.consumedAt !== undefined) continue;
+      await ctx.db.patch(id, { consumedAt: now });
+      consumed += 1;
+    }
+    return { consumed };
   },
 });
 
 // ── The event pen ────────────────────────────────────────────────────────────
 // The job's kinds are its own ("nightly-failure", "learning-run",
-// "learning-change", "nightly-run"); the pattern keeps the pen to lowercase kebab-case names
+// "learning-change", "learning-reverted", "learning-revert-failed",
+// "nightly-run"); the pattern keeps the pen to lowercase kebab-case names
 // rather than letting a worker write, say, "slack-sent" and confuse the
 // digest's own bookkeeping — the route refuses the kinds Convex writes itself.
 export const EVENT_KIND_PATTERN = /^[a-z][a-z0-9-]{1,63}$/;
