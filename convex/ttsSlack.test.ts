@@ -329,6 +329,82 @@ describe("the #tts thread for a todo that needs Tom", () => {
     expect(await events(t, "needs-tom")).toHaveLength(0);
     expect(await scheduledSends(t)).toHaveLength(0);
   });
+
+  // ── The door the box poller comes through ────────────────────────────────
+  // The mutation above is only reachable from POST /tts/needs-tom, and the
+  // route is the half that decides who may open a thread in Tom's Slack and
+  // what a garbled body does. Both are checked here, as they are on every
+  // other /tts route.
+  describe("POST /tts/needs-tom", () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    async function open(
+      t: ReturnType<typeof convexTest>,
+      body: unknown,
+      key = "s3cret",
+    ) {
+      return await t.fetch("/tts/needs-tom", {
+        method: "POST",
+        headers: { "X-TTS-Key": key, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it("opens the thread for a caller carrying the worker key", async () => {
+      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+      const t = convexTest(schema, modules);
+      const id = await aTodo(t);
+      const res = await open(t, { todoId: id, text: "Needs you today", key: KEY });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ ok: true, opened: true, key: KEY });
+      expect(await scheduledSends(t)).toHaveLength(1);
+    });
+
+    it("is closed to a caller without the worker key", async () => {
+      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+      const t = convexTest(schema, modules);
+      const id = await aTodo(t);
+      const res = await open(t, { todoId: id, text: "Needs you today", key: KEY }, "nope");
+      expect(res.status).toBe(401);
+      expect(await events(t, "needs-tom")).toHaveLength(0);
+      expect(await scheduledSends(t)).toHaveLength(0);
+    });
+
+    it("refuses a body missing any of the three fields, and an unknown todo", async () => {
+      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+      const t = convexTest(schema, modules);
+      const id = await aTodo(t);
+      for (const body of [
+        {},
+        { text: "Needs you today", key: KEY }, // no todoId
+        { todoId: id, key: KEY }, // no text
+        { todoId: id, text: "Needs you today" }, // no key
+        { todoId: id, text: "   ", key: KEY }, // a blank message is no message
+        { todoId: id, text: "Needs you today", key: "  " },
+        { todoId: 17, text: "Needs you today", key: KEY }, // not even a string
+        { todoId: "not-an-id", text: "Needs you today", key: KEY },
+      ]) {
+        expect((await open(t, body)).status).toBe(400);
+      }
+      // Nothing was written and nothing was sent for any of them.
+      expect(await events(t, "needs-tom")).toHaveLength(0);
+      expect(await scheduledSends(t)).toHaveLength(0);
+    });
+
+    it("refuses a body that is not JSON at all", async () => {
+      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+      const t = convexTest(schema, modules);
+      const res = await t.fetch("/tts/needs-tom", {
+        method: "POST",
+        headers: { "X-TTS-Key": "s3cret", "Content-Type": "application/json" },
+        body: "{ not json",
+      });
+      expect(res.status).toBe(400);
+      expect(await scheduledSends(t)).toHaveLength(0);
+    });
+  });
 });
 
 describe("threaded replies from Tom", () => {
