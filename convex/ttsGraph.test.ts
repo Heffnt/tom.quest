@@ -1815,12 +1815,15 @@ describe("POST /tts/plan-graph", () => {
     expect((await allBatches(t)).find((x) => x._id === c)!.needs).toEqual([b, a]);
   });
 
-  // witness: forward an unknown key from the payload into the mutation and
-  // this goes red — the mutation's validator refuses an argument it does not
-  // declare, so one stale field in a plan the box has not yet stopped sending
-  // would cost the whole call. `path` is the retired sequencing (its edges are
-  // needs now), and it is the field a not-yet-rolled-out box would still send.
-  it("ignores the retired path rather than costing the call", async () => {
+  // `path` is the retired sequencing — its edges are `needs` now. While the
+  // box had not rolled out the route IGNORED it, so one stale field would not
+  // cost a whole plan; worker/setup.sh has since run (main 6825608) and the
+  // route refuses it by name instead, so a planner still writing paths shows
+  // up in its own error rather than losing sequencing it thinks it wrote.
+  //
+  // witness: drop the check and this goes red — the payload would store a
+  // batch with its sequencing quietly discarded.
+  it("refuses the retired path by name and stores nothing", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
     const res = await postGraph(t, {
@@ -1828,9 +1831,9 @@ describe("POST /tts/plan-graph", () => {
       path: { name: "research", index: 0, edge: "must" },
       tasks: [{ statement: "draft the section", actor: "agent" }],
     });
-    expect(res.status).toBe(200);
-    expect((await res.json()).created).toBe(1);
-    expect((await oneBatch(t)).statement).toBe("ship the paper");
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("path is retired");
+    expect((await allBatches(t)).length).toBe(0);
   });
 
   it("binds goals, archives, and echoes a batch id", async () => {

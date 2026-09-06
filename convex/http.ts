@@ -1531,10 +1531,10 @@ http.route({ path: "/tts/event", method: "POST", handler: ttsEvent });
 
 // ── POST /tts/plan-graph — the planner's pen (schema v2) ─────────────────────
 // ONE batch's graph per call, the successor to POST /tts/batches. Body:
-// { batchId?, statement, groundUpExplanation?, path?, tasks: [...], goalIds?,
-// archive? }. Same drop-don't-reject discipline as /tts/batches: the body is
-// model-written JSON, so it is PROJECTED to the known shape and the mutation's
-// per-item skip report is the real validator.
+// { batchId?, statement, groundUpExplanation?, needs?, repos?, tasks: [...],
+// goalIds?, archive? }. Same drop-don't-reject discipline as /tts/batches: the
+// body is model-written JSON, so it is PROJECTED to the known shape and the
+// mutation's per-item skip report is the real validator.
 //
 // ONE DIFFERENCE, and it is the whole reason this sanitizer is not a copy of
 // the batch one: a task's `needs` may address an EARLIER TASK BY ITS POSITION
@@ -1632,6 +1632,18 @@ const ttsPlanGraph = httpAction(async (ctx, request) => {
   if (!Array.isArray(b.tasks)) {
     return jsonResponse(400, { error: "tasks (array) required" });
   }
+  // `path` was a batch's sequencing (name, index, must/helps edge) and it is
+  // retired — its edges are `needs` now. Until worker/setup.sh had rolled out
+  // it was IGNORED here, because one retired field would otherwise have cost a
+  // whole plan; the box has since caught up (main 6825608), so a payload still
+  // carrying it comes from code nobody is running and is refused by name. A
+  // stale planner is then visible in the job's error rather than silently
+  // losing the sequencing it thought it wrote.
+  if (b.path !== undefined) {
+    return jsonResponse(400, {
+      error: "path is retired — sequence a batch with needs (batch ids)",
+    });
+  }
   const droppedTasks: DroppedTask[] = [];
   const tasks = b.tasks.map((task, i) => sanitizeGraphTask(task, i, droppedTasks));
   try {
@@ -1643,9 +1655,7 @@ const ttsPlanGraph = httpAction(async (ctx, request) => {
           ? b.groundUpExplanation
           : undefined,
       // The batches this one needs done first. Absent preserves; the
-      // mutation drops a name that is not a batch with a named skip. A "path"
-      // in an older payload is IGNORED here rather than refused — the field is
-      // retired and its edges are already needs.
+      // mutation drops a name that is not a batch with a named skip.
       needs: Array.isArray(b.needs)
         ? b.needs.filter((x): x is string => typeof x === "string")
         : undefined,
