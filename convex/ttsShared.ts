@@ -268,26 +268,43 @@ export function goalCheckable(todo: GoalTodo): boolean {
   return (todo.condition ?? "").trim() !== "";
 }
 
+// ── The model-of-tom files every prompt begins with (the lifeos update, phase 4)
+// The nightly job on the Jarvis Box posts these WikiTom files, with the commit
+// they were read at, to POST /tts/model-of-tom; convex/ttsSkills.ts stores
+// them and modelOfTomPrelude is the one read that prepends them, in THIS
+// order, to every prompt that writes to Tom or plans for him. The three named
+// files come first; then, for each page under areas/, the "Current state" and
+// "Must not break" sections (the job extracts them by heading; the server
+// only orders). The job cannot import this file (Node ESM on the box), so it
+// posts in the order it reads and the server's order is the authority.
+export const MODEL_OF_TOM_FIRST = [
+  "model-of-tom/writing.md",
+  "model-of-tom/priorities.md",
+  "model-of-tom/schedule.md",
+] as const;
+export const MODEL_OF_TOM_AREAS_DIR = "model-of-tom/areas/";
+
 // ── The writing standard — THE FALLBACK COPY (Tom's ruling, 2026-08-29) ─────
 // EVERY piece of natural language TTS shows Tom — a batch statement, a task
 // statement, a ground-up explanation, a digest line, a decision list — is
 // written to this standard.
 //
-// THE LIVE SOURCE IS NO LONGER THIS STRING. It is the WikiTom skill
-// model-of-tom/skills/writing-to-tom/SKILL.md, synced into the ttsSkills table
-// by the cron in convex/ttsSkills.ts; the durable reasoning behind the rules —
-// the mined evidence, the session cites — is WikiTom model-of-tom/writing.md,
-// which that skill is the operative form of. Every consumer prefers the synced
-// row: GET /tts/batch-context (which is how the Node ESM planner on the worker
-// box gets it — it can neither import .ts nor read a git checkout), the worker
-// mission prompt in convex/claudeSessions.ts, and the session-prompt builders
-// in app/lib/tts-session-prompt.ts.
+// THE LIVE SOURCE IS NO LONGER THIS STRING. It is WikiTom
+// model-of-tom/writing.md (the skill model-of-tom/skills/writing-to-tom was
+// merged into it), which reaches Convex through the nightly job's post
+// (convex/ttsSkills.ts) and reaches every prompt through modelOfTomPrelude:
+// the session openers in convex/claudeSessions.ts, and GET /tts/batch-context
+// for the Node ESM planner on the worker box (which can neither import .ts
+// nor read a git checkout).
 //
-// This copy is what those consumers use when the table is empty — before the
-// first sync, and while GITHUB_MIRROR_TOKEN is still scoped away from WikiTom.
-// It is a snapshot, so it drifts: when the skill changes, update it here too.
+// This copy is what those consumers use ONLY while the ttsSkills table is
+// empty — before the job's first post — and the prelude's header says so
+// when it is serving. It is a snapshot, so it drifts: when writing.md
+// changes, update it here too.
 
-/** The ttsSkills row every writing consumer prefers over the fallback below. */
+/** The row name the retired six-hourly sync wrote; a row by this name keeps
+ * serving as the writing file until the nightly job's first post replaces
+ * the table. */
 export const WRITING_SKILL = "writing-to-tom";
 export const WRITING_STANDARD = `WRITING STANDARD — every sentence TTS shows Tom obeys this.
 

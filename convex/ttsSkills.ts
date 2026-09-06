@@ -1,54 +1,147 @@
-// The model-of-tom skills, mirrored out of WikiTom (Tom's ruling, 2026-08-29).
+// The model-of-tom files every prompt begins with (the lifeos update, phase
+// 4; Tom's ruling 2026-08-29 that WikiTom is the system of record for his
+// model of himself).
 //
-// A SKILL is a standard Claude Code skill file — WikiTom
-// model-of-tom/skills/<name>/SKILL.md, YAML frontmatter (name, description)
-// then markdown instructions. WikiTom is the SYSTEM OF RECORD for every one of
-// them; this table is a copy, and nothing here ever writes back.
+// WHAT IS STORED: one row per WikiTom file the nightly job posts — the three
+// named files (model-of-tom/writing.md, priorities.md, schedule.md) and, for
+// each page under model-of-tom/areas/, the "Current state" and "Must not
+// break" sections — together with the WikiTom commit they were read at. The
+// job on the Jarvis Box holds the checkout and TTS_WORKER_KEY and posts through
+// POST /tts/model-of-tom (convex/http.ts) after every nightly push, whether or
+// not the push reached GitHub. Nothing here writes back to WikiTom, and no
+// Convex-side read of GitHub exists any more: the six-hourly refresh and its
+// read token (GITHUB_MIRROR_TOKEN) went with it, because it read three skill
+// files without pinning a commit and no transcript could say which text it
+// had begun with.
 //
 // WHY A COPY AT ALL: the consumers cannot read a git checkout. Convex has no
-// filesystem, and the planner and batcher on the Jarvis Box are Node ESM that
-// never loads TypeScript, so their half arrives over HTTP (GET
-// /tts/batch-context). The copy is what lets the skill text reach a prompt.
+// filesystem, and the planner on the Jarvis Box is Node ESM that never loads
+// TypeScript, so its half arrives over HTTP (GET /tts/batch-context). The copy
+// is what lets the text reach a prompt.
 //
-// THE FALLBACK RULE: every consumer prefers the synced row and falls back to
-// the hardcoded copy in convex/ttsShared.ts (WRITING_STANDARD) when the table
-// is empty. GITHUB_MIRROR_TOKEN is currently scoped to ComplexMultiTrigger and
-// tom.quest only, so a WikiTom read comes back 404 or 403 until Tom widens it —
-// that is a logged, quiet no-op here, which is what lets the cron ship first.
+// THE ONE READ is modelOfTomPrelude below: every session opener
+// (claudeSessions.insertSession) and the planner payload go through it, so
+// the fixed file order, the commit header, and the fallback cannot mean
+// different things in different files. The header names the commit and lists
+// the paths, which is how a transcript's first row records what the session
+// began with.
+//
+// THE FALLBACK RULE: until the job's first post, a row the retired sync left
+// (name "writing-to-tom", no commit) keeps serving as the writing file; with
+// no rows at all the hardcoded copy in convex/ttsShared.ts (WRITING_STANDARD)
+// stands in, and the header says so.
 
 import { v } from "convex/values";
 import {
-  internalAction,
   internalMutation,
   internalQuery,
-  query,
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
-import { internal } from "./_generated/api";
-import { requireTomOrAgent } from "./authRoles";
+import type { Doc } from "./_generated/dataModel";
+import {
+  MODEL_OF_TOM_AREAS_DIR,
+  MODEL_OF_TOM_FIRST,
+  WRITING_SKILL,
+  WRITING_STANDARD,
+} from "./ttsShared";
 
-const SKILLS_REPO = "Heffnt/WikiTom";
-const SKILLS_DIR = "model-of-tom/skills";
+/** One posted file: its WikiTom path and the text the prompt carries. */
+export type ModelOfTomFile = { path: string; body: string };
 
-/**
- * The synced body of a skill, or `fallback` when nothing is synced. THE ONE
- * READ every server-side consumer goes through, so "prefer the skill, fall
- * back to the hardcoded copy" cannot mean two different things in two files.
- */
-export async function skillText(
-  ctx: QueryCtx | MutationCtx,
-  name: string,
-  fallback: string,
-): Promise<string> {
-  const row = await ctx.db
-    .query("ttsSkills")
-    .withIndex("by_name", (q) => q.eq("name", name))
-    .unique();
-  const body = row?.body.trim() ?? "";
-  return body === "" ? fallback : body;
+/** What the store holds right now, in the fixed prompt order. `commit` is
+ * null while the retired sync's row or the hardcoded copy is serving. */
+export type ModelOfTomState = {
+  commit: string | null;
+  syncedAt: number | null;
+  files: ModelOfTomFile[];
+};
+
+// The fixed order the files are prepended in: the three named files, then the
+// area pages alphabetically. Anything else the store holds (nothing today)
+// follows, alphabetically, so a new file cannot silently be dropped.
+function orderRank(path: string): [number, string] {
+  const named = (MODEL_OF_TOM_FIRST as readonly string[]).indexOf(path);
+  if (named !== -1) return [named, path];
+  if (path.startsWith(MODEL_OF_TOM_AREAS_DIR)) return [MODEL_OF_TOM_FIRST.length, path];
+  return [MODEL_OF_TOM_FIRST.length + 1, path];
 }
 
+/** The files in the order every prompt carries them. Exported for the tests. */
+export function orderModelOfTom<T extends { path: string }>(files: T[]): T[] {
+  return [...files].sort((a, b) => {
+    const [ra, pa] = orderRank(a.path);
+    const [rb, pb] = orderRank(b.path);
+    return ra - rb || (pa < pb ? -1 : pa > pb ? 1 : 0);
+  });
+}
+
+/** The store's current contents. Posted rows (those carrying a commit) win;
+ * otherwise the retired sync's writing row, if it is still there. */
+export async function modelOfTomState(
+  ctx: QueryCtx | MutationCtx,
+): Promise<ModelOfTomState> {
+  const rows = await ctx.db.query("ttsSkills").collect();
+  const posted = rows.filter(
+    (r): r is Doc<"ttsSkills"> & { commit: string } =>
+      typeof r.commit === "string" && r.body.trim() !== "",
+  );
+  if (posted.length > 0) {
+    const ordered = orderModelOfTom(
+      posted.map((r) => ({ path: r.sourcePath, body: r.body, row: r })),
+    );
+    return {
+      commit: ordered[0].row.commit,
+      syncedAt: ordered[0].row.syncedAt,
+      files: ordered.map(({ path, body }) => ({ path, body })),
+    };
+  }
+  const legacy = rows.find((r) => r.name === WRITING_SKILL && r.body.trim() !== "");
+  if (legacy) {
+    return {
+      commit: null,
+      syncedAt: legacy.syncedAt,
+      files: [{ path: legacy.sourcePath, body: legacy.body }],
+    };
+  }
+  return { commit: null, syncedAt: null, files: [] };
+}
+
+// The header is the first line of every prompt, and so of every transcript.
+export const MODEL_OF_TOM_HEADER = "MODEL-OF-TOM FILES";
+export const MODEL_OF_TOM_FALLBACK_HEADER = `${MODEL_OF_TOM_HEADER}: none stored yet — the hardcoded writing standard (convex/ttsShared.ts WRITING_STANDARD) stands in until the nightly job's first post.`;
+
+/** The text every prompt begins with: the header naming the commit and the
+ * paths, then each file under its path. Pure, so the tests can pin it. */
+export function modelOfTomText(state: ModelOfTomState): string {
+  if (state.files.length === 0) {
+    return `${MODEL_OF_TOM_FALLBACK_HEADER}\n\n${WRITING_STANDARD}`;
+  }
+  const paths = state.files.map((f) => f.path);
+  const header = `${MODEL_OF_TOM_HEADER} (WikiTom commit ${state.commit ?? "not recorded — the retired sync's row"}): ${paths.join(", ")}`;
+  const sections = state.files.map((f) => `── ${f.path} ──\n${f.body.trim()}`);
+  return [header, ...sections].join("\n\n");
+}
+
+/** THE ONE READ every prompt consumer goes through. */
+export async function modelOfTomPrelude(
+  ctx: QueryCtx | MutationCtx,
+): Promise<string> {
+  return modelOfTomText(await modelOfTomState(ctx));
+}
+
+// The same read for an HTTP action (GET /tts/batch-context), which has no db
+// handle of its own.
+export const internalModelOfTomPrelude = internalQuery({
+  args: {},
+  handler: async (ctx) => await modelOfTomPrelude(ctx),
+});
+
+// One row by name, for GET /tts/capture-context (convex/http.ts), which
+// serves a capture poller its triage rules. The only rows this can still find
+// are ones the retired six-hourly WikiTom skill sync left behind: the nightly
+// job posts model-of-tom files only, and its wholesale replace clears the
+// rest, after which the route serves ttsShared.CAPTURE_TRIAGE_RULES.
 export const internalGetSkill = internalQuery({
   args: { name: v.string() },
   handler: async (ctx, { name }) => {
@@ -59,121 +152,50 @@ export const internalGetSkill = internalQuery({
   },
 });
 
-// The browser's read. Closed to everyone but Tom and the read-only `agent`
-// role a TTS session browses as — the skills are Tom's model of himself, not
-// public text, and `agent` may look at them without changing them.
-export const getSkill = query({
-  args: { name: v.string() },
-  handler: async (ctx, { name }) => {
-    await requireTomOrAgent(ctx, "TTS");
-    return await ctx.db
-      .query("ttsSkills")
-      .withIndex("by_name", (q) => q.eq("name", name))
-      .unique();
-  },
-});
+// A path the job may post: inside model-of-tom/, a markdown file, no
+// traversal. Exported so the route and the tests share one spelling.
+export function isModelOfTomPath(path: unknown): path is string {
+  return (
+    typeof path === "string" &&
+    /^model-of-tom\/[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*\.md$/.test(path) &&
+    !path.split("/").some((seg) => seg === "." || seg === "..")
+  );
+}
 
-// Wholesale replace, keyed by name: upsert what the sync read, drop what it did
-// not. A skill directory removed in WikiTom must stop reaching prompts —
-// nothing-is-lost governs Tom's todos, not this mirror.
-export const internalReplaceSkills = internalMutation({
+// Wholesale replace, atomically: every row goes, one row per posted path
+// comes in, all carrying the same commit. A file removed in WikiTom must stop
+// reaching prompts — nothing-is-lost governs Tom's todos, not this copy. An
+// empty post is refused here rather than emptying the store: a job that read
+// nothing has hit a layout change, not a decision of Tom's.
+export const internalReplaceModelOfTom = internalMutation({
   args: {
-    skills: v.array(
-      v.object({
-        name: v.string(),
-        body: v.string(),
-        sourcePath: v.string(),
-      }),
-    ),
+    commit: v.string(),
+    // The commit's own time (epoch ms), which is what syncedAt records — the
+    // text is as old as the commit, not as young as the post.
+    committedAt: v.number(),
+    files: v.array(v.object({ path: v.string(), body: v.string() })),
   },
-  handler: async (ctx, { skills }) => {
-    const now = Date.now();
-    const existing = await ctx.db.query("ttsSkills").collect();
-    const byName = new Map(existing.map((r) => [r.name, r]));
+  handler: async (ctx, { commit, committedAt, files }) => {
+    if (files.length === 0) throw new Error("no files posted — store left as it was");
     const seen = new Set<string>();
-    for (const skill of skills) {
-      seen.add(skill.name);
-      const prior = byName.get(skill.name);
-      if (prior) await ctx.db.patch(prior._id, { ...skill, syncedAt: now });
-      else await ctx.db.insert("ttsSkills", { ...skill, syncedAt: now });
+    for (const f of files) {
+      if (!isModelOfTomPath(f.path)) throw new Error(`not a model-of-tom path: ${f.path}`);
+      if (seen.has(f.path)) throw new Error(`path posted twice: ${f.path}`);
+      seen.add(f.path);
     }
-    let deleted = 0;
-    for (const prior of existing) {
-      if (seen.has(prior.name)) continue;
-      await ctx.db.delete(prior._id);
-      deleted++;
+    const existing = await ctx.db.query("ttsSkills").collect();
+    for (const row of existing) await ctx.db.delete(row._id);
+    for (const f of files) {
+      await ctx.db.insert("ttsSkills", {
+        // The row's short name: the path inside model-of-tom/ without the
+        // extension ("writing", "areas/research").
+        name: f.path.slice("model-of-tom/".length).replace(/\.md$/, ""),
+        body: f.body,
+        sourcePath: f.path,
+        commit,
+        syncedAt: committedAt,
+      });
     }
-    return { upserted: skills.length, deleted };
-  },
-});
-
-type ContentsEntry = { name?: unknown; path?: unknown; type?: unknown };
-
-// The GitHub contents API on a directory returns one entry per child; a skill
-// is a child DIRECTORY holding SKILL.md. No ?ref= — the default branch is the
-// published state of WikiTom, and a worktree's branch is not.
-export const refreshSkills = internalAction({
-  args: {},
-  handler: async (ctx) => {
-    const token = process.env.GITHUB_MIRROR_TOKEN;
-    if (!token) return;
-    const headers = {
-      Authorization: `Bearer ${token}`,
-      "User-Agent": "tts-skills",
-    };
-    try {
-      const listRes = await fetch(
-        `https://api.github.com/repos/${SKILLS_REPO}/contents/${SKILLS_DIR}`,
-        { headers: { ...headers, Accept: "application/vnd.github+json" } },
-      );
-      // 404 (repo or path invisible to this token) and 403 (token not scoped to
-      // WikiTom) are the expected states until the token is widened: say so
-      // once and leave every existing row untouched.
-      if (!listRes.ok) {
-        console.error(
-          `TTS skills: ${SKILLS_DIR} listing failed (${listRes.status}) — rows left untouched`,
-        );
-        return;
-      }
-      const listed = (await listRes.json()) as unknown;
-      if (!Array.isArray(listed)) {
-        console.error(`TTS skills: ${SKILLS_DIR} is not a directory listing`);
-        return;
-      }
-      const skills: { name: string; body: string; sourcePath: string }[] = [];
-      for (const entry of listed as ContentsEntry[]) {
-        if (entry?.type !== "dir" || typeof entry.name !== "string") continue;
-        const sourcePath = `${SKILLS_DIR}/${entry.name}/SKILL.md`;
-        const res = await fetch(
-          `https://api.github.com/repos/${SKILLS_REPO}/contents/${sourcePath}`,
-          { headers: { ...headers, Accept: "application/vnd.github.raw+json" } },
-        );
-        // A directory with no SKILL.md is not a skill; a failure on one file
-        // must not cost the others their refresh.
-        if (res.status === 404) continue;
-        if (!res.ok) {
-          console.error(`TTS skills: ${sourcePath} fetch failed (${res.status})`);
-          continue;
-        }
-        const body = await res.text();
-        if (body.trim() === "") continue;
-        skills.push({ name: entry.name, body, sourcePath });
-      }
-      // Shape-change guard, same reasoning as the code-todo mirror: a listing
-      // that yields no skills at all means the layout moved or the reads
-      // failed, not that Tom deleted his model of himself. Replacing here would
-      // silently drop every consumer back to the hardcoded fallback.
-      if (skills.length === 0) {
-        console.error(
-          `TTS skills: ${SKILLS_DIR} yielded 0 skills — layout change? Rows left untouched.`,
-        );
-        return;
-      }
-      await ctx.runMutation(internal.ttsSkills.internalReplaceSkills, { skills });
-    } catch (err) {
-      console.error(
-        `TTS skills: refresh error: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    return { files: files.length, deleted: existing.length };
   },
 });

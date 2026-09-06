@@ -38,10 +38,9 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // declared here AND in app/sessions/lib.ts) and
 // the graph rules the frontier walk below reads (buildDoneSet / isReady) — the
 // page, the planner, and the scheduler must all mean the same thing by
-// "ready". The writing standard the worker mission pastes into its prompt is
-// the synced WikiTom skill (ttsSkills.skillText), with WRITING_STANDARD as its
-// fallback.
-import { skillText } from "./ttsSkills";
+// "ready". The model-of-tom files every prompt begins with come from
+// ttsSkills.modelOfTomPrelude, read once per opener in insertSession below.
+import { modelOfTomPrelude } from "./ttsSkills";
 import {
   CODEX_FALLBACK_MODEL,
   CODEX_USAGE_STALE_MS,
@@ -53,8 +52,6 @@ import {
   NO_REPO,
   SESSION_MODEL,
   SESSION_REPO_NAMES,
-  WRITING_SKILL,
-  WRITING_STANDARD,
   buildDoneSet,
   goalCheckable,
   isLive,
@@ -599,7 +596,16 @@ async function insertSession(
   if (seed.todoId !== undefined && seed.mode !== "autonomous") {
     await markLiveSessionRulingApplied(ctx, seed.todoId, sessionId);
   }
+  // EVERY opener begins with the model-of-tom files (the lifeos update, phase
+  // 4): the browser-built prompts, the worker missions, the CLI pen, a fork —
+  // one home, here, rather than each builder pasting its own copy. The
+  // prelude's first line names the WikiTom commit and lists the paths, and
+  // this row is the transcript's first row, so the transcript records what
+  // the session began with. Under no posted files it is the hardcoded
+  // writing standard under a header that says so (convex/ttsSkills.ts).
   const text =
+    (await modelOfTomPrelude(ctx)) +
+    "\n\n" +
     seed.prompt(sessionId, repos) +
     (seed.outcomePen === false ? "" : outcomePenFooter(sessionId, repos));
   await ctx.db.insert("claudeInbound", {
@@ -2602,19 +2608,8 @@ function buildWorkerPrompt(args: {
   needs: GraphNeighbor[];
   dependents: GraphNeighbor[];
   siblings: GraphNeighbor[];
-  /** The writing skill's text, resolved by the caller (synced or fallback). */
-  writingStandard: string;
 }): string {
-  const {
-    todo,
-    batch,
-    sessionId,
-    repos,
-    needs,
-    dependents,
-    siblings,
-    writingStandard,
-  } = args;
+  const { todo, batch, sessionId, repos, needs, dependents, siblings } = args;
   const isGoal = todo.kind === "goal";
   const lines: (string | null)[] = [
     "You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.",
@@ -2629,9 +2624,7 @@ function buildWorkerPrompt(args: {
     "- A PATH is a named sequence of batches. A MUST edge means the previous batch has to land first; a HELPS edge means it only makes this one easier.",
     '- DISPLAY TEXT is the short line always on screen. A GROUND-UP EXPLANATION is the self-contained layer behind it: a complete HTML document, shown fullscreen, whose exact form the standard below specifies.',
     "",
-    "Everything you write into TTS obeys this standard, verbatim:",
-    "",
-    writingStandard,
+    "Everything you write into TTS obeys the writing standard in the model-of-tom files this prompt begins with, verbatim.",
     "",
     `THE BATCH ("${batch.statement}"):`,
     promptFact("ground-up explanation", batch.groundUpExplanation),
@@ -3589,9 +3582,6 @@ export const internalAutoSchedule = internalMutation({
     for (const t of whenever) candidates.push({ todo: t, lane: "whenever" });
 
     // ── Admit up to `capacity` picks ─────────────────────────────────────────
-    // One read for the whole tick: every worker prompt this tick writes carries
-    // the same standard, and re-reading it per admission would say otherwise.
-    const writingStandard = await skillText(ctx, WRITING_SKILL, WRITING_STANDARD);
     const picked = new Set<string>();
     const counts: Record<string, number> = {};
     const admit = async (c: Candidate): Promise<void> => {
@@ -3661,7 +3651,6 @@ export const internalAutoSchedule = internalMutation({
             needs,
             dependents,
             siblings,
-            writingStandard,
           });
         extra = { batchId: batch._id };
       } else {

@@ -11,12 +11,11 @@ import {
   CAPTURE_TRIAGE_SKILL,
   DAY_MS,
   SESSION_REPO_NAMES,
-  WRITING_SKILL,
-  WRITING_STANDARD,
   isSessionModel,
   nyCalendarDayBoundsUtc,
   ttsPrepDay,
 } from "./ttsShared";
+import { isModelOfTomPath } from "./ttsSkills";
 
 const http = httpRouter();
 
@@ -1256,16 +1255,17 @@ http.route({ path: "/tts/batches", method: "POST", handler: ttsBatches });
 // git checkout of WikiTom. Serving it here is what keeps the text the planner
 // pastes into its prompt the same text every TypeScript caller reads.
 //
-// ITS SOURCE is the synced WikiTom skill (ttsSkills, name "writing-to-tom"),
-// with ttsShared.WRITING_STANDARD as the fallback until the sync has run. The
-// field name and type do not change: worker/jobs/plan-graphs.mjs treats a
-// missing `writingStandard` as fatal and form-batches.mjs reads the same
-// payload.
+// ITS SOURCE is the model-of-tom prelude (convex/ttsSkills.ts
+// modelOfTomPrelude): the files the nightly job posted, headed by their
+// WikiTom commit, or ttsShared.WRITING_STANDARD under a header saying so
+// until the first post. The field name and type do not change:
+// worker/jobs/plan-graphs.mjs treats a missing `writingStandard` as fatal and
+// form-batches.mjs reads the same payload.
 const ttsBatchContext = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
   // Seven independent reads — issued in parallel, not awaited one by one.
-  const [todos, mirror, briefs, recentRulings, batches, planRepairs, writingSkill] =
+  const [todos, mirror, briefs, recentRulings, batches, planRepairs, writingStandard] =
     await Promise.all([
       ctx.runQuery(internal.tts.internalListTodos, {}),
       ctx.runQuery(internal.tts.internalListMirror, {}),
@@ -1273,9 +1273,8 @@ const ttsBatchContext = httpAction(async (ctx, request) => {
       ctx.runQuery(internal.ttsRulings.internalRecentRulings, { limit: 200 }),
       ctx.runQuery(internal.tts.internalListBatches, {}),
       ctx.runQuery(internal.tts.internalRecentPlanRepairs, { limit: 20 }),
-      ctx.runQuery(internal.ttsSkills.internalGetSkill, { name: WRITING_SKILL }),
+      ctx.runQuery(internal.ttsSkills.internalModelOfTomPrelude, {}),
     ]);
-  const synced = writingSkill?.body.trim() ?? "";
   return jsonResponse(200, {
     todos,
     mirror,
@@ -1283,7 +1282,7 @@ const ttsBatchContext = httpAction(async (ctx, request) => {
     recentRulings,
     batches,
     planRepairs,
-    writingStandard: synced === "" ? WRITING_STANDARD : synced,
+    writingStandard,
     // The repo names a batch may declare. Served for the SAME reason as
     // writingStandard above: the planner is Node ESM on a box that never loads
     // TypeScript, so it cannot import SESSION_REPOS. Serving the one home's
@@ -1298,6 +1297,68 @@ http.route({
   method: "GET",
   handler: ttsBatchContext,
 });
+
+// ── POST /tts/model-of-tom — the nightly job's post of the files every prompt
+// begins with (the lifeos update, phase 4) ───────────────────────────────────
+// Body: { commit, committedAt, files: [{ path, body }] } — the WikiTom commit
+// hash the files were read at, that commit's time (epoch ms; it becomes the
+// rows' syncedAt), and the files in any order (the server orders them). The
+// store is replaced whole, atomically, in convex/ttsSkills.ts. Same
+// TTS_WORKER_KEY door as every other worker pen: the box that holds the
+// WikiTom checkout is the only writer, and nothing in Convex reads GitHub.
+const MODEL_OF_TOM_FILES_MAX = 64;
+
+const ttsModelOfTom = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.commit !== "string" || !/^[0-9a-f]{7,40}$/.test(b.commit)) {
+    return jsonResponse(400, { error: "commit (7-40 hex characters) required" });
+  }
+  if (typeof b.committedAt !== "number" || !Number.isFinite(b.committedAt)) {
+    return jsonResponse(400, { error: "committedAt (epoch ms) required" });
+  }
+  if (!Array.isArray(b.files) || b.files.length === 0) {
+    return jsonResponse(400, { error: "files (non-empty array) required" });
+  }
+  if (b.files.length > MODEL_OF_TOM_FILES_MAX) {
+    return jsonResponse(400, {
+      error: `at most ${MODEL_OF_TOM_FILES_MAX} files per post — got ${b.files.length}`,
+    });
+  }
+  const files: { path: string; body: string }[] = [];
+  for (let i = 0; i < b.files.length; i++) {
+    const f = b.files[i] as Record<string, unknown> | null;
+    if (typeof f !== "object" || f === null || !isModelOfTomPath(f.path)) {
+      return jsonResponse(400, {
+        error: `files[${i}].path must be a markdown path under model-of-tom/`,
+      });
+    }
+    if (typeof f.body !== "string" || f.body.trim() === "") {
+      return jsonResponse(400, { error: `files[${i}].body (non-empty string) required` });
+    }
+    files.push({ path: f.path, body: f.body });
+  }
+  try {
+    const result = await ctx.runMutation(
+      internal.ttsSkills.internalReplaceModelOfTom,
+      { commit: b.commit, committedAt: b.committedAt, files },
+    );
+    return jsonResponse(200, { ok: true, commit: b.commit, ...result });
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({ path: "/tts/model-of-tom", method: "POST", handler: ttsModelOfTom });
 
 // ── POST /tts/plan-graph — the planner's pen (schema v2) ─────────────────────
 // ONE batch's graph per call, the successor to POST /tts/batches. Body:

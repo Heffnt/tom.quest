@@ -30,7 +30,6 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
-import { WRITING_SKILL } from "@/convex/ttsShared";
 import { useAuth } from "@/app/lib/auth";
 import { buildBlockSessionPrompt } from "@/app/lib/tts-session-prompt";
 import { useOpenSession } from "@/app/lib/use-open-todo-session";
@@ -236,12 +235,6 @@ export default function CalendarTab({
   );
   // ONE time-note subscription for the whole tab; days and blocks slice it.
   const timeNotes = useQuery(api.tts.listTimeNotes, canRead ? {} : "skip");
-  // The writing skill (WikiTom, synced into ttsSkills) that opens the block
-  // session's prompt; unsynced leaves buildBlockSessionPrompt on its fallback.
-  const writingSkill = useQuery(
-    api.ttsSkills.getSkill,
-    canRead ? { name: WRITING_SKILL } : "skip",
-  );
   const recordEvent = useMutation(api.tts.recordEvent);
   // The one launch hook owns the createSession arguments and the failure text;
   // this surface only remembers WHICH block the last attempt was for, so the
@@ -296,11 +289,7 @@ export default function CalendarTab({
       title: `Block: ${category}`,
       kind: "block",
       blockCategory: category,
-      initialPrompt: buildBlockSessionPrompt(
-        category,
-        matching,
-        writingSkill?.body,
-      ),
+      initialPrompt: buildBlockSessionPrompt(category, matching),
     });
     setSessionBusyId(null);
   };

@@ -53,10 +53,9 @@ crons.interval(
 // Code-todo mirror refresh from GitHub default branches.
 crons.interval("tts mirror refresh", { hours: 6 }, internal.ttsSync.refreshMirror, {});
 
-// Model-of-tom skill refresh from WikiTom's default branch (quiet no-op while
-// GITHUB_MIRROR_TOKEN cannot see WikiTom — consumers fall back to the
-// hardcoded copies). Same 6-hour cadence as the mirror above.
-crons.interval("tts skills refresh", { hours: 6 }, internal.ttsSkills.refreshSkills, {});
+// The model-of-tom files are POSTED by the nightly job on the Jarvis Box
+// (POST /tts/model-of-tom), not pulled by a cron — no Convex-side read of
+// WikiTom exists (the lifeos update, phase 4).
 
 // Calendar mirror refresh from the ICS feeds in TTS_ICS_FEEDS (quiet no-op
 // until the env var is set). Hourly: calendars move on human timescales.

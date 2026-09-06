@@ -1,8 +1,15 @@
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, internal } from "./_generated/api";
+import { internal } from "./_generated/api";
 import schema from "./schema";
-import { skillText } from "./ttsSkills";
+import {
+  MODEL_OF_TOM_FALLBACK_HEADER,
+  isModelOfTomPath,
+  modelOfTomPrelude,
+  modelOfTomState,
+  modelOfTomText,
+  orderModelOfTom,
+} from "./ttsSkills";
 import {
   CAPTURE_TRIAGE_RULES,
   CAPTURE_TRIAGE_SKILL,
@@ -12,169 +19,255 @@ import {
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
-const WRITING_BODY = `---
-name: writing-to-tom
-description: Load before writing anything Tom will read.
----
+const COMMIT = "0123abcd0123abcd0123abcd0123abcd0123abcd";
+const COMMITTED_AT = Date.UTC(2026, 8, 6, 8, 5, 0);
 
-# Writing to Tom
+const WRITING = "# Writing to Tom\n\nUse one fixed term per concept and reuse it exactly.";
+const PRIORITIES = "# Priorities\n\nResearch first.";
+const SCHEDULE = "# Schedule\n\nClimbing on Tuesdays.";
+const RESEARCH = "## Current state\n\n- CMT campaign live (2026-09-05)\n\n## Must not break\n\n- the D5 judge fix";
 
-Use one fixed term per concept and reuse it exactly.`;
-
-async function withTom(t: ReturnType<typeof convexTest>) {
-  const tomId = await t.run(async (ctx) =>
-    ctx.db.insert("users", { name: "tom", email: "tom@tom.quest", role: "tom" }),
-  );
-  return t.withIdentity({ subject: tomId });
-}
-
-async function replace(
+function post(
   t: ReturnType<typeof convexTest>,
-  skills: { name: string; body: string; sourcePath: string }[],
+  files: { path: string; body: string }[],
+  commit = COMMIT,
 ) {
-  return await t.mutation(internal.ttsSkills.internalReplaceSkills, { skills });
+  return t.mutation(internal.ttsSkills.internalReplaceModelOfTom, {
+    commit,
+    committedAt: COMMITTED_AT,
+    files,
+  });
 }
 
-function skill(name: string, body: string) {
-  return { name, body, sourcePath: `model-of-tom/skills/${name}/SKILL.md` };
-}
-
-const allSkills = (t: ReturnType<typeof convexTest>) =>
+const allRows = (t: ReturnType<typeof convexTest>) =>
   t.run(async (ctx) => ctx.db.query("ttsSkills").collect());
 
-describe("internalReplaceSkills", () => {
-  it("inserts a row per skill, carrying the file verbatim", async () => {
-    const t = convexTest({ schema, modules });
-    expect(await replace(t, [skill(WRITING_SKILL, WRITING_BODY)])).toEqual({
-      upserted: 1,
-      deleted: 0,
-    });
+const THREE = [
+  { path: "model-of-tom/writing.md", body: WRITING },
+  { path: "model-of-tom/priorities.md", body: PRIORITIES },
+  { path: "model-of-tom/schedule.md", body: SCHEDULE },
+];
 
-    const rows = await allSkills(t);
-    expect(rows).toHaveLength(1);
-    expect(rows[0].name).toBe(WRITING_SKILL);
-    expect(rows[0].body).toBe(WRITING_BODY); // frontmatter included
-    expect(rows[0].sourcePath).toBe(
-      "model-of-tom/skills/writing-to-tom/SKILL.md",
-    );
-    expect(rows[0].syncedAt).toBeGreaterThan(0);
-  });
-
-  // witness: insert instead of patching a known name and the table grows one
-  // row per sync, after which the by_name read is ambiguous and throws.
-  it("updates a known name in place rather than adding a second row", async () => {
-    const t = convexTest({ schema, modules });
-    await replace(t, [skill(WRITING_SKILL, WRITING_BODY)]);
-    const first = (await allSkills(t))[0];
-
-    const rewritten = `${WRITING_BODY}\n\nNever paraphrase for variety.`;
-    expect(await replace(t, [skill(WRITING_SKILL, rewritten)])).toEqual({
-      upserted: 1,
-      deleted: 0,
-    });
-    const rows = await allSkills(t);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]._id).toBe(first._id);
-    expect(rows[0].body).toBe(rewritten);
-  });
-
-  // WikiTom is the system of record: a skill directory removed there stops
-  // reaching prompts here.
-  it("drops a row whose skill is no longer in the sync", async () => {
-    const t = convexTest({ schema, modules });
-    await replace(t, [
-      skill(WRITING_SKILL, WRITING_BODY),
-      skill("kept-dates", "# Kept dates"),
+describe("orderModelOfTom", () => {
+  // The fixed order every prompt carries: the three named files, then the
+  // area pages alphabetically — whatever order the job posted them in.
+  it("puts the three named files first and the areas after, alphabetically", () => {
+    const ordered = orderModelOfTom([
+      { path: "model-of-tom/areas/social.md" },
+      { path: "model-of-tom/schedule.md" },
+      { path: "model-of-tom/areas/admin.md" },
+      { path: "model-of-tom/writing.md" },
+      { path: "model-of-tom/priorities.md" },
+    ]).map((f) => f.path);
+    expect(ordered).toEqual([
+      "model-of-tom/writing.md",
+      "model-of-tom/priorities.md",
+      "model-of-tom/schedule.md",
+      "model-of-tom/areas/admin.md",
+      "model-of-tom/areas/social.md",
     ]);
-    expect(await replace(t, [skill(WRITING_SKILL, WRITING_BODY)])).toEqual({
-      upserted: 1,
-      deleted: 1,
-    });
-    expect((await allSkills(t)).map((r) => r.name)).toEqual([WRITING_SKILL]);
+  });
+
+  // witness: an unexpected path silently dropped would shorten every prompt
+  // with no one told; it is carried, last.
+  it("keeps a path outside the known set, after everything else", () => {
+    const ordered = orderModelOfTom([
+      { path: "model-of-tom/README.md" },
+      { path: "model-of-tom/areas/admin.md" },
+    ]).map((f) => f.path);
+    expect(ordered).toEqual(["model-of-tom/areas/admin.md", "model-of-tom/README.md"]);
   });
 });
 
-describe("skillText", () => {
-  it("returns the fallback when nothing is synced", async () => {
-    const t = convexTest({ schema, modules });
-    const text = await t.run(async (ctx) =>
-      skillText(ctx, WRITING_SKILL, WRITING_STANDARD),
-    );
-    expect(text).toBe(WRITING_STANDARD);
-  });
-
-  it("prefers the synced skill over the fallback", async () => {
-    const t = convexTest({ schema, modules });
-    await replace(t, [skill(WRITING_SKILL, WRITING_BODY)]);
-    const text = await t.run(async (ctx) =>
-      skillText(ctx, WRITING_SKILL, WRITING_STANDARD),
-    );
-    expect(text).toBe(WRITING_BODY);
-  });
-
-  // A row synced from an empty or whitespace-only file would otherwise put a
-  // prompt on no standard at all — worse than the stale fallback.
-  it("falls back when the synced body is blank", async () => {
-    const t = convexTest({ schema, modules });
-    await replace(t, [skill(WRITING_SKILL, "   \n  ")]);
-    const text = await t.run(async (ctx) =>
-      skillText(ctx, WRITING_SKILL, WRITING_STANDARD),
-    );
-    expect(text).toBe(WRITING_STANDARD);
-  });
-
-  it("falls back for a name that was never synced", async () => {
-    const t = convexTest({ schema, modules });
-    await replace(t, [skill("kept-dates", "# Kept dates")]);
-    const text = await t.run(async (ctx) =>
-      skillText(ctx, WRITING_SKILL, WRITING_STANDARD),
-    );
-    expect(text).toBe(WRITING_STANDARD);
+describe("isModelOfTomPath", () => {
+  it("accepts markdown under model-of-tom/ and refuses everything else", () => {
+    expect(isModelOfTomPath("model-of-tom/writing.md")).toBe(true);
+    expect(isModelOfTomPath("model-of-tom/areas/research.md")).toBe(true);
+    expect(isModelOfTomPath("tts/spec.md")).toBe(false);
+    expect(isModelOfTomPath("model-of-tom/../tts/spec.md")).toBe(false);
+    expect(isModelOfTomPath("model-of-tom/writing.txt")).toBe(false);
+    expect(isModelOfTomPath("model-of-tom/")).toBe(false);
+    expect(isModelOfTomPath(42)).toBe(false);
   });
 });
 
-describe("getSkill", () => {
-  it("serves Tom the synced row", async () => {
+describe("internalReplaceModelOfTom", () => {
+  it("stores one row per file, all carrying the commit and its time", async () => {
     const t = convexTest({ schema, modules });
-    await replace(t, [skill(WRITING_SKILL, WRITING_BODY)]);
-    const row = await (await withTom(t)).query(api.ttsSkills.getSkill, {
-      name: WRITING_SKILL,
-    });
-    expect(row?.body).toBe(WRITING_BODY);
+    expect(await post(t, THREE)).toEqual({ files: 3, deleted: 0 });
+    const rows = await allRows(t);
+    expect(rows.map((r) => r.name).sort()).toEqual(["priorities", "schedule", "writing"]);
+    for (const row of rows) {
+      expect(row.commit).toBe(COMMIT);
+      expect(row.syncedAt).toBe(COMMITTED_AT); // the commit's time, not now
+      expect(row.sourcePath.startsWith("model-of-tom/")).toBe(true);
+    }
   });
 
-  it("returns null for a name with no row", async () => {
+  // WikiTom is the system of record: a file removed there stops reaching
+  // prompts here, and the retired sync's row goes with the first post.
+  it("replaces the store whole, the retired sync's row included", async () => {
     const t = convexTest({ schema, modules });
-    const row = await (await withTom(t)).query(api.ttsSkills.getSkill, {
-      name: WRITING_SKILL,
+    await t.run(async (ctx) => {
+      await ctx.db.insert("ttsSkills", {
+        name: WRITING_SKILL,
+        body: "old skill",
+        sourcePath: "model-of-tom/skills/writing-to-tom/SKILL.md",
+        syncedAt: 1,
+      });
     });
-    expect(row).toBeNull();
+    await post(t, [...THREE, { path: "model-of-tom/areas/research.md", body: RESEARCH }]);
+    expect(await post(t, THREE, "feedface1")).toEqual({ files: 3, deleted: 4 });
+    const rows = await allRows(t);
+    expect(rows).toHaveLength(3);
+    expect(rows.every((r) => r.commit === "feedface1")).toBe(true);
   });
 
-  // The skills are Tom's model of himself; the gate is the same one every
-  // other TTS surface uses.
-  it("rejects a signed-out reader and a non-Tom user", async () => {
+  // witness: an empty post that emptied the table would put every prompt on
+  // the hardcoded fallback because the job hit a layout change.
+  it("refuses an empty post and leaves the store as it was", async () => {
     const t = convexTest({ schema, modules });
-    await replace(t, [skill(WRITING_SKILL, WRITING_BODY)]);
-    await expect(
-      t.query(api.ttsSkills.getSkill, { name: WRITING_SKILL }),
-    ).rejects.toThrow(/Authentication required/);
+    await post(t, THREE);
+    await expect(post(t, [])).rejects.toThrow(/no files posted/);
+    expect(await allRows(t)).toHaveLength(3);
+  });
 
-    const userId = await t.run(async (ctx) =>
-      ctx.db.insert("users", { name: "someone", email: "s@x.dev", role: "user" }),
+  it("refuses a path outside model-of-tom/ and a path posted twice", async () => {
+    const t = convexTest({ schema, modules });
+    await expect(post(t, [{ path: "tts/spec.md", body: "x" }])).rejects.toThrow(
+      /not a model-of-tom path/,
     );
     await expect(
-      t
-        .withIdentity({ subject: userId })
-        .query(api.ttsSkills.getSkill, { name: WRITING_SKILL }),
-    ).rejects.toThrow(/restricted to Tom/);
+      post(t, [THREE[0], THREE[0]]),
+    ).rejects.toThrow(/posted twice/);
+    expect(await allRows(t)).toHaveLength(0);
   });
 });
 
-// ── The batch-context half (the planner's only channel) ──────────────────────
+describe("modelOfTomState and the prelude", () => {
+  it("serves the hardcoded standard under a header that says so while nothing is stored", async () => {
+    const t = convexTest({ schema, modules });
+    const state = await t.run(async (ctx) => modelOfTomState(ctx));
+    expect(state).toEqual({ commit: null, syncedAt: null, files: [] });
+    const text = await t.run(async (ctx) => modelOfTomPrelude(ctx));
+    expect(text.startsWith(MODEL_OF_TOM_FALLBACK_HEADER)).toBe(true);
+    expect(text).toContain(WRITING_STANDARD);
+  });
+
+  // Until the job's first post, the retired sync's row keeps serving as the
+  // writing file — a prompt never drops to the fallback while a synced
+  // writing skill exists.
+  it("serves the retired sync's writing row, commit unknown, until the first post", async () => {
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("ttsSkills", {
+        name: WRITING_SKILL,
+        body: "synced skill text",
+        sourcePath: "model-of-tom/skills/writing-to-tom/SKILL.md",
+        syncedAt: 5,
+      });
+    });
+    const state = await t.run(async (ctx) => modelOfTomState(ctx));
+    expect(state.commit).toBeNull();
+    expect(state.files).toEqual([
+      { path: "model-of-tom/skills/writing-to-tom/SKILL.md", body: "synced skill text" },
+    ]);
+    const text = modelOfTomText(state);
+    expect(text).toContain("synced skill text");
+    expect(text).not.toContain(WRITING_STANDARD);
+  });
+
+  it("serves the posted files in the fixed order, headed by the commit and the paths", async () => {
+    const t = convexTest({ schema, modules });
+    await post(t, [
+      { path: "model-of-tom/areas/research.md", body: RESEARCH },
+      ...[...THREE].reverse(),
+    ]);
+    const state = await t.run(async (ctx) => modelOfTomState(ctx));
+    expect(state.commit).toBe(COMMIT);
+    expect(state.syncedAt).toBe(COMMITTED_AT);
+    expect(state.files.map((f) => f.path)).toEqual([
+      "model-of-tom/writing.md",
+      "model-of-tom/priorities.md",
+      "model-of-tom/schedule.md",
+      "model-of-tom/areas/research.md",
+    ]);
+    const text = modelOfTomText(state);
+    const [header] = text.split("\n");
+    // The transcript's first line: the commit and every path included.
+    expect(header).toBe(
+      `MODEL-OF-TOM FILES (WikiTom commit ${COMMIT}): model-of-tom/writing.md, model-of-tom/priorities.md, model-of-tom/schedule.md, model-of-tom/areas/research.md`,
+    );
+    // Each file under its own path, bodies in order.
+    expect(text.indexOf(WRITING)).toBeLessThan(text.indexOf(PRIORITIES));
+    expect(text.indexOf(PRIORITIES)).toBeLessThan(text.indexOf(SCHEDULE));
+    expect(text.indexOf(SCHEDULE)).toBeLessThan(text.indexOf("the D5 judge fix"));
+    expect(text).toContain("── model-of-tom/areas/research.md ──");
+    expect(text).not.toContain(WRITING_STANDARD);
+  });
+
+  // A blank posted body is refused at the route; a row that somehow carries
+  // one must not put a prompt on an empty file.
+  it("ignores a stored row whose body is blank", async () => {
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("ttsSkills", {
+        name: "writing",
+        body: "   \n",
+        sourcePath: "model-of-tom/writing.md",
+        commit: COMMIT,
+        syncedAt: 1,
+      });
+    });
+    const state = await t.run(async (ctx) => modelOfTomState(ctx));
+    expect(state.files).toEqual([]);
+  });
+});
+
+// ── The route the nightly job posts through ──────────────────────────────────
+describe("POST /tts/model-of-tom", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const send = (t: ReturnType<typeof convexTest>, body: unknown, key = "s3cret") =>
+    t.fetch("/tts/model-of-tom", {
+      method: "POST",
+      headers: { "X-TTS-Key": key, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  it("stores the files and answers with the commit", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const res = await send(t, { commit: COMMIT, committedAt: COMMITTED_AT, files: THREE });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, commit: COMMIT, files: 3, deleted: 0 });
+    expect(await allRows(t)).toHaveLength(3);
+  });
+
+  it("refuses a wrong key, a bad commit, no files, and a path outside model-of-tom/", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    expect((await send(t, { commit: COMMIT, committedAt: 1, files: THREE }, "nope")).status).toBe(401);
+    expect((await send(t, { commit: "main", committedAt: 1, files: THREE })).status).toBe(400);
+    expect((await send(t, { commit: COMMIT, committedAt: 1, files: [] })).status).toBe(400);
+    expect((await send(t, { commit: COMMIT, files: THREE })).status).toBe(400);
+    const outside = await send(t, {
+      commit: COMMIT,
+      committedAt: 1,
+      files: [{ path: "tts/spec.md", body: "x" }],
+    });
+    expect(outside.status).toBe(400);
+    expect((await outside.json()).error).toMatch(/files\[0\]\.path/);
+    expect(await allRows(t)).toHaveLength(0);
+  });
+});
+
+// ── The planner's channel keeps its field ────────────────────────────────────
 // worker/jobs/plan-graphs.mjs treats a missing `writingStandard` as fatal and
-// form-batches.mjs reads the same payload, so the field must keep its name and
-// its type whichever source answers.
+// form-batches.mjs reads the same payload, so the field keeps its name and its
+// type; what it carries is now the prelude.
 describe("GET /tts/batch-context writing standard", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -189,17 +282,22 @@ describe("GET /tts/batch-context writing standard", () => {
     return (await res.json()).writingStandard;
   }
 
-  it("serves the hardcoded copy while nothing is synced", async () => {
+  it("serves the hardcoded copy, headed, while nothing is stored", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
-    expect(await fetchStandard(t)).toBe(WRITING_STANDARD);
+    const text = await fetchStandard(t);
+    expect(text.startsWith(MODEL_OF_TOM_FALLBACK_HEADER)).toBe(true);
+    expect(text).toContain(WRITING_STANDARD);
   });
 
-  it("serves the synced skill once it exists", async () => {
+  it("serves the posted files once they exist", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
-    await replace(t, [skill(WRITING_SKILL, WRITING_BODY)]);
-    expect(await fetchStandard(t)).toBe(WRITING_BODY);
+    await post(t, THREE);
+    const text = await fetchStandard(t);
+    expect(text).toContain(`WikiTom commit ${COMMIT}`);
+    expect(text).toContain(WRITING);
+    expect(text).not.toContain(WRITING_STANDARD);
   });
 });
 
@@ -242,7 +340,17 @@ describe("GET /tts/capture-context", () => {
   it("serves the synced skill once it exists", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
-    await replace(t, [skill(CAPTURE_TRIAGE_SKILL, TRIAGE_BODY)]);
+    // Written straight into the table: the six-hourly WikiTom skill sync that
+    // used to write this row is retired (see the head of convex/ttsSkills.ts),
+    // so a row of this name can only be one the retired sync left behind.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("ttsSkills", {
+        name: CAPTURE_TRIAGE_SKILL,
+        body: TRIAGE_BODY,
+        sourcePath: `skills/${CAPTURE_TRIAGE_SKILL}/SKILL.md`,
+        syncedAt: COMMITTED_AT,
+      });
+    });
     expect(await fetchTriage(t)).toBe(TRIAGE_BODY);
   });
 
