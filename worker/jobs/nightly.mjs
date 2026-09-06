@@ -1056,8 +1056,17 @@ async function main() {
     failures: [],
     results: {},
   };
+  // No checkout is a bad night, not a silent one: the digest reads these two
+  // rows, and a run that threw here wrote neither — the one morning Tom would
+  // see nothing at all is the morning the checkout is gone.
   if (!fs.existsSync(path.join(run.dir, ".git"))) {
-    throw new Error(`${run.dir} is not a git checkout — setup.sh clones WikiTom there`);
+    await recordFailure(
+      run,
+      "checkout",
+      new Error(`${run.dir} is not a git checkout — setup.sh clones WikiTom there`),
+    );
+    await recordSummary(run, only);
+    return;
   }
   const steps = {
     snapshot: snapshotStep,
@@ -1095,6 +1104,12 @@ async function main() {
     }
   }
   if (only.includes("post")) await runStep("post");
+  await recordSummary(run, only);
+}
+
+/** The one "nightly-run" row the 5 a.m. digest reads, written however the run
+ * went — including a run that got no further than a missing checkout. */
+async function recordSummary(run, only) {
   const summary = {
     day: run.day,
     steps: only,
@@ -1115,7 +1130,7 @@ async function main() {
     failures: run.failures,
   };
   try {
-    await convexFetch(env, "/tts/event", { kind: "nightly-run", data: summary });
+    await convexFetch(run.env, "/tts/event", { kind: "nightly-run", data: summary });
   } catch (err) {
     console.error(`[nightly] could not record the run summary: ${err.message}`);
   }
