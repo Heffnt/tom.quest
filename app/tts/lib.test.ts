@@ -223,6 +223,21 @@ describe("selectToday", () => {
       row("tomorrow", { dueAt: DAY_END + HOUR }),
       row("raw"), // unprepared, undated, unscheduled: not in the column
       row("archived", { status: "archived", dueAt: DAY_START + HOUR }),
+      // The three the retired queue never listed, each dated inside the day
+      // so only the pool rule keeps it out: asleep past the day, a v1 batch
+      // row, a graph task. A bound GOAL is Tom's own todo and stays.
+      row("asleep-past-day", { dueAt: DAY_START + HOUR, wakeAt: DAY_END + HOUR }),
+      row("v1-batch", { dueAt: DAY_START + HOUR, members: [] }),
+      row("graph-task", {
+        dueAt: DAY_START + HOUR,
+        batchId: "batch-1" as unknown as Todo["batchId"],
+        kind: "task",
+      }),
+      row("goal", {
+        dueAt: DAY_START + 13 * HOUR,
+        batchId: "batch-1" as unknown as Todo["batchId"],
+        kind: "goal",
+      }),
     ];
     const blocks = [
       { todoId: "scheduled", start: DAY_START + 10 * HOUR, end: DAY_START + 11 * HOUR },
@@ -230,7 +245,7 @@ describe("selectToday", () => {
     ];
     const view = selectToday(todos, blocks, { start: DAY_START, end: DAY_END }, NOW);
     expect(view.overdue.map((t) => t._id)).toEqual(["overdue"]);
-    expect(view.due.map((t) => t._id)).toEqual(["due"]);
+    expect(view.due.map((t) => t._id)).toEqual(["due", "goal"]);
     expect(view.scheduled.map((t) => t._id)).toEqual(["scheduled"]);
     // "overdue" is ready too, and stays in the ready list — the lists are facts.
     expect(view.ready.map((t) => t._id).sort()).toEqual(["overdue", "ready"]);
@@ -239,13 +254,14 @@ describe("selectToday", () => {
     expect(view.entries.map((e) => `${e.reason}:${e.todo._id}`)).toEqual([
       "overdue:overdue",
       "due:due",
+      "due:goal",
       "scheduled:scheduled",
       "ready:ready",
       "waking:waking",
     ]);
   });
 
-  it("ready means ready FOR TOM: prepared, awake, every need done, no v1 batch", () => {
+  it("ready means ready FOR TOM: prepared, awake, every need done (a v1 batch is outside the pool)", () => {
     const todos = [
       row("need", { status: "done" }),
       row("blocked", { readiness: "prepared", needs: ["missing"] as never }),
