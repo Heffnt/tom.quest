@@ -175,7 +175,15 @@ export type DigestFacts = {
   rulings: {
     verdict: string;
     subject: string;
-    sentence?: string;
+    // Tom's own sentence, from the ruling's provenance (ttsRulings check 3).
+    // The ONLY text the digest prints between quotation marks.
+    quote?: string;
+    // The ruling's own `sentence` — the revise redirect through the words
+    // door (itself a sentence of Tom's turn since check 7), or whatever a
+    // provenance-carrying row of another shape holds. Printed as the
+    // redirect, never as a quotation of Tom: the field is what an agent
+    // acts on, and the digest must not present it as what Tom said.
+    redirect?: string;
     provenance: string;
   }[];
   learning: {
@@ -269,8 +277,11 @@ export function composeDigest(f: DigestFacts): string {
   if (f.rulings.length > 0) {
     lines.push("", "*Rulings from your words*");
     for (const r of f.rulings) {
-      const quote = r.sentence ? `: "${slackEscape(r.sentence)}"` : "";
-      lines.push(`- ${r.verdict} on ${r.subject}${quote} (${slackEscape(r.provenance)})`);
+      const quote = r.quote ? `: "${slackEscape(r.quote)}"` : "";
+      const redirect = r.redirect ? ` — redirect: ${slackEscape(r.redirect)}` : "";
+      lines.push(
+        `- ${r.verdict} on ${r.subject}${quote}${redirect} (${slackEscape(r.provenance)})`,
+      );
     }
   }
 
@@ -359,8 +370,24 @@ export function provenanceText(raw: unknown): string | null {
     .slice(0, PROVENANCE_PARTS);
   return parts.length === 0 ? null : parts.join(", ");
 }
-function rulingProvenance(r: Doc<"dtsRulings">): string | null {
-  return provenanceText((r as unknown as Record<string, unknown>).provenance);
+// The words door (ttsRulings.internalRecordRulingFromTomWords) writes
+// { from, inboundId, quote }: `quote` is Tom's sentence and is lifted out to
+// be printed AS his quotation; the rest names the source. Any other
+// non-empty shape is a source with no quotation to print.
+function rulingProvenance(
+  r: Doc<"dtsRulings">,
+): { quote?: string; provenance: string } | null {
+  const raw = (r as unknown as Record<string, unknown>).provenance;
+  if (raw !== null && typeof raw === "object" && "quote" in raw) {
+    const { quote, ...source } = raw as Record<string, unknown>;
+    const provenance = provenanceText(source);
+    if (typeof quote === "string" && quote.trim() !== "") {
+      return { quote: quote.trim(), provenance: provenance ?? "from Tom's words" };
+    }
+    return provenance === null ? null : { provenance };
+  }
+  const provenance = provenanceText(raw);
+  return provenance === null ? null : { provenance };
 }
 
 const SESSION_LINK = "https://tom.quest/sessions?session=";
@@ -632,15 +659,21 @@ export async function gatherDigestFacts(
     .collect();
   const rulings: DigestFacts["rulings"] = [];
   for (const r of rulingRows) {
-    const provenance = rulingProvenance(r);
-    if (provenance === null) continue;
+    const source = rulingProvenance(r);
+    if (source === null) continue;
     const subject =
       r.todoId !== undefined
         ? `<${ttsItemLink(r.todoId)}|${slackEscape((await todoOf(r.todoId))?.statement ?? "todo")}>`
         : r.batchId !== undefined
           ? slackEscape((await batchName(r.batchId)) ?? "batch")
           : slackEscape(`${r.repo ?? ""}#${r.externalId ?? ""}`);
-    rulings.push({ verdict: r.verdict, subject, sentence: r.sentence, provenance });
+    rulings.push({
+      verdict: r.verdict,
+      subject,
+      quote: source.quote,
+      redirect: r.sentence,
+      provenance: source.provenance,
+    });
   }
 
   return {

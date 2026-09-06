@@ -105,7 +105,7 @@ describe("composeDigest", () => {
       ready: [{ id: "t4", statement: "sign the form", entryAction: "sign page 2" }],
       failures: [{ at: Date.UTC(2026, 8, 5, 7), text: "poll-gmail-failed: token expired" }],
       rulings: [
-        { verdict: "archive", subject: "old thing", sentence: "drop it", provenance: "slack 1757000000.000100" },
+        { verdict: "archive", subject: "old thing", quote: "drop it", provenance: "slack 1757000000.000100" },
       ],
       learning: [
         { id: "lc-1", file: "schedule.md", before: "up at 7", after: "up at 6", evidence: "three sessions before 7" },
@@ -185,6 +185,72 @@ describe("provenanceText", () => {
     expect(provenanceText({})).toBeNull();
     expect(provenanceText({ nested: { from: "tom-words" } })).toBeNull();
     expect(provenanceText(7)).toBeNull();
+  });
+});
+
+// The digest is how Tom catches a misread sentence, so the quotation marks
+// hold HIS words only: provenance.quote (the sentence the route verified
+// against his turn). The ruling's own sentence — the redirect an agent acts
+// on — is printed after it, labelled, never as the quotation. witness: print
+// r.redirect between the quotation marks, or drop the quote from the line.
+describe("rulings from Tom's words in the digest", () => {
+  it("prints the quote as the quotation and the redirect separately", () => {
+    const text = composeDigest({
+      ...emptyFacts(),
+      rulings: [
+        {
+          verdict: "revise",
+          subject: "the dentist",
+          quote: "no wait, revise it.",
+          redirect: "book the hygienist, not the dentist!",
+          provenance: "from tom-words, inboundId j57abc",
+        },
+        // A provenance of another shape carries no quotation: its sentence is
+        // still not presented as what Tom said.
+        { verdict: "archive", subject: "old thing", redirect: "drop it", provenance: "dictated" },
+      ],
+    });
+    const lines = text.split("\n");
+    expect(lines).toContain(
+      '- revise on the dentist: "no wait, revise it." — redirect: book the hygienist, not the dentist! (from tom-words, inboundId j57abc)',
+    );
+    expect(lines).toContain("- archive on old thing — redirect: drop it (dictated)");
+    expect(text).not.toContain('"drop it"');
+  });
+
+  it("reads the quote out of the stored provenance and the redirect out of the sentence", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "call the dentist" });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsRulings", {
+        subjectType: "life",
+        todoId,
+        verdict: "revise",
+        sentence: "book the hygienist, not the dentist!",
+        ruledAt: FIVE_AM - 60_000,
+        provenance: { from: "tom-words", inboundId: "j57abc", quote: "no wait, revise it." },
+      });
+      // A button ruling has no provenance and is not reported here at all.
+      await ctx.db.insert("dtsRulings", {
+        subjectType: "life",
+        todoId,
+        verdict: "approve",
+        sentence: "an agent's note",
+        ruledAt: FIVE_AM - 30_000,
+      });
+    });
+    const { text } = await t.query(internal.ttsDigest.internalComposeDigest, {
+      day: DAY_KEY,
+      now: FIVE_AM,
+    });
+    expect(text).toContain(
+      `- revise on <${ttsItemLink(todoId)}|call the dentist>: "no wait, revise it." — redirect: book the hygienist, not the dentist! (from tom-words, inboundId j57abc)`,
+    );
+    expect(text).not.toContain("an agent's note");
+    expect(text).not.toContain('"book the hygienist');
   });
 });
 
