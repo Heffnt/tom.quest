@@ -42,8 +42,9 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 // The record prod holds while a migration runs, which is NOT the record the
 // validator declares once the narrow lands: a retired readiness spelling, a
 // condition-bound timing class, a latest-safe instant, a wake condition in
-// words, a batch's named path, a brief's importance and retired recommendation
-// spelling, and a session left in "awaiting-permission" all stop inserting
+// words, a v1 batch's members and its plan, a batch's named path, a brief's
+// importance and retired recommendation spelling, and a session left in
+// "awaiting-permission" all stop inserting
 // under convex/schema.ts the day the declarations go. The fixtures here are
 // exactly those rows, so they go in under a copy of the schema with the
 // retired declarations put back — today identical to what the schema itself
@@ -109,6 +110,31 @@ const wideSchema = defineSchema({
         latestSafeAt: v.optional(v.number()),
         wakeCondition: v.optional(v.string()),
         importance: RETIRED_IMPORTANCE,
+        // The v1 batch pair, declared here for the same reason as the fields
+        // above: a dtsTodos row carrying `members` WAS a batch and `plan` was
+        // its ordered steps, the graph migration has replaced both, and the
+        // narrow drops the declarations — while rows on the deployment still
+        // hold them until this walk has cleared them.
+        members: v.optional(
+          v.array(
+            v.object({
+              todoId: v.optional(v.id("dtsTodos")),
+              repo: v.optional(v.string()),
+              externalId: v.optional(v.string()),
+            }),
+          ),
+        ),
+        plan: v.optional(
+          v.array(
+            v.object({
+              text: v.string(),
+              actor: v.union(v.literal("tom"), v.literal("agent")),
+              status: v.union(v.literal("open"), v.literal("done")),
+              doneAt: v.optional(v.number()),
+              evidence: v.optional(v.string()),
+            }),
+          ),
+        ),
       }),
     ),
     schemaTodos,
@@ -843,6 +869,22 @@ describe("clearing walk (retired fields and the retired session status)", () => 
   const MUST_PATH = { name: "release", index: 1, edge: "must" as const };
   const HELPS_PATH = { name: "release", index: 2, edge: "helps" as const };
   const UNLINKED_PATH = { name: "paper", index: 0 };
+  // The v1 batch pair. `members` is what made a dtsTodos row a batch; `plan`
+  // was its ordered completion steps and was legal on any todo, batch or not.
+  const V1_MEMBERS = [
+    { repo: "ComplexMultiTrigger", externalId: "cmt-001" },
+    { repo: "tom.quest", externalId: "tq-002" },
+  ];
+  const V1_PLAN = [
+    {
+      text: "gather the sources",
+      actor: "agent" as const,
+      status: "done" as const,
+      doneAt: NOW,
+      evidence: "session/abc → PR #12",
+    },
+    { text: "rule on the shape", actor: "tom" as const, status: "open" as const },
+  ];
 
   const todoSeed = (): Seed[] => [
     {
@@ -861,6 +903,17 @@ describe("clearing walk (retired fields and the retired session status)", () => 
       doneAt: NOW,
       importance: RETIRED_IMPORTANCE_VALUE,
     },
+    // A v1 batch, as prod holds one after tts.internalMigrateToGraph replaced
+    // it: archived with the successor pointer, still carrying both fields.
+    {
+      statement: "live v1 batch",
+      status: "archived",
+      unarchiveCondition: "superseded by graph batch k12345",
+      members: V1_MEMBERS,
+      plan: V1_PLAN,
+    },
+    // A plan on a row that was never a batch — the field was legal anywhere.
+    { statement: "a plan, no members", plan: V1_PLAN },
   ];
 
   async function seedRest(t: ReturnType<typeof convexTest>) {
@@ -941,13 +994,15 @@ describe("clearing walk (retired fields and the retired session status)", () => 
   }
 
   const expectedTotals = {
-    "dtsTodos-scanned": 4,
+    "dtsTodos-scanned": 6,
     "batches-scanned": 4,
     "claudeSessions-scanned": 3,
     "dtsCodeBriefs-scanned": 2,
     "latestSafeAt-cleared": 2,
     "wakeCondition-cleared": 1,
     "importance-cleared": 2,
+    "members-cleared": 1,
+    "plan-cleared": 2,
     "path-cleared": 3,
     "awaiting-permission-ended": 2,
     "brief-importance-cleared": 1,
@@ -958,6 +1013,8 @@ describe("clearing walk (retired fields and the retired session status)", () => 
     "latestSafeAt-cleared": 0,
     "wakeCondition-cleared": 0,
     "importance-cleared": 0,
+    "members-cleared": 0,
+    "plan-cleared": 0,
     "path-cleared": 0,
     "awaiting-permission-ended": 0,
     "brief-importance-cleared": 0,
@@ -1011,6 +1068,8 @@ describe("clearing walk (retired fields and the retired session status)", () => 
       expect(todo.latestSafeAt).toBeUndefined();
       expect(todo.wakeCondition).toBeUndefined();
       expect(todo.importance).toBeUndefined();
+      expect(todo.members).toBeUndefined();
+      expect(todo.plan).toBeUndefined();
       // Nothing else on the row moved: updatedAt is untouched, so clearing a
       // retired field puts no settled item back on Tom's pile.
       expect(todo.updatedAt).toBe(NOW);
@@ -1041,7 +1100,7 @@ describe("clearing walk (retired fields and the retired session status)", () => 
 
     // One event per value, carrying the value itself.
     const cleared = await eventsOfKind(t, RETIRED_FIELD_CLEARED);
-    expect(cleared).toHaveLength(12);
+    expect(cleared).toHaveLength(15);
     const byField = (field: string) =>
       cleared
         .map((e) => e.data as { field: string; value: unknown })
@@ -1057,11 +1116,16 @@ describe("clearing walk (retired fields and the retired session status)", () => 
     // The WHOLE path object, helps edges and unlinked names included: what
     // the needs migration derived from is not all a path said.
     expect(byField("path")).toEqual([MUST_PATH, HELPS_PATH, UNLINKED_PATH]);
+    // The WHOLE members array and the WHOLE plan — every step with its actor,
+    // its status, its completion instant and its evidence. The graph holds
+    // what they MEANT; this is what they SAID.
+    expect(byField("members")).toEqual([V1_MEMBERS]);
+    expect(byField("plan")).toEqual([V1_PLAN, V1_PLAN]);
     expect(byField("recommendation")).toEqual(["stale-replan"]);
     // A todo's clearing is on its own history (the indexed column), and every
     // row names the table and the row it came out of.
     const todoEvents = cleared.filter((e) => e.todoId !== undefined);
-    expect(todoEvents).toHaveLength(5);
+    expect(todoEvents).toHaveLength(8);
     const pathEvent = cleared.find(
       (e) => (e.data as { field: string }).field === "path",
     )!;
@@ -1088,6 +1152,8 @@ describe("clearing walk (retired fields and the retired session status)", () => 
     const rows = await wideRows(t);
     expect(rows.todos.filter((r) => r.latestSafeAt !== undefined)).toHaveLength(2);
     expect(rows.todos.filter((r) => r.importance !== undefined)).toHaveLength(2);
+    expect(rows.todos.filter((r) => r.members !== undefined)).toHaveLength(1);
+    expect(rows.todos.filter((r) => r.plan !== undefined)).toHaveLength(2);
     expect(rows.batches.filter((b) => b.path !== undefined)).toHaveLength(3);
     expect(
       rows.sessions.filter((s) => s.status === "awaiting-permission"),
@@ -1104,9 +1170,9 @@ describe("clearing walk (retired fields and the retired session status)", () => 
     await seedRest(t);
     await clearAll(t);
     expect(await clearAll(t)).toEqual(nothingLeft);
-    // And it wrote no second record of a value: nine values left the rows,
+    // And it wrote no second record of a value: every value left the rows
     // once, on the first run.
-    expect(await eventsOfKind(t, RETIRED_FIELD_CLEARED)).toHaveLength(12);
+    expect(await eventsOfKind(t, RETIRED_FIELD_CLEARED)).toHaveLength(15);
   });
 
   // witness: drop the cursor from the continuation and a resumed run starts
@@ -1152,8 +1218,10 @@ describe("clearing walk (retired fields and the retired session status)", () => 
     );
     expect(second.done).toBe(false);
     expect(second.nextTable).toBe("batches");
-    expect(second.totals["dtsTodos-scanned"]).toBe(4);
+    expect(second.totals["dtsTodos-scanned"]).toBe(6);
     expect(second.totals["latestSafeAt-cleared"]).toBe(2);
+    expect(second.totals["members-cleared"]).toBe(1);
+    expect(second.totals["plan-cleared"]).toBe(2);
     // And one table on its own, for the run that only has to finish one.
     const briefsOnly = await t.mutation(
       internal.ttsMigrations.internalClearRetiredFields,
