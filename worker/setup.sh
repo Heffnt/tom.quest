@@ -223,6 +223,17 @@ if [ ! -d /root/wikitom/.git ]; then
     && echo "  cloned WikiTom into /root/wikitom" \
     || echo "  WikiTom clone refused (deploy key not on GitHub yet?) — the nightly job records a failure until it is; re-run setup.sh after"
 fi
+# The committer identity every git command in that checkout writes with. The
+# nightly job passes it to the commands it names itself, but `git pull
+# --rebase` re-commits whatever is local through git's own machinery, and a
+# rebase without a configured identity DIES ("Please tell me who you are") —
+# on this box nothing configures one, since there is no user and no ~/.gitconfig
+# worth the name. Set every run: it is a local config, so a checkout made
+# before this line gets it on the next setup.sh.
+if [ -d /root/wikitom/.git ]; then
+  git -C /root/wikitom config user.name "tts-nightly"
+  git -C /root/wikitom config user.email "tts-nightly@tom.quest"
+fi
 
 # Env file: seed from the template ONLY if absent — a re-run must never
 # clobber real secrets. Tighten permissions every time regardless.

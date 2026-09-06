@@ -82,6 +82,17 @@ export const MODEL_OF_TOM_FIRST = [
 export const MODEL_OF_TOM_AREAS_DIR = "model-of-tom/areas";
 export const AREA_SECTIONS = ["Current state", "Must not break"];
 
+// The committer identity every git command in the checkout writes under. It is
+// ALSO set in the checkout's own config by setup.sh, and both homes are needed:
+// `git commit` here names it on the command line, but `git pull --rebase`
+// re-commits local work through git's own machinery, which reads the config and
+// dies without one. The author names the job, which is how the digest tells the
+// box's commits from Tom's.
+export const GIT_IDENTITY = [
+  "-c", "user.name=tts-nightly",
+  "-c", "user.email=tts-nightly@tom.quest",
+];
+
 const STEPS = ["snapshot", "learning", "sessions", "push", "post"];
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -779,14 +790,7 @@ async function pushStep(run) {
     for (const c of run.commits) {
       git(dir, "add", "-A", "--", ...c.paths);
       if (!stagedChanges(dir)) continue;
-      // The author names the job (the digest lists WikiTom commits with
-      // their author, and this is how Tom tells the box's from his own).
-      git(
-        dir,
-        "-c", "user.name=tts-nightly",
-        "-c", "user.email=tts-nightly@tom.quest",
-        "commit", "-q", "-m", c.message,
-      );
+      git(dir, ...GIT_IDENTITY, "commit", "-q", "-m", c.message);
       made.push(c.message);
     }
     // Local commits from earlier nights whose push was refused are ahead of
@@ -795,7 +799,9 @@ async function pushStep(run) {
     let pushed = false;
     const failures = [];
     try {
-      gitCapture(dir, "pull", "--rebase", "--quiet");
+      // The identity again: a rebase of local commits onto origin re-commits
+      // them, and git refuses to without one.
+      gitCapture(dir, ...GIT_IDENTITY, "pull", "--rebase", "--quiet");
       pulled = true;
     } catch (err) {
       failures.push({ step: "pull", error: gitError(err) });
