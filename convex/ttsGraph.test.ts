@@ -12,6 +12,8 @@ import {
   isReady,
   isReadyForTom,
   normalizeReadiness,
+  waitingReason,
+  waitingReasonText,
 } from "./ttsShared";
 import type { SessionModel } from "./ttsShared";
 
@@ -174,6 +176,72 @@ describe("ttsShared graph rules", () => {
     const done = buildDoneSet(rows);
     const ready = rows.filter((r) => isReadyForTom(r, done, NOW)).map((r) => r._id);
     expect(ready).toEqual(["b", "g"]);
+  });
+
+  // ── Waiting, computed with its reason ─────────────────────────────────────
+  // witness: reorder the checks in waitingReason so `unprepared` comes before
+  // `wake` — a raw capture asleep until March would say "unprepared", and the
+  // preparer would look like the thing holding it.
+  it("names the one reason an active todo waits, hard blocks first", () => {
+    const ctx = {
+      now: NOW,
+      doneSet: new Set(["a"]),
+      statementOf: (id: string) => (id === "b" ? "the need" : undefined),
+    };
+    const base = { _id: "x", status: "active" as const, readiness: "prepared" as const };
+    // wake: a future wakeAt, whatever else is true.
+    expect(
+      waitingReason({ ...base, readiness: "unprepared", wakeAt: NOW + 1, needs: ["b"] }, ctx),
+    ).toEqual({ kind: "wake", at: NOW + 1, condition: undefined });
+    // a stored "waiting" status reads as a sleep during the widen, with its
+    // condition in words when it has no time.
+    expect(
+      waitingReason({ ...base, status: "waiting", wakeCondition: "the landlord writes" }, ctx),
+    ).toEqual({ kind: "wake", at: undefined, condition: "the landlord writes" });
+    // need: the first unmet need, named.
+    expect(waitingReason({ ...base, needs: ["a", "b"] }, ctx)).toEqual({
+      kind: "need",
+      id: "b",
+      statement: "the need",
+    });
+    // credential: the source is declined.
+    expect(
+      waitingReason(
+        { ...base, source: "email" },
+        { ...ctx, declinedSources: new Set(["email"]) },
+      ),
+    ).toEqual({ kind: "credential", source: "email" });
+    // unprepared: a raw capture with nothing else holding it.
+    expect(waitingReason({ ...base, readiness: "unprepared" }, ctx)).toEqual({
+      kind: "unprepared",
+    });
+    // tom: prepared, and his (an actor of "tom", or no actor at all).
+    expect(waitingReason({ ...base, actor: "tom" }, ctx)).toEqual({ kind: "tom" });
+    expect(waitingReason(base, ctx)).toEqual({ kind: "tom" });
+    // an agent task that is ready waits on nothing.
+    expect(waitingReason({ ...base, actor: "agent" }, ctx)).toBeNull();
+    // done and archived rows are not waiting.
+    expect(waitingReason({ ...base, status: "done" }, ctx)).toBeNull();
+    expect(waitingReason({ ...base, status: "archived" }, ctx)).toBeNull();
+  });
+
+  it("spells each reason one way", () => {
+    const date = (at: number) => `d${at}`;
+    expect(waitingReasonText({ kind: "wake", at: 5 }, date)).toBe("waiting until d5");
+    expect(waitingReasonText({ kind: "wake", at: 5, condition: "c" }, date)).toBe(
+      "waiting until d5 — c",
+    );
+    expect(waitingReasonText({ kind: "wake", condition: "c" }, date)).toBe("waiting until: c");
+    expect(waitingReasonText({ kind: "wake" }, date)).toBe("waiting");
+    expect(waitingReasonText({ kind: "need", id: "b", statement: "s" }, date)).toBe(
+      "waiting on: s",
+    );
+    expect(waitingReasonText({ kind: "need", id: "b" }, date)).toBe("waiting on: b");
+    expect(waitingReasonText({ kind: "credential", source: "email" }, date)).toBe(
+      "waiting on a credential: email declined",
+    );
+    expect(waitingReasonText({ kind: "unprepared" }, date)).toBe("waiting: unprepared");
+    expect(waitingReasonText({ kind: "tom" }, date)).toBe("waiting on you");
   });
 
   it("bounds a todo's fan-in", () => {

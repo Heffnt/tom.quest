@@ -357,10 +357,12 @@ export default function CalendarTab({
                   t.dueAt < day.end,
               )
               .sort((a, b) => (a.dueAt ?? 0) - (b.dueAt ?? 0));
+            // A sleep is a wakeAt on an active row (the lifeos update) or,
+            // until the migration lands, a stored "waiting" status — both.
             const wakeMarks = (todos ?? [])
               .filter(
                 (t) =>
-                  t.status === "waiting" &&
+                  (t.status === "active" || t.status === "waiting") &&
                   t.wakeAt !== undefined &&
                   t.wakeAt >= day.start &&
                   t.wakeAt < day.end,

@@ -33,6 +33,7 @@ import PathsBar, { type PathChip } from "./paths-bar";
 import BatchCard, {
   needNames,
   taskSets,
+  taskWaiting,
   type BatchGraph,
   type GraphTask,
 } from "./batch-card";
@@ -103,6 +104,10 @@ function toGraph(batch: Batch, contents: Todo[]): BatchGraph {
         actor: t.actor ?? "agent",
         status: done ? "done" : "active",
         needs: t.needs ?? [],
+        // A stored "waiting" row reads as a sleep until the migration turns
+        // it into active + wakeAt; with no time it sleeps until Tom wakes it.
+        wakeAt: t.status === "waiting" ? (t.wakeAt ?? Number.MAX_SAFE_INTEGER) : t.wakeAt,
+        readiness: t.readiness,
         evidence: t.evidence,
         groundUp: t.groundUpExplanation,
         rulable: isRulable(t),
@@ -119,8 +124,12 @@ function toGraph(batch: Batch, contents: Todo[]): BatchGraph {
 }
 
 /** The graph as the session prompt reads it — the card's own three sets. */
-function sessionContext(batch: Batch, graph: BatchGraph): BatchSessionContext {
-  const { done, ready, blocked } = taskSets(graph.tasks);
+function sessionContext(
+  batch: Batch,
+  graph: BatchGraph,
+  now: number,
+): BatchSessionContext {
+  const { done, ready, blocked } = taskSets(graph.tasks, now);
   const byId = new Map(graph.tasks.map((t) => [t.id, t]));
   const doneIds = new Set(done.map((t) => t.id));
   const shape = (t: GraphTask, state: "done" | "ready" | "blocked") => ({
@@ -166,6 +175,7 @@ function sessionContext(batch: Batch, graph: BatchGraph): BatchSessionContext {
 function resolveDetail(
   item: DetailItem | null,
   graphs: BatchGraph[],
+  now: number,
 ): DetailItem | null {
   if (item === null) return null;
   if (item.kind === "batch") {
@@ -180,6 +190,7 @@ function resolveDetail(
           kind: "task",
           batchStatement: graph.statement,
           task,
+          waiting: taskWaiting(task, graph.tasks, now),
           waitingOn: needNames(task, graph.tasks),
         };
       }
@@ -363,8 +374,8 @@ export default function BatchesTab() {
   // The open dialog's item, re-resolved against the live graphs (resolveDetail
   // above).
   const liveDetail = useMemo(
-    () => resolveDetail(detail, [...byPath.values()].flat().map((b) => b.graph)),
-    [detail, byPath],
+    () => resolveDetail(detail, [...byPath.values()].flat().map((b) => b.graph), now),
+    [detail, byPath, now],
   );
 
   // Live ruling per subject — the shared derivation (app/tts/lib.ts), the same
@@ -442,7 +453,7 @@ export default function BatchesTab() {
           tab.close();
           throw e;
         }
-        await openBatchSession(sessionContext(batch, graph), {
+        await openBatchSession(sessionContext(batch, graph, now), {
           tab,
           ruling: { verdict, sentence: args.sentence },
         });
@@ -545,6 +556,7 @@ export default function BatchesTab() {
               )}
               <BatchCard
                 graph={graph}
+                now={now}
                 expanded={expanded.has(graph.id)}
                 onToggle={() =>
                   toggle(graph.id, () => {
@@ -558,7 +570,7 @@ export default function BatchesTab() {
                 onDetail={setDetail}
                 onGroundUp={(title, content) => setGroundUp({ title, content })}
                 onOpenSession={() =>
-                  void openBatchSession(sessionContext(batch, graph))
+                  void openBatchSession(sessionContext(batch, graph, now))
                 }
               />
             </div>

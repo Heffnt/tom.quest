@@ -58,6 +58,7 @@ function toGraph(b: Row, byId: Map<string, Row>): BatchGraph {
     actor: s.actor,
     status: s.status === "done" ? ("done" as const) : ("active" as const),
     needs: i > 0 ? [`${b._id}#${i - 1}`] : [],
+    readiness: "prepared" as const,
     evidence: s.evidence,
     rulable: false,
   }));
@@ -166,6 +167,7 @@ export default function MockupClient() {
             )}
             <BatchCard
               graph={g}
+              now={Date.now()}
               expanded={expanded.has(g.id)}
               onToggle={() => setExpanded((prev) => toggle(prev, g.id))}
               onRule={() => {}}

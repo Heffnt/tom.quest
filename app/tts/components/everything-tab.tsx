@@ -13,6 +13,7 @@ import { useAuth } from "@/app/lib/auth";
 import TodoRow from "./todo-row";
 import CodeTodoRow from "./code-todo-row";
 import { groupTimeNotes, NO_NOTES } from "./time-note-field";
+import { waitingReason, type WaitingContext } from "@/convex/ttsShared";
 import {
   buildDoneSet,
   codeSubjectKey,
@@ -180,6 +181,15 @@ export default function EverythingTab({
   const byKind = (r: Row) => kinds.has(r.kind);
   const doneSet = buildDoneSet(todos ?? []);
   const byReady = (r: Row) => !readyOnly || rowReady(r, doneSet, now);
+  // The waiting context every row's reason is computed against: the same
+  // done set, and need names looked up here. Declined sources arrive with
+  // phase 6 (the archived integration todos); until then none is declined.
+  const statementById = new Map((todos ?? []).map((t) => [t._id as string, t.statement]));
+  const waitingCtx: WaitingContext = {
+    now,
+    doneSet,
+    statementOf: (id) => statementById.get(id),
+  };
   const byCategory = (r: Row) =>
     category === "" || rowCategory(r) === category;
 
@@ -396,6 +406,7 @@ export default function EverythingTab({
               intent={link && link.item === r.todo._id ? link.intent : null}
               onIntentCleared={onLinkCleared}
               timeNotes={notesByContext.get(r.todo._id) ?? NO_NOTES}
+              waiting={waitingReason(r.todo, waitingCtx)}
             />
           ) : (
             <CodeTodoRow

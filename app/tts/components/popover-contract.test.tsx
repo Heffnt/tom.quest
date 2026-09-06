@@ -179,6 +179,7 @@ const GRAPH: BatchGraph = {
       actor: "agent",
       status: "done",
       needs: [],
+      readiness: "prepared",
       rulable: false,
     },
     {
@@ -187,6 +188,7 @@ const GRAPH: BatchGraph = {
       actor: "tom",
       status: "active",
       needs: ["t1"],
+      readiness: "prepared",
       groundUp: "<!DOCTYPE html><html><body><p>why</p></body></html>",
       rulable: true,
     },
@@ -288,6 +290,7 @@ const CASES: { file: string; render: () => void }[] = [
       void render(
         <BatchCard
           graph={GRAPH}
+          now={NOW}
           expanded
           onToggle={noop}
           onRule={noop}

@@ -23,7 +23,9 @@ import {
   countdownText,
   isPrepared,
   normalizeReadiness,
+  waitingReasonText,
   type Readiness,
+  type WaitingReason,
 } from "@/convex/ttsShared";
 import { useOpenTodoSession } from "@/app/lib/use-open-todo-session";
 import Info from "./info";
@@ -181,6 +183,7 @@ export default function TodoRow({
   intent,
   onIntentCleared,
   timeNotes,
+  waiting = null,
 }: {
   todo: Todo;
   now: number;
@@ -191,6 +194,10 @@ export default function TodoRow({
   onIntentCleared: () => void;
   /** This todo's time notes, bucketed by the tab that holds the query. */
   timeNotes: readonly TimeNote[];
+  /** Why this todo waits, computed by the tab that holds every todo
+   * (ttsShared.waitingReason: the done set and the need names live there).
+   * null = waiting on nothing, or not an active todo. */
+  waiting?: WaitingReason | null;
 }) {
   const updateTodo = useMutation(api.tts.updateTodo);
   const setStatus = useMutation(api.tts.setStatus);
@@ -291,15 +298,14 @@ export default function TodoRow({
       </span>,
     );
   }
-  if (todo.status === "waiting") {
+  // The waiting line — one reason, computed (ttsShared.waitingReason). A
+  // stored "waiting" status still reads as a sleep during the widen.
+  if (waiting !== null) {
     facts.push(
-      <span key="wake" className="text-text-muted">
-        {todo.wakeCondition ? `until: ${todo.wakeCondition}` : "waiting"}
-        {todo.wakeAt !== undefined && (
-          <span className="text-text-faint">
-            {" "}
-            · wakes {countdownText(todo.wakeAt, now)} ({fmtDate(todo.wakeAt)})
-          </span>
+      <span key="waiting" className={waiting.kind === "tom" ? "text-accent" : "text-text-muted"}>
+        {waitingReasonText(waiting, fmtDate)}
+        {waiting.kind === "wake" && waiting.at !== undefined && (
+          <span className="text-text-faint"> · wakes {countdownText(waiting.at, now)}</span>
         )}
       </span>,
     );

@@ -87,6 +87,7 @@ const GRAPH: BatchGraph = {
       actor: "agent",
       status: "done",
       needs: [],
+      readiness: "prepared",
       rulable: false,
     },
     {
@@ -95,6 +96,7 @@ const GRAPH: BatchGraph = {
       actor: "tom",
       status: "active",
       needs: ["t1"],
+      readiness: "prepared",
       rulable: true,
     },
   ],
@@ -240,6 +242,7 @@ describe("the batch card", () => {
     render(
       <BatchCard
         graph={GRAPH}
+        now={Date.now()}
         expanded
         onToggle={() => {}}
         onRule={() => {}}
@@ -286,7 +289,7 @@ describe("the detail dialog", () => {
     const rulable = GRAPH.tasks[1];
     const { unmount } = render(
       <DetailDialog
-        item={{ kind: "task", batchStatement: GRAPH.statement, task: rulable, waitingOn: [] }}
+        item={{ kind: "task", batchStatement: GRAPH.statement, task: rulable, waiting: null, waitingOn: [] }}
         onClose={noop}
         onGroundUp={noop}
         onRule={() => {}}
@@ -298,7 +301,7 @@ describe("the detail dialog", () => {
     const done = GRAPH.tasks[0];
     render(
       <DetailDialog
-        item={{ kind: "task", batchStatement: GRAPH.statement, task: done, waitingOn: [] }}
+        item={{ kind: "task", batchStatement: GRAPH.statement, task: done, waiting: null, waitingOn: [] }}
         onClose={noop}
         onGroundUp={noop}
         onRule={() => {}}
