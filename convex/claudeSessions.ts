@@ -2858,7 +2858,7 @@ const codeTodoGuard = (repo: string): string | undefined =>
 
 /** The one line a code mission's ruling row records at admission. */
 export const codeMissionApplyResult = (sessionId: string): string =>
-  `worker mission session ${sessionId}`;
+  `admitted as session ${sessionId}`;
 
 function buildCodeMissionPrompt(args: {
   repo: string;

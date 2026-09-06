@@ -3626,7 +3626,7 @@ describe("the code lane", () => {
     // The ruling is applied AT ADMISSION, naming the session.
     const ruling = await t.run(async (ctx) => ctx.db.get(rulingId));
     expect(ruling?.appliedAt).toBeDefined();
-    expect(ruling?.applyResult).toBe(`worker mission session ${session._id}`);
+    expect(ruling?.applyResult).toBe(`admitted as session ${session._id}`);
     expect(await t.query(internal.ttsRulings.internalPendingRulings, {})).toHaveLength(0);
 
     const events = await t.run(async (ctx) => ctx.db.query("dtsEvents").collect());
