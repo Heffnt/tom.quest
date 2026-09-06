@@ -7,12 +7,14 @@ import {
 } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import {
   DAY_MS,
   MAX_NEEDS,
   SESSION_MODEL,
   TTS_PREP_NY_HOUR,
+  captureReplyText,
   goalCheckable,
   nyCalendarDayBoundsUtc,
   nyCalendarDayKey,
@@ -927,38 +929,67 @@ export const listTimeNotes = query({
   },
 });
 
+// One args object and one body behind two doors (the claudeSessions pattern):
+// Tom's browser mutation, and the internal twin a Slack reply that says only
+// "done" or a date goes through (convex/ttsSlack.ts) — a time note is Tom's
+// own written instruction either way, and the pen may never skip a check the
+// browser enforces.
+const CREATE_TIME_NOTE_ARGS = {
+  text: v.string(),
+  todoId: v.optional(v.id("dtsTodos")),
+  blockId: v.optional(v.id("dtsBlocks")),
+  day: v.optional(v.string()),
+};
+
+async function createTimeNoteFrom(
+  ctx: MutationCtx,
+  {
+    text,
+    todoId,
+    blockId,
+    day,
+  }: {
+    text: string;
+    todoId?: Id<"dtsTodos">;
+    blockId?: Id<"dtsBlocks">;
+    day?: string;
+  },
+): Promise<Id<"dtsTimeNotes">> {
+  const trimmed = text.trim();
+  if (trimmed === "") throw new Error("A time note needs text");
+  requireOneTimeNoteContext(todoId, blockId, day);
+  if (day !== undefined && !DAY_KEY_RE.test(day)) {
+    throw new Error(`A day is a calendar date, YYYY-MM-DD — got ${day}`);
+  }
+  if (todoId !== undefined && !(await ctx.db.get(todoId))) {
+    throw new Error("TTS todo not found");
+  }
+  if (blockId !== undefined && !(await ctx.db.get(blockId))) {
+    throw new Error("Block not found");
+  }
+  const id = await ctx.db.insert("dtsTimeNotes", {
+    text: trimmed,
+    todoId,
+    blockId,
+    day,
+    status: "pending",
+    createdAt: Date.now(),
+  });
+  await logEvent(ctx, "time-note", todoId, { text: trimmed, blockId, day });
+  return id;
+}
+
 export const createTimeNote = mutation({
-  args: {
-    text: v.string(),
-    todoId: v.optional(v.id("dtsTodos")),
-    blockId: v.optional(v.id("dtsBlocks")),
-    day: v.optional(v.string()),
-  },
-  handler: async (ctx, { text, todoId, blockId, day }) => {
+  args: CREATE_TIME_NOTE_ARGS,
+  handler: async (ctx, args) => {
     await requireTomId(ctx);
-    const trimmed = text.trim();
-    if (trimmed === "") throw new Error("A time note needs text");
-    requireOneTimeNoteContext(todoId, blockId, day);
-    if (day !== undefined && !DAY_KEY_RE.test(day)) {
-      throw new Error(`A day is a calendar date, YYYY-MM-DD — got ${day}`);
-    }
-    if (todoId !== undefined && !(await ctx.db.get(todoId))) {
-      throw new Error("TTS todo not found");
-    }
-    if (blockId !== undefined && !(await ctx.db.get(blockId))) {
-      throw new Error("Block not found");
-    }
-    const id = await ctx.db.insert("dtsTimeNotes", {
-      text: trimmed,
-      todoId,
-      blockId,
-      day,
-      status: "pending",
-      createdAt: Date.now(),
-    });
-    await logEvent(ctx, "time-note", todoId, { text: trimmed, blockId, day });
-    return id;
+    return await createTimeNoteFrom(ctx, args);
   },
+});
+
+export const internalCreateTimeNote = internalMutation({
+  args: CREATE_TIME_NOTE_ARGS,
+  handler: async (ctx, args) => await createTimeNoteFrom(ctx, args),
 });
 
 // Tom withdraws a note he no longer wants acted on. An APPLIED note is not
@@ -1418,30 +1449,23 @@ export const internalCapture = internalMutation({
       updatedAt: now,
     });
     await logEvent(ctx, "captured", id, { source });
+    // The one reply line at capture, in the thread of the #dump message this
+    // came from. Scheduled INSIDE the insert's transaction, after the dedupe
+    // above — so a Slack retry, which returns the existing id, never
+    // schedules a second one, and no reply exists for a capture that rolled
+    // back. The door (ttsSync.sendSlack) records the send and stamps
+    // slackReplyTs. This is the ONE reply a #dump message gets: no worker
+    // posts its own (a second sender reading a stale copy of the stamp is how
+    // a message got two replies), and a refused send is a recorded failure.
+    if (slackChannel !== undefined && slackTs !== undefined) {
+      await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
+        channel: slackChannel,
+        threadTs: slackTs,
+        text: captureReplyText(statement, id),
+        subject: { kind: "todo", id },
+      });
+    }
     return id;
-  },
-});
-
-// The reply pen: prepare-life-todos.mjs posted its one threaded reply to the
-// #dump message this todo came from, and records that here so it never posts a
-// second one. Tom's ruling is EXACTLY ONE reply per message, and this job
-// re-prepares on --force and on every revise ruling, so the guard has to be
-// durable rather than a variable inside one run.
-export const internalMarkSlackReplied = internalMutation({
-  args: { id: v.string(), replyTs: v.optional(v.string()) },
-  handler: async (ctx, { id, replyTs }) => {
-    const normalized = ctx.db.normalizeId("dtsTodos", id);
-    const todo = normalized && (await ctx.db.get(normalized));
-    if (!todo) throw new Error(`Unknown todo id: ${id}`);
-    // Never overwrite the FIRST reply's ts: if this is somehow called twice,
-    // the reply that exists in Slack is the first one, and pointing the field
-    // at a second would lose the editable message.
-    if (todo.slackRepliedAt !== undefined) return { alreadyReplied: true };
-    await ctx.db.patch(todo._id, {
-      slackRepliedAt: Date.now(),
-      slackReplyTs: replyTs,
-    });
-    return { alreadyReplied: false };
   },
 });
 

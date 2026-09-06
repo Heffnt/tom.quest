@@ -237,42 +237,6 @@ http.route({
   handler: ttsCalendarEvent,
 });
 
-// POST /tts/slack-replied — the worker reports that it posted its ONE threaded
-// reply to the #dump message a todo came from. Body: { id, replyTs? }. Separate
-// from /tts/prepare-todo because the reply happens AFTER preparation lands: the
-// reply names the brief, so it cannot be written before there is one.
-const ttsSlackReplied = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.id !== "string" || b.id === "") {
-    return jsonResponse(400, { error: "id (non-empty string) required" });
-  }
-  try {
-    const result = await ctx.runMutation(internal.tts.internalMarkSlackReplied, {
-      id: b.id,
-      replyTs: typeof b.replyTs === "string" ? b.replyTs : undefined,
-    });
-    return jsonResponse(200, { ok: true, ...result });
-  } catch (e) {
-    return jsonResponse(400, {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
-});
-
-http.route({
-  path: "/tts/slack-replied",
-  method: "POST",
-  handler: ttsSlackReplied,
-});
-
 // ── POST /slack/events — Slack PUSHES #dump messages to TTS ──────────────────
 // Tom's ruling 2026-08-30: Slack pushes instead of TTS polling every two
 // minutes. worker/jobs/poll-dump.mjs STAYS as the reconciliation backstop
@@ -297,6 +261,21 @@ http.route({
 // captured request stays useful to an attacker who has the bytes but not the
 // secret; without it a signed request is valid forever.
 const SLACK_REPLAY_WINDOW_MS = 5 * 60 * 1000;
+// Log-once guard for an unset TOM_SLACK_USER_ID (per isolate — Convex may run
+// the route in more than one, so "once" is once per warm runtime).
+let warnedNoTomSlackUserId = false;
+
+/** The channels a threaded reply is acted on in: the three TTS posts to.
+ * Read per request so a value set after the isolate warmed up counts. */
+function slackReplyChannels(): Set<string> {
+  return new Set(
+    [
+      process.env.SLACK_DUMP_CHANNEL_ID,
+      process.env.SLACK_TTS_CHANNEL_ID,
+      process.env.SLACK_TTS_HOURLY_CHANNEL_ID,
+    ].filter((id): id is string => typeof id === "string" && id !== ""),
+  );
+}
 
 // Constant-time hex compare of our computed signature against the presented
 // one. Reuses timingSafeEqual above for the same reason it exists there.
@@ -372,19 +351,68 @@ const slackEvents = httpAction(async (ctx, request) => {
   const dumpChannel = process.env.SLACK_DUMP_CHANNEL_ID;
   const text = typeof event.text === "string" ? event.text : "";
   const ts = typeof event.ts === "string" ? event.ts : "";
+  const channel = typeof event.channel === "string" ? event.channel : "";
+  const threadTs =
+    typeof event.thread_ts === "string" ? event.thread_ts : undefined;
   if (
     event.type !== "message" ||
     event.bot_id !== undefined ||
     event.subtype !== undefined ||
-    // A threaded reply is not a capture — Tom's replies to our own reply would
-    // otherwise become todos.
-    event.thread_ts !== undefined ||
     text.trim() === "" ||
     ts === "" ||
-    (dumpChannel !== undefined && event.channel !== dumpChannel)
+    channel === ""
   ) {
     // Acknowledged and ignored: anything but a 200 makes Slack retry an event
     // we have already decided we do not want.
+    return jsonResponse(200, { ok: true, ignored: true });
+  }
+
+  // ── A threaded reply (the lifeos update, phase 2) ────────────────────────
+  // A reply in a thread is never a capture; it is Tom answering something TTS
+  // posted (a digest line, an hourly update, a session that needs him, the
+  // reply under his own #dump message). Accepted from ONE Slack user id —
+  // TOM_SLACK_USER_ID — because a reply becomes a session's next turn or a
+  // time note on a todo, which are Tom's pens; anyone else's reply is
+  // acknowledged and ignored. Unset means no threaded reply is acted on, and
+  // the log says so once per isolate rather than on every event.
+  //
+  // And accepted in TTS's OWN channels only: #dump, #tts, #tts-hourly. An
+  // unknown thread becomes a todo and gets a capture line posted into it, so
+  // a reply in any other channel the app happens to be in would make TTS
+  // post where nobody asked it to (agents post nothing Tom did not ask for).
+  // Each id is read as it is set; an unset one admits nothing.
+  if (threadTs !== undefined && threadTs !== ts) {
+    if (!slackReplyChannels().has(channel)) {
+      return jsonResponse(200, { ok: true, ignored: true });
+    }
+    const tomSlackUserId = process.env.TOM_SLACK_USER_ID;
+    if (!tomSlackUserId) {
+      if (!warnedNoTomSlackUserId) {
+        warnedNoTomSlackUserId = true;
+        console.warn(
+          "TTS slack events: TOM_SLACK_USER_ID not configured — threaded replies are ignored",
+        );
+      }
+      return jsonResponse(200, { ok: true, ignored: true });
+    }
+    if (event.user !== tomSlackUserId) {
+      return jsonResponse(200, { ok: true, ignored: true });
+    }
+    // Slack's event_id is the dedupe key (delivery is at-least-once); an
+    // envelope without one falls back to the message's own coordinates.
+    const eventId =
+      typeof body.event_id === "string" && body.event_id !== ""
+        ? body.event_id
+        : `${channel}:${ts}`;
+    const result = await ctx.runMutation(
+      internal.ttsSlack.internalSlackThreadReply,
+      { eventId, channel, threadTs, ts, text, user: tomSlackUserId },
+    );
+    return jsonResponse(200, { ok: true, ...result });
+  }
+
+  // A top-level message is a capture only in #dump.
+  if (dumpChannel !== undefined && channel !== dumpChannel) {
     return jsonResponse(200, { ok: true, ignored: true });
   }
 
@@ -392,12 +420,14 @@ const slackEvents = httpAction(async (ctx, request) => {
   // Slack's at-least-once retries and poll-dump's backstop pass converge on
   // one todo. No permalink call here: fetching one is a second network round
   // trip inside the 3-second budget, and poll-dump's provenance is not worth
-  // the risk of a retry storm. The ts IS the address until then.
+  // the risk of a retry storm. The ts IS the address until then. The one
+  // reply line in the message's thread is scheduled by the capture itself
+  // (tts.internalCapture → ttsSync.sendSlack), so a retry never re-posts it.
   const id = await ctx.runMutation(internal.tts.internalCapture, {
     statement: text,
     source: "slack-capture",
     provenance: `slack:#dump ts=${ts}`,
-    slackChannel: typeof event.channel === "string" ? event.channel : undefined,
+    slackChannel: channel,
     slackTs: ts,
   });
   return jsonResponse(200, { ok: true, id });

@@ -791,9 +791,18 @@ export default defineSchema({
     // week, and the model's most likely response to an instruction to fix
     // something already fixed is to restructure something else.
     consumedAt: v.optional(v.number()),
+    // The Slack lookup key, set on exactly two kinds (convex/ttsSlack.ts):
+    //   "slack-sent"  — `${channel}:${thread root ts}`, so a threaded reply
+    //                   from Tom finds what it answers by (channel, thread_ts);
+    //   "slack-event" — Slack's event_id, so a redelivered event is dropped.
+    // `data` is v.any() and cannot be indexed, which is why the key is its
+    // own field: the events route must answer inside Slack's 3-second budget,
+    // and a thread root can be days old, so a bounded scan is not enough.
+    key: v.optional(v.string()),
   })
     .index("by_at", ["at"])
-    .index("by_todo", ["todoId", "at"]),
+    .index("by_todo", ["todoId", "at"])
+    .index("by_kind_key", ["kind", "key", "at"]),
 
   // One row per TTS day (5 a.m. America/New_York boundary, key YYYY-MM-DD).
   // The Jarvis Box posts a Claude-prepared queue + digest text before 5;
@@ -1080,6 +1089,11 @@ export default defineSchema({
       v.literal("stop"),
     ),
     text: v.optional(v.string()),
+    // Who wrote a user-turn: "tom" for a turn Tom typed (the browser door, or
+    // a Slack reply the events route verified came from TOM_SLACK_USER_ID),
+    // "agent" for the CLI pen and the code-built opener. A row from before
+    // the field has no author and counts as not Tom.
+    author: v.optional(v.union(v.literal("tom"), v.literal("agent"))),
     status: v.union(
       v.literal("pending"),
       v.literal("delivered"),
