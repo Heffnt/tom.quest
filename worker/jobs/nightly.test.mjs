@@ -27,7 +27,6 @@ import {
   collectModelOfTomFiles,
   commitTree,
   discoverSessionFiles,
-  extractSections,
   indexManifests,
   isTableFile,
   planTableFiles,
@@ -154,66 +153,7 @@ describe("syncSnapshot", () => {
   });
 });
 
-describe("extractSections", () => {
-  const page = [
-    "---",
-    "updated: 2026-09-05",
-    "---",
-    "# Research",
-    "",
-    "## Current state",
-    "",
-    "- CMT campaign live (2026-09-05, evidence: PR #104)",
-    "",
-    "### Detail",
-    "",
-    "- a sub-point that belongs to the section",
-    "",
-    "## Ideal state",
-    "",
-    "Tom's words, never posted.",
-    "",
-    "## Must not break",
-    "",
-    "- the D5 judge fix",
-    "",
-    "## Notes",
-    "",
-    "not posted either",
-  ].join("\n");
-
-  it("takes the two headed sections, sub-headings included, and nothing else", () => {
-    const out = extractSections(page);
-    expect(out).toBe(
-      [
-        "## Current state",
-        "",
-        "- CMT campaign live (2026-09-05, evidence: PR #104)",
-        "",
-        "### Detail",
-        "",
-        "- a sub-point that belongs to the section",
-        "",
-        "## Must not break",
-        "",
-        "- the D5 judge fix",
-      ].join("\n"),
-    );
-    expect(out).not.toContain("Ideal state");
-    expect(out).not.toContain("Tom's words");
-    expect(out).not.toContain("Notes");
-  });
-
-  it("returns the sections in the fixed order whatever the page's order, and matches headings case-insensitively", () => {
-    const flipped = "# Health\n\n## MUST NOT BREAK\n\n- sleep\n\n## current state\n\n- fine\n";
-    expect(extractSections(flipped)).toBe("## current state\n\n- fine\n\n## MUST NOT BREAK\n\n- sleep");
-  });
-
-  it("is empty for a page with neither section, and copes with CRLF", () => {
-    expect(extractSections("# Nothing\n\nprose\n")).toBe("");
-    expect(extractSections("## Current state\r\n\r\n- x\r\n## Other\r\n")).toBe("## Current state\n\n- x");
-  });
-
+describe("AREA_SECTIONS", () => {
   it("names the two sections the design fixes", () => {
     expect(AREA_SECTIONS).toEqual(["Current state", "Must not break"]);
   });
