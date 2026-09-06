@@ -2045,6 +2045,18 @@ describe("Tom-facing mutations have CLI pens with identical effect", () => {
     );
     expect(turns).toHaveLength(1);
     expect(turns[0].status).toBe("pending");
+    // The pen's turn is agent-authored unless the caller vouches for Tom
+    // (ttsSlack.sessionReply, after the route verified his Slack user id);
+    // the opener is code-built and always "agent".
+    expect(turns[0].author).toBe("agent");
+    await t.mutation(internal.claudeSessions.internalSendMessage, {
+      sessionId,
+      text: "relayed from Tom",
+      author: "tom",
+    });
+    const rows = await inboundFor(t, sessionId);
+    expect(rows.find((row) => row.text === "relayed from Tom")?.author).toBe("tom");
+    expect(rows[0].author).toBe("agent"); // the opener
 
     // The shared body carries the validations, so the pen refuses exactly what
     // the browser refuses: empty text, and a session that is no longer live.

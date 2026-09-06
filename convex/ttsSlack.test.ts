@@ -313,11 +313,13 @@ describe("threaded replies from Tom", () => {
         .withIndex("by_session_status", (q) => q.eq("sessionId", sessionId).eq("status", "pending"))
         .collect(),
     );
-    // The first row is the seed (with the outcome-pen footer); the second is
-    // Tom's reply, verbatim.
+    // The first row is the seed (with the outcome-pen footer), code-built; the
+    // second is Tom's reply, verbatim and in his name — the route verified the
+    // Slack user, so a ruling in his words may cite this row.
     expect(inbound).toHaveLength(2);
     expect(inbound[0].text?.startsWith("start")).toBe(true);
-    expect(inbound[1].text).toBe("go with option B");
+    expect(inbound[0].author).toBe("agent");
+    expect(inbound[1]).toMatchObject({ text: "go with option B", author: "tom" });
     expect(await scheduledSends(t)).toHaveLength(0);
   });
 
@@ -352,15 +354,21 @@ describe("threaded replies from Tom", () => {
       model: "opus",
       status: "requested",
     });
-    const seed = await t.run(async (ctx) =>
+    const turns = await t.run(async (ctx) =>
       ctx.db
         .query("claudeInbound")
         .withIndex("by_session_status", (q) => q.eq("sessionId", newId).eq("status", "pending"))
-        .first(),
+        .collect(),
     );
-    expect(seed?.text).toContain("[TTS] session finished: landed the draft");
-    expect(seed?.text).toContain("[Tom] one more pass on the wording");
-    expect(seed?.text).toContain(oldId);
+    // The code-built seed carries the thread and stays "agent"; Tom's reply
+    // is its own turn after it, verbatim, in his name.
+    expect(turns).toHaveLength(2);
+    const [seed, tomTurn] = turns;
+    expect(seed.author).toBe("agent");
+    expect(seed.text).toContain("[TTS] session finished: landed the draft");
+    expect(seed.text).not.toContain("one more pass on the wording");
+    expect(seed.text).toContain(oldId);
+    expect(tomTurn).toMatchObject({ text: "one more pass on the wording", author: "tom" });
     // The thread notice carries the NEW session as its subject, so the next
     // reply in the same thread reaches the new session, not the ended one.
     const sends = await scheduledSends(t);

@@ -1,5 +1,5 @@
 import { paginationOptsValidator } from "convex/server";
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
 import {
   internalMutation,
   internalQuery,
@@ -391,6 +391,9 @@ async function insertSession(
     sessionId,
     kind: "user-turn",
     text,
+    // The opener is code-built, whoever asked for the session: it can never
+    // be the source of a ruling in Tom's words (schema: author).
+    author: "agent",
     status: "pending",
     createdAt: now,
   });
@@ -877,6 +880,14 @@ export const internalForkSessionAs = internalMutation({
   handler: async (ctx, args) => await forkSessionAsFrom(ctx, args),
 });
 
+// Who typed a turn (schema: claudeInbound.author). The browser door is behind
+// requireTomId, so it writes "tom". The internal door is the CLI pen and every
+// code path that relays a turn; it writes "agent" unless the caller can vouch
+// for Tom — the one such caller is ttsSlack.sessionReply, which has a reply the
+// events route verified came from TOM_SLACK_USER_ID and passes "tom".
+const TURN_AUTHOR = v.union(v.literal("tom"), v.literal("agent"));
+type TurnAuthor = Infer<typeof TURN_AUTHOR>;
+
 const SEND_MESSAGE_ARGS = {
   sessionId: v.id("claudeSessions"),
   text: v.string(),
@@ -884,7 +895,11 @@ const SEND_MESSAGE_ARGS = {
 
 async function sendMessageFrom(
   ctx: MutationCtx,
-  { sessionId, text }: { sessionId: Id<"claudeSessions">; text: string },
+  {
+    sessionId,
+    text,
+    author,
+  }: { sessionId: Id<"claudeSessions">; text: string; author: TurnAuthor },
 ): Promise<void> {
   const session = await getSessionOrThrow(ctx, sessionId);
   if (!isLive(session.status)) {
@@ -895,6 +910,7 @@ async function sendMessageFrom(
     sessionId,
     kind: "user-turn",
     text,
+    author,
     status: "pending",
     createdAt: Date.now(),
   });
@@ -904,13 +920,14 @@ export const sendMessage = mutation({
   args: SEND_MESSAGE_ARGS,
   handler: async (ctx, args) => {
     await requireTomId(ctx);
-    await sendMessageFrom(ctx, args);
+    await sendMessageFrom(ctx, { ...args, author: "tom" });
   },
 });
 
 export const internalSendMessage = internalMutation({
-  args: SEND_MESSAGE_ARGS,
-  handler: async (ctx, args) => await sendMessageFrom(ctx, args),
+  args: { ...SEND_MESSAGE_ARGS, author: v.optional(TURN_AUTHOR) },
+  handler: async (ctx, { author, ...args }) =>
+    await sendMessageFrom(ctx, { ...args, author: author ?? "agent" }),
 });
 
 // interrupt = stop the current turn, keep the session; stop = end the session.

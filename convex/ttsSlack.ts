@@ -362,7 +362,13 @@ async function routeReply(
 /** Live session: the reply is its next turn. Ended or failed: a new session
  * of the same kind (same subject, repos, model) seeded with the thread, and
  * one line in the thread saying so — recorded with the NEW session as its
- * subject, so the next reply in the same thread reaches the new session. */
+ * subject, so the next reply in the same thread reaches the new session.
+ *
+ * The turn Tom's reply becomes is written with author "tom" on both paths:
+ * the events route verified the reply's user is TOM_SLACK_USER_ID, so the
+ * words are his, and a ruling in his words (POST /tts/ruling) may cite the
+ * row. On the ended path the code-built seed stays "agent" and Tom's reply is
+ * its own turn after it, verbatim. */
 async function sessionReply(
   ctx: MutationCtx,
   sessionId: Id<"claudeSessions">,
@@ -375,6 +381,7 @@ async function sessionReply(
     await ctx.runMutation(internal.claudeSessions.internalSendMessage, {
       sessionId,
       text,
+      author: "tom",
     });
     return { outcome: "session-turn", sessionId };
   }
@@ -391,10 +398,14 @@ async function sessionReply(
       initialPrompt: continuationPrompt(
         session,
         await threadSoFar(ctx, at.channel, at.threadTs),
-        text,
       ),
     },
   );
+  await ctx.runMutation(internal.claudeSessions.internalSendMessage, {
+    sessionId: newId,
+    text,
+    author: "tom",
+  });
   await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
     channel: at.channel,
     threadTs: at.threadTs,
@@ -426,16 +437,16 @@ async function threadSoFar(
 function continuationPrompt(
   session: Doc<"claudeSessions">,
   posted: string[],
-  reply: string,
 ): string {
   return [
     `Tom replied in the Slack thread of session "${session.title}" (${session._id}), which had ${session.status}${
       session.outcomeSummary ? ` — its recorded outcome: ${session.outcomeSummary}` : ""
     }. This session continues that one from his reply; its transcript is at ${ttsSessionLink(session._id)}.`,
     ``,
-    `The thread so far:`,
+    `The thread so far, as TTS posted it:`,
     ...posted.map((p) => `[TTS] ${p}`),
-    `[Tom] ${reply}`,
+    ``,
+    `Tom's reply is the next turn, in his own words.`,
   ].join("\n");
 }
 

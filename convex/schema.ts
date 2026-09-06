@@ -1089,6 +1089,11 @@ export default defineSchema({
       v.literal("stop"),
     ),
     text: v.optional(v.string()),
+    // Who wrote a user-turn: "tom" for a turn Tom typed (the browser door, or
+    // a Slack reply the events route verified came from TOM_SLACK_USER_ID),
+    // "agent" for the CLI pen and the code-built opener. A row from before
+    // the field has no author and counts as not Tom.
+    author: v.optional(v.union(v.literal("tom"), v.literal("agent"))),
     status: v.union(
       v.literal("pending"),
       v.literal("delivered"),
