@@ -2,7 +2,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
-import { matchQuotedUnit, turnUnits } from "./ttsRulings";
+import { matchQuotedUnit, turnSpans, turnUnits } from "./ttsRulings";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -839,7 +839,38 @@ describe("a ruling from Tom's words", () => {
     ).toEqual(["ok", "archive it, I already went", "ship 1.5 to tom.quest", "fine"]);
     expect(matchQuotedUnit("archive it, I already went.", "archive it, I already went")).toEqual({
       unit: "archive it, I already went",
+      source: "archive it, I already went.",
     });
+  });
+
+  // witness: return `{ unit }` from matchQuotedUnit and store `quoted` in the
+  // provenance. The match ignores the terminator so the agent's retyping can
+  // LOCATE the sentence, but what is stored is the turn's own substring,
+  // terminator and all — "Archive this?" never becomes "Archive this!".
+  it("stores the turn's own substring as the quote, not the caller's retyping", () => {
+    expect(turnSpans("Archive this?  and the other one!")).toEqual([
+      { unit: "Archive this", source: "Archive this?" },
+      { unit: "and the other one", source: "and the other one!" },
+    ]);
+    expect(matchQuotedUnit("Archive this? ok", "Archive this!")).toEqual({
+      unit: "Archive this",
+      source: "Archive this?",
+    });
+  });
+
+  it("writes the quote as it appears in the turn when the agent retyped its punctuation", async () => {
+    const t = convexTest({ schema, modules });
+    const { tom, todoId, tomRow } = await sessionWithTurns(t);
+    const res = await post(t, {
+      inboundId: tomRow._id,
+      verdict: "archive",
+      subjectType: "life",
+      subjectId: todoId,
+      quote: "archive the dentist one, I already went!",
+    });
+    expect(res.status).toBe(200);
+    const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
+    expect(ruling.provenance?.quote).toBe("archive the dentist one, I already went.");
   });
 
   // witness: drop the mirror or brief lookups from resolveSubject. A code

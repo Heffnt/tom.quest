@@ -339,9 +339,10 @@ export const internalRecordRuling = internalMutation({
 //      not an inbound row is refused as unknown;
 //   2. the row's author is "tom" — an agent-authored row (the CLI pen, the
 //      code-built opener) and a row that predates the author field are refused;
-//   3. the sentence is ONE WHOLE UNIT of the row's text (turnUnits below) of
+//   3. the sentence is ONE WHOLE UNIT of the row's text (turnSpans below) of
 //      at least two words — a substring check with no floor let "ok" pass
-//      against almost any turn, which made the pen the agent's;
+//      against almost any turn, which made the pen the agent's. Matching
+//      ignores the terminator; the STORED quote is the turn's own substring;
 //   4. the subject EXISTS: a dtsTodos row, a batches row, or a code todo that
 //      is open in the mirror and has a brief — a well-formed id from another
 //      table, an unknown repo, or an unmirrored externalId is refused, so no
@@ -364,26 +365,44 @@ const SUBJECT_TYPE = v.union(
   v.literal("batch"),
 );
 
-// A turn's units: split at newlines and at a sentence terminator (. ! ?) that
+// A turn's spans: split at newlines and at a sentence terminator (. ! ?) that
 // is followed by whitespace or the end, so "1.5" and "tom.quest" stay whole.
-// One home for the rule — the quote is normalised by the same function, so
-// "archive it." and "archive it" are the same unit.
+// `unit` is the normalised form (no terminator, trimmed) that matching
+// compares on, so "archive it." and "archive it" are the same unit; `source`
+// is the exact substring of the turn the unit came from, terminator
+// included — the only text ever STORED as Tom's words. One home for the rule.
+export function turnSpans(text: string): { unit: string; source: string }[] {
+  // The capturing group keeps each separator next to the piece it ended.
+  const pieces = text.split(/(\n|[.!?]+(?=\s|$))/);
+  const spans: { unit: string; source: string }[] = [];
+  for (let i = 0; i < pieces.length; i += 2) {
+    const unit = pieces[i].trim();
+    if (unit === "") continue;
+    const terminator = pieces[i + 1] ?? "";
+    spans.push({
+      unit,
+      source: (pieces[i] + (terminator === "\n" ? "" : terminator)).trim(),
+    });
+  }
+  return spans;
+}
+
 export function turnUnits(text: string): string[] {
-  return text
-    .split(/\n|[.!?]+(?=\s|$)/)
-    .map((u) => u.trim())
-    .filter((u) => u !== "");
+  return turnSpans(text).map((s) => s.unit);
 }
 
 // The floor under a quote: a single word ("ok", "yes", "archive") is never a
 // ruling in Tom's words, whatever turn it sits in.
 const MIN_QUOTE_WORDS = 2;
 
-// The unit of `turn` that `quoted` is, or the reason it is none.
+// The span of `turn` that `quoted` is, or the reason it is none. Normalisation
+// only LOCATES the span: the caller stores `source`, the turn's own text, so
+// "Archive this?" cannot come back as "Archive this!" because the agent
+// retyped the terminator.
 export function matchQuotedUnit(
   turn: string,
   quoted: string,
-): { unit: string } | { refused: string } {
+): { unit: string; source: string } | { refused: string } {
   const units = turnUnits(quoted);
   if (units.length !== 1) {
     return {
@@ -395,13 +414,14 @@ export function matchQuotedUnit(
   if (unit.split(/\s+/).length < MIN_QUOTE_WORDS) {
     return { refused: "refused: a single word is not a ruling in Tom's words" };
   }
-  if (!turnUnits(turn).includes(unit)) {
+  const span = turnSpans(turn).find((s) => s.unit === unit);
+  if (span === undefined) {
     return {
       refused:
         "refused: the sentence is not a whole sentence or line of that turn",
     };
   }
-  return { unit };
+  return span;
 }
 
 // A code subject is spelled "<repo> <externalId>" — the tail of subjectKey
@@ -497,7 +517,8 @@ export const internalRecordRulingFromTomWords = internalMutation({
           `${row.author ?? "unset"}), so it cannot be a ruling in his words`,
       );
     }
-    // 3. one whole unit of the turn, at least two words
+    // 3. one whole unit of the turn, at least two words. What is stored is
+    //    the turn's own text for that unit, never the caller's retyping.
     const quoted = quote.trim();
     if (quoted === "") throw new Error("quote (non-empty string) required");
     const match = matchQuotedUnit(row.text ?? "", quoted);
@@ -536,7 +557,7 @@ export const internalRecordRulingFromTomWords = internalMutation({
       ...subject,
       verdict,
       sentence: verdict === "revise" ? redirect : undefined,
-      provenance: { from: "tom-words", inboundId: rowId, quote: quoted },
+      provenance: { from: "tom-words", inboundId: rowId, quote: match.source },
     });
   },
 });
