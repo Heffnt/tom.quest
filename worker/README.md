@@ -79,10 +79,9 @@ on a schedule:
    Convex (`convex/ttsDigest.ts`) and sent by `sendDigest`, so a missing
    morning message is itself the monitoring signal. This job's digest half
    goes in phase 7 with the queue.
-8. **brief-code-todos** (every 2 h at :17) — see the ruling loop below.
-9. **apply-rulings** (every 10 min) — see the ruling loop below.
-10. **execute-approved** (hourly at :45) — see the ruling loop below.
-11. **nightly** (4:00 a.m. New York) — copies the Convex record and this
+8. **apply-rulings** (every 10 min) — see the ruling loop below.
+9. **execute-approved** (hourly at :45) — see the ruling loop below.
+10. **nightly** (4:00 a.m. New York) — copies the Convex record and this
    box's session files into WikiTom, runs the learning step, pushes, and
    posts the model-of-tom files back to Convex. See "The nightly job" below.
 
@@ -204,15 +203,18 @@ CMT (`github.com/Heffnt/ComplexMultiTrigger`) keeps its standing intent in
 `vqc/todos.yaml`; the Jarvis Box turns that file into rulings Tom can make from the
 tom.quest UI in seconds:
 
-- **brief-code-todos** refreshes a shallow cache clone of CMT, and for every
-  OPEN todo entry whose YAML changed since its last brief (sha256 cursor in
-  `/var/lib/tts/brief-hashes.json`), has headless Claude write a ground-up
+- **The planner's brief pass** (`plan-graphs.mjs`, every 30 minutes)
+  refreshes a shallow cache clone of CMT, and for every OPEN todo entry
+  whose YAML changed since its last brief (sha256 cursor in
+  `/var/lib/tts/brief-hashes.json`) — or that Tom ruled `revise` on, with
+  his sentence as the replan note — has headless Claude write a ground-up
   brief against the current tree and a recommendation in the four verdict
   words — `archive` (already done/moot, with evidence), `revise` (intent
   live, plan stale), `session` (open judgment call; all tier C), or
   `approve` — plus an exec class (`box` vs `needs-turing`). Briefs POST to
   Convex and are also cached locally under `/var/cache/tts/briefs/`.
-- Tom rules on each brief in the UI; Convex queues the rulings.
+- Tom rules on each brief in the UI; Convex queues the rulings. A `revise`
+  is consumed by the brief pass once the fresh brief has posted.
 - **apply-rulings** carries out the non-execution rulings: `defer` records
   it; `stale-replan` queues a re-brief that must propose a fresh plan;
   `needs-session` pushes a session-agenda file to CMT master; and
@@ -529,8 +531,8 @@ node /opt/tts/poll-gmail.mjs              # triage + capture new inbox mail now
 node /opt/tts/poll-canvas.mjs             # triage + capture new announcements now
 node /opt/tts/poll-outlook.mjs            # prints the OUTLOOK_* keys still missing
 node /opt/tts/prepare-queue.mjs --force   # prep today's queue regardless of hour
-node /opt/tts/brief-code-todos.mjs        # brief changed CMT todos now
-node /opt/tts/brief-code-todos.mjs --force # re-brief EVERY open CMT todo
+node /opt/tts/plan-graphs.mjs             # prepare, brief, plan — now
+node /opt/tts/plan-graphs.mjs --force     # also re-prepare and re-brief EVERYTHING
 node /opt/tts/apply-rulings.mjs           # apply pending rulings now
 node /opt/tts/execute-approved.mjs        # execute one approved plan now
 node /opt/tts/nightly.mjs --force         # the nightly job, every step, now
@@ -543,5 +545,6 @@ whichever side of daylight saving we're on).
 ## Logs
 
 Cron output: one `/var/log/tts/<job>.log` per job (poll-dump, poll-gmail,
-prepare-queue, brief-code-todos, apply-rulings, execute-approved, nightly),
-truncated monthly by cron — they are convenience, not state.
+poll-canvas, apply-time-notes, plan-graphs, prepare-queue, apply-rulings,
+execute-approved, nightly), truncated monthly by cron — they are convenience,
+not state.

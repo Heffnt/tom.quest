@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// plan-graphs.mjs — THE PLANNER. One run, two passes, in this order:
+// plan-graphs.mjs — THE PLANNER. One run, three passes, in this order:
 //
 //   1. PREPARE — every unprepared life todo (a #dump capture, an email
 //      capture, a Canvas announcement, a todo Tom ruled "revise" on) gets its
@@ -10,11 +10,15 @@
 //      the planner already reads every todo every run, and a capture's
 //      write-up and its place in a graph are one job's worth of reading.
 //      Nothing here posts to Slack — the events route replies at capture.
-//   2. PLAN — maintain the graph inside every batch via headless Claude.
+//   2. BRIEF — every open CMT code todo whose YAML changed, or that Tom ruled
+//      "revise" on, gets a ground-up brief against the current tree and a
+//      recommendation in the four verdict words (was brief-code-todos.mjs).
+//   3. PLAN — maintain the graph inside every batch via headless Claude.
 //
 // Run by cron every 30 minutes under flock (see /etc/cron.d/tts). Manual run:
-//   node /opt/tts/plan-graphs.mjs            # both passes
+//   node /opt/tts/plan-graphs.mjs            # all three passes
 //   node /opt/tts/plan-graphs.mjs --force    # also re-prepare prepared todos
+//                                            # and re-brief EVERY open entry
 //
 // WHAT A BATCH IS (schema v2, ratified 2026-08-29). A batch is NOT a todo.
 // It is its own row, and it holds one thing: HOW a set of todos gets
@@ -85,6 +89,7 @@
 // `invokedDirectly` guard at the bottom).
 
 import fs from "node:fs";
+import path from "node:path";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
@@ -97,6 +102,17 @@ import {
   MAX_LIFE_PER_RUN,
   MAX_BRIEF_CHARS,
 } from "./tts-lib.mjs";
+import {
+  CMT_REPO,
+  TODOS_PATH,
+  cmtRepoDir,
+  yamlToJson,
+  sourceHash,
+  readBriefHashes,
+  writeBriefHashes,
+  briefCachePath,
+  findEntryBlock,
+} from "./tts-code-lib.mjs";
 
 const HASH_PATH = "/var/lib/tts/plan-input-hash";
 // Bump when the plan prompt changes semantics: it joins the input hash, so a
@@ -389,7 +405,220 @@ export async function prepareLifeTodos(
   return { prepared: preparedIds.length, failed, preparedIds };
 }
 
-// ── PASS 2: plan ─────────────────────────────────────────────────────────────
+// ── PASS 2: brief ────────────────────────────────────────────────────────────
+// Every OPEN entry of CMT's vqc/todos.yaml gets a ground-up brief against the
+// CURRENT tree and a recommendation in the four verdict words. This pass used
+// to be brief-code-todos.mjs (every 2 hours at :17), absorbed here in the
+// lifeos update, phase 7. Incremental: an entry is re-briefed only when its
+// YAML changed since the last posted brief (a sha256 source hash per entry in
+// /var/lib/tts/brief-hashes.json — losing the file re-briefs everything once,
+// and the Convex POST upserts) or when Tom ruled "revise" on it (the pending
+// ruling's sentence rides into the prompt as the replan note, and the ruling
+// is consumed once the fresh brief has posted). Each success is durable in
+// dependency order (Convex, then the local brief copy, then the cursor), so a
+// crash mid-run loses at most the entry in flight.
+
+// At most this many briefs per run (all pending with --force). Bounds the run:
+// 8 entries × the 10-minute per-entry timeout is 80 minutes worst case; the
+// cron line's flock turns an overrun into skipped ticks, never a second run.
+export const BRIEF_MAX_PER_RUN = 8;
+export const BRIEF_TIMEOUT_MS = 10 * 60 * 1000;
+// Briefing gets a real exploration budget (vs the non-agentic default of 8):
+// the model must open cited ledger/constitution/code files to judge whether a
+// plan still matches the tree, and each file read is a turn.
+export const BRIEF_MAX_TURNS = 40;
+
+// The four verdict words (the lifeos update): the recommendation is the
+// worker's read of what Tom will rule, spelled in the words he rules in.
+// convex/ttsShared.ts RECOMMENDATION_VALUES is the one home; this is the
+// box's literal mirror (Node never loads .ts).
+export const RECOMMENDATIONS = new Set(["approve", "revise", "session", "archive"]);
+export const EXEC_CLASSES = new Set(["needs-turing", "box"]);
+
+// Build the per-entry prompt. `entryYaml` is the entry's RAW block from
+// todos.yaml (real YAML beats re-serialized JSON: Tom's comments and block
+// scalars survive), `replanNote` is Tom's revise sentence when he ruled
+// revise, else null.
+export function briefPrompt(entryYaml, replanNote) {
+  return [
+    `You are briefing Tom on ONE entry of vqc/todos.yaml in the ComplexMultiTrigger`,
+    `repo. Your working directory is a checkout of that repo at current master —`,
+    `use your file-reading tools to open the files, ledger entries, and constitution`,
+    `articles the entry cites, and any code the plan touches. Verify, don't assume.`,
+    ``,
+    `The entry:`,
+    ``,
+    entryYaml,
+    ``,
+    ...(replanNote !== null
+      ? [
+          `Tom ruled "revise" on this entry's existing brief and plan` +
+            (replanNote ? ` with the sentence: ${replanNote}` : `.`),
+          `His sentence overrides any other reading of the entry. Propose a`,
+          `FRESH plan inside the brief, grounded in the current tree.`,
+          ``,
+        ]
+      : []),
+    `Write a GROUND-UP brief for Tom (~250-400 words). Ground-up means: define`,
+    `every term the first time it appears, no invented names, concrete before`,
+    `abstract — Tom's understanding is the bottleneck and the brief exists so he`,
+    `can rule fast. Cover, in order:`,
+    `- what this todo is and why it exists;`,
+    `- what its attached plan (if any) would do;`,
+    `- whether the plan still matches the CURRENT tree: check that the files and`,
+    `  ledger entries it cites actually exist, and NAME anything stale.`,
+    ``,
+    `End with a recommendation — the verdict Tom will most likely rule, in`,
+    `the four words he rules in — chosen by EXACTLY these criteria, in order;`,
+    `the first that applies wins:`,
+    `1. The completion condition is already satisfied by landed work, or the`,
+    `   intent is moot/superseded -> "archive", and set "evidence" to the`,
+    `   commits/files that prove it.`,
+    `2. The intent is live but the plan is stale against the tree -> "revise".`,
+    `3. The plan is live but embeds an open judgment call Tom has not made —`,
+    `   ALL tier-C entries land here by definition -> "session".`,
+    `4. All clean -> "approve".`,
+    ``,
+    `Also classify execClass: "needs-turing" if executing the plan requires the`,
+    `SLURM cluster / GPUs, else "box" (runnable on an ordinary Linux box).`,
+    ``,
+    `Answer with ONLY a JSON object, no prose, no code fences:`,
+    `{"brief": "...", "recommendation": "approve|revise|session|archive",`,
+    ` "execClass": "needs-turing|box", "evidence": "..." (optional)}`,
+  ].join("\n");
+}
+
+// The local brief-copy markdown layout (/var/cache/tts/briefs/<repo>/<id>.md).
+export function briefCacheMarkdown(externalId, parsed) {
+  return [
+    `# TTS brief — ${CMT_REPO}:${externalId}`,
+    ``,
+    `Recommendation: ${parsed.recommendation}`,
+    `Exec-class: ${parsed.execClass}`,
+    ...(parsed.evidence ? [`Evidence: ${parsed.evidence}`] : []),
+    ``,
+    parsed.brief,
+    ``,
+  ].join("\n");
+}
+
+/**
+ * Which entries this run briefs: every open entry whose source hash moved
+ * since its last brief, plus every open entry with a pending code "revise"
+ * ruling (re-briefed whatever its hash, with the sentence as the replan
+ * note), plus everything with `force`. `entries` are the parsed open entries
+ * of todos.yaml, `hashes` the cursor file's map.
+ */
+export function selectBriefTargets(entries, hashes, pending, { force = false } = {}) {
+  const reviseById = new Map();
+  for (const r of Array.isArray(pending) ? pending : []) {
+    if (r.subjectType !== "code" || r.verdict !== "revise") continue;
+    if (r.repo !== CMT_REPO || typeof r.externalId !== "string") continue;
+    reviseById.set(r.externalId, r);
+  }
+  const targets = [];
+  for (const entry of entries) {
+    const key = `${CMT_REPO}:${entry.id}`;
+    const hash = sourceHash(entry);
+    const revise = reviseById.get(entry.id) ?? null;
+    if (!force && !revise && hashes[key] === hash) continue; // unchanged
+    targets.push({ entry, key, hash, revise });
+  }
+  return targets;
+}
+
+/**
+ * The brief pass. `repo` is the CMT checkout the model reads from: its
+ * directory (the model's cwd), the raw todos.yaml text (for the entry blocks)
+ * and the parsed OPEN entries. `io` adds three file-shaped hooks to the pass
+ * contract — `readHashes()`, `writeHashes(map)` and `writeCache(externalId,
+ * markdown)` — so the tests keep the cursor and the copy in memory.
+ */
+export async function briefCodeTodos({ repo, pending, force = false }, io) {
+  const hashes = io.readHashes();
+  const targets = selectBriefTargets(repo.entries, hashes, pending, { force });
+  if (targets.length === 0) return { briefed: 0, failed: 0 }; // quiet when idle
+  const batch = force ? targets : targets.slice(0, BRIEF_MAX_PER_RUN);
+  console.log(
+    `[plan-graphs] brief: ${targets.length} entr${targets.length === 1 ? "y" : "ies"} to brief, ` +
+      `processing ${batch.length}${force ? " (--force)" : ""}`,
+  );
+  let briefed = 0;
+  let failed = 0;
+  for (const { entry, key, hash, revise } of batch) {
+    try {
+      // The raw YAML block for the prompt; fall back to JSON if the block
+      // scan somehow misses (it shouldn't — the entry came from this file).
+      const found = findEntryBlock(repo.todosText, entry.id);
+      const entryYaml = found ? found.block : JSON.stringify(entry, null, 2);
+      const replanNote = revise ? (revise.sentence ?? "") : null;
+
+      const answer = io.runClaude(briefPrompt(entryYaml, replanNote), {
+        cwd: repo.dir, // non-agentic: read-only tools over the repo, no edits
+        timeoutMs: BRIEF_TIMEOUT_MS,
+        maxTurns: BRIEF_MAX_TURNS,
+      });
+      const parsed = extractJsonObject(answer);
+
+      // Validate hard — a brief with a garbage recommendation would render
+      // as a broken ruling card in the UI, so fail THIS entry loudly instead.
+      if (typeof parsed.brief !== "string" || parsed.brief.trim() === "") {
+        throw new Error("answer has no brief text");
+      }
+      if (!RECOMMENDATIONS.has(parsed.recommendation)) {
+        throw new Error(`invalid recommendation: ${JSON.stringify(parsed.recommendation)}`);
+      }
+      if (!EXEC_CLASSES.has(parsed.execClass)) {
+        throw new Error(`invalid execClass: ${JSON.stringify(parsed.execClass)}`);
+      }
+      const evidence =
+        typeof parsed.evidence === "string" && parsed.evidence.trim() !== ""
+          ? parsed.evidence
+          : undefined;
+
+      // Durable in dependency order: Convex first (the system of record),
+      // then the local copy, then the cursor — so a crash can only leave us
+      // re-doing work, never believing work happened that didn't.
+      await io.post("/tts/code-briefs", {
+        briefs: [
+          {
+            repo: CMT_REPO,
+            externalId: entry.id,
+            sourceHash: hash,
+            brief: parsed.brief,
+            recommendation: parsed.recommendation,
+            execClass: parsed.execClass,
+            ...(evidence ? { evidence } : {}),
+          },
+        ],
+      });
+      io.writeCache(entry.id, briefCacheMarkdown(entry.id, { ...parsed, evidence }));
+      hashes[key] = hash;
+      io.writeHashes(hashes);
+      if (revise) {
+        // The fresh brief landed — consume the ruling so the UI shows the
+        // outcome and the next run does not re-brief on the same sentence.
+        await io.post("/tts/ruling-applied", {
+          id: revise._id,
+          result: "revised: brief re-written with a fresh plan",
+        });
+      }
+      briefed++;
+      console.log(
+        `[plan-graphs] briefed ${entry.id}: ${parsed.recommendation} ` +
+          `(${parsed.execClass}${revise ? ", fresh plan after revise" : ""})`,
+      );
+    } catch (err) {
+      // Per-entry failure: the entry keeps its old cursor (or its revise
+      // ruling stays pending) and the next run retries it.
+      failed++;
+      console.error(`[plan-graphs] brief ${entry.id} FAILED: ${err.message}`);
+    }
+  }
+  return { briefed, failed };
+}
+
+// ── PASS 3: plan ─────────────────────────────────────────────────────────────
 
 function prompt(ctx) {
   return [
@@ -1128,7 +1357,49 @@ async function main() {
     console.error(`[plan-graphs] prepare pass FAILED: ${err.message}`);
   }
 
-  // --- Pass 2: plan ---------------------------------------------------------
+  // --- Pass 2: brief --------------------------------------------------------
+  // The CMT checkout is refreshed only when the pass runs at all: without
+  // GH_TOKEN there is no clone to read, and a planner that cannot brief still
+  // prepares and plans — one line says which half is standing down.
+  if (!env.GH_TOKEN) {
+    console.log("[plan-graphs] brief: GH_TOKEN missing in worker.env — skipping");
+  } else {
+    try {
+      const dir = cmtRepoDir(env);
+      const todosFile = path.join(dir, TODOS_PATH);
+      const parsed = yamlToJson(todosFile);
+      if (!Array.isArray(parsed)) throw new Error(`${TODOS_PATH} did not parse to a list`);
+      // Open = no `closed` field. (The file also keeps closed entries below a
+      // banner comment, but the field is the machine-readable truth — the
+      // banner is for humans and the guard test enforces the pairing.)
+      const entries = parsed.filter(
+        (e) => e && typeof e === "object" && !("closed" in e),
+      );
+      const result = await briefCodeTodos(
+        {
+          repo: { dir, todosText: fs.readFileSync(todosFile, "utf8"), entries },
+          pending,
+          force,
+        },
+        {
+          ...io,
+          readHashes: readBriefHashes,
+          writeHashes: writeBriefHashes,
+          writeCache: (externalId, markdown) => {
+            const file = briefCachePath(CMT_REPO, externalId);
+            fs.mkdirSync(path.dirname(file), { recursive: true });
+            fs.writeFileSync(file, markdown);
+          },
+        },
+      );
+      failures += result.failed;
+    } catch (err) {
+      failures++;
+      console.error(`[plan-graphs] brief pass FAILED: ${err.message}`);
+    }
+  }
+
+  // --- Pass 3: plan ---------------------------------------------------------
   try {
     const result = await planGraphs(context, pending, io);
     if (result.ran) failures += result.failed;

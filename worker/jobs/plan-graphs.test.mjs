@@ -11,12 +11,17 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  BRIEF_MAX_PER_RUN,
   PREPARE_MAX,
   PREPARED,
+  briefCodeTodos,
+  briefPrompt,
   preparePrompt,
   prepareLifeTodos,
+  selectBriefTargets,
   selectPrepareTargets,
 } from "./plan-graphs.mjs";
+import { CMT_REPO, sourceHash } from "./tts-code-lib.mjs";
 
 const WRITING_STANDARD = "WRITING STANDARD — test copy.";
 const TODAY = "2026-09-06";
@@ -220,5 +225,173 @@ describe("prepareLifeTodos", () => {
     expect(text).toContain(`today is ${TODAY} in New York`);
     expect(text).toContain("NEVER infer, estimate, or invent a date");
     expect(text).toContain('"groundUpExplanation"');
+  });
+});
+
+// ── The brief pass ──────────────────────────────────────────────────────────
+
+const ENTRY_A = { id: "cmt-001", tier: "R", statement: "do the thing", created: "2026-08-01" };
+const ENTRY_B = { id: "cmt-002", tier: "C", statement: "decide the other thing", created: "2026-08-02" };
+const TODOS_YAML = [
+  "- id: cmt-001",
+  "  tier: R",
+  "  statement: do the thing",
+  "  created: 2026-08-01",
+  "",
+  "- id: cmt-002",
+  "  tier: C",
+  "  statement: decide the other thing",
+  "  created: 2026-08-02",
+  "",
+  "# --- closed todos ---",
+  "",
+].join("\n");
+
+const briefAnswer = (over = {}) =>
+  JSON.stringify({
+    brief: "A ground-up brief.",
+    recommendation: "approve",
+    execClass: "box",
+    ...over,
+  });
+
+function briefIo(answers, hashes = {}) {
+  const queue = Array.isArray(answers) ? [...answers] : [answers];
+  const cache = new Map();
+  return {
+    runClaude: vi.fn(() => queue.shift() ?? briefAnswer()),
+    post: vi.fn(async () => ({ ok: true })),
+    readHashes: () => hashes,
+    writeHashes: vi.fn(),
+    writeCache: vi.fn((id, md) => cache.set(id, md)),
+    cache,
+    hashes,
+  };
+}
+
+const repo = (entries = [ENTRY_A, ENTRY_B]) => ({
+  dir: "/var/cache/tts/ComplexMultiTrigger",
+  todosText: TODOS_YAML,
+  entries,
+});
+
+describe("selectBriefTargets", () => {
+  it("briefs an entry whose hash moved and leaves an unchanged one alone", () => {
+    const hashes = { [`${CMT_REPO}:cmt-001`]: sourceHash(ENTRY_A) };
+    const targets = selectBriefTargets([ENTRY_A, ENTRY_B], hashes, []);
+    expect(targets.map((t) => t.entry.id)).toEqual(["cmt-002"]);
+    expect(targets[0].hash).toBe(sourceHash(ENTRY_B));
+    expect(targets[0].revise).toBeNull();
+  });
+
+  it("re-briefs an unchanged entry Tom ruled revise on, and only for CMT code rulings", () => {
+    const hashes = {
+      [`${CMT_REPO}:cmt-001`]: sourceHash(ENTRY_A),
+      [`${CMT_REPO}:cmt-002`]: sourceHash(ENTRY_B),
+    };
+    const pending = [
+      { _id: "r1", subjectType: "code", verdict: "revise", repo: CMT_REPO, externalId: "cmt-001", sentence: "fresh plan" },
+      { _id: "r2", subjectType: "code", verdict: "approve", repo: CMT_REPO, externalId: "cmt-002" },
+      { _id: "r3", subjectType: "code", verdict: "revise", repo: "tom.quest", externalId: "cmt-002", sentence: "x" },
+      { _id: "r4", subjectType: "life", verdict: "revise", todoId: "t1", sentence: "y" },
+    ];
+    const targets = selectBriefTargets([ENTRY_A, ENTRY_B], hashes, pending);
+    expect(targets.map((t) => t.entry.id)).toEqual(["cmt-001"]);
+    expect(targets[0].revise._id).toBe("r1");
+  });
+
+  it("with --force briefs everything", () => {
+    const hashes = { [`${CMT_REPO}:cmt-001`]: sourceHash(ENTRY_A) };
+    expect(selectBriefTargets([ENTRY_A], hashes, [], { force: true })).toHaveLength(1);
+  });
+});
+
+describe("briefCodeTodos", () => {
+  it("posts the brief in the four-word shape, keeps a local copy, then advances the cursor", async () => {
+    const io = briefIo(briefAnswer({ evidence: "commit abc" }));
+    const result = await briefCodeTodos({ repo: repo([ENTRY_A]), pending: [] }, io);
+    expect(result).toEqual({ briefed: 1, failed: 0 });
+    // The model reads the checkout and gets the raw YAML block, not JSON.
+    expect(io.runClaude.mock.calls[0][1].cwd).toBe("/var/cache/tts/ComplexMultiTrigger");
+    expect(io.runClaude.mock.calls[0][0]).toContain("- id: cmt-001\n  tier: R");
+    expect(io.post).toHaveBeenCalledWith("/tts/code-briefs", {
+      briefs: [
+        {
+          repo: CMT_REPO,
+          externalId: "cmt-001",
+          sourceHash: sourceHash(ENTRY_A),
+          brief: "A ground-up brief.",
+          recommendation: "approve",
+          execClass: "box",
+          evidence: "commit abc",
+        },
+      ],
+    });
+    expect(io.cache.get("cmt-001")).toContain("Recommendation: approve");
+    expect(io.cache.get("cmt-001")).toContain("Evidence: commit abc");
+    expect(io.writeHashes).toHaveBeenCalledWith({
+      [`${CMT_REPO}:cmt-001`]: sourceHash(ENTRY_A),
+    });
+  });
+
+  it("refuses a recommendation outside the four words and advances no cursor", async () => {
+    const io = briefIo(briefAnswer({ recommendation: "stale-replan" }));
+    const result = await briefCodeTodos({ repo: repo([ENTRY_A]), pending: [] }, io);
+    expect(result).toEqual({ briefed: 0, failed: 1 });
+    expect(io.post).not.toHaveBeenCalled();
+    expect(io.writeHashes).not.toHaveBeenCalled();
+  });
+
+  it("puts Tom's revise sentence in the prompt and consumes the ruling after the brief posts", async () => {
+    const hashes = { [`${CMT_REPO}:cmt-001`]: sourceHash(ENTRY_A) };
+    const pending = [
+      { _id: "r1", subjectType: "code", verdict: "revise", repo: CMT_REPO, externalId: "cmt-001", sentence: "drop step 3" },
+    ];
+    const io = briefIo(briefAnswer({ recommendation: "revise" }), hashes);
+    await briefCodeTodos({ repo: repo([ENTRY_A]), pending }, io);
+    expect(io.runClaude.mock.calls[0][0]).toContain("drop step 3");
+    expect(io.runClaude.mock.calls[0][0]).toContain("Propose a");
+    expect(io.post.mock.calls.map((c) => c[0])).toEqual(["/tts/code-briefs", "/tts/ruling-applied"]);
+    expect(io.post.mock.calls[1][1]).toEqual({
+      id: "r1",
+      result: "revised: brief re-written with a fresh plan",
+    });
+  });
+
+  it("leaves the ruling pending when the re-brief fails", async () => {
+    const pending = [
+      { _id: "r1", subjectType: "code", verdict: "revise", repo: CMT_REPO, externalId: "cmt-001", sentence: "again" },
+    ];
+    const io = briefIo("not json at all");
+    const result = await briefCodeTodos({ repo: repo([ENTRY_A]), pending }, io);
+    expect(result).toEqual({ briefed: 0, failed: 1 });
+    expect(io.post).not.toHaveBeenCalled();
+  });
+
+  it("briefs at most BRIEF_MAX_PER_RUN per run, all of them with --force, and nothing when idle", async () => {
+    const many = Array.from({ length: BRIEF_MAX_PER_RUN + 2 }, (_, i) => ({
+      id: `cmt-${i}`,
+      statement: `entry ${i}`,
+    }));
+    const io = briefIo([]);
+    expect((await briefCodeTodos({ repo: repo(many), pending: [] }, io)).briefed).toBe(
+      BRIEF_MAX_PER_RUN,
+    );
+    const forced = briefIo([]);
+    expect(
+      (await briefCodeTodos({ repo: repo(many), pending: [], force: true }, forced)).briefed,
+    ).toBe(BRIEF_MAX_PER_RUN + 2);
+    const idle = briefIo([], { [`${CMT_REPO}:cmt-001`]: sourceHash(ENTRY_A) });
+    expect(await briefCodeTodos({ repo: repo([ENTRY_A]), pending: [] }, idle)).toEqual({
+      briefed: 0,
+      failed: 0,
+    });
+    expect(idle.runClaude).not.toHaveBeenCalled();
+  });
+
+  it("asks for the four verdict words and nothing else", () => {
+    const text = briefPrompt("- id: x", null);
+    expect(text).toContain('"recommendation": "approve|revise|session|archive"');
+    expect(text).not.toContain("stale-replan");
   });
 });

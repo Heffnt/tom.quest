@@ -1,13 +1,14 @@
-// tts-code-lib.mjs — shared helpers for the TTS CODE-TODO jobs
-// (brief-code-todos.mjs, apply-rulings.mjs, execute-approved.mjs). Plain Node
-// ESM, ZERO npm dependencies — same rules as tts-lib.mjs.
+// tts-code-lib.mjs — shared helpers for the TTS CODE-TODO work on the box
+// (the planner's brief pass in plan-graphs.mjs, apply-rulings.mjs,
+// execute-approved.mjs). Plain Node ESM, ZERO npm dependencies — same rules
+// as tts-lib.mjs.
 //
 // The code-todo loop in one breath: CMT (github.com/Heffnt/ComplexMultiTrigger)
-// keeps its standing intent in vqc/todos.yaml; the briefing job explains each
-// open entry to Tom and recommends a ruling; Tom rules in the tom.quest UI
-// (stored in Convex); the apply job carries out non-execution rulings; the
-// executor implements ONE approved plan per hour on a branch and opens a PR —
-// merging that PR is the human gate.
+// keeps its standing intent in vqc/todos.yaml; the planner's brief pass
+// explains each open entry to Tom and recommends a ruling; Tom rules in the
+// tom.quest UI (stored in Convex); the apply job carries out non-execution
+// rulings; the executor implements ONE approved plan per hour on a branch and
+// opens a PR — merging that PR is the human gate.
 //
 // STATE ON THE JARVIS BOX (all harmless to lose, per the no-state rule):
 //   /var/cache/tts/ComplexMultiTrigger — shallow cache clone; rebuilt from
@@ -37,13 +38,11 @@ export const TODOS_GUARD_TEST = "tests/guards/test_bb_todos.py";
 export const BRIEF_HASHES_FILE = "/var/lib/tts/brief-hashes.json";
 export const BRIEF_CACHE_ROOT = "/var/cache/tts/briefs";
 
-// Cursor-value sentinel prefix: apply-rulings sets an entry's cursor value to
-// "replan-requested[: <Tom's sentence>]" instead of a real hash when Tom's
-// verdict is "revise". Any non-hash value forces a re-brief (it never equals
-// the recomputed hash), and the PREFIX tells the briefing job to ask for a
-// fresh plan — a plain deletion couldn't be told apart from "never briefed".
-// (The sentinel string predates the verdict rename and stays as-is: it is a
-// private contract between apply-rulings and brief-code-todos.)
+// A "replan-requested" sentinel used to ride the cursor file so a revise
+// ruling forced a re-brief. The planner's brief pass no longer reads it: it
+// takes the pending revise rulings from /tts/rulings itself and consumes each
+// once the fresh brief has posted. Still written by apply-rulings.mjs until
+// that job goes — a non-hash value still forces one re-brief, harmlessly.
 export const REPLAN_SENTINEL = "replan-requested";
 
 // The first characters of the closed-todos banner line in vqc/todos.yaml.
@@ -140,9 +139,9 @@ export function sourceHash(entry) {
   return crypto.createHash("sha256").update(JSON.stringify(entry)).digest("hex");
 }
 
-// The cursor file maps "repo:externalId" -> the sourceHash last POSTed (or a
-// replan sentinel, see REPLAN_SENTINEL). Corrupt or missing reads as empty —
-// the worst case is re-briefing, which the Convex upsert absorbs.
+// The cursor file maps "repo:externalId" -> the sourceHash last POSTed.
+// Corrupt or missing reads as empty — the worst case is re-briefing, which
+// the Convex upsert absorbs.
 export function readBriefHashes() {
   try {
     const parsed = JSON.parse(fs.readFileSync(BRIEF_HASHES_FILE, "utf8"));
@@ -158,7 +157,8 @@ export function writeBriefHashes(hashes) {
 }
 
 // Where the local copy of a posted brief lives (markdown; see
-// brief-code-todos.mjs for the layout, apply-rulings.mjs for the reader).
+// plan-graphs.mjs briefCacheMarkdown for the layout, apply-rulings.mjs for
+// the reader).
 export function briefCachePath(repo, externalId) {
   return path.join(BRIEF_CACHE_ROOT, repo, `${externalId}.md`);
 }

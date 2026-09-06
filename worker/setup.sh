@@ -359,12 +359,10 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 0 9 * * * root /usr/bin/flock -n /var/lock/tts-nightly.lock /usr/bin/node /opt/tts/nightly.mjs >> /var/log/tts/nightly.log 2>&1
 
 # CODE-TODO RULING LOOP (CMT's vqc/todos.yaml -> briefs -> Tom rules -> apply/execute):
-
-# Brief open CMT code todos via headless Claude, every 2nd hour at :17 (an
-# odd minute so it never collides with the other jobs' slots). Incremental —
-# only entries whose YAML changed since their last brief are re-briefed
-# (hash cursor in /var/lib/tts/brief-hashes.json), so most runs are no-ops.
-17 */2 * * * root /usr/bin/node /opt/tts/brief-code-todos.mjs >> /var/log/tts/brief-code-todos.log 2>&1
+# The BRIEFS are the planner's second pass (plan-graphs.mjs above, every 30
+# minutes): every open entry whose YAML changed since its last brief, or that
+# Tom ruled revise on, is re-briefed — hash cursor in
+# /var/lib/tts/brief-hashes.json, so most ticks brief nothing.
 
 # ── THE BATCH PAIR, MID-CUTOVER (schema v2, 2026-08-29) ─────────────────────
 # These two jobs are the OLD and the NEW way of doing the same thing, and they

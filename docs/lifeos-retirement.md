@@ -49,7 +49,8 @@ Non-negotiables that hold through every state: nothing is deleted from the todo 
 |---|---|---|---|---|
 | `prepare-queue.mjs`, the fallback prep cron | `dtsDailyQueues` | the computed today view and the digest composer | composer live for a week | not started |
 | `prepare-life-todos.mjs`, its 2-minute cron, and the spawn from `poll-dump.mjs` | the box's cron; `poll-dump.mjs` spawned it after a capture | the planner's prepare pass (`plan-graphs.mjs` `prepareLifeTodos`, every 30 minutes under flock): brief, entry action, work description, ground-up explanation, readiness `prepared`, the statement's own date; life revise rulings consumed there. The threaded Slack reply is posted by the capture itself, so nothing waits on preparation | the pass live for a week | narrowed (this branch) |
-| `form-batches.mjs`, `apply-rulings.mjs`, `execute-approved.mjs`, `brief-code-todos.mjs` | the box's cron | `plan-graphs.mjs` (absorbing brief), the worker, the events route | replacement live for a week | not started (`brief-code-todos.mjs` already writes the new values) |
+| `brief-code-todos.mjs` and its 2-hourly cron | the box's cron | the planner's brief pass (`plan-graphs.mjs` `briefCodeTodos`, every 30 minutes): the same brief shape, the four verdict words, the hash cursor; a code revise ruling is read off `/tts/rulings` (no cursor sentinel) and consumed once the fresh brief has posted | the pass live for a week | narrowed (this branch) |
+| `form-batches.mjs`, `apply-rulings.mjs`, `execute-approved.mjs` | the box's cron | the worker, the events route | replacement live for a week | not started |
 | the model-of-Tom refresh cron and its read token, the Convex Canvas sync | `ttsSkills`, `ttsCanvas` | the nightly job's post, `poll-canvas.mjs` | replacement live for a week | not started |
 
 ## Page
