@@ -4,11 +4,13 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import {
   DIGEST_SENT,
+  ITEM_TEXT_CHARS,
   LEARNING_CHANGE,
   ROLLOVER_NOTE,
   SLACK_FAILED,
   SLACK_SENT,
   WIKITOM_UNREADABLE,
+  clipToLine,
   composeDigest,
   digestSubject,
   isPassedWithoutOutcome,
@@ -153,6 +155,58 @@ describe("composeDigest", () => {
     expect(lines).toContain(
       '- [lc-1] schedule.md: "up at 7" → "up at 6" (three sessions before 7)',
     );
+  });
+
+  // The first live digest (2026-09-06) printed every statement in full, and a
+  // code todo's runs to 300 characters over several sentences. One item is one
+  // line: the statement is cut, the link follows it, the entry action follows
+  // the link.
+  it("gives a 300-character statement one line", () => {
+    const long =
+      "Rework the credential file helper so the one-time auth path writes the minted values to an owner-only file and prints only that file's path and the variable names, because an agent session stores its own standard output and a printed token is a leaked token forever afterwards.";
+    expect(long.length).toBeGreaterThan(260);
+    const text = composeDigest({
+      ...emptyFacts(),
+      ready: [{ id: "t1", statement: long }],
+    });
+    const line = text.split("\n").find((l) => l.includes(ttsItemLink("t1")))!;
+    expect(line.split("\n")).toHaveLength(1);
+    expect(line.length).toBeLessThan(200);
+    expect(line.endsWith("…>")).toBe(true);
+  });
+
+  it("cuts at the first sentence end, or a word boundary, whichever comes first", () => {
+    // A sentence that ends inside the budget is kept whole and the rest goes.
+    expect(clipToLine("Call the bank. Then post the form and wait for the reply.")).toBe(
+      "Call the bank.…",
+    );
+    // One sentence longer than the budget: cut at a word boundary, never
+    // mid-word, and never longer than the budget plus the ellipsis.
+    const oneSentence = `${"word ".repeat(40)}end.`;
+    const cut = clipToLine(oneSentence);
+    expect(cut.length).toBeLessThanOrEqual(ITEM_TEXT_CHARS + 1);
+    expect(cut.endsWith("word…")).toBe(true);
+    // Short enough to print whole: no ellipsis, and newlines become spaces.
+    expect(clipToLine("pay rent")).toBe("pay rent");
+    expect(clipToLine("pay\n  rent")).toBe("pay rent");
+    expect(clipToLine("pay the rent.")).toBe("pay the rent.");
+  });
+
+  it("cuts the entry action the same way", () => {
+    const text = composeDigest({
+      ...emptyFacts(),
+      ready: [
+        {
+          id: "t1",
+          statement: "sign the form",
+          entryAction: `open page 2 ${"and read it ".repeat(20)}then sign`,
+        },
+      ],
+    });
+    const line = text.split("\n").find((l) => l.includes(ttsItemLink("t1")))!;
+    expect(line).toContain("— open page 2 and read it");
+    expect(line.endsWith("…")).toBe(true);
+    expect(line.length).toBeLessThan(200);
   });
 
   it("escapes Slack's reserved characters in statements", () => {

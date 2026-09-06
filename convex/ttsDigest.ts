@@ -200,9 +200,40 @@ export function slackEscape(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+// ── One item, one line ───────────────────────────────────────────────────────
+// The digest is a morning read and the full list lives on the /tts page, so an
+// item contributes ONE line to it. A statement is written for the page, not for
+// Slack: a code todo's runs to 300 characters over several sentences, and the
+// first live digest (2026-09-06) printed every one of them in full — ten Slack
+// messages Tom had to scroll. Every statement and every entry action the digest
+// prints goes through clipToLine, which is the only place the length of a
+// printed statement is decided.
+export const ITEM_TEXT_CHARS = 110;
+
+/**
+ * A statement or an entry action as one line: whitespace collapsed, then cut at
+ * whichever comes first — the end of the first sentence, or ITEM_TEXT_CHARS at
+ * a word boundary — with "…" when anything was dropped. A sentence is kept
+ * whole (its full stop included); only the character cut needs a word boundary.
+ */
+export function clipToLine(raw: string): string {
+  const text = raw.replace(/\s+/g, " ").trim();
+  const sentence = text.match(/[.!?](?=\s|$)/);
+  if (sentence?.index !== undefined && sentence.index < ITEM_TEXT_CHARS) {
+    const end = sentence.index + 1;
+    return end >= text.length ? text : `${text.slice(0, end)}…`;
+  }
+  if (text.length <= ITEM_TEXT_CHARS) return text;
+  const cut = text.slice(0, ITEM_TEXT_CHARS);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > 0 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
 function itemLine(item: { id: string; statement: string; entryAction?: string }) {
-  const entry = item.entryAction ? ` — ${slackEscape(item.entryAction)}` : "";
-  return `- <${ttsItemLink(item.id)}|${slackEscape(item.statement)}>${entry}`;
+  const entry = item.entryAction
+    ? ` — ${slackEscape(clipToLine(item.entryAction))}`
+    : "";
+  return `- <${ttsItemLink(item.id)}|${slackEscape(clipToLine(item.statement))}>${entry}`;
 }
 
 export function composeDigest(f: DigestFacts): string {
