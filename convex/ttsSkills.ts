@@ -40,12 +40,17 @@ import {
 } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import {
+  CAPTURE_TRIAGE_HEADING,
+  CAPTURE_TRIAGE_RULES,
+  CAPTURE_TRIAGE_SKILL,
   MODEL_OF_TOM_AREAS_DIR,
   MODEL_OF_TOM_FIRST,
+  MODEL_OF_TOM_PRIORITIES,
   MODEL_OF_TOM_WRITING,
   WRITING_SKILL,
   WRITING_STANDARD,
 } from "./ttsShared";
+import { extractSections } from "../worker/jobs/markdown-sections.mjs";
 
 /** One posted file: its WikiTom path and the text the prompt carries. */
 export type ModelOfTomFile = { path: string; body: string };
@@ -138,20 +143,60 @@ export const internalModelOfTomPrelude = internalQuery({
   handler: async (ctx) => await modelOfTomPrelude(ctx),
 });
 
-// One row by name, for GET /tts/capture-context (convex/http.ts), which
-// serves a capture poller its triage rules. The only rows this can still find
-// are ones the retired six-hourly WikiTom skill sync left behind: the nightly
-// job posts model-of-tom files only, and its wholesale replace clears the
-// rest, after which the route serves ttsShared.CAPTURE_TRIAGE_RULES.
-export const internalGetSkill = internalQuery({
-  args: { name: v.string() },
-  handler: async (ctx, { name }) => {
-    return await ctx.db
-      .query("ttsSkills")
-      .withIndex("by_name", (q) => q.eq("name", name))
-      .unique();
+// ── The capture triage rules (GET /tts/capture-context) ──────────────────────
+// The words every capture poller makes its two judgements by. Phase 3 of the
+// lifeos update merged the WikiTom capture-triage skill into
+// model-of-tom/priorities.md, so the live rules are now a SECTION of a file
+// the nightly job already posts — nothing writes a capture-triage row any
+// more, and the job's wholesale replace deletes the one the retired sync left.
+//
+// Three sources, in this order, and the answer says which one it is so the
+// poller's log line names it (worker/jobs/tts-lib.mjs triageSourceLine):
+//
+//   "priorities" — the "What becomes a todo" section of the stored
+//     model-of-tom/priorities.md. The live source.
+//   "skill" — a capture-triage row the retired sync left behind, for as long
+//     as one survives the next post.
+//   "builtin" — the hardcoded copy in convex/ttsShared.ts, which serves only
+//     while the store holds neither of the above.
+export type CaptureTriageSource = "priorities" | "skill" | "builtin";
+
+/** The rules and where they came from. Pure, so the tests can pin it. */
+export function captureTriageFrom(
+  priorities: string | null | undefined,
+  skill: string | null | undefined,
+): { captureTriage: string; source: CaptureTriageSource } {
+  const section = extractSections(priorities ?? "", [CAPTURE_TRIAGE_HEADING]).trim();
+  if (section !== "") return { captureTriage: section, source: "priorities" };
+  const legacy = (skill ?? "").trim();
+  if (legacy !== "") return { captureTriage: legacy, source: "skill" };
+  return { captureTriage: CAPTURE_TRIAGE_RULES, source: "builtin" };
+}
+
+/** THE ONE READ behind GET /tts/capture-context, which has no db handle. */
+export const internalCaptureTriage = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const byName = async (name: string) =>
+      await ctx.db
+        .query("ttsSkills")
+        .withIndex("by_name", (q) => q.eq("name", name))
+        .unique();
+    const [priorities, skill] = await Promise.all([
+      byName(modelOfTomRowName(MODEL_OF_TOM_PRIORITIES)),
+      byName(CAPTURE_TRIAGE_SKILL),
+    ]);
+    return captureTriageFrom(priorities?.body, skill?.body);
   },
 });
+
+/** A posted file's row name: the path inside model-of-tom/ without the
+ * extension ("writing", "priorities", "areas/research"). One home, because
+ * the insert below writes it and internalCaptureTriage above looks a row up
+ * by it. */
+export function modelOfTomRowName(path: string): string {
+  return path.slice("model-of-tom/".length).replace(/\.md$/, "");
+}
 
 // A path the job may post: inside model-of-tom/, a markdown file, no
 // traversal. Exported so the route and the tests share one spelling.
@@ -201,9 +246,7 @@ export const internalReplaceModelOfTom = internalMutation({
     for (const row of existing) await ctx.db.delete(row._id);
     for (const f of files) {
       await ctx.db.insert("ttsSkills", {
-        // The row's short name: the path inside model-of-tom/ without the
-        // extension ("writing", "areas/research").
-        name: f.path.slice("model-of-tom/".length).replace(/\.md$/, ""),
+        name: modelOfTomRowName(f.path),
         body: f.body,
         sourcePath: f.path,
         commit,

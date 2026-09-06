@@ -81,6 +81,7 @@ import {
   reportJobOk,
   reportUntriaged,
   runClaude,
+  triageSourceLine,
 } from "./tts-lib.mjs";
 
 const CURSOR_FILE = "/var/lib/tts/canvas-announcements-cursor";
@@ -471,7 +472,10 @@ async function main() {
   // triage call that can time out. In that order a bad triage run costs only
   // the announcements, and the cursor makes the next tick pick them up again.
   await syncAssignments(env, courses);
-  // The deployment's own capture-triage rules, not a copy written here.
+  // The deployment's own capture-triage rules, not a copy written here. The
+  // line names where they came from, so a run reading the hardcoded fallback
+  // says so.
+  console.log(triageSourceLine("poll-canvas", context));
   await pollAnnouncements(env, courses, context.captureTriage);
 }
 

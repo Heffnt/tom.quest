@@ -7,8 +7,6 @@ import { auth } from "./auth";
 import { nowContext } from "./tts";
 import { isRulingVerdict } from "./ttsRulings";
 import {
-  CAPTURE_TRIAGE_RULES,
-  CAPTURE_TRIAGE_SKILL,
   DAY_MS,
   SESSION_REPO_NAMES,
   isSessionModel,
@@ -200,8 +198,13 @@ http.route({ path: "/tts/capture", method: "POST", handler: ttsCapture });
 // box that can neither import TypeScript nor read a git checkout of WikiTom.
 //
 //   captureTriage — the two judgements a poller makes (does this imply an
-//     action by Tom; does it need him today), from the synced WikiTom skill,
-//     falling back to ttsShared.CAPTURE_TRIAGE_RULES until the sync has run.
+//     action by Tom; does it need him today), taken from the "What becomes a
+//     todo" section of the stored model-of-tom/priorities.md.
+//   source — which of the three the rules came from: "priorities" (the live
+//     section), "skill" (a capture-triage row the retired sync left), or
+//     "builtin" (ttsShared.CAPTURE_TRIAGE_RULES). The poller prints it, so a
+//     run whose rules stopped tracking WikiTom says so in its own log line
+//     instead of triaging by a frozen copy in silence.
 //   declinedIntegrations — the integrations Tom has declined, each with the
 //     date and his sentence (convex/ttsIntegrations.ts). A poller checks its
 //     own name against this list BEFORE anything else and exits when it is
@@ -210,15 +213,13 @@ http.route({ path: "/tts/capture", method: "POST", handler: ttsCapture });
 const ttsCaptureContext = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  const [triageSkill, declinedIntegrations] = await Promise.all([
-    ctx.runQuery(internal.ttsSkills.internalGetSkill, {
-      name: CAPTURE_TRIAGE_SKILL,
-    }),
+  const [triage, declinedIntegrations] = await Promise.all([
+    ctx.runQuery(internal.ttsSkills.internalCaptureTriage, {}),
     ctx.runQuery(internal.ttsIntegrations.internalDeclinedIntegrations, {}),
   ]);
-  const synced = triageSkill?.body.trim() ?? "";
   return jsonResponse(200, {
-    captureTriage: synced === "" ? CAPTURE_TRIAGE_RULES : synced,
+    captureTriage: triage.captureTriage,
+    source: triage.source,
     declinedIntegrations,
   });
 });
