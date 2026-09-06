@@ -265,6 +265,18 @@ const SLACK_REPLAY_WINDOW_MS = 5 * 60 * 1000;
 // the route in more than one, so "once" is once per warm runtime).
 let warnedNoTomSlackUserId = false;
 
+/** The channels a threaded reply is acted on in: the three TTS posts to.
+ * Read per request so a value set after the isolate warmed up counts. */
+function slackReplyChannels(): Set<string> {
+  return new Set(
+    [
+      process.env.SLACK_DUMP_CHANNEL_ID,
+      process.env.SLACK_TTS_CHANNEL_ID,
+      process.env.SLACK_TTS_HOURLY_CHANNEL_ID,
+    ].filter((id): id is string => typeof id === "string" && id !== ""),
+  );
+}
+
 // Constant-time hex compare of our computed signature against the presented
 // one. Reuses timingSafeEqual above for the same reason it exists there.
 async function slackSignatureValid(
@@ -363,7 +375,16 @@ const slackEvents = httpAction(async (ctx, request) => {
   // time note on a todo, which are Tom's pens; anyone else's reply is
   // acknowledged and ignored. Unset means no threaded reply is acted on, and
   // the log says so once per isolate rather than on every event.
+  //
+  // And accepted in TTS's OWN channels only: #dump, #tts, #tts-hourly. An
+  // unknown thread becomes a todo and gets a capture line posted into it, so
+  // a reply in any other channel the app happens to be in would make TTS
+  // post where nobody asked it to (agents post nothing Tom did not ask for).
+  // Each id is read as it is set; an unset one admits nothing.
   if (threadTs !== undefined && threadTs !== ts) {
+    if (!slackReplyChannels().has(channel)) {
+      return jsonResponse(200, { ok: true, ignored: true });
+    }
     const tomSlackUserId = process.env.TOM_SLACK_USER_ID;
     if (!tomSlackUserId) {
       if (!warnedNoTomSlackUserId) {

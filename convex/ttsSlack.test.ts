@@ -66,6 +66,7 @@ async function postEvent(
 function slackEnv() {
   vi.stubEnv("SLACK_SIGNING_SECRET", SECRET);
   vi.stubEnv("SLACK_DUMP_CHANNEL_ID", DUMP);
+  vi.stubEnv("SLACK_TTS_CHANNEL_ID", TTS);
   vi.stubEnv("TOM_SLACK_USER_ID", TOM);
 }
 
@@ -546,7 +547,9 @@ describe("threaded replies from Tom", () => {
     expect(await t.run(async (ctx) => ctx.db.query("dtsTodos").collect())).toHaveLength(1);
   });
 
-  it("a threaded reply is routed whatever channel it is in; a top-level message captures only in #dump", async () => {
+  // witness: drop the slackReplyChannels check from the route and a reply in
+  // any channel the app is in becomes a todo AND a bot post into that thread.
+  it("a threaded reply is acted on only in #dump, #tts and #tts-hourly; a top-level message captures only in #dump", async () => {
     slackEnv();
     const t = convexTest(schema, modules);
     const top = await postEvent(t, { channel: TTS, ts: "900.1", text: "not a capture" });
@@ -555,6 +558,20 @@ describe("threaded replies from Tom", () => {
     const bot = await postEvent(t, { channel: TTS, ts: "900.3", thread_ts: "900.1", text: "our own reply", bot_id: "B1" });
     expect(bot).toEqual({ ok: true, ignored: true });
     expect(await events(t, "slack-event")).toHaveLength(0);
+
+    // Another channel: nothing recorded, nothing captured, nothing posted.
+    const elsewhere = await postEvent(t, { channel: "C0GENERAL", ts: "900.5", thread_ts: "900.4", text: "lunch?" });
+    expect(elsewhere).toEqual({ ok: true, ignored: true });
+    expect(await events(t, "slack-event")).toHaveLength(0);
+    expect(await t.run(async (ctx) => ctx.db.query("dtsTodos").collect())).toHaveLength(0);
+    expect(await scheduledSends(t)).toHaveLength(0);
+
+    // #tts-hourly admits replies once its id is set, not before.
+    const hourly = { channel: "C0HOURLY", ts: "900.7", thread_ts: "900.6", text: "noted" };
+    expect(await postEvent(t, hourly, "EvH1")).toEqual({ ok: true, ignored: true });
+    vi.stubEnv("SLACK_TTS_HOURLY_CHANNEL_ID", "C0HOURLY");
+    expect((await postEvent(t, hourly, "EvH2")).outcome).toBe("captured");
+    expect(await events(t, "slack-event")).toHaveLength(1);
   });
 });
 
