@@ -593,7 +593,21 @@ export function bumpUpdated(text, day) {
   return text.slice(0, 4) + front.replace(/^updated:.*$/m, `updated: ${day}`) + text.slice(end);
 }
 
-/** Every id in tonight's input that a line's evidence may name. */
+/**
+ * The id a page cites a session by: the first 8 hex characters of the SDK
+ * session id ("session 47f04bc9" on the pages; WikiTom's sessions/ archive is
+ * keyed by the whole of it, `sessions/YYYY/MM/DD/claude-<id>/`). A session
+ * that never reported one — the SDK had not started — is cited by its Convex
+ * row id, which is the only name it has.
+ */
+export function sessionCitation(turn) {
+  const sdk = typeof turn.sdkSessionId === "string" ? turn.sdkSessionId.toLowerCase() : "";
+  return /^[0-9a-f]{8}/.test(sdk) ? sdk.slice(0, 8) : turn.sessionId;
+}
+
+/** Every id in tonight's input that a line's evidence may name. A session is
+ * named by its citation (the 8-hex prefix), by the whole SDK id, or by its
+ * Convex row id — the prompt shows the first; the others are accepted. */
 export function learningEvidenceIds(input) {
   const ids = new Set();
   const add = (x) => {
@@ -602,6 +616,8 @@ export function learningEvidenceIds(input) {
   for (const t of input.tomTurns ?? []) {
     add(t.id);
     add(t.sessionId);
+    add(t.sdkSessionId);
+    add(sessionCitation(t));
   }
   for (const r of input.slackReplies ?? []) {
     add(r.id);
@@ -823,7 +839,7 @@ export function learningPrompt(input, pages, day) {
     window: { since: new Date(input.since).toISOString(), until: new Date(input.until).toISOString() },
     tomTurns: (input.tomTurns ?? []).map((t) => ({
       turnId: t.id,
-      sessionId: t.sessionId,
+      session: sessionCitation(t),
       sessionTitle: t.sessionTitle,
       date: utcDay(t.at),
       agentBefore: t.replyBefore ?? null,
@@ -860,14 +876,14 @@ export function learningPrompt(input, pages, day) {
     "",
     "RULES",
     "- A change is one line for one section of one page. `kind` is what the line is: a fact about Tom, a correction of something a page says, or an inference. An inference is allowed and must say in the line that it is an inference and which facts it rests on.",
-    "- Every line ends with its evidence, in the pages' citation style, in parentheses: (session <sessionId>, YYYY-MM-DD) for a turn, (ruling <rulingId>, YYYY-MM-DD) for a ruling, (slack <ts>, YYYY-MM-DD) for a Slack reply; several joined with \"; \". The ids are the ones in the input, verbatim. `evidence` lists the same ids. A line whose evidence names nothing in the input is refused.",
+    "- Every line ends with its evidence, in the pages' citation style, in parentheses: (session <session>, YYYY-MM-DD) for a turn — `session` is the 8-character id the pages already cite, e.g. (session 47f04bc9, 2026-08-30) — (ruling <rulingId>, YYYY-MM-DD) for a ruling, (slack <ts>, YYYY-MM-DD) for a Slack reply; several joined with \"; \". The ids are the ones in the input, verbatim. `evidence` lists the same citations, and every one of them must appear in the line. A line whose evidence names nothing in the input is refused.",
     "- Only these pages: model-of-tom/writing.md, model-of-tom/priorities.md, model-of-tom/areas/<area>.md. Only a section that exists on the page, named by its heading. Never \"Directions\", never \"Ideal state\", never \"Must not break\" — those are Tom's own, and a change naming them is refused. Never the spec.",
     "- A correction replaces: `replaces` is one existing line of that section, verbatim, and the new line supersedes it — the pages describe what is, never what was. An addition has `replaces: null`.",
     "- Write to writing.md's own rules: plain statements, no comparisons or analogies, no evaluative language, one fixed term per concept, the date in the line. One line, starting with \"- \".",
     "- Nothing from the agent's words alone; nothing already on a page; nothing that restates a line. An empty list is the right answer on a night whose input changes nothing about the model of Tom, and that is most nights.",
     "",
     "Answer with ONE JSON object and nothing else, no code fence:",
-    '{"changes":[{"file":"model-of-tom/areas/climbing.md","section":"Current state","kind":"fact","line":"- ... (session <sessionId>, YYYY-MM-DD).","replaces":null,"evidence":["session <sessionId>"]}]}',
+    '{"changes":[{"file":"model-of-tom/areas/climbing.md","section":"Current state","kind":"fact","line":"- ... (session <session>, YYYY-MM-DD).","replaces":null,"evidence":["session <session>"]}]}',
     "",
     `Tonight is ${day} (UTC).`,
     "",

@@ -206,14 +206,19 @@ export const internalLearningInput = internalQuery({
       )
       .take(LEARNING_INPUT_MAX);
     const tomTurns = [];
-    const titles = new Map<string, string>();
+    // Per session, read once: the title, and the SDK session id — the id the
+    // pages cite a session by (its first 8 hex characters; WikiTom's
+    // sessions/ archive is keyed by the whole of it), which the session host
+    // stores on the row as sdkSessionId once the SDK reports it.
+    const sessions = new Map<string, { title: string; sdkSessionId: string | null }>();
     let repliesLookedUp = 0;
     for (const row of inbound) {
       if (row.kind !== "user-turn") continue;
-      let title = titles.get(row.sessionId);
-      if (title === undefined) {
-        title = (await ctx.db.get(row.sessionId))?.title ?? "";
-        titles.set(row.sessionId, title);
+      let session = sessions.get(row.sessionId);
+      if (session === undefined) {
+        const s = await ctx.db.get(row.sessionId);
+        session = { title: s?.title ?? "", sdkSessionId: s?.sdkSessionId ?? null };
+        sessions.set(row.sessionId, session);
       }
       // The agent's text just before the turn and just after it. The index
       // pins the session and the kind; the filter walks the rows on one side
@@ -244,7 +249,8 @@ export const internalLearningInput = internalQuery({
       tomTurns.push({
         id: row._id,
         sessionId: row.sessionId,
-        sessionTitle: title,
+        sdkSessionId: session.sdkSessionId,
+        sessionTitle: session.title,
         text: row.text ?? "",
         at: row.createdAt,
         replyBefore,

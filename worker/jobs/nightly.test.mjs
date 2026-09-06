@@ -34,6 +34,7 @@ import {
   isLearningFile,
   isTableFile,
   learningChangeId,
+  learningEvidenceIds,
   learningStep,
   matchObjection,
   parseLearningAnswer,
@@ -42,6 +43,7 @@ import {
   rebaseInProgress,
   revertLearningChange,
   serializeRow,
+  sessionCitation,
   sessionDateOf,
   sessionDateOfBuffer,
   sha256,
@@ -122,7 +124,12 @@ function learningCheckout() {
   return dir;
 }
 
-const SESSION = "k97abc123def456ghi789jkl012mno34";
+// The session's Convex row id, its SDK session id, and the id the pages cite
+// it by (the SDK id's first 8 hex characters — the key of WikiTom's
+// sessions/ archive, as the pages already write it: "session 47f04bc9").
+const SESSION_ROW = "k97abc123def456ghi789jkl012mno34";
+const SDK_SESSION = "9e1c2b3a-4d5e-4f60-8a7b-8c9d0e1f2a3b";
+const SESSION = "9e1c2b3a";
 const TURN = "turn0001turn0001turn0001turn0001";
 const RULING = "rul0001rul0001rul0001rul0001rul0";
 
@@ -134,7 +141,8 @@ function learningInput(over = {}) {
     tomTurns: [
       {
         id: TURN,
-        sessionId: SESSION,
+        sessionId: SESSION_ROW,
+        sdkSessionId: SDK_SESSION,
         sessionTitle: "training plan",
         text: "thursday practice moved to 6pm this term",
         at: Date.UTC(2026, 8, 5, 20),
@@ -250,6 +258,10 @@ describe("the learning step", () => {
     expect(modelCalls[0].prompt).toContain("thursday practice moved to 6pm this term");
     expect(modelCalls[0].prompt).toContain("=== model-of-tom/areas/climbing.md ===");
     expect(modelCalls[0].prompt).toContain("Which practice moved?");
+    // The session is shown by the id the pages cite — the SDK id's 8-hex
+    // prefix — not by its Convex row id.
+    expect(modelCalls[0].prompt).toContain(`"session": "${SESSION}"`);
+    expect(modelCalls[0].prompt).not.toContain(SESSION_ROW);
     // The other pages are untouched.
     expect(fs.readFileSync(path.join(dir, "model-of-tom/priorities.md"), "utf8")).toBe(PRIORITIES);
   });
@@ -433,6 +445,31 @@ describe("the learning step", () => {
     });
     expect(run.commits).toEqual([]);
     expect(convex.posts[0]).toEqual({ route: "/tts/learning-objections-consumed", body: { ids: ["ev3", "ev4"] } });
+  });
+
+  it("cites a session by its SDK id's 8-hex prefix, and accepts the whole id or the row id as evidence", () => {
+    const turn = { id: TURN, sessionId: SESSION_ROW, sdkSessionId: SDK_SESSION };
+    expect(sessionCitation(turn)).toBe(SESSION);
+    expect(sessionCitation({ ...turn, sdkSessionId: SDK_SESSION.toUpperCase() })).toBe(SESSION);
+    // Before the SDK reported one, the row id is the session's only name.
+    expect(sessionCitation({ id: TURN, sessionId: SESSION_ROW, sdkSessionId: null })).toBe(SESSION_ROW);
+    const ids = learningEvidenceIds(learningInput());
+    expect(ids.has(SESSION)).toBe(true);
+    expect(ids.has(SDK_SESSION)).toBe(true);
+    expect(ids.has(SESSION_ROW)).toBe(true);
+    expect(ids.has(TURN)).toBe(true);
+    expect(ids.has(RULING)).toBe(true);
+    const pages = new Map([["model-of-tom/areas/climbing.md", CLIMBING]]);
+    for (const named of [SESSION, SDK_SESSION, SESSION_ROW]) {
+      const line = `- Thursday practice is at 6 p.m. this term (session ${named}, 2026-09-05).`;
+      const { applied, refused } = applyLearningChanges(
+        pages,
+        [factChange({ line, evidence: [`session ${named}`] })],
+        { day: "2026-09-06", evidenceIds: ids },
+      );
+      expect(refused).toEqual([]);
+      expect(applied).toHaveLength(1);
+    }
   });
 
   it("names the pages it writes, and the sections it never does", () => {

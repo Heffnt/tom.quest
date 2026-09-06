@@ -259,6 +259,7 @@ describe("GET /tts/learning-input", () => {
         statusChangedAt: now,
         nextSeq: 3,
         createdAt: now,
+        sdkSessionId: "47f04bc9-1111-4222-8333-444444444444",
       });
       const turn = (author: "tom" | "agent", text: string) =>
         ctx.db.insert("claudeInbound", {
@@ -309,6 +310,8 @@ describe("GET /tts/learning-input", () => {
     const input = await res.json();
     expect(input.tomTurns.map((x: { text: string }) => x.text)).toEqual(["sign it Friday"]);
     expect(input.tomTurns[0].sessionTitle).toBe("the lease");
+    // The SDK session id rides each turn: the pages cite its 8-hex prefix.
+    expect(input.tomTurns[0].sdkSessionId).toBe("47f04bc9-1111-4222-8333-444444444444");
     expect(input.slackReplies).toHaveLength(1);
     expect(input.slackReplies[0].data.text).toBe("done");
     expect(input.rulings.map((r: { verdict: string }) => r.verdict)).toEqual(["revise"]);
@@ -355,6 +358,9 @@ describe("GET /tts/learning-input", () => {
     const res = await get(t, `/tts/learning-input?since=${now - 3_600_000}&until=${now + 3_600_000}`);
     const input = await res.json();
     expect(input.tomTurns).toHaveLength(1);
+    // A session the SDK never reported an id for carries null, not a
+    // missing field.
+    expect(input.tomTurns[0].sdkSessionId).toBeNull();
     expect(input.tomTurns[0].replyBefore).toBe("Which lease?");
     expect(input.tomTurns[0].replyAfter.startsWith("Noted. xxx")).toBe(true);
     expect(input.tomTurns[0].replyAfter.length).toBe(LEARNING_REPLY_CHARS + 1);
