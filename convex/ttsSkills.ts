@@ -64,7 +64,7 @@ export type ModelOfTomState = {
 function orderRank(path: string): [number, string] {
   const named = (MODEL_OF_TOM_FIRST as readonly string[]).indexOf(path);
   if (named !== -1) return [named, path];
-  if (path.startsWith(MODEL_OF_TOM_AREAS_DIR)) return [MODEL_OF_TOM_FIRST.length, path];
+  if (path.startsWith(`${MODEL_OF_TOM_AREAS_DIR}/`)) return [MODEL_OF_TOM_FIRST.length, path];
   return [MODEL_OF_TOM_FIRST.length + 1, path];
 }
 

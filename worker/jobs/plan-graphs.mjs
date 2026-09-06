@@ -379,9 +379,12 @@ async function main() {
 
   const all = Array.isArray(todos) ? todos : [];
   const batchRows = Array.isArray(batches) ? batches : [];
-  // The writing standard is the WikiTom skill model-of-tom/skills/writing-to-tom
-  // (synced into Convex; convex/ttsShared.ts WRITING_STANDARD is the fallback
-  // copy), and it rides this payload because this file is Node ESM on the
+  // The writing standard is the model-of-tom prelude: WikiTom
+  // model-of-tom/writing.md and the files beside it, which the nightly job
+  // posts to Convex with the commit they were read at (the skill
+  // model-of-tom/skills/writing-to-tom was merged into writing.md and is gone;
+  // convex/ttsShared.ts WRITING_STANDARD is the fallback copy until the first
+  // post). It rides this payload because this file is Node ESM on the
   // Jarvis Box, which never loads TypeScript and holds no WikiTom checkout. A run without it
   // would quietly produce prose written to no standard at all, which is worse
   // than not running — so it is fatal.

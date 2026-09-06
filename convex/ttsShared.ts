@@ -288,7 +288,10 @@ export const MODEL_OF_TOM_FIRST = [
   "model-of-tom/priorities.md",
   "model-of-tom/schedule.md",
 ] as const;
-export const MODEL_OF_TOM_AREAS_DIR = "model-of-tom/areas/";
+// Spelled WITHOUT a trailing slash, the same way worker/jobs/nightly.mjs
+// spells it — the job cannot import this file, so the two strings are only
+// kept identical by being written identically.
+export const MODEL_OF_TOM_AREAS_DIR = "model-of-tom/areas";
 
 // ── The writing standard — THE FALLBACK COPY (Tom's ruling, 2026-08-29) ─────
 // EVERY piece of natural language TTS shows Tom — a batch statement, a task
