@@ -171,19 +171,18 @@ export const internalLearningInput = internalQuery({
         at: row.createdAt,
       });
     }
-    // dtsEvents has no (kind, at) index to pin — "slack-event" rows carry a
-    // key, so by_kind_key orders them by event id, not by time — so the whole
-    // window is examined one row at a time and only the replies are kept.
-    // A day's events are small rows and few; a day's Slack replies from Tom
-    // are fewer still, and losing them is the learning step losing its input.
-    const slackReplies = [];
-    for await (const e of ctx.db
-      .query("dtsEvents")
-      .withIndex("by_at", (q) => q.gte("at", since).lt("at", until))) {
-      if (e.kind !== "slack-event") continue;
-      slackReplies.push({ id: e._id, at: e.at, todoId: e.todoId, data: e.data });
-      if (slackReplies.length >= LEARNING_INPUT_MAX) break;
-    }
+    // by_kind_at, not by_at: the kind is pinned and `at` orders what comes
+    // back, so the cap falls on Tom's replies rather than on a window whose
+    // other kinds outnumber them. (by_kind_key cannot serve this — its rows
+    // are ordered by event id, and "slack-event" rows all carry one.)
+    const slackReplies = (
+      await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_at", (q) =>
+          q.eq("kind", "slack-event").gte("at", since).lt("at", until),
+        )
+        .take(LEARNING_INPUT_MAX)
+    ).map((e) => ({ id: e._id, at: e.at, todoId: e.todoId, data: e.data }));
     const rulings = (
       await ctx.db
         .query("dtsRulings")
