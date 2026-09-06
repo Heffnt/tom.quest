@@ -954,17 +954,22 @@ export default defineSchema({
     .index("by_repo_external", ["repo", "externalId"])
     .index("by_ruled", ["ruledAt"]),
 
-  // Mirror of WikiTom model-of-tom/skills/*/SKILL.md, refreshed by cron;
-  // WikiTom is the system of record. A row exists so prompt-building code can
-  // read a skill without a git checkout: Convex has no filesystem, and the
-  // planner on the Jarvis Box is Node ESM that cannot import TypeScript, so it
-  // takes the text over HTTP (GET /tts/batch-context). Rows are a copy — the
-  // sync replaces them wholesale, the way dtsCodeTodoMirror replaces per repo.
+  // The model-of-tom files every prompt begins with (the lifeos update, phase
+  // 4): one row per WikiTom file the nightly job posts to POST /tts/model-of-tom,
+  // all rows carrying the commit they were read at. WikiTom is the system of
+  // record. A row exists so prompt-building code can read the text without a
+  // git checkout: Convex has no filesystem, and the planner on the Jarvis Box
+  // is Node ESM that cannot import TypeScript, so it takes the text over HTTP
+  // (GET /tts/batch-context). Rows are a copy — each post replaces them
+  // wholesale (convex/ttsSkills.ts internalReplaceModelOfTom).
   ttsSkills: defineTable({
-    name: v.string(), // the skill directory's name, e.g. "writing-to-tom"
-    body: v.string(), // the SKILL.md file verbatim, YAML frontmatter included
+    name: v.string(), // the path inside model-of-tom/ without ".md": "writing", "areas/research"
+    body: v.string(), // the file, or the posted sections of an area page
     sourcePath: v.string(), // path inside WikiTom, so a row traces to its file
-    syncedAt: v.number(),
+    // The WikiTom commit the file was read at. Absent only on a row the
+    // retired six-hourly sync wrote, which serves until the first post.
+    commit: v.optional(v.string()),
+    syncedAt: v.number(), // the commit's time, not the post's
   }).index("by_name", ["name"]),
 
   // ── Claude Code session surface ──────────────────────────────────────────────
@@ -1190,7 +1195,14 @@ export default defineSchema({
     ),
     createdAt: v.number(),
     deliveredAt: v.optional(v.number()),
-  }).index("by_session_status", ["sessionId", "status"]),
+  })
+    .index("by_session_status", ["sessionId", "status"])
+    // The nightly learning step reads ONE author's turns over one day
+    // (convex/ttsNightly.ts). Without this index it took N rows off the
+    // creation-time index and filtered them afterwards, which silently
+    // dropped Tom's turns on any day the agents wrote more than N rows —
+    // and the agents write most of them.
+    .index("by_author", ["author"]),
 
   // Permission requests — HISTORICAL/RESIDUAL under the unified auto
   // permission gate (tts-spec:20.2, ruling session-permission-posture

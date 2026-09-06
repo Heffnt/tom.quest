@@ -32,6 +32,7 @@ import type * as ttsHourly from "../ttsHourly.js";
 import type * as ttsHourlyText from "../ttsHourlyText.js";
 import type * as ttsIntegrations from "../ttsIntegrations.js";
 import type * as ttsJobs from "../ttsJobs.js";
+import type * as ttsNightly from "../ttsNightly.js";
 import type * as ttsRepeats from "../ttsRepeats.js";
 import type * as ttsRulings from "../ttsRulings.js";
 import type * as ttsShared from "../ttsShared.js";
@@ -72,6 +73,7 @@ declare const fullApi: ApiFromModules<{
   ttsHourlyText: typeof ttsHourlyText;
   ttsIntegrations: typeof ttsIntegrations;
   ttsJobs: typeof ttsJobs;
+  ttsNightly: typeof ttsNightly;
   ttsRepeats: typeof ttsRepeats;
   ttsRulings: typeof ttsRulings;
   ttsShared: typeof ttsShared;

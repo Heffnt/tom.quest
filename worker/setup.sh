@@ -209,6 +209,75 @@ else
   echo "  and private-repo clones will fail; fill it in and re-run setup.sh."
 fi
 
+# The WikiTom checkout the nightly job writes (worker/jobs/nightly.mjs; the
+# lifeos update, phase 4): a full clone at /root/wikitom, sessions/ included,
+# because the job writes there and git refuses adds outside a sparse cone.
+# Cloned over the github.com-wikitom SSH alias (Host entry in
+# /root/.ssh/config → the deploy key /root/.ssh/wikitom, root-only). Until Tom
+# adds that key's public half to the WikiTom repository the clone is refused,
+# which is tolerated here in one line: the job then records a failure row
+# each night and nothing else on this box is held up. Never re-cloned on a
+# re-run: the checkout may hold commits a refused push left local.
+#
+# First, github.com's SSH host keys in root's known_hosts. A bare rebuild has
+# an empty known_hosts and no terminal to answer StrictHostKeyChecking's
+# prompt with, so the first ssh — this clone, and every later push — is
+# refused for a reason no log here would name. The keys are fetched with
+# ssh-keyscan and TRUSTED ONLY IF their fingerprint is one GitHub publishes
+# (below); an unexpected key is reported and not written, because a
+# keyscan on its own trusts whatever answers.
+GITHUB_SSH_FINGERPRINTS="SHA256:uNiVztksCsDhcc0u9e8BujQXVUpKZIDTMczCvj3tD2s
+SHA256:p2QAMXNIC1TJYWeIOttrVc98/R1BUFWu3/LiyKgUfQM
+SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+touch /root/.ssh/known_hosts
+chmod 600 /root/.ssh/known_hosts
+GITHUB_KEYS="$(mktemp)"
+if ssh-keyscan -t rsa,ecdsa,ed25519 github.com > "$GITHUB_KEYS" 2>/dev/null && [ -s "$GITHUB_KEYS" ]; then
+  KEYS_ADDED=0
+  while IFS= read -r KEY_LINE; do
+    case "$KEY_LINE" in ""|\#*) continue ;; esac
+    KEY_FP="$(printf '%s\n' "$KEY_LINE" | ssh-keygen -lf - 2>/dev/null | awk '{print $2}')"
+    if [ -z "$KEY_FP" ]; then
+      echo "  a github.com key from ssh-keyscan could not be fingerprinted — not trusting it"
+      continue
+    fi
+    case "$GITHUB_SSH_FINGERPRINTS" in
+      *"$KEY_FP"*) ;;
+      *) echo "  github.com offered an unpublished host key ($KEY_FP) — NOT trusting it"; continue ;;
+    esac
+    if ! grep -qF "$KEY_LINE" /root/.ssh/known_hosts; then
+      printf '%s\n' "$KEY_LINE" >> /root/.ssh/known_hosts
+      KEYS_ADDED=$((KEYS_ADDED + 1))
+    fi
+  done < "$GITHUB_KEYS"
+  echo "  github.com host keys verified; $KEYS_ADDED added to /root/.ssh/known_hosts"
+else
+  echo "  ssh-keyscan github.com failed — the first WikiTom clone or push will refuse the host key"
+fi
+rm -f "$GITHUB_KEYS"
+
+if [ ! -d /root/wikitom/.git ]; then
+  # git's own words on one line, so a refused clone says WHY (a missing deploy
+  # key, an unknown host, a network). Nothing secret is in them: the key is a
+  # file ssh reads, never a string in the URL.
+  CLONE_ERROR="$(git clone --quiet git@github.com-wikitom:Heffnt/WikiTom.git /root/wikitom 2>&1 >/dev/null)" \
+    && echo "  cloned WikiTom into /root/wikitom" \
+    || echo "  WikiTom clone refused — git said: $(printf '%s' "$CLONE_ERROR" | tr '\n' ' ' | cut -c1-300) — the nightly job records a failure until this works; re-run setup.sh after"
+fi
+# The committer identity every git command in that checkout writes with. The
+# nightly job passes it to the commands it names itself, but `git pull
+# --rebase` re-commits whatever is local through git's own machinery, and a
+# rebase without a configured identity DIES ("Please tell me who you are") —
+# on this box nothing configures one, since there is no user and no ~/.gitconfig
+# worth the name. Set every run: it is a local config, so a checkout made
+# before this line gets it on the next setup.sh.
+if [ -d /root/wikitom/.git ]; then
+  git -C /root/wikitom config user.name "tts-nightly"
+  git -C /root/wikitom config user.email "tts-nightly@tom.quest"
+fi
+
 # Env file: seed from the template ONLY if absent — a re-run must never
 # clobber real secrets. Tighten permissions every time regardless.
 if [ ! -f /etc/tts/worker.env ]; then
@@ -274,6 +343,20 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # prepare-queue.mjs must move with them (no import path crosses this boundary).
 30 8 * * * root /usr/bin/node /opt/tts/prepare-queue.mjs >> /var/log/tts/prepare-queue.log 2>&1
 30 9 * * * root /usr/bin/node /opt/tts/prepare-queue.mjs >> /var/log/tts/prepare-queue.log 2>&1
+
+# THE NIGHTLY JOB (the lifeos update, phase 4) at 4:00 a.m. New York — before
+# the 5 a.m. digest, which reads its rows: copy every Convex table into the
+# WikiTom checkout (/root/wikitom, tts/snapshot/), the learning step, archive
+# this box's session files into sessions/, one locked commit-and-push over the
+# github.com-wikitom alias, then post the model-of-tom files and their commit
+# to Convex. Same two-slot DST pattern as prepare-queue above (08:00 UTC is
+# 4 a.m. EDT, 09:00 UTC is 4 a.m. EST; the job's own guard keeps one). flock
+# -n on its own lock: the export can outlast an hour on a slow night, and a
+# second run would race the first for the checkout. The WikiTom writer lock
+# (/var/lock/tts-wikitom.lock) is taken inside the job, around the four steps
+# that write the checkout — snapshot, learning, sessions and the push.
+0 8 * * * root /usr/bin/flock -n /var/lock/tts-nightly.lock /usr/bin/node /opt/tts/nightly.mjs >> /var/log/tts/nightly.log 2>&1
+0 9 * * * root /usr/bin/flock -n /var/lock/tts-nightly.lock /usr/bin/node /opt/tts/nightly.mjs >> /var/log/tts/nightly.log 2>&1
 
 # CODE-TODO RULING LOOP (CMT's vqc/todos.yaml -> briefs -> Tom rules -> apply/execute):
 

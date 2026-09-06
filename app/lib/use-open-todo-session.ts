@@ -7,12 +7,10 @@
 // for the caller to render instead of being swallowed.
 
 import { useState } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
-import { WRITING_SKILL } from "@/convex/ttsShared";
 import type { SessionModel } from "@/convex/ttsShared";
-import { useAuth } from "@/app/lib/auth";
 import {
   buildBatchSessionPrompt,
   buildTodoSessionPrompt,
@@ -20,18 +18,6 @@ import {
   type BatchSessionContext,
   type LiveRulingContext,
 } from "@/app/lib/tts-session-prompt";
-
-// The writing skill (WikiTom, synced into ttsSkills) that opens every session
-// prompt built here. Tom-gated like the rest of TTS, so it skips for anyone
-// else — and an unsynced or skipped read leaves the builders on their fallback.
-function useWritingSkill(): string | undefined {
-  const { isTom } = useAuth();
-  const row = useQuery(
-    api.ttsSkills.getSkill,
-    isTom ? { name: WRITING_SKILL } : "skip",
-  );
-  return row?.body;
-}
 
 // Resolve a batch's members to live statements + statuses against the todos
 // and mirror the caller already subscribes to — a member whose mirror row is
@@ -174,7 +160,6 @@ export function useOpenSession() {
 // server's repo resolver reads the batch's declared repos directly and the
 // session starts with the checkout the batch's work needs.
 export function useOpenBatchSession() {
-  const writingSkill = useWritingSkill();
   const { open: openSession, busy, error } = useOpenSession();
 
   const open = async (
@@ -194,7 +179,7 @@ export function useOpenBatchSession() {
       kind: "focus-item",
       batchId: batch.id,
       tab: opts?.tab,
-      initialPrompt: buildBatchSessionPrompt(batch, writingSkill, opts?.ruling),
+      initialPrompt: buildBatchSessionPrompt(batch, opts?.ruling),
     });
   };
 
@@ -202,7 +187,6 @@ export function useOpenBatchSession() {
 }
 
 export function useOpenTodoSession() {
-  const writingSkill = useWritingSkill();
   const { open: openSession, busy, error } = useOpenSession();
 
   const open = async (
@@ -237,7 +221,6 @@ export function useOpenTodoSession() {
           ? { members: resolveMembers(todo, opts.batch) }
           : undefined,
         opts?.ruling,
-        writingSkill,
       ),
     });
   };

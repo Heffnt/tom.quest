@@ -218,9 +218,15 @@ describe("claude sessions", () => {
     });
     expect(inbound).toHaveLength(1);
     expect(inbound[0].kind).toBe("user-turn");
-    // Tom's prompt verbatim at the head; the outcome-pen footer is appended
+    // The model-of-tom prelude at the head (the lifeos update, phase 4): the
+    // transcript's first row names what the session began with — here, with
+    // nothing posted yet, the hardcoded standard under the header saying so.
+    // Then Tom's prompt verbatim; the outcome-pen footer is appended
     // server-side (pinned by its own test below).
-    expect(inbound[0].text?.startsWith("hello")).toBe(true);
+    const text = inbound[0].text ?? "";
+    expect(text.startsWith("MODEL-OF-TOM FILES: none stored yet")).toBe(true);
+    expect(text).toContain(WRITING_STANDARD);
+    expect(text.indexOf(WRITING_STANDARD)).toBeLessThan(text.indexOf("\n\nhello"));
   });
 
   it("daemon poll claims state and heartbeat; ingest transitions and delivers", async () => {
@@ -780,9 +786,9 @@ describe("claude sessions", () => {
     const pending = await tom.query(api.claudeSessions.getPendingInbound, {
       sessionId,
     });
-    // The opener carries createSession's outcome-pen footer, so it is found by
-    // its head, not by exact text.
-    const opener = pending.find((p) => p.text?.startsWith("hello"));
+    // The opener carries the model-of-tom prelude and createSession's
+    // outcome-pen footer, so it is found by its prompt, not by exact text.
+    const opener = pending.find((p) => p.text?.includes("hello"));
     expect(pending).toHaveLength(2);
 
     // One flush both ENDS the session and reports what the daemon did manage
@@ -799,7 +805,7 @@ describe("claude sessions", () => {
     const rows = await t.run(async (ctx) =>
       ctx.db.query("claudeInbound").collect(),
     );
-    expect(rows.find((r) => r.text?.startsWith("hello"))?.status).toBe("done");
+    expect(rows.find((r) => r.text?.includes("hello"))?.status).toBe("done");
     expect(rows.find((r) => r.text === "one more thing")?.status).toBe(
       "interrupted",
     );
@@ -844,7 +850,7 @@ describe("claude sessions", () => {
       ctx.db.query("claudeInbound").collect(),
     );
     const authorOf = (head: string) =>
-      rows.find((r) => r.text?.startsWith(head))?.author;
+      rows.find((r) => r.text?.includes(head))?.author;
     expect(authorOf("hello")).toBe("agent");
     expect(authorOf("typed by Tom")).toBe("tom");
     expect(authorOf("typed through the pen")).toBe("agent");

@@ -84,9 +84,6 @@ describe("TTS reads admit agent", () => {
     await expect(agent.query(api.ttsCode.listCodeBriefs, {})).resolves.toEqual([]);
     await expect(agent.query(api.ttsRepeats.listRepeats, {})).resolves.toEqual([]);
     await expect(agent.query(api.ttsRulings.listRulings, {})).resolves.toEqual([]);
-    await expect(
-      agent.query(api.ttsSkills.getSkill, { name: "writing" }),
-    ).resolves.toBeNull();
   });
 
   // The read gate widened for `agent` ONLY. Signed-out, `user` and `admin`

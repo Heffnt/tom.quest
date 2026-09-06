@@ -5,22 +5,17 @@
 
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 
-// The opening has two halves. The FRAMING says what this session is and how
-// wide it is; it is only true here, so it lives only here.
-const FRAMING = `You are working inside TTS (Tom's Delegated Todo System), in an interactive session with Tom — likely on his phone. Stay scoped to the single item below unless Tom widens the scope; the goal of this session is his understanding and his ruling, not maximum output.`;
-
-// The WRITING half is the same standard every other TTS prompt carries, and
-// its live source is the WikiTom skill "writing-to-tom" (synced into
-// ttsSkills; convex/ttsShared.ts WRITING_SKILL names the row). Callers read it
-// with useQuery(api.ttsSkills.getSkill) and pass the body in. This string is
-// the FALLBACK for a session opened before the sync has ever run.
-const CONTRACT = `Follow the ground-up contract in every reply: define terms on first use, invent no names, concrete before abstract, one idea per paragraph, keep replies short, and end anything needing a decision with what Tom needs to decide plus a recommendation. Language is descriptive, never evaluative — no praise, no scolding.`;
-
-/** The opening block: the framing, then the writing skill or its fallback. */
-function opening(writingSkill?: string): string {
-  const skill = writingSkill?.trim();
-  return skill ? `${FRAMING}\n\n${skill}` : `${FRAMING} ${CONTRACT}`;
-}
+// The FRAMING says what this session is and how wide it is; it is only true
+// here, so it lives only here. The WRITING half is not built here at all:
+// every session opener begins with the model-of-tom files (WikiTom
+// writing.md, priorities.md, schedule.md, the area pages' current-state and
+// must-not-break sections), prepended server-side in one home —
+// convex/claudeSessions.ts insertSession, reading convex/ttsSkills.ts
+// modelOfTomPrelude — so the transcript's first row names the WikiTom commit
+// the session began with. Until the nightly job's first post that prelude is
+// the hardcoded writing standard (convex/ttsShared.ts WRITING_STANDARD) under
+// a header saying so; nothing in this file falls back on its own.
+const FRAMING = `You are working inside TTS (Tom's Delegated Todo System), in an interactive session with Tom — likely on his phone. Stay scoped to the single item below unless Tom widens the scope; the goal of this session is his understanding and his ruling, not maximum output. Follow the writing standard in the model-of-tom files this prompt begins with in every reply, and end anything needing a decision with what Tom needs to decide plus a recommendation.`;
 
 function fact(label: string, value: string | undefined): string | null {
   return value && value.trim() !== "" ? `${label}: ${value}` : null;
@@ -61,10 +56,9 @@ const RULING_PEN = `When Tom states a ruling in plain language — approve, revi
 export function buildBlockSessionPrompt(
   category: string,
   todos: Doc<"dtsTodos">[],
-  writingSkill?: string,
 ): string {
   const lines: string[] = [
-    opening(writingSkill),
+    FRAMING,
     "",
     `This is a block session: Tom committed this span of time to the category "${category}". Work through the category's items with him, one at a time, smallest concrete first steps — open an item, take its first step with him, then move on. ${RULING_PEN}`,
     "",
@@ -164,13 +158,12 @@ function rulingLines(ruling: LiveRulingContext | undefined): string[] {
 
 export function buildBatchSessionPrompt(
   batch: BatchSessionContext,
-  writingSkill?: string,
   /** The ruling just recorded (the session verdict) — its sentence goes into
    * the prompt so Tom never repeats himself. */
   ruling?: LiveRulingContext,
 ): string {
   const lines: (string | null)[] = [
-    opening(writingSkill),
+    FRAMING,
     "",
     "This is a batch session. A BATCH holds how a set of todos gets completed: it is not itself a todo and is never worked directly. Its contents are TASKS (work someone does) and GOALS (a state of the world the batch is for, written as a condition that is either true yet or not). A todo is READY when every todo it NEEDS is done. Work the ready tasks with Tom, smallest concrete first step first.",
     "",
@@ -224,10 +217,9 @@ export function buildTodoSessionPrompt(
   kind: "gate" | "focus-item",
   batch?: { members: BatchMemberContext[] },
   ruling?: LiveRulingContext,
-  writingSkill?: string,
 ): string {
   const lines = [
-    opening(writingSkill),
+    FRAMING,
     "",
     kind === "gate"
       ? "This is a tom-gate session: the item below is ready-for-tom and needs his input integrated. Walk him through it ground-up, take his ruling, and shape the result with him."

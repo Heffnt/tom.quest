@@ -275,7 +275,6 @@ function load() {
     [getFunctionName(api.tts.getToday)]: null,
     [getFunctionName(api.ttsRepeats.listRepeats)]: [REPEAT],
     [getFunctionName(api.ttsCalendar.listCalendarEvents)]: [],
-    [getFunctionName(api.ttsSkills.getSkill)]: undefined,
   };
 }
 

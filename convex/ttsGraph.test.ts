@@ -1682,7 +1682,10 @@ describe("GET /tts/batch-context (planner half)", () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.writingStandard).toBe(WRITING_STANDARD);
+    // The prelude: nothing posted yet, so the hardcoded copy under a header
+    // that says so (convex/ttsSkills.ts).
+    expect(body.writingStandard).toContain(WRITING_STANDARD);
+    expect(body.writingStandard.startsWith("MODEL-OF-TOM FILES: none stored yet")).toBe(true);
     expect(body.batches.map((b: Doc<"batches">) => b.statement)).toEqual([
       "sign the lease",
     ]);

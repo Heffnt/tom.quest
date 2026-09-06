@@ -474,11 +474,13 @@ describe("threaded replies from Tom", () => {
         .withIndex("by_session_status", (q) => q.eq("sessionId", sessionId).eq("status", "pending"))
         .collect(),
     );
-    // The first row is the seed (with the outcome-pen footer), code-built; the
-    // second is Tom's reply, verbatim and in his name — the route verified the
-    // Slack user, so a ruling in his words may cite this row.
+    // The first row is the seed (behind the model-of-tom prelude, with the
+    // outcome-pen footer), code-built; the second is Tom's reply, verbatim and
+    // in his name — the route verified the Slack user, so a ruling in his
+    // words may cite this row.
     expect(inbound).toHaveLength(2);
-    expect(inbound[0].text?.startsWith("start")).toBe(true);
+    expect(inbound[0].text?.startsWith("MODEL-OF-TOM FILES")).toBe(true);
+    expect(inbound[0].text).toContain("\n\nstart");
     expect(inbound[0].author).toBe("agent");
     expect(inbound[1]).toMatchObject({ text: "go with option B", author: "tom" });
     expect(await scheduledSends(t)).toHaveLength(0);
