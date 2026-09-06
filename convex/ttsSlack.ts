@@ -3,7 +3,7 @@ import { internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
-import { logEvent } from "./tts";
+import { applyStatusChange, logEvent } from "./tts";
 import {
   SLACK_SUBJECT,
   captureReplyText,
@@ -105,10 +105,12 @@ export const internalRecordSlackFailed = internalMutation({
   },
 });
 
-// ── "done" or a bare date: the time-note path ────────────────────────────────
-// A reply on a todo or digest thread that says ONLY a date, or only "done",
-// is a time note (dtsTimeNotes), not a fact: worker/jobs/apply-time-notes.mjs
-// reads Tom's words and moves the date through the kept-dates rules. Anything
+// ── "done", a bare date, or a fact ───────────────────────────────────────────
+// A reply on a todo thread that says ONLY "done" completes the todo through
+// applyStatusChange — the one status writer, so the kept-dates rule resolves
+// an open date the same way the page's button does. A reply that is ONLY a
+// date is a time note (dtsTimeNotes): worker/jobs/apply-time-notes.mjs reads
+// Tom's words and moves the date through the kept-dates rules. Anything
 // longer is a fact. The recognised shapes are deliberately finite — a sentence
 // that happens to contain a date is still a sentence.
 const MONTH =
@@ -133,17 +135,20 @@ const DATE_ONLY = new RegExp(
   "i",
 );
 
-/** True when the whole reply is "done" or a bare date (optionally "on"/"by"
- * first, a time after). Exported for its test. */
-export function timeNoteOnlyReply(text: string): boolean {
+export type ReplyShape = "done" | "date" | "fact";
+
+/** "done" when the whole reply is the word done; "date" when it is a bare
+ * date (optionally "on"/"by" first, a time after); "fact" otherwise.
+ * Exported for its test. */
+export function replyShape(text: string): ReplyShape {
   const normalized = text
     .trim()
     .toLowerCase()
     .replace(/[.!]+$/, "")
     .replace(/\s+/g, " ")
     .replace(/^(?:on|by|for)\s+/, "");
-  if (normalized === "done") return true;
-  return DATE_ONLY.test(normalized);
+  if (normalized === "done") return "done";
+  return DATE_ONLY.test(normalized) ? "date" : "fact";
 }
 
 // ── A threaded reply from Tom ────────────────────────────────────────────────
@@ -195,6 +200,7 @@ export type ThreadReplyOutcome =
       endedSessionId: Id<"claudeSessions">;
       sessionId: Id<"claudeSessions">;
     }
+  | { outcome: "done"; todoId: Id<"dtsTodos"> }
   | { outcome: "time-note"; timeNoteId: Id<"dtsTimeNotes"> }
   | { outcome: "tom-note"; subject: SlackSubject }
   | { outcome: "learning-objection"; id: string }
@@ -207,7 +213,8 @@ export type ThreadReplyOutcome =
  *   session  → the text is the session's next inbound turn; an ended session
  *              gets a NEW session of the same kind seeded with the thread,
  *              and the thread is told which one.
- *   todo     → "done" / a bare date is a time note on the todo; anything else
+ *   todo     → "done" completes the todo (applyStatusChange, the reply as the
+ *              note); a bare date is a time note on the todo; anything else
  *              is a "tom-note" event on the todo.
  *   digest   → the same two shapes, on the digest's day.
  *   hourly   → a "tom-note" event with the hour.
@@ -266,19 +273,10 @@ async function routeReply(
   switch (subject.kind) {
     case "session":
       return await sessionReply(ctx, subject.id, text, at);
-    case "todo": {
-      if (timeNoteOnlyReply(text)) {
-        const timeNoteId = await ctx.runMutation(
-          internal.tts.internalCreateTimeNote,
-          { text, todoId: subject.id },
-        );
-        return { outcome: "time-note", timeNoteId };
-      }
-      await logEvent(ctx, "tom-note", subject.id, { text, ...at, subject });
-      return { outcome: "tom-note", subject };
-    }
+    case "todo":
+      return await todoReply(ctx, subject.id, text, at);
     case "digest": {
-      if (timeNoteOnlyReply(text)) {
+      if (replyShape(text) === "date") {
         const timeNoteId = await ctx.runMutation(
           internal.tts.internalCreateTimeNote,
           { text, day: subject.day },
@@ -327,6 +325,40 @@ async function routeReply(
       return { outcome: "captured", todoId };
     }
   }
+}
+
+/** A reply on a todo's thread, by its shape: "done" completes the todo, a
+ * bare date is a time note on it, anything else is a fact on it. A todo that
+ * is already done takes a second "done" as a fact — nothing to complete, and
+ * the words are still kept. */
+async function todoReply(
+  ctx: MutationCtx,
+  todoId: Id<"dtsTodos">,
+  text: string,
+  at: { channel: string; ts: string; threadTs: string },
+): Promise<ThreadReplyOutcome> {
+  const todo = await ctx.db.get(todoId);
+  if (!todo) throw new Error(`Unknown todo id: ${todoId}`);
+  const subject: SlackSubject = { kind: "todo", id: todoId };
+  switch (replyShape(text)) {
+    case "done":
+      if (todo.status !== "done") {
+        await applyStatusChange(ctx, todo, { status: "done", note: text });
+        return { outcome: "done", todoId };
+      }
+      break;
+    case "date": {
+      const timeNoteId = await ctx.runMutation(
+        internal.tts.internalCreateTimeNote,
+        { text, todoId },
+      );
+      return { outcome: "time-note", timeNoteId };
+    }
+    case "fact":
+      break;
+  }
+  await logEvent(ctx, "tom-note", todoId, { text, ...at, subject });
+  return { outcome: "tom-note", subject };
 }
 
 /** Live session: the reply is its next turn. Ended or failed: a new session

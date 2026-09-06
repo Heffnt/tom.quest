@@ -4,7 +4,7 @@ import { createHmac, webcrypto } from "node:crypto";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
-import { timeNoteOnlyReply } from "./ttsSlack";
+import { replyShape } from "./ttsSlack";
 import { captureReplyText, slackHourKey, slackThreadKey } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -371,7 +371,9 @@ describe("threaded replies from Tom", () => {
     expect(sends[0].text).toContain(newId);
   });
 
-  it("a todo thread takes a sentence as a fact and a bare 'done' or date as a time note", async () => {
+  // witness: send "done" down the time-note path instead of applyStatusChange
+  // and the todo stays active — apply-time-notes has no completion action.
+  it("a todo thread takes a sentence as a fact, a bare date as a time note, and 'done' completes the todo", async () => {
     slackEnv();
     const t = convexTest(schema, modules);
     // Captured from #dump with no recorded reply yet: found by the todo's own ts.
@@ -399,14 +401,28 @@ describe("threaded replies from Tom", () => {
 
     const dated = await postEvent(t, { channel: DUMP, ts: "400.3", thread_ts: "400.1", text: "sept 12" });
     expect(dated.outcome).toBe("time-note");
-    const done = await postEvent(t, { channel: DUMP, ts: "400.4", thread_ts: "400.1", text: "Done." });
-    expect(done.outcome).toBe("time-note");
     const timeNotes = await t.run(async (ctx) => ctx.db.query("dtsTimeNotes").collect());
     expect(timeNotes.map((n) => [n.text, n.todoId, n.status])).toEqual([
       ["sept 12", todoId, "pending"],
-      ["Done.", todoId, "pending"],
     ]);
-    expect(await events(t, "tom-note")).toHaveLength(1);
+
+    const done = await postEvent(t, { channel: DUMP, ts: "400.4", thread_ts: "400.1", text: "Done." });
+    expect(done).toMatchObject({ outcome: "done", todoId });
+    const todo = await t.run(async (ctx) => ctx.db.get(todoId));
+    expect(todo?.status).toBe("done");
+    expect(todo?.doneAt).toBeDefined();
+    const changes = await events(t, "status-changed");
+    expect(changes).toHaveLength(1);
+    expect(changes[0].data).toMatchObject({ from: "active", to: "done", note: "Done." });
+    // No time note was written for "done": nothing would ever have acted on it.
+    expect(await t.run(async (ctx) => ctx.db.query("dtsTimeNotes").collect())).toHaveLength(1);
+
+    // A second "done" on a completed todo has nothing to complete; the words
+    // are kept as a fact.
+    const again = await postEvent(t, { channel: DUMP, ts: "400.5", thread_ts: "400.1", text: "done" });
+    expect(again.outcome).toBe("tom-note");
+    expect(await events(t, "tom-note")).toHaveLength(2);
+    expect(await events(t, "status-changed")).toHaveLength(1);
   });
 
   it("a digest thread takes a fact with the day, and a bare date as a time note on the day", async () => {
@@ -497,12 +513,12 @@ describe("threaded replies from Tom", () => {
   });
 });
 
-describe("timeNoteOnlyReply", () => {
-  it("recognises 'done' and bare dates, and nothing longer", () => {
-    for (const yes of [
-      "done",
-      "Done.",
-      "done!",
+describe("replyShape", () => {
+  it("tells 'done' from a bare date from anything longer", () => {
+    for (const done of ["done", "Done.", "done!"]) {
+      expect(replyShape(done), done).toBe("done");
+    }
+    for (const date of [
       "2026-09-12",
       "9/12",
       "12.09.2026",
@@ -522,9 +538,9 @@ describe("timeNoteOnlyReply", () => {
       "by sept 3",
       "friday at 10:30",
     ]) {
-      expect(timeNoteOnlyReply(yes), yes).toBe(true);
+      expect(replyShape(date), date).toBe("date");
     }
-    for (const no of [
+    for (const fact of [
       "done, but the receipt is still missing",
       "friday works if the shop is open",
       "not done",
@@ -534,7 +550,7 @@ describe("timeNoteOnlyReply", () => {
       "12",
       "the office only takes appointments on weekdays",
     ]) {
-      expect(timeNoteOnlyReply(no), no).toBe(false);
+      expect(replyShape(fact), fact).toBe("fact");
     }
   });
 });
