@@ -136,21 +136,28 @@ export const internalExportPage = internalQuery({
 // (the "slack-event" rows the events route writes), and his rulings — never
 // an agent's turns, never the spec (design section 4, "Learning"). Windowed
 // by the caller: the job asks for the day before its run.
+// The cap is on what is RETURNED, never on what is looked at: a read that
+// takes N rows and filters them afterwards drops what it was looking for as
+// soon as the window holds more than N rows of anything else — and the
+// agents' turns and the instrumentation events outnumber Tom's by far. Each
+// read below either pins the value in an index or examines the whole window.
 export const LEARNING_INPUT_MAX = 2000;
 
 export const internalLearningInput = internalQuery({
   args: { since: v.number(), until: v.number() },
   handler: async (ctx, { since, until }) => {
+    // by_author, so the window is Tom's rows — not the first N rows of
+    // everyone's, most of which are an agent's.
     const inbound = await ctx.db
       .query("claudeInbound")
-      .withIndex("by_creation_time", (q) =>
-        q.gte("_creationTime", since).lt("_creationTime", until),
+      .withIndex("by_author", (q) =>
+        q.eq("author", "tom").gte("_creationTime", since).lt("_creationTime", until),
       )
       .take(LEARNING_INPUT_MAX);
     const tomTurns = [];
     const titles = new Map<string, string>();
     for (const row of inbound) {
-      if (row.author !== "tom" || row.kind !== "user-turn") continue;
+      if (row.kind !== "user-turn") continue;
       let title = titles.get(row.sessionId);
       if (title === undefined) {
         title = (await ctx.db.get(row.sessionId))?.title ?? "";
@@ -164,14 +171,19 @@ export const internalLearningInput = internalQuery({
         at: row.createdAt,
       });
     }
-    const slackReplies = (
-      await ctx.db
-        .query("dtsEvents")
-        .withIndex("by_at", (q) => q.gte("at", since).lt("at", until))
-        .take(LEARNING_INPUT_MAX)
-    )
-      .filter((e) => e.kind === "slack-event")
-      .map((e) => ({ id: e._id, at: e.at, todoId: e.todoId, data: e.data }));
+    // dtsEvents has no (kind, at) index to pin — "slack-event" rows carry a
+    // key, so by_kind_key orders them by event id, not by time — so the whole
+    // window is examined one row at a time and only the replies are kept.
+    // A day's events are small rows and few; a day's Slack replies from Tom
+    // are fewer still, and losing them is the learning step losing its input.
+    const slackReplies = [];
+    for await (const e of ctx.db
+      .query("dtsEvents")
+      .withIndex("by_at", (q) => q.gte("at", since).lt("at", until))) {
+      if (e.kind !== "slack-event") continue;
+      slackReplies.push({ id: e._id, at: e.at, todoId: e.todoId, data: e.data });
+      if (slackReplies.length >= LEARNING_INPUT_MAX) break;
+    }
     const rulings = (
       await ctx.db
         .query("dtsRulings")

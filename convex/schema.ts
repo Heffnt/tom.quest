@@ -1195,7 +1195,14 @@ export default defineSchema({
     ),
     createdAt: v.number(),
     deliveredAt: v.optional(v.number()),
-  }).index("by_session_status", ["sessionId", "status"]),
+  })
+    .index("by_session_status", ["sessionId", "status"])
+    // The nightly learning step reads ONE author's turns over one day
+    // (convex/ttsNightly.ts). Without this index it took N rows off the
+    // creation-time index and filtered them afterwards, which silently
+    // dropped Tom's turns on any day the agents wrote more than N rows —
+    // and the agents write most of them.
+    .index("by_author", ["author"]),
 
   // Permission requests — HISTORICAL/RESIDUAL under the unified auto
   // permission gate (tts-spec:20.2, ruling session-permission-posture

@@ -1,7 +1,12 @@
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import schema from "./schema";
-import { EXPORT_PAGE_BYTES, EXPORT_PAGE_DEFAULT, EXPORT_TABLES } from "./ttsNightly";
+import {
+  EXPORT_PAGE_BYTES,
+  EXPORT_PAGE_DEFAULT,
+  EXPORT_TABLES,
+  LEARNING_INPUT_MAX,
+} from "./ttsNightly";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -303,6 +308,70 @@ describe("GET /tts/learning-input", () => {
     expect(input.rulings.map((r: { verdict: string }) => r.verdict)).toEqual(["revise"]);
     expect(input.rulings[0].quote).toBe("ask for a shorter term");
   });
+
+  // witness: the reads used to take 2000 rows off a time index and filter
+  // afterwards, so a day with more than 2000 agent turns — an ordinary day —
+  // returned none of Tom's, and the learning step would have learned nothing
+  // while reporting a clean run.
+  it("finds Tom's turn and his Slack reply behind more rows than the cap", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      const sessionId = await ctx.db.insert("claudeSessions", {
+        title: "a long day",
+        kind: "adhoc",
+        repo: "none",
+        repos: [],
+        status: "running",
+        statusChangedAt: now,
+        nextSeq: 1,
+        createdAt: now,
+      });
+      const todoId = await ctx.db.insert("dtsTodos", {
+        statement: "x",
+        readiness: "unprepared",
+        status: "active",
+        timingClass: "whenever",
+        source: "test",
+        createdAt: now,
+        updatedAt: now,
+      });
+      for (let i = 0; i < LEARNING_INPUT_MAX + 1; i++) {
+        await ctx.db.insert("claudeInbound", {
+          sessionId,
+          kind: "user-turn",
+          text: `agent ${i}`,
+          author: "agent",
+          status: "done",
+          createdAt: now,
+        });
+        await ctx.db.insert("dtsEvents", { at: now, kind: "surfaced", todoId });
+      }
+      // Tom's, last: behind every one of them.
+      await ctx.db.insert("claudeInbound", {
+        sessionId,
+        kind: "user-turn",
+        text: "do the lease first",
+        author: "tom",
+        status: "done",
+        createdAt: now,
+      });
+      await ctx.db.insert("dtsEvents", {
+        at: now,
+        kind: "slack-event",
+        key: "Ev9",
+        todoId,
+        data: { text: "not that one" },
+      });
+    });
+    const res = await get(t, `/tts/learning-input?since=${now - 3_600_000}&until=${now + 3_600_000}`);
+    const input = await res.json();
+    expect(input.tomTurns.map((x: { text: string }) => x.text)).toEqual(["do the lease first"]);
+    expect(input.slackReplies.map((x: { data: { text: string } }) => x.data.text)).toEqual([
+      "not that one",
+    ]);
+  }, 120_000);
 
   it("refuses a missing or inverted window", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
