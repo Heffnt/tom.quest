@@ -351,53 +351,31 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 0 8 * * * root /usr/bin/flock -n /var/lock/tts-nightly.lock /usr/bin/node /opt/tts/nightly.mjs >> /var/log/tts/nightly.log 2>&1
 0 9 * * * root /usr/bin/flock -n /var/lock/tts-nightly.lock /usr/bin/node /opt/tts/nightly.mjs >> /var/log/tts/nightly.log 2>&1
 
-# CODE-TODO RULING LOOP (CMT's vqc/todos.yaml -> briefs -> Tom rules -> apply/execute):
-# The BRIEFS are the planner's second pass (plan-graphs.mjs above, every 30
-# minutes): every open entry whose YAML changed since its last brief, or that
-# Tom ruled revise on, is re-briefed — hash cursor in
-# /var/lib/tts/brief-hashes.json, so most ticks brief nothing.
+# CODE-TODO RULING LOOP (CMT's vqc/todos.yaml -> briefs -> Tom rules -> a
+# worker mission): the BRIEFS are the planner's second pass (below, every 30
+# minutes) — hash cursor in /var/lib/tts/brief-hashes.json, so most ticks
+# brief nothing.
 
-# ── THE BATCH PAIR, MID-CUTOVER (schema v2, 2026-08-29) ─────────────────────
-# These two jobs are the OLD and the NEW way of doing the same thing, and they
-# run side by side on purpose until the cutover.
+# THE PLANNER (schema v2, 2026-08-29; the one batcher since the lifeos
+# update, phase 7 — form-batches.mjs, the v1 batcher that wrote a todo row
+# carrying `members` and an ordered plan, is gone; the v1 batches still in
+# the record go through tts:internalMigrateToGraph). A batch is its own row
+# holding a GRAPH: goal todos (the end states it is for) and task todos (the
+# work), wired by `needs` edges, so the todos whose needs are all done are
+# the ready ones.
 #
-#   form-batches.mjs  — the v1 batcher. A batch is a todo row carrying a list
-#                       of `members` and an ordered plan.
-#   plan-graphs.mjs   — the v2 PLANNER. A batch is its own row holding a GRAPH:
-#                       goal todos (the end states it is for) and task todos
-#                       (the work), wired by `needs` edges, so the todos whose
-#                       needs are all done are the ready ones.
-#
-# They cannot collide, and the guard is the SERVER'S in both directions: it
-# refuses a v1 batch that claims a row already inside a v2 batch, and it
-# refuses to bind a row a live v1 batch claims as a v2 goal. (The planner's
-# own filter is not that guard — it governs which ids are offered to the
-# model, not which the model may emit.) Each job also consumes only its own
-# revise rulings: v1 takes rulings whose subject is a members-bearing todo, v2
-# takes rulings whose subject is a batch row, which exist only in v2.
-#
-# AT CUTOVER: delete the form-batches line below, and nothing else here.
-# plan-graphs already sits in the slot that will be the only one left.
-
-# v1 — Form batches (life + code todos grouped so one session with Tom advances
-# many) via headless Claude, every 2 hours at :07 (:07 collides with nothing;
-# :17/:37/:45 are taken). An input-hash cursor in /var/lib/tts/ makes
-# unchanged-input runs no-ops, so most ticks cost no Claude call.
-# REPLACED BY plan-graphs.mjs — remove this line at cutover.
-7 */2 * * * root /usr/bin/node /opt/tts/form-batches.mjs >> /var/log/tts/form-batches.log 2>&1
-
-# v2 — THE PLANNER, every 30 minutes at :27 and :57. Two passes in one run
-# (the lifeos update, phase 7): PREPARE every unprepared life todo (brief,
-# entry action, work description, ground-up explanation, readiness prepared —
-# this used to be prepare-life-todos.mjs on a 2-minute tick; the threaded
-# Slack reply no longer waits on it, the capture posts that itself), then
-# PLAN the graph inside every batch (goals, tasks, needs edges, the needs
-# between batches). An idle tick is cheap: the prepare pass returns before
-# any Claude call when nothing is unprepared, and the plan pass exits on an
+# Every 30 minutes at :27 and :57, three passes in one run: PREPARE every
+# unprepared life todo (brief, entry action, work description, ground-up
+# explanation, readiness prepared — this used to be prepare-life-todos.mjs on
+# a 2-minute tick; the threaded Slack reply no longer waits on it, the
+# capture posts that itself), BRIEF every open CMT code todo whose YAML
+# changed or that Tom ruled revise on (was brief-code-todos.mjs), then PLAN
+# the graph inside every batch (goals, tasks, needs edges, the needs between
+# batches). An idle tick is cheap: the prepare and brief passes return before
+# any Claude call when nothing is owed, and the plan pass exits on an
 # unchanged input hash (/var/lib/tts/plan-input-hash). flock -n: a backlog of
 # preparations plus a 20-minute plan call can outlast the tick, and a second
-# run would prepare the same todos twice. This line REPLACES the form-batches
-# line above at cutover.
+# run would prepare the same todos twice.
 27,57 * * * * root /usr/bin/flock -n /var/lock/tts-plan-graphs.lock /usr/bin/node /opt/tts/plan-graphs.mjs >> /var/log/tts/plan-graphs.log 2>&1
 
 # Tom's rulings need no apply job: every verdict's effect is applied at write

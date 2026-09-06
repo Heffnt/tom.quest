@@ -285,9 +285,8 @@ describe("POST /tts/model-of-tom", () => {
 });
 
 // ── The planner's channel keeps its field ────────────────────────────────────
-// worker/jobs/plan-graphs.mjs treats a missing `writingStandard` as fatal and
-// form-batches.mjs reads the same payload, so the field keeps its name and its
-// type; what it carries is now the prelude.
+// worker/jobs/plan-graphs.mjs treats a missing `writingStandard` as fatal, so
+// the field keeps its name and its type; what it carries is now the prelude.
 describe("GET /tts/batch-context writing standard", () => {
   afterEach(() => {
     vi.unstubAllEnvs();

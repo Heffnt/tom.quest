@@ -961,8 +961,7 @@ http.route({ path: "/tts/code-briefs", method: "POST", handler: ttsCodeBriefs })
 // ttsRulings table. ALL THREE subject types ride the one feed: rows carry
 // subjectType, and the planner (worker/jobs/plan-graphs.mjs) filters for its
 // own kinds — a "life" revise → its prepare pass, a "code" revise → its brief
-// pass, a "batch" revise → its plan pass (and form-batches takes a "life"
-// revise whose subject is a v1 batch) — consuming only what it served. A
+// pass, a "batch" revise → its plan pass — consuming only what it served. A
 // "code" approve or archive rides the feed too but is consumed by the
 // auto-session scheduler in Convex. Each row carries its _id, which the
 // planner echoes back to /tts/ruling-applied.
@@ -1226,8 +1225,7 @@ http.route({ path: "/tts/batches", method: "POST", handler: ttsBatches });
 // modelOfTomPrelude): the files the nightly job posted, headed by their
 // WikiTom commit, or ttsShared.WRITING_STANDARD under a header saying so
 // until the first post. The field name and type do not change:
-// worker/jobs/plan-graphs.mjs treats a missing `writingStandard` as fatal and
-// form-batches.mjs reads the same payload.
+// worker/jobs/plan-graphs.mjs treats a missing `writingStandard` as fatal.
 const ttsBatchContext = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;

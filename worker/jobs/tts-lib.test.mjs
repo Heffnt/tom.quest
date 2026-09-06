@@ -1,11 +1,11 @@
 // Tests for the shared brief-clipping rule in tts-lib.mjs.
 //
 // This rule used to be spelled twice — once in plan-graphs.mjs (with an
-// ellipsis marker and an empty-text case) and once in form-batches.mjs (a bare
-// slice with neither) — so the same brief reached the model in two forms
-// depending on which planner read it. These three cases are exactly the ones
-// the two old spellings disagreed about, so they are what a re-split would
-// break first.
+// ellipsis marker and an empty-text case) and once in the retired v1 batcher
+// (a bare slice with neither) — so the same brief reached the model in two
+// forms depending on which planner read it. These three cases are exactly the
+// ones the two old spellings disagreed about, so they are what a re-split
+// would break first.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
