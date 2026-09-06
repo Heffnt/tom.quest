@@ -3,8 +3,14 @@
 // One click on any item — a task, a goal, the batch itself — opens this:
 // everything known about the item, with its ground-up explanation, in one
 // fixed dialog. Understanding never requires opening a session.
+//
+// Actions sit at the top (CLAUDE.md UI rules): where a ruling can be given —
+// on the batch always, on a task or goal whose todo is rulable (lib
+// isRulable) — the four verdict buttons come first, the same row the batch
+// card renders (verdict-buttons.tsx).
 import type { BatchGraph, GraphGoal, GraphTask } from "./batch-card";
-import { groundUpTeaser } from "../lib";
+import VerdictButtons from "./verdict-buttons";
+import { groundUpTeaser, type RulingVerdict } from "../lib";
 
 export type DetailItem =
   | { kind: "task"; batchStatement: string; task: GraphTask; waitingOn: string[] }
@@ -26,11 +32,24 @@ export default function DetailDialog({
   item,
   onClose,
   onGroundUp,
+  onRule,
 }: {
   item: DetailItem;
   onClose: () => void;
   onGroundUp: (title: string, content: string) => void;
+  /** ttsRulings.recordRuling on the item's subject — the batch row, or the
+   * task's or goal's todo — with this verdict and sentence. Absent = no
+   * verdicts are offered (the mockup route). */
+  onRule?: (
+    item: DetailItem,
+    verdict: RulingVerdict,
+    sentence: string,
+  ) => Promise<unknown> | void;
 }) {
+  const rule = onRule
+    ? (verdict: RulingVerdict, sentence: string) => onRule(item, verdict, sentence)
+    : undefined;
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
@@ -42,6 +61,13 @@ export default function DetailDialog({
         {item.kind === "task" && (
           <div className="flex flex-col gap-2">
             <h3 className="text-[15px] font-semibold">{item.task.statement}</h3>
+            {rule && item.task.rulable && (
+              <VerdictButtons
+                subject="todo"
+                statement={item.task.statement}
+                onRule={rule}
+              />
+            )}
             <Row label="part of">{item.batchStatement}</Row>
             <Row label="who">
               {item.task.actor === "tom" ? <span className="text-accent">you</span> : "agents"}
@@ -83,6 +109,13 @@ export default function DetailDialog({
         {item.kind === "goal" && (
           <div className="flex flex-col gap-2">
             <h3 className="text-[15px] font-semibold">{item.goal.statement}</h3>
+            {rule && item.goal.rulable && (
+              <VerdictButtons
+                subject="todo"
+                statement={item.goal.statement}
+                onRule={rule}
+              />
+            )}
             <Row label="part of">{item.batchStatement}</Row>
             <Row label="kind">goal — a condition about the world this batch must make true</Row>
             {item.goal.condition !== undefined && (
@@ -109,6 +142,18 @@ export default function DetailDialog({
         {item.kind === "batch" && (
           <div className="flex flex-col gap-2">
             <h3 className="text-[15px] font-semibold">{item.graph.statement}</h3>
+            {rule && (
+              <VerdictButtons
+                subject="batch"
+                statement={item.graph.statement}
+                plan={item.graph.tasks.map((t) => ({
+                  text: t.statement,
+                  actor: t.actor,
+                  status: t.status === "done" ? ("done" as const) : ("open" as const),
+                }))}
+                onRule={rule}
+              />
+            )}
             {/* The teaser, not the value: an explanation is a whole HTML
                 document now, and the document itself is read fullscreen. */}
             {item.graph.groundUp !== undefined && (

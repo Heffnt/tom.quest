@@ -1,10 +1,10 @@
 "use client";
 
 // MOCKUP page: the graph-model batches tab rendered by the real components
-// (paths-bar, batch-card, plan-bar, ruling-dialog, detail-dialog) over live
-// prod data via the real authed query. Quick by design: ruling confirms are
-// no-ops. The real build swaps this shell for the batches tab and deletes
-// this route.
+// (paths-bar, batch-card, plan-bar, detail-dialog) over live prod data via
+// the real authed query. Quick by design: the verdict buttons record nothing
+// here. The real build swaps this shell for the batches tab and deletes this
+// route.
 //
 // MOCKUP-ONLY derivations until schema v2 + planner land: paths come from a
 // keyword bucketing; each batch's GRAPH is derived from today's linear plan
@@ -16,7 +16,6 @@ import { useAuth } from "@/app/lib/auth";
 import TomGate from "@/app/components/tom-gate";
 import PathsBar from "../tts/components/paths-bar";
 import BatchCard, { type BatchGraph } from "../tts/components/batch-card";
-import RulingDialog, { type RulingVerdict } from "../tts/components/ruling-dialog";
 import DetailDialog, { type DetailItem } from "../tts/components/detail-dialog";
 import GroundUpView from "../tts/components/ground-up-view";
 
@@ -60,6 +59,7 @@ function toGraph(b: Row, byId: Map<string, Row>): BatchGraph {
     status: s.status === "done" ? ("done" as const) : ("active" as const),
     needs: i > 0 ? [`${b._id}#${i - 1}`] : [],
     evidence: s.evidence,
+    rulable: false,
   }));
   const goals = (b.members ?? []).map((m, i) => {
     if (m.todoId !== undefined) {
@@ -70,6 +70,7 @@ function toGraph(b: Row, byId: Map<string, Row>): BatchGraph {
         condition: t ? `"${t.statement}" is done` : undefined,
         met: t?.status === "done" || t?.status === "archived",
         groundUp: t?.brief,
+        rulable: false,
       };
     }
     return {
@@ -78,6 +79,7 @@ function toGraph(b: Row, byId: Map<string, Row>): BatchGraph {
       condition: `${m.repo} todo ${m.externalId} is closed in its repo`,
       met: false,
       code: { repo: m.repo ?? "?", externalId: m.externalId ?? "?" },
+      rulable: false,
     };
   });
   return { id: b._id, statement: b.statement, groundUp: b.brief, tasks, goals };
@@ -109,7 +111,6 @@ export default function MockupClient() {
     fetched ?? (process.env.NODE_ENV === "development" && !isTom ? DEV_SAMPLE : null);
   const [selectedPath, setSelectedPath] = useState<string>("cmt paper");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [ruling, setRuling] = useState<{ graph: BatchGraph; verdict: RulingVerdict } | null>(null);
   const [detail, setDetail] = useState<DetailItem | null>(null);
   const [groundUp, setGroundUp] = useState<{ title: string; content: string } | null>(null);
 
@@ -167,7 +168,7 @@ export default function MockupClient() {
               graph={g}
               expanded={expanded.has(g.id)}
               onToggle={() => setExpanded((prev) => toggle(prev, g.id))}
-              onRule={(verdict) => setRuling({ graph: g, verdict })}
+              onRule={() => {}}
               onDetail={setDetail}
               onGroundUp={(title, content) => setGroundUp({ title, content })}
               onOpenSession={() => {}}
@@ -176,19 +177,6 @@ export default function MockupClient() {
         ))}
       </div>
 
-      {ruling && (
-        <RulingDialog
-          verdict={ruling.verdict}
-          statement={ruling.graph.statement}
-          brief={ruling.graph.groundUp}
-          plan={ruling.graph.tasks.map((t) => ({
-            text: t.statement,
-            actor: t.actor,
-            status: t.status === "done" ? ("done" as const) : ("open" as const),
-          }))}
-          onClose={() => setRuling(null)}
-        />
-      )}
       {detail && (
         <DetailDialog
           item={detail}

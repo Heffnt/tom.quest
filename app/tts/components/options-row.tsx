@@ -22,6 +22,11 @@ import { useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import Info from "./info";
+import {
+  VERDICT_EFFECT,
+  verdictCall,
+  type VerdictSubject,
+} from "./verdict-buttons";
 import { VERDICTS_EXPLANATION } from "../explanations";
 import {
   reserveSessionTab,
@@ -48,32 +53,19 @@ const PLACEHOLDER: Record<Mode, string> = {
   "set-archived": "propose back when (optional)",
 };
 
-// One entry per verdict: the exact call, and what that verdict actually does
-// downstream. The plain half is the point — "recordRuling" says nothing about
-// which job wakes up next, and that is the thing worth knowing before pressing
-// it (one info mechanism, ratified 2026-08-29).
+// One entry per chip: the exact call, and what it actually does downstream.
+// The plain half is the point — "recordRuling" says nothing about which job
+// wakes up next, and that is the thing worth knowing before pressing it (one
+// info mechanism, ratified 2026-08-29). The four verdicts' call and effect
+// text live in verdict-buttons.tsx, the one home for them, so this row and
+// the batch card's verdict row cannot say two different things about one
+// mutation; only the two status chips are defined here.
 // The ground-up layer is ONE document for all six chips, not one per chip.
 // What a reader standing on "approve" needs is approve RELATIVE to revise,
 // session and archive, and a per-chip document could not give that without
 // repeating the other five — so VERDICTS_EXPLANATION covers the whole surface
-// and each chip differs only in its display text below.
-const INFO: Record<Mode, { call: string; body: string }> = {
-  approve: {
-    call: 'ttsRulings.recordRuling({ verdict: "approve", sentence })',
-    body: "Marks this as decided your way. On a code todo the executor picks it up and does the work; on a life todo it simply records your call and stops asking.",
-  },
-  revise: {
-    call: 'ttsRulings.recordRuling({ verdict: "revise", sentence })',
-    body: "Sends it back to be prepared again, with your sentence as the redirection. The preparer re-writes the brief against what you said and returns it — your sentence is the whole instruction, so it has to stand on its own.",
-  },
-  session: {
-    call: 'ttsRulings.recordRuling({ verdict: "session", sentence })',
-    body: "Says this needs a conversation rather than a ruling. The ruling is consumed the moment you actually open a session on it — an autonomous run that happens to claim the same item never consumes it, so the conversation you asked for still happens.",
-  },
-  archive: {
-    call: 'ttsRulings.recordRuling({ verdict: "archive", sentence })',
-    body: "Sets it aside. Your sentence becomes the condition under which it should be proposed back, so nothing is lost — archived is a resting state, not a delete.",
-  },
+// and each chip differs only in its display text.
+const STATUS_INFO: Record<"done" | "set-archived", { call: string; body: string }> = {
   done: {
     call: 'tts.setStatus({ status: "done", note })',
     body: "Closes it as finished, with your note as the record of how. It stays visible in the archive; nothing in TTS is ever deleted.",
@@ -83,6 +75,14 @@ const INFO: Record<Mode, { call: string; body: string }> = {
     body: "Sets it aside without ruling on it. Your sentence is the condition that should bring it back, so a thing put down on purpose can be picked up again.",
   },
 };
+
+function info(
+  subject: VerdictSubject,
+  mode: Mode,
+): { call: string; body: string } {
+  if (mode === "done" || mode === "set-archived") return STATUS_INFO[mode];
+  return { call: verdictCall(subject, mode), body: VERDICT_EFFECT[subject][mode] };
+}
 
 export type OptionsRowProps = {
   /** Life todo or batch row (a batch IS a life todo). Omit for code subjects. */
@@ -187,6 +187,7 @@ export default function OptionsRow({
 
   if (!todo && !code) return null;
 
+  const subject: VerdictSubject = todo ? "todo" : "code";
   const chips: { mode: Mode; label: string }[] = [];
   if (rulable) for (const v of VERDICTS) chips.push({ mode: v, label: v });
   // Done is available wherever the row is not already done — a waiting todo is
@@ -245,11 +246,11 @@ export default function OptionsRow({
             {mode === "set-archived" ? "archive" : mode}
           </button>
           <Info
-            call={INFO[mode].call}
+            call={info(subject, mode).call}
             explanation={VERDICTS_EXPLANATION}
             explanationTitle="the four verdicts, and what each one sets in motion"
           >
-            {INFO[mode].body}
+            {info(subject, mode).body}
           </Info>
         </form>
       )}
