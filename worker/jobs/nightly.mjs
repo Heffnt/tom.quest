@@ -384,9 +384,10 @@ export function readManifests(sessionsDir) {
 /**
  * What the manifests already say, indexed for the archive step: the content
  * hash last archived for each source path (a file that grew since is
- * archived again), the directory each parent session was archived into (so a
- * child lands beside its parent), and which accounts each Claude session id
- * has been seen under (so a second account's copy sits in its own subdir).
+ * archived again), the session directory each parent was archived into —
+ * WITHOUT the per-account segment, which claudeEntry appends — so a child
+ * lands beside its parent, and which accounts each Claude session id has been
+ * seen under (so a second account's copy sits in its own subdir).
  */
 export function indexManifests(entries) {
   const shaBySource = new Map();
@@ -399,7 +400,14 @@ export function indexManifests(entries) {
     if (e.kind === "parent" && typeof e.dest === "string" && typeof e.session === "string") {
       const key = `${e.runtime}:${e.session}`;
       if (!dirBySession.has(key)) {
-        dirBySession.set(key, e.dest.slice(0, e.dest.lastIndexOf("/")));
+        let dir = e.dest.slice(0, e.dest.lastIndexOf("/"));
+        // What is indexed is the session's directory WITHOUT the account: a
+        // per-account dest ends in the account's name, and keeping that would
+        // nest the other account's files inside this one's.
+        if (e.runtime === "claude" && e.account && dir.endsWith(`/${e.account}`)) {
+          dir = dir.slice(0, -`/${e.account}`.length);
+        }
+        dirBySession.set(key, dir);
       }
     }
     if (e.runtime === "claude" && typeof e.session === "string" && e.account) {
@@ -611,34 +619,47 @@ async function sessionsStep(run) {
   return { archived: archived.length };
 }
 
-/** The manifest entry for a Claude SDK file (parent, child or attachment). */
+/**
+ * The manifest entry for a Claude SDK file (parent, child or attachment).
+ *
+ * THE DIRECTORY THE INDEX HOLDS IS ACCOUNT-LESS —
+ * `sessions/YYYY/MM/DD/claude-<id>` — and the account is appended here, once,
+ * when two accounts hold the same session id (phase 1's layout; one account
+ * is the flat layout). Holding the second account's directory instead would
+ * append the second account under the first's, and that session's children
+ * would land at `.../claude-<id>/gmail/wpi/children/...`.
+ */
 export function claudeEntry(f, raw, sha, mtimeMs, index, accountsBySession) {
   const key = `claude:${f.session}`;
-  // Two accounts holding the same session id sit side by side under the
-  // account's name (phase 1's layout); one account is the flat layout.
   const accounts = accountsBySession.get(f.session) ?? new Set([f.account]);
   const perAccount = accounts.size > 1;
-  let dir = index.dirBySession.get(key);
+  let base = index.dirBySession.get(key);
   let date;
   let dateSource;
   if (f.kind === "parent") {
-    ({ date, dateSource } = sessionDateOf(raw.subarray(0, 64 * 1024).toString("utf8"), mtimeMs));
-    dir = `${SESSIONS_DIR}/${date.replaceAll("-", "/")}/claude-${f.session}${perAccount ? `/${f.account}` : ""}`;
-    index.dirBySession.set(key, dir);
-  } else {
-    if (dir === undefined) {
-      // A child whose parent is not archived (an orphan): its own date.
-      ({ date, dateSource } = sessionDateOf(
-        f.kind === "child" ? raw.subarray(0, 64 * 1024).toString("utf8") : "",
-        mtimeMs,
-      ));
-      dir = `${SESSIONS_DIR}/${date.replaceAll("-", "/")}/claude-${f.session}${perAccount ? `/${f.account}` : ""}`;
-    } else {
-      date = dir.split("/").slice(1, 4).join("-");
-      dateSource = "parent";
+    const own = sessionDateOf(raw.subarray(0, 64 * 1024).toString("utf8"), mtimeMs);
+    if (base === undefined) {
+      base = `${SESSIONS_DIR}/${own.date.replaceAll("-", "/")}/claude-${f.session}`;
+      index.dirBySession.set(key, base);
     }
-    if (perAccount && !dir.endsWith(`/${f.account}`)) dir = `${dir}/${f.account}`;
+    // One session id is one directory: the other account's copy, and an
+    // earlier night's, keep the directory the session already has, so every
+    // child of either account finds one place. Only a copy whose own date
+    // disagrees with it records that the directory decided the date.
+    date = base.split("/").slice(1, 4).join("-");
+    dateSource = date === own.date ? own.dateSource : "parent";
+  } else if (base === undefined) {
+    // A child whose parent is not archived (an orphan): its own date.
+    ({ date, dateSource } = sessionDateOf(
+      f.kind === "child" ? raw.subarray(0, 64 * 1024).toString("utf8") : "",
+      mtimeMs,
+    ));
+    base = `${SESSIONS_DIR}/${date.replaceAll("-", "/")}/claude-${f.session}`;
+  } else {
+    date = base.split("/").slice(1, 4).join("-");
+    dateSource = "parent";
   }
+  const dir = perAccount ? `${base}/${f.account}` : base;
   const orphan = f.kind !== "parent" && !index.dirBySession.has(key);
   const ext = path.extname(f.source).toLowerCase();
   const encoding = f.kind === "attachment" && RAW_EXTENSIONS.has(ext) ? "raw" : "gzip";

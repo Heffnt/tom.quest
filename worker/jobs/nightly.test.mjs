@@ -375,7 +375,50 @@ describe("the manifests and the archive", () => {
     expect(pdf.encoding).toBe("raw");
   });
 
-  it("puts a session id held by two accounts under per-account subdirectories, and marks a parentless child an orphan", () => {
+  // witness: with the account kept in the indexed directory, the SECOND
+  // account's parent nested inside the first's — and its children landed at
+  // .../claude-s1/gmail/wpi/children/... , which no reader looks in.
+  it("puts both accounts' copies side by side, children included", () => {
+    const index = indexManifests([]);
+    const accounts = new Map([["s1", new Set(["gmail", "wpi"])]]);
+    const raw = Buffer.from('{"timestamp":"2026-09-02T10:00:00Z"}\n');
+    const entry = (account, kind, extra = {}) =>
+      claudeEntry(
+        { runtime: "claude", account, project: "-p", session: "s1", kind, ...extra },
+        raw, "a", 0, index, accounts,
+      );
+    const gmail = entry("gmail", "parent", { source: "/g/s1.jsonl" });
+    expect(gmail.dest).toBe("sessions/2026/09/02/claude-s1/gmail/session.jsonl.gz");
+    const wpi = entry("wpi", "parent", { source: "/w/s1.jsonl" });
+    expect(wpi.dest).toBe("sessions/2026/09/02/claude-s1/wpi/session.jsonl.gz");
+    const gmailChild = entry("gmail", "child", {
+      rel: "subagents/a.jsonl",
+      source: "/g/s1/subagents/a.jsonl",
+    });
+    expect(gmailChild.dest).toBe(
+      "sessions/2026/09/02/claude-s1/gmail/children/subagents/a.jsonl.gz",
+    );
+    const wpiChild = entry("wpi", "child", {
+      rel: "subagents/b.jsonl",
+      source: "/w/s1/subagents/b.jsonl",
+    });
+    expect(wpiChild.dest).toBe(
+      "sessions/2026/09/02/claude-s1/wpi/children/subagents/b.jsonl.gz",
+    );
+    // And a night after: the manifest's per-account dest indexes back to the
+    // account-less directory, so nothing nests one account inside the other.
+    const later = indexManifests([
+      { ...PARENT_LINE, session: "s1", account: "gmail", dest: gmail.dest, source: "/g/s1.jsonl" },
+    ]);
+    expect(later.dirBySession.get("claude:s1")).toBe("sessions/2026/09/02/claude-s1");
+    const nextNight = claudeEntry(
+      { runtime: "claude", account: "wpi", project: "-p", session: "s1", kind: "child", rel: "c.jsonl", source: "/w/s1/c.jsonl" },
+      raw, "b", 0, later, accounts,
+    );
+    expect(nextNight.dest).toBe("sessions/2026/09/02/claude-s1/wpi/children/c.jsonl.gz");
+  });
+
+  it("marks a parentless child an orphan", () => {
     const index = indexManifests([]);
     const accounts = new Map([["s1", new Set(["gmail", "wpi"])]]);
     const raw = Buffer.from('{"timestamp":"2026-09-02T10:00:00Z"}\n');
@@ -423,7 +466,9 @@ describe("the manifests and the archive", () => {
 // would find one (no global, no system, no local config, no GIT_AUTHOR_*), so
 // a commit or a rebase that does not carry the job's own `-c` pair dies
 // exactly as it would on the Jarvis Box.
-describe("the git half", () => {
+// git takes seconds per command on some machines, and these tests run a
+// dozen of them each.
+describe("the git half", { timeout: 60_000 }, () => {
   const IDENTITY = ["-c", "user.name=test", "-c", "user.email=test@example.com"];
 
   beforeEach(() => {
@@ -548,7 +593,7 @@ describe("the git half", () => {
     expect(after).toEqual([]);
     expect(made).toEqual(["nightly: 2026-09-06 — changes an earlier run left uncommitted"]);
     expect(status(dir)).toBe("");
-  }, 30_000);
+  });
 
   // witness: `git pull --rebase` re-commits the local commits it replays, and
   // without an identity it dies — on the box, every night, forever after.
@@ -583,7 +628,7 @@ describe("the git half", () => {
     expect(run(bare, "log", "--format=%s", "-1", "main").trim()).toBe(
       "nightly: 2026-09-06 — changes an earlier run left uncommitted",
     );
-  }, 60_000);
+  });
 
   it("records a refused pull as a failure and keeps the commit local", () => {
     const dir = repo();
@@ -597,5 +642,5 @@ describe("the git half", () => {
     expect(result.failures[0].error).not.toBe("");
     expect(subjects(dir)[0]).toContain("nightly: 2026-09-06");
     expect(rebaseInProgress(dir)).toBe(false);
-  }, 30_000);
+  });
 });
