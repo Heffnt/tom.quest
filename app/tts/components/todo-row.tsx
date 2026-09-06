@@ -35,6 +35,7 @@ import {
   errMessage,
   fmtDate,
   isoDate,
+  isRulable,
   type LinkIntent,
   type Todo,
 } from "../lib";
@@ -405,9 +406,7 @@ export default function TodoRow({
             </div>
             <OptionsRow
               todo={todo}
-              rulable={
-                todo.status === "active" && todo.readiness === "ready-for-tom"
-              }
+              rulable={isRulable(todo)}
               afterSession={(tab, ruling) =>
                 void openTodoSession(todo, { tab, ruling })
               }

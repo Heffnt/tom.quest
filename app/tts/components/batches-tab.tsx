@@ -22,6 +22,7 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { countdownText } from "@/convex/ttsShared";
 import { useAuth } from "@/app/lib/auth";
 import {
+  reserveSessionTab,
   useOpenBatchSession,
   useOpenTodoSession,
 } from "@/app/lib/use-open-todo-session";
@@ -30,11 +31,11 @@ import CodeTodoRow from "./code-todo-row";
 import OptionsRow from "./options-row";
 import PathsBar, { type PathChip } from "./paths-bar";
 import BatchCard, {
+  needNames,
   taskSets,
   type BatchGraph,
   type GraphTask,
 } from "./batch-card";
-import RulingDialog, { type RulingVerdict } from "./ruling-dialog";
 import DetailDialog, { type DetailItem } from "./detail-dialog";
 import GroundUpView from "./ground-up-view";
 import TimeNoteField, {
@@ -47,11 +48,12 @@ import {
   batchSubjectKey,
   codeSubjectKey,
   fmtDate,
-  groundUpTeaser,
+  isRulable,
   liveRulingsByKey,
   rulingSubjectKey,
   selectBatches,
   type Batch,
+  type RulingVerdict,
   type Todo,
 } from "@/app/tts/lib";
 
@@ -92,6 +94,7 @@ function toGraph(batch: Batch, contents: Todo[]): BatchGraph {
           t.codeRepo !== undefined && t.codeExternalId !== undefined
             ? { repo: t.codeRepo, externalId: t.codeExternalId }
             : undefined,
+        rulable: isRulable(t),
       });
     } else {
       tasks.push({
@@ -102,6 +105,7 @@ function toGraph(batch: Batch, contents: Todo[]): BatchGraph {
         needs: t.needs ?? [],
         evidence: t.evidence,
         groundUp: t.groundUpExplanation,
+        rulable: isRulable(t),
       });
     }
   }
@@ -148,6 +152,43 @@ function sessionContext(batch: Batch, graph: BatchGraph): BatchSessionContext {
       met: g.met,
     })),
   };
+}
+
+/**
+ * The item an open detail dialog is showing, READ LIVE. The dialog is opened
+ * with a DetailItem, but a ruling changes the row underneath it — archive
+ * takes a todo out of rulable (lib isRulable) and a batch out of the active
+ * list — and a held snapshot went on offering the four verdicts on a subject
+ * that had just been archived. So the snapshot is only an identity: it is
+ * looked up again in the current graphs on every render, and a subject no
+ * longer among them returns null, which closes the dialog.
+ */
+function resolveDetail(
+  item: DetailItem | null,
+  graphs: BatchGraph[],
+): DetailItem | null {
+  if (item === null) return null;
+  if (item.kind === "batch") {
+    const graph = graphs.find((g) => g.id === item.graph.id);
+    return graph ? { kind: "batch", graph } : null;
+  }
+  for (const graph of graphs) {
+    if (item.kind === "task") {
+      const task = graph.tasks.find((t) => t.id === item.task.id);
+      if (task) {
+        return {
+          kind: "task",
+          batchStatement: graph.statement,
+          task,
+          waitingOn: needNames(task, graph.tasks),
+        };
+      }
+    } else {
+      const goal = graph.goals.find((g) => g.id === item.goal.id);
+      if (goal) return { kind: "goal", batchStatement: graph.statement, goal };
+    }
+  }
+  return null;
 }
 
 // ── Unbatched life row (active · ready-for-tom, in no batch) ────────────────
@@ -249,15 +290,14 @@ export default function BatchesTab() {
   const recordRuling = useMutation(api.ttsRulings.recordRuling);
   const { open: openBatchSession, error: batchSessionError } =
     useOpenBatchSession();
+  // For the session verdict on a task or goal in the detail dialog: the todo
+  // behind it gets a session, exactly as the todo row's session chip does.
+  const { open: openTodoSession, error: todoSessionError } =
+    useOpenTodoSession();
 
   const now = Date.now();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [ruling, setRuling] = useState<{
-    batchId: Id<"batches">;
-    graph: BatchGraph;
-    verdict: RulingVerdict;
-  } | null>(null);
   const [detail, setDetail] = useState<DetailItem | null>(null);
   const [groundUp, setGroundUp] = useState<{ title: string; content: string } | null>(null);
 
@@ -320,6 +360,13 @@ export default function BatchesTab() {
     return { chips, byPath };
   }, [batches, todos]);
 
+  // The open dialog's item, re-resolved against the live graphs (resolveDetail
+  // above).
+  const liveDetail = useMemo(
+    () => resolveDetail(detail, [...byPath.values()].flat().map((b) => b.graph)),
+    [detail, byPath],
+  );
+
   // Live ruling per subject — the shared derivation (app/tts/lib.ts), the same
   // one the by-individual tab feeds CodeTodoRow.
   const liveRulingByKey = useMemo(
@@ -371,6 +418,97 @@ export default function BatchesTab() {
     [selection],
   );
 
+  // ── Rulings ─────────────────────────────────────────────────────────────
+  // ONE mutation for every verdict button on this tab: ttsRulings.recordRuling
+  // on the subject with the verdict and the sentence (empty on approve and
+  // session; verdict-buttons.tsx collects it for revise and archive). The
+  // session verdict then opens the session — the tab is reserved HERE,
+  // synchronously, still inside the press, because browsers only honour
+  // window.open in the gesture stack; a refused ruling closes it again.
+  const ruleBatch =
+    (batch: Batch, graph: BatchGraph) =>
+    (verdict: RulingVerdict, sentence: string) => {
+      const args = {
+        batchId: batch._id,
+        verdict,
+        sentence: sentence || undefined,
+      };
+      if (verdict !== "session") return recordRuling(args);
+      const tab = reserveSessionTab();
+      return (async () => {
+        try {
+          await recordRuling(args);
+        } catch (e) {
+          tab.close();
+          throw e;
+        }
+        await openBatchSession(sessionContext(batch, graph), {
+          tab,
+          ruling: { verdict, sentence: args.sentence },
+        });
+      })();
+    };
+
+  const ruleTodo =
+    (todoId: Id<"dtsTodos">) =>
+    (verdict: RulingVerdict, sentence: string) => {
+      const args = { todoId, verdict, sentence: sentence || undefined };
+      if (verdict !== "session") return recordRuling(args);
+      const todo = (todos ?? []).find((t) => t._id === todoId);
+      // Recording the ruling anyway would be the worst of both: a "session"
+      // ruling nothing consumes, holding the todo in "ruled, applying" until
+      // Tom rules again. The verdict row shows this instead.
+      if (!todo) throw new Error("TTS todo not found — reload the page");
+      const tab = reserveSessionTab();
+      return (async () => {
+        try {
+          await recordRuling(args);
+        } catch (e) {
+          tab.close();
+          throw e;
+        }
+        await openTodoSession(todo, {
+          tab,
+          ruling: { verdict, sentence: args.sentence },
+        });
+      })();
+    };
+
+  // A code goal's ruling is a CODE ruling: repo plus the item's id in that
+  // repo's todo file, which is where the executor on the Jarvis Box looks and
+  // what the mirror row is keyed by. Ruling it as a life todo would file the
+  // verdict against a row nothing in the repository reads, and would offer
+  // "opens a session on it" for a subject no session opens.
+  const ruleCode =
+    (code: { repo: string; externalId: string }) =>
+    (verdict: RulingVerdict, sentence: string) =>
+      recordRuling({
+        repo: code.repo,
+        externalId: code.externalId,
+        verdict,
+        sentence: sentence || undefined,
+      });
+
+  // The detail dialog's subject: the batch row, the code entry behind a goal
+  // that carries one, or the task's or goal's todo. A task's and a goal's id
+  // IS its dtsTodos id (toGraph above).
+  const ruleDetail = (
+    item: DetailItem,
+    verdict: RulingVerdict,
+    sentence: string,
+  ) => {
+    if (item.kind === "batch") {
+      const batch = (batches ?? []).find((b) => b._id === item.graph.id);
+      if (!batch) throw new Error("TTS batch not found");
+      return ruleBatch(batch, item.graph)(verdict, sentence);
+    }
+    if (item.kind === "goal" && item.goal.code !== undefined) {
+      return ruleCode(item.goal.code)(verdict, sentence);
+    }
+    const id = (item.kind === "task" ? item.task.id : item.goal.id) as Id<"dtsTodos">;
+    return ruleTodo(id)(verdict, sentence);
+  };
+
   if (
     todos === undefined ||
     batches === undefined ||
@@ -416,9 +554,7 @@ export default function BatchesTab() {
                     }).catch(() => {});
                   })
                 }
-                onRule={(verdict) =>
-                  setRuling({ batchId: batch._id, graph, verdict })
-                }
+                onRule={ruleBatch(batch, graph)}
                 onDetail={setDetail}
                 onGroundUp={(title, content) => setGroundUp({ title, content })}
                 onOpenSession={() =>
@@ -430,6 +566,9 @@ export default function BatchesTab() {
         </div>
         {batchSessionError && (
           <div className="text-xs text-error">{batchSessionError}</div>
+        )}
+        {todoSessionError && (
+          <div className="text-xs text-error">{todoSessionError}</div>
         )}
       </section>
 
@@ -508,37 +647,20 @@ export default function BatchesTab() {
         ))}
       </section>
 
-      {ruling && (
-        <RulingDialog
-          verdict={ruling.verdict}
-          statement={ruling.graph.statement}
-          brief={
-            ruling.graph.groundUp !== undefined
-              ? groundUpTeaser(ruling.graph.groundUp)
-              : undefined
-          }
-          plan={ruling.graph.tasks.map((t) => ({
-            text: t.statement,
-            actor: t.actor,
-            status: t.status === "done" ? ("done" as const) : ("open" as const),
-          }))}
-          onConfirm={(sentence) =>
-            recordRuling({
-              batchId: ruling.batchId,
-              // The chip says "edit" (Tom's word for it); the stored verdict
-              // is still named "revise".
-              verdict: ruling.verdict === "edit" ? "revise" : ruling.verdict,
-              sentence: sentence || undefined,
-            })
-          }
-          onClose={() => setRuling(null)}
-        />
-      )}
-      {detail && (
+      {liveDetail && (
         <DetailDialog
-          item={detail}
+          item={liveDetail}
           onClose={() => setDetail(null)}
           onGroundUp={(title, content) => setGroundUp({ title, content })}
+          onRule={ruleDetail}
+          // The session verdict records the ruling and then opens the session,
+          // and the launch hooks keep their failures in state rather than
+          // throwing. Under this overlay the error lines at the foot of the
+          // page are invisible, so the dialog's subject's hook is handed in
+          // and the verdict row prints it.
+          error={
+            liveDetail.kind === "batch" ? batchSessionError : todoSessionError
+          }
         />
       )}
       {groundUp && (

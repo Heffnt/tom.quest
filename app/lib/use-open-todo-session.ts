@@ -177,12 +177,24 @@ export function useOpenBatchSession() {
   const writingSkill = useWritingSkill();
   const { open: openSession, busy, error } = useOpenSession();
 
-  const open = async (batch: BatchSessionContext) => {
+  const open = async (
+    batch: BatchSessionContext,
+    opts?: {
+      // A tab the caller already reserved in its own click handler (the
+      // session verdict, which records a ruling first). Omit it and open
+      // reserves one itself — synchronously, before the mutation.
+      tab?: ReservedTab;
+      // The ruling just recorded (session verdict path) — its sentence goes
+      // into the session prompt so Tom never repeats himself.
+      ruling?: LiveRulingContext;
+    },
+  ) => {
     await openSession({
       title: batch.statement,
       kind: "focus-item",
       batchId: batch.id,
-      initialPrompt: buildBatchSessionPrompt(batch, writingSkill),
+      tab: opts?.tab,
+      initialPrompt: buildBatchSessionPrompt(batch, writingSkill, opts?.ruling),
     });
   };
 

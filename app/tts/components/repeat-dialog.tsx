@@ -225,18 +225,11 @@ export default function RepeatDialog({
           onChange={(e) => setBody(e.target.value)}
         />
 
-        <p className="mt-2 text-xs text-text-muted">
-          {editing
-            ? "Rewrites the rule in place. Todos it already minted keep the words they were minted with — this decides what the next 4:30 a.m. run writes."
-            : "Adds a rule that mints this todo on the weekdays you picked. It starts from the next 4:30 a.m. run — nothing appears for today."}
-        </p>
-        <div className="mt-0.5 font-mono text-[10px] text-text-faint">
-          {editing
-            ? "ttsRepeats.updateRepeat({ id, statement, daysOfWeek, timeOfDay, … })"
-            : "ttsRepeats.createRepeat({ statement, daysOfWeek, timeOfDay, … })"}
-        </div>
-
-        <div className="mt-3 flex justify-end gap-2">
+        {/* What this writes lives behind the ⓘ on the button that writes it —
+            the one info mechanism (CLAUDE.md, ratified 2026-08-29). It used to
+            stand as prose plus a mono line above the buttons, which is
+            explainer text on a page that must be data and actions. */}
+        <div className="mt-3 flex items-center justify-end gap-2">
           <button
             type="button"
             onClick={onClose}
@@ -244,14 +237,29 @@ export default function RepeatDialog({
           >
             cancel
           </button>
-          <button
-            type="button"
-            disabled={busy || statement.trim() === "" || days.length === 0}
-            onClick={() => void save()}
-            className="rounded-md border border-accent bg-accent-dim px-3 py-1 text-[13px] text-accent hover:opacity-80 disabled:pointer-events-none disabled:opacity-40"
-          >
-            {editing ? "save repeat" : "create repeat"}
-          </button>
+          <span className="inline-flex items-center gap-1">
+            <button
+              type="button"
+              disabled={busy || statement.trim() === "" || days.length === 0}
+              onClick={() => void save()}
+              className="rounded-md border border-accent bg-accent-dim px-3 py-1 text-[13px] text-accent hover:opacity-80 disabled:pointer-events-none disabled:opacity-40"
+            >
+              {editing ? "save repeat" : "create repeat"}
+            </button>
+            <Info
+              call={
+                editing
+                  ? "ttsRepeats.updateRepeat({ id, statement, daysOfWeek, timeOfDay, … })"
+                  : "ttsRepeats.createRepeat({ statement, daysOfWeek, timeOfDay, … })"
+              }
+              explanation={REPEATS_EXPLANATION}
+              explanationTitle="repeat rules — what mints a todo at 4:30 a.m."
+            >
+              {editing
+                ? "Rewrites the rule in place. Todos it already minted keep the words they were minted with — this decides what the next 4:30 a.m. run writes."
+                : "Adds a rule that mints this todo on the weekdays you picked. It starts from the next 4:30 a.m. run — nothing appears for today."}
+            </Info>
+          </span>
         </div>
         {error && <div className="mt-2 text-xs text-error">{error}</div>}
       </div>

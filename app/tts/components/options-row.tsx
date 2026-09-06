@@ -5,80 +5,76 @@
 // expanded panel: the four verdict chips and the status chips a life todo
 // carries (done · archive).
 //
-// The four verdicts are uniform (ratified 2026-08-29): clicking a chip selects
-// it and reveals ONE note input; confirming records the verdict with that note
-// as `sentence`. Only revise requires it. On archive the sentence IS the
-// unarchive condition (convex/ttsRulings.ts maps it), so one input serves all
-// four.
+// The verdicts are NOT re-implemented here. This row renders VerdictButtons
+// (./verdict-buttons), the one verdict row on /tts, so the batch card, the
+// detail dialog and this row cannot offer a different set, a different label
+// or a different popover. What this row adds is the two status chips, which
+// are not rulings: they write tts.setStatus directly.
 //
-// This one component replaces VerdictButtons and StatusActions, so a control
-// cannot drift between the batch card, the generic todo row and the code row.
-// There is no "commit time" control here — anything about time is a time note
-// now.
+// NOTHING IS COMPOSED INLINE (CLAUDE.md UI rules: interactions never shift
+// layout; anything composed opens in a fixed dialog). A chip that needs a
+// sentence — either status chip, and the revise and archive verdicts inside
+// VerdictButtons — opens RulingDialog, a fixed overlay portalled to <body>, so
+// the row it was pressed in never moves and is never clipped by the card
+// around it.
 //
 // Every control names the exact backend call it fires behind an ⓘ (UI = code).
 
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import Info from "./info";
+import RulingDialog from "./ruling-dialog";
+import VerdictButtons, { type VerdictSubject } from "./verdict-buttons";
 import { VERDICTS_EXPLANATION } from "../explanations";
 import {
   reserveSessionTab,
   type ReservedTab,
 } from "@/app/lib/use-open-todo-session";
 import type { LiveRulingContext } from "@/app/lib/tts-session-prompt";
-import { errMessage, VERDICTS, type RulingVerdict, type Todo } from "../lib";
+import type { RulingVerdict, Todo } from "../lib";
 
-const inputCls =
-  "bg-surface border border-border rounded-md px-2 py-1 text-sm text-text placeholder:text-text-faint focus:outline-none focus:border-accent/60";
 const btnCls =
   "border border-border rounded-md px-2.5 py-1 text-xs text-text-muted hover:text-text hover:border-accent/60 disabled:opacity-50 disabled:pointer-events-none";
 
-// ── The row ─────────────────────────────────────────────────────────────────
-
-type Mode = RulingVerdict | "done" | "set-archived";
-
-const PLACEHOLDER: Record<Mode, string> = {
-  approve: "note (optional)",
-  revise: "sentence (required)",
-  session: "note (optional)",
-  archive: "unarchive when (optional)",
-  done: "note (optional)",
-  "set-archived": "propose back when (optional)",
-};
-
-// One entry per verdict: the exact call, and what that verdict actually does
-// downstream. The plain half is the point — "recordRuling" says nothing about
-// which job wakes up next, and that is the thing worth knowing before pressing
-// it (one info mechanism, ratified 2026-08-29).
+// ── The two status chips ────────────────────────────────────────────────────
+// One entry per chip: the exact call, what it actually does downstream, and
+// the words its dialog wears. The plain half is the point — "setStatus" says
+// nothing about what happens to the row afterwards, and that is the thing
+// worth knowing before pressing it (one info mechanism, ratified 2026-08-29).
+// The four verdicts' equivalent text lives in verdict-buttons.tsx, the one
+// home for it.
 // The ground-up layer is ONE document for all six chips, not one per chip.
 // What a reader standing on "approve" needs is approve RELATIVE to revise,
 // session and archive, and a per-chip document could not give that without
 // repeating the other five — so VERDICTS_EXPLANATION covers the whole surface
-// and each chip differs only in its display text below.
-const INFO: Record<Mode, { call: string; body: string }> = {
-  approve: {
-    call: 'ttsRulings.recordRuling({ verdict: "approve", sentence })',
-    body: "Marks this as decided your way. On a code todo the executor picks it up and does the work; on a life todo it simply records your call and stops asking.",
-  },
-  revise: {
-    call: 'ttsRulings.recordRuling({ verdict: "revise", sentence })',
-    body: "Sends it back to be prepared again, with your sentence as the redirection. The preparer re-writes the brief against what you said and returns it — your sentence is the whole instruction, so it has to stand on its own.",
-  },
-  session: {
-    call: 'ttsRulings.recordRuling({ verdict: "session", sentence })',
-    body: "Says this needs a conversation rather than a ruling. The ruling is consumed the moment you actually open a session on it — an autonomous run that happens to claim the same item never consumes it, so the conversation you asked for still happens.",
-  },
-  archive: {
-    call: 'ttsRulings.recordRuling({ verdict: "archive", sentence })',
-    body: "Sets it aside. Your sentence becomes the condition under which it should be proposed back, so nothing is lost — archived is a resting state, not a delete.",
-  },
+// and each chip differs only in its display text.
+type StatusAction = "done" | "set-archived";
+
+const STATUS_INFO: Record<
+  StatusAction,
+  {
+    /** The chip's label, and the dialog's heading. */
+    label: string;
+    /** The dialog's confirm button — its exact backend effect, in words. */
+    confirm: string;
+    placeholder: string;
+    call: string;
+    body: string;
+  }
+> = {
   done: {
+    label: "done",
+    confirm: "mark done",
+    placeholder: "note (optional)",
     call: 'tts.setStatus({ status: "done", note })',
     body: "Closes it as finished, with your note as the record of how. It stays visible in the archive; nothing in TTS is ever deleted.",
   },
   "set-archived": {
+    label: "archive",
+    confirm: "archive it",
+    placeholder: "propose it back when… (optional)",
     call: 'tts.setStatus({ status: "archived", unarchiveCondition })',
     body: "Sets it aside without ruling on it. Your sentence is the condition that should bring it back, so a thing put down on purpose can be picked up again.",
   },
@@ -89,6 +85,9 @@ export type OptionsRowProps = {
   todo?: Todo;
   /** Code subject. */
   code?: { repo: string; externalId: string };
+  /** The subject's statement, for the dialog's heading. Defaults to the
+   * todo's own; a code subject has to be told. */
+  statement?: string;
   /** Show the four verdict chips. */
   rulable: boolean;
   /**
@@ -102,31 +101,14 @@ export type OptionsRowProps = {
 export default function OptionsRow({
   todo,
   code,
+  statement,
   rulable,
   afterSession,
 }: OptionsRowProps) {
   const recordRuling = useMutation(api.ttsRulings.recordRuling);
   const setStatus = useMutation(api.tts.setStatus);
 
-  const [mode, setMode] = useState<Mode | null>(null);
-  const [note, setNote] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const run = async (fn: () => Promise<unknown>) => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await fn();
-      setMode(null);
-      setNote("");
-    } catch (e) {
-      setError(errMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const [status, setStatusDialog] = useState<StatusAction | null>(null);
 
   const record = (verdict: RulingVerdict, sentence: string) => {
     const args = { verdict, sentence: sentence || undefined };
@@ -139,122 +121,105 @@ export default function OptionsRow({
         });
   };
 
-  const confirm = () => {
-    // Guarded here too, not only in run(): the session branch reserves a
-    // browser tab before run() would bail, and a bailed run would strand it.
-    if (!mode || busy) return;
-    const text = note.trim();
-    if (mode === "revise" && !text) return;
-
-    if (mode === "done" || mode === "set-archived") {
-      if (!todo) return;
-      void run(() =>
-        mode === "done"
-          ? setStatus({ id: todo._id, status: "done", note: text || undefined })
-          : setStatus({
-              id: todo._id,
-              status: "archived",
-              unarchiveCondition: text || undefined,
-            }),
-      );
-      return;
-    }
-
-    if (mode === "session") {
-      // Reserved HERE, synchronously inside the click/submit, before the
-      // mutation — browsers only honour window.open in the gesture stack.
-      // Nothing opens a session for a code subject, so nothing is reserved.
-      const tab = afterSession ? reserveSessionTab() : null;
-      void run(async () => {
-        try {
-          await record("session", text);
-        } catch (e) {
-          tab?.close();
-          throw e;
-        }
-        if (tab) {
-          afterSession?.(tab, {
-            verdict: "session",
-            sentence: text || undefined,
-          });
-        }
+  // Called synchronously inside the verdict press (verdict-buttons.tsx), which
+  // is where a session verdict has to reserve its browser tab: browsers only
+  // honour window.open in the gesture stack. Nothing opens a session for a
+  // code subject, so nothing is reserved for one.
+  const rule = (verdict: RulingVerdict, sentence: string) => {
+    if (verdict !== "session" || !afterSession) return record(verdict, sentence);
+    const tab = reserveSessionTab();
+    return (async () => {
+      try {
+        await record("session", sentence);
+      } catch (e) {
+        tab.close();
+        throw e;
+      }
+      afterSession(tab, {
+        verdict: "session",
+        sentence: sentence || undefined,
       });
-      return;
-    }
-
-    void run(() => record(mode, text));
+    })();
   };
 
   if (!todo && !code) return null;
 
-  const chips: { mode: Mode; label: string }[] = [];
-  if (rulable) for (const v of VERDICTS) chips.push({ mode: v, label: v });
+  const subject: VerdictSubject = todo ? "todo" : "code";
+  const heading =
+    statement ?? todo?.statement ?? `${code!.repo} ${code!.externalId}`;
+
+  const chips: StatusAction[] = [];
   // Done is available wherever the row is not already done — a waiting todo is
   // finished the same way an active one is.
-  if (todo && todo.status !== "done") {
-    chips.push({ mode: "done", label: "done" });
-  }
+  if (todo && todo.status !== "done") chips.push("done");
   // A rulable subject already has the archive VERDICT (which archives the row
   // itself) — never both.
-  if (todo && !rulable && todo.status !== "archived") {
-    chips.push({ mode: "set-archived", label: "archive" });
-  }
+  if (todo && !rulable && todo.status !== "archived") chips.push("set-archived");
 
-  if (chips.length === 0) return null;
+  if (!rulable && chips.length === 0) return null;
 
   return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
-        {chips.map((c) => (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
+      {rulable && (
+        <VerdictButtons
+          subject={subject}
+          statement={heading}
+          plan={todo?.plan}
+          onRule={rule}
+        />
+      )}
+      {chips.map((chip) => (
+        <span key={chip} className="inline-flex items-center gap-0.5">
           <button
-            key={c.mode}
             type="button"
-            disabled={busy}
-            onClick={() => {
-              setError(null);
-              setNote("");
-              setMode((m) => (m === c.mode ? null : c.mode));
-            }}
-            className={`${btnCls} ${mode === c.mode ? "border-accent/60 text-text" : ""}`}
-          >
-            {c.label}
-          </button>
-        ))}
-      </div>
-
-      {mode && (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            confirm();
-          }}
-          className="flex flex-wrap items-center gap-2"
-        >
-          <input
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            placeholder={PLACEHOLDER[mode]}
-            autoFocus
-            className={`${inputCls} flex-1 min-w-56 max-w-md`}
-          />
-          <button
-            type="submit"
-            disabled={busy || (mode === "revise" && !note.trim())}
+            onClick={() => setStatusDialog(chip)}
             className={btnCls}
           >
-            {mode === "set-archived" ? "archive" : mode}
+            {STATUS_INFO[chip].label}
           </button>
           <Info
-            call={INFO[mode].call}
+            call={STATUS_INFO[chip].call}
             explanation={VERDICTS_EXPLANATION}
             explanationTitle="the four verdicts, and what each one sets in motion"
           >
-            {INFO[mode].body}
+            {STATUS_INFO[chip].body}
           </Info>
-        </form>
-      )}
+        </span>
+      ))}
 
-      {error && <div className="text-xs text-error">{error}</div>}
+      {status !== null &&
+        todo &&
+        typeof document !== "undefined" &&
+        // Sent to <body>: this row sits inside a card or an expanded panel, and
+        // a fixed overlay must not be clipped or stacked by either.
+        createPortal(
+          <RulingDialog
+            action={STATUS_INFO[status].label}
+            confirm={STATUS_INFO[status].confirm}
+            placeholder={STATUS_INFO[status].placeholder}
+            call={STATUS_INFO[status].call}
+            effect={STATUS_INFO[status].body}
+            statement={heading}
+            plan={todo.plan}
+            // A rejection propagates: the dialog stays open and shows it,
+            // which is the only place a refused status write can be read.
+            onConfirm={(text) =>
+              status === "done"
+                ? setStatus({
+                    id: todo._id,
+                    status: "done",
+                    note: text || undefined,
+                  })
+                : setStatus({
+                    id: todo._id,
+                    status: "archived",
+                    unarchiveCondition: text || undefined,
+                  })
+            }
+            onClose={() => setStatusDialog(null)}
+          />,
+          document.body,
+        )}
     </div>
   );
 }

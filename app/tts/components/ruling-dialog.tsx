@@ -1,64 +1,62 @@
 "use client";
 
-// The one dialog every action chip opens. Fixed overlay — nothing on the
-// page moves. Three input shapes, one per option kind:
-//   approve / archive — a choice, with an optional note
-//   edit              — a short answer an agent applies (absorbs revise,
-//                       schedule, reshaping, re-pathing, anything sayable)
-//   (session is its own thing and opens directly, not through this dialog)
-// The dialog always states where the batch stands before asking for input.
+// THE ONE PLACE ANYTHING IS COMPOSED on /tts — a fixed overlay, so nothing on
+// the page moves (CLAUDE.md UI rules: interactions never shift layout; anything
+// composed opens in a fixed dialog, never an inline form between controls).
+//
+// Two callers, one mechanism. The two SENTENCE VERDICTS (verdict-buttons.tsx):
+// revise requires its sentence — it is the whole redirection the agent
+// receives, and convex/ttsRulings.ts refuses a revise without one — and archive
+// takes an optional sentence, the condition under which the subject should be
+// proposed back. approve and session take no sentence and never open this
+// dialog (they record on the press). And the two STATUS ACTIONS on a life todo
+// (options-row.tsx): done with its note, archive with its unarchive condition.
+//
+// The dialog states where the subject stands (its steps, what is open on Tom)
+// before asking for the sentence; the confirm button's label is the exact
+// effect — "record revise", "mark done" — and its ⓘ names the call. Every word
+// of that comes from the caller: this component knows nothing about verdicts.
 import { useState } from "react";
-import { planNeedsYou, type PlanStep } from "../lib";
+import Info from "./info";
+import { VERDICTS_EXPLANATION } from "../explanations";
+import { errMessage, planNeedsYou, type PlanStep } from "../lib";
 import { nextStep, planProgress } from "./plan-bar";
 
-export type RulingVerdict = "approve" | "archive" | "edit";
-
-const COPY: Record<
-  RulingVerdict,
-  { does: string; call: string; placeholder: string; confirm: string }
-> = {
-  approve: {
-    does: "Records your go-ahead as a ruling. Agents work through the remaining agent steps; once nothing is open, the batch is marked done.",
-    call: 'ttsRulings.recordRuling({verdict:"approve", sentence})',
-    placeholder: "anything to add (optional)",
-    confirm: "record approve",
-  },
-  archive: {
-    does: "Puts the batch away — nothing is deleted. It is proposed back when the condition you write here is met.",
-    call: 'ttsRulings.recordRuling({verdict:"archive", sentence})',
-    placeholder: "bring it back when… (optional)",
-    confirm: "record archive",
-  },
-  edit: {
-    does: "Say anything about this batch — reschedule it, reorder or drop steps, split it, reword it, move it to another path. An agent reads your words and applies them; the result shows here when it lands.",
-    // The chip says "edit" (Tom's word); the stored verdict is still named
-    // "revise" — the mono line shows the CALL, so it shows the true name.
-    call: 'ttsRulings.recordRuling({verdict:"revise", sentence})',
-    placeholder: "e.g. after the paper batch · drop step 3 · not until saturday · split the turing items out",
-    confirm: "send edit",
-  },
-};
+export type SentenceVerdict = "revise" | "archive";
 
 export default function RulingDialog({
-  verdict,
+  action,
+  confirm,
+  placeholder,
+  required = false,
+  call,
+  effect,
   statement,
-  brief,
   plan,
   onConfirm,
   onClose,
 }: {
-  verdict: RulingVerdict;
+  /** The heading: the word for what is being composed ("revise", "done"). */
+  action: string;
+  /** The confirm button's label — its exact backend effect, in words. */
+  confirm: string;
+  placeholder: string;
+  /** The sentence is required (revise — the server refuses an empty one). */
+  required?: boolean;
+  /** The exact call the confirm fires — the popover's mono line. The control
+   * that opened this dialog owns both texts. */
+  call: string;
+  /** What that call sets in motion — the popover's plain half. */
+  effect: string;
   statement: string;
-  brief?: string;
   plan?: PlanStep[];
-  /** Records the ruling. Absent = the dialog only closes (the mockup route). */
+  /** Records it. Absent = the dialog only closes (the mockup route). */
   onConfirm?: (sentence: string) => Promise<unknown> | unknown;
   onClose: () => void;
 }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const c = COPY[verdict];
   const { done, total } = planProgress(plan);
   const next = nextStep(plan);
   // "open on you" means exactly what the card's needs-you strip means, so it
@@ -73,41 +71,32 @@ export default function RulingDialog({
       }}
     >
       <div className="w-[440px] max-w-full rounded-xl border border-[#3b4a66] bg-surface p-4">
-        <h3 className="text-[15px] font-semibold">{verdict}</h3>
+        <h3 className="text-[15px] font-semibold">{action}</h3>
         <p className="mt-0.5 text-sm text-text">{statement}</p>
 
-        <div className="mt-2 rounded-md bg-surface-alt/60 px-2.5 py-2 text-xs text-text-muted">
-          {total > 0 ? (
-            <>
-              {done} of {total} plan steps done
-              {openTom > 0 && (
-                <span className="text-accent"> · {openTom} open on you</span>
-              )}
-              {next && (
-                <div className="mt-0.5 truncate">
-                  next: {next.actor === "tom" ? "you" : "agents"} — {next.text}
-                </div>
-              )}
-            </>
-          ) : (
-            <span>{brief ?? "no plan yet"}</span>
-          )}
-        </div>
-
-        <p className="mt-2 text-xs text-text-muted">{c.does}</p>
-        <div className="mt-0.5 font-mono text-[10px] text-text-faint">
-          {c.call}
-        </div>
+        {total > 0 && (
+          <div className="mt-2 rounded-md bg-surface-alt/60 px-2.5 py-2 text-xs text-text-muted">
+            {done} of {total} steps done
+            {openTom > 0 && (
+              <span className="text-accent"> · {openTom} open on you</span>
+            )}
+            {next && (
+              <div className="mt-0.5 truncate">
+                next: {next.actor === "tom" ? "you" : "agents"} — {next.text}
+              </div>
+            )}
+          </div>
+        )}
 
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder={c.placeholder}
-          autoFocus={verdict === "edit"}
+          placeholder={placeholder}
+          autoFocus
           className="mt-2.5 min-h-16 w-full resize-y rounded-md border border-border bg-bg px-2.5 py-1.5 text-[13px] text-text placeholder:text-text-faint"
         />
 
-        <div className="mt-3 flex justify-end gap-2">
+        <div className="mt-3 flex items-center justify-end gap-2">
           <button
             type="button"
             onClick={onClose}
@@ -117,9 +106,9 @@ export default function RulingDialog({
           </button>
           <button
             type="button"
-            // "edit" stores the revise verdict, which REQUIRES its sentence —
-            // the server refuses an empty one, so the button is not offered.
-            disabled={busy || (verdict === "edit" && text.trim() === "")}
+            // revise REQUIRES its sentence — the server refuses an empty one,
+            // so the button is not offered until there is one.
+            disabled={busy || (required && text.trim() === "")}
             onClick={() => {
               if (!onConfirm) {
                 onClose();
@@ -132,15 +121,22 @@ export default function RulingDialog({
                   await onConfirm(text.trim());
                   onClose();
                 } catch (e) {
-                  setError(e instanceof Error ? e.message : String(e));
+                  setError(errMessage(e));
                   setBusy(false);
                 }
               })();
             }}
             className="rounded-md border border-accent bg-accent-dim px-3 py-1 text-[13px] text-accent hover:opacity-80 disabled:opacity-40 disabled:pointer-events-none"
           >
-            {c.confirm}
+            {confirm}
           </button>
+          <Info
+            call={call}
+            explanation={VERDICTS_EXPLANATION}
+            explanationTitle="the four verdicts, and what each one sets in motion"
+          >
+            {effect}
+          </Info>
         </div>
         {error && <div className="mt-2 text-xs text-error">{error}</div>}
       </div>

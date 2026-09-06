@@ -22,6 +22,15 @@ export const VERDICTS: RulingVerdict[] = [
   "archive",
 ];
 
+// Where a todo can be ruled on from the page: active, and prepared to the
+// point of needing Tom. ONE definition — the todo row's verdict chips, the
+// detail dialog's verdict buttons and the needs-me selector all read it, so
+// the set of items offering the four verdicts cannot drift between surfaces.
+// (A batch is always rulable: it is its own row and has no readiness.)
+export function isRulable(t: Todo): boolean {
+  return t.status === "active" && t.readiness === "ready-for-tom";
+}
+
 // ── Ruling subject identity + live-ruling derivation ─────────────────────────
 // Client mirror of convex/ttsRulings.ts subjectKey/liveRulings — same key
 // format, same newest-ruledAt/_creationTime rule, so the tabs, the badge, and
@@ -172,7 +181,7 @@ export function selectNeedsMe(
   const live = liveRulingsByKey(rulings);
 
   const lifeRows = todos.filter((t) => {
-    if (t.status !== "active" || t.readiness !== "ready-for-tom") return false;
+    if (!isRulable(t)) return false;
     const ruling = live.get(
       rulingSubjectKey({ subjectType: "life", todoId: t._id }),
     );

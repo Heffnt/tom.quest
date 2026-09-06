@@ -5,13 +5,16 @@
 // goal-todos; a todo is ready when everything it needs is done.
 // Collapsed = statement · task progress (amber = Tom's, green = agents') ·
 // what's ready now. Expanded = display text (whole block clickable → the
-// ground-up explanation) → actions → ready now → blocked (visible, never
-// hidden) → done → goals. Every item opens a detail dialog; nothing shifts
-// the page, and everything clickable changes on hover.
+// ground-up explanation) → actions (open a session; the four verdicts) →
+// ready now → blocked (visible, never hidden) → done → goals. Every item opens
+// a detail dialog; nothing shifts the page, and everything clickable changes
+// on hover.
 import PlanBar from "./plan-bar";
 import GraphView from "./graph-view";
-import { groundUpTeaser } from "../lib";
-import type { RulingVerdict } from "./ruling-dialog";
+import Info from "./info";
+import VerdictButtons from "./verdict-buttons";
+import { SESSIONS_EXPLANATION } from "../explanations";
+import { groundUpTeaser, type RulingVerdict } from "../lib";
 import type { DetailItem } from "./detail-dialog";
 
 export type GraphTask = {
@@ -22,6 +25,8 @@ export type GraphTask = {
   needs: string[];
   evidence?: string;
   groundUp?: string;
+  /** Whether the todo behind it offers the four verdicts (lib isRulable). */
+  rulable: boolean;
 };
 
 export type GraphGoal = {
@@ -31,6 +36,8 @@ export type GraphGoal = {
   met: boolean;
   groundUp?: string;
   code?: { repo: string; externalId: string };
+  /** Whether the todo behind it offers the four verdicts (lib isRulable). */
+  rulable: boolean;
 };
 
 export type BatchGraph = {
@@ -58,7 +65,10 @@ export function taskSets(tasks: GraphTask[]): {
   return { done, ready, blocked };
 }
 
-function needNames(t: GraphTask, all: GraphTask[]): string[] {
+/** The statements of everything a task still waits on — its unmet `needs`.
+ * Exported because the detail dialog's "waiting on" row is the same list, and
+ * the batches tab rebuilds it when it re-resolves an open dialog's item. */
+export function needNames(t: GraphTask, all: GraphTask[]): string[] {
   const doneIds = new Set(all.filter((x) => x.status === "done").map((x) => x.id));
   const byId = new Map(all.map((x) => [x.id, x]));
   return t.needs
@@ -78,7 +88,9 @@ export default function BatchCard({
   graph: BatchGraph;
   expanded: boolean;
   onToggle: () => void;
-  onRule: (verdict: RulingVerdict) => void;
+  /** ttsRulings.recordRuling on the batch with this verdict and sentence
+   * (empty for approve and session); see verdict-buttons.tsx. */
+  onRule: (verdict: RulingVerdict, sentence: string) => Promise<unknown> | void;
   onDetail: (item: DetailItem) => void;
   onGroundUp: (title: string, content: string) => void;
   onOpenSession: () => void;
@@ -160,24 +172,33 @@ export default function BatchCard({
             }}
           />
 
-          <div className="mb-3 flex flex-wrap items-center gap-1.5">
-            <button
-              type="button"
-              onClick={onOpenSession}
-              className="rounded-md border border-accent/50 bg-accent-dim px-2.5 py-1 text-xs text-accent hover:border-accent hover:opacity-80"
-            >
-              open batch session
-            </button>
-            {(["approve", "archive", "edit"] as const).map((v) => (
+          <div className="mb-3 flex flex-wrap items-start gap-x-3 gap-y-1.5">
+            <span className="inline-flex items-center gap-0.5">
               <button
-                key={v}
                 type="button"
-                onClick={() => onRule(v)}
-                className="rounded-md border border-border bg-surface-alt px-2.5 py-1 text-xs text-text-muted hover:border-text-faint hover:text-text"
+                onClick={onOpenSession}
+                className="rounded-md border border-accent/50 bg-accent-dim px-2.5 py-1 text-xs text-accent hover:border-accent hover:opacity-80"
               >
-                {v}
+                open batch session
               </button>
-            ))}
+              <Info
+                call='claudeSessions.createSession({ kind: "focus-item", batchId, initialPrompt })'
+                explanation={SESSIONS_EXPLANATION}
+                explanationTitle="opening a session — what is created and where it runs"
+              >
+                Opens a Claude session on the Jarvis Box in a new tab, with this
+                graph — its ready, blocked and done tasks and its goals — in the
+                opening prompt. It checks out the repositories the batch
+                declares and can only push to its own branch. No ruling is
+                recorded.
+              </Info>
+            </span>
+            <VerdictButtons
+              subject="batch"
+              statement={graph.statement}
+              plan={planForBar}
+              onRule={onRule}
+            />
           </div>
 
           {ready.length > 0 && (

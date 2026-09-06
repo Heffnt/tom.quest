@@ -146,15 +146,32 @@ export type BatchSessionContext = {
   }[];
 };
 
+// The lines a standing ruling adds to an opening prompt — the same two shapes
+// for a todo and a batch, so the session verdict reads the same on both.
+function rulingLines(ruling: LiveRulingContext | undefined): string[] {
+  if (!ruling) return [];
+  const note = ruling.sentence?.trim();
+  return [
+    note
+      ? `Tom's standing ruling on this item is "${ruling.verdict}", and he wrote: ${note}. That sentence is his instruction for this session and overrides any other reading of the item.`
+      : `Tom's standing ruling on this item is "${ruling.verdict}" (no note written).`,
+    "",
+  ];
+}
+
 export function buildBatchSessionPrompt(
   batch: BatchSessionContext,
   writingSkill?: string,
+  /** The ruling just recorded (the session verdict) — its sentence goes into
+   * the prompt so Tom never repeats himself. */
+  ruling?: LiveRulingContext,
 ): string {
   const lines: (string | null)[] = [
     opening(writingSkill),
     "",
     "This is a batch session. A BATCH holds how a set of todos gets completed: it is not itself a todo and is never worked directly. Its contents are TASKS (work someone does) and GOALS (a state of the world the batch is for, written as a condition that is either true yet or not). A todo is READY when every todo it NEEDS is done. Work the ready tasks with Tom, smallest concrete first step first.",
     "",
+    ...rulingLines(ruling),
     `THE BATCH ("${batch.statement}"):`,
     fact("id (batch subject)", batch.id),
     fact("ground-up explanation", batch.groundUp),
@@ -206,7 +223,6 @@ export function buildTodoSessionPrompt(
   ruling?: LiveRulingContext,
   writingSkill?: string,
 ): string {
-  const rulingNote = ruling?.sentence?.trim();
   const lines = [
     opening(writingSkill),
     "",
@@ -214,14 +230,7 @@ export function buildTodoSessionPrompt(
       ? "This is a tom-gate session: the item below is ready-for-tom and needs his input integrated. Walk him through it ground-up, take his ruling, and shape the result with him."
       : "This is a focus session: Tom chose to begin this item now. Open with the smallest concrete first step and work it with him.",
     "",
-    ...(ruling
-      ? [
-          rulingNote
-            ? `Tom's standing ruling on this item is "${ruling.verdict}", and he wrote: ${rulingNote}. That sentence is his instruction for this session and overrides any other reading of the item.`
-            : `Tom's standing ruling on this item is "${ruling.verdict}" (no note written).`,
-          "",
-        ]
-      : []),
+    ...rulingLines(ruling),
     `The item ("${todo.statement}"):`,
     fact("id (life subject)", todo._id),
     fact("timing", todo.timingClass),
