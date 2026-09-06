@@ -794,17 +794,99 @@ export async function withWikiTomLock(fn, lockPath = WIKITOM_LOCK) {
   }
 }
 
-async function pushStep(run) {
-  const dir = run.dir;
+/**
+ * Whether git stopped part-way through a rebase in `dir` — the directory it
+ * leaves behind when a `pull --rebase` hit a conflict or died (no committer
+ * identity, an interrupted run). Nothing later works in that state: `git
+ * commit` refuses, and so does the next night's pull, FOREVER.
+ */
+export function rebaseInProgress(dir) {
+  const gitDir = gitCapture(dir, "rev-parse", "--git-dir").trim();
+  const abs = path.isAbsolute(gitDir) ? gitDir : path.join(dir, gitDir);
+  return (
+    fs.existsSync(path.join(abs, "rebase-merge")) || fs.existsSync(path.join(abs, "rebase-apply"))
+  );
+}
+
+/** `git add -A` over the paths that exist in the tree or in the index — git
+ * refuses a pathspec matching neither, and sessions/ or tts/snapshot/ can be
+ * absent on a fresh checkout. */
+function addPaths(dir, paths) {
+  const present = paths.filter((p) => {
+    if (fs.existsSync(path.join(dir, p))) return true;
+    try {
+      return gitCapture(dir, "ls-files", "--", p).trim() !== "";
+    } catch {
+      return false;
+    }
+  });
+  if (present.length > 0) git(dir, "add", "-A", "--", ...present);
+}
+
+/**
+ * Abort a rebase an earlier run left in progress, as its own failure row.
+ * While one is in progress git refuses to commit at all, so the checkout would
+ * never commit or push again on its own — and `git rebase --abort` resets the
+ * work tree hard, which is why THE RUN CALLS THIS BEFORE ITS FIRST WRITE (see
+ * main): after the snapshot has been written, the abort would take tonight's
+ * files with it. It is called again from commitTree as a last guard, where in
+ * a normal run it finds nothing to do.
+ */
+export function abortStaleRebase(dir) {
+  if (!rebaseInProgress(dir)) return [];
+  try {
+    execFileSync("git", ["-C", dir, "rebase", "--abort"], { stdio: "ignore" });
+    return [
+      {
+        step: "rebase",
+        error: `a rebase from an earlier run was still in progress in ${dir} — aborted it; nothing could be committed until it was`,
+      },
+    ];
+  } catch (err) {
+    return [{ step: "rebase", error: gitError(err) }];
+  }
+}
+
+/**
+ * Commit the checkout: one commit per step that changed something, and then —
+ * ALWAYS, whatever this run's own change list says — everything still modified
+ * under tts/snapshot/ and sessions/.
+ *
+ * WHY THE SWEEP: a run that died after writing files (a crashed export, a
+ * killed process, a step whose failure row was recorded and skipped) leaves
+ * tracked files modified. The next night's `git pull --rebase` refuses a dirty
+ * tree and would go on refusing every night after, with nothing in the
+ * checkout ever reaching GitHub again. Committing the leftovers is what makes
+ * the next night recoverable; the snapshot is deterministic and the archive is
+ * append-only, so committing them is never wrong, only sometimes redundant.
+ *
+ * A rebase left in progress by an earlier run is aborted first, as its own
+ * failure row: while one is in progress git refuses to commit at all.
+ */
+export function commitTree(dir, commits, day) {
   const made = [];
-  for (const c of run.commits) {
-    git(dir, "add", "-A", "--", ...c.paths);
+  const failures = abortStaleRebase(dir);
+  for (const c of commits) {
+    addPaths(dir, c.paths);
     if (!stagedChanges(dir)) continue;
     git(dir, ...GIT_IDENTITY, "commit", "-q", "-m", c.message);
     made.push(c.message);
   }
-  // Local commits from earlier nights whose push was refused are ahead of
-  // origin too; the rebase and the push carry them together.
+  addPaths(dir, [SNAPSHOT_DIR, SESSIONS_DIR]);
+  if (stagedChanges(dir)) {
+    const message = `nightly: ${day} — changes an earlier run left uncommitted`;
+    git(dir, ...GIT_IDENTITY, "commit", "-q", "-m", message);
+    made.push(message);
+  }
+  return { made, failures };
+}
+
+/**
+ * `git pull --rebase` then `git push`, each refusal a failure row rather than
+ * a throw. Local commits from earlier nights whose push was refused are ahead
+ * of origin too; the rebase and the push carry them together.
+ */
+export function syncRemote(dir) {
   let pulled = false;
   let pushed = false;
   const failures = [];
@@ -830,12 +912,20 @@ async function pushStep(run) {
       failures.push({ step: "push", error: gitError(err) });
     }
   }
-  const result = { made, pulled, pushed, failures };
-  for (const f of result.failures) await recordFailure(run, f.step, new Error(f.error));
+  return { pulled, pushed, failures };
+}
+
+async function pushStep(run) {
+  const dir = run.dir;
+  const committed = commitTree(dir, run.commits, run.day);
+  const sync = syncRemote(dir);
+  for (const f of [...committed.failures, ...sync.failures]) {
+    await recordFailure(run, f.step, new Error(f.error));
+  }
   console.log(
-    `[nightly] push: ${result.made.length} commit(s) made, pull ${result.pulled ? "ok" : "FAILED"}, push ${result.pushed ? "ok" : "not done — commits stay local"}`,
+    `[nightly] push: ${committed.made.length} commit(s) made, pull ${sync.pulled ? "ok" : "FAILED"}, push ${sync.pushed ? "ok" : "not done — commits stay local"}`,
   );
-  return { commits: result.made, pulled: result.pulled, pushed: result.pushed };
+  return { commits: committed.made, pulled: sync.pulled, pushed: sync.pushed };
 }
 
 // The two commands that talk to GitHub, with stderr CAPTURED rather than
@@ -949,6 +1039,12 @@ async function main() {
   if (locked.length > 0) {
     try {
       await withWikiTomLock(async () => {
+        // Before the first write: a rebase an earlier run left in progress
+        // stops every commit, and aborting it resets the work tree hard — so
+        // it happens while there is nothing of tonight's to lose.
+        for (const f of abortStaleRebase(run.dir)) {
+          await recordFailure(run, f.step, new Error(f.error));
+        }
         for (const name of locked) await runStep(name);
       });
     } catch (err) {

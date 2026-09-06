@@ -148,11 +148,15 @@ never around the commit alone; step 5 only reads `HEAD` and takes no lock:
    own timestamps (mtime when there is none); one line per file is appended
    to `sessions/manifest-box-<day>.jsonl`, phase 1's columns. A file that
    grew since it was archived is archived again.
-4. **push** — one commit per step that changed something, authored
-   `tts-nightly` (an identity `setup.sh` also writes into the checkout's own
-   config, because the rebase commits under it) so the digest tells the box's
-   commits from Tom's, then `git pull --rebase` and `git push` over the
-   alias. A refused pull or
+4. **push** — one commit per step that changed something, and then, always,
+   one more for anything still modified under `tts/snapshot/` and `sessions/`
+   — what a run that died part-way left behind, which `git pull --rebase`
+   would otherwise refuse every night after. A rebase an earlier run left in
+   progress is aborted before the run's first write (aborting resets the tree
+   hard) and recorded as a failure. Commits are authored `tts-nightly` (an
+   identity `setup.sh` also writes into the checkout's own config, because the
+   rebase commits under it) so the digest tells the box's commits from Tom's,
+   then `git pull --rebase` and `git push` over the alias. A refused pull or
    push is a failure row and the commits stay local, to go with the next
    night's. **Until Tom adds the deploy key's public half to the WikiTom
    repository, every push is refused and this is the row the digest shows.**

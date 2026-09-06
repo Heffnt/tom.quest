@@ -13,24 +13,29 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
-import { afterEach, describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   AREA_SECTIONS,
   MODEL_OF_TOM_FIRST,
   SPLIT_BYTES,
+  abortStaleRebase,
   claudeEntry,
   codexMetaOf,
   collectModelOfTomFiles,
+  commitTree,
   discoverSessionFiles,
   extractSections,
   indexManifests,
   isTableFile,
   planTableFiles,
   readManifests,
+  rebaseInProgress,
   serializeRow,
   sessionDateOf,
   sha256,
+  syncRemote,
   syncSnapshot,
   utcDay,
   writeArchived,
@@ -409,4 +414,188 @@ describe("the manifests and the archive", () => {
     // The index now knows this source at this content, so tomorrow skips it.
     expect(index.shaBySource.get("/a/s1.jsonl")).toBe(sha256(raw));
   });
+});
+
+// ── The git half, in a temp repository ───────────────────────────────────────
+// What these pin is what the box cannot tell us about until the night after:
+// the checkout must always be left in a state the next night can pull into.
+// Every repository here is made WITHOUT a committer identity anywhere git
+// would find one (no global, no system, no local config, no GIT_AUTHOR_*), so
+// a commit or a rebase that does not carry the job's own `-c` pair dies
+// exactly as it would on the Jarvis Box.
+describe("the git half", () => {
+  const IDENTITY = ["-c", "user.name=test", "-c", "user.email=test@example.com"];
+
+  beforeEach(() => {
+    // An empty global config file and no system config: the machine running
+    // the tests has an identity, and the Jarvis Box has none.
+    const empty = path.join(tmp(), "gitconfig");
+    fs.writeFileSync(empty, "");
+    vi.stubEnv("GIT_CONFIG_GLOBAL", empty);
+    vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+    for (const key of [
+      "GIT_AUTHOR_NAME",
+      "GIT_AUTHOR_EMAIL",
+      "GIT_COMMITTER_NAME",
+      "GIT_COMMITTER_EMAIL",
+      "EMAIL",
+    ]) {
+      vi.stubEnv(key, undefined);
+    }
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  /** git in `dir`, with the TEST's identity — never the job's. */
+  function run(dir, ...args) {
+    return execFileSync("git", ["-C", dir, ...IDENTITY, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  }
+  /** A repository with one commit holding a snapshot file and a manifest. */
+  function repo() {
+    const dir = tmp();
+    execFileSync("git", ["init", "-q", "-b", "main", dir], { stdio: "ignore" });
+    write(dir, "tts/snapshot/dtsTodos.jsonl", "old\n");
+    write(dir, "sessions/manifest-box-2026-09-05.jsonl", "{}\n");
+    run(dir, "add", "-A");
+    run(dir, "commit", "-q", "-m", "base");
+    return dir;
+  }
+  const status = (dir) => run(dir, "status", "--porcelain").trim();
+  const subjects = (dir) => run(dir, "log", "--format=%s").trim().split("\n");
+  const committers = (dir) => run(dir, "log", "--format=%cn|%an").trim().split("\n");
+
+  it("commits under the job's identity where the checkout has none configured", () => {
+    const dir = repo();
+    write(dir, "tts/snapshot/dtsTodos.jsonl", "new\n");
+    const { made, failures } = commitTree(
+      dir,
+      [{ paths: ["tts/snapshot"], message: "snapshot: 2026-09-06 — 1 table" }],
+      "2026-09-06",
+    );
+    expect(failures).toEqual([]);
+    expect(made).toEqual(["snapshot: 2026-09-06 — 1 table"]);
+    expect(committers(dir)[0]).toBe("tts-nightly|tts-nightly");
+    expect(status(dir)).toBe("");
+  });
+
+  // witness: without the sweep, a run that died after writing files leaves the
+  // tree modified, and every later night's `git pull --rebase` refuses it.
+  it("commits what an earlier run left modified even when this run changed nothing", () => {
+    const dir = repo();
+    write(dir, "tts/snapshot/dtsTodos.jsonl", "left behind by a crashed run\n");
+    write(dir, "sessions/2026/09/06/claude-s1/session.jsonl.gz", "half an archive");
+    const { made, failures } = commitTree(dir, [], "2026-09-06");
+    expect(failures).toEqual([]);
+    expect(made).toEqual(["nightly: 2026-09-06 — changes an earlier run left uncommitted"]);
+    expect(status(dir)).toBe("");
+    // The leftovers are IN the commit, not merely staged.
+    expect(run(dir, "show", "--stat", "--format=", "HEAD")).toContain("session.jsonl.gz");
+  });
+
+  it("leaves nothing modified when a step's own commit did not cover it", () => {
+    const dir = repo();
+    write(dir, "tts/snapshot/dtsTodos.jsonl", "tonight\n");
+    write(dir, "sessions/manifest-box-2026-09-06.jsonl", "{}\n");
+    const { made } = commitTree(
+      dir,
+      [{ paths: ["tts/snapshot"], message: "snapshot: 2026-09-06" }],
+      "2026-09-06",
+    );
+    expect(made).toEqual([
+      "snapshot: 2026-09-06",
+      "nightly: 2026-09-06 — changes an earlier run left uncommitted",
+    ]);
+    expect(status(dir)).toBe("");
+  });
+
+  it("adds nothing and commits nothing when the tree is clean", () => {
+    const dir = repo();
+    expect(commitTree(dir, [], "2026-09-06")).toEqual({ made: [], failures: [] });
+    expect(subjects(dir)).toEqual(["base"]);
+  });
+
+  // A rebase left in progress by a previous night blocks `git commit`
+  // outright; the checkout would never commit or push again on its own. The
+  // abort is before the run's first write because it resets the tree hard.
+  it("aborts a rebase an earlier run left in progress, records it, and commits after", () => {
+    const dir = repo();
+    run(dir, "checkout", "-q", "-b", "theirs");
+    write(dir, "tts/snapshot/dtsTodos.jsonl", "theirs\n");
+    run(dir, "commit", "-qam", "theirs");
+    run(dir, "checkout", "-q", "main");
+    write(dir, "tts/snapshot/dtsTodos.jsonl", "ours\n");
+    run(dir, "commit", "-qam", "ours");
+    try {
+      run(dir, "rebase", "theirs");
+    } catch {
+      // the conflict is the point
+    }
+    expect(rebaseInProgress(dir)).toBe(true);
+
+    const failures = abortStaleRebase(dir);
+    expect(failures).toHaveLength(1);
+    expect(failures[0].step).toBe("rebase");
+    expect(failures[0].error).toContain("still in progress");
+    expect(rebaseInProgress(dir)).toBe(false);
+    expect(status(dir)).toBe("");
+    // The night's own work then commits on a checkout that can be pulled into.
+    write(dir, "tts/snapshot/dtsTodos.jsonl", "tonight's snapshot\n");
+    const { made, failures: after } = commitTree(dir, [], "2026-09-06");
+    expect(after).toEqual([]);
+    expect(made).toEqual(["nightly: 2026-09-06 — changes an earlier run left uncommitted"]);
+    expect(status(dir)).toBe("");
+  }, 30_000);
+
+  // witness: `git pull --rebase` re-commits the local commits it replays, and
+  // without an identity it dies — on the box, every night, forever after.
+  it("rebases a local commit onto origin and pushes it, with no identity configured", () => {
+    const bare = tmp();
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main", bare], { stdio: "ignore" });
+    const first = repo();
+    run(first, "remote", "add", "origin", bare);
+    run(first, "push", "-q", "-u", "origin", "main");
+    const box = tmp();
+    execFileSync("git", ["clone", "-q", bare, box], { stdio: "ignore" });
+    // Another writer pushes; the box holds a commit of its own from a night
+    // whose push was refused.
+    write(first, "tts/snapshot/dtsEvents.jsonl", "elsewhere\n");
+    run(first, "add", "-A");
+    run(first, "commit", "-q", "-m", "from another writer");
+    run(first, "push", "-q");
+    write(box, "sessions/manifest-box-2026-09-06.jsonl", "{}\n");
+    const { made } = commitTree(box, [], "2026-09-06");
+    expect(made).toHaveLength(1);
+
+    const result = syncRemote(box);
+    expect(result.failures).toEqual([]);
+    expect(result).toMatchObject({ pulled: true, pushed: true });
+    // The box's commit was replayed on top of the other writer's, under the
+    // job's identity, and origin now holds both.
+    expect(subjects(box).slice(0, 2)).toEqual([
+      "nightly: 2026-09-06 — changes an earlier run left uncommitted",
+      "from another writer",
+    ]);
+    expect(committers(box)[0]).toBe("tts-nightly|tts-nightly");
+    expect(run(bare, "log", "--format=%s", "-1", "main").trim()).toBe(
+      "nightly: 2026-09-06 — changes an earlier run left uncommitted",
+    );
+  }, 60_000);
+
+  it("records a refused pull as a failure and keeps the commit local", () => {
+    const dir = repo();
+    run(dir, "remote", "add", "origin", path.join(tmp(), "not-a-repo"));
+    write(dir, "tts/snapshot/dtsTodos.jsonl", "tonight\n");
+    commitTree(dir, [], "2026-09-06");
+    const result = syncRemote(dir);
+    expect(result.pulled).toBe(false);
+    expect(result.pushed).toBe(false);
+    expect(result.failures.map((f) => f.step)).toEqual(["pull"]);
+    expect(result.failures[0].error).not.toBe("");
+    expect(subjects(dir)[0]).toContain("nightly: 2026-09-06");
+    expect(rebaseInProgress(dir)).toBe(false);
+  }, 30_000);
 });
