@@ -71,15 +71,7 @@ on a schedule:
    in `setup.sh`, with the reason next to it. Run by hand today it prints one
    line naming the keys it is still waiting for. See "Outlook credentials"
    below.
-7. **prepare-queue** (4:30 a.m. New York) — runs headless Claude Code to pick
-   today's queue (≤7 items) and write the daily digest, and posts both to
-   Convex. If it fails, the Convex-side fallback prep (4:45) still writes the
-   day's queue. The digest text it writes has no reader any more: since the
-   lifeos update (phase 2) the 5 a.m. digest is composed deterministically in
-   Convex (`convex/ttsDigest.ts`) and sent by `sendDigest`, so a missing
-   morning message is itself the monitoring signal. This job's digest half
-   goes in phase 7 with the queue.
-8. **nightly** (4:00 a.m. New York) — copies the Convex record and this
+7. **nightly** (4:00 a.m. New York) — copies the Convex record and this
    box's session files into WikiTom, runs the learning step, pushes, and
    posts the model-of-tom files back to Convex. See "The nightly job" below.
 
@@ -527,18 +519,18 @@ node /opt/tts/poll-dump.mjs               # capture anything new in #dump now
 node /opt/tts/poll-gmail.mjs              # triage + capture new inbox mail now
 node /opt/tts/poll-canvas.mjs             # triage + capture new announcements now
 node /opt/tts/poll-outlook.mjs            # prints the OUTLOOK_* keys still missing
-node /opt/tts/prepare-queue.mjs --force   # prep today's queue regardless of hour
+node /opt/tts/apply-time-notes.mjs        # apply pending time notes now
 node /opt/tts/plan-graphs.mjs             # prepare, brief, plan — now
 node /opt/tts/plan-graphs.mjs --force     # also re-prepare and re-brief EVERYTHING
 node /opt/tts/nightly.mjs --force         # the nightly job, every step, now
 ```
 
-`--force` skips the 4-a.m.-New-York hour guard (cron fires the prep at both
-08:30 and 09:30 UTC and the guard keeps exactly the slot that is 4:30 a.m. NY,
-whichever side of daylight saving we're on).
+The nightly job's `--force` skips its 4-a.m.-New-York hour guard (cron fires
+it at both 08:00 and 09:00 UTC and the guard keeps exactly the slot that is
+4 a.m. NY, whichever side of daylight saving we're on).
 
 ## Logs
 
 Cron output: one `/var/log/tts/<job>.log` per job (poll-dump, poll-gmail,
-poll-canvas, apply-time-notes, plan-graphs, prepare-queue, nightly),
+poll-canvas, apply-time-notes, plan-graphs, nightly, reingest-overflow),
 truncated monthly by cron — they are convenience, not state.

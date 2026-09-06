@@ -72,7 +72,6 @@ describe("TTS reads admit agent", () => {
     await expect(agent.query(api.tts.listTodos, {})).resolves.toEqual([]);
     await expect(agent.query(api.tts.listMirror, {})).resolves.toEqual([]);
     await expect(agent.query(api.tts.listBatches, {})).resolves.toEqual([]);
-    await expect(agent.query(api.tts.getToday, {})).resolves.toBeDefined();
     await expect(agent.query(api.tts.listRecentEvents, {})).resolves.toEqual([]);
     await expect(
       agent.query(api.tts.listBlocks, { start: 0, end: 1 }),

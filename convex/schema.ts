@@ -881,12 +881,13 @@ export default defineSchema({
     .index("by_kind_at", ["kind", "at"]),
 
   // One row per TTS day (5 a.m. America/New_York boundary, key YYYY-MM-DD).
-  // The Jarvis Box posts a Claude-prepared queue + digest text before 5;
-  // a fallback cron builds a simple-rules queue if none arrived. Since the
-  // lifeos update (phase 2) the digest is composed deterministically by
-  // convex/ttsDigest.ts and `digestText` has no reader; the queue is still
-  // written every morning and read on the TTS pages, and digestSentAt is
-  // stamped again by each sent digest. Both go in phase 7.
+  // RETIRED (the lifeos update, phase 7): the day's queue used to be written
+  // here every morning — by the box's prepare-queue job or the fallback cron —
+  // and read by the calendar's today column and the digest. Today's view is
+  // computed from the record now (app/tts/lib.ts selectToday) and the digest
+  // dedupes on its own "digest-sent" event. NOTHING WRITES OR READS THIS TABLE;
+  // the declaration stays until NARROW because prod schema is additive-only
+  // (docs/lifeos-retirement.md).
   dtsDailyQueues: defineTable({
     day: v.string(),
     entries: v.array(

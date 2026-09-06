@@ -188,7 +188,7 @@ const SESSION_EVENT_MESSAGES_ENABLED: boolean = false;
 //   2. read the window start, fetch WikiTom's commits over it from GitHub (the
 //      one read outside Convex the digest needs), then compose
 //      (ttsDigest.internalComposeDigest): deterministic, from queries, no model
-//      call, no dtsDailyQueues.digestText;
+//      call, no stored queue;
 //   3. post through the one door above, subject {kind: "digest", day} — which
 //      records the "slack-sent" row a threaded reply from Tom is matched
 //      against, retries once on a refusal, and on a second refusal records a

@@ -376,7 +376,7 @@ ${WHAT_TTS_IS}
 
 <p>Each of these controls writes the field, writes one entry of kind <span class="mono">status-changed</span> carrying the old and new values, and stops. Nothing else is scheduled and no message is sent.</p>
 
-<p>After that: an active todo is a candidate for the picker that starts agent sessions every five minutes, and appears in the day's queue; a waiting todo disappears from the active list until its wake time passes; an archived or done todo leaves the working views and stays readable. All four also stamp the row as touched by Tom, which freezes its grouping against the job that forms batches automatically.</p>
+<p>After that: an active todo is a candidate for the picker that starts agent sessions every five minutes, and appears in today's column on the calendar when it is due, overdue, scheduled, ready or waking today; a waiting todo disappears from the active list until its wake time passes; an archived or done todo leaves the working views and stays readable. All four also stamp the row as touched by Tom, which freezes its grouping against the job that forms batches automatically.</p>
 `,
 );
 
@@ -676,7 +676,7 @@ ${WHAT_TTS_IS}
 
 <p>One job, once a day, at 4:30 in the morning New York time. It runs at that hour year-round: the scheduler underneath understands only universal time, so the job is registered at both possible universal times and its own check of the local hour lets exactly one of the two proceed. Daylight saving therefore needs no change to anything.</p>
 
-<p>4:30 is fifteen minutes before the job that builds the day's queue of what to look at. That ordering is the reason for the time: a repeat that minted after the queue was built would not be in the day it belongs to.</p>
+<p>4:30 is half an hour before the 5 a.m. digest reads the record. That ordering is the reason for the time: a repeat that minted after the digest was composed would not be in the morning it belongs to.</p>
 
 <p>For each active rule whose weekday matches, the job inserts one todo with these values, all fixed:</p>
 

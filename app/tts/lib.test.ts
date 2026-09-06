@@ -15,6 +15,7 @@ import {
   codeSubjectKey,
   rulingSubjectKey,
   selectNeedsMe,
+  selectToday,
   type CodeBrief,
   type MirrorRow,
   type Ruling,
@@ -198,5 +199,76 @@ describe("ruling subject keys", () => {
     for (const c of CASES) {
       expect(rulingSubjectKey(c)).toBe(subjectKey(c));
     }
+  });
+});
+
+// Today's column is computed from the record, not read from a stored queue
+// (the lifeos update, phase 7: dtsDailyQueues gets no new rows). These cases
+// pin the five lists and the render order.
+describe("selectToday", () => {
+  const HOUR = 3_600_000;
+  const DAY_START = Date.UTC(2026, 8, 6, 4); // a calendar day, as instants
+  const DAY_END = DAY_START + 24 * HOUR;
+  const NOW = DAY_START + 9 * HOUR;
+  const row = (id: string, over: Partial<Todo> = {}): Todo =>
+    todo({ _id: id as unknown as Todo["_id"], readiness: "unprepared", ...over });
+
+  it("files each active todo under the first reason that holds, in order", () => {
+    const todos = [
+      row("overdue", { dueAt: DAY_START - HOUR, readiness: "prepared" }), // also ready
+      row("due", { dueAt: DAY_START + 12 * HOUR }),
+      row("scheduled"),
+      row("ready", { readiness: "prepared" }),
+      row("waking", { wakeAt: DAY_START + 20 * HOUR }),
+      row("tomorrow", { dueAt: DAY_END + HOUR }),
+      row("raw"), // unprepared, undated, unscheduled: not in the column
+      row("archived", { status: "archived", dueAt: DAY_START + HOUR }),
+    ];
+    const blocks = [
+      { todoId: "scheduled", start: DAY_START + 10 * HOUR, end: DAY_START + 11 * HOUR },
+      { todoId: "raw", start: DAY_END + HOUR, end: DAY_END + 2 * HOUR }, // tomorrow's block
+    ];
+    const view = selectToday(todos, blocks, { start: DAY_START, end: DAY_END }, NOW);
+    expect(view.overdue.map((t) => t._id)).toEqual(["overdue"]);
+    expect(view.due.map((t) => t._id)).toEqual(["due"]);
+    expect(view.scheduled.map((t) => t._id)).toEqual(["scheduled"]);
+    // "overdue" is ready too, and stays in the ready list — the lists are facts.
+    expect(view.ready.map((t) => t._id).sort()).toEqual(["overdue", "ready"]);
+    expect(view.waking.map((t) => t._id)).toEqual(["waking"]);
+    // The column shows each once, under the reason that outranks the others.
+    expect(view.entries.map((e) => `${e.reason}:${e.todo._id}`)).toEqual([
+      "overdue:overdue",
+      "due:due",
+      "scheduled:scheduled",
+      "ready:ready",
+      "waking:waking",
+    ]);
+  });
+
+  it("ready means ready FOR TOM: prepared, awake, every need done, no v1 batch", () => {
+    const todos = [
+      row("need", { status: "done" }),
+      row("blocked", { readiness: "prepared", needs: ["missing"] as never }),
+      row("unblocked", { readiness: "prepared", needs: ["need"] as never }),
+      row("asleep", { readiness: "prepared", wakeAt: NOW + HOUR }),
+      row("batch", { readiness: "prepared", members: [] }),
+    ];
+    const view = selectToday(todos, [], { start: DAY_START, end: DAY_END }, NOW);
+    expect(view.ready.map((t) => t._id)).toEqual(["unblocked"]);
+    // A sleep that ends inside the day is a waking entry, not a ready one.
+    expect(view.entries.map((e) => `${e.reason}:${e.todo._id}`)).toEqual([
+      "ready:unblocked",
+      "waking:asleep",
+    ]);
+  });
+
+  it("orders dated lists by date and is empty for an empty record", () => {
+    const todos = [
+      row("later", { dueAt: DAY_START + 15 * HOUR }),
+      row("sooner", { dueAt: DAY_START + 8 * HOUR }),
+    ];
+    const view = selectToday(todos, [], { start: DAY_START, end: DAY_END }, NOW);
+    expect(view.due.map((t) => t._id)).toEqual(["sooner", "later"]);
+    expect(selectToday([], [], { start: DAY_START, end: DAY_END }, NOW).entries).toEqual([]);
   });
 });

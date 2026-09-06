@@ -174,8 +174,8 @@ export default function RepeatsStrip() {
           explanationTitle="repeat rules — what mints a todo at 4:30 a.m."
         >
           Your repeating rules. Each one mints a dated todo on the weekdays it
-          names, at 4:30 a.m. New York, just before the day&apos;s queue is
-          built — so a repeat is in the corpus by the time anything reads it.
+          names, at 4:30 a.m. New York, just before the 5 a.m. digest reads
+          the record — so a repeat is in it by the time anything reads it.
         </Info>
         <button className={btnCls} onClick={() => setEditing("new")}>
           New repeat

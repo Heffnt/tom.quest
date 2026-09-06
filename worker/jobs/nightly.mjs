@@ -1662,8 +1662,8 @@ function parseArgs(argv) {
 async function main() {
   const { force, only } = parseArgs(process.argv.slice(2));
   const now = Date.now();
-  // The DST guard (prepare-queue.mjs's): cron fires at 08:00 and 09:00 UTC
-  // and exactly one is the 4 a.m. New York hour.
+  // The DST guard: cron fires at 08:00 and 09:00 UTC and exactly one is the
+  // 4 a.m. New York hour (system cron is UTC and knows nothing about DST).
   if (!force && nyHour(now) !== 4) {
     console.log(
       `[nightly] NY hour is ${nyHour(now)}, not 4 — this is the off-season cron slot, exiting (use --force to override)`,

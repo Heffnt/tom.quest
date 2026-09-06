@@ -287,12 +287,10 @@ fi
 chmod 600 /etc/tts/worker.env
 
 echo "== [8/10] cron =="
-# System cron runs in UTC and knows nothing about daylight saving, so
-# prepare-queue is scheduled at BOTH 08:30 and 09:30 UTC; the script itself
+# System cron runs in UTC and knows nothing about daylight saving, so the
+# nightly job is scheduled at BOTH 08:00 and 09:00 UTC; the script itself
 # checks the New York wall-clock hour and proceeds only when it is the
 # 4 a.m. NY hour — exactly one of the two slots, in every season.
-# (4:30 NY chosen so the Convex fallback prep at 4:45 and the always-sends
-# digest at 5:00 have a clean ordering after us.)
 cat > /etc/cron.d/tts <<'CRON'
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -335,14 +333,9 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # is 2 minutes away).
 */2 * * * * root /usr/bin/flock -n /var/lock/tts-apply-time-notes.lock /usr/bin/node /opt/tts/apply-time-notes.mjs >> /var/log/tts/apply-time-notes.log 2>&1
 
-# Prepare today's queue + digest via headless Claude. Two UTC slots because of
-# US daylight saving; the script's NY-hour guard lets exactly one proceed
-# (08:30 UTC = 4:30 a.m. EDT in summer; 09:30 UTC = 4:30 a.m. EST in winter).
-# These hours are DERIVED from TTS_PREP_NY_HOUR (=4) in convex/ttsShared.ts as
-# hour+4/hour+5 UTC — if the anchor hours ever move, THIS FILE and the guard in
-# prepare-queue.mjs must move with them (no import path crosses this boundary).
-30 8 * * * root /usr/bin/node /opt/tts/prepare-queue.mjs >> /var/log/tts/prepare-queue.log 2>&1
-30 9 * * * root /usr/bin/node /opt/tts/prepare-queue.mjs >> /var/log/tts/prepare-queue.log 2>&1
+# There is no queue-preparing job any more (the lifeos update, phase 7):
+# today's view — due, overdue, scheduled, ready, waking today — is computed by
+# the /tts page from the record, and the 5 a.m. digest is composed in Convex.
 
 # THE NIGHTLY JOB (the lifeos update, phase 4) at 4:00 a.m. New York — before
 # the 5 a.m. digest, which reads its rows: copy every Convex table into the
@@ -554,7 +547,7 @@ NEXT STEPS (manual, in order):
 
   5. Smoke-test the jobs by hand:
        node /opt/tts/poll-dump.mjs
-       node /opt/tts/prepare-queue.mjs --force
+       node /opt/tts/plan-graphs.mjs
        echo "Reply with exactly: pong" | tts-codex --effort low
 
   6. Check the session-host daemon (once SESSIONS_WORKER_KEY is set):

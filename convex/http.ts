@@ -662,46 +662,6 @@ const slackEvents = httpAction(async (ctx, request) => {
 
 http.route({ path: "/slack/events", method: "POST", handler: slackEvents });
 
-// POST /tts/prep — the worker's Claude-prepared daily queue + digest text.
-// Body: { day, todoIds: string[], reasons?: string[], digestText? }.
-const ttsPrep = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(b.day)) {
-    return jsonResponse(400, { error: "day (YYYY-MM-DD) required" });
-  }
-  if (
-    !Array.isArray(b.todoIds) ||
-    b.todoIds.some((x) => typeof x !== "string")
-  ) {
-    return jsonResponse(400, { error: "todoIds (string[]) required" });
-  }
-  try {
-    await ctx.runMutation(internal.tts.internalStoreWorkerPrep, {
-      day: b.day,
-      todoIds: b.todoIds as string[],
-      reasons: Array.isArray(b.reasons)
-        ? (b.reasons as unknown[]).map(String)
-        : undefined,
-      digestText: typeof b.digestText === "string" ? b.digestText : undefined,
-    });
-    return jsonResponse(200, { ok: true });
-  } catch (e) {
-    return jsonResponse(400, {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
-});
-
-http.route({ path: "/tts/prep", method: "POST", handler: ttsPrep });
-
 // POST /tts/prepare-todo — the worker's preparer job attaches brief /
 // entry action / work description to a life todo and advances its readiness,
 // plus the date the statement itself states, if any.
@@ -786,21 +746,21 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/prepare-todo", method: "POST", handler: ttsPrepareTodo });
 
-// GET /tts/state — everything the prep job needs: all todos, the queue row for
-// the day being prepared, and `prepDay` itself. The server owns the day
-// arithmetic (5 a.m. boundary + DST) so the worker never computes a day key —
-// two hand-rolled implementations of that math diverged on DST Sundays before
-// this was centralized (review finding). An explicit ?day= overrides.
+// GET /tts/state — the record as a box job or a session reads it: all todos,
+// the coming week of calendar events, and the server's clock. The server owns
+// the day arithmetic (5 a.m. boundary + DST) so the worker never computes a
+// day key — two hand-rolled implementations of that math diverged on DST
+// Sundays before this was centralized (review finding). An explicit ?day=
+// overrides `prepDay`. (The day's queue row rode this payload until the lifeos
+// update, phase 7; today's view is computed, not stored.)
 const ttsState = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
   const day =
     new URL(request.url).searchParams.get("day") ?? ttsPrepDay(Date.now());
   const todos = await ctx.runQuery(internal.tts.internalListTodos, {});
-  const queue = await ctx.runQuery(internal.tts.internalGetDay, { day });
   // The coming week of external-calendar mirror rows (ttsCalendarEvents):
-  // schedule knowledge for realistic queueing — the prep prompt shows them as
-  // context, never as queueable items.
+  // schedule knowledge, shown as context.
   const dayStart = nyCalendarDayBoundsUtc(day).start;
   const calendarEvents = await ctx.runQuery(
     internal.ttsCalendar.internalListEventsInRange,
@@ -812,7 +772,6 @@ const ttsState = httpAction(async (ctx, request) => {
   // the clock, the worker repeats it back.
   return jsonResponse(200, {
     todos,
-    queue,
     calendarEvents,
     prepDay: day,
     ...nowContext(Date.now()),

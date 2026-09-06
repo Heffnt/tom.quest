@@ -20,14 +20,12 @@ crons.interval(
 // each job fires at both possible UTC times (EDT/EST) and the handler's
 // local-hour guard lets exactly one proceed — DST needs no cron edits.
 
-// Repeating-todo generation, 4:30 NY — BEFORE the 4:45 queue prep, so the
-// day's minted instances are in the corpus when the queue is built.
+// Repeating-todo generation, 4:30 NY — BEFORE the 5 a.m. digest, so the
+// day's minted instances are in the record when the digest reads it. (The
+// 4:45 fallback queue prep that used to sit between them is gone — the lifeos
+// update, phase 7: today's view is computed, not stored.)
 crons.cron("tts repeats (edt)", "30 8 * * *", internal.ttsRepeats.internalGenerateRepeats, {});
 crons.cron("tts repeats (est)", "30 9 * * *", internal.ttsRepeats.internalGenerateRepeats, {});
-
-// Fallback queue prep + waking of due `waiting` items, in the 4 a.m. hour.
-crons.cron("tts queue prep (edt)", "45 8 * * *", internal.tts.internalPrepareFallbackQueue, {});
-crons.cron("tts queue prep (est)", "45 9 * * *", internal.tts.internalPrepareFallbackQueue, {});
 
 // The 5 a.m. digest (the lifeos update, phase 2): the missed rollover, then the
 // deterministic composer, then one post to #tts — every day, even when short.

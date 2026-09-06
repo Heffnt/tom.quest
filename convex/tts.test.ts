@@ -226,35 +226,6 @@ describe("TTS todos", () => {
     expect(todo.unarchiveCondition).toBeUndefined();
   });
 
-  it("worker prep intake drops non-active items and enforces the queue cap", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    const ids = [];
-    for (let i = 0; i < 9; i++) {
-      ids.push(await tom.mutation(api.tts.createTodo, { statement: `t${i}` }));
-    }
-    const sleeping = ids[0];
-    await tom.mutation(api.tts.setStatus, { id: sleeping, status: "waiting" });
-    await t.mutation(internal.tts.internalStoreWorkerPrep, {
-      day: "2026-08-27",
-      todoIds: ids,
-      digestText: "x",
-    });
-    const rows = await t.run(async (ctx) =>
-      ctx.db.query("dtsDailyQueues").collect(),
-    );
-    // 9 sent - 1 waiting = 8 eligible, capped at 7.
-    expect(rows[0].entries).toHaveLength(7);
-    expect(rows[0].entries.some((e) => e.todoId === sleeping)).toBe(false);
-    // A malformed id is rejected by name.
-    await expect(
-      t.mutation(internal.tts.internalStoreWorkerPrep, {
-        day: "2026-08-27",
-        todoIds: ["not-a-real-id"],
-      }),
-    ).rejects.toThrow(/Unknown todo id/);
-  });
-
   it("captures worker submissions as unprepared items", async () => {
     const t = convexTest({ schema, modules });
     await t.mutation(internal.tts.internalCapture, {
@@ -443,90 +414,6 @@ describe("TTS todos", () => {
     [todo] = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
     expect(todo.status).toBe("waiting");
     expect(todo.wakeCondition).toBe("closer to the date");
-  });
-
-  it("builds the fallback queue and wakes due waiting items", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    const now = Date.now();
-    const overdue = await tom.mutation(api.tts.createTodo, {
-      statement: "overdue thing",
-      dueAt: now - 86_400_000,
-    });
-    await tom.mutation(api.tts.createTodo, { statement: "someday thing" });
-    const sleeping = await tom.mutation(api.tts.createTodo, {
-      statement: "wake me",
-    });
-    await tom.mutation(api.tts.setStatus, {
-      id: sleeping,
-      status: "waiting",
-      wakeAt: now - 1000,
-    });
-
-    await t.mutation(internal.tts.internalPrepareFallbackQueue, { force: true });
-
-    const todos = await t.run(async (ctx) => ctx.db.query("dtsTodos").collect());
-    const woken = todos.find((x) => x._id === sleeping);
-    expect(woken?.status).toBe("active");
-
-    const queue = await t.run(async (ctx) =>
-      ctx.db.query("dtsDailyQueues").collect(),
-    );
-    expect(queue).toHaveLength(1);
-    expect(queue[0].preparedBy).toBe("fallback");
-    const first = queue[0].entries[0];
-    expect(first.todoId).toBe(overdue);
-    expect(first.reason).toBe("overdue");
-    expect(
-      queue[0].entries.some((e) => e.reason === "invitation"),
-    ).toBe(true);
-  });
-
-  // witness: drop wakeAtPassed from the fallback queue's active filter — an
-  // active row the lifeos migration put to sleep (waiting → active + wakeAt)
-  // would be queued the morning after it was parked.
-  it("the fallback queue leaves an active row asleep on its wakeAt alone", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    const now = Date.now();
-    const asleep = await tom.mutation(api.tts.createTodo, {
-      statement: "not yet",
-      dueAt: now - 86_400_000, // overdue, and yet asleep
-    });
-    const awake = await tom.mutation(api.tts.createTodo, {
-      statement: "overdue and awake",
-      dueAt: now - 86_400_000,
-    });
-    await t.run(async (ctx) => {
-      await ctx.db.patch(asleep, { wakeAt: now + 30 * 86_400_000 });
-      await ctx.db.patch(awake, { wakeAt: now - 60_000 }); // a sleep that ended
-    });
-    await t.mutation(internal.tts.internalPrepareFallbackQueue, { force: true });
-    const [queue] = await t.run(async (ctx) => ctx.db.query("dtsDailyQueues").collect());
-    const queued = queue.entries.map((e) => e.todoId);
-    expect(queued).toContain(awake);
-    expect(queued).not.toContain(asleep);
-  });
-
-  it("worker prep overwrites the fallback queue for the same day", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    const id = await tom.mutation(api.tts.createTodo, { statement: "a task" });
-    await t.mutation(internal.tts.internalPrepareFallbackQueue, { force: true });
-    const day = (
-      await t.run(async (ctx) => ctx.db.query("dtsDailyQueues").collect())
-    )[0].day;
-    await t.mutation(internal.tts.internalStoreWorkerPrep, {
-      day,
-      todoIds: [id],
-      digestText: "*prepared by worker*",
-    });
-    const rows = await t.run(async (ctx) =>
-      ctx.db.query("dtsDailyQueues").collect(),
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0].preparedBy).toBe("worker");
-    expect(rows[0].digestText).toBe("*prepared by worker*");
   });
 
   it("mirror replace upserts and drops vanished rows", async () => {
@@ -1551,21 +1438,6 @@ describe("TTS batches and annotations", () => {
     expect(events.some((e) => e.kind === "due-skipped")).toBe(true);
   });
 
-  // witness: drop the members === undefined filter from
-  // internalPrepareFallbackQueue in convex/tts.ts
-  it("fallback prep never queues a members-bearing row", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    const solo = await tom.mutation(api.tts.createTodo, { statement: "solo" });
-    await storeBatch(t);
-    const batch = await findBatch(t);
-    await t.mutation(internal.tts.internalPrepareFallbackQueue, { force: true });
-    const [queue] = await t.run(async (ctx) =>
-      ctx.db.query("dtsDailyQueues").collect(),
-    );
-    expect(queue.entries.some((e) => e.todoId === solo)).toBe(true);
-    expect(queue.entries.some((e) => e.todoId === batch?._id)).toBe(false);
-  });
 });
 
 // The one time input on the /dts page: Tom writes a sentence, the worker job

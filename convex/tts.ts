@@ -11,13 +11,11 @@ import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { INTEGRATION_SOURCE, integrationName } from "./ttsIntegrations";
 import {
-  CONDITION_WINDOW_MS,
   DAY_MS,
   MAX_NEEDS,
   READINESS,
   RETIRED_READINESS_VALUES,
   SESSION_MODEL,
-  TTS_PREP_NY_HOUR,
   captureReplyText,
   goalCheckable,
   isPrepared,
@@ -25,12 +23,7 @@ import {
   nyCalendarDayBoundsUtc,
   nyCalendarDayKey,
   normalizeSessionRepos,
-  nyLocalHour,
   nyOffsetHours,
-  ttsDayBoundsUtc,
-  ttsDayKey,
-  ttsPrepDay,
-  wakeAtPassed,
 } from "./ttsShared";
 
 // TTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
@@ -52,11 +45,6 @@ async function requireTomOrAgentId(
 ): Promise<Id<"users">> {
   return await requireTomOrAgent(ctx, "TTS");
 }
-
-// One queue size for every producer: the fallback rules here and (mirrored in
-// its prompt) the worker's Claude prep, enforced again at intake in
-// internalStoreWorkerPrep.
-const QUEUE_MAX = 7;
 
 // Readiness is two values (ruling 18); READINESS, the two-value validator, is
 // imported from ttsShared — Tom's door writes only those. The worker's pen
@@ -258,33 +246,6 @@ export const listBatches = query({
 
 // Focus: today's queue row (entries joined with their todos) — null when no
 // prep has happened yet today.
-export const getToday = query({
-  args: {},
-  handler: async (ctx) => {
-    await requireTomOrAgentId(ctx);
-    const day = ttsDayKey(Date.now());
-    const row = await ctx.db
-      .query("dtsDailyQueues")
-      .withIndex("by_day", (q) => q.eq("day", day))
-      .first();
-    if (!row) return { day, queue: null };
-    const todos = [];
-    for (const entry of row.entries) {
-      const todo = await ctx.db.get(entry.todoId);
-      if (todo) todos.push({ ...todo, queueReason: entry.reason });
-    }
-    return {
-      day,
-      queue: {
-        preparedAt: row.preparedAt,
-        preparedBy: row.preparedBy,
-        digestSentAt: row.digestSentAt,
-        todos,
-      },
-    };
-  },
-});
-
 export const listRecentEvents = query({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, { limit }) => {
@@ -1523,66 +1484,6 @@ export const internalCapture = internalMutation({
   },
 });
 
-export const internalStoreWorkerPrep = internalMutation({
-  args: {
-    day: v.string(),
-    todoIds: v.array(v.string()),
-    reasons: v.optional(v.array(v.string())),
-    digestText: v.optional(v.string()),
-  },
-  handler: async (ctx, { day, todoIds, reasons, digestText }) => {
-    const entries: { todoId: Id<"dtsTodos">; reason?: string }[] = [];
-    const dropped: { id: string; why: string }[] = [];
-    for (let i = 0; i < todoIds.length; i++) {
-      // The worker sends plain strings over HTTP; normalizeId is the proper
-      // reject-with-a-name path for malformed/wrong-table ids.
-      const normalized = ctx.db.normalizeId("dtsTodos", todoIds[i]);
-      if (!normalized) throw new Error(`Unknown todo id: ${todoIds[i]}`);
-      const todo = await ctx.db.get(normalized);
-      if (!todo) throw new Error(`Unknown todo id: ${todoIds[i]}`);
-      // The model sees waiting items for context but must not queue them; a
-      // sleeping card on Focus would contradict the Inventory. Drop, don't
-      // reject — one bad pick shouldn't cost the whole prepared queue.
-      if (todo.status !== "active") {
-        dropped.push({ id: todoIds[i], why: `status ${todo.status}` });
-        continue;
-      }
-      if (entries.length >= QUEUE_MAX) {
-        dropped.push({ id: todoIds[i], why: "over queue cap" });
-        continue;
-      }
-      entries.push({ todoId: todo._id, reason: reasons?.[i] });
-    }
-    const now = Date.now();
-    const existing = await ctx.db
-      .query("dtsDailyQueues")
-      .withIndex("by_day", (q) => q.eq("day", day))
-      .first();
-    if (existing) {
-      await ctx.db.patch(existing._id, {
-        entries,
-        digestText,
-        preparedAt: now,
-        preparedBy: "worker",
-      });
-    } else {
-      await ctx.db.insert("dtsDailyQueues", {
-        day,
-        entries,
-        digestText,
-        preparedAt: now,
-        preparedBy: "worker",
-      });
-    }
-    await logEvent(ctx, "queue-prepared", undefined, {
-      day,
-      by: "worker",
-      count: entries.length,
-      dropped: dropped.length > 0 ? dropped : undefined,
-    });
-  },
-});
-
 // The preparation path for LIFE todos (spec §15, swarm-lite): the worker's
 // preparer job advances an unprepared capture toward ready-for-tom by
 // attaching the ground-up brief, the smallest entry action, and a qualitative
@@ -1765,8 +1666,8 @@ export const internalPrepareTodo = internalMutation({
   },
 });
 
-// The batcher's write path (key-authed POST /tts/batches). Drop-don't-reject
-// (the internalStoreWorkerPrep pattern): one bad grouping must not fail the
+// The batcher's write path (key-authed POST /tts/batches). Drop-don't-reject:
+// one bad grouping must not fail the
 // batch run, so a batch that fails member validation, collides on an occupied
 // member, or targets a row the batcher may not touch is SKIPPED with a named
 // reason. A row is batcher-writable only while source "batcher", status
@@ -2989,21 +2890,14 @@ export const internalMarkPlanRepairsConsumed = internalMutation({
   },
 });
 
-export const internalGetDay = internalQuery({
-  args: { day: v.string() },
-  handler: async (ctx, { day }) => {
-    return await ctx.db
-      .query("dtsDailyQueues")
-      .withIndex("by_day", (q) => q.eq("day", day))
-      .first();
-  },
-});
-
 export const internalMarkDigestSent = internalMutation({
   // windowEnd: the instant the digest was composed against. It is the start of
-  // the NEXT digest's window (convex/ttsDigest.ts digestWindowStart), and this
-  // row's `day` is the once-a-day dedupe key — so the two facts a digest run
-  // needs from the last one live on one row.
+  // the NEXT digest's window (convex/ttsDigest.ts digestWindowStart), and the
+  // event's `day` is the once-a-day dedupe key — so the two facts a digest run
+  // needs from the last one live on one "digest-sent" event (ttsDigest
+  // lastDigestSent reads it). Nothing is written to dtsDailyQueues any more
+  // (the lifeos update, phase 7): the table stays until NARROW and gets no
+  // new rows.
   args: {
     day: v.string(),
     surfacedTodoIds: v.array(v.id("dtsTodos")),
@@ -3014,147 +2908,10 @@ export const internalMarkDigestSent = internalMutation({
     truncated: v.optional(v.boolean()),
   },
   handler: async (ctx, { day, surfacedTodoIds, windowEnd, truncated }) => {
-    const now = Date.now();
-    const existing = await ctx.db
-      .query("dtsDailyQueues")
-      .withIndex("by_day", (q) => q.eq("day", day))
-      .first();
-    if (existing) {
-      await ctx.db.patch(existing._id, { digestSentAt: now });
-    } else {
-      await ctx.db.insert("dtsDailyQueues", {
-        day,
-        entries: [],
-        preparedAt: now,
-        preparedBy: "fallback",
-        digestSentAt: now,
-      });
-    }
     for (const todoId of surfacedTodoIds) {
       await logEvent(ctx, "surfaced", todoId, { via: "digest", day });
     }
     await logEvent(ctx, "digest-sent", undefined, { day, windowEnd, truncated });
-  },
-});
-
-// ── Internal: fallback queue prep (cron; spec §7 reliability split) ──────────
-// Runs shortly before 5 a.m. local (two UTC crons + local-hour guard so DST
-// needs no cron edits). Wakes due `waiting` items, then builds a simple-rules
-// queue if the worker hasn't posted one. The worker's Claude-written prep, when
-// it lands, overwrites this via internalStoreWorkerPrep.
-export const internalPrepareFallbackQueue = internalMutation({
-  args: { force: v.optional(v.boolean()) },
-  handler: async (ctx, { force }) => {
-    const now = Date.now();
-    if (!force && nyLocalHour(now) !== TTS_PREP_NY_HOUR) return; // 4 a.m. hour, before the 5 a.m. send
-    // CRITICAL: prep runs BEFORE the 5 a.m. boundary, so ttsDayKey(now) would
-    // name YESTERDAY. ttsPrepDay names the day the coming digest belongs to —
-    // the digest and getToday then find this row. (Review-caught bug.)
-    const day = ttsPrepDay(now);
-    const bounds = ttsDayBoundsUtc(day);
-
-    // Wake waiting items whose wake time falls inside the day being prepared —
-    // not `wakeAt <= now`: wake times are stored as noon local, and a 4 a.m.
-    // check against `now` would wake everything one day late (review-caught).
-    const waiting = await ctx.db
-      .query("dtsTodos")
-      .withIndex("by_status", (q) => q.eq("status", "waiting"))
-      .collect();
-    for (const todo of waiting) {
-      if (todo.wakeAt !== undefined && todo.wakeAt < bounds.end) {
-        await ctx.db.patch(todo._id, {
-          status: "active",
-          updatedAt: now,
-          wakeAt: undefined,
-          wakeCondition: undefined,
-        });
-        await logEvent(ctx, "woke", todo._id, { wakeCondition: todo.wakeCondition });
-      }
-    }
-
-    const existing = await ctx.db
-      .query("dtsDailyQueues")
-      .withIndex("by_day", (q) => q.eq("day", day))
-      .first();
-    if (existing && !force) return; // worker already prepared today
-
-    // The same instant the wake loop above uses: a sleep ending inside the
-    // day being prepared is over for that day's queue.
-    const endOfDayWake = bounds.end - 1;
-    const active = (
-      await ctx.db
-        .query("dtsTodos")
-        .withIndex("by_status", (q) => q.eq("status", "active"))
-        .collect()
-    ) // The dumb fallback cannot reason about batch/member overlap, so it
-      // skips batches; the worker's Claude prep may queue them. A schema-v2
-      // row (batchId set) is a task or goal INSIDE a batch — the batch is the
-      // unit Tom sees, so its parts never queue individually either. An
-      // active row still asleep (wakeAt ahead — the lifeos spelling of
-      // "waiting") is not queued either, the way a waiting row never was.
-      .filter(
-        (t) =>
-          t.members === undefined &&
-          t.batchId === undefined &&
-          wakeAtPassed(t, endOfDayWake),
-      );
-    const endOfToday = bounds.end; // 5 a.m. NY tomorrow, DST-correct
-    const entries: { todoId: Id<"dtsTodos">; reason?: string }[] = [];
-    const used = new Set<string>();
-    const add = (todo: Doc<"dtsTodos">, reason: string) => {
-      if (used.has(todo._id) || entries.length >= QUEUE_MAX) return;
-      used.add(todo._id);
-      entries.push({ todoId: todo._id, reason });
-    };
-
-    const dated = active
-      .filter((t) => t.dueAt !== undefined)
-      .sort((a, b) => (a.dueAt ?? 0) - (b.dueAt ?? 0));
-    for (const t of dated) {
-      if ((t.dueAt ?? 0) < now) add(t, "overdue");
-      else if ((t.dueAt ?? 0) <= endOfToday) add(t, "due");
-    }
-    const conditionBound = active
-      .filter(
-        (t) =>
-          t.timingClass === "condition-bound" &&
-          t.latestSafeAt !== undefined &&
-          t.latestSafeAt <= now + CONDITION_WINDOW_MS,
-      )
-      .sort((a, b) => (a.latestSafeAt ?? 0) - (b.latestSafeAt ?? 0));
-    for (const t of conditionBound.slice(0, 2)) add(t, "condition");
-    // Reserve the invitation slot (spec §7) before stale-fill, or every
-    // `whenever` item gets consumed as filler and no invitation survives.
-    const stale = [...active].sort((a, b) => a.updatedAt - b.updatedAt);
-    const invitation = stale.find(
-      (t) => t.timingClass === "whenever" && !used.has(t._id),
-    );
-    if (invitation) add(invitation, "invitation");
-    for (const t of stale) {
-      if (entries.length >= QUEUE_MAX) break;
-      add(t, "stale");
-    }
-
-    if (existing) {
-      await ctx.db.patch(existing._id, {
-        entries,
-        preparedAt: now,
-        preparedBy: "fallback",
-        digestText: undefined,
-      });
-    } else {
-      await ctx.db.insert("dtsDailyQueues", {
-        day,
-        entries,
-        preparedAt: now,
-        preparedBy: "fallback",
-      });
-    }
-    await logEvent(ctx, "queue-prepared", undefined, {
-      day,
-      by: "fallback",
-      count: entries.length,
-    });
   },
 });
 
