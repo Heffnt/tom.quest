@@ -40,6 +40,7 @@ import type * as ttsShared from "../ttsShared.js";
 import type * as ttsSkills from "../ttsSkills.js";
 import type * as ttsSlack from "../ttsSlack.js";
 import type * as ttsSync from "../ttsSync.js";
+import type * as ttsWeekly from "../ttsWeekly.js";
 import type * as userSettings from "../userSettings.js";
 import type * as users from "../users.js";
 
@@ -82,6 +83,7 @@ declare const fullApi: ApiFromModules<{
   ttsSkills: typeof ttsSkills;
   ttsSlack: typeof ttsSlack;
   ttsSync: typeof ttsSync;
+  ttsWeekly: typeof ttsWeekly;
   userSettings: typeof userSettings;
   users: typeof users;
 }>;

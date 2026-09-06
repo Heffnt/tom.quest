@@ -6,9 +6,72 @@
 
 import { describe, expect, it } from "vitest";
 
-import { enclosingHeadings, extractSections, sectionSpan } from "./markdown-sections.mjs";
+import {
+  enclosingHeadings,
+  extractSections,
+  frontmatterBlock,
+  isIsoDay,
+  parseFrontmatter,
+  sectionSpan,
+  setFrontmatterField,
+} from "./markdown-sections.mjs";
 
 const AREA = ["Current state", "Must not break"];
+
+describe("isIsoDay", () => {
+  it("accepts only a real day that round-trips through Date", () => {
+    expect(isIsoDay("2026-09-11")).toBe(true);
+    expect(isIsoDay("2028-02-29")).toBe(true);
+    expect(isIsoDay("2026-02-30")).toBe(false);
+    expect(isIsoDay("2027-02-29")).toBe(false);
+    expect(isIsoDay("2026-13-01")).toBe(false);
+    expect(isIsoDay("2026-9-11")).toBe(false);
+    expect(isIsoDay(" 2026-09-11")).toBe(false);
+    expect(isIsoDay(undefined)).toBe(false);
+  });
+});
+
+describe("frontmatter", () => {
+  const page = "---\nupdated: 2026-09-06\nreviewed:\nwindow_days: 30\n---\n# Research\n\ntext\n";
+
+  it("reads the key: value lines between the fences and leaves the body", () => {
+    expect(parseFrontmatter(page)).toEqual({
+      fields: { updated: "2026-09-06", reviewed: "", window_days: "30" },
+      body: "# Research\n\ntext\n",
+    });
+    expect(frontmatterBlock(page)).toBe("---\nupdated: 2026-09-06\nreviewed:\nwindow_days: 30\n---");
+  });
+
+  it("gives a page without a fence no fields and itself as the body", () => {
+    expect(parseFrontmatter("# Plain\n")).toEqual({ fields: {}, body: "# Plain\n" });
+    expect(parseFrontmatter("---\nnever closed\n")).toEqual({
+      fields: {},
+      body: "---\nnever closed\n",
+    });
+    expect(parseFrontmatter(undefined)).toEqual({ fields: {}, body: "" });
+    expect(frontmatterBlock("# Plain\n")).toBe("");
+  });
+
+  it("sets a field in place and changes nothing else", () => {
+    expect(setFrontmatterField(page, "reviewed", "2026-09-11")).toBe(
+      "---\nupdated: 2026-09-06\nreviewed: 2026-09-11\nwindow_days: 30\n---\n# Research\n\ntext\n",
+    );
+  });
+
+  it("appends a missing key before the closing fence, and gives a bare page a block", () => {
+    expect(setFrontmatterField("---\nupdated: 2026-09-06\n---\nbody\n", "reviewed", "2026-09-11")).toBe(
+      "---\nupdated: 2026-09-06\nreviewed: 2026-09-11\n---\nbody\n",
+    );
+    expect(setFrontmatterField("# Plain\n", "reviewed", "2026-09-11")).toBe(
+      "---\nreviewed: 2026-09-11\n---\n# Plain\n",
+    );
+  });
+
+  it("round-trips through parseFrontmatter", () => {
+    const out = setFrontmatterField(page, "reviewed", "2026-09-11");
+    expect(parseFrontmatter(out).fields.reviewed).toBe("2026-09-11");
+  });
+});
 
 describe("sectionSpan", () => {
   const lines = [

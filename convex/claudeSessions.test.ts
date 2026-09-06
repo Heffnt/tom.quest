@@ -566,6 +566,16 @@ describe("claude sessions", () => {
     const session = await t.run(async (ctx) => ctx.db.get(sessionId));
     expect(session?.repos).toEqual(["tom.quest", "WikiTom"]);
     expect(session?.batchId).toBe(batchId);
+    // The creation event names the batch (data and key): the weekly gather
+    // reads a goal's batch sessions off by_kind_key, since the row has no todo.
+    const created = await t.run(async (ctx) =>
+      ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", "session-created").eq("key", batchId))
+        .unique(),
+    );
+    expect(created?.todoId).toBeUndefined();
+    expect(created?.data).toMatchObject({ sessionId, batchId });
   });
 
   // witness: drop the isSessionRepo filter from normalizeSessionRepos and the

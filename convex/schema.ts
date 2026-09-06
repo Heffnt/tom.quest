@@ -842,7 +842,7 @@ export default defineSchema({
     // week, and the model's most likely response to an instruction to fix
     // something already fixed is to restructure something else.
     consumedAt: v.optional(v.number()),
-    // The lookup key, set on exactly six kinds. Four are convex/ttsSlack.ts:
+    // The lookup key, set on exactly eight kinds. Four are convex/ttsSlack.ts:
     //   "slack-sent"  — `${channel}:${thread root ts}`, so a threaded reply
     //                   from Tom finds what it answers by (channel, thread_ts);
     //   "slack-event" — Slack's event_id, so a redelivered event is dropped;
@@ -859,6 +859,12 @@ export default defineSchema({
     //                     is one row until it is fixed, not one every tick;
     //   "job-recovered" — the same key, written when the job next runs clean,
     //                     which is what re-arms the report for the next time.
+    // Two are convex/claudeSessions.ts, where the key is the BATCH a session
+    // was opened on (absent on a session with no batch):
+    //   "session-created", "session-outcome"
+    //                 — a batch session has no todoId, so the weekly gather
+    //                   finds the sessions that worked a goal's batch here
+    //                   (convex/ttsWeekly.ts goalsNotEvaluated).
     // `data` is v.any() and cannot be indexed, which is why the key is its
     // own field: the events route must answer inside Slack's 3-second budget,
     // and a thread root can be days old, so a bounded scan is not enough.
@@ -1121,8 +1127,19 @@ export default defineSchema({
     // network retry and is dropped. Monotonic per session.
     nextSeq: v.number(),
     createdAt: v.number(),
+    // ── The weekly session's agenda (the lifeos update, phase 8; spec §11) ──
+    // Set only on kind "weekly", by the Friday job through POST /tts/session
+    // (claudeSessions.internalCreateWeeklySession). `agendaDay` is the
+    // YYYY-MM-DD the job ran for — one weekly session per day, refused on
+    // by_kind_agenda_day. `agendaSubjects` is the todo and batch ids the
+    // agenda's forks name: a weekly session's turns rule on these and on
+    // nothing else (ttsRulings refuseUnlessSessionSubject). A weekly session
+    // opened from the page carries neither and so rules on nothing.
+    agendaDay: v.optional(v.string()),
+    agendaSubjects: v.optional(v.array(v.string())),
   })
     .index("by_status", ["status", "statusChangedAt"])
+    .index("by_kind_agenda_day", ["kind", "agendaDay"])
     // Per-todo session history: powers the "does a live session already
     // reference this todo" exclusion and the scheduler's backoff walk.
     .index("by_todo", ["todoId"])

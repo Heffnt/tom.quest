@@ -347,13 +347,18 @@ export const internalConsumeLearningObjections = internalMutation({
 // digest's own bookkeeping — the route refuses the kinds Convex writes itself.
 export const EVENT_KIND_PATTERN = /^[a-z][a-z0-9-]{1,63}$/;
 export const RESERVED_EVENT_KINDS = new Set(["slack-sent", "slack-event"]);
+/** The nightly job's failure row (data { day, step, error }); the worker's
+ * spelling is worker/jobs/nightly.mjs NIGHTLY_FAILURE, shared by name. */
+export const NIGHTLY_FAILURE = "nightly-failure";
 
 export const internalRecordWorkerEvent = internalMutation({
-  args: { kind: v.string(), data: v.optional(v.any()) },
-  handler: async (ctx, { kind, data }) => {
+  // `key`: the indexed lookup key (schema dtsEvents.key) — the weekly job's
+  // "weekly-run" row carries its day, so a rerun finds it on by_kind_key.
+  args: { kind: v.string(), data: v.optional(v.any()), key: v.optional(v.string()) },
+  handler: async (ctx, { kind, data, key }) => {
     if (!EVENT_KIND_PATTERN.test(kind) || RESERVED_EVENT_KINDS.has(kind)) {
       throw new Error(`not a worker event kind: ${kind}`);
     }
-    return await ctx.db.insert("dtsEvents", { at: Date.now(), kind, data });
+    return await ctx.db.insert("dtsEvents", { at: Date.now(), kind, data, key });
   },
 });

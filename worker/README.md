@@ -12,12 +12,13 @@ each; `setup.sh` writes exactly this list into `/etc/cron.d/tts`:
 6. **plan-graphs** (every 30 min) — the planner: prepares every unprepared life todo, briefs every changed or revise-ruled code todo, then plans the graph inside every batch; see "The planner".
 7. **nightly** (4:00 a.m. New York) — copies the Convex record and this box's session files into WikiTom, runs the learning step, pushes, and posts the model-of-tom files back to Convex; see "The nightly job".
 8. **reingest-overflow** (hourly) — the session daemon's helper: finishes storing the transcript payloads the daemon could not (`worker/session-host/`).
+9. **weekly** (4:00 a.m. New York, Fridays) — gathers the week's facts from Convex, makes one model call, commits the agenda file to the WikiTom checkout, and opens the one `weekly` session (`worker/jobs/weekly.mjs`).
 
 Beside them runs the **session daemon** (`worker/session-host/`, a systemd
 service): every interactive session Tom opens and every autonomous mission
 the auto-session scheduler in Convex admits — including the worker missions
 that carry out his `approve` and `archive` rulings on code todos (see "The
-code-todo ruling loop"). The Friday weekly job is not on this box yet.
+code-todo ruling loop"), and the weekly session the Friday job opens.
 
 ## The planner
 
@@ -542,6 +543,8 @@ node /opt/tts/apply-time-notes.mjs        # apply pending time notes now
 node /opt/tts/plan-graphs.mjs             # prepare, brief, plan — now
 node /opt/tts/plan-graphs.mjs --force     # also re-prepare and re-brief EVERYTHING
 node /opt/tts/nightly.mjs --force         # the nightly job, every step, now
+node /opt/tts/weekly.mjs --force          # the weekly job, now (refuses a rerun)
+node /opt/tts/weekly.mjs --force --overwrite   # rerun the same day on purpose
 ```
 
 The nightly job's `--force` skips its 4-a.m.-New-York hour guard (cron fires
@@ -551,5 +554,6 @@ it at both 08:00 and 09:00 UTC and the guard keeps exactly the slot that is
 ## Logs
 
 Cron output: one `/var/log/tts/<job>.log` per job (poll-dump, poll-gmail,
-poll-canvas, apply-time-notes, plan-graphs, nightly, reingest-overflow),
+poll-canvas, apply-time-notes, plan-graphs, nightly, weekly,
+reingest-overflow),
 truncated monthly by cron — they are convenience, not state.

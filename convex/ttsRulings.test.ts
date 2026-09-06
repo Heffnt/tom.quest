@@ -1391,6 +1391,113 @@ describe("a ruling from Tom's words", () => {
     expect((await adhoc.json()).error).toMatch(/about no todo, batch, or block/);
   });
 
+  // The weekly session's turns rule on what its agenda names — the todo and
+  // batch ids the Friday job stored on the row (the lifeos update, phase 8) —
+  // and on nothing else: not a todo the agenda did not name, never code.
+  it("binds a weekly session's turns to the subjects its agenda names", async () => {
+    const t = convexTest({ schema, modules });
+    const { tom, todoId } = await sessionWithTurns(t, "adhoc");
+    const { batchId, otherId } = await t.run(async (ctx) => {
+      const now = Date.now();
+      const batchId = await ctx.db.insert("batches", {
+        statement: "the paper",
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      });
+      const otherId = await ctx.db.insert("dtsTodos", {
+        statement: "renew the passport",
+        status: "active",
+        readiness: "unprepared",
+        timingClass: "whenever",
+        source: "tom",
+        createdAt: now,
+        updatedAt: now,
+      });
+      return { batchId, otherId };
+    });
+    // The job's pen: the agenda names the dentist todo and the paper batch.
+    const sessionId = await t.mutation(internal.claudeSessions.internalCreateWeeklySession, {
+      title: "Weekly 2026-09-11",
+      initialPrompt: "the agenda",
+      day: "2026-09-11",
+      agendaSubjects: [todoId, batchId],
+    });
+    await tom.mutation(api.claudeSessions.sendMessage, {
+      sessionId,
+      text: "fork 1: archive the dentist one. fork 2: approve the paper batch. and archive the passport one.",
+    });
+    const turn = (
+      await t.run(async (ctx) => ctx.db.query("claudeInbound").collect())
+    ).find((r) => r.sessionId === sessionId && r.author === "tom")!;
+    const life = await post(t, {
+      inboundId: turn._id,
+      verdict: "archive",
+      subjectType: "life",
+      subjectId: todoId,
+      quote: "fork 1: archive the dentist one.",
+    });
+    expect(life.status).toBe(200);
+    const batch = await post(t, {
+      inboundId: turn._id,
+      verdict: "approve",
+      subjectType: "batch",
+      subjectId: batchId,
+      quote: "fork 2: approve the paper batch.",
+    });
+    expect(batch.status).toBe(200);
+    // A todo the agenda did not name: refused as not what the session was
+    // about, even though the turn mentions it.
+    const unnamed = await post(t, {
+      inboundId: turn._id,
+      verdict: "archive",
+      subjectType: "life",
+      subjectId: otherId,
+      quote: "and archive the passport one.",
+    });
+    expect(unnamed.status).toBe(400);
+    expect((await unnamed.json()).error).toMatch(/its agenda names/);
+    const code = await post(t, {
+      inboundId: turn._id,
+      verdict: "approve",
+      subjectType: "code",
+      subjectId: "ComplexMultiTrigger 42",
+      quote: "fork 2: approve the paper batch.",
+    });
+    expect(code.status).toBe(400);
+    const rulings = await tom.query(api.ttsRulings.listRulings, {});
+    expect(rulings.map((r) => r.verdict).sort()).toEqual(["approve", "archive"]);
+  });
+
+  // A weekly session opened from the page carries no agenda, so its turns
+  // rule on nothing — the kind alone opens no subject.
+  it("refuses every subject from a weekly session with no agenda", async () => {
+    const t = convexTest({ schema, modules });
+    const { tom, todoId } = await sessionWithTurns(t, "adhoc");
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "Weekly by hand",
+      kind: "weekly",
+      repo: "none",
+      initialPrompt: "no agenda",
+    });
+    await tom.mutation(api.claudeSessions.sendMessage, {
+      sessionId,
+      text: "archive the dentist one.",
+    });
+    const turn = (
+      await t.run(async (ctx) => ctx.db.query("claudeInbound").collect())
+    ).find((r) => r.sessionId === sessionId && r.author === "tom")!;
+    const res = await post(t, {
+      inboundId: turn._id,
+      verdict: "archive",
+      subjectType: "life",
+      subjectId: todoId,
+      quote: "archive the dentist one.",
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/the 0 subject\(s\) its agenda names/);
+  });
+
   // A block session is about the todos of its category — those its opening
   // prompt listed — and nothing else.
   it("binds a block session's turns to the todos of its category", async () => {

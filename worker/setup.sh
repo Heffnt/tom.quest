@@ -352,6 +352,13 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 0 8 * * * root /usr/bin/flock -n /var/lock/tts-nightly.lock /usr/bin/node /opt/tts/nightly.mjs >> /var/log/tts/nightly.log 2>&1
 0 9 * * * root /usr/bin/flock -n /var/lock/tts-nightly.lock /usr/bin/node /opt/tts/nightly.mjs >> /var/log/tts/nightly.log 2>&1
 
+# THE WEEKLY JOB (the lifeos update, phase 8) at 4:00 a.m. New York on
+# Fridays: the week's facts from Convex, one model call, the agenda file
+# committed and pushed under the WikiTom writer lock, one "weekly" session
+# opened. Both UTC slots on one line; the job's own NY-hour guard keeps one
+# (worker/jobs/weekly.mjs).
+0 8,9 * * 5 root /usr/bin/flock -n /var/lock/tts-weekly.lock /usr/bin/node /opt/tts/weekly.mjs >> /var/log/tts/weekly.log 2>&1
+
 # CODE-TODO RULING LOOP (CMT's vqc/todos.yaml -> briefs -> Tom rules -> a
 # worker mission): the BRIEFS are the planner's second pass (below, every 30
 # minutes) — hash cursor in /var/lib/tts/brief-hashes.json, so most ticks

@@ -96,6 +96,11 @@ export const LEARNING_CHANGE = "learning-change";
 export const LEARNING_REVERTED = "learning-reverted";
 export const LEARNING_REVERT_FAILED = "learning-revert-failed";
 
+// The weekly session's record that Tom confirmed an area page (phase 8;
+// POST /tts/area-reviewed, convex/ttsWeekly.ts): key = the page's path,
+// data { path, reviewedOn }. Listed with what happened since the last digest.
+export const AREA_REVIEWED = "area-reviewed";
+
 // The note the rollover writes on the outcome row, so the row says who wrote
 // it when Tom reads the item's history.
 export const ROLLOVER_NOTE = "passed without an outcome; recorded at the 5 a.m. rollover";
@@ -811,6 +816,12 @@ export async function gatherDigestFacts(
           after: str(d.after) ?? "",
           evidence: str(d.evidence) ?? "",
           reason: str(d.reason),
+        });
+        break;
+      case AREA_REVIEWED:
+        overnight.push({
+          batch: null,
+          text: `area page reviewed with Tom: ${slackEscape(str(d.path) ?? "")} (reviewed ${slackEscape(str(d.reviewedOn) ?? "")})`,
         });
         break;
       default:

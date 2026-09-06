@@ -18,6 +18,7 @@ import {
   subjectKey,
 } from "./ttsRulings";
 import { logEvent } from "./tts";
+import { isIsoDay } from "../worker/jobs/markdown-sections.mjs";
 import { codeSessionRulingLines } from "../app/lib/tts-session-prompt";
 
 // Claude Code session surface — the Convex half of the web wrapper around
@@ -544,6 +545,10 @@ type SessionSeed = {
   /** Provenance for a "reopen as": the session this one continues on another
    * model (forkSessionAs). */
   forkedFrom?: Id<"claudeSessions">;
+  /** Kind "weekly" only (schema: agendaDay, agendaSubjects): the day the
+   * Friday job ran for, and the todo and batch ids its agenda's forks name. */
+  agendaDay?: string;
+  agendaSubjects?: string[];
   /**
    * The session's first turn. A BUILDER, not a string, because every prompt
    * this system writes names the session's own id (the outcome pen) and that
@@ -592,6 +597,8 @@ async function insertSession(
     // which is exactly what modelFamily() reads an absent field as.
     model: seed.model ?? DEFAULT_SESSION_MODEL,
     forkedFrom: seed.forkedFrom,
+    agendaDay: seed.agendaDay,
+    agendaSubjects: seed.agendaSubjects,
     status: "requested",
     statusChangedAt: now,
     nextSeq: 0,
@@ -682,13 +689,25 @@ async function insertSession(
   // plan repairs crossed over from the session world — so a night of fleet
   // work left no trace there at all. One home for the creation event, now that
   // there is one home for the creation.
-  await logEvent(ctx, "session-created", seed.todoId, {
-    sessionId,
-    title: seed.title,
-    kind: seed.kind,
-    mode: seed.mode ?? "interactive",
-    repos,
-  });
+  //
+  // A session opened ON a batch has no todoId, so the row names the batch in
+  // its data and carries it as the key: the weekly gather reads "was this
+  // goal evaluated" off by_todo for the goal's own sessions and off
+  // by_kind_key for the sessions of its batch (convex/ttsWeekly.ts).
+  await logEvent(
+    ctx,
+    "session-created",
+    seed.todoId,
+    {
+      sessionId,
+      title: seed.title,
+      kind: seed.kind,
+      mode: seed.mode ?? "interactive",
+      repos,
+      batchId: seed.batchId,
+    },
+    seed.batchId,
+  );
   return sessionId;
 }
 
@@ -810,6 +829,8 @@ async function createSessionFrom(
     blockCategory,
     model,
     initialPrompt,
+    agendaDay,
+    agendaSubjects,
   }: {
     title: string;
     kind: Doc<"claudeSessions">["kind"];
@@ -820,6 +841,8 @@ async function createSessionFrom(
     blockCategory?: string;
     model?: SessionModel;
     initialPrompt: string;
+    agendaDay?: string;
+    agendaSubjects?: string[];
   },
 ): Promise<Id<"claudeSessions">> {
   if (initialPrompt.trim() === "") throw new Error("initialPrompt is empty");
@@ -852,6 +875,8 @@ async function createSessionFrom(
       batchId,
       blockCategory,
       model,
+      agendaDay,
+      agendaSubjects,
       // The ratified rule is "every session ends with a written outcome
       // record". An INTERACTIVE session had no writer for its own outcome at
       // all until the footer was appended server-side, after the insert.
@@ -876,6 +901,46 @@ export const createSession = mutation({
 export const internalCreateSession = internalMutation({
   args: CREATE_SESSION_ARGS,
   handler: async (ctx, args) => await createSessionFrom(ctx, args),
+});
+
+// The Friday job's pen (POST /tts/session; the lifeos update, phase 8). Kind
+// "weekly" and nothing else, and two facts the row must carry that no other
+// session has: the day the job ran for, and the todo and batch ids the
+// agenda's forks name. A weekly session's turns rule on those ids only
+// (ttsRulings refuseUnlessSessionSubject) — the agenda, not the session's
+// kind, is what says what Tom was talking about. Any holder of
+// TTS_WORKER_KEY reaches this door, so it also refuses a second weekly
+// session for the same day: the one the job opened is the weekly session.
+export const internalCreateWeeklySession = internalMutation({
+  args: {
+    title: v.string(),
+    repos: v.optional(v.array(v.string())),
+    model: v.optional(SESSION_MODEL),
+    initialPrompt: v.string(),
+    day: v.string(),
+    agendaSubjects: v.array(v.string()),
+  },
+  handler: async (ctx, { title, repos, model, initialPrompt, day, agendaSubjects }) => {
+    if (!isIsoDay(day)) throw new Error(`day must be a YYYY-MM-DD date, got: ${day}`);
+    const existing = await ctx.db
+      .query("claudeSessions")
+      .withIndex("by_kind_agenda_day", (q) => q.eq("kind", "weekly").eq("agendaDay", day))
+      .first();
+    if (existing !== null) {
+      throw new Error(
+        `refused: the weekly session for ${day} already exists (${existing._id})`,
+      );
+    }
+    return await createSessionFrom(ctx, {
+      title,
+      kind: "weekly",
+      repos,
+      model,
+      initialPrompt,
+      agendaDay: day,
+      agendaSubjects: [...new Set(agendaSubjects.map((s) => s.trim()).filter((s) => s !== ""))],
+    });
+  },
 });
 
 // Every Tom-facing session mutation below carries the same pen, built the same
@@ -1775,12 +1840,19 @@ export const internalIngest = internalMutation({
         args.sessionId,
         outcomeEventText(session.title, args.outcome, args.outcomeSummary),
       );
-      await logEvent(ctx, "session-outcome", session.todoId, {
-        sessionId: args.sessionId,
-        title: session.title,
-        outcome: args.outcome,
-        summary: args.outcomeSummary,
-      });
+      await logEvent(
+        ctx,
+        "session-outcome",
+        session.todoId,
+        {
+          sessionId: args.sessionId,
+          title: session.title,
+          outcome: args.outcome,
+          summary: args.outcomeSummary,
+          batchId: session.batchId,
+        },
+        session.batchId,
+      );
     }
 
     for (const upd of args.inboundUpdates ?? []) {
@@ -2092,12 +2164,19 @@ export const internalRecordOutcome = internalMutation({
         outcomeEventText(session.title, outcome, summary),
       );
       // Same edge, same reason, into the events table the hourly update reads.
-      await logEvent(ctx, "session-outcome", session.todoId, {
-        sessionId: normalized,
-        title: session.title,
-        outcome,
-        summary: summary.trim(),
-      });
+      await logEvent(
+        ctx,
+        "session-outcome",
+        session.todoId,
+        {
+          sessionId: normalized,
+          title: session.title,
+          outcome,
+          summary: summary.trim(),
+          batchId: session.batchId,
+        },
+        session.batchId,
+      );
     }
     // The plan-repair event, written whenever the worker sent one — including
     // on a re-record, because a second wording of the same ending may be where

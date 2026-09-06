@@ -1400,6 +1400,79 @@ const ttsLearningInput = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/learning-input", method: "GET", handler: ttsLearningInput });
 
+// GET /tts/weekly-input?until=<epoch ms> — the Friday job's one deterministic
+// gather (convex/ttsWeekly.ts): every fact of the seven days ending at
+// `until` (default: now), read on indexes, no model in the loop. The job adds
+// last week's agenda from the WikiTom checkout and makes the one model call.
+const ttsWeeklyInput = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const params = new URL(request.url).searchParams;
+  const until = params.has("until") ? Number(params.get("until")) : Date.now();
+  if (!Number.isFinite(until) || until <= 0) {
+    return jsonResponse(400, { error: "until must be an epoch ms instant" });
+  }
+  const facts = await ctx.runQuery(internal.ttsWeekly.internalWeeklyInput, { until });
+  return jsonResponse(200, facts);
+});
+
+http.route({ path: "/tts/weekly-input", method: "GET", handler: ttsWeeklyInput });
+
+// GET /tts/weekly-run?day=YYYY-MM-DD — whether the Friday job already ran for
+// that day: its "weekly-run" row, keyed on the day (convex/ttsWeekly.ts). The
+// job asks before it writes anything, and a rerun stops here unless it was
+// told --overwrite.
+const ttsWeeklyRun = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const day = new URL(request.url).searchParams.get("day") ?? "";
+  if (day === "") return jsonResponse(400, { error: "day (YYYY-MM-DD) required" });
+  try {
+    const run = await ctx.runQuery(internal.ttsWeekly.internalWeeklyRun, { day });
+    return jsonResponse(200, { run });
+  } catch (e) {
+    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+http.route({ path: "/tts/weekly-run", method: "GET", handler: ttsWeeklyRun });
+
+// POST /tts/area-reviewed — the weekly session's record that Tom confirmed an
+// area page. Body: { path, reviewedOn }. One "area-reviewed" dtsEvents row
+// (convex/ttsWeekly.ts); the page's `reviewed:` line itself is edited in the
+// checkout by the session's pen (worker/jobs/weekly.mjs reviewed), which
+// calls this after the commit.
+const ttsAreaReviewed = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.path !== "string" || b.path === "") {
+    return jsonResponse(400, { error: "path (non-empty string) required" });
+  }
+  if (typeof b.reviewedOn !== "string" || b.reviewedOn === "") {
+    return jsonResponse(400, { error: "reviewedOn (YYYY-MM-DD) required" });
+  }
+  try {
+    const id = await ctx.runMutation(internal.ttsWeekly.internalRecordAreaReviewed, {
+      path: b.path,
+      reviewedOn: b.reviewedOn,
+    });
+    return jsonResponse(200, { ok: true, id });
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({ path: "/tts/area-reviewed", method: "POST", handler: ttsAreaReviewed });
+
 // POST /tts/learning-objections-consumed — body { ids: [<dtsEvents id>] }.
 // The job stamps each objection it acted on (reverted, or could not revert
 // and said so), so the next night's read does not return it again.
@@ -1446,10 +1519,14 @@ const ttsEvent = httpAction(async (ctx, request) => {
   if (typeof b.kind !== "string" || b.kind === "") {
     return jsonResponse(400, { error: "kind (non-empty string) required" });
   }
+  if (b.key !== undefined && (typeof b.key !== "string" || b.key === "")) {
+    return jsonResponse(400, { error: "key, when given, is a non-empty string" });
+  }
   try {
     const id = await ctx.runMutation(internal.ttsNightly.internalRecordWorkerEvent, {
       kind: b.kind,
       data: b.data,
+      key: b.key,
     });
     return jsonResponse(200, { ok: true, id });
   } catch (e) {
@@ -1657,6 +1734,79 @@ http.route({
   method: "POST",
   handler: ttsPlanRepairsConsumed,
 });
+
+// POST /tts/session — the Friday weekly job's door (worker/jobs/weekly.mjs)
+// to open ITS session on the sessions page. Body: { title, kind: "weekly",
+// day, agendaSubjects, repos?, model?, initialPrompt } →
+// claudeSessions.internalCreateWeeklySession, the same one row-builder
+// (insertSession) behind every session, so the opener begins with the
+// model-of-tom prelude and the outcome footer like every other.
+//
+// KIND "weekly" ONLY, ONE PER DAY. Every holder of TTS_WORKER_KEY — every
+// session on the box — reaches this route, so it opens nothing but the
+// weekly session and refuses a second one for the same `day`. `agendaSubjects`
+// is the list of todo and batch ids the agenda's forks name; the session's
+// turns rule on those and nothing else (ttsRulings). The system's own kinds
+// (gate, focus-item, block) name a subject and are opened by the code that
+// holds it; an adhoc session is Tom's to open from the page.
+const ttsSession = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.title !== "string" || b.title.trim() === "") {
+    return jsonResponse(400, { error: "title (non-empty string) required" });
+  }
+  if (b.kind !== "weekly") {
+    return jsonResponse(400, { error: 'kind must be "weekly" — this door opens the weekly session only' });
+  }
+  if (typeof b.day !== "string" || b.day === "") {
+    return jsonResponse(400, { error: "day (YYYY-MM-DD) required" });
+  }
+  if (
+    !Array.isArray(b.agendaSubjects) ||
+    !b.agendaSubjects.every((s) => typeof s === "string")
+  ) {
+    return jsonResponse(400, { error: "agendaSubjects (array of todo and batch ids) required" });
+  }
+  if (typeof b.initialPrompt !== "string" || b.initialPrompt.trim() === "") {
+    return jsonResponse(400, { error: "initialPrompt (non-empty string) required" });
+  }
+  if (
+    b.repos !== undefined &&
+    (!Array.isArray(b.repos) ||
+      !b.repos.every((r) => (SESSION_REPO_NAMES as readonly string[]).includes(r as string)))
+  ) {
+    return jsonResponse(400, {
+      error: `repos must be an array of ${SESSION_REPO_NAMES.join(", ")}`,
+    });
+  }
+  if (b.model !== undefined && !isSessionModel(b.model)) {
+    return jsonResponse(400, { error: "model is not a session model" });
+  }
+  try {
+    const sessionId = await ctx.runMutation(internal.claudeSessions.internalCreateWeeklySession, {
+      title: b.title,
+      repos: b.repos as string[] | undefined,
+      model: b.model,
+      initialPrompt: b.initialPrompt,
+      day: b.day,
+      agendaSubjects: b.agendaSubjects as string[],
+    });
+    return jsonResponse(200, { ok: true, sessionId });
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({ path: "/tts/session", method: "POST", handler: ttsSession });
 
 // POST /tts/session-outcome — an autonomous session's outcome pen. Body:
 // { sessionId, outcome: "completed"|"errored", summary?, planRepair? }. It lives under the

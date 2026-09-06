@@ -19,7 +19,7 @@
 // /tts/capture-context, before it does anything else; and, later, the Friday
 // weekly gather, which lists integrations by state.
 
-import { internalQuery } from "./_generated/server";
+import { internalQuery, type QueryCtx } from "./_generated/server";
 
 /** The one shape a declining todo's statement has. */
 export const INTEGRATION_PREFIX = "integration:";
@@ -93,32 +93,59 @@ export type DeclinedIntegration = {
  * source is stamped at capture (INTEGRATION_SOURCE above), so the rows read
  * here are exactly the rulings about integrations: a handful, for ever.
  */
+export async function declinedIntegrations(
+  ctx: QueryCtx,
+): Promise<DeclinedIntegration[]> {
+  const rows = await ctx.db
+    .query("dtsTodos")
+    .withIndex("by_source", (q) => q.eq("source", INTEGRATION_SOURCE))
+    .collect();
+  const out: DeclinedIntegration[] = [];
+  for (const todo of rows) {
+    if (todo.status !== "archived") continue;
+    const name = integrationName(todo.statement);
+    if (name === null) continue;
+    const rulings = await ctx.db
+      .query("dtsRulings")
+      .withIndex("by_todo", (q) => q.eq("todoId", todo._id))
+      .collect();
+    // The newest ruling decides; it has to be the archive.
+    const newest = rulings.sort((a, b) => b.ruledAt - a.ruledAt)[0];
+    if (newest === undefined || newest.verdict !== "archive") continue;
+    out.push({
+      name,
+      todoId: todo._id,
+      ruledAt: newest.ruledAt,
+      sentence: newest.sentence?.trim() || null,
+    });
+  }
+  return out;
+}
+
+/** The read behind GET /tts/capture-context, which has no db handle. The
+ * weekly gather (convex/ttsWeekly.ts) calls declinedIntegrations directly. */
 export const internalDeclinedIntegrations = internalQuery({
   args: {},
-  handler: async (ctx): Promise<DeclinedIntegration[]> => {
-    const rows = await ctx.db
-      .query("dtsTodos")
-      .withIndex("by_source", (q) => q.eq("source", INTEGRATION_SOURCE))
-      .collect();
-    const out: DeclinedIntegration[] = [];
-    for (const todo of rows) {
-      if (todo.status !== "archived") continue;
-      const name = integrationName(todo.statement);
-      if (name === null) continue;
-      const rulings = await ctx.db
-        .query("dtsRulings")
-        .withIndex("by_todo", (q) => q.eq("todoId", todo._id))
-        .collect();
-      // The newest ruling decides; it has to be the archive.
-      const newest = rulings.sort((a, b) => b.ruledAt - a.ruledAt)[0];
-      if (newest === undefined || newest.verdict !== "archive") continue;
-      out.push({
-        name,
-        todoId: todo._id,
-        ruledAt: newest.ruledAt,
-        sentence: newest.sentence?.trim() || null,
-      });
-    }
-    return out;
-  },
+  handler: async (ctx): Promise<DeclinedIntegration[]> =>
+    await declinedIntegrations(ctx),
 });
+
+// ── The integrations by state (the weekly gather) ────────────────────────────
+// The capture integrations the Jarvis Box runs, by the name Tom declines them
+// under and the job that runs them. Every job reports a dead credential as a
+// standing "job-failed" row keyed on a condition of its own naming
+// (convex/ttsJobs.ts; poll-canvas's is `poll-canvas:canvas-auth`), and the
+// weekly gather reads that row as "waiting on a credential". An integration
+// neither declined nor waiting is running. Add a poller here when it gets a
+// cron line, and nowhere else.
+export const INTEGRATIONS = [
+  { name: "gmail", job: "poll-gmail" },
+  { name: "canvas", job: "poll-canvas" },
+  { name: "outlook", job: "poll-outlook" },
+] as const;
+
+/** Whether a standing failure's key names a credential condition — the one
+ * kind of failure that means "waiting on Tom" rather than "broke". */
+export function isCredentialKey(key: string): boolean {
+  return /auth|credential|token/i.test(key);
+}

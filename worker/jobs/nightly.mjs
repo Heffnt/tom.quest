@@ -58,7 +58,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { loadEnv, convexFetch, nyHour, runClaude, extractJsonObject, clip } from "./tts-lib.mjs";
 import { git } from "./tts-code-lib.mjs";
-import { enclosingHeadings, extractSections, sectionSpan } from "./markdown-sections.mjs";
+import { enclosingHeadings, extractSections, frontmatterBlock, sectionSpan } from "./markdown-sections.mjs";
 import { CHANGE_ID_CHARS, changeIdTokens, namedChange } from "./learning-change-names.mjs";
 
 // ── Where things are ─────────────────────────────────────────────────────────
@@ -92,6 +92,8 @@ export const MODEL_OF_TOM_FIRST = [
 ];
 export const MODEL_OF_TOM_AREAS_DIR = "model-of-tom/areas";
 export const AREA_SECTIONS = ["Current state", "Must not break"];
+/** The job's failure row (convex/ttsNightly.ts NIGHTLY_FAILURE by name). */
+export const NIGHTLY_FAILURE = "nightly-failure";
 
 // The committer identity every git command in the checkout writes under. It is
 // ALSO set in the checkout's own config by setup.sh, and both homes are needed:
@@ -180,8 +182,15 @@ export function gzip(bytes) {
 /**
  * The files to post from a WikiTom checkout: the three named files that
  * exist, then each page under areas/ (alphabetically) reduced to its
- * AREA_SECTIONS. `missing` names the expected files that were not there —
- * a post still goes out with the rest, and the caller records the gap.
+ * frontmatter block and its AREA_SECTIONS. `missing` names the expected files
+ * that were not there — a post still goes out with the rest, and the caller
+ * records the gap.
+ *
+ * THE FRONTMATTER RIDES ALONG because it is where a page says when it was
+ * last reviewed and how long its window is (spec §22), and the weekly gather
+ * (convex/ttsWeekly.ts) reads that off the posted body — Convex has no other
+ * way to see the checkout. Three short lines in every prompt, and the date
+ * they carry is a fact an agent planning for Tom should have anyway.
  */
 export function collectModelOfTomFiles(dir) {
   const files = [];
@@ -203,12 +212,14 @@ export function collectModelOfTomFiles(dir) {
       .filter((n) => n.endsWith(".md"))
       .sort();
     for (const page of pages) {
-      const body = extractSections(
-        fs.readFileSync(path.join(areas, page), "utf8"),
-        AREA_SECTIONS,
-      );
-      if (body === "") continue;
-      files.push({ path: `${MODEL_OF_TOM_AREAS_DIR}/${page}`, body });
+      const text = fs.readFileSync(path.join(areas, page), "utf8");
+      const sections = extractSections(text, AREA_SECTIONS);
+      if (sections === "") continue;
+      const front = frontmatterBlock(text);
+      files.push({
+        path: `${MODEL_OF_TOM_AREAS_DIR}/${page}`,
+        body: front === "" ? sections : `${front}\n\n${sections}`,
+      });
     }
   }
   return { files, missing };
@@ -430,7 +441,7 @@ async function recordFailure(run, step, err) {
   run.failures.push({ step, error });
   try {
     await convexFetch(run.env, "/tts/event", {
-      kind: "nightly-failure",
+      kind: NIGHTLY_FAILURE,
       data: { day: run.day, step, error },
     });
   } catch (postErr) {
@@ -1518,9 +1529,12 @@ export function abortStaleRebase(dir) {
  * A rebase left in progress by an earlier run is aborted first, as its own
  * failure row: while one is in progress git refuses to commit at all.
  */
-export function commitTree(dir, commits, day) {
+export function commitTree(dir, commits, day, { guardRebase = true } = {}) {
   const made = [];
-  const failures = abortStaleRebase(dir);
+  // A caller that already aborted a stale rebase before its own write (the
+  // weekly job's commitUnderLock) passes guardRebase: false — the check is
+  // one per write, not one before the write and one here.
+  const failures = guardRebase ? abortStaleRebase(dir) : [];
   for (const c of commits) {
     addPaths(dir, c.paths);
     if (!stagedChanges(dir)) continue;
