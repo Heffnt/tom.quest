@@ -192,15 +192,67 @@ export const getMessages = query({
 // truncation this whole path exists to undo.
 export const OVERFLOW_READ_BYTES = 1024 * 1024;
 
+// The most chunk rows one read scans: one ranged index scan, bounded at 2MB
+// of documents by the chunk cap below whatever the byte budget says. The
+// budget normally stops the walk first.
+const OVERFLOW_READ_CHUNKS = 8;
+
+// The largest chunk the overflow route accepts — OVERFLOW_CHUNK_BYTES in
+// worker/session-host/overflow.mjs, spelled again here because no import
+// crosses that boundary. Convex caps a document at ~1MB; this keeps a chunk
+// row well inside it and is what bounds every read above.
+export const OVERFLOW_CHUNK_MAX_BYTES = 256 * 1024;
+
+const utf8 = new TextEncoder();
+const utf8Bytes = (text: string) => utf8.encode(text).length;
+
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", utf8.encode(text));
+  return Array.from(new Uint8Array(digest), (b) =>
+    b.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+/** The finalized row at (sessionId, seq), if it has landed. */
+async function messageAt(
+  ctx: QueryCtx,
+  sessionId: Id<"claudeSessions">,
+  seq: number,
+) {
+  return await ctx.db
+    .query("claudeMessages")
+    .withIndex("by_session_seq", (q) =>
+      q.eq("sessionId", sessionId).eq("seq", seq),
+    )
+    .first();
+}
+
+/** One chunk row of a message's complete payload, if it has landed. */
+async function chunkAt(
+  ctx: QueryCtx,
+  sessionId: Id<"claudeSessions">,
+  seq: number,
+  index: number,
+) {
+  return await ctx.db
+    .query("claudeMessageOverflow")
+    .withIndex("by_session_seq_index", (q) =>
+      q.eq("sessionId", sessionId).eq("seq", seq).eq("index", index),
+    )
+    .first();
+}
+
 /**
  * The complete payload behind one message, chunks reassembled in order.
  *
  * `fromIndex` continues a previous read at its `nextIndex`; concatenating the
- * `text` of every page in order reproduces exactly what the daemon stored, and
- * `sha256` (of that same stored text) is what a caller checks it against.
- * `complete` says whether every chunk the row names is actually here — an
- * upload that failed permanently leaves the row's promise unkept, and saying
- * so is better than handing back a hole.
+ * `text` of every page in order reproduces exactly what the daemon stored.
+ * A page says how many UTF-8 bytes it carries (`bytes`) and whether the walk
+ * reached the last chunk the row names (`end`); `complete` is the stronger
+ * claim, made only when it was checked: the whole payload came back in this
+ * one call, its bytes sum to the row's `byteLength`, and it hashes to the
+ * row's `sha256`. A paged reader gets `end` on its last page and sums `bytes`
+ * against `byteLength` itself — counting chunks would call a hole complete.
  */
 export type MessageOverflowRead = {
   /** False = nothing was cut and `content` on the row IS the whole payload. */
@@ -212,9 +264,13 @@ export type MessageOverflowRead = {
   byteLength?: number;
   chunkCount?: number;
   fromIndex: number;
-  /** Where to continue; null = the payload ends here. */
+  /** Where to continue; null = the walk stopped (at the end, or at a hole). */
   nextIndex: number | null;
-  /** Every chunk the row names was found. */
+  /** UTF-8 bytes of `text` — what a paged reader sums against `byteLength`. */
+  bytes: number;
+  /** The walk reached the last chunk the row names with no index missing. */
+  end: boolean;
+  /** Read whole in this call AND its bytes and hash match the row's stamp. */
   complete: boolean;
   text: string;
 };
@@ -233,36 +289,61 @@ async function messageOverflow(
       seq: message.seq,
       fromIndex: 0,
       nextIndex: null,
+      bytes: 0,
+      end: true,
       complete: true,
       text: "",
     };
   }
   const { sha256, byteLength, chunkCount } = message.overflow;
-  let stored = 0;
-  let bytes = 0;
-  let nextIndex: number | null = null;
   const parts: string[] = [];
-  for (let index = fromIndex; index < chunkCount; index++) {
-    const chunk = await ctx.db
+  let bytes = 0;
+  let end = false;
+  let nextIndex: number | null = null;
+  let expected = fromIndex;
+  if (Number.isInteger(fromIndex) && fromIndex >= 0 && fromIndex < chunkCount) {
+    // One ranged scan from `fromIndex` up, never one point read per index.
+    const chunks = await ctx.db
       .query("claudeMessageOverflow")
       .withIndex("by_session_seq_index", (q) =>
         q
           .eq("sessionId", message.sessionId)
           .eq("seq", message.seq)
-          .eq("index", index),
+          .gte("index", fromIndex),
       )
-      .first();
-    if (!chunk) break; // an incomplete set — reported, never papered over
-    stored += 1;
-    parts.push(chunk.text);
-    // Character count, not byte count — a budget, and UTF-8 bytes are never
-    // fewer, so a page can overshoot by at most one chunk.
-    bytes += chunk.text.length;
-    if (bytes >= OVERFLOW_READ_BYTES && index + 1 < chunkCount) {
-      nextIndex = index + 1;
-      break;
+      .take(OVERFLOW_READ_CHUNKS);
+    for (const chunk of chunks) {
+      if (chunk.index !== expected) break; // a hole — reported, never papered over
+      parts.push(chunk.text);
+      bytes += utf8Bytes(chunk.text);
+      expected += 1;
+      if (expected === chunkCount) {
+        end = true;
+        break;
+      }
+      if (bytes >= OVERFLOW_READ_BYTES) {
+        nextIndex = expected;
+        break;
+      }
+    }
+    // The window was consumed whole with neither the end nor the budget
+    // reached: more chunks may lie past it. A shorter window means the index
+    // simply had no more rows — a hole, and nextIndex stays null.
+    if (
+      !end &&
+      nextIndex === null &&
+      parts.length === chunks.length &&
+      chunks.length === OVERFLOW_READ_CHUNKS
+    ) {
+      nextIndex = expected;
     }
   }
+  const text = parts.join("");
+  // Verified, not counted: the stamp's byte length and hash, on the whole.
+  const complete =
+    end && fromIndex === 0 && bytes === byteLength
+      ? (await sha256Hex(text)) === sha256
+      : false;
   return {
     hasOverflow: true,
     sessionId: message.sessionId,
@@ -271,11 +352,11 @@ async function messageOverflow(
     byteLength,
     chunkCount,
     fromIndex,
-    // Read this far and stop; null means the payload ends here.
     nextIndex,
-    // True only when this read walked to the last chunk and found them all.
-    complete: nextIndex === null && fromIndex + stored === chunkCount,
-    text: parts.join(""),
+    bytes,
+    end,
+    complete,
+    text,
   };
 }
 
@@ -1718,39 +1799,66 @@ export const internalIngest = internalMutation({
   },
 });
 
-// ── Internal: overflow chunk ingest (the complete payload) ───────────────────
+// ── Internal: overflow chunks (the complete payload) ─────────────────────────
 // One chunk of one message's full payload, ≤256KB, behind POST
-// /sessions/overflow. The daemon uploads every chunk BEFORE the finalize row
-// that names their hash, so a row carrying `overflow` always points at bytes
-// already here; a row whose upload failed carries no `overflow` and the
-// failure arrives as an overflowFailures entry above instead.
+// /sessions/overflow. Each chunk is its own mutation: nothing here is inside
+// internalIngest's transaction. The ordering — chunks first, then the row that
+// names them — is the daemon's to keep, and it keeps it by holding the row out
+// of the flush until the last chunk is acknowledged (OverflowQueue in
+// worker/session-host/overflow.mjs). A row whose upload failed lands with no
+// `overflow` stamp, its failure arrives as an overflowFailures entry above,
+// and reingest-overflow.mjs on the box later uploads the chunks again and
+// stamps the row through internalStampOverflow below.
 //
 // Upsert by (sessionId, seq, index): the daemon retries blindly, and a
-// re-sent chunk must overwrite rather than double the payload.
+// re-sent chunk must overwrite rather than double the payload. A chunk is
+// REFUSED — { ok: false, reason }, which the route returns as 409 so the
+// daemon stops re-sending it — when its shape is wrong or when a row already
+// stamped under this seq names a different chunkCount: that chunk is not part
+// of the payload the row promises, and storing it would corrupt one.
+
+/** A refusal's shape, and the one place the reason is logged (never text). */
+function refuseOverflow(
+  reason: string,
+  where: { sessionId: Id<"claudeSessions">; seq: number; index?: number },
+) {
+  console.warn(
+    `overflow refused: ${reason} (session ${where.sessionId}, seq ${where.seq}` +
+      (where.index === undefined ? ")" : `, chunk ${where.index})`),
+  );
+  return { ok: false as const, reason };
+}
+
 export const internalIngestOverflow = internalMutation({
   args: {
     sessionId: v.id("claudeSessions"),
     seq: v.number(),
     index: v.number(),
     chunkCount: v.number(),
-    // Recorded on the message row, not the chunk; accepted here so the daemon
-    // sends one shape and a chunk arriving for a row that never lands is
-    // still self-describing in the logs.
-    sha256: v.optional(v.string()),
-    byteLength: v.optional(v.number()),
     text: v.string(),
   },
   handler: async (ctx, args) => {
     await getSessionOrThrow(ctx, args.sessionId);
-    const existing = await ctx.db
-      .query("claudeMessageOverflow")
-      .withIndex("by_session_seq_index", (q) =>
-        q
-          .eq("sessionId", args.sessionId)
-          .eq("seq", args.seq)
-          .eq("index", args.index),
-      )
-      .first();
+    const where = { sessionId: args.sessionId, seq: args.seq, index: args.index };
+    if (
+      !Number.isInteger(args.seq) ||
+      args.seq < 0 ||
+      !Number.isInteger(args.chunkCount) ||
+      args.chunkCount < 1 ||
+      !Number.isInteger(args.index) ||
+      args.index < 0 ||
+      args.index >= args.chunkCount
+    ) {
+      return refuseOverflow("malformed chunk", where);
+    }
+    if (utf8Bytes(args.text) > OVERFLOW_CHUNK_MAX_BYTES) {
+      return refuseOverflow("chunk too large", where);
+    }
+    const row = await messageAt(ctx, args.sessionId, args.seq);
+    if (row?.overflow && row.overflow.chunkCount !== args.chunkCount) {
+      return refuseOverflow("chunkCount disagrees with the row's stamp", where);
+    }
+    const existing = await chunkAt(ctx, args.sessionId, args.seq, args.index);
     if (existing) {
       await ctx.db.patch(existing._id, {
         chunkCount: args.chunkCount,
