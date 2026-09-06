@@ -23,6 +23,7 @@ import {
   abortStaleRebase,
   claudeEntry,
   codexMetaOf,
+  codexMetaOfBuffer,
   collectModelOfTomFiles,
   commitTree,
   discoverSessionFiles,
@@ -34,6 +35,7 @@ import {
   rebaseInProgress,
   serializeRow,
   sessionDateOf,
+  sessionDateOfBuffer,
   sha256,
   syncRemote,
   syncSnapshot,
@@ -258,6 +260,28 @@ describe("sessionDateOf", () => {
   it("reads a Codex rollout's session_meta timestamp", () => {
     const head = '{"timestamp":"2026-09-04T23:28:08.844Z","type":"session_meta","payload":{"id":"t1","timestamp":"2026-09-04T23:28:08.818Z"}}\n';
     expect(sessionDateOf(head, 0)).toEqual({ date: "2026-09-04", dateSource: "timestamp" });
+  });
+
+  // witness: every session now opens with the model-of-tom prelude, so the
+  // first line of a transcript is hundreds of KB on its own — read as a fixed
+  // 64 KB head it is a truncated, unparseable line, and every such session
+  // was filed under the file's mtime instead of its own date.
+  it("reads past a first line longer than any fixed head, over a buffer", () => {
+    const prelude = JSON.stringify({
+      type: "user",
+      message: { content: "MODEL-OF-TOM FILES".padEnd(300 * 1024, " ") },
+    });
+    const raw = Buffer.from(
+      `${prelude}\n{"type":"assistant","timestamp":"2026-09-04T23:28:08.844Z"}\n`,
+    );
+    expect(raw.length).toBeGreaterThan(64 * 1024);
+    expect(sessionDateOfBuffer(raw, 0)).toEqual({ date: "2026-09-04", dateSource: "timestamp" });
+    // And the Codex identity, whose session_meta is the first line whatever
+    // its length.
+    const meta = Buffer.from(
+      `${JSON.stringify({ type: "session_meta", payload: { id: "p1", cwd: "/w".padEnd(80 * 1024, "x") } })}\n`,
+    );
+    expect(codexMetaOfBuffer(meta)?.id).toBe("p1");
   });
 
   it("falls back to the file's mtime when no line carries a timestamp", () => {

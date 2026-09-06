@@ -240,26 +240,66 @@ export function collectModelOfTomFiles(dir) {
   return { files, missing };
 }
 
+/** The instant one session-file line carries, or null: a Claude SDK line has
+ * `timestamp` at the top level, a Codex rollout's session_meta line has one
+ * there and inside its payload. */
+function timestampOfLine(line) {
+  if (line.trim() === "") return null;
+  try {
+    const obj = JSON.parse(line);
+    const ts = obj?.timestamp ?? obj?.payload?.timestamp;
+    if (typeof ts === "string" && !Number.isNaN(Date.parse(ts))) return Date.parse(ts);
+  } catch {
+    // not JSON — keep looking
+  }
+  return null;
+}
+
 /**
- * The date a session file belongs to: the first `timestamp` found in its
- * first lines (a Claude SDK line carries one at the top level; a Codex
- * rollout's session_meta line carries one at the top level and inside its
- * payload), else the file's mtime. Returns { date, dateSource }.
+ * The lines of a buffer, decoded ONE AT A TIME. A session file is tens of
+ * megabytes and a single line of it can be hundreds of kilobytes — every
+ * session now opens with the model-of-tom prelude — so neither a fixed head
+ * nor one decode of the whole file is the right way to read the first lines.
+ */
+export function* bufferLines(raw) {
+  let start = 0;
+  while (start < raw.length) {
+    let end = raw.indexOf(0x0a, start);
+    if (end === -1) end = raw.length;
+    yield raw.toString("utf8", start, end);
+    start = end + 1;
+  }
+}
+
+/**
+ * The date a session file belongs to: the first `timestamp` found in it,
+ * however far in that is, else the file's mtime. Returns { date, dateSource }.
+ * A cap on how much is read is a cap on how many files are filed by the wrong
+ * date — the prelude alone exceeded the 64 KB head this used to take.
  */
 export function sessionDateOf(head, mtimeMs) {
-  for (const line of head.split("\n").slice(0, 20)) {
-    if (line.trim() === "") continue;
-    try {
-      const obj = JSON.parse(line);
-      const ts = obj?.timestamp ?? obj?.payload?.timestamp;
-      if (typeof ts === "string" && !Number.isNaN(Date.parse(ts))) {
-        return { date: utcDay(Date.parse(ts)), dateSource: "timestamp" };
-      }
-    } catch {
-      // not JSON — keep looking
-    }
+  for (const line of head.split("\n")) {
+    const at = timestampOfLine(line);
+    if (at !== null) return { date: utcDay(at), dateSource: "timestamp" };
   }
   return { date: utcDay(mtimeMs), dateSource: "mtime" };
+}
+
+/** sessionDateOf over a buffer, without decoding more of it than it must. */
+export function sessionDateOfBuffer(raw, mtimeMs) {
+  for (const line of bufferLines(raw)) {
+    const at = timestampOfLine(line);
+    if (at !== null) return { date: utcDay(at), dateSource: "timestamp" };
+  }
+  return { date: utcDay(mtimeMs), dateSource: "mtime" };
+}
+
+/** codexMetaOf over a buffer: its first non-empty line, however long. */
+export function codexMetaOfBuffer(raw) {
+  for (const line of bufferLines(raw)) {
+    if (line.trim() !== "") return codexMetaOf(line);
+  }
+  return null;
 }
 
 /** A Codex rollout's identity from its session_meta line: the thread id and,
@@ -280,18 +320,6 @@ export function codexMetaOf(head) {
     return { id, parent, cwd: typeof p.cwd === "string" ? p.cwd : null };
   } catch {
     return null;
-  }
-}
-
-/** The first bytes of a file as text — enough lines to find a timestamp. */
-function headOf(file, bytes = 64 * 1024) {
-  const fd = fs.openSync(file, "r");
-  try {
-    const buf = Buffer.alloc(bytes);
-    const n = fs.readSync(fd, buf, 0, bytes, 0);
-    return buf.subarray(0, n).toString("utf8");
-  } finally {
-    fs.closeSync(fd);
   }
 }
 
@@ -590,7 +618,7 @@ async function sessionsStep(run) {
     const mtimeMs = fs.statSync(f.source).mtimeMs;
     let entry;
     if (f.runtime === "codex") {
-      const meta = codexMetaOf(headOf(f.source));
+      const meta = codexMetaOfBuffer(raw);
       if (!meta) {
         console.error(`[nightly] sessions: not a Codex rollout, skipped: ${f.source}`);
         continue;
@@ -637,7 +665,7 @@ export function claudeEntry(f, raw, sha, mtimeMs, index, accountsBySession) {
   let date;
   let dateSource;
   if (f.kind === "parent") {
-    const own = sessionDateOf(raw.subarray(0, 64 * 1024).toString("utf8"), mtimeMs);
+    const own = sessionDateOfBuffer(raw, mtimeMs);
     if (base === undefined) {
       base = `${SESSIONS_DIR}/${own.date.replaceAll("-", "/")}/claude-${f.session}`;
       index.dirBySession.set(key, base);
@@ -650,10 +678,10 @@ export function claudeEntry(f, raw, sha, mtimeMs, index, accountsBySession) {
     dateSource = date === own.date ? own.dateSource : "parent";
   } else if (base === undefined) {
     // A child whose parent is not archived (an orphan): its own date.
-    ({ date, dateSource } = sessionDateOf(
-      f.kind === "child" ? raw.subarray(0, 64 * 1024).toString("utf8") : "",
-      mtimeMs,
-    ));
+    ({ date, dateSource } =
+      f.kind === "child"
+        ? sessionDateOfBuffer(raw, mtimeMs)
+        : { date: utcDay(mtimeMs), dateSource: "mtime" });
     base = `${SESSIONS_DIR}/${date.replaceAll("-", "/")}/claude-${f.session}`;
   } else {
     date = base.split("/").slice(1, 4).join("-");
@@ -687,7 +715,7 @@ export function claudeEntry(f, raw, sha, mtimeMs, index, accountsBySession) {
 }
 
 function codexParentEntry({ f, raw, sha, mtimeMs, meta }) {
-  const { date, dateSource } = sessionDateOf(raw.subarray(0, 64 * 1024).toString("utf8"), mtimeMs);
+  const { date, dateSource } = sessionDateOfBuffer(raw, mtimeMs);
   const dir = `${SESSIONS_DIR}/${date.replaceAll("-", "/")}/codex-${meta.id}`;
   return {
     session: meta.id,
@@ -716,7 +744,7 @@ function codexChildEntry({ f, raw, sha, mtimeMs, meta }, index) {
   let dateSource;
   const orphan = dir === undefined;
   if (orphan) {
-    ({ date, dateSource } = sessionDateOf(raw.subarray(0, 64 * 1024).toString("utf8"), mtimeMs));
+    ({ date, dateSource } = sessionDateOfBuffer(raw, mtimeMs));
     dir = `${SESSIONS_DIR}/${date.replaceAll("-", "/")}/codex-${meta.parent}`;
   } else {
     date = dir.split("/").slice(1, 4).join("-");
