@@ -4,6 +4,7 @@ import { internal } from "./_generated/api";
 import schema from "./schema";
 import {
   MODEL_OF_TOM_FALLBACK_HEADER,
+  captureTriageFrom,
   isModelOfTomPath,
   modelOfTomPrelude,
   modelOfTomState,
@@ -323,9 +324,49 @@ describe("GET /tts/batch-context writing standard", () => {
 // ── The capture-context half (every capture poller's only channel) ───────────
 // poll-gmail, poll-canvas and poll-outlook are Node ESM on the Jarvis Box: they
 // can neither import the rules nor read a git checkout of WikiTom, so this
-// route is where the two capture judgements get their words. Same
-// prefer-the-synced-row, fall-back-to-the-copy rule as the writing standard
-// above — one rule, so the three pollers cannot triage by three sets of rules.
+// route is where the two capture judgements get their words.
+//
+// THE LIVE RULES ARE A SECTION of model-of-tom/priorities.md — phase 3 merged
+// the capture-triage skill into it, and phase 4's nightly job replaces the
+// ttsSkills table wholesale, so nothing writes a capture-triage row any more.
+// What is pinned here is the whole ladder: the section wins, the retired
+// sync's row is the middle rung, the hardcoded copy is the floor, and the
+// answer says which — a poller triaging by a frozen copy has to be able to
+// say so in its log.
+
+// The real shape of the page (WikiTom model-of-tom/priorities.md at
+// 0fa8f545a): the section is the LAST one, it is headed at level 2, and two
+// earlier sections mention capture triage without being it.
+const PRIORITIES_PAGE = [
+  "# Priorities",
+  "",
+  "## Directions",
+  "",
+  "- Research first; everything else is scheduled around it.",
+  "",
+  "## Rules learned from corrections",
+  "",
+  "- **Email/capture triage classes**: not yet authored — a TTS todo exists.",
+  "",
+  "## What becomes a todo",
+  "",
+  "Decides what enters TTS from an inbound stream.",
+  "",
+  "- **Capture whatever implies an action by Tom**: reply, submit, schedule, pay, sign.",
+  "- **Skip** newsletters, promotions, automated notifications, receipts, and mass mail.",
+  "- **Mark guesses.** A decision no listed rule covers is a guess.",
+].join("\n");
+
+const TRIAGE_SECTION = [
+  "## What becomes a todo",
+  "",
+  "Decides what enters TTS from an inbound stream.",
+  "",
+  "- **Capture whatever implies an action by Tom**: reply, submit, schedule, pay, sign.",
+  "- **Skip** newsletters, promotions, automated notifications, receipts, and mass mail.",
+  "- **Mark guesses.** A decision no listed rule covers is a guess.",
+].join("\n");
+
 const TRIAGE_BODY = `---
 name: capture-triage
 description: Load before deciding whether an incoming message needs Tom.
@@ -335,6 +376,42 @@ description: Load before deciding whether an incoming message needs Tom.
 
 Needs Tom today only for a deadline inside 48 hours, a person waiting on a
 reply, or money or credentials.`;
+
+describe("captureTriageFrom", () => {
+  it("takes the section out of a real priorities page and nothing around it", () => {
+    const out = captureTriageFrom(PRIORITIES_PAGE, null);
+    expect(out).toEqual({ captureTriage: TRIAGE_SECTION, source: "priorities" });
+    expect(out.captureTriage).not.toContain("Directions");
+    expect(out.captureTriage).not.toContain("Rules learned from corrections");
+  });
+
+  it("matches the heading by text, case-insensitively", () => {
+    const shouted = PRIORITIES_PAGE.replace(
+      "## What becomes a todo",
+      "## WHAT BECOMES A TODO",
+    );
+    expect(captureTriageFrom(shouted, null).source).toBe("priorities");
+  });
+
+  it("falls back to the retired sync's row when the page has no such section", () => {
+    const noSection = "# Priorities\n\n## Directions\n\n- Research first.\n";
+    expect(captureTriageFrom(noSection, TRIAGE_BODY)).toEqual({
+      captureTriage: TRIAGE_BODY,
+      source: "skill",
+    });
+  });
+
+  it("falls back to the hardcoded copy when neither is there", () => {
+    expect(captureTriageFrom(null, null)).toEqual({
+      captureTriage: CAPTURE_TRIAGE_RULES,
+      source: "builtin",
+    });
+    expect(captureTriageFrom("   ", "   ")).toEqual({
+      captureTriage: CAPTURE_TRIAGE_RULES,
+      source: "builtin",
+    });
+  });
+});
 
 describe("GET /tts/capture-context", () => {
   afterEach(() => {
@@ -347,16 +424,34 @@ describe("GET /tts/capture-context", () => {
       headers: { "X-TTS-Key": "s3cret" },
     });
     expect(res.status).toBe(200);
-    return (await res.json()).captureTriage;
+    const body = await res.json();
+    return { captureTriage: body.captureTriage, source: body.source };
   }
 
-  it("serves the hardcoded copy while nothing is synced", async () => {
+  it("serves the hardcoded copy, named as such, while nothing is stored", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
-    expect(await fetchTriage(t)).toBe(CAPTURE_TRIAGE_RULES);
+    expect(await fetchTriage(t)).toEqual({
+      captureTriage: CAPTURE_TRIAGE_RULES,
+      source: "builtin",
+    });
   });
 
-  it("serves the synced skill once it exists", async () => {
+  it("serves the section of the posted priorities.md — the nightly job's own post", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    await post(t, [
+      { path: "model-of-tom/writing.md", body: WRITING },
+      { path: "model-of-tom/priorities.md", body: PRIORITIES_PAGE },
+      { path: "model-of-tom/schedule.md", body: SCHEDULE },
+    ]);
+    expect(await fetchTriage(t)).toEqual({
+      captureTriage: TRIAGE_SECTION,
+      source: "priorities",
+    });
+  });
+
+  it("serves the retired sync's row while it survives and the section is absent", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
     // Written straight into the table: the six-hourly WikiTom skill sync that
@@ -370,7 +465,37 @@ describe("GET /tts/capture-context", () => {
         syncedAt: COMMITTED_AT,
       });
     });
-    expect(await fetchTriage(t)).toBe(TRIAGE_BODY);
+    expect(await fetchTriage(t)).toEqual({
+      captureTriage: TRIAGE_BODY,
+      source: "skill",
+    });
+  });
+
+  // THE REGRESSION THIS ROUTE EXISTS FOR: the nightly post replaces the table
+  // wholesale, so the capture-triage row is gone after the first night. Before
+  // this change the route fell through to the frozen copy from then on and
+  // WikiTom's rules never reached a poller again.
+  it("keeps serving WikiTom's rules after the post that deletes the capture-triage row", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("ttsSkills", {
+        name: CAPTURE_TRIAGE_SKILL,
+        body: TRIAGE_BODY,
+        sourcePath: `skills/${CAPTURE_TRIAGE_SKILL}/SKILL.md`,
+        syncedAt: COMMITTED_AT,
+      });
+    });
+    await post(t, [
+      { path: "model-of-tom/writing.md", body: WRITING },
+      { path: "model-of-tom/priorities.md", body: PRIORITIES_PAGE },
+    ]);
+    const names = (await allRows(t)).map((r) => r.name);
+    expect(names).not.toContain(CAPTURE_TRIAGE_SKILL);
+    expect(await fetchTriage(t)).toEqual({
+      captureTriage: TRIAGE_SECTION,
+      source: "priorities",
+    });
   });
 
   it("is closed to a caller without the worker key", async () => {

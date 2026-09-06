@@ -65,6 +65,7 @@ import {
   reconcileVerdicts,
   reportUntriaged,
   runClaude,
+  triageSourceLine,
   ttsItemLink,
 } from "./tts-lib.mjs";
 
@@ -193,8 +194,10 @@ async function main() {
   const batch = candidates.slice(0, MAX_CANDIDATES);
 
   // The deployment's own capture-triage rules, not a copy written here — off
-  // the one context this run already read.
+  // the one context this run already read. The line names where they came
+  // from, so a run reading the hardcoded fallback says so.
   const { captureTriage } = context;
+  console.log(triageSourceLine("poll-gmail", context));
 
   const prompt = `You triage Tom's Gmail inbox for his todo system (TTS).
 Below is a JSON array of new emails (headers + a ~100-character snippet).

@@ -504,9 +504,12 @@ export function goalCheckable(todo: GoalTodo): boolean {
 // refused whole (convex/ttsSkills.ts), because replacing the table with the
 // rest would leave every prompt from then on written to no standard at all.
 export const MODEL_OF_TOM_WRITING = "model-of-tom/writing.md";
+/** The file the capture triage rules are a section of (CAPTURE_TRIAGE_HEADING
+ * below); named here because two consumers reach for it, not just the order. */
+export const MODEL_OF_TOM_PRIORITIES = "model-of-tom/priorities.md";
 export const MODEL_OF_TOM_FIRST = [
   MODEL_OF_TOM_WRITING,
-  "model-of-tom/priorities.md",
+  MODEL_OF_TOM_PRIORITIES,
   "model-of-tom/schedule.md",
 ] as const;
 // Spelled WITHOUT a trailing slash, the same way worker/jobs/nightly.mjs
@@ -658,12 +661,27 @@ own comes back unruled.`;
 // person waiting on a reply, money or credentials. Everything else waits for
 // the morning digest, which reports every capture.
 //
-// THE LIVE SOURCE, once phase 4 lands, is WikiTom model-of-tom/priorities.md
-// through the ttsSkills row named below; this string is what the pollers use
-// until then, exactly like WRITING_STANDARD above. It is a snapshot, so it
-// drifts: when the rules change in WikiTom, update it here too.
+// THE LIVE SOURCE IS NO LONGER THIS STRING. The lifeos update's phase 3
+// merged the WikiTom capture-triage skill into model-of-tom/priorities.md as
+// the section headed "What becomes a todo", and phase 4's nightly job posts
+// priorities.md whole while replacing the ttsSkills table wholesale — so no
+// row named capture-triage is written any more. GET /tts/capture-context
+// takes the section out of the stored priorities row
+// (convex/ttsSkills.ts captureTriageFrom) and names which of the three it
+// served, so a poller's log line says where its rules came from.
+//
+// This copy is what the pollers use ONLY while neither the section nor a row
+// the retired sync left behind is there. It is a snapshot, so it drifts: when
+// the rules change in WikiTom, update it here too.
 
-/** The ttsSkills row every capture poller prefers over the fallback below. */
+/** The heading in model-of-tom/priorities.md whose section IS the triage
+ * rules. Matched by text, case-insensitively, through the next heading of the
+ * same or a higher level. */
+export const CAPTURE_TRIAGE_HEADING = "What becomes a todo";
+
+/** The row the retired six-hourly WikiTom skill sync wrote. A row by this
+ * name still serves — below the priorities section, above the copy here —
+ * for as long as one survives the nightly job's first wholesale replace. */
 export const CAPTURE_TRIAGE_SKILL = "capture-triage";
 export const CAPTURE_TRIAGE_RULES = `CAPTURE TRIAGE — two judgements about one incoming message.
 

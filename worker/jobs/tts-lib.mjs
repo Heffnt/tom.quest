@@ -153,8 +153,9 @@ export function ttsItemLink(todoId) {
 // Every capture poller (poll-gmail, poll-canvas, poll-outlook) makes the same
 // two judgements about an incoming message: does it imply an action by Tom,
 // and does it need him TODAY. The words for both come from the deployment, not
-// from any job: GET /tts/capture-context serves the synced WikiTom
-// capture-triage text with convex/ttsShared.ts's copy as the fallback.
+// from any job: GET /tts/capture-context serves the "What becomes a todo"
+// section of WikiTom's model-of-tom/priorities.md, and says in `source` which
+// of its three it served.
 //
 // One read, one shape, so the three pollers cannot triage by three different
 // sets of rules. Fields grow here as later phases add them (the declined
@@ -170,6 +171,28 @@ export function ttsItemLink(todoId) {
  */
 export async function captureContext(env) {
   return await convexFetch(env, "/tts/capture-context");
+}
+
+/** What each `source` the route can answer with means, in Tom's words for a
+ * log line. The three names are the route's (convex/ttsSkills.ts). */
+export const TRIAGE_SOURCES = {
+  priorities: 'model-of-tom/priorities.md, "What becomes a todo"',
+  skill: "the retired sync's capture-triage row",
+  builtin: "the hardcoded fallback — WikiTom's rules are NOT reaching this run",
+};
+
+/**
+ * The one line a poller prints about where its triage rules came from. PURE:
+ * it reads the context the run already fetched.
+ *
+ * WHY A POLLER SAYS THIS AT ALL: the rules used to come from a capture-triage
+ * row that nothing writes any more, and the fallback is a frozen copy — a run
+ * triaging by it looks exactly like a run triaging by WikiTom. The line is
+ * what makes the difference visible in /var/log/tts on the night it changes.
+ */
+export function triageSourceLine(job, context) {
+  const source = context?.source ?? "builtin";
+  return `[${job}] triage rules from ${TRIAGE_SOURCES[source] ?? source}`;
 }
 
 /**

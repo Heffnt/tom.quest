@@ -20,6 +20,7 @@ import {
   reconcileVerdicts,
   reportJobFailed,
   reportJobOk,
+  triageSourceLine,
   ttsItemLink,
   unmatchedIdKey,
   unmatchedIdMessage,
@@ -125,20 +126,58 @@ describe("captureContext", () => {
     vi.unstubAllGlobals();
   });
 
-  it("is the single GET both the rules and the declined list come from", async () => {
+  it("is the single GET the rules, their source and the declined list come from", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       status: 200,
-      text: async () => JSON.stringify({ captureTriage: "rules", declinedIntegrations: [] }),
+      text: async () =>
+        JSON.stringify({
+          captureTriage: "rules",
+          source: "priorities",
+          declinedIntegrations: [],
+        }),
     }));
     vi.stubGlobal("fetch", fetchMock);
 
     const context = await captureContext(env);
     expect(declined(context, "gmail")).toBeNull();
     expect(context.captureTriage).toBe("rules");
+    expect(context.source).toBe("priorities");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0][0])).toBe(
       "https://x.convex.site/tts/capture-context",
+    );
+  });
+});
+
+// A run triaging by the frozen fallback looks exactly like a run triaging by
+// WikiTom unless the log says which, so what is pinned here is that the three
+// answers read differently and that a payload without the field is not
+// silently called live.
+describe("triageSourceLine", () => {
+  it("names the live section when the rules came from priorities.md", () => {
+    expect(triageSourceLine("poll-gmail", { source: "priorities" })).toBe(
+      '[poll-gmail] triage rules from model-of-tom/priorities.md, "What becomes a todo"',
+    );
+  });
+
+  it("names the retired sync's row", () => {
+    expect(triageSourceLine("poll-canvas", { source: "skill" })).toContain(
+      "capture-triage row",
+    );
+  });
+
+  it("says the fallback is NOT WikiTom, and treats a missing field as the fallback", () => {
+    const warned = triageSourceLine("poll-gmail", { source: "builtin" });
+    expect(warned).toContain("hardcoded fallback");
+    expect(warned).toContain("NOT reaching this run");
+    expect(triageSourceLine("poll-gmail", {})).toBe(warned);
+    expect(triageSourceLine("poll-gmail", undefined)).toBe(warned);
+  });
+
+  it("prints a source it does not know rather than dropping it", () => {
+    expect(triageSourceLine("poll-gmail", { source: "something-new" })).toBe(
+      "[poll-gmail] triage rules from something-new",
     );
   });
 });

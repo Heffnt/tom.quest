@@ -55,6 +55,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { loadEnv, convexFetch, nyHour } from "./tts-lib.mjs";
 import { git } from "./tts-code-lib.mjs";
+import { extractSections } from "./markdown-sections.mjs";
 
 // ── Where things are ─────────────────────────────────────────────────────────
 export const WIKITOM_DIR = process.env.WIKITOM_DIR || "/root/wikitom";
@@ -175,38 +176,6 @@ export function gzip(bytes) {
 }
 
 /**
- * The sections of a markdown page headed by any of `headings` (case-
- * insensitive), each running from its heading line to the next heading of
- * the same or a higher level, returned in the order of `headings` and joined
- * by a blank line. "" when the page has none of them.
- */
-export function extractSections(markdown, headings = AREA_SECTIONS) {
-  const lines = markdown.split(/\r?\n/);
-  const wanted = headings.map((h) => h.trim().toLowerCase());
-  const found = new Map();
-  for (let i = 0; i < lines.length; i++) {
-    const m = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(lines[i]);
-    if (!m) continue;
-    const key = m[2].trim().toLowerCase();
-    if (!wanted.includes(key) || found.has(key)) continue;
-    const level = m[1].length;
-    let end = lines.length;
-    for (let j = i + 1; j < lines.length; j++) {
-      const n = /^(#{1,6})\s+\S/.exec(lines[j]);
-      if (n && n[1].length <= level) {
-        end = j;
-        break;
-      }
-    }
-    found.set(key, lines.slice(i, end).join("\n").trim());
-  }
-  return wanted
-    .filter((k) => found.has(k))
-    .map((k) => found.get(k))
-    .join("\n\n");
-}
-
-/**
  * The files to post from a WikiTom checkout: the three named files that
  * exist, then each page under areas/ (alphabetically) reduced to its
  * AREA_SECTIONS. `missing` names the expected files that were not there —
@@ -232,7 +201,10 @@ export function collectModelOfTomFiles(dir) {
       .filter((n) => n.endsWith(".md"))
       .sort();
     for (const page of pages) {
-      const body = extractSections(fs.readFileSync(path.join(areas, page), "utf8"));
+      const body = extractSections(
+        fs.readFileSync(path.join(areas, page), "utf8"),
+        AREA_SECTIONS,
+      );
       if (body === "") continue;
       files.push({ path: `${MODEL_OF_TOM_AREAS_DIR}/${page}`, body });
     }
