@@ -1588,26 +1588,6 @@ export const internalIngest = internalMutation({
         }),
       ),
     ),
-    // ACCEPTED AND IGNORED for one release. The permission table is gone (the
-    // lifeos update, phase 7): under the unified auto gate the daemon parks
-    // nothing for Tom (#canUseTool returns allow or deny on every path), so
-    // nothing had produced a request since that gate landed and these acks had
-    // nothing left to ack. A daemon on the box that has not yet rolled out
-    // this change still sends the field, and a Convex mutation refuses an
-    // argument it does not declare — so it is declared here, read by nothing,
-    // and goes once worker/setup.sh has run.
-    permissionUpdates: v.optional(
-      v.array(
-        v.object({
-          requestId: v.string(),
-          applied: v.optional(v.boolean()),
-          status: v.optional(
-            v.union(v.literal("superseded"), v.literal("expired")),
-          ),
-          decidedBy: v.optional(v.string()),
-        }),
-      ),
-    ),
   },
   handler: async (ctx, args) => {
     const session = await getSessionOrThrow(ctx, args.sessionId);

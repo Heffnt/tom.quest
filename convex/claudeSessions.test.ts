@@ -294,21 +294,29 @@ describe("claude sessions", () => {
   });
 
   // The permission table and its round-trip are gone (the lifeos update,
-  // phase 7). What stays is the compatibility shim: a daemon on the box that
-  // has not rolled out yet still sends permissionUpdates, and a Convex
-  // mutation refuses an argument it does not declare — so the field must be
-  // accepted and ignored, or every flush from that daemon fails.
+  // phase 7), and so is the roll-out shim that accepted permissionUpdates and
+  // ignored it: worker/setup.sh has run, so no daemon sends the field any
+  // more. A Convex mutation refuses an argument it does not declare, which is
+  // the point — a box that somehow ran the old code would fail loudly on its
+  // next flush rather than have its acks silently swallowed.
   //
-  // witness: drop permissionUpdates from internalIngest's args and this goes
-  // red with a validator error.
-  it("accepts a not-yet-rolled-out daemon's permissionUpdates and ignores them", async () => {
+  // witness: declare permissionUpdates on internalIngest again and this goes
+  // red — the flush would be accepted, and a stale daemon would be invisible.
+  it("refuses the retired permissionUpdates field", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const sessionId = await createBasicSession(tom);
+    await expect(
+      t.mutation(internal.claudeSessions.internalIngest, {
+        sessionId,
+        status: "running",
+        permissionUpdates: [{ requestId: "req-1", applied: true }],
+      } as never),
+    ).rejects.toThrow(/permissionUpdates/);
+    // The mutation itself still works without it.
     const res = await t.mutation(internal.claudeSessions.internalIngest, {
       sessionId,
       status: "running",
-      permissionUpdates: [{ requestId: "req-1", applied: true }],
     });
     expect(res.sessionStatus).toBe("running");
   });
