@@ -286,6 +286,14 @@ describe("the learning step", () => {
         factChange({ evidence: [] }),
         factChange({ evidence: ["session deadbeef"] }),
         factChange({ line: "- Thursday practice is at 6 p.m. this term." }),
+        // A parenthetical is not a citation: the evidence is not in the line
+        // at all, or it is in the line but the trailing parenthetical is bare.
+        factChange({ line: "- Thursday practice is at 6 p.m. this term (probably)." }),
+        factChange({ line: `- In session ${SESSION} he moved practice to 6 p.m. (probably).` }),
+        factChange({
+          line: `- Thursday practice is at 6 p.m. this term (session ${SESSION}, 2026-09-05).`,
+          evidence: [`session ${SESSION}`, `ruling ${RULING}`],
+        }),
         factChange({ kind: "inference", line: `- He trains Thursdays (session ${SESSION}, 2026-09-05).` }),
       ]),
     });
@@ -299,6 +307,9 @@ describe("the learning step", () => {
       "no evidence",
       'evidence "session deadbeef" names nothing in tonight\'s input',
       "the line does not end with its evidence citation",
+      `the line does not cite its evidence "session ${SESSION}"`,
+      "the citation (probably) names none of the change's evidence",
+      `the line does not cite its evidence "ruling ${RULING}"`,
       "an inference must say it is one, in the line",
     ]);
     for (const [rel, text] of before) {

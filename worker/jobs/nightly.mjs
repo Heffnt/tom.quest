@@ -660,7 +660,11 @@ export function parseLearningAnswer(answerText) {
   return obj.changes;
 }
 
-const CITED = /\([^()]+\)\.?$/;
+// The trailing parenthetical of a line — its citation. A parenthetical
+// alone is not a citation: what makes it one is that it names the change's
+// evidence (learningRefusal), which is what "every line cites its evidence"
+// means on the pages.
+const CITED = /(\([^()]+\))\.?$/;
 
 /** Why one proposed change may not land, or null when it may. The checks
  * are the rules in the block comment above, in the order a reader of the
@@ -678,7 +682,8 @@ function learningRefusal(c, texts, evidenceIds) {
   if (typeof c.line !== "string" || c.line.trim() === "" || /[\r\n]/.test(c.line)) {
     return "the line must be one non-empty line";
   }
-  if (!CITED.test(c.line.trim())) return "the line does not end with its evidence citation";
+  const cited = CITED.exec(c.line.trim());
+  if (cited === null) return "the line does not end with its evidence citation";
   if (c.kind === "inference" && !/inference/i.test(c.line)) {
     return "an inference must say it is one, in the line";
   }
@@ -689,12 +694,22 @@ function learningRefusal(c, texts, evidenceIds) {
   ) {
     return "no evidence";
   }
+  const evidence = c.evidence.map((e) => e.trim());
   if (evidenceIds !== null) {
-    for (const e of c.evidence) {
+    for (const e of evidence) {
       if (![...evidenceIds].some((id) => e.includes(id))) {
         return `evidence "${e}" names nothing in tonight's input`;
       }
     }
+  }
+  // The citation IS the evidence: every entry is in the line, and the
+  // trailing parenthetical names at least one of them — "(probably)" at the
+  // end of a line that never says where it came from is not a citation.
+  for (const e of evidence) {
+    if (!c.line.includes(e)) return `the line does not cite its evidence "${e}"`;
+  }
+  if (!evidence.some((e) => cited[1].includes(e))) {
+    return `the citation ${cited[1]} names none of the change's evidence`;
   }
   if (c.replaces !== null && c.replaces !== undefined) {
     if (typeof c.replaces !== "string" || c.replaces.trim() === "" || /[\r\n]/.test(c.replaces)) {
