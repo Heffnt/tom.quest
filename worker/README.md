@@ -1,79 +1,95 @@
 # The Jarvis Box
 
-The always-on home for TTS's scheduled headless-Claude jobs: a Hetzner VPS
-(today: x86_64, Ubuntu 26.04 — it began life as an ARM64 CAX11 on 24.04) running five personal-todo jobs and three code-todo jobs
-on a schedule:
+The always-on home for TTS's scheduled jobs: a Hetzner VPS (today: x86_64,
+Ubuntu 26.04 — it began life as an ARM64 CAX11 on 24.04). The jobs, one line
+each; `setup.sh` writes exactly this list into `/etc/cron.d/tts`:
 
-1. **poll-dump** (every 2 min) — reads new human messages from the Slack
-   `#dump` channel and submits each one to Convex as an unprepared todo.
-2. **poll-gmail** (every 10 min) — lists new inbox mail and spends ONE headless
-   Claude call per batch on TWO judgements. First: does the message imply an
-   action by Tom? If so it is submitted to Convex as an unprepared todo with
-   source `email` and the stable source id `gmail:message:<id>` in its
-   provenance, followed by the `#all` link. Judged from headers plus Gmail's
-   ~100-character snippet only — v1 never downloads bodies — and the prompt
-   leans toward capturing when unsure, because a wrong capture costs one
-   archive click while a wrong skip loses the thread. Second: does it need Tom
-   **today**? If so the job asks Convex to open one thread in `#tts` on that
-   todo (`POST /tts/needs-tom`), carrying one line — the sender, the subject,
-   the todo's link — so his reply in it is the next turn on the row. That
-   second judgement is capture triage, not an importance rating: three facts
-   and no others make it true (a deadline inside 48 hours, a named person
-   waiting on a reply, money or credentials), and the rules for both
-   judgements come from the deployment (`GET /tts/capture-context`, the synced
-   WikiTom capture-triage text), never from a copy in the job. The thread is
-   deduped on the Gmail message id, so one mail opens one thread however many
-   times the job re-reads it. Until the Gmail credentials exist it is a quiet
-   no-op; see below.
-3. **poll-canvas** (every 30 min) — the one job that owns Canvas, in two
-   halves on one tick. **Assignments**: every published, dated assignment
-   within 14 days back and 60 days on is posted to
-   `POST /tts/canvas-assignments`, which keeps one todo per assignment (source
-   `canvas`, `dateKind: "external"`, provenance `canvas:assignment:<id> <url>`)
-   — the instructor's date is a fact and moves the todo with it, and a
-   submission on Canvas completes the todo. No Claude call: an assignment with
-   a due date *is* an obligation, there is nothing to judge, and posting the
-   whole window every run is safe because the sync keys each row by its
-   assignment id. **Announcements**: ONE headless Claude call per batch, under
-   the deployment's own capture-triage rules (`GET /tts/capture-context`, the
-   same words poll-gmail uses), deciding which imply an action by Tom
-   (schedule changes, sign-ups, required responses); those are captured as
-   unprepared todos with source `canvas-announcement`, linked to the
-   announcement. Two source names for two facts: they shared `canvas` until the
-   sync was found reading every announcement row and dropping it without a
-   word. Quiet no-op until `CANVAS_TOKEN` exists in worker.env (WPI restricts
-   token creation; Tom's request form is pending), and an expired or revoked
-   token is reported to TTS as a job failure so it reaches him in the morning
-   digest instead of dying in `/var/log/tts`.
+1. **poll-dump** (hourly) — the recovery pass behind the push route: re-offers every `#dump` message since its cursor, deduped server-side on the message ts.
+2. **poll-gmail** (every 10 min) — captures action-implying inbox mail as unprepared todos and opens a `#tts` thread on what needs Tom today; see "The pollers".
+3. **poll-canvas** (every 30 min) — syncs dated assignments as todos and captures action-implying announcements; see "The pollers".
+4. **poll-outlook** (no cron line yet) — the Outlook counterpart of poll-gmail, a skeleton until the `OUTLOOK_*` credential exists; see "The pollers".
+5. **apply-time-notes** (every 2 min) — turns each time note Tom wrote into concrete date and block changes.
+6. **plan-graphs** (every 30 min) — the planner: prepares every unprepared life todo, briefs every changed or revise-ruled code todo, then plans the graph inside every batch; see "The planner".
+7. **nightly** (4:00 a.m. New York) — copies the Convex record and this box's session files into WikiTom, runs the learning step, pushes, and posts the model-of-tom files back to Convex; see "The nightly job".
+8. **reingest-overflow** (hourly) — the session daemon's helper: finishes storing the transcript payloads the daemon could not (`worker/session-host/`).
 
-   **One credential copy.** The assignments half used to be a Convex cron
-   action with a second `CANVAS_TOKEN` in the deployment env. It is gone; the
-   token lives only in `/etc/tts/worker.env`, and what stayed in Convex is the
-   mutation that writes todos, because writing todos has to be one.
-4. **poll-outlook** (not scheduled yet) — the Outlook counterpart of
-   poll-gmail (Tom, 2026-08-25: "outlook is where the most important mail comes
-   in"). It is a **skeleton**: the credential contract, the cursor's home and
-   the two strings a later reader depends on are settled, and the Microsoft
-   Graph half lands in the same change as the `OUTLOOK_*` credential, because
-   network code that can never be exercised is worse than an empty hand. It
-   has no cron line at all until then — the line is written and commented out
-   in `setup.sh`, with the reason next to it. Run by hand today it prints one
-   line naming the keys it is still waiting for. See "Outlook credentials"
-   below.
-5. **prepare-queue** (4:30 a.m. New York) — runs headless Claude Code to pick
-   today's queue (≤7 items) and write the daily digest, and posts both to
-   Convex. If it fails, the Convex-side fallback prep (4:45) still writes the
-   day's queue. The digest text it writes has no reader any more: since the
-   lifeos update (phase 2) the 5 a.m. digest is composed deterministically in
-   Convex (`convex/ttsDigest.ts`) and sent by `sendDigest`, so a missing
-   morning message is itself the monitoring signal. This job's digest half
-   goes in phase 7 with the queue.
-6. **brief-code-todos** (every 2 h at :17) — see the ruling loop below.
-7. **apply-rulings** (every 10 min) — see the ruling loop below.
-8. **execute-approved** (hourly at :45) — see the ruling loop below.
-9. **nightly** (4:00 a.m. New York) — copies the Convex record and this
-   box's session files into WikiTom, runs the learning step, pushes, and
-   posts the model-of-tom files back to Convex. See "The nightly job" below.
+Beside them runs the **session daemon** (`worker/session-host/`, a systemd
+service): every interactive session Tom opens and every autonomous mission
+the auto-session scheduler in Convex admits — including the worker missions
+that carry out his `approve` and `archive` rulings on code todos (see "The
+code-todo ruling loop"). The Friday weekly job is not on this box yet.
+
+## The planner
+
+`plan-graphs.mjs` runs three passes on one half-hourly tick, under flock:
+
+- **prepare** — every unprepared life todo (a `#dump` capture, an email or
+  Canvas capture, a todo Tom ruled `revise` on) gets its brief, the smallest
+  entry action, a work description, a ground-up explanation, readiness
+  `prepared`, and the date the statement itself states (a first date only,
+  never a guess). A `revise` re-prepares with Tom's sentence in the prompt
+  and is consumed once the re-prep lands. Nothing here posts to Slack — the
+  capture posts its own threaded reply.
+- **brief** — see "The code-todo ruling loop".
+- **plan** — the graph inside every batch (goals, tasks, `needs` edges, the
+  needs between batches), exiting early on an unchanged input hash
+  (`/var/lib/tts/plan-input-hash`).
+
+## The pollers
+
+**poll-gmail** lists new inbox mail and spends ONE headless Claude call per
+batch on TWO judgements. First: does the message imply an action by Tom? If
+so it is submitted to Convex as an unprepared todo with source `email` and
+the stable source id `gmail:message:<id>` in its provenance, followed by the
+`#all` link. Judged from headers plus Gmail's ~100-character snippet only —
+v1 never downloads bodies — and the prompt leans toward capturing when
+unsure, because a wrong capture costs one archive click while a wrong skip
+loses the thread. Second: does it need Tom **today**? If so the job asks
+Convex to open one thread in `#tts` on that todo (`POST /tts/needs-tom`),
+carrying one line — the sender, the subject, the todo's link — so his reply
+in it is the next turn on the row. That second judgement is capture triage,
+not an importance rating: three facts and no others make it true (a deadline
+inside 48 hours, a named person waiting on a reply, money or credentials),
+and the rules for both judgements come from the deployment
+(`GET /tts/capture-context`, the synced WikiTom capture-triage text), never
+from a copy in the job. The thread is deduped on the Gmail message id, so one
+mail opens one thread however many times the job re-reads it. Until the
+Gmail credentials exist it is a quiet no-op; see "Gmail credentials".
+
+**poll-canvas** is the one job that owns Canvas, in two halves on one tick.
+**Assignments**: every published, dated assignment within 14 days back and
+60 days on is posted to `POST /tts/canvas-assignments`, which keeps one todo
+per assignment (source `canvas`, `dateKind: "external"`, provenance
+`canvas:assignment:<id> <url>`) — the instructor's date is a fact and moves
+the todo with it, and a submission on Canvas completes the todo. No Claude
+call: an assignment with a due date *is* an obligation, there is nothing to
+judge, and posting the whole window every run is safe because the sync keys
+each row by its assignment id. **Announcements**: ONE headless Claude call
+per batch, under the deployment's own capture-triage rules
+(`GET /tts/capture-context`, the same words poll-gmail uses), deciding which
+imply an action by Tom (schedule changes, sign-ups, required responses);
+those are captured as unprepared todos with source `canvas-announcement`,
+linked to the announcement. Two source names for two facts: they shared
+`canvas` until the sync was found reading every announcement row and
+dropping it without a word. Quiet no-op until `CANVAS_TOKEN` exists in
+worker.env (WPI restricts token creation; Tom's request form is pending),
+and an expired or revoked token is reported to TTS as a job failure so it
+reaches him in the morning digest instead of dying in `/var/log/tts`.
+
+**One credential copy.** The assignments half used to be a Convex cron
+action with a second `CANVAS_TOKEN` in the deployment env. It is gone; the
+token lives only in `/etc/tts/worker.env`, and what stayed in Convex is the
+mutation that writes todos, because writing todos has to be one.
+
+**poll-outlook** is the Outlook counterpart of poll-gmail (Tom, 2026-08-25:
+"outlook is where the most important mail comes in"). It is a **skeleton**:
+the credential contract, the cursor's home and the two strings a later
+reader depends on are settled, and the Microsoft Graph half lands in the
+same change as the `OUTLOOK_*` credential, because network code that can
+never be exercised is worse than an empty hand. It has no cron line at all
+until then — the line is written and commented out in `setup.sh`, with the
+reason next to it. Run by hand today it prints one line naming the keys it
+is still waiting for. See "Outlook credentials" below.
 
 ## Declining an integration
 
@@ -193,31 +209,35 @@ CMT (`github.com/Heffnt/ComplexMultiTrigger`) keeps its standing intent in
 `vqc/todos.yaml`; the Jarvis Box turns that file into rulings Tom can make from the
 tom.quest UI in seconds:
 
-- **brief-code-todos** refreshes a shallow cache clone of CMT, and for every
-  OPEN todo entry whose YAML changed since its last brief (sha256 cursor in
-  `/var/lib/tts/brief-hashes.json`), has headless Claude write a ground-up
+- **The planner's brief pass** (`plan-graphs.mjs`, every 30 minutes)
+  refreshes a shallow cache clone of CMT, and for every OPEN todo entry
+  whose YAML changed since its last brief (sha256 cursor in
+  `/var/lib/tts/brief-hashes.json`) — or that Tom ruled `revise` on, with
+  his sentence as the replan note — has headless Claude write a ground-up
   brief against the current tree and a recommendation in the four verdict
   words — `archive` (already done/moot, with evidence), `revise` (intent
   live, plan stale), `session` (open judgment call; all tier C), or
   `approve` — plus an exec class (`box` vs `needs-turing`). Briefs POST to
-  Convex and are also cached locally under `/var/cache/tts/briefs/`.
-- Tom rules on each brief in the UI; Convex queues the rulings.
-- **apply-rulings** carries out the non-execution rulings: `defer` records
-  it; `stale-replan` queues a re-brief that must propose a fresh plan;
-  `needs-session` pushes a session-agenda file to CMT master; and
-  `propose-archive` closes the entry in `vqc/todos.yaml` (text surgery, then
-  CMT's own todos guard test — a red guard reverts and reports instead of
-  pushing).
-- **execute-approved** takes ONE pending `approve` per hour, runs agentic
-  Claude in a throwaway full clone on a `tts/<id>` branch, verifies commits +
-  the todos guard, pushes, and opens a PR. **Merging the PR is the human
-  gate** — nothing lands on master autonomously.
-
-To start a `needs-session` working session, from any CMT checkout:
-
-```
-claude "Run the TTS session in dev/handoff/tts-session-<id>.md"
-```
+  Convex, the one copy.
+- Tom rules on each brief in the UI. There is no apply job: every verdict's
+  effect is applied at write time in Convex (`convex/ttsRulings.ts`), or at
+  the one moment its effect can exist. `revise` is consumed by the brief
+  pass once the fresh brief has posted, with Tom's sentence as the replan
+  note. `session` is applied when Tom opens the code block session from
+  the calendar; that session's opening prompt names each code todo whose
+  verdict it consumed, with Tom's sentence, so the conversation he asked
+  for reaches the session.
+- **`approve` and `archive` are worker missions.** The auto-session
+  scheduler in Convex (`convex/claudeSessions.ts`, the code lane, every
+  5 minutes) takes the oldest unapplied one (an archive ahead of any approve: setting work aside is one edit, and should not wait behind an hour of implementing), admits an autonomous session on
+  that repo's checkout — one code mission at a time, under the same load
+  gate, circuit breaker and per-subject ceiling as every other mission —
+  and marks the ruling applied with the session id. The session implements
+  the plan (approve) or only closes the entry (archive), runs the registry's
+  own guard test, pushes `session/<id>`, and opens a PR whose body starts
+  with `CHANGE REPORT:`. **Merging the PR is the human gate** — nothing
+  lands on the default branch autonomously. A mission that fails is not
+  retried by the fleet; ruling again is the retry.
 
 ## Codex
 
@@ -328,8 +348,9 @@ full-key-only.
 (and, for code todos, in the CMT repo itself). The local files with memory
 are all harmless to lose:
 
-- `/var/lib/tts/dump-cursor` — Slack poll cursor; losing it re-captures up to
-  24 hours of `#dump` messages as duplicates Tom can archive.
+- `/var/lib/tts/dump-cursor` — Slack poll cursor; losing it re-offers up to
+  24 hours of `#dump` messages, each deduped server-side on its ts, so the
+  cost is one day of Slack reads and no duplicate.
 - `/var/lib/tts/gmail-cursor` — timestamp of the newest email poll-gmail has
   processed (captured or skipped); losing it re-examines the last 24 hours,
   at worst re-capturing a few emails as duplicates Tom can archive.
@@ -341,9 +362,9 @@ are all harmless to lose:
   7 days, at worst re-capturing a few announcements as duplicates.
 - `/var/lib/tts/brief-hashes.json` — which todo version was last briefed;
   losing it re-briefs everything once (the Convex POST upserts).
-- `/var/cache/tts/` — rebuildable caches: the shallow CMT clone, the local
-  brief copies, the executor's throwaway clones, the nightly job's snapshot
-  staging directory.
+- `/var/cache/tts/` — rebuildable caches: the shallow CMT clone the brief
+  pass reads, the session daemon's per-session workdirs, the nightly job's
+  snapshot staging directory.
 - `/root/wikitom` — the WikiTom checkout the nightly job writes. Everything
   in it is pushed, or reproducible from Convex and the session files, except
   commits a refused push left local — those are lost with the box, and the
@@ -517,20 +538,18 @@ node /opt/tts/poll-dump.mjs               # capture anything new in #dump now
 node /opt/tts/poll-gmail.mjs              # triage + capture new inbox mail now
 node /opt/tts/poll-canvas.mjs             # triage + capture new announcements now
 node /opt/tts/poll-outlook.mjs            # prints the OUTLOOK_* keys still missing
-node /opt/tts/prepare-queue.mjs --force   # prep today's queue regardless of hour
-node /opt/tts/brief-code-todos.mjs        # brief changed CMT todos now
-node /opt/tts/brief-code-todos.mjs --force # re-brief EVERY open CMT todo
-node /opt/tts/apply-rulings.mjs           # apply pending rulings now
-node /opt/tts/execute-approved.mjs        # execute one approved plan now
+node /opt/tts/apply-time-notes.mjs        # apply pending time notes now
+node /opt/tts/plan-graphs.mjs             # prepare, brief, plan — now
+node /opt/tts/plan-graphs.mjs --force     # also re-prepare and re-brief EVERYTHING
 node /opt/tts/nightly.mjs --force         # the nightly job, every step, now
 ```
 
-`--force` skips the 4-a.m.-New-York hour guard (cron fires the prep at both
-08:30 and 09:30 UTC and the guard keeps exactly the slot that is 4:30 a.m. NY,
-whichever side of daylight saving we're on).
+The nightly job's `--force` skips its 4-a.m.-New-York hour guard (cron fires
+it at both 08:00 and 09:00 UTC and the guard keeps exactly the slot that is
+4 a.m. NY, whichever side of daylight saving we're on).
 
 ## Logs
 
 Cron output: one `/var/log/tts/<job>.log` per job (poll-dump, poll-gmail,
-prepare-queue, brief-code-todos, apply-rulings, execute-approved, nightly),
+poll-canvas, apply-time-notes, plan-graphs, nightly, reingest-overflow),
 truncated monthly by cron — they are convenience, not state.

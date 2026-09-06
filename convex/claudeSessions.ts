@@ -11,11 +11,14 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireTom } from "./authRoles";
 import {
+  liveCodeSessionRulings,
   liveRulings,
+  markCodeSessionRulingsApplied,
   markLiveSessionRulingApplied,
   subjectKey,
 } from "./ttsRulings";
 import { logEvent } from "./tts";
+import { codeSessionRulingLines } from "../app/lib/tts-session-prompt";
 
 // Claude Code session surface — the Convex half of the web wrapper around
 // headless Claude Code sessions on the Jarvis Box. CANONICAL DESIGN HOME:
@@ -46,6 +49,7 @@ import {
   CODEX_USAGE_STALE_MS,
   CODEX_WEEKLY_CAP_PERCENT,
   CODE_TODO_PATH,
+  CODE_TODO_REPOS,
   DAEMON_STALE_MS,
   DEFAULT_SESSION_MODEL,
   LIVE_STATUSES,
@@ -57,6 +61,7 @@ import {
   isLive,
   isPrepared,
   isReady,
+  isSessionRepo,
   modelFamily,
   normalizeSessionRepos,
   tracksCodeTodos,
@@ -529,6 +534,9 @@ type SessionSeed = {
   /** The batch this session was opened on, when its subject IS a batch. */
   batchId?: Id<"batches">;
   blockCategory?: string;
+  /** The code todo a worker mission was admitted for (schema: codeRepo /
+   * codeExternalId) — both or neither. */
+  codeSubject?: { repo: string; externalId: string };
   mode?: "interactive" | "autonomous";
   /** Absent = DEFAULT_SESSION_MODEL. Every row inserted from here carries an
    * explicit model; only rows predating 2026-09-04 have the field absent. */
@@ -575,6 +583,8 @@ async function insertSession(
     todoId: seed.todoId,
     batchId: seed.batchId,
     blockCategory: seed.kind === "block" ? seed.blockCategory : undefined,
+    codeRepo: seed.codeSubject?.repo,
+    codeExternalId: seed.codeSubject?.externalId,
     mode: seed.mode,
     // EVERY new row carries an explicit model (Tom's ruling 2026-09-04: the
     // model is the choice, and the family behind it picks the runner). Absent
@@ -598,6 +608,44 @@ async function insertSession(
   if (seed.todoId !== undefined && seed.mode !== "autonomous") {
     await markLiveSessionRulingApplied(ctx, seed.todoId, sessionId);
   }
+  // The code twin: a "session" verdict on a code todo is applied when Tom
+  // opens the CODE BLOCK session — the interactive session whose turns are
+  // about code todos (ttsRulings.refuseUnlessSessionSubject reads it that
+  // way). Same interactive-only reason as above. (The block lane skips a
+  // "code" category block by name, so no autonomous block session on code
+  // exists today; the mode check is the guard should one ever be made.)
+  //
+  // A verdict is consumed ONLY IF THE OPENER NAMES IT: the prompt Tom's
+  // browser built cannot know which code todos carry a live session verdict,
+  // so the set is read here, each subject and Tom's sentence are appended to
+  // the opener below, and exactly that set is marked — one read, one list,
+  // one mark, so what the session is told and what the record says it
+  // consumed cannot differ.
+  let codeSessionLines: string[] = [];
+  if (
+    seed.kind === "block" &&
+    seed.blockCategory === "code" &&
+    seed.mode !== "autonomous"
+  ) {
+    const consumed = await liveCodeSessionRulings(ctx);
+    const subjects = [];
+    for (const r of consumed) {
+      const mirrored = await ctx.db
+        .query("dtsCodeTodoMirror")
+        .withIndex("by_repo_external", (q) =>
+          q.eq("repo", r.repo!).eq("externalId", r.externalId!),
+        )
+        .first();
+      subjects.push({
+        repo: r.repo!,
+        externalId: r.externalId!,
+        statement: mirrored?.statement,
+        sentence: r.sentence,
+      });
+    }
+    codeSessionLines = codeSessionRulingLines(subjects);
+    await markCodeSessionRulingsApplied(ctx, consumed, sessionId);
+  }
   // EVERY opener begins with the model-of-tom files (the lifeos update, phase
   // 4): the browser-built prompts, the worker missions, the CLI pen, a fork —
   // one home, here, rather than each builder pasting its own copy. The
@@ -609,6 +657,7 @@ async function insertSession(
     (await modelOfTomPrelude(ctx)) +
     "\n\n" +
     seed.prompt(sessionId, repos) +
+    (codeSessionLines.length > 0 ? "\n\n" + codeSessionLines.join("\n") : "") +
     (seed.outcomePen === false ? "" : outcomePenFooter(sessionId, repos));
   await ctx.db.insert("claudeInbound", {
     sessionId,
@@ -2789,6 +2838,243 @@ function buildWorkerPrompt(args: {
   return lines.filter((l): l is string => l !== null).join("\n");
 }
 
+// ── The code mission (the lifeos update, phase 7) ────────────────────────────
+// Tom's approve or archive ruling on a CODE todo — an entry in a repo's
+// vqc/todos.yaml, briefed on the /tts page — is carried out by an autonomous
+// session on that repo's checkout, the way worker/jobs/execute-approved.mjs
+// did on its own hourly clone before this: implement the plan (approve) or
+// close the entry (archive), run the registry's own guard test, commit, push
+// session/<id>, open a pull request. MERGING THE PULL REQUEST IS TOM'S GATE —
+// nothing lands on the default branch by itself, which is why the box's
+// unified auto mode is acceptable here: the blast radius is one branch.
+
+/** How a registry-keeping repo checks its own todo file — read off the one
+ * home (ttsShared CODE_TODO_REPOS). A mission is told to run it and to fix
+ * what it breaks: the PR must never carry a malformed registry. */
+const codeTodoGuard = (repo: string): string | undefined =>
+  tracksCodeTodos(repo)
+    ? CODE_TODO_REPOS[repo as keyof typeof CODE_TODO_REPOS].guard
+    : undefined;
+
+/** The one line a code mission's ruling row records at admission. */
+export const codeMissionApplyResult = (sessionId: string): string =>
+  `admitted as session ${sessionId}`;
+
+function buildCodeMissionPrompt(args: {
+  repo: string;
+  externalId: string;
+  verdict: "approve" | "archive";
+  sentence?: string;
+  statement: string;
+  brief: string;
+  sessionId: Id<"claudeSessions">;
+}): string {
+  const { repo, externalId, verdict, sentence, statement, brief, sessionId } = args;
+  const branch = `session/${sessionId}`;
+  const guard = codeTodoGuard(repo);
+  const lines: (string | null)[] = [
+    `You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.`,
+    "",
+    `THE CODE TODO: the entry \`${externalId}\` in ${CODE_TODO_PATH} of the ${repo} repository — the repository's own registry of decided work, where each entry carries a statement, a completion condition and (for the ready tier) a plan. The repository is the system of record for it; TTS only mirrors it.`,
+    `statement: ${statement}`,
+    "",
+    verdict === "approve"
+      ? `TOM RULED "approve": the entry's attached plan is the ratified decision, not a suggestion. Implement it faithfully. Where the plan is silent, follow the repository's existing conventions and do not widen scope. Close the entry in ${CODE_TODO_PATH} in this same body of work, per that file's own discipline: move it below the closed-todos banner, keeping its full body, adding a \`closed: <today>\` date and a \`resolution:\` describing what landed.`
+      : `TOM RULED "archive": the entry is set aside — already done, moot, or superseded. Do NOT implement it. Close it in ${CODE_TODO_PATH} per that file's own discipline: move the entry below the closed-todos banner, keeping its full body, adding a \`closed: <today>\` date and a \`resolution:\` that says it was archived by Tom's TTS ruling${sentence ? " and quotes his sentence" : ""}, with the evidence the brief names if it names any. Until your pull request merges, the TTS mirror of ${CODE_TODO_PATH} still says the entry is open, so a second "archive" ruling on it would open a second pull request for the same close — say so in the pull request body, so Tom merges rather than re-rules.`,
+    promptFact("Tom's sentence with the ruling", sentence),
+    "",
+    "THE BRIEF Tom ruled from (written against the tree as it stood then; verify against the tree in front of you, and name in your pull request anything that has moved):",
+    brief,
+    "",
+    workspaceParagraph(
+      [repo],
+      sessionId,
+      `${verdict === "approve" ? "Implement the plan, then close the entry." : "Close the entry."} Run \`${guard ?? "the repository's own guard test for that file"}\` and the tests nearest your change, and fix what you break — a pull request never carries a malformed registry.`,
+    ),
+    "",
+    `Open the pull request in every case that produced commits: it is how the work reaches Tom, and merging it is his gate. Its body STARTS with the line "CHANGE REPORT:" followed by a ground-up description of what changed as OBSERVABLE BEHAVIOR — define every term on first use; write for Tom, who will review it — and ends with the line "Merging this pull request is the persist-tom-gate for ${repo} ${externalId}."`,
+    "",
+    "The pen (a shell command; CONVEX_SITE_URL and TTS_WORKER_KEY are already set in this session's environment). Record this session's outcome when you stop:",
+    "```",
+    `curl -s -X POST "$CONVEX_SITE_URL/tts/session-outcome" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"sessionId": "${sessionId}", "outcome": "completed", "summary": "one line: the pull request URL and what it does"}'`,
+    "```",
+    '"completed" means the pull request exists; otherwise record "errored" with a summary that says what blocked you — Tom re-rules to retry.',
+    "",
+    `Prohibitions: never record a ruling and never change the status of any TTS todo — verdicts are Tom's pens alone. NEVER merge, and never push any branch other than ${branch} — merging is Tom's gate.`,
+    "",
+    BOX_TOOLS_PARAGRAPH,
+    "",
+    "Ending: record the outcome, then simply stop responding — the daemon ends the session after your final turn.",
+  ];
+  return lines.filter((l): l is string => l !== null).join("\n");
+}
+
+// At most this many code missions admitted per tick, and at most this many
+// live at once. One, as execute-approved ran one per hour: it keeps pull
+// requests reviewable in series and a bad run costs one slot, not a pileup.
+const CODE_MISSIONS_PER_TICK = 1;
+const CODE_MISSIONS_MAX_LIVE = 1;
+
+/**
+ * The code lane: Tom's live, unapplied approve and archive rulings on code
+ * todos — archives first, then oldest ruling first — each admitted as a
+ * worker mission on its repo's checkout. A ruling applies AT ADMISSION with the session id — a failed
+ * mission is not retried by the fleet; Tom re-rules to retry, as with the
+ * executor before. Returns how many it admitted (0 or 1).
+ *
+ * What it refuses, and how it records the refusal:
+ *   - a repo no session can check out, or an entry not open in the mirror, or
+ *     one with no brief: the ruling is marked applied with the reason, so it
+ *     cannot ride the feed forever;
+ *   - the per-subject ceiling (AUTO_MAX_SESSIONS_PER_TODO, by_code_subject):
+ *     marked applied with the reason for the same cause;
+ *   - a live mission on the same subject, or CODE_MISSIONS_MAX_LIVE reached:
+ *     left pending for a later tick.
+ */
+async function admitCodeMissions(
+  ctx: MutationCtx,
+  now: number,
+  liveSessions: Doc<"claudeSessions">[],
+  fleet: FleetModelContext,
+  liveBySubject: Map<string, Doc<"dtsRulings">>,
+  budget: number,
+): Promise<number> {
+  if (budget <= 0) return 0;
+  const liveCode = liveSessions.filter(
+    (s) => s.mode === "autonomous" && s.codeRepo !== undefined,
+  );
+  if (liveCode.length >= CODE_MISSIONS_MAX_LIVE) return 0;
+
+  const rulings = [...liveBySubject.values()]
+    .filter(
+      (r) =>
+        r.subjectType === "code" &&
+        r.appliedAt === undefined &&
+        (r.verdict === "approve" || r.verdict === "archive") &&
+        r.repo !== undefined &&
+        r.externalId !== undefined,
+    )
+    // Archives first, then oldest ruling first: closing an entry is one
+    // registry edit and a pull request, cheap and short, and it is Tom
+    // setting work ASIDE — an approve behind it can implement for an hour,
+    // and holding a set-aside behind that, one mission at a time, leaves the
+    // entry open in the mirror (and on Tom's plate) for no reason.
+    .sort(
+      (a, b) =>
+        (a.verdict === "archive" ? 0 : 1) - (b.verdict === "archive" ? 0 : 1) ||
+        a.ruledAt - b.ruledAt,
+    );
+
+  let admitted = 0;
+  for (const ruling of rulings) {
+    if (admitted >= Math.min(budget, CODE_MISSIONS_PER_TICK)) break;
+    const repo = ruling.repo!;
+    const externalId = ruling.externalId!;
+    const verdict = ruling.verdict as "approve" | "archive";
+    const refuse = async (why: string) => {
+      await ctx.db.patch(ruling._id, {
+        appliedAt: now,
+        applyResult: `refused: ${why}`,
+      });
+      await logEvent(ctx, "ruling-applied", undefined, {
+        verdict,
+        repo,
+        externalId,
+        result: `refused: ${why}`,
+      });
+    };
+    if (!isSessionRepo(repo) || !tracksCodeTodos(repo)) {
+      await refuse(`no session can check out ${repo}`);
+      continue;
+    }
+    if (
+      liveCode.some((s) => s.codeRepo === repo && s.codeExternalId === externalId)
+    ) {
+      continue; // a mission on it is already running
+    }
+    const mirrored = await ctx.db
+      .query("dtsCodeTodoMirror")
+      .withIndex("by_repo_external", (q) =>
+        q.eq("repo", repo).eq("externalId", externalId),
+      )
+      .first();
+    if (!mirrored || mirrored.status !== "open") {
+      await refuse(`${externalId} is not open in the ${repo} mirror`);
+      continue;
+    }
+    const brief = await ctx.db
+      .query("dtsCodeBriefs")
+      .withIndex("by_repo_external", (q) =>
+        q.eq("repo", repo).eq("externalId", externalId),
+      )
+      .unique();
+    if (!brief) {
+      await refuse(`${externalId} has no brief`);
+      continue;
+    }
+    // The far bound, per subject — the todo rule, one level over.
+    const history = await ctx.db
+      .query("claudeSessions")
+      .withIndex("by_code_subject", (q) =>
+        q.eq("codeRepo", repo).eq("codeExternalId", externalId),
+      )
+      .collect();
+    if (history.filter(wasAutonomous).length >= AUTO_MAX_SESSIONS_PER_TODO) {
+      await refuse(
+        `${externalId} has drawn ${AUTO_MAX_SESSIONS_PER_TODO} missions already`,
+      );
+      continue;
+    }
+    // The fleet default, falling back off Codex when the door is shut; a
+    // code todo carries no model tag, so "wait" cannot come back.
+    const model = await resolveFleetModel(ctx, fleet);
+    const sessionId = await insertSession(
+      ctx,
+      {
+        title: `auto: ${verdict} ${externalId}`,
+        kind: "adhoc",
+        repos: resolveSessionRepos({ explicit: [repo] }),
+        codeSubject: { repo, externalId },
+        mode: "autonomous",
+        model,
+        prompt: (id) =>
+          buildCodeMissionPrompt({
+            repo,
+            externalId,
+            verdict,
+            sentence: ruling.sentence,
+            statement: mirrored.statement,
+            brief: brief.brief,
+            sessionId: id,
+          }),
+        outcomePen: false,
+      },
+      now,
+    );
+    // The ruling is applied HERE, with the session that carries it out —
+    // the moment its effect exists (ttsRulings.ts header).
+    await ctx.db.patch(ruling._id, {
+      appliedAt: now,
+      applyResult: codeMissionApplyResult(sessionId),
+    });
+    await logEvent(ctx, "ruling-applied", undefined, {
+      verdict,
+      repo,
+      externalId,
+      result: codeMissionApplyResult(sessionId),
+    });
+    await logEvent(ctx, "auto-session-created", undefined, {
+      sessionId,
+      repo,
+      externalId,
+      verdict,
+    });
+    liveCode.push({ codeRepo: repo, codeExternalId: externalId } as Doc<"claudeSessions">);
+    admitted++;
+  }
+  return admitted;
+}
+
 // ── The prospecting lane ─────────────────────────────────────────────────────
 // Tom's directive (2026-08-29): "review the CMT and tom.quest repos for issues
 // to make more to-dos." A PROSPECTING MISSION is an autonomous session that
@@ -2974,13 +3260,17 @@ async function admitProspectMission(
   fleet: FleetModelContext,
 ): Promise<string | undefined> {
   // At most PROSPECT_MAX_LIVE prospectors alive at once. An autonomous session
-  // with NO todoId is what a prospecting mission looks like — a mission for
-  // real work always carries the todo it works, so this needs no extra field to
-  // key off. (liveSessions is this tick's snapshot, taken before any creation;
-  // since this lane creates one mission per tick at most, nothing it made can
-  // be missing from the count it just used.)
+  // with NO todoId and NO code subject is what a prospecting mission looks
+  // like — a mission for real work always carries the todo it works, and a
+  // code mission the code todo, so this needs no extra field to key off.
+  // (liveSessions is this tick's snapshot, taken before any creation; since
+  // this lane creates one mission per tick at most, nothing it made can be
+  // missing from the count it just used.)
   const liveProspectors = liveSessions.filter(
-    (s) => s.mode === "autonomous" && s.todoId === undefined,
+    (s) =>
+      s.mode === "autonomous" &&
+      s.todoId === undefined &&
+      s.codeRepo === undefined,
   ).length;
   if (liveProspectors >= PROSPECT_MAX_LIVE) return undefined;
 
@@ -3782,19 +4072,34 @@ export const internalAutoSchedule = internalMutation({
       });
     };
 
+    // THE CODE LANE goes first: Tom's approve and archive rulings on code
+    // todos are work he ratified by hand, and any lane placed after the walk
+    // can be starved by it — a full frontier or a long legacy backlog fills
+    // every slot of every tick. It takes at most one slot (CODE_MISSIONS_PER_TICK).
+    const codeAdmitted = await admitCodeMissions(
+      ctx,
+      now,
+      liveSessions,
+      fleet,
+      liveBySubject,
+      capacity,
+    );
+    if (codeAdmitted > 0) counts.code = codeAdmitted;
+    const admittedSoFar = () => picked.size + codeAdmitted;
+
     // PASS ONE holds the frontier to its quota, so a tick with more ready
     // graph tasks than slots still reaches the legacy lanes. PASS TWO runs the
     // same walk with the quota lifted: a slot the legacy lanes had nothing to
     // put in goes back to the graph rather than going unspent.
     for (const c of candidates) {
-      if (picked.size >= capacity) break;
+      if (admittedSoFar() >= capacity) break;
       if (c.lane === "graph" && (counts.graph ?? 0) >= graphQuota) continue;
       if (picked.has(c.todo._id)) continue;
       if (await excluded(c.todo)) continue;
       await admit(c);
     }
     for (const c of candidates) {
-      if (picked.size >= capacity) break;
+      if (admittedSoFar() >= capacity) break;
       if (picked.has(c.todo._id)) continue;
       if (await excluded(c.todo)) continue;
       await admit(c);
@@ -3802,13 +4107,13 @@ export const internalAutoSchedule = internalMutation({
 
     // ── The prospecting lane (parallel with the work walk) ───────────────────
     // Real todo work has now taken its share of `capacity`; prospecting spends
-    // what is LEFT, on this same tick. The guard is the leftover budget itself
-    // (picked.size < capacity), so prospecting can never take a slot the walk
-    // above wanted — but an unspent slot goes to prospecting rather than going
-    // unused, which is the full-capacity rule. The mission it creates is an
-    // ordinary autonomous session: it counts against maxLiveAutonomous on every
-    // later tick, and against this tick's budget as the one pick it is.
-    if (picked.size < capacity) {
+    // what is LEFT, on this same tick. The guard is the leftover budget itself,
+    // so prospecting can never take a slot the walk above wanted — but an
+    // unspent slot goes to prospecting rather than going unused, which is the
+    // full-capacity rule. The mission it creates is an ordinary autonomous
+    // session: it counts against maxLiveAutonomous on every later tick, and
+    // against this tick's budget as the one pick it is.
+    if (admittedSoFar() < capacity) {
       await admitProspectMission(ctx, now, liveSessions, fleet);
     }
 
@@ -3816,9 +4121,9 @@ export const internalAutoSchedule = internalMutation({
     // admitted — no-op ticks leave no trace. A prospecting admission does not
     // pass through here: its trace is the "prospect-mission-created" event,
     // which names the session and the repo.
-    if (picked.size > 0) {
+    if (admittedSoFar() > 0) {
       await logEvent(ctx, "auto-session-scheduler", undefined, {
-        admitted: picked.size,
+        admitted: admittedSoFar(),
         counts,
         liveAutonomousBefore: liveAutonomous,
       });

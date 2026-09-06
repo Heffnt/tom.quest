@@ -3,7 +3,11 @@
 // the Inventory's gate button both route through here, so the ground-up
 // framing cannot drift between entry points.
 
-import type { Doc, Id } from "@/convex/_generated/dataModel";
+// Relative, not "@/": convex/claudeSessions.ts imports this module for the
+// code block session's ruling lines, and the Convex typecheck (convex/
+// tsconfig.json) knows no path alias — the same reason convex/brews.ts reaches
+// app/perfume by a relative path.
+import type { Doc, Id } from "../../convex/_generated/dataModel";
 
 // The FRAMING says what this session is and how wide it is; it is only true
 // here, so it lives only here. The WRITING half is not built here at all:
@@ -65,7 +69,7 @@ export function buildBlockSessionPrompt(
   ];
   if (category === "code") {
     lines.push(
-      'The queue for "code" is the code-todo mirror and its prepared briefs (dtsCodeTodoMirror + dtsCodeBriefs) — work from those, not from a list in this prompt.',
+      'The queue for "code" is the code-todo mirror and its prepared briefs (dtsCodeTodoMirror + dtsCodeBriefs) — work from those, not from a list in this prompt. The one list this prompt does carry is below it, added by the server when the session was recorded: the code todos Tom ruled "session" on, with what he wrote — those come first.',
     );
   } else if (todos.length === 0) {
     lines.push(`No active todos carry the category "${category}" right now.`);
@@ -88,6 +92,41 @@ export function buildBlockSessionPrompt(
     }
   }
   return lines.join("\n");
+}
+
+// The code todos a CODE BLOCK session is the conversation for: each carries a
+// live "session" verdict, and opening the block is what applies it — so the
+// prompt has to name the subject and Tom's sentence, or the verdict is
+// consumed without the conversation ever reaching the session. Built by
+// the server at insert time (convex/claudeSessions.ts insertSession) from the
+// same rows it marks applied, so the set named and the set consumed are one
+// set by construction. The subject is spelled the way a ruling names it
+// ("<repo> <externalId>", ttsRulings.subjectKey's code tail).
+export type CodeSessionSubject = {
+  repo: string;
+  externalId: string;
+  /** The mirror's statement for the entry, when the mirror still holds it. */
+  statement?: string;
+  /** The note Tom wrote with the verdict, when he wrote one. */
+  sentence?: string;
+};
+
+export function codeSessionRulingLines(
+  subjects: readonly CodeSessionSubject[],
+): string[] {
+  if (subjects.length === 0) return [];
+  const lines = [
+    `Tom ruled "session" on these code todos (${subjects.length}) — each is a conversation he asked for, and this session is where it happens, so open with them, in this order:`,
+  ];
+  for (const s of subjects) {
+    const note = s.sentence?.trim();
+    lines.push(
+      `- ${s.repo} ${s.externalId}${s.statement ? ` "${s.statement}"` : ""} — ${
+        note ? `he wrote: ${note}` : "no note written"
+      }`,
+    );
+  }
+  return lines;
 }
 
 // Live context for one batch member, resolved by the caller against the

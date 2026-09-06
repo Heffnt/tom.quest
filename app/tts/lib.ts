@@ -72,7 +72,12 @@ export function isBatch(t: Todo): boolean {
 // NOT redefined here: convex/ttsShared.ts is the ONE home for the graph rules,
 // so the server's frontier and the page's frontier cannot drift. This is only
 // the client's local name for them.
-import { buildDoneSet, isPrepared, isReadyForTom } from "@/convex/ttsShared";
+import {
+  buildDoneSet,
+  isPrepared,
+  isReadyForTom,
+  wakeAtPassed,
+} from "@/convex/ttsShared";
 export {
   MAX_NEEDS,
   buildDoneSet,
@@ -278,6 +283,95 @@ export function selectBatches(
 }
 
 /** e.message for Errors, String(e) otherwise — the error line under a control. */
+// ── Today's view (the lifeos update, phase 7) ─────────────────────────────────
+// The calendar's today column used to render a queue row a job wrote every
+// morning (dtsDailyQueues). It is COMPUTED now, from the same subscriptions the
+// tab already holds, in five lists — each a fact about the row and the day:
+//   overdue   — dated before the day started
+//   due       — dated inside the day
+//   scheduled — with a committed block on it overlapping the day
+//   ready     — ready for Tom (ttsShared.isReadyForTom: prepared, active,
+//               awake, every need done)
+//   waking    — its wakeAt inside the day (a sleep that ends today)
+// Every list draws from the same pool, THE ROWS THE RETIRED QUEUE SHOWED
+// (convex/tts.ts internalPrepareFallbackQueue, gone with phase 7): active
+// rows that are not a v1 batch (a todo carrying `members` — the batch was the
+// unit Tom saw, never its members' grouping row), not a graph TASK (batchId
+// set and kind not "goal" — a step of a batch's plan, which the batch card
+// shows; a goal is one of Tom's own todos the planner bound, and stays), and
+// not asleep past the day (a wakeAt at or after the day's end — the lifeos
+// spelling of "waiting", which the queue never listed, however it was dated).
+// A parity note on overdue: the queue took dueAt before the instant it ran
+// (4 a.m., so in effect before the day), this takes dueAt before the day's
+// start — a todo due earlier today is "due", not "overdue": a fact about the
+// day, not the clock, so the column does not re-sort itself during the day.
+// `entries` is the column's render order: each todo once, under the FIRST of
+// those reasons that holds for it, in that order — so an overdue todo that is
+// also ready shows as overdue, the fact that outranks the other.
+
+export type TodayReason = "overdue" | "due" | "scheduled" | "ready" | "waking";
+export type TodayEntry = { todo: Todo; reason: TodayReason };
+export type TodayView = {
+  overdue: Todo[];
+  due: Todo[];
+  scheduled: Todo[];
+  ready: Todo[];
+  waking: Todo[];
+  entries: TodayEntry[];
+};
+
+export function selectToday(
+  todos: Todo[],
+  blocks: readonly { todoId?: string; start: number; end: number }[],
+  day: { start: number; end: number },
+  now: number = Date.now(),
+): TodayView {
+  // The pool: what the retired queue showed (the header above). The sleep
+  // test is against the day's last instant, as the queue's was: a sleep that
+  // ends inside the day is over for the day (and a "waking" entry).
+  const active = todos.filter(
+    (t) =>
+      t.status === "active" &&
+      t.members === undefined &&
+      !(t.batchId !== undefined && t.kind !== "goal") &&
+      wakeAtPassed(t, day.end - 1),
+  );
+  const byDue = (a: Todo, b: Todo) => (a.dueAt ?? 0) - (b.dueAt ?? 0);
+  const overdue = active
+    .filter((t) => t.dueAt !== undefined && t.dueAt < day.start)
+    .sort(byDue);
+  const due = active
+    .filter((t) => t.dueAt !== undefined && t.dueAt >= day.start && t.dueAt < day.end)
+    .sort(byDue);
+  const scheduledIds = new Set(
+    blocks
+      .filter((b) => b.todoId !== undefined && b.start < day.end && b.end > day.start)
+      .map((b) => b.todoId as string),
+  );
+  const scheduled = active.filter((t) => scheduledIds.has(t._id as string));
+  const doneSet = buildDoneSet(todos);
+  const ready = active.filter((t) => isReadyForTom(t, doneSet, now));
+  const waking = active
+    .filter((t) => t.wakeAt !== undefined && t.wakeAt >= day.start && t.wakeAt < day.end)
+    .sort((a, b) => (a.wakeAt ?? 0) - (b.wakeAt ?? 0));
+
+  const seen = new Set<string>();
+  const entries: TodayEntry[] = [];
+  const take = (list: Todo[], reason: TodayReason) => {
+    for (const todo of list) {
+      if (seen.has(todo._id as string)) continue;
+      seen.add(todo._id as string);
+      entries.push({ todo, reason });
+    }
+  };
+  take(overdue, "overdue");
+  take(due, "due");
+  take(scheduled, "scheduled");
+  take(ready, "ready");
+  take(waking, "waking");
+  return { overdue, due, scheduled, ready, waking, entries };
+}
+
 export function errMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }

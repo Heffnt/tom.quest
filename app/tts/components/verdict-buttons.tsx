@@ -86,13 +86,13 @@ export const VERDICT_EFFECT: Record<
   },
   code: {
     approve:
-      "Marks this as decided your way. The ruling waits for the executor on the Jarvis Box, which clones the repository, does the work on a branch, and opens a pull request; merging stays yours.",
+      "Marks this as decided your way. The ruling waits for the picker on the Jarvis Box, which starts a session on a fresh checkout of the repository, does the work on the session's branch, and opens a pull request; merging stays yours. The ruling is marked applied the moment that session is started.",
     revise:
-      "Sends it back to be planned again, with your sentence as the redirection: a job on the Jarvis Box queues a re-plan against what you said. Your sentence is the whole instruction, so it has to stand on its own.",
+      "Sends it back to be planned again, with your sentence as the redirection: the planner on the Jarvis Box re-writes the brief with a fresh plan against what you said on its next half-hourly run, and the ruling is marked applied once the new brief is stored. Your sentence is the whole instruction, so it has to stand on its own.",
     session:
-      "Says this needs a conversation rather than a ruling. No session opens from here: a job on the Jarvis Box writes a handoff note into the repository, and the item waits for you.",
+      "Says this needs a conversation rather than a ruling. No session opens from here: the ruling is applied the moment you open the code block session from the calendar — its opening prompt names this item and your note — and the item waits for you until then.",
     archive:
-      "Sets it aside: a job on the Jarvis Box closes the entry in the repository's own todo file, and your sentence is kept with the ruling as the condition to propose it back.",
+      "Sets it aside: the ruling waits for the picker on the Jarvis Box, which starts a session that closes the entry in the repository's own todo file and opens a pull request for it; merging stays yours. Your sentence is kept with the ruling as the condition to propose it back.",
   },
 };
 

@@ -30,7 +30,8 @@
 // minutes gets the same nothing back. Phase 2 writes the verdict; a 4xx is the
 // server REFUSING it (re-filed needs-session in the server's own words), while
 // a 5xx or a network throw is ENVIRONMENTAL — the note stays pending and the
-// next tick retries it whole (the apply-rulings.mjs failure policy).
+// next tick retries it whole (content failures are marked, environmental ones
+// are retried — the failure policy every box job shares).
 //
 // COST: the queue is usually empty and the job exits before spending anything.
 // Parsing one sentence into a fixed action vocabulary is mechanical, so it

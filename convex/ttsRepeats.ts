@@ -7,9 +7,9 @@
 // schedule mechanics (like dtsBlocks): editable and deletable freely, with
 // every change logged to dtsEvents.
 //
-// The generator runs BEFORE the 4:45 queue prep (crons.ts), so the day's
-// instances are already in the corpus when the queue is built and they land
-// in the digest as ordinary due-today items.
+// The generator runs at 4:30, BEFORE the 5 a.m. digest (crons.ts), so the
+// day's instances are already in the record when the digest reads it and they
+// land in it as ordinary due-today items.
 
 import { v } from "convex/values";
 import { internalMutation, mutation, query } from "./_generated/server";

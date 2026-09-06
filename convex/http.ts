@@ -662,46 +662,6 @@ const slackEvents = httpAction(async (ctx, request) => {
 
 http.route({ path: "/slack/events", method: "POST", handler: slackEvents });
 
-// POST /tts/prep — the worker's Claude-prepared daily queue + digest text.
-// Body: { day, todoIds: string[], reasons?: string[], digestText? }.
-const ttsPrep = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(b.day)) {
-    return jsonResponse(400, { error: "day (YYYY-MM-DD) required" });
-  }
-  if (
-    !Array.isArray(b.todoIds) ||
-    b.todoIds.some((x) => typeof x !== "string")
-  ) {
-    return jsonResponse(400, { error: "todoIds (string[]) required" });
-  }
-  try {
-    await ctx.runMutation(internal.tts.internalStoreWorkerPrep, {
-      day: b.day,
-      todoIds: b.todoIds as string[],
-      reasons: Array.isArray(b.reasons)
-        ? (b.reasons as unknown[]).map(String)
-        : undefined,
-      digestText: typeof b.digestText === "string" ? b.digestText : undefined,
-    });
-    return jsonResponse(200, { ok: true });
-  } catch (e) {
-    return jsonResponse(400, {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
-});
-
-http.route({ path: "/tts/prep", method: "POST", handler: ttsPrep });
-
 // POST /tts/prepare-todo — the worker's preparer job attaches brief /
 // entry action / work description to a life todo and advances its readiness,
 // plus the date the statement itself states, if any.
@@ -786,21 +746,21 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/prepare-todo", method: "POST", handler: ttsPrepareTodo });
 
-// GET /tts/state — everything the prep job needs: all todos, the queue row for
-// the day being prepared, and `prepDay` itself. The server owns the day
-// arithmetic (5 a.m. boundary + DST) so the worker never computes a day key —
-// two hand-rolled implementations of that math diverged on DST Sundays before
-// this was centralized (review finding). An explicit ?day= overrides.
+// GET /tts/state — the record as a box job or a session reads it: all todos,
+// the coming week of calendar events, and the server's clock. The server owns
+// the day arithmetic (5 a.m. boundary + DST) so the worker never computes a
+// day key — two hand-rolled implementations of that math diverged on DST
+// Sundays before this was centralized (review finding). An explicit ?day=
+// overrides `prepDay`. (The day's queue row rode this payload until the lifeos
+// update, phase 7; today's view is computed, not stored.)
 const ttsState = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
   const day =
     new URL(request.url).searchParams.get("day") ?? ttsPrepDay(Date.now());
   const todos = await ctx.runQuery(internal.tts.internalListTodos, {});
-  const queue = await ctx.runQuery(internal.tts.internalGetDay, { day });
   // The coming week of external-calendar mirror rows (ttsCalendarEvents):
-  // schedule knowledge for realistic queueing — the prep prompt shows them as
-  // context, never as queueable items.
+  // schedule knowledge, shown as context.
   const dayStart = nyCalendarDayBoundsUtc(day).start;
   const calendarEvents = await ctx.runQuery(
     internal.ttsCalendar.internalListEventsInRange,
@@ -812,7 +772,6 @@ const ttsState = httpAction(async (ctx, request) => {
   // the clock, the worker repeats it back.
   return jsonResponse(200, {
     todos,
-    queue,
     calendarEvents,
     prepDay: day,
     ...nowContext(Date.now()),
@@ -997,14 +956,15 @@ const ttsCodeBriefs = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/code-briefs", method: "POST", handler: ttsCodeBriefs });
 
-// GET /tts/rulings — the rulings a worker job should act on (unapplied
-// and not superseded by a newer ruling on the same subject), from the unified
+// GET /tts/rulings — the rulings a box job should act on (unapplied and not
+// superseded by a newer ruling on the same subject), from the unified
 // ttsRulings table. ALL THREE subject types ride the one feed: rows carry
-// subjectType ("code" → the apply job; "life" with verdict "revise" → the
-// preparer, or form-batches when the subject is a v1 batch; "batch" with
-// verdict "revise" → the planner, worker/jobs/plan-graphs.mjs). Each job
-// filters for its own kind and consumes only those. Each row carries its _id,
-// which the worker echoes back to /tts/ruling-applied.
+// subjectType, and the planner (worker/jobs/plan-graphs.mjs) filters for its
+// own kinds — a "life" revise → its prepare pass, a "code" revise → its brief
+// pass, a "batch" revise → its plan pass — consuming only what it served. A
+// "code" approve or archive rides the feed too but is consumed by the
+// auto-session scheduler in Convex. Each row carries its _id, which the
+// planner echoes back to /tts/ruling-applied.
 const ttsRulingsFeed = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -1017,9 +977,8 @@ const ttsRulingsFeed = httpAction(async (ctx, request) => {
 
 // /tts/rulings is the only path. The feed carries every subject type, so there
 // is no code-scoped variant: a /tts/code-rulings alias pointed at this same
-// handler for workers predating the unified feed, and was removed once all
-// five callers (apply-rulings, execute-approved, form-batches,
-// prepare-life-todos, plan-graphs) had moved to /tts/rulings.
+// handler for workers predating the unified feed, and was removed once every
+// caller had moved to /tts/rulings.
 http.route({ path: "/tts/rulings", method: "GET", handler: ttsRulingsFeed });
 
 // POST /tts/code-ruling-applied — the worker's apply report. Body: { id,
@@ -1266,8 +1225,7 @@ http.route({ path: "/tts/batches", method: "POST", handler: ttsBatches });
 // modelOfTomPrelude): the files the nightly job posted, headed by their
 // WikiTom commit, or ttsShared.WRITING_STANDARD under a header saying so
 // until the first post. The field name and type do not change:
-// worker/jobs/plan-graphs.mjs treats a missing `writingStandard` as fatal and
-// form-batches.mjs reads the same payload.
+// worker/jobs/plan-graphs.mjs treats a missing `writingStandard` as fatal.
 const ttsBatchContext = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -1296,6 +1254,10 @@ const ttsBatchContext = httpAction(async (ctx, request) => {
     // value is what stops a fourth hand-written copy of the repo list
     // appearing in worker/ (VQC C1).
     sessionRepos: SESSION_REPO_NAMES,
+    // The server's clock, the /tts/state convention: the planner's prepare
+    // pass resolves "sept 3" in a statement against nyCalendarDay and never
+    // computes a New York date of its own.
+    ...nowContext(Date.now()),
   });
 });
 

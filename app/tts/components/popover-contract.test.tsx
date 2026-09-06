@@ -274,7 +274,6 @@ function load() {
     [getFunctionName(api.ttsRulings.listRulings)]: [],
     [getFunctionName(api.tts.listTimeNotes)]: [NOTE],
     [getFunctionName(api.tts.listBlocks)]: [],
-    [getFunctionName(api.tts.getToday)]: null,
     [getFunctionName(api.ttsRepeats.listRepeats)]: [REPEAT],
     [getFunctionName(api.ttsCalendar.listCalendarEvents)]: [],
   };

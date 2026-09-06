@@ -376,7 +376,7 @@ ${WHAT_TTS_IS}
 
 <p>Each of these controls writes the field, writes one entry of kind <span class="mono">status-changed</span> carrying the old and new values, and stops. Nothing else is scheduled and no message is sent.</p>
 
-<p>After that: an active todo is a candidate for the picker that starts agent sessions every five minutes, and appears in the day's queue; a waiting todo disappears from the active list until its wake time passes; an archived or done todo leaves the working views and stays readable. All four also stamp the row as touched by Tom, which freezes its grouping against the job that forms batches automatically.</p>
+<p>After that: an active todo is a candidate for the picker that starts agent sessions every five minutes, and appears in today's column on the calendar when it is due, overdue, scheduled, ready or waking today; a waiting todo disappears from the active list until its wake time passes; an archived or done todo leaves the working views and stays readable. All four also stamp the row as touched by Tom, which freezes its grouping against the job that forms batches automatically.</p>
 `,
 );
 
@@ -439,23 +439,23 @@ ${WHAT_TTS_IS}
 
 <h2>What approve means on a code todo</h2>
 
-<p>A <span class="term">code todo</span> is a todo that lives in a code repository and is mirrored into TTS, addressed by repository name plus an identifier rather than by a TTS row. The same four chips appear on it, and approve behaves completely differently: the ruling stays unapplied, because the repository, not TTS, is where code work is recorded.</p>
+<p>A <span class="term">code todo</span> is a todo that lives in a code repository and is mirrored into TTS, addressed by repository name plus an identifier rather than by a TTS row. The same four chips appear on it, and approve behaves completely differently: the ruling stays unapplied until a session exists to carry it out, because the repository, not TTS, is where code work is recorded.</p>
 
 <div class="flow">
   <div class="box">Tom presses approve on a code todo. <span class="muted">The ruling row is stored, unapplied.</span></div>
-  <div class="arrow">↓ <span class="muted">at 45 minutes past each hour</span></div>
-  <div class="box">A job on the Jarvis Box takes the single oldest unapplied approve, clones the repository fresh, and makes a branch named for the todo.</div>
-  <div class="arrow">↓ <span class="muted">one headless Claude run, capped at 45 minutes</span></div>
-  <div class="box">It pushes that branch and opens a pull request, then reports the pull request address back as the ruling's result.</div>
+  <div class="arrow">↓ <span class="muted">within five minutes, when the Jarvis Box has headroom</span></div>
+  <div class="box">The picker that starts agent sessions takes the single oldest unapplied approve (or archive) on a code todo and starts one autonomous session on a fresh checkout of that repository, on a branch named for the session. One code mission runs at a time; the ruling is marked applied with the session's id at that moment.</div>
+  <div class="arrow">↓ <span class="muted">one autonomous session</span></div>
+  <div class="box">It implements the plan (or, for archive, only closes the entry in the repository's todo file), runs that file's own guard test, pushes the branch and opens a pull request whose body begins with a change report.</div>
   <div class="arrow">↓</div>
-  <div class="box">Merging the pull request is Tom's, and nothing automates it. A failure marks the ruling with the reason; ruling approve again is the retry.</div>
+  <div class="box">Merging the pull request is Tom's, and nothing automates it. A session that fails is not retried by the picker; ruling again is the retry.</div>
 </div>
 
-<p>The other three verdicts on a code todo are handled by a different job every ten minutes: revise queues a re-plan, session writes a handoff note into the repository, and archive closes the entry in the repository's own todo file.</p>
+<p>The other three verdicts on a code todo have no job of their own. Revise is consumed by the planner on the Jarvis Box, which runs every half hour: it re-writes the brief with a fresh plan, with Tom's sentence in the prompt, and marks the ruling applied once the new brief is stored. Session is applied the moment Tom opens the code block session from the calendar — the interactive session whose turns are about code todos; its opening prompt names each code todo it consumed, with Tom's sentence. Archive is admitted by the same picker as approve, as a mission that closes the entry in the repository's own todo file and opens a pull request for it; merging that is Tom's.</p>
 
 <h2>What happens next, and who does it</h2>
 
-<p>Recording a ruling writes one row, writes one entry of kind <span class="mono">ruling</span> in the append-only event record, and — for approve and archive on a life todo — nothing further. For revise, an agent session re-prepares the brief within a couple of minutes and the item returns at <span class="mono">prepared</span> for another look. For session, the item waits until Tom opens the conversation. For approve on a code todo, a pull request appears within the hour and waits for his merge.</p>
+<p>Recording a ruling writes one row, writes one entry of kind <span class="mono">ruling</span> in the append-only event record, and — for approve and archive on a life todo — nothing further. For revise, the planner re-prepares the brief on its next half-hourly run and the item returns at <span class="mono">prepared</span> for another look. For session, the item waits until Tom opens the conversation. For approve on a code todo, the picker starts a session that ends in a pull request waiting for his merge.</p>
 `,
 );
 
@@ -676,7 +676,7 @@ ${WHAT_TTS_IS}
 
 <p>One job, once a day, at 4:30 in the morning New York time. It runs at that hour year-round: the scheduler underneath understands only universal time, so the job is registered at both possible universal times and its own check of the local hour lets exactly one of the two proceed. Daylight saving therefore needs no change to anything.</p>
 
-<p>4:30 is fifteen minutes before the job that builds the day's queue of what to look at. That ordering is the reason for the time: a repeat that minted after the queue was built would not be in the day it belongs to.</p>
+<p>4:30 is half an hour before the 5 a.m. digest reads the record. That ordering is the reason for the time: a repeat that minted after the digest was composed would not be in the morning it belongs to.</p>
 
 <p>For each active rule whose weekday matches, the job inserts one todo with these values, all fixed:</p>
 

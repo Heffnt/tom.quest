@@ -287,12 +287,10 @@ fi
 chmod 600 /etc/tts/worker.env
 
 echo "== [8/10] cron =="
-# System cron runs in UTC and knows nothing about daylight saving, so
-# prepare-queue is scheduled at BOTH 08:30 and 09:30 UTC; the script itself
+# System cron runs in UTC and knows nothing about daylight saving, so the
+# nightly job is scheduled at BOTH 08:00 and 09:00 UTC; the script itself
 # checks the New York wall-clock hour and proceeds only when it is the
 # 4 a.m. NY hour — exactly one of the two slots, in every season.
-# (4:30 NY chosen so the Convex fallback prep at 4:45 and the always-sends
-# digest at 5:00 have a clean ordering after us.)
 cat > /etc/cron.d/tts <<'CRON'
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -335,22 +333,18 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # is 2 minutes away).
 */2 * * * * root /usr/bin/flock -n /var/lock/tts-apply-time-notes.lock /usr/bin/node /opt/tts/apply-time-notes.mjs >> /var/log/tts/apply-time-notes.log 2>&1
 
-# Prepare today's queue + digest via headless Claude. Two UTC slots because of
-# US daylight saving; the script's NY-hour guard lets exactly one proceed
-# (08:30 UTC = 4:30 a.m. EDT in summer; 09:30 UTC = 4:30 a.m. EST in winter).
-# These hours are DERIVED from TTS_PREP_NY_HOUR (=4) in convex/ttsShared.ts as
-# hour+4/hour+5 UTC — if the anchor hours ever move, THIS FILE and the guard in
-# prepare-queue.mjs must move with them (no import path crosses this boundary).
-30 8 * * * root /usr/bin/node /opt/tts/prepare-queue.mjs >> /var/log/tts/prepare-queue.log 2>&1
-30 9 * * * root /usr/bin/node /opt/tts/prepare-queue.mjs >> /var/log/tts/prepare-queue.log 2>&1
+# There is no queue-preparing job any more (the lifeos update, phase 7):
+# today's view — due, overdue, scheduled, ready, waking today — is computed by
+# the /tts page from the record, and the 5 a.m. digest is composed in Convex.
 
 # THE NIGHTLY JOB (the lifeos update, phase 4) at 4:00 a.m. New York — before
 # the 5 a.m. digest, which reads its rows: copy every Convex table into the
 # WikiTom checkout (/root/wikitom, tts/snapshot/), the learning step, archive
 # this box's session files into sessions/, one locked commit-and-push over the
 # github.com-wikitom alias, then post the model-of-tom files and their commit
-# to Convex. Same two-slot DST pattern as prepare-queue above (08:00 UTC is
-# 4 a.m. EDT, 09:00 UTC is 4 a.m. EST; the job's own guard keeps one). flock
+# to Convex. Two cron slots for one run — 08:00 UTC is 4 a.m. EDT, 09:00 UTC
+# is 4 a.m. EST, and the job's own New York wall-clock guard (tts-lib.mjs
+# nyHour) exits the off-season one — so DST needs no cron edit. flock
 # -n on its own lock: the export can outlast an hour on a slow night, and a
 # second run would race the first for the checkout. The WikiTom writer lock
 # (/var/lock/tts-wikitom.lock) is taken inside the job, around the four steps
@@ -358,79 +352,43 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 0 8 * * * root /usr/bin/flock -n /var/lock/tts-nightly.lock /usr/bin/node /opt/tts/nightly.mjs >> /var/log/tts/nightly.log 2>&1
 0 9 * * * root /usr/bin/flock -n /var/lock/tts-nightly.lock /usr/bin/node /opt/tts/nightly.mjs >> /var/log/tts/nightly.log 2>&1
 
-# CODE-TODO RULING LOOP (CMT's vqc/todos.yaml -> briefs -> Tom rules -> apply/execute):
+# CODE-TODO RULING LOOP (CMT's vqc/todos.yaml -> briefs -> Tom rules -> a
+# worker mission): the BRIEFS are the planner's second pass (below, every 30
+# minutes) — hash cursor in /var/lib/tts/brief-hashes.json, so most ticks
+# brief nothing.
 
-# Brief open CMT code todos via headless Claude, every 2nd hour at :17 (an
-# odd minute so it never collides with the other jobs' slots). Incremental —
-# only entries whose YAML changed since their last brief are re-briefed
-# (hash cursor in /var/lib/tts/brief-hashes.json), so most runs are no-ops.
-17 */2 * * * root /usr/bin/node /opt/tts/brief-code-todos.mjs >> /var/log/tts/brief-code-todos.log 2>&1
-
-# Prepare unprepared LIFE todos (#dump captures, consolidation candidates)
-# via headless Claude: ground-up brief + smallest entry action + work
-# description, readiness advanced — so raw captures reach Tom pre-chewed.
+# THE PLANNER (schema v2, 2026-08-29; the one batcher since the lifeos
+# update, phase 7 — form-batches.mjs, the v1 batcher that wrote a todo row
+# carrying `members` and an ordered plan, is gone; the v1 batches still in
+# the record go through tts:internalMigrateToGraph). A batch is its own row
+# holding a GRAPH: goal todos (the end states it is for) and task todos (the
+# work), wired by `needs` edges, so the todos whose needs are all done are
+# the ready ones.
 #
-# EVERY 2 MINUTES (Tom 2026-08-30: #dump messages are processed immediately, so
-# the threaded Slack reply can state how TTS interpreted the message). Safe and
-# cheap because the job returns BEFORE any Claude call when there is nothing to
-# prepare ("if (targets.length === 0) return; // quiet when idle"), so an idle
-# tick costs one HTTP read.
-#
-# CONSEQUENCE ACCEPTED, STATED: the old :37 slot existed so the Claude-calling
-# jobs never shared a tick. At */2 this job can now overlap brief-code-todos
-# (:17), form-batches (:07) and plan-graphs (:27). flock guards it only against
-# ITSELF — which is also the lock poll-dump.mjs takes when it spawns this job
-# straight after a capture, so the spawn and the cron can never both run.
-*/2 * * * * root /usr/bin/flock -n /var/lock/tts-prepare-life-todos.lock /usr/bin/node /opt/tts/prepare-life-todos.mjs >> /var/log/tts/prepare-life-todos.log 2>&1
+# Every 30 minutes at :27 and :57, three passes in one run: PREPARE every
+# unprepared life todo (brief, entry action, work description, ground-up
+# explanation, readiness prepared — this used to be prepare-life-todos.mjs on
+# a 2-minute tick; the threaded Slack reply no longer waits on it, the
+# capture posts that itself), BRIEF every open CMT code todo whose YAML
+# changed or that Tom ruled revise on (was brief-code-todos.mjs), then PLAN
+# the graph inside every batch (goals, tasks, needs edges, the needs between
+# batches). An idle tick is cheap: the prepare and brief passes return before
+# any Claude call when nothing is owed, and the plan pass exits on an
+# unchanged input hash (/var/lib/tts/plan-input-hash). flock -n: a backlog of
+# preparations plus a 20-minute plan call can outlast the tick, and a second
+# run would prepare the same todos twice.
+27,57 * * * * root /usr/bin/flock -n /var/lock/tts-plan-graphs.lock /usr/bin/node /opt/tts/plan-graphs.mjs >> /var/log/tts/plan-graphs.log 2>&1
 
-# ── THE BATCH PAIR, MID-CUTOVER (schema v2, 2026-08-29) ─────────────────────
-# These two jobs are the OLD and the NEW way of doing the same thing, and they
-# run side by side on purpose until the cutover.
-#
-#   form-batches.mjs  — the v1 batcher. A batch is a todo row carrying a list
-#                       of `members` and an ordered plan.
-#   plan-graphs.mjs   — the v2 PLANNER. A batch is its own row holding a GRAPH:
-#                       goal todos (the end states it is for) and task todos
-#                       (the work), wired by `needs` edges, so the todos whose
-#                       needs are all done are the ready ones.
-#
-# They cannot collide, and the guard is the SERVER'S in both directions: it
-# refuses a v1 batch that claims a row already inside a v2 batch, and it
-# refuses to bind a row a live v1 batch claims as a v2 goal. (The planner's
-# own filter is not that guard — it governs which ids are offered to the
-# model, not which the model may emit.) Each job also consumes only its own
-# revise rulings: v1 takes rulings whose subject is a members-bearing todo, v2
-# takes rulings whose subject is a batch row, which exist only in v2.
-#
-# AT CUTOVER: delete the form-batches line below, and nothing else here.
-# plan-graphs already sits in the slot that will be the only one left.
+# Tom's rulings need no apply job: every verdict's effect is applied at write
+# time in Convex (convex/ttsRulings.ts), or at the one moment its effect can
+# exist — a code revise by the planner's brief pass, a code approve or archive
+# by the auto-session scheduler as a worker mission, a session verdict when
+# Tom opens the session.
 
-# v1 — Form batches (life + code todos grouped so one session with Tom advances
-# many) via headless Claude, every 2 hours at :07 (:07 collides with nothing;
-# :17/:37/:45 are taken). An input-hash cursor in /var/lib/tts/ makes
-# unchanged-input runs no-ops, so most ticks cost no Claude call.
-# REPLACED BY plan-graphs.mjs — remove this line at cutover.
-7 */2 * * * root /usr/bin/node /opt/tts/form-batches.mjs >> /var/log/tts/form-batches.log 2>&1
-
-# v2 — Maintain the graph inside every batch (goals, tasks, needs edges, the
-# paths between batches) via headless Claude, every 2 hours at :27 (an odd
-# minute of its own; :07/:17/:37/:45 are taken, and the offset from
-# form-batches keeps the two Claude calls off the same tick). Its own
-# input-hash cursor (/var/lib/tts/plan-input-hash) makes unchanged-input runs
-# no-ops. This line REPLACES the form-batches line above at cutover.
-27 */2 * * * root /usr/bin/node /opt/tts/plan-graphs.mjs >> /var/log/tts/plan-graphs.log 2>&1
-
-# Apply Tom's non-execution rulings (defer / stale-replan / needs-session /
-# propose-archive) every 10 minutes, so a ruling made in the UI takes effect
-# within minutes. The job serializes itself via /var/lib/tts/apply.lock —
-# overlapping cron ticks exit immediately instead of double-applying.
-*/10 * * * * root /usr/bin/node /opt/tts/apply-rulings.mjs >> /var/log/tts/apply-rulings.log 2>&1
-
-# Execute ONE approved plan per hour at :45 (agentic Claude in a throwaway
-# clone, 45-min cap, PR as output — merging the PR is the human gate). One
-# per hour bounds Claude usage and keeps PRs reviewable in series;
-# /var/lib/tts/execute.lock (stale after 3h) stops overlap.
-45 * * * * root /usr/bin/node /opt/tts/execute-approved.mjs >> /var/log/tts/execute-approved.log 2>&1
+# An approved (or archived) code todo is EXECUTED by the session daemon
+# below, not by a cron line: the auto-session scheduler in Convex admits it
+# as a worker mission on a session/<id> branch, one at a time, and the PR it
+# opens is Tom's merge gate (convex/claudeSessions.ts, the code lane).
 
 # Finish storing the complete transcript payloads the session-host daemon
 # could not (worker/session-host/reingest-overflow.mjs): every file under
@@ -568,7 +526,7 @@ NEXT STEPS (manual, in order):
 
   5. Smoke-test the jobs by hand:
        node /opt/tts/poll-dump.mjs
-       node /opt/tts/prepare-queue.mjs --force
+       node /opt/tts/plan-graphs.mjs
        echo "Reply with exactly: pong" | tts-codex --effort low
 
   6. Check the session-host daemon (once SESSIONS_WORKER_KEY is set):

@@ -881,12 +881,13 @@ export default defineSchema({
     .index("by_kind_at", ["kind", "at"]),
 
   // One row per TTS day (5 a.m. America/New_York boundary, key YYYY-MM-DD).
-  // The Jarvis Box posts a Claude-prepared queue + digest text before 5;
-  // a fallback cron builds a simple-rules queue if none arrived. Since the
-  // lifeos update (phase 2) the digest is composed deterministically by
-  // convex/ttsDigest.ts and `digestText` has no reader; the queue is still
-  // written every morning and read on the TTS pages, and digestSentAt is
-  // stamped again by each sent digest. Both go in phase 7.
+  // RETIRED (the lifeos update, phase 7): the day's queue used to be written
+  // here every morning — by the box's prepare-queue job or the fallback cron —
+  // and read by the calendar's today column and the digest. Today's view is
+  // computed from the record now (app/tts/lib.ts selectToday) and the digest
+  // dedupes on its own "digest-sent" event. NOTHING WRITES OR READS THIS TABLE;
+  // the declaration stays until NARROW because prod schema is additive-only
+  // (docs/lifeos-retirement.md).
   dtsDailyQueues: defineTable({
     day: v.string(),
     entries: v.array(
@@ -1028,6 +1029,14 @@ export default defineSchema({
     // from this id directly.
     batchId: v.optional(v.id("batches")),
     blockCategory: v.optional(v.string()), // for block sessions: the category worked
+    // The CODE subject (the lifeos update, phase 7): a worker mission the
+    // auto-session scheduler admits for Tom's approve or archive ruling on a
+    // code todo — an entry in a repo's vqc/todos.yaml, addressed by (repo,
+    // externalId), never a dtsTodos row. Both set or neither. The index is the
+    // per-subject session history the scheduler's ceiling reads, the way
+    // by_todo is for a todo.
+    codeRepo: v.optional(v.string()),
+    codeExternalId: v.optional(v.string()),
     // ── The repos this session works in ──────────────────────────────────────
     // `repos` is the LIVE field (Tom's ruling 2026-08-30: a session must be
     // able to hold more than one repo — a batch spanning tom.quest and WikiTom
@@ -1116,7 +1125,10 @@ export default defineSchema({
     .index("by_status", ["status", "statusChangedAt"])
     // Per-todo session history: powers the "does a live session already
     // reference this todo" exclusion and the scheduler's backoff walk.
-    .index("by_todo", ["todoId"]),
+    .index("by_todo", ["todoId"])
+    // Per-code-subject session history: the scheduler's ceiling on how many
+    // worker missions one code todo may draw.
+    .index("by_code_subject", ["codeRepo", "codeExternalId"]),
 
   // Finalized transcript — written exactly once per row by the daemon.
   // `turn` has no UI reader yet; it is kept because transcript structure is

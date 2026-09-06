@@ -2,8 +2,10 @@
 
 // TTS Calendar tab — horizontal week view (Monday-start, 7 columns). Each day
 // stacks, in time order: committed blocks (dtsBlocks), due marks (dueAt),
-// wake marks (waiting todos' wakeAt), and — on today only — the day's queue
-// from getToday. A category block can open a block session over its todos.
+// wake marks (waiting todos' wakeAt), and — on today only — today's view,
+// COMPUTED from the same subscriptions (app/tts/lib.ts selectToday: overdue,
+// due, scheduled, ready, waking today; no stored queue since the lifeos
+// update, phase 7). A category block can open a block session over its todos.
 //
 // Blocks are created and moved by TIME NOTE, not by picker: the day's `+`
 // opens a note for that day ("sat 9–11 deep work"), a block's own note moves
@@ -45,7 +47,7 @@ import TimeNoteField, {
   NO_NOTES,
   type TimeNote,
 } from "./time-note-field";
-import { errMessage, isoDate } from "../lib";
+import { errMessage, isoDate, selectToday } from "../lib";
 
 type Block = Doc<"dtsBlocks">;
 
@@ -226,7 +228,6 @@ export default function CalendarTab({
     api.tts.listBlocks,
     canRead ? { start: weekStart, end: shiftDays(weekStart, 7) } : "skip",
   );
-  const today = useQuery(api.tts.getToday, canRead ? {} : "skip");
   // External-calendar mirror rows (Google/Outlook/Canvas ICS feeds) for the
   // visible week — read-only schedule knowledge next to the blocks.
   const calendarEvents = useQuery(
@@ -368,7 +369,11 @@ export default function CalendarTab({
                   t.wakeAt < day.end,
               )
               .sort((a, b) => (a.wakeAt ?? 0) - (b.wakeAt ?? 0));
-            const queue = isToday ? (today?.queue?.todos ?? []) : [];
+            // Today's view, computed from the todos and blocks already held
+            // here — no stored queue (app/tts/lib.ts selectToday).
+            const todayEntries = isToday
+              ? selectToday(todos, blocks, day, now).entries
+              : [];
             const dayNotes = notesByContext.get(day.key) ?? NO_NOTES;
 
             return (
@@ -479,9 +484,9 @@ export default function CalendarTab({
                   </div>
                 ))}
 
-                {queue.length > 0 && (
+                {todayEntries.length > 0 && (
                   <div className="border-t border-border pt-1 mt-1 space-y-0.5">
-                    {queue.map((t) => (
+                    {todayEntries.map(({ todo: t, reason }) => (
                       <button
                         key={`q-${t._id}`}
                         type="button"
@@ -489,7 +494,7 @@ export default function CalendarTab({
                           void recordEvent({
                             kind: "engaged",
                             todoId: t._id,
-                            data: { via: "calendar-queue" },
+                            data: { via: "calendar-today" },
                           }).catch(() => {});
                           onOpenItem?.(t._id);
                         }}
@@ -499,11 +504,9 @@ export default function CalendarTab({
                         <span className="text-text truncate">
                           {t.statement}
                         </span>
-                        {t.queueReason && (
-                          <span className="text-[10px] text-text-faint border border-border rounded px-1 shrink-0">
-                            {t.queueReason}
-                          </span>
-                        )}
+                        <span className="text-[10px] text-text-faint border border-border rounded px-1 shrink-0">
+                          {reason}
+                        </span>
                       </button>
                     ))}
                   </div>

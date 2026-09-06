@@ -138,7 +138,15 @@ async function workSessions(t: ReturnType<typeof convexTest>) {
 }
 
 async function prospectSessions(t: ReturnType<typeof convexTest>) {
-  return (await autoSessions(t)).filter((s) => s.todoId === undefined);
+  return (await autoSessions(t)).filter(
+    (s) => s.todoId === undefined && s.codeRepo === undefined,
+  );
+}
+
+// The third kind of autonomous session: a CODE MISSION, admitted for Tom's
+// approve or archive ruling on a code todo, told apart by its code subject.
+async function codeSessions(t: ReturnType<typeof convexTest>) {
+  return (await autoSessions(t)).filter((s) => s.codeRepo !== undefined);
 }
 
 // The prospecting lane's own trail: one row per created mission, naming the
@@ -3523,6 +3531,317 @@ describe("autonomous session scheduler", () => {
     // Both workspace variants carry the implement-anyway doctrine: a Tom
     // decision in the plan never parks the session.
     expect(inbound[0].text).toContain("does NOT block you");
+  });
+});
+
+// ── The code lane ────────────────────────────────────────────────────────────
+// Tom's approve or archive ruling on a CODE todo (an entry in a repo's
+// vqc/todos.yaml, briefed on the page) is admitted as a WORKER MISSION on
+// that repo's checkout — the successor of worker/jobs/execute-approved.mjs
+// (the lifeos update, phase 7). The ruling applies at admission with the
+// session id; the mission ends in a pull request Tom merges.
+describe("the code lane", () => {
+  const CMT = "ComplexMultiTrigger";
+
+  // Open, briefed code todos — what Tom rules on. One mirror replace for the
+  // whole set (a replace drops the rows it is not handed).
+  async function briefedCodeTodos(t: ReturnType<typeof convexTest>, ids: string[]) {
+    await t.mutation(internal.tts.internalReplaceMirror, {
+      repo: CMT,
+      rows: ids.map((externalId) => ({
+        externalId,
+        tier: "R",
+        status: "open",
+        statement: `entry ${externalId}`,
+        url: "u",
+      })),
+    });
+    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+      briefs: ids.map((externalId) => ({
+        repo: CMT,
+        externalId,
+        sourceHash: "h",
+        brief: `# Brief for ${externalId}\nwhat, why, how`,
+        recommendation: "approve" as const,
+        execClass: "box" as const,
+      })),
+    });
+  }
+  const briefedCodeTodo = (t: ReturnType<typeof convexTest>, id: string) =>
+    briefedCodeTodos(t, [id]);
+
+  async function rule(
+    tom: Awaited<ReturnType<typeof withTom>>,
+    externalId: string,
+    verdict: "approve" | "archive" | "revise" | "session",
+    sentence?: string,
+  ) {
+    return await tom.mutation(api.ttsRulings.recordRuling, {
+      repo: CMT,
+      externalId,
+      verdict,
+      sentence,
+    });
+  }
+
+  it("admits an approved code todo as a worker mission and applies the ruling with the session", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await briefedCodeTodo(t, "cmt-001");
+    const rulingId = await rule(tom, "cmt-001", "approve", "keep the CLI flag");
+    await enableAuto(t);
+    await heartbeat(t);
+
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+
+    const sessions = await codeSessions(t);
+    expect(sessions).toHaveLength(1);
+    const session = sessions[0];
+    expect(session.mode).toBe("autonomous");
+    expect(session.codeRepo).toBe(CMT);
+    expect(session.codeExternalId).toBe("cmt-001");
+    expect(session.repos).toEqual([CMT]);
+    expect(session.todoId).toBeUndefined();
+    expect(session.status).toBe("requested");
+
+    // The prompt: the entry, the brief Tom ruled from, his sentence, the
+    // branch, the guard, the PR, the outcome pen — and never the ingest key.
+    const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
+      sessionId: session._id,
+    });
+    const text = inbound[0].text;
+    expect(text).toContain("cmt-001");
+    expect(text).toContain('TOM RULED "approve"');
+    expect(text).toContain("Brief for cmt-001");
+    expect(text).toContain("keep the CLI flag");
+    expect(text).toContain(`session/${session._id}`);
+    expect(text).toContain("python3 -m pytest tests/guards/test_bb_todos.py -q");
+    expect(text).toContain("gh pr create");
+    expect(text).toContain("CHANGE REPORT:");
+    expect(text).toContain("/tts/session-outcome");
+    expect(text).toContain("NEVER merge");
+    expect(text).toContain(DAEMON_SENTENCE);
+    expect(text).not.toContain("SESSIONS_WORKER_KEY");
+
+    // The ruling is applied AT ADMISSION, naming the session.
+    const ruling = await t.run(async (ctx) => ctx.db.get(rulingId));
+    expect(ruling?.appliedAt).toBeDefined();
+    expect(ruling?.applyResult).toBe(`admitted as session ${session._id}`);
+    expect(await t.query(internal.ttsRulings.internalPendingRulings, {})).toHaveLength(0);
+
+    const events = await t.run(async (ctx) => ctx.db.query("dtsEvents").collect());
+    expect(
+      events.some(
+        (e) =>
+          e.kind === "auto-session-created" &&
+          (e.data as { externalId?: string })?.externalId === "cmt-001",
+      ),
+    ).toBe(true);
+    expect(events.some((e) => e.kind === "auto-session-scheduler")).toBe(true);
+
+    // A second tick admits nothing more: the ruling is applied, and the
+    // mission is live.
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await codeSessions(t)).toHaveLength(1);
+  });
+
+  it("admits an archive ruling as a mission that only closes the entry", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await briefedCodeTodo(t, "cmt-002");
+    await rule(tom, "cmt-002", "archive", "landed in #90");
+    await enableAuto(t);
+    await heartbeat(t);
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const [session] = await codeSessions(t);
+    expect(session).toBeDefined();
+    const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
+      sessionId: session._id,
+    });
+    expect(inbound[0].text).toContain('TOM RULED "archive"');
+    expect(inbound[0].text).toContain("Do NOT implement it");
+    expect(inbound[0].text).toContain("landed in #90");
+    // The mirror keeps saying "open" until the PR merges: the mission is
+    // told, so its PR body tells Tom why a second archive would double up.
+    expect(inbound[0].text).toContain(
+      'a second "archive" ruling on it would open a second pull request',
+    );
+  });
+
+  // witness: drop `seed.mode !== "autonomous"` AND the kind/category checks
+  // from the code-session block in insertSession — the mission's insert would
+  // stamp cmt-b's verdict with a session Tom is not in. (The block lane skips
+  // a "code" category block by name, so the code lane is the one path that
+  // opens an autonomous session while a code session verdict is live.)
+  it("an autonomous mission consumes no code session verdict", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await briefedCodeTodos(t, ["cmt-a", "cmt-b"]);
+    await rule(tom, "cmt-a", "approve");
+    await rule(tom, "cmt-b", "session", "walk me through the parser");
+    await enableAuto(t);
+    await heartbeat(t);
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const [mission] = await codeSessions(t);
+    expect(mission.codeExternalId).toBe("cmt-a");
+    // cmt-b's conversation is still owed: the ruling rides the feed, and the
+    // mission was told nothing about it.
+    const pending = await t.query(internal.ttsRulings.internalPendingRulings, {});
+    expect(pending.map((r) => `${r.externalId} ${r.verdict}`)).toEqual(["cmt-b session"]);
+    const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
+      sessionId: mission._id,
+    });
+    expect(inbound[0].text).not.toContain("cmt-b");
+    expect(inbound[0].text).not.toContain("walk me through the parser");
+  });
+
+  // witness: drop the archive-first key from admitCodeMissions' sort — an
+  // hour-long approve mission would hold a one-edit set-aside behind it.
+  it("admits an archive ahead of an older approve", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await briefedCodeTodos(t, ["cmt-approve", "cmt-archive"]);
+    await rule(tom, "cmt-approve", "approve");
+    await rule(tom, "cmt-archive", "archive");
+    // The approve is the OLDER ruling.
+    await t.run(async (ctx) => {
+      for (const r of await ctx.db.query("dtsRulings").collect()) {
+        await ctx.db.patch(r._id, { ruledAt: r.verdict === "approve" ? 1000 : 2000 });
+      }
+    });
+    await enableAuto(t, { maxNewPerTick: 4 });
+    await heartbeat(t);
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await codeSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].codeExternalId).toBe("cmt-archive");
+    const pending = await t.query(internal.ttsRulings.internalPendingRulings, {});
+    expect(pending.map((r) => r.externalId)).toEqual(["cmt-approve"]);
+  });
+
+  // witness: drop the verdict filter in admitCodeMissions — a revise (the
+  // planner's) or a session (Tom's conversation) would be executed.
+  it("admits neither a revise nor a session ruling, and one mission at a time, oldest ruling first", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await briefedCodeTodos(t, ["cmt-a", "cmt-b", "cmt-c", "cmt-d"]);
+    await rule(tom, "cmt-a", "revise", "again");
+    await rule(tom, "cmt-b", "session");
+    await rule(tom, "cmt-c", "approve");
+    await rule(tom, "cmt-d", "approve");
+    // cmt-c ruled first.
+    await t.run(async (ctx) => {
+      for (const r of await ctx.db.query("dtsRulings").collect()) {
+        await ctx.db.patch(r._id, { ruledAt: r.externalId === "cmt-c" ? 1000 : 2000 });
+      }
+    });
+    await enableAuto(t, { maxNewPerTick: 4 });
+    await heartbeat(t);
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await codeSessions(t);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].codeExternalId).toBe("cmt-c");
+    // While cmt-c's mission is live, cmt-d waits — pending, not refused.
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await codeSessions(t)).toHaveLength(1);
+    const pending = await t.query(internal.ttsRulings.internalPendingRulings, {});
+    expect(pending.map((r) => r.externalId).sort()).toEqual(["cmt-a", "cmt-b", "cmt-d"]);
+  });
+
+  // witness: drop the mirror or brief checks — a ruling on a closed or
+  // unbriefed entry would ride the feed forever, or start a session on
+  // nothing.
+  it("refuses, by name on the ruling, an entry that is closed in the mirror or has no brief", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await briefedCodeTodo(t, "cmt-closed");
+    await t.mutation(internal.tts.internalReplaceMirror, {
+      repo: CMT,
+      rows: [
+        { externalId: "cmt-closed", tier: "R", status: "closed", statement: "s", url: "u" },
+        { externalId: "cmt-unbriefed", tier: "R", status: "open", statement: "s", url: "u" },
+      ],
+    });
+    const closed = await rule(tom, "cmt-closed", "approve");
+    const unbriefed = await rule(tom, "cmt-unbriefed", "approve");
+    await enableAuto(t);
+    await heartbeat(t);
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await codeSessions(t)).toHaveLength(0);
+    const rows = await t.run(async (ctx) => ({
+      closed: await ctx.db.get(closed),
+      unbriefed: await ctx.db.get(unbriefed),
+    }));
+    expect(rows.closed?.applyResult).toMatch(/^refused: .*not open/);
+    expect(rows.unbriefed?.applyResult).toMatch(/^refused: .*no brief/);
+    expect(await t.query(internal.ttsRulings.internalPendingRulings, {})).toHaveLength(0);
+  });
+
+  // witness: drop the by_code_subject history read — a code todo could draw
+  // missions without end.
+  it("holds the per-subject session ceiling", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await briefedCodeTodo(t, "cmt-loop");
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 8; i++) {
+        await ctx.db.insert("claudeSessions", {
+          title: "past code mission",
+          kind: "adhoc",
+          repo: CMT,
+          mode: "autonomous",
+          codeRepo: CMT,
+          codeExternalId: "cmt-loop",
+          status: "ended",
+          statusChangedAt: Date.now() - 86_400_000,
+          nextSeq: 0,
+          createdAt: Date.now() - 86_400_000,
+        });
+      }
+    });
+    const rulingId = await rule(tom, "cmt-loop", "approve");
+    await enableAuto(t);
+    await heartbeat(t);
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect((await codeSessions(t)).filter((s) => s.status === "requested")).toHaveLength(0);
+    const ruling = await t.run(async (ctx) => ctx.db.get(rulingId));
+    expect(ruling?.applyResult).toMatch(/^refused: .*8 missions/);
+  });
+
+  // witness: put the code lane after the work walk — a backlog with more
+  // eligible todos than slots would starve every approved code todo forever.
+  it("takes its slot before the work walk", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await briefedCodeTodo(t, "cmt-001");
+    await rule(tom, "cmt-001", "approve");
+    // Three eligible life todos and a budget of two: the code lane still gets
+    // one of the two, and the walk the other.
+    for (const s of ["a", "b", "c"]) {
+      await tom.mutation(api.tts.createTodo, { statement: `life ${s}` });
+    }
+    await enableAuto(t, { maxNewPerTick: 2 });
+    await heartbeat(t);
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await codeSessions(t)).toHaveLength(1);
+    expect(await workSessions(t)).toHaveLength(1);
+    // And the tick's own event counts it.
+    const events = await t.run(async (ctx) => ctx.db.query("dtsEvents").collect());
+    const tick = events.find((e) => e.kind === "auto-session-scheduler");
+    expect((tick?.data as { admitted?: number })?.admitted).toBe(2);
+    expect((tick?.data as { counts?: { code?: number } })?.counts?.code).toBe(1);
+  });
+
+  it("stands down with the rest of the fleet when the box is busy", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await briefedCodeTodo(t, "cmt-001");
+    await rule(tom, "cmt-001", "approve");
+    await enableAuto(t);
+    await heartbeat(t, { ...HEALTHY_LOAD, loadavg1: 16 });
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    expect(await codeSessions(t)).toHaveLength(0);
+    expect(await t.query(internal.ttsRulings.internalPendingRulings, {})).toHaveLength(1);
   });
 });
 

@@ -26,11 +26,36 @@ import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
 // condition; on approve/session it is a free note that reaches the batcher
 // prompt, the preparer prompt, and the session's opening prompt.
 //
-// Life-subject verdicts take their immediate effect here (revise drops
-// readiness to "unprepared"; archive archives). Code subjects are applied by
-// the worker's apply job (repo is the system of record). appliedAt/applyResult
-// record the application either way; a newer ruling on the same subject
-// supersedes an older unapplied one (append-only, history kept).
+// EVERY VERDICT'S EFFECT IS APPLIED AT WRITE TIME, OR AT THE ONE MOMENT ITS
+// EFFECT CAN EXIST (the lifeos update, phase 7; there is no apply job on the
+// box any more). Per subject:
+//   life   — revise drops readiness to "unprepared" here and the planner's
+//            prepare pass re-prepares the todo with the sentence, consuming
+//            the ruling when the re-prep lands — except on a v1 batch row (a
+//            todo carrying `members`), which no pass prepares any more: that
+//            revise is refused by name on its own row, since only
+//            tts:internalMigrateToGraph re-forms a v1 batch; archive archives here;
+//            approve is ratification and applies here; session applies the
+//            moment Tom opens an interactive session on the todo
+//            (markLiveSessionRulingApplied, from claudeSessions.insertSession).
+//   batch  — approve ratifies the graph here; archive archives the batch and
+//            its contents here; revise un-freezes the batch for the planner
+//            and applies here (the planner reads the sentence off the recent
+//            feed); session pauses the graph for a day (claudeSessions).
+//   code   — the repo is the system of record, so the effect is work in the
+//            repo: approve and archive are admitted by the auto-session
+//            scheduler as WORKER MISSIONS (claudeSessions.internalAutoSchedule
+//            — implement the plan into a pull request on a session/<id>
+//            branch, or close the entry in the repo's todo file the same
+//            way), and the ruling applies at admission with the session id;
+//            revise is consumed by the planner's brief pass once the fresh
+//            brief has posted; session applies the moment Tom opens an
+//            interactive session on the code block, whose opener names each
+//            subject and sentence it consumes (liveCodeSessionRulings +
+//            markCodeSessionRulingsApplied, from claudeSessions.insertSession).
+// appliedAt/applyResult record the application either way; a newer ruling on
+// the same subject supersedes an older unapplied one (append-only, history
+// kept).
 //
 // THREE SUBJECT TYPES since schema v2 (2026-08-29): life (a dtsTodos row),
 // code (repo + externalId), and BATCH (a batches row — a batch is its own row
@@ -153,7 +178,23 @@ async function insertRuling(
       if (verdict !== "revise") {
         await ctx.db.patch(todoId, { tomTouchedAt: now });
       }
-      if (verdict === "revise") {
+      if (verdict === "revise" && todo.members !== undefined) {
+        // A v1 BATCH ROW (a todo carrying `members`) has no preparer any more:
+        // the planner's prepare pass skips members-bearing rows by name
+        // (worker/jobs/plan-graphs.mjs selectPrepareTargets), and the v1
+        // batcher that re-formed one is gone (the lifeos update, phase 7).
+        // Dropping its readiness would take it off the ready list for good,
+        // and leaving the ruling unapplied would park it on the pending feed
+        // with nothing on any side able to consume it. So: readiness
+        // untouched, and the ruling refused BY NAME on its own row — the
+        // sentence stays on the record (and in the digest), and the row says
+        // what re-forms a v1 batch now.
+        appliedAt = now;
+        applyResult =
+          "refused: a v1 batch (a todo carrying members) has no preparer — " +
+          "tts:internalMigrateToGraph hands it to the graph, and the batch " +
+          "row it becomes takes a revise";
+      } else if (verdict === "revise") {
         // Two readiness values (ruling 18): revise hands the write-up back, so
         // the row is unprepared — preparation is owed again — until the
         // preparer returns it as prepared. It is therefore not ready for Tom
@@ -369,8 +410,8 @@ export const internalRecordRuling = internalMutation({
 //
 // approve on a code subject is NOT further gated here: a code todo has no
 // readiness field — its brief IS the prepared state (check 4 requires one),
-// and what approve triggers (worker/jobs/execute-approved.mjs) is a PR whose
-// merge is still Tom's own hand.
+// and what approve triggers (a worker mission admitted by the auto-session
+// scheduler) is a PR whose merge is still Tom's own hand.
 
 const SUBJECT_TYPE = v.union(
   v.literal("life"),
@@ -686,10 +727,53 @@ export async function markLiveSessionRulingApplied(
   }
 }
 
-// The rulings a worker job should act on: appliedAt unset AND not superseded
-// (a newer ruling on the same subject makes the older one dead history). Both
-// subject types ride the same feed — the worker filters by subjectType (code →
-// apply job; life revise → the preparer consumes the sentence).
+/**
+ * A "session" verdict on a CODE subject is applied the moment Tom opens an
+ * interactive session on the code block — the one kind of session whose turns
+ * are about code todos (refuseUnlessSessionSubject above reads a "code" block
+ * session that way). The twin of markLiveSessionRulingApplied, in two halves
+ * so the session's prompt can NAME what it consumes: liveCodeSessionRulings
+ * is the set (every live, unapplied code session ruling, oldest first — the
+ * block holds them all), and markCodeSessionRulingsApplied stamps exactly
+ * the rows it is handed. claudeSessions.insertSession reads the set, writes
+ * each subject and Tom's sentence into the opener, then marks that same set
+ * — a verdict is never consumed without its conversation reaching the
+ * session, and never named without being consumed.
+ */
+export async function liveCodeSessionRulings(
+  ctx: MutationCtx,
+): Promise<Doc<"dtsRulings">[]> {
+  const all = await ctx.db.query("dtsRulings").collect();
+  return [...liveRulings(all).values()]
+    .filter(
+      (live) =>
+        live.subjectType === "code" &&
+        live.verdict === "session" &&
+        live.appliedAt === undefined,
+    )
+    .sort((a, b) => a.ruledAt - b.ruledAt);
+}
+
+export async function markCodeSessionRulingsApplied(
+  ctx: MutationCtx,
+  rulings: readonly Doc<"dtsRulings">[],
+  sessionId: string,
+): Promise<void> {
+  for (const ruling of rulings) {
+    await ctx.db.patch(ruling._id, {
+      appliedAt: Date.now(),
+      applyResult: `session ${sessionId}`,
+    });
+  }
+}
+
+// The rulings a box job should act on: appliedAt unset AND not superseded
+// (a newer ruling on the same subject makes the older one dead history). Every
+// subject type rides the same feed — the planner filters by kind (a life
+// revise → its prepare pass; a code revise → its brief pass; a batch revise →
+// its plan pass) and consumes only what it served. Code approve and archive
+// rulings ride it too, but their consumer is the auto-session scheduler in
+// Convex, not a box job.
 export const internalPendingRulings = internalQuery({
   args: {},
   handler: async (ctx) => {
