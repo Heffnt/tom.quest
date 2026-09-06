@@ -697,6 +697,30 @@ describe("threaded replies from Tom", () => {
     expect((await postEvent(t, hourly, "EvH2")).outcome).toBe("captured");
     expect(await events(t, "slack-event")).toHaveLength(1);
   });
+
+  // witness: restore the `dumpChannel !== undefined &&` guard and an unset id
+  // turns every channel the app is in into #dump — a top-level message
+  // anywhere becomes a todo AND gets a bot reply posted under it.
+  it("captures nothing at all while SLACK_DUMP_CHANNEL_ID is unset", async () => {
+    slackEnv();
+    vi.stubEnv("SLACK_DUMP_CHANNEL_ID", "");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const t = convexTest(schema, modules);
+
+    for (const [i, channel] of [DUMP, "C0GENERAL"].entries()) {
+      expect(await postEvent(t, { channel, ts: `950.${i}`, text: "buy milk" })).toEqual({
+        ok: true,
+        ignored: true,
+      });
+    }
+    expect(await t.run(async (ctx) => ctx.db.query("dtsTodos").collect())).toHaveLength(0);
+    expect(await scheduledSends(t)).toHaveLength(0);
+    // Once, not per event.
+    expect(
+      warn.mock.calls.filter((c) => String(c[0]).includes("SLACK_DUMP_CHANNEL_ID")).length,
+    ).toBe(1);
+    warn.mockRestore();
+  });
 });
 
 describe("replyShape", () => {
