@@ -69,7 +69,11 @@ const CLAUDE_TIMEOUT_MS = 5 * 60 * 1000;
 // Failure is reported, never fatal: the preparation already landed, and a todo
 // with no reply is a smaller loss than a run that stops.
 async function postThreadedReply(env, todo, parsed) {
-  if (todo.slackRepliedAt !== undefined) return; // already answered, once
+  // Already answered, once — by this job on an earlier run, or by the capture
+  // itself (convex/tts.ts internalCapture posts the one reply line at capture
+  // and stamps slackReplyTs through the Slack door). Either stamp means the
+  // message has its reply; this job then says nothing.
+  if (todo.slackRepliedAt !== undefined || todo.slackReplyTs !== undefined) return;
   if (!todo.slackChannel || !todo.slackTs) return; // not from a Slack message
   const readiness =
     parsed.readiness === "ready-for-tom"

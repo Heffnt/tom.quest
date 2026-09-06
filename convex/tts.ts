@@ -7,12 +7,14 @@ import {
 } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import {
   DAY_MS,
   MAX_NEEDS,
   SESSION_MODEL,
   TTS_PREP_NY_HOUR,
+  captureReplyText,
   goalCheckable,
   nyCalendarDayBoundsUtc,
   nyCalendarDayKey,
@@ -1418,6 +1420,20 @@ export const internalCapture = internalMutation({
       updatedAt: now,
     });
     await logEvent(ctx, "captured", id, { source });
+    // The one reply line at capture, in the thread of the #dump message this
+    // came from. Scheduled INSIDE the insert's transaction, after the dedupe
+    // above — so a Slack retry, which returns the existing id, never
+    // schedules a second one, and no reply exists for a capture that rolled
+    // back. The door (ttsSync.sendSlack) records the send and stamps
+    // slackReplyTs; prepare-life-todos.mjs reads that stamp and stays quiet.
+    if (slackChannel !== undefined && slackTs !== undefined) {
+      await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
+        channel: slackChannel,
+        threadTs: slackTs,
+        text: captureReplyText(statement, id),
+        subject: { kind: "todo", id },
+      });
+    }
     return id;
   },
 });

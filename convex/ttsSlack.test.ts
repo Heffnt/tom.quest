@@ -137,6 +137,26 @@ afterEach(() => {
 });
 
 describe("the reply at capture", () => {
+  // witness: move the scheduler call above the by_slackTs lookup in
+  // internalCapture and the retry schedules a second reply.
+  it("schedules exactly one reply line per #dump message, however many times Slack retries", async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    const message = { channel: DUMP, ts: "1700000000.000100", text: "buy climbing tape" };
+    const first = await postEvent(t, message);
+    const second = await postEvent(t, message, "EvRetry");
+    expect(second.id).toBe(first.id);
+    const sends = await scheduledSends(t);
+    expect(sends).toHaveLength(1);
+    expect(sends[0]).toMatchObject({
+      channel: DUMP,
+      threadTs: message.ts,
+      subject: { kind: "todo", id: first.id },
+    });
+    expect(sends[0].text).toBe(captureReplyText("buy climbing tape", first.id as string));
+    expect(sends[0].text).not.toContain("\n");
+  });
+
   // witness: drop the todo patch from recordSlackSent and prepare-life-todos
   // posts a second reply under every message.
   it("the door records the send and stamps slackReplyTs, so the worker stays quiet", async () => {
