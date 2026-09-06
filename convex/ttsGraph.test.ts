@@ -1786,6 +1786,42 @@ describe("POST /tts/plan-graph", () => {
     expect((await allBatches(t)).find((b) => b._id === cut._id)!.needs).toEqual([]);
   });
 
+  // A needs B and B needs A passes a self-need check, and the scheduler's
+  // batchNeedsMet then holds both back forever with nothing saying why. The
+  // pen walks each need through the stored needs of every batch and refuses
+  // the edge that would close a cycle, naming the batch it names.
+  it("refuses a need that closes a cycle, direct or through another batch", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const store = async (body: Record<string, unknown>) =>
+      (await (await postGraph(t, body)).json()) as {
+        batchId: string;
+        skipped: { ref: string; why: string }[];
+      };
+    const task = (s: string) => [{ statement: s, actor: "agent" }];
+    const a = (await store({ statement: "a", tasks: task("do a") })).batchId;
+    const b = (await store({ statement: "b", needs: [a], tasks: task("do b") })).batchId;
+    const c = (await store({ statement: "c", needs: [b], tasks: task("do c") })).batchId;
+    // Direct: a needs b, and b already needs a.
+    const direct = await store({ batchId: a, statement: "a", needs: [b], tasks: task("do a") });
+    expect(direct.skipped).toEqual([
+      { ref: b, why: 'needs form a cycle: "b" already needs this batch' },
+    ]);
+    // Through another batch: a needs c, c needs b, b needs a.
+    const transitive = await store({ batchId: a, statement: "a", needs: [c], tasks: task("do a") });
+    expect(transitive.skipped).toEqual([
+      { ref: c, why: 'needs form a cycle: "c" already needs this batch' },
+    ]);
+    const byId = new Map((await allBatches(t)).map((x) => [x._id as string, x]));
+    expect(byId.get(a)!.needs).toEqual([]);
+    expect(byId.get(b)!.needs).toEqual([a]);
+    expect(byId.get(c)!.needs).toEqual([b]);
+    // The other way round is no cycle: c may need a as well as b.
+    const fine = await store({ batchId: c, statement: "c", needs: [b, a], tasks: task("do c") });
+    expect(fine.skipped).toEqual([]);
+    expect((await allBatches(t)).find((x) => x._id === c)!.needs).toEqual([b, a]);
+  });
+
   // witness: pass a half-formed path straight through — the mutation's
   // validator would refuse the object and cost the whole call, when an absent
   // path simply preserves whatever is stored.

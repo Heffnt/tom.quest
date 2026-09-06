@@ -2359,23 +2359,51 @@ export const internalStorePlanGraph = internalMutation({
       return false;
     });
 
-    // ── The batch's needs: ids of OTHER batches, bounded, known ─────────────
+    // ── The batch's needs: ids of OTHER batches, bounded, known, acyclic ────
     // A name that is not a batch id, or the batch itself, is dropped with a
     // named skip rather than stored: an edge to nothing would block the batch
-    // forever, and an edge to itself would too. Absent preserves.
+    // forever, and an edge to itself would too. So would a cycle through
+    // other batches — A needs B and B needs A passes a self-need check, and
+    // then the scheduler's batchNeedsMet holds both back forever with nothing
+    // saying why. Each candidate need is walked transitively through the
+    // stored needs of every batch (ONE collect of a human-scale table), and
+    // one that reaches this batch is skipped naming the batch it names.
+    // Absent preserves.
     let batchNeeds: Id<"batches">[] | undefined;
     if (args.needs !== undefined) {
+      const allBatches = await ctx.db.query("batches").collect();
+      const batchByIdForNeeds = new Map(allBatches.map((b) => [b._id as string, b]));
+      /** Whether `from` reaches `target` along stored needs edges. */
+      const reaches = (from: string, target: string): boolean => {
+        const seen = new Set<string>();
+        const stack = [from];
+        while (stack.length > 0) {
+          const id = stack.pop()!;
+          if (id === target) return true;
+          if (seen.has(id)) continue;
+          seen.add(id);
+          stack.push(...(batchByIdForNeeds.get(id)?.needs ?? []));
+        }
+        return false;
+      };
       batchNeeds = [];
       const seen = new Set<string>();
       for (const raw of args.needs) {
         const id = ctx.db.normalizeId("batches", raw);
-        const target = id ? await ctx.db.get(id) : null;
+        const target = id ? batchByIdForNeeds.get(id) : undefined;
         if (!id || !target) {
           result.skipped.push({ ref: raw, why: "needs names no batch" });
           continue;
         }
         if (batch && id === batch._id) {
           result.skipped.push({ ref: raw, why: "a batch cannot need itself" });
+          continue;
+        }
+        if (batch && reaches(id, batch._id)) {
+          result.skipped.push({
+            ref: raw,
+            why: `needs form a cycle: "${target.statement}" already needs this batch`,
+          });
           continue;
         }
         if (seen.has(id)) continue;
