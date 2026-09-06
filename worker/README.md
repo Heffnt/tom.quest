@@ -1,30 +1,66 @@
 # The Jarvis Box
 
 The always-on home for TTS's scheduled headless-Claude jobs: a Hetzner VPS
-(today: x86_64, Ubuntu 26.04 — it began life as an ARM64 CAX11 on 24.04) running three personal-todo jobs and three code-todo jobs
+(today: x86_64, Ubuntu 26.04 — it began life as an ARM64 CAX11 on 24.04) running five personal-todo jobs and three code-todo jobs
 on a schedule:
 
 1. **poll-dump** (every 2 min) — reads new human messages from the Slack
    `#dump` channel and submits each one to Convex as an unprepared todo.
 2. **poll-gmail** (every 10 min) — lists new inbox mail and spends ONE headless
-   Claude call per batch deciding which messages imply an action by Tom, then
-   submits each of those to Convex as an unprepared todo with source `email`
-   (linked back to the thread). Judged from headers plus Gmail's ~100-character
-   snippet only — v1 never downloads bodies — and the prompt leans toward
-   capturing when unsure, because a wrong capture costs one archive click while
-   a wrong skip loses the thread. Until the Gmail credentials exist it is a
-   quiet no-op; see below.
-3. **poll-canvas** (every 30 min) — lists new Canvas course announcements and
-   spends ONE headless Claude call per batch deciding which imply an action
-   by Tom (schedule changes, sign-ups, required responses), then submits
-   those to Convex as unprepared todos with source `canvas-announcement`,
-   linked to the announcement. Assignments are NOT this job's business — the
-   Convex-side sync (convex/ttsCanvas.ts) owns those under the source `canvas`,
-   with due dates and auto-done on submission. Two producers, two source names:
-   they shared `canvas` until the sync was found reading every announcement row
-   and dropping it without a word. Quiet no-op until `CANVAS_TOKEN` exists in worker.env (WPI
-   restricts token creation; Tom's request form is pending).
-4. **prepare-queue** (4:30 a.m. New York) — runs headless Claude Code to pick
+   Claude call per batch on TWO judgements. First: does the message imply an
+   action by Tom? If so it is submitted to Convex as an unprepared todo with
+   source `email` and the stable source id `gmail:message:<id>` in its
+   provenance, followed by the `#all` link. Judged from headers plus Gmail's
+   ~100-character snippet only — v1 never downloads bodies — and the prompt
+   leans toward capturing when unsure, because a wrong capture costs one
+   archive click while a wrong skip loses the thread. Second: does it need Tom
+   **today**? If so the job asks Convex to open one thread in `#tts` on that
+   todo (`POST /tts/needs-tom`), carrying one line — the sender, the subject,
+   the todo's link — so his reply in it is the next turn on the row. That
+   second judgement is capture triage, not an importance rating: three facts
+   and no others make it true (a deadline inside 48 hours, a named person
+   waiting on a reply, money or credentials), and the rules for both
+   judgements come from the deployment (`GET /tts/capture-context`, the synced
+   WikiTom capture-triage text), never from a copy in the job. The thread is
+   deduped on the Gmail message id, so one mail opens one thread however many
+   times the job re-reads it. Until the Gmail credentials exist it is a quiet
+   no-op; see below.
+3. **poll-canvas** (every 30 min) — the one job that owns Canvas, in two
+   halves on one tick. **Assignments**: every published, dated assignment
+   within 14 days back and 60 days on is posted to
+   `POST /tts/canvas-assignments`, which keeps one todo per assignment (source
+   `canvas`, `dateKind: "external"`, provenance `canvas:assignment:<id> <url>`)
+   — the instructor's date is a fact and moves the todo with it, and a
+   submission on Canvas completes the todo. No Claude call: an assignment with
+   a due date *is* an obligation, there is nothing to judge, and posting the
+   whole window every run is safe because the sync keys each row by its
+   assignment id. **Announcements**: ONE headless Claude call per batch, under
+   the deployment's own capture-triage rules (`GET /tts/capture-context`, the
+   same words poll-gmail uses), deciding which imply an action by Tom
+   (schedule changes, sign-ups, required responses); those are captured as
+   unprepared todos with source `canvas-announcement`, linked to the
+   announcement. Two source names for two facts: they shared `canvas` until the
+   sync was found reading every announcement row and dropping it without a
+   word. Quiet no-op until `CANVAS_TOKEN` exists in worker.env (WPI restricts
+   token creation; Tom's request form is pending), and an expired or revoked
+   token is reported to TTS as a job failure so it reaches him in the morning
+   digest instead of dying in `/var/log/tts`.
+
+   **One credential copy.** The assignments half used to be a Convex cron
+   action with a second `CANVAS_TOKEN` in the deployment env. It is gone; the
+   token lives only in `/etc/tts/worker.env`, and what stayed in Convex is the
+   mutation that writes todos, because writing todos has to be one.
+4. **poll-outlook** (not scheduled yet) — the Outlook counterpart of
+   poll-gmail (Tom, 2026-08-25: "outlook is where the most important mail comes
+   in"). It is a **skeleton**: the credential contract, the cursor's home and
+   the two strings a later reader depends on are settled, and the Microsoft
+   Graph half lands in the same change as the `OUTLOOK_*` credential, because
+   network code that can never be exercised is worse than an empty hand. It
+   has no cron line at all until then — the line is written and commented out
+   in `setup.sh`, with the reason next to it. Run by hand today it prints one
+   line naming the keys it is still waiting for. See "Outlook credentials"
+   below.
+5. **prepare-queue** (4:30 a.m. New York) — runs headless Claude Code to pick
    today's queue (≤7 items) and write the daily digest, and posts both to
    Convex. If it fails, the Convex-side fallback prep (4:45) still writes the
    day's queue. The digest text it writes has no reader any more: since the
@@ -32,9 +68,44 @@ on a schedule:
    Convex (`convex/ttsDigest.ts`) and sent by `sendDigest`, so a missing
    morning message is itself the monitoring signal. This job's digest half
    goes in phase 7 with the queue.
-5. **brief-code-todos** (every 2 h at :17) — see the ruling loop below.
-6. **apply-rulings** (every 10 min) — see the ruling loop below.
-7. **execute-approved** (hourly at :45) — see the ruling loop below.
+6. **brief-code-todos** (every 2 h at :17) — see the ruling loop below.
+7. **apply-rulings** (every 10 min) — see the ruling loop below.
+8. **execute-approved** (hourly at :45) — see the ruling loop below.
+
+## Declining an integration
+
+**An integration Tom declines is an archived todo with his ruling on it.**
+There is no integrations table, no enabled flag, no config page: the thing that
+already records a decision of his records this one too, so it keeps his own
+words, its date, and its place in everything that reads rulings.
+
+To decline one, dump the line into `#dump` and archive it with the **archive**
+verdict:
+
+```
+integration: outlook
+```
+
+The optional sentence on that verdict is the reason. Every poller asks
+`declined(env, "<its name>")` before anything else — before its credential
+check, before any read — and exits with one line naming the date and the
+sentence:
+
+```
+[poll-outlook] declined by Tom on 2026-09-05: not worth the credential — skipping
+```
+
+The names are `gmail`, `canvas` (both halves) and `outlook`; the prefix is
+matched case-insensitively, so `Integration: Outlook` is the same ruling.
+
+Both halves are required — the row must be **archived** *and* its newest ruling
+must be **archive**. An archived row alone is not a decision of his (a cleanup
+or a batch archive can archive a row), and a ruling alone is not either. Ruling
+again takes the decline back: an approve after an archive re-enables the
+integration and leaves the history of having declined it. The Friday weekly
+gather lists integrations by state, with the ruling date.
+
+The one home for all of that is `convex/ttsIntegrations.ts`.
 
 ## The code-todo ruling loop
 
@@ -182,6 +253,9 @@ are all harmless to lose:
 - `/var/lib/tts/gmail-cursor` — timestamp of the newest email poll-gmail has
   processed (captured or skipped); losing it re-examines the last 24 hours,
   at worst re-capturing a few emails as duplicates Tom can archive.
+- `/var/lib/tts/outlook-cursor` — the same, for poll-outlook, in the same
+  one-integer format; it does not exist yet (the job has no cron line until
+  the `OUTLOOK_*` credential does).
 - `/var/lib/tts/canvas-announcements-cursor` — timestamp of the newest
   announcement poll-canvas has processed; losing it re-examines the last
   7 days, at worst re-capturing a few announcements as duplicates.
@@ -239,6 +313,29 @@ No credential value is ever printed — see the "never log secrets" rule in
 `worker/jobs/credential-file.mjs`, which is how they comply. The token lasts
 until it is revoked at `myaccount.google.com/permissions`. The script's own
 header carries the ten-minute console walkthrough.
+
+## Outlook credentials (one-time, not yet minted)
+
+poll-outlook needs three keys in `/etc/tts/worker.env` — `OUTLOOK_CLIENT_ID`,
+`OUTLOOK_CLIENT_SECRET`, `OUTLOOK_REFRESH_TOKEN` — and prints one line naming
+the missing ones until all three are there.
+
+The client id and secret come from an Entra ID (Azure AD) app registration in
+Tom's tenant, with the **delegated** Microsoft Graph permission `Mail.Read`
+plus `offline_access` (which is what makes a refresh token mintable at all).
+Read-only by construction: a leaked token cannot send mail as him.
+
+The refresh token is minted ONCE on Tom's own machine rather than on the
+Jarvis Box, because approving it needs a browser — the same one-time shape as
+`gmail-auth.mjs`. **That minting helper and the Microsoft Graph half of the
+job both land in the change that carries this credential**, together with the
+cron line, which sits commented out in `setup.sh` with the reason beside it
+until then. Network code that can never be exercised is worse than an empty
+hand, so what is in the repo today is only what could be settled without the
+token: the three key names, the cursor's home
+(`/var/lib/tts/outlook-cursor`, the same one-integer format as the Gmail
+cursor), the source id shape `outlook:message:<id>`, and the line a `#tts`
+thread opens with.
 
 ## Calendar credentials (one-time)
 
@@ -334,6 +431,7 @@ tts-account use wpi      # switch; takes effect on the next job run
 node /opt/tts/poll-dump.mjs               # capture anything new in #dump now
 node /opt/tts/poll-gmail.mjs              # triage + capture new inbox mail now
 node /opt/tts/poll-canvas.mjs             # triage + capture new announcements now
+node /opt/tts/poll-outlook.mjs            # prints the OUTLOOK_* keys still missing
 node /opt/tts/prepare-queue.mjs --force   # prep today's queue regardless of hour
 node /opt/tts/brief-code-todos.mjs        # brief changed CMT todos now
 node /opt/tts/brief-code-todos.mjs --force # re-brief EVERY open CMT todo

@@ -222,6 +222,36 @@ describe("the changed-since query", () => {
     });
   });
 
+  // A kind's rows belong to it whatever they are keyed on. This read used to
+  // pin `key` to undefined, which was exact only for as long as no row of the
+  // kind had a key — and "job-failed" grew one, to stop a dead credential
+  // writing a row every half hour (convex/ttsJobs.ts). Pinned, every keyed
+  // failure would have vanished from this update without a word.
+  it("reports a job failure whether or not it names the condition it is about", async () => {
+    const t = convexTest(schema, modules);
+    await insertEvent(t, SINCE + 1, "job-failed", undefined, {
+      job: "poll-canvas",
+      error: "one bad run",
+    });
+    await t.run(async (ctx) =>
+      ctx.db.insert("dtsEvents", {
+        at: SINCE + 2,
+        kind: "job-failed",
+        key: "poll-canvas:canvas-auth",
+        data: { job: "poll-canvas", error: "the Canvas token is dead" },
+      }),
+    );
+
+    const changes = await t.query(internal.ttsHourly.internalChangedSince, {
+      start: SINCE,
+      end: NOW,
+    });
+    expect(changes.map((c) => c.detail)).toEqual([
+      "one bad run",
+      "the Canvas token is dead",
+    ]);
+  });
+
   it("starts the window at the hourly update's OWN marker, never at the door's record of a send", async () => {
     const t = convexTest(schema, modules);
     expect(await t.query(internal.ttsHourly.internalLastHourlyWindowEnd, {})).toBeNull();

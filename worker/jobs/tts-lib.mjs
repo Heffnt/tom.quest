@@ -137,6 +137,239 @@ export async function convexFetch(env, path, body = undefined) {
   return JSON.parse(text);
 }
 
+/**
+ * The link to one todo on the /tts page. ONE HOME in worker/ for the URL
+ * shape — convex/ttsShared.ts ttsItemLink is the same string on the server
+ * side, and a job that spells it itself is the drift this rule exists to stop.
+ */
+export function ttsItemLink(todoId) {
+  return `https://tom.quest/tts?item=${todoId}`;
+}
+
+// ---------------------------------------------------------------------------
+// Capture context — the rules a poller triages by (the lifeos update, phase 6)
+// ---------------------------------------------------------------------------
+//
+// Every capture poller (poll-gmail, poll-canvas, poll-outlook) makes the same
+// two judgements about an incoming message: does it imply an action by Tom,
+// and does it need him TODAY. The words for both come from the deployment, not
+// from any job: GET /tts/capture-context serves the synced WikiTom
+// capture-triage text with convex/ttsShared.ts's copy as the fallback.
+//
+// One read, one shape, so the three pollers cannot triage by three different
+// sets of rules. Fields grow here as later phases add them (the declined
+// integrations list is the next one).
+
+/**
+ * The capture rules and the state a poller checks before it runs.
+ *
+ * ONE READ PER RUN. Both things a poller needs from the deployment ride this
+ * payload — the triage rules and the declined list — and a run that fetched it
+ * twice (once to ask whether it was declined, once to get the rules) asked the
+ * same question of the same deployment twice a tick, forever.
+ */
+export async function captureContext(env) {
+  return await convexFetch(env, "/tts/capture-context");
+}
+
+/**
+ * Tom's ruling declining this integration, or null. PURE: it reads the context
+ * the run already fetched (captureContext above), not a second GET.
+ *
+ * AN INTEGRATION HE DECLINES IS AN ARCHIVED TODO WITH HIS RULING ON IT
+ * (convex/ttsIntegrations.ts): he dumps the line `integration: outlook` and
+ * archives it with the archive verdict, and the optional sentence on that
+ * verdict is his reason. There is no enabled flag anywhere — the thing that
+ * already records a decision of his records this one, so it keeps his words,
+ * its date, and its place in everything that reads rulings.
+ *
+ * Every poller asks this FIRST and exits with one line when the answer is not
+ * null. The returned row is `{ name, todoId, ruledAt, sentence }`; the caller
+ * prints the date and the sentence so the log says why, not just that.
+ */
+export function declined(context, name) {
+  const target = String(name).trim().toLowerCase();
+  return (context?.declinedIntegrations ?? []).find((d) => d.name === target) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// A job's own report about itself (the lifeos update, phase 6)
+// ---------------------------------------------------------------------------
+//
+// A cron job's only voice used to be /var/log/tts, which Tom does not read.
+// These two calls are the voice he does read: POST /tts/job-failed writes a
+// dtsEvents row the morning digest and the hourly update both carry, and POST
+// /tts/job-ok closes one.
+//
+// `key` NAMES THE CONDITION, NOT THE RUN — `poll-canvas:canvas-auth`. A
+// condition already reported and not since recovered is not reported again
+// (convex/ttsJobs.ts), so a credential that is dead for a week is one row and
+// not one row a tick. Omit the key for a failure that is about this run alone.
+//
+// NEITHER CALL THROWS. Reporting a failure must not become a second unreported
+// failure, and telling Tom about a bad run is never worth losing the run's
+// real work — so a refusal is logged here and the caller carries on.
+
+/** Report this job's failure in plain words. Returns null if the report failed. */
+export async function reportJobFailed(env, { job, error, key }) {
+  try {
+    return await convexFetch(env, "/tts/job-failed", { job, error, key });
+  } catch (err) {
+    console.error(`[${job}] could not report the failure: ${err.message}`);
+    return null;
+  }
+}
+
+/** Say this job just ran clean, which re-arms the keyed report above. */
+export async function reportJobOk(env, { job, key }) {
+  try {
+    return await convexFetch(env, "/tts/job-ok", { job, key });
+  } catch (err) {
+    console.error(`[${job}] could not report the clean run: ${err.message}`);
+    return null;
+  }
+}
+
+/** The one line a poller prints when it stands down. Exported for tests. */
+export function declinedLine(job, ruling) {
+  const on = new Date(ruling.ruledAt).toISOString().slice(0, 10);
+  return (
+    `[${job}] declined by Tom on ${on}` +
+    (ruling.sentence ? `: ${ruling.sentence}` : "") +
+    " — skipping"
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Triage answers: what the model said about what it was given
+// ---------------------------------------------------------------------------
+//
+// A capture poller hands a model a batch of items, each with an id, and reads
+// back a verdict per item. The ids come back through the model, which means
+// they can come back WRONG — a digit dropped from a Gmail id, an id invented,
+// an item simply not mentioned.
+//
+// SILENCE USED TO MEAN "SKIP". Each job built a Map keyed by the id in the
+// answer and looked each item up in it; a miss was read as "the model decided
+// not to capture this one", the item was passed over, and the cursor advanced
+// past it. So a garbled id lost a mail — permanently, since the cursor never
+// comes back — and the only trace was a count that happened to be one lower.
+//
+// Now the answer is RECONCILED against the batch. Every item gets a verdict or
+// is unresolved; every returned id is in the batch or is unmatched; both are
+// reported to Tom through POST /tts/job-failed, and the caller holds its cursor
+// at the oldest unresolved item so the next run reads it again. A model that
+// answers well loses nothing to this; a model that garbles an id costs a
+// re-read instead of a message.
+
+/** The stand-in for an answer that names no id at all. Never a real id. */
+export const NO_ID = "(no id)";
+
+/**
+ * Pure: the verdict one answer carries, or null when it carries none.
+ *
+ * `capture: false` is a complete verdict — the model looked and said no. A
+ * `capture: true` with no statement is NOT: it claims an action and names
+ * none, so there is nothing to write, and reading it as a skip would lose the
+ * item exactly the way silence used to. Exported for tests.
+ */
+export function captureVerdict(answer) {
+  if (answer === null || typeof answer !== "object") return null;
+  if (answer.capture === false) return { capture: false };
+  if (answer.capture !== true) return null;
+  const statement = typeof answer.statement === "string" ? answer.statement.trim() : "";
+  if (statement === "") return null;
+  return {
+    capture: true,
+    statement,
+    needsTomToday: answer.needsTomToday === true,
+    why: typeof answer.why === "string" ? answer.why.trim() : "",
+  };
+}
+
+/**
+ * Pure: line a model's answers up against the batch ids it was given.
+ *
+ *   byId       the verdict for each batch id the model resolved;
+ *   unresolved batch ids with no usable verdict, in the batch's own order —
+ *              the caller processes up to the first of these and no further;
+ *   unmatched  ids the answer named that were not in the batch, deduped.
+ *
+ * Exported for tests.
+ */
+export function reconcileVerdicts(batchIds, answers) {
+  const inBatch = new Set(batchIds);
+  const byId = new Map();
+  const unmatched = [];
+  for (const answer of Array.isArray(answers) ? answers : []) {
+    const named = answer === null || typeof answer !== "object" ? undefined : answer.id;
+    const id = typeof named === "string" && named.trim() !== "" ? named.trim() : NO_ID;
+    if (!inBatch.has(id)) {
+      if (!unmatched.includes(id)) unmatched.push(id);
+      continue;
+    }
+    const verdict = captureVerdict(answer);
+    // First usable verdict wins; a second answer for the same id changes
+    // nothing, and a malformed one leaves the item unresolved.
+    if (verdict !== null && !byId.has(id)) byId.set(id, verdict);
+  }
+  return { byId, unmatched, unresolved: batchIds.filter((id) => !byId.has(id)) };
+}
+
+/** The key one untriaged item is reported under: once per item, ever. */
+export function untriagedKey(job, sourceId) {
+  return `${job}:untriaged:${sourceId}`;
+}
+
+/** The key one unmatched id is reported under. Clipped: it is model output. */
+export function unmatchedIdKey(job, id) {
+  return `${job}:unmatched-id:${String(id).slice(0, 80)}`;
+}
+
+/** The plain words one untriaged item is reported in. Exported for tests. */
+export function untriagedMessage(job, label, sourceId) {
+  return (
+    `${job} got no triage verdict for ${label} (${sourceId}), so nothing was ` +
+    `captured from it. Its cursor is holding at the oldest untriaged item, so ` +
+    `this one and everything after it are read again next run — nothing is lost, ` +
+    `but nothing after it moves until a run answers for it.`
+  );
+}
+
+/** The plain words an id that was not in the batch is reported in. */
+export function unmatchedIdMessage(job, id) {
+  return (
+    `${job}'s triage answer named an id that was not in the batch it was given: ` +
+    `"${String(id).slice(0, 80)}". The model is garbling or inventing ids, which ` +
+    `is how an item's verdict goes missing.`
+  );
+}
+
+/**
+ * Report everything a triage answer left unresolved: one row per untriaged
+ * item, one per unmatched id. Keyed per item (convex/ttsJobs.ts), so an item
+ * the model keeps failing to answer for is ONE row and not one every tick.
+ *
+ * `untriaged` is `{ sourceId, label }` per item — the stable id the row is
+ * keyed on and the words Tom reads it by.
+ */
+export async function reportUntriaged(env, job, { untriaged = [], unmatched = [] }) {
+  for (const item of untriaged) {
+    await reportJobFailed(env, {
+      job,
+      error: untriagedMessage(job, item.label, item.sourceId),
+      key: untriagedKey(job, item.sourceId),
+    });
+  }
+  for (const id of unmatched) {
+    await reportJobFailed(env, {
+      job,
+      error: unmatchedIdMessage(job, id),
+      key: unmatchedIdKey(job, id),
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Slack Web API
 // ---------------------------------------------------------------------------

@@ -6,6 +6,8 @@ import { auth } from "./auth";
 import { nowContext } from "./tts";
 import { isRulingVerdict } from "./ttsRulings";
 import {
+  CAPTURE_TRIAGE_RULES,
+  CAPTURE_TRIAGE_SKILL,
   DAY_MS,
   SESSION_REPO_NAMES,
   WRITING_SKILL,
@@ -189,6 +191,206 @@ const ttsCapture = httpAction(async (ctx, request) => {
 });
 
 http.route({ path: "/tts/capture", method: "POST", handler: ttsCapture });
+
+// GET /tts/capture-context — what a capture poller on the Jarvis Box needs
+// BEFORE it captures anything (the lifeos update, phase 6). One read, shared
+// by poll-gmail, poll-canvas and poll-outlook, for the same reason
+// /tts/batch-context serves the writing standard: those jobs are Node ESM on a
+// box that can neither import TypeScript nor read a git checkout of WikiTom.
+//
+//   captureTriage — the two judgements a poller makes (does this imply an
+//     action by Tom; does it need him today), from the synced WikiTom skill,
+//     falling back to ttsShared.CAPTURE_TRIAGE_RULES until the sync has run.
+//   declinedIntegrations — the integrations Tom has declined, each with the
+//     date and his sentence (convex/ttsIntegrations.ts). A poller checks its
+//     own name against this list BEFORE anything else and exits when it is
+//     there: an integration he declined does not run, and the ruling that says
+//     so is the same kind of record as every other decision of his.
+const ttsCaptureContext = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const [triageSkill, declinedIntegrations] = await Promise.all([
+    ctx.runQuery(internal.ttsSkills.internalGetSkill, {
+      name: CAPTURE_TRIAGE_SKILL,
+    }),
+    ctx.runQuery(internal.ttsIntegrations.internalDeclinedIntegrations, {}),
+  ]);
+  const synced = triageSkill?.body.trim() ?? "";
+  return jsonResponse(200, {
+    captureTriage: synced === "" ? CAPTURE_TRIAGE_RULES : synced,
+    declinedIntegrations,
+  });
+});
+
+http.route({
+  path: "/tts/capture-context",
+  method: "GET",
+  handler: ttsCaptureContext,
+});
+
+// POST /tts/needs-tom — one thread in #tts for a todo that needs Tom TODAY.
+// Body: { todoId, text, key }. The ONE message shape for anything that needs
+// him: convex/ttsSlack.ts opens the thread through the one Slack door with the
+// todo as its subject, so his reply in it is already routed back to the row.
+// `key` is the producer's own id for the thing that needs him
+// (`gmail:message:<id>`), and it is what makes the thread open exactly once.
+const ttsNeedsTom = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.todoId !== "string" || b.todoId.length === 0) {
+    return jsonResponse(400, { error: "todoId (non-empty string) required" });
+  }
+  if (typeof b.text !== "string" || b.text.trim().length === 0) {
+    return jsonResponse(400, { error: "text (non-empty string) required" });
+  }
+  if (typeof b.key !== "string" || b.key.trim().length === 0) {
+    return jsonResponse(400, { error: "key (non-empty string) required" });
+  }
+  try {
+    const result = await ctx.runMutation(
+      internal.ttsSlack.internalOpenNeedsTomThread,
+      { todoId: b.todoId, text: b.text, key: b.key },
+    );
+    return jsonResponse(200, { ok: true, ...result });
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({ path: "/tts/needs-tom", method: "POST", handler: ttsNeedsTom });
+
+// POST /tts/canvas-assignments — the Canvas assignments worker/jobs/
+// poll-canvas.mjs read this run (the lifeos update, phase 6). Body:
+// { assignments: [{ externalId, courseCode, name, htmlUrl, dueAt, submitted }] }.
+//
+// The job owns the FETCH (one job and one CANVAS_TOKEN copy, in
+// /etc/tts/worker.env); convex/ttsCanvas.ts owns what a fetched assignment
+// DOES to a todo — insert, move the date, complete on submission — because
+// that is a mutation. The mutation's own validators are the gate on the array;
+// this route only carries the traffic and names a refusal.
+//
+// REPLAYING THE SAME ASSIGNMENTS CHANGES NOTHING: the sync keys every row by
+// its `canvas:assignment:<id>` provenance, so a re-run creates no second todo.
+const ttsCanvasAssignments = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (!Array.isArray(b.assignments)) {
+    return jsonResponse(400, { error: "assignments (array) required" });
+  }
+  try {
+    const result = await ctx.runMutation(
+      internal.ttsCanvas.internalSyncCanvasTodos,
+      { assignments: b.assignments as never },
+    );
+    return jsonResponse(200, { ok: true, ...result });
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({
+  path: "/tts/canvas-assignments",
+  method: "POST",
+  handler: ttsCanvasAssignments,
+});
+
+// POST /tts/job-failed — a box job reporting its own failure in plain words
+// (the lifeos update, phase 6). Body: { job, error, key? }.
+//
+// This is the channel convex/ttsDigest.ts already reads: every "-failed" event
+// kind becomes a line in the morning digest's job-failures section, and
+// convex/ttsHourly.ts names "job-failed" among the kinds the hourly update
+// reports. Until now nothing on the Jarvis Box could write one — a cron job's
+// only voice was /var/log/tts, which Tom does not read. An expired Canvas
+// token is the first thing that speaks through here.
+//
+// A REPORT, NOT A TODO. The row records what broke and what to do about it;
+// deciding whether it is worth Tom's morning is the digest's job.
+//
+// `key` names the CONDITION rather than the run — `poll-canvas:canvas-auth`.
+// A condition already reported and not since recovered is not reported again
+// (convex/ttsJobs.ts), because a dead credential is dead for days and a row a
+// tick would bury the one fact under its own repetitions. A report without a
+// key is unconditional: one row per call.
+const ttsJobFailed = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.job !== "string" || b.job.trim().length === 0) {
+    return jsonResponse(400, { error: "job (non-empty string) required" });
+  }
+  if (typeof b.error !== "string" || b.error.trim().length === 0) {
+    return jsonResponse(400, { error: "error (non-empty string) required" });
+  }
+  if (b.key !== undefined && (typeof b.key !== "string" || b.key.trim() === "")) {
+    return jsonResponse(400, { error: "key, when given, is a non-empty string" });
+  }
+  const result = await ctx.runMutation(internal.ttsJobs.internalReportJobFailed, {
+    job: b.job,
+    error: b.error,
+    key: typeof b.key === "string" ? b.key : undefined,
+  });
+  return jsonResponse(200, { ok: true, ...result });
+});
+
+http.route({ path: "/tts/job-failed", method: "POST", handler: ttsJobFailed });
+
+// POST /tts/job-ok — the same box job saying it just ran clean. Body:
+// { job, key }.
+//
+// The other half of the keyed report above, and the only thing that re-arms
+// it: a run that ends a reported failure writes the recovery row and the next
+// expiry of the same credential is reported afresh. A run that ends nothing
+// writes nothing — a job running clean every thirty minutes must not become a
+// row every thirty minutes.
+const ttsJobOk = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.job !== "string" || b.job.trim().length === 0) {
+    return jsonResponse(400, { error: "job (non-empty string) required" });
+  }
+  if (typeof b.key !== "string" || b.key.trim().length === 0) {
+    return jsonResponse(400, { error: "key (non-empty string) required" });
+  }
+  const result = await ctx.runMutation(internal.ttsJobs.internalReportJobOk, {
+    job: b.job,
+    key: b.key,
+  });
+  return jsonResponse(200, { ok: true, ...result });
+});
+
+http.route({ path: "/tts/job-ok", method: "POST", handler: ttsJobOk });
 
 // POST /tts/calendar-event — the Jarvis Box's path through the ONE write door
 // to Tom's Google Calendar (convex/ttsCalendarWrite.ts owns the door; this

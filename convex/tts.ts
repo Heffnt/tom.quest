@@ -9,6 +9,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
+import { INTEGRATION_SOURCE, integrationName } from "./ttsIntegrations";
 import {
   DAY_MS,
   MAX_NEEDS,
@@ -1468,19 +1469,28 @@ export const internalCapture = internalMutation({
         .first();
       if (existing) return existing._id;
     }
+    // A RULING ABOUT AN INTEGRATION IS LABELLED WHERE IT IS WRITTEN. The
+    // statement `integration: outlook` is Tom turning a poller off
+    // (convex/ttsIntegrations.ts), and every poller asks which ones are off
+    // before it captures anything. A statement prefix cannot be indexed, so
+    // the shape is read once — here, at the one place a todo is born from a
+    // message — and recorded as the row's source; the pollers' read is then
+    // the handful of rows under that source rather than the whole archive.
+    const declaredSource =
+      integrationName(statement) === null ? source : INTEGRATION_SOURCE;
     const id = await ctx.db.insert("dtsTodos", {
       statement: statement.trim(),
       readiness: "unprepared",
       status: "active",
       timingClass: "whenever",
-      source,
+      source: declaredSource,
       provenance,
       slackChannel,
       slackTs,
       createdAt: now,
       updatedAt: now,
     });
-    await logEvent(ctx, "captured", id, { source });
+    await logEvent(ctx, "captured", id, { source: declaredSource });
     // The one reply line at capture, in the thread of the #dump message this
     // came from. Scheduled INSIDE the insert's transaction, after the dedupe
     // above — so a Slack retry, which returns the existing id, never

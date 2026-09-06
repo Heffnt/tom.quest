@@ -629,9 +629,13 @@ export async function gatherDigestFacts(
         break;
       default:
         // Every job failure is a "-failed" kind ("slack-send-failed" is the
-        // Slack door's; the box's jobs report theirs through the events route).
+        // Slack door's; the box's jobs report theirs as "job-failed" through
+        // POST /tts/job-failed). A Slack failure is named by its SUBJECT, a
+        // box job's by the JOB — the same slot, whichever the row carries.
         if (e.kind.endsWith("-failed")) {
-          const what = slackSubjectLabel(d.subject);
+          const job = str(d.job);
+          const what =
+            slackSubjectLabel(d.subject) || (job === undefined ? "" : ` (${job})`);
           failures.push({
             at: e.at,
             text: `${e.kind}${what}: ${slackEscape(str(d.error) ?? "")}`,

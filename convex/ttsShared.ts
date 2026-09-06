@@ -395,6 +395,52 @@ Each numbered item is one sentence of situation, then the options, then your
 recommendation. He replies by number, so an item that cannot be read on its
 own comes back unruled.`;
 
+// ── Capture triage — THE FALLBACK COPY (the lifeos update, phase 6) ──────────
+// Two judgements, and they are NOT the same question. Every capture poller on
+// the Jarvis Box (poll-gmail, poll-canvas, poll-outlook) asks both:
+//
+//   1. does this imply an ACTION by Tom?  → capture it as a todo. Nothing is
+//      lost, so a wrong yes costs one archive click and a wrong no loses the
+//      thread; the prompt leans toward capturing.
+//   2. does it need TOM, TODAY?           → open one thread in #tts on the
+//      todo, so his reply is the next turn.
+//
+// The second is NOT an importance rating and never becomes one. It is capture
+// triage: three facts about the message, each of which Tom has to answer to
+// himself and cannot be answered by an agent — a deadline inside 48 hours, a
+// person waiting on a reply, money or credentials. Everything else waits for
+// the morning digest, which reports every capture.
+//
+// THE LIVE SOURCE, once phase 4 lands, is WikiTom model-of-tom/priorities.md
+// through the ttsSkills row named below; this string is what the pollers use
+// until then, exactly like WRITING_STANDARD above. It is a snapshot, so it
+// drifts: when the rules change in WikiTom, update it here too.
+
+/** The ttsSkills row every capture poller prefers over the fallback below. */
+export const CAPTURE_TRIAGE_SKILL = "capture-triage";
+export const CAPTURE_TRIAGE_RULES = `CAPTURE TRIAGE — two judgements about one incoming message.
+
+FIRST: does it imply an ACTION BY TOM — something he must reply to, submit,
+schedule, pay, sign, decide, or follow up on? Skip newsletters, promotions,
+automated notifications, receipts, and mass mail. When genuinely unsure,
+capture: a wrong capture costs Tom one archive click, a wrong skip loses the
+thread.
+
+SECOND: does it need TOM, TODAY? This is not a rating of how important the
+item is — it is whether waiting until tomorrow morning's digest would cost
+something that cannot be recovered. Exactly three facts make it true, and any
+one of them is enough:
+
+  DEADLINE — the message names a deadline inside the next 48 hours.
+  PERSON WAITING — a named human being has asked Tom for a reply. An automated
+    sender, a mailing list, or a no-reply address is never a person waiting.
+  MONEY OR CREDENTIALS — a payment, an invoice, a refund, a bill, an account,
+    a password, a key, or a signature is at stake.
+
+Nothing else qualifies. A message that implies an action and matches none of
+the three is captured and reported in the morning digest like every other
+capture; it is not lost, it is not urgent.`;
+
 // ── Session-surface constants (one home; ledger graduation
 // session-constants-two-homes) ───────────────────────────────────────────────
 // app/sessions and convex/claudeSessions import these directly. The worker

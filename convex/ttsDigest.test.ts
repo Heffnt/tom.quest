@@ -623,6 +623,33 @@ describe("internalComposeDigest", () => {
     expect(text).toContain("|reply to Ana>");
     expect(text).toContain("poll-canvas-failed: canvas token expired");
   });
+
+  // The box's jobs report their failures as "job-failed" through POST
+  // /tts/job-failed (the lifeos update, phase 6), so the kind alone no longer
+  // says which job broke — the row names it, and the line has to carry it or
+  // every box failure reads as the same anonymous "job-failed".
+  it("names the job on a failure a box job reported", async () => {
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    await tom.mutation(api.tts.createTodo, { statement: "anything" });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: FIVE_AM - 3600_000,
+        kind: "job-failed",
+        data: {
+          job: "poll-canvas",
+          error: "Canvas rejected the access token (HTTP 401)",
+        },
+      });
+    });
+    const { text } = await t.query(internal.ttsDigest.internalComposeDigest, {
+      day: DAY_KEY,
+      now: FIVE_AM,
+    });
+    expect(text).toContain(
+      "job-failed (poll-canvas): Canvas rejected the access token (HTTP 401)",
+    );
+  });
 });
 
 describe("sendDigest", () => {

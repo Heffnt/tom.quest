@@ -3,7 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { skillText } from "./ttsSkills";
-import { WRITING_SKILL, WRITING_STANDARD } from "./ttsShared";
+import {
+  CAPTURE_TRIAGE_RULES,
+  CAPTURE_TRIAGE_SKILL,
+  WRITING_SKILL,
+  WRITING_STANDARD,
+} from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -195,5 +200,59 @@ describe("GET /tts/batch-context writing standard", () => {
     const t = convexTest({ schema, modules });
     await replace(t, [skill(WRITING_SKILL, WRITING_BODY)]);
     expect(await fetchStandard(t)).toBe(WRITING_BODY);
+  });
+});
+
+// ── The capture-context half (every capture poller's only channel) ───────────
+// poll-gmail, poll-canvas and poll-outlook are Node ESM on the Jarvis Box: they
+// can neither import the rules nor read a git checkout of WikiTom, so this
+// route is where the two capture judgements get their words. Same
+// prefer-the-synced-row, fall-back-to-the-copy rule as the writing standard
+// above — one rule, so the three pollers cannot triage by three sets of rules.
+const TRIAGE_BODY = `---
+name: capture-triage
+description: Load before deciding whether an incoming message needs Tom.
+---
+
+# Capture triage
+
+Needs Tom today only for a deadline inside 48 hours, a person waiting on a
+reply, or money or credentials.`;
+
+describe("GET /tts/capture-context", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  async function fetchTriage(t: ReturnType<typeof convexTest>) {
+    const res = await t.fetch("/tts/capture-context", {
+      method: "GET",
+      headers: { "X-TTS-Key": "s3cret" },
+    });
+    expect(res.status).toBe(200);
+    return (await res.json()).captureTriage;
+  }
+
+  it("serves the hardcoded copy while nothing is synced", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    expect(await fetchTriage(t)).toBe(CAPTURE_TRIAGE_RULES);
+  });
+
+  it("serves the synced skill once it exists", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    await replace(t, [skill(CAPTURE_TRIAGE_SKILL, TRIAGE_BODY)]);
+    expect(await fetchTriage(t)).toBe(TRIAGE_BODY);
+  });
+
+  it("is closed to a caller without the worker key", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const res = await t.fetch("/tts/capture-context", {
+      method: "GET",
+      headers: { "X-TTS-Key": "nope" },
+    });
+    expect(res.status).toBe(401);
   });
 });

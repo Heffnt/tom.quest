@@ -37,19 +37,18 @@ const PER_KIND_LIMIT = 500;
 // it and says how many more there are.
 const CHANGES_LIMIT = 1000;
 
-// ── One kind over a time range, on the ONE kind index ───────────────────────
-// dtsEvents has one index whose first column is `kind`: by_kind_key,
-// ["kind", "key", "at"]. Reaching `at` means pinning `key` — and every kind
-// this file reads is KEYLESS (only "slack-sent" and "slack-event" carry a key,
-// and neither is a reported kind), so pinning it to undefined is exact rather
-// than a filter, and the third column then orders by time. A by_at read
-// filtered by kind would not do: dtsEvents is busy instrumentation and past N
-// rows such a read silently answers wrong.
+// ── One kind over a time range, on the kind-and-time index ──────────────────
+// by_kind_at, ["kind", "at"]: exact on the kind, ordered by time, and blind to
+// what the rows carry in `key`. A by_at read filtered by kind would not do —
+// dtsEvents is busy instrumentation and past N rows such a read silently
+// answers wrong.
 //
-// THE TRAP, named here because it is silent: give one of these kinds a key and
-// its rows disappear from this read. A kind that starts carrying a key needs
-// its own index.
-async function keylessKindRange(
+// THIS USED TO READ by_kind_key WITH `key` PINNED TO UNDEFINED, which was
+// exact only for as long as no row of the kind had a key — and "job-failed"
+// grew one (convex/ttsJobs.ts), which would have taken every keyed failure out
+// of this update without a word. A kind's rows belong to it whatever they are
+// keyed on, so the read no longer mentions the key at all.
+async function kindRange(
   ctx: QueryCtx,
   kind: string,
   start: number,
@@ -58,9 +57,7 @@ async function keylessKindRange(
 ): Promise<Doc<"dtsEvents">[]> {
   return await ctx.db
     .query("dtsEvents")
-    .withIndex("by_kind_key", (q) =>
-      q.eq("kind", kind).eq("key", undefined).gte("at", start).lt("at", end),
-    )
+    .withIndex("by_kind_at", (q) => q.eq("kind", kind).gte("at", start).lt("at", end))
     .order("desc")
     .take(limit);
 }
@@ -100,11 +97,11 @@ export const internalLastHourlyWindowEnd = internalQuery({
   handler: async (ctx): Promise<number | null> => {
     let best: number | null = null;
     for (const kind of [HOURLY_UPDATE_SENT, HOURLY_UPDATE_ABANDONED]) {
-      // Keyless kind, newest first: within the kind, by_kind_key's order IS
-      // time order (see keylessKindRange above).
+      // One kind, newest first, on the same kind-and-time index kindRange
+      // above reads.
       const rows = await ctx.db
         .query("dtsEvents")
-        .withIndex("by_kind_key", (q) => q.eq("kind", kind))
+        .withIndex("by_kind_at", (q) => q.eq("kind", kind))
         .order("desc")
         .take(MARKER_SCAN);
       for (const row of rows) {
@@ -214,7 +211,7 @@ export const internalBatchesWorked = internalQuery({
     }
     const events: Doc<"dtsEvents">[] = [];
     for (const kind of WORKER_EVENT_KINDS) {
-      events.push(...(await keylessKindRange(ctx, kind, since, now, PER_KIND_LIMIT)));
+      events.push(...(await kindRange(ctx, kind, since, now, PER_KIND_LIMIT)));
     }
     for (const e of events) {
       const data = e.data as { batchId?: unknown } | undefined;
@@ -262,7 +259,7 @@ export const internalChangedSince = internalQuery({
   handler: async (ctx, { start, end }): Promise<Change[]> => {
     const found: Doc<"dtsEvents">[] = [];
     for (const kind of REPORTED_KINDS) {
-      found.push(...(await keylessKindRange(ctx, kind, start, end, PER_KIND_LIMIT)));
+      found.push(...(await kindRange(ctx, kind, start, end, PER_KIND_LIMIT)));
     }
     // Newest kept, then oldest first, so the hour reads in order.
     const rows = found
@@ -355,11 +352,11 @@ export const internalDigestToResend = internalQuery({
     ctx,
     { day, dayStart, dayEnd },
   ): Promise<{ text: string; windowEnd: number } | null> => {
-    const sent = await keylessKindRange(ctx, "digest-sent", dayStart, dayEnd, 5);
+    const sent = await kindRange(ctx, "digest-sent", dayStart, dayEnd, 5);
     if (sent.some((e) => (e.data as { day?: unknown } | undefined)?.day === day)) {
       return null;
     }
-    const failures = await keylessKindRange(
+    const failures = await kindRange(
       ctx,
       "slack-send-failed",
       dayStart,

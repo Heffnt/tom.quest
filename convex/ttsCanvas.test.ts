@@ -1,19 +1,19 @@
 import { convexTest } from "convex-test";
-import { describe, expect, it } from "vitest";
-import { internal } from "./_generated/api";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { api, internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import schema from "./schema";
 import {
   ASSIGNMENT_SOURCE,
   type AssignmentInput,
   canvasProvenance,
-  mapCanvasAssignments,
   provenanceExternalId,
 } from "./ttsCanvas";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
-// The sync does no windowing of its own (mapCanvasAssignments already did it),
+// The sync does no windowing of its own — worker/jobs/poll-canvas.mjs owns the
+// fetch and the window now (mapCanvasAssignments lives there, with its tests),
 // so these instants only need to be stable, not near the real clock.
 const DUE = Date.UTC(2026, 8, 3, 3, 59); // 2026-09-02 23:59 EDT
 const URL_14 = "https://canvas.wpi.edu/courses/1/assignments/14";
@@ -41,6 +41,14 @@ const allTodos = (t: ReturnType<typeof convexTest>) =>
 const allEvents = (t: ReturnType<typeof convexTest>) =>
   t.run(async (ctx) => ctx.db.query("dtsEvents").collect());
 
+/** Tom, for the reopen tests: setStatus is his door and it is gated on him. */
+async function withTom(t: ReturnType<typeof convexTest>) {
+  const tomId = await t.run(async (ctx) =>
+    ctx.db.insert("users", { name: "tom", email: "tom@tom.quest", role: "tom" }),
+  );
+  return t.withIdentity({ subject: tomId });
+}
+
 describe("canvas provenance", () => {
   it("round-trips the assignment id through the provenance string", () => {
     const p = canvasProvenance("98765", URL_14);
@@ -49,63 +57,6 @@ describe("canvas provenance", () => {
     // A todo from any other source carries no assignment id to match on.
     expect(provenanceExternalId(undefined)).toBeNull();
     expect(provenanceExternalId("slack:C123/p170")).toBeNull();
-  });
-});
-
-describe("mapCanvasAssignments", () => {
-  const now = Date.UTC(2026, 7, 27, 12); // window: 2026-08-13 .. 2026-10-26
-
-  it("keeps only published, dated, in-window assignments", () => {
-    const courses = [
-      { id: 1, course_code: "CS4241", name: "Webware" },
-      { id: 2, name: "Mathematical Modeling" }, // no course_code -> name
-    ];
-    const byCourse = new Map([
-      [
-        1,
-        [
-          { id: 10, name: "draft", due_at: "2026-08-30T03:59:00Z", published: false },
-          { id: 11, name: "no date", due_at: null, published: true },
-          { id: 12, name: "final exam", due_at: "2026-12-01T05:00:00Z" }, // past windowEnd
-          { id: 13, name: "week 1", due_at: "2026-07-20T05:00:00Z" }, // before windowStart
-          { id: 14, name: "unparseable", due_at: "not a date" },
-          {
-            id: 15,
-            name: "Project 3",
-            html_url: URL_14,
-            due_at: "2026-08-30T03:59:00Z",
-            published: true,
-            submission: { submitted_at: null },
-          },
-        ],
-      ],
-      [
-        2,
-        [
-          {
-            id: 20,
-            name: "HW 5",
-            html_url: "https://canvas.wpi.edu/courses/2/assignments/20",
-            due_at: "2026-08-25T03:59:00Z",
-            submission: { submitted_at: "2026-08-24T18:02:00Z" },
-          },
-        ],
-      ],
-    ]);
-
-    const out = mapCanvasAssignments(courses, byCourse, now);
-    expect(out.map((a) => a.externalId)).toEqual(["15", "20"]);
-    expect(out[0]).toEqual({
-      externalId: "15",
-      courseCode: "CS4241",
-      name: "Project 3",
-      htmlUrl: URL_14,
-      dueAt: Date.UTC(2026, 7, 30, 3, 59),
-      submitted: false,
-    });
-    // course_code absent -> the course name stands in as the statement prefix.
-    expect(out[1].courseCode).toBe("Mathematical Modeling");
-    expect(out[1].submitted).toBe(true);
   });
 });
 
@@ -240,6 +191,57 @@ describe("internalSyncCanvasTodos", () => {
     expect(await sync(t, [assignment()])).toMatchObject({ foreign: 0 });
   });
 
+  // TOM'S ANSWER IS THE NEWER ONE. Canvas keeps saying "submitted" for ever,
+  // so a row he deliberately put back — wrong file, a resubmission asked for,
+  // the work not actually finished — was completed again by the next tick,
+  // within thirty minutes and with no message anywhere.
+  it("does not re-complete an assignment Tom reopened after it was completed", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await sync(t, [assignment()]);
+    await sync(t, [assignment({ submitted: true })]);
+    const id = (await allTodos(t))[0]._id;
+    expect((await allTodos(t))[0].status).toBe("done");
+
+    await tom.mutation(api.tts.setStatus, { id, status: "active" });
+    const reopenedAt = (await allTodos(t))[0].updatedAt;
+    const eventCount = (await allEvents(t)).length;
+
+    // Canvas still reports the submission, every half hour, for ever.
+    const result = await sync(t, [assignment({ submitted: true })]);
+    expect(result).toMatchObject({ completed: 0, reopened: 1 });
+    const todo = (await allTodos(t))[0];
+    expect(todo.status).toBe("active");
+    expect(todo.doneAt).toBeUndefined();
+    expect(todo.updatedAt).toBe(reopenedAt); // not touched at all
+    expect(await allEvents(t)).toHaveLength(eventCount);
+
+    // And it stays reopened however many ticks Canvas gets.
+    expect(await sync(t, [assignment({ submitted: true })])).toMatchObject({
+      completed: 0,
+      reopened: 1,
+    });
+    expect((await allTodos(t))[0].status).toBe("active");
+  });
+
+  it("still completes a submitted assignment that has never been completed", async () => {
+    // The guard is about a completion Tom answered, not about any status
+    // change: an ordinary row archived and made active again has no completion
+    // behind it, and its submission is still the fact that finishes it.
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await sync(t, [assignment()]);
+    const id = (await allTodos(t))[0]._id;
+    await tom.mutation(api.tts.setStatus, { id, status: "archived" });
+    await tom.mutation(api.tts.setStatus, { id, status: "active" });
+
+    expect(await sync(t, [assignment({ submitted: true })])).toMatchObject({
+      completed: 1,
+      reopened: 0,
+    });
+    expect((await allTodos(t))[0].status).toBe("done");
+  });
+
   it("leaves an already-done todo untouched on later syncs", async () => {
     const t = convexTest({ schema, modules });
     await sync(t, [assignment()]);
@@ -255,5 +257,197 @@ describe("internalSyncCanvasTodos", () => {
     expect(again).toMatchObject({ created: 0, completed: 0, dateMoved: 0 });
     expect(await allTodos(t)).toEqual([done]);
     expect(await allEvents(t)).toHaveLength(eventCount);
+  });
+});
+
+// ── The door the box poller comes through (the lifeos update, phase 6) ───────
+// worker/jobs/poll-canvas.mjs owns the fetch now — one job, one CANVAS_TOKEN
+// copy — and posts the whole window here every 30 minutes. That makes REPLAY
+// the ordinary case, not an edge one, so it is checked at the door and not
+// only at the mutation.
+describe("POST /tts/canvas-assignments", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  async function post(t: ReturnType<typeof convexTest>, body: unknown, key = "s3cret") {
+    return await t.fetch("/tts/canvas-assignments", {
+      method: "POST",
+      headers: { "X-TTS-Key": key, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("syncs what the poller read, and a replay of it creates no second todo", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+
+    const first = await post(t, { assignments: [assignment()] });
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ ok: true, seen: 1, created: 1 });
+
+    // The next tick reads the same window and posts the same assignment.
+    const replay = await post(t, { assignments: [assignment()] });
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({
+      created: 0,
+      completed: 0,
+      dateMoved: 0,
+    });
+    expect(await allTodos(t)).toHaveLength(1);
+  });
+
+  it("refuses a body that is not an assignments array", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const res = await post(t, { assignments: "all of them" });
+    expect(res.status).toBe(400);
+    expect(await allTodos(t)).toHaveLength(0);
+  });
+
+  it("is closed to a caller without the worker key", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    expect((await post(t, { assignments: [assignment()] }, "nope")).status).toBe(401);
+    expect(await allTodos(t)).toHaveLength(0);
+  });
+});
+
+// ── The box's one voice for a failure (the lifeos update, phase 6) ───────────
+// A cron job on the Jarvis Box could only ever write to /var/log/tts, which Tom
+// does not read. This route is how an expired Canvas token becomes a line in
+// the morning digest instead.
+describe("POST /tts/job-failed", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  async function report(
+    t: ReturnType<typeof convexTest>,
+    body: unknown,
+    key = "s3cret",
+  ) {
+    return await t.fetch("/tts/job-failed", {
+      method: "POST",
+      headers: { "X-TTS-Key": key, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function ok(t: ReturnType<typeof convexTest>, body: unknown, key = "s3cret") {
+    return await t.fetch("/tts/job-ok", {
+      method: "POST",
+      headers: { "X-TTS-Key": key, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  const failures = async (t: ReturnType<typeof convexTest>) =>
+    (await allEvents(t)).filter((e) => e.kind === "job-failed");
+
+  it("records the job and its plain message as a digest-readable failure", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const error = "Canvas rejected the access token (HTTP 401)";
+    expect((await report(t, { job: "poll-canvas", error })).status).toBe(200);
+
+    const rows = await failures(t);
+    expect(rows).toHaveLength(1);
+    // The kind ends in "-failed", which is the whole rule convex/ttsDigest.ts
+    // reads to put a row in the morning digest's failures section.
+    expect(rows[0].kind.endsWith("-failed")).toBe(true);
+    expect(rows[0].data).toEqual({ job: "poll-canvas", error });
+    expect(rows[0].key).toBeUndefined(); // an unkeyed report is per call
+  });
+
+  // A DEAD CREDENTIAL IS DEAD FOR DAYS, and the job reporting it runs every
+  // thirty minutes. Unkeyed that was a row every half hour for ever: the
+  // morning digest listed each one and the hourly update repeated the same
+  // sentence around the clock, burying the one fact Tom needed under its own
+  // repetitions.
+  it("writes one row per condition, however many ticks report it", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const failure = {
+      job: "poll-canvas",
+      error: "Canvas rejected the access token (HTTP 401)",
+      key: "poll-canvas:canvas-auth",
+    };
+    expect(await (await report(t, failure)).json()).toMatchObject({ reported: true });
+    for (let tick = 0; tick < 5; tick++) {
+      expect(await (await report(t, failure)).json()).toMatchObject({
+        reported: false,
+      });
+    }
+    const rows = await failures(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].key).toBe("poll-canvas:canvas-auth");
+  });
+
+  it("reports the next expiry, because the clean run in between closed the last", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const key = "poll-canvas:canvas-auth";
+    const failure = { job: "poll-canvas", error: "HTTP 401", key };
+    await report(t, failure);
+
+    // Tom minted a new token and the job read Canvas again.
+    const recovery = await ok(t, { job: "poll-canvas", key });
+    expect(recovery.status).toBe(200);
+    expect(await recovery.json()).toMatchObject({ recovered: true });
+    // A clean run that ends nothing is not news and writes nothing.
+    expect(await (await ok(t, { job: "poll-canvas", key })).json()).toMatchObject({
+      recovered: false,
+    });
+    const recovered = (await allEvents(t)).filter((e) => e.kind === "job-recovered");
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0].key).toBe(key);
+
+    // Months later the new token expires too, and that is a second fact.
+    expect(await (await report(t, failure)).json()).toMatchObject({ reported: true });
+    expect(await failures(t)).toHaveLength(2);
+  });
+
+  it("keeps two conditions apart, and an unkeyed report out of both", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    await report(t, { job: "poll-canvas", error: "HTTP 401", key: "a" });
+    await report(t, { job: "poll-gmail", error: "no verdict", key: "b" });
+    await report(t, { job: "poll-canvas", error: "one bad run" });
+    await report(t, { job: "poll-canvas", error: "another bad run" });
+    expect(await failures(t)).toHaveLength(4);
+  });
+
+  it("refuses a blank key on either route, and an unnamed clean run", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    expect((await report(t, { job: "j", error: "e", key: "  " })).status).toBe(400);
+    expect((await report(t, { job: "j", error: "e", key: 17 })).status).toBe(400);
+    expect((await ok(t, { job: "j" })).status).toBe(400);
+    expect((await ok(t, { key: "a" })).status).toBe(400);
+    expect((await ok(t, { job: "j", key: "a" }, "nope")).status).toBe(401);
+    expect(await allEvents(t)).toHaveLength(0);
+  });
+
+  it("refuses a report that names no job or no error", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    for (const body of [
+      { error: "x" },
+      { job: "poll-canvas" },
+      { job: "", error: "x" },
+    ]) {
+      expect((await report(t, body)).status).toBe(400);
+    }
+    expect(await allEvents(t)).toHaveLength(0);
+  });
+
+  it("is closed to a caller without the worker key", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    expect(
+      (await report(t, { job: "poll-canvas", error: "x" }, "nope")).status,
+    ).toBe(401);
+    expect(await allEvents(t)).toHaveLength(0);
   });
 });
