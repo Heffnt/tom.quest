@@ -38,6 +38,37 @@ Files:
   is handed. `lib.mjs` re-exports it; the file stands alone so
   `__tests__/env-scrub.test.mjs` can fence the list.
 
+## Complete transcripts
+
+The transcript is the complete record of the agent's context: what the page
+renders may be short, but the full bytes must stay retrievable (lifeos update
+§1). So the 32KB cut is a rendering bound, not a storage bound.
+
+When a payload the model actually read — thinking, assistant text, a tool
+input, a tool result, an SDK system message, or a delivered turn (the opening
+prompt with the model-of-Tom files prepended included) — crosses
+`TRUNCATE_LIMIT`, `cutWithOverflow` returns the cut for the row AND the
+complete payload beside it. The complete copy is redacted as ONE string
+first (a credential straddling a chunk boundary would be two harmless halves
+to `redactSecrets`), then hashed, then split into ≤256KB chunks. The chunks
+go up one at a time through `POST /sessions/overflow` into
+`claudeMessageOverflow`, keyed by `(sessionId, seq)` — the message's identity
+before Convex has given the row an `_id` — and the finalize row carries
+`overflow: { sha256, byteLength, chunkCount }`. `sha256` is of the redacted
+text, so it fences reassembly, not provenance.
+
+Chunk rows rather than Convex file storage because the read side is a QUERY
+(`claudeSessions.internalMessageOverflow`) and `ctx.storage.get` is reachable
+only from an action.
+
+A payload that cannot be stored is never lost in silence: the chunk upload
+retries transient failures, and on a permanent rejection (or attempts spent)
+writes the bytes to `/var/cache/tts/sessions/<id>/overflow/<seq>` on the box,
+writes an `error` row naming that file, and reports the failure to the server,
+which records a `session-overflow-unstored` event. That directory is the ONE
+exception to "losing a session dir loses nothing durable": when it holds
+files, `cleanupWorkdir` deletes everything beside it and keeps it.
+
 ## Autonomous sessions
 
 A session row with `mode: "autonomous"` (created by the Convex scheduler
@@ -118,7 +149,13 @@ surfaces the decision in the PR, rather than stopping to wait.
   (`__tests__/banned-tools.test.mjs`) — `session.mjs` cannot be imported
   there, since the SDK is installed only on the box.
 - `lib.mjs` — env parsing, `sessionsFetch` / `sessionsGet`, backoff, 32KB
-  truncation.
+  truncation (`truncated`) and the same cut with the complete payload beside
+  it (`cutWithOverflow`).
+- `overflow.mjs` — the complete payload behind that cut: redaction of the
+  WHOLE text, its sha256, the ≤256KB chunking, the upload loop and the
+  on-disk last resort. Dependency-free for the same reason `redact.mjs` is,
+  so `__tests__/overflow.test.mjs` can fence it; `lib.mjs` re-exports it.
+  See "Complete transcripts" below.
 - `fork-transcript.mjs` — the `.tts-transcript.md` filename and its
   rendering, dependency-free for the same reason `banned-tools.mjs` is
   (`__tests__/fork-transcript.test.mjs` pins it).
@@ -328,7 +365,12 @@ Restarts are a designed-for non-event (`Restart=always`, `RestartSec=5`):
   ("a transcript flush was rejected and dropped: …") is written so the
   transcript records the loss honestly, and the server's error text is
   reported as `lastIngestError` in the next poll body so the failure is
-  visible server-side, not just in journald.
+  visible server-side, not just in journald. One verdict for both paths:
+  `isPermanentStatus` in `overflow.mjs`.
+- **A complete payload that cannot be stored** goes to disk instead
+  (`/var/cache/tts/sessions/<id>/overflow/<seq>`), with an `error` row naming
+  the file and a `session-overflow-unstored` event on the server. A terminal
+  session is not reaped until its overflow queue has drained.
 - **Error text is capped at 8KB** (git failures, SDK errors) before it goes
   into `error` rows or `endedReason` — git runs with an 8MB output buffer,
   and an untruncated failure report could itself be rejected at ingest.

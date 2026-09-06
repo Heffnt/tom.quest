@@ -1110,12 +1110,43 @@ export default defineSchema({
     // Task subagent, the parent Task's toolUseId — the daemon reports it so
     // the agent panel can show what each subagent is doing right now.
     parentToolUseId: v.optional(v.string()),
+    // Set when the 32KB cut above fired (lifeos update §1, the transcript
+    // principle: a rendered view may be short, the full bytes must stay
+    // retrievable). The complete payload lives in claudeMessageOverflow as
+    // `chunkCount` ordered chunks under this row's (sessionId, seq); `sha256`
+    // and `byteLength` describe the reassembly, so a reader can check that
+    // what comes back is what the daemon stored. Absent = `content` IS the
+    // whole payload.
+    overflow: v.optional(
+      v.object({
+        sha256: v.string(),
+        byteLength: v.number(),
+        chunkCount: v.number(),
+      }),
+    ),
     createdAt: v.number(),
   })
     .index("by_session_seq", ["sessionId", "seq"])
     // Kind-scoped reads (getOpenToolWork): tool-call/tool-result rows only,
     // without paging the whole transcript.
     .index("by_session_kind", ["sessionId", "kind", "seq"]),
+
+  // The complete payload behind a cut message row, in ordered chunks of ≤256KB
+  // (OVERFLOW_CHUNK_BYTES in worker/session-host/overflow.mjs). Keyed by
+  // (sessionId, seq) rather than by the message's _id because the daemon
+  // uploads the bytes before internalIngest has inserted the row — seq is the
+  // message's identity on the daemon's side of the wire, and unique per
+  // session by the seq floor. Chunks rather than file storage: the read side
+  // is a QUERY (claudeSessions.internalMessageOverflow) and ctx.storage.get is
+  // reachable only from an action.
+  claudeMessageOverflow: defineTable({
+    sessionId: v.id("claudeSessions"),
+    seq: v.number(),
+    index: v.number(), // 0-based position; concatenating in order is the payload
+    chunkCount: v.number(), // so an incomplete set is visible without the row
+    text: v.string(),
+    createdAt: v.number(),
+  }).index("by_session_seq_index", ["sessionId", "seq", "index"]),
 
   // The live tail: ONE row per session, ≤ ~16KB text by construction.
   claudeStreamBuf: defineTable({

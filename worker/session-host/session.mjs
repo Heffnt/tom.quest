@@ -24,6 +24,10 @@ import {
   sleep,
   backoffMs,
   truncated,
+  cutWithOverflow,
+  isPermanentStatus,
+  sendOverflow,
+  writeOverflowFallback,
   ERROR_TEXT_LIMIT,
   scrubbedEnv,
 } from "./lib.mjs";
@@ -502,7 +506,17 @@ export class Session {
       finalize: [],
       inboundUpdates: [],
       permissionUpdates: [],
+      // Payloads whose overflow copy could not be stored: reported to the
+      // server so the loss becomes a dtsEvents row naming the file on disk
+      // that still holds the bytes.
+      overflowFailures: [],
     };
+    // Complete payloads awaiting POST /sessions/overflow, in seq order, and
+    // the one-at-a-time pump that drains them. Kept OFF the ingest body: the
+    // flush cadence is ~400ms and a blind retry re-sends its whole payload,
+    // so a multi-megabyte tool result riding along would wreck both.
+    this.overflowQueue = [];
+    this.overflowSending = false;
     this.statusToSend = undefined;
     this.outcomeToSend = undefined; // { outcome, outcomeSummary } — daemon-stamped ending
     this.endedReasonToSend = undefined;
@@ -554,7 +568,12 @@ export class Session {
     if (status === "ended" || status === "failed") this.reportedTerminal = true;
   }
 
-  finalizeRow(kind, content, parentToolUseId) {
+  // `overflow` is what cutWithOverflow returned when the 32KB cut fired: the
+  // complete redacted payload with its hash. The row carries the hash, byte
+  // length and chunk count; the bytes themselves go up their own route (see
+  // #pumpOverflow), so the row stays small and the full payload stays
+  // retrievable.
+  finalizeRow(kind, content, parentToolUseId, overflow) {
     const seq = this.nextSeq++;
     this.outbox.finalize.push({
       seq,
@@ -565,8 +584,70 @@ export class Session {
       // (absent = top-level). The panel and transcript grouping derive from
       // this — the daemon records the SDK's fact, nothing more.
       ...(parentToolUseId ? { parentToolUseId } : {}),
+      ...(overflow
+        ? {
+            overflow: {
+              sha256: overflow.sha256,
+              byteLength: overflow.byteLength,
+              chunkCount: overflow.chunkCount,
+            },
+          }
+        : {}),
     });
+    if (overflow) {
+      this.overflowQueue.push({ seq, overflow });
+      void this.#pumpOverflow();
+    }
     return seq;
+  }
+
+  // Drain the overflow queue, one message's payload at a time. Never throws
+  // and never blocks a flush: a failure here costs the FULL copy of one
+  // payload, not the transcript row, and sendOverflow keeps the bytes on disk
+  // when Convex refuses them so nothing is lost silently.
+  async #pumpOverflow() {
+    if (this.overflowSending) return;
+    this.overflowSending = true;
+    try {
+      while (this.overflowQueue.length > 0 && !this.dead) {
+        const { seq, overflow } = this.overflowQueue.shift();
+        let res;
+        try {
+          res = await sendOverflow({
+            post: (body) =>
+              sessionsFetch(this.env, "/sessions/overflow", body),
+            sessionId: this.id,
+            seq,
+            overflow,
+            sessionsRoot: SESSIONS_ROOT,
+            sleep,
+            backoffMs,
+            log,
+          });
+        } catch (err) {
+          // sendOverflow handles HTTP failure itself; anything reaching here
+          // is a bug or an out-of-memory, and must not kill the daemon.
+          res = { ok: false, error: String(err?.message ?? err), path: null };
+        }
+        if (!res.ok) {
+          this.outbox.overflowFailures.push({
+            seq,
+            error: String(res.error ?? "").slice(0, 300),
+            ...(res.path ? { path: res.path } : {}),
+            byteLength: overflow.byteLength,
+          });
+          this.finalizeRow("error", {
+            message:
+              `the complete payload for message ${seq} could not be stored ` +
+              `(${overflow.byteLength} bytes): ${String(res.error ?? "").slice(0, 200)}` +
+              (res.path ? ` — kept on the box at ${res.path}` : ""),
+          });
+          this.requestFlush(true);
+        }
+      }
+    } finally {
+      this.overflowSending = false;
+    }
   }
 
   // SDK produced something: update the lastSdkEventAt fact (rides along on
@@ -586,6 +667,12 @@ export class Session {
       this.outbox.finalize.length === 0 &&
       this.outbox.inboundUpdates.length === 0 &&
       this.outbox.permissionUpdates.length === 0 &&
+      this.outbox.overflowFailures.length === 0 &&
+      // A terminal session stays alive until its complete payloads are
+      // stored: reaping mid-upload would lose exactly the bytes the overflow
+      // path exists to keep.
+      this.overflowQueue.length === 0 &&
+      !this.overflowSending &&
       this.statusToSend === undefined &&
       this.outcomeToSend === undefined &&
       !this.bufDirty
@@ -906,11 +993,25 @@ export class Session {
   // Best-effort teardown. Losing this dir loses nothing durable (no-state
   // rule) — that is precisely why deleting it is safe here.
   cleanupWorkdir() {
+    const base = path.join(SESSIONS_ROOT, String(this.id));
     try {
-      fs.rmSync(path.join(SESSIONS_ROOT, String(this.id)), {
-        recursive: true,
-        force: true,
-      });
+      // ONE exception to "losing this dir loses nothing durable": the overflow
+      // dir holds complete payloads Convex refused, which exist nowhere else.
+      // When it has files, everything BESIDE it goes and it stays.
+      const overflowDir = path.join(base, "overflow");
+      const rescued =
+        fs.existsSync(overflowDir) && fs.readdirSync(overflowDir).length > 0;
+      if (!rescued) {
+        fs.rmSync(base, { recursive: true, force: true });
+        return;
+      }
+      for (const entry of fs.readdirSync(base)) {
+        if (entry === "overflow") continue;
+        fs.rmSync(path.join(base, entry), { recursive: true, force: true });
+      }
+      log(
+        `session ${this.id}: kept ${overflowDir} — it holds payloads Convex refused`,
+      );
     } catch (err) {
       log(`session ${this.id}: workdir cleanup failed (ignored):`, String(err));
     }
@@ -1202,21 +1303,23 @@ export class Session {
           // parent and must never be drained here.
           for (const b of blocks) {
             if (b.type === "thinking") {
-              const t = truncated(b.thinking);
+              const t = cutWithOverflow(b.thinking);
               this.finalizeRow(
                 "thinking",
                 { text: t.value, ...(t.note ? { truncationNote: t.note } : {}) },
                 parent,
+                t.overflow,
               );
             } else if (b.type === "text" && b.text) {
-              const t = truncated(b.text);
+              const t = cutWithOverflow(b.text);
               this.finalizeRow(
                 "assistant-text",
                 { text: t.value, ...(t.note ? { truncationNote: t.note } : {}) },
                 parent,
+                t.overflow,
               );
             } else if (b.type === "tool_use") {
-              const t = truncated(b.input);
+              const t = cutWithOverflow(b.input);
               this.finalizeRow(
                 "tool-call",
                 {
@@ -1226,6 +1329,7 @@ export class Session {
                   ...(t.note ? { truncationNote: t.note } : {}),
                 },
                 parent,
+                t.overflow,
               );
             }
           }
@@ -1234,11 +1338,13 @@ export class Session {
         }
         for (const b of blocks) {
           if (b.type === "thinking") {
-            const t = truncated(b.thinking);
-            this.finalizeRow("thinking", {
-              text: t.value,
-              ...(t.note ? { truncationNote: t.note } : {}),
-            });
+            const t = cutWithOverflow(b.thinking);
+            this.finalizeRow(
+              "thinking",
+              { text: t.value, ...(t.note ? { truncationNote: t.note } : {}) },
+              undefined,
+              t.overflow,
+            );
           } else if (b.type === "text") {
             // The streamed buffer IS this block's text (minus any 16KB
             // segments already finalized), so finalize the buffer rather
@@ -1254,13 +1360,18 @@ export class Session {
             }
             this.segmentsSinceAssistant = 0;
           } else if (b.type === "tool_use") {
-            const t = truncated(b.input);
-            this.finalizeRow("tool-call", {
-              toolName: b.name,
-              toolUseId: b.id,
-              input: t.value,
-              ...(t.note ? { truncationNote: t.note } : {}),
-            });
+            const t = cutWithOverflow(b.input);
+            this.finalizeRow(
+              "tool-call",
+              {
+                toolName: b.name,
+                toolUseId: b.id,
+                input: t.value,
+                ...(t.note ? { truncationNote: t.note } : {}),
+              },
+              undefined,
+              t.overflow,
+            );
           }
         }
         this.requestFlush(true); // immediate: tool_use / message boundary
@@ -1275,7 +1386,7 @@ export class Session {
         if (Array.isArray(blocks)) {
           for (const b of blocks) {
             if (b.type === "tool_result") {
-              const t = truncated(toolResultText(b.content));
+              const t = cutWithOverflow(toolResultText(b.content));
               this.finalizeRow(
                 "tool-result",
                 {
@@ -1285,6 +1396,7 @@ export class Session {
                   ...(t.note ? { truncationNote: t.note } : {}),
                 },
                 parent,
+                t.overflow,
               );
             } else if (
               b.type === "text" &&
@@ -1300,7 +1412,7 @@ export class Session {
               // so equality alone re-records the whole prompt) — everything
               // else here (task notifications, system nudges) is real
               // transcript content, recorded as system rows.
-              const t = truncated(b.text);
+              const t = cutWithOverflow(b.text);
               this.finalizeRow(
                 "system",
                 {
@@ -1309,6 +1421,7 @@ export class Session {
                   ...(t.note ? { truncationNote: t.note } : {}),
                 },
                 parent,
+                t.overflow,
               );
             }
           }
@@ -1949,11 +2062,27 @@ export class Session {
         );
       });
     }
+    // Whatever complete payloads never made it up go to disk before the
+    // queue is dropped: the row already names their hash, and the bytes are
+    // the one thing that cannot be reconstructed later.
+    for (const { seq, overflow } of this.overflowQueue) {
+      const file = writeOverflowFallback(
+        SESSIONS_ROOT,
+        this.id,
+        seq,
+        overflow.text,
+      );
+      log(
+        `session ${this.id}: overflow seq ${seq} unstored at force-kill — kept at ${file ?? "(write failed)"}`,
+      );
+    }
+    this.overflowQueue = [];
     // Drop everything local so the reaper can delete this entry.
     this.outbox = {
       finalize: [],
       inboundUpdates: [],
       permissionUpdates: [],
+      overflowFailures: [],
     };
     this.bufDirty = false;
     this.statusToSend = undefined;
@@ -2011,13 +2140,9 @@ export class Session {
           // oversized document): retrying the identical payload would wedge
           // this session's outbox forever (review fix: permanent-400 wedge).
           // Drop the payload, record the loss honestly, continue normally.
+          // Same verdict the overflow upload uses, one home (overflow.mjs).
           const status = err?.status;
-          const permanent =
-            typeof status === "number" &&
-            status >= 400 &&
-            status < 500 &&
-            status !== 408 &&
-            status !== 429;
+          const permanent = isPermanentStatus(status);
           if (permanent) {
             const errText = String(err?.bodyText ?? err?.message ?? err).slice(0, 300);
             log(
@@ -2128,6 +2253,12 @@ export class Session {
       this.outbox.permissionUpdates = [];
       any = true;
     }
+    if (this.outbox.overflowFailures.length > 0) {
+      snap.overflowFailures = payload.overflowFailures =
+        this.outbox.overflowFailures;
+      this.outbox.overflowFailures = [];
+      any = true;
+    }
     if (!any) return null;
     // lastSdkEventAt rides along on real flushes only — it must never keep
     // the flush loop spinning by itself.
@@ -2172,6 +2303,11 @@ export class Session {
     if (snap.permissionUpdates) {
       this.outbox.permissionUpdates = snap.permissionUpdates.concat(
         this.outbox.permissionUpdates,
+      );
+    }
+    if (snap.overflowFailures) {
+      this.outbox.overflowFailures = snap.overflowFailures.concat(
+        this.outbox.overflowFailures,
       );
     }
   }

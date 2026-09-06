@@ -1635,6 +1635,47 @@ http.route({
   handler: sessionsIngest,
 });
 
+// POST /sessions/overflow — one ≤256KB chunk of a message's COMPLETE payload
+// (the transcript principle: the 32KB cut is what the page renders, not what
+// is stored). Its own route rather than a field on the ingest body: the flush
+// cadence is ~400ms and a failed flush re-sends its whole payload, so a
+// multi-megabyte tool result riding along would wreck both. Same
+// SESSIONS_WORKER_KEY door as poll/ingest.
+const sessionsOverflow = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.sessionId !== "string" || b.sessionId === "") {
+    return jsonResponse(400, { error: "sessionId required" });
+  }
+  if (typeof b.text !== "string") {
+    return jsonResponse(400, { error: "text (string) required" });
+  }
+  try {
+    const result = await ctx.runMutation(
+      internal.claudeSessions.internalIngestOverflow,
+      b as never,
+    );
+    return jsonResponse(200, result);
+  } catch (e) {
+    return jsonResponse(400, {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+http.route({
+  path: "/sessions/overflow",
+  method: "POST",
+  handler: sessionsOverflow,
+});
+
 // GET /sessions/transcript?sessionId=<id>&cursor=<opaque> — one page of a
 // session's finalized transcript, oldest first. The daemon walks it to write
 // .tts-transcript.md into a forked session's workspace before that session's

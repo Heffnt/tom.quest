@@ -1278,6 +1278,29 @@ export const internalIngest = internalMutation({
           // Subagent parentage: on a tool-call emitted inside a running Task
           // subagent, the parent Task's toolUseId.
           parentToolUseId: v.optional(v.string()),
+          // The 32KB cut fired and the complete payload was uploaded to
+          // claudeMessageOverflow under this (sessionId, seq) before this
+          // flush. Metadata only — the bytes never ride the ingest body.
+          overflow: v.optional(
+            v.object({
+              sha256: v.string(),
+              byteLength: v.number(),
+              chunkCount: v.number(),
+            }),
+          ),
+        }),
+      ),
+    ),
+    // Complete payloads the daemon could NOT store (a permanent rejection, or
+    // retries spent). Each becomes a dtsEvents row naming the file on the box
+    // that still holds the bytes — a payload is never dropped in silence.
+    overflowFailures: v.optional(
+      v.array(
+        v.object({
+          seq: v.number(),
+          error: v.string(),
+          path: v.optional(v.string()),
+          byteLength: v.optional(v.number()),
         }),
       ),
     ),
@@ -1344,11 +1367,26 @@ export const internalIngest = internalMutation({
           kind: row.kind,
           content: row.content,
           parentToolUseId: row.parentToolUseId,
+          overflow: row.overflow,
           createdAt: now,
         });
         if (row.seq > maxSeq) maxSeq = row.seq;
       }
       patch.nextSeq = maxSeq + 1;
+    }
+
+    // A complete payload that never reached storage is a hole in the record,
+    // so it is recorded as one: the transcript already carries the daemon's
+    // error row, and this is the event the digest and the weekly gather read.
+    for (const failure of args.overflowFailures ?? []) {
+      await logEvent(ctx, "session-overflow-unstored", session.todoId, {
+        sessionId: args.sessionId,
+        title: session.title,
+        seq: failure.seq,
+        error: failure.error,
+        path: failure.path,
+        byteLength: failure.byteLength,
+      });
     }
 
     // Terminal sessions (forceClose is browser-owned) accept FINALIZE rows —
@@ -1543,6 +1581,58 @@ export const internalIngest = internalMutation({
       pendingInbound,
       decisions,
     };
+  },
+});
+
+// ── Internal: overflow chunk ingest (the complete payload) ───────────────────
+// One chunk of one message's full payload, ≤256KB, behind POST
+// /sessions/overflow. The daemon uploads every chunk BEFORE the finalize row
+// that names their hash, so a row carrying `overflow` always points at bytes
+// already here; a row whose upload failed carries no `overflow` and the
+// failure arrives as an overflowFailures entry above instead.
+//
+// Upsert by (sessionId, seq, index): the daemon retries blindly, and a
+// re-sent chunk must overwrite rather than double the payload.
+export const internalIngestOverflow = internalMutation({
+  args: {
+    sessionId: v.id("claudeSessions"),
+    seq: v.number(),
+    index: v.number(),
+    chunkCount: v.number(),
+    // Recorded on the message row, not the chunk; accepted here so the daemon
+    // sends one shape and a chunk arriving for a row that never lands is
+    // still self-describing in the logs.
+    sha256: v.optional(v.string()),
+    byteLength: v.optional(v.number()),
+    text: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await getSessionOrThrow(ctx, args.sessionId);
+    const existing = await ctx.db
+      .query("claudeMessageOverflow")
+      .withIndex("by_session_seq_index", (q) =>
+        q
+          .eq("sessionId", args.sessionId)
+          .eq("seq", args.seq)
+          .eq("index", args.index),
+      )
+      .first();
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        chunkCount: args.chunkCount,
+        text: args.text,
+      });
+    } else {
+      await ctx.db.insert("claudeMessageOverflow", {
+        sessionId: args.sessionId,
+        seq: args.seq,
+        index: args.index,
+        chunkCount: args.chunkCount,
+        text: args.text,
+        createdAt: Date.now(),
+      });
+    }
+    return { ok: true as const, index: args.index };
   },
 });
 
