@@ -3668,6 +3668,33 @@ describe("the code lane", () => {
     );
   });
 
+  // witness: drop `seed.mode !== "autonomous"` AND the kind/category checks
+  // from the code-session block in insertSession — the mission's insert would
+  // stamp cmt-b's verdict with a session Tom is not in. (The block lane skips
+  // a "code" category block by name, so the code lane is the one path that
+  // opens an autonomous session while a code session verdict is live.)
+  it("an autonomous mission consumes no code session verdict", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await briefedCodeTodos(t, ["cmt-a", "cmt-b"]);
+    await rule(tom, "cmt-a", "approve");
+    await rule(tom, "cmt-b", "session", "walk me through the parser");
+    await enableAuto(t);
+    await heartbeat(t);
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const [mission] = await codeSessions(t);
+    expect(mission.codeExternalId).toBe("cmt-a");
+    // cmt-b's conversation is still owed: the ruling rides the feed, and the
+    // mission was told nothing about it.
+    const pending = await t.query(internal.ttsRulings.internalPendingRulings, {});
+    expect(pending.map((r) => `${r.externalId} ${r.verdict}`)).toEqual(["cmt-b session"]);
+    const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
+      sessionId: mission._id,
+    });
+    expect(inbound[0].text).not.toContain("cmt-b");
+    expect(inbound[0].text).not.toContain("walk me through the parser");
+  });
+
   // witness: drop the archive-first key from admitCodeMissions' sort — an
   // hour-long approve mission would hold a one-edit set-aside behind it.
   it("admits an archive ahead of an older approve", async () => {
