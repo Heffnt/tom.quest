@@ -785,6 +785,34 @@ describe("threaded replies from Tom", () => {
     expect(await events(t, "learning-objection")).toHaveLength(2);
   });
 
+  it("a digest-thread reply that names a todo with done AND a model-of-Tom line does both", async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now() - 3_600_000,
+        kind: "learning-change",
+        data: { id: "0123456789ab", file: "model-of-tom/areas/climbing.md", before: "", after: "- a line" },
+      });
+    });
+    const todoId = await t.mutation(internal.tts.internalCapture, {
+      statement: "renew the passport",
+      source: "slack-capture",
+    });
+    await posted(t, "760.1", { kind: "digest", day: "2026-09-06" });
+    const both = await postEvent(t, { channel: TTS, ts: "760.2", thread_ts: "760.1", text: `${todoId} done [0123456789ab]` });
+    expect(both).toMatchObject({ outcome: "done", todoId });
+    expect((await t.run(async (ctx) => ctx.db.get(todoId)))?.status).toBe("done");
+    const objections = await events(t, "learning-objection");
+    expect(objections).toHaveLength(1);
+    expect(objections[0].data).toMatchObject({ id: "0123456789ab", text: `${todoId} done [0123456789ab]` });
+    // The change's name beside a todo and a sentence is the objection; the
+    // sentence is not a "done", so the todo stays as it was.
+    const withFact = await postEvent(t, { channel: TTS, ts: "760.3", thread_ts: "760.1", text: `01234567 wrong, and ${todoId} needs a form first` });
+    expect(withFact).toMatchObject({ outcome: "learning-objection", id: "0123456789ab" });
+    expect(await events(t, "learning-objection")).toHaveLength(2);
+  });
+
   it("a learning thread writes a learning-objection with the change's id", async () => {
     slackEnv();
     const t = convexTest(schema, modules);

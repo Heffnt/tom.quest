@@ -12,7 +12,7 @@ import {
   ttsSessionLink,
   type SlackSubject,
 } from "./ttsShared";
-import { changeIdTokens, namedChange } from "../worker/jobs/learning-change-names.mjs";
+import { changeIdTokens, namedChange, withoutChangeId } from "../worker/jobs/learning-change-names.mjs";
 
 // Slack, the Convex side (the lifeos update, phase 2). Two facts live here:
 //
@@ -433,7 +433,10 @@ async function routeReply(
       // link or id) and otherwise says only "done" or a date is that todo's
       // reply, exactly as if it were in the todo's own thread. A reply that
       // names a model-of-Tom line by its id is an objection to that line —
-      // the nightly job applies the inverse the next night.
+      // the nightly job applies the inverse the next night. BOTH CAN BE
+      // TRUE OF ONE REPLY — "<todo id> done [<change id>]" — and both then
+      // happen: the objection is written first, and the todo's part is read
+      // with the change's name taken out, so the "done" is still a "done".
       const objected = await namedLearningChange(ctx, text);
       if (objected !== undefined) {
         await logEvent(ctx, "learning-objection", undefined, {
@@ -442,15 +445,16 @@ async function routeReply(
           ...at,
           subject,
         });
-        return { outcome: "learning-objection", id: objected };
       }
       const named = await namedTodo(ctx, text);
       if (named !== undefined) {
-        const shape = replyShape(named.rest);
+        const rest = objected === undefined ? named.rest : withoutChangeId(named.rest, objected);
+        const shape = replyShape(rest);
         if (shape !== "fact") {
           return await todoReply(ctx, named.todoId, text, at, shape);
         }
       }
+      if (objected !== undefined) return { outcome: "learning-objection", id: objected };
       await logEvent(ctx, "tom-note", named?.todoId, {
         text,
         ...at,
