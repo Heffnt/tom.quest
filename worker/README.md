@@ -71,6 +71,9 @@ on a schedule:
 6. **brief-code-todos** (every 2 h at :17) — see the ruling loop below.
 7. **apply-rulings** (every 10 min) — see the ruling loop below.
 8. **execute-approved** (hourly at :45) — see the ruling loop below.
+9. **nightly** (4:00 a.m. New York) — copies the Convex record and this
+   box's session files into WikiTom, runs the learning step, pushes, and
+   posts the model-of-tom files back to Convex. See "The nightly job" below.
 
 ## Declining an integration
 
@@ -106,6 +109,70 @@ integration and leaves the history of having declined it. The Friday weekly
 gather lists integrations by state, with the ruling date.
 
 The one home for all of that is `convex/ttsIntegrations.ts`.
+
+## The nightly job
+
+`worker/jobs/nightly.mjs` (the lifeos update, phase 4) runs at 4:00 a.m. New
+York, an hour before the 5 a.m. digest reads what it wrote. It works in the
+WikiTom checkout at `/root/wikitom` — a full clone, `sessions/` included,
+made by `setup.sh` over the SSH alias `github.com-wikitom` (a `Host` entry
+in `/root/.ssh/config` pointing at the deploy key `/root/.ssh/wikitom`,
+readable by root only). Five steps, in order; a step that fails writes one
+`nightly-failure` row to `dtsEvents` (`POST /tts/event`, naming the step and
+git's or the server's own words) and the next step runs anyway:
+
+1. **snapshot** — every Convex table except the six `auth*` ones, read by
+   pages from `GET /tts/export` against one boundary instant, into
+   `tts/snapshot/`: one JSON-lines file per table, keys sorted, newest row
+   first, a table over 90 MB as gzipped parts (`<table>.partNN.jsonl.gz`).
+   The set is assembled in `/var/cache/tts/snapshot-staging/` first and a
+   file is written only where its hash changed, so a night with no change
+   to a table makes no commit for it.
+2. **learning** — a skeleton for now: reads yesterday's turns Tom typed,
+   his Slack replies and his rulings (`GET /tts/learning-input`) and records
+   one `learning-run` row with the counts and zero changes. The comment above
+   the step in the job says what the full step will do (proposed lines with
+   evidence, one `learning-change` row each, the digest listing them, the
+   inverse applied on an objection).
+3. **sessions** — every Codex rollout (`/root/.codex/sessions/YYYY/MM/DD/`)
+   and Claude SDK session file (`/root/.claude-accounts/<account>/projects/`;
+   the `active` symlink is skipped) whose content the manifests under
+   `sessions/` do not already hold, archived in phase 1's layout:
+   `sessions/YYYY/MM/DD/claude-<id>/session.jsonl.gz` with `children/` and
+   `attachments/` beside it, `codex-<thread>/rollout.jsonl.gz` with its
+   subagent threads under `children/<thread>.jsonl.gz`, a per-account subdir
+   when both Max accounts hold one session id. Dates come from the files'
+   own timestamps (mtime when there is none); one line per file is appended
+   to `sessions/manifest-box-<day>.jsonl`, phase 1's columns. A file that
+   grew since it was archived is archived again.
+4. **push** — under `/var/lock/tts-wikitom.lock` (the one lock every writer
+   of the checkout takes; the job holds it the way `exec 3>lock; flock 3`
+   does): one commit per step that changed something, authored
+   `tts-nightly` so the digest tells the box's commits from Tom's, then
+   `git pull --rebase` and `git push` over the alias. A refused pull or
+   push is a failure row and the commits stay local, to go with the next
+   night's. **Until Tom adds the deploy key's public half to the WikiTom
+   repository, every push is refused and this is the row the digest shows.**
+5. **post** — the model-of-tom files at `HEAD`, whether or not the push
+   went through: `model-of-tom/writing.md`, `priorities.md`, `schedule.md`,
+   then for each page under `model-of-tom/areas/` its "Current state" and
+   "Must not break" sections (parsed by heading; while `areas/` does not
+   exist, the three alone), posted with the commit hash and the commit's
+   time to `POST /tts/model-of-tom`. Convex replaces the `ttsSkills` table
+   whole and every prompt from then on begins with those files under a
+   header naming that commit. A named file that is missing is a failure row;
+   the post still goes out with the rest.
+
+Then one `nightly-run` row with the summary (commit, pushed or not, table
+and row counts, files archived, the failures). By hand:
+
+```
+node /opt/tts/nightly.mjs --force                  # every step, now
+node /opt/tts/nightly.mjs --force --only=post      # one step, or a comma list
+```
+
+Nothing here prints a token: the deploy key is a file git reads, and
+`TTS_WORKER_KEY` travels only in a request header.
 
 ## The code-todo ruling loop
 
@@ -262,7 +329,12 @@ are all harmless to lose:
 - `/var/lib/tts/brief-hashes.json` — which todo version was last briefed;
   losing it re-briefs everything once (the Convex POST upserts).
 - `/var/cache/tts/` — rebuildable caches: the shallow CMT clone, the local
-  brief copies, the executor's throwaway clones.
+  brief copies, the executor's throwaway clones, the nightly job's snapshot
+  staging directory.
+- `/root/wikitom` — the WikiTom checkout the nightly job writes. Everything
+  in it is pushed, or reproducible from Convex and the session files, except
+  commits a refused push left local — those are lost with the box, and the
+  next night's run makes them again from the same sources.
 
 Losing the whole Jarvis Box loses nothing but a paused digest and some re-work.
 
@@ -437,6 +509,7 @@ node /opt/tts/brief-code-todos.mjs        # brief changed CMT todos now
 node /opt/tts/brief-code-todos.mjs --force # re-brief EVERY open CMT todo
 node /opt/tts/apply-rulings.mjs           # apply pending rulings now
 node /opt/tts/execute-approved.mjs        # execute one approved plan now
+node /opt/tts/nightly.mjs --force         # the nightly job, every step, now
 ```
 
 `--force` skips the 4-a.m.-New-York hour guard (cron fires the prep at both
@@ -446,5 +519,5 @@ whichever side of daylight saving we're on).
 ## Logs
 
 Cron output: one `/var/log/tts/<job>.log` per job (poll-dump, poll-gmail,
-prepare-queue, brief-code-todos, apply-rulings, execute-approved), truncated
-monthly by cron — they are convenience, not state.
+prepare-queue, brief-code-todos, apply-rulings, execute-approved, nightly),
+truncated monthly by cron — they are convenience, not state.

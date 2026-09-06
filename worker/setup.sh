@@ -209,6 +209,21 @@ else
   echo "  and private-repo clones will fail; fill it in and re-run setup.sh."
 fi
 
+# The WikiTom checkout the nightly job writes (worker/jobs/nightly.mjs; the
+# lifeos update, phase 4): a full clone at /root/wikitom, sessions/ included,
+# because the job writes there and git refuses adds outside a sparse cone.
+# Cloned over the github.com-wikitom SSH alias (Host entry in
+# /root/.ssh/config → the deploy key /root/.ssh/wikitom, root-only). Until Tom
+# adds that key's public half to the WikiTom repository the clone is refused,
+# which is tolerated here in one line: the job then records a failure row
+# each night and nothing else on this box is held up. Never re-cloned on a
+# re-run: the checkout may hold commits a refused push left local.
+if [ ! -d /root/wikitom/.git ]; then
+  git clone --quiet git@github.com-wikitom:Heffnt/WikiTom.git /root/wikitom 2>/dev/null \
+    && echo "  cloned WikiTom into /root/wikitom" \
+    || echo "  WikiTom clone refused (deploy key not on GitHub yet?) — the nightly job records a failure until it is; re-run setup.sh after"
+fi
+
 # Env file: seed from the template ONLY if absent — a re-run must never
 # clobber real secrets. Tighten permissions every time regardless.
 if [ ! -f /etc/tts/worker.env ]; then
