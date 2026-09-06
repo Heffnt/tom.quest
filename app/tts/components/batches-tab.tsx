@@ -103,11 +103,15 @@ function toGraph(batch: Batch, contents: Todo[]): BatchGraph {
         id: t._id,
         statement: t.statement,
         actor: t.actor ?? "agent",
-        status: done ? "done" : "active",
+        // A stored "waiting" row stays "waiting" here: ttsShared.isReady
+        // excludes it and waitingReason reads it as a wake — by its wakeAt
+        // when it has one, else by its condition in words. No instant is
+        // invented for a wordless sleep (a MAX_SAFE_INTEGER wakeAt rendered
+        // as "waiting until" the year 275760).
+        status: done ? "done" : t.status === "waiting" ? "waiting" : "active",
         needs: t.needs ?? [],
-        // A stored "waiting" row reads as a sleep until the migration turns
-        // it into active + wakeAt; with no time it sleeps until Tom wakes it.
-        wakeAt: t.status === "waiting" ? (t.wakeAt ?? Number.MAX_SAFE_INTEGER) : t.wakeAt,
+        wakeAt: t.wakeAt,
+        wakeCondition: t.wakeCondition,
         readiness: t.readiness,
         evidence: t.evidence,
         groundUp: t.groundUpExplanation,

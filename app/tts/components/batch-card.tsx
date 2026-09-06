@@ -28,10 +28,15 @@ export type GraphTask = {
   id: string;
   statement: string;
   actor: "tom" | "agent";
-  status: "active" | "done";
+  /** "waiting" is the stored status, still readable during the widen: a
+   * sleep with no instant of its own (ttsShared.waitingReason reads it as a
+   * wake, by its condition in words). Never a made-up wakeAt. */
+  status: "active" | "waiting" | "done";
   needs: string[];
   /** A sleep on an active task (the lifeos update); absent = awake. */
   wakeAt?: number;
+  /** The sleep in words, when the row has one. */
+  wakeCondition?: string;
   readiness: StoredReadiness;
   evidence?: string;
   groundUp?: string;
@@ -105,7 +110,12 @@ export function taskWaiting(
 ): WaitingReason | null {
   const byId = new Map(all.map((x) => [x.id, x]));
   return waitingReason(
-    { ...asGraphTodo(t), readiness: t.readiness, actor: t.actor },
+    {
+      ...asGraphTodo(t),
+      readiness: t.readiness,
+      actor: t.actor,
+      wakeCondition: t.wakeCondition,
+    },
     { now, doneSet: graphDoneSet(all), statementOf: (id) => byId.get(id)?.statement },
   );
 }
