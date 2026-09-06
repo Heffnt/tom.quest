@@ -360,11 +360,19 @@ export const updateTodo = mutation({
     category: v.optional(v.union(v.string(), v.null())),
     members: v.optional(v.union(v.array(MEMBER), v.null())),
     plan: v.optional(v.union(v.array(PLAN_STEP), v.null())),
+    // Tom's line on a GOAL (schema: mustNotBreak); null clears it. This door
+    // is the only writer — ruling 13.
+    mustNotBreak: v.optional(v.union(v.string(), v.null())),
   },
   handler: async (ctx, { id, ...fields }) => {
     await requireTomId(ctx);
     const todo = await ctx.db.get(id);
     if (!todo) throw new Error("TTS todo not found");
+    if (fields.mustNotBreak !== undefined && todo.kind !== "goal") {
+      throw new Error(
+        "mustNotBreak is a goal's field — this todo is not a goal",
+      );
+    }
     // Kept-dates rule (spec §8): a date never just disappears — the silent
     // slide is the one forbidden outcome. Clearing dueAt directly is refused;
     // dates leave via recordDateOutcome (done / renegotiated / missed).

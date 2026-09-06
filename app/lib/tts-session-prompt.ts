@@ -142,6 +142,8 @@ export type BatchSessionContext = {
     id: string;
     statement: string;
     condition?: string;
+    /** Tom's own line on what the work toward this goal must not break. */
+    mustNotBreak?: string;
     met: boolean;
   }[];
 };
@@ -203,7 +205,7 @@ export function buildBatchSessionPrompt(
       lines.push(
         `- [${g.met ? "met" : "not yet met"}] "${g.statement}" (id ${g.id})${
           g.condition ? ` — condition: ${g.condition}` : ""
-        }`,
+        }${g.mustNotBreak ? ` — MUST NOT BREAK (Tom's own line, binding on every step toward this goal): ${g.mustNotBreak}` : ""}`,
       );
     }
   }
@@ -234,6 +236,7 @@ export function buildTodoSessionPrompt(
     ...rulingLines(ruling),
     `The item ("${todo.statement}"):`,
     fact("id (life subject)", todo._id),
+    fact("must not break (Tom's own line, binding)", todo.mustNotBreak),
     fact("timing", todo.timingClass),
     fact(
       "due",

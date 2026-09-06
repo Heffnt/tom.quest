@@ -4882,6 +4882,36 @@ describe("frontier scheduler", () => {
     ).toHaveLength(0);
   });
 
+  // witness: drop `mustNotBreak` from the worker prompt's args in
+  // convex/claudeSessions.ts — Tom's binding line would reach the page and
+  // never the agent doing the work.
+  it("hands the worker Tom's must-not-break lines on the batch's goals", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await enableAuto(t, { maxNewPerTick: 1 });
+    await heartbeat(t);
+    const goalId = await tom.mutation(api.tts.createTodo, {
+      statement: "the reading list is published",
+    });
+    await storeGraph(t, {
+      statement: "the reading-list batch",
+      goalIds: [goalId],
+      tasks: [{ statement: "write the summary", actor: "agent" }],
+    });
+    await tom.mutation(api.tts.updateTodo, {
+      id: goalId,
+      mustNotBreak: "every citation stays verbatim",
+    });
+    await t.mutation(internal.claudeSessions.internalAutoSchedule, {});
+    const sessions = await workSessions(t);
+    expect(sessions).toHaveLength(1);
+    const text = await missionText(tom, sessions[0]._id);
+    expect(text).toContain("MUST NOT BREAK");
+    expect(text).toContain(
+      '- on the goal "the reading list is published": every citation stays verbatim',
+    );
+  });
+
   // The whole worker contract in one read: what it claimed, why it is ready,
   // what waits on it, what is moving beside it, the standard it writes to, and
   // the two pens. witness: remove any of these from buildWorkerPrompt in

@@ -13,7 +13,7 @@ import PlanBar from "./plan-bar";
 import GraphView from "./graph-view";
 import Info from "./info";
 import VerdictButtons from "./verdict-buttons";
-import { SESSIONS_EXPLANATION } from "../explanations";
+import { MUST_NOT_BREAK_EXPLANATION, SESSIONS_EXPLANATION } from "../explanations";
 import { fmtDate, groundUpTeaser, type RulingVerdict } from "../lib";
 import {
   isReady,
@@ -43,6 +43,8 @@ export type GraphGoal = {
   id: string;
   statement: string;
   condition?: string;
+  /** Tom's own line on what the work toward this goal must not break. */
+  mustNotBreak?: string;
   met: boolean;
   groundUp?: string;
   code?: { repo: string; externalId: string };
@@ -341,19 +343,36 @@ export default function BatchCard({
                 goals · {graph.goals.filter((g) => g.met).length} of {graph.goals.length} met
               </div>
               {graph.goals.map((g) => (
-                <button
-                  key={g.id}
-                  type="button"
-                  onClick={() => onDetail({ kind: "goal", batchStatement: graph.statement, goal: g })}
-                  className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-baseline gap-2 rounded px-1.5 py-0.5 text-left text-[13px] hover:bg-surface-alt/60"
-                >
-                  <span className={g.met ? "text-success" : "text-text-faint"}>
-                    {g.met ? "✓" : "◇"}
-                  </span>
-                  <span className={`truncate ${g.met ? "text-text-faint" : "text-text-muted"}`}>
-                    {g.statement}
-                  </span>
-                </button>
+                <div key={g.id}>
+                  <button
+                    type="button"
+                    onClick={() => onDetail({ kind: "goal", batchStatement: graph.statement, goal: g })}
+                    className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-baseline gap-2 rounded px-1.5 py-0.5 text-left text-[13px] hover:bg-surface-alt/60"
+                  >
+                    <span className={g.met ? "text-success" : "text-text-faint"}>
+                      {g.met ? "✓" : "◇"}
+                    </span>
+                    <span className={`truncate ${g.met ? "text-text-faint" : "text-text-muted"}`}>
+                      {g.statement}
+                    </span>
+                  </button>
+                  {g.mustNotBreak !== undefined && g.mustNotBreak.trim() !== "" && (
+                    <div className="ml-4 flex items-baseline gap-1 text-[12px] text-text-faint">
+                      <span>
+                        must not break: <span className="text-text-muted">{g.mustNotBreak}</span>
+                      </span>
+                      <Info
+                        call="tts.updateTodo({ mustNotBreak })"
+                        explanation={MUST_NOT_BREAK_EXPLANATION}
+                        explanationTitle="must not break — Tom's line on a goal"
+                      >
+                        Your own line on what the work toward this goal must
+                        not break. Only you write it, and every agent working
+                        this batch reads it in its opening prompt.
+                      </Info>
+                    </div>
+                  )}
+                </div>
               ))}
             </>
           )}

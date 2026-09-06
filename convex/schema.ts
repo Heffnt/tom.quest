@@ -601,6 +601,13 @@ export default defineSchema({
     // Completion evidence — the artifact that shows the work happened (branch,
     // PR, brief). The plan-step field of the same name, per row.
     evidence: v.optional(v.string()),
+    // GOALS ONLY (the lifeos update, phase 7): Tom's own line on what the
+    // work toward this goal must not break. In his words, written only by his
+    // door (tts.updateTodo refuses it on a task; ruling 13: never written by
+    // an agent on its own judgement), shown on the batch card under the goal,
+    // and injected into every worker and planner prompt where the goal's
+    // statement is.
+    mustNotBreak: v.optional(v.string()),
     // The "more" layer, same as batches.groundUpExplanation.
     groundUpExplanation: v.optional(v.string()),
     // A goal may bind a CODE subject: "that upstream code todo is closed".

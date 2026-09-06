@@ -89,6 +89,7 @@ function toGraph(batch: Batch, contents: Todo[]): BatchGraph {
         id: t._id,
         statement: t.statement,
         condition: t.condition,
+        mustNotBreak: t.mustNotBreak,
         met: done,
         groundUp: t.groundUpExplanation ?? t.brief,
         code:
@@ -162,6 +163,7 @@ function sessionContext(
       id: g.id,
       statement: g.statement,
       condition: g.condition,
+      mustNotBreak: g.mustNotBreak,
       met: g.met,
     })),
   };

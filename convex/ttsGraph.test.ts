@@ -1711,6 +1711,38 @@ describe("POST /tts/plan-graph", () => {
     expect(byStatement(todos, "run it")?.model).toBeUndefined();
   });
 
+  // ── mustNotBreak: Tom's line, goals only (the lifeos update) ─────────────
+  // witness: drop the kind check from updateTodo — a task could carry a
+  // must-not-break line, and the planner would read a constraint on nothing.
+  it("mustNotBreak is written by Tom's door on a goal only, and read where the goal is", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const goalId = await tom.mutation(api.tts.createTodo, { statement: "the lease is signed" });
+    const res = await postGraph(t, {
+      statement: "get the apartment",
+      goalIds: [goalId],
+      tasks: [{ statement: "call the landlord", actor: "agent" }],
+    });
+    expect(res.status).toBe(200);
+    await tom.mutation(api.tts.updateTodo, {
+      id: goalId,
+      mustNotBreak: "the current tenancy must not lapse before the new one starts",
+    });
+    const goal = await t.run(async (ctx) => ctx.db.get(goalId));
+    expect(goal?.mustNotBreak).toBe(
+      "the current tenancy must not lapse before the new one starts",
+    );
+    // A task refuses it.
+    const task = byStatement(await batchTodos(t, (await oneBatch(t))._id), "call the landlord")!;
+    await expect(
+      tom.mutation(api.tts.updateTodo, { id: task._id, mustNotBreak: "anything" }),
+    ).rejects.toThrow(/goal's field/);
+    // null clears it.
+    await tom.mutation(api.tts.updateTodo, { id: goalId, mustNotBreak: null });
+    expect((await t.run(async (ctx) => ctx.db.get(goalId)))?.mustNotBreak).toBeUndefined();
+  });
+
   // ── batches.needs (the lifeos update: the successor of path) ─────────────
   // witness: store `args.needs` without normalizing each id — a name that is
   // not a batch would block the batch forever, with nothing saying why.

@@ -766,3 +766,51 @@ ${WHAT_TTS_IS}
 <p>Pressing the button writes the one change in its row and stops. Nothing is scheduled and no message is sent. A todo marked done or archived leaves the working views and stays readable; a recorded engagement is visible only in the event feed.</p>
 `,
 );
+
+export const MUST_NOT_BREAK_EXPLANATION = page(
+  "Must not break — Tom's line on a goal",
+  "Must not break: Tom's own line on what the work toward a goal must not break",
+  "The field behind the line under a goal on the batch card: who writes it, where it is read, and what it binds.",
+  `
+<h2>What this is</h2>
+
+${WHAT_TTS_IS}
+
+<p>A <span class="term">batch</span> is a stored row holding how a set of todos gets completed. Its contents are todos of two kinds: a <span class="term">task</span> is work someone does, and a <span class="term">goal</span> is a state of the world the batch is for, written as a condition that is either true yet or not. <span class="term">Must not break</span> is one field on a goal: one line, in Tom's own words, naming what the work toward that goal must not break — a constraint on every task planned or done in the goal's name.</p>
+
+<p>It is stored on the goal's row under the name <span class="mono">mustNotBreak</span>, and it exists only on goals: the one function that writes it, <span class="mono">updateTodo</span> in the file <span class="mono">convex/tts.ts</span>, refuses it on a task.</p>
+
+<h2>Who writes it</h2>
+
+<table>
+  <tr><th>Writer</th><th>Allowed</th><th>Why</th></tr>
+  <tr><td>Tom, through <span class="mono">updateTodo</span></td><td>Yes — the only writer.</td><td>The line is his intent about the world. An agent guessing it would be an agent inventing a constraint in his name.</td></tr>
+  <tr><td>The planner (the job that maintains the graph inside each batch)</td><td>No. It reads the line and never writes or rewrites it.</td><td>The planner proposes structure; it does not state what matters.</td></tr>
+  <tr><td>A worker session (an agent doing one task)</td><td>No. Its writing pen does not carry the field.</td><td>Same reason. A worker that finds the line wrong says so in its outcome summary, and Tom changes it.</td></tr>
+</table>
+
+<h2>Where it is read</h2>
+
+<table>
+  <tr><th>Reader</th><th>What it does with the line</th></tr>
+  <tr><td>The batch card and the goal's detail dialog</td><td>Show it under the goal, exactly as written.</td></tr>
+  <tr><td>The planner's prompt</td><td>Carries it beside the goal's statement. A task that would break the line is not a task to write, and a task's explanation must say how the line is kept.</td></tr>
+  <tr><td>A worker session's opening prompt</td><td>Lists every must-not-break line of the batch's goals before the task, as binding on that task.</td></tr>
+  <tr><td>A batch session or item session Tom opens</td><td>Prints it beside the goal, marked as his own binding line.</td></tr>
+</table>
+
+<h2>What it binds</h2>
+
+<div class="flow">
+  <div class="box">Tom writes the line on a goal <span class="muted">— one sentence, his words</span></div>
+  <div class="arrow">↓</div>
+  <div class="box">Every task the planner writes toward that goal is planned under it <span class="muted">— the prompt says a task that would break it is not written</span></div>
+  <div class="arrow">↓</div>
+  <div class="box">Every worker that takes one of those tasks reads it first <span class="muted">— a change that would break it is not made, whatever the task says</span></div>
+</div>
+
+<h2>What happens next, and who does it</h2>
+
+<p>Writing or changing the line writes one field and stops. Nothing is scheduled and no message is sent. The next planner run and the next worker session on the batch read the new line from the row; a session already open keeps the prompt it was opened with.</p>
+`,
+);

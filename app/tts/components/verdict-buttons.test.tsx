@@ -238,6 +238,32 @@ describe("the verdict row", () => {
 });
 
 describe("the batch card", () => {
+  // witness: drop the mustNotBreak line from the goals list in batch-card.tsx
+  // — Tom's constraint would be stored and shown nowhere on the page.
+  it("shows Tom's must-not-break line under its goal, with the popover naming the pen", () => {
+    render(
+      <BatchCard
+        graph={{
+          ...GRAPH,
+          goals: [
+            { ...GRAPH.goals[0], mustNotBreak: "the citations stay verbatim" },
+          ],
+        }}
+        now={Date.now()}
+        expanded
+        onToggle={() => {}}
+        onRule={() => {}}
+        onDetail={() => {}}
+        onGroundUp={() => {}}
+        onOpenSession={() => {}}
+      />,
+    );
+    const line = screen.getByText("the citations stay verbatim");
+    expect(line).toBeTruthy();
+    fireEvent.click(infoBeside(line.closest("div")!.querySelector("span")!));
+    expect(screen.getByText("tts.updateTodo({ mustNotBreak })")).toBeTruthy();
+  });
+
   it("expanded: the session opener and the four verdicts, each with a popover", () => {
     render(
       <BatchCard

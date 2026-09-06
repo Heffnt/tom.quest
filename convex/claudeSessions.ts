@@ -2613,6 +2613,9 @@ function buildWorkerPrompt(args: {
   /** The statements of the batches this batch needs (all done by the time a
    * worker is here — the scheduler admits no batch with an open need). */
   batchNeeds?: string[];
+  /** Tom's must-not-break lines on this batch's goals, each with the goal it
+   * is on. Binding on every step toward those goals — so on this one. */
+  mustNotBreak?: { goal: string; line: string }[];
 }): string {
   const {
     todo,
@@ -2623,6 +2626,7 @@ function buildWorkerPrompt(args: {
     dependents,
     siblings,
     batchNeeds = [],
+    mustNotBreak = [],
   } = args;
   const isGoal = todo.kind === "goal";
   const lines: (string | null)[] = [
@@ -2654,11 +2658,19 @@ function buildWorkerPrompt(args: {
           .map((n) => `"${n}"`)
           .join(", ")}`
       : null,
+    ...(mustNotBreak.length > 0
+      ? [
+          "",
+          "MUST NOT BREAK — Tom's own lines on this batch's goals. They bind every step toward those goals, so they bind this one; a change that would break one is not a change to make, whatever else the task says:",
+          ...mustNotBreak.map((m) => `- on the goal "${m.goal}": ${m.line}`),
+        ]
+      : []),
     "",
     `YOU HAVE CLAIMED ONE TODO IN THIS BATCH, and only this one ("${todo.statement}"):`,
     `kind: ${isGoal ? "goal" : "task"}`,
     isGoal ? null : `who does it: ${todo.actor ?? "agent"}`,
     promptFact("condition", todo.condition),
+    promptFact("must not break (Tom's own line, binding)", todo.mustNotBreak),
     promptFact("ground-up explanation", todo.groundUpExplanation),
     promptFact("work description", todo.workDescription),
     promptFact("entry action", todo.entryAction),
@@ -3676,6 +3688,16 @@ export const internalAutoSchedule = internalMutation({
         const batchNeeds = (batch.needs ?? [])
           .map((id) => batchById.get(id)?.statement)
           .filter((s): s is string => s !== undefined);
+        // Tom's must-not-break lines on the batch's goals, where the goal's
+        // statement is: binding on every task toward them.
+        const mustNotBreak = todos
+          .filter(
+            (t) =>
+              t.batchId === batch._id &&
+              t.kind === "goal" &&
+              (t.mustNotBreak ?? "").trim() !== "",
+          )
+          .map((t) => ({ goal: t.statement, line: t.mustNotBreak!.trim() }));
         prompt = (sessionId) =>
           buildWorkerPrompt({
             todo: c.todo,
@@ -3686,6 +3708,7 @@ export const internalAutoSchedule = internalMutation({
             dependents,
             siblings,
             batchNeeds,
+            mustNotBreak,
           });
         extra = { batchId: batch._id };
       } else {

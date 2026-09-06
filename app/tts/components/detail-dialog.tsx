@@ -154,6 +154,9 @@ export default function DetailDialog({
             {item.goal.condition !== undefined && (
               <Row label="condition">{item.goal.condition}</Row>
             )}
+            {item.goal.mustNotBreak !== undefined && item.goal.mustNotBreak.trim() !== "" && (
+              <Row label="must not break">{item.goal.mustNotBreak}</Row>
+            )}
             <Row label="status">{item.goal.met ? "met" : "not yet met"}</Row>
             {item.goal.code !== undefined && (
               <Row label="lives in">
