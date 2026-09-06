@@ -1,12 +1,23 @@
 # The Jarvis Box
 
 The always-on home for TTS's scheduled headless-Claude jobs: a Hetzner VPS
-(today: x86_64, Ubuntu 26.04 — it began life as an ARM64 CAX11 on 24.04) running five personal-todo jobs and three code-todo jobs
+(today: x86_64, Ubuntu 26.04 — it began life as an ARM64 CAX11 on 24.04) running these jobs
 on a schedule:
 
-1. **poll-dump** (every 2 min) — reads new human messages from the Slack
+1. **poll-dump** (hourly) — reads new human messages from the Slack
    `#dump` channel and submits each one to Convex as an unprepared todo.
-2. **poll-gmail** (every 10 min) — lists new inbox mail and spends ONE headless
+   The recovery pass behind the push route (`POST /slack/events`), which is
+   how a message normally arrives.
+2. **plan-graphs** (every 30 min) — the planner, two passes in one run:
+   **prepare** every unprepared life todo (brief, entry action, work
+   description, ground-up explanation, readiness `prepared`, and the date
+   the statement itself states), re-preparing any todo Tom ruled `revise`
+   on with his sentence in the prompt; then **plan** the graph inside every
+   batch (goals, tasks, `needs` edges, the needs between batches). Nothing
+   here posts to Slack — the capture posts its own threaded reply.
+3. **apply-time-notes** (every 2 min) — turns each time note Tom wrote into
+   concrete date and block changes.
+4. **poll-gmail** (every 10 min) — lists new inbox mail and spends ONE headless
    Claude call per batch on TWO judgements. First: does the message imply an
    action by Tom? If so it is submitted to Convex as an unprepared todo with
    source `email` and the stable source id `gmail:message:<id>` in its
@@ -25,7 +36,7 @@ on a schedule:
    deduped on the Gmail message id, so one mail opens one thread however many
    times the job re-reads it. Until the Gmail credentials exist it is a quiet
    no-op; see below.
-3. **poll-canvas** (every 30 min) — the one job that owns Canvas, in two
+5. **poll-canvas** (every 30 min) — the one job that owns Canvas, in two
    halves on one tick. **Assignments**: every published, dated assignment
    within 14 days back and 60 days on is posted to
    `POST /tts/canvas-assignments`, which keeps one todo per assignment (source
@@ -50,7 +61,7 @@ on a schedule:
    action with a second `CANVAS_TOKEN` in the deployment env. It is gone; the
    token lives only in `/etc/tts/worker.env`, and what stayed in Convex is the
    mutation that writes todos, because writing todos has to be one.
-4. **poll-outlook** (not scheduled yet) — the Outlook counterpart of
+6. **poll-outlook** (not scheduled yet) — the Outlook counterpart of
    poll-gmail (Tom, 2026-08-25: "outlook is where the most important mail comes
    in"). It is a **skeleton**: the credential contract, the cursor's home and
    the two strings a later reader depends on are settled, and the Microsoft
@@ -60,7 +71,7 @@ on a schedule:
    in `setup.sh`, with the reason next to it. Run by hand today it prints one
    line naming the keys it is still waiting for. See "Outlook credentials"
    below.
-5. **prepare-queue** (4:30 a.m. New York) — runs headless Claude Code to pick
+7. **prepare-queue** (4:30 a.m. New York) — runs headless Claude Code to pick
    today's queue (≤7 items) and write the daily digest, and posts both to
    Convex. If it fails, the Convex-side fallback prep (4:45) still writes the
    day's queue. The digest text it writes has no reader any more: since the
@@ -68,10 +79,10 @@ on a schedule:
    Convex (`convex/ttsDigest.ts`) and sent by `sendDigest`, so a missing
    morning message is itself the monitoring signal. This job's digest half
    goes in phase 7 with the queue.
-6. **brief-code-todos** (every 2 h at :17) — see the ruling loop below.
-7. **apply-rulings** (every 10 min) — see the ruling loop below.
-8. **execute-approved** (hourly at :45) — see the ruling loop below.
-9. **nightly** (4:00 a.m. New York) — copies the Convex record and this
+8. **brief-code-todos** (every 2 h at :17) — see the ruling loop below.
+9. **apply-rulings** (every 10 min) — see the ruling loop below.
+10. **execute-approved** (hourly at :45) — see the ruling loop below.
+11. **nightly** (4:00 a.m. New York) — copies the Convex record and this
    box's session files into WikiTom, runs the learning step, pushes, and
    posts the model-of-tom files back to Convex. See "The nightly job" below.
 

@@ -1296,6 +1296,10 @@ const ttsBatchContext = httpAction(async (ctx, request) => {
     // value is what stops a fourth hand-written copy of the repo list
     // appearing in worker/ (VQC C1).
     sessionRepos: SESSION_REPO_NAMES,
+    // The server's clock, the /tts/state convention: the planner's prepare
+    // pass resolves "sept 3" in a statement against nyCalendarDay and never
+    // computes a New York date of its own.
+    ...nowContext(Date.now()),
   });
 });
 

@@ -1,12 +1,22 @@
 #!/usr/bin/env node
-// plan-graphs.mjs — THE PLANNER. Maintains the graph inside every batch via
-// headless Claude.
+// plan-graphs.mjs — THE PLANNER. One run, two passes, in this order:
 //
-// Run by cron every 2 hours at :07 UTC (see /etc/cron.d/tts, where it replaces
-// form-batches.mjs at cutover). Manual run:
-//   node /opt/tts/plan-graphs.mjs
+//   1. PREPARE — every unprepared life todo (a #dump capture, an email
+//      capture, a Canvas announcement, a todo Tom ruled "revise" on) gets its
+//      write-up: a brief, the smallest entry action, a work description, a
+//      ground-up explanation, and readiness "prepared". One headless-Claude
+//      call per todo. This pass used to be its own job (prepare-life-todos.mjs,
+//      every 2 minutes) and was absorbed here in the lifeos update, phase 7:
+//      the planner already reads every todo every run, and a capture's
+//      write-up and its place in a graph are one job's worth of reading.
+//      Nothing here posts to Slack — the events route replies at capture.
+//   2. PLAN — maintain the graph inside every batch via headless Claude.
 //
-// WHAT A BATCH IS NOW (schema v2, ratified 2026-08-29). A batch is NOT a todo.
+// Run by cron every 30 minutes under flock (see /etc/cron.d/tts). Manual run:
+//   node /opt/tts/plan-graphs.mjs            # both passes
+//   node /opt/tts/plan-graphs.mjs --force    # also re-prepare prepared todos
+//
+// WHAT A BATCH IS (schema v2, ratified 2026-08-29). A batch is NOT a todo.
 // It is its own row, and it holds one thing: HOW a set of todos gets
 // completed. Its contents are todos pointing back at it, in two kinds:
 //   goal — a state of the world the batch is FOR, checkable by a condition
@@ -22,34 +32,37 @@
 // previous batch) is RETIRED: still accepted from an older plan during the
 // widen, derived into needs by a migration, and dropped at NARROW.
 //
-// THE JOB'S ONE RESPONSIBILITY: for each batch, propose the graph. It executes
-// nothing and rules on nothing. Every gate lives on the server
+// THE PLAN PASS'S ONE RESPONSIBILITY: for each batch, propose the graph. It
+// executes nothing and rules on nothing. Every gate lives on the server
 // (tts.internalStorePlanGraph): a Tom-touched batch is frozen and never
 // rewritten, a task that fails validation is DROPPED with a named reason while
 // the rest of the graph still lands, cycles are dropped, and the per-batch
 // skip report comes back here to be logged.
 //
+// THE PREPARE PASS NEVER REWRITES INTENT. It writes brief, entryAction,
+// workDescription, groundUpExplanation and readiness; the statement and the
+// status are Tom's (the server pen, tts.internalPrepareTodo, enforces the
+// same). A date reaches a todo through this pass ONLY when the statement
+// itself states one ("pay rent sept 3") — Tom's own words, never a guess —
+// and only as a FIRST date (the pen refuses an overwrite and a resurrection
+// of a date Tom already resolved). Whether a prepared todo is READY for Tom
+// is computed on the server (convex/ttsShared.ts isReadyForTom), never
+// written here.
+//
 // GROUND-UP EXPLANATIONS ARE HTML DOCUMENTS (Tom, 2026-08-29: rendered as
 // prose they are "an incomprehensible wall of text"). Every explanation this
-// job writes — the batch's and each task's — is a complete self-contained HTML
-// page, which the /tts page shows fullscreen in a sandboxed, script-less
-// iframe. The form is specified once, in the writing standard that rides in on
-// /tts/batch-context; the prompt below only names the requirement and the
-// palette. Stored explanations come back into the prompt as extracted-text
-// PREVIEWS, never as markup.
+// job writes — a prepared todo's, the batch's, each task's — is a complete
+// self-contained HTML page, which the /tts page shows fullscreen in a
+// sandboxed, script-less iframe. The form is specified once, in the writing
+// standard that rides in on /tts/batch-context; the prompts below only name
+// the requirement and the palette. Stored explanations come back into the
+// plan prompt as extracted-text PREVIEWS, never as markup.
 //
-// SUCCESSOR TO form-batches.mjs. That job groups todos into v1 batches (a
-// dtsTodos row carrying `members`); this one maintains v2 graphs. They run
-// side by side until cutover, and they cannot collide: the server refuses a v1
-// batch that claims a row already inside a v2 batch, and the two consume
-// different ruling feeds (form-batches takes `life` revise rulings whose
-// subject is a members-bearing todo; this job takes `batch` revise rulings,
-// which only exist in v2).
-//
-// REVISE RULINGS: Tom can rule "revise" on a batch with one written sentence.
-// This job embeds those sentences in the prompt (they override any other
-// reading of the inputs) and consumes each via /tts/ruling-applied only once
-// the server reports that batch as stored — a skipped batch leaves its ruling
+// REVISE RULINGS. Tom can rule "revise" with one written sentence on a life
+// todo (the prepare pass re-prepares it with the sentence in the prompt) or on
+// a batch (the plan pass embeds the sentence; it overrides any other reading
+// of the inputs). Each is consumed via /tts/ruling-applied only once its
+// effect landed — a skipped batch or a failed preparation leaves its ruling
 // pending, so the next run tries again on the same sentence.
 //
 // PLAN REPAIRS: a worker that reached a task and found the graph wrong (an
@@ -58,35 +71,43 @@
 // corrects the planning of it, so those reports are injected as instructions
 // to FIX THE STRUCTURE, not as commentary. Like a revise ruling they are
 // CONSUMED once the batch they are about has been re-planned
-// (/tts/plan-repairs-consumed): an instruction re-asserted every two hours
+// (/tts/plan-repairs-consumed): an instruction re-asserted every half hour
 // after it has been carried out is an instruction to change something else.
 //
 // NO-STATE RULE: Convex is read and written each run. The only local file is
 // the input-hash cursor in /var/lib/tts/ — losing it merely costs one extra
 // Claude invocation on inputs that had not changed.
+//
+// TESTABLE HALVES. The passes are exported and take their model call and
+// their Convex writes as an `io` argument, so worker/jobs/plan-graphs.test.mjs
+// runs them against stubs; main() below wires the real ones. Importing this
+// module is safe: it only runs main() when node was pointed at the file (the
+// `invokedDirectly` guard at the bottom).
 
 import fs from "node:fs";
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import {
   loadEnv,
   convexFetch,
   runClaude,
   extractJsonObject,
   clip,
+  nyNoonUtcMs,
   MAX_LIFE_PER_RUN,
   MAX_BRIEF_CHARS,
 } from "./tts-lib.mjs";
 
 const HASH_PATH = "/var/lib/tts/plan-input-hash";
-// Bump when the prompt changes semantics: it joins the input hash, so a new
-// prompt re-plans even inputs that have not changed.
+// Bump when the plan prompt changes semantics: it joins the input hash, so a
+// new prompt re-plans even inputs that have not changed.
 const PROMPT_VERSION = 3;
 const CLAUDE_TIMEOUT_MS = 20 * 60 * 1000;
 
 // MAX_LIFE_PER_RUN (how many unbatched life todos one run offers as goal
 // candidates) and MAX_BRIEF_CHARS, together with clip(), are imported from
-// tts-lib.mjs, which is the one home for the brief-clipping rule shared with
-// the other planner, form-batches.mjs. Do not re-declare them here.
+// tts-lib.mjs, the one home for the brief-clipping rule. Do not re-declare
+// them here.
 // Full graphs shown per run, most-recently-updated first. EVERY active batch's
 // statement is listed regardless (one line each, so the planner cannot
 // recreate a grouping that already exists); only this many carry their whole
@@ -105,6 +126,16 @@ const MAX_PREVIEW_CHARS = 240;
 const MAX_BATCH_PREVIEW_CHARS = 600;
 const MAX_CODE_TODOS = 60;
 const NOTE_MAX = 20;
+
+// ── The prepare pass's bounds ────────────────────────────────────────────────
+// Todos prepared per run. One Claude call each, so the bound is the run's
+// worst case: PREPARE_MAX × PREPARE_TIMEOUT_MS, inside the 30-minute cadence
+// only because the cron line's flock makes an overrun a skipped tick rather
+// than a second run. A backlog drains PREPARE_MAX per run.
+export const PREPARE_MAX = 10;
+export const PREPARE_TIMEOUT_MS = 5 * 60 * 1000;
+// The one value preparation produces (ruling 18); ready is computed.
+export const PREPARED = "prepared";
 
 /**
  * The readable text of a ground-up explanation, for preview only. An HTML
@@ -135,6 +166,230 @@ function explanationText(value) {
 function explanationPreview(value, max) {
   return clip(explanationText(value), max);
 }
+
+// The palette and form every explanation document takes, named once for both
+// prompts. The writing standard says what a document must cover; this says
+// what it looks like and what it may not load.
+const EXPLANATION_FORM = [
+  `A "groundUpExplanation" is a COMPLETE, SELF-CONTAINED HTML DOCUMENT, from`,
+  `"<!DOCTYPE html>" to "</html>", carrying its own inline <style> and nothing`,
+  `external: no script, no event handler, no stylesheet, font, image, or URL`,
+  `loaded from anywhere. It renders fullscreen in a sandbox with no scripting`,
+  `and no network, so anything external is a hole in the page. Palette`,
+  `#0a0e17 background, #e2e8f0 text, #94a3b8 secondary, #e8a040 accent,`,
+  `#1e293b borders; ~15px body type, real <h1>/<h2> headings, short`,
+  `sections, a <table> for enumerable facts, and bordered <div> boxes with →`,
+  `or ↓ arrows where a shape helps. Write the whole document as the JSON`,
+  `string value, escaped as JSON requires.`,
+];
+
+// ── PASS 1: prepare ──────────────────────────────────────────────────────────
+
+/** The prompt that prepares ONE life todo. */
+export function preparePrompt(todo, reviseSentence, today, writingStandard) {
+  return [
+    `You are preparing one item in TTS, Tom's personal todo system. It was`,
+    `captured as a raw thought; your job is to make it arrive pre-chewed.`,
+    ``,
+    `The item (JSON):`,
+    JSON.stringify(
+      {
+        statement: todo.statement,
+        source: todo.source,
+        provenance: todo.provenance ?? null,
+        category: todo.category ?? null,
+        createdAt: todo.createdAt,
+      },
+      null,
+      2,
+    ),
+    ``,
+    ...(reviseSentence
+      ? [
+          `Tom reviewed an earlier preparation of this item and ruled "revise" —`,
+          `his one written sentence below redirects this re-preparation and`,
+          `overrides any other reading of the item:`,
+          ``,
+          `Tom's revise ruling: ${reviseSentence}`,
+          ``,
+        ]
+      : []),
+    writingStandard,
+    ``,
+    `Write, in plain language (define any term Tom might not know; invent no`,
+    `names; descriptive, never evaluative — no praise, no urgency theater):`,
+    `1. "brief" — 2-5 sentences, ground-up: what this item is, why it likely`,
+    `   exists, and anything a person acting on it should know. If the`,
+    `   statement is too terse to interpret confidently, say so plainly in the`,
+    `   brief and phrase what needs clarifying.`,
+    `2. "entryAction" — the SMALLEST first action, imperative, under 10 words`,
+    `   (e.g. "Open the reservation page", "Draft two sentences to Ana").`,
+    `3. "workDescription" — the kind/size of engagement, qualitatively, a few`,
+    `   words (e.g. "a two-minute errand", "a short ruling", "a session's`,
+    `   worth of writing"). NEVER a numeric time estimate.`,
+    `4. "groundUpExplanation" — the self-contained layer behind the "more"`,
+    `   control, obeying the WRITING STANDARD above in full: what this is, why`,
+    `   it exists, what each term in the statement means, where it stands now,`,
+    `   what happens next and who does it. ${EXPLANATION_FORM.join(" ")}`,
+    `5. "dueDate" — ONLY when the statement ITSELF names an explicit date`,
+    `   ("pay rent sept 3", "call the bank on Friday the 12th"). Then give it`,
+    `   as "YYYY-MM-DD"; today is ${today} in New York, which is how you`,
+    `   resolve a bare month+day or weekday to a year. Otherwise give null.`,
+    `   NEVER infer, estimate, or invent a date — no "this seems urgent, so`,
+    `   next week". A date you were not told in the statement is a date that`,
+    `   does not exist. Only the words in "statement" count; a date mentioned`,
+    `   anywhere else is not this item's date.`,
+    `6. "dateKind" — ONLY when you gave a dueDate. "external" if the statement`,
+    `   shows the deadline was imposed by someone or something else (a bill, a`,
+    `   landlord, a booking window, a court date); "self-imposed" if it reads`,
+    `   as Tom's own choice of when. When the statement does not say, answer`,
+    `   "self-imposed". Otherwise give null.`,
+    ``,
+    `Answer ONLY a JSON object, no prose, no code fences:`,
+    `{"brief": "...", "entryAction": "...", "workDescription": "...",`,
+    ` "groundUpExplanation": "<!DOCTYPE html>…</html>",`,
+    ` "dueDate": null, "dateKind": null}`,
+  ].join("\n");
+}
+
+/** A row inside a batch that is not a goal: a step of a graph, never prepared
+ * on its own ("unprepared" is a task's resting state; briefing one would
+ * flood the needs-me feed with plan steps). */
+const isGraphTask = (t) =>
+  t.batchId !== undefined && t.batchId !== null && t.kind !== "goal";
+
+/**
+ * Which todos this run prepares, and the revise ruling each carries, from the
+ * pending-rulings feed and the todo list:
+ *   - a members-bearing todo is a v1 batch and is never prepared here;
+ *   - a graph task is never prepared here (see isGraphTask); a GOAL is — it is
+ *     one of Tom's own todos the planner bound, and binding must not be what
+ *     stops it getting prepared;
+ *   - an active unprepared todo is prepared; with `force`, a prepared one too;
+ *   - a todo with a pending life "revise" ruling is re-prepared REGARDLESS of
+ *     status (the verdict dropped its readiness server-side; the sentence is
+ *     what pulls it back in, and preparation touches no status, so
+ *     re-preparing an archived todo is safe — an active-only filter would
+ *     strand the ruling pending forever if Tom changed the status after
+ *     ruling).
+ */
+export function selectPrepareTargets(todos, pending, { force = false } = {}) {
+  const all = Array.isArray(todos) ? todos : [];
+  const todoById = new Map(all.map((t) => [t._id, t]));
+  const reviseByTodo = new Map();
+  for (const r of Array.isArray(pending) ? pending : []) {
+    if (r.subjectType !== "life" || r.verdict !== "revise" || !r.todoId) continue;
+    const subject = todoById.get(r.todoId);
+    if (subject && subject.members !== undefined) continue; // a v1 batch
+    reviseByTodo.set(r.todoId, r);
+  }
+  const targets = all.filter(
+    (t) =>
+      t.members === undefined &&
+      !isGraphTask(t) &&
+      (reviseByTodo.has(t._id) ||
+        (t.status === "active" && (t.readiness === "unprepared" || force))),
+  );
+  return { targets, reviseByTodo };
+}
+
+/**
+ * The prepare pass. `io.runClaude(prompt, opts)` answers the model call and
+ * `io.post(path, body)` is the Convex write; both are the real functions in
+ * main() and stubs in the tests. Returns the counts and the ids prepared, and
+ * MUTATES the todo objects it prepared (brief, readiness) so the plan pass in
+ * the same run sees the write-up it just made without a second read.
+ */
+export async function prepareLifeTodos(
+  { todos, pending, today, writingStandard, force = false },
+  io,
+) {
+  const { targets, reviseByTodo } = selectPrepareTargets(todos, pending, { force });
+  if (targets.length === 0) return { prepared: 0, failed: 0, preparedIds: [] };
+  const batch = targets.slice(0, PREPARE_MAX);
+  console.log(
+    `[plan-graphs] prepare: ${targets.length} to prepare ` +
+      `(${reviseByTodo.size} revise ruling(s) pending), processing ${batch.length}`,
+  );
+  let failed = 0;
+  const preparedIds = [];
+  for (const todo of batch) {
+    const revise = reviseByTodo.get(todo._id) ?? null;
+    try {
+      const answer = io.runClaude(
+        preparePrompt(todo, revise?.sentence ?? null, today, writingStandard),
+        { timeoutMs: PREPARE_TIMEOUT_MS },
+      );
+      const parsed = extractJsonObject(answer);
+      if (
+        typeof parsed.brief !== "string" ||
+        typeof parsed.entryAction !== "string" ||
+        typeof parsed.workDescription !== "string" ||
+        typeof parsed.groundUpExplanation !== "string" ||
+        parsed.groundUpExplanation.trim() === ""
+      ) {
+        throw new Error(`bad shape: ${JSON.stringify(parsed).slice(0, 120)}`);
+      }
+      // A date the STATEMENT states, in Tom's own words. Sent only when the
+      // todo has no date AND no date HISTORY — a todo whose date Tom already
+      // resolved (missed, renegotiated) must never have that same date handed
+      // back to it by a re-prep of the same sentence. The server enforces both
+      // halves regardless (internalPrepareTodo); this filter keeps the job
+      // from asking. A malformed date is dropped, never guessed at: the rest
+      // of the preparation still lands.
+      let dueAt;
+      const dateSettled =
+        todo.dueAt !== undefined || (todo.dateOutcomes ?? []).length > 0;
+      if (typeof parsed.dueDate === "string" && !dateSettled) {
+        try {
+          dueAt = nyNoonUtcMs(parsed.dueDate.trim());
+        } catch (e) {
+          console.error(`[plan-graphs] ${todo._id} ignoring dueDate: ${e.message}`);
+        }
+      }
+      // Whose deadline it is, as the statement reads it — passed through, not
+      // assumed. Anything but a clean "external" is self-imposed.
+      const dateKind = parsed.dateKind === "external" ? "external" : "self-imposed";
+      await io.post("/tts/prepare-todo", {
+        id: todo._id,
+        brief: parsed.brief,
+        entryAction: parsed.entryAction,
+        workDescription: parsed.workDescription,
+        groundUpExplanation: parsed.groundUpExplanation,
+        readiness: PREPARED,
+        ...(dueAt !== undefined ? { dueAt, dateKind } : {}),
+      });
+      if (revise) {
+        // The re-prep landed — consume the ruling so the UI shows the
+        // outcome and the next run doesn't re-prepare on the same sentence.
+        await io.post("/tts/ruling-applied", {
+          id: revise._id,
+          result: "revised: brief re-prepared",
+        });
+      }
+      // What the plan pass reads in this same run.
+      todo.brief = parsed.brief;
+      todo.readiness = PREPARED;
+      preparedIds.push(todo._id);
+      console.log(
+        `[plan-graphs] prepared ${todo._id}` +
+          `${revise ? " (revise ruling applied)" : ""} ` +
+          `"${todo.statement.slice(0, 50).replace(/\s+/g, " ")}"`,
+      );
+    } catch (err) {
+      // Per-item failure: log and continue — the item stays unprepared (or
+      // its revise ruling stays pending) and the next run retries it. One
+      // bad item must not starve the batch.
+      failed++;
+      console.error(
+        `[plan-graphs] prepare ${todo._id} FAILED: ${String(err.message ?? err).slice(-200)}`,
+      );
+    }
+  }
+  return { prepared: preparedIds.length, failed, preparedIds };
+}
+
+// ── PASS 2: plan ─────────────────────────────────────────────────────────────
 
 function prompt(ctx) {
   return [
@@ -338,16 +593,7 @@ function prompt(ctx) {
     ``,
     `WRITING. Every "statement" is display text: short, names the thing, no`,
     `explanation. Every "groundUpExplanation" obeys the WRITING STANDARD`,
-    `above, in full — which means it is a COMPLETE, SELF-CONTAINED HTML`,
-    `DOCUMENT, from "<!DOCTYPE html>" to "</html>", carrying its own inline`,
-    `<style> and nothing external: no script, no event handler, no stylesheet,`,
-    `font, image, or URL loaded from anywhere. It renders fullscreen in a`,
-    `sandbox with no scripting and no network, so anything external is a hole`,
-    `in the page. Palette #0a0e17 background, #e2e8f0 text, #94a3b8 secondary,`,
-    `#e8a040 accent, #1e293b borders; ~15px body type, real <h1>/<h2>`,
-    `headings, short sections, a <table> for enumerable facts, and bordered`,
-    `<div> boxes with → or ↓ arrows where a shape helps. Write the whole`,
-    `document as the JSON string value, escaped as JSON requires.`,
+    `above, in full. ${EXPLANATION_FORM.join(" ")}`,
     ``,
     `WRITE AN EXPLANATION ONLY WHEN YOU MEAN TO REPLACE ONE. A batch or task`,
     `whose explanation is already right keeps it by OMISSION — leave the field`,
@@ -380,45 +626,19 @@ function prompt(ctx) {
   ].join("\n");
 }
 
-async function main() {
-  const env = loadEnv();
-
-  // --- Gather context ------------------------------------------------------
-  const context = await convexFetch(env, "/tts/batch-context");
+/**
+ * The plan pass: one Claude call for every graph this run, one pen call per
+ * batch. `context` is the /tts/batch-context payload (its todos possibly
+ * already annotated by the prepare pass), `pending` the rulings feed. Same
+ * `io` contract as the prepare pass.
+ */
+export async function planGraphs(context, pending, io) {
   const { todos, mirror, briefs, recentRulings, batches, planRepairs } = context;
-  const { pending } = await convexFetch(env, "/tts/rulings");
 
   const all = Array.isArray(todos) ? todos : [];
   const batchRows = Array.isArray(batches) ? batches : [];
-  // The writing standard is the model-of-tom prelude: WikiTom
-  // model-of-tom/writing.md and the files beside it, which the nightly job
-  // posts to Convex with the commit they were read at (the skill
-  // model-of-tom/skills/writing-to-tom was merged into writing.md and is gone;
-  // convex/ttsShared.ts WRITING_STANDARD is the fallback copy until the first
-  // post). It rides this payload because this file is Node ESM on the
-  // Jarvis Box, which never loads TypeScript and holds no WikiTom checkout. A run without it
-  // would quietly produce prose written to no standard at all, which is worse
-  // than not running — so it is fatal.
   const writingStandard = context.writingStandard;
-  if (typeof writingStandard !== "string" || writingStandard.trim() === "") {
-    throw new Error(
-      "/tts/batch-context returned no writingStandard — the server half of the " +
-        "one-home rule is missing; refusing to write prose to no standard",
-    );
-  }
-
-  // The repo names a batch may declare, from the one home (convex/ttsShared.ts)
-  // via the payload — same reason writingStandard rides it. Fatal if missing
-  // for the same reason too: a planner guessing repo names would declare ones
-  // the daemon cannot clone, and every session on that batch would die on its
-  // first turn.
   const sessionRepos = context.sessionRepos;
-  if (!Array.isArray(sessionRepos) || sessionRepos.length === 0) {
-    throw new Error(
-      "/tts/batch-context returned no sessionRepos — refusing to let the " +
-        "planner guess which repositories exist",
-    );
-  }
 
   const activeBatches = batchRows.filter((b) => b.status === "active");
   const archivedStatements = batchRows
@@ -427,9 +647,8 @@ async function main() {
   const activeStatements = activeBatches.map((b) => b.statement);
 
   // Pending revise rulings ON BATCHES only. A revise on a plain life todo
-  // belongs to prepare-life-todos.mjs, and a revise on a v1 batch (a
-  // members-bearing todo, subjectType "life") belongs to form-batches.mjs —
-  // both read the same feed, and each consumes only its own kind.
+  // belongs to the prepare pass above, which reads the same feed and consumes
+  // only its own kind.
   const batchById = new Map(activeBatches.map((b) => [b._id, b]));
   const revises = [];
   for (const r of Array.isArray(pending) ? pending : []) {
@@ -617,7 +836,7 @@ async function main() {
     .slice(0, MAX_CODE_TODOS);
 
   if (graphs.length === 0 && candidates.length === 0) {
-    return; // no graphs to maintain and nothing to build one from
+    return { ran: false }; // no graphs to maintain and nothing to build one from
   }
 
   // --- Input hash: skip the Claude call when nothing changed ----------------
@@ -642,13 +861,8 @@ async function main() {
       }),
     )
     .digest("hex");
-  let storedHash = null;
-  try {
-    storedHash = fs.readFileSync(HASH_PATH, "utf8").trim();
-  } catch {
-    // no cursor yet — first run, or the Jarvis Box was rebuilt
-  }
-  if (inputHash === storedHash && revises.length === 0) return; // quiet when idle
+  const storedHash = io.readHash();
+  if (inputHash === storedHash && revises.length === 0) return { ran: false }; // quiet when idle
 
   // --- One Claude call for every graph this run ----------------------------
   console.log(
@@ -656,7 +870,7 @@ async function main() {
       `${candidates.length} goal candidate(s) (${candidatesHeldBack} held back), ` +
       `${repairs.length} plan repair(s), ${revises.length} revise ruling(s) — asking Claude…`,
   );
-  const answer = runClaude(
+  const answer = io.runClaude(
     prompt({
       writingStandard,
       sessionRepos,
@@ -735,7 +949,7 @@ async function main() {
     }
     let result;
     try {
-      result = await convexFetch(env, "/tts/plan-graph", batch);
+      result = await io.post("/tts/plan-graph", batch);
     } catch (err) {
       // One batch refused is one batch lost, not a failed run — its revise
       // ruling (if any) stays pending and the next run retries it.
@@ -783,7 +997,7 @@ async function main() {
     .map((r) => r.id)
     .filter((id) => typeof id === "string");
   if (consumable.length > 0) {
-    await convexFetch(env, "/tts/plan-repairs-consumed", { ids: consumable });
+    await io.post("/tts/plan-repairs-consumed", { ids: consumable });
     console.log(`[plan-graphs] consumed ${consumable.length} plan repair(s)`);
   }
 
@@ -799,8 +1013,8 @@ async function main() {
     // planner then stores the batch under a new statement. Keying on the
     // stored statement leaves such a ruling pending forever — and a pending
     // revise bypasses the input-hash short-circuit, so the job would make a
-    // full Claude call every two hours forever, re-applying an instruction
-    // that already landed. The server always returns the batch id.
+    // full Claude call every run forever, re-applying an instruction that
+    // already landed. The server always returns the batch id.
     if (!served.has(r.batchId)) {
       console.log(
         `[plan-graphs] revise ruling for "${r.statement}" left pending: ` +
@@ -808,7 +1022,7 @@ async function main() {
       );
       continue;
     }
-    await convexFetch(env, "/tts/ruling-applied", {
+    await io.post("/tts/ruling-applied", {
       id: r.ruling._id,
       result: "revised: graph re-planned",
     });
@@ -828,12 +1042,114 @@ async function main() {
       `[plan-graphs] cursor NOT advanced: ${failed} batch(es) lost and none ` +
         `stored — the next run retries these same inputs`,
     );
-    return;
+    return { ran: true, totals, failed };
   }
-  fs.writeFileSync(HASH_PATH, inputHash + "\n");
+  io.writeHash(inputHash);
+  return { ran: true, totals, failed };
 }
 
-main().catch((err) => {
-  console.error(`[plan-graphs] FAILED: ${err.message}`);
-  process.exit(1);
-});
+// ── main ─────────────────────────────────────────────────────────────────────
+
+async function main() {
+  const force = process.argv.includes("--force");
+  const env = loadEnv();
+  const io = {
+    runClaude,
+    post: (path, body) => convexFetch(env, path, body),
+    readHash: () => {
+      try {
+        return fs.readFileSync(HASH_PATH, "utf8").trim();
+      } catch {
+        return null; // no cursor yet — first run, or the Jarvis Box was rebuilt
+      }
+    },
+    writeHash: (hash) => fs.writeFileSync(HASH_PATH, hash + "\n"),
+  };
+
+  // --- Gather context (one read each; both passes work from these) ----------
+  const context = await convexFetch(env, "/tts/batch-context");
+  const { pending } = await convexFetch(env, "/tts/rulings");
+
+  // The writing standard is the model-of-tom prelude: WikiTom
+  // model-of-tom/writing.md and the files beside it, which the nightly job
+  // posts to Convex with the commit they were read at (convex/ttsShared.ts
+  // WRITING_STANDARD is the fallback copy until the first post). It rides this
+  // payload because this file is Node ESM on the Jarvis Box, which never
+  // loads TypeScript and holds no WikiTom checkout. A run without it would
+  // quietly produce prose written to no standard at all, which is worse than
+  // not running — so it is fatal, for both passes.
+  if (
+    typeof context.writingStandard !== "string" ||
+    context.writingStandard.trim() === ""
+  ) {
+    throw new Error(
+      "/tts/batch-context returned no writingStandard — the server half of the " +
+        "one-home rule is missing; refusing to write prose to no standard",
+    );
+  }
+  // The repo names a batch may declare, from the one home (convex/ttsShared.ts)
+  // via the payload — same reason writingStandard rides it. Fatal if missing
+  // for the same reason too: a planner guessing repo names would declare ones
+  // the daemon cannot clone, and every session on that batch would die on its
+  // first turn.
+  if (!Array.isArray(context.sessionRepos) || context.sessionRepos.length === 0) {
+    throw new Error(
+      "/tts/batch-context returned no sessionRepos — refusing to let the " +
+        "planner guess which repositories exist",
+    );
+  }
+  // The New York calendar date, for resolving "sept 3" in a statement. The
+  // server owns the clock (the /tts/state convention); the planner repeats it
+  // back and never computes a day of its own.
+  if (typeof context.nyCalendarDay !== "string") {
+    throw new Error("/tts/batch-context returned no nyCalendarDay");
+  }
+
+  let failures = 0;
+
+  // --- Pass 1: prepare ------------------------------------------------------
+  // A failure inside the pass is per-item and counted; a failure of the pass
+  // itself (the feed unreadable, say) is logged and the plan pass still runs —
+  // the two passes share reads, not fates.
+  try {
+    const result = await prepareLifeTodos(
+      {
+        todos: context.todos,
+        pending,
+        today: context.nyCalendarDay,
+        writingStandard: context.writingStandard,
+        force,
+      },
+      io,
+    );
+    failures += result.failed;
+  } catch (err) {
+    failures++;
+    console.error(`[plan-graphs] prepare pass FAILED: ${err.message}`);
+  }
+
+  // --- Pass 2: plan ---------------------------------------------------------
+  try {
+    const result = await planGraphs(context, pending, io);
+    if (result.ran) failures += result.failed;
+  } catch (err) {
+    failures++;
+    console.error(`[plan-graphs] plan pass FAILED: ${err.message}`);
+  }
+
+  if (failures > 0) process.exitCode = 1;
+}
+
+// Run ONLY when node was pointed at this file — the guard every job with
+// tested pure halves carries, so a test that imports the passes above does
+// not fire the job.
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+
+if (invokedDirectly) {
+  main().catch((err) => {
+    console.error(`[plan-graphs] FAILED: ${err.message}`);
+    process.exit(1);
+  });
+}

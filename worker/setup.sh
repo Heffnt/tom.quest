@@ -366,23 +366,6 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # (hash cursor in /var/lib/tts/brief-hashes.json), so most runs are no-ops.
 17 */2 * * * root /usr/bin/node /opt/tts/brief-code-todos.mjs >> /var/log/tts/brief-code-todos.log 2>&1
 
-# Prepare unprepared LIFE todos (#dump captures, consolidation candidates)
-# via headless Claude: ground-up brief + smallest entry action + work
-# description, readiness advanced — so raw captures reach Tom pre-chewed.
-#
-# EVERY 2 MINUTES (Tom 2026-08-30: #dump messages are processed immediately, so
-# the threaded Slack reply can state how TTS interpreted the message). Safe and
-# cheap because the job returns BEFORE any Claude call when there is nothing to
-# prepare ("if (targets.length === 0) return; // quiet when idle"), so an idle
-# tick costs one HTTP read.
-#
-# CONSEQUENCE ACCEPTED, STATED: the old :37 slot existed so the Claude-calling
-# jobs never shared a tick. At */2 this job can now overlap brief-code-todos
-# (:17), form-batches (:07) and plan-graphs (:27). flock guards it only against
-# ITSELF — which is also the lock poll-dump.mjs takes when it spawns this job
-# straight after a capture, so the spawn and the cron can never both run.
-*/2 * * * * root /usr/bin/flock -n /var/lock/tts-prepare-life-todos.lock /usr/bin/node /opt/tts/prepare-life-todos.mjs >> /var/log/tts/prepare-life-todos.log 2>&1
-
 # ── THE BATCH PAIR, MID-CUTOVER (schema v2, 2026-08-29) ─────────────────────
 # These two jobs are the OLD and the NEW way of doing the same thing, and they
 # run side by side on purpose until the cutover.
@@ -412,13 +395,19 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # REPLACED BY plan-graphs.mjs — remove this line at cutover.
 7 */2 * * * root /usr/bin/node /opt/tts/form-batches.mjs >> /var/log/tts/form-batches.log 2>&1
 
-# v2 — Maintain the graph inside every batch (goals, tasks, needs edges, the
-# paths between batches) via headless Claude, every 2 hours at :27 (an odd
-# minute of its own; :07/:17/:37/:45 are taken, and the offset from
-# form-batches keeps the two Claude calls off the same tick). Its own
-# input-hash cursor (/var/lib/tts/plan-input-hash) makes unchanged-input runs
-# no-ops. This line REPLACES the form-batches line above at cutover.
-27 */2 * * * root /usr/bin/node /opt/tts/plan-graphs.mjs >> /var/log/tts/plan-graphs.log 2>&1
+# v2 — THE PLANNER, every 30 minutes at :27 and :57. Two passes in one run
+# (the lifeos update, phase 7): PREPARE every unprepared life todo (brief,
+# entry action, work description, ground-up explanation, readiness prepared —
+# this used to be prepare-life-todos.mjs on a 2-minute tick; the threaded
+# Slack reply no longer waits on it, the capture posts that itself), then
+# PLAN the graph inside every batch (goals, tasks, needs edges, the needs
+# between batches). An idle tick is cheap: the prepare pass returns before
+# any Claude call when nothing is unprepared, and the plan pass exits on an
+# unchanged input hash (/var/lib/tts/plan-input-hash). flock -n: a backlog of
+# preparations plus a 20-minute plan call can outlast the tick, and a second
+# run would prepare the same todos twice. This line REPLACES the form-batches
+# line above at cutover.
+27,57 * * * * root /usr/bin/flock -n /var/lock/tts-plan-graphs.lock /usr/bin/node /opt/tts/plan-graphs.mjs >> /var/log/tts/plan-graphs.log 2>&1
 
 # Apply Tom's non-execution rulings (defer / stale-replan / needs-session /
 # propose-archive) every 10 minutes, so a ruling made in the UI takes effect
