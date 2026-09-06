@@ -317,6 +317,51 @@ describe("the detail dialog", () => {
     expect(onRule).toHaveBeenCalledWith(item, "approve", "");
   });
 
+  it("rules a goal that lives in a repository as a code subject", () => {
+    const goal = {
+      ...GRAPH.goals[0],
+      rulable: true,
+      code: { repo: "tom.quest", externalId: "todo-14" },
+    };
+    render(
+      <DetailDialog
+        item={{ kind: "goal", batchStatement: GRAPH.statement, goal }}
+        onClose={noop}
+        onGroundUp={noop}
+        onRule={() => {}}
+      />,
+    );
+    fireEvent.click(infoBeside(screen.getByRole("button", { name: "approve" })));
+    expect(
+      screen.getByText(
+        'ttsRulings.recordRuling({ repo, externalId, verdict: "approve", sentence })',
+      ),
+    ).toBeTruthy();
+    // …and the effect text is the executor's, not a life todo's.
+    expect(screen.getByText(/Jarvis Box/)).toBeTruthy();
+  });
+
+  it("rules a goal with no repository behind it as a life todo", () => {
+    render(
+      <DetailDialog
+        item={{
+          kind: "goal",
+          batchStatement: GRAPH.statement,
+          goal: { ...GRAPH.goals[0], rulable: true },
+        }}
+        onClose={noop}
+        onGroundUp={noop}
+        onRule={() => {}}
+      />,
+    );
+    fireEvent.click(infoBeside(screen.getByRole("button", { name: "approve" })));
+    expect(
+      screen.getByText(
+        'ttsRulings.recordRuling({ todoId, verdict: "approve", sentence })',
+      ),
+    ).toBeTruthy();
+  });
+
   it("shows a session that failed to open, which the overlay would hide", () => {
     // The dialog covers the page, including the error line the tab prints
     // under its cards — so the tab's hook error is handed in here instead.

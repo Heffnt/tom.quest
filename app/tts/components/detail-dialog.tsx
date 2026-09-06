@@ -120,8 +120,12 @@ export default function DetailDialog({
           <div className="flex flex-col gap-2">
             <h3 className="text-[15px] font-semibold">{item.goal.statement}</h3>
             {rule && item.goal.rulable && (
+              // A goal that lives in a repository is a CODE subject: the
+              // ruling is filed against repo + externalId, and what each
+              // verdict sets in motion is the executor on the Jarvis Box, not
+              // a life todo's preparer. The popover has to say so.
               <VerdictButtons
-                subject="todo"
+                subject={item.goal.code !== undefined ? "code" : "todo"}
                 statement={item.goal.statement}
                 error={error}
                 onRule={rule}

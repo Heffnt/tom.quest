@@ -429,8 +429,24 @@ export default function BatchesTab() {
       })();
     };
 
-  // The detail dialog's subject: the batch row, or the task's or goal's todo.
-  // A task's and a goal's id IS its dtsTodos id (toGraph above).
+  // A code goal's ruling is a CODE ruling: repo plus the item's id in that
+  // repo's todo file, which is where the executor on the Jarvis Box looks and
+  // what the mirror row is keyed by. Ruling it as a life todo would file the
+  // verdict against a row nothing in the repository reads, and would offer
+  // "opens a session on it" for a subject no session opens.
+  const ruleCode =
+    (code: { repo: string; externalId: string }) =>
+    (verdict: RulingVerdict, sentence: string) =>
+      recordRuling({
+        repo: code.repo,
+        externalId: code.externalId,
+        verdict,
+        sentence: sentence || undefined,
+      });
+
+  // The detail dialog's subject: the batch row, the code entry behind a goal
+  // that carries one, or the task's or goal's todo. A task's and a goal's id
+  // IS its dtsTodos id (toGraph above).
   const ruleDetail = (
     item: DetailItem,
     verdict: RulingVerdict,
@@ -440,6 +456,9 @@ export default function BatchesTab() {
       const batch = (batches ?? []).find((b) => b._id === item.graph.id);
       if (!batch) throw new Error("TTS batch not found");
       return ruleBatch(batch, item.graph)(verdict, sentence);
+    }
+    if (item.kind === "goal" && item.goal.code !== undefined) {
+      return ruleCode(item.goal.code)(verdict, sentence);
     }
     const id = (item.kind === "task" ? item.task.id : item.goal.id) as Id<"dtsTodos">;
     return ruleTodo(id)(verdict, sentence);
