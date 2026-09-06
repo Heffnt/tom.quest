@@ -1004,11 +1004,6 @@ export const deleteTimeNote = mutation({
   },
 });
 
-/** The record a shimmed action leaves: it was accepted, and it did nothing.
- * One row per ignored action, so the last emitters on the Jarvis Box are
- * visible and the shim's exit is a fact rather than a guess. */
-export const RETIRED_ACTION_IGNORED = "retired-action-ignored";
-
 // The actions a time note may ask for. Every one of them is validated again
 // below against the same helpers the equivalent Tom-gated mutation uses.
 const TIME_NOTE_ACTION = v.union(
@@ -1034,29 +1029,15 @@ const TIME_NOTE_ACTION = v.union(
   // The date stands; only its NATURE was misread ("that deadline is the
   // landlord's, not mine").
   v.object({ kind: v.literal("set-date-kind"), dateKind: DATE_KIND }),
-  // ── The roll-out shim (the lifeos update, phase 7) ───────────────────────
-  // THESE THREE DO NOTHING. The two latest-safe actions and the wakeCondition
-  // key below write fields that are retired: a sleep is a time (wakeAt) and
-  // what a row waits FOR belongs in its statement, and
-  // ttsMigrations.internalClearRetiredFields empties both fields off every row
-  // so the validator can drop them. Writing one back would put the deploy
-  // blocker back.
-  //
-  // They stay DECLARED for one release because the Jarvis Box rolls out
-  // separately from a Convex deploy: worker/jobs/apply-time-notes.mjs still
-  // emits them until worker/setup.sh has run, and a Convex mutation refuses an
-  // argument it does not declare — so undeclaring them here would fail every
-  // time note the box applies, not only one carrying a retired action. They go
-  // once setup.sh has rolled out (docs/lifeos-retirement.md names the exit).
-  v.object({ kind: v.literal("set-latest-safe"), latestSafeAt: v.number() }),
-  v.object({ kind: v.literal("clear-latest-safe") }),
-  v.object({
-    kind: v.literal("set-waiting"),
-    wakeAt: v.optional(v.number()),
-    // The third of the three: taken so a box that has not rolled out yet
-    // still lands its whole flush, and dropped rather than stored.
-    wakeCondition: v.optional(v.string()),
-  }),
+  // A sleep is a time and nothing else. `set-latest-safe`, `clear-latest-safe`
+  // and a `wakeCondition` on this action were the roll-out shim of the lifeos
+  // update's phase 7 — declared, accepted and doing nothing, because the box
+  // rolls out separately from a Convex deploy and a mutation refuses an
+  // argument it does not declare. worker/setup.sh has since run at main
+  // 6825608, so nothing emits them and they are gone: the route refuses them
+  // by name (convex/http.ts), and what a row waits FOR belongs in its
+  // statement.
+  v.object({ kind: v.literal("set-waiting"), wakeAt: v.optional(v.number()) }),
   v.object({ kind: v.literal("set-active") }),
   v.object({
     kind: v.literal("create-block"),
@@ -1294,19 +1275,6 @@ export const internalApplyTimeNote = internalMutation({
           });
           break;
         }
-        // The two latest-safe actions are the roll-out shim declared above:
-        // accepted so a not-yet-redeployed box job's whole flush still lands,
-        // and doing nothing, because the field they wrote is retired and
-        // cleared off every row. The ignored action is on the record, so the
-        // box's last emitters are visible rather than silent.
-        case "set-latest-safe":
-        case "clear-latest-safe": {
-          await logEvent(ctx, RETIRED_ACTION_IGNORED, note.todoId, {
-            action: action.kind,
-            via: "time-note",
-          });
-          break;
-        }
         case "set-waiting": {
           const todo = await requireSubject("set-waiting");
           // MERGE, don't replace: a note that only moves the wake DATE ("wait
@@ -1314,17 +1282,6 @@ export const internalApplyTimeNote = internalMutation({
           // had, and applyStatusChange writes wakeAt unconditionally — so an
           // omitted field carries the stored value forward instead of erasing
           // a fact Tom never asked to lose.
-          //
-          // action.wakeCondition is the third half of the shim: taken so the
-          // box's flush lands, and dropped rather than stored. What a row is
-          // waiting for goes in its statement.
-          if (action.wakeCondition !== undefined) {
-            await logEvent(ctx, RETIRED_ACTION_IGNORED, todo._id, {
-              action: "set-waiting.wakeCondition",
-              value: action.wakeCondition,
-              via: "time-note",
-            });
-          }
           await applyStatusChange(ctx, todo, {
             status: "waiting",
             wakeAt: action.wakeAt ?? todo.wakeAt,

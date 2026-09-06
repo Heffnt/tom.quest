@@ -1,9 +1,8 @@
 import { convexTest } from "convex-test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
-import { RETIRED_ACTION_IGNORED } from "./tts";
 import {
   countdownText,
   nyCalendarDayBoundsUtc,
@@ -1407,6 +1406,10 @@ describe("TTS batches and annotations", () => {
 describe("TTS time notes", () => {
   const DAY = 86_400_000;
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   const apply = (
     t: ReturnType<typeof convexTest>,
     id: string,
@@ -1941,61 +1944,67 @@ describe("TTS time notes", () => {
     expect(todo.wakeAt).toBe(moved);
   });
 
-  // THE ROLL-OUT SHIM (the lifeos update, phase 7). The Jarvis Box rolls out
-  // separately from a Convex deploy, and worker/jobs/apply-time-notes.mjs
-  // still emits the two latest-safe actions and the wakeCondition key until
-  // worker/setup.sh has run. A Convex mutation refuses an argument it does not
-  // declare, so undeclaring them would fail the WHOLE flush of a box that has
-  // not caught up — while writing them would put back the retired fields the
-  // clearing migration takes off every row, which is what the deploy
-  // validates. So they are accepted and do nothing.
+  // The retired sleep vocabulary. `set-latest-safe`, `clear-latest-safe` and a
+  // `wakeCondition` on set-waiting were the roll-out shim of the lifeos
+  // update's phase 7: declared and doing nothing, because the Jarvis Box rolls
+  // out separately from a Convex deploy and a mutation refuses an argument it
+  // does not declare, so undeclaring them then would have failed the WHOLE
+  // flush of a box that had not caught up. worker/setup.sh has since run at
+  // main 6825608 and nothing emits them, so they are gone — and a note still
+  // carrying one is refused by name at the route, so a stale job reads its own
+  // reason instead of a validator dump.
   //
-  // witness: delete the two case labels — every time note the box sends until
-  // setup.sh runs fails on an unrecognized action; store action.wakeCondition
-  // again — the narrow's deploy is blocked by the rows this puts it back on.
-  it("accepts the retired time-note actions, stores nothing, and records the ignore", async () => {
+  // witness: delete retiredTimeNoteAction's check in convex/http.ts and the
+  // reasons below become the union validator's error text; declare the actions
+  // again in convex/tts.ts and the note applies, putting back the fields the
+  // clearing migration took off every row and blocking the next deploy.
+  it("refuses the retired time-note actions by name and applies nothing", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, { statement: "lease" });
-    const note = await tom.mutation(api.tts.createTimeNote, {
-      text: "safe until the 1st, and wait for the landlord",
+    const wakeAt = Date.now() + DAY;
+    const post = async (actions: Record<string, unknown>[]) => {
+      const id = await tom.mutation(api.tts.createTimeNote, {
+        text: "safe until the 1st, and wait for the landlord",
+        todoId,
+      });
+      const res = await t.fetch("/tts/apply-time-note", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-TTS-Key": "s3cret" },
+        body: JSON.stringify({ id, status: "applied", result: "noted", actions }),
+      });
+      return { status: res.status, error: (await res.json()).error as string };
+    };
+    expect(
+      await post([{ kind: "set-latest-safe", latestSafeAt: Date.now() + 30 * DAY }]),
+    ).toEqual({ status: 400, error: expect.stringContaining("set-latest-safe is retired") });
+    expect(await post([{ kind: "clear-latest-safe" }])).toEqual({
+      status: 400,
+      error: expect.stringContaining("clear-latest-safe is retired"),
+    });
+    expect(
+      await post([{ kind: "set-waiting", wakeAt, wakeCondition: "the landlord writes" }]),
+    ).toEqual({
+      status: 400,
+      error: expect.stringContaining("set-waiting.wakeCondition is retired"),
+    });
+    // Nothing landed: the todo is untouched and every note is still pending
+    // for the job to re-submit as needs-session.
+    const [todo] = await tom.query(api.tts.listTodos, {});
+    expect(todo.status).toBe("active");
+    expect(todo.wakeAt).toBeUndefined();
+    const notes = await tom.query(api.tts.listTimeNotes, {});
+    expect(notes.map((n) => n.status)).toEqual(["pending", "pending", "pending"]);
+    // The sleep itself still applies — a wake TIME is the whole vocabulary.
+    const ok = await tom.mutation(api.tts.createTimeNote, {
+      text: "wait until the 15th",
       todoId,
     });
-    const latestSafeAt = Date.now() + 30 * DAY;
-    const wakeAt = Date.now() + DAY;
-    await apply(
-      t,
-      note,
-      [
-        { kind: "set-latest-safe", latestSafeAt },
-        { kind: "set-waiting", wakeAt, wakeCondition: "the landlord writes" },
-        { kind: "clear-latest-safe" },
-      ],
-      "noted",
-    );
-    const [todo] = await tom.query(api.tts.listTodos, {});
-    // The note applied — the flush landed — and the sleep it carried is a
-    // time. Neither retired field is on the row. (Read loosely: the validator
-    // has narrowed past both, and the point of this test is that nothing put
-    // them back.)
-    expect(todo.status).toBe("waiting");
-    expect(todo.wakeAt).toBe(wakeAt);
-    const stored = todo as { latestSafeAt?: number; wakeCondition?: string };
-    expect(stored.latestSafeAt).toBeUndefined();
-    expect(stored.wakeCondition).toBeUndefined();
-    const ignored = await t.run(async (ctx) =>
-      (await ctx.db.query("dtsEvents").collect()).filter(
-        (e) => e.kind === RETIRED_ACTION_IGNORED,
-      ),
-    );
-    expect(ignored.map((e) => (e.data as { action: string }).action)).toEqual([
-      "set-latest-safe",
-      "set-waiting.wakeCondition",
-      "clear-latest-safe",
-    ]);
-    expect((ignored[1].data as { value: string }).value).toBe(
-      "the landlord writes",
-    );
+    await apply(t, ok, [{ kind: "set-waiting", wakeAt }], "parked");
+    const [parked] = await tom.query(api.tts.listTodos, {});
+    expect(parked.status).toBe("waiting");
+    expect(parked.wakeAt).toBe(wakeAt);
   });
 
   // witness: drop the set-date-kind branch (or its dueAt check) — "that's the
