@@ -493,47 +493,17 @@ export default defineSchema({
     // Category tag: lets one scheduled dtsBlocks row cover a set of todos
     // ("chores", …). Free string; "code" is reserved for the code-todo mirror.
     category: v.optional(v.string()),
-    // ── Batches v1 (ratified 2026-08-28; SUPERSEDED by the batches table) ────
-    // RETIRED, AWAITING THE CLEARING (the lifeos update, phase 7). In v1 a row
-    // carrying `members` WAS a batch — that one field was the whole
-    // discrimination — and `plan` was its ordered completion steps. Both are
-    // gone from the graph world: a batch is its own `batches` row and its
-    // contents are dtsTodos rows pointing back at it, and
-    // tts.internalMigrateToGraph has moved every v1 batch across, archiving
-    // the old row with a pointer to its successor.
-    //
-    // NOTHING READS OR WRITES EITHER any more — the v1 pen, POST /tts/batches,
-    // setPlanStep, the scheduler's v1 lane and the prompts' plan blocks are
-    // all gone — except that migration, which reads them through a LOOSE view
-    // of the row so it survives the narrow. The two declarations stay only
-    // until `ttsMigrations.internalClearRetiredFields` has taken them off
-    // every row on prod: `convex deploy` validates every stored document
-    // against the validator being deployed, so dropping them first would fail
-    // the deploy on the first row that still holds one.
-    members: v.optional(
-      v.array(
-        v.object({
-          todoId: v.optional(v.id("dtsTodos")),
-          repo: v.optional(v.string()),
-          externalId: v.optional(v.string()),
-        }),
-      ),
-    ),
-    // The v1 completion plan (see `members` above): ordered steps, each done
-    // by an agent or by Tom, with `evidence` on a done agent step naming the
-    // artifact. The graph succeeds it — a step is a task row, the order is
-    // `needs`, the actor and the evidence are fields of their own.
-    plan: v.optional(
-      v.array(
-        v.object({
-          text: v.string(),
-          actor: v.union(v.literal("tom"), v.literal("agent")),
-          status: v.union(v.literal("open"), v.literal("done")),
-          doneAt: v.optional(v.number()),
-          evidence: v.optional(v.string()),
-        }),
-      ),
-    ),
+    // (Batches v1, ratified 2026-08-28, is gone from here: `members` — the one
+    // field that made a dtsTodos row a batch — and `plan`, its ordered
+    // completion steps, were NARROWED out after
+    // ttsMigrations.internalClearRetiredFields took both off every row on prod
+    // and a second run reported zero. A batch is its own `batches` row now,
+    // and its contents are dtsTodos rows pointing back at it by batchId, kind
+    // "task" or "goal", ordered by `needs`. tts.internalMigrateToGraph, which
+    // moved all 61 of them across, still reads the pair through a loose view
+    // of the row, so it runs on a deployment whose validator has moved on.
+    // What each row SAID is on record as a `retired-field-cleared` dtsEvents
+    // row. The lifeos update, phase 7.)
     // Stamped by the Tom doors (updateTodo, setStatus, the ruling life path,
     // the pens). A row with this set is FROZEN: the planner
     // (tts.internalStorePlanGraph) may never rewrite or retire it.

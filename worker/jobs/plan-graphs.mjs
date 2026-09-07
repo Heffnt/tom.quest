@@ -987,22 +987,13 @@ export async function planGraphs(context, pending, io) {
   });
 
   // Goal candidates: active todos in no batch at all. A row already inside a
-  // v2 batch is owned by it, and a row inside a v1 batch (offered as a
-  // `members` entry) is claimed too — the server refuses a cross-batch claim
-  // either way, so offering one here would only buy a dropped batch and a
-  // wasted Claude call.
-  const v1Claimed = new Set(
-    all
-      .filter((t) => Array.isArray(t.members) && t.status !== "archived" && t.status !== "done")
-      .flatMap((t) => t.members.filter((m) => m.todoId).map((m) => m.todoId)),
-  );
+  // batch is owned by it — the server refuses a cross-batch claim, so offering
+  // one here would only buy a dropped batch and a wasted Claude call.
   const candidatesEligible = all
     .filter(
       (t) =>
         t.status === "active" &&
-        t.members === undefined &&
-        (t.batchId === undefined || t.batchId === null) &&
-        !v1Claimed.has(t._id),
+        (t.batchId === undefined || t.batchId === null),
     )
     .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
   const candidatesHeldBack = Math.max(

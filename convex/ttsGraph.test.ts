@@ -1329,7 +1329,9 @@ describe("TTS migration to the graph (internalMigrateToGraph)", () => {
       ctx.db.get(old._id),
     )) as Doc<"dtsTodos">;
     expect(oldRow.status).toBe("archived");
-    expect(oldRow.members).toHaveLength(2); // kept verbatim
+    // Kept verbatim — read through the loose view, since the validator no
+    // longer declares the field the row still holds.
+    expect((oldRow as { members?: unknown[] }).members).toHaveLength(2);
     expect(oldRow.unarchiveCondition).toBe(
       `superseded by graph batch ${batch._id}`,
     );

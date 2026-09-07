@@ -310,7 +310,13 @@ export const internalMigrateTiming = internalMutation({
           ]++;
         }
         // (d) members and plan: the graph migration's own work; count it.
-        if (row.members !== undefined && row.status === "active") {
+        // Read through the loose view, like every other retired field here:
+        // the narrow has taken both out of the validator and a row the
+        // clearing has not reached still carries them.
+        if (
+          (row as unknown as RetiredFields).members !== undefined &&
+          row.status === "active"
+        ) {
           page["v1-batches-pending-graph-migration"]++;
         }
       },
