@@ -15,38 +15,9 @@ import type { SessionModel } from "@/convex/ttsShared";
 import {
   buildBatchSessionPrompt,
   buildTodoSessionPrompt,
-  type BatchMemberContext,
   type BatchSessionContext,
   type LiveRulingContext,
 } from "@/app/lib/tts-session-prompt";
-
-// Resolve a batch's members to live statements + statuses against the todos
-// and mirror the caller already subscribes to — a member whose mirror row is
-// gone reads "closed upstream" (mirror rows are deleted on upstream close).
-function resolveMembers(
-  todo: Doc<"dtsTodos">,
-  batch: { todos: Doc<"dtsTodos">[]; mirror: Doc<"dtsCodeTodoMirror">[] },
-): BatchMemberContext[] {
-  const todoById = new Map(batch.todos.map((t) => [t._id, t]));
-  const mirrorByKey = new Map(
-    batch.mirror.map((m) => [`${m.repo} ${m.externalId}`, m]),
-  );
-  return (todo.members ?? []).map((m) => {
-    if (m.todoId !== undefined) {
-      const member = todoById.get(m.todoId);
-      return member
-        ? { kind: "life" as const, statement: member.statement, status: member.status }
-        : { kind: "life" as const, statement: "(not found)", status: "unknown" };
-    }
-    const row = mirrorByKey.get(`${m.repo} ${m.externalId}`);
-    return {
-      kind: "code" as const,
-      label: `${m.repo} ${m.externalId}`,
-      statement: row ? row.statement : "(no longer in the mirror)",
-      status: row ? row.status : "closed upstream",
-    };
-  });
-}
 
 // A browser tab claimed during the click itself, before the createSession
 // round trip. Browsers only honour window.open inside the user-gesture call
@@ -194,9 +165,6 @@ export function useOpenTodoSession() {
     todo: Doc<"dtsTodos">,
     opts?: {
       fireEngaged?: (id: Id<"dtsTodos">) => void;
-      // For batch todos (members set): the todos + mirror the caller already
-      // holds, so the prompt carries live member statements and statuses.
-      batch?: { todos: Doc<"dtsTodos">[]; mirror: Doc<"dtsCodeTodoMirror">[] };
       // A tab the caller already reserved in its own click handler (e.g. the
       // session verdict, which records a ruling first). Omit it and open
       // reserves one itself — synchronously, before the mutation.
@@ -215,14 +183,7 @@ export function useOpenTodoSession() {
       todoId: todo._id,
       tab: opts?.tab,
       before: () => opts?.fireEngaged?.(todo._id),
-      initialPrompt: buildTodoSessionPrompt(
-        todo,
-        kind,
-        todo.members !== undefined && opts?.batch
-          ? { members: resolveMembers(todo, opts.batch) }
-          : undefined,
-        opts?.ruling,
-      ),
+      initialPrompt: buildTodoSessionPrompt(todo, kind, opts?.ruling),
     });
   };
 

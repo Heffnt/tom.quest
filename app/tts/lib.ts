@@ -9,8 +9,6 @@ export type MirrorRow = Doc<"dtsCodeTodoMirror">;
 export type CodeBrief = Doc<"dtsCodeBriefs">;
 export type Ruling = Doc<"dtsRulings">;
 
-export type Member = NonNullable<Todo["members"]>[number];
-
 // The closed verdict set — convex/ttsRulings.ts owns the union; this is the
 // client's iterable of the same four values.
 export type RulingVerdict = "approve" | "revise" | "session" | "archive";
@@ -58,15 +56,6 @@ export function batchSubjectKey(batchId: string): string {
   return `batch ${batchId}`;
 }
 
-// ── Batches v1 ───────────────────────────────────────────────────────────────
-// A row with `members` IS a batch — that one field is the whole discrimination
-// (convex/schema.ts dtsTodos). Superseded by the schema-v2 `batches` table
-// (its own row) and kept live until cutover.
-
-export function isBatch(t: Todo): boolean {
-  return t.members !== undefined;
-}
-
 // ── The todo graph (schema v2) ───────────────────────────────────────────────
 // NOT redefined here: convex/ttsShared.ts is the ONE home for the graph rules,
 // so the server's frontier and the page's frontier cannot drift. This is only
@@ -86,40 +75,6 @@ export {
   frontier,
   normalizeReadiness,
 } from "@/convex/ttsShared";
-
-// Client mirror of convex/tts.ts memberKey — one definition of the key format,
-// delegated to rulingSubjectKey/codeSubjectKey above, so member identity and
-// ruling identity cannot drift apart.
-export function clientMemberKey(m: Member): string {
-  return m.todoId !== undefined
-    ? rulingSubjectKey({ subjectType: "life", todoId: m.todoId })
-    : codeSubjectKey(m.repo!, m.externalId!);
-}
-
-/**
- * Member completion against the maps the caller already builds (the batches
- * tab holds both in a useMemo): a life member is done when its todo is
- * done|archived; a code member ONLY when its mirror row exists and is closed.
- * A missing mirror row is not evidence of completion — it may be closed
- * upstream or it may be an id that never matched a row — so it does not count.
- */
-export function memberProgress(
-  members: Member[],
-  todoById: Map<string, Todo>,
-  mirrorByKey: Map<string, MirrorRow>,
-): { done: number; total: number } {
-  let done = 0;
-  for (const m of members) {
-    if (m.todoId !== undefined) {
-      const t = todoById.get(m.todoId);
-      if (t && (t.status === "done" || t.status === "archived")) done += 1;
-    } else {
-      const row = mirrorByKey.get(codeSubjectKey(m.repo!, m.externalId!));
-      if (row && row.status === "closed") done += 1;
-    }
-  }
-  return { done, total: members.length };
-}
 
 export function liveRulingsByKey(rulings: Ruling[]): Map<string, Ruling> {
   const newest = new Map<string, Ruling>();
@@ -203,15 +158,17 @@ export function selectNeedsMe(
 
 // ── The batches selector (ONE definition; the batches tab renders it, the
 // badge counts it) ───────────────────────────────────────────────────────────
-// batches: non-terminal (active|waiting) batch rows; awaitingRuling is
-//   selectNeedsMe lifeRows membership — a batch IS a life todo, so the same
-//   live-ruling predicate decides when it needs a ruling.
-// unbatchedLife/unbatchedCode: the selectNeedsMe rows minus subjects claimed
-//   by any non-terminal batch (and minus the batch rows themselves).
+// unbatchedLife/unbatchedCode: the selectNeedsMe rows that no BATCH already
+//   shows — a row bound into a graph batch renders inside that batch's card,
+//   its one home, so listing it here too would repeat content.
 // pending: passed through from selectNeedsMe.
+//
+// (The `batches` list this selector also returned — the non-terminal v1 batch
+// rows, a dtsTodos row carrying `members` — is gone with that field: a batch
+// is its own `batches` row, and the tab builds its cards from that table. The
+// lifeos update, phase 7.)
 
 export type BatchesSelection = {
-  batches: { todo: Todo; awaitingRuling: boolean }[];
   unbatchedLife: Todo[];
   unbatchedCode: { row: MirrorRow; brief: CodeBrief }[];
   pending: Ruling[];
@@ -230,35 +187,9 @@ export function selectBatches(
     rulings,
   );
 
-  const batchTodos = todos.filter(
-    (t) => isBatch(t) && (t.status === "active" || t.status === "waiting"),
-  );
+  const unbatchedLife = lifeRows.filter((t) => t.batchId === undefined);
 
-  const claimed = new Set<string>();
-  for (const b of batchTodos) {
-    for (const m of b.members ?? []) claimed.add(clientMemberKey(m));
-  }
-  const batchIds = new Set<string>(batchTodos.map((t) => t._id as string));
-  const lifeIds = new Set<string>(lifeRows.map((t) => t._id as string));
-
-  // Oldest first — order comes from dates, never a rating.
-  const batches = batchTodos
-    .map((todo) => ({ todo, awaitingRuling: lifeIds.has(todo._id as string) }))
-    .sort((a, b) => a.todo.createdAt - b.todo.createdAt);
-
-  const unbatchedLife = lifeRows.filter(
-    (t) =>
-      // A row bound into a graph batch renders inside that batch's card —
-      // its ONE home. Listing it here too would repeat content.
-      t.batchId === undefined &&
-      !batchIds.has(t._id as string) &&
-      !claimed.has(clientMemberKey({ todoId: t._id })),
-  );
-  const unbatchedCode = codeRows.filter(
-    ({ row }) => !claimed.has(codeSubjectKey(row.repo, row.externalId)),
-  );
-
-  return { batches, unbatchedLife, unbatchedCode, pending };
+  return { unbatchedLife, unbatchedCode: codeRows, pending };
 }
 
 /** e.message for Errors, String(e) otherwise — the error line under a control. */
@@ -274,10 +205,9 @@ export function selectBatches(
 //   waking    — its wakeAt inside the day (a sleep that ends today)
 // Every list draws from the same pool, THE ROWS THE RETIRED QUEUE SHOWED
 // (convex/tts.ts internalPrepareFallbackQueue, gone with phase 7): active
-// rows that are not a v1 batch (a todo carrying `members` — the batch was the
-// unit Tom saw, never its members' grouping row), not a graph TASK (batchId
-// set and kind not "goal" — a step of a batch's plan, which the batch card
-// shows; a goal is one of Tom's own todos the planner bound, and stays), and
+// rows that are not a graph TASK (batchId set and kind not "goal" — a step of
+// a batch's graph, which the batch card shows; a goal is one of Tom's own
+// todos the planner bound, and stays), and
 // not asleep past the day (a wakeAt at or after the day's end — the lifeos
 // spelling of "waiting", which the queue never listed, however it was dated).
 // A parity note on overdue: the queue took dueAt before the instant it ran
@@ -311,7 +241,6 @@ export function selectToday(
   const active = todos.filter(
     (t) =>
       t.status === "active" &&
-      t.members === undefined &&
       !(t.batchId !== undefined && t.kind !== "goal") &&
       wakeAtPassed(t, day.end - 1),
   );

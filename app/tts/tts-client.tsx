@@ -106,17 +106,13 @@ export default function TtsClient() {
   const rulings = useQuery(api.ttsRulings.listRulings, canRead ? {} : "skip");
 
   const batchesCount = useMemo(() => {
-    const { batches, unbatchedLife, unbatchedCode } = selectBatches(
+    const { unbatchedLife, unbatchedCode } = selectBatches(
       todos ?? [],
       mirror ?? [],
       codeBriefs ?? [],
       rulings ?? [],
     );
-    return (
-      batches.filter((b) => b.awaitingRuling).length +
-      unbatchedLife.length +
-      unbatchedCode.length
-    );
+    return unbatchedLife.length + unbatchedCode.length;
   }, [todos, mirror, codeBriefs, rulings]);
 
   return (

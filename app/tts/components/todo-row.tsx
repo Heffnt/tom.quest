@@ -9,11 +9,6 @@
 // latest safe, wake, date history); timing INPUT is one time note — the row
 // has no date picker at all, and an agent reads the note (app/tts/components/
 // time-note-field.tsx).
-//
-// A batch is a life todo with members, so it reaches this row too (the by-
-// individual tab lists every todo): the header marks it and the fact grid
-// carries the member count — the members and the plan are worked on the
-// batches tab.
 
 import { useEffect, useState } from "react";
 import { useMutation } from "convex/react";
@@ -313,9 +308,6 @@ export default function TodoRow({
         className="w-full text-left px-3 py-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 hover:bg-surface/60 rounded-lg"
       >
         <span className="text-base text-text">{todo.statement}</span>
-        {todo.members !== undefined && (
-          <span className={chipCls}>batch · {todo.members.length} members</span>
-        )}
         <span className={chipCls}>{normalizeReadiness(todo.readiness)}</span>
         {todo.status !== "active" && (
           <span className={chipCls}>{todo.status}</span>
@@ -542,9 +534,6 @@ export default function TodoRow({
                 <Fact label="timingClass">{todo.timingClass}</Fact>
                 {todo.category && (
                   <Fact label="category">{todo.category}</Fact>
-                )}
-                {todo.members !== undefined && (
-                  <Fact label="members">{todo.members.length}</Fact>
                 )}
                 <Fact label="source">
                   {todo.source}

@@ -314,14 +314,13 @@ ${WHAT_TTS_IS}
 
 <h2>Which repositories it gets, and how</h2>
 
-<p>A session works in a fresh copy of whatever code it needs. Which repositories those are is decided by four rules, consulted in order, the first that answers winning — and an answer of "none at all" is an answer that stops the search.</p>
+<p>A session works in a fresh copy of whatever code it needs. Which repositories those are is decided by three rules, consulted in order, the first that answers winning — and an answer of "none at all" is an answer that stops the search.</p>
 
 <table>
   <tr><th>Order</th><th>Rule</th></tr>
   <tr><td>1</td><td>Whatever the caller passed explicitly. The todo buttons deliberately pass nothing, so that the rules below decide.</td></tr>
   <tr><td>2</td><td>The repositories the item's batch declared when it was formed.</td></tr>
-  <tr><td>3</td><td>A vote among the batch's members: each member naming a repository is one mark, and the most frequent wins.</td></tr>
-  <tr><td>4</td><td>A scan of the todo's own text — statement, brief, explanation — for the name of a known repository, returning every match.</td></tr>
+  <tr><td>3</td><td>A scan of the todo's own text — statement, brief, explanation — for the name of a known repository, returning every match.</td></tr>
 </table>
 
 <p>The known repositories are a fixed list of three: <span class="mono">tom.quest</span>, <span class="mono">ComplexMultiTrigger</span> and <span class="mono">WikiTom</span>. A name outside the list is dropped rather than treated as an error. With no repositories the session gets an empty scratch directory; with one, that checkout is its working directory; with several, its working directory is the folder holding all of them.</p>

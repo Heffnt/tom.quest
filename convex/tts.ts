@@ -60,20 +60,6 @@ const DATE_OUTCOME = v.union(
   v.literal("renegotiated"),
   v.literal("missed"),
 );
-// A batch member addresses exactly one subject, in the ttsRulings shape
-// (life by todoId, code by repo+externalId) — enforced in validateBatchMembers.
-const MEMBER = v.object({
-  todoId: v.optional(v.id("dtsTodos")),
-  repo: v.optional(v.string()),
-  externalId: v.optional(v.string()),
-});
-const PLAN_STEP = v.object({
-  text: v.string(),
-  actor: v.union(v.literal("tom"), v.literal("agent")),
-  status: v.union(v.literal("open"), v.literal("done")),
-  doneAt: v.optional(v.number()),
-  evidence: v.optional(v.string()),
-});
 // ── Schema v2 graph shapes (ratified 2026-08-29) ─────────────────────────────
 const ACTOR = v.union(v.literal("tom"), v.literal("agent"));
 // A `needs` reference inside a plan-graph payload: a STRING is an existing
@@ -98,92 +84,13 @@ const GRAPH_TASK = v.object({
   model: v.optional(SESSION_MODEL),
 });
 
-type Member = { todoId?: Id<"dtsTodos">; repo?: string; externalId?: string };
-
-// Same identity convention as ttsRulings.subjectKey — one vocabulary for
-// "which subject is this" everywhere.
-export function memberKey(m: Member): string {
-  return m.todoId !== undefined
-    ? `life ${m.todoId}`
-    : `code ${m.repo} ${m.externalId}`;
-}
-
 // Array caps (Convex guideline: array fields on a document must be bounded —
-// an unbounded array grows a single row without limit). A batch groups 1..20
-// subjects; a plan holds at most 40 steps; one plan-graph payload carries at
-// most as many tasks as a plan had steps (the graph succeeds the plan).
-const MAX_BATCH_MEMBERS = 20;
-const MAX_PLAN_STEPS = 40;
-const MAX_GRAPH_TASKS = MAX_PLAN_STEPS;
-
-// Shared membership gate (updateTodo + internalStoreBatches): every member
-// addresses exactly one subject, no duplicates, no batch-in-batch, no batch
-// containing itself. Code members are NOT checked against the mirror — mirror
-// rows churn on upstream close; a vanished code member renders "closed
-// upstream" client-side.
-async function validateBatchMembers(
-  ctx: QueryCtx | MutationCtx,
-  members: Member[],
-  opts: {
-    selfId?: Id<"dtsTodos">;
-    // Callers that already hold a full collect (internalStoreBatches) pass it
-    // here so member lookups reuse it instead of per-member ctx.db.get.
-    todoById?: Map<Id<"dtsTodos">, Doc<"dtsTodos">>;
-  } = {},
-) {
-  // Bounded arrays (Convex unbounded-array-field guideline): an empty batch
-  // is not a grouping, and a batch never exceeds MAX_BATCH_MEMBERS subjects.
-  if (members.length === 0) {
-    throw new Error("A batch needs at least one member");
-  }
-  if (members.length > MAX_BATCH_MEMBERS) {
-    throw new Error(
-      `A batch holds at most ${MAX_BATCH_MEMBERS} members — got ${members.length}`,
-    );
-  }
-  const seen = new Set<string>();
-  for (const m of members) {
-    const isLife = m.todoId !== undefined;
-    const isCode = m.repo !== undefined || m.externalId !== undefined;
-    if (isLife === isCode) {
-      throw new Error(
-        `A member addresses exactly one subject: todoId (life) OR repo+externalId (code) — got ${JSON.stringify(m)}`,
-      );
-    }
-    if (isCode && (m.repo === undefined || m.externalId === undefined)) {
-      throw new Error(
-        `A code member needs both repo and externalId — got ${JSON.stringify(m)}`,
-      );
-    }
-    const key = memberKey(m);
-    if (seen.has(key)) throw new Error(`Duplicate member: ${key}`);
-    seen.add(key);
-    if (m.todoId !== undefined) {
-      if (m.todoId === opts.selfId) {
-        throw new Error("A batch cannot contain itself");
-      }
-      const todo = opts.todoById
-        ? opts.todoById.get(m.todoId)
-        : await ctx.db.get(m.todoId);
-      if (!todo) throw new Error(`Member todo not found: ${m.todoId}`);
-      if (todo.members !== undefined) {
-        throw new Error(
-          `"${todo.statement}" is itself a batch — no batch-in-batch`,
-        );
-      }
-      // A row already inside a schema-v2 batch is owned by that batch. The
-      // migration archives the v1 row, which frees its members from the v1
-      // occupied map — without this the still-running batcher would re-group
-      // the very rows it just migrated, and a todo would sit in a v1 batch and
-      // a v2 batch at once.
-      if (todo.batchId !== undefined) {
-        throw new Error(
-          `"${todo.statement}" belongs to a graph batch — a v1 batch never claims a v2 row`,
-        );
-      }
-    }
-  }
-}
+// an unbounded array grows a single row without limit). A batch is FOR at
+// most 20 goals and holds at most 40 tasks — the two numbers the retired v1
+// batch used for its members and its plan steps, kept because the graph
+// succeeds both and a batch has not become a bigger thing.
+const MAX_BATCH_GOALS = 20;
+const MAX_GRAPH_TASKS = 40;
 
 export async function logEvent(
   ctx: MutationCtx,
@@ -306,8 +213,6 @@ export const updateTodo = mutation({
     entryAction: v.optional(v.string()),
     brief: v.optional(v.string()),
     category: v.optional(v.union(v.string(), v.null())),
-    members: v.optional(v.union(v.array(MEMBER), v.null())),
-    plan: v.optional(v.union(v.array(PLAN_STEP), v.null())),
     // Tom's line on a GOAL (schema: mustNotBreak); null clears it. This door
     // is the only writer — ruling 13.
     mustNotBreak: v.optional(v.union(v.string(), v.null())),
@@ -329,48 +234,9 @@ export const updateTodo = mutation({
         "A date is never cleared silently — resolve it via recordDateOutcome (renegotiated before the date, or missed)",
       );
     }
-    // Bounded arrays (Convex unbounded-array-field guideline): a plan never
-    // exceeds MAX_PLAN_STEPS steps.
-    if (
-      fields.plan !== undefined &&
-      fields.plan !== null &&
-      fields.plan.length > MAX_PLAN_STEPS
-    ) {
-      throw new Error(
-        `A plan holds at most ${MAX_PLAN_STEPS} steps — got ${fields.plan.length}`,
-      );
-    }
-    // Batch membership: validated per member, then against every OTHER
-    // non-terminal batch — a subject lives in at most one (full collect:
-    // single-user table).
-    if (fields.members !== undefined && fields.members !== null) {
-      await validateBatchMembers(ctx, fields.members, { selfId: id });
-      const keys = new Set(fields.members.map(memberKey));
-      const selfKey = memberKey({ todoId: id });
-      const all = await ctx.db.query("dtsTodos").collect();
-      for (const other of all) {
-        if (other._id === id || other.members === undefined) continue;
-        if (other.status !== "active" && other.status !== "waiting") continue;
-        for (const m of other.members) {
-          if (keys.has(memberKey(m))) {
-            throw new Error(
-              `${memberKey(m)} is already in batch "${other.statement}"`,
-            );
-          }
-          // The other direction of validateBatchMembers' no-batch-in-batch
-          // rule: promoting a row to a batch while it is itself a member of a
-          // non-terminal batch would nest batches through the back door.
-          if (memberKey(m) === selfKey) {
-            throw new Error(
-              `"${todo.statement}" is a member of batch "${other.statement}" — no batch-in-batch`,
-            );
-          }
-        }
-      }
-    }
     const now = Date.now();
     // Every updateTodo edit is a Tom touch — tomTouchedAt marks the row FROZEN
-    // to the batcher (internalStoreBatches never rewrites or retires it).
+    // to the planner (tts.internalStorePlanGraph never rewrites it).
     const patch: Record<string, unknown> = { updatedAt: now, tomTouchedAt: now };
     for (const [key, value] of Object.entries(fields)) {
       if (value === undefined) continue;
@@ -474,9 +340,10 @@ export const setStatus = mutation({
     const todo = await ctx.db.get(id);
     if (!todo) throw new Error("TTS todo not found");
     await applyStatusChange(ctx, todo, args);
-    // Stamped HERE, not in applyStatusChange: internalStoreBatches archives
-    // its own batches through applyStatusChange, and an agent action must not
-    // stamp a Tom touch (tomTouchedAt freezes the row to the batcher).
+    // Stamped HERE, not in applyStatusChange: agent-driven writes go through
+    // that same transition (tts.internalMigrateToGraph archives a superseded
+    // row with it), and an agent action must not stamp a Tom touch
+    // (tomTouchedAt freezes the row to the planner).
     await ctx.db.patch(id, { tomTouchedAt: Date.now() });
   },
 });
@@ -521,9 +388,9 @@ export const internalTriage = internalMutation({
       const fresh = await ctx.db.get(normalized);
       if (fresh) await applyStatusChange(ctx, fresh, { status, ...rest });
     }
-    // Triage is Tom's pen: a Tom touch, so the row is frozen to the batcher —
+    // Triage is Tom's pen: a Tom touch, so the row is frozen to the planner —
     // but only when the call actually did something. A no-op/retry pen call
-    // must not freeze a batch.
+    // must not freeze a row.
     if (status !== undefined || dueAt !== undefined) {
       await ctx.db.patch(normalized, { tomTouchedAt: Date.now() });
     }
@@ -640,7 +507,7 @@ export async function applyDateOutcome(
 //     deadline as one Tom set himself;
 //   - updatedAt is NOT bumped. This is an annotation by a cron, not a content
 //     edit, and the needs-me predicate resurfaces an already-ruled gate when
-//     ruledAt < updatedAt (same reasoning as setPlanStep and internalBulkUpdate).
+//     ruledAt < updatedAt (the same reasoning as internalBulkUpdate's).
 // The outcome row itself is written in the one shape every reader knows.
 export async function recordMissedKeepingDate(
   ctx: MutationCtx,
@@ -678,36 +545,6 @@ export const recordDateOutcome = mutation({
     const todo = await ctx.db.get(id);
     if (!todo) throw new Error("TTS todo not found");
     await applyDateOutcome(ctx, todo, args);
-  },
-});
-
-// Tom checks a plan step off (or reopens it). An annotation, not a content
-// edit: tomTouchedAt is stamped, updatedAt is not — bumping it would resurface
-// ruled gates via the needs-me ruledAt<updatedAt predicate.
-export const setPlanStep = mutation({
-  args: {
-    id: v.id("dtsTodos"),
-    index: v.number(),
-    status: v.union(v.literal("open"), v.literal("done")),
-  },
-  handler: async (ctx, { id, index, status }) => {
-    await requireTomId(ctx);
-    const todo = await ctx.db.get(id);
-    if (!todo) throw new Error("TTS todo not found");
-    if (todo.plan === undefined) throw new Error("Todo has no plan");
-    if (!Number.isInteger(index) || index < 0 || index >= todo.plan.length) {
-      throw new Error(`Plan has no step ${index}`);
-    }
-    const now = Date.now();
-    // doneAt: undefined on reopen — an undefined object field is stored as
-    // absent, so the stale timestamp clears.
-    const plan = todo.plan.map((step, i) =>
-      i === index
-        ? { ...step, status, doneAt: status === "done" ? now : undefined }
-        : step,
-    );
-    await ctx.db.patch(id, { plan, tomTouchedAt: now });
-    await logEvent(ctx, "plan-step", id, { index, status });
   },
 });
 
@@ -1466,7 +1303,6 @@ export const internalPrepareTodo = internalMutation({
     // "prepared"). The literal "unprepared" is refused too: an agent must
     // never erase the record that a todo was written up.
     readiness: v.optional(v.literal("prepared")),
-    plan: v.optional(v.array(PLAN_STEP)),
     // ── The graph worker's three args (schema v2, 2026-08-29) ────────────────
     // A worker session claims ONE ready todo inside a batch and advances it by
     // one stable state, and this is the pen it writes that state with. It
@@ -1496,69 +1332,43 @@ export const internalPrepareTodo = internalMutation({
   },
   handler: async (
     ctx,
-    { id, brief, entryAction, workDescription, readiness, plan, dueAt, dateKind, evidence, groundUpExplanation, status },
+    { id, brief, entryAction, workDescription, readiness, dueAt, dateKind, evidence, groundUpExplanation, status },
   ) => {
     const normalized = ctx.db.normalizeId("dtsTodos", id);
     if (!normalized) throw new Error(`Unknown todo id: ${id}`);
     const todo = await ctx.db.get(normalized);
     if (!todo) throw new Error(`Unknown todo id: ${id}`);
-    // Bounded arrays (Convex unbounded-array-field guideline): a plan never
-    // exceeds MAX_PLAN_STEPS steps.
-    if (plan !== undefined && plan.length > MAX_PLAN_STEPS) {
-      throw new Error(
-        `A plan holds at most ${MAX_PLAN_STEPS} steps — got ${plan.length}`,
-      );
-    }
     const now = Date.now();
     const patch: Record<string, unknown> = { updatedAt: now };
-    if (todo.members !== undefined) {
-      // Batch gate: the batcher (internalStoreBatches) owns batch briefs —
-      // the single-todo preparer must never rewrite a grouping brief. ONLY the
-      // plan field may land here (session agents update plans through this
-      // pen); everything else is skipped with one named event.
-      const skippedFields = [
-        brief !== undefined && "brief",
-        entryAction !== undefined && "entryAction",
-        workDescription !== undefined && "workDescription",
-        readiness !== undefined && "readiness",
-        dueAt !== undefined && "dueAt",
-        evidence !== undefined && "evidence",
-        groundUpExplanation !== undefined && "groundUpExplanation",
-      ].filter(Boolean);
-      if (skippedFields.length > 0) {
-        await logEvent(ctx, "prepare-skipped-batch", normalized, {
-          fields: skippedFields,
-        });
-      }
-    } else {
-      if (brief !== undefined) patch.brief = brief;
-      if (evidence !== undefined) patch.evidence = evidence;
-      if (groundUpExplanation !== undefined) {
-        patch.groundUpExplanation = groundUpExplanation;
-      }
-      if (entryAction !== undefined) patch.entryAction = entryAction;
-      if (workDescription !== undefined) patch.workDescription = workDescription;
-      if (readiness !== undefined) patch.readiness = readiness;
-      if (dueAt !== undefined) {
-        // Kept-dates rule (spec §8): a stored date moves only through
-        // recordDateOutcome / a time note. The preparer gets the FIRST date
-        // only — an existing one is never overwritten, and the skip is named.
-        // A RESOLVED date counts as a date: an item whose date was recorded
-        // missed or renegotiated has a dateOutcomes history, and letting a
-        // re-prep read the same statement and hand back the very date Tom just
-        // resolved would resurrect it behind his back.
-        if (todo.dueAt !== undefined || (todo.dateOutcomes ?? []).length > 0) {
-          await logEvent(ctx, "due-skipped", normalized, { dueAt });
-        } else {
-          patch.dueAt = dueAt;
-          patch.dateKind = dateKind ?? "self-imposed";
-          patch.timingClass = "dated";
-        }
+    // Every field lands on every row. The batch gate that used to sit here —
+    // a row carrying `members` took only its plan, because the v1 batcher
+    // owned its brief — went with the v1 batch itself (the lifeos update,
+    // phase 7): there is no grouping brief for a single-todo preparer to
+    // overwrite any more, and a batch is its own `batches` row.
+    if (brief !== undefined) patch.brief = brief;
+    if (evidence !== undefined) patch.evidence = evidence;
+    if (groundUpExplanation !== undefined) {
+      patch.groundUpExplanation = groundUpExplanation;
+    }
+    if (entryAction !== undefined) patch.entryAction = entryAction;
+    if (workDescription !== undefined) patch.workDescription = workDescription;
+    if (readiness !== undefined) patch.readiness = readiness;
+    if (dueAt !== undefined) {
+      // Kept-dates rule (spec §8): a stored date moves only through
+      // recordDateOutcome / a time note. The preparer gets the FIRST date
+      // only — an existing one is never overwritten, and the skip is named.
+      // A RESOLVED date counts as a date: an item whose date was recorded
+      // missed or renegotiated has a dateOutcomes history, and letting a
+      // re-prep read the same statement and hand back the very date Tom just
+      // resolved would resurrect it behind his back.
+      if (todo.dueAt !== undefined || (todo.dateOutcomes ?? []).length > 0) {
+        await logEvent(ctx, "due-skipped", normalized, { dueAt });
+      } else {
+        patch.dueAt = dueAt;
+        patch.dateKind = dateKind ?? "self-imposed";
+        patch.timingClass = "dated";
       }
     }
-    // Agents rewrite plans freely — Tom's input gates persistence (rulings,
-    // merges), not plan text.
-    if (plan !== undefined) patch.plan = plan;
     await ctx.db.patch(normalized, patch);
     await logEvent(ctx, "prepared", normalized, {
       readiness: patch.readiness,
@@ -1566,7 +1376,6 @@ export const internalPrepareTodo = internalMutation({
         patch.brief !== undefined && "brief",
         patch.entryAction !== undefined && "entryAction",
         patch.workDescription !== undefined && "workDescription",
-        patch.plan !== undefined && "plan",
         patch.dueAt !== undefined && "dueAt",
         patch.evidence !== undefined && "evidence",
         patch.groundUpExplanation !== undefined && "groundUpExplanation",
@@ -1614,201 +1423,6 @@ export const internalPrepareTodo = internalMutation({
         });
       }
     }
-  },
-});
-
-// The batcher's write path (key-authed POST /tts/batches). Drop-don't-reject:
-// one bad grouping must not fail the
-// batch run, so a batch that fails member validation, collides on an occupied
-// member, or targets a row the batcher may not touch is SKIPPED with a named
-// reason. A row is batcher-writable only while source "batcher", status
-// "active", and never Tom-touched (tomTouchedAt set = FROZEN).
-export const internalStoreBatches = internalMutation({
-  args: {
-    batches: v.array(
-      v.object({
-        id: v.optional(v.string()),
-        statement: v.string(),
-        brief: v.string(),
-        members: v.array(MEMBER),
-        plan: v.optional(v.array(PLAN_STEP)),
-      }),
-    ),
-    archiveIds: v.optional(v.array(v.string())),
-  },
-  handler: async (ctx, { batches, archiveIds }) => {
-    const skipped: { ref: string; why: string }[] = [];
-    let created = 0;
-    let updated = 0;
-    let unchanged = 0;
-    let archived = 0;
-
-    // null = writable; otherwise the plain-language reason it is not.
-    const notWritable = (todo: Doc<"dtsTodos">): string | null => {
-      if (todo.source !== "batcher") return `source ${todo.source} is not batcher`;
-      if (todo.tomTouchedAt !== undefined) return "Tom-touched (frozen)";
-      if (todo.status !== "active") return `status ${todo.status}`;
-      return null;
-    };
-
-    // Archives first: a regroup is archive-old + create-new in one call, so
-    // retired batches must free their members before the occupied map is
-    // built. Goes through applyStatusChange (which does NOT stamp
-    // tomTouchedAt — this is an agent action, not a Tom touch).
-    for (const raw of archiveIds ?? []) {
-      const normalized = ctx.db.normalizeId("dtsTodos", raw);
-      const todo = normalized && (await ctx.db.get(normalized));
-      if (!todo) {
-        skipped.push({ ref: raw, why: "unknown todo id" });
-        continue;
-      }
-      const frozen = notWritable(todo);
-      if (frozen) {
-        skipped.push({ ref: raw, why: frozen });
-        continue;
-      }
-      await applyStatusChange(ctx, todo, {
-        status: "archived",
-        note: "batcher: regrouped or members terminal",
-      });
-      archived++;
-    }
-
-    // Occupied-member map from ALL non-terminal members-bearing rows, each
-    // entry tagged with its owner batch id: a desired batch's member conflicts
-    // UNLESS the occupying owner is that batch itself (a rewrite may keep its
-    // own members). Consequence, on purpose: moving a member from existing
-    // batch X to a new batch takes two runs (run 1: X's rewrite drops it;
-    // run 2: the new batch claims it) — conservative, so a skipped rewrite can
-    // never leave a subject claimable twice. Each landed batch extends the map
-    // so in-call batches conflict pairwise. One collect feeds this map, the
-    // rewrite lookups, and validateBatchMembers (opts.todoById).
-    const all = await ctx.db.query("dtsTodos").collect();
-    const todoById = new Map<Id<"dtsTodos">, Doc<"dtsTodos">>(
-      all.map((t) => [t._id, t]),
-    );
-    const occupied = new Map<
-      string,
-      { id: Id<"dtsTodos">; statement: string }
-    >();
-    for (const todo of all) {
-      if (todo.members === undefined) continue;
-      if (todo.status !== "active" && todo.status !== "waiting") continue;
-      for (const m of todo.members) {
-        occupied.set(memberKey(m), { id: todo._id, statement: todo.statement });
-      }
-    }
-
-    const now = Date.now();
-    for (const b of batches) {
-      const normalized =
-        b.id === undefined ? null : ctx.db.normalizeId("dtsTodos", b.id);
-      if (b.id !== undefined && !normalized) {
-        skipped.push({ ref: b.statement, why: `unknown todo id: ${b.id}` });
-        continue;
-      }
-      // Bounded arrays (Convex unbounded-array-field guideline) — a per-batch
-      // skip like the other validation failures.
-      if (b.plan !== undefined && b.plan.length > MAX_PLAN_STEPS) {
-        skipped.push({
-          ref: b.statement,
-          why: `a plan holds at most ${MAX_PLAN_STEPS} steps — got ${b.plan.length}`,
-        });
-        continue;
-      }
-      try {
-        await validateBatchMembers(ctx, b.members, {
-          selfId: normalized ?? undefined,
-          todoById,
-        });
-      } catch (e) {
-        skipped.push({
-          ref: b.statement,
-          why: e instanceof Error ? e.message : String(e),
-        });
-        continue;
-      }
-      const conflict = b.members.find((m) => {
-        const owner = occupied.get(memberKey(m));
-        return owner !== undefined && owner.id !== normalized;
-      });
-      if (conflict) {
-        skipped.push({
-          ref: b.statement,
-          why: `${memberKey(conflict)} is already in batch "${occupied.get(memberKey(conflict))!.statement}"`,
-        });
-        continue;
-      }
-      if (normalized) {
-        const todo = todoById.get(normalized);
-        if (!todo) {
-          skipped.push({ ref: b.statement, why: `unknown todo id: ${b.id}` });
-          continue;
-        }
-        const frozen = notWritable(todo);
-        if (frozen) {
-          skipped.push({ ref: b.statement, why: frozen });
-          continue;
-        }
-        // Rewrite of what the batcher owns — but an ABSENT plan PRESERVES the
-        // stored value (internalStoreBriefs semantics: an LLM omission must
-        // not delete state); only an explicit plan overwrites.
-        const projected = {
-          statement: b.statement.trim(),
-          brief: b.brief,
-          members: b.members,
-          plan: b.plan ?? todo.plan,
-        };
-        const stored = {
-          statement: todo.statement,
-          brief: todo.brief,
-          members: todo.members,
-          plan: todo.plan,
-        };
-        // No-op rewrite: nothing changed, so skip the patch entirely — a
-        // 6-hourly re-post must not bump updatedAt and re-push every open
-        // client. Counted as "unchanged", neither updated nor skipped.
-        if (JSON.stringify(projected) === JSON.stringify(stored)) {
-          unchanged++;
-        } else {
-          await ctx.db.patch(normalized, { ...projected, updatedAt: now });
-          updated++;
-        }
-        for (const m of b.members) {
-          occupied.set(memberKey(m), {
-            id: normalized,
-            statement: projected.statement,
-          });
-        }
-      } else {
-        const id = await ctx.db.insert("dtsTodos", {
-          statement: b.statement.trim(),
-          brief: b.brief,
-          members: b.members,
-          plan: b.plan,
-          readiness: "prepared",
-          status: "active",
-          timingClass: "whenever",
-          source: "batcher",
-          createdAt: now,
-          updatedAt: now,
-        });
-        await logEvent(ctx, "batch-formed", id, { members: b.members.length });
-        created++;
-        for (const m of b.members) {
-          occupied.set(memberKey(m), { id, statement: b.statement.trim() });
-        }
-      }
-    }
-
-    await logEvent(ctx, "batches-stored", undefined, {
-      created,
-      updated,
-      unchanged,
-      archived,
-      skipped: skipped.length > 0 ? skipped : undefined,
-    });
-    return { created, updated, unchanged, archived, skipped };
   },
 });
 
@@ -1901,8 +1515,7 @@ export async function archiveBatchContents(
   return { archivedTasks, unboundGoals };
 }
 
-// The planner's pen (the internalStoreBatches pattern, one batch per call):
-// upserts ONE batch's graph — the batch row, its tasks, and the goals bound to
+// The planner's pen, one batch per call: upserts ONE batch's graph — the batch row, its tasks, and the goals bound to
 // it. Drop-don't-reject: a task that fails validation is SKIPPED with a named
 // reason and the rest of the graph still lands; only a batch that is unknown
 // or FROZEN (Tom-touched, or terminal) costs the whole call.
@@ -1976,8 +1589,8 @@ export const internalStorePlanGraph = internalMutation({
     }
     if (batch) {
       result.batchId = batch._id;
-      // The freeze, verbatim from internalStoreBatches: a Tom-touched batch is
-      // never rewritten by an agent, and a terminal one is not rewritten at all.
+      // The freeze: a Tom-touched batch is never rewritten by an agent, and a
+      // terminal one is not rewritten at all.
       const frozen =
         batch.tomTouchedAt !== undefined
           ? "Tom-touched (frozen)"
@@ -2007,19 +1620,13 @@ export const internalStorePlanGraph = internalMutation({
       todo.batchId === undefined ||
       (currentBatchId !== undefined && todo.batchId === currentBatchId);
 
-    // The PER-ROW freeze — internalStoreBatches' notWritable, applied to a task
-    // target (addressable() only says which batch a row is in, not whether the
-    // planner may write it). null = writable; otherwise the plain-language
-    // reason it is not. Without this the pen would rewrite a life todo Tom
-    // wrote by hand, reopen a task he closed, or claim a v1 batch row — which
-    // would then render as a batch (app/tts/lib.ts isBatch) while living
-    // inside one, the back-door batch-in-batch validateBatchMembers exists to
-    // prevent. A `done` task IS writable: it is the resting state of a landed
+    // The PER-ROW freeze, applied to a task target (addressable() only says
+    // which batch a row is in, not whether the planner may write it). null =
+    // writable; otherwise the plain-language reason it is not. Without this
+    // the pen would rewrite a life todo Tom wrote by hand or reopen a task he
+    // closed. A `done` task IS writable: it is the resting state of a landed
     // step inside a live graph, and a re-post must still read as unchanged.
     const notWritable = (todo: Doc<"dtsTodos">): string | null => {
-      // Most specific reason first — a v1 batch row is refused as a batch, not
-      // as a row with the wrong source (which it also has).
-      if (todo.members !== undefined) return "is a v1 batch";
       if (todo.tomTouchedAt !== undefined) return "Tom-touched (frozen)";
       if (todo.source !== "planner" && todo.source !== "migration") {
         return `source ${todo.source} is not the planner's`;
@@ -2404,33 +2011,14 @@ export const internalStorePlanGraph = internalMutation({
     // would resurface already-ruled gates (the needs-me ruledAt<updatedAt
     // predicate).
     const goalIds = args.goalIds ?? [];
-    // The rows a live v1 batch already claims. validateBatchMembers refuses a
-    // v1 batch that claims a row inside a v2 batch; this is the same rule in
-    // the other direction, and without it the collision the server-side check
-    // exists to prevent lands through the goal binder — a row in a v1 batch
-    // AND a v2 batch at once, unschedulable from either side (batchOwned
-    // excludes it in claudeSessions, and the v1 lanes filter on batchId).
-    // The planner's client-side filter is not this check: it governs which ids
-    // are OFFERED, not which the model may emit. Read once, and only when
-    // there is a goal to bind.
-    const v1Claimed = new Set<string>();
-    if (goalIds.length > 0) {
-      for (const row of await ctx.db.query("dtsTodos").collect()) {
-        if (row.members === undefined) continue;
-        if (row.status === "archived" || row.status === "done") continue;
-        for (const m of row.members) {
-          if (m.todoId !== undefined) v1Claimed.add(m.todoId);
-        }
-      }
-    }
     for (let g = 0; g < goalIds.length; g++) {
       const raw = goalIds[g];
-      // Bounded like every other array here: a batch is FOR at most as many
-      // subjects as a v1 batch grouped.
-      if (g >= MAX_BATCH_MEMBERS) {
+      // Bounded like every other array here (Convex unbounded-array-field
+      // guideline): a batch is FOR at most MAX_BATCH_GOALS subjects.
+      if (g >= MAX_BATCH_GOALS) {
         result.skipped.push({
           ref: raw,
-          why: `a batch holds at most ${MAX_BATCH_MEMBERS} goals`,
+          why: `a batch holds at most ${MAX_BATCH_GOALS} goals`,
         });
         continue;
       }
@@ -2440,18 +2028,11 @@ export const internalStorePlanGraph = internalMutation({
         result.skipped.push({ ref: raw, why: `unknown todo id: ${raw}` });
         continue;
       }
-      // A v1 batch bound as a goal would be a batch inside a batch through the
-      // back door — the thing validateBatchMembers refuses in the other
-      // direction. (Tom-touched is NOT a bar here: his own todos becoming a
-      // batch's goals is the whole point, and binding rewrites no content.)
-      if (todo.members !== undefined) {
-        result.skipped.push({ ref: raw, why: "is a v1 batch" });
-        continue;
-      }
-      if (v1Claimed.has(todo._id)) {
-        result.skipped.push({ ref: raw, why: "is a member of a live v1 batch" });
-        continue;
-      }
+      // (The two v1-batch bars that used to sit here — a v1 batch row bound as
+      // a goal, and a row a live v1 batch already claimed — went with the v1
+      // batch itself: the graph migration turned every one of them into a
+      // `batches` row and archived the old row, and nothing writes `members`
+      // any more. The lifeos update, phase 7.)
       if (claimedIds.has(todo._id)) {
         result.skipped.push({
           ref: raw,
@@ -2541,6 +2122,24 @@ export const internalStorePlanGraph = internalMutation({
  * (this one is a pointer, not a condition). */
 export const GRAPH_SUPERSEDED = "superseded by graph batch ";
 
+/** The v1 batch pair, as a stored row still holds it. THIS MIGRATION IS THE
+ * LAST READER of either field, and it reads them through a loose view of the
+ * row rather than the generated Doc type: the narrow drops both declarations
+ * from convex/schema.ts, and Convex still returns them off any row the
+ * clearing walk has not reached — which is what keeps a re-run possible. */
+type RetiredV1Batch = {
+  members?: { todoId?: Id<"dtsTodos">; repo?: string; externalId?: string }[];
+  plan?: {
+    text: string;
+    actor: "tom" | "agent";
+    status: "open" | "done";
+    doneAt?: number;
+    evidence?: string;
+  }[];
+};
+const v1Batch = (row: Doc<"dtsTodos">): RetiredV1Batch =>
+  row as unknown as RetiredV1Batch;
+
 export const internalMigrateToGraph = internalMutation({
   args: {},
   handler: async (ctx) => {
@@ -2548,7 +2147,7 @@ export const internalMigrateToGraph = internalMutation({
     const all = await ctx.db.query("dtsTodos").collect();
     const oldBatches = all.filter(
       (t) =>
-        t.members !== undefined &&
+        v1Batch(t).members !== undefined &&
         t.status === "active" &&
         !(t.unarchiveCondition ?? "").startsWith(GRAPH_SUPERSEDED),
     );
@@ -2577,7 +2176,7 @@ export const internalMigrateToGraph = internalMutation({
       // that is certainly true. The planner parallelizes it later by dropping
       // edges — inventing that parallelism here would be a guess.
       let previous: Id<"dtsTodos"> | undefined;
-      for (const step of row.plan ?? []) {
+      for (const step of v1Batch(row).plan ?? []) {
         const done = step.status === "done";
         const id = await ctx.db.insert("dtsTodos", {
           statement: step.text,
@@ -2598,7 +2197,7 @@ export const internalMigrateToGraph = internalMutation({
         counts.tasks++;
       }
 
-      for (const member of row.members ?? []) {
+      for (const member of v1Batch(row).members ?? []) {
         if (member.todoId !== undefined) {
           const todo = await ctx.db.get(member.todoId);
           if (!todo) {

@@ -23,7 +23,7 @@ import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
 //
 // SENTENCE ON ANY VERDICT (2026-08-29): all four verdicts accept the optional
 // `sentence`. Required only on revise; on archive it is the unarchive
-// condition; on approve/session it is a free note that reaches the batcher
+// condition; on approve/session it is a free note that reaches the planner's
 // prompt, the preparer prompt, and the session's opening prompt.
 //
 // EVERY VERDICT'S EFFECT IS APPLIED AT WRITE TIME, OR AT THE ONE MOMENT ITS
@@ -31,10 +31,7 @@ import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
 // box any more). Per subject:
 //   life   — revise drops readiness to "unprepared" here and the planner's
 //            prepare pass re-prepares the todo with the sentence, consuming
-//            the ruling when the re-prep lands — except on a v1 batch row (a
-//            todo carrying `members`), which no pass prepares any more: that
-//            revise is refused by name on its own row, since only
-//            tts:internalMigrateToGraph re-forms a v1 batch; archive archives here;
+//            the ruling when the re-prep lands; archive archives here;
 //            approve is ratification and applies here; session applies the
 //            moment Tom opens an interactive session on the todo
 //            (markLiveSessionRulingApplied, from claudeSessions.insertSession).
@@ -171,30 +168,13 @@ async function insertRuling(
     if (isLife) {
       const todo = await ctx.db.get(todoId);
       if (!todo) throw new Error("TTS todo not found");
-      // A ruling is a Tom touch: tomTouchedAt freezes the row to the batcher
-      // (internalStoreBatches never rewrites or retires it) — EXCEPT revise,
-      // the one verdict that hands the subject BACK to the preparing agent
-      // (for a batch, the batcher must stay allowed to re-form it).
+      // A ruling is a Tom touch: tomTouchedAt freezes the row to the planner
+      // (tts.internalStorePlanGraph never rewrites it) — EXCEPT revise, the
+      // one verdict that hands the subject BACK to the preparing agent.
       if (verdict !== "revise") {
         await ctx.db.patch(todoId, { tomTouchedAt: now });
       }
-      if (verdict === "revise" && todo.members !== undefined) {
-        // A v1 BATCH ROW (a todo carrying `members`) has no preparer any more:
-        // the planner's prepare pass skips members-bearing rows by name
-        // (worker/jobs/plan-graphs.mjs selectPrepareTargets), and the v1
-        // batcher that re-formed one is gone (the lifeos update, phase 7).
-        // Dropping its readiness would take it off the ready list for good,
-        // and leaving the ruling unapplied would park it on the pending feed
-        // with nothing on any side able to consume it. So: readiness
-        // untouched, and the ruling refused BY NAME on its own row — the
-        // sentence stays on the record (and in the digest), and the row says
-        // what re-forms a v1 batch now.
-        appliedAt = now;
-        applyResult =
-          "refused: a v1 batch (a todo carrying members) has no preparer — " +
-          "tts:internalMigrateToGraph hands it to the graph, and the batch " +
-          "row it becomes takes a revise";
-      } else if (verdict === "revise") {
+      if (verdict === "revise") {
         // Two readiness values (ruling 18): revise hands the write-up back, so
         // the row is unprepared — preparation is owed again — until the
         // preparer returns it as prepared. It is therefore not ready for Tom

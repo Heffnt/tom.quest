@@ -225,11 +225,10 @@ describe("selectToday", () => {
       row("tomorrow", { dueAt: DAY_END + HOUR }),
       row("raw"), // unprepared, undated, unscheduled: not in the column
       row("archived", { status: "archived", dueAt: DAY_START + HOUR }),
-      // The three the retired queue never listed, each dated inside the day
-      // so only the pool rule keeps it out: asleep past the day, a v1 batch
-      // row, a graph task. A bound GOAL is Tom's own todo and stays.
+      // The two the retired queue never listed, each dated inside the day so
+      // only the pool rule keeps it out: asleep past the day, and a graph
+      // task. A bound GOAL is Tom's own todo and stays.
       row("asleep-past-day", { dueAt: DAY_START + HOUR, wakeAt: DAY_END + HOUR }),
-      row("v1-batch", { dueAt: DAY_START + HOUR, members: [] }),
       row("graph-task", {
         dueAt: DAY_START + HOUR,
         batchId: "batch-1" as unknown as Todo["batchId"],
@@ -263,13 +262,12 @@ describe("selectToday", () => {
     ]);
   });
 
-  it("ready means ready FOR TOM: prepared, awake, every need done (a v1 batch is outside the pool)", () => {
+  it("ready means ready FOR TOM: prepared, awake, every need done", () => {
     const todos = [
       row("need", { status: "done" }),
       row("blocked", { readiness: "prepared", needs: ["missing"] as never }),
       row("unblocked", { readiness: "prepared", needs: ["need"] as never }),
       row("asleep", { readiness: "prepared", wakeAt: NOW + HOUR }),
-      row("batch", { readiness: "prepared", members: [] }),
     ];
     const view = selectToday(todos, [], { start: DAY_START, end: DAY_END }, NOW);
     expect(view.ready.map((t) => t._id)).toEqual(["unblocked"]);

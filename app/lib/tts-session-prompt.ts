@@ -129,17 +129,6 @@ export function codeSessionRulingLines(
   return lines;
 }
 
-// Live context for one batch member, resolved by the caller against the
-// todos/mirror it already holds (this module never fetches). `label` names
-// the subject the way the system does: a life member is just its statement,
-// a code member carries "repo externalId".
-export type BatchMemberContext = {
-  kind: "life" | "code";
-  label?: string;
-  statement: string;
-  status: string;
-};
-
 // The live (newest) ruling on this todo, when the caller holds one. Every
 // verdict may carry a sentence (ratified 2026-08-29) — the note Tom wrote when
 // he ruled — and the session that follows a "session" verdict is exactly where
@@ -257,7 +246,6 @@ export function buildBatchSessionPrompt(
 export function buildTodoSessionPrompt(
   todo: Doc<"dtsTodos">,
   kind: "gate" | "focus-item",
-  batch?: { members: BatchMemberContext[] },
   ruling?: LiveRulingContext,
 ): string {
   const lines = [
@@ -284,43 +272,9 @@ export function buildTodoSessionPrompt(
     fact("brief", todo.brief),
   ].filter((l): l is string => l !== null);
 
-  // A batch (a todo with `members`) is worked as a walk-through of its plan:
-  // one session advances every member, and the pens record what lands.
-  if (todo.members !== undefined) {
-    lines.push(
-      "",
-      "This item is a BATCH: one grouping of several todos, so one session's worth of shared context advances all of them. Its plan is the working order.",
-    );
-    const plan = todo.plan ?? [];
-    if (plan.length > 0) {
-      lines.push("", `The plan (${plan.length} steps, in order):`);
-      plan.forEach((step, i) => {
-        lines.push(
-          `${i + 1}. [${step.actor}, ${step.status}] ${step.text}${step.evidence ? ` (evidence: ${step.evidence})` : ""}`,
-        );
-      });
-    } else {
-      lines.push("", "The batch has no plan yet — building one with Tom is the first step.");
-    }
-    const members = batch?.members ?? [];
-    if (members.length > 0) {
-      lines.push("", `The members (${members.length}, live statuses):`);
-      for (const m of members) {
-        lines.push(
-          `- [${m.kind}${m.label ? ` ${m.label}` : ""}, ${m.status}] "${m.statement}"`,
-        );
-      }
-    } else {
-      lines.push("", `The batch lists ${todo.members.length} members; their live statuses were not resolved for this prompt.`);
-    }
-    lines.push(
-      "",
-      "Walk-through contract:",
-      '- Work the plan IN ORDER. Steps with actor "agent" you do yourself.',
-      '- At each OPEN step with actor "tom", put the question to Tom AND keep implementing — do the best-judgment option in the workspace while he considers. His ruling gates what PERSISTS (merges, verdicts, statuses), not what you attempt.',
-      `- Record plan progress the moment a step closes: curl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "plan": [ ...the full updated plan... ]}' — the full plan array, never a diff.`,
-      `- ${RULING_PEN}`,
-    );
-  }
+  // (The v1 BATCH block that used to sit here — a todo carrying `members` was
+  // a batch, and its `plan` was the working order — went with those two
+  // fields. A batch is its own row now, and buildBatchSessionPrompt above is
+  // its prompt. The lifeos update, phase 7.)
   return lines.join("\n");
 }

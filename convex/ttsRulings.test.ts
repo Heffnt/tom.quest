@@ -159,35 +159,6 @@ describe("TTS unified rulings", () => {
     ).toBe(true);
   });
 
-  // witness: drop the `todo.members !== undefined` branch from insertRuling's
-  // revise path in convex/ttsRulings.ts — the ruling would ride the pending
-  // feed forever (the planner's prepare pass skips v1 batch rows by name, and
-  // the v1 batcher is gone), and the row would lose its readiness for good.
-  it("revise on a v1 batch row is refused by name, readiness untouched, nothing parked", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    const todoId = await tom.mutation(api.tts.createTodo, {
-      statement: "the passport batch",
-    });
-    await t.run(async (ctx) => {
-      await ctx.db.patch(todoId, { readiness: "prepared", members: [] });
-    });
-    await tom.mutation(api.ttsRulings.recordRuling, {
-      todoId,
-      verdict: "revise",
-      sentence: "split the renewal out",
-    });
-    const todo = await t.run(async (ctx) => ctx.db.get(todoId));
-    expect(todo?.readiness).toBe("prepared");
-    const [ruling] = await tom.query(api.ttsRulings.listRulings, {});
-    expect(ruling.sentence).toBe("split the renewal out"); // on the record
-    expect(ruling.appliedAt).toBeDefined();
-    expect(ruling.applyResult).toMatch(/^refused: .*internalMigrateToGraph/);
-    expect(
-      await t.query(internal.ttsRulings.internalPendingRulings, {}),
-    ).toHaveLength(0);
-  });
-
   // witness: drop the applyStatusChange call from recordRuling's archive
   // branch in convex/ttsRulings.ts
   it("archive on a life todo archives it immediately", async () => {
@@ -395,7 +366,7 @@ describe("TTS unified rulings", () => {
   });
 
   // witness: drop the tomTouchedAt patch from insertRuling's life path in
-  // convex/ttsRulings.ts — the batcher could rewrite a batch Tom just ruled on.
+  // convex/ttsRulings.ts — the planner could rewrite a row Tom just ruled on.
   it("approve, session, and archive each stamp tomTouchedAt (row frozen)", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
@@ -413,8 +384,8 @@ describe("TTS unified rulings", () => {
 
   // witness: drop the `verdict !== "revise"` guard from insertRuling's
   // tomTouchedAt patch in convex/ttsRulings.ts — revise hands the subject BACK
-  // to the preparing agent, so freezing the row would strand every batch Tom
-  // ever asked the batcher to redo.
+  // to the preparing agent, so freezing the row would strand every todo Tom
+  // ever asked the planner to prepare again.
   it("revise does NOT stamp tomTouchedAt — the row goes back to the agent", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
@@ -427,61 +398,6 @@ describe("TTS unified rulings", () => {
     const todo = await t.run(async (ctx) => ctx.db.get(todoId));
     expect(todo?.tomTouchedAt).toBeUndefined();
     expect(todo?.readiness).toBe("unprepared"); // the revise effect still landed
-  });
-
-  // witness: same guard — a revised batch must stay rewritable, which is the
-  // whole point of the verdict.
-  it("a revised batcher batch is still rewritable by the batcher", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    await t.mutation(internal.tts.internalStoreBatches, {
-      batches: [
-        {
-          statement: "trip logistics",
-          brief: "one errand, three tickets",
-          members: [{ repo: "ComplexMultiTrigger", externalId: "cmt-001" }],
-        },
-      ],
-    });
-    const batch = await t.run(async (ctx) =>
-      (await ctx.db.query("dtsTodos").collect()).find(
-        (x) => x.members !== undefined,
-      ),
-    );
-    await tom.mutation(api.ttsRulings.recordRuling, {
-      todoId: batch!._id,
-      verdict: "revise",
-      sentence: "the flights do not belong with the visa",
-    });
-    const res = await t.mutation(internal.tts.internalStoreBatches, {
-      batches: [
-        {
-          id: batch!._id,
-          statement: "visa paperwork",
-          brief: "regrouped per Tom's sentence",
-          members: [{ repo: "ComplexMultiTrigger", externalId: "cmt-001" }],
-        },
-      ],
-    });
-    expect(res).toMatchObject({ created: 0, updated: 1, skipped: [] });
-    const fresh = await t.run(async (ctx) => ctx.db.get(batch!._id));
-    expect(fresh?.statement).toBe("visa paperwork");
-    // An approve on the same batch DOES freeze it against the next run.
-    await tom.mutation(api.ttsRulings.recordRuling, {
-      todoId: batch!._id,
-      verdict: "approve",
-    });
-    const after = await t.mutation(internal.tts.internalStoreBatches, {
-      batches: [
-        {
-          id: batch!._id,
-          statement: "rewrite attempt",
-          brief: "x",
-          members: [{ repo: "ComplexMultiTrigger", externalId: "cmt-001" }],
-        },
-      ],
-    });
-    expect(after.skipped.map((s) => s.why)).toEqual(["Tom-touched (frozen)"]);
   });
 
   // witness: change briefAwaitsRuling back to "any ruling clears the item" in
