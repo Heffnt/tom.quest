@@ -142,7 +142,8 @@ host-key prompt with — and reports git's own words when a clone is refused. Fi
 git's or the server's own words) and the next step runs anyway. Steps 1 to 4
 write the checkout and run under one hold of `/var/lock/tts-wikitom.lock` —
 the lock every writer of the checkout takes — taken around all four together,
-never around the commit alone; step 5 only reads `HEAD` and takes no lock:
+never around the commit alone, and step 5 runs under the same hold, reading
+the `HEAD` the four left:
 
 1. **snapshot** — every Convex table except the six `auth*` ones, read by
    pages from `GET /tts/export` against one boundary instant, into
@@ -150,7 +151,16 @@ never around the commit alone; step 5 only reads `HEAD` and takes no lock:
    first, a table over 90 MB as gzipped parts (`<table>.partNN.jsonl.gz`).
    The set is assembled in `/var/cache/tts/snapshot-staging/` first and a
    file is written only where its hash changed, so a night with no change
-   to a table makes no commit for it.
+   to a table makes no commit for it. **A nightly copy, not a point-in-time
+   transaction:** the boundary instant fixes which rows are in the copy
+   (those created before the job started), not their state — each page is
+   its own query, so a row updated between two pages is exported in its
+   later state, a row deleted between them is in neither, and two tables
+   read minutes apart can disagree. Every string value of every row goes
+   through the daemon's credential filter (`worker/session-host/redact.mjs`,
+   the same one every transcript row passes on ingest) before it is
+   written, so a key pasted into a session turn or a setting reaches WikiTom
+   as `[redacted:<kind>]`.
 2. **learning** — a skeleton for now: reads yesterday's turns Tom typed,
    his Slack replies and his rulings (`GET /tts/learning-input`) and records
    one `learning-run` row with the counts and zero changes. The comment above
@@ -167,7 +177,20 @@ never around the commit alone; step 5 only reads `HEAD` and takes no lock:
    when both Max accounts hold one session id. Dates come from the files'
    own timestamps (mtime when there is none); one line per file is appended
    to `sessions/manifest-box-<day>.jsonl`, phase 1's columns. A file that
-   grew since it was archived is archived again.
+   grew since it was archived is archived again. This is the sweep behind
+   the session-end archive: the session-host daemon archives a session's
+   own files the moment it ends, through the same function
+   (`worker/jobs/session-archive.mjs`), under the same lock — so the
+   transcript is in the checkout hours before the sweep, which then only
+   picks up what grew after. Each file is written atomically: staged under
+   `sessions/.staging/<id>/`, renamed into place, and its manifest line
+   appended last, so a crash never leaves a manifest line for bytes that
+   are not there. Every `.jsonl` goes through the same credential filter the
+   snapshot's rows do (`worker/session-host/redact.mjs`) before it is
+   gzipped — a session transcript is where a printed token actually appears
+   — while the manifest's `sha256` and `raw_bytes` stay the source file's,
+   so "has this file grown since?" keeps comparing the box's bytes to the
+   box's bytes.
 4. **push** — one commit per step that changed something, and then, always,
    one more for anything still modified under `tts/snapshot/` and `sessions/`
    — what a run that died part-way left behind, which `git pull --rebase`
@@ -180,14 +203,19 @@ never around the commit alone; step 5 only reads `HEAD` and takes no lock:
    push is a failure row and the commits stay local, to go with the next
    night's. **Until Tom adds the deploy key's public half to the WikiTom
    repository, every push is refused and this is the row the digest shows.**
-5. **post** — the model-of-tom files at `HEAD`, whether or not the push
-   went through: `model-of-tom/writing.md`, `priorities.md`, `schedule.md`,
-   then for each page under `model-of-tom/areas/` its "Current state" and
-   "Must not break" sections (parsed by heading; while `areas/` does not
-   exist, the three alone), posted with the commit hash and the commit's
-   time to `POST /tts/model-of-tom`. Convex replaces the `ttsSkills` table
-   whole and every prompt from then on begins with those files under a
-   header naming that commit. A named file that is missing or empty is a
+5. **post** — the model-of-tom files read from the git object at `HEAD`
+   (`git show <commit>:<path>`, never the work tree), whether or not the
+   push went through: `model-of-tom/writing.md`, `priorities.md`,
+   `schedule.md`, then for each page under `model-of-tom/areas/` its
+   "Current state" and "Must not break" sections (parsed by heading), posted
+   with the commit hash, the commit's time and whether that commit is on
+   the upstream yet (`pushed`) to `POST /tts/model-of-tom`. Convex replaces
+   the `ttsSkills` table whole and every prompt from then on begins with
+   those files under a header naming that commit; a post whose commit is
+   older than the stored one is refused (a `force` reason overrides), so two
+   posts racing end on the newer. When the push was refused the post still
+   goes out — a prompt names the commit it began with — and the digest says
+   "not yet pushed". A named file that is missing or empty is a
    failure row and NO post goes out: the replace is wholesale, so posting the
    rest would take that file — `writing.md`, the writing standard itself —
    out of every prompt until a night that reads it again. Convex refuses a

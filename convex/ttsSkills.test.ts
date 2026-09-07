@@ -95,7 +95,7 @@ describe("isModelOfTomPath", () => {
 describe("internalReplaceModelOfTom", () => {
   it("stores one row per file, all carrying the commit and its time", async () => {
     const t = convexTest({ schema, modules });
-    expect(await post(t, THREE)).toEqual({ files: 3, deleted: 0 });
+    expect(await post(t, THREE)).toEqual({ files: 3, deleted: 0, forced: false });
     const rows = await allRows(t);
     expect(rows.map((r) => r.name).sort()).toEqual(["priorities", "schedule", "writing"]);
     for (const row of rows) {
@@ -118,7 +118,7 @@ describe("internalReplaceModelOfTom", () => {
       });
     });
     await post(t, [...THREE, { path: "model-of-tom/areas/research.md", body: RESEARCH }]);
-    expect(await post(t, THREE, "feedface1")).toEqual({ files: 3, deleted: 4 });
+    expect(await post(t, THREE, "feedface1")).toEqual({ files: 3, deleted: 4, forced: false });
     const rows = await allRows(t);
     expect(rows).toHaveLength(3);
     expect(rows.every((r) => r.commit === "feedface1")).toBe(true);
@@ -152,6 +152,53 @@ describe("internalReplaceModelOfTom", () => {
     expect(text).toContain(WRITING);
   });
 
+  // witness: two posts raced and the store ended on whichever landed last —
+  // a `--only=post` from a checkout that had fallen behind rolled the prelude
+  // back to an older commit.
+  it("refuses a post whose commit is older than the stored one, unless force names why", async () => {
+    const t = convexTest({ schema, modules });
+    await post(t, THREE);
+    const older = () =>
+      t.mutation(internal.ttsSkills.internalReplaceModelOfTom, {
+        commit: "feedface1",
+        committedAt: COMMITTED_AT - 60_000,
+        pushed: true,
+        files: [{ path: "model-of-tom/writing.md", body: "older writing" }],
+      });
+    await expect(older()).rejects.toThrow(/older than the stored one/);
+    let rows = await allRows(t);
+    expect(rows).toHaveLength(3);
+    expect(rows.every((r) => r.commit === COMMIT)).toBe(true);
+    // The same commit again is not older: a rerun goes through.
+    expect(await post(t, THREE)).toMatchObject({ files: 3, deleted: 3, forced: false });
+    // Named, the roll-back is allowed.
+    const forced = await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, {
+      commit: "feedface1",
+      committedAt: COMMITTED_AT - 60_000,
+      force: "Tom asked for last night's text back",
+      files: [{ path: "model-of-tom/writing.md", body: "older writing" }],
+    });
+    expect(forced).toMatchObject({ files: 1, deleted: 3, forced: true });
+    rows = await allRows(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].commit).toBe("feedface1");
+  });
+
+  it("records whether the commit was pushed, and the prelude state carries it", async () => {
+    const t = convexTest({ schema, modules });
+    await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, {
+      commit: COMMIT,
+      committedAt: COMMITTED_AT,
+      pushed: false,
+      files: THREE,
+    });
+    expect((await allRows(t)).every((r) => r.pushed === false)).toBe(true);
+    expect((await t.run(async (ctx) => modelOfTomState(ctx))).pushed).toBe(false);
+    // Absent on a post from before the flag: null, never a claim.
+    await post(t, THREE);
+    expect((await t.run(async (ctx) => modelOfTomState(ctx))).pushed).toBeNull();
+  });
+
   it("refuses a path outside model-of-tom/ and a path posted twice", async () => {
     const t = convexTest({ schema, modules });
     await expect(post(t, [{ path: "tts/spec.md", body: "x" }])).rejects.toThrow(
@@ -168,7 +215,7 @@ describe("modelOfTomState and the prelude", () => {
   it("serves the hardcoded standard under a header that says so while nothing is stored", async () => {
     const t = convexTest({ schema, modules });
     const state = await t.run(async (ctx) => modelOfTomState(ctx));
-    expect(state).toEqual({ commit: null, syncedAt: null, files: [] });
+    expect(state).toEqual({ commit: null, syncedAt: null, pushed: null, files: [] });
     const text = await t.run(async (ctx) => modelOfTomPrelude(ctx));
     expect(text.startsWith(MODEL_OF_TOM_FALLBACK_HEADER)).toBe(true);
     expect(text).toContain(WRITING_STANDARD);
@@ -260,10 +307,19 @@ describe("POST /tts/model-of-tom", () => {
   it("stores the files and answers with the commit", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
-    const res = await send(t, { commit: COMMIT, committedAt: COMMITTED_AT, files: THREE });
+    const res = await send(t, { commit: COMMIT, committedAt: COMMITTED_AT, pushed: false, files: THREE });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, commit: COMMIT, files: 3, deleted: 0 });
-    expect(await allRows(t)).toHaveLength(3);
+    expect(await res.json()).toEqual({ ok: true, commit: COMMIT, files: 3, deleted: 0, forced: false });
+    const rows = await allRows(t);
+    expect(rows).toHaveLength(3);
+    expect(rows.every((r) => r.pushed === false)).toBe(true);
+    // An older post through the route is the mutation's refusal, as a 400.
+    const older = await send(t, { commit: "feedface1", committedAt: COMMITTED_AT - 1, files: THREE });
+    expect(older.status).toBe(400);
+    expect((await older.json()).error).toMatch(/older than the stored one/);
+    const forced = await send(t, { commit: "feedface1", committedAt: COMMITTED_AT - 1, force: "roll back", files: THREE });
+    expect(forced.status).toBe(200);
+    expect(await forced.json()).toMatchObject({ commit: "feedface1", forced: true });
   });
 
   it("refuses a wrong key, a bad commit, no files, and a path outside model-of-tom/", async () => {
@@ -273,6 +329,8 @@ describe("POST /tts/model-of-tom", () => {
     expect((await send(t, { commit: "main", committedAt: 1, files: THREE })).status).toBe(400);
     expect((await send(t, { commit: COMMIT, committedAt: 1, files: [] })).status).toBe(400);
     expect((await send(t, { commit: COMMIT, files: THREE })).status).toBe(400);
+    expect((await send(t, { commit: COMMIT, committedAt: 1, pushed: "yes", files: THREE })).status).toBe(400);
+    expect((await send(t, { commit: COMMIT, committedAt: 1, force: "", files: THREE })).status).toBe(400);
     const outside = await send(t, {
       commit: COMMIT,
       committedAt: 1,

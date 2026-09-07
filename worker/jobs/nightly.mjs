@@ -1,15 +1,19 @@
-#!/usr/bin/env node
 // nightly.mjs — the nightly job (the lifeos update, phase 4). Runs at 4:00
 // a.m. New York, before the 5 a.m. digest, and does five things in order,
 // each one recording a "nightly-failure" dtsEvents row if it fails and then
 // letting the next one run:
 //
-// Steps 1 to 4 write the checkout and run under /var/lock/tts-wikitom.lock,
-// taken once around all four (the post reads HEAD and takes no lock):
+// All five run under /var/lock/tts-wikitom.lock, taken once around them
+// (steps 1 to 4 write the checkout; the post reads the HEAD they left):
 //
 //   1. snapshot — copies every Convex table (the six auth tables excepted)
 //      into the WikiTom checkout at tts/snapshot/, one JSON-lines file per
-//      table, deterministic, written only where the bytes changed.
+//      table, deterministic, written only where the bytes changed, every
+//      string value through the credential filter first (redactRow). A
+//      NIGHTLY COPY, NOT A POINT-IN-TIME TRANSACTION: the boundary instant
+//      fixes which rows are in it (those created before the job started),
+//      not their state — a row updated between two pages is exported in its
+//      later state, and two tables read minutes apart can disagree.
 //   2. learning — applies Tom's objections from the digest thread (the
 //      inverse of each named change, or a row saying why not), then reads
 //      what he did since the last learning run (his session turns with the
@@ -19,18 +23,21 @@
 //      the commit, once the push has made it. See learningStep.
 //   3. sessions — archives every Codex rollout and Claude SDK session file on
 //      this box that WikiTom's sessions/ does not already hold at that
-//      content, in phase 1's layout, and appends the manifest.
+//      content, in phase 1's layout, and appends the manifest — the sweep
+//      behind the session-end archive the daemon makes through the same
+//      function (session-archive.mjs).
 //   4. push — one commit per step that changed something, plus whatever an
 //      earlier run left modified, `git pull --rebase`, `git push` over the
 //      github.com-wikitom SSH alias. A refused pull or push is a failure row
 //      and the commits stay local for the next night; nothing is retried.
-//   5. post — reads the model-of-tom files at HEAD (writing.md,
-//      priorities.md, schedule.md, and the "Current state" and "Must not
-//      break" sections of every page under areas/) and posts them with the
-//      commit hash and time to POST /tts/model-of-tom — whether or not the
-//      push succeeded, so every prompt names the commit it began with. A
-//      named file missing or empty is a failure row and NO post: the store
-//      is replaced whole, so a partial post would drop that file from every
+//   5. post — reads the model-of-tom files from the git object at HEAD
+//      (writing.md, priorities.md, schedule.md, and the "Current state" and
+//      "Must not break" sections of every page under areas/) and posts them
+//      with the commit hash and time to POST /tts/model-of-tom — whether or
+//      not the push succeeded, so every prompt names the commit it began
+//      with; `pushed` says whether that commit is on GitHub yet. A named
+//      file missing or empty is a failure row and NO post: the store is
+//      replaced whole, so a partial post would drop that file from every
 //      prompt.
 //
 // Then one "nightly-run" row with the summary, which the digest reads.
@@ -48,39 +55,92 @@
 // and never prints TTS_WORKER_KEY.
 //
 // Plain Node ESM, zero npm dependencies (tts-lib.mjs's rule): node:fs,
-// node:zlib, node:crypto, node:child_process, and the global fetch.
+// node:zlib, node:crypto, node:child_process, and the global fetch. No
+// shebang line, unlike its siblings: the credential filter reaches this file
+// through session-archive.mjs, which finds it by a dynamic import at load,
+// and vitest's transform puts an import of its own ahead of a shebang, which
+// is then a syntax error. Cron and the README run it as
+// `node /opt/tts/nightly.mjs`, which needs none.
 
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import zlib from "node:zlib";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import {
+  CLAUDE_ACCOUNTS_DIR,
+  CODEX_SESSIONS_DIR,
+  LOCK_WAIT_SECONDS,
+  SESSIONS_DIR,
+  SPLIT_BYTES,
+  WIKITOM_DIR,
+  WIKITOM_LOCK,
+  archiveSessionFiles,
+  bufferLines,
+  claudeEntry,
+  codexMetaOf,
+  codexMetaOfBuffer,
+  discoverSessionFiles,
+  gzip,
+  indexManifests,
+  readManifests,
+  redactSecrets,
+  sessionDateOf,
+  sessionDateOfBuffer,
+  sha256,
+  utcDay,
+  withWikiTomLock,
+  writeArchived,
+} from "./session-archive.mjs";
 import { loadEnv, convexFetch, nyHour, runClaude, extractJsonObject, clip } from "./tts-lib.mjs";
 import { git } from "./tts-code-lib.mjs";
-import { enclosingHeadings, extractSections, frontmatterBlock, sectionSpan } from "./markdown-sections.mjs";
+import {
+  enclosingHeadings,
+  extractSections,
+  frontmatterBlock,
+  isIsoDay,
+  parseFrontmatter,
+  sectionSpan,
+} from "./markdown-sections.mjs";
 import { CHANGE_ID_CHARS, changeIdTokens, namedChange } from "./learning-change-names.mjs";
 
 // ── Where things are ─────────────────────────────────────────────────────────
-export const WIKITOM_DIR = process.env.WIKITOM_DIR || "/root/wikitom";
-export const WIKITOM_LOCK = "/var/lock/tts-wikitom.lock";
+// The checkout, its lock, the session directories, the split rule and the
+// archive itself live in session-archive.mjs — the one home the daemon
+// shares for a session-end archive — and are re-exported here for the
+// weekly job and the tests, which read them off this module.
+export {
+  CLAUDE_ACCOUNTS_DIR,
+  CODEX_SESSIONS_DIR,
+  LOCK_WAIT_SECONDS,
+  SESSIONS_DIR,
+  SPLIT_BYTES,
+  WIKITOM_DIR,
+  WIKITOM_LOCK,
+  bufferLines,
+  claudeEntry,
+  codexMetaOf,
+  codexMetaOfBuffer,
+  discoverSessionFiles,
+  gzip,
+  indexManifests,
+  readManifests,
+  sessionDateOf,
+  sessionDateOfBuffer,
+  sha256,
+  utcDay,
+  withWikiTomLock,
+  writeArchived,
+};
 // The SSH alias setup.sh clones over (Host github.com-wikitom in
 // /root/.ssh/config → the deploy key /root/.ssh/wikitom). The checkout's
 // origin carries it, so `git pull` and `git push` need no URL here.
 export const WIKITOM_REMOTE = "git@github.com-wikitom:Heffnt/WikiTom.git";
 export const SNAPSHOT_DIR = "tts/snapshot";
-export const SESSIONS_DIR = "sessions";
-export const CODEX_SESSIONS_DIR = "/root/.codex/sessions";
-export const CLAUDE_ACCOUNTS_DIR = "/root/.claude-accounts";
 // Where a table's files are assembled before they replace the checkout's:
 // outside the work tree, so a failed export leaves tts/snapshot/ as it was.
 export const SNAPSHOT_STAGING_DIR = "/var/cache/tts/snapshot-staging";
-
-// A file over 90 MB is split into gzipped parts (phase 1's rule; GitHub
-// refuses a blob over 100 MB, and the same threshold applies forever).
-export const SPLIT_BYTES = 90 * 1024 * 1024;
 export const EXPORT_PAGE = 200;
-export const LOCK_WAIT_SECONDS = 600;
 
 // The model-of-tom files, in the order they are posted. The server orders
 // them again (convex/ttsSkills.ts orderModelOfTom) — that is the authority;
@@ -92,6 +152,24 @@ export const MODEL_OF_TOM_FIRST = [
 ];
 export const MODEL_OF_TOM_AREAS_DIR = "model-of-tom/areas";
 export const AREA_SECTIONS = ["Current state", "Must not break"];
+// The eight area pages every prompt carries (WikiTom model-of-tom/areas/).
+// Named here because THE POST IS ALL OR NOTHING: the store is replaced
+// whole, so a page or a section the job could not read would fall out of
+// every prompt until a night that read it again — and silently, since a
+// missing area page is no different from one that never existed. A page
+// beyond these eight is posted when it has the sections and is not
+// required; one of these eight, or either of its sections, missing is a
+// failure row naming it and no post.
+export const MODEL_OF_TOM_AREA_PAGES = [
+  "admin",
+  "agent-systems",
+  "climbing",
+  "health-and-food",
+  "mental-health",
+  "money",
+  "research",
+  "social",
+].map((name) => `${MODEL_OF_TOM_AREAS_DIR}/${name}.md`);
 /** The job's failure row (convex/ttsNightly.ts NIGHTLY_FAILURE by name). */
 export const NIGHTLY_FAILURE = "nightly-failure";
 
@@ -107,18 +185,10 @@ export const GIT_IDENTITY = [
 ];
 
 const STEPS = ["snapshot", "learning", "sessions", "push", "post"];
-// The four that write the WikiTom checkout, and so run under one lock.
+// The four that write the WikiTom checkout. The post runs under the same
+// lock after them (see main), reading what they left.
 const LOCKED_STEPS = ["snapshot", "learning", "sessions", "push"];
 // ── Small pure helpers (tested in nightly.test.mjs) ──────────────────────────
-
-export function sha256(bytes) {
-  return crypto.createHash("sha256").update(bytes).digest("hex");
-}
-
-/** YYYY-MM-DD of an instant, in UTC (the manifest's and the layout's date). */
-export function utcDay(ms) {
-  return new Date(ms).toISOString().slice(0, 10);
-}
 
 /**
  * One row as one line, deterministically: keys sorted at every level, the
@@ -133,6 +203,27 @@ export function serializeRow(value) {
     return `{ ${keys.map((k) => `${JSON.stringify(k)}: ${serializeRow(value[k])}`).join(", ")} }`;
   }
   return JSON.stringify(value);
+}
+
+/**
+ * One exported row with every string value in it — however deep, in arrays
+ * and objects alike — passed through the daemon's credential filter. THE
+ * SNAPSHOT IS VERBATIM OTHERWISE, and a Convex row can hold anything a
+ * model or Tom typed: a key pasted into a session turn (claudeInbound.text),
+ * a setting, a captured email. The transcript rows already pass this filter
+ * on their way in; the rows that never did pass it here, on their way into
+ * a public-shaped git repository. Keys and non-strings are untouched, so
+ * serializeRow's bytes stay deterministic night after night.
+ */
+export function redactRow(value) {
+  if (typeof value === "string") return redactSecrets(value);
+  if (Array.isArray(value)) return value.map(redactRow);
+  if (value !== null && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = redactRow(v);
+    return out;
+  }
+  return value;
 }
 
 /**
@@ -173,18 +264,73 @@ export function isTableFile(table, name) {
   return name === `${table}.jsonl` || new RegExp(`^${table}\\.part\\d+\\.jsonl\\.gz$`).test(name);
 }
 
-// gzip with no name or mtime in the header (Node writes neither), so the
-// same input gives the same bytes and hashes compare across nights.
-export function gzip(bytes) {
-  return zlib.gzipSync(bytes, { level: 9 });
+// ── Where the post reads from ────────────────────────────────────────────────
+// A source is `read(rel)` → the file's text or null, and `list(dirRel)` → the
+// names in a directory. The post reads THE GIT OBJECT AT THE COMMIT IT NAMES
+// (commitSource), never the work tree: a post that read the tree while
+// naming HEAD could carry a page another writer had already changed under
+// the lock's next holder, or a half-written one, under a commit that never
+// held those bytes. The work tree form is for the tests and for a caller
+// with no commit yet.
+export function worktreeSource(dir) {
+  return {
+    read(rel) {
+      const abs = path.join(dir, rel);
+      return fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : null;
+    },
+    list(dirRel) {
+      const abs = path.join(dir, dirRel);
+      return fs.existsSync(abs) ? fs.readdirSync(abs) : [];
+    },
+  };
+}
+
+export function commitSource(dir, commit) {
+  return {
+    read(rel) {
+      try {
+        return gitCapture(dir, "show", `${commit}:${rel}`);
+      } catch {
+        return null;
+      }
+    },
+    list(dirRel) {
+      try {
+        return gitCapture(dir, "ls-tree", "--name-only", commit, "--", `${dirRel}/`)
+          .split("\n")
+          .filter((p) => p !== "")
+          .map((p) => p.slice(dirRel.length + 1));
+      } catch {
+        return [];
+      }
+    },
+  };
 }
 
 /**
- * The files to post from a WikiTom checkout: the three named files that
+ * Whether `commit` has reached the checkout's upstream — an ancestor of
+ * `@{upstream}` as last fetched, which the push step's pull has just done.
+ * Read from git rather than from this run's push result so `--only=post`
+ * answers the same question, and a checkout with no upstream is "not
+ * pushed", which is the truth.
+ */
+export function isPushed(dir, commit) {
+  try {
+    execFileSync("git", ["-C", dir, "merge-base", "--is-ancestor", commit, "@{upstream}"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The files to post from a WikiTom source (a checkout directory, read from
+ * the work tree, or a source from commitSource): the three named files that
  * exist, then each page under areas/ (alphabetically) reduced to its
- * frontmatter block and its AREA_SECTIONS. `missing` names the expected files
- * that were not there — a post still goes out with the rest, and the caller
- * records the gap.
+ * frontmatter block and its AREA_SECTIONS. `missing` names every expected
+ * thing that was not there — a named file, one of the eight area pages, or
+ * either of a page's two sections — and the caller posts nothing while it
+ * is not empty (postStep).
  *
  * THE FRONTMATTER RIDES ALONG because it is where a page says when it was
  * last reviewed and how long its window is (spec §22), and the weekly gather
@@ -192,255 +338,46 @@ export function gzip(bytes) {
  * way to see the checkout. Three short lines in every prompt, and the date
  * they carry is a fact an agent planning for Tom should have anyway.
  */
-export function collectModelOfTomFiles(dir) {
+export function collectModelOfTomFiles(from) {
+  const source = typeof from === "string" ? worktreeSource(from) : from;
   const files = [];
   const missing = [];
   for (const rel of MODEL_OF_TOM_FIRST) {
-    const abs = path.join(dir, rel);
-    if (!fs.existsSync(abs)) {
-      missing.push(rel);
-      continue;
-    }
-    const body = fs.readFileSync(abs, "utf8");
-    if (body.trim() === "") missing.push(rel);
+    const body = source.read(rel);
+    if (body === null || body.trim() === "") missing.push(rel);
     else files.push({ path: rel, body });
   }
-  const areas = path.join(dir, MODEL_OF_TOM_AREAS_DIR);
-  if (fs.existsSync(areas)) {
-    const pages = fs
-      .readdirSync(areas)
-      .filter((n) => n.endsWith(".md"))
-      .sort();
-    for (const page of pages) {
-      const text = fs.readFileSync(path.join(areas, page), "utf8");
-      const sections = extractSections(text, AREA_SECTIONS);
-      if (sections === "") continue;
-      const front = frontmatterBlock(text);
-      files.push({
-        path: `${MODEL_OF_TOM_AREAS_DIR}/${page}`,
-        body: front === "" ? sections : `${front}\n\n${sections}`,
-      });
+  const pages = source
+    .list(MODEL_OF_TOM_AREAS_DIR)
+    .filter((n) => n.endsWith(".md"))
+    .map((n) => `${MODEL_OF_TOM_AREAS_DIR}/${n}`);
+  for (const rel of MODEL_OF_TOM_AREA_PAGES) if (!pages.includes(rel)) missing.push(rel);
+  for (const rel of pages.sort()) {
+    const text = source.read(rel) ?? "";
+    const required = MODEL_OF_TOM_AREA_PAGES.includes(rel);
+    if (required) {
+      const lines = text.split(/\r?\n/);
+      for (const section of AREA_SECTIONS) {
+        if (sectionSpan(lines, section) === null) missing.push(`${rel}: no "${section}" section`);
+      }
     }
+    const sections = extractSections(text, AREA_SECTIONS);
+    if (sections === "") continue;
+    const front = frontmatterBlock(text);
+    files.push({ path: rel, body: front === "" ? sections : `${front}\n\n${sections}` });
   }
   return { files, missing };
-}
-
-/** The instant one session-file line carries, or null: a Claude SDK line has
- * `timestamp` at the top level, a Codex rollout's session_meta line has one
- * there and inside its payload. */
-function timestampOfLine(line) {
-  if (line.trim() === "") return null;
-  try {
-    const obj = JSON.parse(line);
-    const ts = obj?.timestamp ?? obj?.payload?.timestamp;
-    if (typeof ts === "string" && !Number.isNaN(Date.parse(ts))) return Date.parse(ts);
-  } catch {
-    // not JSON — keep looking
-  }
-  return null;
-}
-
-/**
- * The lines of a buffer, decoded ONE AT A TIME. A session file is tens of
- * megabytes and a single line of it can be hundreds of kilobytes — every
- * session now opens with the model-of-tom prelude — so neither a fixed head
- * nor one decode of the whole file is the right way to read the first lines.
- */
-export function* bufferLines(raw) {
-  let start = 0;
-  while (start < raw.length) {
-    let end = raw.indexOf(0x0a, start);
-    if (end === -1) end = raw.length;
-    yield raw.toString("utf8", start, end);
-    start = end + 1;
-  }
-}
-
-/**
- * The date a session file belongs to: the first `timestamp` found in it,
- * however far in that is, else the file's mtime. Returns { date, dateSource }.
- * A cap on how much is read is a cap on how many files are filed by the wrong
- * date — the prelude alone exceeded the 64 KB head this used to take.
- */
-export function sessionDateOf(head, mtimeMs) {
-  for (const line of head.split("\n")) {
-    const at = timestampOfLine(line);
-    if (at !== null) return { date: utcDay(at), dateSource: "timestamp" };
-  }
-  return { date: utcDay(mtimeMs), dateSource: "mtime" };
-}
-
-/** sessionDateOf over a buffer, without decoding more of it than it must. */
-export function sessionDateOfBuffer(raw, mtimeMs) {
-  for (const line of bufferLines(raw)) {
-    const at = timestampOfLine(line);
-    if (at !== null) return { date: utcDay(at), dateSource: "timestamp" };
-  }
-  return { date: utcDay(mtimeMs), dateSource: "mtime" };
-}
-
-/** codexMetaOf over a buffer: its first non-empty line, however long. */
-export function codexMetaOfBuffer(raw) {
-  for (const line of bufferLines(raw)) {
-    if (line.trim() !== "") return codexMetaOf(line);
-  }
-  return null;
-}
-
-/** A Codex rollout's identity from its session_meta line: the thread id and,
- * for a subagent thread, the parent's. Null when the head is not a rollout. */
-export function codexMetaOf(head) {
-  const first = head.split("\n").find((l) => l.trim() !== "");
-  if (!first) return null;
-  try {
-    const obj = JSON.parse(first);
-    if (obj?.type !== "session_meta") return null;
-    const p = obj.payload ?? {};
-    const id = typeof p.id === "string" ? p.id : null;
-    if (!id) return null;
-    const parent =
-      typeof p.parent_thread_id === "string" && p.parent_thread_id !== id
-        ? p.parent_thread_id
-        : null;
-    return { id, parent, cwd: typeof p.cwd === "string" ? p.cwd : null };
-  } catch {
-    return null;
-  }
-}
-
-// Attachments that are already compressed, or binary, are stored raw (phase
-// 1 stored a PDF raw); everything else is gzipped.
-const RAW_EXTENSIONS = new Set([".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".zip", ".gz"]);
-
-/**
- * Every session file on this box, described but not read: Codex rollouts
- * under `codexDir`/YYYY/MM/DD/ and Claude SDK files under
- * `accountsDir`/<account>/projects/<project>/ (the parent transcript
- * `<id>.jsonl`, and everything under `<id>/`: .jsonl children, other files
- * as attachments). The `active` symlink under the accounts dir is skipped —
- * it is one of the real accounts under another name.
- */
-export function discoverSessionFiles({ codexDir, accountsDir }) {
-  const out = [];
-  if (fs.existsSync(codexDir)) {
-    walk(codexDir, (file) => {
-      if (!file.endsWith(".jsonl")) return;
-      out.push({ runtime: "codex", account: null, source: file });
-    });
-  }
-  if (fs.existsSync(accountsDir)) {
-    for (const entry of fs.readdirSync(accountsDir, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
-      const projects = path.join(accountsDir, entry.name, "projects");
-      if (!fs.existsSync(projects)) continue;
-      for (const proj of fs.readdirSync(projects, { withFileTypes: true })) {
-        if (!proj.isDirectory()) continue;
-        const projDir = path.join(projects, proj.name);
-        for (const item of fs.readdirSync(projDir, { withFileTypes: true })) {
-          const abs = path.join(projDir, item.name);
-          if (item.isFile() && item.name.endsWith(".jsonl")) {
-            out.push({
-              runtime: "claude",
-              account: entry.name,
-              project: proj.name,
-              session: item.name.slice(0, -".jsonl".length),
-              kind: "parent",
-              source: abs,
-            });
-          } else if (item.isDirectory()) {
-            walk(abs, (file) => {
-              out.push({
-                runtime: "claude",
-                account: entry.name,
-                project: proj.name,
-                session: item.name,
-                kind: file.endsWith(".jsonl") ? "child" : "attachment",
-                rel: path.relative(abs, file).split(path.sep).join("/"),
-                source: file,
-              });
-            });
-          }
-        }
-      }
-    }
-  }
-  out.sort((a, b) => (a.source < b.source ? -1 : a.source > b.source ? 1 : 0));
-  return out;
-}
-
-function walk(dir, visit) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const abs = path.join(dir, entry.name);
-    if (entry.isDirectory()) walk(abs, visit);
-    else if (entry.isFile()) visit(abs);
-  }
-}
-
-/** Every line of every manifest-*.jsonl under sessions/, parsed. */
-export function readManifests(sessionsDir) {
-  const entries = [];
-  if (!fs.existsSync(sessionsDir)) return entries;
-  for (const name of fs.readdirSync(sessionsDir).sort()) {
-    if (!/^manifest-.*\.jsonl$/.test(name)) continue;
-    for (const line of fs.readFileSync(path.join(sessionsDir, name), "utf8").split("\n")) {
-      if (line.trim() === "") continue;
-      try {
-        entries.push(JSON.parse(line));
-      } catch {
-        // a torn line is not a reason to re-archive everything
-      }
-    }
-  }
-  return entries;
-}
-
-/**
- * What the manifests already say, indexed for the archive step: the content
- * hash last archived for each source path (a file that grew since is
- * archived again), the session directory each parent was archived into —
- * WITHOUT the per-account segment, which claudeEntry appends — so a child
- * lands beside its parent, and which accounts each Claude session id has been
- * seen under (so a second account's copy sits in its own subdir).
- */
-export function indexManifests(entries) {
-  const shaBySource = new Map();
-  const dirBySession = new Map();
-  const accountsBySession = new Map();
-  for (const e of entries) {
-    if (typeof e.source === "string" && typeof e.sha256 === "string") {
-      shaBySource.set(e.source, e.sha256);
-    }
-    if (e.kind === "parent" && typeof e.dest === "string" && typeof e.session === "string") {
-      const key = `${e.runtime}:${e.session}`;
-      if (!dirBySession.has(key)) {
-        let dir = e.dest.slice(0, e.dest.lastIndexOf("/"));
-        // What is indexed is the session's directory WITHOUT the account: a
-        // per-account dest ends in the account's name, and keeping that would
-        // nest the other account's files inside this one's.
-        if (e.runtime === "claude" && e.account && dir.endsWith(`/${e.account}`)) {
-          dir = dir.slice(0, -`/${e.account}`.length);
-        }
-        dirBySession.set(key, dir);
-      }
-    }
-    if (e.runtime === "claude" && typeof e.session === "string" && e.account) {
-      const set = accountsBySession.get(e.session) ?? new Set();
-      set.add(e.account);
-      accountsBySession.set(e.session, set);
-    }
-  }
-  return { shaBySource, dirBySession, accountsBySession };
 }
 
 // ── The run ──────────────────────────────────────────────────────────────────
 
 /** Record a failed step: the cron log, and a dtsEvents row the digest reads. */
-async function recordFailure(run, step, err) {
+async function recordFailure(run, step, err, { fetch = convexFetch } = {}) {
   const error = String(err?.message ?? err).slice(0, 2000);
   console.error(`[nightly] ${step} FAILED: ${error}`);
   run.failures.push({ step, error });
   try {
-    await convexFetch(run.env, "/tts/event", {
+    await fetch(run.env, "/tts/event", {
       kind: NIGHTLY_FAILURE,
       data: { day: run.day, step, error },
     });
@@ -450,6 +387,38 @@ async function recordFailure(run, step, err) {
 }
 
 // ── 1. snapshot ──────────────────────────────────────────────────────────────
+/**
+ * Every row of one table, paged out of GET /tts/export against one boundary
+ * instant, EACH ONE THROUGH THE CREDENTIAL FILTER (redactRow, every string
+ * value at every depth). This is the only way a row reaches the snapshot, so
+ * "the vault holds no key" is a property of the read itself rather than a
+ * line somebody has to remember to keep next to the write.
+ */
+export async function exportTableRows({ env, table, boundary, fetch = convexFetch }) {
+  const rows = [];
+  let cursor = null;
+  for (;;) {
+    const params = new URLSearchParams({
+      table,
+      boundary: String(boundary),
+      numItems: String(EXPORT_PAGE),
+    });
+    if (cursor !== null) params.set("cursor", cursor);
+    const page = await fetch(env, `/tts/export?${params}`);
+    for (const row of page.rows) rows.push(redactRow(row));
+    if (page.isDone) break;
+    // EXPORT_PAGE is a ceiling, not a promise: the server ends a page at its
+    // byte budget too (a table of 256KB rows would otherwise ask for more
+    // than one query may read), so a page can be one row. The cursor must
+    // move every time — a server that stopped advancing it would spin here.
+    if (page.continueCursor === cursor) {
+      throw new Error(`/tts/export did not advance its cursor for ${table} — stopped at ${rows.length} rows`);
+    }
+    cursor = page.continueCursor;
+  }
+  return rows;
+}
+
 async function snapshotStep(run) {
   const { env } = run;
   const boundary = run.now;
@@ -464,27 +433,7 @@ async function snapshotStep(run) {
   // complete set replaces the checkout's, so a failure part-way leaves last
   // night's copy whole rather than a mix of two nights.
   for (const table of tables) {
-    const rows = [];
-    let cursor = null;
-    for (;;) {
-      const params = new URLSearchParams({
-        table,
-        boundary: String(boundary),
-        numItems: String(EXPORT_PAGE),
-      });
-      if (cursor !== null) params.set("cursor", cursor);
-      const page = await convexFetch(env, `/tts/export?${params}`);
-      for (const row of page.rows) rows.push(row);
-      if (page.isDone) break;
-      // EXPORT_PAGE is a ceiling, not a promise: the server ends a page at its
-      // byte budget too (a table of 256KB rows would otherwise ask for more
-      // than one query may read), so a page can be one row. The cursor must
-      // move every time — a server that stopped advancing it would spin here.
-      if (page.continueCursor === cursor) {
-        throw new Error(`/tts/export did not advance its cursor for ${table} — stopped at ${rows.length} rows`);
-      }
-      cursor = page.continueCursor;
-    }
+    const rows = await exportTableRows({ env, table, boundary });
     counts[table] = rows.length;
     for (const f of planTableFiles(table, rows)) {
       fs.writeFileSync(path.join(SNAPSHOT_STAGING_DIR, f.name), f.bytes);
@@ -591,6 +540,29 @@ export function learningChangeId(file, section, line) {
   return sha256(`${file}\n${section}\n${line}`).slice(0, CHANGE_ID_CHARS);
 }
 
+/** The id git gives a blob of `text` — what `git hash-object` prints —
+ * computed here so a page still in memory needs no git call. */
+export function gitBlobId(text) {
+  const bytes = Buffer.from(String(text ?? ""));
+  return crypto.createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+}
+
+/**
+ * The blob id of a page's BODY — the text below its frontmatter. Every
+ * learning row carries two: `baseBlob`, the body the validation read, and
+ * `resultBlob`, the body it wrote; a revert checks the page against the
+ * newest resultBlob the job recorded for it (revertLearningChange), so a
+ * line is taken back only from a page that is as the job last left it, and
+ * a page Tom has edited since gets a "learning-revert-failed" row naming
+ * both hashes instead of a change to text the job never saw. The body and
+ * not the whole page, because the frontmatter is written by others on
+ * purpose — `updated:` by the step itself, `reviewed:` by the weekly job
+ * when Tom confirms a page — and neither is an edit to what the lines say.
+ */
+export function pageBodyBlob(text) {
+  return gitBlobId(parseFrontmatter(text).body);
+}
+
 /**
  * `updated: <day>` in a page's frontmatter (the area pages carry one; a page
  * without frontmatter, or without an `updated:` line in it, is returned as
@@ -617,28 +589,55 @@ export function sessionCitation(turn) {
   return /^[0-9a-f]{8}/.test(sdk) ? sdk.slice(0, 8) : turn.sessionId;
 }
 
-/** Every id in tonight's input that a line's evidence may name. A session is
- * named by its citation (the 8-hex prefix), by the whole SDK id, or by its
- * Convex row id — the prompt shows the first; the others are accepted. */
-export function learningEvidenceIds(input) {
-  const ids = new Set();
-  const add = (x) => {
-    if (typeof x === "string" && x.length >= 6) ids.add(x);
+// ── Evidence ─────────────────────────────────────────────────────────────────
+// A citation has one of three forms, and the id in it is EXACT — a source in
+// tonight's input has that name or the citation names nothing:
+//
+//   session <id>   a session Tom typed in: the 8-hex prefix of its SDK id
+//                  (what the pages cite), the whole SDK id, or the Convex row
+//                  id of a session that never reported one
+//   ruling <id>    a ruling's row id
+//   thread <ts>    a Slack reply of Tom's, by its ts or its thread's
+//
+// "Includes an id" was the old test, and `session 47f04bc9-old` included
+// one. On the line, each citation carries its date — `(session 47f04bc9,
+// 2026-09-05; ruling k17…, 2026-09-05)` — and the date must fall in the
+// window the input was read over: a line resting on tonight's input is dated
+// tonight. And every change carries an EXCERPT: EXCERPT_MIN_WORDS or more of
+// Tom's own words, verbatim, from a source it cites. The citation says where;
+// the excerpt is what was there, and it is the evidence for an inference too
+// — an inference that cannot quote what it rests on rests on nothing.
+const CITATION = /^(session|ruling|thread) (\S+)$/;
+const CITED_ENTRY = /^(session|ruling|thread) (\S+), (\d{4}-\d{2}-\d{2})$/;
+export const EXCERPT_MIN_WORDS = 6;
+
+/**
+ * What tonight's input can evidence: every name a citation may use, keyed
+ * "<kind> <id>", each with Tom's own words under that name (the turns he
+ * typed in the session, the reply's text, the ruling's sentence and quote),
+ * and the window's first and last days. A session is under each of its
+ * names. Null skips the input-dependent checks (the pure tests).
+ */
+export function learningEvidence(input) {
+  const sources = new Map();
+  const add = (kind, id, ...texts) => {
+    if (typeof id !== "string" || id.length < 6) return;
+    const key = `${kind} ${id}`;
+    const s = sources.get(key) ?? { texts: [] };
+    for (const t of texts) if (typeof t === "string" && t.trim() !== "") s.texts.push(t);
+    sources.set(key, s);
   };
   for (const t of input.tomTurns ?? []) {
-    add(t.id);
-    add(t.sessionId);
-    add(t.sdkSessionId);
-    add(sessionCitation(t));
+    for (const id of new Set([sessionCitation(t), t.sdkSessionId, t.sessionId])) add("session", id, t.text);
   }
   for (const r of input.slackReplies ?? []) {
-    add(r.id);
-    add(r.data?.ts);
-    add(r.data?.threadTs);
+    for (const id of new Set([r.data?.ts, r.data?.threadTs])) add("thread", id, r.data?.text);
   }
-  for (const r of input.rulings ?? []) add(r.id);
-  return ids;
+  for (const r of input.rulings ?? []) add("ruling", r.id, r.sentence, r.quote);
+  return { sources, sinceDay: utcDay(input.since), untilDay: utcDay(input.until) };
 }
+
+const wordCount = (text) => oneLine(text).split(" ").filter((w) => w !== "").length;
 
 /**
  * The model's answer as a list of raw changes. Malformed JSON, or an object
@@ -709,8 +708,8 @@ export function locateSection(lines, file, section) {
 
 /** Why one proposed change may not land, or null when it may. The checks
  * are the rules in the block comment above, in the order a reader of the
- * refusal would want them. */
-function learningRefusal(c, texts, evidenceIds) {
+ * refusal would want them. `evidence` is learningEvidence(input), or null. */
+function learningRefusal(c, texts, evidence) {
   if (typeof c.file !== "string" || !isLearningFile(c.file)) {
     return `${String(c.file)} is not a page the learning step writes`;
   }
@@ -735,22 +734,41 @@ function learningRefusal(c, texts, evidenceIds) {
   ) {
     return "no evidence";
   }
-  const evidence = c.evidence.map((e) => e.trim());
-  if (evidenceIds !== null) {
-    for (const e of evidence) {
-      if (![...evidenceIds].some((id) => e.includes(id))) {
-        return `evidence "${e}" names nothing in tonight's input`;
-      }
+  const names = c.evidence.map((e) => e.trim());
+  for (const e of names) {
+    if (!CITATION.test(e)) return `evidence "${e}" is not a citation: session <id>, ruling <id> or thread <ts>`;
+    if (evidence !== null && !evidence.sources.has(e)) {
+      return `evidence "${e}" names nothing in tonight's input`;
     }
   }
-  // The citation IS the evidence: every entry is in the line, and the
-  // trailing parenthetical names at least one of them — "(probably)" at the
-  // end of a line that never says where it came from is not a citation.
-  for (const e of evidence) {
-    if (!c.line.includes(e)) return `the line does not cite its evidence "${e}"`;
+  // The citation IS the evidence: the trailing parenthetical is the
+  // change's evidence entry by entry, each with its date in the window, and
+  // nothing else — "(probably)" at the end of a line that never says where
+  // it came from is not a citation.
+  const entries = cited[1].slice(1, -1).split(";").map((e) => e.trim());
+  for (const entry of entries) {
+    const m = CITED_ENTRY.exec(entry);
+    if (!m) return `the citation "${entry}" is not in the form <kind> <id>, YYYY-MM-DD`;
+    const name = `${m[1]} ${m[2]}`;
+    if (!names.includes(name)) return `the citation names "${name}", which is not in the change's evidence`;
+    if (!isIsoDay(m[3])) return `the citation date ${m[3]} is not a day`;
+    if (evidence !== null && (m[3] < evidence.sinceDay || m[3] > evidence.untilDay)) {
+      return `the citation date ${m[3]} is outside tonight's window (${evidence.sinceDay} to ${evidence.untilDay})`;
+    }
   }
-  if (!evidence.some((e) => cited[1].includes(e))) {
-    return `the citation ${cited[1]} names none of the change's evidence`;
+  for (const e of names) {
+    if (!entries.some((entry) => entry.startsWith(`${e},`))) return `the line does not cite its evidence "${e}"`;
+  }
+  // The excerpt: Tom's words, verbatim, from a source the change cites.
+  if (typeof c.excerpt !== "string" || wordCount(c.excerpt) < EXCERPT_MIN_WORDS) {
+    return `no excerpt of ${EXCERPT_MIN_WORDS} or more of Tom's words from tonight's input`;
+  }
+  if (evidence !== null) {
+    const wanted = oneLine(c.excerpt);
+    const cites = names.flatMap((e) => evidence.sources.get(e)?.texts ?? []);
+    if (!cites.some((t) => oneLine(t).includes(wanted))) {
+      return "the excerpt is not in the cited input verbatim";
+    }
   }
   if (c.replaces !== null && c.replaces !== undefined) {
     // One bullet — which on writing.md may be quoted over the lines the
@@ -802,23 +820,28 @@ export function oneLine(text) {
     .trim();
 }
 
-/** The unit within `span` whose one-line form equals `text`'s, or null. */
-function findBullet(lines, span, text) {
+/**
+ * Every unit within `span` whose one-line form equals `text`'s. A caller
+ * that will REMOVE OR REPLACE a bullet acts only on exactly one match: with
+ * two, which is the learned copy and which is Tom's cannot be told from the
+ * text, and taking the first would take his (a line he pasted above the
+ * job's) while the job's stayed.
+ */
+function findBullets(lines, span, text) {
   const wanted = oneLine(text);
-  for (const unit of bulletUnits(lines, span)) {
-    if (oneLine(lines.slice(unit.start, unit.end).join("\n")) === wanted) return unit;
-  }
-  return null;
+  return bulletUnits(lines, span).filter(
+    (unit) => oneLine(lines.slice(unit.start, unit.end).join("\n")) === wanted,
+  );
 }
 
 /**
  * Apply proposed changes to the pages (a Map of file → text), pure. Returns
  * the new texts, the changes that landed (each with its id and the digest's
- * fields), and the ones refused with the reason. `evidenceIds` is the set a
- * line's evidence must name — null skips that check. Every page that took
- * a change gets `updated: day`.
+ * fields), and the ones refused with the reason. `evidence` is what tonight's
+ * input can evidence (learningEvidence) — null skips the checks against it.
+ * Every page that took a change gets `updated: day`.
  */
-export function applyLearningChanges(pages, changes, { day, evidenceIds = null } = {}) {
+export function applyLearningChanges(pages, changes, { day, evidence = null } = {}) {
   const texts = new Map(pages);
   const applied = [];
   const refused = [];
@@ -830,7 +853,7 @@ export function applyLearningChanges(pages, changes, { day, evidenceIds = null }
       reason,
     });
   for (const c of changes) {
-    const why = learningRefusal(c, texts, evidenceIds);
+    const why = learningRefusal(c, texts, evidence);
     if (why !== null) {
       refuse(c, why);
       continue;
@@ -843,18 +866,23 @@ export function applyLearningChanges(pages, changes, { day, evidenceIds = null }
       continue;
     }
     const { span } = located;
-    if (findBullet(lines, { start: -1, end: lines.length }, line) !== null) {
+    if (findBullets(lines, { start: -1, end: lines.length }, line).length > 0) {
       refuse(c, "already on the page");
       continue;
     }
     const replaces = c.replaces ?? null;
     let before = "";
     if (replaces !== null) {
-      const unit = findBullet(lines, span, replaces);
-      if (unit === null) {
+      const units = findBullets(lines, span, replaces);
+      if (units.length === 0) {
         refuse(c, `the line to replace is not in "${c.section.trim()}" verbatim`);
         continue;
       }
+      if (units.length > 1) {
+        refuse(c, `the line to replace is in "${c.section.trim()}" ${units.length} times; which one cannot be told`);
+        continue;
+      }
+      const [unit] = units;
       before = oneLine(lines.slice(unit.start, unit.end).join("\n"));
       lines.splice(unit.start, unit.end - unit.start, line);
     } else {
@@ -873,12 +901,34 @@ export function applyLearningChanges(pages, changes, { day, evidenceIds = null }
       after: line,
       evidence: c.evidence.map((e) => e.trim()).join("; "),
       sources: c.evidence.map((e) => e.trim()),
+      excerpt: oneLine(c.excerpt),
     });
   }
   for (const file of new Set(applied.map((a) => a.file))) {
     texts.set(file, bumpUpdated(texts.get(file), day));
   }
+  // The body each change was validated against, and the body it left.
+  for (const a of applied) {
+    a.baseBlob = pageBodyBlob(pages.get(a.file));
+    a.resultBlob = pageBodyBlob(texts.get(a.file));
+  }
   return { pages: texts, applied, refused };
+}
+
+/**
+ * The body blob the job last left each page with: the newest recorded
+ * write per file (a "learning-change" or a "learning-reverted" row, both
+ * carry resultBlob). A file with no recorded blob — rows from before blobs
+ * were kept — is not checked.
+ */
+export function expectedBodyBlobs(rows) {
+  const out = new Map();
+  for (const r of [...(rows ?? [])].sort((a, b) => (b.at ?? 0) - (a.at ?? 0))) {
+    if (typeof r?.file === "string" && typeof r.resultBlob === "string" && !out.has(r.file)) {
+      out.set(r.file, r.resultBlob);
+    }
+  }
+  return out;
 }
 
 /**
@@ -890,24 +940,45 @@ export function applyLearningChanges(pages, changes, { day, evidenceIds = null }
  * ONLY WITHIN THE CHANGE'S OWN SECTION (locateSection): the line is looked
  * for where the change put it and nowhere else, so a copy Tom pasted into
  * Must not break or Directions — or anywhere — is never the one taken back.
+ * AND ONLY WHEN IT IS THERE ONCE: two copies in the section — Tom's, pasted
+ * above the job's — cannot be told apart by their text, so neither goes and
+ * the reason says so (an objection reverts the learned change, never his).
+ * AND ONLY ON A PAGE AS THE JOB LEFT IT: `expectedBlob`, when given, is the
+ * body blob the job last recorded for the page (expectedBodyBlobs), and a
+ * page whose body no longer hashes to it has been edited since — the revert
+ * is refused with both hashes rather than applied to text the job never
+ * read. Returns `baseBlob` and `resultBlob` for the revert's own row.
  */
-export function revertLearningChange(text, change) {
+export function revertLearningChange(text, change, { expectedBlob = null } = {}) {
   const after = String(change.after ?? "").trim();
   if (after === "") return { ok: false, reason: "the change records no line to look for" };
+  const baseBlob = pageBodyBlob(text);
+  if (expectedBlob !== null && expectedBlob !== baseBlob) {
+    return {
+      ok: false,
+      reason: `${change.file} has changed since the job last wrote it (body blob ${expectedBlob.slice(0, 12)}, now ${baseBlob.slice(0, 12)}); nothing was taken back`,
+    };
+  }
   const lines = text.split("\n");
   const located = locateSection(lines, change.file, change.section);
   if (located.span === undefined) return { ok: false, reason: located.reason };
   const { span } = located;
-  const unit = findBullet(lines, span, after);
-  if (unit === null) {
+  const units = findBullets(lines, span, after);
+  const section = String(change.section).trim();
+  if (units.length === 0) {
+    return { ok: false, reason: `the line is no longer in "${section}" on ${change.file} as written` };
+  }
+  if (units.length > 1) {
     return {
       ok: false,
-      reason: `the line is no longer in "${String(change.section).trim()}" on ${change.file} as written`,
+      reason: `the line is in "${section}" on ${change.file} ${units.length} times — the learned copy cannot be told from the others, so none was taken back`,
     };
   }
+  const [unit] = units;
   const before = oneLine(change.before);
   lines.splice(unit.start, unit.end - unit.start, ...(before === "" ? [] : [before]));
-  return { ok: true, text: lines.join("\n") };
+  const reverted = lines.join("\n");
+  return { ok: true, text: reverted, baseBlob, resultBlob: pageBodyBlob(reverted) };
 }
 
 /**
@@ -916,7 +987,10 @@ export function revertLearningChange(text, change) {
  * also how ttsSlack.ts read the reply — else by the line's text quoted in
  * the objection.
  */
-export function matchObjection(objection, changes) {
+export function matchObjection(objection, rows) {
+  // The rows carry reverts too (their blobs, for expectedBodyBlobs); an
+  // objection names a change.
+  const changes = (rows ?? []).filter((r) => r?.eventKind === undefined || r.eventKind === "learning-change");
   const text = String(objection.text ?? "");
   const hit = namedChange([objection.id, ...changeIdTokens(text)], changes);
   if (hit) return hit;
@@ -988,14 +1062,15 @@ export function learningPrompt(input, pages, day) {
     "",
     "RULES",
     "- A change is one line for one section of one page. `kind` is what the line is: a fact about Tom, a correction of something a page says, or an inference. An inference is allowed and must say in the line that it is an inference and which facts it rests on.",
-    "- Every line ends with its evidence, in the pages' citation style, in parentheses: (session <session>, YYYY-MM-DD) for a turn — `session` is the 8-character id the pages already cite, e.g. (session 47f04bc9, 2026-08-30) — (ruling <rulingId>, YYYY-MM-DD) for a ruling, (slack <ts>, YYYY-MM-DD) for a Slack reply; several joined with \"; \". The ids are the ones in the input, verbatim. `evidence` lists the same citations, and every one of them must appear in the line. A line whose evidence names nothing in the input is refused.",
+    "- Every line ends with its evidence, in the pages' citation style, in parentheses: (session <session>, YYYY-MM-DD) for a turn — `session` is the 8-character id the pages already cite, e.g. (session 47f04bc9, 2026-08-30) — (ruling <rulingId>, YYYY-MM-DD) for a ruling, (thread <ts>, YYYY-MM-DD) for a Slack reply; several joined with \"; \". The ids are the ones in the input, verbatim and whole, and the date is the input's date, inside tonight's window. `evidence` lists the same citations without their dates (\"session <session>\", \"ruling <rulingId>\", \"thread <ts>\"), and every one of them must appear in the line. A citation naming anything not in the input is refused.",
+    `- \`excerpt\` is ${EXCERPT_MIN_WORDS} or more of Tom's own words, verbatim, from a source the change cites — the turn he typed, his reply, his ruling's sentence — never the agent's words. It is the evidence for a fact, a correction and an inference alike; a change without one is refused.`,
     "- Only these pages: model-of-tom/writing.md, model-of-tom/priorities.md, model-of-tom/areas/<area>.md. Only a section that exists on the page, named by its heading. Never \"Directions\", never \"Ideal state\", never \"Must not break\" — those are Tom's own, and a change naming them is refused. Never the spec.",
     "- A correction replaces: `replaces` is one existing bullet of that section, verbatim — where the page wraps a bullet over several lines, quote all of them — and the new line supersedes it — the pages describe what is, never what was. An addition has `replaces: null`.",
     "- Write to writing.md's own rules: plain statements, no comparisons or analogies, no evaluative language, one fixed term per concept, the date in the line. One line, starting with \"- \".",
     "- Nothing from the agent's words alone; nothing already on a page; nothing that restates a line. An empty list is the right answer on a night whose input changes nothing about the model of Tom, and that is most nights.",
     "",
     "Answer with ONE JSON object and nothing else, no code fence:",
-    '{"changes":[{"file":"model-of-tom/areas/climbing.md","section":"Current state","kind":"fact","line":"- ... (session <session>, YYYY-MM-DD).","replaces":null,"evidence":["session <session>"]}]}',
+    '{"changes":[{"file":"model-of-tom/areas/climbing.md","section":"Current state","kind":"fact","line":"- ... (session <session>, YYYY-MM-DD).","replaces":null,"evidence":["session <session>"],"excerpt":"<six or more of Tom\'s words, verbatim>"}]}',
     "",
     `Tonight is ${day} (UTC).`,
     "",
@@ -1020,6 +1095,10 @@ async function learningObjections(run, input, fetchConvex) {
   // The rows that go in the reverts' commit: tagged with its message below,
   // once the count is known, so recordLearningRows finds the commit by it.
   const revertedRows = [];
+  // The body blob the job last left each page with; a revert this run makes
+  // moves it on, so the next objection to the same page checks against the
+  // page as this run left it.
+  const expected = expectedBodyBlobs(input.changes);
   for (const objection of input.objections ?? []) {
     const change = matchObjection(objection, input.changes ?? []);
     const note = { objectionId: objection.eventId, objection: clip(objection.text, 400) };
@@ -1033,14 +1112,24 @@ async function learningObjections(run, input, fetchConvex) {
       const abs = path.join(run.dir, change.file);
       const result =
         typeof change.file === "string" && isLearningFile(change.file) && fs.existsSync(abs)
-          ? revertLearningChange(fs.readFileSync(abs, "utf8"), change)
+          ? revertLearningChange(fs.readFileSync(abs, "utf8"), change, {
+              expectedBlob: expected.get(change.file) ?? null,
+            })
           : { ok: false, reason: `${change.file} is not a page in the checkout` };
       const named = { id: change.id, file: change.file, section: change.section ?? null };
       if (result.ok) {
         fs.writeFileSync(abs, bumpUpdated(result.text, run.day));
+        expected.set(change.file, result.resultBlob);
         const row = {
           kind: "learning-reverted",
-          data: { ...note, ...named, before: change.after, after: change.before },
+          data: {
+            ...note,
+            ...named,
+            before: change.after,
+            after: change.before,
+            baseBlob: result.baseBlob,
+            resultBlob: result.resultBlob,
+          },
         };
         run.learningRows.push(row);
         revertedRows.push(row);
@@ -1110,7 +1199,7 @@ export async function learningStep(run, deps = {}) {
     });
     const result = applyLearningChanges(pages, parseLearningAnswer(answer), {
       day: run.day,
-      evidenceIds: learningEvidenceIds(input),
+      evidence: learningEvidence(input),
     });
     for (const [file, text] of result.pages) {
       if (text !== pages.get(file)) fs.writeFileSync(path.join(run.dir, file), text);
@@ -1195,52 +1284,16 @@ export async function recordLearningRows(run, deps = {}) {
 
 // ── 3. sessions ──────────────────────────────────────────────────────────────
 async function sessionsStep(run) {
-  const sessionsDir = path.join(run.dir, SESSIONS_DIR);
-  const index = indexManifests(readManifests(sessionsDir));
-  const files = discoverSessionFiles({
+  // The sweep: every session file on the box the manifests do not hold at
+  // its content (session-archive.mjs, the one home the daemon's session-end
+  // archive shares). The lock is main()'s.
+  const { archived } = archiveSessionFiles({
+    checkoutDir: run.dir,
+    day: run.day,
     codexDir: CODEX_SESSIONS_DIR,
     accountsDir: CLAUDE_ACCOUNTS_DIR,
+    log: (line) => console.error(`[nightly] sessions: ${line}`),
   });
-  const manifestPath = path.join(sessionsDir, `manifest-box-${run.day}.jsonl`);
-  const archived = [];
-  // Parents first, so a child archived the same night finds its parent's
-  // directory; then children and attachments; Codex rollouts sort by their
-  // own metadata below.
-  const order = (f) => (f.runtime === "codex" ? 1 : f.kind === "parent" ? 0 : 2);
-  const claudeAccounts = new Map();
-  for (const f of files) {
-    if (f.runtime !== "claude") continue;
-    const set = claudeAccounts.get(f.session) ?? new Set(index.accountsBySession.get(f.session) ?? []);
-    set.add(f.account);
-    claudeAccounts.set(f.session, set);
-  }
-  const codexEntries = [];
-  for (const f of [...files].sort((a, b) => order(a) - order(b))) {
-    const raw = fs.readFileSync(f.source);
-    const sha = sha256(raw);
-    if (index.shaBySource.get(f.source) === sha) continue; // archived at this content already
-    const mtimeMs = fs.statSync(f.source).mtimeMs;
-    let entry;
-    if (f.runtime === "codex") {
-      const meta = codexMetaOfBuffer(raw);
-      if (!meta) {
-        console.error(`[nightly] sessions: not a Codex rollout, skipped: ${f.source}`);
-        continue;
-      }
-      // Children wait until every parent of this run is placed.
-      codexEntries.push({ f, raw, sha, mtimeMs, meta });
-      continue;
-    }
-    entry = claudeEntry(f, raw, sha, mtimeMs, index, claudeAccounts);
-    if (!entry) continue;
-    archived.push(writeArchived(run.dir, manifestPath, entry, raw, index));
-  }
-  for (const c of codexEntries.filter((c) => c.meta.parent === null)) {
-    archived.push(writeArchived(run.dir, manifestPath, codexParentEntry(c), c.raw, index));
-  }
-  for (const c of codexEntries.filter((c) => c.meta.parent !== null)) {
-    archived.push(writeArchived(run.dir, manifestPath, codexChildEntry(c, index), c.raw, index));
-  }
   console.log(`[nightly] sessions: ${archived.length} file(s) archived`);
   if (archived.length > 0) {
     run.commits.push({
@@ -1251,212 +1304,7 @@ async function sessionsStep(run) {
   return { archived: archived.length };
 }
 
-/**
- * The manifest entry for a Claude SDK file (parent, child or attachment).
- *
- * THE DIRECTORY THE INDEX HOLDS IS ACCOUNT-LESS —
- * `sessions/YYYY/MM/DD/claude-<id>` — and the account is appended here, once,
- * when two accounts hold the same session id (phase 1's layout; one account
- * is the flat layout). Holding the second account's directory instead would
- * append the second account under the first's, and that session's children
- * would land at `.../claude-<id>/gmail/wpi/children/...`.
- */
-export function claudeEntry(f, raw, sha, mtimeMs, index, accountsBySession) {
-  const key = `claude:${f.session}`;
-  const accounts = accountsBySession.get(f.session) ?? new Set([f.account]);
-  const perAccount = accounts.size > 1;
-  let base = index.dirBySession.get(key);
-  let date;
-  let dateSource;
-  if (f.kind === "parent") {
-    const own = sessionDateOfBuffer(raw, mtimeMs);
-    if (base === undefined) {
-      base = `${SESSIONS_DIR}/${own.date.replaceAll("-", "/")}/claude-${f.session}`;
-      index.dirBySession.set(key, base);
-    }
-    // One session id is one directory: the other account's copy, and an
-    // earlier night's, keep the directory the session already has, so every
-    // child of either account finds one place. Only a copy whose own date
-    // disagrees with it records that the directory decided the date.
-    date = base.split("/").slice(1, 4).join("-");
-    dateSource = date === own.date ? own.dateSource : "parent";
-  } else if (base === undefined) {
-    // A child whose parent is not archived (an orphan): its own date.
-    ({ date, dateSource } =
-      f.kind === "child"
-        ? sessionDateOfBuffer(raw, mtimeMs)
-        : { date: utcDay(mtimeMs), dateSource: "mtime" });
-    base = `${SESSIONS_DIR}/${date.replaceAll("-", "/")}/claude-${f.session}`;
-  } else {
-    date = base.split("/").slice(1, 4).join("-");
-    dateSource = "parent";
-  }
-  const dir = perAccount ? `${base}/${f.account}` : base;
-  const orphan = f.kind !== "parent" && !index.dirBySession.has(key);
-  const ext = path.extname(f.source).toLowerCase();
-  const encoding = f.kind === "attachment" && RAW_EXTENSIONS.has(ext) ? "raw" : "gzip";
-  const rel =
-    f.kind === "parent"
-      ? "session.jsonl"
-      : `${f.kind === "child" ? "children" : "attachments"}/${f.rel}`;
-  return {
-    session: f.session,
-    project: f.project,
-    date,
-    date_source: dateSource,
-    orphan,
-    host: "box",
-    account: f.account,
-    runtime: "claude",
-    parent: f.kind === "parent" ? null : f.session,
-    kind: f.kind,
-    source: f.source,
-    dest: `${dir}/${rel}${encoding === "gzip" ? ".gz" : ""}`,
-    raw_bytes: raw.length,
-    sha256: sha,
-    encoding,
-  };
-}
-
-function codexParentEntry({ f, raw, sha, mtimeMs, meta }) {
-  const { date, dateSource } = sessionDateOfBuffer(raw, mtimeMs);
-  const dir = `${SESSIONS_DIR}/${date.replaceAll("-", "/")}/codex-${meta.id}`;
-  return {
-    session: meta.id,
-    project: meta.cwd,
-    date,
-    date_source: dateSource,
-    orphan: false,
-    host: "box",
-    account: null,
-    runtime: "codex",
-    parent: null,
-    kind: "parent",
-    source: f.source,
-    dest: `${dir}/rollout.jsonl.gz`,
-    raw_bytes: raw.length,
-    sha256: sha,
-    encoding: "gzip",
-    _dir: dir,
-  };
-}
-
-function codexChildEntry({ f, raw, sha, mtimeMs, meta }, index) {
-  const key = `codex:${meta.parent}`;
-  let dir = index.dirBySession.get(key);
-  let date;
-  let dateSource;
-  const orphan = dir === undefined;
-  if (orphan) {
-    ({ date, dateSource } = sessionDateOfBuffer(raw, mtimeMs));
-    dir = `${SESSIONS_DIR}/${date.replaceAll("-", "/")}/codex-${meta.parent}`;
-  } else {
-    date = dir.split("/").slice(1, 4).join("-");
-    dateSource = "parent";
-  }
-  return {
-    session: meta.parent,
-    project: meta.cwd,
-    date,
-    date_source: dateSource,
-    orphan,
-    host: "box",
-    account: null,
-    runtime: "codex",
-    parent: meta.parent,
-    kind: "child",
-    source: f.source,
-    dest: `${dir}/children/${meta.id}.jsonl.gz`,
-    raw_bytes: raw.length,
-    sha256: sha,
-    encoding: "gzip",
-  };
-}
-
-/**
- * Write one archived file under the checkout and append its manifest line.
- * A raw file over SPLIT_BYTES is stored as gzipped parts named after the
- * destination (`<name>.partNN.gz`), listed in `parts`; the manifest is the
- * only reader that needs to know.
- */
-export function writeArchived(checkoutDir, manifestPath, entry, raw, index) {
-  const { _dir, ...line } = entry;
-  const destAbs = path.join(checkoutDir, line.dest);
-  fs.mkdirSync(path.dirname(destAbs), { recursive: true });
-  let stored = 0;
-  let parts = null;
-  if (line.encoding === "raw") {
-    fs.writeFileSync(destAbs, raw);
-    stored = raw.length;
-  } else if (raw.length <= SPLIT_BYTES) {
-    const bytes = gzip(raw);
-    fs.writeFileSync(destAbs, bytes);
-    stored = bytes.length;
-  } else {
-    parts = [];
-    const base = line.dest.replace(/\.gz$/, "");
-    for (let i = 0, offset = 0; offset < raw.length; i++, offset += SPLIT_BYTES) {
-      const name = `${base}.part${String(i).padStart(2, "0")}.gz`;
-      const bytes = gzip(raw.subarray(offset, offset + SPLIT_BYTES));
-      fs.writeFileSync(path.join(checkoutDir, name), bytes);
-      stored += bytes.length;
-      parts.push(name);
-    }
-    if (fs.existsSync(destAbs)) fs.rmSync(destAbs);
-  }
-  // Phase 1's columns, in phase 1's order.
-  const record = {
-    session: line.session,
-    project: line.project,
-    date: line.date,
-    date_source: line.date_source,
-    orphan: line.orphan,
-    host: line.host,
-    account: line.account,
-    runtime: line.runtime,
-    parent: line.parent,
-    kind: line.kind,
-    source: line.source,
-    dest: line.dest,
-    raw_bytes: line.raw_bytes,
-    stored_bytes: stored,
-    sha256: line.sha256,
-    encoding: line.encoding,
-    parts,
-  };
-  fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
-  fs.appendFileSync(manifestPath, `${JSON.stringify(record)}\n`);
-  index.shaBySource.set(line.source, line.sha256);
-  if (line.kind === "parent" && _dir) index.dirBySession.set(`${line.runtime}:${line.session}`, _dir);
-  return record;
-}
-
 // ── 4. the push ──────────────────────────────────────────────────────────────
-/**
- * Hold /var/lock/tts-wikitom.lock for the duration of `fn`. The lock is the
- * open file description: `flock` takes it on our inherited descriptor and
- * exits, and the kernel keeps it for us until we close the descriptor — the
- * `exec 3>lock; flock 3` idiom, from Node. Every other writer of the
- * checkout (the weekly job, a session-end archive) takes the same lock.
- *
- * THE LOCK COVERS THE WRITES, not only the push: main() holds it around steps
- * 1 to 4 together. A lock held around the commit alone protects nothing —
- * another writer committing its own work while this job is still writing
- * tts/snapshot/ and sessions/ would carry half of tonight's tree into its
- * commit, and `git pull --rebase` would meet a dirty tree it did not make.
- */
-export async function withWikiTomLock(fn, lockPath = WIKITOM_LOCK) {
-  const fd = fs.openSync(lockPath, "w");
-  try {
-    execFileSync("flock", ["-w", String(LOCK_WAIT_SECONDS), "3"], {
-      stdio: ["ignore", "inherit", "inherit", fd],
-    });
-    return await fn();
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
 /**
  * Whether git stopped part-way through a rebase in `dir` — the directory it
  * leaves behind when a `pull --rebase` hit a conflict or died (no committer
@@ -1628,38 +1476,73 @@ function gitError(err) {
 }
 
 // ── 5. the post ──────────────────────────────────────────────────────────────
-async function postStep(run) {
+// Under the lock like the four steps before it, and reading the git object
+// at the commit it names (commitSource): outside the lock the work tree
+// could change between `rev-parse HEAD` and the read, and a post would name
+// one commit while carrying another's bytes. Local HEAD is posted whether or
+// not the push went through — the design says every prompt names the
+// commit it began with — and `pushed` says which, so the store and the
+// digest can say "not yet pushed" rather than pass a local commit off as
+// one on GitHub. Convex refuses a post older than the one it holds, so a
+// rerun of an old checkout cannot roll the prelude back (ttsSkills.ts).
+export async function postStep(run, deps = {}) {
+  const { fetch = convexFetch } = deps;
   const dir = run.dir;
+  // A REBASE IN PROGRESS MEANS NO POST. During one, HEAD is detached on a
+  // half-replayed commit: `rev-parse HEAD` names it, `git show <commit>:<path>`
+  // reads whatever version of the pages that replay had reached, and Convex —
+  // which only refuses a post OLDER than the one it holds — would take it and
+  // serve it to every prompt until a clean night replaced it. The four steps
+  // before this one never meet that state, because the run aborts a stale
+  // rebase before its first write (main); `--only=post` runs none of them, so
+  // the guard belongs here too. Recorded, not thrown, and NOT aborted: an
+  // abort resets the work tree hard, and a post is a read.
+  if (rebaseInProgress(dir)) {
+    await recordFailure(
+      run,
+      "post",
+      new Error(
+        `a rebase is in progress in ${dir} — HEAD is a replayed commit, not the checkout's; refusing to post, the store keeps what it has`,
+      ),
+      { fetch },
+    );
+    return { commit: null, pushed: false, files: null, rebasing: true };
+  }
   const commit = git(dir, "rev-parse", "HEAD").trim();
-  const committedAt = Number(git(dir, "log", "-1", "--format=%ct").trim()) * 1000;
-  const { files, missing } = collectModelOfTomFiles(dir);
-  // A NAMED FILE MISSING MEANS NO POST. The store is replaced whole, so
-  // posting the rest would take the missing file out of every prompt until a
-  // night that reads it again — and for writing.md that is every sentence
-  // written to no standard at all (the server refuses that post outright).
-  // A missing file is a layout change or a half-read checkout, never a
-  // decision of Tom's: last night's text keeps serving, and this is the row
-  // the digest shows.
+  const committedAt = Number(git(dir, "log", "-1", "--format=%ct", commit).trim()) * 1000;
+  const pushed = isPushed(dir, commit);
+  const { files, missing } = collectModelOfTomFiles(commitSource(dir, commit));
+  // ANYTHING EXPECTED MISSING MEANS NO POST: a named file, one of the eight
+  // area pages, either of a page's two sections. The store is replaced
+  // whole, so posting the rest would take the missing part out of every
+  // prompt until a night that reads it again — silently, and for writing.md
+  // that is every sentence written to no standard at all (the server
+  // refuses that post outright). A missing part is a layout change, a
+  // renamed heading or a half-read checkout, never a decision of Tom's:
+  // last night's text keeps serving, and this is the row the digest shows,
+  // naming each missing part.
   if (missing.length > 0) {
     await recordFailure(
       run,
       "post",
       new Error(
-        `model-of-tom files missing or empty at ${commit.slice(0, 12)}: ${missing.join(", ")} — not posting, the store keeps what it has`,
+        `model-of-tom files or sections missing at ${commit.slice(0, 12)}: ${missing.join("; ")} — refusing to post, the store keeps what it has`,
       ),
+      { fetch },
     );
-    return { commit, files: null, missing };
+    return { commit, pushed, files: null, missing };
   }
   if (files.length === 0) throw new Error("no model-of-tom files to post");
-  const res = await convexFetch(run.env, "/tts/model-of-tom", {
+  const res = await fetch(run.env, "/tts/model-of-tom", {
     commit,
     committedAt,
+    pushed,
     files,
   });
   console.log(
-    `[nightly] post: ${res.files} file(s) at WikiTom ${commit.slice(0, 12)} — ${files.map((f) => f.path).join(", ")}`,
+    `[nightly] post: ${res.files} file(s) at WikiTom ${commit.slice(0, 12)}${pushed ? "" : " (not yet pushed)"} — ${files.map((f) => f.path).join(", ")}`,
   );
-  return { commit, files: files.map((f) => f.path) };
+  return { commit, pushed, files: files.map((f) => f.path) };
 }
 
 // ── main ─────────────────────────────────────────────────────────────────────
@@ -1723,13 +1606,14 @@ async function main() {
       await recordFailure(run, name, err);
     }
   };
-  // Steps 1 to 4 WRITE the checkout, so the lock covers all four (see
-  // withWikiTomLock). The post is a read of HEAD and takes no lock, which is
-  // also what lets `--only=post` run while another writer holds it.
+  // Every step runs under the one lock (see withWikiTomLock): steps 1 to 4
+  // write the checkout, and the post reads HEAD's git object, which must be
+  // the HEAD this run left — not one a writer that took the lock in between
+  // moved it to.
   const locked = LOCKED_STEPS.filter((name) => only.includes(name));
-  if (locked.length > 0) {
-    try {
-      await withWikiTomLock(async () => {
+  try {
+    await withWikiTomLock(async () => {
+      if (locked.length > 0) {
         // Before the first write: a rebase an earlier run left in progress
         // stops every commit, and aborting it resets the work tree hard — so
         // it happens while there is nothing of tonight's to lose.
@@ -1737,17 +1621,18 @@ async function main() {
           await recordFailure(run, f.step, new Error(f.error));
         }
         for (const name of locked) await runStep(name);
-      });
-    } catch (err) {
-      // The lock itself was refused — another writer held it past the wait.
-      // Every step it covers is skipped; the post below still runs.
-      await recordFailure(run, "lock", err);
-    }
-    // The learning step's rows wait for this: their commits exist now, with
-    // their final hashes (pushed, or local when the push was refused).
-    await recordLearningRows(run);
+        // The learning step's rows wait for this: their commits exist now,
+        // with their final hashes (pushed, or local when the push was
+        // refused).
+        await recordLearningRows(run);
+      }
+      if (only.includes("post")) await runStep("post");
+    });
+  } catch (err) {
+    // The lock itself was refused — another writer held it past the wait.
+    // Every step is skipped; the summary below says so.
+    await recordFailure(run, "lock", err);
   }
-  if (only.includes("post")) await runStep("post");
   await recordSummary(run, only);
 }
 

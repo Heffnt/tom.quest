@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AREA_SECTIONS,
   FORBIDDEN_SECTIONS,
+  MODEL_OF_TOM_AREA_PAGES,
   MODEL_OF_TOM_FIRST,
   SPLIT_BYTES,
   abortStaleRebase,
@@ -28,22 +29,30 @@ import {
   codexMetaOf,
   codexMetaOfBuffer,
   collectModelOfTomFiles,
+  commitSource,
   commitTree,
   discoverSessionFiles,
+  expectedBodyBlobs,
+  exportTableRows,
+  gitBlobId,
   indexManifests,
   isLearningFile,
+  isPushed,
   isTableFile,
   learningChangeId,
-  learningEvidenceIds,
+  learningEvidence,
   learningStep,
   locateSection,
   matchObjection,
   modelOfTomCommit,
+  pageBodyBlob,
   parseLearningAnswer,
   planTableFiles,
+  postStep,
   readManifests,
   rebaseInProgress,
   recordLearningRows,
+  redactRow,
   revertLearningChange,
   serializeRow,
   sessionCitation,
@@ -199,6 +208,8 @@ const factChange = (over = {}) => ({
   line: NEW_LINE,
   replaces: null,
   evidence: [`session ${SESSION}`],
+  // Tom's words from the turn, verbatim (learningInput above).
+  excerpt: "thursday practice moved to 6pm this term",
   ...over,
 });
 
@@ -241,6 +252,10 @@ describe("the learning step", () => {
         after: NEW_LINE,
         evidence: `session ${SESSION}`,
         sources: [`session ${SESSION}`],
+        excerpt: "thursday practice moved to 6pm this term",
+        // The body the validation read, and the body it wrote.
+        baseBlob: pageBodyBlob(CLIMBING),
+        resultBlob: pageBodyBlob(page),
       },
       // The commit the row will name, found by this message once made.
       commitMessage: "learning: 2026-09-06 — 1 line from Tom's turns, replies and rulings",
@@ -300,6 +315,21 @@ describe("the learning step", () => {
           evidence: [`session ${SESSION}`, `ruling ${RULING}`],
         }),
         factChange({ kind: "inference", line: `- He trains Thursdays (session ${SESSION}, 2026-09-05).` }),
+        // witness: "includes the id" let `session 9e1c2b3a-old` pass as the
+        // session, and a line dated any day pass beside it.
+        factChange({
+          line: `- Thursday practice is at 6 p.m. this term (session ${SESSION}-old, 2026-09-05).`,
+          evidence: [`session ${SESSION}-old`],
+        }),
+        factChange({ line: `- Thursday practice is at 6 p.m. this term (session ${SESSION}, 2026-08-30).` }),
+        factChange({ line: `- Thursday practice is at 6 p.m. this term (session ${SESSION}, 2026-09-31).` }),
+        factChange({ line: `- Thursday practice is at 6 p.m. this term (session ${SESSION}, 2026-09-05; ruling ${RULING}, 2026-09-05).` }),
+        factChange({ evidence: [SESSION] }),
+        // The excerpt: missing, too short, and not Tom's words.
+        factChange({ excerpt: undefined }),
+        factChange({ excerpt: "moved to 6pm" }),
+        factChange({ excerpt: "practice is on Fridays now this term" }),
+        factChange({ excerpt: "Which practice moved? Noted: Thursday at 6 p.m." }),
       ]),
     });
     expect(summary.changes).toBe(0);
@@ -312,10 +342,19 @@ describe("the learning step", () => {
       "no evidence",
       'evidence "session deadbeef" names nothing in tonight\'s input',
       "the line does not end with its evidence citation",
-      `the line does not cite its evidence "session ${SESSION}"`,
-      "the citation (probably) names none of the change's evidence",
+      'the citation "probably" is not in the form <kind> <id>, YYYY-MM-DD',
+      'the citation "probably" is not in the form <kind> <id>, YYYY-MM-DD',
       `the line does not cite its evidence "ruling ${RULING}"`,
       "an inference must say it is one, in the line",
+      `evidence "session ${SESSION}-old" names nothing in tonight's input`,
+      "the citation date 2026-08-30 is outside tonight's window (2026-09-05 to 2026-09-06)",
+      "the citation date 2026-09-31 is not a day",
+      `the citation names "ruling ${RULING}", which is not in the change's evidence`,
+      `evidence "${SESSION}" is not a citation: session <id>, ruling <id> or thread <ts>`,
+      "no excerpt of 6 or more of Tom's words from tonight's input",
+      "no excerpt of 6 or more of Tom's words from tonight's input",
+      "the excerpt is not in the cited input verbatim",
+      "the excerpt is not in the cited input verbatim",
     ]);
     for (const [rel, text] of before) {
       expect(fs.readFileSync(path.join(dir, rel), "utf8")).toBe(text);
@@ -394,8 +433,9 @@ describe("the learning step", () => {
     expect(
       applyLearningChanges(new Map([[file, wrapped]]), [factChange({ file, section: "Calibration core", line, replaces: before })], { day: "2026-09-06" }).applied,
     ).toHaveLength(1);
+    const present = "- Assume absent: web-dev jargon of any kind (session 47f04bc9, 2026-08-29).";
     expect(
-      applyLearningChanges(new Map([[file, wrapped]]), [factChange({ file, section: "Calibration core", line: before, evidence: ["session `47f04bc9`"] })], { day: "2026-09-06" }).refused[0].reason,
+      applyLearningChanges(new Map([[file, wrapped]]), [factChange({ file, section: "Calibration core", line: present, evidence: ["session 47f04bc9"] })], { day: "2026-09-06" }).refused[0].reason,
     ).toBe("already on the page");
     // A first line alone is not the bullet.
     expect(
@@ -534,23 +574,53 @@ describe("the learning step", () => {
     expect(sessionCitation({ ...turn, sdkSessionId: SDK_SESSION.toUpperCase() })).toBe(SESSION);
     // Before the SDK reported one, the row id is the session's only name.
     expect(sessionCitation({ id: TURN, sessionId: SESSION_ROW, sdkSessionId: null })).toBe(SESSION_ROW);
-    const ids = learningEvidenceIds(learningInput());
-    expect(ids.has(SESSION)).toBe(true);
-    expect(ids.has(SDK_SESSION)).toBe(true);
-    expect(ids.has(SESSION_ROW)).toBe(true);
-    expect(ids.has(TURN)).toBe(true);
-    expect(ids.has(RULING)).toBe(true);
+    const evidence = learningEvidence(
+      learningInput({
+        slackReplies: [
+          { id: "ev9", at: Date.UTC(2026, 8, 5, 22), data: { ts: "1757000000.000100", threadTs: "1757000000.000001", text: "yes, the thursday one, keep it there" } },
+        ],
+      }),
+    );
+    expect(evidence).toMatchObject({ sinceDay: "2026-09-05", untilDay: "2026-09-06" });
+    expect([...evidence.sources.keys()].sort()).toEqual(
+      [
+        `session ${SESSION}`,
+        `session ${SDK_SESSION}`,
+        `session ${SESSION_ROW}`,
+        `ruling ${RULING}`,
+        "thread 1757000000.000100",
+        "thread 1757000000.000001",
+      ].sort(),
+    );
+    // A turn's row id is not a session's name.
+    expect(evidence.sources.has(`session ${TURN}`)).toBe(false);
+    expect(evidence.sources.get(`session ${SESSION}`).texts).toEqual(["thursday practice moved to 6pm this term"]);
     const pages = new Map([["model-of-tom/areas/climbing.md", CLIMBING]]);
     for (const named of [SESSION, SDK_SESSION, SESSION_ROW]) {
       const line = `- Thursday practice is at 6 p.m. this term (session ${named}, 2026-09-05).`;
       const { applied, refused } = applyLearningChanges(
         pages,
         [factChange({ line, evidence: [`session ${named}`] })],
-        { day: "2026-09-06", evidenceIds: ids },
+        { day: "2026-09-06", evidence },
       );
       expect(refused).toEqual([]);
       expect(applied).toHaveLength(1);
+      expect(applied[0].excerpt).toBe("thursday practice moved to 6pm this term");
     }
+    // A Slack reply is cited as a thread, and its excerpt comes from the reply.
+    const { applied, refused } = applyLearningChanges(
+      pages,
+      [
+        factChange({
+          line: "- Thursday practice stays where it is (thread 1757000000.000001, 2026-09-05).",
+          evidence: ["thread 1757000000.000001"],
+          excerpt: "the thursday one, keep it there",
+        }),
+      ],
+      { day: "2026-09-06", evidence },
+    );
+    expect(refused).toEqual([]);
+    expect(applied).toHaveLength(1);
   });
 
   it("names the pages it writes, and the sections it never does", () => {
@@ -592,7 +662,7 @@ describe("the learning step", () => {
   it("reverts against the page's current text, and says when the line has moved on", () => {
     const change = { file: "f", section: "Current state", before: "", after: NEW_LINE };
     const withLine = `## Current state\n\n- a\n${NEW_LINE}\n- b\n`;
-    expect(revertLearningChange(withLine, change)).toEqual({ ok: true, text: "## Current state\n\n- a\n- b\n" });
+    expect(revertLearningChange(withLine, change)).toMatchObject({ ok: true, text: "## Current state\n\n- a\n- b\n" });
     expect(revertLearningChange("## Current state\n\n- a\n- b\n", change)).toEqual({
       ok: false,
       reason: 'the line is no longer in "Current state" on f as written',
@@ -639,6 +709,126 @@ describe("the learning step", () => {
     expect(again).toEqual({ ok: false, reason: `the line is no longer in "Current state" on ${file} as written` });
   });
 
+  // witness: the revert removed the FIRST match in the section, so with Tom's
+  // copy of the line pasted above the job's, his went and the job's stayed.
+  it("takes nothing back when the line is in its section twice, and says so", async () => {
+    const dir = learningCheckout();
+    const file = "model-of-tom/areas/climbing.md";
+    // Tom's copy first, the job's (at the end of Current state) second.
+    write(
+      dir,
+      file,
+      CLIMBING.replace("- Climbing for 16 years", `${NEW_LINE}\n- Climbing for 16 years`).replace(
+        "## Ideal state",
+        `${NEW_LINE}\n\n## Ideal state`,
+      ),
+    );
+    const before = fs.readFileSync(path.join(dir, file), "utf8");
+    const added = { id: "aaaaaaaaaaaa", file, section: "Current state", before: "", after: NEW_LINE };
+    const run = learningRun(dir);
+    const convex = fakeConvex(
+      learningInput({
+        tomTurns: [],
+        rulings: [],
+        objections: [{ eventId: "ev7", at: 1, id: "aaaaaaaaaaaa", text: "no" }],
+        changes: [added],
+      }),
+    );
+    const summary = await learningStep(run, { fetch: convex.fetch, model: vi.fn() });
+    expect(summary).toMatchObject({ reverted: 0, revertFailed: 1 });
+    expect(fs.readFileSync(path.join(dir, file), "utf8")).toBe(before);
+    expect(run.learningRows[0]).toMatchObject({
+      kind: "learning-revert-failed",
+      data: {
+        id: "aaaaaaaaaaaa",
+        reason: `the line is in "Current state" on ${file} 2 times — the learned copy cannot be told from the others, so none was taken back`,
+      },
+    });
+    expect(run.commits).toEqual([]);
+    // The same rule for a replacement's target: two copies, no replacement.
+    const old = "- Ankle: minor chronic pain from jumping down off the wall (session 47f04bc9, 2026-08-30).";
+    const twice = new Map([[file, CLIMBING.replace(old, `${old}\n${old}`)]]);
+    const { applied, refused } = applyLearningChanges(twice, [factChange({ replaces: old })], { day: "2026-09-06" });
+    expect(applied).toEqual([]);
+    expect(refused.map((r) => r.reason)).toEqual(['the line to replace is in "Current state" 2 times; which one cannot be told']);
+  });
+
+  it("computes git's own blob id, of the body below the frontmatter", () => {
+    const body = "## Current state\n\n- a\n";
+    const fromGit = execFileSync("git", ["hash-object", "--stdin"], { input: body, encoding: "utf8" }).trim();
+    expect(gitBlobId(body)).toBe(fromGit);
+    expect(pageBodyBlob(`---\nupdated: 2026-09-01\n---\n${body}`)).toBe(fromGit);
+    expect(pageBodyBlob(`---\nupdated: 2026-09-06\nreviewed: 2026-09-06\n---\n${body}`)).toBe(fromGit);
+    expect(pageBodyBlob(body)).toBe(fromGit);
+    expect(pageBodyBlob(`${body}- b\n`)).not.toBe(fromGit);
+    // The newest recorded write per file, reverts included; a row without a blob is skipped.
+    expect(
+      expectedBodyBlobs([
+        { at: 1, file: "f", resultBlob: "old" },
+        { at: 3, file: "f", eventKind: "learning-reverted", resultBlob: "new" },
+        { at: 2, file: "f", resultBlob: "mid" },
+        { at: 9, file: "f" },
+        { at: 1, file: "g", resultBlob: "g1" },
+      ]),
+    ).toEqual(new Map([["f", "new"], ["g", "g1"]]));
+  });
+
+  // witness: a learning row carried no hash of the page, so a revert applied
+  // to whatever text the page had by then — Tom's edits included.
+  it("reverts only a page whose body is as the job last left it, and moves that mark on with each revert", async () => {
+    const file = "model-of-tom/areas/climbing.md";
+    const second = `- Rest days are Mondays (session ${SESSION}, 2026-09-05).`;
+    const asLeft = CLIMBING.replace("## Ideal state", `${NEW_LINE}\n${second}\n\n## Ideal state`);
+    const rows = [
+      { id: "aaaaaaaaaaaa", at: 1, eventKind: "learning-change", file, section: "Current state", before: "", after: NEW_LINE, resultBlob: pageBodyBlob(asLeft) },
+      { id: "bbbbbbbbbbbb", at: 1, eventKind: "learning-change", file, section: "Current state", before: "", after: second, resultBlob: pageBodyBlob(asLeft) },
+    ];
+    const objections = [
+      { eventId: "ev8", at: 1, id: "aaaaaaaaaaaa", text: "no" },
+      { eventId: "ev9", at: 2, id: "bbbbbbbbbbbb", text: "no" },
+    ];
+    // As the job left it: both go, the second checked against what the first left.
+    {
+      const dir = learningCheckout();
+      write(dir, file, asLeft);
+      const run = learningRun(dir);
+      const convex = fakeConvex(learningInput({ tomTurns: [], rulings: [], objections, changes: rows }));
+      const summary = await learningStep(run, { fetch: convex.fetch, model: vi.fn() });
+      expect(summary).toMatchObject({ reverted: 2, revertFailed: 0 });
+      const page = fs.readFileSync(path.join(dir, file), "utf8");
+      expect(page).not.toContain(NEW_LINE);
+      expect(page).not.toContain(second);
+      expect(run.learningRows[0].data).toMatchObject({ baseBlob: pageBodyBlob(asLeft) });
+      expect(run.learningRows[1].data).toMatchObject({ baseBlob: run.learningRows[0].data.resultBlob, resultBlob: pageBodyBlob(page) });
+    }
+    // Edited by hand since (a line of Tom's in Current state): nothing goes.
+    {
+      const dir = learningCheckout();
+      const edited = asLeft.replace("- Climbing for 16 years", "- Bouldering only this month.\n- Climbing for 16 years");
+      write(dir, file, edited);
+      const run = learningRun(dir);
+      const convex = fakeConvex(learningInput({ tomTurns: [], rulings: [], objections: objections.slice(0, 1), changes: rows }));
+      const summary = await learningStep(run, { fetch: convex.fetch, model: vi.fn() });
+      expect(summary).toMatchObject({ reverted: 0, revertFailed: 1 });
+      expect(fs.readFileSync(path.join(dir, file), "utf8")).toBe(edited);
+      expect(run.learningRows[0]).toMatchObject({
+        kind: "learning-revert-failed",
+        data: {
+          id: "aaaaaaaaaaaa",
+          reason: `${file} has changed since the job last wrote it (body blob ${pageBodyBlob(asLeft).slice(0, 12)}, now ${pageBodyBlob(edited).slice(0, 12)}); nothing was taken back`,
+        },
+      });
+    }
+    // The frontmatter is not the body: reviewed: set by the weekly job changes nothing.
+    {
+      const dir = learningCheckout();
+      write(dir, file, asLeft.replace("reviewed:", "reviewed: 2026-09-05"));
+      const run = learningRun(dir);
+      const convex = fakeConvex(learningInput({ tomTurns: [], rulings: [], objections: objections.slice(0, 1), changes: rows }));
+      expect(await learningStep(run, { fetch: convex.fetch, model: vi.fn() })).toMatchObject({ reverted: 1, revertFailed: 0 });
+    }
+  });
+
   it("refuses a section nested under one of Tom's, on the way in and on the way back", async () => {
     const dir = learningCheckout();
     const file = "model-of-tom/areas/climbing.md";
@@ -664,6 +854,92 @@ describe("the learning step", () => {
     // The same walk, on the pure half.
     expect(locateSection(before.split("\n"), file, "Training goals")).toEqual({ reason });
     expect(locateSection(before.split("\n"), file, "Current state").span).toMatchObject({ level: 2 });
+  });
+
+  // witness: the guard read `#` in column one only, so an indented
+  // `   ## Ideal state` or a setext `Ideal state\n-----` was body text to it:
+  // Current state ran on through Tom's section, and a `### Training goals`
+  // under it sat under nothing.
+  it("guards a section under an indented or a setext heading of Tom's as under a column-one one", () => {
+    const nested = "### Training goals\n\n- Lead 5.12 by December (session 47f04bc9, 2026-08-30).\n\n## Must not break";
+    const reason = '"Training goals" is under "Ideal state", Tom\'s section; an agent never writes it';
+    const own = '"Ideal state" is Tom\'s section; an agent never writes it';
+    for (const heading of ["   ## Ideal state", "Ideal state\n-----------"]) {
+      const lines = CLIMBING.replace("## Ideal state", heading).replace("## Must not break", nested).split("\n");
+      expect(locateSection(lines, "f", "Training goals")).toEqual({ reason });
+      expect(locateSection(lines, "f", "Ideal state")).toEqual({ reason: own });
+      // Current state ends where Tom's section begins, whichever form it takes.
+      expect(locateSection(lines, "f", "Current state").span.end).toBe(lines.indexOf(heading.split("\n")[0]));
+    }
+  });
+});
+
+// witness: the snapshot serialized every row verbatim, so a key pasted into a
+// session turn or a setting would have landed in WikiTom as itself.
+describe("redactRow", () => {
+  // Assembled at runtime from pieces, so no committed line spells a token.
+  const token = ["gh", "p_", "A".repeat(36)].join("");
+  const slack = ["xox", "b-1234567890-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx"].join("");
+
+  it("filters every string value at every depth and leaves the rest as it was", () => {
+    const row = {
+      _id: "k1",
+      text: `use ${token} for the push`,
+      settings: { keys: [slack, 7, null], note: "plain" },
+      n: 3,
+      flag: true,
+    };
+    expect(redactRow(row)).toEqual({
+      _id: "k1",
+      text: "use [redacted:github] for the push",
+      settings: { keys: ["[redacted:slack]", 7, null], note: "plain" },
+      n: 3,
+      flag: true,
+    });
+    expect(row.text).toContain(token); // pure
+  });
+
+  // A regex over this module's own source used to stand here, which said only
+  // that a line of code had not been edited. What the vault's guarantee needs
+  // is that a row carrying a token comes out of the export redacted, whatever
+  // the read is spelled like — so the export runs, over pages a fake server
+  // hands it, and the bytes the snapshot would write are the assertion.
+  it("exports every row of a table redacted, across every page of it", async () => {
+    const pages = [
+      { rows: [{ _id: "a", text: `push with ${token}` }], isDone: false, continueCursor: "c1" },
+      { rows: [{ _id: "b", settings: { keys: [slack] } }], isDone: true, continueCursor: "c2" },
+    ];
+    const asked = [];
+    const rows = await exportTableRows({
+      env: {},
+      table: "claudeInbound",
+      boundary: 1757000000000,
+      fetch: async (_env, route) => {
+        asked.push(route);
+        return pages[asked.length - 1];
+      },
+    });
+    expect(asked[0]).toContain("table=claudeInbound&boundary=1757000000000");
+    expect(asked[1]).toContain("cursor=c1"); // the second page, not the first again
+    expect(rows).toEqual([
+      { _id: "a", text: "push with [redacted:github]" },
+      { _id: "b", settings: { keys: ["[redacted:slack]"] } },
+    ]);
+    const bytes = planTableFiles("claudeInbound", rows)[0].bytes.toString();
+    expect(bytes).not.toContain(token);
+    expect(bytes).not.toContain(slack);
+    expect(bytes).toContain('"text": "push with [redacted:github]"');
+  });
+
+  it("stops rather than spins when the server does not advance its cursor", async () => {
+    await expect(
+      exportTableRows({
+        env: {},
+        table: "dtsTodos",
+        boundary: 1,
+        fetch: async () => ({ rows: [{ _id: "a" }], isDone: false, continueCursor: null }),
+      }),
+    ).rejects.toThrow(/did not advance its cursor for dtsTodos/);
   });
 });
 
@@ -768,42 +1044,81 @@ describe("AREA_SECTIONS", () => {
 });
 
 describe("collectModelOfTomFiles", () => {
-  it("posts the three named files then each area page's sections, alphabetically", () => {
+  /** A checkout with the three named files and every area page complete. */
+  function fullCheckout() {
     const dir = tmp();
     write(dir, "model-of-tom/writing.md", "# Writing\n");
     write(dir, "model-of-tom/priorities.md", "# Priorities\n");
     write(dir, "model-of-tom/schedule.md", "# Schedule\n");
     write(dir, "model-of-tom/README.md", "not posted\n");
-    write(dir, "model-of-tom/areas/social.md", "## Current state\n\n- friends\n\n## Ideal state\n\nx\n");
+    for (const rel of MODEL_OF_TOM_AREA_PAGES) {
+      write(dir, rel, `## Current state\n\n- ${rel}\n\n## Ideal state\n\nx\n\n## Must not break\n\n- y\n`);
+    }
+    return dir;
+  }
+
+  it("posts the three named files then each area page's sections, alphabetically", () => {
+    const dir = fullCheckout();
     write(
       dir,
       "model-of-tom/areas/admin.md",
-      "---\nupdated: 2026-09-06\nreviewed:\nwindow_days: 30\n---\n# Admin\n\n## Must not break\n\n- taxes\n",
+      "---\nupdated: 2026-09-06\nreviewed:\nwindow_days: 30\n---\n# Admin\n\n## Current state\n\n- mail\n\n## Must not break\n\n- taxes\n",
     );
+    // A ninth page is posted when it has the sections, and never required.
+    write(dir, "model-of-tom/areas/travel.md", "## Current state\n\n- none planned\n");
     write(dir, "model-of-tom/areas/empty.md", "# Empty\n\nno sections yet\n");
     const { files, missing } = collectModelOfTomFiles(dir);
     expect(missing).toEqual([]);
-    expect(files.map((f) => f.path)).toEqual([
-      ...MODEL_OF_TOM_FIRST,
-      "model-of-tom/areas/admin.md",
-      "model-of-tom/areas/social.md",
-    ]);
-    expect(files[4].body).toBe("## Current state\n\n- friends");
+    expect(files.map((f) => f.path)).toEqual([...MODEL_OF_TOM_FIRST, ...MODEL_OF_TOM_AREA_PAGES, "model-of-tom/areas/travel.md"]);
+    expect(files.at(-1).body).toBe("## Current state\n\n- none planned");
     // The frontmatter rides ahead of the sections: it is where the weekly
     // gather reads `reviewed:` and the window from.
     expect(files[3].body).toBe(
-      "---\nupdated: 2026-09-06\nreviewed:\nwindow_days: 30\n---\n\n## Must not break\n\n- taxes",
+      "---\nupdated: 2026-09-06\nreviewed:\nwindow_days: 30\n---\n\n## Current state\n\n- mail\n\n## Must not break\n\n- taxes",
+    );
+    expect(files[3].body).not.toContain("Ideal state");
+  });
+
+  it("names the eight area pages", () => {
+    expect(MODEL_OF_TOM_AREA_PAGES).toEqual(
+      ["admin", "agent-systems", "climbing", "health-and-food", "mental-health", "money", "research", "social"].map(
+        (n) => `model-of-tom/areas/${n}.md`,
+      ),
     );
   });
 
-  // areas/ arrives with the content half of phase 4; until then the three.
-  it("posts the named files alone while areas/ does not exist, and names what is missing", () => {
+  // witness: an area page with one of its two sections gone, or gone
+  // altogether, was left out of the post without a word — and the prompts
+  // lost it until a night that read it again.
+  it("names every missing file, page and section, so the post can refuse", () => {
+    const dir = fullCheckout();
+    write(dir, "model-of-tom/schedule.md", "   \n");
+    fs.rmSync(path.join(dir, "model-of-tom/priorities.md"));
+    fs.rmSync(path.join(dir, "model-of-tom/areas/money.md"));
+    write(dir, "model-of-tom/areas/social.md", "## Current state\n\n- friends\n\n## Ideal state\n\nx\n");
+    write(dir, "model-of-tom/areas/climbing.md", "# Climbing\n\nno sections yet\n");
+    const { files, missing } = collectModelOfTomFiles(dir);
+    expect(missing).toEqual([
+      "model-of-tom/priorities.md",
+      "model-of-tom/schedule.md",
+      "model-of-tom/areas/money.md",
+      'model-of-tom/areas/climbing.md: no "Current state" section',
+      'model-of-tom/areas/climbing.md: no "Must not break" section',
+      'model-of-tom/areas/social.md: no "Must not break" section',
+    ]);
+    // What was there is still collected — the caller decides not to post it.
+    expect(files.map((f) => f.path)).toContain("model-of-tom/areas/social.md");
+    expect(files.map((f) => f.path)).not.toContain("model-of-tom/areas/climbing.md");
+  });
+
+  it("names all eight pages while areas/ does not exist", () => {
     const dir = tmp();
     write(dir, "model-of-tom/writing.md", "# Writing\n");
-    write(dir, "model-of-tom/schedule.md", "   \n");
+    write(dir, "model-of-tom/priorities.md", "# Priorities\n");
+    write(dir, "model-of-tom/schedule.md", "# Schedule\n");
     const { files, missing } = collectModelOfTomFiles(dir);
-    expect(files.map((f) => f.path)).toEqual(["model-of-tom/writing.md"]);
-    expect(missing).toEqual(["model-of-tom/priorities.md", "model-of-tom/schedule.md"]);
+    expect(files.map((f) => f.path)).toEqual(MODEL_OF_TOM_FIRST);
+    expect(missing).toEqual(MODEL_OF_TOM_AREA_PAGES);
   });
 });
 
@@ -1249,6 +1564,48 @@ describe("the git half", { timeout: 60_000 }, () => {
     expect(status(dir)).toBe("");
   });
 
+  // witness: LOCKED_STEPS names the four steps that write, so `--only=post`
+  // ran nothing that aborts a stale rebase. The post then read `rev-parse
+  // HEAD` — a half-replayed commit, not the checkout's — and Convex, which
+  // refuses only a post OLDER than the one it holds, took it and served those
+  // pages to every prompt until a clean night replaced them.
+  it("refuses to post while a rebase is in progress, and does not abort it", async () => {
+    const dir = repo();
+    run(dir, "checkout", "-q", "-b", "theirs");
+    write(dir, "tts/snapshot/dtsTodos.jsonl", "theirs\n");
+    run(dir, "commit", "-qam", "theirs");
+    run(dir, "checkout", "-q", "main");
+    write(dir, "tts/snapshot/dtsTodos.jsonl", "ours\n");
+    run(dir, "commit", "-qam", "ours");
+    try {
+      run(dir, "rebase", "theirs");
+    } catch {
+      // the conflict is the point
+    }
+    expect(rebaseInProgress(dir)).toBe(true);
+
+    const r = learningRun(dir);
+    const convex = fakeConvex();
+    const result = await postStep(r, { fetch: convex.fetch });
+    expect(result).toMatchObject({ commit: null, pushed: false, files: null });
+    expect(r.failures).toHaveLength(1);
+    expect(r.failures[0].step).toBe("post");
+    expect(r.failures[0].error).toContain("a rebase is in progress");
+    // The only thing that went to Convex is the failure row: nothing was
+    // posted to /tts/model-of-tom.
+    expect(convex.posts.map((p) => p.route)).toEqual(["/tts/event"]);
+    // And the rebase is where it was — a post is a read, and `rebase --abort`
+    // resets the work tree hard.
+    expect(rebaseInProgress(dir)).toBe(true);
+
+    // Off that state the same call gets as far as reading the pages, so the
+    // guard is what stopped it and not the state of the checkout's files.
+    abortStaleRebase(dir);
+    const after = learningRun(dir);
+    await postStep(after, { fetch: fakeConvex().fetch });
+    expect(after.failures[0].error).toContain("model-of-tom files or sections missing");
+  });
+
   // witness: `git pull --rebase` re-commits the local commits it replays, and
   // without an identity it dies — on the box, every night, forever after.
   it("rebases a local commit onto origin and pushes it, with no identity configured", () => {
@@ -1296,5 +1653,50 @@ describe("the git half", { timeout: 60_000 }, () => {
     expect(result.failures[0].error).not.toBe("");
     expect(subjects(dir)[0]).toContain("nightly: 2026-09-06");
     expect(rebaseInProgress(dir)).toBe(false);
+  });
+
+  // witness: the post read the work tree while naming HEAD, outside the
+  // lock — a page changed under it went out under a commit that never held
+  // those bytes; and it reported local HEAD as if it were on GitHub.
+  it("posts the files from the git object at the commit, and says whether that commit is pushed", () => {
+    const bare = tmp();
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main", bare], { stdio: "ignore" });
+    const dir = repo();
+    write(dir, "model-of-tom/writing.md", "# Writing\n");
+    write(dir, "model-of-tom/priorities.md", "# Priorities\n");
+    write(dir, "model-of-tom/schedule.md", "# Schedule\n");
+    const areas = ["admin", "agent-systems", "climbing", "health-and-food", "mental-health", "money", "research", "social"];
+    for (const name of areas) write(dir, `model-of-tom/areas/${name}.md`, CLIMBING);
+    run(dir, "add", "-A");
+    run(dir, "commit", "-q", "-m", "pages");
+    const commit = run(dir, "rev-parse", "HEAD").trim();
+    // The work tree moves on after the commit: an edit not yet committed, a
+    // page added, a page removed.
+    write(dir, "model-of-tom/writing.md", "# Writing, edited since\n");
+    write(dir, "model-of-tom/areas/travel.md", "## Current state\n\n- uncommitted\n");
+    fs.rmSync(path.join(dir, "model-of-tom/schedule.md"));
+    const atCommit = collectModelOfTomFiles(commitSource(dir, commit));
+    expect(atCommit.missing).toEqual([]);
+    expect(atCommit.files.map((f) => f.path)).toEqual([...MODEL_OF_TOM_FIRST, ...areas.map((n) => `model-of-tom/areas/${n}.md`)]);
+    expect(atCommit.files[0].body).toBe("# Writing\n");
+    expect(atCommit.files[3].body).toContain("## Current state");
+    expect(atCommit.files[3].body).not.toContain("## Ideal state");
+    // The tree says otherwise, which is the point.
+    const inTree = collectModelOfTomFiles(dir);
+    expect(inTree.missing).toEqual(["model-of-tom/schedule.md"]);
+    expect(inTree.files[0].body).toBe("# Writing, edited since\n");
+    // No upstream: not pushed. After the push: pushed.
+    expect(isPushed(dir, commit)).toBe(false);
+    run(dir, "remote", "add", "origin", bare);
+    run(dir, "push", "-q", "-u", "origin", "main");
+    expect(isPushed(dir, commit)).toBe(true);
+    // A new local commit is not, until it is.
+    run(dir, "add", "-A");
+    run(dir, "commit", "-q", "-m", "later");
+    const later = run(dir, "rev-parse", "HEAD").trim();
+    expect(isPushed(dir, later)).toBe(false);
+    expect(isPushed(dir, commit)).toBe(true);
+    run(dir, "push", "-q");
+    expect(isPushed(dir, later)).toBe(true);
   });
 });

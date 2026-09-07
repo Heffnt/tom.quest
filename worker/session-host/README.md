@@ -329,7 +329,13 @@ lose:
   Codex's thread store under `CODEX_HOME` — the resume-by-id context. Cost of
   losing them: old sessions can no longer *resume* (the model's context is
   gone), but their transcripts live in Convex untouched; Tom reopens the
-  session as a fork and the transcript file carries the context.
+  session as a fork and the transcript file carries the context. And the
+  raw files are in WikiTom's `sessions/` archive: when a session ends, the
+  daemon archives its own file (`#archiveTranscript` in session.mjs, through
+  `worker/jobs/session-archive.mjs` under the WikiTom writer lock, waiting
+  at most two minutes for it) and writes one system row naming the archived
+  path — or one saying why not, with the nightly sweep as the fallback. The
+  nightly job's push commits what the daemon staged.
 
 Everything that matters — transcript, statuses, permissions, commands — is in
 Convex the moment it happens (flushes every ~400ms while streaming, instantly

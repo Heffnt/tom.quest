@@ -44,7 +44,7 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // page, the planner, and the scheduler must all mean the same thing by
 // "ready". The model-of-tom files every prompt begins with come from
 // ttsSkills.modelOfTomPrelude, read once per opener in insertSession below.
-import { modelOfTomPrelude } from "./ttsSkills";
+import { modelOfTomPrelude, withoutModelOfTomPrelude } from "./ttsSkills";
 import {
   CODEX_FALLBACK_MODEL,
   CODEX_USAGE_STALE_MS,
@@ -54,6 +54,7 @@ import {
   DAEMON_STALE_MS,
   DEFAULT_SESSION_MODEL,
   LIVE_STATUSES,
+  MODEL_OF_TOM_HEADER,
   NO_REPO,
   SESSION_MODEL,
   SESSION_REPO_NAMES,
@@ -611,10 +612,33 @@ async function insertSession(
   // this row is the transcript's first row, so the transcript records what
   // the session began with. Under no posted files it is the hardcoded
   // writing standard under a header that says so (convex/ttsSkills.ts).
+  //
+  // AND ONLY HERE: a seed whose prompt already begins with the prelude's
+  // header — a live opener copied into the Create session box, a builder that
+  // pasted its own copy — has that copy TAKEN OFF and the live one put there
+  // instead (withoutModelOfTomPrelude), so the session opens and the
+  // transcript's first line names one commit: the one this deployment holds.
+  // Two headers naming two commits is what nothing reading the row could make
+  // sense of, and one paste is a normal thing for Tom to do.
+  //
+  // A prelude read at some OTHER commit is still refused, because there is
+  // nothing in the text that says where it stops and the prompt starts (see
+  // withoutModelOfTomPrelude). The refusal writes nothing: a Convex mutation
+  // is one transaction, so the row inserted above and the ruling marks after
+  // it go back with the throw — pinned by the test, which finds no session and
+  // no inbound row.
+  const prompt = seed.prompt(sessionId, repos);
+  const prelude = await modelOfTomPrelude(ctx);
+  const body = withoutModelOfTomPrelude(prompt, prelude);
+  if (body === null) {
+    throw new Error(
+      `the prompt begins with a model-of-tom prelude ("${MODEL_OF_TOM_HEADER}") read at another commit; the opener adds the live one, and where a prelude from another commit stops and the prompt starts is not written down anywhere in it`,
+    );
+  }
   const text =
-    (await modelOfTomPrelude(ctx)) +
+    prelude +
     "\n\n" +
-    seed.prompt(sessionId, repos) +
+    body +
     (codeSessionLines.length > 0 ? "\n\n" + codeSessionLines.join("\n") : "") +
     (seed.outcomePen === false ? "" : outcomePenFooter(sessionId, repos));
   await ctx.db.insert("claudeInbound", {

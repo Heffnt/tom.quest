@@ -415,14 +415,22 @@ describe("GET /tts/learning-input", () => {
         data: { id: "0123456789ab", text: "an earlier no" },
         consumedAt: now - 15_000,
       });
+      // A revert rides along under `changes`, newest first, with its kind:
+      // its resultBlob is what the job checks the page against.
+      await ctx.db.insert("dtsEvents", {
+        at: now - 80_000_000,
+        kind: "learning-reverted",
+        data: { id: "fedcba987654", file: "model-of-tom/areas/climbing.md", before: "- b", after: "", resultBlob: "abc" },
+      });
       return { objectionId, consumedId };
     });
     const input = await (await get(t, `/tts/learning-input?until=${now}`)).json();
     expect(input.objections).toEqual([
       { eventId: objectionId, at: now - 10_000, id: "0123456789ab", text: "no" },
     ]);
-    expect(input.changes).toHaveLength(1);
-    expect(input.changes[0]).toMatchObject({ id: "0123456789ab", file: "model-of-tom/areas/climbing.md", after: "- a line" });
+    expect(input.changes).toHaveLength(2);
+    expect(input.changes[0]).toMatchObject({ eventKind: "learning-reverted", id: "fedcba987654", resultBlob: "abc" });
+    expect(input.changes[1]).toMatchObject({ eventKind: "learning-change", id: "0123456789ab", file: "model-of-tom/areas/climbing.md", after: "- a line" });
 
     const res = await post(t, "/tts/learning-objections-consumed", { ids: [objectionId, consumedId, "not-an-id"] });
     expect(res.status).toBe(200);

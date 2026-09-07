@@ -6,10 +6,12 @@ import { AUTO_DEFAULTS } from "./claudeSessions";
 import type { MessageOverflowRead } from "./claudeSessions";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
+import { modelOfTomPrelude } from "./ttsSkills";
 import {
   CODEX_USAGE_STALE_MS,
   CODEX_WEEKLY_CAP_PERCENT,
   DEFAULT_SESSION_MODEL,
+  MODEL_OF_TOM_HEADER,
   WRITING_STANDARD,
 } from "./ttsShared";
 import type { SessionModel } from "./ttsShared";
@@ -223,6 +225,58 @@ describe("claude sessions", () => {
     expect(text.startsWith("MODEL-OF-TOM FILES: none stored yet")).toBe(true);
     expect(text).toContain(WRITING_STANDARD);
     expect(text.indexOf(WRITING_STANDARD)).toBeLessThan(text.indexOf("\n\nhello"));
+  });
+
+  // witness: insertSession prefixed the prelude to whatever the seed's prompt
+  // was, so a builder that had pasted its own copy gave the transcript two
+  // headers naming two commits.
+  it("opens the session on a pasted opener, with the live prelude and one header", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    // What a paste actually is: the opener of a live session, copied whole.
+    const prelude = await t.run(async (ctx) => modelOfTomPrelude(ctx));
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "pasted opener",
+      kind: "adhoc",
+      repo: "none",
+      initialPrompt: `${prelude}\n\ncarry on from here`,
+    });
+    const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
+      sessionId,
+    });
+    const text = inbound[0].text ?? "";
+    expect(text.startsWith(prelude)).toBe(true);
+    expect(text.split(MODEL_OF_TOM_HEADER)).toHaveLength(2); // one header
+    expect(text).toContain("carry on from here");
+  });
+
+  it("refuses a seed carrying a prelude from another commit, and inserts nothing", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await expect(
+      tom.mutation(api.claudeSessions.createSession, {
+        title: "double prelude",
+        kind: "adhoc",
+        repo: "none",
+        initialPrompt: `${MODEL_OF_TOM_HEADER} (WikiTom commit 0123abcd): model-of-tom/writing.md\n\n── model-of-tom/writing.md ──\nold text\n\nhello`,
+      }),
+    ).rejects.toThrow(/prelude .* read at another commit/);
+    // A Convex mutation is one transaction: the session row and the ruling
+    // marks the refusal comes after go back with it.
+    const rows = await t.run(async (ctx) => ({
+      sessions: await ctx.db.query("claudeSessions").collect(),
+      inbound: await ctx.db.query("claudeInbound").collect(),
+    }));
+    expect(rows.sessions).toHaveLength(0);
+    expect(rows.inbound).toHaveLength(0);
+    // A prompt that merely mentions the header later is Tom's to write.
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "mentions it",
+      kind: "adhoc",
+      repo: "none",
+      initialPrompt: `read the ${MODEL_OF_TOM_HEADER} line first`,
+    });
+    expect(sessionId).toBeDefined();
   });
 
   it("daemon poll claims state and heartbeat; ingest transitions and delivers", async () => {

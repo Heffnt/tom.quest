@@ -34,6 +34,17 @@ import {
 import { BANNED_TOOLS, bannedToolDenial } from "./banned-tools.mjs";
 import { codexQuery } from "./codex-query.mjs";
 import { FORK_TRANSCRIPT_FILE, renderTranscript } from "./fork-transcript.mjs";
+// The session-end archive into WikiTom (design section 4, "Sessions"). Its
+// body is worker/jobs/session-archive.mjs, the nightly sweep's too; it is
+// reached through ./session-archive.mjs, a symlink, for the reason lib.mjs
+// gives for worker-env.mjs (the two directories install at different depths).
+import {
+  CLAUDE_ACCOUNTS_DIR,
+  CODEX_SESSIONS_DIR,
+  WIKITOM_DIR,
+  archiveSessionUnderLock,
+  utcDay,
+} from "./session-archive.mjs";
 
 const execFile = promisify(execFileCb);
 
@@ -273,6 +284,10 @@ function classifierPrompt({ command, workdir, branch }) {
 // — the push of local-only commits to session/<id> — is time-boxed: a session
 // must reach "ended" even when the remote is unreachable.
 const PRESERVE_PUSH_TIMEOUT_MS = 60_000;
+// How long a session end waits for the WikiTom writer lock before leaving
+// its transcript to the nightly sweep (#archiveTranscript). The nightly job
+// holds the lock for minutes; a daemon has other sessions to serve.
+const ARCHIVE_LOCK_WAIT_SECONDS = 120;
 
 // Autonomous sessions: SDK turn budget (matches the executor's agentic
 // budget) and the wall-clock cap per delivered turn — past it the turn is
@@ -1215,6 +1230,7 @@ export class Session {
       // A failed turn is exactly where work is most likely to be stranded —
       // the commits made before the error die with the dir otherwise.
       await this.#preserveWork();
+      await this.#archiveTranscript();
       this.setStatus("ended");
       this.endedReasonToSend = "autonomous turn failed";
       this.requestFlush(true);
@@ -1898,6 +1914,47 @@ export class Session {
   // record is already server-side) or the time cap (outcome errored). Never
   // interrupts — the result path's query has already finished its turn, and
   // the time cap interrupts before calling here.
+  // ── The session-end archive ────────────────────────────────────────────────
+  // The SDK's (or Codex's) file for this session goes into WikiTom's
+  // sessions/ archive the moment the session ends, under the checkout's
+  // writer lock, so the transcript is in the vault hours before the nightly
+  // sweep — which still runs, and archives again a file that grew after this
+  // (the SDK can flush after the query ends; the manifest keys on the
+  // content hash). Every terminal path calls it before the ending flush, so
+  // the row it writes rides in the same ingest as the ending.
+  //
+  // NOTHING HERE CAN END THE SESSION BADLY: a missing checkout (setup.sh has
+  // not cloned it yet), a lock held past the wait, any throw at all is one
+  // system row in the transcript and one log line, and the sweep is the
+  // fallback. The wait is short — a daemon has other sessions to serve, and
+  // the nightly job holds the lock for minutes.
+  async #archiveTranscript() {
+    const id = this.sdkSessionId;
+    if (!id) return; // no turn ever ran: the SDK wrote no file
+    try {
+      const { archived } = await archiveSessionUnderLock({
+        checkoutDir: WIKITOM_DIR,
+        sessionId: id,
+        day: utcDay(Date.now()),
+        codexDir: CODEX_SESSIONS_DIR,
+        accountsDir: CLAUDE_ACCOUNTS_DIR,
+        waitSeconds: ARCHIVE_LOCK_WAIT_SECONDS,
+        log: (line) => log(`session ${this.id}: ${line}`),
+      });
+      if (archived.length > 0) {
+        this.finalizeRow("system", {
+          text: `transcript archived to WikiTom: ${archived.map((a) => a.dest).join(", ")} (committed and pushed by the nightly job)`,
+        });
+      }
+    } catch (err) {
+      const msg = String(err?.message ?? err).slice(0, 300);
+      log(`session ${this.id}: transcript not archived at session end (the nightly sweep will): ${msg}`);
+      this.finalizeRow("system", {
+        text: `transcript not archived at session end — ${msg}; the nightly sweep archives it`,
+      });
+    }
+  }
+
   async #endAutonomous(endedReason, outcome) {
     if (this.dead || this.status === "ended" || this.status === "failed") return;
     this.#clearAutoTimer();
@@ -1919,6 +1976,7 @@ export class Session {
     // An autonomous mission has no Tom watching to push for it — the commits
     // it made exist ONLY here until this call (rows land in the flush below).
     await this.#preserveWork();
+    await this.#archiveTranscript();
     this.setStatus("ended");
     this.endedReasonToSend = endedReason;
     this.requestFlush(true);
@@ -1995,6 +2053,7 @@ export class Session {
     // Before the terminal flush, not after: preservation ADDS rows, and they
     // belong in the same ingest that carries the ending.
     await this.#preserveWork();
+    await this.#archiveTranscript();
     this.setStatus("ended");
     this.endedReasonToSend = "stopped by Tom";
     this.requestFlush(true);

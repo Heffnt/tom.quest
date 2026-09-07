@@ -75,7 +75,7 @@ import {
   utcDay,
   withWikiTomLock,
 } from "./nightly.mjs";
-import { extractSections, isIsoDay, setFrontmatterField } from "./markdown-sections.mjs";
+import { extractSections, isIsoDay, setFrontmatterField, withoutHeading } from "./markdown-sections.mjs";
 
 // ── Names ────────────────────────────────────────────────────────────────────
 export const WEEKLY_DIR = "tts/weekly";
@@ -265,7 +265,7 @@ export function readPriorAgenda(dir, today = null) {
   const outcomeOf = (name) => {
     const text = fs.readFileSync(path.join(weekly, name), "utf8");
     const section = extractSections(text, ["Outcome"]);
-    const outcome = section.replace(/^#{1,6}\s+Outcome\s*\n?/i, "").trim();
+    const outcome = withoutHeading(section).trim();
     return outcome === "" ? null : outcome;
   };
   const dayOfName = (name) => name.slice(0, -".md".length);

@@ -1176,12 +1176,15 @@ http.route({
 
 // ── POST /tts/model-of-tom — the nightly job's post of the files every prompt
 // begins with (the lifeos update, phase 4) ───────────────────────────────────
-// Body: { commit, committedAt, files: [{ path, body }] } — the WikiTom commit
-// hash the files were read at, that commit's time (epoch ms; it becomes the
-// rows' syncedAt), and the files in any order (the server orders them). The
-// store is replaced whole, atomically, in convex/ttsSkills.ts. Same
-// TTS_WORKER_KEY door as every other worker pen: the box that holds the
-// WikiTom checkout is the only writer, and nothing in Convex reads GitHub.
+// Body: { commit, committedAt, pushed?, force?, files: [{ path, body }] } —
+// the WikiTom commit hash the files were read at, that commit's time (epoch
+// ms; it becomes the rows' syncedAt), whether the commit had reached GitHub
+// (the job posts local HEAD even after a refused push), the reason an older
+// commit may replace the store (absent, an older post is refused), and the
+// files in any order (the server orders them). The store is replaced whole,
+// atomically, in convex/ttsSkills.ts. Same TTS_WORKER_KEY door as every
+// other worker pen: the box that holds the WikiTom checkout is the only
+// writer, and nothing in Convex reads GitHub.
 const MODEL_OF_TOM_FILES_MAX = 64;
 
 const ttsModelOfTom = httpAction(async (ctx, request) => {
@@ -1199,6 +1202,12 @@ const ttsModelOfTom = httpAction(async (ctx, request) => {
   }
   if (typeof b.committedAt !== "number" || !Number.isFinite(b.committedAt)) {
     return jsonResponse(400, { error: "committedAt (epoch ms) required" });
+  }
+  if (b.pushed !== undefined && typeof b.pushed !== "boolean") {
+    return jsonResponse(400, { error: "pushed, when given, is a boolean" });
+  }
+  if (b.force !== undefined && (typeof b.force !== "string" || b.force.trim() === "")) {
+    return jsonResponse(400, { error: "force, when given, is the reason (a non-empty string)" });
   }
   if (!Array.isArray(b.files) || b.files.length === 0) {
     return jsonResponse(400, { error: "files (non-empty array) required" });
@@ -1224,7 +1233,7 @@ const ttsModelOfTom = httpAction(async (ctx, request) => {
   try {
     const result = await ctx.runMutation(
       internal.ttsSkills.internalReplaceModelOfTom,
-      { commit: b.commit, committedAt: b.committedAt, files },
+      { commit: b.commit, committedAt: b.committedAt, pushed: b.pushed, force: b.force, files },
     );
     return jsonResponse(200, { ok: true, commit: b.commit, ...result });
   } catch (e) {
