@@ -14,7 +14,6 @@ import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -34,6 +33,7 @@ import {
   commitTree,
   discoverSessionFiles,
   expectedBodyBlobs,
+  exportTableRows,
   gitBlobId,
   indexManifests,
   isLearningFile,
@@ -899,12 +899,47 @@ describe("redactRow", () => {
     expect(row.text).toContain(token); // pure
   });
 
-  it("is applied to every row the snapshot step reads before it is written", () => {
-    const source = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "nightly.mjs"), "utf8");
-    const step = source.slice(source.indexOf("async function snapshotStep"), source.indexOf("export function syncSnapshot"));
-    expect(step).toMatch(/for \(const row of page\.rows\) rows\.push\(redactRow\(row\)\);/);
-    const bytes = planTableFiles("claudeInbound", [{ _id: "a", text: token }].map(redactRow));
-    expect(bytes[0].bytes.toString()).toBe('{ "_id": "a", "text": "[redacted:github]" }\n');
+  // A regex over this module's own source used to stand here, which said only
+  // that a line of code had not been edited. What the vault's guarantee needs
+  // is that a row carrying a token comes out of the export redacted, whatever
+  // the read is spelled like — so the export runs, over pages a fake server
+  // hands it, and the bytes the snapshot would write are the assertion.
+  it("exports every row of a table redacted, across every page of it", async () => {
+    const pages = [
+      { rows: [{ _id: "a", text: `push with ${token}` }], isDone: false, continueCursor: "c1" },
+      { rows: [{ _id: "b", settings: { keys: [slack] } }], isDone: true, continueCursor: "c2" },
+    ];
+    const asked = [];
+    const rows = await exportTableRows({
+      env: {},
+      table: "claudeInbound",
+      boundary: 1757000000000,
+      fetch: async (_env, route) => {
+        asked.push(route);
+        return pages[asked.length - 1];
+      },
+    });
+    expect(asked[0]).toContain("table=claudeInbound&boundary=1757000000000");
+    expect(asked[1]).toContain("cursor=c1"); // the second page, not the first again
+    expect(rows).toEqual([
+      { _id: "a", text: "push with [redacted:github]" },
+      { _id: "b", settings: { keys: ["[redacted:slack]"] } },
+    ]);
+    const bytes = planTableFiles("claudeInbound", rows)[0].bytes.toString();
+    expect(bytes).not.toContain(token);
+    expect(bytes).not.toContain(slack);
+    expect(bytes).toContain('"text": "push with [redacted:github]"');
+  });
+
+  it("stops rather than spins when the server does not advance its cursor", async () => {
+    await expect(
+      exportTableRows({
+        env: {},
+        table: "dtsTodos",
+        boundary: 1,
+        fetch: async () => ({ rows: [{ _id: "a" }], isDone: false, continueCursor: null }),
+      }),
+    ).rejects.toThrow(/did not advance its cursor for dtsTodos/);
   });
 });
 

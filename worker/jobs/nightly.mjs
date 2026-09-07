@@ -387,6 +387,38 @@ async function recordFailure(run, step, err, { fetch = convexFetch } = {}) {
 }
 
 // ── 1. snapshot ──────────────────────────────────────────────────────────────
+/**
+ * Every row of one table, paged out of GET /tts/export against one boundary
+ * instant, EACH ONE THROUGH THE CREDENTIAL FILTER (redactRow, every string
+ * value at every depth). This is the only way a row reaches the snapshot, so
+ * "the vault holds no key" is a property of the read itself rather than a
+ * line somebody has to remember to keep next to the write.
+ */
+export async function exportTableRows({ env, table, boundary, fetch = convexFetch }) {
+  const rows = [];
+  let cursor = null;
+  for (;;) {
+    const params = new URLSearchParams({
+      table,
+      boundary: String(boundary),
+      numItems: String(EXPORT_PAGE),
+    });
+    if (cursor !== null) params.set("cursor", cursor);
+    const page = await fetch(env, `/tts/export?${params}`);
+    for (const row of page.rows) rows.push(redactRow(row));
+    if (page.isDone) break;
+    // EXPORT_PAGE is a ceiling, not a promise: the server ends a page at its
+    // byte budget too (a table of 256KB rows would otherwise ask for more
+    // than one query may read), so a page can be one row. The cursor must
+    // move every time — a server that stopped advancing it would spin here.
+    if (page.continueCursor === cursor) {
+      throw new Error(`/tts/export did not advance its cursor for ${table} — stopped at ${rows.length} rows`);
+    }
+    cursor = page.continueCursor;
+  }
+  return rows;
+}
+
 async function snapshotStep(run) {
   const { env } = run;
   const boundary = run.now;
@@ -401,29 +433,7 @@ async function snapshotStep(run) {
   // complete set replaces the checkout's, so a failure part-way leaves last
   // night's copy whole rather than a mix of two nights.
   for (const table of tables) {
-    const rows = [];
-    let cursor = null;
-    for (;;) {
-      const params = new URLSearchParams({
-        table,
-        boundary: String(boundary),
-        numItems: String(EXPORT_PAGE),
-      });
-      if (cursor !== null) params.set("cursor", cursor);
-      const page = await convexFetch(env, `/tts/export?${params}`);
-      // Every row through the credential filter before it is written
-      // (redactRow): nothing in the vault is trusted to be secret-free.
-      for (const row of page.rows) rows.push(redactRow(row));
-      if (page.isDone) break;
-      // EXPORT_PAGE is a ceiling, not a promise: the server ends a page at its
-      // byte budget too (a table of 256KB rows would otherwise ask for more
-      // than one query may read), so a page can be one row. The cursor must
-      // move every time — a server that stopped advancing it would spin here.
-      if (page.continueCursor === cursor) {
-        throw new Error(`/tts/export did not advance its cursor for ${table} — stopped at ${rows.length} rows`);
-      }
-      cursor = page.continueCursor;
-    }
+    const rows = await exportTableRows({ env, table, boundary });
     counts[table] = rows.length;
     for (const f of planTableFiles(table, rows)) {
       fs.writeFileSync(path.join(SNAPSHOT_STAGING_DIR, f.name), f.bytes);
