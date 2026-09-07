@@ -1,5 +1,6 @@
 "use client";
 
+import { stripColorModeFamilyPrefix } from "./lib/color-mode-label";
 import type { ColorMode, CloudKey, CloudMetaEntry } from "./lib/types";
 
 type Props = {
@@ -101,7 +102,7 @@ export function ControlPanel(props: Props) {
                 key={m.id}
                 checked={activeMode === m.id}
                 onChange={() => setActiveMode(m.id)}
-                label={m.label.replace(/^(Ground truth|Predictions?) — /, "")}
+                label={stripColorModeFamilyPrefix(m.label)}
               />
             ))}
           </div>

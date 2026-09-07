@@ -1,6 +1,7 @@
 "use client";
 
 import type { PointHover } from "./cloud-viewer";
+import { stripColorModeFamilyPrefix } from "./lib/color-mode-label";
 import type { ColorMode, Manifest, PaletteEntry, ParsedCloud } from "./lib/types";
 
 type Props = {
@@ -87,7 +88,7 @@ export function PointHoverTooltip({ point, cloud, manifest, activeMode }: Props)
             {predictions.map(({ mode, value }) => (
               <ClassRow
                 key={mode.id}
-                label={stripPredictionLabel(mode.label)}
+                label={stripColorModeFamilyPrefix(mode.label)}
                 value={value}
                 selected={mode.id === activeMode.id}
               />
@@ -181,10 +182,6 @@ function clampToViewport(
   if (typeof window === "undefined") return value;
   const viewportSize = axis === "width" ? window.innerWidth : window.innerHeight;
   return Math.max(padding, Math.min(value, viewportSize - estimatedSize - padding));
-}
-
-function stripPredictionLabel(label: string): string {
-  return label.replace(/^Predictions?\s+—\s+/, "");
 }
 
 function formatCoordinate(value: number): string {
