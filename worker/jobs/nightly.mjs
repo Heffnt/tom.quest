@@ -66,7 +66,13 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { loadEnv, convexFetch, nyHour, runClaude, extractJsonObject, clip } from "./tts-lib.mjs";
 import { git } from "./tts-code-lib.mjs";
-import { enclosingHeadings, extractSections, frontmatterBlock, sectionSpan } from "./markdown-sections.mjs";
+import {
+  enclosingHeadings,
+  extractSections,
+  frontmatterBlock,
+  isIsoDay,
+  sectionSpan,
+} from "./markdown-sections.mjs";
 import { CHANGE_ID_CHARS, changeIdTokens, namedChange } from "./learning-change-names.mjs";
 
 // The credential filter is worker/session-host/redact.mjs — THE ONE HOME; the
@@ -661,28 +667,55 @@ export function sessionCitation(turn) {
   return /^[0-9a-f]{8}/.test(sdk) ? sdk.slice(0, 8) : turn.sessionId;
 }
 
-/** Every id in tonight's input that a line's evidence may name. A session is
- * named by its citation (the 8-hex prefix), by the whole SDK id, or by its
- * Convex row id — the prompt shows the first; the others are accepted. */
-export function learningEvidenceIds(input) {
-  const ids = new Set();
-  const add = (x) => {
-    if (typeof x === "string" && x.length >= 6) ids.add(x);
+// ── Evidence ─────────────────────────────────────────────────────────────────
+// A citation has one of three forms, and the id in it is EXACT — a source in
+// tonight's input has that name or the citation names nothing:
+//
+//   session <id>   a session Tom typed in: the 8-hex prefix of its SDK id
+//                  (what the pages cite), the whole SDK id, or the Convex row
+//                  id of a session that never reported one
+//   ruling <id>    a ruling's row id
+//   thread <ts>    a Slack reply of Tom's, by its ts or its thread's
+//
+// "Includes an id" was the old test, and `session 47f04bc9-old` included
+// one. On the line, each citation carries its date — `(session 47f04bc9,
+// 2026-09-05; ruling k17…, 2026-09-05)` — and the date must fall in the
+// window the input was read over: a line resting on tonight's input is dated
+// tonight. And every change carries an EXCERPT: EXCERPT_MIN_WORDS or more of
+// Tom's own words, verbatim, from a source it cites. The citation says where;
+// the excerpt is what was there, and it is the evidence for an inference too
+// — an inference that cannot quote what it rests on rests on nothing.
+const CITATION = /^(session|ruling|thread) (\S+)$/;
+const CITED_ENTRY = /^(session|ruling|thread) (\S+), (\d{4}-\d{2}-\d{2})$/;
+export const EXCERPT_MIN_WORDS = 6;
+
+/**
+ * What tonight's input can evidence: every name a citation may use, keyed
+ * "<kind> <id>", each with Tom's own words under that name (the turns he
+ * typed in the session, the reply's text, the ruling's sentence and quote),
+ * and the window's first and last days. A session is under each of its
+ * names. Null skips the input-dependent checks (the pure tests).
+ */
+export function learningEvidence(input) {
+  const sources = new Map();
+  const add = (kind, id, ...texts) => {
+    if (typeof id !== "string" || id.length < 6) return;
+    const key = `${kind} ${id}`;
+    const s = sources.get(key) ?? { texts: [] };
+    for (const t of texts) if (typeof t === "string" && t.trim() !== "") s.texts.push(t);
+    sources.set(key, s);
   };
   for (const t of input.tomTurns ?? []) {
-    add(t.id);
-    add(t.sessionId);
-    add(t.sdkSessionId);
-    add(sessionCitation(t));
+    for (const id of new Set([sessionCitation(t), t.sdkSessionId, t.sessionId])) add("session", id, t.text);
   }
   for (const r of input.slackReplies ?? []) {
-    add(r.id);
-    add(r.data?.ts);
-    add(r.data?.threadTs);
+    for (const id of new Set([r.data?.ts, r.data?.threadTs])) add("thread", id, r.data?.text);
   }
-  for (const r of input.rulings ?? []) add(r.id);
-  return ids;
+  for (const r of input.rulings ?? []) add("ruling", r.id, r.sentence, r.quote);
+  return { sources, sinceDay: utcDay(input.since), untilDay: utcDay(input.until) };
 }
+
+const wordCount = (text) => oneLine(text).split(" ").filter((w) => w !== "").length;
 
 /**
  * The model's answer as a list of raw changes. Malformed JSON, or an object
@@ -753,8 +786,8 @@ export function locateSection(lines, file, section) {
 
 /** Why one proposed change may not land, or null when it may. The checks
  * are the rules in the block comment above, in the order a reader of the
- * refusal would want them. */
-function learningRefusal(c, texts, evidenceIds) {
+ * refusal would want them. `evidence` is learningEvidence(input), or null. */
+function learningRefusal(c, texts, evidence) {
   if (typeof c.file !== "string" || !isLearningFile(c.file)) {
     return `${String(c.file)} is not a page the learning step writes`;
   }
@@ -779,22 +812,41 @@ function learningRefusal(c, texts, evidenceIds) {
   ) {
     return "no evidence";
   }
-  const evidence = c.evidence.map((e) => e.trim());
-  if (evidenceIds !== null) {
-    for (const e of evidence) {
-      if (![...evidenceIds].some((id) => e.includes(id))) {
-        return `evidence "${e}" names nothing in tonight's input`;
-      }
+  const names = c.evidence.map((e) => e.trim());
+  for (const e of names) {
+    if (!CITATION.test(e)) return `evidence "${e}" is not a citation: session <id>, ruling <id> or thread <ts>`;
+    if (evidence !== null && !evidence.sources.has(e)) {
+      return `evidence "${e}" names nothing in tonight's input`;
     }
   }
-  // The citation IS the evidence: every entry is in the line, and the
-  // trailing parenthetical names at least one of them — "(probably)" at the
-  // end of a line that never says where it came from is not a citation.
-  for (const e of evidence) {
-    if (!c.line.includes(e)) return `the line does not cite its evidence "${e}"`;
+  // The citation IS the evidence: the trailing parenthetical is the
+  // change's evidence entry by entry, each with its date in the window, and
+  // nothing else — "(probably)" at the end of a line that never says where
+  // it came from is not a citation.
+  const entries = cited[1].slice(1, -1).split(";").map((e) => e.trim());
+  for (const entry of entries) {
+    const m = CITED_ENTRY.exec(entry);
+    if (!m) return `the citation "${entry}" is not in the form <kind> <id>, YYYY-MM-DD`;
+    const name = `${m[1]} ${m[2]}`;
+    if (!names.includes(name)) return `the citation names "${name}", which is not in the change's evidence`;
+    if (!isIsoDay(m[3])) return `the citation date ${m[3]} is not a day`;
+    if (evidence !== null && (m[3] < evidence.sinceDay || m[3] > evidence.untilDay)) {
+      return `the citation date ${m[3]} is outside tonight's window (${evidence.sinceDay} to ${evidence.untilDay})`;
+    }
   }
-  if (!evidence.some((e) => cited[1].includes(e))) {
-    return `the citation ${cited[1]} names none of the change's evidence`;
+  for (const e of names) {
+    if (!entries.some((entry) => entry.startsWith(`${e},`))) return `the line does not cite its evidence "${e}"`;
+  }
+  // The excerpt: Tom's words, verbatim, from a source the change cites.
+  if (typeof c.excerpt !== "string" || wordCount(c.excerpt) < EXCERPT_MIN_WORDS) {
+    return `no excerpt of ${EXCERPT_MIN_WORDS} or more of Tom's words from tonight's input`;
+  }
+  if (evidence !== null) {
+    const wanted = oneLine(c.excerpt);
+    const cites = names.flatMap((e) => evidence.sources.get(e)?.texts ?? []);
+    if (!cites.some((t) => oneLine(t).includes(wanted))) {
+      return "the excerpt is not in the cited input verbatim";
+    }
   }
   if (c.replaces !== null && c.replaces !== undefined) {
     // One bullet — which on writing.md may be quoted over the lines the
@@ -863,11 +915,11 @@ function findBullets(lines, span, text) {
 /**
  * Apply proposed changes to the pages (a Map of file → text), pure. Returns
  * the new texts, the changes that landed (each with its id and the digest's
- * fields), and the ones refused with the reason. `evidenceIds` is the set a
- * line's evidence must name — null skips that check. Every page that took
- * a change gets `updated: day`.
+ * fields), and the ones refused with the reason. `evidence` is what tonight's
+ * input can evidence (learningEvidence) — null skips the checks against it.
+ * Every page that took a change gets `updated: day`.
  */
-export function applyLearningChanges(pages, changes, { day, evidenceIds = null } = {}) {
+export function applyLearningChanges(pages, changes, { day, evidence = null } = {}) {
   const texts = new Map(pages);
   const applied = [];
   const refused = [];
@@ -879,7 +931,7 @@ export function applyLearningChanges(pages, changes, { day, evidenceIds = null }
       reason,
     });
   for (const c of changes) {
-    const why = learningRefusal(c, texts, evidenceIds);
+    const why = learningRefusal(c, texts, evidence);
     if (why !== null) {
       refuse(c, why);
       continue;
@@ -927,6 +979,7 @@ export function applyLearningChanges(pages, changes, { day, evidenceIds = null }
       after: line,
       evidence: c.evidence.map((e) => e.trim()).join("; "),
       sources: c.evidence.map((e) => e.trim()),
+      excerpt: oneLine(c.excerpt),
     });
   }
   for (const file of new Set(applied.map((a) => a.file))) {
@@ -1050,14 +1103,15 @@ export function learningPrompt(input, pages, day) {
     "",
     "RULES",
     "- A change is one line for one section of one page. `kind` is what the line is: a fact about Tom, a correction of something a page says, or an inference. An inference is allowed and must say in the line that it is an inference and which facts it rests on.",
-    "- Every line ends with its evidence, in the pages' citation style, in parentheses: (session <session>, YYYY-MM-DD) for a turn — `session` is the 8-character id the pages already cite, e.g. (session 47f04bc9, 2026-08-30) — (ruling <rulingId>, YYYY-MM-DD) for a ruling, (slack <ts>, YYYY-MM-DD) for a Slack reply; several joined with \"; \". The ids are the ones in the input, verbatim. `evidence` lists the same citations, and every one of them must appear in the line. A line whose evidence names nothing in the input is refused.",
+    "- Every line ends with its evidence, in the pages' citation style, in parentheses: (session <session>, YYYY-MM-DD) for a turn — `session` is the 8-character id the pages already cite, e.g. (session 47f04bc9, 2026-08-30) — (ruling <rulingId>, YYYY-MM-DD) for a ruling, (thread <ts>, YYYY-MM-DD) for a Slack reply; several joined with \"; \". The ids are the ones in the input, verbatim and whole, and the date is the input's date, inside tonight's window. `evidence` lists the same citations without their dates (\"session <session>\", \"ruling <rulingId>\", \"thread <ts>\"), and every one of them must appear in the line. A citation naming anything not in the input is refused.",
+    `- \`excerpt\` is ${EXCERPT_MIN_WORDS} or more of Tom's own words, verbatim, from a source the change cites — the turn he typed, his reply, his ruling's sentence — never the agent's words. It is the evidence for a fact, a correction and an inference alike; a change without one is refused.`,
     "- Only these pages: model-of-tom/writing.md, model-of-tom/priorities.md, model-of-tom/areas/<area>.md. Only a section that exists on the page, named by its heading. Never \"Directions\", never \"Ideal state\", never \"Must not break\" — those are Tom's own, and a change naming them is refused. Never the spec.",
     "- A correction replaces: `replaces` is one existing bullet of that section, verbatim — where the page wraps a bullet over several lines, quote all of them — and the new line supersedes it — the pages describe what is, never what was. An addition has `replaces: null`.",
     "- Write to writing.md's own rules: plain statements, no comparisons or analogies, no evaluative language, one fixed term per concept, the date in the line. One line, starting with \"- \".",
     "- Nothing from the agent's words alone; nothing already on a page; nothing that restates a line. An empty list is the right answer on a night whose input changes nothing about the model of Tom, and that is most nights.",
     "",
     "Answer with ONE JSON object and nothing else, no code fence:",
-    '{"changes":[{"file":"model-of-tom/areas/climbing.md","section":"Current state","kind":"fact","line":"- ... (session <session>, YYYY-MM-DD).","replaces":null,"evidence":["session <session>"]}]}',
+    '{"changes":[{"file":"model-of-tom/areas/climbing.md","section":"Current state","kind":"fact","line":"- ... (session <session>, YYYY-MM-DD).","replaces":null,"evidence":["session <session>"],"excerpt":"<six or more of Tom\'s words, verbatim>"}]}',
     "",
     `Tonight is ${day} (UTC).`,
     "",
@@ -1172,7 +1226,7 @@ export async function learningStep(run, deps = {}) {
     });
     const result = applyLearningChanges(pages, parseLearningAnswer(answer), {
       day: run.day,
-      evidenceIds: learningEvidenceIds(input),
+      evidence: learningEvidence(input),
     });
     for (const [file, text] of result.pages) {
       if (text !== pages.get(file)) fs.writeFileSync(path.join(run.dir, file), text);

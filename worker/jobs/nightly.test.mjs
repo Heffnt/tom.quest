@@ -35,7 +35,7 @@ import {
   isLearningFile,
   isTableFile,
   learningChangeId,
-  learningEvidenceIds,
+  learningEvidence,
   learningStep,
   locateSection,
   matchObjection,
@@ -201,6 +201,8 @@ const factChange = (over = {}) => ({
   line: NEW_LINE,
   replaces: null,
   evidence: [`session ${SESSION}`],
+  // Tom's words from the turn, verbatim (learningInput above).
+  excerpt: "thursday practice moved to 6pm this term",
   ...over,
 });
 
@@ -243,6 +245,7 @@ describe("the learning step", () => {
         after: NEW_LINE,
         evidence: `session ${SESSION}`,
         sources: [`session ${SESSION}`],
+        excerpt: "thursday practice moved to 6pm this term",
       },
       // The commit the row will name, found by this message once made.
       commitMessage: "learning: 2026-09-06 — 1 line from Tom's turns, replies and rulings",
@@ -302,6 +305,21 @@ describe("the learning step", () => {
           evidence: [`session ${SESSION}`, `ruling ${RULING}`],
         }),
         factChange({ kind: "inference", line: `- He trains Thursdays (session ${SESSION}, 2026-09-05).` }),
+        // witness: "includes the id" let `session 9e1c2b3a-old` pass as the
+        // session, and a line dated any day pass beside it.
+        factChange({
+          line: `- Thursday practice is at 6 p.m. this term (session ${SESSION}-old, 2026-09-05).`,
+          evidence: [`session ${SESSION}-old`],
+        }),
+        factChange({ line: `- Thursday practice is at 6 p.m. this term (session ${SESSION}, 2026-08-30).` }),
+        factChange({ line: `- Thursday practice is at 6 p.m. this term (session ${SESSION}, 2026-09-31).` }),
+        factChange({ line: `- Thursday practice is at 6 p.m. this term (session ${SESSION}, 2026-09-05; ruling ${RULING}, 2026-09-05).` }),
+        factChange({ evidence: [SESSION] }),
+        // The excerpt: missing, too short, and not Tom's words.
+        factChange({ excerpt: undefined }),
+        factChange({ excerpt: "moved to 6pm" }),
+        factChange({ excerpt: "practice is on Fridays now this term" }),
+        factChange({ excerpt: "Which practice moved? Noted: Thursday at 6 p.m." }),
       ]),
     });
     expect(summary.changes).toBe(0);
@@ -314,10 +332,19 @@ describe("the learning step", () => {
       "no evidence",
       'evidence "session deadbeef" names nothing in tonight\'s input',
       "the line does not end with its evidence citation",
-      `the line does not cite its evidence "session ${SESSION}"`,
-      "the citation (probably) names none of the change's evidence",
+      'the citation "probably" is not in the form <kind> <id>, YYYY-MM-DD',
+      'the citation "probably" is not in the form <kind> <id>, YYYY-MM-DD',
       `the line does not cite its evidence "ruling ${RULING}"`,
       "an inference must say it is one, in the line",
+      `evidence "session ${SESSION}-old" names nothing in tonight's input`,
+      "the citation date 2026-08-30 is outside tonight's window (2026-09-05 to 2026-09-06)",
+      "the citation date 2026-09-31 is not a day",
+      `the citation names "ruling ${RULING}", which is not in the change's evidence`,
+      `evidence "${SESSION}" is not a citation: session <id>, ruling <id> or thread <ts>`,
+      "no excerpt of 6 or more of Tom's words from tonight's input",
+      "no excerpt of 6 or more of Tom's words from tonight's input",
+      "the excerpt is not in the cited input verbatim",
+      "the excerpt is not in the cited input verbatim",
     ]);
     for (const [rel, text] of before) {
       expect(fs.readFileSync(path.join(dir, rel), "utf8")).toBe(text);
@@ -396,8 +423,9 @@ describe("the learning step", () => {
     expect(
       applyLearningChanges(new Map([[file, wrapped]]), [factChange({ file, section: "Calibration core", line, replaces: before })], { day: "2026-09-06" }).applied,
     ).toHaveLength(1);
+    const present = "- Assume absent: web-dev jargon of any kind (session 47f04bc9, 2026-08-29).";
     expect(
-      applyLearningChanges(new Map([[file, wrapped]]), [factChange({ file, section: "Calibration core", line: before, evidence: ["session `47f04bc9`"] })], { day: "2026-09-06" }).refused[0].reason,
+      applyLearningChanges(new Map([[file, wrapped]]), [factChange({ file, section: "Calibration core", line: present, evidence: ["session 47f04bc9"] })], { day: "2026-09-06" }).refused[0].reason,
     ).toBe("already on the page");
     // A first line alone is not the bullet.
     expect(
@@ -536,23 +564,53 @@ describe("the learning step", () => {
     expect(sessionCitation({ ...turn, sdkSessionId: SDK_SESSION.toUpperCase() })).toBe(SESSION);
     // Before the SDK reported one, the row id is the session's only name.
     expect(sessionCitation({ id: TURN, sessionId: SESSION_ROW, sdkSessionId: null })).toBe(SESSION_ROW);
-    const ids = learningEvidenceIds(learningInput());
-    expect(ids.has(SESSION)).toBe(true);
-    expect(ids.has(SDK_SESSION)).toBe(true);
-    expect(ids.has(SESSION_ROW)).toBe(true);
-    expect(ids.has(TURN)).toBe(true);
-    expect(ids.has(RULING)).toBe(true);
+    const evidence = learningEvidence(
+      learningInput({
+        slackReplies: [
+          { id: "ev9", at: Date.UTC(2026, 8, 5, 22), data: { ts: "1757000000.000100", threadTs: "1757000000.000001", text: "yes, the thursday one, keep it there" } },
+        ],
+      }),
+    );
+    expect(evidence).toMatchObject({ sinceDay: "2026-09-05", untilDay: "2026-09-06" });
+    expect([...evidence.sources.keys()].sort()).toEqual(
+      [
+        `session ${SESSION}`,
+        `session ${SDK_SESSION}`,
+        `session ${SESSION_ROW}`,
+        `ruling ${RULING}`,
+        "thread 1757000000.000100",
+        "thread 1757000000.000001",
+      ].sort(),
+    );
+    // A turn's row id is not a session's name.
+    expect(evidence.sources.has(`session ${TURN}`)).toBe(false);
+    expect(evidence.sources.get(`session ${SESSION}`).texts).toEqual(["thursday practice moved to 6pm this term"]);
     const pages = new Map([["model-of-tom/areas/climbing.md", CLIMBING]]);
     for (const named of [SESSION, SDK_SESSION, SESSION_ROW]) {
       const line = `- Thursday practice is at 6 p.m. this term (session ${named}, 2026-09-05).`;
       const { applied, refused } = applyLearningChanges(
         pages,
         [factChange({ line, evidence: [`session ${named}`] })],
-        { day: "2026-09-06", evidenceIds: ids },
+        { day: "2026-09-06", evidence },
       );
       expect(refused).toEqual([]);
       expect(applied).toHaveLength(1);
+      expect(applied[0].excerpt).toBe("thursday practice moved to 6pm this term");
     }
+    // A Slack reply is cited as a thread, and its excerpt comes from the reply.
+    const { applied, refused } = applyLearningChanges(
+      pages,
+      [
+        factChange({
+          line: "- Thursday practice stays where it is (thread 1757000000.000001, 2026-09-05).",
+          evidence: ["thread 1757000000.000001"],
+          excerpt: "the thursday one, keep it there",
+        }),
+      ],
+      { day: "2026-09-06", evidence },
+    );
+    expect(refused).toEqual([]);
+    expect(applied).toHaveLength(1);
   });
 
   it("names the pages it writes, and the sections it never does", () => {
