@@ -38,14 +38,16 @@
 // of an area page, and the capture-triage section all locate sections
 // through headings() below, so no form is a heading to one and not another.
 //
-// Not headings: anything inside a fenced code block, and the frontmatter
-// block at the top of a page, whose closing `---` would otherwise read as a
-// setext underline of the last `key: value` line.
+// Not headings: anything inside a fenced code block — which is opened and
+// closed by a run of ONE kind (fenceOf), not by any fence line at all — and
+// the frontmatter block at the top of a page, whose closing `---` would
+// otherwise read as a setext underline of the last `key: value` line.
 const ATX = /^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*$/;
 const CLOSING_HASHES = /[ \t]+#+$/;
 const SETEXT_1 = /^ {0,3}=+[ \t]*$/;
 const SETEXT_2 = /^ {0,3}-+[ \t]*$/;
-const FENCE = /^ {0,3}(?:`{3,}|~{3,})/;
+// A fence line: its run of backticks or tildes, and whatever follows it.
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 // A line a setext underline may head: a paragraph line, which is not blank,
 // not a list item, not a block quote, not indented code, not a fence.
 const NOT_PARAGRAPH = /^(?:[ \t]*$| {0,3}(?:[-*+][ \t]|\d{1,9}[.)][ \t]|>)| {4,}|\t)/;
@@ -53,6 +55,36 @@ const NOT_PARAGRAPH = /^(?:[ \t]*$| {0,3}(?:[-*+][ \t]|\d{1,9}[.)][ \t]|>)| {4,}
 function atxText(m) {
   const text = m[2].replace(CLOSING_HASHES, "").trim();
   return /^#+$/.test(text) ? "" : text;
+}
+
+/**
+ * A fence line as `{ char, length, info }`, or null.
+ *
+ * A CODE FENCE IS CLOSED ONLY BY ITS OWN KIND (CommonMark 4.5), and this is
+ * the whole reason the shape is kept rather than a boolean: a ``` inside a
+ * ~~~ block, or the ```` of a nested example inside a ```, is CONTENT. Read
+ * as a toggle, each of those flipped the fence state, and from there every
+ * heading in the page was inside-out — a `## Ideal state` under a code block
+ * read as ordinary text, which is exactly the way past the learning step's
+ * guard that headings() exists to close.
+ *
+ * A closing fence is a run of the same character, at least as long as the
+ * opening one, with nothing after it. An opening BACKTICK fence's info string
+ * may not contain a backtick (a `` `x` `` in a paragraph is not a fence); a
+ * tilde fence's may contain anything.
+ */
+function fenceOf(line) {
+  const m = FENCE.exec(line);
+  if (m === null) return null;
+  return { char: m[1][0], length: m[1].length, info: m[2] };
+}
+
+function opensFence(f) {
+  return f.char === "~" || !f.info.includes("`");
+}
+
+function closesFence(f, open) {
+  return f.char === open.char && f.length >= open.length && f.info.trim() === "";
 }
 
 /** The lines the frontmatter block occupies — [0, end] inclusive — or -1. */
@@ -69,15 +101,19 @@ function frontmatterEnd(lines) {
 export function headings(lines) {
   const out = [];
   const skipTo = frontmatterEnd(lines);
-  let fenced = false;
+  let open = null; // the fence currently held open, if any
   for (let i = 0; i < lines.length; i++) {
     if (i <= skipTo) continue;
     const line = lines[i];
-    if (FENCE.test(line)) {
-      fenced = !fenced;
+    const fence = fenceOf(line);
+    if (open !== null) {
+      if (fence !== null && closesFence(fence, open)) open = null;
       continue;
     }
-    if (fenced) continue;
+    if (fence !== null && opensFence(fence)) {
+      open = fence;
+      continue;
+    }
     const atx = ATX.exec(line);
     if (atx) {
       out.push({ index: i, level: atx[1].length, text: atxText(atx), lines: 1 });

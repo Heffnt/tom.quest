@@ -131,6 +131,44 @@ describe("sectionSpan", () => {
     expect(sectionSpan(page, "Current state")).toEqual({ start: 0, end: 5, level: 2 });
     expect(sectionSpan(page, "Ideal state")).toBeNull();
   });
+
+  // witness: any fence line toggled the state, so a page holding a markdown
+  // example — a ``` inside a ~~~ block, or the longer run of a nested example
+  // — was inside-out from there on: everything after the block read as code,
+  // and `## Ideal state` was a heading to nobody. That is the same way past
+  // the learning step's guard the indented-heading fix closed.
+  it("closes a fence only on a run of its own kind, at least as long", () => {
+    const page = [
+      "## Current state",
+      "~~~",
+      "```",
+      "## Not a heading",
+      "```",
+      "~~~",
+      "## Ideal state",
+      "````",
+      "```",
+      "## Nor this one",
+      "```",
+      "````",
+      "## Must not break",
+      "- a",
+    ];
+    expect(headings(page).map((h) => h.text)).toEqual([
+      "Current state",
+      "Ideal state",
+      "Must not break",
+    ]);
+    expect(sectionSpan(page, "Ideal state")).toEqual({ start: 6, end: 12, level: 2 });
+    expect(sectionSpan(page, "Not a heading")).toBeNull();
+    expect(sectionSpan(page, "Nor this one")).toBeNull();
+    // A closing fence carries nothing after it, and an opening backtick
+    // fence's info string carries no backtick — so an inline `code` span in a
+    // paragraph opens nothing.
+    const info = ["## Current state", "```js", "## Not a heading", "``` still code", "```", "## Ideal state"];
+    expect(headings(info).map((h) => h.text)).toEqual(["Current state", "Ideal state"]);
+    expect(headings(["```x`y", "## Ideal state"]).map((h) => h.text)).toEqual(["Ideal state"]);
+  });
 });
 
 describe("enclosingHeadings", () => {
