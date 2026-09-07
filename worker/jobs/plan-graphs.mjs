@@ -275,7 +275,6 @@ const isGraphTask = (t) =>
 /**
  * Which todos this run prepares, and the revise ruling each carries, from the
  * pending-rulings feed and the todo list:
- *   - a members-bearing todo is a v1 batch and is never prepared here;
  *   - a graph task is never prepared here (see isGraphTask); a GOAL is — it is
  *     one of Tom's own todos the planner bound, and binding must not be what
  *     stops it getting prepared;
@@ -289,17 +288,13 @@ const isGraphTask = (t) =>
  */
 export function selectPrepareTargets(todos, pending, { force = false } = {}) {
   const all = Array.isArray(todos) ? todos : [];
-  const todoById = new Map(all.map((t) => [t._id, t]));
   const reviseByTodo = new Map();
   for (const r of Array.isArray(pending) ? pending : []) {
     if (r.subjectType !== "life" || r.verdict !== "revise" || !r.todoId) continue;
-    const subject = todoById.get(r.todoId);
-    if (subject && subject.members !== undefined) continue; // a v1 batch
     reviseByTodo.set(r.todoId, r);
   }
   const targets = all.filter(
     (t) =>
-      t.members === undefined &&
       !isGraphTask(t) &&
       (reviseByTodo.has(t._id) ||
         (t.status === "active" && (t.readiness === "unprepared" || force))),

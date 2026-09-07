@@ -494,15 +494,22 @@ export default defineSchema({
     // ("chores", …). Free string; "code" is reserved for the code-todo mirror.
     category: v.optional(v.string()),
     // ── Batches v1 (ratified 2026-08-28; SUPERSEDED by the batches table) ────
-    // The v1 world, kept live until cutover (nothing is destructive): a row
-    // with `members` IS a batch — that one field is the whole
-    // discrimination. Because a batch is a real dtsTodos row, every action
-    // (rulings, blocks, sessions, done/archive) works on it with no new code.
-    // Each member addresses exactly one subject in the ttsRulings shape:
-    // { todoId } for a life todo, { repo, externalId } for a code todo
-    // (mirror-row _ids are unstable — rows are deleted on upstream close).
-    // Enforced in tts.ts: no batch-in-batch; a subject is in at most one
-    // non-terminal batch.
+    // RETIRED, AWAITING THE CLEARING (the lifeos update, phase 7). In v1 a row
+    // carrying `members` WAS a batch — that one field was the whole
+    // discrimination — and `plan` was its ordered completion steps. Both are
+    // gone from the graph world: a batch is its own `batches` row and its
+    // contents are dtsTodos rows pointing back at it, and
+    // tts.internalMigrateToGraph has moved every v1 batch across, archiving
+    // the old row with a pointer to its successor.
+    //
+    // NOTHING READS OR WRITES EITHER any more — the v1 pen, POST /tts/batches,
+    // setPlanStep, the scheduler's v1 lane and the prompts' plan blocks are
+    // all gone — except that migration, which reads them through a LOOSE view
+    // of the row so it survives the narrow. The two declarations stay only
+    // until `ttsMigrations.internalClearRetiredFields` has taken them off
+    // every row on prod: `convex deploy` validates every stored document
+    // against the validator being deployed, so dropping them first would fail
+    // the deploy on the first row that still holds one.
     members: v.optional(
       v.array(
         v.object({
@@ -512,10 +519,10 @@ export default defineSchema({
         }),
       ),
     ),
-    // The completion plan (batches mostly; legal on any todo): ordered steps,
-    // each done by an agent or by Tom. The card's "needs you" strip = the open
-    // steps with actor "tom". `evidence` on a done agent step names the
-    // artifact (branch, PR, brief).
+    // The v1 completion plan (see `members` above): ordered steps, each done
+    // by an agent or by Tom, with `evidence` on a done agent step naming the
+    // artifact. The graph succeeds it — a step is a task row, the order is
+    // `needs`, the actor and the evidence are fields of their own.
     plan: v.optional(
       v.array(
         v.object({
@@ -527,9 +534,9 @@ export default defineSchema({
         }),
       ),
     ),
-    // Stamped by the Tom doors (updateTodo, setStatus, setPlanStep, ruling
-    // life path, the pens). A batch with this set is
-    // FROZEN: the batcher job may never rewrite or retire it.
+    // Stamped by the Tom doors (updateTodo, setStatus, the ruling life path,
+    // the pens). A row with this set is FROZEN: the planner
+    // (tts.internalStorePlanGraph) may never rewrite or retire it.
     tomTouchedAt: v.optional(v.number()),
     // "manual" | "slack-capture" | "consolidation" | "email" | "session-sweep"
     // | "prospecting" | … Each name means ONE fact: the two Canvas producers

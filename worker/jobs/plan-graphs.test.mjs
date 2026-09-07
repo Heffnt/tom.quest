@@ -60,13 +60,11 @@ function stubIo(answers) {
 }
 
 describe("selectPrepareTargets", () => {
-  it("takes active unprepared todos and leaves prepared, terminal, batch and task rows alone", () => {
+  it("takes active unprepared todos and leaves prepared, terminal and task rows alone", () => {
     const todos = [
       todo({ _id: "raw" }),
       todo({ _id: "done", readiness: "prepared" }),
       todo({ _id: "archived", status: "archived" }),
-      // A v1 batch row is the batcher's, never prepared here.
-      todo({ _id: "batch", members: [] }),
       // A graph task rests at "unprepared"; a bound GOAL is still Tom's todo.
       todo({ _id: "task", batchId: "b1", kind: "task" }),
       todo({ _id: "goal", batchId: "b1", kind: "goal" }),
@@ -78,12 +76,9 @@ describe("selectPrepareTargets", () => {
   it("re-prepares a todo with a pending life revise ruling whatever its status", () => {
     const todos = [
       todo({ _id: "asleep", readiness: "prepared", status: "archived" }),
-      todo({ _id: "batch", members: [], readiness: "prepared" }),
     ];
     const pending = [
       { _id: "r1", subjectType: "life", verdict: "revise", todoId: "asleep", sentence: "shorter" },
-      // A revise on a v1 batch belongs to the batcher, not the preparer.
-      { _id: "r2", subjectType: "life", verdict: "revise", todoId: "batch", sentence: "x" },
       // Other verdicts and other subject types are not this pass's.
       { _id: "r3", subjectType: "life", verdict: "approve", todoId: "asleep" },
       { _id: "r4", subjectType: "batch", verdict: "revise", batchId: "b1", sentence: "y" },

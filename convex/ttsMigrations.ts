@@ -472,10 +472,11 @@ export const internalMigrateRecommendations = internalMutation({
 //
 // The value walks above deliberately left the retired fields where they were —
 // they mapped what a field MEANT into its successor and said so. This walk is
-// the second step, for the five shapes the narrow removes, and it is the
+// the second step, for the seven shapes the narrow removes, and it is the
 // prerequisite of that pull request:
 //
 //   dtsTodos        latestSafeAt, wakeCondition, importance  → unset
+//                   members, plan (the v1 batch fields)      → unset
 //   batches         path                                     → unset
 //   claudeSessions  status "awaiting-permission"             → ended
 //   dtsCodeBriefs   importance → unset; a retired recommendation spelling →
@@ -484,10 +485,12 @@ export const internalMigrateRecommendations = internalMutation({
 // NOTHING IS LOST. Every value goes into a `retired-field-cleared` dtsEvents
 // row before it leaves — the whole `path` object, `helps` edges and unlinked
 // path names included; the whole `importance` object with its rationale; the
-// wake sentence; the instant — so what the row said outlives the field. Same
-// dry run, same counts, same idempotence, same event as the walks above, and
-// updatedAt is never bumped: clearing a retired field is not news about a todo
-// and must not put a settled item back on Tom's pile.
+// whole `members` array and the whole `plan` array with every step, its actor,
+// its status and its evidence; the wake sentence; the instant — so what the row
+// said outlives the field. Same dry run, same counts, same idempotence, same
+// event as the walks above, and updatedAt is never bumped: clearing a retired
+// field is not news about a todo and must not put a settled item back on Tom's
+// pile.
 export const CLEAR_MIGRATION = "clear-retired";
 
 /** The per-value record every clearing writes: one row per field, carrying the
@@ -511,8 +514,21 @@ export const CLEAR_TABLES = [
 ] as const;
 export type ClearTable = (typeof CLEAR_TABLES)[number];
 
-/** The three retired fields on dtsTodos, cleared one event each. */
-const RETIRED_TODO_FIELDS = ["latestSafeAt", "wakeCondition", "importance"] as const;
+/** The retired fields on dtsTodos, cleared one event each carrying the whole
+ * value. `members` and `plan` are the V1 BATCH pair: a dtsTodos row carrying
+ * `members` WAS a batch, and `plan` was its ordered completion steps. The
+ * graph migration (tts.internalMigrateToGraph) has already turned every one of
+ * them into a `batches` row with its steps as task todos and its members bound
+ * as goals, archiving the v1 row as superseded — so what these two fields
+ * MEANT is in the graph, and what they SAID goes onto the event below before
+ * the field leaves. */
+const RETIRED_TODO_FIELDS = [
+  "latestSafeAt",
+  "wakeCondition",
+  "importance",
+  "members",
+  "plan",
+] as const;
 
 /** Every count key, so a report names every field even on a page where none of
  * them was set: a missing key and a zero must not read the same. */
@@ -548,6 +564,8 @@ type RetiredFields = {
   latestSafeAt?: number;
   wakeCondition?: string;
   importance?: unknown;
+  members?: unknown;
+  plan?: unknown;
   path?: unknown;
 };
 

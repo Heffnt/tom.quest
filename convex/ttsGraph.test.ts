@@ -1,5 +1,7 @@
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { defineSchema, defineTable } from "convex/server";
+import { v } from "convex/values";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
@@ -707,39 +709,6 @@ describe("TTS plan graph (internalStorePlanGraph)", () => {
     ]);
   });
 
-  // witness: bind on `members === undefined` alone (the pre-fix rule) and this
-  // goes red — the row would sit in a v1 batch AND a v2 batch at once, the
-  // exact state validateBatchMembers refuses in the other direction, and
-  // batchOwned then makes it unschedulable from either side. The planner's
-  // client-side filter is not this check: it governs which ids are OFFERED,
-  // not which the model may emit.
-  it("refuses to bind a row a live v1 batch already claims", async () => {
-    const t = convexTest({ schema, modules });
-    const tom = await withTom(t);
-    const memberId = await tom.mutation(api.tts.createTodo, {
-      statement: "call the landlord",
-    });
-    await t.run(async (ctx) => ctx.db.patch(memberId, { source: "batcher" }));
-    await t.mutation(internal.tts.internalStoreBatches, {
-      batches: [
-        {
-          statement: "the v1 grouping",
-          brief: "b",
-          members: [{ todoId: memberId }],
-        },
-      ],
-    });
-
-    const res = await storeGraph(t, { goalIds: [memberId] });
-    expect(res.goalsBound).toBe(0);
-    expect(res.skipped).toEqual([
-      { ref: memberId, why: "is a member of a live v1 batch" },
-    ]);
-    expect(
-      (await t.run(async (ctx) => ctx.db.get(memberId)))?.batchId,
-    ).toBeUndefined();
-  });
-
   // witness: infer "did the batch store?" from the skip report (the pre-fix
   // rule) and this goes red — a TASK's skip carries the task's statement as
   // its ref, so a task whose statement happens to equal the batch's reads as a
@@ -947,26 +916,6 @@ describe("TTS plan graph (internalStorePlanGraph)", () => {
     });
     expect(stolen.skipped).toEqual([
       { ref: "rewritten", why: "source manual is not the planner's" },
-    ]);
-
-    // A v1 batch row is refused as a task AND as a goal (no batch-in-batch).
-    await t.mutation(internal.tts.internalStoreBatches, {
-      batches: [{ statement: "v1", brief: "b", members: [{ todoId: mine }] }],
-    });
-    const v1 = (await t.run(async (ctx) =>
-      (await ctx.db.query("dtsTodos").collect()).find(
-        (x) => x.members !== undefined,
-      ),
-    )) as Doc<"dtsTodos">;
-    const nested = await storeGraph(t, {
-      batchId: batch._id,
-      tasks: [graphTask("as a task", { id: v1._id })],
-      goalIds: [v1._id],
-    });
-    expect(nested.goalsBound).toBe(0);
-    expect(nested.skipped).toEqual([
-      { ref: "as a task", why: "is a v1 batch" },
-      { ref: v1._id, why: "is a v1 batch" },
     ]);
   });
 
@@ -1218,39 +1167,106 @@ describe("TTS rulings on a batch", () => {
 });
 
 // ── The v1 → v2 migration ────────────────────────────────────────────────────
+// THE PRE-NARROW RECORD. `members` and `plan` — the pair that made a dtsTodos
+// row a v1 batch — have no writer left (the lifeos update, phase 7: the v1
+// pen and POST /tts/batches are gone), and the narrow that follows the
+// clearing takes their declarations out of convex/schema.ts, at which point a
+// fixture carrying them stops inserting under it. The rows are still on the
+// deployment until the clearing walk reaches them, and internalMigrateToGraph
+// is their last reader — through a loose view of the row. So these fixtures go
+// in under a copy of the schema with the two put back, the same device
+// convex/ttsMigrations.test.ts uses for every other retired shape (spelled
+// again here because one test file cannot import another without re-running
+// its suites).
+
+const V1_MEMBER = v.object({
+  todoId: v.optional(v.id("dtsTodos")),
+  repo: v.optional(v.string()),
+  externalId: v.optional(v.string()),
+});
+const V1_PLAN_STEP = v.object({
+  text: v.string(),
+  actor: v.union(v.literal("tom"), v.literal("agent")),
+  status: v.union(v.literal("open"), v.literal("done")),
+  doneAt: v.optional(v.number()),
+  evidence: v.optional(v.string()),
+});
+
+/** `defineTable(v.object(...))` starts a table with NO indexes — the `.index()`
+ * chain lives on the TableDefinition, not on the validator it is rebuilt from
+ * — so the rebuilt table has to be handed the source's chain or the first
+ * `withIndex()` read any tested function makes fails here while passing in
+ * production. (`" indexes"()` is convex/server's own accessor.) */
+type IndexChain = { indexDescriptor: string; fields: string[] }[];
+type Indexed = { " indexes"(): IndexChain };
+type Chainable = { index(name: string, fields: string[]): Chainable };
+function carryIndexes<T>(rebuilt: T, source: Indexed): T {
+  let table = rebuilt as unknown as Chainable;
+  for (const { indexDescriptor, fields } of (
+    source as Indexed
+  )[" indexes"]()) {
+    table = table.index(indexDescriptor, fields);
+  }
+  return table as unknown as T;
+}
+
+const { dtsTodos: schemaTodos, ...otherTables } = schema.tables;
+const v1Schema = defineSchema({
+  ...otherTables,
+  dtsTodos: carryIndexes(
+    defineTable(
+      v.object({
+        ...schemaTodos.validator.fields,
+        members: v.optional(v.array(V1_MEMBER)),
+        plan: v.optional(v.array(V1_PLAN_STEP)),
+      }),
+    ),
+    schemaTodos as unknown as Indexed,
+  ),
+});
 
 describe("TTS migration to the graph (internalMigrateToGraph)", () => {
+  /** The one v1 batch row on the deployment, read the way the migration reads
+   * it: through a loose view, not the generated Doc type. */
+  const oldV1Row = async (t: ReturnType<typeof convexTest>) =>
+    (await t.run(async (ctx) =>
+      (await ctx.db.query("dtsTodos").collect()).find(
+        (x) => (x as { members?: unknown }).members !== undefined,
+      ),
+    )) as Doc<"dtsTodos">;
+
   const seedOldWorld = async (t: ReturnType<typeof convexTest>) => {
     const tom = await withTom(t);
     const member = await tom.mutation(api.tts.createTodo, {
       statement: "book the movers",
     });
-    await t.mutation(internal.tts.internalStoreBatches, {
-      batches: [
-        {
-          statement: "the move",
-          brief: "why these belong together",
-          members: [
-            { todoId: member },
-            { repo: "ComplexMultiTrigger", externalId: "cmt-001" },
-          ],
-          plan: [
-            { text: "compare quotes", actor: "agent", status: "done", doneAt: 111, evidence: "notes.md" },
-            { text: "pick one", actor: "tom", status: "open" },
-          ],
-        },
-      ],
-    });
-    const old = (await t.run(async (ctx) =>
-      (await ctx.db.query("dtsTodos").collect()).find(
-        (x) => x.members !== undefined,
-      ),
-    )) as Doc<"dtsTodos">;
+    const now = Date.now();
+    await t.run(async (ctx) =>
+      ctx.db.insert("dtsTodos", {
+        statement: "the move",
+        brief: "why these belong together",
+        members: [
+          { todoId: member },
+          { repo: "ComplexMultiTrigger", externalId: "cmt-001" },
+        ],
+        plan: [
+          { text: "compare quotes", actor: "agent", status: "done", doneAt: 111, evidence: "notes.md" },
+          { text: "pick one", actor: "tom", status: "open" },
+        ],
+        readiness: "prepared",
+        status: "active",
+        timingClass: "whenever",
+        source: "batcher",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    const old = await oldV1Row(t);
     return { tom, member, old };
   };
 
   it("migrates one old batch into a batch row, chained tasks, and goals", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: v1Schema, modules });
     const { tom, member, old } = await seedOldWorld(t);
     // An old updatedAt on the member: the migration must not resurface it.
     await t.run(async (ctx) => ctx.db.patch(member, { updatedAt: 1000 }));
@@ -1324,7 +1340,7 @@ describe("TTS migration to the graph (internalMigrateToGraph)", () => {
   // witness: drop the unarchiveCondition/status filter in
   // internalMigrateToGraph — a second run would duplicate every batch.
   it("is idempotent", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: v1Schema, modules });
     await seedOldWorld(t);
     await t.mutation(internal.tts.internalMigrateToGraph, {});
     const again = await t.mutation(internal.tts.internalMigrateToGraph, {});
@@ -1340,11 +1356,7 @@ describe("TTS migration to the graph (internalMigrateToGraph)", () => {
 
     // Even a REOPENED old batch is skipped — the pointer is the key, not the
     // status (reopening one would otherwise mint a second successor).
-    const old = (await t.run(async (ctx) =>
-      (await ctx.db.query("dtsTodos").collect()).find(
-        (x) => x.members !== undefined,
-      ),
-    )) as Doc<"dtsTodos">;
+    const old = await oldV1Row(t);
     await t.run(async (ctx) => ctx.db.patch(old._id, { status: "active" }));
     const third = await t.mutation(internal.tts.internalMigrateToGraph, {});
     expect(third.batches).toBe(0);
@@ -1352,23 +1364,24 @@ describe("TTS migration to the graph (internalMigrateToGraph)", () => {
   });
 
   it("leaves terminal old batches and plain todos alone", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: v1Schema, modules });
     const tom = await withTom(t);
     const plain = await tom.mutation(api.tts.createTodo, { statement: "solo" });
-    await t.mutation(internal.tts.internalStoreBatches, {
-      batches: [
-        {
-          statement: "already done",
-          brief: "b",
-          members: [{ repo: "tom.quest", externalId: "tq-001" }],
-        },
-      ],
-    });
-    const old = (await t.run(async (ctx) =>
-      (await ctx.db.query("dtsTodos").collect()).find(
-        (x) => x.members !== undefined,
-      ),
-    )) as Doc<"dtsTodos">;
+    const now = Date.now();
+    await t.run(async (ctx) =>
+      ctx.db.insert("dtsTodos", {
+        statement: "already done",
+        brief: "b",
+        members: [{ repo: "tom.quest", externalId: "tq-001" }],
+        readiness: "prepared",
+        status: "active",
+        timingClass: "whenever",
+        source: "batcher",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    const old = await oldV1Row(t);
     await t.run(async (ctx) => ctx.db.patch(old._id, { status: "done" }));
 
     const counts = await t.mutation(internal.tts.internalMigrateToGraph, {});
@@ -1385,13 +1398,11 @@ describe("TTS migration to the graph (internalMigrateToGraph)", () => {
   // member the planner already bound as a goal of a v2 batch would silently
   // leave it, and nothing anywhere would record the loss.
   it("never steals a member the planner already bound to a v2 batch", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: v1Schema, modules });
     const { member } = await seedOldWorld(t);
-    // Bound straight through the database, not through the planner's pen: the
-    // pen now REFUSES to bind a row a live v1 batch still claims (that is the
-    // v1/v2 collision), so this is the only way to stand up the state the
-    // migration has to survive — a row bound before the v1 batch was formed,
-    // or bound while the batcher happened to be mid-run.
+    // Bound straight through the database: the state the migration has to
+    // survive is a row bound before the v1 batch was formed, or bound while
+    // the batcher happened to be mid-run.
     const plannerBatch = await t.run(async (ctx) => {
       const batchId = await ctx.db.insert("batches", {
         statement: "already planned",
@@ -1411,29 +1422,11 @@ describe("TTS migration to the graph (internalMigrateToGraph)", () => {
     expect(goal.batchId).toBe(plannerBatch); // still the planner's batch
   });
 
-  // witness: drop the batchId guard from validateBatchMembers — the migration
-  // archives the v1 row, which frees its members from the batcher's occupied
-  // map, and the still-running v1 batcher re-groups the rows it just migrated
-  // (one todo in a v1 batch AND a v2 batch at once).
-  it("the v1 batcher can never claim a row that lives in a graph batch", async () => {
-    const t = convexTest({ schema, modules });
-    const { member } = await seedOldWorld(t);
-    await t.mutation(internal.tts.internalMigrateToGraph, {});
-
-    const res = await t.mutation(internal.tts.internalStoreBatches, {
-      batches: [
-        { statement: "regrouped", brief: "b", members: [{ todoId: member }] },
-      ],
-    });
-    expect(res.created).toBe(0);
-    expect(res.skipped[0].why).toMatch(/belongs to a graph batch/);
-  });
-
   // witness: drop the goal-closing sweep from internalReplaceMirror — every
   // migrated code goal is an active todo nothing can ever complete, blocking
   // each of its dependents forever.
   it("a code goal closes when the mirror says the upstream todo closed", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: v1Schema, modules });
     await seedOldWorld(t);
     await t.mutation(internal.tts.internalMigrateToGraph, {});
     const codeGoal = (await t.run(async (ctx) =>
@@ -1471,7 +1464,7 @@ describe("TTS migration to the graph (internalMigrateToGraph)", () => {
   });
 
   it("counts a member whose todo has vanished instead of failing the run", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest({ schema: v1Schema, modules });
     const { member } = await seedOldWorld(t);
     await t.run(async (ctx) => ctx.db.delete(member as Id<"dtsTodos">));
     const counts = await t.mutation(internal.tts.internalMigrateToGraph, {});

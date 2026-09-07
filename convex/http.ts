@@ -665,7 +665,7 @@ http.route({ path: "/slack/events", method: "POST", handler: slackEvents });
 // entry action / work description to a life todo and advances its readiness,
 // plus the date the statement itself states, if any.
 // Body: { id, brief?, entryAction?, workDescription?, readiness?, dueAt?,
-// dateKind?, plan? }.
+// dateKind?, evidence?, groundUpExplanation?, status? }.
 const ttsPrepareTodo = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -717,9 +717,6 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
       // the real gate: a first date only, never over an existing one.
       dueAt: b.dueAt as number | undefined,
       dateKind: b.dateKind as "external" | "self-imposed" | undefined,
-      // The plan rides through loose-shape; the mutation's arg validators are
-      // the final gate and a mismatch surfaces as a named 400 below.
-      plan: b.plan as never,
       // The graph worker's three: the artifact that shows the work happened,
       // the self-contained "more" layer, and the completion itself.
       evidence: str(b.evidence),
@@ -1113,123 +1110,12 @@ const ttsRuling = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/ruling", method: "POST", handler: ttsRuling });
 
-// ── TTS batches (ratified 2026-08-28) ────────────────────────────────────────
-// Same TTS_WORKER_KEY path: the batcher job reads context, then posts its
-// desired batch set. It can only touch source-"batcher" rows that Tom has
-// never touched — the freeze/skip gates live in internalStoreBatches.
-
-// The sanitizers for POST /tts/batches: the body is model-written JSON, so
-// each batch is PROJECTED to exactly the known shape — unknown keys and
-// shape-invalid scalars are dropped, never rejected, because one stray LLM
-// key must not abort the whole POST. The mutation's arg validators stay the
-// final gate (anything still malformed lands in its per-batch skip report).
-const PLAN_ACTORS = ["tom", "agent"] as const;
-const PLAN_STATUSES = ["open", "done"] as const;
-
-function sanitizeMember(m: unknown): Record<string, unknown> {
-  // A non-object or key-less member survives as {} — validateBatchMembers
-  // then names it in the skip report (better than dropping it silently).
-  if (typeof m !== "object" || m === null) return {};
-  const r = m as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  if (typeof r.todoId === "string") out.todoId = r.todoId;
-  if (typeof r.repo === "string") out.repo = r.repo;
-  if (typeof r.externalId === "string") out.externalId = r.externalId;
-  return out;
-}
-
-// A plan step with a broken required field poisons the whole plan (undefined
-// = absent, which the mutation treats as "preserve stored plan") — dropping
-// single steps would silently reorder someone's plan.
-function sanitizePlan(plan: unknown): Record<string, unknown>[] | undefined {
-  if (!Array.isArray(plan)) return undefined;
-  const out: Record<string, unknown>[] = [];
-  for (const step of plan) {
-    if (typeof step !== "object" || step === null) return undefined;
-    const s = step as Record<string, unknown>;
-    if (
-      typeof s.text !== "string" ||
-      !PLAN_ACTORS.includes(s.actor as (typeof PLAN_ACTORS)[number]) ||
-      !PLAN_STATUSES.includes(s.status as (typeof PLAN_STATUSES)[number])
-    ) {
-      return undefined;
-    }
-    const clean: Record<string, unknown> = {
-      text: s.text,
-      actor: s.actor,
-      status: s.status,
-    };
-    if (typeof s.doneAt === "number") clean.doneAt = s.doneAt;
-    if (typeof s.evidence === "string") clean.evidence = s.evidence;
-    out.push(clean);
-  }
-  return out;
-}
-
-function sanitizeBatch(item: unknown): Record<string, unknown> | undefined {
-  if (typeof item !== "object" || item === null) return undefined;
-  const r = item as Record<string, unknown>;
-  // statement and brief are the mutation's required strings — without them
-  // the row cannot even be named in a skip report, so the batch is dropped.
-  if (typeof r.statement !== "string" || typeof r.brief !== "string") {
-    return undefined;
-  }
-  const out: Record<string, unknown> = {
-    statement: r.statement,
-    brief: r.brief,
-    members: Array.isArray(r.members) ? r.members.map(sanitizeMember) : [],
-  };
-  if (typeof r.id === "string") out.id = r.id;
-  const plan = sanitizePlan(r.plan);
-  if (plan !== undefined) out.plan = plan;
-  return out;
-}
-
-// POST /tts/batches — the batcher's desired batch set. Body: { batches:
-// [{ id?, statement, brief, members, plan? }], archiveIds? }.
-// Sanitized (drop-don't-reject)
-// before the mutation; the mutation's per-batch skip report is the response.
-const ttsBatches = httpAction(async (ctx, request) => {
-  const denied = ttsAuth(request);
-  if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (!Array.isArray(b.batches)) {
-    return jsonResponse(400, { error: "batches (array) required" });
-  }
-  const batches = b.batches
-    .map(sanitizeBatch)
-    .filter((x): x is Record<string, unknown> => x !== undefined);
-  const droppedBatches = b.batches.length - batches.length;
-  const archiveIds = Array.isArray(b.archiveIds)
-    ? b.archiveIds.filter((x): x is string => typeof x === "string")
-    : undefined;
-  try {
-    const result = await ctx.runMutation(internal.tts.internalStoreBatches, {
-      batches: batches as never,
-      archiveIds,
-    });
-    return jsonResponse(200, {
-      ...result,
-      droppedBatches: droppedBatches > 0 ? droppedBatches : undefined,
-    });
-  } catch (e) {
-    return jsonResponse(400, {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
-});
-
-http.route({ path: "/tts/batches", method: "POST", handler: ttsBatches });
-
-// GET /tts/batch-context — everything the batcher and the planner work from:
-// all life todos (schema-v2 graph fields included), the code-todo mirror, the
-// code briefs, and Tom's recent rulings (grouping signal).
+// GET /tts/batch-context — everything the planner works from: all life todos
+// (schema-v2 graph fields included), the code-todo mirror, the code briefs,
+// and Tom's recent rulings (grouping signal). The v1 batcher that shared this
+// payload, and the POST /tts/batches door it wrote back through, are gone with
+// the `members`/`plan` pair (the lifeos update, phase 7); the name stays
+// because worker/jobs/plan-graphs.mjs asks for it by it.
 //
 // SCHEMA V2 ADDITIONS, for worker/jobs/plan-graphs.mjs: the `batches` rows
 // (the planner maintains the graph inside them, and needs the archived
@@ -1560,11 +1446,12 @@ const ttsEvent = httpAction(async (ctx, request) => {
 http.route({ path: "/tts/event", method: "POST", handler: ttsEvent });
 
 // ── POST /tts/plan-graph — the planner's pen (schema v2) ─────────────────────
-// ONE batch's graph per call, the successor to POST /tts/batches. Body:
+// ONE batch's graph per call, and the ONE batch door since the v1 pen and its
+// route (POST /tts/batches) went with `members` and `plan`. Body:
 // { batchId?, statement, groundUpExplanation?, needs?, repos?, tasks: [...],
-// goalIds?, archive? }. Same drop-don't-reject discipline as /tts/batches: the
-// body is model-written JSON, so it is PROJECTED to the known shape and the
-// mutation's per-item skip report is the real validator.
+// goalIds?, archive? }. Drop-don't-reject: the body is model-written JSON, so
+// it is PROJECTED to the known shape and the mutation's per-item skip report
+// is the real validator.
 //
 // ONE DIFFERENCE, and it is the whole reason this sanitizer is not a copy of
 // the batch one: a task's `needs` may address an EARLIER TASK BY ITS POSITION

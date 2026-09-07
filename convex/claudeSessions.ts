@@ -436,14 +436,16 @@ const SESSION_KIND = v.union(
  *     2026-08-30: a batch declares, the scheduler does not guess. An explicit
  *     empty array is an answer ("this batch needs no checkout"), which is why
  *     the test is `!== undefined` and not truthiness.
- *  3. The batch-member vote — each {repo, externalId} member is one tally mark
- *     and the most frequent wins (ties keep the first seen: Map preserves
- *     insertion order and the comparison is strict >).
- *  4. The substring scan over the item's own words. The last resort and the
+ *  3. The substring scan over the item's own words. The last resort and the
  *     weakest: it is case-sensitive and matches anywhere, so it reads "the
  *     tom.quest dashboard" and "not tom.quest" identically. Kept only because
  *     dropping it would regress every batch-less legacy todo to no checkout at
  *     all; (2) is what makes it stop mattering.
+ *
+ * (The v1 batch-member vote that used to sit between (2) and (3) — each
+ * {repo, externalId} member one tally mark — went with `members` itself: the
+ * graph migration turned every v1 batch into a `batches` row, which declares
+ * its repos, and that IS rule (2).)
  *
  * Returns the canonical, normalized list — possibly empty, which means the
  * empty-scratch posture (`repo: "none"`).
@@ -462,22 +464,6 @@ function resolveSessionRepos(input: {
   }
   const todo = input.todo;
   if (todo) {
-    const tally = new Map<string, number>();
-    for (const m of todo.members ?? []) {
-      // A code member is the {repo, externalId} pair; a life member carries
-      // todoId instead and votes for nothing.
-      if (m.repo === undefined || m.externalId === undefined) continue;
-      tally.set(m.repo, (tally.get(m.repo) ?? 0) + 1);
-    }
-    let winner: string | undefined;
-    let winnerCount = 0;
-    for (const [repo, count] of tally) {
-      if (count > winnerCount) {
-        winner = repo;
-        winnerCount = count;
-      }
-    }
-    if (winner !== undefined) return normalizeSessionRepos(winner);
     const text = `${todo.statement} ${todo.brief ?? ""} ${
       todo.groundUpExplanation ?? ""
     } ${input.extraText ?? ""}`;
@@ -2437,15 +2423,6 @@ export const internalSetAutoConfig = internalMutation({
 
 // ── Autonomous mission prompt ────────────────────────────────────────────────
 
-// Live context for one batch member, resolved by the scheduler against the
-// todo collect / mirror it already holds.
-type AutoMemberContext = {
-  kind: "life" | "code";
-  label?: string;
-  statement: string;
-  status: string;
-};
-
 function promptFact(label: string, value: string | undefined): string | null {
   return value && value.trim() !== "" ? `${label}: ${value}` : null;
 }
@@ -2506,16 +2483,14 @@ function workspaceParagraph(
 // session — the agent has no other way to learn its own id.
 //
 // Lockstep: app/lib/tts-session-prompt.ts is the interactive twin (its
-// CONTRACT opening, buildTodoSessionPrompt's item facts block, and the batch
-// members/plan blocks) — both files carry a note naming the other, and the
-// facts-block wording ('The item ("…"):', "The plan (N steps, in order):",
-// "The members (N, live statuses):") is kept identical where the posture
-// allows. No import across the convex boundary: that module is client code.
+// CONTRACT opening and buildTodoSessionPrompt's item facts block) — both files
+// carry a note naming the other, and the facts-block wording ('The item
+// ("…"):') is kept identical where the posture allows. No import across the
+// convex boundary: that module is client code.
 function buildAutoMissionPrompt(
   todo: Doc<"dtsTodos">,
   sessionId: Id<"claudeSessions">,
   repos: string[],
-  members?: AutoMemberContext[],
 ): string {
   const lines: (string | null)[] = [
     `You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it. Follow the ground-up contract in everything you write into the system: define terms on first use, invent no names, concrete before abstract; language is descriptive, never evaluative.`,
@@ -2530,38 +2505,14 @@ function buildAutoMissionPrompt(
     promptFact("body", todo.body),
     promptFact("brief", todo.brief),
   ];
-  const plan = todo.plan ?? [];
-  if (plan.length > 0) {
-    lines.push("", `The plan (${plan.length} steps, in order):`);
-    plan.forEach((step, i) => {
-      lines.push(
-        `${i + 1}. [${step.actor}, ${step.status}] ${step.text}${step.evidence ? ` (evidence: ${step.evidence})` : ""}`,
-      );
-    });
-  }
-  if (todo.members !== undefined) {
-    lines.push(
-      "",
-      "This item is a BATCH: one grouping of several todos, so one session's worth of shared context advances all of them.",
-    );
-    const resolved = members ?? [];
-    if (resolved.length > 0) {
-      lines.push("", `The members (${resolved.length}, live statuses):`);
-      for (const m of resolved) {
-        lines.push(
-          `- [${m.kind}${m.label ? ` ${m.label}` : ""}, ${m.status}] "${m.statement}"`,
-        );
-      }
-    }
-  }
   lines.push(
     "",
-    `The goal: do every open plan step with actor "agent" — research, draft, gather, and write what you produce into the item via the prepare pen below. Set readiness to "prepared" when the write-up is complete — and only then; a prepared item that is active, awake and unblocked is what TTS shows Tom as ready. For a batch, refine the plan and check off the agent steps you complete (always post the FULL updated plan, never a diff).`,
+    `The goal: do the groundwork this item needs — research, draft, gather — and write what you produce into the item via the prepare pen below. Set readiness to "prepared" when the write-up is complete — and only then; a prepared item that is active, awake and unblocked is what TTS shows Tom as ready.`,
     "",
     // Ratified doctrine (Tom, 2026-08-29): his input gates PERSISTENCE, never
     // implementation — a session that halts at a decision leaves him nothing
     // concrete to rule on.
-    `Tom decisions: a plan step that names a decision of Tom's does NOT block you. Implement your best-judgment option and name the alternatives you passed over in that step's text or its evidence; the decision then surfaces where the work persists — the pull request, or the batch's ruling. Reserve actor-"tom" steps for what ONLY Tom can do: rulings, merges, and real-world actions.`,
+    `Tom decisions: a decision of Tom's does NOT block you. Implement your best-judgment option and name the alternatives you passed over in the write-up; the decision then surfaces where the work persists — the pull request, or the ruling on this item. Leave for Tom only what ONLY he can do: rulings, merges, and real-world actions.`,
     "",
     // The env contract: the daemon injects ONLY these two variables into an
     // autonomous session's shell — SESSIONS_WORKER_KEY (the ingest key) never
@@ -2571,9 +2522,9 @@ function buildAutoMissionPrompt(
     "",
     "1. Write your work into the item:",
     "```",
-    `curl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "brief": "...", "entryAction": "...", "workDescription": "...", "readiness": "prepared", "plan": [{"text": "...", "actor": "agent", "status": "open"}]}'`,
+    `curl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"id": "${todo._id}", "brief": "...", "entryAction": "...", "workDescription": "...", "readiness": "prepared"}'`,
     "```",
-    'Every field except "id" is optional — send only what you produced. On a batch only "plan" lands (the server skips the other fields by design).',
+    'Every field except "id" is optional — send only what you produced.',
     "",
     "2. Record this session's outcome when the mission is done:",
     "```",
@@ -2589,7 +2540,7 @@ function buildAutoMissionPrompt(
           // No workspace paragraph in this posture, so the daemon sentence
           // rides here instead — a session with no checkout still has a shell
           // on the box and can still stop the daemon.
-          `Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. Never touch code — this session has an EMPTY scratch directory and no repository; anything that needs code goes into the plan as an open step instead. ${DAEMON_RESTART_SENTENCE}`,
+          `Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. Never touch code — this session has an EMPTY scratch directory and no repository; anything that needs code goes into the write-up as work still to do instead. ${DAEMON_RESTART_SENTENCE}`,
         ]
       : [
           workspaceParagraph(
@@ -2610,10 +2561,9 @@ function buildAutoMissionPrompt(
 
 // ── The worker mission (schema v2, ratified 2026-08-29) ──────────────────────
 // The successor to buildAutoMissionPrompt for every todo that lives inside a
-// BATCH. The old builder stays, unchanged, for the legacy rows that have no
-// batch — the two worlds run side by side until the migration drains the old
-// one, and one prompt cannot honestly serve both (a legacy mission works a
-// whole item through a plan; a worker advances ONE node of a graph).
+// BATCH. The old builder stays for the rows that have no batch — one prompt
+// cannot honestly serve both (a groundwork mission writes up a whole item; a
+// worker advances ONE node of a graph).
 //
 // THE CONTRACT THIS PROMPT WRITES DOWN: the session claimed exactly one READY
 // todo — every id in its `needs` is done — and advances it by ONE STABLE
@@ -3544,18 +3494,6 @@ export const internalAutoSchedule = internalMutation({
     // append-only table written at human pace (the /tts page collects it
     // wholesale on every load).
     const liveBySubject = liveRulings(await ctx.db.query("dtsRulings").collect());
-    // Members of non-terminal batches — the batch owns them (exclusion below).
-    const batchOwned = new Set<string>();
-    for (const t of todos) {
-      if (t.members !== undefined && t.status !== "done" && t.status !== "archived") {
-        for (const m of t.members) {
-          if (m.todoId !== undefined) batchOwned.add(m.todoId);
-        }
-      }
-    }
-
-    const hasOpenAgentStep = (t: Doc<"dtsTodos">): boolean =>
-      (t.plan ?? []).some((s) => s.actor === "agent" && s.status === "open");
     // Two readiness values (ruling 18), read through the one home.
     const unprepared = (t: Doc<"dtsTodos">): boolean => !isPrepared(t.readiness);
 
@@ -3563,8 +3501,10 @@ export const internalAutoSchedule = internalMutation({
     const computeExcluded = async (t: Doc<"dtsTodos">): Promise<boolean> => {
       // Code todos live in the mirror; their work happens in the repo.
       if (t.category === "code") return true;
-      // A member of a non-terminal batch is owned by the batch.
-      if (batchOwned.has(t._id)) return true;
+      // (The v1 batch-member exclusion that used to sit here — a member of a
+      // non-terminal batch is owned by the batch — went with `members`: a
+      // batch's contents point back at it with batchId now, and the lanes
+      // below filter on that.)
       // (A row carrying batchId used to be excluded outright, because nothing
       // here read `needs` and scheduling one directly would have worked a
       // blocked step. The frontier walk below reads `needs`, so the blanket
@@ -3655,7 +3595,7 @@ export const internalAutoSchedule = internalMutation({
     // created session's kind and the scheduler event's counts.
     type Candidate = {
       todo: Doc<"dtsTodos">;
-      lane: "graph" | "block" | "batch" | "dated" | "whenever";
+      lane: "graph" | "block" | "dated" | "whenever";
       blockCategory?: string;
       batch?: Doc<"batches">;
     };
@@ -3767,11 +3707,13 @@ export const internalAutoSchedule = internalMutation({
     // not use goes back to the graph rather than being left unspent.
     const graphQuota = capacity <= 1 ? capacity : capacity - 1;
 
-    // ── The LEGACY lanes (pre-migration rows only) ───────────────────────────
-    // Every lane below is the v1 walk, untouched except for one added test:
-    // the row must have no batchId. A row inside a batch is the frontier's to
-    // schedule, and these lanes read v1 vocabulary (readiness, members, the
-    // plan) that says nothing about a graph node.
+    // ── The GROUNDWORK lanes (rows outside every batch) ──────────────────────
+    // Each lane below hands out a todo that lives outside the graph, and each
+    // carries one test: the row must have no batchId. A row inside a batch is
+    // the frontier's to schedule, and these lanes read readiness, which says
+    // nothing about a graph node. (The v1 BATCH lane that used to be lane (2)
+    // — an active row carrying `members` with an open agent plan step — went
+    // with those two fields: the lifeos update, phase 7.)
     //
     // ONE EXCEPTION, and it is the block lane's: a GOAL is one of Tom's own
     // todos, bound to a batch by the planner and otherwise unchanged. Binding
@@ -3800,11 +3742,8 @@ export const internalAutoSchedule = internalMutation({
         const t = todoById.get(block.todoId);
         if (!t || t.status !== "active" || !wakeAtPassed(t, now)) continue;
         if (!legacyOrGoal(t)) continue;
-        // Not ready: a plain todo not yet prepared, or a batch with open
-        // agent plan steps still to do.
-        const notReady =
-          t.members !== undefined ? hasOpenAgentStep(t) : unprepared(t);
-        if (notReady) candidates.push({ todo: t, lane: "block" });
+        // Not ready: not yet prepared.
+        if (unprepared(t)) candidates.push({ todo: t, lane: "block" });
       } else if (block.category !== undefined && block.category !== "code") {
         // Category block: the stalest NON-excluded unprepared todo in the
         // category — probed through excluded() (memoized, so the admission
@@ -3814,7 +3753,6 @@ export const internalAutoSchedule = internalMutation({
           .filter(
             (t) =>
               t.category === block.category &&
-              t.members === undefined &&
               legacyOrGoal(t) &&
               unprepared(t),
           )
@@ -3831,37 +3769,21 @@ export const internalAutoSchedule = internalMutation({
       }
     }
 
-    // (2) Active batches with open agent plan steps, stalest first — the same
-    // updatedAt ordering the whenever lane below uses. Ordering comes from
-    // needs and dates, never a rating (Tom's ruling 2026-08-29).
-    const v1Batches = active.filter(
-      (t) => t.members !== undefined && legacy(t) && hasOpenAgentStep(t),
-    );
-    v1Batches.sort((a, b) => a.updatedAt - b.updatedAt);
-    for (const t of v1Batches) candidates.push({ todo: t, lane: "batch" });
-
-    // (3) Dated actives still unprepared, soonest due first.
+    // (2) Dated actives still unprepared, soonest due first. Ordering comes
+    // from needs and dates, never a rating (Tom's ruling 2026-08-29).
     const dated = active.filter(
-      (t) =>
-        t.members === undefined &&
-        legacy(t) &&
-        t.timingClass === "dated" &&
-        unprepared(t),
+      (t) => legacy(t) && t.timingClass === "dated" && unprepared(t),
     );
     dated.sort((a, b) => (a.dueAt ?? Infinity) - (b.dueAt ?? Infinity));
     for (const t of dated) candidates.push({ todo: t, lane: "dated" });
 
-    // (4) Whenever actives, stalest first. The condition-bound lane that used
+    // (3) Whenever actives, stalest first. The condition-bound lane that used
     // to sit here is gone with the value it read (the lifeos update, phase 7):
     // a row that was condition-bound is now a task carrying its condition in
     // its statement, asleep until its wake time, and it reaches a worker
     // through this lane once it wakes.
     const whenever = active.filter(
-      (t) =>
-        t.members === undefined &&
-        legacy(t) &&
-        t.timingClass === "whenever" &&
-        unprepared(t),
+      (t) => legacy(t) && t.timingClass === "whenever" && unprepared(t),
     );
     whenever.sort((a, b) => a.updatedAt - b.updatedAt);
     for (const t of whenever) candidates.push({ todo: t, lane: "whenever" });
@@ -3954,39 +3876,7 @@ export const internalAutoSchedule = internalMutation({
           });
         extra = { batchId: batch._id };
       } else {
-        // Resolve batch members for the mission prompt (life via the collect,
-        // code via the mirror).
-        let members: AutoMemberContext[] | undefined;
-        if (c.todo.members !== undefined) {
-          members = [];
-          for (const m of c.todo.members) {
-            if (m.todoId !== undefined) {
-              const t = todoById.get(m.todoId);
-              members.push({
-                kind: "life",
-                statement: t?.statement ?? "(missing todo)",
-                status: t?.status ?? "missing",
-              });
-            } else {
-              const row = await ctx.db
-                .query("dtsCodeTodoMirror")
-                .withIndex("by_repo_external", (q) =>
-                  q
-                    .eq("repo", m.repo ?? "")
-                    .eq("externalId", m.externalId ?? ""),
-                )
-                .first();
-              members.push({
-                kind: "code",
-                label: `${m.repo} ${m.externalId}`,
-                statement: row?.statement ?? "(closed upstream)",
-                status: row?.status ?? "closed",
-              });
-            }
-          }
-        }
-        prompt = (sessionId) =>
-          buildAutoMissionPrompt(c.todo, sessionId, repos, members);
+        prompt = (sessionId) => buildAutoMissionPrompt(c.todo, sessionId, repos);
       }
 
       const sessionId = await insertSession(
