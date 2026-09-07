@@ -150,7 +150,16 @@ never around the commit alone; step 5 only reads `HEAD` and takes no lock:
    first, a table over 90 MB as gzipped parts (`<table>.partNN.jsonl.gz`).
    The set is assembled in `/var/cache/tts/snapshot-staging/` first and a
    file is written only where its hash changed, so a night with no change
-   to a table makes no commit for it.
+   to a table makes no commit for it. **A nightly copy, not a point-in-time
+   transaction:** the boundary instant fixes which rows are in the copy
+   (those created before the job started), not their state — each page is
+   its own query, so a row updated between two pages is exported in its
+   later state, a row deleted between them is in neither, and two tables
+   read minutes apart can disagree. Every string value of every row goes
+   through the daemon's credential filter (`worker/session-host/redact.mjs`,
+   the same one every transcript row passes on ingest) before it is
+   written, so a key pasted into a session turn or a setting reaches WikiTom
+   as `[redacted:<kind>]`.
 2. **learning** — a skeleton for now: reads yesterday's turns Tom typed,
    his Slack replies and his rulings (`GET /tts/learning-input`) and records
    one `learning-run` row with the counts and zero changes. The comment above

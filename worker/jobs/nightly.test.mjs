@@ -14,6 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -44,6 +45,7 @@ import {
   readManifests,
   rebaseInProgress,
   recordLearningRows,
+  redactRow,
   revertLearningChange,
   serializeRow,
   sessionCitation,
@@ -681,6 +683,40 @@ describe("the learning step", () => {
       // Current state ends where Tom's section begins, whichever form it takes.
       expect(locateSection(lines, "f", "Current state").span.end).toBe(lines.indexOf(heading.split("\n")[0]));
     }
+  });
+});
+
+// witness: the snapshot serialized every row verbatim, so a key pasted into a
+// session turn or a setting would have landed in WikiTom as itself.
+describe("redactRow", () => {
+  // Assembled at runtime from pieces, so no committed line spells a token.
+  const token = ["gh", "p_", "A".repeat(36)].join("");
+  const slack = ["xox", "b-1234567890-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx"].join("");
+
+  it("filters every string value at every depth and leaves the rest as it was", () => {
+    const row = {
+      _id: "k1",
+      text: `use ${token} for the push`,
+      settings: { keys: [slack, 7, null], note: "plain" },
+      n: 3,
+      flag: true,
+    };
+    expect(redactRow(row)).toEqual({
+      _id: "k1",
+      text: "use [redacted:github] for the push",
+      settings: { keys: ["[redacted:slack]", 7, null], note: "plain" },
+      n: 3,
+      flag: true,
+    });
+    expect(row.text).toContain(token); // pure
+  });
+
+  it("is applied to every row the snapshot step reads before it is written", () => {
+    const source = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "nightly.mjs"), "utf8");
+    const step = source.slice(source.indexOf("async function snapshotStep"), source.indexOf("export function syncSnapshot"));
+    expect(step).toMatch(/for \(const row of page\.rows\) rows\.push\(redactRow\(row\)\);/);
+    const bytes = planTableFiles("claudeInbound", [{ _id: "a", text: token }].map(redactRow));
+    expect(bytes[0].bytes.toString()).toBe('{ "_id": "a", "text": "[redacted:github]" }\n');
   });
 });
 

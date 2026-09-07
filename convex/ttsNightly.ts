@@ -87,8 +87,13 @@ export function rowBytes(row: unknown): number {
 // One page, in creation order, of the rows created BEFORE `boundary` — the
 // job fixes the boundary at the instant it starts, so a row written while
 // the job pages (an hourly update, a session's flush) is in tomorrow's copy
-// and never straddles a page. Same boundary for every table, so the copy is
-// one instant of the record.
+// and never straddles a page. Same boundary for every table.
+//
+// THE BOUNDARY FIXES MEMBERSHIP, NOT STATE. Each page is its own query, so
+// the copy is a nightly copy and not a point-in-time transaction: a row
+// updated between two pages is exported in its later state, and a row
+// deleted between them is in neither. The job's README says so; nothing
+// downstream may read tts/snapshot/ as one instant of the record.
 export const internalExportPage = internalQuery({
   args: {
     table: v.string(),

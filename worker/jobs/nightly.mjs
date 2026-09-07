@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // nightly.mjs — the nightly job (the lifeos update, phase 4). Runs at 4:00
 // a.m. New York, before the 5 a.m. digest, and does five things in order,
 // each one recording a "nightly-failure" dtsEvents row if it fails and then
@@ -9,7 +8,12 @@
 //
 //   1. snapshot — copies every Convex table (the six auth tables excepted)
 //      into the WikiTom checkout at tts/snapshot/, one JSON-lines file per
-//      table, deterministic, written only where the bytes changed.
+//      table, deterministic, written only where the bytes changed, every
+//      string value through the credential filter first (redactRow). A
+//      NIGHTLY COPY, NOT A POINT-IN-TIME TRANSACTION: the boundary instant
+//      fixes which rows are in it (those created before the job started),
+//      not their state — a row updated between two pages is exported in its
+//      later state, and two tables read minutes apart can disagree.
 //   2. learning — applies Tom's objections from the digest thread (the
 //      inverse of each named change, or a row saying why not), then reads
 //      what he did since the last learning run (his session turns with the
@@ -48,7 +52,11 @@
 // and never prints TTS_WORKER_KEY.
 //
 // Plain Node ESM, zero npm dependencies (tts-lib.mjs's rule): node:fs,
-// node:zlib, node:crypto, node:child_process, and the global fetch.
+// node:zlib, node:crypto, node:child_process, and the global fetch. No
+// shebang line, unlike its siblings: the credential filter below is loaded
+// by a dynamic import, and vitest's transform puts an import of its own
+// ahead of a shebang, which is then a syntax error. Cron and the README run
+// it as `node /opt/tts/nightly.mjs`, which needs none.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -60,6 +68,19 @@ import { loadEnv, convexFetch, nyHour, runClaude, extractJsonObject, clip } from
 import { git } from "./tts-code-lib.mjs";
 import { enclosingHeadings, extractSections, frontmatterBlock, sectionSpan } from "./markdown-sections.mjs";
 import { CHANGE_ID_CHARS, changeIdTokens, namedChange } from "./learning-change-names.mjs";
+
+// The credential filter is worker/session-host/redact.mjs — THE ONE HOME; the
+// daemon's ingest choke point reads it there and a test fences it there. It
+// is reached from this file by its installed path: setup.sh copies the two
+// directories to different depths (this file to /opt/tts/, the daemon to
+// /opt/tts/session-host/), so the one spelled-out path that resolves in the
+// repo dangles on the box and the other way round (the reasoning lib.mjs
+// gives for its worker-env symlink). Both are tried, at load, in that order.
+const REDACT_HOMES = ["../session-host/redact.mjs", "./session-host/redact.mjs"];
+const { redactSecrets } = await import(
+  REDACT_HOMES.map((rel) => new URL(rel, import.meta.url)).find((url) => fs.existsSync(fileURLToPath(url))) ??
+    new URL(REDACT_HOMES[0], import.meta.url)
+);
 
 // ── Where things are ─────────────────────────────────────────────────────────
 export const WIKITOM_DIR = process.env.WIKITOM_DIR || "/root/wikitom";
@@ -133,6 +154,27 @@ export function serializeRow(value) {
     return `{ ${keys.map((k) => `${JSON.stringify(k)}: ${serializeRow(value[k])}`).join(", ")} }`;
   }
   return JSON.stringify(value);
+}
+
+/**
+ * One exported row with every string value in it — however deep, in arrays
+ * and objects alike — passed through the daemon's credential filter. THE
+ * SNAPSHOT IS VERBATIM OTHERWISE, and a Convex row can hold anything a
+ * model or Tom typed: a key pasted into a session turn (claudeInbound.text),
+ * a setting, a captured email. The transcript rows already pass this filter
+ * on their way in; the rows that never did pass it here, on their way into
+ * a public-shaped git repository. Keys and non-strings are untouched, so
+ * serializeRow's bytes stay deterministic night after night.
+ */
+export function redactRow(value) {
+  if (typeof value === "string") return redactSecrets(value);
+  if (Array.isArray(value)) return value.map(redactRow);
+  if (value !== null && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = redactRow(v);
+    return out;
+  }
+  return value;
 }
 
 /**
@@ -474,7 +516,9 @@ async function snapshotStep(run) {
       });
       if (cursor !== null) params.set("cursor", cursor);
       const page = await convexFetch(env, `/tts/export?${params}`);
-      for (const row of page.rows) rows.push(row);
+      // Every row through the credential filter before it is written
+      // (redactRow): nothing in the vault is trusted to be secret-free.
+      for (const row of page.rows) rows.push(redactRow(row));
       if (page.isDone) break;
       // EXPORT_PAGE is a ceiling, not a promise: the server ends a page at its
       // byte budget too (a table of 256KB rows would otherwise ask for more
