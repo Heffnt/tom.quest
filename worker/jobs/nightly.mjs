@@ -372,12 +372,12 @@ export function collectModelOfTomFiles(from) {
 // ── The run ──────────────────────────────────────────────────────────────────
 
 /** Record a failed step: the cron log, and a dtsEvents row the digest reads. */
-async function recordFailure(run, step, err) {
+async function recordFailure(run, step, err, { fetch = convexFetch } = {}) {
   const error = String(err?.message ?? err).slice(0, 2000);
   console.error(`[nightly] ${step} FAILED: ${error}`);
   run.failures.push({ step, error });
   try {
-    await convexFetch(run.env, "/tts/event", {
+    await fetch(run.env, "/tts/event", {
       kind: NIGHTLY_FAILURE,
       data: { day: run.day, step, error },
     });
@@ -1475,8 +1475,29 @@ function gitError(err) {
 // digest can say "not yet pushed" rather than pass a local commit off as
 // one on GitHub. Convex refuses a post older than the one it holds, so a
 // rerun of an old checkout cannot roll the prelude back (ttsSkills.ts).
-async function postStep(run) {
+export async function postStep(run, deps = {}) {
+  const { fetch = convexFetch } = deps;
   const dir = run.dir;
+  // A REBASE IN PROGRESS MEANS NO POST. During one, HEAD is detached on a
+  // half-replayed commit: `rev-parse HEAD` names it, `git show <commit>:<path>`
+  // reads whatever version of the pages that replay had reached, and Convex —
+  // which only refuses a post OLDER than the one it holds — would take it and
+  // serve it to every prompt until a clean night replaced it. The four steps
+  // before this one never meet that state, because the run aborts a stale
+  // rebase before its first write (main); `--only=post` runs none of them, so
+  // the guard belongs here too. Recorded, not thrown, and NOT aborted: an
+  // abort resets the work tree hard, and a post is a read.
+  if (rebaseInProgress(dir)) {
+    await recordFailure(
+      run,
+      "post",
+      new Error(
+        `a rebase is in progress in ${dir} — HEAD is a replayed commit, not the checkout's; refusing to post, the store keeps what it has`,
+      ),
+      { fetch },
+    );
+    return { commit: null, pushed: false, files: null, rebasing: true };
+  }
   const commit = git(dir, "rev-parse", "HEAD").trim();
   const committedAt = Number(git(dir, "log", "-1", "--format=%ct", commit).trim()) * 1000;
   const pushed = isPushed(dir, commit);
@@ -1497,11 +1518,12 @@ async function postStep(run) {
       new Error(
         `model-of-tom files or sections missing at ${commit.slice(0, 12)}: ${missing.join("; ")} — refusing to post, the store keeps what it has`,
       ),
+      { fetch },
     );
     return { commit, pushed, files: null, missing };
   }
   if (files.length === 0) throw new Error("no model-of-tom files to post");
-  const res = await convexFetch(run.env, "/tts/model-of-tom", {
+  const res = await fetch(run.env, "/tts/model-of-tom", {
     commit,
     committedAt,
     pushed,

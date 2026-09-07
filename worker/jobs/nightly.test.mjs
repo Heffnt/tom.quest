@@ -48,6 +48,7 @@ import {
   pageBodyBlob,
   parseLearningAnswer,
   planTableFiles,
+  postStep,
   readManifests,
   rebaseInProgress,
   recordLearningRows,
@@ -1526,6 +1527,48 @@ describe("the git half", { timeout: 60_000 }, () => {
     expect(after).toEqual([]);
     expect(made).toEqual(["nightly: 2026-09-06 — changes an earlier run left uncommitted"]);
     expect(status(dir)).toBe("");
+  });
+
+  // witness: LOCKED_STEPS names the four steps that write, so `--only=post`
+  // ran nothing that aborts a stale rebase. The post then read `rev-parse
+  // HEAD` — a half-replayed commit, not the checkout's — and Convex, which
+  // refuses only a post OLDER than the one it holds, took it and served those
+  // pages to every prompt until a clean night replaced them.
+  it("refuses to post while a rebase is in progress, and does not abort it", async () => {
+    const dir = repo();
+    run(dir, "checkout", "-q", "-b", "theirs");
+    write(dir, "tts/snapshot/dtsTodos.jsonl", "theirs\n");
+    run(dir, "commit", "-qam", "theirs");
+    run(dir, "checkout", "-q", "main");
+    write(dir, "tts/snapshot/dtsTodos.jsonl", "ours\n");
+    run(dir, "commit", "-qam", "ours");
+    try {
+      run(dir, "rebase", "theirs");
+    } catch {
+      // the conflict is the point
+    }
+    expect(rebaseInProgress(dir)).toBe(true);
+
+    const r = learningRun(dir);
+    const convex = fakeConvex();
+    const result = await postStep(r, { fetch: convex.fetch });
+    expect(result).toMatchObject({ commit: null, pushed: false, files: null });
+    expect(r.failures).toHaveLength(1);
+    expect(r.failures[0].step).toBe("post");
+    expect(r.failures[0].error).toContain("a rebase is in progress");
+    // The only thing that went to Convex is the failure row: nothing was
+    // posted to /tts/model-of-tom.
+    expect(convex.posts.map((p) => p.route)).toEqual(["/tts/event"]);
+    // And the rebase is where it was — a post is a read, and `rebase --abort`
+    // resets the work tree hard.
+    expect(rebaseInProgress(dir)).toBe(true);
+
+    // Off that state the same call gets as far as reading the pages, so the
+    // guard is what stopped it and not the state of the checkout's files.
+    abortStaleRebase(dir);
+    const after = learningRun(dir);
+    await postStep(after, { fetch: fakeConvex().fetch });
+    expect(after.failures[0].error).toContain("model-of-tom files or sections missing");
   });
 
   // witness: `git pull --rebase` re-commits the local commits it replays, and
