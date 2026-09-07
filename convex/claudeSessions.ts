@@ -54,6 +54,7 @@ import {
   DAEMON_STALE_MS,
   DEFAULT_SESSION_MODEL,
   LIVE_STATUSES,
+  MODEL_OF_TOM_HEADER,
   NO_REPO,
   SESSION_MODEL,
   SESSION_REPO_NAMES,
@@ -611,10 +612,23 @@ async function insertSession(
   // this row is the transcript's first row, so the transcript records what
   // the session began with. Under no posted files it is the hardcoded
   // writing standard under a header that says so (convex/ttsSkills.ts).
+  //
+  // AND ONLY HERE: a seed whose prompt already begins with the prelude's
+  // header — a builder that pasted its own copy, a fork that carried the
+  // opener whole — is refused rather than prefixed again, because the
+  // transcript's first line would then name one commit and the prompt's
+  // second copy another, and nothing reading the row could say which the
+  // session began with. The throw rolls the session row back with it.
+  const prompt = seed.prompt(sessionId, repos);
+  if (prompt.trimStart().startsWith(MODEL_OF_TOM_HEADER)) {
+    throw new Error(
+      `the prompt already begins with the model-of-tom prelude ("${MODEL_OF_TOM_HEADER}"); the opener adds it once`,
+    );
+  }
   const text =
     (await modelOfTomPrelude(ctx)) +
     "\n\n" +
-    seed.prompt(sessionId, repos) +
+    prompt +
     (codeSessionLines.length > 0 ? "\n\n" + codeSessionLines.join("\n") : "") +
     (seed.outcomePen === false ? "" : outcomePenFooter(sessionId, repos));
   await ctx.db.insert("claudeInbound", {

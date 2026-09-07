@@ -121,6 +121,24 @@ export const MODEL_OF_TOM_FIRST = [
 ];
 export const MODEL_OF_TOM_AREAS_DIR = "model-of-tom/areas";
 export const AREA_SECTIONS = ["Current state", "Must not break"];
+// The eight area pages every prompt carries (WikiTom model-of-tom/areas/).
+// Named here because THE POST IS ALL OR NOTHING: the store is replaced
+// whole, so a page or a section the job could not read would fall out of
+// every prompt until a night that read it again — and silently, since a
+// missing area page is no different from one that never existed. A page
+// beyond these eight is posted when it has the sections and is not
+// required; one of these eight, or either of its sections, missing is a
+// failure row naming it and no post.
+export const MODEL_OF_TOM_AREA_PAGES = [
+  "admin",
+  "agent-systems",
+  "climbing",
+  "health-and-food",
+  "mental-health",
+  "money",
+  "research",
+  "social",
+].map((name) => `${MODEL_OF_TOM_AREAS_DIR}/${name}.md`);
 /** The job's failure row (convex/ttsNightly.ts NIGHTLY_FAILURE by name). */
 export const NIGHTLY_FAILURE = "nightly-failure";
 
@@ -293,9 +311,10 @@ export function isPushed(dir, commit) {
  * The files to post from a WikiTom source (a checkout directory, read from
  * the work tree, or a source from commitSource): the three named files that
  * exist, then each page under areas/ (alphabetically) reduced to its
- * frontmatter block and its AREA_SECTIONS. `missing` names the expected files
- * that were not there — a post still goes out with the rest, and the caller
- * records the gap.
+ * frontmatter block and its AREA_SECTIONS. `missing` names every expected
+ * thing that was not there — a named file, one of the eight area pages, or
+ * either of a page's two sections — and the caller posts nothing while it
+ * is not empty (postStep).
  *
  * THE FRONTMATTER RIDES ALONG because it is where a page says when it was
  * last reviewed and how long its window is (spec §22), and the weekly gather
@@ -315,10 +334,17 @@ export function collectModelOfTomFiles(from) {
   const pages = source
     .list(MODEL_OF_TOM_AREAS_DIR)
     .filter((n) => n.endsWith(".md"))
-    .sort();
-  for (const page of pages) {
-    const rel = `${MODEL_OF_TOM_AREAS_DIR}/${page}`;
+    .map((n) => `${MODEL_OF_TOM_AREAS_DIR}/${n}`);
+  for (const rel of MODEL_OF_TOM_AREA_PAGES) if (!pages.includes(rel)) missing.push(rel);
+  for (const rel of pages.sort()) {
     const text = source.read(rel) ?? "";
+    const required = MODEL_OF_TOM_AREA_PAGES.includes(rel);
+    if (required) {
+      const lines = text.split(/\r?\n/);
+      for (const section of AREA_SECTIONS) {
+        if (sectionSpan(lines, section) === null) missing.push(`${rel}: no "${section}" section`);
+      }
+    }
     const sections = extractSections(text, AREA_SECTIONS);
     if (sections === "") continue;
     const front = frontmatterBlock(text);
@@ -1887,22 +1913,24 @@ async function postStep(run) {
   const committedAt = Number(git(dir, "log", "-1", "--format=%ct", commit).trim()) * 1000;
   const pushed = isPushed(dir, commit);
   const { files, missing } = collectModelOfTomFiles(commitSource(dir, commit));
-  // A NAMED FILE MISSING MEANS NO POST. The store is replaced whole, so
-  // posting the rest would take the missing file out of every prompt until a
-  // night that reads it again — and for writing.md that is every sentence
-  // written to no standard at all (the server refuses that post outright).
-  // A missing file is a layout change or a half-read checkout, never a
-  // decision of Tom's: last night's text keeps serving, and this is the row
-  // the digest shows.
+  // ANYTHING EXPECTED MISSING MEANS NO POST: a named file, one of the eight
+  // area pages, either of a page's two sections. The store is replaced
+  // whole, so posting the rest would take the missing part out of every
+  // prompt until a night that reads it again — silently, and for writing.md
+  // that is every sentence written to no standard at all (the server
+  // refuses that post outright). A missing part is a layout change, a
+  // renamed heading or a half-read checkout, never a decision of Tom's:
+  // last night's text keeps serving, and this is the row the digest shows,
+  // naming each missing part.
   if (missing.length > 0) {
     await recordFailure(
       run,
       "post",
       new Error(
-        `model-of-tom files missing or empty at ${commit.slice(0, 12)}: ${missing.join(", ")} — not posting, the store keeps what it has`,
+        `model-of-tom files or sections missing at ${commit.slice(0, 12)}: ${missing.join("; ")} — refusing to post, the store keeps what it has`,
       ),
     );
-    return { commit, files: null, missing };
+    return { commit, pushed, files: null, missing };
   }
   if (files.length === 0) throw new Error("no model-of-tom files to post");
   const res = await convexFetch(run.env, "/tts/model-of-tom", {

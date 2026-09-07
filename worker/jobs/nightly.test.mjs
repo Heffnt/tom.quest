@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AREA_SECTIONS,
   FORBIDDEN_SECTIONS,
+  MODEL_OF_TOM_AREA_PAGES,
   MODEL_OF_TOM_FIRST,
   SPLIT_BYTES,
   abortStaleRebase,
@@ -1007,42 +1008,81 @@ describe("AREA_SECTIONS", () => {
 });
 
 describe("collectModelOfTomFiles", () => {
-  it("posts the three named files then each area page's sections, alphabetically", () => {
+  /** A checkout with the three named files and every area page complete. */
+  function fullCheckout() {
     const dir = tmp();
     write(dir, "model-of-tom/writing.md", "# Writing\n");
     write(dir, "model-of-tom/priorities.md", "# Priorities\n");
     write(dir, "model-of-tom/schedule.md", "# Schedule\n");
     write(dir, "model-of-tom/README.md", "not posted\n");
-    write(dir, "model-of-tom/areas/social.md", "## Current state\n\n- friends\n\n## Ideal state\n\nx\n");
+    for (const rel of MODEL_OF_TOM_AREA_PAGES) {
+      write(dir, rel, `## Current state\n\n- ${rel}\n\n## Ideal state\n\nx\n\n## Must not break\n\n- y\n`);
+    }
+    return dir;
+  }
+
+  it("posts the three named files then each area page's sections, alphabetically", () => {
+    const dir = fullCheckout();
     write(
       dir,
       "model-of-tom/areas/admin.md",
-      "---\nupdated: 2026-09-06\nreviewed:\nwindow_days: 30\n---\n# Admin\n\n## Must not break\n\n- taxes\n",
+      "---\nupdated: 2026-09-06\nreviewed:\nwindow_days: 30\n---\n# Admin\n\n## Current state\n\n- mail\n\n## Must not break\n\n- taxes\n",
     );
+    // A ninth page is posted when it has the sections, and never required.
+    write(dir, "model-of-tom/areas/travel.md", "## Current state\n\n- none planned\n");
     write(dir, "model-of-tom/areas/empty.md", "# Empty\n\nno sections yet\n");
     const { files, missing } = collectModelOfTomFiles(dir);
     expect(missing).toEqual([]);
-    expect(files.map((f) => f.path)).toEqual([
-      ...MODEL_OF_TOM_FIRST,
-      "model-of-tom/areas/admin.md",
-      "model-of-tom/areas/social.md",
-    ]);
-    expect(files[4].body).toBe("## Current state\n\n- friends");
+    expect(files.map((f) => f.path)).toEqual([...MODEL_OF_TOM_FIRST, ...MODEL_OF_TOM_AREA_PAGES, "model-of-tom/areas/travel.md"]);
+    expect(files.at(-1).body).toBe("## Current state\n\n- none planned");
     // The frontmatter rides ahead of the sections: it is where the weekly
     // gather reads `reviewed:` and the window from.
     expect(files[3].body).toBe(
-      "---\nupdated: 2026-09-06\nreviewed:\nwindow_days: 30\n---\n\n## Must not break\n\n- taxes",
+      "---\nupdated: 2026-09-06\nreviewed:\nwindow_days: 30\n---\n\n## Current state\n\n- mail\n\n## Must not break\n\n- taxes",
+    );
+    expect(files[3].body).not.toContain("Ideal state");
+  });
+
+  it("names the eight area pages", () => {
+    expect(MODEL_OF_TOM_AREA_PAGES).toEqual(
+      ["admin", "agent-systems", "climbing", "health-and-food", "mental-health", "money", "research", "social"].map(
+        (n) => `model-of-tom/areas/${n}.md`,
+      ),
     );
   });
 
-  // areas/ arrives with the content half of phase 4; until then the three.
-  it("posts the named files alone while areas/ does not exist, and names what is missing", () => {
+  // witness: an area page with one of its two sections gone, or gone
+  // altogether, was left out of the post without a word — and the prompts
+  // lost it until a night that read it again.
+  it("names every missing file, page and section, so the post can refuse", () => {
+    const dir = fullCheckout();
+    write(dir, "model-of-tom/schedule.md", "   \n");
+    fs.rmSync(path.join(dir, "model-of-tom/priorities.md"));
+    fs.rmSync(path.join(dir, "model-of-tom/areas/money.md"));
+    write(dir, "model-of-tom/areas/social.md", "## Current state\n\n- friends\n\n## Ideal state\n\nx\n");
+    write(dir, "model-of-tom/areas/climbing.md", "# Climbing\n\nno sections yet\n");
+    const { files, missing } = collectModelOfTomFiles(dir);
+    expect(missing).toEqual([
+      "model-of-tom/priorities.md",
+      "model-of-tom/schedule.md",
+      "model-of-tom/areas/money.md",
+      'model-of-tom/areas/climbing.md: no "Current state" section',
+      'model-of-tom/areas/climbing.md: no "Must not break" section',
+      'model-of-tom/areas/social.md: no "Must not break" section',
+    ]);
+    // What was there is still collected — the caller decides not to post it.
+    expect(files.map((f) => f.path)).toContain("model-of-tom/areas/social.md");
+    expect(files.map((f) => f.path)).not.toContain("model-of-tom/areas/climbing.md");
+  });
+
+  it("names all eight pages while areas/ does not exist", () => {
     const dir = tmp();
     write(dir, "model-of-tom/writing.md", "# Writing\n");
-    write(dir, "model-of-tom/schedule.md", "   \n");
+    write(dir, "model-of-tom/priorities.md", "# Priorities\n");
+    write(dir, "model-of-tom/schedule.md", "# Schedule\n");
     const { files, missing } = collectModelOfTomFiles(dir);
-    expect(files.map((f) => f.path)).toEqual(["model-of-tom/writing.md"]);
-    expect(missing).toEqual(["model-of-tom/priorities.md", "model-of-tom/schedule.md"]);
+    expect(files.map((f) => f.path)).toEqual(MODEL_OF_TOM_FIRST);
+    expect(missing).toEqual(MODEL_OF_TOM_AREA_PAGES);
   });
 });
 

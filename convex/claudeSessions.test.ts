@@ -10,6 +10,7 @@ import {
   CODEX_USAGE_STALE_MS,
   CODEX_WEEKLY_CAP_PERCENT,
   DEFAULT_SESSION_MODEL,
+  MODEL_OF_TOM_HEADER,
   WRITING_STANDARD,
 } from "./ttsShared";
 import type { SessionModel } from "./ttsShared";
@@ -223,6 +224,36 @@ describe("claude sessions", () => {
     expect(text.startsWith("MODEL-OF-TOM FILES: none stored yet")).toBe(true);
     expect(text).toContain(WRITING_STANDARD);
     expect(text.indexOf(WRITING_STANDARD)).toBeLessThan(text.indexOf("\n\nhello"));
+  });
+
+  // witness: insertSession prefixed the prelude to whatever the seed's prompt
+  // was, so a builder that had pasted its own copy gave the transcript two
+  // headers naming two commits.
+  it("refuses a seed whose prompt already begins with the model-of-tom prelude, and inserts nothing", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    await expect(
+      tom.mutation(api.claudeSessions.createSession, {
+        title: "double prelude",
+        kind: "adhoc",
+        repo: "none",
+        initialPrompt: `${MODEL_OF_TOM_HEADER} (WikiTom commit 0123abcd): model-of-tom/writing.md\n\n── model-of-tom/writing.md ──\nold text\n\nhello`,
+      }),
+    ).rejects.toThrow(/already begins with the model-of-tom prelude/);
+    const rows = await t.run(async (ctx) => ({
+      sessions: await ctx.db.query("claudeSessions").collect(),
+      inbound: await ctx.db.query("claudeInbound").collect(),
+    }));
+    expect(rows.sessions).toHaveLength(0);
+    expect(rows.inbound).toHaveLength(0);
+    // A prompt that merely mentions the header later is Tom's to write.
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "mentions it",
+      kind: "adhoc",
+      repo: "none",
+      initialPrompt: `read the ${MODEL_OF_TOM_HEADER} line first`,
+    });
+    expect(sessionId).toBeDefined();
   });
 
   it("daemon poll claims state and heartbeat; ingest transitions and delivers", async () => {
