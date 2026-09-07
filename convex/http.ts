@@ -799,7 +799,9 @@ http.route({ path: "/tts/time-notes", method: "POST", handler: ttsTimeNotes });
 // validator is the single gate. No projection step: a sanitizer that silently
 // dropped a field the model DID send (a create-block category, say) would let a
 // half-understood action land as a different, legal one. Malformed in, 400 out,
-// needs-session on Tom's page.
+// needs-session on Tom's page. The one thing read here first is the retired
+// sleep vocabulary (retiredTimeNoteAction), which the validator would refuse
+// anyway — reading it names WHICH spelling it was.
 
 // One note is one sentence; ten actions is already far past what one sentence
 // asks for (Convex bounded-args guideline).
@@ -810,6 +812,27 @@ const TIME_NOTE_ACTIONS_MAX = 10;
 type TimeNoteActions = FunctionArgs<
   typeof internal.tts.internalApplyTimeNote
 >["actions"];
+
+// The one exception to "no projection step": three spellings of a retired
+// sleep. A latest-safe instant and a wake CONDITION are gone (the lifeos
+// update, phase 7) — a sleep is a wake time, and what a row waits for belongs
+// in its statement. The union validator would refuse them anyway; this names
+// which one it was, so a job still emitting them is readable from the reply
+// rather than from a validator dump. Returns the reason, or null.
+function retiredTimeNoteAction(actions: unknown): string | null {
+  if (!Array.isArray(actions)) return null;
+  for (const action of actions) {
+    if (typeof action !== "object" || action === null) continue;
+    const a = action as Record<string, unknown>;
+    if (a.kind === "set-latest-safe" || a.kind === "clear-latest-safe") {
+      return `${a.kind} is retired — a sleep is a wake time (set-waiting with wakeAt)`;
+    }
+    if (a.kind === "set-waiting" && a.wakeCondition !== undefined) {
+      return "set-waiting.wakeCondition is retired — what a row waits for goes in its statement";
+    }
+  }
+  return null;
+}
 const ttsApplyTimeNote = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -836,6 +859,13 @@ const ttsApplyTimeNote = httpAction(async (ctx, request) => {
       error: `at most ${TIME_NOTE_ACTIONS_MAX} actions per time note — got ${b.actions.length}`,
     });
   }
+  // The retired sleep vocabulary, named here rather than left to the union
+  // validator's error. Until worker/setup.sh had rolled out these were
+  // DECLARED and did nothing, so a box that had not caught up still landed its
+  // whole flush; setup.sh has since run at main 6825608, so a note still
+  // carrying one comes from code nobody runs and says so plainly.
+  const retired = retiredTimeNoteAction(b.actions);
+  if (retired) return jsonResponse(400, { error: retired });
   try {
     const outcome = await ctx.runMutation(internal.tts.internalApplyTimeNote, {
       id: b.id,
@@ -1531,10 +1561,10 @@ http.route({ path: "/tts/event", method: "POST", handler: ttsEvent });
 
 // ── POST /tts/plan-graph — the planner's pen (schema v2) ─────────────────────
 // ONE batch's graph per call, the successor to POST /tts/batches. Body:
-// { batchId?, statement, groundUpExplanation?, path?, tasks: [...], goalIds?,
-// archive? }. Same drop-don't-reject discipline as /tts/batches: the body is
-// model-written JSON, so it is PROJECTED to the known shape and the mutation's
-// per-item skip report is the real validator.
+// { batchId?, statement, groundUpExplanation?, needs?, repos?, tasks: [...],
+// goalIds?, archive? }. Same drop-don't-reject discipline as /tts/batches: the
+// body is model-written JSON, so it is PROJECTED to the known shape and the
+// mutation's per-item skip report is the real validator.
 //
 // ONE DIFFERENCE, and it is the whole reason this sanitizer is not a copy of
 // the batch one: a task's `needs` may address an EARLIER TASK BY ITS POSITION
@@ -1632,6 +1662,18 @@ const ttsPlanGraph = httpAction(async (ctx, request) => {
   if (!Array.isArray(b.tasks)) {
     return jsonResponse(400, { error: "tasks (array) required" });
   }
+  // `path` was a batch's sequencing (name, index, must/helps edge) and it is
+  // retired — its edges are `needs` now. Until worker/setup.sh had rolled out
+  // it was IGNORED here, because one retired field would otherwise have cost a
+  // whole plan; the box has since caught up (main 6825608), so a payload still
+  // carrying it comes from code nobody is running and is refused by name. A
+  // stale planner is then visible in the job's error rather than silently
+  // losing the sequencing it thought it wrote.
+  if (b.path !== undefined) {
+    return jsonResponse(400, {
+      error: "path is retired — sequence a batch with needs (batch ids)",
+    });
+  }
   const droppedTasks: DroppedTask[] = [];
   const tasks = b.tasks.map((task, i) => sanitizeGraphTask(task, i, droppedTasks));
   try {
@@ -1643,9 +1685,7 @@ const ttsPlanGraph = httpAction(async (ctx, request) => {
           ? b.groundUpExplanation
           : undefined,
       // The batches this one needs done first. Absent preserves; the
-      // mutation drops a name that is not a batch with a named skip. A "path"
-      // in an older payload is IGNORED here rather than refused — the field is
-      // retired and its edges are already needs.
+      // mutation drops a name that is not a batch with a named skip.
       needs: Array.isArray(b.needs)
         ? b.needs.filter((x): x is string => typeof x === "string")
         : undefined,
