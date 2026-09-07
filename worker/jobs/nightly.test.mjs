@@ -665,6 +665,23 @@ describe("the learning step", () => {
     expect(locateSection(before.split("\n"), file, "Training goals")).toEqual({ reason });
     expect(locateSection(before.split("\n"), file, "Current state").span).toMatchObject({ level: 2 });
   });
+
+  // witness: the guard read `#` in column one only, so an indented
+  // `   ## Ideal state` or a setext `Ideal state\n-----` was body text to it:
+  // Current state ran on through Tom's section, and a `### Training goals`
+  // under it sat under nothing.
+  it("guards a section under an indented or a setext heading of Tom's as under a column-one one", () => {
+    const nested = "### Training goals\n\n- Lead 5.12 by December (session 47f04bc9, 2026-08-30).\n\n## Must not break";
+    const reason = '"Training goals" is under "Ideal state", Tom\'s section; an agent never writes it';
+    const own = '"Ideal state" is Tom\'s section; an agent never writes it';
+    for (const heading of ["   ## Ideal state", "Ideal state\n-----------"]) {
+      const lines = CLIMBING.replace("## Ideal state", heading).replace("## Must not break", nested).split("\n");
+      expect(locateSection(lines, "f", "Training goals")).toEqual({ reason });
+      expect(locateSection(lines, "f", "Ideal state")).toEqual({ reason: own });
+      // Current state ends where Tom's section begins, whichever form it takes.
+      expect(locateSection(lines, "f", "Current state").span.end).toBe(lines.indexOf(heading.split("\n")[0]));
+    }
+  });
 });
 
 describe("serializeRow", () => {

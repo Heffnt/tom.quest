@@ -10,10 +10,12 @@ import {
   enclosingHeadings,
   extractSections,
   frontmatterBlock,
+  headings,
   isIsoDay,
   parseFrontmatter,
   sectionSpan,
   setFrontmatterField,
+  withoutHeading,
 } from "./markdown-sections.mjs";
 
 const AREA = ["Current state", "Must not break"];
@@ -88,6 +90,46 @@ describe("sectionSpan", () => {
     expect(sectionSpan(lines, "Detail")).toEqual({ start: 3, end: 5, level: 3 });
     expect(sectionSpan(lines, "must not break")).toEqual({ start: 5, end: 7, level: 2 });
     expect(sectionSpan(lines, "Ideal state")).toBeNull();
+  });
+
+  // witness: with `#` recognized in column one only, the indented heading
+  // was body text — the section under it ran to the end of the page, and a
+  // `### Training goals` sat under nothing.
+  it("recognizes an ATX heading indented up to three spaces, and ends a section at one", () => {
+    const page = ["## Current state", "- a", "   ## Ideal state", "- b", "### Training goals", "- c"];
+    expect(sectionSpan(page, "Current state")).toEqual({ start: 0, end: 2, level: 2 });
+    expect(sectionSpan(page, "Ideal state")).toEqual({ start: 2, end: 6, level: 2 });
+    expect(sectionSpan(page, "Training goals")).toEqual({ start: 4, end: 6, level: 3 });
+    expect(enclosingHeadings(page, 4)).toEqual(["Ideal state"]);
+    // Four spaces is indented code, not a heading.
+    expect(sectionSpan(["    ## Not a heading", "- x"], "Not a heading")).toBeNull();
+  });
+
+  it("recognizes a setext heading, its underline inside the span", () => {
+    const page = ["Page", "====", "", "Current state", "-------------", "- a", "Ideal state", "---", "- b", "### Training goals", "- c"];
+    expect(sectionSpan(page, "Page")).toEqual({ start: 0, end: 11, level: 1 });
+    expect(sectionSpan(page, "Current state")).toEqual({ start: 3, end: 6, level: 2 });
+    expect(sectionSpan(page, "Ideal state")).toEqual({ start: 6, end: 11, level: 2 });
+    expect(enclosingHeadings(page, 9)).toEqual(["Ideal state", "Page"]);
+    // The underline is the heading's own line: it sits under what the heading does.
+    expect(enclosingHeadings(page, 7)).toEqual(["Page"]);
+    expect(extractSections(page.join("\n"), ["Current state"])).toBe("Current state\n-------------\n- a");
+    expect(withoutHeading("Ideal state\n---\n- b")).toBe("- b");
+    expect(withoutHeading("  ## Ideal state\n- b")).toBe("- b");
+    expect(withoutHeading("- b")).toBe("- b");
+  });
+
+  it("does not read a list item's, a blank line's or the frontmatter's `---` as a heading", () => {
+    const page = ["---", "updated: 2026-09-06", "reviewed:", "---", "- a", "---", "", "---", "## Current state", "- b"];
+    expect(headings(page)).toEqual([{ index: 8, level: 2, text: "Current state", lines: 1 }]);
+    expect(sectionSpan(page, "updated: 2026-09-06")).toBeNull();
+    expect(sectionSpan(page, "- a")).toBeNull();
+  });
+
+  it("ignores a heading inside a fenced code block", () => {
+    const page = ["## Current state", "```", "## Ideal state", "```", "- a"];
+    expect(sectionSpan(page, "Current state")).toEqual({ start: 0, end: 5, level: 2 });
+    expect(sectionSpan(page, "Ideal state")).toBeNull();
   });
 });
 

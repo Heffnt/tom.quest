@@ -12,38 +12,105 @@
 //   convex/ttsSkills.ts takes the "What becomes a todo" section out of the
 //     posted model-of-tom/priorities.md to serve GET /tts/capture-context.
 //
+//   worker/jobs/weekly.mjs reads the "Outcome" section of an agenda file.
+//
 // A second parser would let the two disagree about a page written for
-// neither of them.
+// neither of them — and a heading form one side did not recognize was a way
+// past the learning step's guard (see headings below).
 //
 // Plain ESM with no imports, on purpose. worker/ is what is deployed to the
 // Jarvis Box and Node there loads no TypeScript; Convex bundles this file into
 // a runtime with no filesystem. Neither side can hold the other's language, so
 // the shared half is written in the one both can read.
 
-const HEADING = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
+// ── Headings ─────────────────────────────────────────────────────────────────
+// CommonMark's two heading forms, and every reader of a page sees both:
+//
+//   ATX     up to three spaces of indentation, one to six `#`, a space, the
+//           text (closing `#`s optional):  `   ## Ideal state`
+//   setext  a paragraph line with a line of `=` (level 1) or `-` (level 2)
+//           under it, each after up to three spaces:  `Ideal state\n-----`
+//
+// Recognizing only `#` in column one was a way past the learning step's
+// protected-section guard: an indented `   ## Ideal state` was body text to
+// the guard, so a `### Training goals` under it sat under nothing, and the
+// step could write into a section of Tom's. The guard, the post's reduction
+// of an area page, and the capture-triage section all locate sections
+// through headings() below, so no form is a heading to one and not another.
+//
+// Not headings: anything inside a fenced code block, and the frontmatter
+// block at the top of a page, whose closing `---` would otherwise read as a
+// setext underline of the last `key: value` line.
+const ATX = /^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*$/;
+const CLOSING_HASHES = /[ \t]+#+$/;
+const SETEXT_1 = /^ {0,3}=+[ \t]*$/;
+const SETEXT_2 = /^ {0,3}-+[ \t]*$/;
+const FENCE = /^ {0,3}(?:`{3,}|~{3,})/;
+// A line a setext underline may head: a paragraph line, which is not blank,
+// not a list item, not a block quote, not indented code, not a fence.
+const NOT_PARAGRAPH = /^(?:[ \t]*$| {0,3}(?:[-*+][ \t]|\d{1,9}[.)][ \t]|>)| {4,}|\t)/;
+
+function atxText(m) {
+  const text = m[2].replace(CLOSING_HASHES, "").trim();
+  return /^#+$/.test(text) ? "" : text;
+}
+
+/** The lines the frontmatter block occupies — [0, end] inclusive — or -1. */
+function frontmatterEnd(lines) {
+  if (lines[0]?.trim() !== FRONTMATTER_FENCE) return -1;
+  return lines.findIndex((l, i) => i > 0 && l.trim() === FRONTMATTER_FENCE);
+}
+
+/**
+ * Every heading of the page in order: `{ index, level, text, lines }` —
+ * `lines` is 1 for an ATX heading and 2 for a setext one, whose underline
+ * belongs to it. THE ONE READ every section locator below goes through.
+ */
+export function headings(lines) {
+  const out = [];
+  const skipTo = frontmatterEnd(lines);
+  let fenced = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (i <= skipTo) continue;
+    const line = lines[i];
+    if (FENCE.test(line)) {
+      fenced = !fenced;
+      continue;
+    }
+    if (fenced) continue;
+    const atx = ATX.exec(line);
+    if (atx) {
+      out.push({ index: i, level: atx[1].length, text: atxText(atx), lines: 1 });
+      continue;
+    }
+    const under = lines[i + 1];
+    if (under === undefined || NOT_PARAGRAPH.test(line) || ATX.test(line)) continue;
+    // A `---` under a paragraph line is a heading; `- a` above it is a list
+    // item, so that `---` is a thematic break and heads nothing.
+    if (SETEXT_1.test(under) || SETEXT_2.test(under)) {
+      out.push({ index: i, level: SETEXT_1.test(under) ? 1 : 2, text: line.trim(), lines: 2 });
+      i += 1;
+    }
+  }
+  return out;
+}
 
 /**
  * Where the section headed `heading` (case-insensitive) sits in `lines`: the
  * index of its heading line, the exclusive index where it ends (the next
  * heading of the same or a higher level, or the end of the page), and the
  * heading's level. Null when the page has no such heading. The FIRST match
- * wins, which is what extractSections has always returned.
+ * wins, which is what extractSections has always returned. A setext
+ * heading's underline is inside its span.
  */
 export function sectionSpan(lines, heading) {
   const wanted = String(heading ?? "").trim().toLowerCase();
-  for (let i = 0; i < lines.length; i++) {
-    const m = HEADING.exec(lines[i]);
-    if (!m || m[2].trim().toLowerCase() !== wanted) continue;
-    const level = m[1].length;
-    let end = lines.length;
-    for (let j = i + 1; j < lines.length; j++) {
-      const n = /^(#{1,6})\s+\S/.exec(lines[j]);
-      if (n && n[1].length <= level) {
-        end = j;
-        break;
-      }
-    }
-    return { start: i, end, level };
+  const all = headings(lines);
+  for (let k = 0; k < all.length; k++) {
+    const h = all[k];
+    if (h.text.toLowerCase() !== wanted) continue;
+    const next = all.slice(k + 1).find((n) => n.level <= h.level);
+    return { start: h.index, end: next === undefined ? lines.length : next.index, level: h.level };
   }
   return null;
 }
@@ -57,16 +124,26 @@ export function sectionSpan(lines, heading) {
  */
 export function enclosingHeadings(lines, index) {
   const out = [];
-  const own = HEADING.exec(lines[index] ?? "");
-  let level = own ? own[1].length : 7;
-  for (let i = index - 1; i >= 0; i--) {
-    const m = HEADING.exec(lines[i]);
-    if (m && m[1].length < level) {
-      out.push(m[2].trim());
-      level = m[1].length;
+  const all = headings(lines);
+  const own = all.find((h) => index >= h.index && index < h.index + h.lines);
+  let level = own ? own.level : 7;
+  for (let k = all.length - 1; k >= 0; k--) {
+    const h = all[k];
+    if (h.index >= index) continue;
+    if (h.level < level) {
+      out.push(h.text);
+      level = h.level;
     }
   }
   return out;
+}
+
+/** A section's text without its heading line (either form), for a reader
+ * that wants the body alone. */
+export function withoutHeading(section) {
+  const lines = String(section ?? "").split(/\r?\n/);
+  const first = headings(lines).find((h) => h.index === 0);
+  return lines.slice(first === undefined ? 0 : first.lines).join("\n");
 }
 
 /**
