@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   STAGING_DIR,
   archiveSessionFiles,
+  firstLine,
   readManifests,
   sha256,
   writeArchived,
@@ -58,9 +59,12 @@ function box() {
     "2026/09/05/rollout-2026-09-05T22-00-00-thread1.jsonl",
     `${JSON.stringify({ type: "session_meta", timestamp: "2026-09-05T22:00:00.000Z", payload: { id: "thread1", cwd: "/root/x" } })}\n`,
   );
+  // A rollout is named after its OWN thread: the subagent's file says
+  // "sub1" and nothing about the parent it belongs to. Nothing but the
+  // session_meta line inside it can say that.
   write(
     codex,
-    "2026/09/05/rollout-2026-09-05T22-01-00-thread1-sub.jsonl",
+    "2026/09/05/rollout-2026-09-05T22-01-00-sub1.jsonl",
     `${JSON.stringify({ type: "session_meta", timestamp: "2026-09-05T22:01:00.000Z", payload: { id: "sub1", parent_thread_id: "thread1", cwd: "/root/x" } })}\n`,
   );
   return { accounts, codex, checkout };
@@ -119,6 +123,52 @@ describe("archiveSessionFiles", () => {
   it("a session no file belongs to archives nothing", () => {
     const b = box();
     expect(archive(b, { only: "nope" })).toMatchObject({ archived: [] });
+  });
+
+  // witness: a session end filtered Codex files by their PATH, and a
+  // subagent rollout's path carries its own thread id, never the parent's —
+  // so every subagent thread of the session that just ended was left to the
+  // sweep, and any that did not grow after that was left to nothing.
+  it("takes a Codex thread's subagent rollouts by what is inside them, not by their names", () => {
+    const b = box();
+    // A second subagent, one more level down: a thread of a thread, whose
+    // parent is the one that ended.
+    write(
+      b.codex,
+      "2026/09/05/rollout-2026-09-05T22-05-00-sub2.jsonl",
+      `${JSON.stringify({ type: "session_meta", timestamp: "2026-09-05T22:05:00.000Z", payload: { id: "sub2", parent_thread_id: "thread1", cwd: "/root/x" } })}\n`,
+    );
+    // A rollout of another session entirely stays where it is.
+    write(
+      b.codex,
+      "2026/09/05/rollout-2026-09-05T23-00-00-other.jsonl",
+      `${JSON.stringify({ type: "session_meta", timestamp: "2026-09-05T23:00:00.000Z", payload: { id: "other", cwd: "/root/y" } })}\n`,
+    );
+    expect(archive(b, { only: "thread1" }).archived.map((r) => r.dest).sort()).toEqual([
+      "sessions/2026/09/05/codex-thread1/children/sub1.jsonl.gz",
+      "sessions/2026/09/05/codex-thread1/children/sub2.jsonl.gz",
+      "sessions/2026/09/05/codex-thread1/rollout.jsonl.gz",
+    ]);
+    // And a Claude session's end reads no Codex thread into the archive.
+    expect(archive(b, { only: "aaaa" }).archived.every((r) => r.runtime === "claude")).toBe(true);
+    expect(archive(b).archived.map((r) => r.dest)).toEqual([
+      "sessions/2026/09/05/claude-bbbb/session.jsonl.gz",
+      "sessions/2026/09/05/codex-other/rollout.jsonl.gz",
+    ]);
+  });
+});
+
+describe("firstLine", () => {
+  it("reads to the first newline and no further, and the whole file when there is none", () => {
+    const dir = tmp();
+    const long = "x".repeat(200_000);
+    expect(firstLine(write(dir, "a.jsonl", `head ${long}\ntail\n`))).toBe(`head ${long}`);
+    expect(firstLine(write(dir, "b.jsonl", "only\n"))).toBe("only");
+    expect(firstLine(write(dir, "c.jsonl", "no newline at all"))).toBe("no newline at all");
+    expect(firstLine(write(dir, "d.jsonl", ""))).toBe("");
+    // A line past the limit is not returned whole, so it does not parse and
+    // the file waits for the sweep, which reads every byte.
+    expect(firstLine(write(dir, "e.jsonl", `${long}\n`), 1000)).toHaveLength(65_536);
   });
 });
 

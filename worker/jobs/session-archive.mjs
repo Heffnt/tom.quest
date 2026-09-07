@@ -146,6 +146,41 @@ export function sessionDateOfBuffer(raw, mtimeMs) {
   return { date: utcDay(mtimeMs), dateSource: "mtime" };
 }
 
+// How much of a file is read to find its first line. A Codex session_meta
+// line is the thread's metadata and its instructions, so it is large by the
+// standards of a line and small by the standards of a file; a line longer
+// than this does not parse and the file is left to the sweep, which reads
+// every byte anyway.
+export const HEAD_BYTES = 8 * 1024 * 1024;
+
+/**
+ * The first line of `file`, reading no more of it than it must — 64 KB at a
+ * time until a newline or HEAD_BYTES. This is how a session-end archive asks
+ * "is this rollout part of the session that just ended?" without reading
+ * every rollout ever made on this box to answer it.
+ */
+export function firstLine(file, limit = HEAD_BYTES) {
+  const fd = fs.openSync(file, "r");
+  try {
+    const chunk = Buffer.allocUnsafe(64 * 1024);
+    const parts = [];
+    let total = 0;
+    for (;;) {
+      const n = fs.readSync(fd, chunk, 0, chunk.length, null);
+      if (n === 0) break;
+      const read = chunk.subarray(0, n);
+      const nl = read.indexOf(0x0a);
+      const end = nl === -1 ? n : nl;
+      parts.push(Buffer.from(read.subarray(0, end)));
+      total += end;
+      if (nl !== -1 || total >= limit) break;
+    }
+    return Buffer.concat(parts).toString("utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 /** codexMetaOf over a buffer: its first non-empty line, however long. */
 export function codexMetaOfBuffer(raw) {
   for (const line of bufferLines(raw)) {
@@ -566,9 +601,20 @@ export function archiveSessionFiles({
   const sessionsDir = path.join(checkoutDir, SESSIONS_DIR);
   const index = indexManifests(readManifests(sessionsDir));
   const manifestPath = path.join(sessionsDir, `manifest-box-${day}.jsonl`);
-  const wanted = (f) =>
-    only === null ||
-    (f.runtime === "claude" ? f.session === only : f.source.includes(only));
+  // A Claude file carries its session id in its path, so `only` is matched
+  // against the path. A CODEX FILE CANNOT BE: a rollout is named after its
+  // OWN thread, so a subagent thread's path holds the subagent's id and never
+  // the parent's, and matching the path admitted the named thread alone —
+  // every subagent thread of the session that just ended was left to the
+  // sweep, or, if it had not grown by then, to nothing. What says who the
+  // parent is is inside the file, on its session_meta line, so that is what
+  // decides; firstLine reads it without reading the rest of the rollout.
+  const wanted = (f) => {
+    if (only === null) return true;
+    if (f.runtime === "claude") return f.session === only;
+    const meta = codexMetaOf(firstLine(f.source));
+    return meta !== null && (meta.id === only || meta.parent === only);
+  };
   const files = discoverSessionFiles({ codexDir, accountsDir }).filter(wanted);
   // A leftover of a crashed earlier call to this session's staging is stale
   // by definition (nothing is renamed twice); the sweep clears the root.
@@ -604,7 +650,8 @@ export function archiveSessionFiles({
         log(`[session-archive] not a Codex rollout, skipped: ${f.source}`);
         continue;
       }
-      if (only !== null && meta.id !== only && meta.parent !== only) continue;
+      // Which threads belong to `only` was settled by `wanted` above, off the
+      // same session_meta line; there is one test, not two.
       // Children wait until every parent of this call is placed.
       codexEntries.push({ f, raw, sha, mtimeMs, meta });
       continue;
