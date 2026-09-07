@@ -641,6 +641,50 @@ describe("the learning step", () => {
     expect(again).toEqual({ ok: false, reason: `the line is no longer in "Current state" on ${file} as written` });
   });
 
+  // witness: the revert removed the FIRST match in the section, so with Tom's
+  // copy of the line pasted above the job's, his went and the job's stayed.
+  it("takes nothing back when the line is in its section twice, and says so", async () => {
+    const dir = learningCheckout();
+    const file = "model-of-tom/areas/climbing.md";
+    // Tom's copy first, the job's (at the end of Current state) second.
+    write(
+      dir,
+      file,
+      CLIMBING.replace("- Climbing for 16 years", `${NEW_LINE}\n- Climbing for 16 years`).replace(
+        "## Ideal state",
+        `${NEW_LINE}\n\n## Ideal state`,
+      ),
+    );
+    const before = fs.readFileSync(path.join(dir, file), "utf8");
+    const added = { id: "aaaaaaaaaaaa", file, section: "Current state", before: "", after: NEW_LINE };
+    const run = learningRun(dir);
+    const convex = fakeConvex(
+      learningInput({
+        tomTurns: [],
+        rulings: [],
+        objections: [{ eventId: "ev7", at: 1, id: "aaaaaaaaaaaa", text: "no" }],
+        changes: [added],
+      }),
+    );
+    const summary = await learningStep(run, { fetch: convex.fetch, model: vi.fn() });
+    expect(summary).toMatchObject({ reverted: 0, revertFailed: 1 });
+    expect(fs.readFileSync(path.join(dir, file), "utf8")).toBe(before);
+    expect(run.learningRows[0]).toMatchObject({
+      kind: "learning-revert-failed",
+      data: {
+        id: "aaaaaaaaaaaa",
+        reason: `the line is in "Current state" on ${file} 2 times — the learned copy cannot be told from the others, so none was taken back`,
+      },
+    });
+    expect(run.commits).toEqual([]);
+    // The same rule for a replacement's target: two copies, no replacement.
+    const old = "- Ankle: minor chronic pain from jumping down off the wall (session 47f04bc9, 2026-08-30).";
+    const twice = new Map([[file, CLIMBING.replace(old, `${old}\n${old}`)]]);
+    const { applied, refused } = applyLearningChanges(twice, [factChange({ replaces: old })], { day: "2026-09-06" });
+    expect(applied).toEqual([]);
+    expect(refused.map((r) => r.reason)).toEqual(['the line to replace is in "Current state" 2 times; which one cannot be told']);
+  });
+
   it("refuses a section nested under one of Tom's, on the way in and on the way back", async () => {
     const dir = learningCheckout();
     const file = "model-of-tom/areas/climbing.md";

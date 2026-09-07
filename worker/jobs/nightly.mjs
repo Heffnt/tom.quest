@@ -846,13 +846,18 @@ export function oneLine(text) {
     .trim();
 }
 
-/** The unit within `span` whose one-line form equals `text`'s, or null. */
-function findBullet(lines, span, text) {
+/**
+ * Every unit within `span` whose one-line form equals `text`'s. A caller
+ * that will REMOVE OR REPLACE a bullet acts only on exactly one match: with
+ * two, which is the learned copy and which is Tom's cannot be told from the
+ * text, and taking the first would take his (a line he pasted above the
+ * job's) while the job's stayed.
+ */
+function findBullets(lines, span, text) {
   const wanted = oneLine(text);
-  for (const unit of bulletUnits(lines, span)) {
-    if (oneLine(lines.slice(unit.start, unit.end).join("\n")) === wanted) return unit;
-  }
-  return null;
+  return bulletUnits(lines, span).filter(
+    (unit) => oneLine(lines.slice(unit.start, unit.end).join("\n")) === wanted,
+  );
 }
 
 /**
@@ -887,18 +892,23 @@ export function applyLearningChanges(pages, changes, { day, evidenceIds = null }
       continue;
     }
     const { span } = located;
-    if (findBullet(lines, { start: -1, end: lines.length }, line) !== null) {
+    if (findBullets(lines, { start: -1, end: lines.length }, line).length > 0) {
       refuse(c, "already on the page");
       continue;
     }
     const replaces = c.replaces ?? null;
     let before = "";
     if (replaces !== null) {
-      const unit = findBullet(lines, span, replaces);
-      if (unit === null) {
+      const units = findBullets(lines, span, replaces);
+      if (units.length === 0) {
         refuse(c, `the line to replace is not in "${c.section.trim()}" verbatim`);
         continue;
       }
+      if (units.length > 1) {
+        refuse(c, `the line to replace is in "${c.section.trim()}" ${units.length} times; which one cannot be told`);
+        continue;
+      }
+      const [unit] = units;
       before = oneLine(lines.slice(unit.start, unit.end).join("\n"));
       lines.splice(unit.start, unit.end - unit.start, line);
     } else {
@@ -934,6 +944,9 @@ export function applyLearningChanges(pages, changes, { day, evidenceIds = null }
  * ONLY WITHIN THE CHANGE'S OWN SECTION (locateSection): the line is looked
  * for where the change put it and nowhere else, so a copy Tom pasted into
  * Must not break or Directions — or anywhere — is never the one taken back.
+ * AND ONLY WHEN IT IS THERE ONCE: two copies in the section — Tom's, pasted
+ * above the job's — cannot be told apart by their text, so neither goes and
+ * the reason says so (an objection reverts the learned change, never his).
  */
 export function revertLearningChange(text, change) {
   const after = String(change.after ?? "").trim();
@@ -942,13 +955,18 @@ export function revertLearningChange(text, change) {
   const located = locateSection(lines, change.file, change.section);
   if (located.span === undefined) return { ok: false, reason: located.reason };
   const { span } = located;
-  const unit = findBullet(lines, span, after);
-  if (unit === null) {
+  const units = findBullets(lines, span, after);
+  const section = String(change.section).trim();
+  if (units.length === 0) {
+    return { ok: false, reason: `the line is no longer in "${section}" on ${change.file} as written` };
+  }
+  if (units.length > 1) {
     return {
       ok: false,
-      reason: `the line is no longer in "${String(change.section).trim()}" on ${change.file} as written`,
+      reason: `the line is in "${section}" on ${change.file} ${units.length} times — the learned copy cannot be told from the others, so none was taken back`,
     };
   }
+  const [unit] = units;
   const before = oneLine(change.before);
   lines.splice(unit.start, unit.end - unit.start, ...(before === "" ? [] : [before]));
   return { ok: true, text: lines.join("\n") };
