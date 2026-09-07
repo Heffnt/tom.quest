@@ -6,6 +6,7 @@ import { AUTO_DEFAULTS } from "./claudeSessions";
 import type { MessageOverflowRead } from "./claudeSessions";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
+import { modelOfTomPrelude } from "./ttsSkills";
 import {
   CODEX_USAGE_STALE_MS,
   CODEX_WEEKLY_CAP_PERCENT,
@@ -229,7 +230,27 @@ describe("claude sessions", () => {
   // witness: insertSession prefixed the prelude to whatever the seed's prompt
   // was, so a builder that had pasted its own copy gave the transcript two
   // headers naming two commits.
-  it("refuses a seed whose prompt already begins with the model-of-tom prelude, and inserts nothing", async () => {
+  it("opens the session on a pasted opener, with the live prelude and one header", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    // What a paste actually is: the opener of a live session, copied whole.
+    const prelude = await t.run(async (ctx) => modelOfTomPrelude(ctx));
+    const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+      title: "pasted opener",
+      kind: "adhoc",
+      repo: "none",
+      initialPrompt: `${prelude}\n\ncarry on from here`,
+    });
+    const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
+      sessionId,
+    });
+    const text = inbound[0].text ?? "";
+    expect(text.startsWith(prelude)).toBe(true);
+    expect(text.split(MODEL_OF_TOM_HEADER)).toHaveLength(2); // one header
+    expect(text).toContain("carry on from here");
+  });
+
+  it("refuses a seed carrying a prelude from another commit, and inserts nothing", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     await expect(
@@ -239,7 +260,9 @@ describe("claude sessions", () => {
         repo: "none",
         initialPrompt: `${MODEL_OF_TOM_HEADER} (WikiTom commit 0123abcd): model-of-tom/writing.md\n\n── model-of-tom/writing.md ──\nold text\n\nhello`,
       }),
-    ).rejects.toThrow(/already begins with the model-of-tom prelude/);
+    ).rejects.toThrow(/prelude .* read at another commit/);
+    // A Convex mutation is one transaction: the session row and the ruling
+    // marks the refusal comes after go back with it.
     const rows = await t.run(async (ctx) => ({
       sessions: await ctx.db.query("claudeSessions").collect(),
       inbound: await ctx.db.query("claudeInbound").collect(),

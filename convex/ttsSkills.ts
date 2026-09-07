@@ -144,6 +144,32 @@ export async function modelOfTomPrelude(
   return modelOfTomText(await modelOfTomState(ctx));
 }
 
+/**
+ * `prompt` with a pasted prelude taken off the front of it, so the opener can
+ * put the live one there instead (insertSession) — or `null` when it opens
+ * with the header and the text after it is not a prelude this deployment can
+ * account for.
+ *
+ * Why not always strip: a prelude is a header line and then each file's body
+ * verbatim, and a body is arbitrary prose with blank lines in it. There is no
+ * mark anywhere in that text saying where the last file stops and the prompt
+ * begins, so a prelude read at SOME OTHER commit cannot be separated from the
+ * prompt after it — every rule for guessing the boundary cuts a real opener
+ * in half sooner or later. What can be separated is the prelude this
+ * deployment would write itself, which is what a copied live opener carries,
+ * and that is the case worth opening a session for. Anything else is refused
+ * and says so.
+ */
+export function withoutModelOfTomPrelude(
+  prompt: string,
+  prelude: string,
+): string | null {
+  const text = prompt.trimStart();
+  if (!text.startsWith(MODEL_OF_TOM_HEADER)) return prompt;
+  if (!text.startsWith(prelude)) return null;
+  return text.slice(prelude.length).replace(/^\n+/, "");
+}
+
 // The same read for an HTTP action (GET /tts/batch-context), which has no db
 // handle of its own.
 export const internalModelOfTomPrelude = internalQuery({
