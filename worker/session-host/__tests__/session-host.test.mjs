@@ -211,3 +211,34 @@ describe("a turn Tom typed carries its inbound row id to the model", () => {
     expect(promptSource).toMatch(/"inboundId"/);
   });
 });
+
+// witness: only the nightly sweep archived session files, so a transcript
+// reached WikiTom up to a day after the session ended, and not at all on a
+// night the job failed before step 3.
+describe("a session's transcript is archived to WikiTom when it ends", () => {
+  it("reaches the one home through the symlink, like worker-env", () => {
+    expect(sessionSource).toMatch(/from "\.\/session-archive\.mjs";/);
+    expect(read("session-archive.mjs").trim()).toBe("../jobs/session-archive.mjs");
+    expect(fs.existsSync(path.join(here, "..", "..", "jobs", "session-archive.mjs"))).toBe(true);
+  });
+
+  it("every terminal path archives before it reports the end, under the lock, with a short wait", () => {
+    const method = between(sessionSource, "async #archiveTranscript()", "async #endAutonomous(");
+    expect(method).toMatch(/archiveSessionUnderLock\(\{/);
+    expect(method).toMatch(/waitSeconds: ARCHIVE_LOCK_WAIT_SECONDS/);
+    expect(sessionSource).toMatch(/const ARCHIVE_LOCK_WAIT_SECONDS = 120;/);
+    // A failure is one system row and a log line, never a throw out of the end path.
+    expect(method).toMatch(/\} catch \(err\) \{[\s\S]*finalizeRow\("system", \{\s*\n\s*text: `transcript not archived at session end/);
+    for (const [start, end] of [
+      ["async #endAutonomous(", "async #doInterrupt("],
+      ["async #doStop(row)", "forceKill(reason)"],
+      ['if (this.mode === "autonomous" && wasError) {', 'this.setStatus("idle");'],
+    ]) {
+      const body = between(sessionSource, start, end);
+      const archiveAt = body.indexOf("await this.#archiveTranscript();");
+      expect(archiveAt, `${start} archives`).toBeGreaterThan(-1);
+      expect(body.indexOf('this.setStatus("ended")'), `${start} archives before ending`).toBeGreaterThan(archiveAt);
+      expect(body.indexOf("await this.#preserveWork();"), `${start} preserves first`).toBeLessThan(archiveAt);
+    }
+  });
+});

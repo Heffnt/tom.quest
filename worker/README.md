@@ -177,7 +177,15 @@ the `HEAD` the four left:
    when both Max accounts hold one session id. Dates come from the files'
    own timestamps (mtime when there is none); one line per file is appended
    to `sessions/manifest-box-<day>.jsonl`, phase 1's columns. A file that
-   grew since it was archived is archived again.
+   grew since it was archived is archived again. This is the sweep behind
+   the session-end archive: the session-host daemon archives a session's
+   own files the moment it ends, through the same function
+   (`worker/jobs/session-archive.mjs`), under the same lock — so the
+   transcript is in the checkout hours before the sweep, which then only
+   picks up what grew after. Each file is written atomically: staged under
+   `sessions/.staging/<id>/`, renamed into place, and its manifest line
+   appended last, so a crash never leaves a manifest line for bytes that
+   are not there.
 4. **push** — one commit per step that changed something, and then, always,
    one more for anything still modified under `tts/snapshot/` and `sessions/`
    — what a run that died part-way left behind, which `git pull --rebase`

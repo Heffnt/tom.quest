@@ -23,7 +23,9 @@
 //      the commit, once the push has made it. See learningStep.
 //   3. sessions — archives every Codex rollout and Claude SDK session file on
 //      this box that WikiTom's sessions/ does not already hold at that
-//      content, in phase 1's layout, and appends the manifest.
+//      content, in phase 1's layout, and appends the manifest — the sweep
+//      behind the session-end archive the daemon makes through the same
+//      function (session-archive.mjs).
 //   4. push — one commit per step that changed something, plus whatever an
 //      earlier run left modified, `git pull --rebase`, `git push` over the
 //      github.com-wikitom SSH alias. A refused pull or push is a failure row
@@ -62,9 +64,32 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import zlib from "node:zlib";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import {
+  CLAUDE_ACCOUNTS_DIR,
+  CODEX_SESSIONS_DIR,
+  LOCK_WAIT_SECONDS,
+  SESSIONS_DIR,
+  SPLIT_BYTES,
+  WIKITOM_DIR,
+  WIKITOM_LOCK,
+  archiveSessionFiles,
+  bufferLines,
+  claudeEntry,
+  codexMetaOf,
+  codexMetaOfBuffer,
+  discoverSessionFiles,
+  gzip,
+  indexManifests,
+  readManifests,
+  sessionDateOf,
+  sessionDateOfBuffer,
+  sha256,
+  utcDay,
+  withWikiTomLock,
+  writeArchived,
+} from "./session-archive.mjs";
 import { loadEnv, convexFetch, nyHour, runClaude, extractJsonObject, clip } from "./tts-lib.mjs";
 import { git } from "./tts-code-lib.mjs";
 import {
@@ -91,25 +116,42 @@ const { redactSecrets } = await import(
 );
 
 // ── Where things are ─────────────────────────────────────────────────────────
-export const WIKITOM_DIR = process.env.WIKITOM_DIR || "/root/wikitom";
-export const WIKITOM_LOCK = "/var/lock/tts-wikitom.lock";
+// The checkout, its lock, the session directories, the split rule and the
+// archive itself live in session-archive.mjs — the one home the daemon
+// shares for a session-end archive — and are re-exported here for the
+// weekly job and the tests, which read them off this module.
+export {
+  CLAUDE_ACCOUNTS_DIR,
+  CODEX_SESSIONS_DIR,
+  LOCK_WAIT_SECONDS,
+  SESSIONS_DIR,
+  SPLIT_BYTES,
+  WIKITOM_DIR,
+  WIKITOM_LOCK,
+  bufferLines,
+  claudeEntry,
+  codexMetaOf,
+  codexMetaOfBuffer,
+  discoverSessionFiles,
+  gzip,
+  indexManifests,
+  readManifests,
+  sessionDateOf,
+  sessionDateOfBuffer,
+  sha256,
+  utcDay,
+  withWikiTomLock,
+  writeArchived,
+};
 // The SSH alias setup.sh clones over (Host github.com-wikitom in
 // /root/.ssh/config → the deploy key /root/.ssh/wikitom). The checkout's
 // origin carries it, so `git pull` and `git push` need no URL here.
 export const WIKITOM_REMOTE = "git@github.com-wikitom:Heffnt/WikiTom.git";
 export const SNAPSHOT_DIR = "tts/snapshot";
-export const SESSIONS_DIR = "sessions";
-export const CODEX_SESSIONS_DIR = "/root/.codex/sessions";
-export const CLAUDE_ACCOUNTS_DIR = "/root/.claude-accounts";
 // Where a table's files are assembled before they replace the checkout's:
 // outside the work tree, so a failed export leaves tts/snapshot/ as it was.
 export const SNAPSHOT_STAGING_DIR = "/var/cache/tts/snapshot-staging";
-
-// A file over 90 MB is split into gzipped parts (phase 1's rule; GitHub
-// refuses a blob over 100 MB, and the same threshold applies forever).
-export const SPLIT_BYTES = 90 * 1024 * 1024;
 export const EXPORT_PAGE = 200;
-export const LOCK_WAIT_SECONDS = 600;
 
 // The model-of-tom files, in the order they are posted. The server orders
 // them again (convex/ttsSkills.ts orderModelOfTom) — that is the authority;
@@ -158,15 +200,6 @@ const STEPS = ["snapshot", "learning", "sessions", "push", "post"];
 // lock after them (see main), reading what they left.
 const LOCKED_STEPS = ["snapshot", "learning", "sessions", "push"];
 // ── Small pure helpers (tested in nightly.test.mjs) ──────────────────────────
-
-export function sha256(bytes) {
-  return crypto.createHash("sha256").update(bytes).digest("hex");
-}
-
-/** YYYY-MM-DD of an instant, in UTC (the manifest's and the layout's date). */
-export function utcDay(ms) {
-  return new Date(ms).toISOString().slice(0, 10);
-}
 
 /**
  * One row as one line, deterministically: keys sorted at every level, the
@@ -240,12 +273,6 @@ export function planTableFiles(table, rows, limit = SPLIT_BYTES) {
 /** Whether a snapshot file name belongs to `table` (its whole file or a part). */
 export function isTableFile(table, name) {
   return name === `${table}.jsonl` || new RegExp(`^${table}\\.part\\d+\\.jsonl\\.gz$`).test(name);
-}
-
-// gzip with no name or mtime in the header (Node writes neither), so the
-// same input gives the same bytes and hashes compare across nights.
-export function gzip(bytes) {
-  return zlib.gzipSync(bytes, { level: 9 });
 }
 
 // ── Where the post reads from ────────────────────────────────────────────────
@@ -351,213 +378,6 @@ export function collectModelOfTomFiles(from) {
     files.push({ path: rel, body: front === "" ? sections : `${front}\n\n${sections}` });
   }
   return { files, missing };
-}
-
-/** The instant one session-file line carries, or null: a Claude SDK line has
- * `timestamp` at the top level, a Codex rollout's session_meta line has one
- * there and inside its payload. */
-function timestampOfLine(line) {
-  if (line.trim() === "") return null;
-  try {
-    const obj = JSON.parse(line);
-    const ts = obj?.timestamp ?? obj?.payload?.timestamp;
-    if (typeof ts === "string" && !Number.isNaN(Date.parse(ts))) return Date.parse(ts);
-  } catch {
-    // not JSON — keep looking
-  }
-  return null;
-}
-
-/**
- * The lines of a buffer, decoded ONE AT A TIME. A session file is tens of
- * megabytes and a single line of it can be hundreds of kilobytes — every
- * session now opens with the model-of-tom prelude — so neither a fixed head
- * nor one decode of the whole file is the right way to read the first lines.
- */
-export function* bufferLines(raw) {
-  let start = 0;
-  while (start < raw.length) {
-    let end = raw.indexOf(0x0a, start);
-    if (end === -1) end = raw.length;
-    yield raw.toString("utf8", start, end);
-    start = end + 1;
-  }
-}
-
-/**
- * The date a session file belongs to: the first `timestamp` found in it,
- * however far in that is, else the file's mtime. Returns { date, dateSource }.
- * A cap on how much is read is a cap on how many files are filed by the wrong
- * date — the prelude alone exceeded the 64 KB head this used to take.
- */
-export function sessionDateOf(head, mtimeMs) {
-  for (const line of head.split("\n")) {
-    const at = timestampOfLine(line);
-    if (at !== null) return { date: utcDay(at), dateSource: "timestamp" };
-  }
-  return { date: utcDay(mtimeMs), dateSource: "mtime" };
-}
-
-/** sessionDateOf over a buffer, without decoding more of it than it must. */
-export function sessionDateOfBuffer(raw, mtimeMs) {
-  for (const line of bufferLines(raw)) {
-    const at = timestampOfLine(line);
-    if (at !== null) return { date: utcDay(at), dateSource: "timestamp" };
-  }
-  return { date: utcDay(mtimeMs), dateSource: "mtime" };
-}
-
-/** codexMetaOf over a buffer: its first non-empty line, however long. */
-export function codexMetaOfBuffer(raw) {
-  for (const line of bufferLines(raw)) {
-    if (line.trim() !== "") return codexMetaOf(line);
-  }
-  return null;
-}
-
-/** A Codex rollout's identity from its session_meta line: the thread id and,
- * for a subagent thread, the parent's. Null when the head is not a rollout. */
-export function codexMetaOf(head) {
-  const first = head.split("\n").find((l) => l.trim() !== "");
-  if (!first) return null;
-  try {
-    const obj = JSON.parse(first);
-    if (obj?.type !== "session_meta") return null;
-    const p = obj.payload ?? {};
-    const id = typeof p.id === "string" ? p.id : null;
-    if (!id) return null;
-    const parent =
-      typeof p.parent_thread_id === "string" && p.parent_thread_id !== id
-        ? p.parent_thread_id
-        : null;
-    return { id, parent, cwd: typeof p.cwd === "string" ? p.cwd : null };
-  } catch {
-    return null;
-  }
-}
-
-// Attachments that are already compressed, or binary, are stored raw (phase
-// 1 stored a PDF raw); everything else is gzipped.
-const RAW_EXTENSIONS = new Set([".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".zip", ".gz"]);
-
-/**
- * Every session file on this box, described but not read: Codex rollouts
- * under `codexDir`/YYYY/MM/DD/ and Claude SDK files under
- * `accountsDir`/<account>/projects/<project>/ (the parent transcript
- * `<id>.jsonl`, and everything under `<id>/`: .jsonl children, other files
- * as attachments). The `active` symlink under the accounts dir is skipped —
- * it is one of the real accounts under another name.
- */
-export function discoverSessionFiles({ codexDir, accountsDir }) {
-  const out = [];
-  if (fs.existsSync(codexDir)) {
-    walk(codexDir, (file) => {
-      if (!file.endsWith(".jsonl")) return;
-      out.push({ runtime: "codex", account: null, source: file });
-    });
-  }
-  if (fs.existsSync(accountsDir)) {
-    for (const entry of fs.readdirSync(accountsDir, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
-      const projects = path.join(accountsDir, entry.name, "projects");
-      if (!fs.existsSync(projects)) continue;
-      for (const proj of fs.readdirSync(projects, { withFileTypes: true })) {
-        if (!proj.isDirectory()) continue;
-        const projDir = path.join(projects, proj.name);
-        for (const item of fs.readdirSync(projDir, { withFileTypes: true })) {
-          const abs = path.join(projDir, item.name);
-          if (item.isFile() && item.name.endsWith(".jsonl")) {
-            out.push({
-              runtime: "claude",
-              account: entry.name,
-              project: proj.name,
-              session: item.name.slice(0, -".jsonl".length),
-              kind: "parent",
-              source: abs,
-            });
-          } else if (item.isDirectory()) {
-            walk(abs, (file) => {
-              out.push({
-                runtime: "claude",
-                account: entry.name,
-                project: proj.name,
-                session: item.name,
-                kind: file.endsWith(".jsonl") ? "child" : "attachment",
-                rel: path.relative(abs, file).split(path.sep).join("/"),
-                source: file,
-              });
-            });
-          }
-        }
-      }
-    }
-  }
-  out.sort((a, b) => (a.source < b.source ? -1 : a.source > b.source ? 1 : 0));
-  return out;
-}
-
-function walk(dir, visit) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const abs = path.join(dir, entry.name);
-    if (entry.isDirectory()) walk(abs, visit);
-    else if (entry.isFile()) visit(abs);
-  }
-}
-
-/** Every line of every manifest-*.jsonl under sessions/, parsed. */
-export function readManifests(sessionsDir) {
-  const entries = [];
-  if (!fs.existsSync(sessionsDir)) return entries;
-  for (const name of fs.readdirSync(sessionsDir).sort()) {
-    if (!/^manifest-.*\.jsonl$/.test(name)) continue;
-    for (const line of fs.readFileSync(path.join(sessionsDir, name), "utf8").split("\n")) {
-      if (line.trim() === "") continue;
-      try {
-        entries.push(JSON.parse(line));
-      } catch {
-        // a torn line is not a reason to re-archive everything
-      }
-    }
-  }
-  return entries;
-}
-
-/**
- * What the manifests already say, indexed for the archive step: the content
- * hash last archived for each source path (a file that grew since is
- * archived again), the session directory each parent was archived into —
- * WITHOUT the per-account segment, which claudeEntry appends — so a child
- * lands beside its parent, and which accounts each Claude session id has been
- * seen under (so a second account's copy sits in its own subdir).
- */
-export function indexManifests(entries) {
-  const shaBySource = new Map();
-  const dirBySession = new Map();
-  const accountsBySession = new Map();
-  for (const e of entries) {
-    if (typeof e.source === "string" && typeof e.sha256 === "string") {
-      shaBySource.set(e.source, e.sha256);
-    }
-    if (e.kind === "parent" && typeof e.dest === "string" && typeof e.session === "string") {
-      const key = `${e.runtime}:${e.session}`;
-      if (!dirBySession.has(key)) {
-        let dir = e.dest.slice(0, e.dest.lastIndexOf("/"));
-        // What is indexed is the session's directory WITHOUT the account: a
-        // per-account dest ends in the account's name, and keeping that would
-        // nest the other account's files inside this one's.
-        if (e.runtime === "claude" && e.account && dir.endsWith(`/${e.account}`)) {
-          dir = dir.slice(0, -`/${e.account}`.length);
-        }
-        dirBySession.set(key, dir);
-      }
-    }
-    if (e.runtime === "claude" && typeof e.session === "string" && e.account) {
-      const set = accountsBySession.get(e.session) ?? new Set();
-      set.add(e.account);
-      accountsBySession.set(e.session, set);
-    }
-  }
-  return { shaBySource, dirBySession, accountsBySession };
 }
 
 // ── The run ──────────────────────────────────────────────────────────────────
@@ -1465,52 +1285,16 @@ export async function recordLearningRows(run, deps = {}) {
 
 // ── 3. sessions ──────────────────────────────────────────────────────────────
 async function sessionsStep(run) {
-  const sessionsDir = path.join(run.dir, SESSIONS_DIR);
-  const index = indexManifests(readManifests(sessionsDir));
-  const files = discoverSessionFiles({
+  // The sweep: every session file on the box the manifests do not hold at
+  // its content (session-archive.mjs, the one home the daemon's session-end
+  // archive shares). The lock is main()'s.
+  const { archived } = archiveSessionFiles({
+    checkoutDir: run.dir,
+    day: run.day,
     codexDir: CODEX_SESSIONS_DIR,
     accountsDir: CLAUDE_ACCOUNTS_DIR,
+    log: (line) => console.error(`[nightly] sessions: ${line}`),
   });
-  const manifestPath = path.join(sessionsDir, `manifest-box-${run.day}.jsonl`);
-  const archived = [];
-  // Parents first, so a child archived the same night finds its parent's
-  // directory; then children and attachments; Codex rollouts sort by their
-  // own metadata below.
-  const order = (f) => (f.runtime === "codex" ? 1 : f.kind === "parent" ? 0 : 2);
-  const claudeAccounts = new Map();
-  for (const f of files) {
-    if (f.runtime !== "claude") continue;
-    const set = claudeAccounts.get(f.session) ?? new Set(index.accountsBySession.get(f.session) ?? []);
-    set.add(f.account);
-    claudeAccounts.set(f.session, set);
-  }
-  const codexEntries = [];
-  for (const f of [...files].sort((a, b) => order(a) - order(b))) {
-    const raw = fs.readFileSync(f.source);
-    const sha = sha256(raw);
-    if (index.shaBySource.get(f.source) === sha) continue; // archived at this content already
-    const mtimeMs = fs.statSync(f.source).mtimeMs;
-    let entry;
-    if (f.runtime === "codex") {
-      const meta = codexMetaOfBuffer(raw);
-      if (!meta) {
-        console.error(`[nightly] sessions: not a Codex rollout, skipped: ${f.source}`);
-        continue;
-      }
-      // Children wait until every parent of this run is placed.
-      codexEntries.push({ f, raw, sha, mtimeMs, meta });
-      continue;
-    }
-    entry = claudeEntry(f, raw, sha, mtimeMs, index, claudeAccounts);
-    if (!entry) continue;
-    archived.push(writeArchived(run.dir, manifestPath, entry, raw, index));
-  }
-  for (const c of codexEntries.filter((c) => c.meta.parent === null)) {
-    archived.push(writeArchived(run.dir, manifestPath, codexParentEntry(c), c.raw, index));
-  }
-  for (const c of codexEntries.filter((c) => c.meta.parent !== null)) {
-    archived.push(writeArchived(run.dir, manifestPath, codexChildEntry(c, index), c.raw, index));
-  }
   console.log(`[nightly] sessions: ${archived.length} file(s) archived`);
   if (archived.length > 0) {
     run.commits.push({
@@ -1521,212 +1305,7 @@ async function sessionsStep(run) {
   return { archived: archived.length };
 }
 
-/**
- * The manifest entry for a Claude SDK file (parent, child or attachment).
- *
- * THE DIRECTORY THE INDEX HOLDS IS ACCOUNT-LESS —
- * `sessions/YYYY/MM/DD/claude-<id>` — and the account is appended here, once,
- * when two accounts hold the same session id (phase 1's layout; one account
- * is the flat layout). Holding the second account's directory instead would
- * append the second account under the first's, and that session's children
- * would land at `.../claude-<id>/gmail/wpi/children/...`.
- */
-export function claudeEntry(f, raw, sha, mtimeMs, index, accountsBySession) {
-  const key = `claude:${f.session}`;
-  const accounts = accountsBySession.get(f.session) ?? new Set([f.account]);
-  const perAccount = accounts.size > 1;
-  let base = index.dirBySession.get(key);
-  let date;
-  let dateSource;
-  if (f.kind === "parent") {
-    const own = sessionDateOfBuffer(raw, mtimeMs);
-    if (base === undefined) {
-      base = `${SESSIONS_DIR}/${own.date.replaceAll("-", "/")}/claude-${f.session}`;
-      index.dirBySession.set(key, base);
-    }
-    // One session id is one directory: the other account's copy, and an
-    // earlier night's, keep the directory the session already has, so every
-    // child of either account finds one place. Only a copy whose own date
-    // disagrees with it records that the directory decided the date.
-    date = base.split("/").slice(1, 4).join("-");
-    dateSource = date === own.date ? own.dateSource : "parent";
-  } else if (base === undefined) {
-    // A child whose parent is not archived (an orphan): its own date.
-    ({ date, dateSource } =
-      f.kind === "child"
-        ? sessionDateOfBuffer(raw, mtimeMs)
-        : { date: utcDay(mtimeMs), dateSource: "mtime" });
-    base = `${SESSIONS_DIR}/${date.replaceAll("-", "/")}/claude-${f.session}`;
-  } else {
-    date = base.split("/").slice(1, 4).join("-");
-    dateSource = "parent";
-  }
-  const dir = perAccount ? `${base}/${f.account}` : base;
-  const orphan = f.kind !== "parent" && !index.dirBySession.has(key);
-  const ext = path.extname(f.source).toLowerCase();
-  const encoding = f.kind === "attachment" && RAW_EXTENSIONS.has(ext) ? "raw" : "gzip";
-  const rel =
-    f.kind === "parent"
-      ? "session.jsonl"
-      : `${f.kind === "child" ? "children" : "attachments"}/${f.rel}`;
-  return {
-    session: f.session,
-    project: f.project,
-    date,
-    date_source: dateSource,
-    orphan,
-    host: "box",
-    account: f.account,
-    runtime: "claude",
-    parent: f.kind === "parent" ? null : f.session,
-    kind: f.kind,
-    source: f.source,
-    dest: `${dir}/${rel}${encoding === "gzip" ? ".gz" : ""}`,
-    raw_bytes: raw.length,
-    sha256: sha,
-    encoding,
-  };
-}
-
-function codexParentEntry({ f, raw, sha, mtimeMs, meta }) {
-  const { date, dateSource } = sessionDateOfBuffer(raw, mtimeMs);
-  const dir = `${SESSIONS_DIR}/${date.replaceAll("-", "/")}/codex-${meta.id}`;
-  return {
-    session: meta.id,
-    project: meta.cwd,
-    date,
-    date_source: dateSource,
-    orphan: false,
-    host: "box",
-    account: null,
-    runtime: "codex",
-    parent: null,
-    kind: "parent",
-    source: f.source,
-    dest: `${dir}/rollout.jsonl.gz`,
-    raw_bytes: raw.length,
-    sha256: sha,
-    encoding: "gzip",
-    _dir: dir,
-  };
-}
-
-function codexChildEntry({ f, raw, sha, mtimeMs, meta }, index) {
-  const key = `codex:${meta.parent}`;
-  let dir = index.dirBySession.get(key);
-  let date;
-  let dateSource;
-  const orphan = dir === undefined;
-  if (orphan) {
-    ({ date, dateSource } = sessionDateOfBuffer(raw, mtimeMs));
-    dir = `${SESSIONS_DIR}/${date.replaceAll("-", "/")}/codex-${meta.parent}`;
-  } else {
-    date = dir.split("/").slice(1, 4).join("-");
-    dateSource = "parent";
-  }
-  return {
-    session: meta.parent,
-    project: meta.cwd,
-    date,
-    date_source: dateSource,
-    orphan,
-    host: "box",
-    account: null,
-    runtime: "codex",
-    parent: meta.parent,
-    kind: "child",
-    source: f.source,
-    dest: `${dir}/children/${meta.id}.jsonl.gz`,
-    raw_bytes: raw.length,
-    sha256: sha,
-    encoding: "gzip",
-  };
-}
-
-/**
- * Write one archived file under the checkout and append its manifest line.
- * A raw file over SPLIT_BYTES is stored as gzipped parts named after the
- * destination (`<name>.partNN.gz`), listed in `parts`; the manifest is the
- * only reader that needs to know.
- */
-export function writeArchived(checkoutDir, manifestPath, entry, raw, index) {
-  const { _dir, ...line } = entry;
-  const destAbs = path.join(checkoutDir, line.dest);
-  fs.mkdirSync(path.dirname(destAbs), { recursive: true });
-  let stored = 0;
-  let parts = null;
-  if (line.encoding === "raw") {
-    fs.writeFileSync(destAbs, raw);
-    stored = raw.length;
-  } else if (raw.length <= SPLIT_BYTES) {
-    const bytes = gzip(raw);
-    fs.writeFileSync(destAbs, bytes);
-    stored = bytes.length;
-  } else {
-    parts = [];
-    const base = line.dest.replace(/\.gz$/, "");
-    for (let i = 0, offset = 0; offset < raw.length; i++, offset += SPLIT_BYTES) {
-      const name = `${base}.part${String(i).padStart(2, "0")}.gz`;
-      const bytes = gzip(raw.subarray(offset, offset + SPLIT_BYTES));
-      fs.writeFileSync(path.join(checkoutDir, name), bytes);
-      stored += bytes.length;
-      parts.push(name);
-    }
-    if (fs.existsSync(destAbs)) fs.rmSync(destAbs);
-  }
-  // Phase 1's columns, in phase 1's order.
-  const record = {
-    session: line.session,
-    project: line.project,
-    date: line.date,
-    date_source: line.date_source,
-    orphan: line.orphan,
-    host: line.host,
-    account: line.account,
-    runtime: line.runtime,
-    parent: line.parent,
-    kind: line.kind,
-    source: line.source,
-    dest: line.dest,
-    raw_bytes: line.raw_bytes,
-    stored_bytes: stored,
-    sha256: line.sha256,
-    encoding: line.encoding,
-    parts,
-  };
-  fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
-  fs.appendFileSync(manifestPath, `${JSON.stringify(record)}\n`);
-  index.shaBySource.set(line.source, line.sha256);
-  if (line.kind === "parent" && _dir) index.dirBySession.set(`${line.runtime}:${line.session}`, _dir);
-  return record;
-}
-
 // ── 4. the push ──────────────────────────────────────────────────────────────
-/**
- * Hold /var/lock/tts-wikitom.lock for the duration of `fn`. The lock is the
- * open file description: `flock` takes it on our inherited descriptor and
- * exits, and the kernel keeps it for us until we close the descriptor — the
- * `exec 3>lock; flock 3` idiom, from Node. Every other writer of the
- * checkout (the weekly job, a session-end archive) takes the same lock.
- *
- * THE LOCK COVERS THE WRITES, not only the push: main() holds it around steps
- * 1 to 4 together, and the post after them. A lock held around the commit alone protects nothing —
- * another writer committing its own work while this job is still writing
- * tts/snapshot/ and sessions/ would carry half of tonight's tree into its
- * commit, and `git pull --rebase` would meet a dirty tree it did not make.
- */
-export async function withWikiTomLock(fn, lockPath = WIKITOM_LOCK) {
-  const fd = fs.openSync(lockPath, "w");
-  try {
-    execFileSync("flock", ["-w", String(LOCK_WAIT_SECONDS), "3"], {
-      stdio: ["ignore", "inherit", "inherit", fd],
-    });
-    return await fn();
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
 /**
  * Whether git stopped part-way through a rebase in `dir` — the directory it
  * leaves behind when a `pull --rebase` hit a conflict or died (no committer
