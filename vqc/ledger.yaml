@@ -242,19 +242,31 @@
   created: 2026-08-30
   cites: [C1, tts-spec:5]
   statement: >-
-    The ⓘ info control is now the ratified tap-to-open popover carrying a
-    plain-language explanation plus the call in mono, and every static caption
-    has been migrated. Two callers have not: todo-row.tsx's `caption` and
-    `intentCaption` pass their text down through props from several surfaces at
-    once, so each needs its own explanation written at its own call site rather
-    than one here. They render the call alone through Info's `label` shim.
-    Separately, native `title=` attributes remain in calendar-tab.tsx (block
-    chip, calendar event, due mark, wake mark, time note) and
-    repeats-strip.tsx — dead on touch, which is exactly what the one-info-
-    mechanism rule forbids.
+    RESTATED 2026-09-02 against the tree; the id is kept because ids are never
+    reused and this is the same discovered gap, narrowed. The caption migration
+    the entry was opened for is DONE: Info's `label` shim prop is gone
+    (info.tsx:56-75 declares only call/children/explanation/explanationTitle),
+    repeats-strip.tsx carries no `title=` attribute at all, todo-row.tsx's
+    `caption` and `intentCaption` now pass a call alongside their own
+    `explains` text, and all fifteen production ⓘ call sites in app/tts carry
+    plain language. What survives is five native `title=` attributes in
+    calendar-tab.tsx (block chip, calendar event, due mark, wake mark, time
+    note). That file argues at its own lines 13-27 that these are DATA ECHOES —
+    the row's own values, which the chip is too narrow to show — rather than
+    captions naming a mechanism, and so are outside the one-info-mechanism
+    rule. That argument lives ONLY IN A COMMENT: no test, no guard, and no link
+    in the check:guardrails chain distinguishes a data echo from a caption, so
+    nothing stops the next `title=` from landing under the same excuse, and
+    nothing holds the CLAUDE.md rule ("never native `title=`") against it. The
+    only other `title=` in app/tts is ground-up-view.tsx:34's `<iframe title=>`,
+    which is required accessibility semantics; info.tsx:192 and batches-tab.tsx
+    pass `title` as a React prop to a component, not as an HTML attribute.
   graduates_when: >-
-    No `title=` attribute survives in app/tts outside genuine HTML semantics,
-    Info's `label` shim prop is deleted, and every ⓘ carries plain language.
+    The data-echo-versus-caption distinction stops resting on a comment: either
+    a guard fails on any `title=` in app/tts outside a named allowlist holding
+    calendar-tab.tsx's five and the iframe, or those five are migrated and the
+    guard forbids `title=` in app/tts outright. Which branch is Tom's, because
+    an allowlist writes an exception into a ratified UI rule.
 
 - id: public-convex-url-two-spellings
   kind: descent
