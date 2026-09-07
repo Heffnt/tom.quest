@@ -71,6 +71,7 @@ import {
   extractSections,
   frontmatterBlock,
   isIsoDay,
+  parseFrontmatter,
   sectionSpan,
 } from "./markdown-sections.mjs";
 import { CHANGE_ID_CHARS, changeIdTokens, namedChange } from "./learning-change-names.mjs";
@@ -641,6 +642,29 @@ export function learningChangeId(file, section, line) {
   return sha256(`${file}\n${section}\n${line}`).slice(0, CHANGE_ID_CHARS);
 }
 
+/** The id git gives a blob of `text` — what `git hash-object` prints —
+ * computed here so a page still in memory needs no git call. */
+export function gitBlobId(text) {
+  const bytes = Buffer.from(String(text ?? ""));
+  return crypto.createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+}
+
+/**
+ * The blob id of a page's BODY — the text below its frontmatter. Every
+ * learning row carries two: `baseBlob`, the body the validation read, and
+ * `resultBlob`, the body it wrote; a revert checks the page against the
+ * newest resultBlob the job recorded for it (revertLearningChange), so a
+ * line is taken back only from a page that is as the job last left it, and
+ * a page Tom has edited since gets a "learning-revert-failed" row naming
+ * both hashes instead of a change to text the job never saw. The body and
+ * not the whole page, because the frontmatter is written by others on
+ * purpose — `updated:` by the step itself, `reviewed:` by the weekly job
+ * when Tom confirms a page — and neither is an edit to what the lines say.
+ */
+export function pageBodyBlob(text) {
+  return gitBlobId(parseFrontmatter(text).body);
+}
+
 /**
  * `updated: <day>` in a page's frontmatter (the area pages carry one; a page
  * without frontmatter, or without an `updated:` line in it, is returned as
@@ -985,7 +1009,28 @@ export function applyLearningChanges(pages, changes, { day, evidence = null } = 
   for (const file of new Set(applied.map((a) => a.file))) {
     texts.set(file, bumpUpdated(texts.get(file), day));
   }
+  // The body each change was validated against, and the body it left.
+  for (const a of applied) {
+    a.baseBlob = pageBodyBlob(pages.get(a.file));
+    a.resultBlob = pageBodyBlob(texts.get(a.file));
+  }
   return { pages: texts, applied, refused };
+}
+
+/**
+ * The body blob the job last left each page with: the newest recorded
+ * write per file (a "learning-change" or a "learning-reverted" row, both
+ * carry resultBlob). A file with no recorded blob — rows from before blobs
+ * were kept — is not checked.
+ */
+export function expectedBodyBlobs(rows) {
+  const out = new Map();
+  for (const r of [...(rows ?? [])].sort((a, b) => (b.at ?? 0) - (a.at ?? 0))) {
+    if (typeof r?.file === "string" && typeof r.resultBlob === "string" && !out.has(r.file)) {
+      out.set(r.file, r.resultBlob);
+    }
+  }
+  return out;
 }
 
 /**
@@ -1000,10 +1045,22 @@ export function applyLearningChanges(pages, changes, { day, evidence = null } = 
  * AND ONLY WHEN IT IS THERE ONCE: two copies in the section — Tom's, pasted
  * above the job's — cannot be told apart by their text, so neither goes and
  * the reason says so (an objection reverts the learned change, never his).
+ * AND ONLY ON A PAGE AS THE JOB LEFT IT: `expectedBlob`, when given, is the
+ * body blob the job last recorded for the page (expectedBodyBlobs), and a
+ * page whose body no longer hashes to it has been edited since — the revert
+ * is refused with both hashes rather than applied to text the job never
+ * read. Returns `baseBlob` and `resultBlob` for the revert's own row.
  */
-export function revertLearningChange(text, change) {
+export function revertLearningChange(text, change, { expectedBlob = null } = {}) {
   const after = String(change.after ?? "").trim();
   if (after === "") return { ok: false, reason: "the change records no line to look for" };
+  const baseBlob = pageBodyBlob(text);
+  if (expectedBlob !== null && expectedBlob !== baseBlob) {
+    return {
+      ok: false,
+      reason: `${change.file} has changed since the job last wrote it (body blob ${expectedBlob.slice(0, 12)}, now ${baseBlob.slice(0, 12)}); nothing was taken back`,
+    };
+  }
   const lines = text.split("\n");
   const located = locateSection(lines, change.file, change.section);
   if (located.span === undefined) return { ok: false, reason: located.reason };
@@ -1022,7 +1079,8 @@ export function revertLearningChange(text, change) {
   const [unit] = units;
   const before = oneLine(change.before);
   lines.splice(unit.start, unit.end - unit.start, ...(before === "" ? [] : [before]));
-  return { ok: true, text: lines.join("\n") };
+  const reverted = lines.join("\n");
+  return { ok: true, text: reverted, baseBlob, resultBlob: pageBodyBlob(reverted) };
 }
 
 /**
@@ -1031,7 +1089,10 @@ export function revertLearningChange(text, change) {
  * also how ttsSlack.ts read the reply — else by the line's text quoted in
  * the objection.
  */
-export function matchObjection(objection, changes) {
+export function matchObjection(objection, rows) {
+  // The rows carry reverts too (their blobs, for expectedBodyBlobs); an
+  // objection names a change.
+  const changes = (rows ?? []).filter((r) => r?.eventKind === undefined || r.eventKind === "learning-change");
   const text = String(objection.text ?? "");
   const hit = namedChange([objection.id, ...changeIdTokens(text)], changes);
   if (hit) return hit;
@@ -1136,6 +1197,10 @@ async function learningObjections(run, input, fetchConvex) {
   // The rows that go in the reverts' commit: tagged with its message below,
   // once the count is known, so recordLearningRows finds the commit by it.
   const revertedRows = [];
+  // The body blob the job last left each page with; a revert this run makes
+  // moves it on, so the next objection to the same page checks against the
+  // page as this run left it.
+  const expected = expectedBodyBlobs(input.changes);
   for (const objection of input.objections ?? []) {
     const change = matchObjection(objection, input.changes ?? []);
     const note = { objectionId: objection.eventId, objection: clip(objection.text, 400) };
@@ -1149,14 +1214,24 @@ async function learningObjections(run, input, fetchConvex) {
       const abs = path.join(run.dir, change.file);
       const result =
         typeof change.file === "string" && isLearningFile(change.file) && fs.existsSync(abs)
-          ? revertLearningChange(fs.readFileSync(abs, "utf8"), change)
+          ? revertLearningChange(fs.readFileSync(abs, "utf8"), change, {
+              expectedBlob: expected.get(change.file) ?? null,
+            })
           : { ok: false, reason: `${change.file} is not a page in the checkout` };
       const named = { id: change.id, file: change.file, section: change.section ?? null };
       if (result.ok) {
         fs.writeFileSync(abs, bumpUpdated(result.text, run.day));
+        expected.set(change.file, result.resultBlob);
         const row = {
           kind: "learning-reverted",
-          data: { ...note, ...named, before: change.after, after: change.before },
+          data: {
+            ...note,
+            ...named,
+            before: change.after,
+            after: change.before,
+            baseBlob: result.baseBlob,
+            resultBlob: result.resultBlob,
+          },
         };
         run.learningRows.push(row);
         revertedRows.push(row);

@@ -31,6 +31,8 @@ import {
   collectModelOfTomFiles,
   commitTree,
   discoverSessionFiles,
+  expectedBodyBlobs,
+  gitBlobId,
   indexManifests,
   isLearningFile,
   isTableFile,
@@ -40,6 +42,7 @@ import {
   locateSection,
   matchObjection,
   modelOfTomCommit,
+  pageBodyBlob,
   parseLearningAnswer,
   planTableFiles,
   readManifests,
@@ -246,6 +249,9 @@ describe("the learning step", () => {
         evidence: `session ${SESSION}`,
         sources: [`session ${SESSION}`],
         excerpt: "thursday practice moved to 6pm this term",
+        // The body the validation read, and the body it wrote.
+        baseBlob: pageBodyBlob(CLIMBING),
+        resultBlob: pageBodyBlob(page),
       },
       // The commit the row will name, found by this message once made.
       commitMessage: "learning: 2026-09-06 — 1 line from Tom's turns, replies and rulings",
@@ -652,7 +658,7 @@ describe("the learning step", () => {
   it("reverts against the page's current text, and says when the line has moved on", () => {
     const change = { file: "f", section: "Current state", before: "", after: NEW_LINE };
     const withLine = `## Current state\n\n- a\n${NEW_LINE}\n- b\n`;
-    expect(revertLearningChange(withLine, change)).toEqual({ ok: true, text: "## Current state\n\n- a\n- b\n" });
+    expect(revertLearningChange(withLine, change)).toMatchObject({ ok: true, text: "## Current state\n\n- a\n- b\n" });
     expect(revertLearningChange("## Current state\n\n- a\n- b\n", change)).toEqual({
       ok: false,
       reason: 'the line is no longer in "Current state" on f as written',
@@ -741,6 +747,82 @@ describe("the learning step", () => {
     const { applied, refused } = applyLearningChanges(twice, [factChange({ replaces: old })], { day: "2026-09-06" });
     expect(applied).toEqual([]);
     expect(refused.map((r) => r.reason)).toEqual(['the line to replace is in "Current state" 2 times; which one cannot be told']);
+  });
+
+  it("computes git's own blob id, of the body below the frontmatter", () => {
+    const body = "## Current state\n\n- a\n";
+    const fromGit = execFileSync("git", ["hash-object", "--stdin"], { input: body, encoding: "utf8" }).trim();
+    expect(gitBlobId(body)).toBe(fromGit);
+    expect(pageBodyBlob(`---\nupdated: 2026-09-01\n---\n${body}`)).toBe(fromGit);
+    expect(pageBodyBlob(`---\nupdated: 2026-09-06\nreviewed: 2026-09-06\n---\n${body}`)).toBe(fromGit);
+    expect(pageBodyBlob(body)).toBe(fromGit);
+    expect(pageBodyBlob(`${body}- b\n`)).not.toBe(fromGit);
+    // The newest recorded write per file, reverts included; a row without a blob is skipped.
+    expect(
+      expectedBodyBlobs([
+        { at: 1, file: "f", resultBlob: "old" },
+        { at: 3, file: "f", eventKind: "learning-reverted", resultBlob: "new" },
+        { at: 2, file: "f", resultBlob: "mid" },
+        { at: 9, file: "f" },
+        { at: 1, file: "g", resultBlob: "g1" },
+      ]),
+    ).toEqual(new Map([["f", "new"], ["g", "g1"]]));
+  });
+
+  // witness: a learning row carried no hash of the page, so a revert applied
+  // to whatever text the page had by then — Tom's edits included.
+  it("reverts only a page whose body is as the job last left it, and moves that mark on with each revert", async () => {
+    const file = "model-of-tom/areas/climbing.md";
+    const second = `- Rest days are Mondays (session ${SESSION}, 2026-09-05).`;
+    const asLeft = CLIMBING.replace("## Ideal state", `${NEW_LINE}\n${second}\n\n## Ideal state`);
+    const rows = [
+      { id: "aaaaaaaaaaaa", at: 1, eventKind: "learning-change", file, section: "Current state", before: "", after: NEW_LINE, resultBlob: pageBodyBlob(asLeft) },
+      { id: "bbbbbbbbbbbb", at: 1, eventKind: "learning-change", file, section: "Current state", before: "", after: second, resultBlob: pageBodyBlob(asLeft) },
+    ];
+    const objections = [
+      { eventId: "ev8", at: 1, id: "aaaaaaaaaaaa", text: "no" },
+      { eventId: "ev9", at: 2, id: "bbbbbbbbbbbb", text: "no" },
+    ];
+    // As the job left it: both go, the second checked against what the first left.
+    {
+      const dir = learningCheckout();
+      write(dir, file, asLeft);
+      const run = learningRun(dir);
+      const convex = fakeConvex(learningInput({ tomTurns: [], rulings: [], objections, changes: rows }));
+      const summary = await learningStep(run, { fetch: convex.fetch, model: vi.fn() });
+      expect(summary).toMatchObject({ reverted: 2, revertFailed: 0 });
+      const page = fs.readFileSync(path.join(dir, file), "utf8");
+      expect(page).not.toContain(NEW_LINE);
+      expect(page).not.toContain(second);
+      expect(run.learningRows[0].data).toMatchObject({ baseBlob: pageBodyBlob(asLeft) });
+      expect(run.learningRows[1].data).toMatchObject({ baseBlob: run.learningRows[0].data.resultBlob, resultBlob: pageBodyBlob(page) });
+    }
+    // Edited by hand since (a line of Tom's in Current state): nothing goes.
+    {
+      const dir = learningCheckout();
+      const edited = asLeft.replace("- Climbing for 16 years", "- Bouldering only this month.\n- Climbing for 16 years");
+      write(dir, file, edited);
+      const run = learningRun(dir);
+      const convex = fakeConvex(learningInput({ tomTurns: [], rulings: [], objections: objections.slice(0, 1), changes: rows }));
+      const summary = await learningStep(run, { fetch: convex.fetch, model: vi.fn() });
+      expect(summary).toMatchObject({ reverted: 0, revertFailed: 1 });
+      expect(fs.readFileSync(path.join(dir, file), "utf8")).toBe(edited);
+      expect(run.learningRows[0]).toMatchObject({
+        kind: "learning-revert-failed",
+        data: {
+          id: "aaaaaaaaaaaa",
+          reason: `${file} has changed since the job last wrote it (body blob ${pageBodyBlob(asLeft).slice(0, 12)}, now ${pageBodyBlob(edited).slice(0, 12)}); nothing was taken back`,
+        },
+      });
+    }
+    // The frontmatter is not the body: reviewed: set by the weekly job changes nothing.
+    {
+      const dir = learningCheckout();
+      write(dir, file, asLeft.replace("reviewed:", "reviewed: 2026-09-05"));
+      const run = learningRun(dir);
+      const convex = fakeConvex(learningInput({ tomTurns: [], rulings: [], objections: objections.slice(0, 1), changes: rows }));
+      expect(await learningStep(run, { fetch: convex.fetch, model: vi.fn() })).toMatchObject({ reverted: 1, revertFailed: 0 });
+    }
   });
 
   it("refuses a section nested under one of Tom's, on the way in and on the way back", async () => {

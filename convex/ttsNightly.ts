@@ -294,7 +294,10 @@ export const internalLearningInput = internalQuery({
     // The objections Tom has raised that no night has acted on yet (an
     // objection is consumed once, whichever way it went), oldest first, and
     // the changes an objection can name — by the change's id or by the
-    // line's text; the job does the matching.
+    // line's text; the job does the matching. The reverts ride along under
+    // `changes` too, each row saying which kind it is (`eventKind`): both
+    // kinds carry the body blob the page was left with (`resultBlob`), and
+    // the job reverts only a page whose body still hashes to the newest.
     const objections = (
       await ctx.db
         .query("dtsEvents")
@@ -313,13 +316,21 @@ export const internalLearningInput = internalQuery({
           text: typeof d.text === "string" ? d.text : "",
         };
       });
-    const changes = (
+    const recorded = async (kind: "learning-change" | "learning-reverted") =>
       await ctx.db
         .query("dtsEvents")
-        .withIndex("by_kind_at", (q) => q.eq("kind", "learning-change"))
+        .withIndex("by_kind_at", (q) => q.eq("kind", kind))
         .order("desc")
-        .take(LEARNING_CHANGES_MAX)
-    ).map((e) => ({ eventId: e._id, at: e.at, ...((e.data ?? {}) as Record<string, unknown>) }));
+        .take(LEARNING_CHANGES_MAX);
+    const changes = [...(await recorded("learning-change")), ...(await recorded("learning-reverted"))]
+      .sort((a, b) => b.at - a.at)
+      .slice(0, LEARNING_CHANGES_MAX)
+      .map((e) => ({
+        eventId: e._id,
+        eventKind: e.kind,
+        at: e.at,
+        ...((e.data ?? {}) as Record<string, unknown>),
+      }));
     return { since, sinceSource, until, tomTurns, slackReplies, rulings, objections, changes };
   },
 });
