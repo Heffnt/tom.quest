@@ -56,10 +56,11 @@
 //
 // Plain Node ESM, zero npm dependencies (tts-lib.mjs's rule): node:fs,
 // node:zlib, node:crypto, node:child_process, and the global fetch. No
-// shebang line, unlike its siblings: the credential filter below is loaded
-// by a dynamic import, and vitest's transform puts an import of its own
-// ahead of a shebang, which is then a syntax error. Cron and the README run
-// it as `node /opt/tts/nightly.mjs`, which needs none.
+// shebang line, unlike its siblings: the credential filter reaches this file
+// through session-archive.mjs, which finds it by a dynamic import at load,
+// and vitest's transform puts an import of its own ahead of a shebang, which
+// is then a syntax error. Cron and the README run it as
+// `node /opt/tts/nightly.mjs`, which needs none.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -83,6 +84,7 @@ import {
   gzip,
   indexManifests,
   readManifests,
+  redactSecrets,
   sessionDateOf,
   sessionDateOfBuffer,
   sha256,
@@ -101,19 +103,6 @@ import {
   sectionSpan,
 } from "./markdown-sections.mjs";
 import { CHANGE_ID_CHARS, changeIdTokens, namedChange } from "./learning-change-names.mjs";
-
-// The credential filter is worker/session-host/redact.mjs — THE ONE HOME; the
-// daemon's ingest choke point reads it there and a test fences it there. It
-// is reached from this file by its installed path: setup.sh copies the two
-// directories to different depths (this file to /opt/tts/, the daemon to
-// /opt/tts/session-host/), so the one spelled-out path that resolves in the
-// repo dangles on the box and the other way round (the reasoning lib.mjs
-// gives for its worker-env symlink). Both are tried, at load, in that order.
-const REDACT_HOMES = ["../session-host/redact.mjs", "./session-host/redact.mjs"];
-const { redactSecrets } = await import(
-  REDACT_HOMES.map((rel) => new URL(rel, import.meta.url)).find((url) => fs.existsSync(fileURLToPath(url))) ??
-    new URL(REDACT_HOMES[0], import.meta.url)
-);
 
 // ── Where things are ─────────────────────────────────────────────────────────
 // The checkout, its lock, the session directories, the split rule and the

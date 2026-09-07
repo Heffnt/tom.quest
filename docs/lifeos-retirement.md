@@ -67,7 +67,7 @@ Non-negotiables that hold through every state: nothing is deleted from the todo 
 The destination three table rows above name is the nightly job's copy (`worker/jobs/nightly.mjs`, step 1): every table except the six `auth*` ones, read by pages from `GET /tts/export` against one boundary instant, written to WikiTom `tts/snapshot/<table>.jsonl`. Two things the gate "export verified" must be read with:
 
 - **It is a nightly copy, not a point-in-time transaction.** The boundary fixes which rows are in the copy (those created before the job started), not their state: each page is its own query, so a row updated between two pages is exported in its later state, a row deleted between them is in neither, and two tables read minutes apart can disagree. A retired table's rows are in the copy as they stood on the night before the narrow, which is what the gate asks for.
-- **Every string value passes the credential filter first** (`worker/session-host/redact.mjs`, the filter every transcript row passes on ingest), so a key pasted into a row reaches WikiTom as `[redacted:<kind>]` and not as itself.
+- **Every string value passes the credential filter first** (`worker/session-host/redact.mjs`, the filter every transcript row passes on ingest), so a key pasted into a row reaches WikiTom as `[redacted:<kind>]` and not as itself. The same holds for the other half of what the nightly job writes: an archived session file (`sessions/`) is filtered before it is gzipped, so no path into the vault carries a key — the snapshot row and the raw `.jsonl` the row was ingested from are covered by one filter.
 
 ## Jobs
 

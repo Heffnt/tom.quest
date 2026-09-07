@@ -185,7 +185,12 @@ the `HEAD` the four left:
    picks up what grew after. Each file is written atomically: staged under
    `sessions/.staging/<id>/`, renamed into place, and its manifest line
    appended last, so a crash never leaves a manifest line for bytes that
-   are not there.
+   are not there. Every `.jsonl` goes through the same credential filter the
+   snapshot's rows do (`worker/session-host/redact.mjs`) before it is
+   gzipped — a session transcript is where a printed token actually appears
+   — while the manifest's `sha256` and `raw_bytes` stay the source file's,
+   so "has this file grown since?" keeps comparing the box's bytes to the
+   box's bytes.
 4. **push** — one commit per step that changed something, and then, always,
    one more for anything still modified under `tts/snapshot/` and `sessions/`
    — what a run that died part-way left behind, which `git pull --rebase`

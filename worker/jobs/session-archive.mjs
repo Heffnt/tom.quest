@@ -29,12 +29,38 @@
 // there would be a session the archive claims to hold and never will (the
 // sweep would skip it forever), while bytes with no line are archived again
 // tomorrow at no cost. A crash leaves at worst a staged file nobody reads.
+//
+// AND THE TRANSCRIPT IS REDACTED ON ITS WAY IN (archivedBody). A session file
+// is where the tokens actually appeared — the 2026-08-30 GitHub token was
+// read out of a clone's .git/config and typed into gh commands, and every one
+// of those turns is a line of a .jsonl on this box — so archiving one
+// verbatim would put in the vault exactly what the snapshot's redactRow keeps
+// out of it, by the other door. Nothing about the box's copy changes, and
+// neither does the manifest: sha256 and raw_bytes are the SOURCE's, so "has
+// this file grown since?" compares the same two numbers it always did.
 
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import zlib from "node:zlib";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+// The credential filter is worker/session-host/redact.mjs — THE ONE HOME; the
+// daemon's ingest choke point reads it there and a test fences it there. It is
+// reached from THIS file by its installed path, and this file has three of
+// them: worker/jobs/ in the repo, /opt/tts/ on the box, and
+// /opt/tts/session-host/ on the box too (setup.sh's `cp` dereferences the
+// session-host symlink, so the box holds a real copy at each depth — the
+// reasoning lib.mjs gives for its worker-env symlink). The spelled-out path
+// that resolves at one depth dangles at the others, so all three are tried,
+// at load, in that order. THE ONE RESOLUTION: nightly.mjs imports the filter
+// back off this module rather than repeating the search.
+const REDACT_HOMES = ["../session-host/redact.mjs", "./session-host/redact.mjs", "./redact.mjs"];
+export const { redactSecrets } = await import(
+  REDACT_HOMES.map((rel) => new URL(rel, import.meta.url)).find((url) => fs.existsSync(fileURLToPath(url))) ??
+    new URL(REDACT_HOMES[0], import.meta.url)
+);
 
 // ── Where things are ─────────────────────────────────────────────────────────
 export const WIKITOM_DIR = process.env.WIKITOM_DIR || "/root/wikitom";
@@ -152,6 +178,25 @@ export function codexMetaOf(head) {
 // Attachments that are already compressed, or binary, are stored raw (phase
 // 1 stored a PDF raw); everything else is gzipped.
 const RAW_EXTENSIONS = new Set([".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".zip", ".gz"]);
+
+/**
+ * The bytes to STORE for a file read as `raw`: its text through the
+ * credential filter. Every .jsonl on this box is transcript text — a Claude
+ * SDK session file, its subagent children, a Codex rollout — and a transcript
+ * is the whole reason this exists.
+ *
+ * ANYTHING ELSE IS FILTERED ONLY IF IT IS TEXT, and the test for that is the
+ * round trip: bytes that re-encode from UTF-8 to exactly what was read. A PNG
+ * or a PDF is not, so it is stored byte-for-byte rather than mangled by a
+ * filter written for text — and a `tool-results/r.txt` beside it, which is
+ * text and could hold a key as easily as a turn could, is filtered.
+ */
+export function archivedBody(source, raw) {
+  const text = raw.toString("utf8");
+  if (!/\.jsonl$/i.test(String(source ?? "")) && !Buffer.from(text, "utf8").equals(raw)) return raw;
+  const filtered = redactSecrets(text);
+  return filtered === text ? raw : Buffer.from(filtered, "utf8");
+}
 
 // ── What is on the box ───────────────────────────────────────────────────────
 /**
@@ -420,11 +465,18 @@ function stagingFor(checkoutDir, session) {
  * <session>/, then each file renamed into its place (one atomic step per
  * file on the same filesystem), then the manifest line. See the header for
  * why the line comes last.
+ *
+ * THE STORED BYTES ARE NOT ALWAYS THE BYTES READ: text goes through the
+ * credential filter first (archivedBody). The manifest's sha256 and raw_bytes
+ * stay the source's — they answer "has this file grown since we archived
+ * it?", and a hash of the filtered text would answer a different question
+ * every time the filter changed.
  */
 export function writeArchived(checkoutDir, manifestPath, entry, raw, index, { stagingDir } = {}) {
   const { _dir, ...line } = entry;
   const staging = stagingDir ?? stagingFor(checkoutDir, line.session);
   const destAbs = path.join(checkoutDir, line.dest);
+  const body = archivedBody(line.source, raw);
   let stored = 0;
   let parts = null;
   // 1. Stage.
@@ -437,15 +489,15 @@ export function writeArchived(checkoutDir, manifestPath, entry, raw, index, { st
     stored += bytes.length;
   };
   if (line.encoding === "raw") {
-    stage(line.dest, raw);
-  } else if (raw.length <= SPLIT_BYTES) {
-    stage(line.dest, gzip(raw));
+    stage(line.dest, body);
+  } else if (body.length <= SPLIT_BYTES) {
+    stage(line.dest, gzip(body));
   } else {
     parts = [];
     const base = line.dest.replace(/\.gz$/, "");
-    for (let i = 0, offset = 0; offset < raw.length; i++, offset += SPLIT_BYTES) {
+    for (let i = 0, offset = 0; offset < body.length; i++, offset += SPLIT_BYTES) {
       const name = `${base}.part${String(i).padStart(2, "0")}.gz`;
-      stage(name, gzip(raw.subarray(offset, offset + SPLIT_BYTES)));
+      stage(name, gzip(body.subarray(offset, offset + SPLIT_BYTES)));
       parts.push(name);
     }
   }

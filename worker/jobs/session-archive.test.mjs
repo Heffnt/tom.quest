@@ -122,6 +122,56 @@ describe("archiveSessionFiles", () => {
   });
 });
 
+// witness: the archive gzipped the session file's own bytes, so the GitHub
+// token a session printed into its transcript on 2026-08-30 — the very rows
+// the snapshot's redactRow keeps out of the vault — went into the vault
+// verbatim, by the other door.
+describe("the archived transcript is redacted", () => {
+  // Assembled at runtime from pieces, so no committed line spells a token.
+  const token = ["gh", "p_", "B".repeat(36)].join("");
+
+  it("stores the filtered text and keeps the source's hash, so the grew-since check is unmoved", () => {
+    const b = box();
+    const source = path.join(b.accounts, "gmail/projects/-root/aaaa.jsonl");
+    fs.appendFileSync(source, line("2026-09-05T20:02:00.000Z", { text: `gh auth login --with-token ${token}` }));
+    const raw = fs.readFileSync(source);
+    const { archived } = archive(b, { only: "aaaa" });
+    const parent = archived.find((r) => r.kind === "parent");
+    const stored = zlib.gunzipSync(fs.readFileSync(path.join(b.checkout, parent.dest))).toString("utf8");
+    expect(stored).not.toContain(token);
+    expect(stored).toContain("[redacted:github]");
+    // Still one line per line, and everything that was not a credential is
+    // where it was.
+    expect(stored.trim().split("\n")).toHaveLength(2);
+    expect(stored).toContain("gh auth login --with-token");
+    // The manifest describes the SOURCE — that is what "has it grown since?"
+    // asks about — so a second call archives nothing.
+    expect(parent.sha256).toBe(sha256(raw));
+    expect(parent.raw_bytes).toBe(raw.length);
+    expect(archive(b, { only: "aaaa" }).archived).toEqual([]);
+  });
+
+  it("filters a Codex rollout and a text attachment, and leaves bytes that are not text alone", () => {
+    const b = box();
+    fs.appendFileSync(
+      path.join(b.codex, "2026/09/05/rollout-2026-09-05T22-00-00-thread1.jsonl"),
+      `${JSON.stringify({ timestamp: "2026-09-05T22:02:00.000Z", text: token })}\n`,
+    );
+    write(b.accounts, "gmail/projects/-root/aaaa/notes.txt", `the key is ${token}\n`);
+    // A PNG's bytes are not valid UTF-8, so nothing decodes and re-encodes
+    // them: it is stored exactly as it was read.
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00, 0x01]);
+    write(b.accounts, "gmail/projects/-root/aaaa/shot.png", png);
+    const { archived } = archive(b);
+    const at = (suffix) => archived.find((r) => r.dest.endsWith(suffix));
+    const unzip = (rec) => zlib.gunzipSync(fs.readFileSync(path.join(b.checkout, rec.dest))).toString();
+    expect(unzip(at("codex-thread1/rollout.jsonl.gz"))).toContain("[redacted:github]");
+    expect(unzip(at("attachments/notes.txt.gz"))).toBe("the key is [redacted:github]\n");
+    expect(at("shot.png").encoding).toBe("raw");
+    expect(fs.readFileSync(path.join(b.checkout, at("shot.png").dest)).equals(png)).toBe(true);
+  });
+});
+
 // witness: the bytes were written to their destination first and the
 // manifest line after — a crash between the two left a torn file at the
 // destination, which the sweep's next commit carried into history.
