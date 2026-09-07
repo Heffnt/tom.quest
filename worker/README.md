@@ -142,7 +142,8 @@ host-key prompt with — and reports git's own words when a clone is refused. Fi
 git's or the server's own words) and the next step runs anyway. Steps 1 to 4
 write the checkout and run under one hold of `/var/lock/tts-wikitom.lock` —
 the lock every writer of the checkout takes — taken around all four together,
-never around the commit alone; step 5 only reads `HEAD` and takes no lock:
+never around the commit alone, and step 5 runs under the same hold, reading
+the `HEAD` the four left:
 
 1. **snapshot** — every Convex table except the six `auth*` ones, read by
    pages from `GET /tts/export` against one boundary instant, into
@@ -189,14 +190,19 @@ never around the commit alone; step 5 only reads `HEAD` and takes no lock:
    push is a failure row and the commits stay local, to go with the next
    night's. **Until Tom adds the deploy key's public half to the WikiTom
    repository, every push is refused and this is the row the digest shows.**
-5. **post** — the model-of-tom files at `HEAD`, whether or not the push
-   went through: `model-of-tom/writing.md`, `priorities.md`, `schedule.md`,
-   then for each page under `model-of-tom/areas/` its "Current state" and
-   "Must not break" sections (parsed by heading; while `areas/` does not
-   exist, the three alone), posted with the commit hash and the commit's
-   time to `POST /tts/model-of-tom`. Convex replaces the `ttsSkills` table
-   whole and every prompt from then on begins with those files under a
-   header naming that commit. A named file that is missing or empty is a
+5. **post** — the model-of-tom files read from the git object at `HEAD`
+   (`git show <commit>:<path>`, never the work tree), whether or not the
+   push went through: `model-of-tom/writing.md`, `priorities.md`,
+   `schedule.md`, then for each page under `model-of-tom/areas/` its
+   "Current state" and "Must not break" sections (parsed by heading), posted
+   with the commit hash, the commit's time and whether that commit is on
+   the upstream yet (`pushed`) to `POST /tts/model-of-tom`. Convex replaces
+   the `ttsSkills` table whole and every prompt from then on begins with
+   those files under a header naming that commit; a post whose commit is
+   older than the stored one is refused (a `force` reason overrides), so two
+   posts racing end on the newer. When the push was refused the post still
+   goes out — a prompt names the commit it began with — and the digest says
+   "not yet pushed". A named file that is missing or empty is a
    failure row and NO post goes out: the replace is wholesale, so posting the
    rest would take that file — `writing.md`, the writing standard itself —
    out of every prompt until a night that reads it again. Convex refuses a

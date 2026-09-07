@@ -24,6 +24,7 @@ describe("modelOfTomHeadOf", () => {
     const prompt = modelOfTomText({
       commit: "abc1234def5678",
       syncedAt: 1,
+      pushed: true,
       files: [
         { path: "model-of-tom/writing.md", body: "the standard" },
         { path: "model-of-tom/priorities.md", body: "what matters" },
@@ -36,7 +37,7 @@ describe("modelOfTomHeadOf", () => {
   });
 
   it("says no commit was recorded when the fallback copy is serving", () => {
-    const prompt = modelOfTomText({ commit: null, syncedAt: null, files: [] });
+    const prompt = modelOfTomText({ commit: null, syncedAt: null, pushed: null, files: [] });
     // The fallback header IS the model-of-tom header, so the row still marks
     // itself as the prelude — with nothing to name.
     expect(modelOfTomHeadOf(prompt)).toEqual({ commit: null, paths: [] });

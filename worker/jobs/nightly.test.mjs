@@ -29,12 +29,14 @@ import {
   codexMetaOf,
   codexMetaOfBuffer,
   collectModelOfTomFiles,
+  commitSource,
   commitTree,
   discoverSessionFiles,
   expectedBodyBlobs,
   gitBlobId,
   indexManifests,
   isLearningFile,
+  isPushed,
   isTableFile,
   learningChangeId,
   learningEvidence,
@@ -1533,5 +1535,50 @@ describe("the git half", { timeout: 60_000 }, () => {
     expect(result.failures[0].error).not.toBe("");
     expect(subjects(dir)[0]).toContain("nightly: 2026-09-06");
     expect(rebaseInProgress(dir)).toBe(false);
+  });
+
+  // witness: the post read the work tree while naming HEAD, outside the
+  // lock — a page changed under it went out under a commit that never held
+  // those bytes; and it reported local HEAD as if it were on GitHub.
+  it("posts the files from the git object at the commit, and says whether that commit is pushed", () => {
+    const bare = tmp();
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main", bare], { stdio: "ignore" });
+    const dir = repo();
+    write(dir, "model-of-tom/writing.md", "# Writing\n");
+    write(dir, "model-of-tom/priorities.md", "# Priorities\n");
+    write(dir, "model-of-tom/schedule.md", "# Schedule\n");
+    const areas = ["admin", "agent-systems", "climbing", "health-and-food", "mental-health", "money", "research", "social"];
+    for (const name of areas) write(dir, `model-of-tom/areas/${name}.md`, CLIMBING);
+    run(dir, "add", "-A");
+    run(dir, "commit", "-q", "-m", "pages");
+    const commit = run(dir, "rev-parse", "HEAD").trim();
+    // The work tree moves on after the commit: an edit not yet committed, a
+    // page added, a page removed.
+    write(dir, "model-of-tom/writing.md", "# Writing, edited since\n");
+    write(dir, "model-of-tom/areas/travel.md", "## Current state\n\n- uncommitted\n");
+    fs.rmSync(path.join(dir, "model-of-tom/schedule.md"));
+    const atCommit = collectModelOfTomFiles(commitSource(dir, commit));
+    expect(atCommit.missing).toEqual([]);
+    expect(atCommit.files.map((f) => f.path)).toEqual([...MODEL_OF_TOM_FIRST, ...areas.map((n) => `model-of-tom/areas/${n}.md`)]);
+    expect(atCommit.files[0].body).toBe("# Writing\n");
+    expect(atCommit.files[3].body).toContain("## Current state");
+    expect(atCommit.files[3].body).not.toContain("## Ideal state");
+    // The tree says otherwise, which is the point.
+    const inTree = collectModelOfTomFiles(dir);
+    expect(inTree.missing).toEqual(["model-of-tom/schedule.md"]);
+    expect(inTree.files[0].body).toBe("# Writing, edited since\n");
+    // No upstream: not pushed. After the push: pushed.
+    expect(isPushed(dir, commit)).toBe(false);
+    run(dir, "remote", "add", "origin", bare);
+    run(dir, "push", "-q", "-u", "origin", "main");
+    expect(isPushed(dir, commit)).toBe(true);
+    // A new local commit is not, until it is.
+    run(dir, "add", "-A");
+    run(dir, "commit", "-q", "-m", "later");
+    const later = run(dir, "rev-parse", "HEAD").trim();
+    expect(isPushed(dir, later)).toBe(false);
+    expect(isPushed(dir, commit)).toBe(true);
+    run(dir, "push", "-q");
+    expect(isPushed(dir, later)).toBe(true);
   });
 });

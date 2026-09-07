@@ -3,6 +3,7 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { recordMissedKeepingDate } from "./tts";
+import { modelOfTomState } from "./ttsSkills";
 import {
   DAY_MS,
   buildDoneSet,
@@ -220,6 +221,10 @@ export type DigestFacts = {
     evidence: string;
     reason?: string;
   }[];
+  // The model-of-tom files every prompt begins with, as the store holds them
+  // (ttsSkills.modelOfTomState): the commit, and whether it had reached
+  // GitHub when the job posted it. Null while nothing posted serves.
+  modelOfTom: { commit: string; pushed: boolean | null } | null;
 };
 
 // Slack mrkdwn reserves these three inside message text and link labels.
@@ -415,24 +420,33 @@ function digestSections(f: DigestFacts): Section[] {
     );
   }
 
-  if (f.learning.length > 0) {
+  // A prelude commit that has not reached GitHub is said, whether or not a
+  // line was learned: the prompts name a commit nobody else can see yet.
+  const notPushed =
+    f.modelOfTom !== null && f.modelOfTom.pushed === false
+      ? [`- model-of-tom files at WikiTom ${slackEscape(f.modelOfTom.commit.slice(0, 12))} — not yet pushed`]
+      : [];
+  if (f.learning.length > 0 || notPushed.length > 0) {
     sections.push(
       section(
         "*Model of Tom*",
-        f.learning.map((l) => {
-          const id = `[${slackEscape(l.id)}]`;
-          const file = slackEscape(l.file);
-          switch (l.status) {
-            case "reverted":
-              return `- ${id} ${file}: reverted on your objection — "${slackEscape(l.before)}"${l.after === "" ? "" : ` → "${slackEscape(l.after)}"`}`;
-            case "revert-failed":
-              return `- ${id} ${file}: NOT reverted — ${slackEscape(l.reason ?? "")}`;
-            default:
-              return l.before === ""
-                ? `- ${id} ${file}: + "${slackEscape(l.after)}" (${slackEscape(l.evidence)})`
-                : `- ${id} ${file}: "${slackEscape(l.before)}" → "${slackEscape(l.after)}" (${slackEscape(l.evidence)})`;
-          }
-        }),
+        [
+          ...notPushed,
+          ...f.learning.map((l) => {
+            const id = `[${slackEscape(l.id)}]`;
+            const file = slackEscape(l.file);
+            switch (l.status) {
+              case "reverted":
+                return `- ${id} ${file}: reverted on your objection — "${slackEscape(l.before)}"${l.after === "" ? "" : ` → "${slackEscape(l.after)}"`}`;
+              case "revert-failed":
+                return `- ${id} ${file}: NOT reverted — ${slackEscape(l.reason ?? "")}`;
+              default:
+                return l.before === ""
+                  ? `- ${id} ${file}: + "${slackEscape(l.after)}" (${slackEscape(l.evidence)})`
+                  : `- ${id} ${file}: "${slackEscape(l.before)}" → "${slackEscape(l.after)}" (${slackEscape(l.evidence)})`;
+            }
+          }),
+        ],
         null,
       ),
     );
@@ -707,6 +721,7 @@ export async function gatherDigestFacts(
   const overnight: DigestFacts["overnight"] = [];
   const failures: DigestFacts["failures"] = [];
   const learning: DigestFacts["learning"] = [];
+  const modelOfTom = await modelOfTomState(ctx);
   for (const e of events) {
     const d = (e.data ?? {}) as Record<string, unknown>;
     const sessionId = str(d.sessionId);
@@ -900,6 +915,7 @@ export async function gatherDigestFacts(
     wikitom: wikitom ?? null,
     rulings,
     learning,
+    modelOfTom: modelOfTom.commit === null ? null : { commit: modelOfTom.commit, pushed: modelOfTom.pushed },
   };
 }
 

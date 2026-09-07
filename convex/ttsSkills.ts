@@ -61,6 +61,9 @@ export type ModelOfTomFile = { path: string; body: string };
 export type ModelOfTomState = {
   commit: string | null;
   syncedAt: number | null;
+  // Whether the posted commit had reached GitHub; null while a row without
+  // the flag (the retired sync's, or one posted before it existed) serves.
+  pushed: boolean | null;
   files: ModelOfTomFile[];
 };
 
@@ -100,6 +103,7 @@ export async function modelOfTomState(
     return {
       commit: ordered[0].row.commit,
       syncedAt: ordered[0].row.syncedAt,
+      pushed: ordered[0].row.pushed ?? null,
       files: ordered.map(({ path, body }) => ({ path, body })),
     };
   }
@@ -108,10 +112,11 @@ export async function modelOfTomState(
     return {
       commit: null,
       syncedAt: legacy.syncedAt,
+      pushed: null,
       files: [{ path: legacy.sourcePath, body: legacy.body }],
     };
   }
-  return { commit: null, syncedAt: null, files: [] };
+  return { commit: null, syncedAt: null, pushed: null, files: [] };
 }
 
 // The header is the first line of every prompt, and so of every transcript.
@@ -224,15 +229,26 @@ export function isModelOfTomPath(path: unknown): path is string {
 // until the next night that read it. A missing writing.md is a layout change
 // or a half-read checkout; the previous night's text keeps serving, which is
 // the only outcome that leaves prose written to a standard.
+//
+// AND A POST OLDER THAN THE STORE IS REFUSED: two posts can race (a `--only=
+// post` by hand beside the nightly run, a box whose checkout fell behind),
+// and the store must end on the newer commit whichever request lands last.
+// The commit's own time decides — an older committedAt than the stored one
+// is refused — unless `force` names why, which is the door for a deliberate
+// roll-back. The same commit posted again is not older and goes through.
 export const internalReplaceModelOfTom = internalMutation({
   args: {
     commit: v.string(),
     // The commit's own time (epoch ms), which is what syncedAt records — the
     // text is as old as the commit, not as young as the post.
     committedAt: v.number(),
+    // Whether the commit had reached GitHub (schema ttsSkills.pushed).
+    pushed: v.optional(v.boolean()),
+    // The reason an older commit may replace the store; absent, it may not.
+    force: v.optional(v.string()),
     files: v.array(v.object({ path: v.string(), body: v.string() })),
   },
-  handler: async (ctx, { commit, committedAt, files }) => {
+  handler: async (ctx, { commit, committedAt, pushed, force, files }) => {
     if (files.length === 0) throw new Error("no files posted — store left as it was");
     const seen = new Set<string>();
     for (const f of files) {
@@ -246,6 +262,14 @@ export const internalReplaceModelOfTom = internalMutation({
       );
     }
     const existing = await ctx.db.query("ttsSkills").collect();
+    const stored = existing
+      .filter((r) => typeof r.commit === "string")
+      .reduce((newest, r) => Math.max(newest, r.syncedAt), -Infinity);
+    if (committedAt < stored && (force === undefined || force.trim() === "")) {
+      throw new Error(
+        `the post's commit ${commit.slice(0, 12)} (${new Date(committedAt).toISOString()}) is older than the stored one (${new Date(stored).toISOString()}) — store left as it was; post with force naming why to replace it`,
+      );
+    }
     for (const row of existing) await ctx.db.delete(row._id);
     for (const f of files) {
       await ctx.db.insert("ttsSkills", {
@@ -254,8 +278,9 @@ export const internalReplaceModelOfTom = internalMutation({
         sourcePath: f.path,
         commit,
         syncedAt: committedAt,
+        pushed,
       });
     }
-    return { files: files.length, deleted: existing.length };
+    return { files: files.length, deleted: existing.length, forced: force !== undefined && force.trim() !== "" };
   },
 });

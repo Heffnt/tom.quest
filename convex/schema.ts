@@ -934,6 +934,11 @@ export default defineSchema({
     // retired six-hourly sync wrote, which serves until the first post.
     commit: v.optional(v.string()),
     syncedAt: v.number(), // the commit's time, not the post's
+    // Whether the commit had reached GitHub when it was posted. The job posts
+    // local HEAD even when its push was refused, so a prompt names the commit
+    // it began with; false is what lets the digest say "not yet pushed".
+    // Absent on a row posted before the flag existed.
+    pushed: v.optional(v.boolean()),
   }).index("by_name", ["name"]),
 
   // ── Claude Code session surface ──────────────────────────────────────────────

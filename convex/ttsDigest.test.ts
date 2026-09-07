@@ -55,6 +55,7 @@ const emptyFacts = (): DigestFacts => ({
   wikitom: [],
   rulings: [],
   learning: [],
+  modelOfTom: null,
 });
 
 describe("composeDigest", () => {
@@ -183,6 +184,20 @@ describe("composeDigest", () => {
       '- [aaaaaaaaaaaa] writing.md: reverted on your objection — "- new" → "- old"',
       "- [bbbbbbbbbbbb] writing.md: NOT reverted — the line is no longer on writing.md as written",
     ]);
+  });
+
+  // witness: the job posts local HEAD after a refused push, and the digest
+  // said nothing — every prompt named a commit nobody could see on GitHub.
+  it("says when the model-of-tom files' commit is not yet pushed, and nothing when it is", () => {
+    const commit = "0123abcd0123abcd0123abcd0123abcd0123abcd";
+    const { text } = composeDigest({ ...emptyFacts(), modelOfTom: { commit, pushed: false } });
+    const lines = text.split("\n");
+    const start = lines.indexOf("*Model of Tom*");
+    expect(start).toBeGreaterThan(-1);
+    expect(lines[start + 1]).toBe("- model-of-tom files at WikiTom 0123abcd0123 — not yet pushed");
+    for (const pushed of [true, null]) {
+      expect(composeDigest({ ...emptyFacts(), modelOfTom: { commit, pushed } }).text).not.toContain("Model of Tom");
+    }
   });
 
   // The first live digest (2026-09-06) printed every statement in full, and a

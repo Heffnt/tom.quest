@@ -3,8 +3,8 @@
 // each one recording a "nightly-failure" dtsEvents row if it fails and then
 // letting the next one run:
 //
-// Steps 1 to 4 write the checkout and run under /var/lock/tts-wikitom.lock,
-// taken once around all four (the post reads HEAD and takes no lock):
+// All five run under /var/lock/tts-wikitom.lock, taken once around them
+// (steps 1 to 4 write the checkout; the post reads the HEAD they left):
 //
 //   1. snapshot — copies every Convex table (the six auth tables excepted)
 //      into the WikiTom checkout at tts/snapshot/, one JSON-lines file per
@@ -28,13 +28,14 @@
 //      earlier run left modified, `git pull --rebase`, `git push` over the
 //      github.com-wikitom SSH alias. A refused pull or push is a failure row
 //      and the commits stay local for the next night; nothing is retried.
-//   5. post — reads the model-of-tom files at HEAD (writing.md,
-//      priorities.md, schedule.md, and the "Current state" and "Must not
-//      break" sections of every page under areas/) and posts them with the
-//      commit hash and time to POST /tts/model-of-tom — whether or not the
-//      push succeeded, so every prompt names the commit it began with. A
-//      named file missing or empty is a failure row and NO post: the store
-//      is replaced whole, so a partial post would drop that file from every
+//   5. post — reads the model-of-tom files from the git object at HEAD
+//      (writing.md, priorities.md, schedule.md, and the "Current state" and
+//      "Must not break" sections of every page under areas/) and posts them
+//      with the commit hash and time to POST /tts/model-of-tom — whether or
+//      not the push succeeded, so every prompt names the commit it began
+//      with; `pushed` says whether that commit is on GitHub yet. A named
+//      file missing or empty is a failure row and NO post: the store is
+//      replaced whole, so a partial post would drop that file from every
 //      prompt.
 //
 // Then one "nightly-run" row with the summary, which the digest reads.
@@ -135,7 +136,8 @@ export const GIT_IDENTITY = [
 ];
 
 const STEPS = ["snapshot", "learning", "sessions", "push", "post"];
-// The four that write the WikiTom checkout, and so run under one lock.
+// The four that write the WikiTom checkout. The post runs under the same
+// lock after them (see main), reading what they left.
 const LOCKED_STEPS = ["snapshot", "learning", "sessions", "push"];
 // ── Small pure helpers (tested in nightly.test.mjs) ──────────────────────────
 
@@ -228,8 +230,68 @@ export function gzip(bytes) {
   return zlib.gzipSync(bytes, { level: 9 });
 }
 
+// ── Where the post reads from ────────────────────────────────────────────────
+// A source is `read(rel)` → the file's text or null, and `list(dirRel)` → the
+// names in a directory. The post reads THE GIT OBJECT AT THE COMMIT IT NAMES
+// (commitSource), never the work tree: a post that read the tree while
+// naming HEAD could carry a page another writer had already changed under
+// the lock's next holder, or a half-written one, under a commit that never
+// held those bytes. The work tree form is for the tests and for a caller
+// with no commit yet.
+export function worktreeSource(dir) {
+  return {
+    read(rel) {
+      const abs = path.join(dir, rel);
+      return fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : null;
+    },
+    list(dirRel) {
+      const abs = path.join(dir, dirRel);
+      return fs.existsSync(abs) ? fs.readdirSync(abs) : [];
+    },
+  };
+}
+
+export function commitSource(dir, commit) {
+  return {
+    read(rel) {
+      try {
+        return gitCapture(dir, "show", `${commit}:${rel}`);
+      } catch {
+        return null;
+      }
+    },
+    list(dirRel) {
+      try {
+        return gitCapture(dir, "ls-tree", "--name-only", commit, "--", `${dirRel}/`)
+          .split("\n")
+          .filter((p) => p !== "")
+          .map((p) => p.slice(dirRel.length + 1));
+      } catch {
+        return [];
+      }
+    },
+  };
+}
+
 /**
- * The files to post from a WikiTom checkout: the three named files that
+ * Whether `commit` has reached the checkout's upstream — an ancestor of
+ * `@{upstream}` as last fetched, which the push step's pull has just done.
+ * Read from git rather than from this run's push result so `--only=post`
+ * answers the same question, and a checkout with no upstream is "not
+ * pushed", which is the truth.
+ */
+export function isPushed(dir, commit) {
+  try {
+    execFileSync("git", ["-C", dir, "merge-base", "--is-ancestor", commit, "@{upstream}"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The files to post from a WikiTom source (a checkout directory, read from
+ * the work tree, or a source from commitSource): the three named files that
  * exist, then each page under areas/ (alphabetically) reduced to its
  * frontmatter block and its AREA_SECTIONS. `missing` names the expected files
  * that were not there — a post still goes out with the rest, and the caller
@@ -241,35 +303,26 @@ export function gzip(bytes) {
  * way to see the checkout. Three short lines in every prompt, and the date
  * they carry is a fact an agent planning for Tom should have anyway.
  */
-export function collectModelOfTomFiles(dir) {
+export function collectModelOfTomFiles(from) {
+  const source = typeof from === "string" ? worktreeSource(from) : from;
   const files = [];
   const missing = [];
   for (const rel of MODEL_OF_TOM_FIRST) {
-    const abs = path.join(dir, rel);
-    if (!fs.existsSync(abs)) {
-      missing.push(rel);
-      continue;
-    }
-    const body = fs.readFileSync(abs, "utf8");
-    if (body.trim() === "") missing.push(rel);
+    const body = source.read(rel);
+    if (body === null || body.trim() === "") missing.push(rel);
     else files.push({ path: rel, body });
   }
-  const areas = path.join(dir, MODEL_OF_TOM_AREAS_DIR);
-  if (fs.existsSync(areas)) {
-    const pages = fs
-      .readdirSync(areas)
-      .filter((n) => n.endsWith(".md"))
-      .sort();
-    for (const page of pages) {
-      const text = fs.readFileSync(path.join(areas, page), "utf8");
-      const sections = extractSections(text, AREA_SECTIONS);
-      if (sections === "") continue;
-      const front = frontmatterBlock(text);
-      files.push({
-        path: `${MODEL_OF_TOM_AREAS_DIR}/${page}`,
-        body: front === "" ? sections : `${front}\n\n${sections}`,
-      });
-    }
+  const pages = source
+    .list(MODEL_OF_TOM_AREAS_DIR)
+    .filter((n) => n.endsWith(".md"))
+    .sort();
+  for (const page of pages) {
+    const rel = `${MODEL_OF_TOM_AREAS_DIR}/${page}`;
+    const text = source.read(rel) ?? "";
+    const sections = extractSections(text, AREA_SECTIONS);
+    if (sections === "") continue;
+    const front = frontmatterBlock(text);
+    files.push({ path: rel, body: front === "" ? sections : `${front}\n\n${sections}` });
   }
   return { files, missing };
 }
@@ -1631,7 +1684,7 @@ export function writeArchived(checkoutDir, manifestPath, entry, raw, index) {
  * checkout (the weekly job, a session-end archive) takes the same lock.
  *
  * THE LOCK COVERS THE WRITES, not only the push: main() holds it around steps
- * 1 to 4 together. A lock held around the commit alone protects nothing —
+ * 1 to 4 together, and the post after them. A lock held around the commit alone protects nothing —
  * another writer committing its own work while this job is still writing
  * tts/snapshot/ and sessions/ would carry half of tonight's tree into its
  * commit, and `git pull --rebase` would meet a dirty tree it did not make.
@@ -1819,11 +1872,21 @@ function gitError(err) {
 }
 
 // ── 5. the post ──────────────────────────────────────────────────────────────
+// Under the lock like the four steps before it, and reading the git object
+// at the commit it names (commitSource): outside the lock the work tree
+// could change between `rev-parse HEAD` and the read, and a post would name
+// one commit while carrying another's bytes. Local HEAD is posted whether or
+// not the push went through — the design says every prompt names the
+// commit it began with — and `pushed` says which, so the store and the
+// digest can say "not yet pushed" rather than pass a local commit off as
+// one on GitHub. Convex refuses a post older than the one it holds, so a
+// rerun of an old checkout cannot roll the prelude back (ttsSkills.ts).
 async function postStep(run) {
   const dir = run.dir;
   const commit = git(dir, "rev-parse", "HEAD").trim();
-  const committedAt = Number(git(dir, "log", "-1", "--format=%ct").trim()) * 1000;
-  const { files, missing } = collectModelOfTomFiles(dir);
+  const committedAt = Number(git(dir, "log", "-1", "--format=%ct", commit).trim()) * 1000;
+  const pushed = isPushed(dir, commit);
+  const { files, missing } = collectModelOfTomFiles(commitSource(dir, commit));
   // A NAMED FILE MISSING MEANS NO POST. The store is replaced whole, so
   // posting the rest would take the missing file out of every prompt until a
   // night that reads it again — and for writing.md that is every sentence
@@ -1845,12 +1908,13 @@ async function postStep(run) {
   const res = await convexFetch(run.env, "/tts/model-of-tom", {
     commit,
     committedAt,
+    pushed,
     files,
   });
   console.log(
-    `[nightly] post: ${res.files} file(s) at WikiTom ${commit.slice(0, 12)} — ${files.map((f) => f.path).join(", ")}`,
+    `[nightly] post: ${res.files} file(s) at WikiTom ${commit.slice(0, 12)}${pushed ? "" : " (not yet pushed)"} — ${files.map((f) => f.path).join(", ")}`,
   );
-  return { commit, files: files.map((f) => f.path) };
+  return { commit, pushed, files: files.map((f) => f.path) };
 }
 
 // ── main ─────────────────────────────────────────────────────────────────────
@@ -1914,13 +1978,14 @@ async function main() {
       await recordFailure(run, name, err);
     }
   };
-  // Steps 1 to 4 WRITE the checkout, so the lock covers all four (see
-  // withWikiTomLock). The post is a read of HEAD and takes no lock, which is
-  // also what lets `--only=post` run while another writer holds it.
+  // Every step runs under the one lock (see withWikiTomLock): steps 1 to 4
+  // write the checkout, and the post reads HEAD's git object, which must be
+  // the HEAD this run left — not one a writer that took the lock in between
+  // moved it to.
   const locked = LOCKED_STEPS.filter((name) => only.includes(name));
-  if (locked.length > 0) {
-    try {
-      await withWikiTomLock(async () => {
+  try {
+    await withWikiTomLock(async () => {
+      if (locked.length > 0) {
         // Before the first write: a rebase an earlier run left in progress
         // stops every commit, and aborting it resets the work tree hard — so
         // it happens while there is nothing of tonight's to lose.
@@ -1928,17 +1993,18 @@ async function main() {
           await recordFailure(run, f.step, new Error(f.error));
         }
         for (const name of locked) await runStep(name);
-      });
-    } catch (err) {
-      // The lock itself was refused — another writer held it past the wait.
-      // Every step it covers is skipped; the post below still runs.
-      await recordFailure(run, "lock", err);
-    }
-    // The learning step's rows wait for this: their commits exist now, with
-    // their final hashes (pushed, or local when the push was refused).
-    await recordLearningRows(run);
+        // The learning step's rows wait for this: their commits exist now,
+        // with their final hashes (pushed, or local when the push was
+        // refused).
+        await recordLearningRows(run);
+      }
+      if (only.includes("post")) await runStep("post");
+    });
+  } catch (err) {
+    // The lock itself was refused — another writer held it past the wait.
+    // Every step is skipped; the summary below says so.
+    await recordFailure(run, "lock", err);
   }
-  if (only.includes("post")) await runStep("post");
   await recordSummary(run, only);
 }
 
