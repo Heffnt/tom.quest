@@ -17,16 +17,16 @@ Codex is OpenAI's terminal coding agent. It runs in this repo with the repo's AG
 
    - Otherwise: the prompt is `$ARGUMENTS` verbatim, followed by a line telling Codex it may read the repository to answer. Codex may edit files on this path (that is the default) — say `--sandbox read-only` in the request if the question must not change anything.
 
-2. Launch the `codex` subagent with the Agent tool, `subagent_type: "codex"`, passing the prompt as the agent's task. Wait for it. Expect one to eight minutes.
+2. Launch the `codex` subagent with the Agent tool, `subagent_type: "codex"`, passing the prompt as the agent's task. Wait for it. A Codex run has no time limit — a few minutes is typical, a long one at `xhigh` can run much longer, and that is a working run, not a stuck one.
 
 3. Present the result as two parts:
    - **Codex says:** Codex's answer, verbatim, in a fenced block. Never present it as your own view.
    - **Assessment:** Two to five sentences. For each concrete claim Codex made, say whether you agree, and why, after checking the code yourself where that is cheap. Disagreements are the point of asking; state them plainly.
 
-4. If the subagent reports a failure or timeout, say so in one line with the exit code. Do not substitute your own review for Codex's.
+4. If the subagent reports a failure, say so in one line with the exit code. Do not substitute your own review for Codex's.
 
 ## Options the user can name
 
 - "read-only" / "don't let it edit": add `--sandbox read-only`. The diff-review path always passes it.
 - "cheap" / "quick question": add `--model gpt-5.6-terra`, the cheap tier. Worth naming for a mechanical lookup or a small factual question, where the strongest model buys nothing.
-- "lower effort": add `--effort medium` (or lower). The default is `xhigh`, which is slow — an eight-minute timeout is real, and a long question at `xhigh` can hit it.
+- "lower effort": add `--effort medium` (or lower). The default is `xhigh`, which is slow. Nothing cuts a slow run off — Codex runs have no time limit, and a cap is opt-in via `--timeout <ms>` — so lower the effort only when the answer being fast is worth more than the answer being good.

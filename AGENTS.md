@@ -155,6 +155,7 @@ Build and maintain tom.Quest as a personal web dashboard for cluster management,
 - Codex is a first-class session runner here, not only a second opinion: a session's model name says which runner it gets, and the `gpt-5.6-*` names mean Codex.
 - Claude reaches Codex through the `codex` subagent (`.claude/agents/codex.md`), the `/codex` skill, or `agentType: 'codex'` in a Workflow script. All go through `scripts/codex-run.mjs` in this repo, or `tts-codex` — the same program on the Jarvis Box's PATH, for sessions in any repo.
 - Codex may edit files by default and runs at the fleet's strongest model and effort. Review paths ask for read-only explicitly.
+- Codex runs have no time limit; a cap is opt-in with `--timeout <ms>`. The `codex` subagent therefore runs the wrapper in the background and reads the answer back from a file, since a foreground Bash call is cut off at ten minutes.
 
 <!-- convex-ai-start -->
 

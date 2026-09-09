@@ -26,13 +26,18 @@ workspace and reach the network. Name a flag in the prompt to change that:
 
 - `--sandbox read-only` when nothing may change (every review path uses it).
 - `--model gpt-5.6-terra` for a cheap mechanical question.
-- `--effort medium` when speed matters more than depth. The wrapper kills a
-  run after eight minutes; a long question at `xhigh` can hit that.
+- `--effort medium` when speed matters more than depth.
+
+Codex runs have no time limit; a cap is opt-in with `--timeout <ms>`, and only
+then is a run killed (exit 124). A run that has been going a long time is
+working, not stuck.
 
 Under the hood every door runs `node scripts/codex-run.mjs` in a tom.quest
 checkout, or `tts-codex` anywhere on the Jarvis Box. Both take the prompt on
 stdin and print only Codex's final answer. Nothing else Codex prints reaches
-the calling session.
+the calling session. The `codex` subagent runs the wrapper as a background
+command and reads its output back from a file when it finishes, because a
+foreground Bash call cannot outlast ten minutes and a Codex run can.
 
 ## From a tom.quest session
 
