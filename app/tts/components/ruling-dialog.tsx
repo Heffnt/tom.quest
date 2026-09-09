@@ -1,7 +1,7 @@
 "use client";
 
 // THE ONE PLACE ANYTHING IS COMPOSED on /tts — a fixed overlay, so nothing on
-// the page moves (CLAUDE.md UI rules: interactions never shift layout; anything
+// the page moves (app/AGENTS.md UI rules: interactions never shift layout; anything
 // composed opens in a fixed dialog, never an inline form between controls).
 //
 // Two callers, one mechanism. The two SENTENCE VERDICTS (verdict-buttons.tsx):

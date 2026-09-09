@@ -1,6 +1,6 @@
 // The verdict row, pinned: the four words convex/ttsRulings.ts accepts and
 // nothing else, each wired to recordRuling with that verdict, each with the
-// popover naming the call (CLAUDE.md UI rules: the popover is the contract,
+// popover naming the call (app/AGENTS.md UI rules: the popover is the contract,
 // and a label names its exact backend effect). Rendered on the batch card and
 // in the detail dialog, so both surfaces are checked through the one
 // component and through themselves.
@@ -419,7 +419,7 @@ describe("the detail dialog", () => {
 // The row a life todo and a code item carry. It renders the SAME verdict row
 // the batch card and the detail dialog do — not a second set of chips — and it
 // composes nothing between its chips: the row sits inside an expanded panel,
-// and an input appearing there moves everything under it (CLAUDE.md UI rules:
+// and an input appearing there moves everything under it (app/AGENTS.md UI rules:
 // interactions never shift layout; anything composed opens in a fixed dialog).
 describe("the options row", () => {
   beforeEach(() => {

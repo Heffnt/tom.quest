@@ -4,7 +4,7 @@ description: Get a second opinion from OpenAI Codex CLI. With no argument it rev
 argument-hint: "[question, or blank to review the current diff]"
 ---
 
-Codex is OpenAI's terminal coding agent. It runs in this repo with the repo's AGENTS.md already loaded, on the fleet default model (`gpt-5.6-sol`) at the highest reasoning effort. The `codex` subagent (`.claude/agents/codex.md`) carries the prompt to it through `scripts/codex-run.mjs` — or `tts-codex`, the same program on the Jarvis Box's PATH — and brings the answer back unchanged, so the several hundred kilobytes of Codex progress output never enter this session.
+For a Claude Code session on a laptop, this is the one prose home for asking Codex: use the `codex` subagent, this `/codex` skill, or `agent(prompt, { agentType: "codex" })` in a Workflow. All three run `node scripts/codex-run.mjs`; Codex arrives with the repo's AGENTS.md loaded, defaults to `gpt-5.6-sol` at `xhigh`, may edit the workspace and reach the network, and returns only its final answer to keep progress output out of this session.
 
 ## Steps
 
@@ -18,6 +18,8 @@ Codex is OpenAI's terminal coding agent. It runs in this repo with the repo's AG
    - Otherwise: the prompt is `$ARGUMENTS` verbatim, followed by a line telling Codex it may read the repository to answer. Codex may edit files on this path (that is the default) — say `--sandbox read-only` in the request if the question must not change anything.
 
 2. Launch the `codex` subagent with the Agent tool, `subagent_type: "codex"`, passing the prompt as the agent's task. Wait for it. A Codex run has no time limit — a few minutes is typical, a long one at `xhigh` can run much longer, and that is a working run, not a stuck one.
+
+   - A Workflow uses `agent(prompt, { agentType: "codex" })` with the same prompt and wrapper behavior. It composes with `parallel` and `pipeline` like any other agent, and with `schema` when the caller needs JSON.
 
 3. Present the result as two parts:
    - **Codex says:** Codex's answer, verbatim, in a fenced block. Never present it as your own view.

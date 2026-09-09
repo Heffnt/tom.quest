@@ -19,7 +19,7 @@ const labelCls = "text-sm";
 const spanCls = "block text-text-muted mb-1";
 const inputCls =
   "w-full bg-bg border border-border rounded px-2 py-1.5 focus:border-accent focus:outline-none";
-const numCls = inputCls; // text inputs for numerics (no spinners) per CLAUDE.md.
+const numCls = inputCls; // text inputs for numerics (no spinners) per app/AGENTS.md.
 
 // Default learning rate by tuning method. Full fine-tuning needs a ~10x lower LR than the adapter
 // methods: a LoRA-scale 2e-4 destabilizes full FT (loss never descends) so the backdoor never

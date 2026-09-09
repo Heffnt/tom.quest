@@ -11,7 +11,7 @@
 // or a different popover. What this row adds is the two status chips, which
 // are not rulings: they write tts.setStatus directly.
 //
-// NOTHING IS COMPOSED INLINE (CLAUDE.md UI rules: interactions never shift
+// NOTHING IS COMPOSED INLINE (app/AGENTS.md UI rules: interactions never shift
 // layout; anything composed opens in a fixed dialog). A chip that needs a
 // sentence — either status chip, and the revise and archive verdicts inside
 // VerdictButtons — opens RulingDialog, a fixed overlay portalled to <body>, so

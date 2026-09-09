@@ -1,6 +1,6 @@
 // What the ⓘ caption control has to do, pinned.
 //
-// The ratified rule (CLAUDE.md, Tom 2026-08-29) is one info mechanism: a
+// The ratified rule (app/AGENTS.md, Tom 2026-08-29) is one info mechanism: a
 // tap-to-open popover, never hover-only and never the browser's own `title`
 // attribute, because both of those are unopenable on a touch screen. The
 // writing standard (WRITING_STANDARD in convex/ttsShared.ts) then splits what
