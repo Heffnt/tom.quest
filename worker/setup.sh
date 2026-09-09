@@ -168,7 +168,7 @@ cp "$WORKER_DIR"/../scripts/codex-run.mjs /opt/tts/codex-run.mjs
 cp "$WORKER_DIR"/bin/* /usr/local/bin/
 chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
   /usr/local/bin/tts-turing /usr/local/bin/tts-git-credential \
-  /usr/local/bin/tts-codex
+  /usr/local/bin/tts-codex /usr/local/bin/tts-search
 
 # GitHub credentials for sessions (ledger graduation sessions-cannot-open-prs,
 # 2026-08-31). Two consumers, one source of truth (GH_TOKEN in worker.env):
