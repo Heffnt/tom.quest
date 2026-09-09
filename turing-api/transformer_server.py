@@ -8,15 +8,22 @@ DataSource seam the frontend consumes (app/transformer/lib/turing-source.ts):
     GET  /weights/{tensor}          strided window of a weight matrix
     GET  /weights/{tensor}/stats    mean / std / absMax for the color scale
 
-Launch on a compute node (see the allocate-form / salloc), then expose with a
-cloudflared quick tunnel:
+Launch on a compute node (see the allocate-form / salloc). No tunnel is started
+here: on startup _register() writes this process's cluster-LAN URL into
+~/.tviz-server.json on the shared NFS home, and the /transformer-trace proxy in
+turing-api/main.py reads that file and forwards to it. The browser reaches the
+proxy over the named cloudflared tunnel turing.tom.quest, which is already
+running for turing-api itself, so the frontend URL is the fixed
+https://turing.tom.quest/transformer-trace (app/transformer/state.ts).
+
+Bind the LAN interface, not the loopback default, or the registered URL is
+unreachable from the login node running the proxy:
 
     python turing-api/transformer_server.py --model meta-llama/Llama-3.2-1B-Instruct \
-        --port 8899 --token SECRET
-    cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8899
+        --host 0.0.0.0 --port 8899 --token SECRET
 
-Auth is a single shared token in the x-trace-token header (CORS is open — the
-browser talks to the tunnel directly).
+Auth is a single shared token in the x-trace-token header, which the proxy
+forwards verbatim (CORS is open).
 """
 
 from __future__ import annotations

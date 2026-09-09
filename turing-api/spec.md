@@ -75,10 +75,13 @@ FastAPI on login-03, bound `127.0.0.1`, reached only via the named cloudflared t
 - **Terminal:** `GET (ws) /ws/sessions/{name}` opens a pty that `tmux attach`es; HMAC-token
   gated, session-scoped.
 - **The async invariant (load-bearing):** every endpoint that shells out is plain `def`,
-  never `async def`; only `/health` is async. A blocking subprocess call inside `async def`
-  freezes the event loop and starved `/health` during the **June 2026 outage**
-  (`main.py:117`). Any new endpoint that touches the filesystem or shells out is plain
-  `def`.
+  never `async def`. A blocking subprocess call inside `async def` freezes the event loop
+  and starved `/health` during the **June 2026 outage**; the rule and that history are
+  recorded at `main.py:221-225`. Two endpoints are `async def`, and neither blocks:
+  `/health` (`main.py:164`) does no I/O at all, and the `/transformer-trace/{path:path}`
+  proxy (`main.py:191`) is async only to `await request.body()`, handing its blocking
+  upstream HTTP call to `run_in_threadpool` (`main.py:218`). Any new endpoint that touches
+  the filesystem or shells out is plain `def`.
 - **`boolback.py` (removed):** a legacy ~1840-line router under `/boolback` formerly served
   ComplexMultiTrigger progress data against the **legacy tree schema** (`claim.json` =
   `{hostname,pid,timestamp}`, `epoch_N` underscore, liveness via `/proc`), which no longer
@@ -252,10 +255,14 @@ happens when a worker **exits**:
 | **`never`** | do **not** re-allocate; the worker is not relaunched at the current `fp` | **release-when-done** — a large final sweep: the pool empties itself as workers drain and exit |
 
 tom.Quest detects no completion itself — it has no tree access and no markers. Under
-`restart:never`, "do not relaunch" is implemented by counting only workers not yet seen-live
-at the current `fp` toward `desiredCount` (reusing the existing seen-live flag), so each
-worker launches at most once and the pool drains to zero on its own. The boolback worker is
-the sole completion-aware party (§1.2).
+`restart:never`, "do not relaunch" is implemented by counting a current-`fp` worker that was
+**seen live and has since exited** toward the launch budget (`convex/gpuPool.ts:558-561`,
+added to the budget at `:575`, reusing the existing seen-live flag): its row is kept as a
+one-shot completion marker instead of being pruned, so the slot reads as filled and is never
+re-allocated. Rows that were never seen live are the complement — they are pruned, and at the
+current `fp` they advance the churn counter (`gpuPool.ts:562-563`). Each slot therefore
+launches at most once and the pool drains to zero on its own. The boolback worker is the sole
+completion-aware party (§1.2).
 
 **Back-pressure is not churn.** When the shared GPU budget (§4.5) is full, *wanting* a worker
 we cannot allocate is a benign steady state — hold, do not advance the churn breaker. Only a
