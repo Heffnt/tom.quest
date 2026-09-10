@@ -1455,8 +1455,15 @@ const evalsRequest = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/evals-request", method: "POST", handler: evalsRequest });
 
+// Readable with EITHER key. CI holds the narrow evals key; the box holds the
+// worker key and must read this route too — it looks a run up before spending
+// eighty model calls repeating it, and reads the base run before comparing.
+// The worker key is strictly the more privileged of the two, so accepting it
+// here widens nothing.
 const evalsRun = httpAction(async (ctx, request) => {
-  const denied = keyAuth(request, "EVALS_KEY", "X-Evals-Key");
+  const denied = request.headers.get("X-TTS-Key")
+    ? ttsAuth(request)
+    : keyAuth(request, "EVALS_KEY", "X-Evals-Key");
   if (denied) return denied;
   const params = new URL(request.url).searchParams;
   const repo = params.get("repo") ?? "";

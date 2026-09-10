@@ -562,7 +562,9 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
     const summary = aggregate(scored);
     return {
       repo,
-      sha: tomquest.commit && repo === "tom.quest" ? tomquest.commit : sha,
+      // The RESOLVED commit of whichever repo this run pins, so a run named
+      // "origin/main" is recorded and keyed by the sha it actually scored.
+      sha: repo === "WikiTom" ? wikitom.commit : tomquest.commit,
       tomquest: tomquest.commit,
       wikitom: wikitom.commit,
       goldenHash: goldenHash(all),
