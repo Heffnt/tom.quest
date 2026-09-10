@@ -1,10 +1,11 @@
-import { convexTest } from "convex-test";
+import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHmac, webcrypto } from "node:crypto";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
-import { SLACK_THREAD_CLAIMED, replyShape } from "./ttsSlack";
+import { SLACK_THREAD_CLAIMED, parseObjectionReply, replyShape } from "./ttsSlack";
+import { DELEGATE_DECISION, DELEGATE_OBJECTION } from "./ttsAsk";
 import { captureReplyText, slackHourKey, slackThreadKey } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -122,7 +123,8 @@ async function posted(
     | { kind: "hourly"; hour: string }
     | { kind: "todo"; id: Id<"dtsTodos"> }
     | { kind: "session"; id: Id<"claudeSessions"> }
-    | { kind: "learning"; id: string },
+    | { kind: "learning"; id: string }
+    | { kind: "delegate"; askId: string },
   text = "a message from TTS",
 ) {
   await t.mutation(internal.ttsSlack.internalRecordSlackSent, {
@@ -971,6 +973,201 @@ describe("threaded replies from Tom", () => {
       warn.mock.calls.filter((c) => String(c[0]).includes("SLACK_DUMP_CHANNEL_ID")).length,
     ).toBe(1);
     warn.mockRestore();
+  });
+});
+
+describe("parseObjectionReply", () => {
+  it("reads the two forms, anchored at the start", () => {
+    expect(parseObjectionReply("revert 2")).toEqual({ n: 2, revert: true, sentence: null });
+    expect(parseObjectionReply("Revert 2.")).toEqual({ n: 2, revert: true, sentence: null });
+    expect(parseObjectionReply("  revert 11  ")).toEqual({ n: 11, revert: true, sentence: null });
+    expect(parseObjectionReply("2: leave it Wednesday")).toEqual({
+      n: 2,
+      revert: false,
+      sentence: "leave it Wednesday",
+    });
+    expect(parseObjectionReply("2 : leave it Wednesday")).toEqual({
+      n: 2,
+      revert: false,
+      sentence: "leave it Wednesday",
+    });
+    expect(parseObjectionReply("3:\nask him first")).toEqual({
+      n: 3,
+      revert: false,
+      sentence: "ask him first",
+    });
+  });
+
+  it("reads a reply that merely contains a number as the fact it is", () => {
+    expect(parseObjectionReply("reverted the branch")).toBe(null);
+    expect(parseObjectionReply("2 done")).toBe(null);
+    expect(parseObjectionReply("see item 2 in the list")).toBe(null);
+    expect(parseObjectionReply("revert the passport one")).toBe(null);
+    expect(parseObjectionReply("2:")).toBe(null);
+    expect(parseObjectionReply("")).toBe(null);
+  });
+});
+
+describe("objecting to a delegate decision in the digest thread", () => {
+  // One morning: a delegate decision on a todo, and the digest-sent row that
+  // printed it as line 2.
+  async function morning(t: TestConvex<typeof schema>, day = "2026-09-05") {
+    const todoId = await t.run(async (ctx) =>
+      ctx.db.insert("dtsTodos", {
+        statement: "renew passport",
+        status: "active",
+        readiness: "prepared",
+        timingClass: "whenever",
+        source: "tom",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: DELEGATE_DECISION,
+        key: "3f9c1a22",
+        todoId,
+        data: { askId: "3f9c1a22", decision: "moved it to Thursday", refused: false },
+      });
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: "digest-sent",
+        data: { day, windowEnd: Date.now(), objectionAskIds: ["other", "3f9c1a22"] },
+      });
+    });
+    await posted(t, "300.1", { kind: "digest", day }, "the morning");
+    return todoId;
+  }
+
+  it('writes one objection row for "revert 2", carrying the decision todo', async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    const todoId = await morning(t);
+    const result = await postEvent(t, {
+      channel: TTS,
+      ts: "300.2",
+      thread_ts: "300.1",
+      text: "revert 2",
+    });
+    expect(result).toMatchObject({ outcome: "delegate-objection", id: "3f9c1a22" });
+    const rows = await events(t, DELEGATE_OBJECTION);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].key).toBe("3f9c1a22");
+    // It reaches the work: the row is on the todo's own timeline, which is
+    // where internalAskContext finds it for the next ask about that item.
+    expect(rows[0].todoId).toBe(todoId);
+    expect(rows[0].data).toMatchObject({ n: 2, revert: true, sentence: null, day: "2026-09-05" });
+  });
+
+  it("keeps the sentence when he says what to do instead", async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    await morning(t);
+    await postEvent(t, {
+      channel: TTS,
+      ts: "300.3",
+      thread_ts: "300.1",
+      text: "2: leave it Wednesday and warn me",
+    });
+    const [row] = await events(t, DELEGATE_OBJECTION);
+    expect(row.data).toMatchObject({ revert: false, sentence: "leave it Wednesday and warn me" });
+  });
+
+  it("changes nothing about the todo — undoing is work, and work is a session's", async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    const todoId = await morning(t);
+    const before = await t.run(async (ctx) => ctx.db.get(todoId));
+    await postEvent(t, { channel: TTS, ts: "300.4", thread_ts: "300.1", text: "revert 2" });
+    const after = await t.run(async (ctx) => ctx.db.get(todoId));
+    expect(after?.status).toBe(before?.status);
+    expect(after?.readiness).toBe(before?.readiness);
+    expect(after?.updatedAt).toBe(before?.updatedAt);
+  });
+
+  it("a number naming no printed line falls through to the fact path", async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    await morning(t);
+    const result = await postEvent(t, {
+      channel: TTS,
+      ts: "300.5",
+      thread_ts: "300.1",
+      text: "revert 9",
+    });
+    expect(result).toMatchObject({ outcome: "tom-note" });
+    expect(await events(t, DELEGATE_OBJECTION)).toHaveLength(0);
+    // Nothing is lost.
+    expect(await events(t, "tom-note")).toHaveLength(1);
+  });
+
+  it("a reply carrying both an objection number and a learning id writes both", async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    await morning(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: "learning-change",
+        data: { id: "abc1234def567", file: "schedule.md", before: "a", after: "b", evidence: "e" },
+      });
+    });
+    const result = await postEvent(t, {
+      channel: TTS,
+      ts: "300.6",
+      thread_ts: "300.1",
+      text: "2: not that, and [abc1234def5] is wrong too",
+    });
+    // The objection takes the outcome; both rows are written.
+    expect(result).toMatchObject({ outcome: "delegate-objection" });
+    expect(await events(t, DELEGATE_OBJECTION)).toHaveLength(1);
+    expect(await events(t, "learning-objection")).toHaveLength(1);
+  });
+
+  it('a reply in an hourly thread is never an objection — there is no "this morning" in it', async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    await morning(t);
+    await posted(t, "301.1", { kind: "hourly", hour: "2026-09-05T14" }, "the hour");
+    const result = await postEvent(t, {
+      channel: TTS,
+      ts: "301.2",
+      thread_ts: "301.1",
+      text: "revert 2",
+    });
+    expect(result).toMatchObject({ outcome: "tom-note" });
+    expect(await events(t, DELEGATE_OBJECTION)).toHaveLength(0);
+  });
+
+  it("a reply in a decision's own thread objects to that decision, with no number", async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    await morning(t);
+    await posted(t, "302.1", { kind: "delegate", askId: "3f9c1a22" }, "delegate 3f9c1a22: …");
+    const result = await postEvent(t, {
+      channel: TTS,
+      ts: "302.2",
+      thread_ts: "302.1",
+      text: "revert",
+    });
+    expect(result).toMatchObject({ outcome: "delegate-objection", id: "3f9c1a22" });
+    const [row] = await events(t, DELEGATE_OBJECTION);
+    expect(row.data).toMatchObject({ revert: true, sentence: null });
+    expect(row.data.n).toBeUndefined();
+  });
+
+  it('"digest-sent" rows still carry no key, so lastDigestSent still finds the newest', async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    await morning(t, "2026-09-04");
+    await morning(t, "2026-09-05");
+    const sent = await events(t, "digest-sent");
+    expect(sent).toHaveLength(2);
+    for (const row of sent) expect(row.key).toBeUndefined();
+    const window = await t.query(internal.ttsDigest.internalDigestWindow, { now: Date.now() });
+    expect(window.lastDay).toBe("2026-09-05");
   });
 });
 
