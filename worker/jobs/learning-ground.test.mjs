@@ -133,16 +133,20 @@ describe("groundSignals", () => {
 
 describe("the sections a signal supports", () => {
   it("maps each kind to the sections a change may name", () => {
-    expect(groundSectionFollows("asked", "Does not know")).toBe(true);
-    expect(groundSectionFollows("asked", "Knows")).toBe(true);
-    expect(groundSectionFollows("confirmed", "Knows")).toBe(true);
-    expect(groundSectionFollows("confirmed", "Follows, without the details")).toBe(false);
-    expect(groundSectionFollows("partial", "Follows, without the details")).toBe(true);
-    expect(groundSectionFollows("partial", "Knows")).toBe(false);
+    expect(groundSectionFollows("asked", "Does not know", "add")).toBe(true);
+    // An ask ADDS only under "Does not know"; it may NARROW a line under any
+    // of the three, because a question about part of a term leaves the rest.
+    expect(groundSectionFollows("asked", "Knows", "add")).toBe(false);
+    expect(groundSectionFollows("asked", "Knows", "replace")).toBe(true);
+    expect(groundSectionFollows("confirmed", "Knows", "add")).toBe(true);
+    expect(groundSectionFollows("confirmed", "Follows, without the details", "add")).toBe(false);
+    expect(groundSectionFollows("confirmed", "Does not know", "remove")).toBe(true);
+    expect(groundSectionFollows("partial", "Follows, without the details", "add")).toBe(true);
+    expect(groundSectionFollows("partial", "Knows", "add")).toBe(false);
     // How to explain takes a change from any kind: it is a rule about
     // writing, not a claim about a term.
     for (const kind of ["asked", "confirmed", "partial"]) {
-      expect(groundSectionFollows(kind, "How to explain")).toBe(true);
+      expect(groundSectionFollows(kind, "How to explain", "add")).toBe(true);
     }
   });
 

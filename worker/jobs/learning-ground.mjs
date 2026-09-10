@@ -28,14 +28,34 @@ export const GROUND_SIGNAL_KINDS = ["asked", "confirmed", "partial"];
 export const GROUND_SIGNALS_MAX = 40;
 export const GROUND_TERM_CHARS = 80;
 
-/** The sections of ground.md a change may name, by the kind of signal it
- * cites. "How to explain" takes a change from any kind, and from none when
- * the change is inferred — it is a rule about writing, not a claim about a
- * term. */
+/**
+ * The sections of ground.md a change may name, by the kind of signal it cites
+ * AND what it does there. A term he ASKED about is added under "Does not
+ * know"; the same signal may NARROW a line already under any of the three
+ * (a replace), because a question about part of a term says the rest still
+ * stands. A term he CONFIRMED is added under "Knows" and leaves "Does not
+ * know"; a PARTIAL confirmation lands under "Follows, without the details"
+ * instead.
+ *
+ * "How to explain" takes a change from any kind, and from none when the
+ * change is inferred — it is a rule about writing, not a claim about a term.
+ */
 export const GROUND_SECTIONS = {
-  asked: ["Does not know", "Knows", "Follows, without the details"],
-  confirmed: ["Knows", "Does not know"],
-  partial: ["Follows, without the details", "Does not know"],
+  asked: {
+    add: ["Does not know"],
+    replace: ["Does not know", "Knows", "Follows, without the details"],
+    remove: ["Does not know"],
+  },
+  confirmed: {
+    add: ["Knows"],
+    replace: ["Knows", "Does not know"],
+    remove: ["Does not know"],
+  },
+  partial: {
+    add: ["Follows, without the details"],
+    replace: ["Follows, without the details", "Does not know"],
+    remove: ["Does not know"],
+  },
 };
 /** The two sections a line may not reach on inference: each carries a `said`
  * entry or it is refused (§2.5). */
@@ -218,11 +238,11 @@ export function groundSignals(input, { max = GROUND_SIGNALS_MAX, cite, day } = {
   };
 }
 
-/** Whether `section` follows from a signal of `kind`. */
-export function groundSectionFollows(kind, section) {
+/** Whether `section` follows from a signal of `kind` under operation `op`. */
+export function groundSectionFollows(kind, section, op = "add") {
   const name = String(section ?? "").trim().toLowerCase();
   if (name === GROUND_FREE_SECTION.toLowerCase()) return true;
-  return (GROUND_SECTIONS[kind] ?? []).some((s) => s.toLowerCase() === name);
+  return ((GROUND_SECTIONS[kind] ?? {})[op] ?? []).some((s) => s.toLowerCase() === name);
 }
 
 /** Whether `section` is one no line may reach on inference. */
