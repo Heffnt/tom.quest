@@ -235,13 +235,14 @@ const ttsSearchRulings = httpAction(async (ctx, request) => {
   if (denied) return denied;
   const args = parseTtsSearchArgs(request);
   if (args instanceof Response) return args;
-  return jsonResponse(200, {
-    results: await ctx.runQuery(internal.ttsSearch.rulings, {
+  return jsonResponse(
+    200,
+    await ctx.runQuery(internal.ttsSearch.rulings, {
       query: args.query,
       limit: args.limit,
       since: args.since,
     }),
-  });
+  );
 });
 
 const ttsSearchSessions = httpAction(async (ctx, request) => {
@@ -249,14 +250,15 @@ const ttsSearchSessions = httpAction(async (ctx, request) => {
   if (denied) return denied;
   const args = parseTtsSearchArgs(request, { queryRequired: false });
   if (args instanceof Response) return args;
-  return jsonResponse(200, {
-    results: await ctx.runQuery(internal.ttsSearch.sessions, {
+  return jsonResponse(
+    200,
+    await ctx.runQuery(internal.ttsSearch.sessions, {
       query: args.query,
       limit: args.limit,
       repo: args.repo,
       since: args.since,
     }),
-  });
+  );
 });
 
 const ttsSearchEvents = httpAction(async (ctx, request) => {
@@ -264,27 +266,30 @@ const ttsSearchEvents = httpAction(async (ctx, request) => {
   if (denied) return denied;
   const args = parseTtsSearchArgs(request);
   if (args instanceof Response) return args;
-  return jsonResponse(200, {
-    results: await ctx.runQuery(internal.ttsSearch.events, {
+  return jsonResponse(
+    200,
+    await ctx.runQuery(internal.ttsSearch.events, {
       query: args.query,
       limit: args.limit,
       since: args.since,
     }),
-  });
+  );
 });
 
 const ttsSearchTodos = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  const args = parseTtsSearchArgs(request, { allowSince: false });
+  const args = parseTtsSearchArgs(request);
   if (args instanceof Response) return args;
-  return jsonResponse(200, {
-    results: await ctx.runQuery(internal.ttsSearch.todos, {
+  return jsonResponse(
+    200,
+    await ctx.runQuery(internal.ttsSearch.todos, {
       query: args.query,
       limit: args.limit,
       status: args.status,
+      since: args.since,
     }),
-  });
+  );
 });
 
 http.route({ path: "/tts/search/rulings", method: "GET", handler: ttsSearchRulings });

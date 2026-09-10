@@ -9,6 +9,10 @@ const FIELD_EXCERPT_CHARS = 160;
 const TEXT_EXCERPT_CHARS = 240;
 const REPO_EXCERPT_CHARS = 64;
 const MAX_RETURNED_REPOS = 6;
+// Text search cannot use a search index over every projected field. Keep the
+// fallback walk bounded, and report when this cap (rather than table
+// exhaustion or the requested result count) stopped the search.
+const MAX_SCANNED_ROWS = 2_000;
 
 function normalized(text: string): string {
   return text.trim().toLowerCase();
@@ -32,12 +36,25 @@ function excerpt(text: string, query: string, maxChars = FIELD_EXCERPT_CHARS): s
   return `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}`;
 }
 
-// Search is a recent-record tool, not a table export. The extra candidates
-// leave room for a selective text query without an unbounded scan.
-function searchLimits(limit: number): { limit: number; candidateBudget: number } {
+function searchLimit(limit: number): number {
   const safe = Number.isFinite(limit) ? Math.floor(limit) : 1;
-  const bounded = Math.min(200, Math.max(1, safe));
-  return { limit: bounded, candidateBudget: Math.min(1_600, Math.max(24, bounded * 8)) };
+  return Math.min(200, Math.max(1, safe));
+}
+
+function searchResponse<Result>(
+  results: Result[],
+  scanned: number,
+  exhausted: boolean,
+  scanLimitReached: boolean,
+  oldestScannedAt: number | null,
+) {
+  return {
+    results,
+    scanned,
+    exhausted,
+    scanLimitReached,
+    oldestScannedAt: oldestScannedAt === null ? null : new Date(oldestScannedAt).toISOString(),
+  };
 }
 
 function appendFlattenedText(value: unknown, parts: string[]): void {
@@ -68,21 +85,30 @@ export const rulings = internalQuery({
   args: { query: v.string(), limit: v.number(), since: v.optional(v.number()) },
   handler: async (ctx, args) => {
     const query = normalized(args.query);
-    if (query === "") return [];
-    const { limit, candidateBudget } = searchLimits(args.limit);
+    if (query === "") return searchResponse([], 0, true, false, null);
+    const limit = searchLimit(args.limit);
     const candidates = args.since === undefined
-      ? await ctx.db
+      ? ctx.db
           .query("dtsRulings")
           .withIndex("by_ruled")
           .order("desc")
-          .take(candidateBudget)
-      : await ctx.db
+      : ctx.db
           .query("dtsRulings")
           .withIndex("by_ruled", (q) => q.gte("ruledAt", args.since!))
-          .order("desc")
-          .take(candidateBudget);
+          .order("desc");
     const results = [];
-    for (const ruling of candidates) {
+    let scanned = 0;
+    let exhausted = true;
+    let scanLimitReached = false;
+    let oldestScannedAt: number | null = null;
+    for await (const ruling of candidates) {
+      if (scanned >= MAX_SCANNED_ROWS) {
+        exhausted = false;
+        scanLimitReached = true;
+        break;
+      }
+      scanned += 1;
+      oldestScannedAt = ruling.ruledAt;
       const todo = ruling.todoId ? await ctx.db.get(ruling.todoId) : null;
       const sentenceSource = ruling.sentence ? redactSecrets(ruling.sentence) : null;
       const todoSource = todo ? redactSecrets(todo.statement) : null;
@@ -104,9 +130,12 @@ export const rulings = internalQuery({
         date: ruling.ruledAt,
         todoStatement,
       });
-      if (results.length === limit) break;
+      if (results.length === limit) {
+        exhausted = false;
+        break;
+      }
     }
-    return results;
+    return searchResponse(results, scanned, exhausted, scanLimitReached, oldestScannedAt);
   },
 });
 
@@ -120,15 +149,30 @@ export const sessions = internalQuery({
   handler: async (ctx, args) => {
     const query = normalized(args.query);
     const repo = args.repo === undefined ? undefined : normalized(args.repo);
-    const { limit, candidateBudget } = searchLimits(args.limit);
-    const candidates = await ctx.db.query("claudeSessions").order("desc").take(candidateBudget);
+    const limit = searchLimit(args.limit);
+    const candidates = args.since === undefined
+      ? ctx.db.query("claudeSessions").withIndex("by_createdAt").order("desc")
+      : ctx.db
+          .query("claudeSessions")
+          .withIndex("by_createdAt", (q) => q.gte("createdAt", args.since!))
+          .order("desc");
     const results = [];
-    for (const session of candidates) {
+    let scanned = 0;
+    let exhausted = true;
+    let scanLimitReached = false;
+    let oldestScannedAt: number | null = null;
+    for await (const session of candidates) {
+      if (scanned >= MAX_SCANNED_ROWS) {
+        exhausted = false;
+        scanLimitReached = true;
+        break;
+      }
+      scanned += 1;
+      oldestScannedAt = session.createdAt;
       // An explicitly empty repos array means no checkout; do not fall back to
       // the legacy string in that case.
       const repos = session.repos ?? (session.repo === "none" ? [] : [session.repo]);
       if (repo !== undefined && !repos.some((name) => normalized(name) === repo)) continue;
-      if (args.since !== undefined && session.createdAt < args.since) continue;
       const source = redactSecrets(
         [
           session.title,
@@ -160,9 +204,12 @@ export const sessions = internalQuery({
         date: session.createdAt,
         url: `https://tom.quest/sessions?session=${session._id}`,
       });
-      if (results.length === limit) break;
+      if (results.length === limit) {
+        exhausted = false;
+        break;
+      }
     }
-    return results;
+    return searchResponse(results, scanned, exhausted, scanLimitReached, oldestScannedAt);
   },
 });
 
@@ -170,21 +217,30 @@ export const events = internalQuery({
   args: { query: v.string(), limit: v.number(), since: v.optional(v.number()) },
   handler: async (ctx, args) => {
     const query = normalized(args.query);
-    if (query === "") return [];
-    const { limit, candidateBudget } = searchLimits(args.limit);
+    if (query === "") return searchResponse([], 0, true, false, null);
+    const limit = searchLimit(args.limit);
     const candidates = args.since === undefined
-      ? await ctx.db
+      ? ctx.db
           .query("dtsEvents")
           .withIndex("by_at")
           .order("desc")
-          .take(candidateBudget)
-      : await ctx.db
+      : ctx.db
           .query("dtsEvents")
           .withIndex("by_at", (q) => q.gte("at", args.since!))
-          .order("desc")
-          .take(candidateBudget);
+          .order("desc");
     const results = [];
-    for (const event of candidates) {
+    let scanned = 0;
+    let exhausted = true;
+    let scanLimitReached = false;
+    let oldestScannedAt: number | null = null;
+    for await (const event of candidates) {
+      if (scanned >= MAX_SCANNED_ROWS) {
+        exhausted = false;
+        scanLimitReached = true;
+        break;
+      }
+      scanned += 1;
+      oldestScannedAt = event.at;
       const todo = event.todoId ? await ctx.db.get(event.todoId) : null;
       const textSource = redactSecrets(
         [todo?.statement, flattenedText(event.data)].filter(Boolean).join(" "),
@@ -197,9 +253,12 @@ export const events = internalQuery({
         date: event.at,
         text: excerpt(textSource, query, TEXT_EXCERPT_CHARS),
       });
-      if (results.length === limit) break;
+      if (results.length === limit) {
+        exhausted = false;
+        break;
+      }
     }
-    return results;
+    return searchResponse(results, scanned, exhausted, scanLimitReached, oldestScannedAt);
   },
 });
 
@@ -208,22 +267,44 @@ export const todos = internalQuery({
     query: v.string(),
     limit: v.number(),
     status: v.optional(v.string()),
+    since: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const query = normalized(args.query);
-    if (query === "") return [];
+    if (query === "") return searchResponse([], 0, true, false, null);
     const status = args.status === undefined ? undefined : normalized(args.status);
-    if (status !== undefined && !isTodoStatus(status)) return [];
-    const { limit, candidateBudget } = searchLimits(args.limit);
+    if (status !== undefined && !isTodoStatus(status)) {
+      return searchResponse([], 0, true, false, null);
+    }
+    const limit = searchLimit(args.limit);
     const candidates = status === undefined
-      ? await ctx.db.query("dtsTodos").order("desc").take(candidateBudget)
-      : await ctx.db
+      ? args.since === undefined
+        ? ctx.db.query("dtsTodos").withIndex("by_updatedAt").order("desc")
+        : ctx.db
+            .query("dtsTodos")
+            .withIndex("by_updatedAt", (q) => q.gte("updatedAt", args.since!))
+            .order("desc")
+      : ctx.db
           .query("dtsTodos")
-          .withIndex("by_status", (q) => q.eq("status", status))
-          .order("desc")
-          .take(candidateBudget);
+          .withIndex("by_status", (q) =>
+            args.since === undefined
+              ? q.eq("status", status)
+              : q.eq("status", status).gte("updatedAt", args.since!),
+          )
+          .order("desc");
     const results = [];
-    for (const todo of candidates) {
+    let scanned = 0;
+    let exhausted = true;
+    let scanLimitReached = false;
+    let oldestScannedAt: number | null = null;
+    for await (const todo of candidates) {
+      if (scanned >= MAX_SCANNED_ROWS) {
+        exhausted = false;
+        scanLimitReached = true;
+        break;
+      }
+      scanned += 1;
+      oldestScannedAt = todo.updatedAt;
       const statementSource = redactSecrets(todo.statement);
       if (!includesQuery(statementSource, query)) continue;
       results.push({
@@ -238,8 +319,11 @@ export const todos = internalQuery({
         doneAt: todo.doneAt ?? null,
         archivedAt: todo.archivedAt ?? null,
       });
-      if (results.length === limit) break;
+      if (results.length === limit) {
+        exhausted = false;
+        break;
+      }
     }
-    return results;
+    return searchResponse(results, scanned, exhausted, scanLimitReached, oldestScannedAt);
   },
 });

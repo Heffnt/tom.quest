@@ -13,6 +13,7 @@ import {
   formatSessionResult,
   formatTodoResult,
   parseSearchArgs,
+  runSearchCli,
 } from "./search-lib.mjs";
 
 const temporary = [];
@@ -65,8 +66,10 @@ describe("archive search", () => {
 });
 
 describe("local search parsing", () => {
-  it("rejects a limit above the hard maximum", () => {
-    expect(() => parseSearchArgs(["events", "needle", "--limit", "201"])).toThrow("from 1 to 200");
+  it("gives areas all the shared default and accepts the hard maximum", () => {
+    expect(parseSearchArgs(["areas", "all"])).toMatchObject({ limit: 20 });
+    expect(parseSearchArgs(["areas", "all", "--limit", "200"])).toMatchObject({ limit: 200 });
+    expect(() => parseSearchArgs(["areas", "all", "--limit", "201"])).toThrow("from 1 to 200");
   });
 
   it("lists all areas as frontmatter-only summaries and reads protected sections by name", () => {
@@ -86,5 +89,115 @@ describe("local search parsing", () => {
       currentState: "## Current state\nReady now",
       mustNotBreak: "## Must not break\nKeep the guard",
     });
+  });
+
+  it("limits areas all to the shared default", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
+    temporary.push(root);
+    const areas = path.join(root, "model-of-tom", "areas");
+    fs.mkdirSync(areas, { recursive: true });
+    for (let i = 0; i < 21; i += 1) fs.writeFileSync(path.join(areas, `area-${String(i).padStart(2, "0")}.md`), `# ${i}\n`);
+    const output = [];
+    expect(await runSearchCli(["areas", "all"], { env: { WIKITOM_DIR: root }, write: (line) => output.push(line), error: () => {} })).toBe(0);
+    expect(output).toHaveLength(20);
+    expect(output[0]).toContain("area:area-00");
+    expect(output.at(-1)).toContain("area:area-19");
+  });
+});
+
+describe("search CLI output boundaries", () => {
+  it("reports missing production credentials through the injected error callback", async () => {
+    const errors = [];
+    expect(await runSearchCli(["rulings", "needle"], { env: {}, write: () => {}, error: (line) => errors.push(line) })).toBe(2);
+    expect(errors).toEqual(["tts-search: CONVEX_SITE_URL and TTS_WORKER_KEY must be set for production searches"]);
+  });
+
+  it("reports a missing archive as text or JSON and exits 3", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
+    temporary.push(root);
+    const text = [];
+    expect(await runSearchCli(["archive", "needle"], { env: { WIKITOM_DIR: root }, write: (line) => text.push(line), error: () => {} })).toBe(3);
+    expect(text).toEqual([`tts-search: no session archive at ${path.join(root, "sessions")}`]);
+
+    const json = [];
+    expect(await runSearchCli(["archive", "needle", "--json"], { env: { WIKITOM_DIR: root }, write: (line) => json.push(line), error: () => {} })).toBe(3);
+    expect(JSON.parse(json[0])).toEqual({ missing: path.join(root, "sessions") });
+  });
+
+  it("redacts credential-shaped paths in missing archive and filesystem errors", async () => {
+    const token = `gho_${"A".repeat(36)}`;
+    const missingRoot = path.join(os.tmpdir(), `tts-search-${token}`);
+    fs.mkdirSync(missingRoot, { recursive: true });
+    temporary.push(missingRoot);
+    const missing = [];
+    expect(await runSearchCli(["archive", "needle"], { env: { WIKITOM_DIR: missingRoot }, write: (line) => missing.push(line), error: () => {} })).toBe(3);
+    expect(missing[0]).toContain("[redacted:github]");
+    expect(missing[0]).not.toContain(token);
+
+    const errorRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
+    temporary.push(errorRoot);
+    const archive = path.join(errorRoot, "sessions", "2026", "09", "09");
+    fs.mkdirSync(archive, { recursive: true });
+    fs.writeFileSync(path.join(archive, `${token}.gz`), "not gzip");
+    const errors = [];
+    expect(await runSearchCli(["archive", "needle"], { env: { WIKITOM_DIR: errorRoot }, write: () => {}, error: (line) => errors.push(line) })).toBe(2);
+    expect(errors[0]).toContain("[redacted:github]");
+    expect(errors[0]).not.toContain(token);
+  });
+
+  it("forwards --since and reports a server coverage envelope from injected fetch", async () => {
+    const output = [];
+    const requested = [];
+    const fetch = async (url, init) => {
+      requested.push({ url, init });
+      return {
+        ok: true,
+        json: async () => ({
+          results: [{ id: "r1", date: "2026-09-08", verdict: "approve", sentence: "needle" }],
+          scanned: 37,
+          exhausted: true,
+          oldestScannedAt: "2026-08-01T12:00:00.000Z",
+        }),
+      };
+    };
+    const env = { CONVEX_SITE_URL: "https://example.convex.cloud", TTS_WORKER_KEY: "worker-key" };
+    expect(await runSearchCli(["rulings", "needle", "--since", "2026-09-01"], { env, fetch, write: (line) => output.push(line), error: () => {} })).toBe(0);
+    expect(new URL(requested[0].url).searchParams.get("since")).toBe("2026-09-01");
+    expect(requested[0].init.headers).toEqual({ "X-TTS-Key": "worker-key" });
+    expect(output.at(-1)).toBe("tts-search: searched 37 rows back to 2026-08-01 (exhausted)");
+
+    const json = [];
+    expect(await runSearchCli(["rulings", "needle", "--json"], { env, fetch, write: (line) => json.push(line), error: () => {} })).toBe(0);
+    expect(JSON.parse(json[0])).toMatchObject({ scanned: 37, exhausted: true, oldestScannedAt: "2026-08-01T12:00:00.000Z", results: [{ id: "r1" }] });
+  });
+
+  it("filters archive rows by --since through the injected WikiTom root", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
+    temporary.push(root);
+    for (const day of ["08", "09"]) {
+      const archive = path.join(root, "sessions", "2026", "09", day);
+      fs.mkdirSync(archive, { recursive: true });
+      fs.writeFileSync(path.join(archive, "session.jsonl"), `needle ${day}\n`);
+    }
+    const output = [];
+    expect(await runSearchCli(["archive", "needle", "--since", "2026-09-09"], { env: { WIKITOM_DIR: root }, write: (line) => output.push(line), error: () => {} })).toBe(0);
+    expect(output).toHaveLength(1);
+    expect(output[0]).toContain("sessions/2026/09/09/session.jsonl:1");
+  });
+
+  it("stops archive matching at --limit even when matches span files", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
+    temporary.push(root);
+    const archive = path.join(root, "sessions", "2026", "09", "09");
+    fs.mkdirSync(archive, { recursive: true });
+    for (const name of ["first.jsonl", "second.jsonl", "third.jsonl"]) {
+      fs.writeFileSync(path.join(archive, name), `needle in ${name}\n`);
+    }
+    const output = [];
+    expect(await runSearchCli(["archive", "needle", "--limit", "2"], { env: { WIKITOM_DIR: root }, write: (line) => output.push(line), error: () => {} })).toBe(0);
+    expect(output).toHaveLength(2);
+    expect(output[0]).toContain("first.jsonl:1");
+    expect(output[1]).toContain("second.jsonl:1");
+    expect(output.join("\n")).not.toContain("third.jsonl");
   });
 });

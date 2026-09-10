@@ -37,7 +37,7 @@ todos <query> [--status S] [--limit N] [--json]
 Search matching production todos, optionally narrowed by status.
 Returns a stable todo id, date, and collapsed text.
 
-areas <name|all> [--wikitom DIR] [--json]
+areas <name|all> [--limit N] [--wikitom DIR] [--json]
 Read an area page's updated/reviewed frontmatter and its protected sections.
 Use all to list the available area names.
 
@@ -124,7 +124,7 @@ export function parseSearchArgs(argv) {
     sessions: new Set(["json", "repo", "since", "query", "limit"]),
     events: new Set(["json", "since", "limit"]),
     todos: new Set(["json", "status", "limit"]),
-    areas: new Set(["json", "wikitom"]),
+    areas: new Set(["json", "limit", "wikitom"]),
     sources: new Set(["json", "limit", "wikitom"]),
     archive: new Set(["json", "since", "limit", "wikitom"]),
   };
@@ -382,7 +382,37 @@ export async function archiveResults(root, query, since, limit) {
   return { missing: null, rows };
 }
 
-async function databaseResults(command, options, env) {
+function databaseSearchResponse(body, limit, invalidMessage) {
+  if (Array.isArray(body)) return { rows: body.slice(0, limit), metadata: null, json: null };
+  const rows = body?.results ?? body?.items;
+  if (!Array.isArray(rows)) fail(invalidMessage);
+  const metadata = {};
+  if (Number.isInteger(body.scanned) && body.scanned >= 0) metadata.scanned = body.scanned;
+  if (typeof body.exhausted === "boolean") metadata.exhausted = body.exhausted;
+  if (body.oldestScannedAt !== undefined && body.oldestScannedAt !== null) {
+    const date = unknownDate(body.oldestScannedAt);
+    if (date !== "unknown") metadata.oldestScannedAt = date;
+  }
+  const limited = rows.slice(0, limit);
+  const hasMetadata = Object.keys(metadata).length !== 0;
+  return {
+    rows: limited,
+    metadata: hasMetadata ? metadata : null,
+    // New server envelopes carry coverage alongside results. Keep that shape
+    // for JSON clients, but retain the historical bare array for old servers.
+    json: hasMetadata ? { ...body, results: limited } : null,
+  };
+}
+
+function formatSearchCoverage(metadata) {
+  if (!metadata || metadata.scanned === undefined) return null;
+  const coverage = metadata.oldestScannedAt
+    ? `tts-search: searched ${metadata.scanned} rows back to ${metadata.oldestScannedAt}`
+    : `tts-search: searched ${metadata.scanned} rows`;
+  return metadata.exhausted === undefined ? coverage : `${coverage} (${metadata.exhausted ? "exhausted" : "more may remain"})`;
+}
+
+async function databaseResults(command, options, env, fetchFn) {
   const site = env.CONVEX_SITE_URL;
   const key = env.TTS_WORKER_KEY;
   if (!site || !key) fail("CONVEX_SITE_URL and TTS_WORKER_KEY must be set for production searches");
@@ -393,7 +423,7 @@ async function databaseResults(command, options, env) {
   const url = `${site.replace(/\/+$/, "")}/tts/search/${command}?${params}`;
   let response;
   try {
-    response = await fetch(url, { headers: { "X-TTS-Key": key } });
+    response = await fetchFn(url, { headers: { "X-TTS-Key": key } });
   } catch {
     fail(`could not reach /tts/search/${command}`);
   }
@@ -404,9 +434,7 @@ async function databaseResults(command, options, env) {
   } catch {
     fail(`/tts/search/${command} returned invalid JSON`);
   }
-  const rows = Array.isArray(body) ? body : body?.results ?? body?.items;
-  if (!Array.isArray(rows)) fail(`/tts/search/${command} returned no result array`);
-  return rows.slice(0, options.limit);
+  return databaseSearchResponse(body, options.limit, `/tts/search/${command} returned no result array`);
 }
 
 function formatLocal(command, row) {
@@ -422,32 +450,49 @@ function formatLocal(command, row) {
 /** Execute a search command. Injectable IO makes formatting testable without live state. */
 export async function runSearchCli(
   argv,
-  { env = process.env, write = console.log, error = console.error, defaultWikiTom = BOX_WIKITOM_DIR } = {},
+  { env = process.env, write = console.log, error = console.error, fetch: fetchFn = globalThis.fetch, defaultWikiTom = BOX_WIKITOM_DIR } = {},
 ) {
+  // Output is the final boundary before a terminal transcript, so every
+  // string -- including errors and filesystem paths -- gets one last pass.
+  const safeWrite = (value) => write(redactSecrets(String(value)));
+  const safeError = (value) => error(redactSecrets(String(value)));
   let options;
   try {
     options = parseSearchArgs(argv);
     if (options.help) {
-      write(usage());
+      safeWrite(usage());
       return 0;
     }
     let rows;
     let missing = null;
+    let metadata = null;
+    let jsonEnvelope = null;
     if (DATABASE_COMMANDS.has(options.command)) {
-      rows = await databaseResults(options.command, options, env);
+      ({ rows, metadata, json: jsonEnvelope } = await databaseResults(options.command, options, env, fetchFn));
     } else {
       const root = wikiTomDir(options, env, defaultWikiTom);
-      if (options.command === "areas") rows = areaResults(root, options.area);
+      if (options.command === "areas") rows = areaResults(root, options.area).slice(0, options.limit);
       else if (options.command === "sources") rows = linesMatching(root, ["sources", "tom-text"], options.query, options.limit);
       else ({ missing, rows } = await archiveResults(root, options.query, options.since, options.limit));
     }
+    if (missing) {
+      if (options.json) safeWrite(JSON.stringify({ missing }));
+      else safeWrite(`tts-search: no session archive at ${missing}`);
+      return 3;
+    }
     const redacted = redactValue(rows);
-    if (options.json) write(JSON.stringify(redacted));
-    else if (missing) write(`tts-search: no session archive at ${missing}`);
-    else for (let i = 0; i < redacted.length; i += 1) write(DATABASE_COMMANDS.has(options.command) ? formatDatabaseResult(options.command, redacted[i], `${options.command}:${i + 1}`) : formatLocal(options.command, redacted[i]));
+    if (options.json) {
+      safeWrite(JSON.stringify(jsonEnvelope ? redactValue(jsonEnvelope) : redacted));
+    } else {
+      for (let i = 0; i < redacted.length; i += 1) {
+        safeWrite(DATABASE_COMMANDS.has(options.command) ? formatDatabaseResult(options.command, redacted[i], `${options.command}:${i + 1}`) : formatLocal(options.command, redacted[i]));
+      }
+      const coverage = formatSearchCoverage(metadata);
+      if (coverage) safeWrite(coverage);
+    }
     return 0;
   } catch (err) {
-    error(String(err?.message ?? err));
+    safeError(String(err?.message ?? err));
     return 2;
   }
 }

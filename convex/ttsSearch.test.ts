@@ -55,13 +55,20 @@ describe("TTS search queries", () => {
       });
     });
 
-    const results = await t.query(internal.ttsSearch.rulings, {
+    const response = await t.query(internal.ttsSearch.rulings, {
       query: "cluster credential",
       limit: 20,
     });
+    const { results } = response;
 
     expect(results).toHaveLength(2);
     expect(results.map((r) => r.date)).toEqual([20, 10]);
+    expect(response).toMatchObject({
+      scanned: 2,
+      exhausted: true,
+      scanLimitReached: false,
+      oldestScannedAt: new Date(10).toISOString(),
+    });
     expect(results[0]).toMatchObject({
       verdict: "approve",
       todoStatement: "Replace the cluster credential helper",
@@ -95,12 +102,13 @@ describe("TTS search queries", () => {
       }),
     }));
 
-    const results = await t.query(internal.ttsSearch.sessions, {
+    const response = await t.query(internal.ttsSearch.sessions, {
       query: "WORKER",
       repo: "TOM.QUEST",
       since: 25,
       limit: 20,
     });
+    const { results } = response;
 
     expect(results).toEqual([
       expect.objectContaining({
@@ -125,10 +133,11 @@ describe("TTS search queries", () => {
       });
     });
 
-    const results = await t.query(internal.ttsSearch.events, {
+    const response = await t.query(internal.ttsSearch.events, {
       query: "admission queue",
       limit: 20,
     });
+    const { results } = response;
 
     expect(results).toEqual([
       expect.objectContaining({
@@ -152,10 +161,11 @@ describe("TTS search queries", () => {
       });
     });
 
-    const results = await t.query(internal.ttsSearch.events, {
+    const response = await t.query(internal.ttsSearch.events, {
       query: needle,
       limit: 20,
     });
+    const { results } = response;
 
     expect(results).toHaveLength(1);
     expect(results[0].text).toContain(needle);
@@ -179,55 +189,143 @@ describe("TTS search queries", () => {
       limit: 20,
     });
 
-    expect(active).toHaveLength(1);
-    expect(active[0]).toMatchObject({ status: "active", createdAt: 100, updatedAt: 200 });
-    expect(unknown).toEqual([]);
+    expect(active.results).toHaveLength(1);
+    expect(active.results[0]).toMatchObject({ status: "active", createdAt: 100, updatedAt: 200 });
+    expect(unknown.results).toEqual([]);
+  });
+
+  it("scans past an initial run of nonmatches and reports the exhausted index range", async () => {
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      for (let at = 2; at <= 30; at += 1) {
+        await ctx.db.insert("dtsEvents", { at, kind: "unrelated" });
+      }
+      await ctx.db.insert("dtsEvents", { at: 1, kind: "needle event" });
+    });
+
+    const response = await t.query(internal.ttsSearch.events, {
+      query: "needle",
+      limit: 2,
+    });
+
+    expect(response.results).toHaveLength(1);
+    expect(response).toMatchObject({
+      scanned: 30,
+      exhausted: true,
+      scanLimitReached: false,
+      oldestScannedAt: new Date(1).toISOString(),
+    });
+  });
+
+  it("reports when the documented hard scan cap, rather than exhaustion, stopped the search", async () => {
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      for (let at = 1; at <= 2_001; at += 1) {
+        await ctx.db.insert("dtsEvents", { at, kind: "unrelated" });
+      }
+    });
+
+    const response = await t.query(internal.ttsSearch.events, {
+      query: "needle",
+      limit: 1,
+    });
+
+    expect(response).toMatchObject({
+      results: [],
+      scanned: 2_000,
+      exhausted: false,
+      scanLimitReached: true,
+      oldestScannedAt: new Date(2).toISOString(),
+    });
   });
 });
 
 describe("GET /tts/search", () => {
   afterEach(() => vi.unstubAllEnvs());
 
-  it("uses the TTS worker key and reports malformed URL arguments without echoing them", async () => {
+  const routes = ["rulings", "sessions", "events", "todos"] as const;
+
+  it.each(routes)("rejects a wrong worker key for %s", async (route) => {
     vi.stubEnv("TTS_WORKER_KEY", "search-key");
     const t = convexTest({ schema, modules });
-    await insertTodo(t, "Searchable todo");
-
-    const denied = await t.fetch("/tts/search/todos?q=searchable", {
+    const denied = await t.fetch(`/tts/search/${route}?query=searchable`, {
       method: "GET",
       headers: { "X-TTS-Key": "wrong" },
     });
     expect(denied.status).toBe(401);
+  });
 
-    const missing = await t.fetch("/tts/search/todos", {
+  it.each(routes)("reports an unconfigured worker key for %s", async (route) => {
+    vi.stubEnv("TTS_WORKER_KEY", "");
+    const t = convexTest({ schema, modules });
+    const missing = await t.fetch(`/tts/search/${route}?query=searchable`, {
       method: "GET",
       headers: { "X-TTS-Key": "search-key" },
     });
-    expect(await missing.json()).toEqual({ error: "query (non-empty string) required" });
+    expect(missing.status).toBe(503);
+    expect(await missing.json()).toEqual({ error: "TTS_WORKER_KEY not configured" });
+  });
 
-    const invalid = await t.fetch("/tts/search/todos?query=searchable&limit=not-a-number", {
+  it.each(routes)("accepts the 1 and 200 result limits for %s", async (route) => {
+    vi.stubEnv("TTS_WORKER_KEY", "search-key");
+    const t = convexTest({ schema, modules });
+    for (const limit of [1, 200]) {
+      const response = await t.fetch(`/tts/search/${route}?query=searchable&limit=${limit}`, {
+        method: "GET",
+        headers: { "X-TTS-Key": "search-key" },
+      });
+      expect(response.status).toBe(200);
+    }
+  });
+
+  it.each(routes)("rejects result limits outside 1 through 200 for %s", async (route) => {
+    vi.stubEnv("TTS_WORKER_KEY", "search-key");
+    const t = convexTest({ schema, modules });
+    for (const limit of [0, 201]) {
+      const response = await t.fetch(`/tts/search/${route}?query=searchable&limit=${limit}`, {
+        method: "GET",
+        headers: { "X-TTS-Key": "search-key" },
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: "limit (integer from 1 to 200) required" });
+    }
+  });
+
+  it.each(routes)("accepts valid and rejects malformed since values for %s", async (route) => {
+    vi.stubEnv("TTS_WORKER_KEY", "search-key");
+    const t = convexTest({ schema, modules });
+    const valid = await t.fetch(`/tts/search/${route}?query=searchable&since=2026-09-01`, {
       method: "GET",
       headers: { "X-TTS-Key": "search-key" },
     });
-    expect(await invalid.json()).toEqual({ error: "limit (integer from 1 to 200) required" });
+    expect(valid.status).toBe(200);
 
-    const tooLarge = await t.fetch("/tts/search/todos?query=searchable&limit=201", {
+    const malformed = await t.fetch(`/tts/search/${route}?query=searchable&since=2026-09-31`, {
       method: "GET",
       headers: { "X-TTS-Key": "search-key" },
     });
-    expect(await tooLarge.json()).toEqual({ error: "limit (integer from 1 to 200) required" });
+    expect(malformed.status).toBe(400);
+    expect(await malformed.json()).toEqual({ error: "since (YYYY-MM-DD) required" });
+  });
 
-    const unsupportedSince = await t.fetch("/tts/search/todos?query=searchable&since=2026-09-01", {
+  it("returns redacted results with scan metadata at the route boundary", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "search-key");
+    const t = convexTest({ schema, modules });
+    const token = shapedGithubToken("C");
+    await insertTodo(t, `Searchable todo ${token}`);
+
+    const response = await t.fetch("/tts/search/todos?query=searchable", {
       method: "GET",
       headers: { "X-TTS-Key": "search-key" },
     });
-    expect(await unsupportedSince.json()).toEqual({ error: "since is not supported for this search" });
-
-    const ok = await t.fetch("/tts/search/todos?query=searchable&status=ACTIVE", {
-      method: "GET",
-      headers: { "X-TTS-Key": "search-key" },
+    const body = await response.json();
+    expect(body).toMatchObject({
+      results: [expect.objectContaining({ statement: "Searchable todo [redacted:github]" })],
+      scanned: 1,
+      exhausted: true,
+      scanLimitReached: false,
+      oldestScannedAt: new Date(200).toISOString(),
     });
-    expect(ok.status).toBe(200);
-    expect((await ok.json()).results).toHaveLength(1);
+    expect(JSON.stringify(body)).not.toContain(token);
   });
 });
