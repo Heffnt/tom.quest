@@ -307,6 +307,7 @@ export type ThreadReplyOutcome =
   | { outcome: "time-note"; timeNoteId: Id<"dtsTimeNotes"> }
   | { outcome: "tom-note"; subject: SlackSubject }
   | { outcome: "learning-objection"; id: string }
+  | { outcome: "delegate-objection"; id: string }
   | { outcome: "captured"; todoId: Id<"dtsTodos"> };
 
 /**
@@ -475,6 +476,22 @@ async function routeReply(
         ...at,
       });
       return { outcome: "learning-objection", id: subject.id };
+    case "delegate": {
+      // A reply in a decisions-channel thread is an objection to that ONE
+      // decision, so there is no number to name: the thread is the naming. A
+      // reply that opens with "revert" says "not that"; anything else says
+      // what instead. Silence, here as in the digest, means it stands.
+      const revert = /^revert\b[.!]?/i.test(text.trim());
+      const sentence = revert ? null : text.trim() === "" ? null : text.trim();
+      await ctx.runMutation(internal.ttsAsk.internalRecordDelegateObjection, {
+        askId: subject.askId,
+        text,
+        revert,
+        sentence,
+        ...at,
+      });
+      return { outcome: "delegate-objection", id: subject.askId };
+    }
     case "unknown":
       return await captureUnknown(ctx, text, at);
   }

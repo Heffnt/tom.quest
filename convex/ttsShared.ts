@@ -779,6 +779,12 @@ export const SLACK_SUBJECT = v.union(
   v.object({ kind: v.literal("todo"), id: v.id("dtsTodos") }),
   v.object({ kind: v.literal("session"), id: v.id("claudeSessions") }),
   v.object({ kind: v.literal("learning"), id: v.string() }),
+  // One delegated decision, posted to the decisions channel as it is recorded
+  // (convex/ttsAsk.ts). It is its own subject and not the todo's: a todo
+  // subject stamps slackReplyTs, which belongs to the ONE reply thread that
+  // todo has in #dump, and a decisions-channel line must not claim it. A reply
+  // in this thread is an objection to that one decision.
+  v.object({ kind: v.literal("delegate"), askId: v.string() }),
 );
 export type SlackSubject = Infer<typeof SLACK_SUBJECT>;
 

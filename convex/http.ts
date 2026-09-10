@@ -8,6 +8,7 @@ import { nowContext } from "./tts";
 import { isRulingVerdict } from "./ttsRulings";
 import {
   DAY_MS,
+  NARROW_LIST,
   RECOMMENDATION_VALUES,
   SESSION_REPO_NAMES,
   TTS_CLOSED_VOCABULARY,
@@ -17,6 +18,7 @@ import {
   ttsPrepDay,
   type Recommendation,
 } from "./ttsShared";
+import { isNarrowListId } from "./ttsShared";
 import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES, isExportTable } from "./ttsNightly";
 
@@ -758,6 +760,7 @@ const ttsState = httpAction(async (ctx, request) => {
   return jsonResponse(200, {
     todos,
     calendarEvents,
+    narrowList: NARROW_LIST,
     prepDay: day,
     ...nowContext(Date.now()),
   });
@@ -1116,6 +1119,84 @@ const ttsRuling = httpAction(async (ctx, request) => {
 });
 
 http.route({ path: "/tts/ruling", method: "POST", handler: ttsRuling });
+
+// POST /tts/ask records a completed delegate call. It intentionally never
+// calls a model: Fable runs on the box where the caller already is, while this
+// route is the durable record, digest input, and immediate Slack notification.
+const ttsAsk = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  const nonempty = (value: unknown) => typeof value === "string" && value.trim() !== "";
+  if (!nonempty(b.askId) || !/^[0-9a-f]{8}$/.test(b.askId as string)) {
+    return jsonResponse(400, { error: "askId (8 lowercase hex characters) required" });
+  }
+  const hasSession = nonempty(b.sessionId);
+  const hasJob = nonempty(b.job);
+  if (hasSession === hasJob) return jsonResponse(400, { error: "exactly one of sessionId or job is required" });
+  if (b.todoId !== undefined && !nonempty(b.todoId)) return jsonResponse(400, { error: "todoId, when given, must be non-empty" });
+  if (!nonempty(b.question) || (b.question as string).trim().length > 400) return jsonResponse(400, { error: "question (1-400 characters) required" });
+  if (!Array.isArray(b.options) || b.options.length < 2 || b.options.length > 5 || !b.options.every(nonempty)) return jsonResponse(400, { error: "options must be 2-5 non-empty strings" });
+  const options = b.options.map((option) => (option as string).trim());
+  if (!nonempty(b.recommendation) || !options.includes((b.recommendation as string).trim())) return jsonResponse(400, { error: "recommendation must be one of options" });
+  if (!nonempty(b.fallback)) return jsonResponse(400, { error: "fallback (non-empty string) required" });
+  if (b.decision !== null && !nonempty(b.decision)) return jsonResponse(400, { error: "decision must be a non-empty string or null" });
+  if (!nonempty(b.reason) || (b.reason as string).trim().length > 400) return jsonResponse(400, { error: "reason (1-400 characters) required" });
+  if (typeof b.refused !== "boolean") return jsonResponse(400, { error: "refused (boolean) required" });
+  if (b.refused) {
+    const id = typeof b.refusedBecause === "string" ? b.refusedBecause.split(" — ")[0] : "";
+    if (!nonempty(b.refusedBecause) || !isNarrowListId(id)) return jsonResponse(400, { error: "refusedBecause must start with a narrow-list id" });
+  } else if (b.refusedBecause !== null) return jsonResponse(400, { error: "refusedBecause must be null unless refused" });
+  if (!nonempty(b.model) || !nonempty(b.promptSha)) return jsonResponse(400, { error: "model and promptSha (non-empty strings) required" });
+  if (typeof b.ms !== "number" || !Number.isFinite(b.ms) || b.ms < 0) return jsonResponse(400, { error: "ms (nonnegative finite number) required" });
+  try {
+    const result = await ctx.runMutation(internal.ttsAsk.internalRecordAsk, {
+      askId: b.askId as string, sessionId: hasSession ? b.sessionId as string : undefined,
+      job: hasJob ? b.job as string : undefined, todoId: b.todoId as string | undefined,
+      question: (b.question as string).trim(), options,
+      recommendation: (b.recommendation as string).trim(), fallback: (b.fallback as string).trim(),
+      decision: b.decision as string | null, reason: (b.reason as string).trim(),
+      refused: b.refused, refusedBecause: b.refusedBecause as string | null,
+      model: b.model as string, ms: b.ms, promptSha: b.promptSha as string,
+    });
+    const context = await ctx.runQuery(internal.ttsAsk.internalAskContext, {
+      sessionId: hasSession ? b.sessionId as string : undefined,
+      job: hasJob ? b.job as string : undefined,
+      todoId: b.todoId as string | undefined,
+    });
+    return jsonResponse(200, { ok: true, askId: b.askId, ...result, priorObjections: context.priorObjections });
+  } catch (error) {
+    return jsonResponse(400, { error: error instanceof Error ? error.message : String(error) });
+  }
+});
+http.route({ path: "/tts/ask", method: "POST", handler: ttsAsk });
+
+// POST /tts/merge is the future merge command's narrow record door. It is not
+// a delegate decision: a mechanically gated merge is only reported in the
+// objection list, keyed by repo+sha so retries remain one event.
+const ttsMerge = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try { body = await request.json(); } catch { return jsonResponse(400, { error: "invalid JSON body" }); }
+  const b = (body ?? {}) as Record<string, unknown>;
+  const nonempty = (value: unknown) => typeof value === "string" && value.trim() !== "";
+  if (!nonempty(b.repo) || !nonempty(b.sha) || !nonempty(b.subject)) return jsonResponse(400, { error: "repo, sha, and subject (non-empty strings) required" });
+  if (b.todoId !== undefined && !nonempty(b.todoId)) return jsonResponse(400, { error: "todoId, when given, must be non-empty" });
+  try {
+    const result = await ctx.runMutation(internal.ttsAsk.internalRecordMerge, { repo: b.repo as string, sha: b.sha as string, subject: b.subject as string, todoId: b.todoId as string | undefined });
+    return jsonResponse(200, { ok: true, ...result });
+  } catch (error) {
+    return jsonResponse(400, { error: error instanceof Error ? error.message : String(error) });
+  }
+});
+http.route({ path: "/tts/merge", method: "POST", handler: ttsMerge });
 
 // GET /tts/batch-context — everything the planner works from: all life todos
 // (schema-v2 graph fields included), the code-todo mirror, the code briefs,

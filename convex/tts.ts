@@ -101,7 +101,7 @@ export async function logEvent(
   // schema comment lists, and on no other.
   key?: string,
 ) {
-  await ctx.db.insert("dtsEvents", {
+  return await ctx.db.insert("dtsEvents", {
     at: Date.now(),
     kind,
     todoId,
