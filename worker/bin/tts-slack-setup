@@ -14,6 +14,12 @@
 // names the account, and an id that is not in the list, or an email that
 // matches none or several, is refused.
 //
+// RENAME #tts TO #tts-today IN SLACK FIRST. A Slack rename keeps the channel
+// id, so the morning message stays in the room Tom already reads and
+// SLACK_TTS_CHANNEL_ID keeps working as its fallback. Run this script before
+// the rename and it will CREATE a second, empty #tts-today with a different
+// id, and the morning will move into a room with no history in it.
+//
 // What it does, in order, with the TTS Slack app's bot token:
 //   1. conversations.list / conversations.create — the five public outbound
 //      TTS channels exist afterwards. The list INCLUDES archived channels: an

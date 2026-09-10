@@ -1066,3 +1066,218 @@ describe("sendToday", () => {
     expect(slack[0].body.channel).toBe("C0TODAY");
   });
 });
+
+// ── #tts-decisions (slack-design.md §3.4) ───────────────────────────────────
+// One action: revert. The default is silence, and silence is consent. This is
+// the channel the round exists for — without it Tom can only object at 5 a.m.
+// about a decision taken at 2 p.m., by which time the run that acted on it has
+// finished.
+describe("sendDecision", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.useRealTimers();
+  });
+
+  function stub() {
+    const posts: { channel: string; text: string }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: { body?: string }) => {
+        const body = JSON.parse(init?.body ?? "{}") as { channel: string; text: string };
+        posts.push({ channel: body.channel, text: body.text });
+        return { ok: true, status: 200, json: async () => ({ ok: true, ts: `${posts.length}.0` }) };
+      }),
+    );
+    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
+    vi.stubEnv("SLACK_TTS_DECISIONS_CHANNEL_ID", "C0DECISIONS");
+    return posts;
+  }
+
+  it("asks for an objection, links the item, and invites no reply while the route is dead", async () => {
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "renew the passport" });
+    const posts = stub();
+
+    expect(
+      await t.action(internal.ttsSync.sendDecision, {
+        askId: "ask-1",
+        todoId,
+        decision: "moved the passport appointment to Thursday",
+        reason: "the consulate shuts on Wednesdays this month",
+      }),
+    ).toEqual({ sent: true });
+    expect(posts).toHaveLength(1);
+    expect(posts[0].channel).toBe("C0DECISIONS");
+    expect(posts[0].text).toBe(
+      [
+        "Object if this is wrong; silence means it stands.",
+        `- <${ttsItemLink(todoId)}|Moved the passport appointment to Thursday, because the consulate shuts on Wednesdays this month.>`,
+      ].join("\n"),
+    );
+    // The thread carries the ask as its subject, so a bare "revert" in it
+    // needs no number (convex/ttsSlack.ts routeReply, case "ask").
+    const rows = await t.run(async (ctx) => ctx.db.query("dtsEvents").collect());
+    const sent = rows.filter((e) => e.kind === SLACK_SENT);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].data).toMatchObject({ subject: { kind: "ask", id: "ask-1" } });
+  });
+
+  it("invites the reply when the route is live", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    const posts = stub();
+    vi.stubEnv("SLACK_SIGNING_SECRET", "shhh");
+    vi.stubEnv("TOM_SLACK_USER_ID", "U0TOM");
+    await t.action(internal.ttsSync.sendDecision, {
+      askId: "ask-2",
+      decision: "left the MOT booked where it was",
+    });
+    expect(posts[0].text).toContain('reply "revert", or say what to do instead.');
+  });
+
+  it("says a refusal is parked, and that nothing was done in his name", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    const posts = stub();
+    await t.action(internal.ttsSync.sendDecision, {
+      askId: "ask-3",
+      decision: "emailed the landlord chasing the deposit",
+      refused: true,
+      refusedBecause: "a message to another human in your name",
+      fallback: "left it for you",
+    });
+    expect(posts[0].text).toContain(
+      "Parked for you: a message to another human in your name. Nothing was done in your name.",
+    );
+    expect(posts[0].text).toContain("instead the run left it for you");
+  });
+
+  // ONE APPEARANCE PER ITEM PER DAY. A decision about an item the morning has
+  // already claimed for "object" is not posted twice in one day — but the
+  // "act" claim is a different ask and does not suppress it, because
+  // suppressing it would silence the objection.
+  it("does not post twice about one item in one day, and is not blocked by the act claim", async () => {
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "renew the passport" });
+    const posts = stub();
+    await t.mutation(internal.ttsSlack.internalClaimSlackItem, {
+      day: ttsDayKey(Date.now()),
+      ask: "act",
+      itemId: todoId,
+      channel: "today",
+    });
+    const args = { askId: "ask-4", todoId, decision: "moved the appointment" };
+    expect(await t.action(internal.ttsSync.sendDecision, args)).toEqual({ sent: true });
+    expect(await t.action(internal.ttsSync.sendDecision, { ...args, askId: "ask-5" })).toMatchObject(
+      { sent: false },
+    );
+    expect(posts).toHaveLength(1);
+  });
+
+  it("posts nothing while #tts-decisions has no id", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    const posts = stub();
+    vi.stubEnv("SLACK_TTS_DECISIONS_CHANNEL_ID", "");
+    expect(
+      await t.action(internal.ttsSync.sendDecision, { askId: "ask-6", decision: "did a thing" }),
+    ).toMatchObject({ sent: false, reason: "not configured" });
+    expect(posts).toHaveLength(0);
+  });
+
+  // The two kinds that LEFT the morning message (§4.3) come here as they are
+  // written: a line the nightly job wrote about him, and a ruling an agent read
+  // out of his sentence, are both decisions taken in his name.
+  it("is scheduled by a model-of-Tom line the nightly job writes", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    await t.mutation(internal.ttsNightly.internalRecordWorkerEvent, {
+      kind: "learning-change",
+      data: {
+        id: "lc-1",
+        file: "writing.md",
+        before: "a spread may be drawn as a figure",
+        after: "a spread is stated with its numbers",
+        evidence: "your correction on 09-07",
+      },
+    });
+    const scheduled = await t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
+        job.name.includes("sendDecision"),
+      ),
+    );
+    expect(scheduled).toHaveLength(1);
+    const args = scheduled[0].args[0] as { askId: string; decision: string; reason?: string };
+    expect(args.askId).toBe("learning:lc-1");
+    expect(args.decision).toContain("writing.md now says a spread is stated with its numbers");
+    // The raw [change-id] prefix he was expected to type back is gone: in
+    // #tts-decisions the thread is the subject.
+    expect(args.decision).not.toContain("[lc-1]");
+  });
+
+  it("is scheduled by a ruling read out of Tom's own words, and not by a button ruling", async () => {
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "read the BDDR paper" });
+    const scheduledFor = async () =>
+      await t.run(async (ctx) =>
+        (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
+          job.name.includes("sendDecision"),
+        ),
+      );
+
+    // A button ruling is Tom's own act: nothing is taken in his name.
+    await tom.mutation(api.ttsRulings.recordRuling, {
+      todoId,
+      verdict: "revise",
+      sentence: "narrow it to the corpus confound",
+    });
+    expect(await scheduledFor()).toHaveLength(0);
+
+    // A ruling read out of a sentence he typed IS a decision taken for him.
+    // The words door only accepts a turn Tom actually authored, so the row is
+    // built the way the browser door and the Slack events route build it.
+    const sessionId = await t.run(async (ctx) =>
+      ctx.db.insert("claudeSessions", {
+        title: "a session about the paper",
+        kind: "focus-item",
+        repo: "tom.quest",
+        // The words door refuses a turn from a session about nothing: a ruling
+        // names only what Tom was actually talking about.
+        todoId,
+        status: "running",
+        nextSeq: 0,
+        createdAt: Date.now(),
+        statusChangedAt: Date.now(),
+      }),
+    );
+    const inboundId = await t.run(async (ctx) =>
+      ctx.db.insert("claudeInbound", {
+        sessionId,
+        kind: "user-turn",
+        author: "tom",
+        text: "the twin has to be matched, not resampled",
+        status: "delivered",
+        createdAt: Date.now(),
+      }),
+    );
+    await t.mutation(internal.ttsRulings.internalRecordRulingFromTomWords, {
+      inboundId,
+      verdict: "revise",
+      subjectType: "life",
+      subjectId: todoId,
+      quote: "the twin has to be matched, not resampled",
+      sentence: "the twin has to be matched, not resampled",
+    });
+    const scheduled = await scheduledFor();
+    expect(scheduled).toHaveLength(1);
+    const args = scheduled[0].args[0] as { decision: string; reason?: string; todoId?: string };
+    expect(args.todoId).toBe(todoId);
+    expect(args.decision).toBe("read the BDDR paper was ruled a revise from your own words");
+    expect(args.reason).toBe("the twin has to be matched, not resampled");
+  });
+});
+
