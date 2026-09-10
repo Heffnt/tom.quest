@@ -5,7 +5,12 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { SLACK_THREAD_CLAIMED, replyShape } from "./ttsSlack";
-import { captureReplyText, slackHourKey, slackThreadKey } from "./ttsShared";
+import { slackHourKey, slackThreadKey, ttsDayKey } from "./ttsShared";
+import { composeCaptured, renderSlack } from "./ttsCompose";
+
+/** The one reply line at capture, as convex/ttsCompose.ts writes it. */
+const captureLine = (statement: string, todoId: string) =>
+  renderSlack(composeCaptured({ todoId, statement }));
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -13,6 +18,9 @@ const SECRET = "slack-signing-secret";
 const TOM = "U0TOM";
 const DUMP = "C0DUMP";
 const TTS = "C0TTS";
+const DECISIONS = "C0DECISIONS";
+const NEEDS_YOU = "C0NEEDSYOU";
+const BROKEN = "C0BROKEN";
 
 // The route verifies HMAC-SHA256 over `v0:<timestamp>:<raw body>` with the
 // Web Crypto API; jsdom leaves that global out, so the test lends it Node's.
@@ -85,6 +93,11 @@ function slackEnv() {
   vi.stubEnv("SLACK_SIGNING_SECRET", SECRET);
   vi.stubEnv("SLACK_DUMP_CHANNEL_ID", DUMP);
   vi.stubEnv("SLACK_TTS_CHANNEL_ID", TTS);
+  // The three rooms this round adds. A reply is acted on only in a channel
+  // TTS posts to, and each admits replies only while its id is set.
+  vi.stubEnv("SLACK_TTS_DECISIONS_CHANNEL_ID", DECISIONS);
+  vi.stubEnv("SLACK_TTS_NEEDS_YOU_CHANNEL_ID", NEEDS_YOU);
+  vi.stubEnv("SLACK_TTS_BROKEN_CHANNEL_ID", BROKEN);
   vi.stubEnv("TOM_SLACK_USER_ID", TOM);
 }
 
@@ -118,15 +131,19 @@ async function posted(
   t: ReturnType<typeof convexTest>,
   ts: string,
   subject:
+    | { kind: "today"; day: string }
     | { kind: "digest"; day: string }
     | { kind: "hourly"; hour: string }
     | { kind: "todo"; id: Id<"dtsTodos"> }
     | { kind: "session"; id: Id<"claudeSessions"> }
-    | { kind: "learning"; id: string },
+    | { kind: "learning"; id: string }
+    | { kind: "ask"; id: string }
+    | { kind: "job"; id: string },
   text = "a message from TTS",
 ) {
   await t.mutation(internal.ttsSlack.internalRecordSlackSent, {
-    channel: TTS,
+    channel:
+      subject.kind === "ask" ? DECISIONS : subject.kind === "job" ? BROKEN : TTS,
     ts,
     subject,
     text,
@@ -173,8 +190,12 @@ describe("the reply at capture", () => {
       threadTs: message.ts,
       subject: { kind: "todo", id: first.id },
     });
-    expect(sends[0].text).toBe(captureReplyText("buy climbing tape", first.id as string));
-    expect(sends[0].text).not.toContain("\n");
+    expect(sends[0].text).toBe(captureLine("buy climbing tape", first.id as string));
+    // It says what happens NEXT rather than echoing his own words back at him.
+    expect(sends[0].text).toContain(
+      "Captured; it is prepared tonight and reaches you in tomorrow's morning message.",
+    );
+    expect(sends[0].text).not.toContain("Captured as a todo");
   });
 
   // witness: let recordSlackSent re-stamp slackReplyTs on every send in the
@@ -200,7 +221,7 @@ describe("the reply at capture", () => {
     const result = await t.action(internal.ttsSync.sendSlack, {
       channel: DUMP,
       threadTs: "1700000000.000200",
-      text: captureReplyText("reply to me", id),
+      text: captureLine("reply to me", id),
       subject: { kind: "todo", id },
     });
     expect(result).toEqual({ ok: true, ts: "9000.1" });
@@ -276,40 +297,124 @@ describe("the #tts thread for a todo that needs Tom", () => {
 
   const KEY = "gmail:message:18f0a1";
 
-  it("opens once, through the one door, with the todo as its subject", async () => {
+  // THE JOB SENDS FACTS, NOT TEXT (slack-design.md §4.5). The thread is
+  // composed here from the todo's own statement and entry action plus the
+  // triage's reason, and the vendor's subject and From header — which the job
+  // used to put in the message — never reach Slack at all.
+  it("composes the thread from the todo and the reason, and opens it once", async () => {
     const t = convexTest(schema, modules);
     const id = await aTodo(t);
     expect(
       await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, {
         todoId: id,
-        text: "Needs you today — Sarah Chen: Lab meeting Friday",
+        reason: "the mail threatens to deactivate the account and may not be from OpenAI",
         key: KEY,
       }),
     ).toEqual({ opened: true, key: KEY });
 
-    const sends = await scheduledSends(t);
-    expect(sends).toHaveLength(1);
-    // No channel: the door's default is #tts, which is where anything that
-    // needs Tom goes.
-    expect(sends[0].channel).toBeUndefined();
-    expect(sends[0].subject).toEqual({ kind: "todo", id });
-    expect(sends[0].text).toContain("Sarah Chen");
+    // The message is a DRAFT REQUEST now: the Fable run on the box writes it,
+    // and the template it falls back to is composed here.
+    const drafts = await events(t, "slack-draft-request");
+    expect(drafts).toHaveLength(1);
+    const draft = drafts[0].data as {
+      kind: string;
+      fallback: string;
+      subject: unknown;
+      facts: { facts: { id: string }[] };
+    };
+    expect(draft.kind).toBe("needs-you");
+    expect(draft.subject).toEqual({ kind: "todo", id });
+    expect(draft.fallback).toContain(
+      "Only you can settle this: the mail threatens to deactivate the account",
+    );
+    expect(draft.fallback).toContain("Open the message it came from.");
+    // The provenance's link is the source line; the raw vendor text is not in
+    // the message at all.
+    expect(draft.fallback).toContain("https://mail.google.com/mail/u/0/#all/18f0a1");
+    expect(draft.facts.facts.map((f) => f.id)).toContain(`todo:${id}`);
 
     const markers = await events(t, "needs-tom");
     expect(markers).toHaveLength(1);
     expect(markers[0].key).toBe(KEY);
     expect(markers[0].todoId).toBe(id);
+    // What the message does NOT print stays on the row.
+    expect(markers[0].data).toMatchObject({
+      reason: "the mail threatens to deactivate the account and may not be from OpenAI",
+    });
+  });
+
+  // ONE APPEARANCE PER ITEM PER DAY, across channels (§2.5). The morning
+  // message claims at 5 a.m., before any daytime channel runs.
+  it("does not open a thread for an item the morning already claimed today", async () => {
+    const t = convexTest(schema, modules);
+    const id = await aTodo(t);
+    const day = ttsDayKey(Date.now());
+    await t.mutation(internal.ttsSlack.internalClaimSlackItem, {
+      day,
+      ask: "act",
+      itemId: id,
+      channel: "today",
+    });
+    const result = await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, {
+      todoId: id,
+      reason: "it needs an answer today",
+      key: KEY,
+    });
+    expect(result).toMatchObject({ opened: false });
+    expect(await events(t, "slack-draft-request")).toHaveLength(0);
+  });
+
+  it("claims the item for the day, and the same item under another ask is its own key", async () => {
+    const t = convexTest(schema, modules);
+    const id = await aTodo(t);
+    const day = ttsDayKey(Date.now());
+    expect(
+      await t.mutation(internal.ttsSlack.internalClaimSlackItem, {
+        day,
+        ask: "act",
+        itemId: id,
+        channel: "needsYou",
+      }),
+    ).toEqual({ claimed: true, by: "needsYou" });
+    // A second channel finds it taken, and is told which one has it.
+    expect(
+      await t.mutation(internal.ttsSlack.internalClaimSlackItem, {
+        day,
+        ask: "act",
+        itemId: id,
+        channel: "today",
+      }),
+    ).toEqual({ claimed: false, by: "needsYou" });
+    // An item may be BOTH something to do today and the subject of a decision:
+    // suppressing the second would silence the objection.
+    expect(
+      await t.mutation(internal.ttsSlack.internalClaimSlackItem, {
+        day,
+        ask: "object",
+        itemId: id,
+        channel: "decisions",
+      }),
+    ).toEqual({ claimed: true, by: "decisions" });
+    // THE DAY ROLLS AT 5 A.M.: tomorrow re-raises what he ignored tonight.
+    expect(
+      await t.mutation(internal.ttsSlack.internalClaimSlackItem, {
+        day: ttsDayKey(Date.now() + 86_400_000),
+        ask: "act",
+        itemId: id,
+        channel: "today",
+      }),
+    ).toEqual({ claimed: true, by: "today" });
   });
 
   it("never opens a second thread for the same producer id", async () => {
     const t = convexTest(schema, modules);
     const id = await aTodo(t);
-    const args = { todoId: id, text: "Needs you today", key: KEY };
+    const args = { todoId: id, reason: "it needs an answer today", key: KEY };
     await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, args);
     expect(
       await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, args),
     ).toEqual({ opened: false, key: KEY });
-    expect(await scheduledSends(t)).toHaveLength(1);
+    expect(await events(t, "slack-draft-request")).toHaveLength(1);
     expect(await events(t, "needs-tom")).toHaveLength(1);
   });
 
@@ -318,7 +423,7 @@ describe("the #tts thread for a todo that needs Tom", () => {
     const first = await aTodo(t);
     await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, {
       todoId: first,
-      text: "Needs you today",
+      reason: "it needs an answer today",
       key: KEY,
     });
     // The cursor was lost and the same message came back as a second todo.
@@ -326,11 +431,11 @@ describe("the #tts thread for a todo that needs Tom", () => {
     expect(
       await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, {
         todoId: second,
-        text: "Needs you today",
+        reason: "it needs an answer today",
         key: KEY,
       }),
     ).toEqual({ opened: false, key: KEY });
-    expect(await scheduledSends(t)).toHaveLength(1);
+    expect(await events(t, "slack-draft-request")).toHaveLength(1);
   });
 
   it("refuses an unknown todo and leaves no marker behind", async () => {
@@ -340,12 +445,12 @@ describe("the #tts thread for a todo that needs Tom", () => {
     await expect(
       t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, {
         todoId: "not-an-id",
-        text: "Needs you today",
+        reason: "it needs an answer today",
         key: KEY,
       }),
     ).rejects.toThrow(/Unknown todo id/);
     expect(await events(t, "needs-tom")).toHaveLength(0);
-    expect(await scheduledSends(t)).toHaveLength(0);
+    expect(await events(t, "slack-draft-request")).toHaveLength(0);
   });
 
   // ── The door the box poller comes through ────────────────────────────────
@@ -374,17 +479,17 @@ describe("the #tts thread for a todo that needs Tom", () => {
       vi.stubEnv("TTS_WORKER_KEY", "s3cret");
       const t = convexTest(schema, modules);
       const id = await aTodo(t);
-      const res = await open(t, { todoId: id, text: "Needs you today", key: KEY });
+      const res = await open(t, { todoId: id, reason: "Sarah needs a reply", key: KEY });
       expect(res.status).toBe(200);
       expect(await res.json()).toMatchObject({ ok: true, opened: true, key: KEY });
-      expect(await scheduledSends(t)).toHaveLength(1);
+      expect(await events(t, "slack-draft-request")).toHaveLength(1);
     });
 
     it("is closed to a caller without the worker key", async () => {
       vi.stubEnv("TTS_WORKER_KEY", "s3cret");
       const t = convexTest(schema, modules);
       const id = await aTodo(t);
-      const res = await open(t, { todoId: id, text: "Needs you today", key: KEY }, "nope");
+      const res = await open(t, { todoId: id, reason: "Sarah needs a reply", key: KEY }, "nope");
       expect(res.status).toBe(401);
       expect(await events(t, "needs-tom")).toHaveLength(0);
       expect(await scheduledSends(t)).toHaveLength(0);
@@ -396,19 +501,23 @@ describe("the #tts thread for a todo that needs Tom", () => {
       const id = await aTodo(t);
       for (const body of [
         {},
-        { text: "Needs you today", key: KEY }, // no todoId
-        { todoId: id, key: KEY }, // no text
-        { todoId: id, text: "Needs you today" }, // no key
-        { todoId: id, text: "   ", key: KEY }, // a blank message is no message
-        { todoId: id, text: "Needs you today", key: "  " },
-        { todoId: 17, text: "Needs you today", key: KEY }, // not even a string
-        { todoId: "not-an-id", text: "Needs you today", key: KEY },
+        { reason: "Sarah needs a reply", key: KEY }, // no todoId
+        { todoId: id, key: KEY }, // no reason
+        { todoId: id, reason: "Sarah needs a reply" }, // no key
+        { todoId: id, reason: "   ", key: KEY }, // a blank reason is no reason
+        { todoId: id, reason: "Sarah needs a reply", key: "  " },
+        { todoId: 17, reason: "Sarah needs a reply", key: KEY }, // not even a string
+        { todoId: "not-an-id", reason: "Sarah needs a reply", key: KEY },
+        // `text` is REFUSED rather than ignored: both sides ship in one commit,
+        // and a silent ignore would post a message with no reason for as long
+        // as an old worker copy survived on the box.
+        { todoId: id, text: "Needs you today", reason: "Sarah needs a reply", key: KEY },
       ]) {
         expect((await open(t, body)).status).toBe(400);
       }
       // Nothing was written and nothing was sent for any of them.
       expect(await events(t, "needs-tom")).toHaveLength(0);
-      expect(await scheduledSends(t)).toHaveLength(0);
+      expect(await events(t, "slack-draft-request")).toHaveLength(0);
     });
 
     it("refuses a body that is not JSON at all", async () => {
@@ -862,7 +971,7 @@ describe("threaded replies from Tom", () => {
     const sends = await scheduledSends(t);
     expect(sends).toHaveLength(1);
     expect(sends[0]).toMatchObject({ channel: TTS, threadTs: "800.1", subject: { kind: "todo", id: todoId } });
-    expect(sends[0].text).toBe(captureReplyText("book the ferry", todoId));
+    expect(sends[0].text).toBe(captureLine("book the ferry", todoId));
     // The newest record in the thread now names the todo: a second reply is a
     // fact on it, not another todo.
     await t.mutation(internal.ttsSlack.internalRecordSlackSent, {
@@ -1013,5 +1122,113 @@ describe("replyShape", () => {
     ]) {
       expect(replyShape(fact), fact).toBe("fact");
     }
+  });
+});
+
+// ── The two rooms a reply lands in that did not exist before ────────────────
+// #tts-decisions: the THREAD IS THE DECISION, so no number is parsed — a bare
+// "revert" reverts it and anything else is the sentence Tom wants instead.
+// #tts-broken: a reply about a failure is a fact and nothing else.
+describe("a reply in one of the new rooms", () => {
+  it("writes one delegate-objection row keyed by the askId for a bare revert", async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    await posted(t, "200.1", { kind: "ask", id: "3f9c1a22" }, "Object if this is wrong.");
+    const outcome = await postEvent(t, {
+      channel: DECISIONS,
+      ts: "200.2",
+      thread_ts: "200.1",
+      text: "revert",
+    });
+    expect(outcome).toMatchObject({ outcome: "delegate-objection", id: "3f9c1a22" });
+    const rows = await events(t, "delegate-objection");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].key).toBe("3f9c1a22");
+    expect(rows[0].data).toMatchObject({ askId: "3f9c1a22", revert: true });
+    // No number, and no day: the thread names the decision on its own.
+    expect(rows[0].data).not.toHaveProperty("n");
+  });
+
+  it("keeps a sentence as the sentence, and does not call it a revert", async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    await posted(t, "201.1", { kind: "ask", id: "ask-2" }, "Object if this is wrong.");
+    await postEvent(t, {
+      channel: DECISIONS,
+      ts: "201.2",
+      thread_ts: "201.1",
+      text: "leave it Wednesday",
+    });
+    const rows = await events(t, "delegate-objection");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].data).toMatchObject({
+      askId: "ask-2",
+      revert: false,
+      sentence: "leave it Wednesday",
+    });
+  });
+
+  it("takes a reply about a failure as a fact", async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    await posted(t, "202.1", { kind: "job", id: "poll-gmail" }, "The Gmail poller failed.");
+    const outcome = await postEvent(t, {
+      channel: BROKEN,
+      ts: "202.2",
+      thread_ts: "202.1",
+      text: "the token expired, I will mint a new one",
+    });
+    expect(outcome).toMatchObject({ outcome: "tom-note" });
+    const notes = await events(t, "tom-note");
+    expect(notes).toHaveLength(1);
+    expect(notes[0].data).toMatchObject({
+      job: "poll-gmail",
+      text: "the token expired, I will mint a new one",
+    });
+  });
+
+  it("acts on a reply in the needs-you room the same way it does in #tts", async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    const id = await t.run(async (ctx) =>
+      ctx.db.insert("dtsTodos", {
+        statement: "check the OpenAI notice",
+        readiness: "unprepared",
+        status: "active",
+        timingClass: "whenever",
+        source: "email",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    await t.mutation(internal.ttsSlack.internalRecordSlackSent, {
+      channel: NEEDS_YOU,
+      ts: "203.1",
+      subject: { kind: "todo", id },
+      text: "Only you can settle this.",
+    });
+    const outcome = await postEvent(t, {
+      channel: NEEDS_YOU,
+      ts: "203.2",
+      thread_ts: "203.1",
+      text: "done",
+    });
+    expect(outcome).toMatchObject({ outcome: "done" });
+    const todo = await t.run(async (ctx) => ctx.db.get(id));
+    expect(todo?.status).toBe("done");
+  });
+
+  it("ignores a reply in a room TTS does not post to", async () => {
+    slackEnv();
+    vi.stubEnv("SLACK_TTS_DECISIONS_CHANNEL_ID", "");
+    const t = convexTest(schema, modules);
+    await posted(t, "204.1", { kind: "ask", id: "ask-3" }, "Object if this is wrong.");
+    await postEvent(t, {
+      channel: DECISIONS,
+      ts: "204.2",
+      thread_ts: "204.1",
+      text: "revert",
+    });
+    expect(await events(t, "delegate-objection")).toHaveLength(0);
   });
 });

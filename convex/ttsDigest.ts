@@ -241,7 +241,9 @@ export function calendarLeadText(spans: { start: number; end: number; allDay: bo
   const timed = spans.filter((s) => !s.allDay).sort((a, b) => a.start - b.start);
   const allDay = spans.length - timed.length;
   if (timed.length === 0) {
-    return `Your day carries ${countWord(allDay)} ${allDay === 1 ? "entry" : "entries"} that run all day and nothing timed.`;
+    return `Your day carries ${countWord(allDay)} ${
+      allDay === 1 ? "entry that runs" : "entries that run"
+    } all day and nothing timed.`;
   }
   const from = nyHhmm(timed[0].start);
   const to = nyHhmm(Math.max(...timed.map((s) => s.end)));

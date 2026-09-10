@@ -125,7 +125,10 @@ export function statement(raw: string): string {
     window.lastIndexOf(":"),
     window.lastIndexOf("—"),
   );
-  const cut = clause > 0 ? clause : window.lastIndexOf(" ");
+  // A boundary in the first two fifths of the line throws away more than it
+  // saves: "0: Rework the credential file helper ..." would become "0.". Past
+  // that, cut at the clause; before it, cut at the last word.
+  const cut = clause >= Math.floor(LINE_CHARS * 0.4) ? clause : window.lastIndexOf(" ");
   const kept = (cut > 0 ? window.slice(0, cut) : window).trimEnd();
   return `${kept.replace(/[\s,;:—.!?]+$/, "")}.`;
 }
@@ -580,7 +583,7 @@ function stripStop(text: string): string {
 export function todayLine(item: TodayItem): string {
   const action = item.entryAction ? `: ${stripStop(item.entryAction)}.` : ".";
   const countdown = item.countdown ? ` ${stripStop(item.countdown)}.` : "";
-  return statement(`${stripStop(item.statement)}${action}${countdown}`);
+  return statement(`${capitalise(stripStop(item.statement))}${action}${countdown}`);
 }
 
 /** delegate-design.md §2.4's line, returning a Line's parts rather than a
@@ -624,9 +627,12 @@ function joinClauses(parts: string[]): string {
   return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
 }
 
+/** WHAT IT MEANS FOR HIM FIRST, then the detail, then how many times — in one
+ *  sentence, so `statement` cuts the detail before it cuts the meaning. */
 export function brokenLine(b: BrokenFact): string {
+  const detail = b.detail === undefined ? "" : ` ${stripStop(b.detail)}.`;
   const times = b.count !== undefined && b.count > 1 ? ` It has failed ${b.count} times.` : "";
-  return statement(`${stripStop(b.detail ?? b.statement)}.${times}`);
+  return statement(`${stripStop(b.statement)}.${detail}${times}`);
 }
 
 /** The calendar's own line. All-day entries say so; the rest name their span. */

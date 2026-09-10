@@ -266,8 +266,8 @@ export const sendSlackDraft = internalAction({
 // behind its own switch, so turning one on never turns another on. The
 // INBOUND path (worker/jobs/poll-dump.mjs → /tts/capture) is untouched.
 //   DIGEST_ENABLED                 the 5 a.m. morning message (on)
-//   MORNING_WRITER_ENABLED         the Fable run on the box writes it (on);
-//                                  off = the plain template, posted here
+//   TTS_MORNING_WRITER=off         (env) the Fable run on the box does NOT
+//                                  write it; the plain template is posted here
 //   HOURLY_UPDATE_ENABLED          the hourly line, below, in #tts-hourly
 //   DECISION_MESSAGES_ENABLED      #tts-decisions
 //   BROKEN_MESSAGES_ENABLED        #tts-broken
@@ -275,7 +275,16 @@ export const sendSlackDraft = internalAction({
 // a session that needs a decision opens a needs-you thread, and a session that
 // failed posts to #tts-broken.
 const DIGEST_ENABLED: boolean = true;
-const MORNING_WRITER_ENABLED: boolean = true;
+/** The Fable writer, off with TTS_MORNING_WRITER=off on the deployment. It is
+ *  an env var and not a constant like its siblings for one reason: the writer
+ *  lives on the Jarvis Box, so turning it off is what Tom does when the box is
+ *  down for a while and he would rather have the template at 5 a.m. than the
+ *  template at 5:05. Read per call, so a value set after the isolate warmed up
+ *  counts. */
+export function morningWriterEnabled(): boolean {
+  return process.env.TTS_MORNING_WRITER !== "off";
+}
+
 const DECISION_MESSAGES_ENABLED: boolean = true;
 const BROKEN_MESSAGES_ENABLED: boolean = true;
 
@@ -353,7 +362,7 @@ export const sendToday = internalAction({
     // carries the digest's own bookkeeping so whichever path posts marks the
     // day sent with the same window.
     const channel = channelFor("today");
-    if (MORNING_WRITER_ENABLED) {
+    if (morningWriterEnabled()) {
       const opened = await ctx.runMutation(internal.ttsSlackDrafts.internalOpenSlackDraft, {
         requestId: `today:${day}`,
         kind: "today",
