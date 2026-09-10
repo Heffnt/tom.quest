@@ -7,6 +7,12 @@ import { auth } from "./auth";
 import { nowContext } from "./tts";
 import { isRulingVerdict } from "./ttsRulings";
 import {
+  DELEGATE_MAX_PER_JOB,
+  DELEGATE_MAX_PER_SESSION,
+  DELEGATE_MAX_TURNS,
+  DELEGATE_TIMEOUT_MS,
+} from "./ttsAsk";
+import {
   DAY_MS,
   NARROW_LIST,
   RECOMMENDATION_VALUES,
@@ -760,7 +766,17 @@ const ttsState = httpAction(async (ctx, request) => {
   return jsonResponse(200, {
     todos,
     calendarEvents,
+    // The one home reaching the one caller that cannot import it: the delegate
+    // is worker/jobs/delegate.mjs and Node does not load .ts, so the narrow
+    // list and the delegate's budgets ride this payload the way
+    // writingStandard and sessionRepos ride /tts/batch-context.
     narrowList: NARROW_LIST,
+    delegate: {
+      maxPerSession: DELEGATE_MAX_PER_SESSION,
+      maxPerJob: DELEGATE_MAX_PER_JOB,
+      maxTurns: DELEGATE_MAX_TURNS,
+      timeoutMs: DELEGATE_TIMEOUT_MS,
+    },
     prepDay: day,
     ...nowContext(Date.now()),
   });
@@ -1176,6 +1192,30 @@ const ttsAsk = httpAction(async (ctx, request) => {
   }
 });
 http.route({ path: "/tts/ask", method: "POST", handler: ttsAsk });
+
+// GET /tts/ask-context — what the caller sees BEFORE it asks: how many asks it
+// has spent in the last day, its cap, and every objection Tom has already made
+// about this todo. Those objections go into the delegate's prompt, and they
+// are the point of the whole loop: the delegate never re-takes a decision he
+// reverted. Read-only, worker-key gated, and bounded — one index read per kind.
+const ttsAskContext = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const params = new URL(request.url).searchParams;
+  const nonempty = (value: string | null) => (value !== null && value.trim() !== "" ? value.trim() : undefined);
+  const sessionId = nonempty(params.get("sessionId"));
+  const job = nonempty(params.get("job"));
+  if ((sessionId === undefined) === (job === undefined)) {
+    return jsonResponse(400, { error: "exactly one of sessionId or job is required" });
+  }
+  const context = await ctx.runQuery(internal.ttsAsk.internalAskContext, {
+    sessionId,
+    job,
+    todoId: nonempty(params.get("todoId")),
+  });
+  return jsonResponse(200, context);
+});
+http.route({ path: "/tts/ask-context", method: "GET", handler: ttsAskContext });
 
 // POST /tts/merge is the future merge command's narrow record door. It is not
 // a delegate decision: a mechanically gated merge is only reported in the

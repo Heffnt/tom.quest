@@ -10,6 +10,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  runClaude,
   captureContext,
   clip,
   convexFetch,
@@ -345,5 +346,17 @@ describe("declinedLine", () => {
 describe("JSON_ONLY_ANSWER", () => {
   it("is the one JSON instruction every worker prompt shares", () => {
     expect(JSON_ONLY_ANSWER).toBe("Answer ONLY a JSON object, no prose, no code fences:");
+  });
+});
+
+// runClaude's allowedTools is what keeps the delegate's agentic run read-only
+// (worker/jobs/delegate.mjs passes Read, Glob and Grep). A malformed list must
+// fail before the process is spawned rather than quietly widening the run to
+// every tool the CLI has.
+describe("runClaude allowedTools", () => {
+  it("refuses a list that is not non-empty strings, before spawning anything", () => {
+    expect(() => runClaude("p", { allowedTools: "Read" })).toThrow(/allowedTools/);
+    expect(() => runClaude("p", { allowedTools: ["Read", ""] })).toThrow(/allowedTools/);
+    expect(() => runClaude("p", { allowedTools: [1] })).toThrow(/allowedTools/);
   });
 });

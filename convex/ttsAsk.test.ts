@@ -1,4 +1,4 @@
-import { convexTest } from "convex-test";
+import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import schema from "./schema";
 import {
@@ -13,7 +13,7 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
 const KEY = "worker-key";
 
-async function seedTodo(t: ReturnType<typeof convexTest>, statement: string) {
+async function seedTodo(t: TestConvex<typeof schema>, statement: string) {
   return await t.run(async (ctx) =>
     ctx.db.insert("dtsTodos", {
       statement,
@@ -28,7 +28,7 @@ async function seedTodo(t: ReturnType<typeof convexTest>, statement: string) {
 }
 
 async function seedSession(
-  t: ReturnType<typeof convexTest>,
+  t: TestConvex<typeof schema>,
   mode?: "autonomous" | "interactive",
 ) {
   return await t.run(async (ctx) =>
@@ -64,7 +64,7 @@ const body = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-function post(t: ReturnType<typeof convexTest>, payload: Record<string, unknown>) {
+function post(t: TestConvex<typeof schema>, payload: Record<string, unknown>) {
   return t.fetch("/tts/ask", {
     method: "POST",
     headers: { "X-TTS-Key": KEY, "Content-Type": "application/json" },
@@ -72,7 +72,7 @@ function post(t: ReturnType<typeof convexTest>, payload: Record<string, unknown>
   });
 }
 
-const rows = (t: ReturnType<typeof convexTest>) =>
+const rows = (t: TestConvex<typeof schema>) =>
   t.run(async (ctx) =>
     ctx.db
       .query("dtsEvents")

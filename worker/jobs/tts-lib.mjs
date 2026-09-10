@@ -471,12 +471,23 @@ export const CLAUDE_CONFIG_DIR = "/root/.claude-accounts/active";
 // actions) pass a cheap model; omit it and the account default applies.
 export function runClaude(
   prompt,
-  { cwd, timeoutMs, agentic = false, maxTurns, model } = {},
+  { cwd, timeoutMs, agentic = false, maxTurns, model, allowedTools } = {},
 ) {
   const turns = maxTurns ?? (agentic ? 200 : 8);
   const args = ["-p", "--output-format", "json", "--max-turns", String(turns)];
   if (model) args.push("--model", model);
   if (agentic) args.push("--permission-mode", "bypassPermissions");
+  // Agentic mode makes Claude's tools usable. A caller that also supplies an
+  // allow-list is responsible for putting it in a disposable workspace: the
+  // allow-list keeps this run read-only, while the throwaway workspace makes
+  // bypassPermissions harmless if a future CLI version interprets a tool more
+  // broadly than we expect.
+  if (allowedTools !== undefined) {
+    if (!Array.isArray(allowedTools) || allowedTools.some((tool) => typeof tool !== "string" || tool === "")) {
+      throw new Error("allowedTools must be an array of non-empty strings");
+    }
+    args.push("--allowedTools", allowedTools.join(","));
+  }
   const stdout = execFileSync("claude", args, {
     input: prompt,
     cwd,
