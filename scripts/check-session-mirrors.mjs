@@ -6,6 +6,7 @@
 // session-constants-two-homes: "a byte-equality check ties the mirrors").
 import { lstatSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
+import { narrowListFailures } from "./narrow-list-mirror.mjs";
 
 // Guardrail 2: some session vocabulary has no worker half at all — the
 // live-status list's other half is convex/schema.ts, and its failure mode is a
@@ -440,6 +441,17 @@ if (sharedBlock) {
     }
   }
 }
+
+// 7. The narrow list: NARROW_LIST's `command` strings in ttsShared.ts must
+// equal NARROW_LIST_COMMANDS in session.mjs, in order, byte for byte. The
+// delegate reads the one home over HTTP (GET /tts/state); the classifier,
+// which has no network in its path, reads this mirror. A drift means the two
+// halves of Tom's list disagree about what is his — and the half that is
+// wrong is the half that decides whether a command runs unattended.
+// The comparison itself lives in scripts/narrow-list-mirror.mjs so it can be
+// unit-tested without running this whole script.
+// witness: change one `command` string on one side only.
+failures.push(...narrowListFailures(shared, sessionMjs));
 
 if (failures.length > 0) {
   console.error("Session-mirror check FAILED:");
