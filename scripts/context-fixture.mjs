@@ -237,6 +237,7 @@ export const SEARCH_LINES = Object.freeze([
   '- WikiTom sources/ and tom-text/ — tts-search sources "<query>"',
   '- archived session transcripts — tts-search archive "<query>" [--since YYYY-MM-DD]',
   "- open repository-rule proposals — tts-search proposals [--repo NAME]",
+  "- recorded evals runs — tts-search evals [--limit N]",
 ]);
 
 export const ALL_KNOW_SECTIONS = Object.freeze([
@@ -359,16 +360,19 @@ export const EXPECTED = Object.freeze({
   },
 
   // 5 — the paths a brief names: the root rules, then the deepest published
-  // AGENTS.md over each token, depth desc then path asc. app/ is named by
+  // AGENTS.md over each token, ordered by the depth of the TOKEN that matched
+  // it (then the number of matching tokens, then the file's own depth, then
+  // path asc). The brief names worker/jobs/x.mjs, a depth-2 token, and
+  // convex/tts.ts, a depth-1 one, so worker/ comes first. app/ is named by
   // nothing and stays in the index.
   todoPaths: {
     expanded: expandedBlock(
-      `MODEL-OF-TOM EXPANDED (for todo ${IDS.paths}, category "agent-systems"): model-of-tom/areas/agent-systems.md 49 B, model-of-tom/priorities.md § Rules learned from corrections 64 B, AGENTS.md 25 B, convex/AGENTS.md 24 B, worker/AGENTS.md 24 B, 3 rulings 84 B, 3 session outcomes 116 B — 693 B`,
+      `MODEL-OF-TOM EXPANDED (for todo ${IDS.paths}, category "agent-systems"): model-of-tom/areas/agent-systems.md 49 B, model-of-tom/priorities.md § Rules learned from corrections 64 B, AGENTS.md 25 B, worker/AGENTS.md 24 B, convex/AGENTS.md 24 B, 3 rulings 84 B, 3 session outcomes 116 B — 693 B`,
       [
         AGENT_SYSTEMS, CORRECTIONS,
         ["AGENTS.md", rulesBody("AGENTS.md")],
-        ["convex/AGENTS.md", rulesBody("convex/AGENTS.md")],
         ["worker/AGENTS.md", rulesBody("worker/AGENTS.md")],
+        ["convex/AGENTS.md", rulesBody("convex/AGENTS.md")],
         BATCH_RULINGS, BATCH_OUTCOMES,
       ],
     ),

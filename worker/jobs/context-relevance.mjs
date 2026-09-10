@@ -172,6 +172,7 @@ export const SEARCH_QUESTIONS = Object.freeze([
   // has no other way to learn that last night proposed a line for that very
   // file — the unknown-unknown this block exists for.
   { what: "open repository-rule proposals", how: `${SEARCH_BINARY} proposals [--repo NAME]` },
+  { what: "recorded evals runs", how: `${SEARCH_BINARY} evals [--limit N]` },
 ]);
 
 export function areaName(path) {
@@ -618,7 +619,13 @@ function select(input) {
   }
 
   // Rule 9: the root AGENTS.md, plus the deepest one over each path token.
-  // Depth desc then path asc, and the root is never dropped by the ordering.
+  // THE ORDER IS THE TOKEN'S, NOT THE FILE'S. Deepest matching token first,
+  // then the file the most tokens matched, and only then the AGENTS.md's own
+  // depth and path as a determinism tail. Sorting on the file's depth alone
+  // made every real tie alphabetical here — `app/`, `convex/` and `worker/`
+  // are all depth 1 — so a brief that named worker/jobs/context-relevance.mjs
+  // lost to a passing mention of app/page.tsx. The root is never dropped by
+  // the ordering.
   const runRepos = [...new Set(repos.filter((repo) => typeof repo === "string" && repo !== ""))].sort();
   const availableRules = repoRules.filter((rule) => runRepos.includes(rule.repo));
   // The root goes when the brief named a path, and also when the RUN'S SUBJECT
@@ -634,13 +641,24 @@ function select(input) {
         const first = token.split("/")[0];
         if (!forRepo.some((rule) => rule.path.split("/")[0] === first)) continue;
         const rule = rulesForToken(forRepo, token);
-        if (rule !== null && rule.path !== "AGENTS.md") matched.set(`${rule.repo}:${rule.path}`, rule);
+        if (rule === null || rule.path === "AGENTS.md") continue;
+        const key = `${rule.repo}:${rule.path}`;
+        const seen = matched.get(key);
+        if (seen === undefined) matched.set(key, { rule, tokenDepth: depthOf(token), tokenCount: 1 });
+        else {
+          seen.tokenDepth = Math.max(seen.tokenDepth, depthOf(token));
+          seen.tokenCount += 1;
+        }
       }
     }
-    const ordered = [...matched.values()].sort((a, b) => {
-      const depth = depthOf(b.path) - depthOf(a.path);
-      return depth !== 0 ? depth : a.path.localeCompare(b.path);
-    });
+    const ordered = [...matched.values()]
+      .sort((a, b) => {
+        if (a.tokenDepth !== b.tokenDepth) return b.tokenDepth - a.tokenDepth;
+        if (a.tokenCount !== b.tokenCount) return b.tokenCount - a.tokenCount;
+        const depth = depthOf(b.rule.path) - depthOf(a.rule.path);
+        return depth !== 0 ? depth : a.rule.path.localeCompare(b.rule.path);
+      })
+      .map((entry) => entry.rule);
     let agentsBytes = 0;
     const push = (rule) => {
       if (rule === undefined || chosen.agents.length >= CAPS.agentsFiles) return;
@@ -1004,7 +1022,7 @@ function shrinkFetchable(items) {
   if (list.filter((item) => item.group === "search").length > 1) {
     list = [
       ...list.filter((item) => item.group !== "search"),
-      { what: "seven read-only search questions", how: `${SEARCH_BINARY} --help`, group: "search" },
+      { what: "the read-only search questions", how: `${SEARCH_BINARY} --help`, group: "search" },
     ];
     applied.push("search questions collapsed");
     if (done()) return out();
