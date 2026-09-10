@@ -2118,6 +2118,91 @@ http.route({
   handler: ttsLearningObjectionsConsumed,
 });
 
+// GET /tts/repo-proposals?repo=<repo> — the open repository-rule proposals
+// the nightly repo-learning step made for one repository, newest first. A
+// session working in that repository reads them before it edits the nested
+// AGENTS.md files, applies the ones it agrees with on a branch, and posts
+// back below. Read-only, worker key.
+const ttsRepoProposals = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const params = new URL(request.url).searchParams;
+  const repo = params.get("repo");
+  const limitRaw = params.get("limit");
+  const limit = limitRaw === null ? undefined : Number(limitRaw);
+  if (limitRaw !== null && !Number.isFinite(limit)) {
+    return jsonResponse(400, { error: "limit, if given, must be a number" });
+  }
+  const result = await ctx.runQuery(internal.ttsNightly.internalOpenRepoProposals, {
+    repo: repo === null || repo === "" ? undefined : repo,
+    limit,
+  });
+  return jsonResponse(200, result);
+});
+
+http.route({ path: "/tts/repo-proposals", method: "GET", handler: ttsRepoProposals });
+
+// POST /tts/repo-proposal-applied — body { id, commit, line? }. The session
+// that landed a proposal in its repository says so: the row's status becomes
+// "applied" and the commit and the FINAL wording are stamped on it. The next
+// night's repo-learning step reads that and moves the evidence entry from its
+// "— proposed" heading to the live one, rewriting the line to what merged.
+const ttsRepoProposalApplied = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const { id, commit, line } = (body ?? {}) as { id?: unknown; commit?: unknown; line?: unknown };
+  if (typeof id !== "string" || id.trim() === "" || typeof commit !== "string" || commit.trim() === "") {
+    return jsonResponse(400, { error: "id and commit (strings) required" });
+  }
+  if (line !== undefined && typeof line !== "string") {
+    return jsonResponse(400, { error: "line, if given, must be a string" });
+  }
+  const result = await ctx.runMutation(internal.ttsNightly.internalApplyRepoProposal, {
+    id: id.trim(),
+    commit: commit.trim(),
+    line,
+  });
+  return jsonResponse(200, { ok: true, ...result });
+});
+
+http.route({ path: "/tts/repo-proposal-applied", method: "POST", handler: ttsRepoProposalApplied });
+
+// POST /tts/repo-proposal-dropped — body { id, reply? }. Tom replied on the
+// proposal's digest line. The nightly job posts this where it would revert a
+// model-of-Tom line: the row's status becomes "dropped", and the next night's
+// repo-learning step writes `dropped:` on the evidence entry, which is what
+// stops the same rule being proposed again.
+const ttsRepoProposalDropped = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const { id, reply } = (body ?? {}) as { id?: unknown; reply?: unknown };
+  if (typeof id !== "string" || id.trim() === "") {
+    return jsonResponse(400, { error: "id (string) required" });
+  }
+  if (reply !== undefined && typeof reply !== "string") {
+    return jsonResponse(400, { error: "reply, if given, must be a string" });
+  }
+  const result = await ctx.runMutation(internal.ttsNightly.internalDropRepoProposal, {
+    id: id.trim(),
+    reply,
+  });
+  return jsonResponse(200, { ok: true, ...result });
+});
+
+http.route({ path: "/tts/repo-proposal-dropped", method: "POST", handler: ttsRepoProposalDropped });
+
 // POST /tts/event — one dtsEvents row from the worker. Body: { kind, data? }.
 // The job records a failed step ("nightly-failure"), its learning run
 // ("learning-run") and its summary ("nightly-run") this way, which is what

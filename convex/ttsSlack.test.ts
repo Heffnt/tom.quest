@@ -917,6 +917,46 @@ describe("threaded replies from Tom", () => {
     expect(await events(t, "learning-objection")).toHaveLength(2);
   });
 
+  // A repository rule is proposed, not written, and its id is the same length
+  // and alphabet as a model-of-Tom line's. Naming it is an objection to the
+  // proposal, which the nightly job drops before the line ever reaches the
+  // repository — the row is a "learning-objection" either way, and the job
+  // tells the two apart by looking the id up.
+  it("a digest-thread reply naming a repository-rule proposal is an objection to that proposal", async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now() - 3_600_000,
+        kind: "repo-proposal",
+        data: {
+          id: "b71cdd41e2f0",
+          repo: "tom.quest",
+          file: "worker/AGENTS.md",
+          section: "box",
+          line: "A worktree has no `.env.local`.",
+        },
+      });
+    });
+    await posted(t, "770.1", { kind: "digest", day: "2026-09-09" });
+    const bracketed = await postEvent(t, { channel: TTS, ts: "770.2", thread_ts: "770.1", text: "[b71cdd41e2f0] no, the copy is in the launcher" });
+    expect(bracketed).toMatchObject({ outcome: "learning-objection", id: "b71cdd41e2f0" });
+    const prefix = await postEvent(t, { channel: TTS, ts: "770.3", thread_ts: "770.1", text: "b71cdd41 is wrong" });
+    expect(prefix).toMatchObject({ outcome: "learning-objection", id: "b71cdd41e2f0" });
+    const objections = await events(t, "learning-objection");
+    expect(objections).toHaveLength(2);
+    expect(objections[0].data).toMatchObject({
+      id: "b71cdd41e2f0",
+      text: "[b71cdd41e2f0] no, the copy is in the launcher",
+      subject: { kind: "digest", day: "2026-09-09" },
+    });
+    // An applied or dropped row is not a live proposal: only "repo-proposal"
+    // is matched, so a hex word that prefixes none is still a fact.
+    const fact = await postEvent(t, { channel: TTS, ts: "770.4", thread_ts: "770.1", text: "the deadbeef commit looks fine" });
+    expect(fact).toMatchObject({ outcome: "tom-note", subject: { kind: "digest" } });
+    expect(await events(t, "learning-objection")).toHaveLength(2);
+  });
+
   it("a digest-thread reply that names a todo with done AND a model-of-Tom line does both", async () => {
     slackEnv();
     const t = convexTest(schema, modules);

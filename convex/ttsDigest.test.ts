@@ -1380,6 +1380,89 @@ describe("sendDecision", () => {
     expect(args.decision).not.toContain("[lc-1]");
   });
 
+  // A REPOSITORY-RULE PROPOSAL is the third kind that reaches him here. The
+  // repo-learning step reads the night's sessions and writes a line it means to
+  // put in a repository's own AGENTS.md; that is a decision taken in his name
+  // just as a model-of-Tom line is, and "revert" in the thread drops it before
+  // the line ever reaches the repository.
+  it("is scheduled by a repository-rule proposal the repo-learning step writes", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    await t.mutation(internal.ttsNightly.internalRecordWorkerEvent, {
+      kind: "repo-proposal",
+      key: "b71c",
+      data: {
+        id: "b71c",
+        repo: "tom.quest",
+        file: "worker/AGENTS.md",
+        section: "box",
+        line: "A worktree has no `.env.local`; copy it from the main checkout.",
+        read: "lost twenty minutes to a missing .env.local in a worktree",
+        evidence: "read: session 47f04bc9",
+        status: "open",
+      },
+    });
+    const scheduled = await t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
+        job.name.includes("sendDecision"),
+      ),
+    );
+    expect(scheduled).toHaveLength(1);
+    const args = scheduled[0].args[0] as { askId: string; decision: string; reason?: string };
+    expect(args.askId).toBe("repo-proposal:b71c");
+    expect(args.decision).toContain("tom.quest worker/AGENTS.md is to say");
+    expect(args.decision).toContain("A worktree has no `.env.local`");
+    expect(args.reason).toContain("lost twenty minutes");
+    // Same reason as the line above: the thread is the subject, so no id is
+    // printed for him to type back.
+    expect(args.decision).not.toContain("[b71c]");
+  });
+
+  // A night that undid its own write is NOT a decision — nothing stands to
+  // object to — and it is not a quiet night either, which is the confusion a
+  // silent row would leave. It goes to #tts-broken.
+  it("sends the night that took its whole write back to #tts-broken, not here", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    await t.mutation(internal.ttsNightly.internalRecordWorkerEvent, {
+      kind: "learning-check-failed",
+      // The step's own field is `changes`, not `count`.
+      data: { baseline: false, stage: "changes", changes: 3, output: "evidence: 2 lines unsupported" },
+    });
+    const jobs = await t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).map((job) => ({
+        name: job.name,
+        args: job.args[0] as { job?: string; statement?: string },
+      })),
+    );
+    expect(jobs.filter((j) => j.name.includes("sendDecision"))).toHaveLength(0);
+    const broken = jobs.filter((j) => j.name.includes("sendBroken"));
+    expect(broken).toHaveLength(1);
+    expect(broken[0].args.job).toBe("learning");
+    expect(broken[0].args.statement).toContain("took every one back");
+    expect(broken[0].args.statement).toContain("3 lines");
+  });
+
+  // The baseline case says something different: the check was ALREADY failing
+  // when the run started, so the step never wrote at all.
+  it("says the check was already failing when the night wrote nothing", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    await t.mutation(internal.ttsNightly.internalRecordWorkerEvent, {
+      kind: "learning-check-failed",
+      data: { baseline: true, output: "evidence: 1 entry has no source" },
+    });
+    const broken = await t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
+        job.name.includes("sendBroken"),
+      ),
+    );
+    expect(broken).toHaveLength(1);
+    expect((broken[0].args[0] as { statement: string }).statement).toContain(
+      "already failing its own check",
+    );
+  });
+
   it("is scheduled by a ruling read out of Tom's own words, and not by a button ruling", async () => {
     const t = convexTest(schema, modules);
     const tom = await withTom(t);

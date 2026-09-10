@@ -28,7 +28,11 @@ import {
   commitTree,
   deliveryStep,
   discoverSessionFiles,
+  LEARNING_CHECK_FAILED,
+  LEARNING_PROMPT_CHARS,
+  LEARNING_TURN_CHARS,
   expectedBodyBlobs,
+  expectedEvidenceBlobs,
   exportTableRows,
   gitBlobId,
   indexManifests,
@@ -49,8 +53,11 @@ import {
   readManifests,
   rebaseInProgress,
   recordLearningRows,
+  repoLearningStep,
   redactRow,
-  revertLearningChange,
+  revertLearningRecords,
+  reviewedRefusal,
+  runEvidenceCheck,
   serializeRow,
   sessionCitation,
   sessionDateOf,
@@ -63,6 +70,7 @@ import {
 } from "./nightly.mjs";
 import { PRELUDE_LAYERS } from "../../scripts/prelude.mjs";
 import { parseFrontmatter } from "./markdown-sections.mjs";
+import { proposalId } from "./learning-repo.mjs";
 
 const REQUIRED_AREA_PATHS = PRELUDE_LAYERS.know.areas.required;
 
@@ -107,10 +115,15 @@ function write(dir, rel, content) {
 }
 
 // ── The learning step ────────────────────────────────────────────────────────
-// The step runs here end to end against a checkout in a temp dir, with the
-// Convex call and the model call handed in (learningStep's `deps`): what is
-// pinned is what lands, what is refused and why, what a failed answer leaves
-// behind (nothing), and what an objection undoes.
+// The step runs here end to end against a WikiTom-SHAPED checkout in a temp
+// dir — the pages, their evidence mirror, and a copy of WikiTom's own
+// check-evidence.mjs, which is the gate the step runs twice a night — with
+// the Convex call and the model call handed in (learningStep's `deps`). What
+// is pinned is what lands in BOTH records, what is refused and why, what a
+// failed answer leaves behind (nothing), what a failed CHECK leaves behind
+// (nothing, byte for byte), and what an objection undoes.
+
+const CHECKER = fs.readFileSync(path.join(import.meta.dirname, "fixtures", "check-evidence.mjs"), "utf8");
 
 const CLIMBING = [
   "---",
@@ -121,16 +134,38 @@ const CLIMBING = [
   "",
   "## Current state",
   "",
-  "- Climbing for 16 years; on the WPI climbing team (session 47f04bc9, 2026-08-30).",
-  "- Ankle: minor chronic pain from jumping down off the wall (session 47f04bc9, 2026-08-30).",
+  "- Climbing for 16 years; on the WPI climbing team.",
+  "- Ankle: minor chronic pain from jumping down off the wall.",
   "",
   "## Ideal state",
   "",
-  "- \"help me design a workout plan\" (session 47f04bc9, 2026-08-30).",
+  "- A workout plan he follows.",
   "",
   "## Must not break",
   "",
-  "- Team practices are fixed (session 47f04bc9, 2026-08-30).",
+  "- Team practices are fixed.",
+  "",
+].join("\n");
+
+const CLIMBING_EVIDENCE = [
+  "# Evidence for areas/climbing.md",
+  "",
+  "## Current state",
+  "",
+  "- line: Climbing for 16 years; on the WPI climbing team.",
+  '  said: 2026-08-30 · session 47f04bc9 · "i have been climbing for sixteen years now"',
+  "- line: Ankle: minor chronic pain from jumping down off the wall.",
+  '  said: 2026-08-30 · session 47f04bc9 · "my ankle hurts from jumping off the wall"',
+  "",
+  "## Ideal state",
+  "",
+  "- line: A workout plan he follows.",
+  '  said: 2026-08-30 · session 47f04bc9 · "help me design a workout plan i will follow"',
+  "",
+  "## Must not break",
+  "",
+  "- line: Team practices are fixed.",
+  '  said: 2026-08-30 · session 47f04bc9 · "team practices are fixed and never move"',
   "",
 ].join("\n");
 
@@ -143,7 +178,7 @@ const PRIORITIES = [
   "",
   "## Rules learned from corrections",
   "",
-  "- **No importance guesses.** Tom, 2026-08-29, session `47f04bc9`.",
+  "- No importance guesses.",
   "",
   "## What becomes a todo",
   "",
@@ -151,13 +186,203 @@ const PRIORITIES = [
   "",
 ].join("\n");
 
-function learningCheckout() {
+const PRIORITIES_EVIDENCE = [
+  "# Evidence for priorities.md",
+  "",
+  "## Rules learned from corrections",
+  "",
+  "- line: No importance guesses.",
+  '  said: 2026-08-29 · session 47f04bc9 · "do not guess importance ratings for me"',
+  "",
+  "## What becomes a todo",
+  "",
+  "- line: Capture whatever implies an action by Tom.",
+  '  said: 2026-08-29 · session 47f04bc9 · "capture anything that implies i have to do something"',
+  "",
+].join("\n");
+
+const GROUND = [
+  "# Ground",
+  "",
+  "## Knows",
+  "",
+  "- The thesis and claims of his own paper.",
+  "",
+  "## Follows, without the details",
+  "",
+  "- Statistics, the ideas and not the math.",
+  "",
+  "## Does not know",
+  "",
+  "- A name an agent coined for an experiment, a run or a concept.",
+  "",
+  "## How to explain",
+  "",
+  "- Lead with the mechanism and re-supply the name.",
+  "",
+].join("\n");
+
+const GROUND_EVIDENCE = [
+  "# Evidence for ground.md",
+  "",
+  "## Knows",
+  "",
+  "- line: The thesis and claims of his own paper.",
+  '  said: 2026-07-23 · session 81be510a · "i know what the thesis of my own paper is"',
+  "",
+  "## Follows, without the details",
+  "",
+  "- line: Statistics, the ideas and not the math.",
+  '  said: 2026-07-23 · session 81be510a · "i understand these intuitively but im not fluent in the math"',
+  "",
+  "## Does not know",
+  "",
+  "- line: A name an agent coined for an experiment, a run or a concept.",
+  '  said: 2026-08-08 · session 542cf5c1 · "That is not a term I recognize, and I am intimately familiar with CMT."',
+  "",
+  "## How to explain",
+  "",
+  "- line: Lead with the mechanism and re-supply the name.",
+  '  said: 2026-08-08 · session 542cf5c1 · "lead with the mechanism and give me the name again"',
+  "",
+].join("\n");
+
+const INTENT = [
+  "---",
+  "updated: 2026-09-01",
+  "reviewed:",
+  "---",
+  "",
+  "# Intent",
+  "",
+  "## Directions",
+  "",
+  "Tom leads this file; no agent writes this section.",
+  "",
+  "## What to protect",
+  "",
+  "- The PhD position and the lab stay.",
+  "",
+  "## What to push toward",
+  "",
+  "- The paper finished and published.",
+  "",
+  "## What he does not care about",
+  "",
+  "- Importance ratings guessed on his behalf.",
+  "",
+].join("\n");
+
+const INTENT_EVIDENCE = [
+  "# Evidence for intent.md",
+  "",
+  "## What to protect",
+  "",
+  "- line: The PhD position and the lab stay.",
+  '  said: 2026-07-23 · session 81be510a · "losing the position and the lab is the failure i name first"',
+  "",
+  "## What to push toward",
+  "",
+  "- line: The paper finished and published.",
+  '  said: 2026-07-23 · session 81be510a · "i need the paper finished and published this year"',
+  "",
+  "## What he does not care about",
+  "",
+  "- line: Importance ratings guessed on his behalf.",
+  '  said: 2026-07-23 · session 81be510a · "do not guess importance ratings for me at all"',
+  "",
+].join("\n");
+
+const WRITING = "# Writing\n\n## Calibration core\n\n- Assume fluent in ML.\n";
+const WRITING_EVIDENCE = [
+  "# Evidence for writing.md",
+  "",
+  "## Calibration core",
+  "",
+  "- line: Assume fluent in ML.",
+  '  said: 2026-08-18 · session 81be510a · "dont dumb down the ml jargon because im familiar with it"',
+  "",
+].join("\n");
+
+/** A WikiTom-shaped checkout: every synthesis file the checker walks, its
+ * evidence mirror, and the checker itself. `runEvidenceCheck` passes on it. */
+function learningCheckout(over = {}) {
   const dir = tmp();
-  write(dir, "model-of-tom/writing.md", "# Model of Tom's understanding\n\n## Calibration core\n\n- Assume fluent in ML.\n");
-  write(dir, "model-of-tom/priorities.md", PRIORITIES);
-  write(dir, "model-of-tom/areas/climbing.md", CLIMBING);
-  write(dir, "tts/spec.md", "# Spec\n\n## Rules\n\n- the spec's own line\n");
+  write(dir, "scripts/check-evidence.mjs", CHECKER);
+  const files = {
+    "model-of-tom/writing.md": WRITING,
+    "model-of-tom/evidence/writing.md": WRITING_EVIDENCE,
+    "model-of-tom/priorities.md": PRIORITIES,
+    "model-of-tom/evidence/priorities.md": PRIORITIES_EVIDENCE,
+    "model-of-tom/ground.md": GROUND,
+    "model-of-tom/evidence/ground.md": GROUND_EVIDENCE,
+    "model-of-tom/intent.md": INTENT,
+    "model-of-tom/evidence/intent.md": INTENT_EVIDENCE,
+    "model-of-tom/agent-rules.md": "# Agent rules\n\n## Map\n\n",
+    "model-of-tom/evidence/agent-rules.md": "# Evidence\n\n## Map\n\n",
+    "model-of-tom/schedule.md": "# Schedule\n\n## Week\n\n",
+    "model-of-tom/evidence/schedule.md": "# Evidence\n\n## Week\n\n",
+    "model-of-tom/areas/climbing.md": CLIMBING,
+    "model-of-tom/evidence/areas/climbing.md": CLIMBING_EVIDENCE,
+    "tts/spec.md": "# Spec\n\n## Rules\n\n- the spec's own line\n",
+    ...over,
+  };
+  for (const [rel, text] of Object.entries(files)) write(dir, rel, text);
   return dir;
+}
+
+/**
+ * An evidence file that mirrors every bullet of `pageText`, one entry each.
+ * A test about the PAGE half of a record still needs a checkout the checker
+ * passes on — the baseline is the first thing the step runs — and this is
+ * what keeps the pair whole without hand-writing an entry per line.
+ */
+function mirrorEvidence(pageText) {
+  const out = ["# Evidence", ""];
+  const seen = new Set();
+  let heading = null;
+  for (const raw of pageText.split("\n")) {
+    const h = /^#{1,6}\s+(.*?)\s*$/.exec(raw);
+    if (h) {
+      heading = h[1];
+      out.push(`## ${heading}`, "");
+      continue;
+    }
+    const m = /^- (.*\S)\s*$/.exec(raw);
+    if (m === null || heading === null || heading === "Directions") continue;
+    const key = `${heading} ${m[1]}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(`- line: ${m[1]}`);
+    out.push(
+      / \(inferred\)$/.test(m[1])
+        ? "  rests on: 2026-08-30 · session 47f04bc9 · read off the record."
+        : `  said: 2026-08-30 · session 47f04bc9 · "${m[1]}"`,
+    );
+  }
+  out.push("");
+  return out.join("\n");
+}
+
+/** A page and its mirrored evidence file, written together. */
+function writePage(dir, rel, text) {
+  write(dir, rel, text);
+  write(dir, rel.replace("model-of-tom/", "model-of-tom/evidence/"), mirrorEvidence(text));
+}
+
+/** Every file under `dir`, hashed — what a rolled-back night must equal. */
+function treeHash(dir) {
+  const out = [];
+  const walk = (rel) => {
+    const entries = fs.readdirSync(path.join(dir, rel), { withFileTypes: true });
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      const next = rel === "" ? entry.name : `${rel}/${entry.name}`;
+      if (entry.isDirectory()) walk(next);
+      else out.push(`${next} ${sha256(fs.readFileSync(path.join(dir, next)))}`);
+    }
+  };
+  walk("");
+  return out.join("\n");
 }
 
 // The session's Convex row id, its SDK session id, and the id the pages cite
@@ -168,6 +393,8 @@ const SDK_SESSION = "9e1c2b3a-4d5e-4f60-8a7b-8c9d0e1f2a3b";
 const SESSION = "9e1c2b3a";
 const TURN = "turn0001turn0001turn0001turn0001";
 const RULING = "rul0001rul0001rul0001rul0001rul0";
+
+const TOM_TEXT = "thursday practice moved to 6pm this term";
 
 function learningInput(over = {}) {
   return {
@@ -180,7 +407,7 @@ function learningInput(over = {}) {
         sessionId: SESSION_ROW,
         sdkSessionId: SDK_SESSION,
         sessionTitle: "training plan",
-        text: "thursday practice moved to 6pm this term",
+        text: TOM_TEXT,
         at: Date.UTC(2026, 8, 5, 20),
         replyBefore: "Which practice moved?",
         replyAfter: "Noted: Thursday at 6 p.m.",
@@ -224,30 +451,87 @@ function learningRun(dir) {
   };
 }
 
-const NEW_LINE = `- Thursday practice is at 6 p.m. this term (session ${SESSION}, 2026-09-05).`;
+const NEW_LINE = "- Thursday practice is at 6 p.m. this term.";
+const SAID = {
+  form: "said",
+  date: "2026-09-05",
+  source: `session ${SESSION}`,
+  text: TOM_TEXT,
+};
 const factChange = (over = {}) => ({
   file: "model-of-tom/areas/climbing.md",
   section: "Current state",
-  kind: "fact",
-  line: NEW_LINE,
+  op: "add",
+  line: "Thursday practice is at 6 p.m. this term.",
   replaces: null,
-  evidence: [`session ${SESSION}`],
-  // Tom's words from the turn, verbatim (learningInput above).
-  excerpt: "thursday practice moved to 6pm this term",
+  inferred: false,
+  signal: null,
+  evidence: [{ ...SAID }],
+  // The said: entry IS the excerpt (R1); the step fills it when the model
+  // leaves it out.
+  excerpt: TOM_TEXT,
   ...over,
 });
 
 const answering = (changes) => () => JSON.stringify({ changes });
 
+/** The pages and their evidence mirror, as applyLearningChanges takes them. */
+function pagesOf(dir, rels) {
+  const pages = new Map();
+  const evidence = new Map();
+  for (const rel of rels) {
+    pages.set(rel, fs.readFileSync(path.join(dir, rel), "utf8"));
+    const eRel = rel.replace("model-of-tom/", "model-of-tom/evidence/");
+    evidence.set(eRel, fs.readFileSync(path.join(dir, eRel), "utf8"));
+  }
+  return { pages, evidence };
+}
+
 describe("the learning step", () => {
-  it("ends the prompt with the UTC day after its input and pages", () => {
-    const prompt = learningPrompt(learningInput(), new Map([["model-of-tom/areas/climbing.md", CLIMBING]]), "2026-09-06");
+  it("ends the prompt with the UTC day, after its input, signals, pages and evidence files", () => {
+    const dir = learningCheckout();
+    const { pages, evidence } = pagesOf(dir, ["model-of-tom/areas/climbing.md"]);
+    const { prompt, turnsDropped } = learningPrompt(learningInput(), pages, evidence, [], "2026-09-06");
+    expect(turnsDropped).toBe(0);
     expect(prompt.endsWith("Tonight is 2026-09-06 (UTC).")).toBe(true);
-    expect(prompt.indexOf("INPUT")).toBeLessThan(prompt.indexOf("PAGES"));
-    expect(prompt.indexOf("PAGES")).toBeLessThan(prompt.lastIndexOf("Tonight is 2026-09-06 (UTC)."));
+    expect(prompt.indexOf("TWO RECORDS")).toBeLessThan(prompt.indexOf("RULES"));
+    const at = (header) => prompt.indexOf(`\n${header}\n`);
+    expect(at("INPUT")).toBeLessThan(at("GROUND SIGNALS"));
+    expect(at("GROUND SIGNALS")).toBeLessThan(at("PAGES"));
+    expect(at("PAGES")).toBeLessThan(
+      prompt.indexOf("\nEVIDENCE FILES (the entries already on record; never propose a duplicate)\n"),
+    );
+    expect(prompt).toContain("=== model-of-tom/evidence/areas/climbing.md ===");
   });
 
-  it("lands a fact with evidence at the end of its section, bumps updated:, and queues its row and commit", async () => {
+  it("drops the oldest turns when the prompt is longer than its cap", () => {
+    const dir = learningCheckout();
+    const { pages, evidence } = pagesOf(dir, ["model-of-tom/areas/climbing.md"]);
+    const big = Array.from({ length: 200 }, (_, i) => ({
+      id: `t${i}`,
+      sessionId: SESSION_ROW,
+      sdkSessionId: SDK_SESSION,
+      sessionTitle: "long",
+      text: "x".repeat(LEARNING_TURN_CHARS),
+      at: Date.UTC(2026, 8, 5, 1) + i * 1000,
+      replyBefore: null,
+      replyAfter: null,
+    }));
+    const { prompt, turnsDropped } = learningPrompt(
+      learningInput({ tomTurns: big }),
+      pages,
+      evidence,
+      [],
+      "2026-09-06",
+    );
+    expect(prompt.length).toBeLessThanOrEqual(LEARNING_PROMPT_CHARS);
+    expect(turnsDropped).toBeGreaterThan(0);
+    // The oldest went; the newest stayed.
+    expect(prompt).toContain('"turnId": "t199"');
+    expect(prompt).not.toContain('"turnId": "t0"');
+  });
+
+  it("writes both records, bumps updated:, passes the checker, and queues its row and commit", async () => {
     const dir = learningCheckout();
     const convex = fakeConvex(learningInput());
     const run = learningRun(dir);
@@ -258,6 +542,7 @@ describe("the learning step", () => {
     };
     const summary = await learningStep(run, { fetch: convex.fetch, model });
 
+    // The page: the bullet, and nothing of the source in it.
     const page = fs.readFileSync(path.join(dir, "model-of-tom/areas/climbing.md"), "utf8");
     const lines = page.split("\n");
     expect(lines[1]).toBe("updated: 2026-09-06");
@@ -266,11 +551,17 @@ describe("the learning step", () => {
     expect(at).toBeGreaterThan(lines.indexOf("## Current state"));
     expect(at).toBeLessThan(lines.indexOf("## Ideal state"));
     expect(lines[at - 1]).toContain("Ankle:");
-    expect(lines[at + 1]).toBe("");
+    expect(NEW_LINE).not.toMatch(/session |\d{4}-\d{2}-\d{2}|"/);
 
-    expect(summary.changes).toBe(1);
-    expect(summary.refused).toEqual([]);
-    expect(summary.model).toBe("opus");
+    // The evidence entry: his words, the date and the source, under the same
+    // heading — and the checker green over the pair.
+    const entry = fs.readFileSync(path.join(dir, "model-of-tom/evidence/areas/climbing.md"), "utf8");
+    expect(entry).toContain(
+      `- line: Thursday practice is at 6 p.m. this term.\n  said: 2026-09-05 · session ${SESSION} · "${TOM_TEXT}"`,
+    );
+    expect(runEvidenceCheck(dir).ok).toBe(true);
+
+    expect(summary).toMatchObject({ changes: 1, refused: [], model: "opus", checkFailed: false, removed: 0, inferred: 0 });
     expect(run.learningRows).toHaveLength(1);
     expect(run.learningRows[0]).toEqual({
       kind: "learning-change",
@@ -278,216 +569,543 @@ describe("the learning step", () => {
         id: learningChangeId("model-of-tom/areas/climbing.md", "Current state", NEW_LINE),
         file: "model-of-tom/areas/climbing.md",
         section: "Current state",
-        kind: "fact",
+        kind: "add",
+        signal: null,
         before: "",
         after: NEW_LINE,
-        evidence: `session ${SESSION}`,
+        beforeEntry: "",
+        afterEntry: `- line: Thursday practice is at 6 p.m. this term.\n  said: 2026-09-05 · session ${SESSION} · "${TOM_TEXT}"`,
+        inferred: false,
+        // form: source, which is what the digest prints in its parenthetical.
+        evidence: `said: session ${SESSION}`,
         sources: [`session ${SESSION}`],
-        excerpt: "thursday practice moved to 6pm this term",
-        // The body the validation read, and the body it wrote.
+        excerpt: TOM_TEXT,
         baseBlob: pageBodyBlob(CLIMBING),
         resultBlob: pageBodyBlob(page),
+        evidenceBaseBlob: pageBodyBlob(CLIMBING_EVIDENCE),
+        evidenceResultBlob: pageBodyBlob(entry),
       },
-      // The commit the row will name, found by this message once made.
       commitMessage: "learning: 2026-09-06 — 1 line from Tom's turns, replies and rulings",
     });
-    expect(run.learningRows[0].data.id).toMatch(/^[0-9a-f]{12}$/);
     expect(run.commits).toEqual([
       {
         paths: ["model-of-tom"],
         message: "learning: 2026-09-06 — 1 line from Tom's turns, replies and rulings",
       },
     ]);
-    // The run row, written by the step itself.
     expect(convex.posts).toHaveLength(1);
-    expect(convex.posts[0].route).toBe("/tts/event");
     expect(convex.posts[0].body.kind).toBe("learning-run");
-    expect(convex.posts[0].body.data).toMatchObject({ changes: 1, tomTurns: 1, rulings: 1, reverted: 0 });
-    // One model call, the Opus tier, over the pages and the input.
+    // One model call, the Opus tier, over the pages, the evidence and the input.
     expect(modelCalls).toHaveLength(1);
     expect(modelCalls[0].opts).toMatchObject({ model: "opus", cwd: dir });
-    expect(modelCalls[0].prompt).toContain("thursday practice moved to 6pm this term");
+    expect(modelCalls[0].prompt).toContain(TOM_TEXT);
     expect(modelCalls[0].prompt).toContain("=== model-of-tom/areas/climbing.md ===");
-    expect(modelCalls[0].prompt).toContain("Which practice moved?");
-    // The session is shown by the id the pages cite — the SDK id's 8-hex
-    // prefix — not by its Convex row id.
     expect(modelCalls[0].prompt).toContain(`"session": "${SESSION}"`);
     expect(modelCalls[0].prompt).not.toContain(SESSION_ROW);
     // The other pages are untouched.
     expect(fs.readFileSync(path.join(dir, "model-of-tom/priorities.md"), "utf8")).toBe(PRIORITIES);
   });
 
-  it("refuses Tom's sections, the spec, a missing replacement target and a line without evidence, and touches nothing", async () => {
+  it("fills the excerpt from the longest said: entry when the model left it out", () => {
     const dir = learningCheckout();
-    const before = new Map(
-      ["model-of-tom/areas/climbing.md", "model-of-tom/priorities.md", "model-of-tom/writing.md", "tts/spec.md"].map(
-        (rel) => [rel, fs.readFileSync(path.join(dir, rel), "utf8")],
-      ),
+    const { pages, evidence } = pagesOf(dir, ["model-of-tom/areas/climbing.md"]);
+    const { applied, refused } = applyLearningChanges(
+      pages,
+      [factChange({ excerpt: undefined })],
+      { day: "2026-09-06", evidence: learningEvidence(learningInput()), evidencePages: evidence },
     );
+    expect(refused).toEqual([]);
+    expect(applied[0].excerpt).toBe(TOM_TEXT);
+  });
+
+  // ── The refusal table: one case per message ────────────────────────────────
+  it("refuses each way a change can be wrong, by its exact message, and writes nothing", async () => {
+    const dir = learningCheckout();
+    const before = treeHash(dir);
     const run = learningRun(dir);
     const convex = fakeConvex(learningInput());
     const summary = await learningStep(run, {
       fetch: convex.fetch,
       model: answering([
+        // where
+        factChange({ file: "tts/spec.md", section: "Rules" }),
+        factChange({ file: "model-of-tom/areas/nowhere.md" }),
+        // the section
+        factChange({ section: "" }),
         factChange({ section: "Ideal state" }),
         factChange({ section: "Must not break" }),
         factChange({ file: "model-of-tom/priorities.md", section: "Directions" }),
-        factChange({ file: "tts/spec.md", section: "Rules" }),
-        factChange({ replaces: "- A line that is not on the page (session x, 2026-01-01)." }),
+        // the operation
+        factChange({ op: "amend" }),
+        factChange({ op: "remove", replaces: "Ankle: minor chronic pain from jumping down off the wall.", line: undefined }),
+        // the line
+        factChange({ line: "" }),
+        factChange({ line: `Thursday practice moved (session ${SESSION}).` }),
+        factChange({ line: "Thursday practice moved on 2026-09-05." }),
+        factChange({ line: 'He said "thursday practice moved to 6pm this term" himself.' }),
+        factChange({ line: "He probably trains Thursdays.", inferred: true }),
+        factChange({ line: "He trains Thursdays. (inferred)", inferred: false }),
+        // the evidence entries
         factChange({ evidence: [] }),
-        factChange({ evidence: ["session deadbeef"] }),
-        factChange({ line: "- Thursday practice is at 6 p.m. this term." }),
-        // A parenthetical is not a citation: the evidence is not in the line
-        // at all, or it is in the line but the trailing parenthetical is bare.
-        factChange({ line: "- Thursday practice is at 6 p.m. this term (probably)." }),
-        factChange({ line: `- In session ${SESSION} he moved practice to 6 p.m. (probably).` }),
+        factChange({ evidence: [{ ...SAID, form: "shouted" }] }),
+        factChange({ evidence: [{ ...SAID, source: SESSION }] }),
+        factChange({ evidence: [{ ...SAID, source: "session deadbeef" }] }),
+        factChange({ evidence: [{ ...SAID, date: "2026-09-31" }] }),
+        factChange({ evidence: [{ ...SAID, date: "2026-08-30" }] }),
         factChange({
-          line: `- Thursday practice is at 6 p.m. this term (session ${SESSION}, 2026-09-05).`,
-          evidence: [`session ${SESSION}`, `ruling ${RULING}`],
+          line: "He trains Thursdays. (inferred)",
+          inferred: true,
+          evidence: [{ ...SAID }, { ...SAID, form: "rests on", text: "read off the turn" }],
+          excerpt: TOM_TEXT,
         }),
-        factChange({ kind: "inference", line: `- He trains Thursdays (session ${SESSION}, 2026-09-05).` }),
-        // witness: "includes the id" let `session 9e1c2b3a-old` pass as the
-        // session, and a line dated any day pass beside it.
+        factChange({ evidence: [{ ...SAID, form: "rests on", text: "read off the turn" }] }),
         factChange({
-          line: `- Thursday practice is at 6 p.m. this term (session ${SESSION}-old, 2026-09-05).`,
-          evidence: [`session ${SESSION}-old`],
+          evidence: [{ ...SAID, form: "read", text: "the record says the practice moved." }],
         }),
-        factChange({ line: `- Thursday practice is at 6 p.m. this term (session ${SESSION}, 2026-08-30).` }),
-        factChange({ line: `- Thursday practice is at 6 p.m. this term (session ${SESSION}, 2026-09-31).` }),
-        factChange({ line: `- Thursday practice is at 6 p.m. this term (session ${SESSION}, 2026-09-05; ruling ${RULING}, 2026-09-05).` }),
-        factChange({ evidence: [SESSION] }),
-        // The excerpt: missing, too short, and not Tom's words.
-        factChange({ excerpt: undefined }),
-        factChange({ excerpt: "moved to 6pm" }),
-        factChange({ excerpt: "practice is on Fridays now this term" }),
-        factChange({ excerpt: "Which practice moved? Noted: Thursday at 6 p.m." }),
+        factChange({ evidence: [{ ...SAID, text: "thursday practice moved to 7pm this term" }] }),
+        factChange({
+          evidence: [{ ...SAID, form: "paraphrase", text: "he moved the practice." }],
+          excerpt: "moved it",
+        }),
+        factChange({
+          evidence: [{ ...SAID, form: "paraphrase", text: "he moved the practice." }],
+          excerpt: "practice is on Fridays now this term",
+        }),
+        factChange({ excerpt: "Which practice moved? Noted: Thursday at" }),
+        // what a replacement replaces
+        factChange({ op: "replace", replaces: null }),
+        factChange({ op: "replace", replaces: "A line that is not on the page." }),
+        factChange({ op: "add", replaces: "Ankle: minor chronic pain from jumping down off the wall." }),
       ]),
     });
     expect(summary.changes).toBe(0);
     expect(summary.refused.map((r) => r.reason)).toEqual([
+      "tts/spec.md is not a page the learning step writes",
+      "model-of-tom/areas/nowhere.md is not in the checkout",
+      "no section named",
       '"Ideal state" is Tom\'s section; an agent never writes it',
       '"Must not break" is Tom\'s section; an agent never writes it',
       '"Directions" is Tom\'s section; an agent never writes it',
-      "tts/spec.md is not a page the learning step writes",
-      'the line to replace is not in "Current state" verbatim',
+      "op must be add, replace or remove",
+      'remove is allowed only on model-of-tom/ground.md under "Does not know"',
+      "the line must be one non-empty line",
+      "the line carries a citation; the pages hold no source",
+      "the line carries a date; the pages hold no date",
+      "the line quotes Tom; his words live in the evidence record",
+      'an inferred line ends with "(inferred)"',
+      'only an inferred line ends with "(inferred)"',
       "no evidence",
-      'evidence "session deadbeef" names nothing in tonight\'s input',
-      "the line does not end with its evidence citation",
-      'the citation "probably" is not in the form <kind> <id>, YYYY-MM-DD',
-      'the citation "probably" is not in the form <kind> <id>, YYYY-MM-DD',
-      `the line does not cite its evidence "ruling ${RULING}"`,
-      "an inference must say it is one, in the line",
-      `evidence "session ${SESSION}-old" names nothing in tonight's input`,
-      "the citation date 2026-08-30 is outside tonight's window (2026-09-05 to 2026-09-06)",
-      "the citation date 2026-09-31 is not a day",
-      `the citation names "ruling ${RULING}", which is not in the change's evidence`,
+      'evidence form "shouted" is not said, paraphrase, read or rests on',
       `evidence "${SESSION}" is not a citation: session <id>, ruling <id> or thread <ts>`,
-      "no excerpt of 6 or more of Tom's words from tonight's input",
+      'evidence "session deadbeef" names nothing in tonight\'s input',
+      "the evidence date 2026-09-31 is not a day",
+      "the evidence date 2026-08-30 is outside tonight's window (2026-09-05 to 2026-09-06)",
+      'an inferred line\'s evidence is "rests on" only',
+      'a "rests on" entry on a line that is not marked (inferred)',
+      "a change to a model-of-tom page needs said:, paraphrase: or rests on:; read: alone is the record describing itself",
+      `said: "thursday practice moved to 7pm this term" is not in session ${SESSION} verbatim`,
       "no excerpt of 6 or more of Tom's words from tonight's input",
       "the excerpt is not in the cited input verbatim",
-      "the excerpt is not in the cited input verbatim",
+      "the excerpt is not one of the change's said: entries",
+      "replaces must be one existing bullet, or null",
+      'the line to replace is not in "Current state" verbatim',
+      "an add replaces nothing; `replaces` is null",
     ]);
-    for (const [rel, text] of before) {
-      expect(fs.readFileSync(path.join(dir, rel), "utf8")).toBe(text);
-    }
+    expect(treeHash(dir)).toBe(before);
     expect(run.learningRows).toEqual([]);
     expect(run.commits).toEqual([]);
     expect(convex.posts.map((p) => p.body.kind)).toEqual(["learning-run"]);
   });
 
-  it("applies a replacement whose target is on the page verbatim, and records what it replaced", () => {
-    const pages = new Map([["model-of-tom/areas/climbing.md", CLIMBING]]);
-    const old = "- Ankle: minor chronic pain from jumping down off the wall (session 47f04bc9, 2026-08-30).";
-    const line = `- Ankle: pain gone since 2026-09-01 (session ${SESSION}, 2026-09-05).`;
-    const { pages: after, applied, refused } = applyLearningChanges(
-      pages,
-      [factChange({ kind: "correction", line, replaces: old })],
-      { day: "2026-09-06" },
+  it("refuses a page whose evidence file is not in the checkout", () => {
+    const dir = learningCheckout();
+    const { pages } = pagesOf(dir, ["model-of-tom/areas/climbing.md"]);
+    const { refused } = applyLearningChanges(pages, [factChange()], {
+      day: "2026-09-06",
+      evidencePages: new Map(),
+    });
+    expect(refused[0].reason).toBe("no evidence file model-of-tom/evidence/areas/climbing.md");
+  });
+
+  it("refuses an answer whose change carries no evidence array at all", () => {
+    expect(() => parseLearningAnswer('{"changes": [{"file": "f"}]}')).toThrow(
+      /^learning change 0 has no evidence array$/,
     );
-    expect(refused).toEqual([]);
-    expect(applied[0]).toMatchObject({ before: old, after: line, kind: "correction" });
-    const text = after.get("model-of-tom/areas/climbing.md");
-    expect(text).not.toContain(old);
-    expect(text).toContain(line);
-    expect(text.startsWith("---\nupdated: 2026-09-06\n")).toBe(true);
-    // The same line proposed again is already there.
-    expect(applyLearningChanges(after, [factChange({ line })], { day: "2026-09-06" }).refused[0].reason).toBe(
-      "already on the page",
+    expect(() => parseLearningAnswer('{"changes": [1]}')).toThrow(/not an object/);
+  });
+
+  // ── ground.md: the signal is code, not judgment ────────────────────────────
+  it("takes a ground line only from a deterministic signal, and only with his own words", async () => {
+    const dir = learningCheckout();
+    const complains = "you are using a lot of made up names for different experiments that I dont understand.";
+    const confirms = "I understand the vocab you defined so use that and other standard cmt language.";
+    const input = learningInput({
+      tomTurns: [
+        {
+          id: TURN,
+          sessionId: SESSION_ROW,
+          sdkSessionId: SDK_SESSION,
+          sessionTitle: "cmt september doc",
+          text: `${complains} ${confirms}`,
+          at: Date.UTC(2026, 8, 5, 20),
+          replyBefore: "I have been calling these terminal detectors.",
+          replyAfter: "Understood — I will use the CMT vocabulary.",
+        },
+      ],
+      rulings: [],
+    });
+    const run = learningRun(dir);
+    const convex = fakeConvex(input);
+    const ground = (over = {}) =>
+      factChange({
+        file: "model-of-tom/ground.md",
+        section: "Knows",
+        line: "CMT's vocabulary, including the terms agents defined for him there.",
+        signal: "g-1",
+        evidence: [{ form: "said", date: "2026-09-05", source: `session ${SESSION}`, text: confirms }],
+        excerpt: confirms,
+        ...over,
+      });
+    const summary = await learningStep(run, {
+      fetch: convex.fetch,
+      model: answering([
+        ground({ signal: null }),
+        ground({ signal: "g-9" }),
+        ground({ section: "How to explain", line: "Use the CMT vocabulary he confirmed.", signal: "g-1" }),
+        ground({
+          section: "Knows",
+          line: "He is fluent in every CMT term. (inferred)",
+          inferred: true,
+          evidence: [{ form: "rests on", date: "2026-09-05", source: `session ${SESSION}`, text: "generalized from one turn." }],
+          excerpt: confirms,
+        }),
+        // A said: of his, verbatim — but a DIFFERENT sentence of the same
+        // turn from the one the code detected. The line must trace to the
+        // sentence the signal is.
+        ground({
+          section: "Knows",
+          line: "He knows the sampling geometry.",
+          evidence: [{ form: "said", date: "2026-09-05", source: `session ${SESSION}`, text: complains }],
+          excerpt: complains,
+        }),
+        ground(),
+      ]),
+    });
+    expect(summary.groundSignals).toBe(1);
+    expect(summary.refused.map((r) => r.reason)).toEqual([
+      "a change to ground.md names no signal",
+      "signal g-9 is not in tonight's ground signals",
+      'a line under "Knows" carries a said: entry; his fluent use of a term is not confirmation',
+      "the said: entry does not contain the signal's sentence",
+    ]);
+    // "How to explain" takes a change from any signal kind, and the confirmed
+    // term lands under "Knows".
+    expect(summary.changes).toBe(2);
+    expect(fs.readFileSync(path.join(dir, "model-of-tom/ground.md"), "utf8")).toContain(
+      "- CMT's vocabulary, including the terms agents defined for him there.",
+    );
+    expect(runEvidenceCheck(dir).ok).toBe(true);
+  });
+
+  it("refuses a section that does not follow from the signal's kind", () => {
+    const dir = learningCheckout();
+    const { pages, evidence } = pagesOf(dir, ["model-of-tom/ground.md"]);
+    const signals = [
+      { id: "g-1", kind: "asked", term: "shards", source: `session ${SESSION}`, date: "2026-09-05", quote: TOM_TEXT },
+    ];
+    const { refused } = applyLearningChanges(
+      pages,
+      [
+        factChange({
+          file: "model-of-tom/ground.md",
+          section: "Follows, without the details",
+          line: "Cluster shards.",
+          signal: "g-1",
+        }),
+      ],
+      { day: "2026-09-06", evidence: learningEvidence(learningInput()), evidencePages: evidence, signals },
+    );
+    expect(refused[0].reason).toBe('"Follows, without the details" does not follow from a asked signal');
+  });
+
+  it("lets a term leave Does not know only beside the same night's line that says where it went", () => {
+    const dir = learningCheckout();
+    const { pages, evidence } = pagesOf(dir, ["model-of-tom/ground.md"]);
+    const quote = "I understand the vocab you defined so use that and other standard cmt language.";
+    const input = learningInput({
+      tomTurns: [{ ...learningInput().tomTurns[0], text: quote }],
+      rulings: [],
+    });
+    const signals = [
+      { id: "g-1", kind: "confirmed", term: "vocab you defined", source: `session ${SESSION}`, date: "2026-09-05", quote },
+    ];
+    const said = { form: "said", date: "2026-09-05", source: `session ${SESSION}`, text: quote };
+    const removal = factChange({
+      file: "model-of-tom/ground.md",
+      section: "Does not know",
+      op: "remove",
+      line: undefined,
+      replaces: "A name an agent coined for an experiment, a run or a concept.",
+      signal: "g-1",
+      evidence: [said],
+      excerpt: quote,
+    });
+    const addition = factChange({
+      file: "model-of-tom/ground.md",
+      section: "Knows",
+      line: "The names agents coined in CMT, which he confirmed.",
+      signal: "g-1",
+      evidence: [said],
+      excerpt: quote,
+    });
+    const opts = {
+      day: "2026-09-06",
+      evidence: learningEvidence(input),
+      evidencePages: evidence,
+      signals,
+    };
+    // Alone, the removal is refused.
+    expect(applyLearningChanges(pages, [removal], opts).refused[0].reason).toBe(
+      'a removal from "Does not know" needs the same night\'s line under "Knows" or "Follows, without the details" on the same signal',
+    );
+    // With its partner applied first, it lands and both records lose the term.
+    const out = applyLearningChanges(pages, [addition, removal], opts);
+    expect(out.refused).toEqual([]);
+    expect(out.applied.map((a) => a.kind)).toEqual(["add", "remove"]);
+    expect(out.pages.get("model-of-tom/ground.md")).not.toContain("- A name an agent coined");
+    expect(out.evidencePages.get("model-of-tom/evidence/ground.md")).not.toContain(
+      "That is not a term I recognize",
     );
   });
 
-  it("replaces a hard-wrapped writing.md bullet whole, and reverts it whole", () => {
-    const file = "model-of-tom/writing.md";
-    const wrapped = [
-      "# Model of Tom's understanding",
-      "",
-      "## Calibration core",
-      "",
-      "- Assume fluent in ML at AI-PhD level: transformer structure, training,",
-      "  evaluation (tom.quest session `47f04bc9`, 2026-08-29).",
-      "- Assume absent: web-dev jargon of any kind (session 47f04bc9,",
-      "  2026-08-29).",
-      "",
-      "## How he reads and rules",
-      "",
-      "- Full sentences when explaining.",
-      "",
-    ].join("\n");
-    const line = `- Assume fluent in ML at AI-PhD level, and in Boolean Fourier analysis since 2026-09 (session ${SESSION}, 2026-09-05).`;
-    // The model quotes the bullet as the page wraps it.
-    const { pages, applied, refused } = applyLearningChanges(
-      new Map([[file, wrapped]]),
+  // ── intent.md: his words, and his review ───────────────────────────────────
+  it("takes an intent line only with a said: entry, and never Directions", () => {
+    const dir = learningCheckout();
+    const { pages, evidence } = pagesOf(dir, ["model-of-tom/intent.md"]);
+    const opts = {
+      day: "2026-09-06",
+      evidence: learningEvidence(learningInput()),
+      evidencePages: evidence,
+    };
+    const intent = (over = {}) =>
+      factChange({ file: "model-of-tom/intent.md", section: "What to protect", line: "Practice time stays.", ...over });
+    expect(applyLearningChanges(pages, [intent({ section: "Directions" })], opts).refused[0].reason).toBe(
+      '"Directions" is Tom\'s section; an agent never writes it',
+    );
+    expect(
+      applyLearningChanges(
+        pages,
+        [
+          intent({
+            evidence: [{ ...SAID, form: "paraphrase", text: "he wants practice time kept." }],
+            excerpt: TOM_TEXT,
+          }),
+        ],
+        opts,
+      ).refused[0].reason,
+    ).toBe("a line on intent.md carries a said: entry");
+    expect(
+      applyLearningChanges(
+        pages,
+        [
+          intent({
+            section: "What to protect",
+            line: "Practice time stays. (inferred)",
+            inferred: true,
+            evidence: [{ ...SAID, form: "rests on", text: "read off the turn." }],
+            excerpt: TOM_TEXT,
+          }),
+        ],
+        opts,
+      ).refused[0].reason,
+    ).toBe('an inferred line on intent.md belongs under "What to push toward"');
+    expect(applyLearningChanges(pages, [intent()], opts).refused).toEqual([]);
+  });
+
+  it("never edits a line the file's reviewed: date covers, except by his correction", () => {
+    const dir = learningCheckout();
+    const { pages, evidence } = pagesOf(dir, ["model-of-tom/intent.md"]);
+    const file = "model-of-tom/intent.md";
+    const eFile = "model-of-tom/evidence/intent.md";
+    const opts = (entryDate) => ({
+      day: "2026-09-06",
+      evidence: learningEvidence(learningInput()),
+      evidencePages: new Map([[eFile, evidence.get(eFile).replaceAll("2026-07-23", entryDate)]]),
+    });
+    const reviewedPages = (reviewed) =>
+      new Map([[file, pages.get(file).replace("reviewed:", `reviewed: ${reviewed}`)]]);
+    const replacement = (over = {}) =>
+      factChange({
+        file,
+        section: "What to protect",
+        op: "replace",
+        line: "The PhD position, the lab and the funding stay.",
+        replaces: "The PhD position and the lab stay.",
+        ...over,
+      });
+    // The review is before tonight's window (2026-09-05 to 2026-09-06), so a
+    // said: entry dated tonight is a correction made AFTER it.
+    const REVIEWED = "2026-09-01";
+    const refusal = `"The PhD position and the lab stay." is a line Tom reviewed on ${REVIEWED}; only his correction changes it`;
+    const paraphrased = {
+      evidence: [{ ...SAID, form: "paraphrase", text: "he wants the funding named too." }],
+      excerpt: TOM_TEXT,
+    };
+
+    // Unreviewed: the replacement lands.
+    expect(applyLearningChanges(pages, [replacement()], opts("2026-07-23")).refused).toEqual([]);
+    // Reviewed after the entry, and the evidence is his own later word: lands.
+    expect(
+      applyLearningChanges(reviewedPages(REVIEWED), [replacement()], opts("2026-08-01")).refused,
+    ).toEqual([]);
+    // The same, but the evidence is a paraphrase and not his correction: refused.
+    expect(
+      applyLearningChanges(reviewedPages(REVIEWED), [replacement(paraphrased)], opts("2026-08-01"))
+        .refused[0].reason,
+    ).toBe(refusal);
+    // The entry is dated after the review: the line already moved on.
+    expect(
+      applyLearningChanges(reviewedPages(REVIEWED), [replacement(paraphrased)], opts("2026-09-02")).refused,
+    ).toEqual([]);
+    // An add on a reviewed file always lands: the review approved what was
+    // there, not what may come.
+    expect(
+      applyLearningChanges(
+        reviewedPages(REVIEWED),
+        [factChange({ file, section: "What to protect", line: "Practice time stays." })],
+        opts("2026-08-01"),
+      ).refused,
+    ).toEqual([]);
+  });
+
+  it("guards a reviewed AREA page by the same code path", () => {
+    const dir = learningCheckout();
+    const { pages, evidence } = pagesOf(dir, ["model-of-tom/areas/climbing.md"]);
+    const file = "model-of-tom/areas/climbing.md";
+    const reviewed = new Map([[file, pages.get(file).replace("reviewed:", "reviewed: 2026-09-10")]]);
+    const { refused } = applyLearningChanges(
+      reviewed,
       [
         factChange({
-          file,
-          section: "Calibration core",
-          kind: "correction",
-          line,
-          replaces: wrapped.split("\n").slice(4, 6).join("\n"),
+          op: "replace",
+          line: "Ankle: pain gone since the first of the month.",
+          replaces: "Ankle: minor chronic pain from jumping down off the wall.",
+          evidence: [{ ...SAID, form: "paraphrase", text: "his ankle is better." }],
+          excerpt: TOM_TEXT,
         }),
       ],
-      { day: "2026-09-06" },
+      { day: "2026-09-06", evidence: learningEvidence(learningInput()), evidencePages: evidence },
     );
-    expect(refused).toEqual([]);
-    const before = "- Assume fluent in ML at AI-PhD level: transformer structure, training, evaluation (tom.quest session `47f04bc9`, 2026-08-29).";
-    expect(applied[0]).toMatchObject({ before, after: line });
-    const text = pages.get(file);
-    const lines = text.split("\n");
-    // Both physical lines are gone, the new line is in their place, and the
-    // bullet after it is untouched.
-    expect(lines[4]).toBe(line);
-    expect(lines[5]).toBe("- Assume absent: web-dev jargon of any kind (session 47f04bc9,");
-    expect(lines[6]).toBe("  2026-08-29).");
-    expect(text).not.toContain("  evaluation (tom.quest");
-    // Quoting the bullet as one line matches the same unit; the wrapped
-    // bullet already there is "already on the page" however it is quoted.
+    expect(refused[0].reason).toBe(
+      '"Ankle: minor chronic pain from jumping down off the wall." is a line Tom reviewed on 2026-09-10; only his correction changes it',
+    );
+    // The pure guard, on its own.
+    expect(reviewedRefusal({ op: "add" }, "2026-09-10", [])).toBeNull();
+    expect(reviewedRefusal({ op: "replace", replaces: "x", evidence: [] }, "", [])).toBeNull();
+    expect(reviewedRefusal({ op: "replace", replaces: "x", evidence: [] }, "2026-09-10", ["2026-09-12"])).toBeNull();
     expect(
-      applyLearningChanges(new Map([[file, wrapped]]), [factChange({ file, section: "Calibration core", line, replaces: before })], { day: "2026-09-06" }).applied,
-    ).toHaveLength(1);
-    const present = "- Assume absent: web-dev jargon of any kind (session 47f04bc9, 2026-08-29).";
-    expect(
-      applyLearningChanges(new Map([[file, wrapped]]), [factChange({ file, section: "Calibration core", line: present, evidence: ["session 47f04bc9"] })], { day: "2026-09-06" }).refused[0].reason,
-    ).toBe("already on the page");
-    // A first line alone is not the bullet.
-    expect(
-      applyLearningChanges(new Map([[file, wrapped]]), [factChange({ file, section: "Calibration core", line, replaces: wrapped.split("\n")[4] })], { day: "2026-09-06" }).refused[0].reason,
-    ).toBe('the line to replace is not in "Calibration core" verbatim');
-    // The revert restores the bullet's words as one line.
-    const reverted = revertLearningChange(text, { file, section: "Calibration core", before, after: line });
-    expect(reverted.ok).toBe(true);
-    expect(reverted.text.split("\n").slice(4, 7)).toEqual([before, lines[5], lines[6]]);
-    // A line Tom re-wrapped since is still the job's line.
-    const rewrapped = text.replace(line, line.replace(" and in ", " and\n  in "));
-    expect(rewrapped).not.toBe(text);
-    expect(revertLearningChange(rewrapped, { file, section: "Calibration core", before, after: line }).text).toBe(reverted.text);
+      reviewedRefusal(
+        { op: "replace", replaces: "x", evidence: [{ form: "said", date: "2026-09-11" }] },
+        "2026-09-10",
+        ["2026-09-01"],
+      ),
+    ).toBeNull();
+  });
+
+  // ── The whole-run gate ─────────────────────────────────────────────────────
+  it("writes nothing at all when the checkout was already failing its check", async () => {
+    const dir = learningCheckout();
+    // Somebody else's damage: an entry whose line is gone from the page.
+    write(
+      dir,
+      "model-of-tom/evidence/writing.md",
+      `${WRITING_EVIDENCE}- line: A line no page carries.\n  said: 2026-08-18 · session 81be510a · "no page carries it"\n`,
+    );
+    const before = treeHash(dir);
+    const run = learningRun(dir);
+    const convex = fakeConvex(learningInput());
+    const model = vi.fn();
+    const summary = await learningStep(run, { fetch: convex.fetch, model });
+    expect(model).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({ checkFailed: true, changes: 0, reverted: 0 });
+    expect(summary.checkOutput).toContain("matches no synthesis line");
+    expect(treeHash(dir)).toBe(before);
+    expect(run.learningRows).toEqual([{ kind: LEARNING_CHECK_FAILED, data: { baseline: true, output: summary.checkOutput } }]);
+    expect(run.commits).toEqual([]);
+    expect(convex.posts.map((p) => p.body.kind)).toEqual(["learning-run"]);
+  });
+
+  // witness: half a night's lines on the pages with no entries behind them is
+  // the one state from which nobody can tell what was learned.
+  it("takes back every change of the night when the check fails after them, byte for byte", async () => {
+    const dir = learningCheckout();
+    const before = treeHash(dir);
+    const run = learningRun(dir);
+    const convex = fakeConvex(learningInput());
+    // The writer is fine; the CHECKER is what refuses — here because the
+    // checkout's copy of it is replaced by one that always fails, which is
+    // the same shape as a real disagreement between the two records.
+    write(dir, "scripts/check-evidence.mjs", 'console.error("boom: the records disagree");\nprocess.exit(1);\n');
+    const after = treeHash(dir);
+    const summary = await learningStep(run, {
+      fetch: convex.fetch,
+      model: answering([factChange()]),
+    });
+    // The baseline failed first, so nothing ran at all — that is the point of
+    // the baseline. Now with a checker that passes once and then fails: the
+    // step's own writes are what the second check refuses.
+    expect(summary).toMatchObject({ checkFailed: true, changes: 0 });
+    expect(treeHash(dir)).toBe(after);
+    expect(before).not.toBe(after);
+  });
+
+  it("rolls the night back whole when the second check fails, and posts no applied rows", async () => {
+    const dir = learningCheckout();
+    // A checker that passes the baseline and fails after the write: it fails
+    // exactly when the page holds tonight's line.
+    write(
+      dir,
+      "scripts/check-evidence.mjs",
+      [
+        'import { readFileSync } from "node:fs";',
+        'const page = readFileSync("model-of-tom/areas/climbing.md", "utf8");',
+        'if (page.includes("6 p.m.")) { console.error("the records disagree"); process.exit(1); }',
+        'console.log("ok");',
+      ].join("\n"),
+    );
+    const before = treeHash(dir);
+    const run = learningRun(dir);
+    const convex = fakeConvex(learningInput());
+    const summary = await learningStep(run, { fetch: convex.fetch, model: answering([factChange()]) });
+    expect(summary).toMatchObject({ checkFailed: true, changes: 0 });
+    expect(summary.checkOutput).toContain("the records disagree");
+    // Byte for byte, including the evidence file the write created lines in.
+    expect(treeHash(dir)).toBe(before);
+    expect(run.learningRows).toEqual([
+      {
+        kind: LEARNING_CHECK_FAILED,
+        data: { baseline: false, stage: "changes", changes: 1, output: summary.checkOutput },
+      },
+    ]);
+    expect(run.commits).toEqual([]);
+  });
+
+  it("makes no model call on a night with nothing of Tom's in the window", async () => {
+    const dir = learningCheckout();
+    const run = learningRun(dir);
+    const convex = fakeConvex(learningInput({ tomTurns: [], rulings: [] }));
+    const model = vi.fn();
+    const summary = await learningStep(run, { fetch: convex.fetch, model });
+    expect(model).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({ changes: 0, model: null, tomTurns: 0, checkFailed: false });
+    expect(convex.posts.map((p) => p.body.kind)).toEqual(["learning-run"]);
   });
 
   it("rejects a malformed answer before applying anything", async () => {
     const dir = learningCheckout();
+    const before = treeHash(dir);
     const run = learningRun(dir);
     const convex = fakeConvex(learningInput());
-    // The reason, never the answer: the message becomes a failure row the
-    // digest prints.
     const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
     await expect(
       learningStep(run, { fetch: convex.fetch, model: () => "I could not decide. {changes: [}" }),
@@ -499,35 +1117,60 @@ describe("the learning step", () => {
       learningStep(run, { fetch: convex.fetch, model: () => '{"lines": []}' }),
     ).rejects.toThrow(/changes/);
     quiet.mockRestore();
-    expect(() => parseLearningAnswer('{"changes": [1]}')).toThrow(/not an object/);
-    expect(fs.readFileSync(path.join(dir, "model-of-tom/areas/climbing.md"), "utf8")).toBe(CLIMBING);
+    expect(treeHash(dir)).toBe(before);
     expect(run.learningRows).toEqual([]);
     expect(run.commits).toEqual([]);
     // No run row either: the next night reads the same window again.
     expect(convex.posts).toEqual([]);
   });
 
-  it("makes no model call on a night with nothing of Tom's in the window", async () => {
-    const dir = learningCheckout();
-    const run = learningRun(dir);
-    const convex = fakeConvex(learningInput({ tomTurns: [], rulings: [] }));
-    const model = vi.fn();
-    const summary = await learningStep(run, { fetch: convex.fetch, model });
-    expect(model).not.toHaveBeenCalled();
-    expect(summary).toMatchObject({ changes: 0, model: null, tomTurns: 0 });
-    expect(convex.posts.map((p) => p.body.kind)).toEqual(["learning-run"]);
-  });
-
+  // ── Reverts take back both records ─────────────────────────────────────────
   it("reverts an addition and a replacement on Tom's objection, by id and by the line's text", async () => {
     const dir = learningCheckout();
     const file = "model-of-tom/areas/climbing.md";
-    const old = "- Ankle: minor chronic pain from jumping down off the wall (session 47f04bc9, 2026-08-30).";
-    const replaced = `- Ankle: pain gone since 2026-09-01 (session ${SESSION}, 2026-09-05).`;
-    // The page as an earlier night left it: the addition present, the
-    // replacement in place of the old line.
-    write(dir, file, CLIMBING.replace(old, replaced).replace("## Ideal state", `${NEW_LINE}\n\n## Ideal state`));
-    const added = { id: "aaaaaaaaaaaa", file, section: "Current state", before: "", after: NEW_LINE };
-    const changed = { id: "bbbbbbbbbbbb", file, section: "Current state", before: old, after: replaced };
+    const eFile = "model-of-tom/evidence/areas/climbing.md";
+    const old = "- Ankle: minor chronic pain from jumping down off the wall.";
+    const oldEntry = [
+      "- line: Ankle: minor chronic pain from jumping down off the wall.",
+      '  said: 2026-08-30 · session 47f04bc9 · "my ankle hurts from jumping off the wall"',
+    ].join("\n");
+    const replaced = "- Ankle: pain gone since the first of the month.";
+    const replacedEntry = [
+      "- line: Ankle: pain gone since the first of the month.",
+      `  said: 2026-09-05 · session ${SESSION} · "${TOM_TEXT}"`,
+    ].join("\n");
+    const addedEntry = [
+      "- line: Thursday practice is at 6 p.m. this term.",
+      `  said: 2026-09-05 · session ${SESSION} · "${TOM_TEXT}"`,
+    ].join("\n");
+    // The records as an earlier night left them.
+    write(
+      dir,
+      file,
+      CLIMBING.replace(old, replaced).replace("## Ideal state", `${NEW_LINE}\n\n## Ideal state`),
+    );
+    write(
+      dir,
+      eFile,
+      CLIMBING_EVIDENCE.replace(oldEntry, `${replacedEntry}\n${addedEntry}`),
+    );
+    expect(runEvidenceCheck(dir).ok).toBe(true);
+    const added = {
+      id: "aaaaaaaaaaaa",
+      file,
+      section: "Current state",
+      before: "",
+      beforeEntry: "",
+      after: NEW_LINE,
+    };
+    const changed = {
+      id: "bbbbbbbbbbbb",
+      file,
+      section: "Current state",
+      before: old,
+      beforeEntry: oldEntry,
+      after: replaced,
+    };
     const run = learningRun(dir);
     const convex = fakeConvex(
       learningInput({
@@ -542,10 +1185,15 @@ describe("the learning step", () => {
     );
     const summary = await learningStep(run, { fetch: convex.fetch, model: vi.fn() });
     const page = fs.readFileSync(path.join(dir, file), "utf8");
+    const entries = fs.readFileSync(path.join(dir, eFile), "utf8");
     expect(page).not.toContain(NEW_LINE);
     expect(page).not.toContain(replaced);
     expect(page).toContain(old);
+    expect(entries).not.toContain("Thursday practice is at 6 p.m.");
+    expect(entries).not.toContain("pain gone since the first");
+    expect(entries).toContain("my ankle hurts from jumping off the wall");
     expect(page.startsWith("---\nupdated: 2026-09-06\n")).toBe(true);
+    expect(runEvidenceCheck(dir).ok).toBe(true);
     expect(summary).toMatchObject({ objections: 2, reverted: 2, revertFailed: 0, changes: 0 });
     expect(run.learningRows.map((r) => r.kind)).toEqual(["learning-reverted", "learning-reverted"]);
     expect(run.learningRows[0].data).toMatchObject({
@@ -553,6 +1201,7 @@ describe("the learning step", () => {
       file,
       before: NEW_LINE,
       after: "",
+      evidenceMissing: false,
       objectionId: "ev1",
       objection: "no, that was one week",
     });
@@ -560,9 +1209,58 @@ describe("the learning step", () => {
     expect(run.commits).toEqual([
       { paths: ["model-of-tom"], message: "learning: 2026-09-06 — 2 lines reverted on Tom's objection" },
     ]);
-    // Both objections consumed, in one call, before the run row.
     expect(convex.posts.map((p) => p.route)).toEqual(["/tts/learning-objections-consumed", "/tts/event"]);
     expect(convex.posts[0].body).toEqual({ ids: ["ev1", "ev2"] });
+  });
+
+  it("refuses to revert a replacement whose row predates the evidence record", async () => {
+    const dir = learningCheckout();
+    const file = "model-of-tom/areas/climbing.md";
+    const old = "- Ankle: minor chronic pain from jumping down off the wall.";
+    const replaced = "- Ankle: pain gone since the first of the month.";
+    write(dir, file, CLIMBING.replace(old, replaced));
+    write(
+      dir,
+      "model-of-tom/evidence/areas/climbing.md",
+      CLIMBING_EVIDENCE.replace(
+        "- line: Ankle: minor chronic pain from jumping down off the wall.",
+        "- line: Ankle: pain gone since the first of the month.",
+      ),
+    );
+    const run = learningRun(dir);
+    const convex = fakeConvex(
+      learningInput({
+        tomTurns: [],
+        rulings: [],
+        objections: [{ eventId: "ev1", at: 1, id: "bbbbbbbbbbbb", text: "no" }],
+        changes: [{ id: "bbbbbbbbbbbb", file, section: "Current state", before: old, after: replaced }],
+      }),
+    );
+    const summary = await learningStep(run, { fetch: convex.fetch, model: vi.fn() });
+    expect(summary).toMatchObject({ reverted: 0, revertFailed: 1 });
+    expect(run.learningRows[0].data.reason).toBe(
+      "the change predates the evidence record; revert it by hand",
+    );
+  });
+
+  // A page line whose entry is gone is exactly what the checker refuses, so
+  // the step never meets this through its own baseline; the revert is asked
+  // directly. The page half still goes back — refusing there would strand his
+  // objection — and the row says the entry was already missing.
+  it("takes the page line back when the entry is already gone, and says so", () => {
+    const page = CLIMBING.replace("## Ideal state", `${NEW_LINE}\n\n## Ideal state`);
+    const out = revertLearningRecords(page, CLIMBING_EVIDENCE, {
+      id: "aaaaaaaaaaaa",
+      file: "model-of-tom/areas/climbing.md",
+      section: "Current state",
+      before: "",
+      beforeEntry: "",
+      after: NEW_LINE,
+    });
+    expect(out.ok).toBe(true);
+    expect(out.evidenceMissing).toBe(true);
+    expect(out.pageText).not.toContain(NEW_LINE);
+    expect(out.evidenceText).toBe(CLIMBING_EVIDENCE);
   });
 
   it("records a revert that cannot apply, with the reason, and consumes the objection", async () => {
@@ -605,13 +1303,20 @@ describe("the learning step", () => {
     expect(sessionCitation({ ...turn, sdkSessionId: SDK_SESSION.toUpperCase() })).toBe(SESSION);
     // Before the SDK reported one, the row id is the session's only name.
     expect(sessionCitation({ id: TURN, sessionId: SESSION_ROW, sdkSessionId: null })).toBe(SESSION_ROW);
-    const evidence = learningEvidence(
-      learningInput({
-        slackReplies: [
-          { id: "ev9", at: Date.UTC(2026, 8, 5, 22), data: { ts: "1757000000.000100", threadTs: "1757000000.000001", text: "yes, the thursday one, keep it there" } },
-        ],
-      }),
-    );
+    const input = learningInput({
+      slackReplies: [
+        {
+          id: "ev9",
+          at: Date.UTC(2026, 8, 5, 22),
+          data: {
+            ts: "1757000000.000100",
+            threadTs: "1757000000.000001",
+            text: "yes, the thursday one, keep it there",
+          },
+        },
+      ],
+    });
+    const evidence = learningEvidence(input);
     expect(evidence).toMatchObject({ sinceDay: "2026-09-05", untilDay: "2026-09-06" });
     expect([...evidence.sources.keys()].sort()).toEqual(
       [
@@ -625,30 +1330,37 @@ describe("the learning step", () => {
     );
     // A turn's row id is not a session's name.
     expect(evidence.sources.has(`session ${TURN}`)).toBe(false);
-    expect(evidence.sources.get(`session ${SESSION}`).texts).toEqual(["thursday practice moved to 6pm this term"]);
-    const pages = new Map([["model-of-tom/areas/climbing.md", CLIMBING]]);
+    expect(evidence.sources.get(`session ${SESSION}`).texts).toEqual([TOM_TEXT]);
+    const dir = learningCheckout();
+    const { pages, evidence: evidencePages } = pagesOf(dir, ["model-of-tom/areas/climbing.md"]);
     for (const named of [SESSION, SDK_SESSION, SESSION_ROW]) {
-      const line = `- Thursday practice is at 6 p.m. this term (session ${named}, 2026-09-05).`;
       const { applied, refused } = applyLearningChanges(
         pages,
-        [factChange({ line, evidence: [`session ${named}`] })],
-        { day: "2026-09-06", evidence },
+        [factChange({ evidence: [{ ...SAID, source: `session ${named}` }] })],
+        { day: "2026-09-06", evidence, evidencePages },
       );
       expect(refused).toEqual([]);
       expect(applied).toHaveLength(1);
-      expect(applied[0].excerpt).toBe("thursday practice moved to 6pm this term");
+      expect(applied[0].excerpt).toBe(TOM_TEXT);
     }
-    // A Slack reply is cited as a thread, and its excerpt comes from the reply.
+    // A Slack reply is cited as a thread, and its said: comes from the reply.
     const { applied, refused } = applyLearningChanges(
       pages,
       [
         factChange({
-          line: "- Thursday practice stays where it is (thread 1757000000.000001, 2026-09-05).",
-          evidence: ["thread 1757000000.000001"],
+          line: "Thursday practice stays where it is.",
+          evidence: [
+            {
+              form: "said",
+              date: "2026-09-05",
+              source: "thread 1757000000.000001",
+              text: "the thursday one, keep it there",
+            },
+          ],
           excerpt: "the thursday one, keep it there",
         }),
       ],
-      { day: "2026-09-06", evidence },
+      { day: "2026-09-06", evidence, evidencePages },
     );
     expect(refused).toEqual([]);
     expect(applied).toHaveLength(1);
@@ -657,8 +1369,11 @@ describe("the learning step", () => {
   it("names the pages it writes, and the sections it never does", () => {
     expect(isLearningFile("model-of-tom/writing.md")).toBe(true);
     expect(isLearningFile("model-of-tom/priorities.md")).toBe(true);
+    expect(isLearningFile("model-of-tom/ground.md")).toBe(true);
+    expect(isLearningFile("model-of-tom/intent.md")).toBe(true);
     expect(isLearningFile("model-of-tom/areas/health-and-food.md")).toBe(true);
     expect(isLearningFile("model-of-tom/schedule.md")).toBe(false);
+    expect(isLearningFile("model-of-tom/agent-rules.md")).toBe(false);
     expect(isLearningFile("tts/spec.md")).toBe(false);
     expect(isLearningFile("model-of-tom/areas/../../tts/spec.md")).toBe(false);
     expect(FORBIDDEN_SECTIONS).toEqual(["Directions", "Ideal state", "Must not break"]);
@@ -676,12 +1391,12 @@ describe("the learning step", () => {
 
   it("matches an objection by the id, a prefix of it in the text, or the line's text — and by nothing else", () => {
     const changes = [
-      { id: "0123456789ab", file: "f", before: "", after: "- He climbs Thursdays at 6 p.m. (session s, 2026-09-05)." },
+      { id: "0123456789ab", file: "f", before: "", after: "- He climbs Thursdays at 6 p.m. this term." },
       { id: "fedcba987654", file: "f", before: "- old", after: "- new" },
     ];
     expect(matchObjection({ id: "fedcba987654", text: "no" }, changes)).toBe(changes[1]);
     expect(matchObjection({ id: null, text: "[01234567] is wrong" }, changes)).toBe(changes[0]);
-    expect(matchObjection({ id: null, text: "He climbs Thursdays at 6 p.m. (session s, 2026-09-05). — no" }, changes)).toBe(
+    expect(matchObjection({ id: null, text: "He climbs Thursdays at 6 p.m. this term. — no" }, changes)).toBe(
       changes[0],
     );
     // A short line's text is not enough to name it, and a hex-looking word
@@ -690,15 +1405,18 @@ describe("the learning step", () => {
     expect(matchObjection({ id: null, text: "the deadbeef line" }, changes)).toBeNull();
   });
 
-  it("reverts against the page's current text, and says when the line has moved on", () => {
-    const change = { file: "f", section: "Current state", before: "", after: NEW_LINE };
+  it("reverts against the records' current text, and says when the line has moved on", () => {
+    const change = { file: "f", section: "Current state", before: "", beforeEntry: "", after: NEW_LINE };
     const withLine = `## Current state\n\n- a\n${NEW_LINE}\n- b\n`;
-    expect(revertLearningChange(withLine, change)).toMatchObject({ ok: true, text: "## Current state\n\n- a\n- b\n" });
-    expect(revertLearningChange("## Current state\n\n- a\n- b\n", change)).toEqual({
+    expect(revertLearningRecords(withLine, "", change)).toMatchObject({
+      ok: true,
+      pageText: "## Current state\n\n- a\n- b\n",
+    });
+    expect(revertLearningRecords("## Current state\n\n- a\n- b\n", "", change)).toEqual({
       ok: false,
       reason: 'the line is no longer in "Current state" on f as written',
     });
-    expect(revertLearningChange("## Other\n\n- a\n", change)).toEqual({
+    expect(revertLearningRecords("## Other\n\n- a\n", "", change)).toEqual({
       ok: false,
       reason: 'no section "Current state" on f',
     });
@@ -707,18 +1425,20 @@ describe("the learning step", () => {
   it("reverts only inside the change's own section: a copy Tom pasted into Must not break stays", async () => {
     const dir = learningCheckout();
     const file = "model-of-tom/areas/climbing.md";
+    const eFile = "model-of-tom/evidence/areas/climbing.md";
     // The line in Current state (where the job put it) AND in Must not break
-    // (where Tom copied it), the second copy first on the page's own terms
-    // of "first match" — it must still be the Current state one that goes.
-    write(
+    // (where Tom copied it) — it must still be the Current state one that goes.
+    writePage(
       dir,
       file,
       CLIMBING.replace("## Ideal state", `${NEW_LINE}\n\n## Ideal state`).replace(
-        "- Team practices are fixed (session 47f04bc9, 2026-08-30).",
-        `${NEW_LINE}\n- Team practices are fixed (session 47f04bc9, 2026-08-30).`,
+        "- Team practices are fixed.",
+        `${NEW_LINE}\n- Team practices are fixed.`,
       ),
     );
-    const added = { id: "aaaaaaaaaaaa", file, section: "Current state", before: "", after: NEW_LINE };
+    expect(runEvidenceCheck(dir).ok).toBe(true);
+    expect(eFile).toBe("model-of-tom/evidence/areas/climbing.md");
+    const added = { id: "aaaaaaaaaaaa", file, section: "Current state", before: "", beforeEntry: "", after: NEW_LINE };
     const run = learningRun(dir);
     const convex = fakeConvex(
       learningInput({
@@ -736,7 +1456,7 @@ describe("the learning step", () => {
     expect(copies[0]).toBeGreaterThan(lines.indexOf("## Must not break"));
     // A second objection to the same change finds nothing in Current state
     // and does not go looking elsewhere.
-    const again = revertLearningChange(lines.join("\n"), added);
+    const again = revertLearningRecords(lines.join("\n"), "", added);
     expect(again).toEqual({ ok: false, reason: `the line is no longer in "Current state" on ${file} as written` });
   });
 
@@ -746,7 +1466,7 @@ describe("the learning step", () => {
     const dir = learningCheckout();
     const file = "model-of-tom/areas/climbing.md";
     // Tom's copy first, the job's (at the end of Current state) second.
-    write(
+    writePage(
       dir,
       file,
       CLIMBING.replace("- Climbing for 16 years", `${NEW_LINE}\n- Climbing for 16 years`).replace(
@@ -754,8 +1474,9 @@ describe("the learning step", () => {
         `${NEW_LINE}\n\n## Ideal state`,
       ),
     );
+    expect(runEvidenceCheck(dir).ok).toBe(true);
     const before = fs.readFileSync(path.join(dir, file), "utf8");
-    const added = { id: "aaaaaaaaaaaa", file, section: "Current state", before: "", after: NEW_LINE };
+    const added = { id: "aaaaaaaaaaaa", file, section: "Current state", before: "", beforeEntry: "", after: NEW_LINE };
     const run = learningRun(dir);
     const convex = fakeConvex(
       learningInput({
@@ -777,11 +1498,17 @@ describe("the learning step", () => {
     });
     expect(run.commits).toEqual([]);
     // The same rule for a replacement's target: two copies, no replacement.
-    const old = "- Ankle: minor chronic pain from jumping down off the wall (session 47f04bc9, 2026-08-30).";
+    const old = "- Ankle: minor chronic pain from jumping down off the wall.";
     const twice = new Map([[file, CLIMBING.replace(old, `${old}\n${old}`)]]);
-    const { applied, refused } = applyLearningChanges(twice, [factChange({ replaces: old })], { day: "2026-09-06" });
+    const { applied, refused } = applyLearningChanges(
+      twice,
+      [factChange({ op: "replace", replaces: old })],
+      { day: "2026-09-06" },
+    );
     expect(applied).toEqual([]);
-    expect(refused.map((r) => r.reason)).toEqual(['the line to replace is in "Current state" 2 times; which one cannot be told']);
+    expect(refused.map((r) => r.reason)).toEqual([
+      'the line to replace is in "Current state" 2 times; which one cannot be told',
+    ]);
   });
 
   it("computes git's own blob id, of the body below the frontmatter", () => {
@@ -802,17 +1529,25 @@ describe("the learning step", () => {
         { at: 1, file: "g", resultBlob: "g1" },
       ]),
     ).toEqual(new Map([["f", "new"], ["g", "g1"]]));
+    // The evidence half, keyed by the synthesis file so one lookup serves both.
+    expect(
+      expectedEvidenceBlobs([
+        { at: 1, file: "f", evidenceResultBlob: "e1" },
+        { at: 3, file: "f", evidenceResultBlob: "e3" },
+        { at: 2, file: "f" },
+      ]),
+    ).toEqual(new Map([["f", "e3"]]));
   });
 
   // witness: a learning row carried no hash of the page, so a revert applied
   // to whatever text the page had by then — Tom's edits included.
-  it("reverts only a page whose body is as the job last left it, and moves that mark on with each revert", async () => {
+  it("reverts only records as the job last left them, and moves that mark on with each revert", async () => {
     const file = "model-of-tom/areas/climbing.md";
-    const second = `- Rest days are Mondays (session ${SESSION}, 2026-09-05).`;
+    const second = "- Rest days are Mondays.";
     const asLeft = CLIMBING.replace("## Ideal state", `${NEW_LINE}\n${second}\n\n## Ideal state`);
     const rows = [
-      { id: "aaaaaaaaaaaa", at: 1, eventKind: "learning-change", file, section: "Current state", before: "", after: NEW_LINE, resultBlob: pageBodyBlob(asLeft) },
-      { id: "bbbbbbbbbbbb", at: 1, eventKind: "learning-change", file, section: "Current state", before: "", after: second, resultBlob: pageBodyBlob(asLeft) },
+      { id: "aaaaaaaaaaaa", at: 1, eventKind: "learning-change", file, section: "Current state", before: "", beforeEntry: "", after: NEW_LINE, resultBlob: pageBodyBlob(asLeft) },
+      { id: "bbbbbbbbbbbb", at: 1, eventKind: "learning-change", file, section: "Current state", before: "", beforeEntry: "", after: second, resultBlob: pageBodyBlob(asLeft) },
     ];
     const objections = [
       { eventId: "ev8", at: 1, id: "aaaaaaaaaaaa", text: "no" },
@@ -821,7 +1556,7 @@ describe("the learning step", () => {
     // As the job left it: both go, the second checked against what the first left.
     {
       const dir = learningCheckout();
-      write(dir, file, asLeft);
+      writePage(dir, file, asLeft);
       const run = learningRun(dir);
       const convex = fakeConvex(learningInput({ tomTurns: [], rulings: [], objections, changes: rows }));
       const summary = await learningStep(run, { fetch: convex.fetch, model: vi.fn() });
@@ -836,7 +1571,7 @@ describe("the learning step", () => {
     {
       const dir = learningCheckout();
       const edited = asLeft.replace("- Climbing for 16 years", "- Bouldering only this month.\n- Climbing for 16 years");
-      write(dir, file, edited);
+      writePage(dir, file, edited);
       const run = learningRun(dir);
       const convex = fakeConvex(learningInput({ tomTurns: [], rulings: [], objections: objections.slice(0, 1), changes: rows }));
       const summary = await learningStep(run, { fetch: convex.fetch, model: vi.fn() });
@@ -853,7 +1588,7 @@ describe("the learning step", () => {
     // The frontmatter is not the body: reviewed: set by the weekly job changes nothing.
     {
       const dir = learningCheckout();
-      write(dir, file, asLeft.replace("reviewed:", "reviewed: 2026-09-05"));
+      writePage(dir, file, asLeft.replace("reviewed:", "reviewed: 2026-09-05"));
       const run = learningRun(dir);
       const convex = fakeConvex(learningInput({ tomTurns: [], rulings: [], objections: objections.slice(0, 1), changes: rows }));
       expect(await learningStep(run, { fetch: convex.fetch, model: vi.fn() })).toMatchObject({ reverted: 1, revertFailed: 0 });
@@ -863,14 +1598,29 @@ describe("the learning step", () => {
   it("refuses a section nested under one of Tom's, on the way in and on the way back", async () => {
     const dir = learningCheckout();
     const file = "model-of-tom/areas/climbing.md";
-    const nested = "- Lead 5.12 by December (session 47f04bc9, 2026-08-30).";
+    const nested = "- Lead 5.12 by December.";
     write(dir, file, CLIMBING.replace("## Must not break", `### Training goals\n\n${nested}\n\n## Must not break`));
+    write(
+      dir,
+      "model-of-tom/evidence/areas/climbing.md",
+      CLIMBING_EVIDENCE.replace(
+        "## Must not break",
+        [
+          "### Training goals",
+          "",
+          "- line: Lead 5.12 by December.",
+          '  said: 2026-08-30 · session 47f04bc9 · "i want to lead 5.12 by december"',
+          "",
+          "## Must not break",
+        ].join("\n"),
+      ),
+    );
     const before = fs.readFileSync(path.join(dir, file), "utf8");
     const run = learningRun(dir);
     const convex = fakeConvex(
       learningInput({
         objections: [{ eventId: "ev6", at: 1, id: "dddddddddddd", text: "no" }],
-        changes: [{ id: "dddddddddddd", file, section: "Training goals", before: "", after: nested }],
+        changes: [{ id: "dddddddddddd", file, section: "Training goals", before: "", beforeEntry: "", after: nested }],
       }),
     );
     const summary = await learningStep(run, {
@@ -892,7 +1642,7 @@ describe("the learning step", () => {
   // Current state ran on through Tom's section, and a `### Training goals`
   // under it sat under nothing.
   it("guards a section under an indented or a setext heading of Tom's as under a column-one one", () => {
-    const nested = "### Training goals\n\n- Lead 5.12 by December (session 47f04bc9, 2026-08-30).\n\n## Must not break";
+    const nested = "### Training goals\n\n- Lead 5.12 by December.\n\n## Must not break";
     const reason = '"Training goals" is under "Ideal state", Tom\'s section; an agent never writes it';
     const own = '"Ideal state" is Tom\'s section; an agent never writes it';
     for (const heading of ["   ## Ideal state", "Ideal state\n-----------"]) {
@@ -1303,6 +2053,276 @@ describe("the manifests and the archive", () => {
   });
 });
 
+// ── The repo-learning step ───────────────────────────────────────────────────
+// It reads the transcripts the sessions step archived and proposes lines for
+// the nested AGENTS.md of the repositories the night worked in. It NEVER edits
+// a rule file: what lands is the evidence entry, under a heading that says the
+// line is not in the repository yet, and one row the digest prints.
+
+const SDK_REPO_SESSION = "8da7169a-2222-3333-4444-555555555555";
+
+/** A gzipped transcript with one command, one failure and one assistant text. */
+function transcriptBytes() {
+  const lines = [
+    JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", name: "Bash", input: { command: "pnpm next dev" } }] },
+    }),
+    JSON.stringify({
+      type: "user",
+      message: {
+        content: [{ type: "tool_result", is_error: true, content: "NEXT_PUBLIC_CONVEX_URL is missing" }],
+      },
+    }),
+    JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "Copying .env.local from the main checkout fixed it." }] },
+    }),
+  ];
+  return zlib.gzipSync(Buffer.from(`${lines.join("\n")}\n`));
+}
+
+function repoSession(over = {}) {
+  return {
+    id: "k97repo1",
+    sdkSessionId: SDK_REPO_SESSION,
+    title: "worktree dev server",
+    repos: ["tom.quest"],
+    repo: "tom.quest",
+    cwd: null,
+    model: "opus",
+    mode: "interactive",
+    outcome: "completed",
+    outcomeSummary: "the worktree's dev server would not start",
+    endedReason: null,
+    at: Date.UTC(2026, 8, 5, 22),
+    ...over,
+  };
+}
+
+const PROPOSAL = {
+  repo: "tom.quest",
+  file: "worker/AGENTS.md",
+  section: "box",
+  line: "A worktree has no `.env.local`; copy it from the main checkout before `next dev`.",
+  sources: ["8da7169a"],
+  read: "`next dev` failed with a missing NEXT_PUBLIC_CONVEX_URL until the file was copied.",
+};
+
+const proposing = (proposals) => () => JSON.stringify({ proposals });
+
+/** A checkout with the pages, the checker and the night's archived transcript,
+ * plus a repository checkout the session's cwd points at. */
+function repoLearningCheckout() {
+  const dir = learningCheckout();
+  write(dir, `sessions/2026/09/05/claude-${SDK_REPO_SESSION}/session.jsonl.gz`, transcriptBytes());
+  const repoDir = tmp();
+  write(repoDir, "AGENTS.md", "# tom.quest\n\n## Style\n\n- Simple interfaces around deep modules.\n");
+  write(repoDir, "worker/AGENTS.md", "# worker\n\n## box\n\n- The box runs plain Node with no npm dependencies.\n");
+  return { dir, repoDir };
+}
+
+describe("the repo-learning step", () => {
+  it("writes the evidence entry, queues the row and the commit, and edits no rule file", async () => {
+    const { dir, repoDir } = repoLearningCheckout();
+    const run = learningRun(dir);
+    const convex = fakeConvex(learningInput({ repoSessions: [repoSession({ cwd: repoDir })] }));
+    const calls = [];
+    const summary = await repoLearningStep(run, {
+      fetch: convex.fetch,
+      model: (prompt) => {
+        calls.push(prompt);
+        return JSON.stringify({ proposals: [PROPOSAL] });
+      },
+    });
+    expect(summary).toMatchObject({ sessions: 1, transcriptsRead: 1, proposals: 1, dropped: 0, model: "opus" });
+
+    // The entry, under the heading that says the line is not there yet.
+    const entries = fs.readFileSync(path.join(dir, "model-of-tom/evidence/repos/tom.quest.md"), "utf8");
+    expect(entries).toContain("## worker/AGENTS.md#box — proposed");
+    expect(entries).toContain(`- line: ${PROPOSAL.line}`);
+    expect(entries).toContain("read: 2026-09-06 · session 8da7169a ·");
+    expect(runEvidenceCheck(dir).ok).toBe(true);
+    // The repository's own file is untouched: it merges through its own checks.
+    expect(fs.readFileSync(path.join(repoDir, "worker/AGENTS.md"), "utf8")).not.toContain("worktree");
+
+    const id = proposalId(PROPOSAL.repo, PROPOSAL.file, PROPOSAL.section, PROPOSAL.line);
+    expect(run.learningRows).toHaveLength(1);
+    expect(run.learningRows[0]).toMatchObject({
+      kind: "repo-proposal",
+      key: id,
+      data: {
+        id,
+        repo: "tom.quest",
+        file: "worker/AGENTS.md",
+        section: "box",
+        line: PROPOSAL.line,
+        evidence: "read: session 8da7169a",
+        evidenceHeading: "worker/AGENTS.md#box — proposed",
+        status: "open",
+        commit: null,
+      },
+      commitMessage: "repo rules: 2026-09-06 — 1 proposal from the night's sessions",
+    });
+    expect(run.commits).toEqual([
+      { paths: ["model-of-tom"], message: "repo rules: 2026-09-06 — 1 proposal from the night's sessions" },
+    ]);
+
+    // The prompt carries the transcript's own lines and the rule files.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("ran: pnpm next dev");
+    expect(calls[0]).toContain("failed: NEXT_PUBLIC_CONVEX_URL is missing");
+    expect(calls[0]).toContain("=== tom.quest worker/AGENTS.md ===");
+    expect(convex.posts.map((p) => p.body.kind)).toEqual(["repo-learning-run"]);
+  });
+
+  it("drops a proposal that restates a line already in the repository's own file", async () => {
+    const { dir, repoDir } = repoLearningCheckout();
+    const run = learningRun(dir);
+    const convex = fakeConvex(learningInput({ repoSessions: [repoSession({ cwd: repoDir })] }));
+    const summary = await repoLearningStep(run, {
+      fetch: convex.fetch,
+      model: proposing([
+        { ...PROPOSAL, line: "The box runs plain Node with no npm dependencies!" },
+        PROPOSAL,
+      ]),
+    });
+    expect(summary).toMatchObject({ proposals: 1, dropped: 1, deduped: 1 });
+    expect(summary.notes).toContain("1 proposal dropped as duplicates of lines already in the files");
+  });
+
+  it("says when a repository's own rules could not be read at all", async () => {
+    const { dir } = repoLearningCheckout();
+    const run = learningRun(dir);
+    const convex = fakeConvex(learningInput({ repoSessions: [repoSession({ cwd: null })] }));
+    const summary = await repoLearningStep(run, { fetch: convex.fetch, model: proposing([PROPOSAL]) });
+    expect(summary.notes).toContain(
+      "tom.quest AGENTS.md could not be read on the box; the proposals above were checked against the evidence record only",
+    );
+    expect(summary.proposals).toBe(1);
+  });
+
+  it("makes no model call on a night whose sessions ended in no repository", async () => {
+    const { dir } = repoLearningCheckout();
+    const run = learningRun(dir);
+    const convex = fakeConvex(learningInput({ repoSessions: [] }));
+    const model = vi.fn();
+    const summary = await repoLearningStep(run, { fetch: convex.fetch, model });
+    expect(model).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({ sessions: 0, proposals: 0 });
+    expect(run.commits).toEqual([]);
+  });
+
+  it("moves an entry to its live heading once the line is in the repository, and drops one Tom objected to", async () => {
+    const { dir, repoDir } = repoLearningCheckout();
+    // A night that proposed two lines.
+    const first = learningRun(dir);
+    await repoLearningStep(first, {
+      fetch: fakeConvex(learningInput({ repoSessions: [repoSession({ cwd: repoDir })] })).fetch,
+      model: proposing([PROPOSAL, { ...PROPOSAL, line: "Always run the whole suite.", section: "box" }]),
+    });
+    const rel = "model-of-tom/evidence/repos/tom.quest.md";
+    expect(fs.readFileSync(path.join(dir, rel), "utf8")).toContain("## worker/AGENTS.md#box — proposed");
+
+    // The night after: one landed, one was objected to.
+    const second = learningRun(dir);
+    const convex = fakeConvex(
+      learningInput({
+        repoSessions: [],
+        repoProposalsApplied: [
+          {
+            id: "x",
+            repo: "tom.quest",
+            file: "worker/AGENTS.md",
+            section: "box",
+            line: PROPOSAL.line,
+            appliedLine: "A worktree has no `.env.local`: copy it from the main checkout first.",
+            commit: "7e2fb79",
+          },
+        ],
+        repoProposalsDropped: [
+          {
+            id: "y",
+            repo: "tom.quest",
+            file: "worker/AGENTS.md",
+            section: "box",
+            line: "Always run the whole suite.",
+            reply: "no — it takes nine minutes",
+          },
+        ],
+      }),
+    );
+    const summary = await repoLearningStep(second, { fetch: convex.fetch, model: vi.fn() });
+    expect(summary.reconciled).toBe(1);
+    const after = fs.readFileSync(path.join(dir, rel), "utf8");
+    // The applied one is under the live heading, in the wording that merged.
+    expect(after).toContain("## worker/AGENTS.md#box\n");
+    expect(after).toContain("- line: A worktree has no `.env.local`: copy it from the main checkout first.");
+    // The objected one keeps its heading and says why it is not a rule.
+    expect(after).toContain("- line: Always run the whole suite.");
+    expect(after).toContain("  dropped: 2026-09-06 · Tom's objection · no — it takes nine minutes");
+    expect(runEvidenceCheck(dir).ok).toBe(true);
+  });
+
+  it("takes back the night's proposals when the check fails after them", async () => {
+    const { dir, repoDir } = repoLearningCheckout();
+    write(
+      dir,
+      "scripts/check-evidence.mjs",
+      [
+        'import { existsSync, readFileSync } from "node:fs";',
+        'const p = "model-of-tom/evidence/repos/tom.quest.md";',
+        'if (existsSync(p) && readFileSync(p, "utf8").includes("worktree")) { console.error("the records disagree"); process.exit(1); }',
+        'console.log("ok");',
+      ].join("\n"),
+    );
+    const run = learningRun(dir);
+    const convex = fakeConvex(learningInput({ repoSessions: [repoSession({ cwd: repoDir })] }));
+    const summary = await repoLearningStep(run, { fetch: convex.fetch, model: proposing([PROPOSAL]) });
+    expect(summary.proposals).toBe(0);
+    expect(summary.notes.some((n) => n.includes("taken back"))).toBe(true);
+    expect(fs.existsSync(path.join(dir, "model-of-tom/evidence/repos/tom.quest.md"))).toBe(false);
+    expect(run.learningRows).toEqual([]);
+    expect(run.commits).toEqual([]);
+  });
+
+  it("drops a proposal Tom named in a reply instead of reverting a page", async () => {
+    const { dir } = repoLearningCheckout();
+    const run = learningRun(dir);
+    const convex = fakeConvex(
+      learningInput({
+        tomTurns: [],
+        rulings: [],
+        objections: [{ eventId: "ev1", at: 1, id: null, text: "no, [b71cb71cb71c] is wrong" }],
+        changes: [],
+        repoProposals: [
+          {
+            id: "b71cb71cb71c",
+            repo: "tom.quest",
+            file: "worker/AGENTS.md",
+            section: "box",
+            line: PROPOSAL.line,
+            status: "open",
+          },
+        ],
+      }),
+    );
+    const summary = await learningStep(run, { fetch: convex.fetch, model: vi.fn() });
+    // No page was touched and no revert row was written: a proposal was never
+    // on a page to take a line off.
+    expect(summary).toMatchObject({ reverted: 0, revertFailed: 0, changes: 0 });
+    expect(run.learningRows).toEqual([]);
+    const dropped = convex.posts.find((p) => p.route === "/tts/repo-proposal-dropped");
+    expect(dropped.body).toEqual({ id: "b71cb71cb71c", reply: "no, [b71cb71cb71c] is wrong" });
+    expect(convex.posts.map((p) => p.route)).toEqual([
+      "/tts/repo-proposal-dropped",
+      "/tts/learning-objections-consumed",
+      "/tts/event",
+    ]);
+  });
+});
+
+
 // ── The git half, in a temp repository ───────────────────────────────────────
 // What these pin is what the box cannot tell us about until the night after:
 // the checkout must always be left in a state the next night can pull into.
@@ -1343,9 +2363,11 @@ describe("the git half", { timeout: 60_000 }, () => {
       stdio: ["ignore", "pipe", "pipe"],
     });
   }
-  /** A repository with one commit holding a snapshot file and a manifest. */
+  /** A repository with one commit holding a snapshot file, a manifest, and
+   * the WikiTom-shaped pages the learning step writes (with the checker, so
+   * the step's own gate passes). */
   function repo() {
-    const dir = tmp();
+    const dir = learningCheckout();
     execFileSync("git", ["init", "-q", "-b", "main", dir], { stdio: "ignore" });
     write(dir, "tts/snapshot/dtsTodos.jsonl", "old\n");
     write(dir, "sessions/manifest-box-2026-09-05.jsonl", "{}\n");
@@ -1359,10 +2381,6 @@ describe("the git half", { timeout: 60_000 }, () => {
 
   it("records on each learning row the commit that holds its line, not HEAD", async () => {
     const dir = repo();
-    const file = "model-of-tom/areas/climbing.md";
-    write(dir, file, CLIMBING);
-    run(dir, "add", "-A");
-    run(dir, "commit", "-q", "-m", "pages");
     const r = { ...learningRun(dir), now: Date.now() };
     const convex = fakeConvex(learningInput());
     await learningStep(r, { fetch: convex.fetch, model: answering([factChange()]) });
@@ -1387,9 +2405,9 @@ describe("the git half", { timeout: 60_000 }, () => {
   it("names the one commit a folded revert-and-learn night made, and none for a revert that could not apply", async () => {
     const dir = repo();
     const file = "model-of-tom/areas/climbing.md";
-    const old = "- Ankle: minor chronic pain from jumping down off the wall (session 47f04bc9, 2026-08-30).";
-    const earlier = "- Rest days are Mondays (session 47f04bc9, 2026-08-30).";
-    write(dir, file, CLIMBING.replace(old, `${old}\n${earlier}`));
+    const old = "- Ankle: minor chronic pain from jumping down off the wall.";
+    const earlier = "- Rest days are Mondays.";
+    writePage(dir, file, CLIMBING.replace(old, `${old}\n${earlier}`));
     run(dir, "add", "-A");
     run(dir, "commit", "-q", "-m", "pages");
     const r = { ...learningRun(dir), now: Date.now() };
@@ -1400,8 +2418,8 @@ describe("the git half", { timeout: 60_000 }, () => {
           { eventId: "ev8", at: 2, id: "ffffffffffff", text: "no" },
         ],
         changes: [
-          { id: "eeeeeeeeeeee", file, section: "Current state", before: "", after: earlier },
-          { id: "ffffffffffff", file, section: "Current state", before: "", after: "- gone already (session x, 2026-01-01)." },
+          { id: "eeeeeeeeeeee", file, section: "Current state", before: "", beforeEntry: "", after: earlier },
+          { id: "ffffffffffff", file, section: "Current state", before: "", beforeEntry: "", after: "- gone already." },
         ],
       }),
     );
@@ -1552,7 +2570,9 @@ describe("the git half", { timeout: 60_000 }, () => {
     abortStaleRebase(dir);
     const after = learningRun(dir);
     await postStep(after, { fetch: fakeConvex().fetch });
-    expect(after.failures[0].error).toContain("required model-of-tom/agent-rules.md is absent");
+    // The repository now carries agent-rules.md (learningCheckout writes it),
+    // so the first required file the assembler misses is an area page.
+    expect(after.failures[0].error).toContain("is absent");
   });
 
   // witness: `git pull --rebase` re-commits the local commits it replays, and

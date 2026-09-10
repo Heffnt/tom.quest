@@ -259,8 +259,10 @@ describe("model-of-tom caller contract", () => {
         prompt: () => learningPrompt(
           { since: 0, until: 1, tomTurns: [], slackReplies: [], rulings: [] },
           new Map([["model-of-tom/writing.md", "the unchanged learning page"]]),
+          new Map([["model-of-tom/evidence/writing.md", "the unchanged evidence file"]]),
+          [],
           "2026-09-09",
-        ),
+        ).prompt,
       },
     ];
 

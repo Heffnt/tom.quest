@@ -661,29 +661,42 @@ async function captureUnknown(
 /** The todo a reply names — by its page link (tts?item=<id>, Slack-wrapped
  * or bare) or a bare id — and the reply with that name taken out. The first
  * token that is an existing todo's id wins; a reply naming none is undefined. */
-// How many recent model-of-Tom changes a reply's id is matched against:
-// weeks of nights, inside Slack's 3-second budget.
+// How many recent rows of EACH kind — model-of-Tom changes, repository-rule
+// proposals — a reply's id is matched against: weeks of nights on both,
+// inside Slack's 3-second budget.
 export const LEARNING_CHANGE_LOOKBACK = 500;
 
 /**
- * The full id of the learning change a reply names, if any. What a name is
- * — the digest's `[<id>]`, or a bare prefix of it — is one rule in
- * worker/jobs/learning-change-names.mjs, the nightly job's too; the token is
- * checked against the recent "learning-change" rows, so a commit hash printed
- * in the same digest, or a word spelled in hex letters, names nothing.
+ * The full id of the model-of-Tom line, or of the repository-rule proposal, a
+ * reply names — if any. What a name is — the digest's `[<id>]`, or a bare
+ * prefix of it — is one rule in worker/jobs/learning-change-names.mjs, the
+ * nightly job's too; the token is checked against the recent rows, so a commit
+ * hash printed in the same digest, or a word spelled in hex letters, names
+ * nothing.
+ *
+ * BOTH SETS ARE SEARCHED. The digest prints repository-rule proposals beside
+ * the model-of-Tom lines and a proposal's id is the same length and alphabet
+ * by construction, so a reply naming one reads exactly like a reply naming the
+ * other: it is an objection to that proposal, which the nightly job drops
+ * before the line ever reaches the repository. The row this writes stays a
+ * "learning-objection" either way — the job tells a proposal id from a change
+ * id by looking it up, and the reply does not have to know which it named.
  */
 async function namedLearningChange(ctx: MutationCtx, text: string): Promise<string | undefined> {
   const tokens = changeIdTokens(text);
   if (tokens.length === 0) return undefined;
-  const recent = await ctx.db
-    .query("dtsEvents")
-    .withIndex("by_kind_at", (q) => q.eq("kind", "learning-change"))
-    .order("desc")
-    .take(LEARNING_CHANGE_LOOKBACK);
-  const hit = namedChange(
-    tokens,
-    recent.map((row) => (row.data ?? {}) as { id?: unknown }),
-  );
+  const recentOfKind = async (kind: string) =>
+    (
+      await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_at", (q) => q.eq("kind", kind))
+        .order("desc")
+        .take(LEARNING_CHANGE_LOOKBACK)
+    ).map((row) => (row.data ?? {}) as { id?: unknown });
+  const hit = namedChange(tokens, [
+    ...(await recentOfKind("learning-change")),
+    ...(await recentOfKind("repo-proposal")),
+  ]);
   return typeof hit?.id === "string" ? hit.id : undefined;
 }
 

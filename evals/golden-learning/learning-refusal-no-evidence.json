@@ -1,0 +1,75 @@
+{
+  "id": "learning-refusal-no-evidence",
+  "job": "learning",
+  "partition": "learning/refusal",
+  "verdict": "approve",
+  "sentence": "A line the input does not evidence is refused whole, and neither record is touched.",
+  "input": {
+    "day": "2026-09-09",
+    "window": { "since": "2026-09-08T08:00:00.000Z", "until": "2026-09-09T08:00:00.000Z" },
+    "tomTurns": [
+      {
+        "turnId": "j57turn2",
+        "session": "47f04bc9",
+        "sessionTitle": "a short one",
+        "date": "2026-09-09",
+        "agentBefore": null,
+        "tom": "ok",
+        "agentAfter": null
+      }
+    ],
+    "slackReplies": [],
+    "rulings": [],
+    "pages": {
+      "model-of-tom/ground.md": "# Ground\n\n## Knows\n\n- The thesis and claims of his own paper.\n\n## Does not know\n\n- A name an agent coined for an experiment, a run or a concept.\n",
+      "model-of-tom/intent.md": "---\nupdated: 2026-09-01\nreviewed:\n---\n\n# Intent\n\n## Directions\n\nTom leads this file; no agent writes this section.\n\n## What to push toward\n\n- The paper finished and published.\n"
+    },
+    "evidencePages": {
+      "model-of-tom/evidence/ground.md": "# Evidence for ground.md\n\n## Knows\n\n- line: The thesis and claims of his own paper.\n  said: 2026-07-23 · session 81be510a · \"i know what the thesis is\"\n\n## Does not know\n\n- line: A name an agent coined for an experiment, a run or a concept.\n  said: 2026-08-08 · session 542cf5c1 · \"That is not a term I recognize, and I am intimately familiar with CMT.\"\n",
+      "model-of-tom/evidence/intent.md": "# Evidence for intent.md\n\n## What to push toward\n\n- line: The paper finished and published.\n  said: 2026-07-23 · session 81be510a · \"i need the paper finished and published this year\"\n"
+    },
+    "answer": {
+      "changes": [
+        {
+          "file": "model-of-tom/ground.md",
+          "section": "Knows",
+          "op": "add",
+          "line": "Fourier analysis and boolean Fourier analysis.",
+          "replaces": null,
+          "inferred": false,
+          "signal": null,
+          "evidence": [],
+          "excerpt": null
+        },
+        {
+          "file": "model-of-tom/intent.md",
+          "section": "Directions",
+          "op": "add",
+          "line": "Finish the paper this month.",
+          "replaces": null,
+          "inferred": false,
+          "signal": null,
+          "evidence": [
+            { "form": "said", "date": "2026-09-09", "source": "session 47f04bc9", "text": "ok" }
+          ],
+          "excerpt": "ok"
+        }
+      ]
+    }
+  },
+  "expect": {
+    "signals": [],
+    "applied": [],
+    "refused": [
+      { "file": "model-of-tom/ground.md", "reason": "no evidence" },
+      {
+        "file": "model-of-tom/intent.md",
+        "reason": "\"Directions\" is Tom's section; an agent never writes it"
+      }
+    ],
+    "pagesUnchanged": true,
+    "evidenceUnchanged": true,
+    "evidenceCheck": "ok",
+    "digest": null
+  }
+}

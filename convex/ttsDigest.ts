@@ -113,6 +113,38 @@ export const LEARNING_REVERTED = "learning-reverted";
 export const LEARNING_REVERT_FAILED = "learning-revert-failed";
 export { PRELUDE_DELIVERY, EVALS_RUN } from "./ttsEvals";
 
+// The night the learning step took its WHOLE write back: WikiTom's
+// scripts/check-evidence.mjs failed after the write, so every line the night
+// put on a page was reverted rather than left standing behind a failing check.
+// NOT a decision — nothing stands to object to — and not a quiet night either,
+// which is the confusion silence would leave. It goes to #tts-broken as it is
+// written (convex/ttsNightly.ts internalRecordWorkerEvent), and the morning
+// message's broken run states it again if it is still the day's news.
+//   kind "learning-check-failed", data { baseline, stage?: "reverts" | "changes",
+//                                        changes?, output }
+// `baseline` true means the check was ALREADY failing before the run, so the
+// step wrote nothing at all; false means it wrote and then took it all back.
+export const LEARNING_CHECK_FAILED = "learning-check-failed";
+
+// The nightly "repo-learning" step reads the night's sessions and proposes
+// lines for the nested AGENTS.md of a repository they worked in. The line
+// lands in that repository through ITS OWN checks — a branch, a review, a
+// merge — so what he is shown is a PROPOSAL, not a write. It is a decision
+// taken in his name like a model-of-Tom line, and it reaches him the same way:
+// #tts-decisions as it is written (convex/ttsNightly.ts
+// internalRecordWorkerEvent), where "revert" in the thread drops it before it
+// is ever applied. A reply on the MORNING thread naming its id does the same
+// (convex/ttsSlack.ts namedLearningChange searches both sets).
+//   kind "repo-proposal",         data { id, repo, file, section, line, evidence }
+//   kind "repo-proposal-applied", data { id, repo, file, section, line, evidence, commit }
+//   kind "repo-proposal-dropped", data { id, repo, file, section, line, evidence, reason? }
+// The step's own run row, kind "repo-learning-run", carries `notes`: whole
+// lines it reported that are not one proposal. Nothing prints them today —
+// they are read off the row when a night is being explained.
+export const REPO_PROPOSAL = "repo-proposal";
+export const REPO_PROPOSAL_APPLIED = "repo-proposal-applied";
+export const REPO_PROPOSAL_DROPPED = "repo-proposal-dropped";
+
 // The weekly session's record that Tom confirmed an area page (phase 8;
 // POST /tts/area-reviewed, convex/ttsWeekly.ts): key = the page's path,
 // data { path, reviewedOn }. Listed with what happened since the last digest.

@@ -1,12 +1,14 @@
 // nightly.mjs — the nightly job (the lifeos update, phase 4). Runs at 4:00
-// a.m. New York, before the 5 a.m. digest, and does five things in order,
+// a.m. New York, before the 5 a.m. digest, and does eight things in order,
 // each one recording a "nightly-failure" dtsEvents row if it fails and then
 // letting the next one run:
 //
-// All five run under /var/lock/tts-wikitom.lock, taken once around them
-// (steps 1 to 4 write the checkout; the post reads the HEAD they left):
-//
-//   1. snapshot — copies every Convex table (the six auth tables excepted)
+//   1. delivery — asks Convex which live sessions are on the current
+//      model-of-tom commit, which are on an older one, and which got no
+//      prelude at all, and records the counts. FIRST, and OUTSIDE the lock:
+//      it reads no checkout, and it must compare the timeline as tonight's
+//      post found it, not as tonight's post left it.
+//   2. snapshot — copies every Convex table (the six auth tables excepted)
 //      into the WikiTom checkout at tts/snapshot/, one JSON-lines file per
 //      table, deterministic, written only where the bytes changed, every
 //      string value through the credential filter first (redactRow). A
@@ -14,31 +16,47 @@
 //      fixes which rows are in it (those created before the job started),
 //      not their state — a row updated between two pages is exported in its
 //      later state, and two tables read minutes apart can disagree.
-//   2. learning — applies Tom's objections from the digest thread (the
+//   3. learning — applies Tom's objections from the digest thread (the
 //      inverse of each named change, or a row saying why not), then reads
 //      what he did since the last learning run (his session turns with the
 //      agent's replies around them, his Slack replies, his rulings), makes
 //      one model call over the model-of-tom pages, and applies the lines it
 //      proposes that the rules allow — one "learning-change" row each, with
 //      the commit, once the push has made it. See learningStep.
-//   3. sessions — archives every Codex rollout and Claude SDK session file on
+//   4. sessions — archives every Codex rollout and Claude SDK session file on
 //      this box that WikiTom's sessions/ does not already hold at that
 //      content, in phase 1's layout, and appends the manifest — the sweep
 //      behind the session-end archive the daemon makes through the same
 //      function (session-archive.mjs).
-//   4. push — one commit per step that changed something, plus whatever an
+//   5. repo-learning — reads the transcripts step 4 just archived for what
+//      the night's sessions learned about the REPOSITORIES they worked in,
+//      and writes the evidence entries under model-of-tom/evidence/repos/.
+//      The synthesis lines themselves live in each repo's own AGENTS.md, so
+//      what lands here is proposals and evidence, never the rule files.
+//   6. push — one commit per step that changed something, plus whatever an
 //      earlier run left modified, `git pull --rebase`, `git push` over the
 //      github.com-wikitom SSH alias. A refused pull or push is a failure row
 //      and the commits stay local for the next night; nothing is retried.
-  //   5. post — reads the model-of-tom files from the git object at HEAD
-  //      (the stable operate, write, and know layers; each area page whole
-  //      except for YAML frontmatter) and posts them
-//      with the commit hash and time to POST /tts/model-of-tom — whether or
-//      not the push succeeded, so every prompt names the commit it began
-//      with; `pushed` says whether that commit is on GitHub yet. A named
-//      file missing or empty is a failure row and NO post: the store is
-//      replaced whole, so a partial post would drop that file from every
-//      prompt.
+//   7. post — reads the model-of-tom files from the git object at HEAD (the
+//      stable operate, write, and know layers; each area page whole except
+//      for YAML frontmatter) and posts them with the commit hash and time to
+//      POST /tts/model-of-tom — whether or not the push succeeded, so every
+//      prompt names the commit it began with; `pushed` says whether that
+//      commit is on GitHub yet. A named file missing or empty is a failure
+//      row and NO post: the store is replaced whole, so a partial post would
+//      drop that file from every prompt.
+//   8. repo-rules — reads a DIFFERENT checkout (tom.quest, not WikiTom) for
+//      its nested AGENTS.md bodies and posts them to POST /tts/repo-rules, so
+//      the context assembler — which runs inside Convex and has no filesystem
+//      — can expand them for a session's own directories. LAST, and outside
+//      the lock, for the mirror of delivery's reason: it touches nothing the
+//      WikiTom writers wrote, so a night that lost the lock still runs it.
+//
+// Steps 2 to 6 write the WikiTom checkout and run under
+// /var/lock/tts-wikitom.lock, taken once around them; the post reads the HEAD
+// they left, so it is inside the same lock. Steps 1 and 8 are outside it
+// (CHECKOUTLESS_STEPS), and a box with no WikiTom clone at all still runs
+// them.
 //
 // Then one "nightly-run" row with the summary, which the digest reads.
 //
@@ -101,6 +119,47 @@ import {
   sectionSpan,
 } from "./markdown-sections.mjs";
 import { CHANGE_ID_CHARS, changeIdTokens, namedChange } from "./learning-change-names.mjs";
+import {
+  EVIDENCE_FORMS,
+  applyRecords,
+  bulletUnits,
+  evidencePath,
+  findBullets,
+  oneLine,
+  parseEvidenceEntries,
+  renderEvidenceEntry,
+  renderSynthesisLine,
+  revertRecords,
+  wordCount,
+} from "./learning-records.mjs";
+import {
+  GROUND_FILE,
+  GROUND_SIGNALS_MAX,
+  groundSectionFollows,
+  groundSignals,
+  isGroundConfirmedSection,
+} from "./learning-ground.mjs";
+import {
+  REPO_LEARNING_RUN,
+  REPO_PROPOSAL,
+  appendProposalEntry,
+  chooseSessions,
+  dedupeProposals,
+  dropProposal,
+  evidenceLinesOf,
+  parseRepoAnswer,
+  priorProposalSentences,
+  proposalHeading,
+  proposalId,
+  readRepoRules,
+  reconcileApplied,
+  renderProposalEntry,
+  repoEvidencePath,
+  repoLearningPrompt,
+  repoRuleBullets,
+  transcriptEvidence,
+  transcriptPath,
+} from "./learning-repo.mjs";
 
 // ── Where things are ─────────────────────────────────────────────────────────
 // The checkout, its lock, the session directories, the split rule and the
@@ -130,6 +189,10 @@ export {
   withWikiTomLock,
   writeArchived,
 };
+// The bullet machinery moved to learning-records.mjs, which owns both halves
+// of a line; re-exported here because the weekly job and the tests read it
+// off this module.
+export { bulletUnits, evidencePath, oneLine, renderEvidenceEntry, renderSynthesisLine };
 // The SSH alias setup.sh clones over (Host github.com-wikitom in
 // /root/.ssh/config → the deploy key /root/.ssh/wikitom). The checkout's
 // origin carries it, so `git pull` and `git push` need no URL here.
@@ -166,7 +229,27 @@ function git(dir, ...args) {
   });
 }
 
-const STEPS = ["delivery", "snapshot", "learning", "sessions", "push", "post", "repo-rules"];
+// THE STEP ORDER, and where a step is inserted.
+//
+//   delivery           needs no checkout and no lock: asks Convex what prelude
+//                      each session got. The [before-snapshot] slot — anything
+//                      else of that shape goes here too, AHEAD of snapshot and
+//                      OUTSIDE the lock.
+//   snapshot           writes tts/snapshot/
+//   learning           writes model-of-tom/ and model-of-tom/evidence/
+//   sessions           writes sessions/ — the archived transcripts
+//   repo-learning      reads those transcripts, writes evidence/repos/
+//   [before-push]      any further writer of the checkout goes here
+//   push               commits, pulls --rebase, pushes
+//   post               reads HEAD's git object and posts the prelude
+//   repo-rules         reads a DIFFERENT checkout and posts its AGENTS.md
+//                      bodies. Last, and outside the lock, for the same reason
+//                      delivery is first: it touches nothing WikiTom holds.
+//
+// repo-learning runs AFTER sessions because it reads the transcripts that
+// step archives, and BEFORE push so its writes ride the night's commit.
+// NOTHING here is reordered without moving the comment with it.
+const STEPS = ["delivery", "snapshot", "learning", "sessions", "repo-learning", "push", "post", "repo-rules"];
 // The repo checkouts whose AGENTS.md files ride into Convex beside the
 // model-of-tom layers (the dynamic-context round). Convex has no filesystem, so
 // the assembler cannot read a checkout at all — a run with no checkout of its
@@ -183,9 +266,9 @@ const REPO_CHECKOUTS = [
       || (process.platform === "win32" ? "C:/Users/heffn/Desktop/tom.quest" : "/root/tom.quest"),
   },
 ];
-// The four that write the WikiTom checkout. The post runs under the same
+// The five that write the WikiTom checkout. The post runs under the same
 // lock after them (see main), reading what they left.
-const LOCKED_STEPS = ["snapshot", "learning", "sessions", "push"];
+const LOCKED_STEPS = ["snapshot", "learning", "sessions", "repo-learning", "push"];
 // The steps that never read the WikiTom checkout: delivery asks Convex what it
 // delivered, repo-rules reads a different repo entirely. A night with no
 // WikiTom checkout still runs these two — see main.
@@ -388,16 +471,31 @@ export function syncSnapshot(snapshotDir, stagingDir, tables) {
 // ending with its evidence in the pages' citation style, and either added to
 // the section or replacing one existing line verbatim.
 //
+// TWO RECORDS, WRITTEN TOGETHER. A change is one synthesis line for one
+// section of one page PLUS the evidence entry that supports it, under the
+// same heading of model-of-tom/evidence/<the same path>. The page carries no
+// quotation, no date and no citation; his words are in the entry. Neither
+// half is written without the other (learning-records.mjs applyRecords), and
+// THE WHOLE NIGHT'S WRITE IS GATED ON WikiTom's own checker: it runs once
+// before anything is written — a checkout already failing is somebody else's
+// damage and this job writes nothing — and once after, and a run that would
+// fail it is rolled back whole, byte for byte.
+//
 // THE JOB, NOT THE MODEL, DECIDES WHAT LANDS. A change is refused when it
-// names a file the step does not write (the spec, anything outside
-// writing.md, priorities.md and areas/), a section Tom owns (Directions,
-// Ideal state, Must not break — ruling 13) or one nested under it, a line
-// without evidence or whose evidence names nothing in tonight's input, a
-// replacement whose target is not on the page verbatim, or a line already
-// there. What lands is one
-// "learning-change" row each — {id, file, section, before, after, evidence,
-// modelOfTomCommit} — posted once the push step has made the commit, and the 5 a.m.
-// digest prints each with its id. Tom objects by replying on that line; the
+// names a file the step does not write (the spec, agent-rules.md,
+// schedule.md, anything outside writing.md, priorities.md, ground.md,
+// intent.md and areas/), a section Tom owns (Directions, Ideal state, Must
+// not break — ruling 13) or one nested under it, a line carrying a citation,
+// a date or a quotation of his, evidence that names nothing in tonight's
+// input, a `said:` that is not in its source verbatim, a change to ground.md
+// naming no deterministic signal (learning-ground.mjs — his rule: fluent use
+// is not confirmation), a line on a page he has reviewed that is not his own
+// correction, a replacement whose target is not on the page verbatim, or a
+// line already there. What lands is one "learning-change" row each — {id,
+// file, section, before, after, beforeEntry, afterEntry, inferred, evidence,
+// modelOfTomCommit} — posted once the push step has made the commit, and the
+// 5 a.m. digest prints each with its id. Tom objects by replying on that
+// line; the
 // NEXT night applies the inverse first (learningObjections below), records
 // "learning-reverted" or, when the text has moved on, "learning-revert-
 // failed" with the reason, and the digest reports it. Report and object is
@@ -414,17 +512,106 @@ export const MODEL_OF_TOM_DIR = "model-of-tom";
 export const MODEL_OF_TOM_AREAS_DIR = "model-of-tom/areas";
 // The pages the step writes. The spec and everything else in the checkout is
 // refused by not being here.
-export const LEARNING_FILES_FIRST = ["model-of-tom/writing.md", "model-of-tom/priorities.md"];
+// agent-rules.md is how agents work — it changes by design round, not by a
+// night's turn — and schedule.md is written by the weekly job; neither is
+// here, on purpose.
+export const LEARNING_FILES_FIRST = [
+  "model-of-tom/writing.md",
+  "model-of-tom/priorities.md",
+  "model-of-tom/ground.md",
+  "model-of-tom/intent.md",
+];
+export const INTENT_FILE = "model-of-tom/intent.md";
 // The sections an agent never writes (ruling 13). Matched by heading,
-// case-insensitively, on any page.
+// case-insensitively, on any page. "Ideal state" and "Must not break" stay in
+// the list though the area pages no longer carry them: a page that grows one
+// back is refused without a deploy.
 export const FORBIDDEN_SECTIONS = ["Directions", "Ideal state", "Must not break"];
-export const LEARNING_KINDS = ["fact", "correction", "inference"];
+export const LEARNING_OPS = ["add", "replace", "remove"];
 // runClaude's --model. The Opus tier: this is judgment over Tom's words, not
 // a mechanical parse. Overridable per box without a deploy.
 export const LEARNING_MODEL = process.env.TTS_LEARNING_MODEL || "opus";
 export const LEARNING_TIMEOUT_MS = 20 * 60 * 1000;
 // A turn of Tom's is shown to the model up to this many characters.
 export const LEARNING_TURN_CHARS = 4000;
+// One evidence file in the prompt, from its head: the model needs the entry
+// forms in front of it and nothing else.
+export const LEARNING_EVIDENCE_CHARS = 6000;
+// The whole learning prompt. Past it, `shown.tomTurns` is trimmed oldest
+// first until it fits, and the summary records how many went. Fewer
+// high-signal tokens is also a cost bound.
+export const LEARNING_PROMPT_CHARS = 400_000;
+
+// ── The gate on the night's write ────────────────────────────────────────────
+// WikiTom's own checker, run in the checkout. It is deterministic and pure
+// Node, so it is cheap enough to run twice a night: once before anything is
+// written, to tell this job's damage from somebody else's, and once after.
+export const EVIDENCE_CHECK = ["scripts/check-evidence.mjs"];
+export const EVIDENCE_CHECK_TIMEOUT_MS = 60_000;
+/** The row and the digest fact for a night whose write was taken back. */
+export const LEARNING_CHECK_FAILED = "learning-check-failed";
+
+/**
+ * `node scripts/check-evidence.mjs` in `dir`: `{ok, output}`. NEVER THROWS —
+ * a checker that cannot run at all (no such file, a syntax error in it, a
+ * timeout) is a FAILED CHECK, not a crashed night, because the two records
+ * are exactly what nobody can verify by eye afterwards.
+ */
+export function runEvidenceCheck(dir) {
+  try {
+    const out = execFileSync("node", EVIDENCE_CHECK, {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: EVIDENCE_CHECK_TIMEOUT_MS,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return { ok: true, output: clip(out, 2000) };
+  } catch (err) {
+    return { ok: false, output: clip(`${err.stdout ?? ""}\n${err.stderr ?? err.message}`, 2000) };
+  }
+}
+
+/**
+ * Apply `mutate` to the checkout and KEEP IT ONLY IF THE CHECKER PASSES
+ * AFTER.
+ *
+ * `mutate(io)` reads and writes through `io` and returns whatever the caller
+ * wants back. `io.write` is THE ONLY WAY a path changes, and it reads the
+ * path's bytes before it writes them — so every path the mutation touched is
+ * on record before it was touched, and a failing check restores every one,
+ * removing the ones that did not exist. The checkout is left byte-identical.
+ *
+ * A run that would fail the checker is rejected WHOLE: half a night's lines
+ * on the pages with no entries behind them is the one state from which nobody
+ * can tell what was learned.
+ */
+export function withEvidenceCheck(dir, mutate) {
+  const before = new Map();
+  const io = {
+    read: (rel) => {
+      const abs = path.join(dir, rel);
+      return fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : null;
+    },
+    exists: (rel) => fs.existsSync(path.join(dir, rel)),
+    write: (rel, text) => {
+      const abs = path.join(dir, rel);
+      if (!before.has(rel)) before.set(rel, fs.existsSync(abs) ? fs.readFileSync(abs) : null);
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, text);
+    },
+  };
+  const result = mutate(io);
+  const check = runEvidenceCheck(dir);
+  if (check.ok) return { ok: true, result, check, restored: [] };
+  const restored = [];
+  for (const [rel, bytes] of before) {
+    const abs = path.join(dir, rel);
+    if (bytes === null) fs.rmSync(abs, { force: true });
+    else fs.writeFileSync(abs, bytes);
+    restored.push(rel);
+  }
+  return { ok: false, result, check, restored: restored.sort() };
+}
 
 export function isLearningFile(rel) {
   return (
@@ -451,7 +638,7 @@ export function gitBlobId(text) {
  * The blob id of a page's BODY — the text below its frontmatter. Every
  * learning row carries two: `baseBlob`, the body the validation read, and
  * `resultBlob`, the body it wrote; a revert checks the page against the
- * newest resultBlob the job recorded for it (revertLearningChange), so a
+ * newest resultBlob the job recorded for it (revertLearningRecords), so a
  * line is taken back only from a page that is as the job last left it, and
  * a page Tom has edited since gets a "learning-revert-failed" row naming
  * both hashes instead of a change to text the job never saw. The body and
@@ -508,7 +695,9 @@ export function sessionCitation(turn) {
 // the excerpt is what was there, and it is the evidence for an inference too
 // — an inference that cannot quote what it rests on rests on nothing.
 const CITATION = /^(session|ruling|thread) (\S+)$/;
-const CITED_ENTRY = /^(session|ruling|thread) (\S+), (\d{4}-\d{2}-\d{2})$/;
+// A `read:` entry may also name what it was read from, which is not a source
+// tonight's input can be checked against: a snapshot table or a todo.
+const READ_CITATION = /^(snapshot|todo) (\S+)$/;
 export const EXCERPT_MIN_WORDS = 6;
 
 /**
@@ -536,8 +725,6 @@ export function learningEvidence(input) {
   for (const r of input.rulings ?? []) add("ruling", r.id, r.sentence, r.quote);
   return { sources, sinceDay: utcDay(input.since), untilDay: utcDay(input.until) };
 }
-
-const wordCount = (text) => oneLine(text).split(" ").filter((w) => w !== "").length;
 
 /**
  * The model's answer as a list of raw changes. Malformed JSON, or an object
@@ -567,15 +754,15 @@ export function parseLearningAnswer(answerText) {
     if (c === null || typeof c !== "object" || Array.isArray(c)) {
       throw new Error(`learning change ${i} is not an object`);
     }
+    // The evidence array is the half of the answer the pages never show, so
+    // its SHAPE is checked here rather than reported as one change's refusal:
+    // an answer without it is not an answer in this schema at all.
+    if (!Array.isArray(c.evidence)) {
+      throw new Error(`learning change ${i} has no evidence array`);
+    }
   });
   return obj.changes;
 }
-
-// The trailing parenthetical of a line — its citation. A parenthetical
-// alone is not a citation: what makes it one is that it names the change's
-// evidence (learningRefusal), which is what "every line cites its evidence"
-// means on the pages.
-const CITED = /(\([^()]+\))\.?$/;
 
 function isForbiddenSection(heading) {
   const h = String(heading ?? "").trim().toLowerCase();
@@ -588,7 +775,7 @@ function isForbiddenSection(heading) {
  * heading, the section is one of Tom's, or it sits UNDER one of Tom's — a
  * "### Training goals" beneath "## Ideal state" is Ideal state's. THE ONE
  * DOOR for both directions: a line lands through it (applyLearningChanges)
- * and is taken back through it (revertLearningChange), so a revert can no
+ * and is taken back through it (revertLearningRecords), so a revert can no
  * more reach Tom's sections than a change can.
  */
 export function locateSection(lines, file, section) {
@@ -606,143 +793,284 @@ export function locateSection(lines, file, section) {
   return { span };
 }
 
-/** Why one proposed change may not land, or null when it may. The checks
- * are the rules in the block comment above, in the order a reader of the
- * refusal would want them. `evidence` is learningEvidence(input), or null. */
-function learningRefusal(c, texts, evidence) {
+// ── The reviewed guard ───────────────────────────────────────────────────────
+// intent.md carries `reviewed:` in its frontmatter, and so does every area
+// page. WHEN HE HAS REVIEWED A FILE, ITS LINES ARE HIS THE SAME WAY
+// DIRECTIONS IS: a reviewed line changes only by his correction, and a
+// correction is a `said` entry dated after the review. Additions are always
+// allowed — the review approved what was there, not what may come.
+
+/**
+ * Why `change` may not touch a line on a reviewed file, or null.
+ * `reviewed` is the file's frontmatter date ("" when unset); `entryDates` are
+ * the dates on the target line's evidence entry.
+ */
+export function reviewedRefusal(change, reviewed, entryDates) {
+  if (!isIsoDay(reviewed)) return null; // never reviewed: the ordinary rules
+  if ((change.op ?? "add") === "add") return null; // a new line is not an edit of a reviewed one
+  const dates = (entryDates ?? []).filter(isIsoDay);
+  const newest = dates.length === 0 ? null : dates.slice().sort().at(-1);
+  if (newest !== null && newest > reviewed) return null; // the line already moved on since the review
+  const correction = (change.evidence ?? []).some(
+    (e) => e?.form === "said" && isIsoDay(e?.date) && e.date > reviewed,
+  );
+  if (correction) return null; // his own correction, after the review
+  return `"${clip(oneLine(change.replaces), 60)}" is a line Tom reviewed on ${reviewed}; only his correction changes it`;
+}
+
+/** The dates on the evidence entry for `line` under `section`, for the guard
+ * above. An empty list when the file has no such entry. */
+function entryDatesFor(evidenceText, section, line) {
+  const wanted = oneLine(String(line ?? "")).replace(/^[-*]\s+/, "");
+  const name = String(section ?? "").trim().toLowerCase();
+  for (const e of parseEvidenceEntries(evidenceText ?? "")) {
+    if (String(e.heading ?? "").trim().toLowerCase() !== name) continue;
+    if (oneLine(e.line) !== wanted) continue;
+    return e.fields.map((f) => f.date);
+  }
+  return [];
+}
+
+/**
+ * The change's excerpt: the field when the model wrote one, else the longest
+ * of its `said` texts. THE SAID ENTRY IS THE EXCERPT — the same six words of
+ * his either way — so a model that gave the entry and not the field has
+ * still anchored the line, and the job fills the field rather than refusing.
+ */
+export function changeExcerpt(c) {
+  const given = typeof c?.excerpt === "string" ? c.excerpt.trim() : "";
+  if (given !== "") return oneLine(given);
+  const saids = (c?.evidence ?? []).filter((e) => e?.form === "said" && typeof e.text === "string");
+  if (saids.length === 0) return "";
+  return oneLine(saids.reduce((a, b) => (oneLine(b.text).length > oneLine(a.text).length ? b : a)).text);
+}
+
+// A line the pages may not carry: a citation, a date, or Tom quoted. His
+// words live in the evidence record and nowhere else.
+const LINE_CITATION = /\((?:session|ruling|thread)\s/;
+const LINE_DATE = /\b20\d{2}-\d{2}-\d{2}\b/;
+const LINE_QUOTE = /["“]([^"”]+)["”]/;
+const TRAILING_PARENTHETICAL = /\(([^()]*)\)\s*\.?$/;
+
+/**
+ * Why one proposed change may not land, or null when it may. The checks are
+ * the two-record rules, in the order a reader of the refusal wants them:
+ * where it goes, what the line is, what the evidence is, and only then what
+ * the section it names allows. `evidence` is learningEvidence(input), or
+ * null (the pure tests). `signals` is tonight's ground signal list.
+ */
+function learningRefusal(c, texts, evidencePages, evidence, signals = []) {
+  // 1–3: where the two records are.
   if (typeof c.file !== "string" || !isLearningFile(c.file)) {
     return `${String(c.file)} is not a page the learning step writes`;
   }
   if (!texts.has(c.file)) return `${c.file} is not in the checkout`;
+  const ePath = evidencePath(c.file);
+  if (!evidencePages.has(ePath)) return `no evidence file ${ePath}`;
+  // 4: the section.
   if (typeof c.section !== "string" || c.section.trim() === "") return "no section named";
   if (isForbiddenSection(c.section)) {
     return `"${c.section.trim()}" is Tom's section; an agent never writes it`;
   }
-  if (!LEARNING_KINDS.includes(c.kind)) return "kind must be fact, correction or inference";
-  if (typeof c.line !== "string" || c.line.trim() === "" || /[\r\n]/.test(c.line)) {
-    return "the line must be one non-empty line";
+  const section = c.section.trim();
+  // 5–6: the operation.
+  const op = c.op;
+  if (!LEARNING_OPS.includes(op)) return "op must be add, replace or remove";
+  if (op === "remove" && !(c.file === GROUND_FILE && section.toLowerCase() === "does not know")) {
+    return 'remove is allowed only on model-of-tom/ground.md under "Does not know"';
   }
-  const cited = CITED.exec(c.line.trim());
-  if (cited === null) return "the line does not end with its evidence citation";
-  if (c.kind === "inference" && !/inference/i.test(c.line)) {
-    return "an inference must say it is one, in the line";
+  // 7–11: the line the page carries.
+  if (op !== "remove") {
+    if (typeof c.line !== "string" || c.line.trim() === "" || /[\r\n]/.test(c.line)) {
+      return "the line must be one non-empty line";
+    }
+    if (LINE_CITATION.test(c.line)) return "the line carries a citation; the pages hold no source";
+    if (LINE_DATE.test(c.line)) return "the line carries a date; the pages hold no date";
+    const quoted = LINE_QUOTE.exec(c.line);
+    if (quoted !== null && wordCount(quoted[1]) >= 4) {
+      return "the line quotes Tom; his words live in the evidence record";
+    }
+    const tail = TRAILING_PARENTHETICAL.exec(c.line.trim());
+    const marked = tail !== null && tail[1].trim() === "inferred";
+    if (c.inferred === true && !marked) return 'an inferred line ends with "(inferred)"';
+    if (c.inferred !== true && marked) return 'only an inferred line ends with "(inferred)"';
   }
-  if (
-    !Array.isArray(c.evidence) ||
-    c.evidence.length === 0 ||
-    !c.evidence.every((e) => typeof e === "string" && e.trim() !== "")
-  ) {
+  // 12–16: the evidence entries.
+  const entries = Array.isArray(c.evidence) ? c.evidence : [];
+  if (entries.length === 0 || !entries.every((e) => e !== null && typeof e === "object" && !Array.isArray(e))) {
     return "no evidence";
   }
-  const names = c.evidence.map((e) => e.trim());
-  for (const e of names) {
-    if (!CITATION.test(e)) return `evidence "${e}" is not a citation: session <id>, ruling <id> or thread <ts>`;
-    if (evidence !== null && !evidence.sources.has(e)) {
-      return `evidence "${e}" names nothing in tonight's input`;
+  for (const e of entries) {
+    if (!EVIDENCE_FORMS.includes(e.form)) {
+      return `evidence form "${String(e.form)}" is not said, paraphrase, read or rests on`;
+    }
+    const source = String(e.source ?? "").trim();
+    const citable = CITATION.test(source);
+    if (!citable && !(e.form === "read" && READ_CITATION.test(source))) {
+      return `evidence "${source}" is not a citation: session <id>, ruling <id> or thread <ts>`;
+    }
+    if (citable && evidence !== null && !evidence.sources.has(source)) {
+      return `evidence "${source}" names nothing in tonight's input`;
+    }
+    if (!isIsoDay(e.date)) return `the evidence date ${String(e.date)} is not a day`;
+    if (evidence !== null && (e.date < evidence.sinceDay || e.date > evidence.untilDay)) {
+      return `the evidence date ${e.date} is outside tonight's window (${evidence.sinceDay} to ${evidence.untilDay})`;
+    }
+    if (typeof e.text !== "string" || e.text.trim() === "") {
+      return `an evidence entry of form "${e.form}" has no text`;
     }
   }
-  // The citation IS the evidence: the trailing parenthetical is the
-  // change's evidence entry by entry, each with its date in the window, and
-  // nothing else — "(probably)" at the end of a line that never says where
-  // it came from is not a citation.
-  const entries = cited[1].slice(1, -1).split(";").map((e) => e.trim());
-  for (const entry of entries) {
-    const m = CITED_ENTRY.exec(entry);
-    if (!m) return `the citation "${entry}" is not in the form <kind> <id>, YYYY-MM-DD`;
-    const name = `${m[1]} ${m[2]}`;
-    if (!names.includes(name)) return `the citation names "${name}", which is not in the change's evidence`;
-    if (!isIsoDay(m[3])) return `the citation date ${m[3]} is not a day`;
-    if (evidence !== null && (m[3] < evidence.sinceDay || m[3] > evidence.untilDay)) {
-      return `the citation date ${m[3]} is outside tonight's window (${evidence.sinceDay} to ${evidence.untilDay})`;
+  // 17: the mark and the forms agree. An inferred line rests on inference
+  // only; a line that is not marked rests on nothing.
+  const rests = entries.filter((e) => e.form === "rests on");
+  if (c.inferred === true && rests.length !== entries.length) {
+    return 'an inferred line\'s evidence is "rests on" only';
+  }
+  if (c.inferred !== true && rests.length > 0) {
+    return 'a "rests on" entry on a line that is not marked (inferred)';
+  }
+  // 18 (R3): the record alone does not learn about Tom.
+  if (entries.every((e) => e.form === "read")) {
+    return "a change to a model-of-tom page needs said:, paraphrase: or rests on:; read: alone is the record describing itself";
+  }
+  // 19 (R2): a said: is his words, from the source named on that entry.
+  const saids = entries.filter((e) => e.form === "said");
+  if (evidence !== null) {
+    for (const e of saids) {
+      const texts_ = evidence.sources.get(String(e.source).trim())?.texts ?? [];
+      const wanted = oneLine(e.text);
+      if (wordCount(e.text) < EXCERPT_MIN_WORDS || !texts_.some((t) => oneLine(t).includes(wanted))) {
+        return `said: "${clip(oneLine(e.text), 60)}" is not in ${String(e.source).trim()} verbatim`;
+      }
     }
   }
-  for (const e of names) {
-    if (!entries.some((entry) => entry.startsWith(`${e},`))) return `the line does not cite its evidence "${e}"`;
-  }
-  // The excerpt: Tom's words, verbatim, from a source the change cites.
-  if (typeof c.excerpt !== "string" || wordCount(c.excerpt) < EXCERPT_MIN_WORDS) {
+  // 20 (R1): the anchor. Every change quotes EXCERPT_MIN_WORDS of his own
+  // words from a source it cites. When it has a said: entry, that entry IS
+  // the excerpt — the job fills the field from the longest one when the model
+  // left it out; when it has none, the excerpt is a separate quote and the
+  // same test applies.
+  const excerpt = changeExcerpt(c);
+  if (wordCount(excerpt) < EXCERPT_MIN_WORDS) {
     return `no excerpt of ${EXCERPT_MIN_WORDS} or more of Tom's words from tonight's input`;
   }
-  if (evidence !== null) {
-    const wanted = oneLine(c.excerpt);
-    const cites = names.flatMap((e) => evidence.sources.get(e)?.texts ?? []);
+  if (saids.length > 0) {
+    if (!saids.some((e) => oneLine(e.text) === oneLine(excerpt))) {
+      return "the excerpt is not one of the change's said: entries";
+    }
+  } else if (evidence !== null) {
+    const wanted = oneLine(excerpt);
+    const cites = entries.flatMap((e) => evidence.sources.get(String(e.source).trim())?.texts ?? []);
     if (!cites.some((t) => oneLine(t).includes(wanted))) {
       return "the excerpt is not in the cited input verbatim";
     }
   }
-  if (c.replaces !== null && c.replaces !== undefined) {
-    // One bullet — which on writing.md may be quoted over the lines the
-    // page wraps it on (bulletUnits below).
+  // 21a: the ground guards.
+  if (c.file === GROUND_FILE) {
+    const signal = signals.find((s) => s.id === c.signal);
+    if (typeof c.signal !== "string" || c.signal.trim() === "") {
+      return "a change to ground.md names no signal";
+    }
+    if (signal === undefined) return `signal ${c.signal} is not in tonight's ground signals`;
+    if (!groundSectionFollows(signal.kind, section, op)) {
+      return `"${section}" does not follow from a ${signal.kind} signal`;
+    }
+    if (op !== "remove" && isGroundConfirmedSection(section)) {
+      if (saids.length === 0 || c.inferred === true) {
+        return `a line under "${section}" carries a said: entry; his fluent use of a term is not confirmation`;
+      }
+    }
+    // The line traces to the sentence the CODE detected, not to a different
+    // sentence in the same turn.
+    if (saids.length > 0) {
+      const quote = oneLine(signal.quote);
+      if (!saids.some((e) => quote.includes(oneLine(e.text)))) {
+        return "the said: entry does not contain the signal's sentence";
+      }
+    }
+  } else if (c.signal !== undefined && c.signal !== null) {
+    return "only a change to ground.md names a signal";
+  }
+  // 21b: the intent guards. A statement of what he wants is his; an inferred
+  // want is allowed only where the existing inferred lines live.
+  if (c.file === INTENT_FILE) {
+    if (c.inferred === true && section.toLowerCase() !== "what to push toward") {
+      return 'an inferred line on intent.md belongs under "What to push toward"';
+    }
+    if (op === "add" && c.inferred !== true && saids.length === 0) {
+      return "a line on intent.md carries a said: entry";
+    }
+  }
+  // 21c: the reviewed guard, on intent.md and on every area page.
+  if (op !== "add") {
+    const reviewed = parseFrontmatter(texts.get(c.file)).fields.reviewed ?? "";
+    const why = reviewedRefusal(
+      c,
+      reviewed,
+      entryDatesFor(evidencePages.get(ePath), section, c.replaces),
+    );
+    if (why !== null) return why;
+  }
+  // 22: what a replacement replaces.
+  if (op === "add") {
+    if (c.replaces !== null && c.replaces !== undefined) {
+      return "an add replaces nothing; `replaces` is null";
+    }
+  } else {
     if (typeof c.replaces !== "string" || c.replaces.trim() === "") {
       return "replaces must be one existing bullet, or null";
     }
-    if (oneLine(c.replaces) === oneLine(c.line)) return "the replacement is the line it replaces";
+    if (op === "replace" && oneLine(c.replaces) === oneLine(renderSynthesisLine(c))) {
+      return "the replacement is the line it replaces";
+    }
   }
   return null;
 }
 
-// ── The unit a change replaces or takes back: one bullet ─────────────────────
-// writing.md is hard-wrapped: one bullet runs over several physical lines,
-// the continuation lines indented. A replacement or a revert that worked on
-// physical lines would replace the first line of a bullet and leave its
-// tail as a stray, so the unit here is the bullet whole — the line that
-// starts it plus the indented, non-blank lines under it — and a bullet is
-// matched with whitespace normalized (the lines joined by one space), so
-// the model may quote it as the page wraps it or as one line, and a bullet
-// Tom re-wrapped still matches. The area pages' bullets are one line each,
-// which is the degenerate case. What the job writes is always one line, and
-// `before` records the replaced bullet as one line, so a revert restores its
-// words unwrapped.
-const BULLET = /^\s*[-*]\s+\S/;
-const CONTINUATION = /^\s+\S/;
-
-/** The bullets within `span` as [start, end) line ranges. */
-export function bulletUnits(lines, span) {
-  const units = [];
-  for (let i = span.start + 1; i < span.end; i++) {
-    if (!BULLET.test(lines[i])) continue;
-    let end = i + 1;
-    while (end < span.end && CONTINUATION.test(lines[end]) && !BULLET.test(lines[end])) end++;
-    units.push({ start: i, end });
-    i = end - 1;
-  }
-  return units;
-}
-
-/** A bullet's text (or any text) as one line: each line trimmed, joined by
- * a space, runs of whitespace collapsed. The form bullets are compared in. */
-export function oneLine(text) {
-  return String(text ?? "")
-    .split("\n")
-    .map((l) => l.trim())
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 /**
- * Every unit within `span` whose one-line form equals `text`'s. A caller
- * that will REMOVE OR REPLACE a bullet acts only on exactly one match: with
- * two, which is the learned copy and which is Tom's cannot be told from the
- * text, and taking the first would take his (a line he pasted above the
- * job's) while the job's stayed.
+ * A term he confirms is usually already named under "Does not know", so the
+ * two changes travel together: a `remove` there is refused unless the SAME
+ * answer holds an applied `add` or `replace` under "Knows" or "Follows,
+ * without the details" naming the same signal. Where the old line covers more
+ * than the confirmed term, the model narrows it with `replace` instead, which
+ * needs no partner.
  */
-function findBullets(lines, span, text) {
-  const wanted = oneLine(text);
-  return bulletUnits(lines, span).filter(
-    (unit) => oneLine(lines.slice(unit.start, unit.end).join("\n")) === wanted,
+export function groundRemovalGuard(change, applied) {
+  const partnered = applied.some(
+    (a) =>
+      a.file === GROUND_FILE &&
+      a.signal === change.signal &&
+      a.kind !== "remove" &&
+      isGroundConfirmedSection(a.section),
   );
+  return partnered
+    ? null
+    : 'a removal from "Does not know" needs the same night\'s line under "Knows" or "Follows, without the details" on the same signal';
 }
 
 /**
- * Apply proposed changes to the pages (a Map of file → text), pure. Returns
- * the new texts, the changes that landed (each with its id and the digest's
- * fields), and the ones refused with the reason. `evidence` is what tonight's
- * input can evidence (learningEvidence) — null skips the checks against it.
- * Every page that took a change gets `updated: day`.
+ * Apply proposed changes to BOTH RECORDS, pure. `pages` is a Map of the
+ * synthesis file → text and `evidencePages` a Map of the evidence file →
+ * text; both come back changed, and NEITHER IS WRITTEN WITHOUT THE OTHER —
+ * every line that lands does so through learning-records.mjs's applyRecords,
+ * which writes the bullet and its entry in one call or refuses both.
+ *
+ * `evidence` is what tonight's input can evidence (learningEvidence) — null
+ * skips the checks against it. `signals` is tonight's deterministic ground
+ * signal list (learning-ground.mjs); a change to ground.md names one of them
+ * or it is refused. Every page that took a change gets `updated: day`.
  */
-export function applyLearningChanges(pages, changes, { day, evidence = null } = {}) {
+export function applyLearningChanges(
+  pages,
+  changes,
+  { day, evidence = null, evidencePages = null, signals = [] } = {},
+) {
   const texts = new Map(pages);
+  // A caller with no evidence files (the pure tests of the synthesis half)
+  // gets an empty one per page, so the refusal for a missing file is the
+  // caller's choice rather than a crash.
+  const eTexts = new Map(
+    evidencePages ?? [...pages.keys()].map((f) => [evidencePath(f), "# Evidence\n"]),
+  );
   const applied = [];
   const refused = [];
   const refuse = (c, reason) =>
@@ -753,66 +1081,62 @@ export function applyLearningChanges(pages, changes, { day, evidence = null } = 
       reason,
     });
   for (const c of changes) {
-    const why = learningRefusal(c, texts, evidence);
+    const why = learningRefusal(c, texts, eTexts, evidence, signals);
     if (why !== null) {
       refuse(c, why);
       continue;
     }
-    const line = c.line.trim().startsWith("- ") ? c.line.trim() : `- ${c.line.trim()}`;
-    const lines = texts.get(c.file).split("\n");
-    const located = locateSection(lines, c.file, c.section);
-    if (located.span === undefined) {
-      refuse(c, located.reason);
+    const section = c.section.trim();
+    const ePath = evidencePath(c.file);
+    const excerpt = changeExcerpt(c);
+    const out = applyRecords(texts.get(c.file), eTexts.get(ePath), c, {
+      locate: locateSection,
+    });
+    if (!out.ok) {
+      refuse(c, out.reason);
       continue;
     }
-    const { span } = located;
-    if (findBullets(lines, { start: -1, end: lines.length }, line).length > 0) {
-      refuse(c, "already on the page");
-      continue;
-    }
-    const replaces = c.replaces ?? null;
-    let before = "";
-    if (replaces !== null) {
-      const units = findBullets(lines, span, replaces);
-      if (units.length === 0) {
-        refuse(c, `the line to replace is not in "${c.section.trim()}" verbatim`);
+    // The removal's partner: a term leaves "Does not know" only beside the
+    // same night's line that says where it went.
+    if (c.op === "remove") {
+      const guard = groundRemovalGuard(c, applied);
+      if (guard !== null) {
+        refuse(c, guard);
         continue;
       }
-      if (units.length > 1) {
-        refuse(c, `the line to replace is in "${c.section.trim()}" ${units.length} times; which one cannot be told`);
-        continue;
-      }
-      const [unit] = units;
-      before = oneLine(lines.slice(unit.start, unit.end).join("\n"));
-      lines.splice(unit.start, unit.end - unit.start, line);
-    } else {
-      let last = span.start;
-      for (let i = span.start + 1; i < span.end; i++) if (lines[i].trim() !== "") last = i;
-      if (last === span.start) lines.splice(last + 1, 0, "", line);
-      else lines.splice(last + 1, 0, line);
     }
-    texts.set(c.file, lines.join("\n"));
+    texts.set(c.file, out.pageText);
+    eTexts.set(ePath, out.evidenceText);
     applied.push({
-      id: learningChangeId(c.file, c.section.trim(), line),
+      id: learningChangeId(c.file, section, out.line === "" ? out.before : out.line),
       file: c.file,
-      section: c.section.trim(),
-      kind: c.kind,
-      before,
-      after: line,
-      evidence: c.evidence.map((e) => e.trim()).join("; "),
-      sources: c.evidence.map((e) => e.trim()),
-      excerpt: oneLine(c.excerpt),
+      section,
+      kind: c.op,
+      signal: c.signal ?? null,
+      before: out.before,
+      after: out.line,
+      beforeEntry: out.beforeEntry,
+      afterEntry: out.entry,
+      inferred: c.inferred === true,
+      // The digest's parenthetical: form and source, not a bare citation, so
+      // "(said: session 47f04bc9)" says what kind of evidence it is.
+      evidence: c.evidence.map((e) => `${e.form}: ${String(e.source).trim()}`).join("; "),
+      sources: [...new Set(c.evidence.map((e) => String(e.source).trim()))],
+      excerpt,
     });
   }
   for (const file of new Set(applied.map((a) => a.file))) {
     texts.set(file, bumpUpdated(texts.get(file), day));
   }
-  // The body each change was validated against, and the body it left.
+  // The bodies each change was validated against, and the bodies it left.
   for (const a of applied) {
+    const ePath = evidencePath(a.file);
     a.baseBlob = pageBodyBlob(pages.get(a.file));
     a.resultBlob = pageBodyBlob(texts.get(a.file));
+    a.evidenceBaseBlob = pageBodyBlob(evidencePages?.get(ePath) ?? "");
+    a.evidenceResultBlob = pageBodyBlob(eTexts.get(ePath) ?? "");
   }
-  return { pages: texts, applied, refused };
+  return { pages: texts, evidencePages: eTexts, applied, refused };
 }
 
 /**
@@ -831,11 +1155,22 @@ export function expectedBodyBlobs(rows) {
   return out;
 }
 
+/** The same, for the evidence half: keyed by the SYNTHESIS file, so one
+ * lookup serves both bodies of a revert. */
+export function expectedEvidenceBlobs(rows) {
+  const out = new Map();
+  for (const r of [...(rows ?? [])].sort((a, b) => (b.at ?? 0) - (a.at ?? 0))) {
+    if (typeof r?.file === "string" && typeof r.evidenceResultBlob === "string" && !out.has(r.file)) {
+      out.set(r.file, r.evidenceResultBlob);
+    }
+  }
+  return out;
+}
+
 /**
- * The inverse of one recorded change against a page's CURRENT text: an
- * addition's line is removed, a replacement's line becomes what it replaced.
- * When the line is no longer there as written — a later change replaced it,
- * or Tom edited the page — nothing is touched and the reason says so.
+ * The inverse of one recorded change against BOTH RECORDS' current text: an
+ * addition's line and its entry are removed, a replacement's line and entry
+ * become what they replaced.
  *
  * ONLY WITHIN THE CHANGE'S OWN SECTION (locateSection): the line is looked
  * for where the change put it and nowhere else, so a copy Tom pasted into
@@ -843,44 +1178,50 @@ export function expectedBodyBlobs(rows) {
  * AND ONLY WHEN IT IS THERE ONCE: two copies in the section — Tom's, pasted
  * above the job's — cannot be told apart by their text, so neither goes and
  * the reason says so (an objection reverts the learned change, never his).
- * AND ONLY ON A PAGE AS THE JOB LEFT IT: `expectedBlob`, when given, is the
- * body blob the job last recorded for the page (expectedBodyBlobs), and a
- * page whose body no longer hashes to it has been edited since — the revert
- * is refused with both hashes rather than applied to text the job never
- * read. Returns `baseBlob` and `resultBlob` for the revert's own row.
+ * AND ONLY ON RECORDS AS THE JOB LEFT THEM: `expectedBlob` and
+ * `expectedEvidenceBlob`, when given, are the body blobs the job last
+ * recorded (expectedBodyBlobs, expectedEvidenceBlobs), and a body that no
+ * longer hashes to its own has been edited since — the revert is refused with
+ * both hashes rather than applied to text the job never read.
+ *
+ * The entry being gone already is NOT a failure: the page is what a prompt
+ * loads, the checker passes either way, and refusing there would strand Tom's
+ * objection. The row records `evidenceMissing` instead.
  */
-export function revertLearningChange(text, change, { expectedBlob = null } = {}) {
-  const after = String(change.after ?? "").trim();
-  if (after === "") return { ok: false, reason: "the change records no line to look for" };
-  const baseBlob = pageBodyBlob(text);
+export function revertLearningRecords(
+  pageText,
+  evidenceText,
+  change,
+  { expectedBlob = null, expectedEvidenceBlob = null } = {},
+) {
+  const baseBlob = pageBodyBlob(pageText);
   if (expectedBlob !== null && expectedBlob !== baseBlob) {
     return {
       ok: false,
       reason: `${change.file} has changed since the job last wrote it (body blob ${expectedBlob.slice(0, 12)}, now ${baseBlob.slice(0, 12)}); nothing was taken back`,
     };
   }
-  const lines = text.split("\n");
-  const located = locateSection(lines, change.file, change.section);
-  if (located.span === undefined) return { ok: false, reason: located.reason };
-  const { span } = located;
-  const units = findBullets(lines, span, after);
-  const section = String(change.section).trim();
-  if (units.length === 0) {
-    return { ok: false, reason: `the line is no longer in "${section}" on ${change.file} as written` };
-  }
-  if (units.length > 1) {
+  const evidenceBaseBlob = pageBodyBlob(evidenceText ?? "");
+  if (expectedEvidenceBlob !== null && expectedEvidenceBlob !== evidenceBaseBlob) {
+    const ePath = evidencePath(change.file);
     return {
       ok: false,
-      reason: `the line is in "${section}" on ${change.file} ${units.length} times — the learned copy cannot be told from the others, so none was taken back`,
+      reason: `${ePath} has changed since the job last wrote it (body blob ${expectedEvidenceBlob.slice(0, 12)}, now ${evidenceBaseBlob.slice(0, 12)}); nothing was taken back`,
     };
   }
-  const [unit] = units;
-  const before = oneLine(change.before);
-  lines.splice(unit.start, unit.end - unit.start, ...(before === "" ? [] : [before]));
-  const reverted = lines.join("\n");
-  return { ok: true, text: reverted, baseBlob, resultBlob: pageBodyBlob(reverted) };
+  const out = revertRecords(pageText, evidenceText ?? "", change, { locate: locateSection });
+  if (!out.ok) return out;
+  return {
+    ok: true,
+    pageText: out.pageText,
+    evidenceText: out.evidenceText,
+    evidenceMissing: out.evidenceMissing,
+    baseBlob,
+    resultBlob: pageBodyBlob(out.pageText),
+    evidenceBaseBlob,
+    evidenceResultBlob: pageBodyBlob(out.evidenceText),
+  };
 }
-
 /**
  * The change an objection names: by the change's id — the row's own, or a
  * name in the text by the one rule in learning-change-names.mjs, which is
@@ -918,9 +1259,24 @@ export function readLearningPages(dir) {
   return pages;
 }
 
+/** The evidence file of each page the step writes, as a Map of
+ * checkout-relative path → text. A page whose evidence file is missing is
+ * refused by learningRefusal, not created here: the pair is the record, and
+ * a file nobody wrote is a fact about the checkout. */
+export function readEvidencePages(dir, pages) {
+  const out = new Map();
+  for (const file of pages.keys()) {
+    const rel = evidencePath(file);
+    if (rel === null) continue;
+    const abs = path.join(dir, rel);
+    if (fs.existsSync(abs)) out.set(rel, fs.readFileSync(abs, "utf8"));
+  }
+  return out;
+}
+
 /** The one prompt. The pages' own rules (writing.md) travel with the pages;
  * what is here is the contract of the answer and what the job refuses. */
-export function learningPrompt(input, pages, day) {
+export function learningPrompt(input, pages, evidencePages, signals, day) {
   const shown = {
     window: { since: new Date(input.since).toISOString(), until: new Date(input.until).toISOString() },
     tomTurns: (input.tomTurns ?? []).map((t) => ({
@@ -957,29 +1313,63 @@ export function learningPrompt(input, pages, day) {
   const pageText = [...pages]
     .map(([file, text]) => `=== ${file} ===\n${text}`)
     .join("\n\n");
-  return [
-    "You maintain the model-of-tom pages of WikiTom: the files every agent prompt about Tom begins with. Tonight's input is what Tom did since the last learning run — the turns he typed in sessions (each with the agent's text just before and just after it, which is context for reading his words and never a source of a line), his threaded Slack replies, and his rulings. Propose the changes those inputs justify to the pages below, and nothing else.",
-    "",
-    "RULES",
-    "- A change is one line for one section of one page. `kind` is what the line is: a fact about Tom, a correction of something a page says, or an inference. An inference is allowed and must say in the line that it is an inference and which facts it rests on.",
-    "- Every line ends with its evidence, in the pages' citation style, in parentheses: (session <session>, YYYY-MM-DD) for a turn — `session` is the 8-character id the pages already cite, e.g. (session 47f04bc9, 2026-08-30) — (ruling <rulingId>, YYYY-MM-DD) for a ruling, (thread <ts>, YYYY-MM-DD) for a Slack reply; several joined with \"; \". The ids are the ones in the input, verbatim and whole, and the date is the input's date, inside tonight's window. `evidence` lists the same citations without their dates (\"session <session>\", \"ruling <rulingId>\", \"thread <ts>\"), and every one of them must appear in the line. A citation naming anything not in the input is refused.",
-    `- \`excerpt\` is ${EXCERPT_MIN_WORDS} or more of Tom's own words, verbatim, from a source the change cites — the turn he typed, his reply, his ruling's sentence — never the agent's words. It is the evidence for a fact, a correction and an inference alike; a change without one is refused.`,
-    "- Only these pages: model-of-tom/writing.md, model-of-tom/priorities.md, model-of-tom/areas/<area>.md. Only a section that exists on the page, named by its heading. Never \"Directions\", never \"Ideal state\", never \"Must not break\" — those are Tom's own, and a change naming them is refused. Never the spec.",
-    "- A correction replaces: `replaces` is one existing bullet of that section, verbatim — where the page wraps a bullet over several lines, quote all of them — and the new line supersedes it — the pages describe what is, never what was. An addition has `replaces: null`.",
-    "- Write to writing.md's own rules: plain statements, no comparisons or analogies, no evaluative language, one fixed term per concept, the date in the line. One line, starting with \"- \".",
-    "- Nothing from the agent's words alone; nothing already on a page; nothing that restates a line. An empty list is the right answer on a night whose input changes nothing about the model of Tom, and that is most nights.",
-    "",
-    "Answer with ONE JSON object and nothing else, no code fence:",
-    '{"changes":[{"file":"model-of-tom/areas/climbing.md","section":"Current state","kind":"fact","line":"- ... (session <session>, YYYY-MM-DD).","replaces":null,"evidence":["session <session>"],"excerpt":"<six or more of Tom\'s words, verbatim>"}]}',
-    "",
-    "INPUT",
-    JSON.stringify(shown, null, 1),
-    "",
-    "PAGES",
-    pageText,
-    "",
-    `Tonight is ${day} (UTC).`,
-  ].join("\n");
+  // The evidence files are shown for their FORMS and for what is already on
+  // record, clipped from the head: the model needs the entry shapes in front
+  // of it and the entries it must not duplicate, and nothing else.
+  const evidenceText = [...(evidencePages ?? new Map())]
+    .map(([file, text]) => `=== ${file} ===\n${clip(text, LEARNING_EVIDENCE_CHARS)}`)
+    .join("\n\n");
+  const build = (turns) =>
+    [
+      "You maintain the model-of-tom pages of WikiTom: the files every agent prompt about Tom begins with. Tonight's input is what Tom did since the last learning run — the turns he typed in sessions (each with the agent's text just before and just after it, which is context for reading his words and never a source of a line), his threaded Slack replies, and his rulings. Propose the changes those inputs justify to the pages below, and nothing else.",
+      "",
+      "TWO RECORDS",
+      "- Every change writes two things: the SYNTHESIS LINE that goes on the page, and the EVIDENCE ENTRY that goes under the same heading of model-of-tom/evidence/<the same path>. Neither exists without the other.",
+      "- The synthesis line is plain present tense for the agent that loads the page: one idea, no quotation, no date, no session id, no ruling id, no thread timestamp, no parenthetical citation of any kind. A line that quotes Tom or names a source is refused.",
+      '- A line the input does not state, which you reached by inference, ends with the exact words " (inferred)" and sets "inferred": true. An inferred line\'s evidence is "rests on" entries only. A line that is not inferred carries no "rests on" entry.',
+      "- The evidence entry is where his words live. Each entry has a form, a date, a source and a text:",
+      "    said       his words, verbatim, from a session turn, a Slack reply or a ruling",
+      "    paraphrase his statement from a source, in your words, when it is his and not verbatim",
+      "    read       a fact read from the record, a mirror or a document",
+      "    rests on   an inference and the basis it rests on",
+      '- Give the entry that is true. Never write "said" for words you have shortened, tidied, corrected or joined: if it is not character-for-character in the input, it is "paraphrase".',
+      `- Every change carries "excerpt": ${EXCERPT_MIN_WORDS} or more of Tom's own words, verbatim, from a source the change cites. When the change has a "said" entry the excerpt is that entry's text; when it has none, quote the words the change rests on. A change that cannot quote six of his words rests on nothing and is refused.`,
+      '- "read" never stands alone on these pages: a change with only "read" entries is the record describing itself, not something learned about Tom.',
+      "",
+      "RULES",
+      '- A change is one line for one section of one page. "op" is "add" (a new line; "replaces": null), "replace" ("replaces" is one existing bullet of that section, verbatim — the new line supersedes it, because the pages describe what is, never what was), or "remove" (only on model-of-tom/ground.md under "Does not know", and only when the same night adds the same term to "Knows" or "Follows, without the details").',
+      '- Only these pages: model-of-tom/writing.md, model-of-tom/priorities.md, model-of-tom/ground.md, model-of-tom/intent.md, model-of-tom/areas/<area>.md. Only a section that exists on the page, named by its heading. Never "Directions", never "Ideal state", never "Must not break" — those are Tom\'s own, and a change naming them is refused. Never the spec, never agent-rules.md, never schedule.md.',
+      '- model-of-tom/ground.md: what he knows and does not know. A change there names a "signal" from the GROUND SIGNALS list below and proposes exactly what that signal supports — a term he asked about goes under "Does not know" or narrows a line already there; a term he confirmed he knows, in his own words, goes under "Knows" or "Follows, without the details". His fluent use of a term is not confirmation, an agent\'s explanation of a term is not confirmation, and no line under "Knows" or "Follows, without the details" may rest on inference: each carries a "said" entry or it is refused.',
+      '- model-of-tom/intent.md: what he wants to be true. A statement of his about what he wants goes in the section it belongs to with a "said" entry. Never the Directions section. A line whose evidence predates the file\'s "reviewed" date is his and changes only by his correction: propose a replacement for one only when tonight\'s input holds him correcting it.',
+      '- Write to writing.md\'s own rules: present tense, one idea per line, imperative or second person, never "Tom wants" or "agents should", the mechanism plainly, no analogy, no evaluative word, one fixed term per concept, his words and the code\'s words only.',
+      "- Nothing from the agent's words alone; nothing already on a page; nothing that restates a line; nothing the evidence file already carries an entry for. An empty list is the right answer on a night whose input changes nothing about the model of Tom, and that is most nights.",
+      "",
+      "Answer with ONE JSON object and nothing else, no code fence:",
+      '{"changes":[{"file":"model-of-tom/areas/climbing.md","section":"Current state","op":"add","line":"...","replaces":null,"inferred":false,"signal":null,"evidence":[{"form":"said","date":"YYYY-MM-DD","source":"session <session>","text":"<his words, verbatim>"}],"excerpt":"<six or more of his words, verbatim>"}]}',
+      "",
+      "INPUT",
+      JSON.stringify({ ...shown, tomTurns: turns }, null, 1),
+      "",
+      "GROUND SIGNALS",
+      JSON.stringify(signals ?? [], null, 1),
+      "",
+      "PAGES",
+      pageText,
+      "",
+      "EVIDENCE FILES (the entries already on record; never propose a duplicate)",
+      evidenceText,
+      "",
+      `Tonight is ${day} (UTC).`,
+    ].join("\n");
+  // Fewer high-signal tokens is also a cost bound: past LEARNING_PROMPT_CHARS
+  // the OLDEST turns go first, and the summary says how many.
+  let turns = shown.tomTurns;
+  let prompt = build(turns);
+  while (prompt.length > LEARNING_PROMPT_CHARS && turns.length > 0) {
+    turns = turns.slice(1);
+    prompt = build(turns);
+  }
+  return { prompt, turnsDropped: shown.tomTurns.length - turns.length };
 }
 
 /**
@@ -990,60 +1380,125 @@ export function learningPrompt(input, pages, day) {
  * not revert says so once and the digest shows it once.
  */
 async function learningObjections(run, input, fetchConvex) {
-  const outcome = { reverted: 0, failed: 0 };
   const consumed = [];
-  // The rows that go in the reverts' commit: tagged with its message below,
-  // once the count is known, so recordLearningRows finds the commit by it.
-  const revertedRows = [];
-  // The body blob the job last left each page with; a revert this run makes
-  // moves it on, so the next objection to the same page checks against the
-  // page as this run left it.
-  const expected = expectedBodyBlobs(input.changes);
+  // An objection may name a REPOSITORY-RULE PROPOSAL instead of a learned
+  // line: the digest prints both with an id of the same shape, and Tom
+  // replies on either the same way. A proposal has no page to take a line
+  // off — it was never written to one — so it is dropped at its row, and the
+  // next night's repo-learning step writes `dropped:` on its evidence entry.
+  const objections = [];
+  const proposals = new Map(
+    (input.repoProposals ?? [])
+      .filter((p) => typeof p?.id === "string" && p.status === "open")
+      .map((p) => [p.id, p]),
+  );
+  const droppedProposals = [];
   for (const objection of input.objections ?? []) {
-    const change = matchObjection(objection, input.changes ?? []);
-    const note = { objectionId: objection.eventId, objection: clip(objection.text, 400) };
-    if (change === null) {
-      run.learningRows.push({
-        kind: "learning-revert-failed",
-        data: { ...note, id: objection.id, reason: "no learning change matches the objection" },
-      });
-      outcome.failed += 1;
-    } else {
-      const abs = path.join(run.dir, change.file);
-      const result =
-        typeof change.file === "string" && isLearningFile(change.file) && fs.existsSync(abs)
-          ? revertLearningChange(fs.readFileSync(abs, "utf8"), change, {
-              expectedBlob: expected.get(change.file) ?? null,
-            })
-          : { ok: false, reason: `${change.file} is not a page in the checkout` };
-      const named = { id: change.id, file: change.file, section: change.section ?? null };
-      if (result.ok) {
-        fs.writeFileSync(abs, bumpUpdated(result.text, run.day));
-        expected.set(change.file, result.resultBlob);
-        const row = {
-          kind: "learning-reverted",
-          data: {
-            ...note,
-            ...named,
-            before: change.after,
-            after: change.before,
-            baseBlob: result.baseBlob,
-            resultBlob: result.resultBlob,
-          },
-        };
-        run.learningRows.push(row);
-        revertedRows.push(row);
-        outcome.reverted += 1;
-      } else {
-        run.learningRows.push({
-          kind: "learning-revert-failed",
-          data: { ...note, ...named, reason: result.reason },
-        });
-        outcome.failed += 1;
-      }
+    const named = namedChange(
+      [objection.id, ...changeIdTokens(String(objection.text ?? ""))],
+      [...proposals.values()],
+    );
+    if (named === null) {
+      objections.push(objection);
+      continue;
     }
+    droppedProposals.push({ objection, proposal: named });
     consumed.push(objection.eventId);
   }
+  for (const { objection, proposal } of droppedProposals) {
+    try {
+      await fetchConvex(run.env, "/tts/repo-proposal-dropped", {
+        id: proposal.id,
+        reply: clip(objection.text, 200),
+      });
+    } catch (err) {
+      console.error(`[nightly] learning: could not drop proposal ${proposal.id}: ${err.message}`);
+    }
+  }
+  // Both halves of every revert are written through `io`, so a checker that
+  // fails after them restores every byte (withEvidenceCheck).
+  const gate = withEvidenceCheck(run.dir, (io) => {
+    const outcome = { reverted: 0, failed: 0 };
+    const rows = [];
+    const revertedRows = [];
+    // The body blob the job last left each record with; a revert this run
+    // makes moves it on, so the next objection to the same page checks
+    // against the records as this run left them.
+    const expected = expectedBodyBlobs(input.changes);
+    const expectedEvidence = expectedEvidenceBlobs(input.changes);
+    for (const objection of objections) {
+      const change = matchObjection(objection, input.changes ?? []);
+      const note = { objectionId: objection.eventId, objection: clip(objection.text, 400) };
+      if (change === null) {
+        rows.push({
+          kind: "learning-revert-failed",
+          data: { ...note, id: objection.id, reason: "no learning change matches the objection" },
+        });
+        outcome.failed += 1;
+      } else {
+        const ePath = typeof change.file === "string" ? evidencePath(change.file) : null;
+        const result =
+          typeof change.file === "string" && isLearningFile(change.file) && io.exists(change.file)
+            ? revertLearningRecords(io.read(change.file), io.read(ePath) ?? "", change, {
+                expectedBlob: expected.get(change.file) ?? null,
+                expectedEvidenceBlob: expectedEvidence.get(change.file) ?? null,
+              })
+            : { ok: false, reason: `${change.file} is not a page in the checkout` };
+        const named = { id: change.id, file: change.file, section: change.section ?? null };
+        if (result.ok) {
+          io.write(change.file, bumpUpdated(result.pageText, run.day));
+          if (ePath !== null) io.write(ePath, result.evidenceText);
+          expected.set(change.file, result.resultBlob);
+          expectedEvidence.set(change.file, result.evidenceResultBlob);
+          const row = {
+            kind: "learning-reverted",
+            data: {
+              ...note,
+              ...named,
+              before: change.after,
+              after: change.before,
+              baseBlob: result.baseBlob,
+              resultBlob: result.resultBlob,
+              evidenceBaseBlob: result.evidenceBaseBlob,
+              evidenceResultBlob: result.evidenceResultBlob,
+              evidenceMissing: result.evidenceMissing === true,
+            },
+          };
+          rows.push(row);
+          revertedRows.push(row);
+          outcome.reverted += 1;
+        } else {
+          rows.push({
+            kind: "learning-revert-failed",
+            data: { ...note, ...named, reason: result.reason },
+          });
+          outcome.failed += 1;
+        }
+      }
+      consumed.push(objection.eventId);
+    }
+    return { outcome, rows, revertedRows };
+  });
+  const { outcome, rows, revertedRows } = gate.result;
+  // A revert that the checker refused is taken back whole and reported as a
+  // failed revert: the objection is still consumed (it was acted on), and the
+  // digest says the records were left as they were.
+  if (!gate.ok) {
+    run.learningRows.push({
+      kind: LEARNING_CHECK_FAILED,
+      data: {
+        baseline: false,
+        stage: "reverts",
+        changes: outcome.reverted,
+        output: clip(gate.check.output, 500),
+      },
+    });
+    if (consumed.length > 0) {
+      await fetchConvex(run.env, "/tts/learning-objections-consumed", { ids: consumed });
+    }
+    return { reverted: 0, failed: outcome.reverted + outcome.failed, proposalsDropped: droppedProposals.length, checkFailed: true };
+  }
+  for (const row of rows) run.learningRows.push(row);
   if (consumed.length > 0) {
     await fetchConvex(run.env, "/tts/learning-objections-consumed", { ids: consumed });
   }
@@ -1052,7 +1507,7 @@ async function learningObjections(run, input, fetchConvex) {
     for (const row of revertedRows) row.commitMessage = message;
     run.commits.push({ paths: [MODEL_OF_TOM_DIR], message });
   }
-  return outcome;
+  return { ...outcome, proposalsDropped: droppedProposals.length, checkFailed: false };
 }
 
 /**
@@ -1081,17 +1536,53 @@ export async function learningStep(run, deps = {}) {
     revertFailed: 0,
     model: null,
     changes: 0,
+    removed: 0,
+    inferred: 0,
     refused: [],
+    groundSignals: 0,
+    groundSignalsDropped: 0,
+    turnsDropped: 0,
+    checkFailed: false,
+    checkOutput: null,
   };
+  // THE BASELINE. A run that cannot tell its own damage from somebody else's
+  // writes nothing: the checkout was already failing before this job touched
+  // it, so no change lands and no revert is applied, and the digest says so.
+  const baseline = runEvidenceCheck(run.dir);
+  if (!baseline.ok) {
+    summary.checkFailed = true;
+    summary.checkOutput = clip(baseline.output, 500);
+    run.learningRows.push({
+      kind: LEARNING_CHECK_FAILED,
+      data: { baseline: true, output: summary.checkOutput },
+    });
+    await fetchConvex(run.env, "/tts/event", { kind: "learning-run", data: summary });
+    console.log(
+      "[nightly] learning: model-of-tom/evidence was already failing its check before tonight's run — nothing was written",
+    );
+    return summary;
+  }
+
   const objections = await learningObjections(run, input, fetchConvex);
   summary.reverted = objections.reverted;
   summary.revertFailed = objections.failed;
+  if (objections.checkFailed) summary.checkFailed = true;
 
   if (summary.tomTurns + summary.slackReplies + summary.rulings > 0) {
     const pages = readLearningPages(run.dir);
     if (pages.size === 0) throw new Error(`no model-of-tom pages under ${run.dir}`);
+    const evidencePages = readEvidencePages(run.dir, pages);
+    const ground = groundSignals(input, {
+      max: GROUND_SIGNALS_MAX,
+      cite: (t) => `session ${sessionCitation(t)}`,
+      day: (at) => utcDay(at),
+    });
+    summary.groundSignals = ground.signals.length;
+    summary.groundSignalsDropped = ground.dropped;
     summary.model = LEARNING_MODEL;
-    const answer = askModel(learningPrompt(input, pages, run.day), {
+    const { prompt, turnsDropped } = learningPrompt(input, pages, evidencePages, ground.signals, run.day);
+    summary.turnsDropped = turnsDropped;
+    const answer = askModel(prompt, {
       cwd: run.dir,
       model: LEARNING_MODEL,
       timeoutMs: LEARNING_TIMEOUT_MS,
@@ -1100,21 +1591,50 @@ export async function learningStep(run, deps = {}) {
     const result = applyLearningChanges(pages, parseLearningAnswer(answer), {
       day: run.day,
       evidence: learningEvidence(input),
+      evidencePages,
+      signals: ground.signals,
     });
-    for (const [file, text] of result.pages) {
-      if (text !== pages.get(file)) fs.writeFileSync(path.join(run.dir, file), text);
-    }
-    summary.changes = result.applied.length;
     summary.refused = result.refused.map((r) => ({ ...r, line: clip(r.line, 200) }));
-    const message = `learning: ${run.day} — ${result.applied.length} line${result.applied.length === 1 ? "" : "s"} from Tom's turns, replies and rulings`;
-    for (const a of result.applied) {
-      run.learningRows.push({ kind: "learning-change", data: a, commitMessage: message });
+    const gate = withEvidenceCheck(run.dir, (io) => {
+      for (const [file, text] of result.pages) {
+        if (text !== pages.get(file)) io.write(file, text);
+      }
+      for (const [file, text] of result.evidencePages) {
+        if (text !== evidencePages.get(file)) io.write(file, text);
+      }
+      return null;
+    });
+    if (!gate.ok) {
+      // Rejected WHOLE. The applied rows describe writes that no longer
+      // exist, so they are NOT posted; one row says the night wrote nothing.
+      summary.checkFailed = true;
+      summary.checkOutput = clip(gate.check.output, 500);
+      run.learningRows.push({
+        kind: LEARNING_CHECK_FAILED,
+        data: {
+          baseline: false,
+          stage: "changes",
+          changes: result.applied.length,
+          output: summary.checkOutput,
+        },
+      });
+      console.error(
+        `[nightly] learning: the evidence check failed after ${result.applied.length} change(s) — every one was taken back`,
+      );
+    } else {
+      summary.changes = result.applied.length;
+      summary.removed = result.applied.filter((a) => a.kind === "remove").length;
+      summary.inferred = result.applied.filter((a) => a.inferred === true).length;
+      const message = `learning: ${run.day} — ${result.applied.length} line${result.applied.length === 1 ? "" : "s"} from Tom's turns, replies and rulings`;
+      for (const a of result.applied) {
+        run.learningRows.push({ kind: "learning-change", data: a, commitMessage: message });
+      }
+      if (result.applied.length > 0) run.commits.push({ paths: [MODEL_OF_TOM_DIR], message });
     }
-    if (result.applied.length > 0) run.commits.push({ paths: [MODEL_OF_TOM_DIR], message });
   }
   await fetchConvex(run.env, "/tts/event", { kind: "learning-run", data: summary });
   console.log(
-    `[nightly] learning: ${summary.tomTurns} turns of Tom's in ${summary.sessions} sessions, ${summary.slackReplies} Slack replies, ${summary.rulings} rulings — ${summary.changes} change(s), ${summary.refused.length} refused, ${summary.reverted} reverted, ${summary.revertFailed} revert(s) failed`,
+    `[nightly] learning: ${summary.tomTurns} turns of Tom's in ${summary.sessions} sessions, ${summary.slackReplies} Slack replies, ${summary.rulings} rulings, ${summary.groundSignals} ground signal(s) — ${summary.changes} change(s), ${summary.refused.length} refused, ${summary.reverted} reverted, ${summary.revertFailed} revert(s) failed`,
   );
   return summary;
 }
@@ -1204,7 +1724,235 @@ async function sessionsStep(run) {
   return { archived: archived.length };
 }
 
-// ── 4. the push ──────────────────────────────────────────────────────────────
+// ── 4. repo-learning ─────────────────────────────────────────────────────────
+// The nightly learning step maintains what the agents know about TOM. This one
+// maintains what they know about his REPOSITORIES: the nested AGENTS.md files.
+// It runs AFTER the sessions step because it reads the transcripts that step
+// archives, and BEFORE the push so its evidence writes ride the night's commit.
+//
+// IT NEVER EDITS A RULE FILE. Those live in other repositories and merge
+// through their own checks, so what lands tonight is the evidence entry alone,
+// under a heading that says the line is not in the repository yet, plus one
+// "repo-proposal" row the digest prints with its id. A session applies the
+// line later and posts back to /tts/repo-proposal-applied; the NEXT night's
+// run of this step moves the entry to its live heading. Tom's reply on the
+// digest line drops it instead — the entry keeps its heading and gains
+// `dropped:`, which is what stops the next night proposing it again.
+
+/**
+ * The step. `deps` is for the tests: the Convex call and the model call.
+ * The rows it produces go to run.learningRows, posted by recordLearningRows
+ * once the push has given them a commit.
+ */
+export async function repoLearningStep(run, deps = {}) {
+  const fetchConvex = deps.fetch ?? convexFetch;
+  const askModel = deps.model ?? runClaude;
+  const readRules = deps.readRules ?? readRepoRules;
+  run.learningRows ??= [];
+  const input = await fetchConvex(run.env, `/tts/learning-input?until=${run.now}`);
+  const summary = {
+    day: run.day,
+    since: input.since,
+    until: run.now,
+    sessions: (input.repoSessions ?? []).length,
+    transcriptsRead: 0,
+    proposals: 0,
+    dropped: 0,
+    deduped: 0,
+    repoFilesRead: 0,
+    reconciled: 0,
+    notes: [],
+    model: null,
+  };
+  // 1. Reconcile what landed since the last run: the only writer of a live
+  //    heading. Done before tonight's proposals so a line that landed is on
+  //    record before a duplicate of it could be proposed again.
+  const applied = (input.repoProposalsApplied ?? []).filter((r) => r.repo && r.file);
+  const objected = (input.repoProposalsDropped ?? []).filter((r) => r.repo && r.file);
+  const gate = withEvidenceCheck(run.dir, (io) => {
+    let reconciled = 0;
+    for (const row of applied) {
+      const rel = repoEvidencePath(row.repo);
+      if (rel === null || !io.exists(rel)) continue;
+      const out = reconcileApplied(io.read(rel), {
+        file: row.file,
+        section: row.section ?? "",
+        line: row.line,
+        appliedLine: row.appliedLine ?? row.line,
+      });
+      if (!out.ok) continue;
+      io.write(rel, out.text);
+      reconciled += 1;
+    }
+    for (const row of objected) {
+      const rel = repoEvidencePath(row.repo);
+      if (rel === null || !io.exists(rel)) continue;
+      const out = dropProposal(io.read(rel), {
+        file: row.file,
+        section: row.section ?? "",
+        line: row.line,
+        day: run.day,
+        reply: row.reply ?? "",
+      });
+      if (out.ok) io.write(rel, out.text);
+    }
+    return reconciled;
+  });
+  summary.reconciled = gate.ok ? gate.result : 0;
+  if (!gate.ok) {
+    summary.notes.push("the reconcile of applied proposals was taken back: the evidence check failed after it");
+  }
+
+  const sessions = chooseSessions(input.repoSessions ?? []);
+  if (sessions.length === 0) {
+    await fetchConvex(run.env, "/tts/event", { kind: REPO_LEARNING_RUN, data: summary });
+    console.log("[nightly] repo-learning: no sessions ended in a repository since the last run");
+    return summary;
+  }
+  // 2. What the model is shown: the outcome, the transcript's repo-bearing
+  //    lines, and the repository's own rule files as they stand on the box.
+  const shown = [];
+  const ruleFiles = [];
+  const seenRepos = new Set();
+  for (const s of sessions) {
+    const rel = transcriptPath(run.dir, s.sdkSessionId, utcDay(s.at));
+    let evidence = "";
+    if (rel !== null) {
+      try {
+        evidence = transcriptEvidence(fs.readFileSync(path.join(run.dir, rel)));
+        summary.transcriptsRead += 1;
+      } catch {
+        evidence = "";
+      }
+    }
+    shown.push({
+      session: sessionCitation({ sdkSessionId: s.sdkSessionId, sessionId: s.id }),
+      title: s.title ?? null,
+      repo: s.repo,
+      outcome: s.outcome ?? null,
+      outcomeSummary: s.outcomeSummary ?? null,
+      endedReason: s.endedReason ?? null,
+      transcript: evidence,
+    });
+    if (seenRepos.has(s.repo)) continue;
+    seenRepos.add(s.repo);
+    const rules = readRules(s.cwd ?? null);
+    if (rules.missing) {
+      summary.notes.push(
+        `${s.repo} AGENTS.md could not be read on the box; the proposals above were checked against the evidence record only`,
+      );
+    }
+    for (const f of rules.files) ruleFiles.push({ repo: s.repo, ...f });
+  }
+  summary.repoFilesRead = ruleFiles.length;
+
+  // 3. What is already on record, so the model is not asked to invent the
+  //    dedupe it would then be scored on.
+  const evidenceByRepo = new Map();
+  for (const repo of seenRepos) {
+    const rel = repoEvidencePath(repo);
+    if (rel === null) continue;
+    const abs = path.join(run.dir, rel);
+    evidenceByRepo.set(repo, fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : "");
+  }
+  const onRecord = [...evidenceByRepo.values()].flatMap(evidenceLinesOf);
+  const prior = priorProposalSentences(input.repoProposals ?? [], run.day);
+
+  summary.model = LEARNING_MODEL;
+  const answer = askModel(
+    repoLearningPrompt(
+      shown,
+      ruleFiles.map((f) => `=== ${f.repo} ${f.path} ===\n${f.text}`).join("\n\n"),
+      [...onRecord, ...prior].map((l) => `- ${l}`).join("\n"),
+      run.day,
+    ),
+    { cwd: run.dir, model: LEARNING_MODEL, timeoutMs: LEARNING_TIMEOUT_MS, maxTurns: 4 },
+  );
+  const proposals = parseRepoAnswer(answer, extractJsonObject).filter(
+    (p) => p !== null && typeof p === "object" && seenRepos.has(p.repo) && typeof p.file === "string",
+  );
+  const { kept, dropped } = dedupeProposals(proposals, {
+    bullets: repoRuleBullets(ruleFiles),
+    entryLines: onRecord,
+    priorSentences: prior,
+  });
+  summary.deduped = dropped.filter((d) => d.reason.startsWith("a duplicate")).length;
+  summary.dropped = dropped.length;
+  if (summary.deduped > 0) {
+    summary.notes.push(
+      `${summary.deduped} proposal${summary.deduped === 1 ? "" : "s"} dropped as duplicates of lines already in the files`,
+    );
+  }
+
+  // 4. The write: the entry, under the proposed heading, and one row each.
+  const rows = [];
+  const write = withEvidenceCheck(run.dir, (io) => {
+    for (const p of kept) {
+      const rel = repoEvidencePath(p.repo);
+      if (rel === null) continue;
+      const heading = proposalHeading(p.file, p.section ?? "", { proposed: true });
+      const entry = renderProposalEntry(p, run.day);
+      const current = io.exists(rel) ? io.read(rel) : repoEvidenceHeader(p.repo);
+      io.write(rel, appendProposalEntry(current, heading, entry));
+      const id = proposalId(p.repo, p.file, p.section ?? "", p.line);
+      rows.push({
+        kind: REPO_PROPOSAL,
+        key: id,
+        data: {
+          id,
+          repo: p.repo,
+          file: p.file,
+          section: p.section ?? "",
+          line: oneLine(p.line),
+          read: oneLine(p.read),
+          sources: (p.sources ?? []).map((s) => String(s)),
+          evidence: `read: session ${String((p.sources ?? [])[0] ?? "unknown")}`,
+          evidenceHeading: heading,
+          status: "open",
+          commit: null,
+        },
+      });
+    }
+    return null;
+  });
+  if (!write.ok) {
+    summary.notes.push(
+      `${kept.length} proposal${kept.length === 1 ? "" : "s"} were taken back: the evidence check failed after them`,
+    );
+    await fetchConvex(run.env, "/tts/event", { kind: REPO_LEARNING_RUN, data: summary });
+    console.error("[nightly] repo-learning: the evidence check failed after the write — every proposal was taken back");
+    return summary;
+  }
+  summary.proposals = rows.length;
+  if (rows.length > 0) {
+    const message = `repo rules: ${run.day} — ${rows.length} proposal${rows.length === 1 ? "" : "s"} from the night's sessions`;
+    for (const row of rows) run.learningRows.push({ ...row, commitMessage: message });
+    run.commits.push({ paths: [MODEL_OF_TOM_DIR], message });
+  } else if (summary.reconciled > 0) {
+    run.commits.push({
+      paths: [MODEL_OF_TOM_DIR],
+      message: `repo rules: ${run.day} — ${summary.reconciled} proposal${summary.reconciled === 1 ? "" : "s"} applied in their repositories`,
+    });
+  }
+  await fetchConvex(run.env, "/tts/event", { kind: REPO_LEARNING_RUN, data: summary });
+  console.log(
+    `[nightly] repo-learning: ${sessions.length} session(s), ${summary.transcriptsRead} transcript(s) — ${summary.proposals} proposal(s), ${summary.dropped} dropped, ${summary.reconciled} reconciled`,
+  );
+  return summary;
+}
+
+/** The head of a repository's evidence file, written once when the first
+ * proposal for that repository lands. It says why the checker does not mirror
+ * it, which is the question a reader of the file asks first. */
+export function repoEvidenceHeader(repo) {
+  return [
+    `Evidence for the synthesis rule files of the ${repo} repository.`,
+    "Their synthesis lines live in that repository, not here, so the evidence checker validates entry form without mirroring them.",
+    "",
+  ].join("\n");
+}
+
+// ── 5. the push ──────────────────────────────────────────────────────────────
 /**
  * Whether git stopped part-way through a rebase in `dir` — the directory it
  * leaves behind when a `pull --rebase` hit a conflict or died (no committer
@@ -1375,8 +2123,8 @@ function gitError(err) {
   return (stderr && !msg.includes(stderr) ? `${msg}\n${stderr}` : msg).slice(0, 2000);
 }
 
-// ── 5. the post ──────────────────────────────────────────────────────────────
-// Under the lock like the four steps before it, the shared prelude assembler
+// ── 6. the post ──────────────────────────────────────────────────────────────
+// Under the lock like the five steps before it, the shared prelude assembler
 // reads local HEAD from its immutable git object. Local HEAD is posted whether or
 // not the push went through — the design says every prompt names the
 // commit it began with — and `pushed` says which, so the store and the
@@ -1390,7 +2138,7 @@ export async function postStep(run, deps = {}) {
   // half-replayed commit: `rev-parse HEAD` names it, `git show <commit>:<path>`
   // reads whatever version of the pages that replay had reached, and Convex —
   // which only refuses a post OLDER than the one it holds — would take it and
-  // serve it to every prompt until a clean night replaced it. The four steps
+  // serve it to every prompt until a clean night replaced it. The five steps
   // before this one never meet that state, because the run aborts a stale
   // rebase before its first write (main); `--only=post` runs none of them, so
   // the guard belongs here too. Recorded, not thrown, and NOT aborted: an
@@ -1451,7 +2199,7 @@ export async function deliveryStep(run, deps = {}) {
   return facts;
 }
 
-// ── 6. the repo rules ────────────────────────────────────────────────────────
+// ── 7. the repo rules ────────────────────────────────────────────────────────
 // NOT under the WikiTom lock: this reads a different checkout entirely, and
 // nothing in this job writes it. Each repo's AGENTS.md bodies are read out of
 // its own immutable HEAD and posted whole, replacing that repo's rows and no
@@ -1460,7 +2208,7 @@ export async function deliveryStep(run, deps = {}) {
 //
 // A missing checkout is a recorded failure, not a thrown one: the box may be
 // rebuilt with WikiTom present and tom.quest not yet cloned, and the morning
-// digest should say so rather than lose the four steps above it.
+// digest should say so rather than lose the seven steps above it.
 export async function repoRulesStep(run, deps = {}) {
   const { fetch = convexFetch } = deps;
   const posted = [];
@@ -1578,6 +2326,7 @@ async function main() {
     snapshot: snapshotStep,
     learning: learningStep,
     sessions: sessionsStep,
+    "repo-learning": repoLearningStep,
     push: pushStep,
     post: postStep,
     "repo-rules": repoRulesStep,
@@ -1589,7 +2338,7 @@ async function main() {
       await recordFailure(run, name, err);
     }
   };
-  // Every step runs under the one lock (see withWikiTomLock): steps 1 to 4
+  // Every step runs under the one lock (see withWikiTomLock): steps 2 to 6
   // write the checkout, and the post reads HEAD's git object, which must be
   // the HEAD this run left — not one a writer that took the lock in between
   // moved it to.
@@ -1647,6 +2396,17 @@ async function recordSummary(run, only) {
           reverted: run.results.learning.reverted,
           revertFailed: run.results.learning.revertFailed,
           tomTurns: run.results.learning.tomTurns,
+          // A weekly "did learning run" fact reads this: a night that wrote
+          // nothing because the checker refused it is not a quiet night.
+          checkFailed: run.results.learning.checkFailed === true,
+        }
+      : null,
+    repoLearning: run.results["repo-learning"]
+      ? {
+          sessions: run.results["repo-learning"].sessions,
+          proposals: run.results["repo-learning"].proposals,
+          dropped: run.results["repo-learning"].dropped,
+          reconciled: run.results["repo-learning"].reconciled,
         }
       : null,
     posted: run.results.post?.files ?? null,
