@@ -4,6 +4,7 @@ import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { PRELUDE_LAYERS } from "./prelude.mjs";
+import { PULL_TIMEOUT_MS, pullWikiTom } from "./session-start-hook.mjs";
 
 const HOOK = path.resolve("scripts/session-start-hook.mjs");
 const IDENTITY = ["-c", "user.name=test", "-c", "user.email=test@example.com"];
@@ -95,5 +96,31 @@ describe("session-start-hook", () => {
     const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
     expect(context).toMatch(/^model-of-tom context could not be loaded: .+$/);
     expect(context).not.toContain("\n");
+  });
+
+  // A session start waits for the pull, so the pull must be capped: without a
+  // timeout one slow fetch made a laptop session wait two minutes.
+  it("caps the WikiTom pull at fifteen seconds", () => {
+    const dir = fixture();
+    const calls = [];
+    const fakeExecFileSync = (file, args, options) => { calls.push({ file, args, options }); };
+
+    expect(pullWikiTom(dir, fakeExecFileSync)).toBe(true);
+    expect(calls).toEqual([{
+      file: "git",
+      args: ["-C", dir, "pull", "--ff-only", "--quiet"],
+      options: { stdio: "ignore", timeout: 15_000 },
+    }]);
+    expect(PULL_TIMEOUT_MS).toBe(15_000);
+  });
+
+  it("skips the pull when WikiTom is absent, and swallows a pull that fails", () => {
+    const absent = path.join(os.tmpdir(), "missing-session-start-wikitom");
+    const never = () => { throw new Error("must not run"); };
+    expect(pullWikiTom(absent, never)).toBe(false);
+
+    const dir = fixture();
+    const killed = () => { throw Object.assign(new Error("timed out"), { signal: "SIGTERM" }); };
+    expect(pullWikiTom(dir, killed)).toBe(false);
   });
 });
