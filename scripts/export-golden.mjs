@@ -74,7 +74,7 @@ export function snapshotCommitAt(dir, at) {
 
 /** True for either form the nightly job writes (nightly.mjs isTableFile). */
 export function isTableFile(table, name) {
-  return name === `${table}.jsonl` || new RegExp(`^${table}\.part\d+\.jsonl\.gz$`).test(name);
+  return name === `${table}.jsonl` || new RegExp(`^${table}\\.part\\d+\\.jsonl\\.gz$`).test(name);
 }
 
 /**

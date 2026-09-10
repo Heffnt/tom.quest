@@ -673,8 +673,8 @@ export async function loadGate() {
  * compare two runs to know which they are.
  */
 export async function stampAgainstBase(data, base) {
-  const module = await loadGate();
-  if (module === null || base === null || base === undefined) {
+  const gateModule = await loadGate();
+  if (gateModule === null || base === null || base === undefined) {
     return {
       ...data,
       regressions: 0,
@@ -682,7 +682,7 @@ export async function stampAgainstBase(data, base) {
       failures: data.failures.map((failure) => ({ ...failure, regression: false })),
     };
   }
-  const verdict = module.gate(data, base);
+  const verdict = gateModule.gate(data, base);
   const regressed = new Set(verdict.regressions.map((failure) => failure.id));
   return {
     ...data,

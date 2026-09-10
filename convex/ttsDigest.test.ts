@@ -76,6 +76,23 @@ describe("composeDigest", () => {
     expect(text).toContain("- preludes: 14 sessions started from the current model-of-tom commit, 0 from an older one");
   });
 
+  it("names a stale session, how far behind it is, and links to it", () => {
+    const { text } = composeDigest({
+      ...emptyFacts(),
+      preludes: {
+        current: 1,
+        stale: [
+          { id: "j57abc", title: "weekly agenda", had: "7fc21ab4c1de", behindDays: 2 },
+          { id: "j57def", title: "prospect: climbing", had: "aaaaaaaaaaaa", behindDays: -1 },
+        ],
+        missing: [{ id: "j57ghi", title: "adhoc" }],
+      },
+    });
+    expect(text).toContain("- prelude 7fc21ab4c1de, 2 days behind: <https://www.tom.quest/sessions?session=j57abc|weekly agenda>");
+    expect(text).toContain("- prelude names a commit this deployment never posted: <https://www.tom.quest/sessions?session=j57def|prospect: climbing>");
+    expect(text).toContain("- no prelude at all: <https://www.tom.quest/sessions?session=j57ghi|adhoc>");
+  });
+
   it("prints evals only when a run is in the window, with its regression count", () => {
     expect(composeDigest(emptyFacts()).text).not.toContain("- evals:");
     const { text } = composeDigest({
