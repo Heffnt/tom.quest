@@ -48,11 +48,14 @@ import {
   nyUtcOffsetHours,
   nyNoonUtcMs,
   JSON_ONLY_ANSWER,
+  MODELS,
 } from "./tts-lib.mjs";
 
 const NOTE_MAX = 10; // per run; the rest wait two minutes
 const CLAUDE_TIMEOUT_MS = 3 * 60 * 1000;
-const MODEL = "claude-sonnet-5"; // mechanical parsing — no need for a big model
+// Mechanical parsing — no need for a big model. The name itself lives in the
+// MODELS table in tts-lib.mjs, where every job's tier is decided in one place.
+const MODEL = MODELS.timeNotes;
 
 // ---------------------------------------------------------------------------
 // New York wall-clock <-> epoch ms

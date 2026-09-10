@@ -449,6 +449,32 @@ export function serverErrorMessage(err) {
 // accounts is one `tts-account use` away and no job hardcodes an account.
 export const CLAUDE_CONFIG_DIR = "/root/.claude-accounts/active";
 
+// ONE HOME FOR MODEL NAMES. Every spawn names its model in the code rather than
+// falling through to whatever the active account happens to default to: a job's
+// tier is a decision this repo makes, and switching Max accounts must not
+// silently re-tier the fleet. The keys are ROLES, not job names, so two jobs
+// doing the same shape of work cannot drift apart:
+//
+//   planner    the planning passes (prepare a life todo, plan the graphs) —
+//              judgment over Tom's own words and his goal structure.
+//   codeBrief  the read-only pass over a real repo checkout that writes the
+//              brief a code todo is worked from — judgment plus code reading.
+//   triage     a capture verdict over a batch of inbound items (Gmail, Canvas):
+//              classify-shaped, high volume, cheap tier.
+//   timeNotes  reading one of Tom's time sentences into concrete actions —
+//              mechanical parsing; the tier here is flagged for Tom's ruling.
+//
+// Model literals still live in nightly.mjs (LEARNING_MODEL), weekly.mjs
+// (WEEKLY_MODEL), delegate.mjs (DELEGATE_MODEL), write-slack.mjs (MODEL) and
+// evals.mjs (REGEN_MODEL / JUDGE_MODEL). They belong in this table too and
+// should move here in a later pass.
+export const MODELS = {
+  planner: "opus",
+  codeBrief: "opus",
+  triage: "claude-haiku-4-5-20251001",
+  timeNotes: "claude-sonnet-5",
+};
+
 // Run headless Claude Code (`claude -p`) and return the model's ANSWER TEXT
 // (the envelope is unwrapped here; parsing the answer is the caller's job —
 // see extractJsonObject below for the JSON-answer case).
@@ -467,8 +493,9 @@ export const CLAUDE_CONFIG_DIR = "/root/.claude-accounts/active";
 // The prompt goes over STDIN, not argv: Linux caps a single argv element at
 // ~128 KiB and embedded todo/ledger JSON will eventually exceed that
 // (review-caught on prepare-queue).
-// `model` maps to --model: mechanical jobs (parsing one sentence into concrete
-// actions) pass a cheap model; omit it and the account default applies.
+// `model` maps to --model. EVERY CALLER PASSES ONE, from the MODELS table
+// above — omit it and the run silently takes the active account's default,
+// which is a fleet-wide setting no job should be tiered by.
 export function runClaude(
   prompt,
   { cwd, timeoutMs, agentic = false, maxTurns, model, allowedTools } = {},

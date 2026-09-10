@@ -101,6 +101,7 @@ import {
   MAX_LIFE_PER_RUN,
   MAX_BRIEF_CHARS,
   JSON_ONLY_ANSWER,
+  MODELS,
 } from "./tts-lib.mjs";
 import {
   CMT_REPO,
@@ -303,7 +304,7 @@ export async function prepareLifeTodos(
     try {
       const answer = io.runClaude(
         preparePrompt(todo, revise?.sentence ?? null, today, writingStandard),
-        { timeoutMs: PREPARE_TIMEOUT_MS },
+        { timeoutMs: PREPARE_TIMEOUT_MS, model: MODELS.planner },
       );
       const parsed = extractJsonObject(answer);
       if (
@@ -507,6 +508,7 @@ export async function briefCodeTodos({ repo, pending, writingStandard, force = f
         cwd: repo.dir, // non-agentic: read-only tools over the repo, no edits
         timeoutMs: BRIEF_TIMEOUT_MS,
         maxTurns: BRIEF_MAX_TURNS,
+        model: MODELS.codeBrief,
       });
       const parsed = extractJsonObject(answer);
 
@@ -1015,7 +1017,7 @@ export async function planGraphs(context, pending, io) {
         ruledAt: r.ruledAt,
       })),
     }),
-    { timeoutMs: CLAUDE_TIMEOUT_MS },
+    { timeoutMs: CLAUDE_TIMEOUT_MS, model: MODELS.planner },
   );
   const parsed = extractJsonObject(answer);
   if (!Array.isArray(parsed.batches)) {

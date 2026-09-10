@@ -63,6 +63,7 @@ import {
   reportUntriaged,
   runClaude,
   JSON_ONLY_ANSWER,
+  MODELS,
 } from "./tts-lib.mjs";
 
 const CURSOR_FILE = "/var/lib/tts/gmail-cursor";
@@ -220,7 +221,10 @@ async function main() {
 
   const prompt = gmailTriagePrompt(context.writingStandard, batch);
 
-  const answer = runClaude(prompt, { timeoutMs: 5 * 60 * 1000 });
+  const answer = runClaude(prompt, {
+    timeoutMs: 5 * 60 * 1000,
+    model: MODELS.triage,
+  });
   const { verdicts } = extractJsonObject(answer);
   if (!Array.isArray(verdicts)) throw new Error("triage answer has no verdicts array");
   // What the model said about what it was given — and what it did not say.

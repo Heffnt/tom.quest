@@ -80,6 +80,7 @@ import {
   reportUntriaged,
   runClaude,
   JSON_ONLY_ANSWER,
+  MODELS,
 } from "./tts-lib.mjs";
 
 const CURSOR_FILE = "/var/lib/tts/canvas-announcements-cursor";
@@ -364,7 +365,10 @@ async function pollAnnouncements(env, courses, writingStandard) {
 
   const prompt = canvasTriagePrompt(writingStandard, candidates);
 
-  const answer = runClaude(prompt, { timeoutMs: 5 * 60 * 1000 });
+  const answer = runClaude(prompt, {
+    timeoutMs: 5 * 60 * 1000,
+    model: MODELS.triage,
+  });
   const { verdicts } = extractJsonObject(answer);
   if (!Array.isArray(verdicts)) throw new Error("triage answer has no verdicts array");
   // What the model said about what it was given — and what it did not say.
