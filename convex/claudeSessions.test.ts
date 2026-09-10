@@ -242,23 +242,26 @@ describe("claude sessions", () => {
     });
     expect(inbound).toHaveLength(1);
     expect(inbound[0].kind).toBe("user-turn");
-    // The model-of-tom prelude at the head (the lifeos update, phase 4): the
-    // transcript's first row names what the session began with — here, with
-    // nothing posted yet, the hardcoded standard under the header saying so.
-    // Then Tom's prompt verbatim; the outcome-pen footer is appended
-    // server-side (pinned by its own test below).
+    // The STABLE PREFIX at the head (the dynamic-context round): the
+    // transcript's first row names what the session began with — the map, the
+    // operate rules and the write layer, at one WikiTom commit. Then Tom's
+    // prompt verbatim, then the fetchable index; the outcome-pen footer is
+    // appended server-side (pinned by its own test below).
+    //
+    // THE KNOW LAYER IS NOT HERE, and never is whole again: this session has
+    // no subject, so nothing expands (rule 12) and the whole know layer is one
+    // line in the index saying how to read it (convex/ttsContext.ts).
     const text = inbound[0].text ?? "";
     expect(text.startsWith(`${MODEL_OF_TOM_HEADER} (WikiTom commit testprelude)`)).toBe(true);
     expect(text).toContain(TEST_PRELUDE_LAYERS.operate);
     expect(text).toContain(TEST_PRELUDE_LAYERS.write);
-    expect(text).toContain(TEST_PRELUDE_LAYERS.know);
+    expect(text).not.toContain(TEST_PRELUDE_LAYERS.know);
     expect(text.indexOf(TEST_PRELUDE_LAYERS.operate)).toBeLessThan(
       text.indexOf(TEST_PRELUDE_LAYERS.write),
     );
-    expect(text.indexOf(TEST_PRELUDE_LAYERS.write)).toBeLessThan(
-      text.indexOf(TEST_PRELUDE_LAYERS.know),
-    );
-    expect(text.indexOf(TEST_PRELUDE_LAYERS.know)).toBeLessThan(text.indexOf("\n\nhello"));
+    expect(text.indexOf(TEST_PRELUDE_LAYERS.write)).toBeLessThan(text.indexOf("\n\nhello"));
+    expect(text.indexOf("\n\nhello")).toBeLessThan(text.indexOf("MODEL-OF-TOM FETCHABLE"));
+    expect(text).toContain("--layers know");
   });
 
   // witness: insertSession prefixed the prelude to whatever the seed's prompt
@@ -267,8 +270,10 @@ describe("claude sessions", () => {
   it("opens the session on a pasted opener, with the live prelude and one header", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    // What a paste actually is: the opener of a live session, copied whole.
-    const prelude = await t.run(async (ctx) => modelOfTomPrelude(ctx));
+    // What a paste actually is: the opener of a live session, copied whole —
+    // and what is strippable in it is the STABLE PREFIX, which is all a paste
+    // can carry that the live record does not rebuild anyway.
+    const prelude = await t.run(async (ctx) => modelOfTomPrelude(ctx, ["operate", "write"]));
     const sessionId = await tom.mutation(api.claudeSessions.createSession, {
       title: "pasted opener",
       kind: "adhoc",

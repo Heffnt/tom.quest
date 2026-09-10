@@ -219,6 +219,18 @@ async function readRecord(
     for (const ruling of onBatch) record.rulings.push(rulingRow(ruling));
   }
 
+  // Rule 11 reads a session two ways — by its batch and by its repos — and one
+  // session is very often both. Deduplicated by id HERE rather than by rendered
+  // text, so a batch's own last session cannot appear twice in one prompt.
+  const seenSessions = new Set<string>();
+  const addSession = (session: Doc<"claudeSessions">) => {
+    if (seenSessions.has(session._id)) return;
+    const row = sessionRow(session);
+    if (row === null) return;
+    seenSessions.add(session._id);
+    record.sessions.push(row);
+  };
+
   // Rule 11, indexed half: the batch's own last sessions.
   if (batch !== null) {
     const onBatch = await ctx.db
@@ -226,10 +238,7 @@ async function readRecord(
       .withIndex("by_batch", (q) => q.eq("batchId", batch!._id))
       .order("desc")
       .take(OUTCOMES_PER_BATCH);
-    for (const session of onBatch) {
-      const row = sessionRow(session);
-      if (row !== null) record.sessions.push(row);
-    }
+    for (const session of onBatch) addSession(session);
   }
 
   // Rule 11, unindexed half: the two terminal statuses, newest first, filtered
@@ -244,16 +253,27 @@ async function readRecord(
         .take(SESSION_SCAN_PER_STATUS);
       for (const session of recent) {
         if (!(session.repos ?? [session.repo]).some((repo) => repos.includes(repo))) continue;
-        const row = sessionRow(session);
-        if (row !== null) record.sessions.push(row);
+        addSession(session);
       }
     }
   }
   return { record, repos };
 }
 
+/**
+ * The rules of the repos this run works in — and of EVERY repo when it works in
+ * none. A run with no checkout (prepare, triage, the planner) gets none of these
+ * expanded, but its fetchable block still says the files exist and where: that
+ * is the unknown-unknown the whole arrangement is for, and dropping the lines
+ * because the run has no repo would put it back.
+ */
 async function readRepoRules(ctx: QueryCtx | MutationCtx, repos: string[]) {
   const out: { repo: string; path: string; body: string }[] = [];
+  if (repos.length === 0) {
+    const rules = await ctx.db.query("repoRules").withIndex("by_repo").take(REPO_RULES_MAX * 3);
+    for (const rule of rules) out.push({ repo: rule.repo, path: rule.path, body: rule.body });
+    return out;
+  }
   for (const repo of repos) {
     const rules = await ctx.db
       .query("repoRules")
@@ -303,7 +323,7 @@ export async function assembleContext(
   const { record, repos } = subject.kind === "none"
     ? { record: { today: nyCalendarDayKey(now), todos: [], batches: [], rulings: [], sessions: [] }, repos: [] }
     : await readRecord(ctx, subject, now);
-  const repoRules = repos.length === 0 ? [] : await readRepoRules(ctx, repos);
+  const repoRules = await readRepoRules(ctx, repos);
 
   const parts = assembleContextParts({
     subject,

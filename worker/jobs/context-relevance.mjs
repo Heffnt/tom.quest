@@ -582,7 +582,10 @@ function select(input) {
   // Depth desc then path asc, and the root is never dropped by the ordering.
   const runRepos = [...new Set(repos.filter((repo) => typeof repo === "string" && repo !== ""))].sort();
   const availableRules = repoRules.filter((rule) => runRepos.includes(rule.repo));
-  if (availableRules.length > 0 && tokens.length > 0) {
+  // The root goes when the brief named a path, and also when the RUN'S SUBJECT
+  // IS THE REPO — a `repo:` run has no brief to name paths in, and the repo's
+  // own root rules are the least surprising thing it could be handed.
+  if (availableRules.length > 0 && (tokens.length > 0 || subject.kind === "repo")) {
     const primary = runRepos.find((repo) => availableRules.some((rule) => rule.repo === repo && rule.path === "AGENTS.md"));
     const root = availableRules.find((rule) => rule.repo === primary && rule.path === "AGENTS.md");
     const matched = new Map();
@@ -841,10 +844,14 @@ function fetchableItems(state, options) {
   }
 
   // 2. The know pages' sections that were not expanded.
+  //
+  // `§ Week` IS NEVER TREATED AS EXPANDED, because rule 8 only ever takes the
+  // bullets for one or two weekdays out of it — the other days went nowhere,
+  // and a section half in the prompt and absent from the index is exactly the
+  // unknown unknown this block exists to close.
   const expandedSections = new Set([
     ...chosen.intent.map((section) => `${section.path} ${section.heading}`),
     ...(chosen.priorities === null ? [] : [`${chosen.priorities.path} ${chosen.priorities.heading}`]),
-    ...(chosen.schedule.length === 0 ? [] : [`${SCHEDULE_PATH} ${WEEK_SECTION}`]),
   ]);
   for (const path of KNOW_FIXED) {
     const source = byPath.get(path);
@@ -855,8 +862,9 @@ function fetchableItems(state, options) {
     }
   }
 
-  // 3. The area pages not expanded.
-  const expandedAreas = new Set(chosen.areas.map((area) => area.path));
+  // 3. The area pages not expanded — INCLUDING one the shrink order cut down to
+  // its "Current state" section, whose rest went nowhere.
+  const expandedAreas = new Set(chosen.areas.filter((area) => area.reduced !== true).map((area) => area.path));
   for (const path of [...byPath.keys()].filter(isAreaPath).sort()) {
     if (expandedAreas.has(path)) continue;
     const name = areaName(path);
