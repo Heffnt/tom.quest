@@ -73,6 +73,25 @@ describe("gate, continued", () => {
     expect(report(head, run({ sha: "9f8e7d6c" }), verdict).join("\n")).toContain("unconfirmed  explanation-n1");
   });
 
+  // gate() routes an unconfirmed failure out of `regressions` on purpose. The
+  // summary line is where that state stops being invisible in the CI log.
+  it("says how many failures went to unconfirmed, in the summary line", () => {
+    const head = run({ pass: 1, fail: 2, failures: [
+      failure("explanation-n1", { confirmed: false }),
+      failure("explanation-n2", { confirmed: false }),
+    ] });
+    const base = run({ sha: "9f8e7d6c" });
+    const lines = report(head, base, gate(head, base));
+    expect(lines[lines.length - 1]).toBe("PASSED: 0 regressions. 2 unconfirmed failures reported, not gated.");
+  });
+
+  it("fails a run the box could not make, rather than reading no failures off it", () => {
+    const head = run({ items: 0, pass: 0, fail: 0, scoredIds: [], error: "could not fetch deadbeef" });
+    const verdict = gate(head, null);
+    expect(verdict).toMatchObject({ ok: false, reason: "could not fetch deadbeef" });
+    expect(report(head, null, verdict).join("\n")).toContain("FAILED: the run could not be made");
+  });
+
   it("counts an item head scored and base never did as new, not as a regression", () => {
     const head = run({ pass: 2, fail: 1, scoredIds: ["one", "two", "three", "four"], failures: [failure("four")] });
     const verdict = gate(head, run({ sha: "9f8e7d6c" }));

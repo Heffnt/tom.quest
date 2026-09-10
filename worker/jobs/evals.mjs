@@ -257,7 +257,118 @@ export const JOBS = {
     fields: ["explanation"],
     opts: { maxTurns: 2 },
   },
+  // The nightly learning step's two items (evals/golden/learning/). They are
+  // the only job here scored WITHOUT a judge: what the item asks is whether the
+  // regenerated answer still lands the one change it must land and still lands
+  // nothing on the night it must refuse, and applyLearningChanges answers that
+  // deterministically. `score` below is what runItem calls in the judge's place.
+  learning: {
+    // No layer text: the pages' own rules travel with the pages, and
+    // learningPrompt takes none. The write layer is asked for anyway because
+    // runItem resolves a job's layers before it builds — it is one cached call
+    // per run and its text reaches nothing here.
+    layers: ["write"],
+    // TWO MODULES, merged into one namespace by loadModules: the prompt and
+    // the writer are in nightly.mjs, the ground signals it is given are in
+    // learning-ground.mjs, and both come from the PINNED tree.
+    module: ["worker/jobs/nightly.mjs", "worker/jobs/learning-ground.mjs"],
+    build: (item, layers, mod) => mod.learningPrompt(
+      learningStepInput(item.input),
+      new Map(Object.entries(item.input.pages ?? {})),
+      new Map(Object.entries(item.input.evidencePages ?? {})),
+      learningSignals(item.input, mod),
+      item.input.day,
+    ).prompt,
+    parse: (answer, mod) => mod.parseLearningAnswer(answer),
+    score: (item, fresh, mod) => scoreLearning(item, fresh, mod),
+    fields: [],
+    opts: { maxTurns: 2 },
+  },
 };
+
+/**
+ * A golden learning item's `input` as the nightly step's own input object: the
+ * turns carrying the fields the job reads, and the window in epoch
+ * milliseconds. The same conversion worker/jobs/learning-golden.test.mjs makes
+ * — one item shape, two readers, and the item file is the only place it is
+ * written down.
+ */
+export function learningStepInput(input) {
+  const at = (date) => Date.parse(`${date}T12:00:00.000Z`);
+  return {
+    since: Date.parse(input.window.since),
+    until: Date.parse(input.window.until),
+    tomTurns: (input.tomTurns ?? []).map((turn) => ({
+      id: turn.turnId,
+      sessionId: turn.session,
+      sdkSessionId: `${turn.session}-0000-0000-0000-000000000000`,
+      sessionTitle: turn.sessionTitle ?? "",
+      text: turn.tom,
+      at: at(turn.date),
+      replyBefore: turn.agentBefore ?? null,
+      replyAfter: turn.agentAfter ?? null,
+    })),
+    slackReplies: input.slackReplies ?? [],
+    rulings: input.rulings ?? [],
+    objections: [],
+    changes: [],
+  };
+}
+
+/** The ground signals of one learning item, found by the pinned tree's OWN
+ *  code — never read off the item. The signal objects carry more than the item
+ *  records about them (the sentence each rests on, which applyLearningChanges
+ *  checks a change's "said:" entry against), and a signal list assembled here
+ *  by hand would refuse changes the real job accepts. */
+export function learningSignals(input, mod) {
+  const step = learningStepInput(input);
+  return mod.groundSignals(step, {
+    cite: (turn) => `session ${mod.sessionCitation(turn)}`,
+    day: (at) => mod.utcDay(at),
+  }).signals;
+}
+
+/**
+ * One learning item, scored with no model call: run the regenerated answer
+ * through the real applyLearningChanges and compare WHAT LANDED with the
+ * item's `expect.applied`, by file, section and kind.
+ *
+ * What landed is the whole test, and refusals are deliberately not compared: on
+ * the refusal item the right answer is to propose nothing at all, which refuses
+ * nothing — the item's own recorded refusals belong to the deliberately bad
+ * answer the vitest suite feeds it. Nothing landing IS the item passing there.
+ */
+export function scoreLearning(item, fresh, mod) {
+  // `fresh` is what parseLearningAnswer returns: the CHANGES ARRAY, not the
+  // object around it, which is what applyLearningChanges takes.
+  const result = mod.applyLearningChanges(
+    new Map(Object.entries(item.input.pages ?? {})),
+    Array.isArray(fresh) ? fresh : (fresh?.changes ?? []),
+    {
+      day: item.input.day,
+      evidence: mod.learningEvidence(learningStepInput(item.input)),
+      evidencePages: new Map(Object.entries(item.input.evidencePages ?? {})),
+      signals: learningSignals(item.input, mod),
+    },
+  );
+  const shape = (change) => `${change.file}#${change.section}:${change.kind ?? change.op}`;
+  const landed = result.applied.map(shape).sort();
+  const wanted = (item.expect?.applied ?? []).map(shape).sort();
+  if (landed.join("|") === wanted.join("|")) {
+    return {
+      judged: "pass",
+      reason: wanted.length === 0
+        ? `nothing landed, as the item requires (${result.refused.length} refused)`
+        : `landed ${wanted.join(", ")}`,
+    };
+  }
+  return {
+    judged: "fail",
+    reason: `landed ${landed.length === 0 ? "nothing" : landed.join(", ")}, expected ` +
+      `${wanted.length === 0 ? "nothing" : wanted.join(", ")}` +
+      (result.refused.length === 0 ? "" : ` (refused: ${result.refused.map((one) => one.reason).join("; ")})`),
+  };
+}
 
 /** Each field of an output under a line naming it. */
 function fieldBlocks(output, fields) {
@@ -393,6 +504,16 @@ export async function runItem(item, context, io) {
   } catch (err) {
     return { ...base, judged: "fail", reason: `regeneration failed: ${serverErrorMessage(err)}` };
   }
+  // A job that can score itself does. The learning items are the case: what
+  // they ask is answered by running the regenerated answer through the job's
+  // own code, so no judge is called and the answer is not a matter of reading.
+  if (typeof job.score === "function") {
+    try {
+      return { ...base, ...job.score(item, fresh, context.modules[item.job]) };
+    } catch (err) {
+      return { ...base, judged: "fail", reason: `scoring failed: ${serverErrorMessage(err)}` };
+    }
+  }
   let answer;
   try {
     answer = await io.runClaude(judgePrompt(item, fresh, job.fields), {
@@ -455,16 +576,22 @@ export function loadTasks(tomquestTree, repo) {
 }
 
 /**
- * The five task kinds, and which of them this branch can actually run.
+ * The five task kinds, and which of them still wait on a branch.
  *
  * `locate`, `explain` and `change` are the repo-task kinds. `delegate` and
  * `slack` are two widenings of that closed union, each defined by its own
- * design and each built on its own branch — the item FORMAT and this runner's
- * interface land here so the writing evals are not held up, and the branch
- * named below supplies the code that answers them.
+ * design and each built on its own branch — and BOTH OF THOSE BRANCHES ARE
+ * MERGED (uac/delegate at f0da2f9, uac/slack at 325bf31), so neither kind is
+ * held back any more and all five items run.
+ *
+ * TASK_BRANCHES is kept, empty, and so is the skip it drives: it is the one
+ * place a kind whose runner genuinely has not landed is named, and a widening
+ * that arrives on a branch adds its row here and takes it out on merge. An
+ * empty map means nothing is waiting on a branch — a kind with no runner wired
+ * is a different fact, and runTask says that one separately.
  */
 export const TASK_KINDS = Object.freeze(["locate", "explain", "change", "delegate", "slack"]);
-export const TASK_BRANCHES = Object.freeze({ delegate: "uac/delegate", slack: "uac/slack" });
+export const TASK_BRANCHES = Object.freeze({});
 
 /** The mechanical checks every task kind runs before any model call. */
 export function mechanicalChecks(task, text) {
@@ -496,7 +623,55 @@ export async function runTask(task, trees, io) {
   if (typeof io?.runTaskKind !== "function") {
     return { ...base, judged: "skip", reason: `no runner wired for task kind ${task.kind}` };
   }
-  return { ...base, ...(await io.runTaskKind(task, trees)) };
+  const produced = await io.runTaskKind(task, trees);
+  // THE MECHANICAL HALF DECIDES FIRST. mustName and mustNotName are read off
+  // the answer's own text with no model in the loop, and a violation is the
+  // item's score — the kind runner's own verdict, and any judge behind it, is
+  // not consulted about a text that already broke the item's rule. The check
+  // runs only when the runner surfaced its text: a runner that reports a
+  // verdict and no answer has nothing to check mechanically, and scoring an
+  // absent text against mustName would fail every such item.
+  if (typeof produced?.text === "string") {
+    const mechanical = mechanicalChecks(task, produced.text);
+    if (mechanical !== null) return { ...base, ...produced, judged: "fail", reason: mechanical };
+  }
+  return { ...base, ...produced };
+}
+
+/** A bare 40-hex commit id, or the abbreviation of one. A ref that looks like
+ *  this is a COMMIT, not a branch, and the cache clone will not have it unless
+ *  it was asked for by name. */
+const SHA_LIKE = /^[0-9a-f]{7,40}$/;
+
+/**
+ * Make `ref` resolvable in the cache clone, or throw saying it is not.
+ *
+ * THE CACHE CLONE IS SHALLOW AND BRANCH-ONLY (tts-code-lib.mjs cacheRepoDir:
+ * `clone --depth 1 --branch <branch>`, then `fetch --depth 1 origin <branch>`),
+ * so a pull-request head sha is in the repo only by accident. `git worktree add
+ * --detach <dir> <sha>` on a sha the repo does not have throws, and before this
+ * every tom.quest pull-request run died there. GitHub serves an exact commit id
+ * to `git fetch`, so the sha is asked for by name.
+ */
+export function ensureRef(repoDir, ref, run = git) {
+  const has = () => {
+    try {
+      run(repoDir, "cat-file", "-e", `${ref}^{commit}`);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (has()) return;
+  if (!SHA_LIKE.test(String(ref))) {
+    throw new Error(`${ref} is not in the cache clone of ${repoDir} and is not a commit id to fetch`);
+  }
+  try {
+    run(repoDir, "fetch", "--depth", "1", "origin", ref);
+  } catch (error) {
+    throw new Error(`could not fetch ${ref}: ${String(error?.message ?? error).split("\n")[0]}`);
+  }
+  if (!has()) throw new Error(`fetched ${ref} but it is still not a commit in ${repoDir}`);
 }
 
 /**
@@ -530,7 +705,15 @@ export async function loadModules(tomquestTree, items) {
   for (const item of items) {
     const job = JOBS[item.job];
     if (job === undefined || job.module === null || modules[item.job] !== undefined) continue;
-    modules[item.job] = await import(pathToFileURL(path.join(tomquestTree, job.module)).href);
+    // A job may name MORE THAN ONE module of the pinned tree — the learning
+    // job's prompt and writer are in nightly.mjs and the ground signals it is
+    // given are in learning-ground.mjs. They are merged into one namespace so
+    // build, parse and score each take a single `mod`, and the FIRST path
+    // listed wins a name both export.
+    const paths = Array.isArray(job.module) ? job.module : [job.module];
+    const loaded = [];
+    for (const rel of paths) loaded.push(await import(pathToFileURL(path.join(tomquestTree, rel)).href));
+    modules[item.job] = loaded.length === 1 ? loaded[0] : Object.assign({}, ...loaded.reverse());
   }
   return modules;
 }
@@ -650,7 +833,13 @@ function realIo(env) {
       // Never reset --hard the WikiTom checkout: the nightly job owns its
       // working tree. A fetch plus a detached worktree reads the commit
       // without touching it.
-      git(repoDir, "fetch", "origin");
+      try {
+        git(repoDir, "fetch", "origin");
+      } catch {
+        // A shallow clone can refuse a bare `fetch origin`; the exact ref
+        // below is the fetch that matters and it says so if it fails.
+      }
+      ensureRef(repoDir, ref);
       return worktreeFor(repoDir, repo, ref);
     },
   };
@@ -658,6 +847,45 @@ function realIo(env) {
 
 async function postRun(env, data) {
   await convexFetch(env, "/tts/event", { kind: EVALS_RUN, key: `${data.repo}@${data.sha}`, data });
+}
+
+/**
+ * The row a run that could not be made posts anyway.
+ *
+ * THE QUEUE IS DRAINED BY ANSWERS, NOT BY ATTEMPTS: `--serve` takes the OLDEST
+ * request with no evals-run row at its key, so one sha the box cannot fetch or
+ * check out is picked again on every tick and every later request waits behind
+ * it forever. A recorded failure is the answer — it says what happened, and it
+ * opens nothing: `regressions: null` denies the merge gate's evals arm, and
+ * `error` makes scripts/evals-check.mjs's gate() fail rather than read "no
+ * failures" off a run that scored nothing.
+ */
+export function failedRun({ repo, sha, error, at }) {
+  return {
+    repo,
+    sha,
+    tomquest: null,
+    wikitom: null,
+    goldenHash: null,
+    regenModel: REGEN_MODEL,
+    judgeModel: JUDGE_MODEL,
+    startedAt: at,
+    finishedAt: at,
+    calls: 0,
+    error,
+    items: 0,
+    pass: 0,
+    fail: 0,
+    regressions: null,
+    stillFailing: 0,
+    byPartition: [],
+    byVerdict: { approve: { items: 0, pass: 0 }, revise: { items: 0, pass: 0 } },
+    failures: [],
+    scoredIds: [],
+    skipped: [],
+    tasks: aggregate([]),
+    tasksSkipped: [],
+  };
 }
 
 /**
@@ -686,9 +914,14 @@ export async function loadGate() {
 export async function stampAgainstBase(data, base) {
   const gateModule = await loadGate();
   if (gateModule === null || base === null || base === undefined) {
+    // NULL, NOT ZERO. A run compared to nothing has no number of regressions,
+    // and the merge gate opens its evals arm on exactly `regressions === 0`
+    // (convex/ttsMerge.ts) — stamping 0 here would let a head that was never
+    // compared to anything satisfy "evals with no regression". A non-number
+    // is refused there and the deny message says the number was unreadable.
     return {
       ...data,
-      regressions: 0,
+      regressions: null,
       stillFailing: 0,
       failures: data.failures.map((failure) => ({ ...failure, regression: false })),
     };
@@ -725,7 +958,8 @@ async function runAndPost(env, io, { repo, sha, base, limit, jobs, weekly, force
   const data = await stampAgainstBase(await runEvals({ repo, sha, limit, jobs, weekly }, io), baseData);
   await postRun(env, data);
   console.log(
-    `[evals] ${repo}@${sha}: ${data.pass}/${data.items} pass, ${data.regressions} regression(s), ` +
+    `[evals] ${repo}@${sha}: ${data.pass}/${data.items} pass, ` +
+      `${data.regressions === null ? "compared to no base" : `${data.regressions} regression(s)`}, ` +
       `${data.stillFailing} still failing (golden ${data.goldenHash})`,
   );
   return data;
@@ -761,15 +995,23 @@ async function main() {
       console.log("[evals] no unanswered request");
       return;
     }
-    await runAndPost(env, io, {
-      repo: request.repo,
-      sha: request.sha,
-      base: request.baseSha,
-      limit: options.limit,
-      jobs: options.jobs,
-      weekly: false,
-      force: options.force,
-    });
+    try {
+      await runAndPost(env, io, {
+        repo: request.repo,
+        sha: request.sha,
+        base: request.baseSha,
+        limit: options.limit,
+        jobs: options.jobs,
+        weekly: false,
+        force: options.force,
+      });
+    } catch (error) {
+      // A run that threw still has to be ANSWERED, or this request is taken
+      // again on every tick and nothing behind it is ever served.
+      const reason = serverErrorMessage(error);
+      console.error(`[evals] ${request.repo}@${request.sha} could not be run: ${reason}`);
+      await postRun(env, failedRun({ repo: request.repo, sha: request.sha, error: reason, at: Date.now() }));
+    }
     return;
   }
 

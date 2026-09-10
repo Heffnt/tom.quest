@@ -124,8 +124,19 @@ export async function auditCommit(
   const io = {
     run: defaultRun,
     env: () => loadEnv({ require: ["CONVEX_SITE_URL", "TTS_WORKER_KEY"] }),
+    // THE PROMPT GOES ON STDIN, never in argv. tts-codex forwards its argv
+    // straight to scripts/codex-run.mjs, whose arg loop refuses anything that
+    // is not one of its flags — a positional prompt was rejected as an unknown
+    // option, readStdin() then found nothing, and every audit was recorded
+    // UNAVAILABLE. codex-run reads the prompt from stdin and nowhere else.
     audit: (prompt) =>
-      defaultRun(AUDIT_RUNNER, ["--cwd", dir, "--sandbox", AUDIT_SANDBOX, "--no-operate", prompt]),
+      String(
+        execFileSync(AUDIT_RUNNER, ["--cwd", dir, "--sandbox", AUDIT_SANDBOX, "--no-operate"], {
+          input: prompt,
+          encoding: "utf8",
+          maxBuffer: 64 * 1024 * 1024,
+        }),
+      ),
     post: (env, body) => convexFetch(env, "/tts/audit", body),
     ...suppliedIo,
   };

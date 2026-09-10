@@ -13,7 +13,10 @@ import {
   parseJudge,
   runItem,
   runTask,
+  scoreLearning,
   selectItems,
+  stampAgainstBase,
+  TASK_BRANCHES,
   treesFor,
   verdictOf,
 } from "./evals.mjs";
@@ -265,11 +268,42 @@ describe("repo tasks", () => {
     expect(loadTasks(dir, "tom.quest").map((task) => task.id)).toEqual(["a", "b"]);
   });
 
-  it("skips a delegate or slack item with the branch that supplies its runner", async () => {
+  // uac/delegate and uac/slack are both merged, so neither kind is held back
+  // by a branch any more. The map stays as the mechanism, empty.
+  it("holds no kind back behind a branch, and skips only for a runner that is not wired", async () => {
+    expect(TASK_BRANCHES).toEqual({});
     const delegate = await runTask({ id: "delegate-01-answers", repo: "delegate", kind: "delegate" }, {}, {});
-    expect(delegate).toMatchObject({ judged: "skip", reason: "delegate runner arrives with branch uac/delegate" });
+    expect(delegate).toMatchObject({ judged: "skip", reason: "no runner wired for task kind delegate" });
     const slack = await runTask({ id: "slack-01-morning", repo: "slack", kind: "slack" }, {}, {});
-    expect(slack).toMatchObject({ judged: "skip", reason: "slack runner arrives with branch uac/slack" });
+    expect(slack).toMatchObject({ judged: "skip", reason: "no runner wired for task kind slack" });
+  });
+
+  it("runs a wired kind and takes its result", async () => {
+    const task = { id: "slack-01-morning", repo: "slack", kind: "slack", expect: { mustName: ["667"], mustNotName: [] } };
+    const result = await runTask(task, {}, {
+      runTaskKind: async () => ({ judged: "pass", reason: "names the count", text: "667 more ready items" }),
+    });
+    expect(result).toMatchObject({ id: "slack-01-morning", partition: "task/slack", judged: "pass" });
+  });
+
+  // The mechanical half, and it decides without a model: an answer that names
+  // what the item says it must not name is a fail whatever the runner said.
+  it("fails an answer on mustName and mustNotName before any judge sees it", async () => {
+    const task = { id: "t", repo: "slack", kind: "slack", expect: { mustName: ["667"], mustNotName: ["plan stored"] } };
+    const missing = await runTask(task, {}, {
+      runTaskKind: async () => ({ judged: "pass", reason: "the runner liked it", text: "nothing much" }),
+    });
+    expect(missing).toMatchObject({ judged: "fail", reason: 'does not name "667"' });
+    const forbidden = await runTask(task, {}, {
+      runTaskKind: async () => ({ judged: "pass", reason: "the runner liked it", text: "667 items, plan stored" }),
+    });
+    expect(forbidden).toMatchObject({ judged: "fail", reason: 'names "plan stored", which it must not' });
+  });
+
+  it("leaves a runner that reports no text to its own verdict", async () => {
+    const task = { id: "t", repo: "slack", kind: "slack", expect: { mustName: ["667"], mustNotName: [] } };
+    const result = await runTask(task, {}, { runTaskKind: async () => ({ judged: "pass", reason: "scored elsewhere" }) });
+    expect(result.judged).toBe("pass");
   });
 
   it("fails an unknown task kind rather than silently passing it", async () => {
@@ -289,6 +323,60 @@ describe("repo tasks", () => {
         expect(Array.isArray(task.expect.mustNotName)).toBe(true);
       }
     }
+  });
+});
+
+describe("the learning job", () => {
+  const golden = (name) => JSON.parse(
+    fs.readFileSync(path.join(path.resolve("."), "evals", "golden", "learning", `${name}.json`), "utf8"),
+  );
+
+  it("has a runner at all, so the two items are not scored 'no runner for job learning'", () => {
+    expect(typeof JOBS.learning?.build).toBe("function");
+    expect(typeof JOBS.learning?.parse).toBe("function");
+  });
+
+  it("builds the nightly prompt out of the item and scores the answer with no judge", async () => {
+    const mod = Object.assign({}, await import("./learning-ground.mjs"), await import("./nightly.mjs"));
+    const one = golden("learning-ground-said-knows");
+    const prompt = JOBS.learning.build(one, layers, mod);
+    expect(prompt).toContain("GROUND SIGNALS");
+    expect(prompt).toContain("I understand the vocab you defined");
+    expect(prompt).toContain("model-of-tom/ground.md");
+    const fresh = JOBS.learning.parse(JSON.stringify(one.input.answer), mod);
+    expect(scoreLearning(one, fresh, mod)).toMatchObject({ judged: "pass" });
+  });
+
+  it("fails the ground item when the regeneration lands nothing", async () => {
+    const mod = Object.assign({}, await import("./learning-ground.mjs"), await import("./nightly.mjs"));
+    expect(scoreLearning(golden("learning-ground-said-knows"), [], mod)).toMatchObject({ judged: "fail" });
+  });
+
+  // The refusal item's whole test is that nothing lands: an answer that
+  // proposes nothing and the item's own recorded bad answer both pass it.
+  it("passes the refusal item on an empty answer and on the answer it carries", async () => {
+    const mod = Object.assign({}, await import("./learning-ground.mjs"), await import("./nightly.mjs"));
+    const one = golden("learning-refusal-no-evidence");
+    expect(scoreLearning(one, [], mod)).toMatchObject({ judged: "pass" });
+    const fresh = JOBS.learning.parse(JSON.stringify(one.input.answer), mod);
+    expect(scoreLearning(one, fresh, mod)).toMatchObject({ judged: "pass" });
+  });
+});
+
+describe("stampAgainstBase", () => {
+  // convex/ttsMerge.ts opens the evals arm on exactly `regressions === 0`, so
+  // a run compared to nothing must not carry a zero.
+  it("stamps regressions null when there is no base", async () => {
+    expect((await stampAgainstBase({ failures: [] }, null)).regressions).toBe(null);
+  });
+
+  it("counts the regressions when there is one", async () => {
+    const failure = { id: "a", partition: "prepare/chores", verdict: "revise", reason: "r", confirmed: true };
+    const head = { goldenHash: "h", scoredIds: ["a"], failures: [failure], tasks: { failures: [] } };
+    const base = { goldenHash: "h", scoredIds: ["a"], failures: [], tasks: { failures: [] } };
+    const stamped = await stampAgainstBase(head, base);
+    expect(stamped.regressions).toBe(1);
+    expect(stamped.failures[0].regression).toBe(true);
   });
 });
 

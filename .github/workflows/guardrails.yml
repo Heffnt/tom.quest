@@ -58,9 +58,12 @@ jobs:
       # RED run is recorded too — a missing row and a red row are different
       # facts, and the gate's deny message says which it found. Recorded once
       # per commit, so re-running until it flakes green changes nothing.
+      # `-f` so a 401 or a 503 from /tts/tests fails THIS step: without it curl
+      # exits 0 on an HTTP error, the row is silently absent, and the gate
+      # denies with "no tests result is recorded" and nothing says why.
       - if: always() && vars.CONVEX_SITE_URL != ''
         run: |
-          curl -sS -X POST "$CONVEX_SITE_URL/tts/tests" \
+          curl -fsS -X POST "$CONVEX_SITE_URL/tts/tests" \
             -H "X-Evals-Key: $EVALS_KEY" \
             -H "Content-Type: application/json" \
             -d "{\"repo\":\"tom.quest\",\"sha\":\"$SHA\",\"ok\":$OK,\"detail\":\"guardrails tests job\",\"url\":\"$RUN_URL\"}"

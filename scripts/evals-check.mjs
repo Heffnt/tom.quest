@@ -68,6 +68,13 @@ export function gate(head, base) {
   if (!head) {
     return { ok: false, reason: "no head run", regressions: [], stillFailing: [], newFailing: [], fixed: [], unconfirmed: [], mismatch: false };
   }
+  // A run the box could not make at all (a sha it could not fetch or check
+  // out) is posted as a row carrying `error`, so the request queue advances.
+  // A row like that scored nothing, and a gate that reads "no failures" off it
+  // would open on a run that never happened.
+  if (typeof head.error === "string" && head.error !== "") {
+    return { ok: false, reason: head.error, regressions: [], stillFailing: [], newFailing: [], fixed: [], unconfirmed: [], mismatch: false };
+  }
   const headFailures = failuresOf(head);
   const baseFailures = failuresOf(base);
   const baseScored = scoredOf(base);
@@ -92,6 +99,15 @@ export function report(head, base, verdict) {
   const setLine = `evals — ${head.repo} ${String(head.sha).slice(0, 7)} vs base ` +
     `${base ? String(base.sha).slice(0, 7) : "none"} (golden set ${head.goldenHash}, ${head.items} items)`;
   const lines = [];
+  if (typeof head.error === "string" && head.error !== "") {
+    return [setLine, `FAILED: the run could not be made — ${head.error}`];
+  }
+  // The unconfirmed count is REPORTED, never gated: gate() routes an
+  // unconfirmed failure out of `regressions` on purpose, and this is the one
+  // place the CI log says how many went that way.
+  const unconfirmedNote = verdict.unconfirmed.length > 0
+    ? ` ${verdict.unconfirmed.length} unconfirmed failure${verdict.unconfirmed.length === 1 ? "" : "s"} reported, not gated.`
+    : "";
   const notes = [
     verdict.regressions.length === 0 ? "0 regressions" : null,
     verdict.stillFailing.length > 0 ? `${verdict.stillFailing.length} still failing` : null,
@@ -115,11 +131,11 @@ export function report(head, base, verdict) {
   for (const failure of verdict.newFailing) lines.push(say("new, failing", failure));
   for (const failure of verdict.unconfirmed) lines.push(say("unconfirmed", failure));
   for (const failure of verdict.fixed) lines.push(`  fixed  ${failure.id} (${failure.partition}, ${failure.verdict})`);
-  lines.push(verdict.ok
+  lines.push((verdict.ok
     ? `PASSED: 0 regressions.`
     : verdict.mismatch
       ? `FAILED: the two runs scored different golden sets.`
-      : `FAILED: ${verdict.regressions.length} regression${verdict.regressions.length === 1 ? "" : "s"}.`);
+      : `FAILED: ${verdict.regressions.length} regression${verdict.regressions.length === 1 ? "" : "s"}.`) + unconfirmedNote);
   return lines;
 }
 
