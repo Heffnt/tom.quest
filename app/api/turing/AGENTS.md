@@ -1,7 +1,6 @@
-# Turing API Route
+# app/api/turing
 
-## Turing Proxy
-
-- Next.js API routes (`app/api/turing/[...path]/route.ts`) read `TURING_API_URL` from env and forward requests through `forwardToTuringApi`, attaching the `X-API-Key` header. The shared key never leaves Vercel.
-- The proxy detects HTML/non-JSON upstream responses and converts them to structured JSON errors.
-- See `turing-api/AGENTS.md` for the cluster API contract and operating constraints.
+- `[...path]/route.ts` forwards to `TURING_API_URL` through `forwardToTuringApi` with the `X-API-Key` header; the key never leaves Vercel.
+- A non-JSON upstream body becomes a JSON error.
+- GET admits `agent` through `requireAdminOrAgent`; every other method and `ws-credentials` call `requireAdmin`.
+- The cluster side is `turing-api/AGENTS.md`.
