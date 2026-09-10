@@ -37,9 +37,9 @@
 
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
+import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { modelOfTomState, modelOfTomText, type ModelOfTomLayerName } from "./ttsSkills";
-import { nyCalendarDayKey } from "./ttsShared";
+import { nyCalendarDayKey, SESSION_REPO_NAMES } from "./ttsShared";
 import {
   assembleContextParts,
   callerRules,
@@ -348,5 +348,62 @@ export const internalContextPrelude = internalQuery({
   handler: async (ctx, args): Promise<string> => {
     if (!CONTEXT_CALLER_NAMES.includes(args.caller)) throw new Error(`unknown context caller ${args.caller}`);
     return joinContext(await assembleContext(ctx, { kind: "none" }, { reachesTom: true, caller: args.caller }));
+  },
+});
+
+// ── The repo layer's publication ─────────────────────────────────────────────
+
+/** A path inside a repo naming an `AGENTS.md`: relative, no traversal, and the
+ * file the repo layer is actually made of. */
+export function isRepoRulesPath(path: unknown): path is string {
+  return (
+    typeof path === "string" &&
+    /^(?:[A-Za-z0-9._-]+\/)*AGENTS\.md$/.test(path) &&
+    !path.split("/").some((segment) => segment === "." || segment === "..")
+  );
+}
+
+/**
+ * One repo's rules, replaced whole. Same shape of refusal as
+ * `internalReplaceModelOfTom`: an empty post leaves the store as it was, a
+ * duplicate path is a bug in the poster, and a blank body is not a rules file.
+ *
+ * PER REPO, not per post: a night that could read tom.quest and not
+ * ComplexMultiTrigger replaces the first repo's rows and leaves the second's
+ * exactly where they were.
+ */
+export const internalReplaceRepoRules = internalMutation({
+  args: {
+    repo: v.string(),
+    commit: v.string(),
+    syncedAt: v.number(),
+    files: v.array(v.object({ path: v.string(), body: v.string(), bytes: v.number() })),
+  },
+  handler: async (ctx, { repo, commit, syncedAt, files }) => {
+    // A repo name nobody declared would create a phantom repo's rules that no
+    // session could ever be opened on — a typo, silently stored.
+    if (!(SESSION_REPO_NAMES as readonly string[]).includes(repo)) throw new Error(`not a session repo: ${repo}`);
+    if (commit.trim() === "") throw new Error("commit is required");
+    if (!Number.isFinite(syncedAt)) throw new Error("syncedAt must be finite");
+    if (files.length === 0) throw new Error("no repo rules posted — store left as it was");
+    const paths = new Set<string>();
+    for (const file of files) {
+      if (!isRepoRulesPath(file.path)) throw new Error(`not a repo rules path: ${file.path}`);
+      if (paths.has(file.path)) throw new Error(`path posted twice: ${file.path}`);
+      if (file.body.trim() === "") throw new Error(`body for ${file.path} must be non-empty`);
+      if (!Number.isSafeInteger(file.bytes) || file.bytes < 0) {
+        throw new Error(`bytes for ${file.path} must be a nonnegative integer`);
+      }
+      paths.add(file.path);
+    }
+    const existing = await ctx.db
+      .query("repoRules")
+      .withIndex("by_repo", (q) => q.eq("repo", repo))
+      .collect();
+    for (const row of existing) await ctx.db.delete(row._id);
+    for (const file of files) {
+      await ctx.db.insert("repoRules", { repo, path: file.path, body: file.body, bytes: file.bytes, commit, syncedAt });
+    }
+    return { repo, files: files.length, deleted: existing.length, commit };
   },
 });

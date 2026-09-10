@@ -93,7 +93,7 @@ import {
   writeArchived,
 } from "./session-archive.mjs";
 import { loadEnv, convexFetch, nyHour, runClaude, extractJsonObject, clip } from "./tts-lib.mjs";
-import { assemblePreludePublication } from "../../scripts/prelude.mjs";
+import { assemblePreludePublication, collectRepoRules } from "../../scripts/prelude.mjs";
 import {
   enclosingHeadings,
   isIsoDay,
@@ -166,7 +166,23 @@ function git(dir, ...args) {
   });
 }
 
-const STEPS = ["snapshot", "learning", "sessions", "push", "post"];
+const STEPS = ["snapshot", "learning", "sessions", "push", "post", "repo-rules"];
+// The repo checkouts whose AGENTS.md files ride into Convex beside the
+// model-of-tom layers (the dynamic-context round). Convex has no filesystem, so
+// the assembler cannot read a checkout at all — a run with no checkout of its
+// own (prepare, triage, the planner) would otherwise not even know these files
+// exist, which is the unknown-unknown the fetchable block is for.
+//
+// The box clones tom.quest to /root (worker/setup.sh runs from there); the
+// laptop's copy is where scripts/laptop-setup.mjs puts it. WikiTom is the vault
+// and carries no AGENTS.md, so it is not listed.
+const REPO_CHECKOUTS = [
+  {
+    repo: "tom.quest",
+    dir: process.env.TOM_QUEST_DIR
+      || (process.platform === "win32" ? "C:/Users/heffn/Desktop/tom.quest" : "/root/tom.quest"),
+  },
+];
 // The four that write the WikiTom checkout. The post runs under the same
 // lock after them (see main), reading what they left.
 const LOCKED_STEPS = ["snapshot", "learning", "sessions", "push"];
@@ -1415,6 +1431,59 @@ export async function postStep(run, deps = {}) {
   return { commit: prelude.commit, pushed: prelude.pushed, files: files.map((f) => f.path) };
 }
 
+// ── 6. the repo rules ────────────────────────────────────────────────────────
+// NOT under the WikiTom lock: this reads a different checkout entirely, and
+// nothing in this job writes it. Each repo's AGENTS.md bodies are read out of
+// its own immutable HEAD and posted whole, replacing that repo's rows and no
+// other repo's — the same replace-all-per-subject semantics the model-of-tom
+// post has, so a repo whose post fails keeps the rules Convex already holds.
+//
+// A missing checkout is a recorded failure, not a thrown one: the box may be
+// rebuilt with WikiTom present and tom.quest not yet cloned, and the morning
+// digest should say so rather than lose the four steps above it.
+export async function repoRulesStep(run, deps = {}) {
+  const { fetch = convexFetch } = deps;
+  const posted = [];
+  for (const { repo, dir } of REPO_CHECKOUTS) {
+    if (!fs.existsSync(path.join(dir, ".git"))) {
+      await recordFailure(
+        run,
+        "repo-rules",
+        new Error(`${dir} is not a git checkout — the ${repo} rules keep whatever Convex holds`),
+        { fetch },
+      );
+      continue;
+    }
+    let collected;
+    try {
+      collected = collectRepoRules({ dir, repo, commit: "HEAD" });
+    } catch (error) {
+      await recordFailure(run, "repo-rules", error, { fetch });
+      continue;
+    }
+    if (collected.rules.length === 0) {
+      await recordFailure(
+        run,
+        "repo-rules",
+        new Error(`${repo} at ${collected.commit.slice(0, 12)} has no AGENTS.md — store left as it was`),
+        { fetch },
+      );
+      continue;
+    }
+    const res = await fetch(run.env, "/tts/repo-rules", {
+      repo,
+      commit: collected.commit,
+      syncedAt: Date.now(),
+      files: collected.rules.map(({ path: filePath, body, bytes }) => ({ path: filePath, body, bytes })),
+    });
+    console.log(
+      `[nightly] repo-rules: ${res.files} file(s) for ${repo} at ${collected.commit.slice(0, 12)} — ${collected.rules.map((r) => r.path).join(", ")}`,
+    );
+    posted.push({ repo, commit: collected.commit, files: collected.rules.map((r) => r.path) });
+  }
+  return { repos: posted };
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 function parseArgs(argv) {
   const force = argv.includes("--force");
@@ -1468,6 +1537,7 @@ async function main() {
     sessions: sessionsStep,
     push: pushStep,
     post: postStep,
+    "repo-rules": repoRulesStep,
   };
   const runStep = async (name) => {
     try {
@@ -1500,9 +1570,13 @@ async function main() {
     });
   } catch (err) {
     // The lock itself was refused — another writer held it past the wait.
-    // Every step is skipped; the summary below says so.
+    // Every WikiTom step is skipped; the summary below says so.
     await recordFailure(run, "lock", err);
   }
+  // OUTSIDE THE LOCK, and outside the try that holds it: this step reads a
+  // different checkout, writes nothing, and a night that lost the WikiTom lock
+  // is exactly a night whose repo rules should still reach Convex.
+  if (only.includes("repo-rules")) await runStep("repo-rules");
   await recordSummary(run, only);
 }
 
