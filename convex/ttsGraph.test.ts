@@ -1885,10 +1885,10 @@ describe("GET /tts/batch-context (planner half)", () => {
         commit: "batch-context-test",
         committedAt: 1,
         pushed: true,
-        operate: "operate layer must not reach the planner",
+        operate: "operate layer reaches the planner",
         write: "write layer reaches the planner",
         know: "know layer reaches the planner",
-        headers: [{ layers: ["write", "know"], header: "published write + know" }],
+        headers: [{ layers: ["operate", "write"], header: "published map + operate + write" }],
       });
       await ctx.db.insert("dtsEvents", {
         at: Date.now(),
@@ -1910,8 +1910,19 @@ describe("GET /tts/batch-context (planner half)", () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.writingStandard).toBe("published write + know\n\nwrite layer reaches the planner\n\nknow layer reaches the planner");
-    expect(body.writingStandard).not.toContain("operate layer");
+    // The door serves the ASSEMBLED CONTEXT now, not two whole layers (the
+    // dynamic-context round): the stable prefix — the map, the operate rules
+    // and the write layer — and then, the planner having no subject of its
+    // own, no expansion at all and the fetchable index. The assembler's exact
+    // output is pinned in convex/ttsContext.test.ts; what this asserts is that
+    // the door serves it under the field name plan-graphs.mjs asks for.
+    const [prefix, index] = body.writingStandard.split("\n\nMODEL-OF-TOM FETCHABLE (");
+    expect(prefix).toBe("published map + operate + write\n\noperate layer reaches the planner\n\nwrite layer reaches the planner");
+    expect(index).toContain("--layers know");
+    // The KNOW layer is what must not reach the planner whole now — it has no
+    // subject of its own, so it gets the index of it instead. The map and the
+    // operate rules do reach it, and that is the change.
+    expect(body.writingStandard).not.toContain("know layer reaches the planner");
     expect(body.vocabulary).toBe(TTS_CLOSED_VOCABULARY);
     expect(body.batches.map((b: Doc<"batches">) => b.statement)).toEqual([
       "sign the lease",
@@ -1935,6 +1946,8 @@ describe("GET /tts/batch-context (planner half)", () => {
       method: "GET", headers: { "X-TTS-Key": "s3cret" },
     });
     expect(response.status).toBe(503);
-    await expect(response.json()).resolves.toEqual({ error: "model-of-tom layer know is not stored" });
+    // The map goes to every run now, so `operate` is the first layer missing
+    // from a publication that stored only `write`.
+    await expect(response.json()).resolves.toEqual({ error: "model-of-tom layer operate is not stored" });
   });
 });

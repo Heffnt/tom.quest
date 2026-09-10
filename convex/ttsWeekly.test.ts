@@ -44,7 +44,7 @@ async function publishSessionPrelude(t: ReturnType<typeof convexTest>) {
     await ctx.db.insert("modelOfTomPublication", {
       key: "current", commit: "weekly-session-test", committedAt: 1, pushed: true,
         operate: "operate layer", write: "write layer", know: "know layer",
-        headers: [{ layers: ["operate", "write", "know"], header: "MODEL-OF-TOM FILES (test)" }],
+        headers: [{ layers: ["operate", "write"], header: "MODEL-OF-TOM FILES (test)" }],
     });
   });
 }
@@ -733,7 +733,7 @@ describe("GET /tts/weekly-input", () => {
       await ctx.db.insert("modelOfTomPublication", {
         key: "current", commit: "weekly-context-test", committedAt: 1, pushed: true,
         operate: "operate layer", write: "write layer", know: "know layer",
-        headers: [{ layers: ["write", "know"], header: "published write + know" }],
+        headers: [{ layers: ["operate", "write"], header: "published map + operate + write" }],
       });
     });
     const res = await get(t, `/tts/weekly-input?until=${until}`);
@@ -743,6 +743,12 @@ describe("GET /tts/weekly-input", () => {
     expect(body.since).toBe(until - WEEK_MS);
     expect(body.readiness).toEqual({ prepared: 0, unprepared: 0 });
     expect(body.integrations.length).toBe(3);
-    expect(body.writingStandard).toBe("published write + know\n\nwrite layer\n\nknow layer");
+    // The door serves the ASSEMBLED CONTEXT now, not two whole layers (the
+    // dynamic-context round): the stable prefix, then — the Friday gather
+    // having no subject of its own — no expansion and the fetchable index. The
+    // assembler's exact output is pinned in convex/ttsContext.test.ts.
+    const [prefix, index] = body.writingStandard.split("\n\nMODEL-OF-TOM FETCHABLE (");
+    expect(prefix).toBe("published map + operate + write\n\noperate layer\n\nwrite layer");
+    expect(index).toContain("--layers know");
   });
 });

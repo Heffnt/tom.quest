@@ -27,6 +27,7 @@ import {
 import { isNarrowListId } from "./ttsShared";
 import { auditVerdictOf } from "./ttsMerge";
 import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
+import { isRepoRulesPath } from "./ttsContext";
 import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES, isExportTable } from "./ttsNightly";
 
 const http = httpRouter();
@@ -343,10 +344,18 @@ const ttsCapture = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/capture", method: "POST", handler: ttsCapture });
 
-// GET /tts/capture-context supplies the published write + know standard and
-// declined integrations before a poller captures anything. The worker cannot
-// import TypeScript or read the WikiTom checkout, so it receives the exact
-// stored prelude instead.
+// GET /tts/capture-context supplies the model-of-tom context a capture run
+// works from, and the declined integrations, before a poller captures anything.
+// The worker cannot import TypeScript or read the WikiTom checkout, so it
+// receives the assembled text instead.
+//
+// ITS BYTES SHRANK, ITS MEANING DID NOT (the dynamic-context round): this was
+// the write + know layers whole, 29.6 KB with the whole know layer inside it.
+// It is now the stable prefix, nothing expanded (a poller has no subject of its
+// own — rule 12), and the FETCHABLE index, which names every page, section and
+// search question it did not get and the exact command that gets it. Rule 7
+// gives this caller `priorities.md § What becomes a todo`, because capture is
+// the one thing it does on his behalf.
 
 const ttsCaptureContext = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
@@ -355,7 +364,7 @@ const ttsCaptureContext = httpAction(async (ctx, request) => {
   let declinedIntegrations;
   try {
     [writingStandard, declinedIntegrations] = await Promise.all([
-      ctx.runQuery(internal.ttsSkills.internalModelOfTomPrelude, { names: ["write", "know"] }),
+      ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "capture-context" }),
       ctx.runQuery(internal.ttsIntegrations.internalDeclinedIntegrations, {}),
     ]);
   } catch (error) {
@@ -1019,7 +1028,7 @@ const ttsTimeNotes = httpAction(async (ctx, request) => {
   try {
     [notes, writingStandard] = await Promise.all([
       ctx.runQuery(internal.tts.internalPendingTimeNotes, {}),
-      ctx.runQuery(internal.ttsSkills.internalModelOfTomPrelude, { names: ["write", "know"] }),
+      ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "time-notes" }),
     ]);
   } catch (error) {
     return modelOfTomErrorResponse(error);
@@ -1583,10 +1592,13 @@ http.route({ path: "/tts/merge", method: "POST", handler: ttsMerge });
 // git checkout of WikiTom. Serving it here is what keeps the text the planner
 // pastes into its prompt the same text every TypeScript caller reads.
 //
-// ITS SOURCE is the model-of-tom prelude (convex/ttsSkills.ts
-// modelOfTomPrelude), selecting the published write + know layers. The field
-// name and type do not change:
-// worker/jobs/plan-graphs.mjs treats a missing `writingStandard` as fatal.
+// ITS SOURCE is the context assembler (convex/ttsContext.ts assembleContext),
+// which since the dynamic-context round sends the STABLE PREFIX plus a
+// FETCHABLE index rather than the write and know layers whole — the planner has
+// no subject of its own, so nothing expands (rule 12) and every page it did not
+// get is one line naming the command that gets it. THE FIELD NAME AND TYPE DO
+// NOT CHANGE: worker/jobs/plan-graphs.mjs treats a missing `writingStandard` as
+// fatal.
 const ttsBatchContext = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -1600,7 +1612,7 @@ const ttsBatchContext = httpAction(async (ctx, request) => {
       ctx.runQuery(internal.ttsRulings.internalRecentRulings, { limit: 200 }),
       ctx.runQuery(internal.tts.internalListBatches, {}),
       ctx.runQuery(internal.tts.internalRecentPlanRepairs, { limit: 20 }),
-      ctx.runQuery(internal.ttsSkills.internalModelOfTomPrelude, { names: ["write", "know"] }),
+      ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "batch-context" }),
     ]);
   } catch (error) {
     return modelOfTomErrorResponse(error);
@@ -1735,6 +1747,73 @@ const ttsModelOfTom = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/model-of-tom", method: "POST", handler: ttsModelOfTom });
 
+// POST /tts/repo-rules — one repo's AGENTS.md bodies, replaced whole.
+//
+// SAME REASON AS THE DOOR ABOVE: the context assembler pre-expands the repo
+// rules for the directories a todo's brief names (convex/ttsContext.ts rule 9)
+// and it runs inside Convex, which has no filesystem. The nightly job reads
+// each repo's own immutable HEAD and posts the bodies here; a run with no
+// checkout at all still learns from the fetchable block that these files exist.
+//
+// Per repo, not per post: the mutation replaces this repo's rows and no other
+// repo's, so a night that could read one checkout and not another leaves the
+// second exactly as it was.
+const REPO_RULES_FILES_MAX = 24;
+
+const ttsRepoRules = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.repo !== "string" || b.repo.trim() === "") {
+    return jsonResponse(400, { error: "repo (a session repo name) required" });
+  }
+  if (typeof b.commit !== "string" || !/^[0-9a-f]{40}$/.test(b.commit)) {
+    return jsonResponse(400, { error: "commit (40 hex characters) required" });
+  }
+  if (typeof b.syncedAt !== "number" || !Number.isFinite(b.syncedAt)) {
+    return jsonResponse(400, { error: "syncedAt (epoch ms) required" });
+  }
+  if (!Array.isArray(b.files) || b.files.length === 0) {
+    return jsonResponse(400, { error: "files (non-empty array) required" });
+  }
+  if (b.files.length > REPO_RULES_FILES_MAX) {
+    return jsonResponse(400, { error: `at most ${REPO_RULES_FILES_MAX} files per post — got ${b.files.length}` });
+  }
+  const files: { path: string; body: string; bytes: number }[] = [];
+  for (let i = 0; i < b.files.length; i++) {
+    const f = b.files[i] as Record<string, unknown> | null;
+    if (typeof f !== "object" || f === null || !isRepoRulesPath(f.path)) {
+      return jsonResponse(400, { error: `files[${i}].path must be an AGENTS.md path inside the repo` });
+    }
+    if (typeof f.body !== "string" || f.body.trim() === "") {
+      return jsonResponse(400, { error: `files[${i}].body (non-empty string) required` });
+    }
+    if (typeof f.bytes !== "number" || !Number.isSafeInteger(f.bytes) || f.bytes < 0) {
+      return jsonResponse(400, { error: `files[${i}].bytes (nonnegative integer) required` });
+    }
+    files.push({ path: f.path, body: f.body, bytes: f.bytes });
+  }
+  try {
+    const result = await ctx.runMutation(internal.ttsContext.internalReplaceRepoRules, {
+      repo: b.repo,
+      commit: b.commit,
+      syncedAt: b.syncedAt,
+      files,
+    });
+    return jsonResponse(200, { ok: true, ...result });
+  } catch (e) {
+    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+http.route({ path: "/tts/repo-rules", method: "POST", handler: ttsRepoRules });
+
 // ── The nightly job's three doors (convex/ttsNightly.ts) ─────────────────────
 
 // GET /tts/export?table=<name>&boundary=<epoch ms>&cursor=<opaque>&numItems=<n>
@@ -1823,7 +1902,7 @@ const ttsWeeklyInput = httpAction(async (ctx, request) => {
   try {
     [facts, writingStandard] = await Promise.all([
       ctx.runQuery(internal.ttsWeekly.internalWeeklyInput, { until }),
-      ctx.runQuery(internal.ttsSkills.internalModelOfTomPrelude, { names: ["write", "know"] }),
+      ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "weekly-input" }),
     ]);
   } catch (error) {
     return modelOfTomErrorResponse(error);

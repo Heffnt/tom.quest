@@ -42,9 +42,12 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // declared here AND in app/sessions/lib.ts) and
 // the graph rules the frontier walk below reads (buildDoneSet / isReady) — the
 // page, the planner, and the scheduler must all mean the same thing by
-// "ready". The caller-selected model-of-tom layers each opener carries come
-// from ttsSkills.modelOfTomPrelude, read once per opener in insertSession below.
-import { modelOfTomPrelude, withoutModelOfTomPrelude } from "./ttsSkills";
+// "ready". The model-of-tom context each opener carries is assembled for that
+// opener's own subject by ttsContext.assembleContext, called once per opener in
+// insertSession below; ttsSkills keeps only the header parser it strips with.
+import { withoutModelOfTomPrelude } from "./ttsSkills";
+import { assembleContext, type ContextSubject } from "./ttsContext";
+import { briefForPrompt } from "../worker/jobs/context-relevance.mjs";
 import {
   AUTONOMOUS_SESSION_CONTRACT,
   CODEX_FALLBACK_MODEL,
@@ -616,43 +619,81 @@ async function insertSession(
     codeSessionLines = codeSessionRulingLines(subjects);
     await markCodeSessionRulingsApplied(ctx, consumed, sessionId);
   }
-  // The opener carries its caller-selected model-of-tom layers (the lifeos
-  // update, phase 4): the browser-built prompts, the worker missions, the CLI
-  // pen, a fork — one home, here, rather than each builder pasting its own copy. The
-  // prelude's first line names the WikiTom commit and lists the paths, and
-  // this row is the transcript's first row, so the transcript records what
-  // the session began with. Publication fails closed: if no complete posted
-  // model-of-tom layer set exists, modelOfTomPrelude throws and this mutation
-  // publishes neither the session nor its opener (convex/ttsSkills.ts).
+  // The opener carries the model-of-tom context ASSEMBLED FOR ITS OWN SUBJECT
+  // (the dynamic-context round, Tom's ruling 2026-09-09), rather than a
+  // caller-selected set of whole layers: the browser-built prompts, the worker
+  // missions, the CLI pen, a fork — one home, here, rather than each builder
+  // pasting its own copy.
   //
-  // AND ONLY HERE: a seed whose prompt already begins with the prelude's
-  // header — a live opener copied into the Create session box, a builder that
-  // pasted its own copy — has that copy TAKEN OFF and the live one put there
-  // instead (withoutModelOfTomPrelude), so the session opens and the
-  // transcript's first line names one commit: the one this deployment holds.
-  // Two headers naming two commits is what nothing reading the row could make
-  // sense of, and one paste is a normal thing for Tom to do.
+  // Four parts in prompt order, and the order is the point:
+  //   prefix     header line 1 + the map + the operate rules + the write layer.
+  //              Identical for every run at one WikiTom commit — the cache
+  //              boundary, and the transcript's first line, so the row records
+  //              what the session began with.
+  //   expanded   header line 2 + only what this session's subject picks out of
+  //              the know layer. "" when nothing did.
+  //   body       the mission the builder wrote, plus the code-session lines and
+  //              the outcome pen. The task layer the map promises is last.
+  //   fetchable  header line 3 + one line per thing NOT in the prompt, each
+  //              naming the command or path that gets it. An index, not
+  //              content, and the most volatile part, so it sits after the task.
   //
-  // A prelude read at some OTHER commit is still refused, because there is
+  // The subject is already in hand: the seed's todo, else its batch, else its
+  // first repo, else nothing. `reachesTom` is TRUE for every opener — the
+  // outcome, the digest and the transcript all reach him — which is what puts
+  // the write layer in the prefix.
+  //
+  // Publication fails closed: with no complete posted layer set, assembleContext
+  // throws and this mutation publishes neither the session nor its opener.
+  //
+  // AND ONLY HERE: a seed whose prompt already begins with the header — a live
+  // opener copied into the Create session box, a builder that pasted its own
+  // copy — has that copy TAKEN OFF and the live one put there instead
+  // (withoutModelOfTomPrelude), so the session opens and the transcript's first
+  // line names one commit: the one this deployment holds. Two headers naming
+  // two commits is what nothing reading the row could make sense of, and one
+  // paste is a normal thing for Tom to do. WHAT IS STRIPPED IS THE STABLE
+  // PREFIX, which is all a paste can carry that is not rebuilt anyway: the
+  // expanded and fetchable parts come from the live record either way.
+  //
+  // A prefix read at some OTHER commit is still refused, because there is
   // nothing in the text that says where it stops and the prompt starts (see
   // withoutModelOfTomPrelude). The refusal writes nothing: a Convex mutation
   // is one transaction, so the row inserted above and the ruling marks after
   // it go back with the throw — pinned by the test, which finds no session and
   // no inbound row.
   const prompt = seed.prompt(sessionId, repos);
-  const prelude = await modelOfTomPrelude(ctx);
-  const body = withoutModelOfTomPrelude(prompt, prelude);
+  const subject: ContextSubject =
+    seed.todoId !== undefined
+      ? { kind: "todo", todoId: seed.todoId }
+      : seed.batchId !== undefined
+        ? { kind: "batch", batchId: seed.batchId }
+        : repos.length > 0 && repos[0] !== NO_REPO
+          ? { kind: "repo", repo: repos[0] }
+          : { kind: "none" };
+  const context = await assembleContext(ctx, subject, { reachesTom: true, caller: "opener", now });
+  const body = withoutModelOfTomPrelude(prompt, context.prefix);
   if (body === null) {
     throw new Error(
       `the prompt begins with a model-of-tom prelude ("${MODEL_OF_TOM_HEADER}") read at another commit; the opener adds the live one, and where a prelude from another commit stops and the prompt starts is not written down anywhere in it`,
     );
   }
   const text =
-    prelude +
+    context.prefix +
+    (context.expanded === "" ? "" : "\n\n" + context.expanded) +
     "\n\n" +
     body +
     (codeSessionLines.length > 0 ? "\n\n" + codeSessionLines.join("\n") : "") +
-    (seed.outcomePen === false ? "" : outcomePenFooter(sessionId, repos));
+    (seed.outcomePen === false ? "" : outcomePenFooter(sessionId, repos)) +
+    "\n\n" +
+    context.fetchable;
+  // What this opener was given, for the delivery check to read beside what the
+  // session then did (schema: contextExpanded / contextBytes). Written on the
+  // row inserted above, in the same transaction as the opener it describes.
+  await ctx.db.patch(sessionId, {
+    contextExpanded: context.manifest,
+    contextBytes: context.bytes,
+  });
   await ctx.db.insert("claudeInbound", {
     sessionId,
     kind: "user-turn",
@@ -2605,7 +2646,9 @@ function buildAutoMissionPrompt(
     promptFact("work description", todo.workDescription),
     promptFact("entry action", todo.entryAction),
     promptFact("body", todo.body),
-    promptFact("brief", todo.brief),
+    // Cut at the same cap the interactive twin uses, and named in the
+    // fetchable block when it was cut (worker/jobs/context-relevance.mjs).
+    promptFact("brief", todo.brief === undefined ? undefined : briefForPrompt(todo.brief).text),
   ];
   const lines: (string | null)[] = [
     AUTONOMOUS_SESSION_CONTRACT,

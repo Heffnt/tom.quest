@@ -202,6 +202,11 @@ describe("model-of-tom publication", () => {
 });
 
 describe("model-of-tom caller contract", () => {
+  // THE KNOW LAYER IS NO LONGER A UNIT ANY CALLER RECEIVES (the dynamic-context
+  // round): every selection below is the STABLE PREFIX — the map, the operate
+  // rules, and the write layer when the run's output reaches Tom — and what the
+  // run needs out of the know layer is expanded for its own subject, with the
+  // rest one line each in the fetchable block (convex/ttsContext.ts).
   it("gives every caller exactly its selected layers", async () => {
     const callers: {
       name: string;
@@ -215,22 +220,22 @@ describe("model-of-tom caller contract", () => {
       },
       {
         name: "worker/jobs/plan-graphs.mjs",
-        layers: ["write", "know"],
+        layers: ["operate", "write"],
         prompt: (prelude) => preparePrompt({ statement: "Plan the contract", source: "test", createdAt: 0 }, null, "2026-09-09", prelude),
       },
       {
         name: "worker/jobs/poll-gmail.mjs",
-        layers: ["write", "know"],
+        layers: ["operate", "write"],
         prompt: (prelude) => gmailTriagePrompt(prelude, [{ id: "mail-1", from: "test@example.com", subject: "Contract", snippet: "body" }]),
       },
       {
         name: "worker/jobs/poll-canvas.mjs",
-        layers: ["write", "know"],
+        layers: ["operate", "write"],
         prompt: (prelude) => canvasTriagePrompt(prelude, [{ id: "canvas-1", courseCode: "CS", title: "Contract", body: "body" }]),
       },
       {
         name: "worker/jobs/apply-time-notes.mjs",
-        layers: ["write", "know"],
+        layers: ["operate", "write"],
         prompt: (prelude) => timeNotePrompt(
           { text: "Move it to Friday", context: { kind: "todo", todo: null } },
           { nyCalendarDay: "2026-09-09", now: Date.UTC(2026, 8, 9, 12), timezone: "America/New_York" },
@@ -239,12 +244,12 @@ describe("model-of-tom caller contract", () => {
       },
       {
         name: "worker/jobs/weekly.mjs",
-        layers: ["write", "know"],
+        layers: ["operate", "write"],
         prompt: (prelude) => buildAgendaPrompt({ writingStandard: prelude, factLines: [], priorLines: [] }),
       },
       {
         name: "insertSession",
-        layers: ["operate", "write", "know"],
+        layers: ["operate", "write"],
         prompt: () => insertSessionPrompt(),
       },
       {
@@ -300,7 +305,7 @@ describe("POST /tts/model-of-tom", () => {
 describe("worker context routes", () => {
   afterEach(() => vi.unstubAllEnvs());
 
-  it("returns the exact missing write-layer message instead of a framework error", async () => {
+  it("returns the exact missing-layer message instead of a framework error", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
     for (const [path, method] of [
@@ -311,7 +316,9 @@ describe("worker context routes", () => {
     ] as const) {
       const response = await t.fetch(path, { method, headers: { "X-TTS-Key": "s3cret" } });
       expect(response.status).toBe(503);
-      await expect(response.json()).resolves.toEqual({ error: "model-of-tom layer write is not stored" });
+      // The map goes to every run now, so `operate` is the first layer the
+      // assembler misses when nothing is published.
+      await expect(response.json()).resolves.toEqual({ error: "model-of-tom layer operate is not stored" });
     }
   });
 });

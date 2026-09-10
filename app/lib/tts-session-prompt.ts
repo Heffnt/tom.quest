@@ -8,6 +8,7 @@
 // tsconfig.json) knows no path alias — the same reason convex/brews.ts reaches
 // app/perfume by a relative path.
 import type { Doc, Id } from "../../convex/_generated/dataModel";
+import { briefForPrompt } from "../../worker/jobs/context-relevance.mjs";
 
 // The FRAMING says what this session is and how wide it is; it is only true
 // here, so it lives only here. insertSession prepends the model-of-tom files
@@ -16,6 +17,17 @@ const FRAMING = `You are working inside TTS (Tom's Delegated Todo System), in an
 
 function fact(label: string, value: string | undefined): string | null {
   return value && value.trim() !== "" ? `${label}: ${value}` : null;
+}
+
+/**
+ * The brief as the prompt carries it: whole, or cut at the last heading before
+ * SUPPLEMENTAL_CAPS.brief with a line saying where the rest is. One home for
+ * the cut (worker/jobs/context-relevance.mjs), which is also where the
+ * fetchable block writes the matching line — so the text that was cut and the
+ * line saying so cannot disagree.
+ */
+function briefFact(brief: string | undefined): string | null {
+  return fact("brief", brief === undefined ? undefined : briefForPrompt(brief).text);
 }
 
 // How a session persists what Tom says (one home for the instruction; every
@@ -259,7 +271,7 @@ export function buildTodoSessionPrompt(
     fact("source", todo.source),
     fact("provenance", todo.provenance),
     fact("body", todo.body),
-    fact("brief", todo.brief),
+    briefFact(todo.brief),
     "",
     ...rulingLines(ruling),
   ].filter((l): l is string => l !== null);

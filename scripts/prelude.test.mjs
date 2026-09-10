@@ -3,7 +3,17 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { assemblePrelude, assemblePreludePublication, PRELUDE_LAYERS } from "./prelude.mjs";
+import { assemblePrelude, assemblePreludePublication, collectRepoRules, PRELUDE_LAYERS } from "./prelude.mjs";
+import { briefForPrompt, EXPAND_BUDGET, SUPPLEMENTAL_CAPS } from "../worker/jobs/context-relevance.mjs";
+import {
+  CONTEXT_PAGES,
+  CONTEXT_REPO_RULES,
+  EXPECTED,
+  IDS,
+  OVERSIZE_PAGE,
+  contextRecord,
+  expectedPrefix,
+} from "./context-fixture.mjs";
 
 const SCRIPT = path.resolve("scripts/prelude.mjs");
 const IDENTITY = ["-c", "user.name=test", "-c", "user.email=test@example.com"];
@@ -200,5 +210,212 @@ describe("prelude", () => {
       { path: "model-of-tom/writing.md", bytes: Buffer.byteLength("# Writing\n\nBe plain.\n") },
       { path: "model-of-tom/ground.md", bytes: Buffer.byteLength("# Ground\n\nStart here.\n") },
     ]);
+  });
+});
+
+// ── --for: one run's own context ─────────────────────────────────────────────
+// Every assertion below is on THE EXACT ASSEMBLY, and every expected string
+// comes from scripts/context-fixture.mjs, which convex/ttsContext.test.ts
+// imports too. The two implementations of the composition cannot drift the way
+// the prelude and its callers could before.
+
+/** The fixture WikiTom: the same pages the Convex test seeds, in a git dir. */
+function contextFixture({ oversize = false } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prelude-for-"));
+  execFileSync("git", ["init", "-q", "-b", "main", dir]);
+  for (const [relative, body] of Object.entries(CONTEXT_PAGES)) write(dir, relative, body);
+  if (oversize) write(dir, "model-of-tom/areas/oversize.md", OVERSIZE_PAGE);
+  git(dir, "add", "-A");
+  git(dir, "commit", "-q", "-m", "context fixture");
+  return dir;
+}
+
+function recordFile(dir, overrides = {}) {
+  const file = path.join(dir, "record.json");
+  fs.writeFileSync(file, JSON.stringify({ ...contextRecord(), repoRules: CONTEXT_REPO_RULES, ...overrides }));
+  return file;
+}
+
+function assembleFor(dir, subject, caller = "opener") {
+  return assemblePrelude({
+    wikitom: dir,
+    for: subject,
+    caller,
+    record: { ...contextRecord(), repoRules: CONTEXT_REPO_RULES },
+  });
+}
+
+describe("prelude --for", () => {
+  it("gives the laptop hook the map, the operate rules, the write layer and the whole index", () => {
+    const dir = contextFixture();
+    const prelude = assembleFor(dir, "laptop", "laptop");
+    expect(prelude.prefix).toBe(expectedPrefix(prelude.commit));
+    expect(prelude.expanded).toBe(EXPECTED.laptop.expanded);
+    expect(prelude.fetchable).toBe(EXPECTED.laptop.fetchable);
+    expect(prelude.text).toBe(`${prelude.prefix}\n\n${EXPECTED.laptop.fetchable}`);
+    // The whole point: no know layer at all, and the know layer's own line
+    // saying how to get it.
+    expect(prelude.text).not.toContain("── model-of-tom/intent.md ──");
+    expect(prelude.text).toContain("--layers know");
+  });
+
+  it("expands one area by name and leaves the other seven in the index", () => {
+    const dir = contextFixture();
+    const prelude = assembleFor(dir, "area:climbing");
+    expect(prelude.expanded).toBe(EXPECTED.areaClimbing.expanded);
+    expect(prelude.fetchable).toBe(EXPECTED.areaClimbing.fetchable);
+  });
+
+  it("expands a dated todo's area, its intent section, the corrections, and its own weekday", () => {
+    const dir = contextFixture();
+    const prelude = assembleFor(dir, `todo:${IDS.climb}`);
+    expect(prelude.expanded).toBe(EXPECTED.todoClimbing.expanded);
+    expect(prelude.fetchable).toBe(EXPECTED.todoClimbing.fetchable);
+    expect(prelude.manifest).toEqual(EXPECTED.todoClimbing.manifest);
+    // The Monday bullets and NO other day's.
+    expect(prelude.expanded).not.toContain("Tuesday");
+    expect(prelude.expanded).not.toContain("Wednesday");
+  });
+
+  it("expands no area for a category no page claims, says so, and exits 0", () => {
+    const dir = contextFixture();
+    const prelude = assembleFor(dir, `todo:${IDS.nosuch}`);
+    expect(prelude.expanded).toBe(EXPECTED.todoNoMatch.expanded);
+    expect(prelude.fetchable).toBe(EXPECTED.todoNoMatch.fetchable);
+    const run = spawnSync(
+      process.execPath,
+      [SCRIPT, "--wikitom", dir, "--for", `todo:${IDS.nosuch}`, "--caller", "opener", "--record", recordFile(dir)],
+      { encoding: "utf8" },
+    );
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain('nothing matched category "nosuch"');
+  });
+
+  it("names a brief too long to ride the prompt whole, and where the rest is", () => {
+    const dir = contextFixture();
+    const prelude = assembleFor(dir, `todo:${IDS.nosuch}`);
+    expect(prelude.fetchable).toContain("- this todo's full brief, truncated above (9.2K) — tom.quest/tts, or the record");
+    // The prompt builders cut it at the same cap, through the same function.
+    const { brief } = contextRecord().todos.find((todo) => todo.id === IDS.nosuch);
+    const carried = briefForPrompt(brief);
+    expect(carried.truncated).toBe(true);
+    expect(Buffer.byteLength(carried.text)).toBeLessThanOrEqual(SUPPLEMENTAL_CAPS.brief);
+    expect(carried.text.endsWith("… (fetch the rest: tom.quest/tts, or the record)")).toBe(true);
+    // Cut at a heading, not mid-line: what is left is a brief that reads.
+    expect(carried.text.startsWith("# The brief")).toBe(true);
+  });
+
+  it("expands the repo rules the brief's paths name, root first then deepest", () => {
+    const dir = contextFixture();
+    const prelude = assembleFor(dir, `todo:${IDS.paths}`);
+    expect(prelude.expanded).toBe(EXPECTED.todoPaths.expanded);
+    expect(prelude.fetchable).toBe(EXPECTED.todoPaths.fetchable);
+  });
+
+  it("expands a batch's areas by todo count then name, and indexes the third", () => {
+    const dir = contextFixture();
+    const prelude = assembleFor(dir, `batch:${IDS.memberBatch}`);
+    expect(prelude.expanded).toBe(EXPECTED.batchMembers.expanded);
+    expect(prelude.fetchable).toBe(EXPECTED.batchMembers.fetchable);
+  });
+
+  it("shrinks an oversized area in the documented order, and puts every dropped item in the index", () => {
+    const dir = contextFixture({ oversize: true });
+    const prelude = assembleFor(dir, `todo:${IDS.oversize}`);
+    expect(prelude.shrink.expand).toEqual(EXPECTED.oversize.shrink);
+    expect(prelude.manifest).toEqual(EXPECTED.oversize.manifest);
+    expect(prelude.bytes.expandedBody).toBeLessThanOrEqual(EXPAND_BUDGET);
+    // The page whose History went, the outcomes that went, and the rulings
+    // that went are each one line away.
+    expect(prelude.fetchable).toContain(EXPECTED.oversize.fetchableLine);
+    expect(prelude.fetchable).toContain("tts-search sessions [--repo NAME]");
+    expect(prelude.fetchable).toContain('tts-search rulings "<query>"');
+  });
+
+  it("assembles byte-identically twice at one commit", () => {
+    const dir = contextFixture();
+    const first = assembleFor(dir, `todo:${IDS.paths}`);
+    const second = assembleFor(dir, `todo:${IDS.paths}`);
+    expect(second.text).toBe(first.text);
+    expect(Buffer.byteLength(second.text)).toBe(Buffer.byteLength(first.text));
+  });
+
+  it("expands a repo's area and its root rules, with nothing todo-shaped", () => {
+    const dir = contextFixture();
+    const prelude = assembleFor(dir, "repo:tom.quest");
+    expect(prelude.expanded).toBe(EXPECTED.repoTomQuest.expanded);
+    expect(prelude.fetchable).toBe(EXPECTED.repoTomQuest.fetchable);
+    expect(prelude.expanded).not.toContain("his rulings on this subject");
+  });
+
+  it("refuses a todo or batch subject with no record, and never guesses one", () => {
+    const dir = contextFixture();
+    const noRecord = spawnSync(process.execPath, [SCRIPT, "--wikitom", dir, "--for", `todo:${IDS.climb}`], { encoding: "utf8" });
+    expect(noRecord.status).toBe(2);
+    expect(noRecord.stderr).toContain(`--for todo:${IDS.climb} needs --record`);
+    const noBatchRecord = spawnSync(process.execPath, [SCRIPT, "--wikitom", dir, "--for", "batch:whatever"], { encoding: "utf8" });
+    expect(noBatchRecord.status).toBe(2);
+    expect(noBatchRecord.stderr).toContain("needs --record");
+    // A subject that names nothing is a hard error, not a silent empty
+    // expansion: a run that thinks it saw the relevant area and saw nothing is
+    // worse than a run that stops.
+    const noArea = spawnSync(process.execPath, [SCRIPT, "--wikitom", dir, "--for", "area:nosuch"], { encoding: "utf8" });
+    expect(noArea.status).toBe(2);
+    expect(noArea.stderr).toContain("no area page named nosuch");
+    const noTodo = spawnSync(
+      process.execPath,
+      [SCRIPT, "--wikitom", dir, "--for", "todo:absent", "--record", recordFile(dir)],
+      { encoding: "utf8" },
+    );
+    expect(noTodo.status).toBe(2);
+    expect(noTodo.stderr).toContain("todo absent is not in the record");
+  });
+
+  it("says on header line 2 when an area matched with no categories: frontmatter", () => {
+    const dir = contextFixture();
+    const prelude = assembleFor(dir, "area:money");
+    expect(prelude.expanded).toBe(EXPECTED.areaMoneyFallback.expanded);
+  });
+
+  it("refuses --for beside --layers, and --record without --for", () => {
+    const dir = contextFixture();
+    const both = spawnSync(
+      process.execPath,
+      [SCRIPT, "--wikitom", dir, "--for", "laptop", "--layers", "write"],
+      { encoding: "utf8" },
+    );
+    expect(both.status).toBe(2);
+    expect(both.stderr).toContain("mutually exclusive");
+    const orphan = spawnSync(
+      process.execPath,
+      [SCRIPT, "--wikitom", dir, "--layers", "write", "--record", recordFile(dir)],
+      { encoding: "utf8" },
+    );
+    expect(orphan.status).toBe(2);
+    expect(orphan.stderr).toContain("--record needs --for");
+  });
+});
+
+describe("collectRepoRules", () => {
+  it("reads every AGENTS.md out of one immutable commit, sorted, with its bytes", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "repo-rules-"));
+    execFileSync("git", ["init", "-q", "-b", "main", dir]);
+    for (const rule of CONTEXT_REPO_RULES) write(dir, rule.path, rule.body);
+    write(dir, "convex/schema.ts", "not a rules file\n");
+    write(dir, "docs/AGENTS.md", "   \n");
+    git(dir, "add", "-A");
+    git(dir, "commit", "-q", "-m", "rules");
+    const collected = collectRepoRules({ dir, repo: "tom.quest" });
+    expect(collected.commit).toBe(git(dir, "rev-parse", "HEAD").trim());
+    // Sorted, blank ones dropped, and nothing that is not an AGENTS.md.
+    expect(collected.rules.map((rule) => rule.path)).toEqual([
+      "AGENTS.md", "app/AGENTS.md", "convex/AGENTS.md", "worker/AGENTS.md",
+    ]);
+    expect(collected.rules[0]).toEqual({
+      repo: "tom.quest",
+      path: "AGENTS.md",
+      body: CONTEXT_REPO_RULES[0].body,
+      bytes: Buffer.byteLength(CONTEXT_REPO_RULES[0].body),
+    });
   });
 });
