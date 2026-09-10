@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // write-slack.mjs — THE MORNING MESSAGE IS WRITTEN, NOT FILLED IN.
 //
 // Tom, 2026-09-09: "Each morning message is written by a Fable agent, not
@@ -26,7 +25,11 @@
 //   node /opt/tts/write-slack.mjs
 //   node /opt/tts/write-slack.mjs --dry-run     # write it, print it, send nothing
 //
-// Plain Node ESM, zero npm dependencies (tts-lib.mjs's rule).
+// Plain Node ESM, zero npm dependencies (tts-lib.mjs's rule). NO SHEBANG LINE,
+// for nightly.mjs's reason: this file reaches scripts/prelude.mjs by a dynamic
+// import, and the test bundler rewrites such a call by prepending an import to
+// the file — which lands in front of a shebang and fails to parse. The cron
+// line names the interpreter, so nothing needs one.
 
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
