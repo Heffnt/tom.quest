@@ -223,6 +223,9 @@ describe("prepareLifeTodos", () => {
     expect(text).toContain("NEVER infer, estimate, or invent a date");
     expect(text).toContain('"groundUpExplanation"');
     expect(text).not.toContain('the self-contained layer behind the "more"');
+    expect(text.indexOf('"renew the visa"')).toBeGreaterThan(
+      text.indexOf(' "dueDate": null, "dateKind": null}'),
+    );
   });
 });
 
@@ -246,6 +249,9 @@ describe("graphPrompt", () => {
     expect(text.startsWith("WRITE STANDARD\n\nVOCABULARY")).toBe(true);
     expect(text.indexOf('"groundUpExplanation": "<explanation>"')).toBeLessThan(
       text.indexOf('"batch-1"'),
+    );
+    expect(text.indexOf('"batch-1"')).toBeGreaterThan(
+      text.indexOf('never output its id and never archive it.'),
     );
     expect(text).not.toContain("<!DOCTYPE html>");
   });
@@ -412,5 +418,8 @@ describe("briefCodeTodos", () => {
     expect(text.startsWith(WRITING_GUIDANCE)).toBe(true);
     expect(text).toContain('"recommendation": "approve|revise|session|archive"');
     expect(text).not.toContain("stale-replan");
+    expect(text.indexOf("- id: x")).toBeGreaterThan(
+      text.indexOf(' "execClass": "needs-turing|box", "evidence": "..." (optional)}'),
+    );
   });
 });

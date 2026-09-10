@@ -2540,6 +2540,17 @@ function buildAutoMissionPrompt(
   sessionId: Id<"claudeSessions">,
   repos: string[],
 ): string {
+  // Facts block — same labels and order as the interactive twin's
+  // buildTodoSessionPrompt (category is autonomous-only: it scopes what a
+  // block-lane session may touch).
+  const itemContext = [
+    `The item ("${todo.statement}"):`,
+    promptFact("category", todo.category),
+    promptFact("work description", todo.workDescription),
+    promptFact("entry action", todo.entryAction),
+    promptFact("body", todo.body),
+    promptFact("brief", todo.brief),
+  ];
   const lines: (string | null)[] = [
     AUTONOMOUS_SESSION_CONTRACT,
     "",
@@ -2550,15 +2561,6 @@ function buildAutoMissionPrompt(
     // concrete to rule on.
     `Tom decisions: a decision of Tom's does NOT block you. Implement your best-judgment option and name the alternatives you passed over in the write-up; the decision then surfaces where the work persists — the pull request, or the ruling on this item. Leave for Tom only what ONLY he can do: rulings, merges, and real-world actions.`,
     "",
-    // Facts block — same labels and order as the interactive twin's
-    // buildTodoSessionPrompt (category is autonomous-only: it scopes what a
-    // block-lane session may touch).
-    `The item ("${todo.statement}"):`,
-    promptFact("category", todo.category),
-    promptFact("work description", todo.workDescription),
-    promptFact("entry action", todo.entryAction),
-    promptFact("body", todo.body),
-    promptFact("brief", todo.brief),
   ];
   lines.push(
     "",
@@ -2606,6 +2608,8 @@ function buildAutoMissionPrompt(
     BOX_TOOLS_PARAGRAPH,
     "",
     "Ending: record the outcome via the /tts/session-outcome command, then simply stop responding — the daemon ends the session after your final turn.",
+    "",
+    ...itemContext,
   );
   return lines.filter((l): l is string => l !== null).join("\n");
 }
@@ -2661,13 +2665,11 @@ function buildWorkerPrompt(args: {
     mustNotBreak = [],
   } = args;
   const isGoal = todo.kind === "goal";
-  const lines: (string | null)[] = [
-    AUTONOMOUS_SESSION_CONTRACT,
-    "",
-    "Everything you write into TTS obeys the writing standard in the model-of-tom files this prompt begins with, verbatim.",
-    "",
-    BOX_TOOLS_PARAGRAPH,
-    "",
+  const neighborLine = (n: GraphNeighbor) =>
+    `- [${n.kind}, ${n.status}${
+      n.kind === "task" ? `, ${n.actor ?? "agent"}` : ""
+    }] "${n.statement}"${n.evidence ? ` (evidence: ${n.evidence})` : ""}`;
+  const batchContext: (string | null)[] = [
     `THE BATCH ("${batch.statement}"):`,
     promptFact("ground-up explanation", batch.groundUpExplanation),
     batchNeeds.length > 0
@@ -2682,7 +2684,8 @@ function buildWorkerPrompt(args: {
           ...mustNotBreak.map((m) => `- on the goal "${m.goal}": ${m.line}`),
         ]
       : []),
-    "",
+  ];
+  const todoContext: (string | null)[] = [
     `YOU HAVE CLAIMED ONE TODO IN THIS BATCH, and only this one ("${todo.statement}"):`,
     `kind: ${isGoal ? "goal" : "task"}`,
     isGoal ? null : `who does it: ${todo.actor ?? "agent"}`,
@@ -2699,33 +2702,30 @@ function buildWorkerPrompt(args: {
         ? `${todo.codeRepo} ${todo.codeExternalId}`
         : undefined,
     ),
-  ];
-
-  const neighborLine = (n: GraphNeighbor) =>
-    `- [${n.kind}, ${n.status}${
-      n.kind === "task" ? `, ${n.actor ?? "agent"}` : ""
-    }] "${n.statement}"${n.evidence ? ` (evidence: ${n.evidence})` : ""}`;
-  lines.push(
     "",
     needs.length > 0
       ? `ITS NEEDS (${needs.length}, every one of them done — that is why this todo is ready):`
       : "ITS NEEDS: none. It was ready from the moment the batch was formed.",
     ...needs.map(neighborLine),
-  );
-  lines.push(
     "",
     dependents.length > 0
       ? `WHAT NEEDS IT (${dependents.length} — these become ready the moment yours is done):`
       : "WHAT NEEDS IT: nothing in this batch waits on it.",
     ...dependents.map(neighborLine),
-  );
-  lines.push(
     "",
     siblings.length > 0
       ? `ALSO READY IN THIS BATCH RIGHT NOW (${siblings.length}). Do NOT work them: another session may be holding any of them, and the ones marked "tom" are waiting on him. They are here so you know what is moving beside you:`
       : "NOTHING ELSE IS READY IN THIS BATCH right now.",
     ...siblings.map(neighborLine),
-  );
+  ];
+  const lines: (string | null)[] = [
+    AUTONOMOUS_SESSION_CONTRACT,
+    "",
+    "Everything you write into TTS obeys the writing standard in the model-of-tom files this prompt begins with, verbatim.",
+    "",
+    BOX_TOOLS_PARAGRAPH,
+    "",
+  ];
 
   lines.push(
     "",
@@ -2795,6 +2795,10 @@ function buildWorkerPrompt(args: {
         ]),
     "",
     "Ending: record the outcome, then simply stop responding — the daemon ends the session after your final turn.",
+    "",
+    ...batchContext,
+    "",
+    ...todoContext,
   );
   return lines.filter((l): l is string => l !== null).join("\n");
 }
@@ -2833,9 +2837,7 @@ function buildCodeMissionPrompt(args: {
   const { repo, externalId, verdict, sentence, statement, brief, sessionId } = args;
   const branch = `session/${sessionId}`;
   const guard = codeTodoGuard(repo);
-  const lines: (string | null)[] = [
-    AUTONOMOUS_SESSION_CONTRACT,
-    "",
+  const codeTodoContext: (string | null)[] = [
     verdict === "approve"
       ? `TOM RULED "approve": the entry's attached plan is the ratified decision, not a suggestion. Implement it faithfully. Where the plan is silent, follow the repository's existing conventions and do not widen scope. Close the entry in ${CODE_TODO_PATH} in this same body of work, per that file's own discipline: move it below the closed-todos banner, keeping its full body, adding a \`closed: <today>\` date and a \`resolution:\` describing what landed.`
       : `TOM RULED "archive": the entry is set aside — already done, moot, or superseded. Do NOT implement it. Close it in ${CODE_TODO_PATH} per that file's own discipline: move the entry below the closed-todos banner, keeping its full body, adding a \`closed: <today>\` date and a \`resolution:\` that says it was archived by Tom's TTS ruling${sentence ? " and quotes his sentence" : ""}, with the evidence the brief names if it names any. Until your pull request merges, the TTS mirror of ${CODE_TODO_PATH} still says the entry is open, so a second "archive" ruling on it would open a second pull request for the same close — say so in the pull request body, so Tom merges rather than re-rules.`,
@@ -2846,6 +2848,9 @@ function buildCodeMissionPrompt(args: {
     "",
     "THE BRIEF Tom ruled from (written against the tree as it stood then; verify against the tree in front of you, and name in your pull request anything that has moved):",
     brief,
+  ];
+  const lines: (string | null)[] = [
+    AUTONOMOUS_SESSION_CONTRACT,
     "",
     workspaceParagraph(
       [repo],
@@ -2870,6 +2875,8 @@ function buildCodeMissionPrompt(args: {
     BOX_TOOLS_PARAGRAPH,
     "",
     "Ending: record the outcome, then simply stop responding — the daemon ends the session after your final turn.",
+    "",
+    ...codeTodoContext,
   ];
   return lines.filter((l): l is string => l !== null).join("\n");
 }
@@ -3100,6 +3107,9 @@ function buildProspectMissionPrompt(
   repo: string,
   sessionId: Id<"claudeSessions">,
 ): string {
+  const prospectContext = [
+    `The mission: this session PROSPECTS — it works no todo item. TTS had session capacity left over after handing out its real todo work this tick, and spends it here. Your working directory is a fresh checkout of ${repo}. Read it for actionable issues worth carrying as items in Tom's todo system, and capture each NEW one with the capture pen below. This mission only READS and CAPTURES — no code changes, no commits, no pushes, no pull requests.`,
+  ];
   const lines: string[] = [
     AUTONOMOUS_SESSION_CONTRACT,
     "",
@@ -3112,8 +3122,6 @@ function buildProspectMissionPrompt(
     "- vocabulary drift: one fact carried under two names, or one name meaning two different things",
     "",
     `The quality bar: every finding NAMES the file or files it lives in, and is actionable by a future session holding nothing but your one sentence and the repo. A finding you are not certain about is still worth capturing when it names a change — Tom reads every item and declining one costs him a glance. What is not worth capturing is a style nitpick or a "this could be cleaner" with no named change: if you cannot say what would change and where, it is not a finding. At most ${PROSPECT_CAPTURE_CAP} captures for the whole mission: a short list of real findings is worth more than a long one, and finding NOTHING new is an honest, complete outcome.`,
-    "",
-    `The mission: this session PROSPECTS — it works no todo item. TTS had session capacity left over after handing out its real todo work this tick, and spends it here. Your working directory is a fresh checkout of ${repo}. Read it for actionable issues worth carrying as items in Tom's todo system, and capture each NEW one with the capture pen below. This mission only READS and CAPTURES — no code changes, no commits, no pushes, no pull requests.`,
   ];
   // A repo that governs itself by an in-repo code-todo registry holds
   // already-tracked work a prospector must not re-capture. WHICH repos those
@@ -3166,6 +3174,8 @@ function buildProspectMissionPrompt(
     `Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. Change no file in the checkout, commit nothing, push nothing, and open no pull request: this mission's only output is captured items. Do not capture a duplicate of something TTS already holds, and do not capture more than ${PROSPECT_CAPTURE_CAP} items. ${DAEMON_RESTART_SENTENCE}`,
     "",
     "Ending: record the outcome via the /tts/session-outcome command, then simply stop responding — the daemon ends the session after your final turn.",
+    "",
+    ...prospectContext,
   );
   return lines.join("\n");
 }

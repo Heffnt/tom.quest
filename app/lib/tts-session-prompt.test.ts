@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Doc } from "../../convex/_generated/dataModel";
 import {
+  buildBlockSessionPrompt,
   buildBatchSessionPrompt,
   buildTodoSessionPrompt,
 } from "./tts-session-prompt";
@@ -39,5 +40,26 @@ describe("interactive session prompts", () => {
     expect(prompt).not.toContain("A BATCH holds how a set of todos gets completed");
     expect(prompt.indexOf("This is a batch session.")).toBeLessThan(
       prompt.indexOf('THE BATCH ("ship the deployment plan"):'));
+    expect(prompt.indexOf("Walk-through contract:")).toBeLessThan(
+      prompt.indexOf('THE BATCH ("ship the deployment plan"):'));
+  });
+
+  it("puts every block todo after the fixed block-session direction", () => {
+    const prompt = buildBlockSessionPrompt("life", [todo]);
+
+    expect(prompt.indexOf('Active todos in "life"')).toBeGreaterThan(
+      prompt.indexOf("A ruling that lives only in chat is lost."),
+    );
+  });
+
+  it("puts a todo's standing ruling after the item facts", () => {
+    const prompt = buildTodoSessionPrompt(todo, "gate", {
+      verdict: "revise",
+      sentence: "make the tradeoff explicit",
+    });
+
+    expect(prompt.indexOf("make the tradeoff explicit")).toBeGreaterThan(
+      prompt.indexOf('The item ("review the deployment plan"):'),
+    );
   });
 });

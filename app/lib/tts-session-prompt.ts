@@ -191,7 +191,11 @@ export function buildBatchSessionPrompt(
     "",
     "This is a batch session. Work the ready tasks with Tom, first step first.",
     "",
-    ...rulingLines(ruling),
+    "Walk-through contract:",
+    '- Take the READY tasks in order. A task with actor "agent" you do yourself.',
+    '- At a ready task with actor "tom", put the question to Tom AND keep implementing — do the best-judgment option in the workspace while he considers. His ruling gates what PERSISTS (merges, verdicts, statuses), not what you attempt.',
+    `- ${RULING_PEN}`,
+    "",
     `THE BATCH ("${batch.statement}"):`,
     fact("id (batch subject)", batch.id),
     fact("ground-up explanation", batch.groundUp),
@@ -226,13 +230,7 @@ export function buildBatchSessionPrompt(
     }
   }
 
-  lines.push(
-    "",
-    "Walk-through contract:",
-    '- Take the READY tasks in order. A task with actor "agent" you do yourself.',
-    '- At a ready task with actor "tom", put the question to Tom AND keep implementing — do the best-judgment option in the workspace while he considers. His ruling gates what PERSISTS (merges, verdicts, statuses), not what you attempt.',
-    `- ${RULING_PEN}`,
-  );
+  lines.push("", ...rulingLines(ruling));
   return lines.filter((l): l is string => l !== null).join("\n");
 }
 
@@ -248,7 +246,6 @@ export function buildTodoSessionPrompt(
       ? "This is a tom-gate session: the item below is prepared and needs his input integrated. Walk him through it, take his ruling, and shape the result with him."
       : "This is a focus session: Tom chose to begin this item now. Open with the first step and work it with him.",
     "",
-    ...rulingLines(ruling),
     `The item ("${todo.statement}"):`,
     fact("id (life subject)", todo._id),
     fact("must not break (Tom's own line, binding)", todo.mustNotBreak),
@@ -263,6 +260,8 @@ export function buildTodoSessionPrompt(
     fact("provenance", todo.provenance),
     fact("body", todo.body),
     fact("brief", todo.brief),
+    "",
+    ...rulingLines(ruling),
   ].filter((l): l is string => l !== null);
 
   // (The v1 BATCH block that used to sit here — a todo carrying `members` was

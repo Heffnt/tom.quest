@@ -3596,14 +3596,14 @@ describe("the code lane", () => {
     expect(text.indexOf(TEST_PRELUDE_LAYERS.know)).toBeLessThan(
       text.indexOf(AUTONOMOUS_SESSION_CONTRACT),
     );
-    expect(text.indexOf('TOM RULED "approve"')).toBeLessThan(
-      text.indexOf("THE CODE TODO:"),
+    expect(text.indexOf("Ending: record the outcome")).toBeLessThan(
+      text.indexOf('TOM RULED "approve"'),
     );
     expect(text.indexOf("THE CODE TODO:")).toBeLessThan(
       text.indexOf("THE BRIEF Tom ruled from"),
     );
-    expect(text.indexOf("THE BRIEF Tom ruled from")).toBeLessThan(
-      text.indexOf(`session/${session._id}`),
+    expect(text.indexOf("Ending: record the outcome, then simply stop responding")).toBeLessThan(
+      text.indexOf("THE BRIEF Tom ruled from"),
     );
 
     // The ruling is applied AT ADMISSION, naming the session.
@@ -4064,8 +4064,8 @@ describe("prospecting lane", () => {
     expect(text.indexOf("What counts as a finding:")).toBeLessThan(
       text.indexOf("The mission: this session PROSPECTS"),
     );
-    expect(text.indexOf("The mission: this session PROSPECTS")).toBeLessThan(
-      text.indexOf("The pens (shell commands"),
+    expect(text.indexOf("Ending: record the outcome via the /tts/session-outcome command")).toBeLessThan(
+      text.indexOf("The mission: this session PROSPECTS"),
     );
   });
 
@@ -4606,8 +4606,8 @@ describe("frontier scheduler", () => {
     expect(text.indexOf("The goal:")).toBeLessThan(
       text.indexOf("The item (\"draft the reading list\")"),
     );
-    expect(text.indexOf("The item (\"draft the reading list\")")).toBeLessThan(
-      text.indexOf("/tts/prepare-todo"),
+    expect(text.indexOf("Ending: record the outcome via the /tts/session-outcome command")).toBeLessThan(
+      text.indexOf("The item (\"draft the reading list\")"),
     );
   });
 
@@ -5322,13 +5322,13 @@ describe("frontier scheduler", () => {
       text.indexOf(AUTONOMOUS_SESSION_CONTRACT),
     );
     expect(text.indexOf("Everything you write into TTS obeys")).toBeLessThan(
+      text.indexOf("/tts/prepare-todo"),
+    );
+    expect(text.indexOf("Ending: record the outcome, then simply stop responding")).toBeLessThan(
       text.indexOf("THE BATCH"),
     );
     expect(text.indexOf("THE BATCH")).toBeLessThan(
       text.indexOf("YOU HAVE CLAIMED ONE TODO"),
-    );
-    expect(text.indexOf("YOU HAVE CLAIMED ONE TODO")).toBeLessThan(
-      text.indexOf("/tts/prepare-todo"),
     );
   });
 
