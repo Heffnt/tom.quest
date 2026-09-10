@@ -821,6 +821,46 @@ export function slackHourKey(utcMs: number): string {
   return `${nyCalendarDayKey(utcMs)}T${String(nyLocalHour(utcMs)).padStart(2, "0")}`;
 }
 
+// ── The six channels (slack-design.md §1) ────────────────────────────────────
+// Six rooms, each with one purpose and one cadence: #tts-today (the morning
+// message), #tts-decisions (object, or let it stand), #tts-needs-you (settle
+// it), #tts-hourly (glance), #tts-broken (the box is failing), #dump (capture).
+// Tom's steps to create them and set these ids are slack-design.md §5.1.
+//
+// This lives here rather than in convex/ttsSync.ts, which owns the Slack door,
+// because that file is "use node" and convex/http.ts — the route that opens a
+// needs-you thread — is a plain-runtime module that cannot import it.
+export type SlackChannelKind = "today" | "decisions" | "needsYou" | "hourly" | "broken";
+
+const CHANNEL_ENV: Record<SlackChannelKind, string> = {
+  today: "SLACK_TTS_TODAY_CHANNEL_ID",
+  decisions: "SLACK_TTS_DECISIONS_CHANNEL_ID",
+  needsYou: "SLACK_TTS_NEEDS_YOU_CHANNEL_ID",
+  hourly: "SLACK_TTS_HOURLY_CHANNEL_ID",
+  broken: "SLACK_TTS_BROKEN_CHANNEL_ID",
+};
+
+/** Each channel, or null when its variable is unset. Missing = log once and do
+ *  not post (ruling digest-env-missing-is-quiet) — EXCEPT the today channel,
+ *  which falls back to SLACK_TTS_CHANNEL_ID, because a missing variable must
+ *  not silence the morning. #tts renamed to #tts-today keeps its id, so that
+ *  fallback is the same room under its old variable.
+ *
+ *  NO OTHER KIND FALLS BACK, and no caller may reproduce this lookup inline:
+ *  postSlack's default target is SLACK_TTS_CHANNEL_ID, so a caller that omits
+ *  `channel` when its own variable is unset posts into #tts-today — the one
+ *  room the design says nothing but the morning message may write to. */
+export function channelFor(kind: SlackChannelKind): string | null {
+  const own = process.env[CHANNEL_ENV[kind]];
+  if (typeof own === "string" && own !== "") return own;
+  if (kind === "today") {
+    const legacy = process.env.SLACK_TTS_CHANNEL_ID;
+    if (typeof legacy === "string" && legacy !== "") return legacy;
+  }
+  console.error(`TTS slack: ${CHANNEL_ENV[kind]} not configured — nothing posted to #tts-${kind}`);
+  return null;
+}
+
 // ── The calendar feeds, and the private ones (Tom, 2026-09-09) ───────────────
 // TTS_ICS_FEEDS is a JSON array of {name, url} on the Convex deployment; each
 // entry's `name` is what a mirrored row carries in ttsCalendarEvents.feed.
@@ -854,9 +894,16 @@ export function parseIcsFeedConfig(raw: string): IcsFeedConfig[] {
 
 /** The feed names Tom has marked private, read from the environment. An
  *  unreadable TTS_ICS_FEEDS answers "every feed is private": a misconfigured
- *  variable must not be the reason his family calendar reaches Slack. */
+ *  variable must not be the reason his family calendar reaches Slack.
+ *
+ *  SO DOES AN ABSENT OR EMPTY ONE. The mirrored rows outlive the variable —
+ *  clearing TTS_ICS_FEEDS stops the fetch but leaves every ttsCalendarEvents
+ *  row in place, so "no config" once meant "nothing is private" and the family
+ *  feed printed. There is no state of this variable in which the answer is
+ *  "name everything": either it says which feeds are private, or nothing is
+ *  named. */
 export function privateFeedNames(raw: string | undefined): Set<string> | "all" {
-  if (raw === undefined || raw.trim() === "") return new Set();
+  if (raw === undefined || raw.trim() === "") return "all";
   try {
     return new Set(parseIcsFeedConfig(raw).filter((f) => f.private).map((f) => f.name));
   } catch (err) {

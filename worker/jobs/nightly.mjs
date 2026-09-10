@@ -518,8 +518,9 @@ export function syncSnapshot(snapshotDir, stagingDir, tables) {
 // line; the
 // NEXT night applies the inverse first (learningObjections below), records
 // "learning-reverted" or, when the text has moved on, "learning-revert-
-// failed" with the reason, and the digest reports it. Report and object is
-// the default: nothing waits on him.
+// failed" with the reason, and the digest reports it. Observe and object is
+// the default (Tom's term, 2026-09-09; "report and object" is retired): the
+// work is done and then reported, and nothing waits on him.
 //
 // Every write happens at the end of the step, after the whole answer has
 // been checked, so a refused answer leaves the checkout untouched. Auto-

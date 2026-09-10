@@ -19,6 +19,7 @@ import {
 } from "./ttsRulings";
 import { logEvent } from "./tts";
 import { isIsoDay } from "../worker/jobs/markdown-sections.mjs";
+import { redactSecrets } from "../worker/session-host/redact.mjs";
 import { codeSessionRulingLines } from "../app/lib/tts-session-prompt";
 
 // Claude Code session surface — the Convex half of the web wrapper around
@@ -114,7 +115,11 @@ function notifySessionFailed(
   return ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
     job: `session:${sessionId}`,
     statement: `A session stopped without finishing what it was carrying, so nothing it was doing is done.`,
-    detail: `${title} stopped: ${reason ?? "no reason was reported"}`,
+    // THE REASON AND THE TITLE ARE FREE TEXT a session wrote about itself, so
+    // both go through the one credential filter (the same redactSecrets
+    // convex/ttsSearch.ts and worker/session-host use) before they can become
+    // a #tts-broken line: a run that printed a token can put it in either.
+    detail: redactSecrets(`${title} stopped: ${reason ?? "no reason was reported"}`),
     url: ttsSessionLink(sessionId),
   });
 }

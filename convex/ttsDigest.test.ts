@@ -623,6 +623,59 @@ describe("internalComposeToday", () => {
     expect(text).toContain("3 more decisions are on the page.");
   });
 
+  // THE SAME INVARIANT, ON THE OTHER CUT. ttsCompose.fit reduces a whole run to
+  // its lead plus one "N more lines are on the page" line when the message will
+  // not fit, and the objection list is the second-to-last ranked run, so a busy
+  // today section takes it. The askIds are read off the FITTED message for
+  // exactly this: recorded from the pre-fit facts, "revert 2" would revert a
+  // decision Tom was never shown.
+  it("records no askId for an objection list the fit reduced away", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    const filler = "which is a whole sentence about something that takes up most of one line";
+    for (let n = 0; n < 12; n += 1) {
+      await tom.mutation(api.tts.createTodo, {
+        statement: `A dated thing number ${n} ${filler}`,
+        entryAction: `open the page and start on it ${filler}`,
+        dueAt: Date.UTC(2026, 8, 4, 16),
+      });
+    }
+    await t.run(async (ctx) => {
+      for (let n = 0; n < 12; n += 1) {
+        await ctx.db.insert("dtsEvents", {
+          at: FIVE_AM - (12 - n) * 60_000,
+          kind: DELEGATE_DECISION,
+          key: `ask-${n}`,
+          data: {
+            // No comma anywhere: ttsCompose.statement cuts at the last clause
+            // boundary, and a "because" clause would shorten every line to
+            // half a Slack line and leave the message under the cap.
+            askId: `ask-${n}`,
+            decision: `took decision ${n} ${filler} and then went on doing rather more of the same until the line was full`,
+            refused: false,
+          },
+        });
+      }
+    });
+    const { text, truncated, objectionAskIds } = await t.query(
+      internal.ttsDigest.internalComposeToday,
+      { day: DAY_KEY, now: FIVE_AM },
+    );
+    expect(truncated).toBe(true);
+    expect(text.length).toBeLessThanOrEqual(MESSAGE_MAX_CHARS);
+    // The today run — nearest him — kept every one of its twelve lines, and the
+    // objection list is the run that went.
+    expect(text).toContain("A dated thing number 0");
+    expect(text).toContain("12 more lines are on the page.");
+    expect(text).not.toContain("1. Took decision");
+    // Nothing he could see, so nothing a number can name: every reply of
+    // "revert N" falls through to the ordinary paths (ttsSlack.namedObjection
+    // treats an empty or missing entry as naming no printed line).
+    expect(objectionAskIds).toEqual([]);
+  });
+
   // These two cases exist only because the morning message narrowed: the
   // delivery check and the evals result used to have a section of their own,
   // and now a PROBLEM in either is a #tts-broken line while a clean run is the
@@ -859,6 +912,35 @@ describe("internalComposeToday", () => {
     expect(text).toContain("Canvas assignments have stopped reaching your list.");
     expect(text).toContain("Canvas rejected the access token (HTTP 401).");
     expect(text).not.toContain("job-failed");
+  });
+
+  // A JOB'S `error` IS ITS OWN STDERR. worker/jobs/nightly.mjs reports git's
+  // verbatim, and git names its remote with the token in it — so the string
+  // goes through redactSecrets (the one choke point, convex/ttsSearch.ts and
+  // worker/session-host use the same helper) before it is a line, and before
+  // todayFactsBlock turns it into the `broken:<n>` fact a model is handed.
+  it("takes a credential out of a job's error before it is a line or a fact", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: FIVE_AM - 3600_000,
+        kind: "job-failed",
+        data: {
+          job: "nightly",
+          error: "fatal: could not read ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8@github.com",
+        },
+      });
+    });
+    const { text, facts } = await t.query(internal.ttsDigest.internalComposeToday, {
+      day: DAY_KEY,
+      now: FIVE_AM,
+    });
+    expect(text).not.toContain("ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8");
+    expect(text).toContain("[redacted:github]");
+    const broken = facts.facts.filter((f: { id: string }) => f.id.startsWith("broken:"));
+    expect(broken).toHaveLength(1);
+    expect(broken[0].text).not.toContain("ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8");
   });
 });
 

@@ -409,6 +409,11 @@ export type ObjectionFact = {
   refusedBecause?: string;
   fallback?: string;
   subject?: string;
+  /** TRUE FOR A MERGE, which the box landed on its own after three mechanical
+   *  gates — nothing decided it in his name. The objection list carries both
+   *  kinds (convex/ttsDigest.ts MERGE) and the lead must not credit a merge to
+   *  the delegate, so the two are counted separately. */
+  merged?: boolean;
 };
 
 /** One line per BATCH, from every event in the window that named it. The
@@ -461,6 +466,10 @@ export type TodayFacts = {
   calendarLead?: string;
   objections: ObjectionFact[];
   objectionsBeyond?: number;
+  /** How many of the WHOLE objection list — printed and beyond — are merges
+   *  rather than delegate decisions. Absent means "count the printed ones",
+   *  which is right whenever nothing was held back. */
+  objectionMerges?: number;
   overnight: BatchOutcome[];
   /** Batches planned and finished overnight, for the overnight lead. */
   batchesPlanned: number;
@@ -677,6 +686,33 @@ function note(lines: Line[], section: string, canReply: boolean, text: string): 
   if (canReply) lines.push({ role: "note", section, text: statement(text) });
 }
 
+/** How many of the objection list are merges. `objectionMerges` counts the
+ *  WHOLE list (the gatherer knows what the cap held back); without it the
+ *  printed lines are the whole list and counting them is the same answer. */
+function objectionMergeCount(f: TodayFacts): number {
+  return f.objectionMerges ?? f.objections.filter((o) => o.merged === true).length;
+}
+
+/**
+ * The objection list's lead. TWO KINDS SHARE THE LIST and the lead names each
+ * for what it is: the delegate DECIDED things in his name, and the box MERGED
+ * things that passed three mechanical gates with nobody deciding anything. A
+ * morning of merges credited to the delegate is a false statement about who
+ * acted, which is the one thing this list exists to let him object to.
+ */
+export function objectionsLead(all: number, merges: number): string {
+  const decided = Math.max(0, all - merges);
+  const stand = "silence means they stand";
+  if (merges === 0) {
+    return `The delegate decided ${countWord(all)} ${plural(all, "thing", "things")} while you were asleep; ${stand}.`;
+  }
+  const landed = `${countWord(merges)} ${plural(merges, "merge", "merges")} landed on ${plural(merges, "its", "their")} own`;
+  if (decided === 0) {
+    return `${capitalise(landed)} while you were asleep; ${stand}.`;
+  }
+  return `The delegate decided ${countWord(decided)} ${plural(decided, "thing", "things")} while you were asleep and ${landed}; ${stand}.`;
+}
+
 // ── The seven kinds ──────────────────────────────────────────────────────────
 
 /**
@@ -734,14 +770,15 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
   }
 
   // 2. The objection list (delegate-design.md §2.4). Nothing when the delegate
-  //    has taken no decision — the rows may not exist at all yet.
+  //    has taken no decision and nothing merged — the rows may not exist at
+  //    all yet. The lead counts the two kinds separately (objectionsLead).
   if (f.objections.length > 0) {
     const beyond = f.objectionsBeyond ?? 0;
     const all = f.objections.length + beyond;
     pushRun(
       lines,
       "objections",
-      `The delegate decided ${countWord(all)} ${plural(all, "thing", "things")} while you were asleep; silence means they stand.`,
+      objectionsLead(all, objectionMergeCount(f)),
       f.objections.map((objection, index) => objectionLine(objection, index + 1)),
       SECTION_CAPS.objections,
       beyond > 0
@@ -969,10 +1006,13 @@ export function composeBroken(f: BrokenFact): Message {
 }
 
 /** The #dump capture reply. It stops echoing his own words back and says what
- *  happens next — the one fact he does not already have. */
+ *  happens next — the one fact he does not already have.
+ *
+ *  HIS WORD IS "THE DIGEST". Every line Tom or a model can read names the
+ *  morning message "the digest"; the other phrase survives only in comments. */
 export function composeCaptured(f: CaptureFact): Message {
   return {
-    firstLine: "Captured; it is prepared tonight and reaches you in tomorrow's morning message.",
+    firstLine: "Captured; it is prepared tonight and reaches you in the digest.",
     lines: [
       { role: "item", section: "captured", text: statement(f.statement), url: itemUrl(f.todoId) },
     ],
@@ -1135,12 +1175,42 @@ export function draftMessage(draft: Draft): Message {
   };
 }
 
+/** THE RULED ORDER, ENFORCED ON A WRITTEN DRAFT. `composeToday` prints the
+ *  sections in SECTION_ORDER by construction; a Fable-written draft can put
+ *  them in any order it likes, and "the objection list is second" is a ruling,
+ *  not a preference. Every lead that names one of the ranked sections is read
+ *  in printed order and must not run backwards. A lead naming the calendar (or
+ *  naming no section at all — the other message kinds have one run and leave it
+ *  undefined) is passed over: the calendar is his day, not a ranked list, and
+ *  `fit` moves it in printed order like any other run. */
+function sectionOrderFaults(lines: { text: string; role: string; section?: string }[]): string[] {
+  const ranked = SECTION_ORDER as readonly string[];
+  const faults: string[] = [];
+  let highest = -1;
+  let highestName = "";
+  for (const line of lines) {
+    if (line.role !== "lead" || line.section === undefined) continue;
+    const rank = ranked.indexOf(line.section);
+    if (rank < 0) continue;
+    if (rank < highest) {
+      faults.push(
+        `the "${line.section}" run is printed after the "${highestName}" run, against the ruled order`,
+      );
+    } else {
+      highest = rank;
+      highestName = line.section;
+    }
+  }
+  return faults;
+}
+
 /**
  * THE VERIFIER. Every link and every number in the draft must exist in the
- * facts block, on a fact the LINE ITSELF cites; and the draft must obey the
- * form (checkMessage). Empty array = it may be posted. On a fault the caller
- * retries ONCE with the complaint, then falls back to the plain template, and
- * records which happened — the morning is never silent.
+ * facts block, on a fact the LINE ITSELF cites; the sections must be in the
+ * ruled order; and the draft must obey the form (checkMessage). Empty array =
+ * it may be posted. On a fault the caller retries ONCE with the complaint,
+ * then falls back to the plain template, and records which happened — the
+ * morning is never silent.
  */
 export function verifyDraft(draft: Draft, block: FactsBlock): string[] {
   const byId = new Map(block.facts.map((f) => [f.id, f]));
@@ -1192,5 +1262,9 @@ export function verifyDraft(draft: Draft, block: FactsBlock): string[] {
       }
     }
   }
-  return [...faults, ...checkMessage(draftMessage(draft), { canReply: block.canReply })];
+  return [
+    ...faults,
+    ...sectionOrderFaults(draft.lines.map((line) => ({ ...line, role: line.role as string }))),
+    ...checkMessage(draftMessage(draft), { canReply: block.canReply }),
+  ];
 }

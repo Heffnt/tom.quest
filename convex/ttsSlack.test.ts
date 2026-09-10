@@ -1,5 +1,5 @@
 import { convexTest, type TestConvex } from "convex-test";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHmac, webcrypto } from "node:crypto";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -193,10 +193,12 @@ describe("the reply at capture", () => {
       subject: { kind: "todo", id: first.id },
     });
     expect(sends[0].text).toBe(captureLine("buy climbing tape", first.id as string));
-    // It says what happens NEXT rather than echoing his own words back at him.
+    // It says what happens NEXT rather than echoing his own words back at him,
+    // and it names the morning message by HIS word for it: the digest.
     expect(sends[0].text).toContain(
-      "Captured; it is prepared tonight and reaches you in tomorrow's morning message.",
+      "Captured; it is prepared tonight and reaches you in the digest.",
     );
+    expect(sends[0].text).not.toContain("morning message");
     expect(sends[0].text).not.toContain("Captured as a todo");
   });
 
@@ -461,6 +463,14 @@ describe("the #tts thread for a todo that needs Tom", () => {
   // what a garbled body does. Both are checked here, as they are on every
   // other /tts route.
   describe("POST /tts/needs-tom", () => {
+    // #tts-needs-you is where a needs-you thread goes and the ONLY room it may
+    // go to; with the variable unset the route drops the thread and reports it
+    // (convex/http.test.ts covers that path). Every case here is about the
+    // configured route, so the room is set for all of them.
+    beforeEach(() => {
+      vi.stubEnv("SLACK_TTS_NEEDS_YOU_CHANNEL_ID", "C0NEEDSYOU");
+    });
+
     afterEach(() => {
       vi.unstubAllEnvs();
     });

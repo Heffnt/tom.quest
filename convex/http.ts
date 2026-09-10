@@ -18,6 +18,7 @@ import {
   RECOMMENDATION_VALUES,
   SESSION_REPO_NAMES,
   TTS_CLOSED_VOCABULARY,
+  channelFor,
   isRecommendation,
   isSessionModel,
   nyCalendarDayBoundsUtc,
@@ -420,6 +421,35 @@ const ttsNeedsTom = httpAction(async (ctx, request) => {
   if (typeof b.key !== "string" || b.key.trim().length === 0) {
     return jsonResponse(400, { error: "key (non-empty string) required" });
   }
+  // #tts-needs-you OR NOWHERE. This route used to omit `channel` when
+  // SLACK_TTS_NEEDS_YOU_CHANNEL_ID was unset, and the Slack door's default
+  // target is SLACK_TTS_CHANNEL_ID — so an unset variable did not silence the
+  // thread, it moved it into #tts-today, the one room the design says nothing
+  // but the morning message may write to. channelFor logs and answers null
+  // instead (ruling digest-env-missing-is-quiet), and nothing is opened.
+  //
+  // A DROP IS A BROKEN JOB, NOT SILENCE. Quiet here means Tom never learns
+  // that the things only he can settle stopped arriving, so the drop is
+  // reported through the same door a box job's failure comes through
+  // (convex/ttsJobs.ts): one "job-failed" row, keyed on the condition so a
+  // poller running every half hour writes it once, and the digest and the
+  // hourly update carry it to #tts-broken for as long as it stands.
+  const channel = channelFor("needsYou");
+  if (channel === null) {
+    const reported = await ctx.runMutation(internal.ttsJobs.internalReportJobFailed, {
+      job: "tts/needs-tom",
+      error:
+        "SLACK_TTS_NEEDS_YOU_CHANNEL_ID is not set — needs-you threads are being dropped rather than posted to #tts-today. Set it (slack-design.md §5.1).",
+      key: "tts/needs-tom:needs-you-channel",
+    });
+    return jsonResponse(200, {
+      ok: false,
+      opened: false,
+      key: b.key,
+      reason: "SLACK_TTS_NEEDS_YOU_CHANNEL_ID not configured",
+      ...reported,
+    });
+  }
   try {
     const result = await ctx.runMutation(internal.ttsSlack.internalOpenNeedsTomThread, {
       todoId: b.todoId,
@@ -427,10 +457,7 @@ const ttsNeedsTom = httpAction(async (ctx, request) => {
       key: b.key,
       // The reply invitation is printed only when a reply would reach TTS.
       canReply: Boolean(process.env.SLACK_SIGNING_SECRET && process.env.TOM_SLACK_USER_ID),
-      ...(typeof process.env.SLACK_TTS_NEEDS_YOU_CHANNEL_ID === "string" &&
-      process.env.SLACK_TTS_NEEDS_YOU_CHANNEL_ID !== ""
-        ? { channel: process.env.SLACK_TTS_NEEDS_YOU_CHANNEL_ID }
-        : {}),
+      channel,
     });
     return jsonResponse(200, { ok: true, ...result });
   } catch (e) {

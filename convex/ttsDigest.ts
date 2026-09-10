@@ -28,6 +28,13 @@ import {
   ttsSessionLink,
   type SlackSubject,
 } from "./ttsShared";
+// THE ONE CHOKE POINT for a credential-shaped span, the same pure helper
+// convex/ttsSearch.ts and worker/session-host use — never a second copy of the
+// patterns. Every free-text error, reason, summary or title below passes
+// through it before it becomes a #tts-broken line or a `broken:<n>` fact:
+// worker/jobs/nightly.mjs reports git stderr verbatim, and git stderr can name
+// a tokenised remote.
+import { redactSecrets } from "../worker/session-host/redact.mjs";
 
 // ── THE MORNING MESSAGE (slack-design.md, Tom 2026-09-09) ───────────────────
 // This file GATHERS THE FACTS. Turning them into sentences is convex/
@@ -37,10 +44,12 @@ import {
 // a query and the composer beneath it is a pure function a test calls with
 // hand-built facts.
 //
-// The word "digest" survives only in the CODE — `digestSubject` became
-// `todaySubject`, `digest-sent` and `internalDigestWindow` stay because rows,
-// subjects and window arithmetic already spell it that way. NEVER PRINT IT:
-// every line Tom reads says "morning message".
+// HIS WORD IS "THE DIGEST" (Tom's ruling). Every line Tom or a model can read
+// names this message "the digest"; "morning message" is a term for comments
+// like this one and appears in nothing that is printed. The code already
+// spells it that way throughout — `digest-sent`, `internalDigestWindow`,
+// `digestWindowStart` — and `todaySubject` keeps its name because the Slack
+// subject union member is `today`.
 //
 // The runs, in this order; each omitted when empty except the first:
 //   1. today — dated or late, oldest date first, each line naming the first
@@ -324,6 +333,15 @@ function str(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
 }
 
+/** `str`, with every credential-shaped span taken out. EVERY FREE-TEXT ERROR
+ *  OR REASON that becomes a line or a fact reads through this one and not
+ *  through `str`: the string was written by a job's stderr or a model's
+ *  summary, and neither is ours to trust. */
+function safeStr(value: unknown): string | undefined {
+  const text = str(value);
+  return text === undefined ? undefined : redactSecrets(text);
+}
+
 function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
@@ -502,6 +520,9 @@ export async function gatherTodayFacts(
     refused: boolean;
     refusedBecause?: string;
     fallback?: string;
+    // A merge, not a delegate decision. The lead counts the two separately
+    // (ttsCompose.objectionsLead): nobody decided a merge in Tom's name.
+    merged?: boolean;
   }[] = [];
 
   for (const e of events) {
@@ -535,7 +556,7 @@ export async function gatherTodayFacts(
             "session",
             "A session ended in an error overnight, so whatever it was carrying is not done.",
             str(d.sessionId) === undefined ? undefined : ttsSessionLink(str(d.sessionId) as string),
-          ).detail = str(d.summary) ?? str(d.title);
+          ).detail = safeStr(d.summary) ?? safeStr(d.title);
         }
         break;
       }
@@ -558,7 +579,7 @@ export async function gatherTodayFacts(
           "session",
           "A session failed overnight, so whatever it was carrying is not done.",
           sessionId === undefined ? undefined : ttsSessionLink(sessionId),
-        ).detail = str(d.endedReason) ?? str(d.title);
+        ).detail = safeStr(d.endedReason) ?? safeStr(d.title);
         break;
       }
       case DELEGATE_DECISION: {
@@ -589,6 +610,7 @@ export async function gatherTodayFacts(
           todoId: e.todoId === undefined ? str(d.todoId) : (e.todoId as string),
           decision: `merged ${repo}@${sha}: ${str(d.subject) ?? "no subject"}`,
           refused: false,
+          merged: true,
         });
         break;
       }
@@ -617,7 +639,7 @@ export async function gatherTodayFacts(
           `Sessions ran without the model-of-tom they should have had: ${clauses.join(", ")}.`,
           firstId === undefined ? undefined : ttsSessionLink(firstId),
         );
-        row.detail = str(first?.title);
+        row.detail = safeStr(first?.title);
         break;
       }
       case EVALS_RUN: {
@@ -644,7 +666,7 @@ export async function gatherTodayFacts(
         if (firstRegression !== undefined) {
           // The id and the reason; the partition is on the run row and is
           // one clause too many for a line that is already a sentence long.
-          row.detail = `${str(firstRegression.id) ?? "an item"} — ${str(firstRegression.reason) ?? ""}`;
+          row.detail = `${safeStr(firstRegression.id) ?? "an item"} — ${safeStr(firstRegression.reason) ?? ""}`;
         }
         break;
       }
@@ -654,7 +676,10 @@ export async function gatherTodayFacts(
         // is not a line.
         if (!e.kind.endsWith("-failed") || NOT_A_FAILURE_LINE.has(e.kind)) break;
         const job = str(d.job) ?? e.kind.replace(/-failed$/, "");
-        failure(job, brokenStatement(job)).detail = str(d.error);
+        // The raw `error` is a job's own stderr — worker/jobs/nightly.mjs
+        // reports git's verbatim, and git names its remote with the token in
+        // it. It never reaches a line or the `broken:<n>` fact unredacted.
+        failure(job, brokenStatement(job)).detail = safeStr(d.error);
       }
     }
   }
@@ -702,6 +727,7 @@ export async function gatherTodayFacts(
       refusedBecause:
         o.refusedBecause === undefined ? undefined : stripNarrowListId(o.refusedBecause),
       fallback: o.fallback,
+      merged: o.merged === true,
     }));
 
   const overnight = [...outcomes.values()];
@@ -715,6 +741,9 @@ export async function gatherTodayFacts(
     calendarLead: spans.length === 0 ? undefined : calendarLeadText(spans),
     objections: objections.slice(0, OBJECTION_CAP),
     objectionsBeyond: Math.max(0, objections.length - OBJECTION_CAP),
+    // Counted over the WHOLE list, printed and beyond, because the lead's
+    // count is the whole list's.
+    objectionMerges: objections.filter((o) => o.merged).length,
     overnight,
     batchesPlanned: overnight.length,
     batchesFinished: overnight.filter((o) => o.finished > 0).length,
@@ -759,6 +788,39 @@ async function digestWindowStart(ctx: QueryCtx, now: number): Promise<number> {
   return row?.windowEnd ?? now - DAY_MS;
 }
 
+/** The number an objection line was PRINTED with, or null for a line that is
+ *  not one: `objectionLine` writes "3. …", while the two count lines the caller
+ *  can also print ("12 more lines are on the page.", "3 more decisions are on
+ *  the page.") open with a number and no full stop after it. */
+function printedObjectionNumber(text: string): number | null {
+  const match = /^(\d+)\.\s/.exec(text.trim());
+  return match === null ? null : Number(match[1]);
+}
+
+/**
+ * The askIds behind the objection lines THAT SURVIVED THE FIT, positionally:
+ * index n − 1 holds the askId of the line Tom read as "n." (convex/ttsSlack.ts
+ * namedObjection indexes it that way). A number that was composed but then cut
+ * — `fit` reduces a whole run to its lead and one count line — holds "", which
+ * that route already treats as "named no printed line" and falls through on.
+ * The list therefore says what he could SEE, which is the only thing a reply
+ * of "revert 2" can honestly be resolved against.
+ */
+function printedObjectionAskIds(
+  message: { lines: { role: string; section?: string; text: string }[] },
+  facts: TodayFacts,
+): string[] {
+  const printed: string[] = [];
+  for (const line of message.lines) {
+    if (line.role !== "item" || line.section !== "objections") continue;
+    const n = printedObjectionNumber(line.text);
+    if (n === null || n < 1) continue;
+    while (printed.length < n) printed.push("");
+    printed[n - 1] = facts.objections[n - 1]?.askId ?? "";
+  }
+  return printed;
+}
+
 /**
  * The morning message's facts, its template text, and the FACTS BLOCK the
  * Fable writer on the box is given (Tom 2026-09-09, amendment 2). Everything
@@ -794,8 +856,11 @@ export const internalComposeToday = internalQuery({
         .map((item) => ctx.db.normalizeId("dtsTodos", item.id))
         .filter((id): id is Id<"dtsTodos"> => id !== null),
       // The decisions the objection list carried, in PRINTED order: a reply of
-      // "revert 2" names the second of these.
-      objectionAskIds: facts.objections.map((o) => o.askId),
+      // "revert 2" names the second of these. Read off the FITTED message, not
+      // off `facts.objections`: `fit` can reduce the objections run to its lead
+      // plus one "N more lines are on the page" line, and a number resolved
+      // against a list Tom never saw reverts something he never read.
+      objectionAskIds: printedObjectionAskIds(message, facts),
       // The deterministic inputs, each fact with an id, its link and its
       // numbers. Stored on the digest event, and handed to the writer.
       facts: todayFactsBlock(facts, reply),

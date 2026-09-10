@@ -356,6 +356,14 @@ function byteLength(text: string): number {
  * carries one field rather than a composed prompt (the four HTTP doors'
  * `writingStandard`). The field's MEANING does not change — it is still "the
  * model-of-tom text this run works from"; its bytes shrink.
+ *
+ * THE FOUR DOORS PUT THIS FIRST IN THEIR PROMPT, index and all
+ * (worker/jobs/plan-graphs.mjs, worker/jobs/apply-time-notes.mjs), which would
+ * normally break the cache boundary the stable prefix exists to hold: an index
+ * that varies per run cannot sit ahead of text that does not. It is safe here
+ * because every one of those callers is `{kind:"none"}` — nothing expands, and
+ * the fetchable block is the whole know-layer index, identical for every run
+ * at one WikiTom commit. A caller with a real subject must not join this way.
  */
 export function joinContext(context: AssembledContext): string {
   return [context.prefix, context.expanded, context.fetchable].filter((part) => part !== "").join("\n\n");

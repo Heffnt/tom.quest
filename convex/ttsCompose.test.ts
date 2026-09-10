@@ -20,6 +20,7 @@ import {
   dropFaultyLines,
   itemUrl,
   objectionLine,
+  objectionsLead,
   overnightLine,
   renderSlack,
   sessionUrl,
@@ -550,6 +551,66 @@ describe("objectionLine", () => {
   });
 });
 
+// TWO KINDS SHARE THE OBJECTION LIST. A merge passed three mechanical gates
+// with nothing deciding it in Tom's name (convex/ttsDigest.ts MERGE), so a
+// morning of merges must not be reported as the delegate's decisions.
+describe("objectionsLead", () => {
+  it("credits the delegate only with what it decided", () => {
+    expect(objectionsLead(3, 0)).toBe(
+      "The delegate decided three things while you were asleep; silence means they stand.",
+    );
+  });
+
+  it("says merges landed on their own when nothing was decided", () => {
+    expect(objectionsLead(2, 2)).toBe(
+      "Two merges landed on their own while you were asleep; silence means they stand.",
+    );
+    expect(objectionsLead(1, 1)).toBe(
+      "One merge landed on its own while you were asleep; silence means they stand.",
+    );
+  });
+
+  it("counts the two kinds separately when the list carries both", () => {
+    const lead = objectionsLead(5, 2);
+    expect(lead).toBe(
+      "The delegate decided three things while you were asleep and two merges landed on their own; silence means they stand.",
+    );
+    expect(lead.length).toBeLessThanOrEqual(LINE_CHARS);
+  });
+
+  it("is the lead composeToday prints, counting the beyond as well", () => {
+    const merges = composeToday(
+      sept9({
+        objections: [
+          { askId: "", decision: "merged tom.quest@a1b2c3d: the mechanical merge gate", merged: true },
+        ],
+      }),
+      { canReply: false },
+    );
+    const lead = merges.lines.find((l) => l.role === "lead" && l.section === "objections");
+    expect(lead?.text).toBe(
+      "One merge landed on its own while you were asleep; silence means they stand.",
+    );
+    expect(lead?.text).not.toContain("The delegate decided");
+    // objectionMerges counts the WHOLE list, so the held-back lines are
+    // attributed too rather than silently becoming the delegate's.
+    const both = composeToday(
+      sept9({
+        objections: [
+          { askId: "a1", decision: "moved the passport appointment to Thursday" },
+          { askId: "", decision: "merged tom.quest@a1b2c3d: the mechanical merge gate", merged: true },
+        ],
+        objectionsBeyond: 3,
+        objectionMerges: 4,
+      }),
+      { canReply: false },
+    );
+    expect(both.lines.find((l) => l.role === "lead" && l.section === "objections")?.text).toBe(
+      "The delegate decided one thing while you were asleep and four merges landed on their own; silence means they stand.",
+    );
+  });
+});
+
 // ── The hourly line ─────────────────────────────────────────────────────────
 function hourly(overrides: Partial<HourlyFacts> = {}): HourlyFacts {
   return { now: 1_757_000_000_000, since: 1_756_996_400_000, running: [], batches: [], changes: [], ...overrides };
@@ -688,11 +749,13 @@ describe("composeCaptured and composeContinued", () => {
     const text = renderSlack(composeCaptured({ todoId: "ph7a", statement: "buy climbing tape" }));
     expect(text).toBe(
       [
-        "Captured; it is prepared tonight and reaches you in tomorrow's morning message.",
+        "Captured; it is prepared tonight and reaches you in the digest.",
         "- <https://tom.quest/tts?item=ph7a|buy climbing tape.>",
       ].join("\n"),
     );
     expect(text).not.toContain("Captured as a todo");
+    // HIS WORD IS "THE DIGEST": the forbidden phrase is in no printed line.
+    expect(text).not.toContain("morning message");
   });
 
   it("states the session's status as a fact and never prints its kind", () => {
@@ -792,6 +855,101 @@ describe("verifyDraft", () => {
       lines: [...good.lines, { role: "note", text: 'reply "done" on a line.', sources: [] }],
     };
     expect(verifyDraft(bad, block).join(" ")).toContain("invites a reply the route cannot receive");
+  });
+
+  // THE RULED ORDER IS A RULING, and only the template guarantees it by
+  // construction: on the default path a Fable run writes the draft and this is
+  // the only thing standing between it and an objection list printed last.
+  const objectionsBlock = todayFactsBlock(
+    sept9({
+      objections: [
+        { askId: "a1", todoId: "ph79", decision: "moved the passport appointment to Thursday" },
+      ],
+    }),
+    false,
+  );
+  const ordered: Draft = {
+    firstLine: "Three things carry a date you have passed, the oldest by ten days.",
+    firstLineSources: ["today:count"],
+    lines: [
+      { role: "lead", section: "today", text: "Dated, oldest first.", sources: ["today:count"] },
+      {
+        role: "item",
+        section: "today",
+        text: "Run the first Friday triage session: open the agenda. Ten days late.",
+        url: itemUrl("ph7fqh2j"),
+        sources: ["todo:ph7fqh2j"],
+      },
+      {
+        role: "lead",
+        section: "objections",
+        text: "The delegate decided one thing while you were asleep.",
+        sources: ["ask:a1"],
+      },
+      {
+        role: "item",
+        section: "objections",
+        text: "1. Moved the passport appointment to Thursday.",
+        url: itemUrl("ph79"),
+        sources: ["ask:a1"],
+      },
+      {
+        role: "lead",
+        section: "calendar",
+        text: "Your day is committed from 16:00 to 23:00.",
+        sources: ["calendar:lead"],
+      },
+      {
+        role: "item",
+        section: "calendar",
+        text: "PT runs 16:00 to 17:00.",
+        url: TAB_CALENDAR,
+        sources: ["calendar:1"],
+      },
+      {
+        role: "lead",
+        section: "overnight",
+        text: "The box planned 9 batches overnight and finished 0.",
+        sources: ["overnight:count"],
+      },
+      {
+        role: "item",
+        section: "overnight",
+        text: "The research critical path gained 4 items and dropped 1.",
+        url: TAB_BATCHES,
+        sources: ["batch:b1"],
+      },
+    ],
+  };
+
+  it("accepts a draft whose runs are in the ruled order", () => {
+    expect(verifyDraft(ordered, objectionsBlock)).toEqual([]);
+  });
+
+  it("refuses a draft that prints the objection list after the overnight run", () => {
+    const swapped: Draft = {
+      ...ordered,
+      lines: [
+        ...ordered.lines.slice(0, 2),
+        ...ordered.lines.slice(4),
+        ...ordered.lines.slice(2, 4),
+      ],
+    };
+    expect(verifyDraft(swapped, objectionsBlock).join(" ")).toContain(
+      'the "objections" run is printed after the "overnight" run, against the ruled order',
+    );
+  });
+
+  it("passes over the calendar and an unlabelled lead — neither is ranked", () => {
+    const unlabelled: Draft = {
+      ...ordered,
+      lines: ordered.lines.map((line) =>
+        line.section === "calendar" || line.section === "today"
+          ? { ...line, section: undefined }
+          : line,
+      ),
+    };
+    expect(verifyDraft(unlabelled, objectionsBlock)).toEqual([]);
   });
 
   it("refuses a draft that breaks the form, whatever it cites", () => {

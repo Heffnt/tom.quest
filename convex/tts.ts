@@ -23,6 +23,7 @@ import {
   normalizeSessionRepos,
   nyOffsetHours,
 } from "./ttsShared";
+import { redactSecrets } from "../worker/session-host/redact.mjs";
 
 // TTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
 // and the code-todo mirror. Spec: WikiTom tts/spec.md. Everything Tom-facing is
@@ -137,10 +138,16 @@ export async function logEvent(
     // Scheduled, not awaited: the post is network I/O and this is a mutation.
     // It rides the transaction, so a rolled-back failure is never reported.
     // The action itself dedupes by job for the TTS day.
+    // THE RAW `error` IS A JOB'S OWN STDERR and is never posted as it came:
+    // worker/jobs/nightly.mjs reports git's verbatim, and git names its remote
+    // with the token in it. redactSecrets is the one choke point (the same
+    // helper convex/ttsSearch.ts and worker/session-host use), and it runs
+    // before the string becomes a #tts-broken line.
+    const detail = str(d.error);
     await ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
       job,
       statement: `The ${job} job failed, so whatever it feeds you has stopped arriving.`,
-      ...(str(d.error) === undefined ? {} : { detail: str(d.error) as string }),
+      ...(detail === undefined ? {} : { detail: redactSecrets(detail) }),
     });
   }
   return id;
