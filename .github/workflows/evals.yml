@@ -1,0 +1,41 @@
+# The semantic half of the writing gate. Merging is the persist gate, so a
+# change to a file the writing jobs read has to prove it did not make the
+# outputs worse. The job posts a request to Convex and waits; the Jarvis Box
+# picks it up on a cron tick and posts the run back. The box has no inbound
+# door, and this needs no access to it.
+name: Evals
+on:
+  pull_request:
+    paths:
+      - "AGENTS.md"
+      - "**/AGENTS.md"
+      - "CLAUDE.md"
+      - "**/CLAUDE.md"
+      - "scripts/prelude.mjs"
+      - "convex/ttsShared.ts"
+      - "convex/claudeSessions.ts"
+      - "convex/ttsSkills.ts"
+      - "convex/ttsCompose.ts"
+      - "convex/ttsDigest.ts"
+      - "worker/jobs/plan-graphs.mjs"
+      - "worker/jobs/weekly.mjs"
+      - "worker/jobs/delegate.mjs"
+      - "worker/bin/tts-ask"
+      - "evals/golden/**"
+      - "evals/tasks/**"
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: node scripts/evals-check.mjs
+        env:
+          CONVEX_SITE_URL: ${{ vars.CONVEX_SITE_URL }}
+          EVALS_KEY: ${{ secrets.EVALS_KEY }}
+          REPO: tom.quest
+          SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR: ${{ github.event.pull_request.number }}

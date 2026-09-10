@@ -1,0 +1,53 @@
+{
+  "id": "slack-01-morning",
+  "repo": "slack",
+  "kind": "slack",
+  "prompt": "",
+  "compose": "today",
+  "canReply": true,
+  "note": "The composer this item measures arrives with branch uac/slack; the item format and the runner interface are settled here.",
+  "facts": {
+    "day": "2026-09-09",
+    "today": [
+      { "id": "ph01", "statement": "Pay the September rent.", "entryAction": "Open the bank transfer page", "dueAt": 1757203200000 },
+      { "id": "ph02", "statement": "Renew the passport before the appointment window closes.", "entryAction": "Open the consulate booking page", "dueAt": 1757289600000 },
+      { "id": "ph03", "statement": "Send the climbing gym the membership form.", "entryAction": "Open the form", "dueAt": 1757376000000 },
+      { "id": "ph04", "statement": "Reply to the landlord about the deposit.", "entryAction": "Open the thread", "dueAt": 1757462400000 },
+      { "id": "ph05", "statement": "Book the dentist.", "entryAction": "Call the surgery", "dueAt": 1757548800000 },
+      { "id": "ph06", "statement": "File the WPI reimbursement.", "entryAction": "Open the expenses form", "dueAt": 1757635200000 },
+      { "id": "ph07", "statement": "667 more ready items", "entryAction": null, "dueAt": null }
+    ],
+    "readyCount": 667,
+    "calendar": [
+      { "at": "09:00", "title": "Standup" },
+      { "at": "10:30", "title": "Advisor meeting" },
+      { "at": "12:00", "title": "Lunch with Ana" },
+      { "at": "14:00", "title": "CMT sync" },
+      { "at": "15:30", "title": "Gym" },
+      { "at": "17:00", "title": "Paper reading" },
+      { "at": "18:30", "title": "Climbing" },
+      { "at": "20:00", "title": "Dinner" }
+    ],
+    "overnight": [
+      { "batchId": "b1", "statement": "the unified agent context round", "added": 4, "reworked": 2, "dropped": 0, "finished": 3, "running": true },
+      { "batchId": "b2", "statement": "the CMT campaign", "added": 0, "reworked": 0, "dropped": 0, "finished": 1, "running": false },
+      { "batchId": null, "statement": "outside any batch", "added": 0, "reworked": 0, "dropped": 0, "finished": 5, "running": false }
+    ],
+    "objections": [
+      { "id": "a1", "question": "Move the passport appointment to Thursday?", "decision": "Move it to Thursday morning.", "subject": "renew passport" },
+      { "id": "a2", "question": "Skip the Friday weekly if the agenda is empty?", "decision": "Run it anyway.", "subject": "weekly agenda" },
+      { "id": "a3", "question": "Drop the stale CMT dormancy plan?", "decision": "Keep it and re-plan.", "subject": "CMT campaign" }
+    ],
+    "broken": [],
+    "failures": []
+  },
+  "expect": {
+    "mustName": ["is the one to start with", "667"],
+    "mustNotName": ["plan stored", "TTS digest", "+667 more", "Ready for you", "created", "retired", "worker event"],
+    "sectionOrder": ["today", "objections", "overnight", "broken"],
+    "sentence": "The first line names how many things are late, how late the worst is, and which one to start with; the four sections run today, the objection list, what the box left behind overnight, and what broke; every line is one whole sentence carrying a link, and the overnight lines say what each batch now is rather than what was logged about it."
+  },
+  "blocks": ["write"],
+  "addedOn": "2026-09-09",
+  "addedBy": "tom"
+}

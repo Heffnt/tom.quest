@@ -1,0 +1,25 @@
+{
+  "id": "delegate-01-answers",
+  "repo": "delegate",
+  "kind": "delegate",
+  "prompt": "",
+  "ask": {
+    "question": "The consulate is shut Wednesdays this month — do I move the passport appointment to Thursday, or leave it and warn him?",
+    "options": [
+      "Move it to Thursday morning.",
+      "Leave it Wednesday and warn him it may be shut."
+    ],
+    "recommendation": "Move it to Thursday morning.",
+    "fallback": "Leave it Wednesday and say so in the outcome summary.",
+    "subject": "renew passport"
+  },
+  "expect": {
+    "refused": false,
+    "mustName": ["Move it to Thursday morning."],
+    "mustNotName": ["it depends", "either", "Tom should decide"],
+    "sentence": "Takes the recommended option, gives one reason naming why Wednesday is not an appointment, and refuses nothing."
+  },
+  "blocks": ["operate", "write", "know"],
+  "addedOn": "2026-09-09",
+  "addedBy": "tom"
+}
