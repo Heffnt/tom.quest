@@ -363,12 +363,16 @@ describe("readRepoRules", () => {
 });
 
 describe("repoLearningPrompt", () => {
-  it("ends with the UTC day, after the sessions, the files and what is on record", () => {
+  it("ends with the UTC day, after the files, what is on record and the sessions", () => {
     const prompt = repoLearningPrompt([{ session: "47f04bc9" }], "=== AGENTS.md ===\nx", "- a line", "2026-09-09");
     expect(prompt.endsWith("Tonight is 2026-09-09 (UTC).")).toBe(true);
-    expect(prompt.indexOf("\nSESSIONS\n")).toBeLessThan(prompt.indexOf("\nTHE FILES AS THEY STAND\n"));
+    // The rarely-changing text first, the per-night sessions last, so the
+    // prompt cache holds from one night to the next.
     expect(prompt.indexOf("\nTHE FILES AS THEY STAND\n")).toBeLessThan(
       prompt.indexOf("\nPROPOSALS AND LINES ALREADY ON RECORD"),
+    );
+    expect(prompt.indexOf("\nPROPOSALS AND LINES ALREADY ON RECORD")).toBeLessThan(
+      prompt.indexOf("\nSESSIONS\n"),
     );
     expect(prompt).toContain("At most 5 proposals");
   });

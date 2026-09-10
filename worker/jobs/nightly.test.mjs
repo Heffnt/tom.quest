@@ -488,19 +488,20 @@ function pagesOf(dir, rels) {
 }
 
 describe("the learning step", () => {
-  it("ends the prompt with the UTC day, after its input, signals, pages and evidence files", () => {
+  it("ends the prompt with the UTC day, after its pages, evidence files, input and signals", () => {
     const dir = learningCheckout();
     const { pages, evidence } = pagesOf(dir, ["model-of-tom/areas/climbing.md"]);
     const { prompt, turnsDropped } = learningPrompt(learningInput(), pages, evidence, [], "2026-09-06");
     expect(turnsDropped).toBe(0);
     expect(prompt.endsWith("Tonight is 2026-09-06 (UTC).")).toBe(true);
     expect(prompt.indexOf("TWO RECORDS")).toBeLessThan(prompt.indexOf("RULES"));
+    // The rarely-changing files first, tonight's input and signals last, so
+    // the prompt cache holds from one night to the next.
     const at = (header) => prompt.indexOf(`\n${header}\n`);
+    const evidenceAt = prompt.indexOf("\nEVIDENCE FILES (the entries already on record; never propose a duplicate)\n");
+    expect(at("PAGES")).toBeLessThan(evidenceAt);
+    expect(evidenceAt).toBeLessThan(at("INPUT"));
     expect(at("INPUT")).toBeLessThan(at("GROUND SIGNALS"));
-    expect(at("GROUND SIGNALS")).toBeLessThan(at("PAGES"));
-    expect(at("PAGES")).toBeLessThan(
-      prompt.indexOf("\nEVIDENCE FILES (the entries already on record; never propose a duplicate)\n"),
-    );
     expect(prompt).toContain("=== model-of-tom/evidence/areas/climbing.md ===");
   });
 

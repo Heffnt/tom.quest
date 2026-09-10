@@ -138,6 +138,9 @@ describe("the sections a signal supports", () => {
     // of the three, because a question about part of a term leaves the rest.
     expect(groundSectionFollows("asked", "Knows", "add")).toBe(false);
     expect(groundSectionFollows("asked", "Knows", "replace")).toBe(true);
+    // An ask never REMOVES: a question is not evidence that a "Does not know"
+    // line has stopped being true. Only a confirmation retires one.
+    expect(groundSectionFollows("asked", "Does not know", "remove")).toBe(false);
     expect(groundSectionFollows("confirmed", "Knows", "add")).toBe(true);
     expect(groundSectionFollows("confirmed", "Follows, without the details", "add")).toBe(false);
     expect(groundSectionFollows("confirmed", "Does not know", "remove")).toBe(true);

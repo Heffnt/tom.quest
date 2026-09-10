@@ -84,7 +84,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   CLAUDE_ACCOUNTS_DIR,
   CODEX_SESSIONS_DIR,
@@ -111,7 +111,6 @@ import {
   writeArchived,
 } from "./session-archive.mjs";
 import { loadEnv, convexFetch, nyHour, runClaude, extractJsonObject, clip } from "./tts-lib.mjs";
-import { assemblePreludePublication, collectRepoRules } from "../../scripts/prelude.mjs";
 import {
   enclosingHeadings,
   isIsoDay,
@@ -160,6 +159,27 @@ import {
   transcriptEvidence,
   transcriptPath,
 } from "./learning-repo.mjs";
+
+// The prelude assembler lives in the repo at scripts/prelude.mjs and on the
+// box at /opt/tts/scripts/prelude.mjs, while the jobs themselves are copied
+// flat into /opt/tts (worker/setup.sh). One specifier cannot name both, so
+// both are tried, in that order, and the failure names them. A static import
+// of either path kills the whole job at load on the layout it does not match,
+// which is why this is a dynamic load at the two call sites instead.
+const PRELUDE_CANDIDATES = ["../../scripts/prelude.mjs", "./scripts/prelude.mjs"];
+
+async function loadPrelude() {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const errors = [];
+  for (const candidate of PRELUDE_CANDIDATES) {
+    try {
+      return await import(pathToFileURL(path.resolve(here, candidate)).href);
+    } catch (err) {
+      errors.push(`${candidate}: ${err.message}`);
+    }
+  }
+  throw new Error(`prelude.mjs is not reachable (${errors.join("; ")})`);
+}
 
 // ── Where things are ─────────────────────────────────────────────────────────
 // The checkout, its lock, the session directories, the split rule and the
@@ -1347,17 +1367,20 @@ export function learningPrompt(input, pages, evidencePages, signals, day) {
       "Answer with ONE JSON object and nothing else, no code fence:",
       '{"changes":[{"file":"model-of-tom/areas/climbing.md","section":"Current state","op":"add","line":"...","replaces":null,"inferred":false,"signal":null,"evidence":[{"form":"said","date":"YYYY-MM-DD","source":"session <session>","text":"<his words, verbatim>"}],"excerpt":"<six or more of his words, verbatim>"}]}',
       "",
-      "INPUT",
-      JSON.stringify({ ...shown, tomTurns: turns }, null, 1),
-      "",
-      "GROUND SIGNALS",
-      JSON.stringify(signals ?? [], null, 1),
-      "",
+      // The rarely-changing text first — the pages and the evidence files
+      // barely move night to night, so the prompt cache holds across runs
+      // only while they sit ABOVE tonight's input, which changes every run.
       "PAGES",
       pageText,
       "",
       "EVIDENCE FILES (the entries already on record; never propose a duplicate)",
       evidenceText,
+      "",
+      "INPUT",
+      JSON.stringify({ ...shown, tomTurns: turns }, null, 1),
+      "",
+      "GROUND SIGNALS",
+      JSON.stringify(signals ?? [], null, 1),
       "",
       `Tonight is ${day} (UTC).`,
     ].join("\n");
@@ -1687,6 +1710,10 @@ export async function recordLearningRows(run, deps = {}) {
     try {
       await fetchConvex(run.env, "/tts/event", {
         kind: row.kind,
+        // The key travels with the row: a repo proposal is looked up later by
+        // by_kind_key (internalApplyRepoProposal / internalDropRepoProposal),
+        // and a row posted without one can never be applied or dropped by id.
+        ...(row.key === undefined ? {} : { key: row.key }),
         data: { ...row.data, day: run.day, modelOfTomCommit: commitFor(row.commitMessage) },
       });
     } catch (err) {
@@ -2158,6 +2185,7 @@ export async function postStep(run, deps = {}) {
   try {
     // The assembler resolves HEAD and reads every body from that immutable
     // object. The header variants below stay pinned to the resolved hash.
+    const { assemblePreludePublication } = await loadPrelude();
     prelude = assemblePreludePublication({ wikitom: dir, commit: "HEAD" });
   } catch (error) {
     await recordFailure(
@@ -2224,6 +2252,7 @@ export async function repoRulesStep(run, deps = {}) {
     }
     let collected;
     try {
+      const { collectRepoRules } = await loadPrelude();
       collected = collectRepoRules({ dir, repo, commit: "HEAD" });
     } catch (error) {
       await recordFailure(run, "repo-rules", error, { fetch });

@@ -44,7 +44,9 @@ export const GROUND_SECTIONS = {
   asked: {
     add: ["Does not know"],
     replace: ["Does not know", "Knows", "Follows, without the details"],
-    remove: ["Does not know"],
+    // No `remove`: a question is not evidence that a "Does not know" line has
+    // stopped being true, so a night where he merely asked cannot retire one.
+    // Only a confirmation (or a partial one) takes a line off that section.
   },
   confirmed: {
     add: ["Knows"],

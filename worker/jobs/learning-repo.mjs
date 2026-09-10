@@ -313,14 +313,17 @@ export function repoLearningPrompt(sessions, repoFiles, entries, day) {
     "Answer with ONE JSON object and nothing else, no code fence:",
     '{"proposals":[{"repo":"tom.quest","file":"worker/AGENTS.md","section":"box","line":"...","sources":["47f04bc9"],"read":"..."}]}',
     "",
-    "SESSIONS",
-    JSON.stringify(sessions, null, 1),
-    "",
+    // The rarely-changing text first — the rule files and the record barely
+    // move night to night, so the prompt cache holds across runs only while
+    // they sit ABOVE tonight's sessions, which change every run.
     "THE FILES AS THEY STAND",
     repoFiles,
     "",
     "PROPOSALS AND LINES ALREADY ON RECORD (never propose a duplicate)",
     entries,
+    "",
+    "SESSIONS",
+    JSON.stringify(sessions, null, 1),
     "",
     `Tonight is ${day} (UTC).`,
   ].join("\n");
