@@ -1,7 +1,7 @@
 // Every ground-up explanation shipped with the TTS captions is a COMPLETE,
 // SELF-CONTAINED HTML DOCUMENT. This test is the CI half of that rule.
 //
-// The rule itself is WRITING_STANDARD (convex/ttsShared.ts): a ground-up
+// The rule itself is the writing standard (WikiTom model-of-tom/writing.md): a ground-up
 // explanation renders fullscreen inside a sandboxed iframe with no scripting
 // and no network, so a <script>, an inline event handler, an external
 // stylesheet, font, image, or URL is not a style slip — it is a hole in the

@@ -36,7 +36,7 @@ import { JOB_FAILED, JOB_RECOVERED } from "./ttsJobs";
 import { NIGHTLY_FAILURE } from "./ttsNightly";
 import { NEEDS_TOM, SLACK_REPLY_FAILED } from "./ttsSlack";
 import { DAY_MS, MODEL_OF_TOM_AREAS_DIR, isPrepared } from "./ttsShared";
-import { isModelOfTomPath } from "./ttsSkills";
+import { isModelOfTomPath, MODEL_OF_TOM_BLOCK_NAMES } from "./ttsSkills";
 import { isIsoDay, parseFrontmatter } from "../worker/jobs/markdown-sections.mjs";
 
 export const WEEK_MS = 7 * DAY_MS;
@@ -138,6 +138,7 @@ export type WeeklyFacts = {
   modelOfTom: {
     commit: string | null;
     syncedAt: number | null;
+    blocks: { name: "operate" | "write" | "know"; bytes: number }[];
     files: { path: string; bytes: number }[];
     totalBytes: number;
   };
@@ -459,17 +460,20 @@ export async function gatherWeeklyFacts(
   const skills = await ctx.db.query("ttsSkills").collect();
   const files: WeeklyFacts["modelOfTom"]["files"] = [];
   const areaPages: WeeklyFacts["areaPages"] = [];
-  let commit: string | null = null;
-  let syncedAt: number | null = null;
+  const publication = await ctx.db.query("modelOfTomPublication")
+    .withIndex("by_key", (q) => q.eq("key", "current")).unique();
+  const blocks: WeeklyFacts["modelOfTom"]["blocks"] = [];
+  for (const name of MODEL_OF_TOM_BLOCK_NAMES) {
+    const body = publication?.[name];
+    if (typeof body === "string") {
+      blocks.push({ name, bytes: new TextEncoder().encode(body).length });
+    }
+  }
   for (const row of [...skills].sort((a, b) =>
     a.sourcePath < b.sourcePath ? -1 : a.sourcePath > b.sourcePath ? 1 : 0,
   )) {
     if (!isModelOfTomPath(row.sourcePath)) continue;
-    files.push({ path: row.sourcePath, bytes: new TextEncoder().encode(row.body).length });
-    if (row.commit !== undefined) {
-      commit = row.commit;
-      syncedAt = row.syncedAt;
-    }
+    files.push({ path: row.sourcePath, bytes: row.bytes ?? new TextEncoder().encode(row.body).length });
     if (!row.sourcePath.startsWith(`${MODEL_OF_TOM_AREAS_DIR}/`)) continue;
     const reviewed = await ctx.db
       .query("dtsEvents")
@@ -482,8 +486,9 @@ export async function gatherWeeklyFacts(
     areaPages.push(areaPageState(row.sourcePath, row.body, reviewedEvent, until));
   }
   const modelOfTom = {
-    commit,
-    syncedAt,
+    commit: publication?.commit ?? null,
+    syncedAt: publication?.committedAt ?? null,
+    blocks,
     files,
     totalBytes: files.reduce((n, f) => n + f.bytes, 0),
   };

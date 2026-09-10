@@ -8,11 +8,11 @@ import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { modelOfTomPrelude } from "./ttsSkills";
 import {
+  AUTONOMOUS_SESSION_CONTRACT,
   CODEX_USAGE_STALE_MS,
   CODEX_WEEKLY_CAP_PERCENT,
   DEFAULT_SESSION_MODEL,
   MODEL_OF_TOM_HEADER,
-  WRITING_STANDARD,
 } from "./ttsShared";
 import type { SessionModel } from "./ttsShared";
 
@@ -24,10 +24,30 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 // when the prompt changes is the alarm working.
 const DAEMON_SENTENCE = "Never restart, stop, or kill `tts-session-host`";
 
+const TEST_PRELUDE_BLOCKS = {
+  operate: "test operate block",
+  write: "test write block",
+  know: "test know block",
+};
+const TEST_PRELUDE_HEADERS = ([
+  ["operate"], ["write"], ["know"], ["operate", "write"],
+  ["operate", "know"], ["write", "know"], ["operate", "write", "know"],
+] as const).map((names) => ({ blocks: [...names], header: `${MODEL_OF_TOM_HEADER} (WikiTom commit testprelude): ${names.join(",")}` }));
+
 async function withTom(t: ReturnType<typeof convexTest>) {
   const tomId = await t.run(async (ctx) =>
     ctx.db.insert("users", { name: "tom", email: "tom@tom.quest", role: "tom" }),
   );
+  await t.run(async (ctx) => {
+    await ctx.db.insert("modelOfTomPublication", {
+      key: "current",
+      commit: "testprelude",
+      committedAt: 1,
+      pushed: true,
+      ...TEST_PRELUDE_BLOCKS,
+      headers: TEST_PRELUDE_HEADERS,
+    });
+  });
   return t.withIdentity({ subject: tomId });
 }
 
@@ -183,6 +203,12 @@ async function insertPastAutoSession(
 }
 
 describe("claude sessions", () => {
+  it("keeps the autonomous opener to the unattended-session boundary", () => {
+    expect(AUTONOMOUS_SESSION_CONTRACT).toBe(
+      "You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.",
+    );
+  });
+
   // witness: remove the requireTomId call from listSessions in
   // convex/claudeSessions.ts and this test goes red.
   it("gates every Tom-facing function on the tom role", async () => {
@@ -222,9 +248,17 @@ describe("claude sessions", () => {
     // Then Tom's prompt verbatim; the outcome-pen footer is appended
     // server-side (pinned by its own test below).
     const text = inbound[0].text ?? "";
-    expect(text.startsWith("MODEL-OF-TOM FILES: none stored yet")).toBe(true);
-    expect(text).toContain(WRITING_STANDARD);
-    expect(text.indexOf(WRITING_STANDARD)).toBeLessThan(text.indexOf("\n\nhello"));
+    expect(text.startsWith(`${MODEL_OF_TOM_HEADER} (WikiTom commit testprelude)`)).toBe(true);
+    expect(text).toContain(TEST_PRELUDE_BLOCKS.operate);
+    expect(text).toContain(TEST_PRELUDE_BLOCKS.write);
+    expect(text).toContain(TEST_PRELUDE_BLOCKS.know);
+    expect(text.indexOf(TEST_PRELUDE_BLOCKS.operate)).toBeLessThan(
+      text.indexOf(TEST_PRELUDE_BLOCKS.write),
+    );
+    expect(text.indexOf(TEST_PRELUDE_BLOCKS.write)).toBeLessThan(
+      text.indexOf(TEST_PRELUDE_BLOCKS.know),
+    );
+    expect(text.indexOf(TEST_PRELUDE_BLOCKS.know)).toBeLessThan(text.indexOf("\n\nhello"));
   });
 
   // witness: insertSession prefixed the prelude to whatever the seed's prompt
@@ -3361,6 +3395,7 @@ describe("autonomous session scheduler", () => {
     const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
       sessionId: sessions[0]._id,
     });
+    expect(inbound[0].text).toContain(AUTONOMOUS_SESSION_CONTRACT);
     // The repo variant of the workspace block: a named checkout, the session's
     // own branch, and the one gate the doctrine keeps for Tom.
     expect(inbound[0].text).toContain("fresh checkout of ComplexMultiTrigger");
@@ -3543,7 +3578,7 @@ describe("the code lane", () => {
     const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
       sessionId: session._id,
     });
-    const text = inbound[0].text;
+    const text = inbound[0].text ?? "";
     expect(text).toContain("cmt-001");
     expect(text).toContain('TOM RULED "approve"');
     expect(text).toContain("Brief for cmt-001");
@@ -3552,10 +3587,24 @@ describe("the code lane", () => {
     expect(text).toContain("python3 -m pytest tests/guards/test_bb_todos.py -q");
     expect(text).toContain("gh pr create");
     expect(text).toContain("CHANGE REPORT:");
+    expect(text).toContain(AUTONOMOUS_SESSION_CONTRACT);
+    expect(text).not.toContain("define every term on first use");
     expect(text).toContain("/tts/session-outcome");
     expect(text).toContain("NEVER merge");
     expect(text).toContain(DAEMON_SENTENCE);
     expect(text).not.toContain("SESSIONS_WORKER_KEY");
+    expect(text.indexOf(TEST_PRELUDE_BLOCKS.know)).toBeLessThan(
+      text.indexOf(AUTONOMOUS_SESSION_CONTRACT),
+    );
+    expect(text.indexOf('TOM RULED "approve"')).toBeLessThan(
+      text.indexOf("THE CODE TODO:"),
+    );
+    expect(text.indexOf("THE CODE TODO:")).toBeLessThan(
+      text.indexOf("THE BRIEF Tom ruled from"),
+    );
+    expect(text.indexOf("THE BRIEF Tom ruled from")).toBeLessThan(
+      text.indexOf(`session/${session._id}`),
+    );
 
     // The ruling is applied AT ADMISSION, naming the session.
     const ruling = await t.run(async (ctx) => ctx.db.get(rulingId));
@@ -3986,6 +4035,8 @@ describe("prospecting lane", () => {
       text.indexOf("/tts/capture"),
     );
     expect(text).toContain('"source": "prospecting"');
+    expect(text).toContain(AUTONOMOUS_SESSION_CONTRACT);
+    expect(text).not.toContain("Follow the ground-up contract");
     // At most eight captures, said in the prompt because the capture route is
     // the agent's own pen and enforces no cap of its own.
     expect(text).toContain("At most 8 captures");
@@ -4007,6 +4058,15 @@ describe("prospecting lane", () => {
     // reaches a model-reachable environment, so the prompt cannot name it.
     expect(text).toContain("TTS_WORKER_KEY");
     expect(text).not.toContain("SESSIONS_WORKER_KEY");
+    expect(text.indexOf(TEST_PRELUDE_BLOCKS.know)).toBeLessThan(
+      text.indexOf(AUTONOMOUS_SESSION_CONTRACT),
+    );
+    expect(text.indexOf("What counts as a finding:")).toBeLessThan(
+      text.indexOf("The mission: this session PROSPECTS"),
+    );
+    expect(text.indexOf("The mission: this session PROSPECTS")).toBeLessThan(
+      text.indexOf("The pens (shell commands"),
+    );
   });
 
   // witness: put the read-first step back behind `repo === "ComplexMultiTrigger"`
@@ -4540,6 +4600,15 @@ describe("frontier scheduler", () => {
     const text = await missionText(tom, sessions[0]._id);
     expect(text).toContain("do the groundwork this item needs");
     expect(text).not.toContain("YOU HAVE CLAIMED ONE TODO");
+    expect(text.indexOf(TEST_PRELUDE_BLOCKS.know)).toBeLessThan(
+      text.indexOf(AUTONOMOUS_SESSION_CONTRACT),
+    );
+    expect(text.indexOf("The goal:")).toBeLessThan(
+      text.indexOf("The item (\"draft the reading list\")"),
+    );
+    expect(text.indexOf("The item (\"draft the reading list\")")).toBeLessThan(
+      text.indexOf("/tts/prepare-todo"),
+    );
   });
 
   // witness: drop the batch-status test from the frontier walk and this goes
@@ -5229,8 +5298,12 @@ describe("frontier scheduler", () => {
     expect(text).toContain("publish the page");
     expect(text).toContain("ALSO READY IN THIS BATCH RIGHT NOW (1");
     expect(text).toContain("check the citations");
-    // The standard it writes to, verbatim from its one home.
-    expect(text).toContain(WRITING_STANDARD);
+    // The selected publication's writing block reaches the worker verbatim.
+    expect(text).toContain(TEST_PRELUDE_BLOCKS.write);
+    expect(text).toContain(AUTONOMOUS_SESSION_CONTRACT);
+    expect(text).not.toContain("The vocabulary, which is closed");
+    expect(text).not.toContain("<!DOCTYPE html>");
+    expect(text).not.toContain("Palette #0a0e17");
     // The two pens, the four outcomes, and the wrong-edge channel.
     expect(text).toContain("/tts/prepare-todo");
     expect(text).toContain("/tts/session-outcome");
@@ -5245,6 +5318,18 @@ describe("frontier scheduler", () => {
     // reaches a model-reachable environment.
     expect(text).toContain("TTS_WORKER_KEY");
     expect(text).not.toContain("SESSIONS_WORKER_KEY");
+    expect(text.indexOf(TEST_PRELUDE_BLOCKS.know)).toBeLessThan(
+      text.indexOf(AUTONOMOUS_SESSION_CONTRACT),
+    );
+    expect(text.indexOf("Everything you write into TTS obeys")).toBeLessThan(
+      text.indexOf("THE BATCH"),
+    );
+    expect(text.indexOf("THE BATCH")).toBeLessThan(
+      text.indexOf("YOU HAVE CLAIMED ONE TODO"),
+    );
+    expect(text.indexOf("YOU HAVE CLAIMED ONE TODO")).toBeLessThan(
+      text.indexOf("/tts/prepare-todo"),
+    );
   });
 
   // witness: drop the extraText argument from the pickMissionRepo call in the

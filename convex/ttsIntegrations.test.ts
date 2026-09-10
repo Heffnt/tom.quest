@@ -16,6 +16,16 @@ import {
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
+async function publishWritingStandard(t: ReturnType<typeof convexTest>) {
+  await t.run(async (ctx) => {
+    await ctx.db.insert("modelOfTomPublication", {
+      key: "current", commit: "capture-context-test", committedAt: 1, pushed: true,
+      operate: "operate block", write: "write block", know: "know block",
+      headers: [{ blocks: ["write", "know"], header: "published write + know" }],
+    });
+  });
+}
+
 // A todo the way the capture door writes one. The source is decided from the
 // statement AT CAPTURE (convex/tts.ts internalCapture), which is what makes
 // the poller's read a handful of rows instead of the whole archive — so these
@@ -213,6 +223,7 @@ describe("GET /tts/capture-context declined integrations", () => {
   it("serves what a poller checks its own name against", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest(schema, modules);
+    await publishWritingStandard(t);
     const id = await declineable(t, "integration: outlook");
     await rule(t, id, "archive", { sentence: "not worth the credential" });
 
@@ -230,13 +241,15 @@ describe("GET /tts/capture-context declined integrations", () => {
         sentence: "not worth the credential",
       },
     ]);
-    // The triage rules still ride the same payload.
-    expect(typeof body.captureTriage).toBe("string");
+    expect(body.writingStandard).toBe("published write + know\n\nwrite block\n\nknow block");
+    expect(body.captureTriage).toBeUndefined();
+    expect(body.source).toBeUndefined();
   });
 
   it("is an empty list when he has declined nothing", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest(schema, modules);
+    await publishWritingStandard(t);
     const res = await t.fetch("/tts/capture-context", {
       method: "GET",
       headers: { "X-TTS-Key": "s3cret" },

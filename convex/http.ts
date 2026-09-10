@@ -10,13 +10,14 @@ import {
   DAY_MS,
   RECOMMENDATION_VALUES,
   SESSION_REPO_NAMES,
+  TTS_CLOSED_VOCABULARY,
   isRecommendation,
   isSessionModel,
   nyCalendarDayBoundsUtc,
   ttsPrepDay,
   type Recommendation,
 } from "./ttsShared";
-import { isModelOfTomPath } from "./ttsSkills";
+import { isModelOfTomPath, MODEL_OF_TOM_BLOCK_NAMES } from "./ttsSkills";
 import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES, isExportTable } from "./ttsNightly";
 
 const http = httpRouter();
@@ -39,6 +40,12 @@ function jsonResponse(status: number, body: unknown): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+/** Worker jobs need the original missing-block sentence, not a framework
+ * exception, so their nonzero exit names the deployment state to repair. */
+function modelOfTomErrorResponse(error: unknown): Response {
+  return jsonResponse(503, { error: error instanceof Error ? error.message : String(error) });
 }
 
 // The one key-auth gate for every agent-facing route (ledger graduation:
@@ -194,35 +201,26 @@ const ttsCapture = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/capture", method: "POST", handler: ttsCapture });
 
-// GET /tts/capture-context — what a capture poller on the Jarvis Box needs
-// BEFORE it captures anything (the lifeos update, phase 6). One read, shared
-// by poll-gmail, poll-canvas and poll-outlook, for the same reason
-// /tts/batch-context serves the writing standard: those jobs are Node ESM on a
-// box that can neither import TypeScript nor read a git checkout of WikiTom.
-//
-//   captureTriage — the two judgements a poller makes (does this imply an
-//     action by Tom; does it need him today), taken from the "What becomes a
-//     todo" section of the stored model-of-tom/priorities.md.
-//   source — which of the three the rules came from: "priorities" (the live
-//     section), "skill" (a capture-triage row the retired sync left), or
-//     "builtin" (ttsShared.CAPTURE_TRIAGE_RULES). The poller prints it, so a
-//     run whose rules stopped tracking WikiTom says so in its own log line
-//     instead of triaging by a frozen copy in silence.
-//   declinedIntegrations — the integrations Tom has declined, each with the
-//     date and his sentence (convex/ttsIntegrations.ts). A poller checks its
-//     own name against this list BEFORE anything else and exits when it is
-//     there: an integration he declined does not run, and the ruling that says
-//     so is the same kind of record as every other decision of his.
+// GET /tts/capture-context supplies the published write + know standard and
+// declined integrations before a poller captures anything. The worker cannot
+// import TypeScript or read the WikiTom checkout, so it receives the exact
+// stored prelude instead.
+
 const ttsCaptureContext = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  const [triage, declinedIntegrations] = await Promise.all([
-    ctx.runQuery(internal.ttsSkills.internalCaptureTriage, {}),
-    ctx.runQuery(internal.ttsIntegrations.internalDeclinedIntegrations, {}),
-  ]);
+  let writingStandard: string;
+  let declinedIntegrations;
+  try {
+    [writingStandard, declinedIntegrations] = await Promise.all([
+      ctx.runQuery(internal.ttsSkills.internalModelOfTomPrelude, { names: ["write", "know"] }),
+      ctx.runQuery(internal.ttsIntegrations.internalDeclinedIntegrations, {}),
+    ]);
+  } catch (error) {
+    return modelOfTomErrorResponse(error);
+  }
   return jsonResponse(200, {
-    captureTriage: triage.captureTriage,
-    source: triage.source,
+    writingStandard,
     declinedIntegrations,
   });
 });
@@ -781,8 +779,17 @@ http.route({ path: "/tts/state", method: "GET", handler: ttsState });
 const ttsTimeNotes = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  const notes = await ctx.runQuery(internal.tts.internalPendingTimeNotes, {});
-  return jsonResponse(200, { notes, ...nowContext(Date.now()) });
+  let notes;
+  let writingStandard: string;
+  try {
+    [notes, writingStandard] = await Promise.all([
+      ctx.runQuery(internal.tts.internalPendingTimeNotes, {}),
+      ctx.runQuery(internal.ttsSkills.internalModelOfTomPrelude, { names: ["write", "know"] }),
+    ]);
+  } catch (error) {
+    return modelOfTomErrorResponse(error);
+  }
+  return jsonResponse(200, { notes, writingStandard, ...nowContext(Date.now()) });
 });
 
 http.route({ path: "/tts/time-notes", method: "POST", handler: ttsTimeNotes });
@@ -1129,24 +1136,27 @@ http.route({ path: "/tts/ruling", method: "POST", handler: ttsRuling });
 // pastes into its prompt the same text every TypeScript caller reads.
 //
 // ITS SOURCE is the model-of-tom prelude (convex/ttsSkills.ts
-// modelOfTomPrelude): the files the nightly job posted, headed by their
-// WikiTom commit, or ttsShared.WRITING_STANDARD under a header saying so
-// until the first post. The field name and type do not change:
+// modelOfTomPrelude), selecting the published write + know blocks. The field
+// name and type do not change:
 // worker/jobs/plan-graphs.mjs treats a missing `writingStandard` as fatal.
 const ttsBatchContext = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
   // Seven independent reads — issued in parallel, not awaited one by one.
-  const [todos, mirror, briefs, recentRulings, batches, planRepairs, writingStandard] =
-    await Promise.all([
+  let todos, mirror, briefs, recentRulings, batches, planRepairs, writingStandard: string;
+  try {
+    [todos, mirror, briefs, recentRulings, batches, planRepairs, writingStandard] = await Promise.all([
       ctx.runQuery(internal.tts.internalListTodos, {}),
       ctx.runQuery(internal.tts.internalListMirror, {}),
       ctx.runQuery(internal.ttsCode.internalListBriefs, {}),
       ctx.runQuery(internal.ttsRulings.internalRecentRulings, { limit: 200 }),
       ctx.runQuery(internal.tts.internalListBatches, {}),
       ctx.runQuery(internal.tts.internalRecentPlanRepairs, { limit: 20 }),
-      ctx.runQuery(internal.ttsSkills.internalModelOfTomPrelude, {}),
+      ctx.runQuery(internal.ttsSkills.internalModelOfTomPrelude, { names: ["write", "know"] }),
     ]);
+  } catch (error) {
+    return modelOfTomErrorResponse(error);
+  }
   return jsonResponse(200, {
     todos,
     mirror,
@@ -1155,6 +1165,7 @@ const ttsBatchContext = httpAction(async (ctx, request) => {
     batches,
     planRepairs,
     writingStandard,
+    vocabulary: TTS_CLOSED_VOCABULARY,
     // The repo names a batch may declare. Served for the SAME reason as
     // writingStandard above: the planner is Node ESM on a box that never loads
     // TypeScript, so it cannot import SESSION_REPOS. Serving the one home's
@@ -1174,17 +1185,12 @@ http.route({
   handler: ttsBatchContext,
 });
 
-// ── POST /tts/model-of-tom — the nightly job's post of the files every prompt
-// begins with (the lifeos update, phase 4) ───────────────────────────────────
-// Body: { commit, committedAt, pushed?, force?, files: [{ path, body }] } —
-// the WikiTom commit hash the files were read at, that commit's time (epoch
-// ms; it becomes the rows' syncedAt), whether the commit had reached GitHub
-// (the job posts local HEAD even after a refused push), the reason an older
-// commit may replace the store (absent, an older post is refused), and the
-// files in any order (the server orders them). The store is replaced whole,
-// atomically, in convex/ttsSkills.ts. Same TTS_WORKER_KEY door as every
-// other worker pen: the box that holds the WikiTom checkout is the only
-// writer, and nothing in Convex reads GitHub.
+// ── POST /tts/model-of-tom — the nightly job's three-block publication every
+// prompt selects from (the lifeos update, phase 4) ───────────────────────────
+// Body: { commit, committedAt, pushed, force?, blocks, headers, files }.
+// `blocks` and the seven selection headers are already rendered by the
+// publisher; files retain source facts ({ path, body, bytes }). The store is
+// replaced atomically in convex/ttsSkills.ts.
 const MODEL_OF_TOM_FILES_MAX = 64;
 
 const ttsModelOfTom = httpAction(async (ctx, request) => {
@@ -1203,21 +1209,54 @@ const ttsModelOfTom = httpAction(async (ctx, request) => {
   if (typeof b.committedAt !== "number" || !Number.isFinite(b.committedAt)) {
     return jsonResponse(400, { error: "committedAt (epoch ms) required" });
   }
-  if (b.pushed !== undefined && typeof b.pushed !== "boolean") {
-    return jsonResponse(400, { error: "pushed, when given, is a boolean" });
+  if (typeof b.pushed !== "boolean") {
+    return jsonResponse(400, { error: "pushed (boolean) required" });
   }
   if (b.force !== undefined && (typeof b.force !== "string" || b.force.trim() === "")) {
     return jsonResponse(400, { error: "force, when given, is the reason (a non-empty string)" });
   }
-  if (!Array.isArray(b.files) || b.files.length === 0) {
-    return jsonResponse(400, { error: "files (non-empty array) required" });
+  if (typeof b.blocks !== "object" || b.blocks === null) {
+    return jsonResponse(400, { error: "blocks ({ operate, write, know }) required" });
+  }
+  const rawBlocks = b.blocks as Record<string, unknown>;
+  if (Object.keys(rawBlocks).length !== MODEL_OF_TOM_BLOCK_NAMES.length ||
+    !Object.keys(rawBlocks).every((name) => (MODEL_OF_TOM_BLOCK_NAMES as readonly string[]).includes(name))) {
+    return jsonResponse(400, { error: "blocks must contain exactly operate, write, and know" });
+  }
+  const blocks: Record<(typeof MODEL_OF_TOM_BLOCK_NAMES)[number], string> = {
+    operate: "", write: "", know: "",
+  };
+  for (const name of MODEL_OF_TOM_BLOCK_NAMES) {
+    if (typeof rawBlocks[name] !== "string" || rawBlocks[name].trim() === "") {
+      return jsonResponse(400, { error: `blocks.${name} (non-empty string) required` });
+    }
+    blocks[name] = rawBlocks[name];
+  }
+  if (!Array.isArray(b.headers) || b.headers.length !== 7) {
+    return jsonResponse(400, { error: "headers (the 7 canonical nonempty selections) required" });
+  }
+  const headers: { blocks: (typeof MODEL_OF_TOM_BLOCK_NAMES)[number][]; header: string }[] = [];
+  for (let i = 0; i < b.headers.length; i++) {
+    const header = b.headers[i] as Record<string, unknown> | null;
+    if (typeof header !== "object" || header === null || !Array.isArray(header.blocks) ||
+      !header.blocks.every((name) => (MODEL_OF_TOM_BLOCK_NAMES as readonly string[]).includes(name as string)) ||
+      typeof header.header !== "string" || header.header.trim() === "" || header.header.includes("\n")) {
+      return jsonResponse(400, { error: `headers[${i}] must contain blocks and a non-empty header` });
+    }
+    headers.push({ blocks: header.blocks as (typeof MODEL_OF_TOM_BLOCK_NAMES)[number][], header: header.header });
+  }
+  if (!Array.isArray(b.files)) {
+    return jsonResponse(400, { error: "files (array) required" });
   }
   if (b.files.length > MODEL_OF_TOM_FILES_MAX) {
     return jsonResponse(400, {
       error: `at most ${MODEL_OF_TOM_FILES_MAX} files per post — got ${b.files.length}`,
     });
   }
-  const files: { path: string; body: string }[] = [];
+  if (b.files.length === 0) {
+    return jsonResponse(400, { error: "files (non-empty array) required" });
+  }
+  const files: { path: string; body: string; bytes: number }[] = [];
   for (let i = 0; i < b.files.length; i++) {
     const f = b.files[i] as Record<string, unknown> | null;
     if (typeof f !== "object" || f === null || !isModelOfTomPath(f.path)) {
@@ -1228,12 +1267,15 @@ const ttsModelOfTom = httpAction(async (ctx, request) => {
     if (typeof f.body !== "string" || f.body.trim() === "") {
       return jsonResponse(400, { error: `files[${i}].body (non-empty string) required` });
     }
-    files.push({ path: f.path, body: f.body });
+    if (typeof f.bytes !== "number" || !Number.isSafeInteger(f.bytes) || f.bytes < 0) {
+      return jsonResponse(400, { error: `files[${i}].bytes (nonnegative integer) required` });
+    }
+    files.push({ path: f.path, body: f.body, bytes: f.bytes });
   }
   try {
     const result = await ctx.runMutation(
       internal.ttsSkills.internalReplaceModelOfTom,
-      { commit: b.commit, committedAt: b.committedAt, pushed: b.pushed, force: b.force, files },
+      { commit: b.commit, committedAt: b.committedAt, pushed: b.pushed, force: b.force, blocks, headers, files },
     );
     return jsonResponse(200, { ok: true, commit: b.commit, ...result });
   } catch (e) {
@@ -1328,8 +1370,17 @@ const ttsWeeklyInput = httpAction(async (ctx, request) => {
   if (!Number.isFinite(until) || until <= 0) {
     return jsonResponse(400, { error: "until must be an epoch ms instant" });
   }
-  const facts = await ctx.runQuery(internal.ttsWeekly.internalWeeklyInput, { until });
-  return jsonResponse(200, facts);
+  let facts;
+  let writingStandard: string;
+  try {
+    [facts, writingStandard] = await Promise.all([
+      ctx.runQuery(internal.ttsWeekly.internalWeeklyInput, { until }),
+      ctx.runQuery(internal.ttsSkills.internalModelOfTomPrelude, { names: ["write", "know"] }),
+    ]);
+  } catch (error) {
+    return modelOfTomErrorResponse(error);
+  }
+  return jsonResponse(200, { ...facts, writingStandard });
 });
 
 http.route({ path: "/tts/weekly-input", method: "GET", handler: ttsWeeklyInput });

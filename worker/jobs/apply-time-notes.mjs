@@ -47,6 +47,7 @@ import {
   extractJsonObject,
   nyUtcOffsetHours,
   nyNoonUtcMs,
+  JSON_ONLY_ANSWER,
 } from "./tts-lib.mjs";
 
 const NOTE_MAX = 10; // per run; the rest wait two minutes
@@ -143,7 +144,7 @@ function renderContext(context) {
 // The prompt
 // ---------------------------------------------------------------------------
 
-function prompt(note, clock) {
+export function timeNotePrompt(note, clock, writingStandard) {
   // note.day is the calendar-date LABEL of the column Tom clicked, already
   // "YYYY-MM-DD" in New York (schema: dtsTimeNotes.day) — it goes into the
   // prompt verbatim. There is no timestamp to convert and nothing to get wrong.
@@ -152,19 +153,12 @@ function prompt(note, clock) {
       ? `The note is about the calendar day ${note.day} (New York).`
       : null;
   return [
+    writingStandard,
+    ``,
     `You are reading ONE "time note" in TTS, Tom's personal todo system. A`,
     `time note is a sentence Tom wrote about time — a due date, a wake time, a`,
     `block of committed time on his calendar. Your job is to turn that one`,
     `sentence into concrete actions, or to say plainly that you cannot.`,
-    ``,
-    `RIGHT NOW: ${clock.nyCalendarDay} ${nyLocal(clock.now)} in ${clock.timezone}`,
-    `(all times below, and every time you write, are New York wall clock).`,
-    ``,
-    `TOM WROTE: ${note.text}`,
-    ...(dayLine ? [``, dayLine] : []),
-    ``,
-    `WHAT THE NOTE IS ABOUT (JSON):`,
-    JSON.stringify(renderContext(note.context), null, 2),
     ``,
     `THE ACTIONS YOU MAY ASK FOR. Nothing else exists; an instruction that`,
     `needs anything else is "needs-session".`,
@@ -208,15 +202,23 @@ function prompt(note, clock) {
     `  says "push it back" but the date already passed — that is a miss).`,
     `- A weekday with no date ("Wednesday") means the NEXT such weekday from`,
     `  today. A bare month+day takes the nearest year that is not in the past.`,
-    `- "result" is ONE plain sentence of what was done, in Tom's words, no`,
-    `  jargon: "due set to Wed Sep 2", "moved the chores block to 10-12".`,
+    `- "result" is ONE plain sentence of what was done: "due set to Wed Sep 2",`,
+    `  "moved the chores block to 10-12".`,
     `  For "needs-session" it is the one-line reason instead.`,
-    `- Descriptive, never evaluative. No praise, no urgency.`,
     ``,
-    `Answer ONLY a JSON object, no prose, no code fences:`,
+    JSON_ONLY_ANSWER,
     `{"status": "applied", "result": "...", "actions": [ ... ]}`,
     `or`,
     `{"status": "needs-session", "result": "...", "actions": []}`,
+    ``,
+    `TOM WROTE: ${note.text}`,
+    ...(dayLine ? [``, dayLine] : []),
+    ``,
+    `WHAT THE NOTE IS ABOUT (JSON):`,
+    JSON.stringify(renderContext(note.context), null, 2),
+    ``,
+    `RIGHT NOW: ${clock.nyCalendarDay} ${nyLocal(clock.now)} in ${clock.timezone}`,
+    `(all times below, and every time you write, are New York wall clock).`,
   ].join("\n");
 }
 
@@ -298,6 +300,9 @@ function toWireAction(a) {
 async function main() {
   const env = loadEnv();
   const state = await convexFetch(env, "/tts/time-notes", {});
+  if (typeof state.writingStandard !== "string" || state.writingStandard.trim() === "") {
+    throw new Error("model-of-tom block write is not stored");
+  }
   const notes = Array.isArray(state.notes) ? state.notes : [];
   if (notes.length === 0) return; // the common case: exit before spending anything
 
@@ -316,7 +321,7 @@ async function main() {
     // well-formed; the only question left is whether the server accepts it.
     let verdict;
     try {
-      const answer = runClaude(prompt(note, state), {
+      const answer = runClaude(timeNotePrompt(note, state, state.writingStandard), {
         timeoutMs: CLAUDE_TIMEOUT_MS,
         model: MODEL,
       });
@@ -389,7 +394,13 @@ async function main() {
   if (failures > 0) process.exitCode = 1;
 }
 
-main().catch((err) => {
-  console.error(`[apply-time-notes] FAILED: ${err.message}`);
-  process.exit(1);
-});
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  new URL(import.meta.url).pathname === new URL(`file://${process.argv[1].replace(/\\/g, "/")}`).pathname;
+
+if (invokedDirectly) {
+  main().catch((err) => {
+    console.error(`[apply-time-notes] FAILED: ${err.message}`);
+    process.exit(1);
+  });
+}

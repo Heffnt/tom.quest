@@ -18,6 +18,24 @@ const TTS = "C0TTS";
 // Web Crypto API; jsdom leaves that global out, so the test lends it Node's.
 vi.stubGlobal("crypto", webcrypto);
 
+async function publishSessionPrelude(t: ReturnType<typeof convexTest>) {
+  await t.run(async (ctx) => {
+    await ctx.db.insert("modelOfTomPublication", {
+      key: "current",
+      commit: "slack-session-test",
+      committedAt: 1,
+      pushed: true,
+      operate: "operate block",
+      write: "write block",
+      know: "know block",
+      headers: [{
+        blocks: ["operate", "write", "know"],
+        header: "MODEL-OF-TOM FILES (WikiTom commit slack-session-test): operate,write,know",
+      }],
+    });
+  });
+}
+
 function signed(body: unknown): { headers: Record<string, string>; body: string } {
   const raw = JSON.stringify(body);
   const timestamp = String(Math.floor(Date.now() / 1000));
@@ -455,6 +473,7 @@ describe("threaded replies from Tom", () => {
   it("a live session takes the reply as its next inbound turn", async () => {
     slackEnv();
     const t = convexTest(schema, modules);
+    await publishSessionPrelude(t);
     const sessionId = await t.mutation(internal.claudeSessions.internalCreateSession, {
       title: "design the thing",
       kind: "adhoc",
@@ -489,6 +508,7 @@ describe("threaded replies from Tom", () => {
   it("an ended session gets a new session of the same kind seeded with the thread, and the thread is told", async () => {
     slackEnv();
     const t = convexTest(schema, modules);
+    await publishSessionPrelude(t);
     const oldId = await t.mutation(internal.claudeSessions.internalCreateSession, {
       title: "design the thing",
       kind: "focus-item",
@@ -551,6 +571,7 @@ describe("threaded replies from Tom", () => {
   it("a second reply arriving before the notice posts joins the same new session", async () => {
     slackEnv();
     const t = convexTest(schema, modules);
+    await publishSessionPrelude(t);
     const oldId = await t.mutation(internal.claudeSessions.internalCreateSession, {
       title: "design the thing",
       kind: "adhoc",
@@ -860,6 +881,7 @@ describe("threaded replies from Tom", () => {
   it("a reply whose routing throws is captured as a todo, recorded as a failure, and answered 200", async () => {
     slackEnv();
     const t = convexTest(schema, modules);
+    await publishSessionPrelude(t);
     const sessionId = await t.mutation(internal.claudeSessions.internalCreateSession, {
       title: "gone",
       kind: "adhoc",

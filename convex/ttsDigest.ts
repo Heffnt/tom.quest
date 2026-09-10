@@ -221,8 +221,8 @@ export type DigestFacts = {
     evidence: string;
     reason?: string;
   }[];
-  // The model-of-tom files every prompt begins with, as the store holds them
-  // (ttsSkills.modelOfTomState): the commit, and whether it had reached
+  // The published model-of-tom revision callers select blocks from, as the
+  // store holds it (ttsSkills.modelOfTomState): the commit, and whether it had reached
   // GitHub when the job posted it. Null while nothing posted serves.
   modelOfTom: { commit: string; pushed: boolean | null } | null;
 };

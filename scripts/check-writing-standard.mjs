@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // check-writing-standard.mjs — how many stored briefs and ground-up
-// explanations fail WRITING_STANDARD, and which ones.
+// explanations fail the writing standard, and which ones.
 //
 //   node scripts/check-writing-standard.mjs           # report + ratchet gate
 //   node scripts/check-writing-standard.mjs --list     # name every failure
@@ -13,8 +13,8 @@
 // down. This script is that number.
 //
 // BOTH HALVES ARE INSPECTED, because the graduation condition the ledger rung
-// carries names both — "no stored brief or groundUpExplanation fails
-// WRITING_STANDARD" (vqc/adoption.md). Until 2026-09-01 this script filtered
+// carries names both — no stored brief or ground-up explanation fails the
+// writing standard (vqc/adoption.md). Until 2026-09-01 this script filtered
 // on groundUpExplanation alone and reported only explanations, so the ratchet
 // could have graduated the rung on evidence that never looked at a brief. It
 // now walks both fields and prints a line per field, and the number the
@@ -83,7 +83,7 @@ function styleView(s) {
 }
 
 // The mechanically checkable half of "A GROUND-UP EXPLANATION IS A COMPLETE
-// HTML DOCUMENT" (convex/ttsShared.ts, WRITING_STANDARD). Each rule is one the
+// HTML DOCUMENT" (writing.md). Each rule is one the
 // standard states in so many words; nothing here is invented. `on` names which
 // view above the rule reads, and every choice other than the whole document
 // carries its reason.
@@ -164,7 +164,7 @@ const RULES = [
 // measurement rather than a gap. A brief is markdown by construction
 // (convex/schema.ts, `brief: v.optional(v.string()), // ground-up brief,
 // markdown`), and every rule in RULES above is a rule of the HTML-document
-// FORM, which WRITING_STANDARD attaches to a ground-up explanation and to
+// FORM, which the writing standard attaches to a ground-up explanation and to
 // nothing else. The standard's remaining demands on a brief — defines every
 // term at first use, no invented names, no load-bearing analogies, descriptive
 // never evaluative — are semantic, and this script does not claim to check
@@ -203,7 +203,7 @@ function gradeField(todos, field, rules) {
 
 function report(label, graded, note) {
   console.log(
-    `${label}: ${graded.failing.length} of ${graded.carrying} fail WRITING_STANDARD` +
+    `${label}: ${graded.failing.length} of ${graded.carrying} fail the writing standard` +
       (note ? ` (${note})` : ""),
   );
   for (const [id, n] of [...graded.byRule].sort((a, b) => b[1] - a[1])) {

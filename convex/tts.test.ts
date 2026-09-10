@@ -16,6 +16,30 @@ import {
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
+describe("POST /tts/time-notes", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("serves the pending queue with the published write and know blocks", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("modelOfTomPublication", {
+        key: "current", commit: "time-notes-test", committedAt: 1, pushed: true,
+        operate: "operate block", write: "write block", know: "know block",
+        headers: [{ blocks: ["write", "know"], header: "published write + know" }],
+      });
+    });
+
+    const response = await t.fetch("/tts/time-notes", {
+      method: "POST", headers: { "X-TTS-Key": "s3cret" },
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.notes).toEqual([]);
+    expect(body.writingStandard).toBe("published write + know\n\nwrite block\n\nknow block");
+  });
+});
+
 async function withTom(t: ReturnType<typeof convexTest>) {
   const tomId = await t.run(async (ctx) =>
     ctx.db.insert("users", { name: "tom", email: "tom@tom.quest", role: "tom" }),

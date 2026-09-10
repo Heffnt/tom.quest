@@ -46,10 +46,8 @@
 // gets an answer out of Canvas says so (POST /tts/job-ok), which records the
 // recovery and re-arms the report for the next expiry.
 //
-// TRIAGE (announcements): one non-agentic Claude call per batch, under the
-// deployment's own capture-triage rules — GET /tts/capture-context, the synced
-// WikiTom text with a fallback copy in convex/ttsShared.ts. The same words
-// poll-gmail triages by; no job keeps its own set.
+// TRIAGE (announcements): one non-agentic Claude call per batch, using the
+// writing standard from GET /tts/capture-context.
 //
 // ONE VERDICT PER ANNOUNCEMENT, and the cursor never passes one without a
 // verdict. The model echoes the ids it was given, so it can garble one, invent
@@ -81,7 +79,7 @@ import {
   reportJobOk,
   reportUntriaged,
   runClaude,
-  triageSourceLine,
+  JSON_ONLY_ANSWER,
 } from "./tts-lib.mjs";
 
 const CURSOR_FILE = "/var/lib/tts/canvas-announcements-cursor";
@@ -97,6 +95,28 @@ const MAX_CANDIDATES = 20; // per run; the 30-minute cadence drains a backlog
 export const MAX_LOOKBACK_MS = 28 * 24 * 3600 * 1000;
 
 /** Pure: the `start_date` a run asks Canvas for, given its cursor. */
+export function canvasTriagePrompt(writingStandard, candidates) {
+  return [
+    writingStandard,
+    ``,
+    `You triage Canvas course announcements for Tom's todo system (TTS).`,
+    `For each captured announcement write "statement": ONE line naming the action,`,
+    `starting with a verb and naming the course.`,
+    ``,
+    `ANSWER FOR EVERY ANNOUNCEMENT BELOW - one entry each, in the order given, with`,
+    `"id" copied EXACTLY as it appears. One you are not capturing is`,
+    `{"id": "...", "capture": false} and nothing else. Leaving one out is not a`,
+    `"no": a missing or misspelled id is a lost verdict, it is reported, and the run`,
+    `stops there rather than passing the announcement over.`,
+    ``,
+    JSON_ONLY_ANSWER,
+    `{"verdicts": [{"id": "<announcement id>", "capture": <true|false>, "statement": "<one line, only when capture is true>"}]}`,
+    ``,
+    `Announcements:`,
+    JSON.stringify(candidates.map(({ id, courseCode, title, body }) => ({ id, courseCode, title, body })), null, 2),
+  ].join("\n");
+}
+
 export function windowStart(cursor, now) {
   return Math.max(cursor, now - MAX_LOOKBACK_MS);
 }
@@ -282,7 +302,7 @@ function textOfHtml(html) {
     .trim();
 }
 
-async function pollAnnouncements(env, courses, captureTriage) {
+async function pollAnnouncements(env, courses, writingStandard) {
   let cursor = 0;
   try {
     cursor = Number(fs.readFileSync(CURSOR_FILE, "utf8").trim()) || 0;
@@ -342,34 +362,7 @@ async function pollAnnouncements(env, courses, captureTriage) {
     .slice(0, MAX_CANDIDATES);
   if (candidates.length === 0) return;
 
-  const prompt = `You triage Canvas course announcements for Tom's todo system (TTS).
-Below is a JSON array of new announcements (course, title, first 500 characters
-of the body).
-
-${captureTriage}
-
-Here an ACTION BY TOM is something he must submit, respond to, sign up for,
-prepare, bring, attend at a changed time, or decide; the purely informational
-announcements (grades posted, general encouragement, restated syllabus policy)
-are the ones to skip. Answer only the FIRST judgement — a course announcement
-reaches Tom in the morning digest, and the assignments half of this job already
-carries every real deadline with its date.
-
-For each captured announcement write "statement": ONE line naming the action in
-plain words, starting with a verb, naming the course (e.g. "Sign up for the
-CS 4241 project demo slot"). Do not invent details the text does not support.
-
-ANSWER FOR EVERY ANNOUNCEMENT BELOW — one entry each, in the order given, with
-"id" copied EXACTLY as it appears. One you are not capturing is
-{"id": "...", "capture": false} and nothing else. Leaving one out is not a
-"no": a missing or misspelled id is a lost verdict, it is reported, and the run
-stops there rather than passing the announcement over.
-
-Answer with ONLY this JSON object, no fences, no commentary:
-{"verdicts": [{"id": "<announcement id>", "capture": <true|false>, "statement": "<one line, only when capture is true>"}]}
-
-Announcements:
-${JSON.stringify(candidates.map(({ id, courseCode, title, body }) => ({ id, courseCode, title, body })), null, 2)}`;
+  const prompt = canvasTriagePrompt(writingStandard, candidates);
 
   const answer = runClaude(prompt, { timeoutMs: 5 * 60 * 1000 });
   const { verdicts } = extractJsonObject(answer);
@@ -434,9 +427,12 @@ export const INTEGRATION_NAME = "canvas";
 
 async function main() {
   const env = loadEnv();
-  // ONE read of the capture context per run — the declined list and the triage
-  // rules the announcements half prompts with are the same payload.
+  // ONE read of the capture context per run — the declined list and writing
+  // standard the announcements half uses are the same payload.
   const context = await captureContext(env);
+  if (typeof context.writingStandard !== "string" || context.writingStandard.trim() === "") {
+    throw new Error("model-of-tom block write is not stored");
+  }
   // FIRST, before the credential and before any read: an integration Tom has
   // declined does not run (worker/jobs/tts-lib.mjs declined()).
   const ruling = declined(context, INTEGRATION_NAME);
@@ -472,11 +468,7 @@ async function main() {
   // triage call that can time out. In that order a bad triage run costs only
   // the announcements, and the cursor makes the next tick pick them up again.
   await syncAssignments(env, courses);
-  // The deployment's own capture-triage rules, not a copy written here. The
-  // line names where they came from, so a run reading the hardcoded fallback
-  // says so.
-  console.log(triageSourceLine("poll-canvas", context));
-  await pollAnnouncements(env, courses, context.captureTriage);
+  await pollAnnouncements(env, courses, context.writingStandard);
 }
 
 // Run ONLY when node was pointed at this file (cron: `node /opt/tts/poll-canvas

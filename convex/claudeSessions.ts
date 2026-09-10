@@ -42,10 +42,11 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // declared here AND in app/sessions/lib.ts) and
 // the graph rules the frontier walk below reads (buildDoneSet / isReady) — the
 // page, the planner, and the scheduler must all mean the same thing by
-// "ready". The model-of-tom files every prompt begins with come from
-// ttsSkills.modelOfTomPrelude, read once per opener in insertSession below.
+// "ready". The caller-selected model-of-tom blocks each opener carries come
+// from ttsSkills.modelOfTomPrelude, read once per opener in insertSession below.
 import { modelOfTomPrelude, withoutModelOfTomPrelude } from "./ttsSkills";
 import {
+  AUTONOMOUS_SESSION_CONTRACT,
   CODEX_FALLBACK_MODEL,
   CODEX_USAGE_STALE_MS,
   CODEX_WEEKLY_CAP_PERCENT,
@@ -605,9 +606,9 @@ async function insertSession(
     codeSessionLines = codeSessionRulingLines(subjects);
     await markCodeSessionRulingsApplied(ctx, consumed, sessionId);
   }
-  // EVERY opener begins with the model-of-tom files (the lifeos update, phase
-  // 4): the browser-built prompts, the worker missions, the CLI pen, a fork —
-  // one home, here, rather than each builder pasting its own copy. The
+  // The opener carries its caller-selected model-of-tom blocks (the lifeos
+  // update, phase 4): the browser-built prompts, the worker missions, the CLI
+  // pen, a fork — one home, here, rather than each builder pasting its own copy. The
   // prelude's first line names the WikiTom commit and lists the paths, and
   // this row is the transcript's first row, so the transcript records what
   // the session began with. Under no posted files it is the hardcoded
@@ -926,11 +927,35 @@ export const internalCreateWeeklySession = internalMutation({
 // sendControl; the validations live in the body precisely so a pen can never
 // skip a check the browser enforces. Not repeated on each one.
 
-// The interactive twin of the autonomous mission's pen #2 — same route, same
-// key, same env contract (CONVEX_SITE_URL + TTS_WORKER_KEY are the only two
+// The one outcome pen for the interactive footer and every autonomous mission.
+// The caller owns its session-specific purpose and outcome wording; this owns
+// the credential-bearing command and its exact JSON shape.
+function sessionOutcomePen({
+  sessionId,
+  leadIn,
+  summary,
+  after,
+  planRepair = false,
+  fenced = false,
+}: {
+  sessionId: Id<"claudeSessions">,
+  leadIn: string;
+  summary: string;
+  after?: string;
+  planRepair?: boolean;
+  fenced?: boolean;
+}): string {
+  const command =
+    `curl -s -X POST "$CONVEX_SITE_URL/tts/session-outcome" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"sessionId": "${sessionId}", "outcome": "completed", "summary": "${summary}"${planRepair ? ', "planRepair": "optional: the edge that was wrong"' : ""}}'`;
+  return fenced
+    ? [leadIn, "```", command, "```", after].filter((line): line is string => line !== undefined).join("\n")
+    : [leadIn, command, after].filter((line): line is string => line !== undefined).join("\n");
+}
+
+// The interactive twin of the autonomous mission's pen: same route, same key,
+// and the same env contract (CONVEX_SITE_URL + TTS_WORKER_KEY are the only two
 // variables the daemon injects; SESSIONS_WORKER_KEY never enters a
-// model-reachable environment). Kept verbatim-close to the autonomous wording
-// so the two prompts teach one command, not two.
+// model-reachable environment).
 //
 // The footer also carries the WORKSPACE contract when the session holds a
 // checkout. The client-built prompts cannot know it (repos are resolved
@@ -953,9 +978,14 @@ function outcomePenFooter(
         `\n\n${DAEMON_RESTART_SENTENCE}`;
   return (
     workspace +
-    `\n\n---\nThis session's id: ${sessionId}. When the session's work concludes (or you and Tom agree it is done), record the outcome:\n` +
-    `curl -s -X POST "$CONVEX_SITE_URL/tts/session-outcome" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"sessionId": "${sessionId}", "outcome": "completed", "summary": "one line: what happened"}'\n` +
-    `("completed" = the session's purpose was met; otherwise "errored" with what blocked it. CONVEX_SITE_URL and TTS_WORKER_KEY are already set in this session's environment.)`
+    "\n\n---\n" +
+    sessionOutcomePen({
+      sessionId,
+      leadIn: `This session's id: ${sessionId}. When the session's work concludes (or you and Tom agree it is done), record the outcome:`,
+      summary: "one line: what happened",
+      after:
+        '("completed" = the session\'s purpose was met; otherwise "errored" with what blocked it. CONVEX_SITE_URL and TTS_WORKER_KEY are already set in this session\'s environment.)',
+    })
   );
 }
 
@@ -2501,23 +2531,24 @@ function workspaceParagraph(
   return `The workspace: your working directory holds ${repos.length} fresh checkouts, one per repository — ${list}. Each is on its own branch ${branch}. ${work} \`cd\` into the repository you are changing before running git: commit as you go and push ${branch} in EACH repository you touched (every remote is already configured), and open a pull request per repository with \`gh pr create\` ONLY when that repository's work is merge-ready. Name every branch and pull request you opened in the outcome summary. ${DAEMON_RESTART_SENTENCE}`;
 }
 
-// Opening prompt for an AUTONOMOUS session (house voice: the ground-up
-// contract of app/lib/tts-session-prompt.ts, adapted for a session no one is
-// watching live). The sessionId rides in so the outcome pen can name this
-// session — the agent has no other way to learn its own id.
-//
-// Lockstep: app/lib/tts-session-prompt.ts is the interactive twin (its
-// CONTRACT opening and buildTodoSessionPrompt's item facts block) — both files
-// carry a note naming the other, and the facts-block wording ('The item
-// ("…"):') is kept identical where the posture allows. No import across the
-// convex boundary: that module is client code.
+// Opening prompt for an AUTONOMOUS session. The sessionId rides in so the
+// outcome pen can name this session — the agent has no other way to learn its
+// own id. Interactive openings have their own framing in
+// app/lib/tts-session-prompt.ts; they do not share this autonomous contract.
 function buildAutoMissionPrompt(
   todo: Doc<"dtsTodos">,
   sessionId: Id<"claudeSessions">,
   repos: string[],
 ): string {
   const lines: (string | null)[] = [
-    `You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it. Follow the ground-up contract in everything you write into the system: define terms on first use, invent no names, concrete before abstract; language is descriptive, never evaluative.`,
+    AUTONOMOUS_SESSION_CONTRACT,
+    "",
+    `The goal: do the groundwork this item needs — research, draft, gather — and write what you produce into the item via the prepare pen below. Set readiness to "prepared" when the write-up is complete — and only then; a prepared item that is active, awake and unblocked is what TTS shows Tom as ready.`,
+    "",
+    // Ratified doctrine (Tom, 2026-08-29): his input gates PERSISTENCE, never
+    // implementation — a session that halts at a decision leaves him nothing
+    // concrete to rule on.
+    `Tom decisions: a decision of Tom's does NOT block you. Implement your best-judgment option and name the alternatives you passed over in the write-up; the decision then surfaces where the work persists — the pull request, or the ruling on this item. Leave for Tom only what ONLY he can do: rulings, merges, and real-world actions.`,
     "",
     // Facts block — same labels and order as the interactive twin's
     // buildTodoSessionPrompt (category is autonomous-only: it scopes what a
@@ -2531,13 +2562,6 @@ function buildAutoMissionPrompt(
   ];
   lines.push(
     "",
-    `The goal: do the groundwork this item needs — research, draft, gather — and write what you produce into the item via the prepare pen below. Set readiness to "prepared" when the write-up is complete — and only then; a prepared item that is active, awake and unblocked is what TTS shows Tom as ready.`,
-    "",
-    // Ratified doctrine (Tom, 2026-08-29): his input gates PERSISTENCE, never
-    // implementation — a session that halts at a decision leaves him nothing
-    // concrete to rule on.
-    `Tom decisions: a decision of Tom's does NOT block you. Implement your best-judgment option and name the alternatives you passed over in the write-up; the decision then surfaces where the work persists — the pull request, or the ruling on this item. Leave for Tom only what ONLY he can do: rulings, merges, and real-world actions.`,
-    "",
     // The env contract: the daemon injects ONLY these two variables into an
     // autonomous session's shell — SESSIONS_WORKER_KEY (the ingest key) never
     // enters a model-reachable environment (the auth-clobber lesson), which
@@ -2550,11 +2574,14 @@ function buildAutoMissionPrompt(
     "```",
     'Every field except "id" is optional — send only what you produced.',
     "",
-    "2. Record this session's outcome when the mission is done:",
-    "```",
-    `curl -s -X POST "$CONVEX_SITE_URL/tts/session-outcome" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"sessionId": "${sessionId}", "outcome": "completed", "summary": "one line: what landed where"}'`,
-    "```",
-    '"completed" means the mission produced its artifact; otherwise record "errored" with a summary saying what blocked you.',
+    sessionOutcomePen({
+      sessionId,
+      leadIn: "2. Record this session's outcome when the mission is done:",
+      summary: "one line: what landed where",
+      after:
+        '"completed" means the mission produced its artifact; otherwise record "errored" with a summary saying what blocked you.',
+      fenced: true,
+    }),
     "",
     // Two workspace variants. No repos is the groundwork posture (unchanged);
     // a repo-equipped mission implements the code itself and stops exactly at
@@ -2635,18 +2662,11 @@ function buildWorkerPrompt(args: {
   } = args;
   const isGoal = todo.kind === "goal";
   const lines: (string | null)[] = [
-    "You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.",
-    "",
-    // The closed vocabulary, defined before it is used. These are Tom's words
-    // and they are law: writing back to him in any other words costs him a
-    // translation he did not ask for.
-    "The vocabulary, which is closed — these words mean exactly this and nothing else:",
-    "- A BATCH holds how a set of todos gets completed. It is not itself a todo and it is never worked directly.",
-    "- A TASK is work someone does. A GOAL is a state of the world the batch is for, written as a condition that is either true yet or not.",
-    "- NEEDS are the todos a todo cannot proceed without. A todo is READY when every one of its needs is done (archived counts as done — a need that was set aside is not going to happen). The same word sequences batches: a batch's needs are the batches that must land before its work is handed out.",
-    '- DISPLAY TEXT is the short line always on screen. A GROUND-UP EXPLANATION is the self-contained layer behind it: a complete HTML document, shown fullscreen, whose exact form the standard below specifies.',
+    AUTONOMOUS_SESSION_CONTRACT,
     "",
     "Everything you write into TTS obeys the writing standard in the model-of-tom files this prompt begins with, verbatim.",
+    "",
+    BOX_TOOLS_PARAGRAPH,
     "",
     `THE BATCH ("${batch.statement}"):`,
     promptFact("ground-up explanation", batch.groundUpExplanation),
@@ -2720,9 +2740,7 @@ function buildWorkerPrompt(args: {
           "",
           "1. THE WORK IS YOURS TO DO. Do it, then record the task done with its evidence — the branch, the pull request, the file you wrote, the answer you established. Evidence is what makes the completion checkable by someone who was not here.",
           "",
-          "2. THE WORK TURNS OUT TO NEED TOM'S JUDGMENT. Do not stop at the question. Prepare it so completely that his part is one reply: write the ground-up explanation (self-contained, defining every term, complete for a reader who has none of this context), state the options as they actually stand, and give your recommendation with the one reason for it. Then set readiness to prepared and leave the task open. His input gates what PERSISTS — a merge, a ruling, a real-world action — never what you implement: where you can implement your best-judgment option and name what you passed over, do that instead of asking.",
-          "",
-          "THAT EXPLANATION IS A COMPLETE HTML DOCUMENT, not a paragraph — from \"<!DOCTYPE html>\" to \"</html>\", with its own inline <style> block and nothing loaded from outside: no script, no event handler, no external stylesheet, font, image, or URL. It renders fullscreen in a sandbox with no scripting and no network, so anything external is a hole in the page. Palette #0a0e17 background, #e2e8f0 text, #94a3b8 secondary, #e8a040 accent, #1e293b borders; about 15px body type, real <h1>/<h2> headings, short sections, a <table> for enumerable facts, bordered <div> boxes with → or ↓ arrows where a shape helps. The standard above says what it must cover; write the whole page, because there is no way to amend one and a fragment overwrites what is stored.",
+          "2. THE WORK TURNS OUT TO NEED TOM'S JUDGMENT. Do not stop at the question. Prepare it, then set readiness to prepared and leave the task open. His input gates what PERSISTS — a merge, a ruling, a real-world action — never what you implement: where you can implement your best-judgment option and name what you passed over, do that instead of asking.",
         ]),
     "",
     // The wrong-edge report. Doing the work is the only thing that can correct
@@ -2743,16 +2761,13 @@ function buildWorkerPrompt(args: {
     "```",
     "Every field except \"id\" is optional — send only what you produced, and send both commands if you both produced something and finished.",
     "",
-    "A groundUpExplanation is a whole HTML document and will not survive being typed inline in that command. Write the document to a file, build the request body from it, and post the file:",
-    "```",
-    `# after writing the page to /tmp/explanation.html\njq -Rs --arg id '${todo._id}' '{id: $id, readiness: "prepared", groundUpExplanation: .}' < /tmp/explanation.html > /tmp/tts-body.json\ncurl -s -X POST "$CONVEX_SITE_URL/tts/prepare-todo" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d @/tmp/tts-body.json`,
-    "```",
-    "Any equivalent works (node, python) — the point is that the JSON escaping is done by a tool and never by hand. Add the other fields to the jq object as you need them.",
-    "",
-    "3. Record this session's outcome when you stop:",
-    "```",
-    `curl -s -X POST "$CONVEX_SITE_URL/tts/session-outcome" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"sessionId": "${sessionId}", "outcome": "completed", "summary": "one line: what moved and where it landed", "planRepair": "optional: the edge that was wrong"}'`,
-    "```",
+    sessionOutcomePen({
+      sessionId,
+      leadIn: "3. Record this session's outcome when you stop:",
+      summary: "one line: what moved and where it landed",
+      planRepair: true,
+      fenced: true,
+    }),
     // Four words, two stored values. The store keeps two ("completed" and
     // "errored") because the scheduler's backoff reads exactly that
     // distinction; the four words are what Tom and the planner read, so they
@@ -2778,8 +2793,6 @@ function buildWorkerPrompt(args: {
           "",
           `Prohibitions: never record a ruling and never change the status of anything but the one todo you claimed — verdicts are Tom's pens alone. NEVER merge, and never push any branch other than session/${sessionId} — merging is Tom's gate.`,
         ]),
-    "",
-    BOX_TOOLS_PARAGRAPH,
     "",
     "Ending: record the outcome, then simply stop responding — the daemon ends the session after your final turn.",
   );
@@ -2821,14 +2834,14 @@ function buildCodeMissionPrompt(args: {
   const branch = `session/${sessionId}`;
   const guard = codeTodoGuard(repo);
   const lines: (string | null)[] = [
-    `You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.`,
-    "",
-    `THE CODE TODO: the entry \`${externalId}\` in ${CODE_TODO_PATH} of the ${repo} repository — the repository's own registry of decided work, where each entry carries a statement, a completion condition and (for the ready tier) a plan. The repository is the system of record for it; TTS only mirrors it.`,
-    `statement: ${statement}`,
+    AUTONOMOUS_SESSION_CONTRACT,
     "",
     verdict === "approve"
       ? `TOM RULED "approve": the entry's attached plan is the ratified decision, not a suggestion. Implement it faithfully. Where the plan is silent, follow the repository's existing conventions and do not widen scope. Close the entry in ${CODE_TODO_PATH} in this same body of work, per that file's own discipline: move it below the closed-todos banner, keeping its full body, adding a \`closed: <today>\` date and a \`resolution:\` describing what landed.`
       : `TOM RULED "archive": the entry is set aside — already done, moot, or superseded. Do NOT implement it. Close it in ${CODE_TODO_PATH} per that file's own discipline: move the entry below the closed-todos banner, keeping its full body, adding a \`closed: <today>\` date and a \`resolution:\` that says it was archived by Tom's TTS ruling${sentence ? " and quotes his sentence" : ""}, with the evidence the brief names if it names any. Until your pull request merges, the TTS mirror of ${CODE_TODO_PATH} still says the entry is open, so a second "archive" ruling on it would open a second pull request for the same close — say so in the pull request body, so Tom merges rather than re-rules.`,
+    "",
+    `THE CODE TODO: the entry \`${externalId}\` in ${CODE_TODO_PATH} of the ${repo} repository — the repository's own registry of decided work, where each entry carries a statement, a completion condition and (for the ready tier) a plan. The repository is the system of record for it; TTS only mirrors it.`,
+    `statement: ${statement}`,
     promptFact("Tom's sentence with the ruling", sentence),
     "",
     "THE BRIEF Tom ruled from (written against the tree as it stood then; verify against the tree in front of you, and name in your pull request anything that has moved):",
@@ -2840,13 +2853,17 @@ function buildCodeMissionPrompt(args: {
       `${verdict === "approve" ? "Implement the plan, then close the entry." : "Close the entry."} Run \`${guard ?? "the repository's own guard test for that file"}\` and the tests nearest your change, and fix what you break — a pull request never carries a malformed registry.`,
     ),
     "",
-    `Open the pull request in every case that produced commits: it is how the work reaches Tom, and merging it is his gate. Its body STARTS with the line "CHANGE REPORT:" followed by a ground-up description of what changed as OBSERVABLE BEHAVIOR — define every term on first use; write for Tom, who will review it — and ends with the line "Merging this pull request is the persist-tom-gate for ${repo} ${externalId}."`,
+    `Open the pull request in every case that produced commits: it is how the work reaches Tom, and merging it is his gate. Its body STARTS with the line "CHANGE REPORT:" and ends with the line "Merging this pull request is the persist-tom-gate for ${repo} ${externalId}."`,
     "",
-    "The pen (a shell command; CONVEX_SITE_URL and TTS_WORKER_KEY are already set in this session's environment). Record this session's outcome when you stop:",
-    "```",
-    `curl -s -X POST "$CONVEX_SITE_URL/tts/session-outcome" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"sessionId": "${sessionId}", "outcome": "completed", "summary": "one line: the pull request URL and what it does"}'`,
-    "```",
-    '"completed" means the pull request exists; otherwise record "errored" with a summary that says what blocked you — Tom re-rules to retry.',
+    sessionOutcomePen({
+      sessionId,
+      leadIn:
+        "The pen (a shell command; CONVEX_SITE_URL and TTS_WORKER_KEY are already set in this session's environment). Record this session's outcome when you stop:",
+      summary: "one line: the pull request URL and what it does",
+      after:
+        '"completed" means the pull request exists; otherwise record "errored" with a summary that says what blocked you — Tom re-rules to retry.',
+      fenced: true,
+    }),
     "",
     `Prohibitions: never record a ruling and never change the status of any TTS todo — verdicts are Tom's pens alone. NEVER merge, and never push any branch other than ${branch} — merging is Tom's gate.`,
     "",
@@ -3074,20 +3091,17 @@ const PROSPECT_EVENT_SCAN = 1000;
 // capture route is the agent's own pen). One number, one home.
 const PROSPECT_CAPTURE_CAP = 8;
 
-// Opening prompt for a PROSPECTING mission. Same house voice and same shape as
-// buildAutoMissionPrompt (contract opening → the mission → the pens → the
-// prohibitions → the ending), with two differences that follow from working no
-// todo: there is no item facts block and no prepare pen, and the read-first
-// step is mandatory because the only way to avoid handing Tom a duplicate is
-// to look at what he already holds.
+// Opening prompt for a PROSPECTING mission. It puts the fixed finding criteria
+// before mission-specific context, then the pens, prohibitions, and ending.
+// There is no item facts block or prepare pen, and the read-first step is
+// mandatory because the only way to avoid handing Tom a duplicate is to look
+// at what he already holds.
 function buildProspectMissionPrompt(
   repo: string,
   sessionId: Id<"claudeSessions">,
 ): string {
   const lines: string[] = [
-    `You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it. Follow the ground-up contract in everything you write into the system: define terms on first use, invent no names, concrete before abstract; language is descriptive, never evaluative.`,
-    "",
-    `The mission: this session PROSPECTS — it works no todo item. TTS had session capacity left over after handing out its real todo work this tick, and spends it here. Your working directory is a fresh checkout of ${repo}. Read it for CONCRETE, ACTIONABLE issues worth carrying as items in Tom's todo system, and capture each NEW one with the capture pen below. This mission only READS and CAPTURES — no code changes, no commits, no pushes, no pull requests.`,
+    AUTONOMOUS_SESSION_CONTRACT,
     "",
     "What counts as a finding:",
     "- a failing or skipped test — name the test and the file it lives in",
@@ -3097,15 +3111,9 @@ function buildProspectMissionPrompt(
     "- a broken link between modules: a stale import path, a field one side renamed and the other still reads, one rule implemented two different ways in two files",
     "- vocabulary drift: one fact carried under two names, or one name meaning two different things",
     "",
-    `The quality bar: every finding NAMES the file or files it lives in, and is actionable by a future session holding nothing but your one sentence and the repo. A finding you are not certain about is still worth capturing when it is CONCRETE — Tom reads every item and declining one costs him a glance. What is not worth capturing is a style nitpick or a "this could be cleaner" with no named change: if you cannot say what would change and where, it is not a finding. At most ${PROSPECT_CAPTURE_CAP} captures for the whole mission: a short list of real findings is worth more than a long one, and finding NOTHING new is an honest, complete outcome.`,
+    `The quality bar: every finding NAMES the file or files it lives in, and is actionable by a future session holding nothing but your one sentence and the repo. A finding you are not certain about is still worth capturing when it names a change — Tom reads every item and declining one costs him a glance. What is not worth capturing is a style nitpick or a "this could be cleaner" with no named change: if you cannot say what would change and where, it is not a finding. At most ${PROSPECT_CAPTURE_CAP} captures for the whole mission: a short list of real findings is worth more than a long one, and finding NOTHING new is an honest, complete outcome.`,
     "",
-    "The pens (shell commands; CONVEX_SITE_URL and TTS_WORKER_KEY are already set in this session's environment):",
-    "",
-    "1. READ WHAT TTS ALREADY HOLDS — do this BEFORE you capture anything:",
-    "```",
-    `curl -s "$CONVEX_SITE_URL/tts/state" -H "X-TTS-Key: $TTS_WORKER_KEY"`,
-    "```",
-    'The response carries every item in the system under "todos". Read their statements. Never capture a finding that restates one of them, or that an item plainly already covers — a duplicate costs Tom a triage he has already done.',
+    `The mission: this session PROSPECTS — it works no todo item. TTS had session capacity left over after handing out its real todo work this tick, and spends it here. Your working directory is a fresh checkout of ${repo}. Read it for actionable issues worth carrying as items in Tom's todo system, and capture each NEW one with the capture pen below. This mission only READS and CAPTURES — no code changes, no commits, no pushes, no pull requests.`,
   ];
   // A repo that governs itself by an in-repo code-todo registry holds
   // already-tracked work a prospector must not re-capture. WHICH repos those
@@ -3129,17 +3137,28 @@ function buildProspectMissionPrompt(
   }
   lines.push(
     "",
+    "The pens (shell commands; CONVEX_SITE_URL and TTS_WORKER_KEY are already set in this session's environment):",
+    "",
+    "1. READ WHAT TTS ALREADY HOLDS — do this BEFORE you capture anything:",
+    "```",
+    `curl -s "$CONVEX_SITE_URL/tts/state" -H "X-TTS-Key: $TTS_WORKER_KEY"`,
+    "```",
+    'The response carries every item in the system under "todos". Read their statements. Never capture a finding that restates one of them, or that an item plainly already covers — a duplicate costs Tom a triage he has already done.',
+    "",
     "2. Capture ONE new finding (repeat per finding, up to the cap above):",
     "```",
     `curl -s -X POST "$CONVEX_SITE_URL/tts/capture" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"statement": "Delete the unreachable helper someHelper in path/to/file.ts", "source": "prospecting", "provenance": "prospect mission ${sessionId}, ${repo}, path/to/file.ts"}'`,
     "```",
     'The statement is ONE imperative sentence that names the file or files. The provenance is where you found it, in exactly the shape above — that is how the item says which mission and which path it came from. Keep "source" as "prospecting".',
     "",
-    "3. Record this session's outcome when the mission is done:",
-    "```",
-    `curl -s -X POST "$CONVEX_SITE_URL/tts/session-outcome" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"sessionId": "${sessionId}", "outcome": "completed", "summary": "one line: what was captured"}'`,
-    "```",
-    '"completed" is the right outcome whether you captured findings or none — say what you captured, or say "nothing new found" and mean it. Record "errored" only when something blocked the review itself (the checkout was unusable, /tts/state would not answer).',
+    sessionOutcomePen({
+      sessionId,
+      leadIn: "3. Record this session's outcome when the mission is done:",
+      summary: "one line: what was captured",
+      after:
+        '"completed" is the right outcome whether you captured findings or none — say what you captured, or say "nothing new found" and mean it. Record "errored" only when something blocked the review itself (the checkout was unusable, /tts/state would not answer).',
+      fenced: true,
+    }),
     "",
     // This prompt builds its own workspace sentence rather than calling
     // workspaceParagraph (a prospector pushes nothing), so it names the daemon

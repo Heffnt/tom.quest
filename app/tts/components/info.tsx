@@ -24,7 +24,7 @@
 //     control, not decoration, and accent alone would not say so.
 //
 // THE TWO REGISTERS (the writing standard, convex/ttsShared.ts
-// WRITING_STANDARD). Every piece of prose TTS shows is one of exactly two
+// writing.md). Every piece of prose TTS shows is one of exactly two
 // kinds, and this component now carries both:
 //   - DISPLAY TEXT — `children`. Short, assumes Tom's background, always
 //     visible once the popover is open. One or two sentences.

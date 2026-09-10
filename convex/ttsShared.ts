@@ -15,6 +15,20 @@
 
 import { v, type Infer } from "convex/values";
 
+/**
+ * The opening contract for every unattended TTS mission. The autonomous
+ * prompt builders share it instead of carrying synchronized copies.
+ */
+export const AUTONOMOUS_SESSION_CONTRACT =
+  "You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.";
+
+/** The closed TTS vocabulary, defined before a worker mission uses its terms. */
+export const TTS_CLOSED_VOCABULARY = `The vocabulary, which is closed — these words mean exactly this and nothing else:
+- A BATCH holds how a set of todos gets completed. It is not itself a todo and it is never worked directly.
+- A TASK is work someone does. A GOAL is a state of the world the batch is for, written as a condition that is either true yet or not.
+- NEEDS are the todos a todo cannot proceed without. A todo is READY when every one of its needs is done (archived counts as done — a need that was set aside is not going to happen). The same word sequences batches: a batch's needs are the batches that must land before its work is handed out.
+- DISPLAY TEXT is the short line always on screen. A GROUND-UP EXPLANATION is the self-contained layer behind it: a complete HTML document, shown fullscreen, whose exact form the standard below specifies.`;
+
 const HOUR_MS = 3_600_000;
 export const DAY_MS = 86_400_000;
 
@@ -489,229 +503,14 @@ export function goalCheckable(todo: GoalTodo): boolean {
   return (todo.condition ?? "").trim() !== "";
 }
 
-// ── The model-of-tom files every prompt begins with (the lifeos update, phase 4)
-// The nightly job on the Jarvis Box posts these WikiTom files, with the commit
-// they were read at, to POST /tts/model-of-tom; convex/ttsSkills.ts stores
-// them and modelOfTomPrelude is the one read that prepends them, in THIS
-// order, to every prompt that writes to Tom or plans for him. The three named
-// files come first; then, for each page under areas/, the "Current state" and
-// "Must not break" sections (the job extracts them by heading; the server
-// only orders). The job cannot import this file (Node ESM on the box), so it
-// posts in the order it reads and the server's order is the authority.
-//
-// writing.md is the one file no prompt may go without: it IS the writing
-// standard every sentence TTS shows Tom obeys. A post that lacks it is
-// refused whole (convex/ttsSkills.ts), because replacing the table with the
-// rest would leave every prompt from then on written to no standard at all.
-export const MODEL_OF_TOM_WRITING = "model-of-tom/writing.md";
-/** The file the capture triage rules are a section of (CAPTURE_TRIAGE_HEADING
- * below); named here because two consumers reach for it, not just the order. */
-export const MODEL_OF_TOM_PRIORITIES = "model-of-tom/priorities.md";
-export const MODEL_OF_TOM_FIRST = [
-  MODEL_OF_TOM_WRITING,
-  MODEL_OF_TOM_PRIORITIES,
-  "model-of-tom/schedule.md",
-] as const;
-// Spelled WITHOUT a trailing slash, the same way worker/jobs/nightly.mjs
-// spells it — the job cannot import this file, so the two strings are only
-// kept identical by being written identically.
+// Weekly source-file facts identify area pages by this prefix. Prompt text is
+// stored as already-rendered blocks in modelOfTomPublication instead.
 export const MODEL_OF_TOM_AREAS_DIR = "model-of-tom/areas";
 
 /** The first line of every prompt that carries the prelude, and so of every
- * transcript: convex/ttsSkills.ts writes it with the commit and the paths
- * after it; the sessions page reads it back off the row (app/sessions/lib.ts
- * modelOfTomHeadOf) to show what the session began with. Here, not there,
- * because the page cannot import a module that pulls in the Convex server. */
+ * transcript. It is shared with the session reader, which reads the header
+ * from the stored publication rather than rebuilding it from source files. */
 export const MODEL_OF_TOM_HEADER = "MODEL-OF-TOM FILES";
-
-// ── The writing standard — THE FALLBACK COPY (Tom's ruling, 2026-08-29) ─────
-// EVERY piece of natural language TTS shows Tom — a batch statement, a task
-// statement, a ground-up explanation, a digest line, a decision list — is
-// written to this standard.
-//
-// THE LIVE SOURCE IS NO LONGER THIS STRING. It is WikiTom
-// model-of-tom/writing.md (the skill model-of-tom/skills/writing-to-tom was
-// merged into it), which reaches Convex through the nightly job's post
-// (convex/ttsSkills.ts) and reaches every prompt through modelOfTomPrelude:
-// the session openers in convex/claudeSessions.ts, and GET /tts/batch-context
-// for the Node ESM planner on the worker box (which can neither import .ts
-// nor read a git checkout).
-//
-// This copy is what those consumers use ONLY while the ttsSkills table is
-// empty — before the job's first post — and the prelude's header says so
-// when it is serving. It is a snapshot, so it drifts: when writing.md
-// changes, update it here too.
-
-/** The row name the retired six-hourly sync wrote; a row by this name keeps
- * serving as the writing file until the nightly job's first post replaces
- * the table. */
-export const WRITING_SKILL = "writing-to-tom";
-export const WRITING_STANDARD = `WRITING STANDARD — every sentence TTS shows Tom obeys this.
-
-THE TWO REGISTERS. All natural language here is one of exactly two kinds, and
-you always know which one you are writing.
-
-Display text is what is always on screen: a batch statement, a task statement,
-a goal condition. It is short and it assumes Tom's background — it does not
-teach, it names. One line, no trailing period needed, no preamble.
-
-A ground-up explanation is the layer behind a "more" control on any line of
-display text. It is self-contained: it defines every term at first use and is
-complete without any external reference, because Tom forwards these to other
-people and other agents verbatim. Assume the reader has no memory of any prior
-session and no knowledge of anything an agent made — files, branches,
-directories, jobs, and artifacts an agent created are unknown to him by name
-and must be described before they are used.
-
-THE FORM OF A GROUND-UP EXPLANATION: A COMPLETE HTML DOCUMENT. Rendered as
-paragraphs of prose, a ground-up explanation is an incomprehensible wall of
-text — Tom's own words, 2026-08-29, and the reason for this rule. So every one
-you write is a complete, self-contained HTML document, opening at
-<!DOCTYPE html> and closing at </html>, and it is shown FULLSCREEN. Hard
-constraints, because it renders inside a sandbox with no scripting and no
-network:
-- No <script>, no inline event handlers, and no external stylesheet, font,
-  image, or URL of any kind. Everything is inline: one <style> block in the
-  <head> and plain markup in the <body>. Nothing loads from outside; anything
-  external renders as a hole in the page.
-- The dark palette of the page it opens over: background #0a0e17, body text
-  #e2e8f0, secondary text #94a3b8, one accent #e8a040 for headings and key
-  terms, #1e293b for borders and rules. No other colors unless a diagram
-  genuinely needs one.
-- Readable type: about 15px body text, 1.65 line height, a column no wider
-  than roughly 760px centered with generous padding, a system sans stack
-  (-apple-system, "Segoe UI", Roboto, sans-serif) for prose and a monospace
-  stack (ui-monospace, "SF Mono", Menlo, monospace) for identifiers, paths,
-  ids, and code.
-- Real headings — one <h1> naming the subject, an <h2> per section — and short
-  sections. The reader must be able to find the part he wants without reading
-  the rest.
-
-STRUCTURE OVER WALLS. Inside that document, pick the form that fits the fact:
-- Enumerable facts go in a <table>: the terms and their definitions, the
-  options and what each one costs, the fields and what they mean, the states
-  and what each one implies. One fact per row, a real <th> header row.
-- Steps, states, and dependencies go in a simple visual structure built from
-  styled <div> boxes — a border, some padding, and an arrow (→ or ↓) between
-  them. Boxes, borders, and arrows only; no diagramming library, and SVG only
-  where plain shapes say it better than boxes would.
-- Everything else is short paragraphs under a heading, plus lists where the
-  items really are a list.
-
-WHAT THE DOCUMENT MUST COVER. It exists so a reader arriving with no context
-can understand the one line of display text it sits behind, and it must cover
-all of it: what this is; why it exists, meaning the end state it serves; what
-every term in the display text means, defined at first use; where the thing
-stands right now; what happens next and who does it; and — whenever Tom's
-ruling is the missing piece — exactly what he would be deciding, written as
-the numbered decision list described below, with the options and your
-recommendation.
-
-HTML is the form; everything else in this standard is still the writing. The
-rules on vocabulary, analogies, invented names, sentence construction, and
-tone all apply inside the document unchanged.
-
-WHO YOU ARE WRITING FOR. Tom is an AI PhD student. Assume fluent, and never
-define: machine learning at PhD level (transformer structure, training,
-evaluation), his own boolean-backdoor research vocabulary (triggers, arity,
-truth tables, activating combinations, poisoning, dormancy, detector classes,
-AUROC and the related rates), agent operations (subagents, worktrees,
-branches, merges, model tiers, crons, SLURM, GPUs, ssh), and git. Assume
-absent, and always define inline at first use: web-development jargon of every
-kind, the statistics of causality and inference, Boolean Fourier analysis, the
-internals of anything an agent created, and his own older prose and rules.
-
-NO LOAD-BEARING ANALOGIES. Do not explain one thing by mapping it onto
-another. The cost is the mapping itself: an analogy makes him understand a
-second domain and then transfer it, which is more work than understanding the
-thing directly. One orienting pointer to a system he already knows (his own
-code, something he built) is allowed as a single sentence. The test is
-deletion: remove the pointer, and if the explanation still teaches completely,
-it was a pointer; if the explanation collapses, it was a load-bearing analogy
-and is banned.
-
-NO INVENTED NAMES. Do not coin nouns, single letters, stage letters, numbered
-codenames, umbrella labels, or clever shorthands. Every one of these produces
-a "what is that?" stall. Use hyphenated plain words instead. Do not introduce a
-term that collides with something already in his head, and do not invent a
-synonym for a word he already uses — reuse his word exactly.
-
-HOW TO BUILD A SENTENCE. Complete sentences, never telegraphic fragments. One
-idea per paragraph. Concrete before abstract: state the specific case first,
-then the rule it illustrates. Every fact you include carries its relevance on
-its face — if the reader cannot see why a sentence is there, cut it or say
-why. Simple means fewer and more fundamental pieces at full technical
-precision, never fewer technical terms. Err toward over-explaining: he would
-rather skim background he already has than stop and ask.
-
-DESCRIPTIVE, NEVER EVALUATIVE. State what is. No praise, no urgency, no
-ceremony, no hedging, no selling.
-
-DECISIONS. When something needs Tom's ruling, write it as a numbered list.
-Each numbered item is one sentence of situation, then the options, then your
-recommendation. He replies by number, so an item that cannot be read on its
-own comes back unruled.`;
-
-// ── Capture triage — THE FALLBACK COPY (the lifeos update, phase 6) ──────────
-// Two judgements, and they are NOT the same question. Every capture poller on
-// the Jarvis Box (poll-gmail, poll-canvas, poll-outlook) asks both:
-//
-//   1. does this imply an ACTION by Tom?  → capture it as a todo. Nothing is
-//      lost, so a wrong yes costs one archive click and a wrong no loses the
-//      thread; the prompt leans toward capturing.
-//   2. does it need TOM, TODAY?           → open one thread in #tts on the
-//      todo, so his reply is the next turn.
-//
-// The second is NOT an importance rating and never becomes one. It is capture
-// triage: three facts about the message, each of which Tom has to answer to
-// himself and cannot be answered by an agent — a deadline inside 48 hours, a
-// person waiting on a reply, money or credentials. Everything else waits for
-// the morning digest, which reports every capture.
-//
-// THE LIVE SOURCE IS NO LONGER THIS STRING. The lifeos update's phase 3
-// merged the WikiTom capture-triage skill into model-of-tom/priorities.md as
-// the section headed "What becomes a todo", and phase 4's nightly job posts
-// priorities.md whole while replacing the ttsSkills table wholesale — so no
-// row named capture-triage is written any more. GET /tts/capture-context
-// takes the section out of the stored priorities row
-// (convex/ttsSkills.ts captureTriageFrom) and names which of the three it
-// served, so a poller's log line says where its rules came from.
-//
-// This copy is what the pollers use ONLY while neither the section nor a row
-// the retired sync left behind is there. It is a snapshot, so it drifts: when
-// the rules change in WikiTom, update it here too.
-
-/** The heading in model-of-tom/priorities.md whose section IS the triage
- * rules. Matched by text, case-insensitively, through the next heading of the
- * same or a higher level. */
-export const CAPTURE_TRIAGE_HEADING = "What becomes a todo";
-
-/** The row the retired six-hourly WikiTom skill sync wrote. A row by this
- * name still serves — below the priorities section, above the copy here —
- * for as long as one survives the nightly job's first wholesale replace. */
-export const CAPTURE_TRIAGE_SKILL = "capture-triage";
-export const CAPTURE_TRIAGE_RULES = `CAPTURE TRIAGE — two judgements about one incoming message.
-
-FIRST: does it imply an ACTION BY TOM — something he must reply to, submit,
-schedule, pay, sign, decide, or follow up on? Skip newsletters, promotions,
-automated notifications, receipts, and mass mail. When genuinely unsure,
-capture: a wrong capture costs Tom one archive click, a wrong skip loses the
-thread.
-
-SECOND: does it need TOM, TODAY? This is not a rating of how important the
-item is — it is whether waiting until tomorrow morning's digest would cost
-something that cannot be recovered. Exactly three facts make it true, and any
-one of them is enough:
-
-  DEADLINE — the message names a deadline inside the next 48 hours.
-  PERSON WAITING — a named human being has asked Tom for a reply. An automated
-    sender, a mailing list, or a no-reply address is never a person waiting.
-  MONEY OR CREDENTIALS — a payment, an invoice, a refund, a bill, an account,
-    a password, a key, or a signature is at stake.
-
-Nothing else qualifies. A message that implies an action and matches none of
-the three is captured and reported in the morning digest like every other
-capture; it is not lost, it is not urgent.`;
 
 // ── Session-surface constants (one home; ledger graduation
 // session-constants-two-homes) ───────────────────────────────────────────────

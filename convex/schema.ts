@@ -888,18 +888,20 @@ export default defineSchema({
     preparedAt: v.number(),
   }).index("by_repo_external", ["repo", "externalId"]),
 
-  // The model-of-tom files every prompt begins with (the lifeos update, phase
-  // 4): one row per WikiTom file the nightly job posts to POST /tts/model-of-tom,
-  // all rows carrying the commit they were read at. WikiTom is the system of
-  // record. A row exists so prompt-building code can read the text without a
-  // git checkout: Convex has no filesystem, and the planner on the Jarvis Box
-  // is Node ESM that cannot import TypeScript, so it takes the text over HTTP
-  // (GET /tts/batch-context). Rows are a copy — each post replaces them
-  // wholesale (convex/ttsSkills.ts internalReplaceModelOfTom).
+  // Per-file publication facts for caller-selected model-of-tom blocks (the
+  // lifeos update, phase 4): one row per WikiTom file the nightly job posts to
+  // POST /tts/model-of-tom. They are traceability metadata, not a prompt
+  // renderer: the three already-rendered verbatim blocks live in the singleton
+  // modelOfTomPublication record below. This separation means a transcript
+  // cannot change when file assembly rules change later.
   ttsSkills: defineTable({
     name: v.string(), // the path inside model-of-tom/ without ".md": "writing", "areas/research"
-    body: v.string(), // the file, or the posted sections of an area page
+    // Source text stays available for fact consumers (weekly area review,
+    // frontmatter, and byte accounting). Publication, not this field, renders
+    // the prompt blocks.
+    body: v.string(),
     sourcePath: v.string(), // path inside WikiTom, so a row traces to its file
+    bytes: v.optional(v.number()), // source bytes reported by the publisher
     // The WikiTom commit the file was read at. Absent only on a row the
     // retired six-hourly sync wrote, which serves until the first post.
     commit: v.optional(v.string()),
@@ -910,6 +912,24 @@ export default defineSchema({
     // Absent on a row posted before the flag existed.
     pushed: v.optional(v.boolean()),
   }).index("by_name", ["name"]),
+
+  // Exactly one `key: "current"` document is the published model-of-tom
+  // revision. It stores each complete, verbatim block and the exact header for
+  // every nonempty canonical selection (7 total), so readers never recreate
+  // prompt text from the per-file facts above.
+  modelOfTomPublication: defineTable({
+    key: v.literal("current"),
+    commit: v.string(),
+    committedAt: v.number(),
+    pushed: v.boolean(),
+    operate: v.optional(v.string()),
+    write: v.optional(v.string()),
+    know: v.optional(v.string()),
+    headers: v.array(v.object({
+      blocks: v.array(v.union(v.literal("operate"), v.literal("write"), v.literal("know"))),
+      header: v.string(),
+    })),
+  }).index("by_key", ["key"]),
 
   // ── Claude Code session surface ──────────────────────────────────────────────
   // CANONICAL DESIGN HOME: WikiTom tts/spec.md §20 (design ratified 2026-08-28;

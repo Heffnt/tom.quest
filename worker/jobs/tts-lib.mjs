@@ -13,6 +13,11 @@ import { ENV_PATH, loadEnv as loadWorkerEnv } from "./worker-env.mjs";
 
 export { ENV_PATH };
 
+// Every unattended worker asks for a structured answer in these exact words.
+// Keep the instruction in one home so prompt changes cannot leave one parser
+// expecting JSON while its model was invited to answer in prose.
+export const JSON_ONLY_ANSWER = "Answer ONLY a JSON object, no prose, no code fences:";
+
 // ---------------------------------------------------------------------------
 // Env file parsing
 // ---------------------------------------------------------------------------
@@ -128,7 +133,19 @@ export async function convexFetch(env, path, body = undefined) {
   });
   const text = await res.text();
   if (!res.ok) {
-    const err = new Error(`${path} -> HTTP ${res.status}: ${text.slice(0, 300)}`);
+    let missingModelOfTomPart = null;
+    try {
+      const response = JSON.parse(text);
+      if (
+        typeof response?.error === "string" &&
+        /^model-of-tom (?:block|header) .+ is not stored$/.test(response.error)
+      ) {
+        missingModelOfTomPart = response.error;
+      }
+    } catch {
+      // Non-JSON errors retain the HTTP summary below.
+    }
+    const err = new Error(missingModelOfTomPart ?? `${path} -> HTTP ${res.status}: ${text.slice(0, 300)}`);
     err.status = res.status;
     err.body = text;
     throw err;
@@ -146,52 +163,20 @@ export function ttsItemLink(todoId) {
 }
 
 // ---------------------------------------------------------------------------
-// Capture context — the rules a poller triages by (the lifeos update, phase 6)
+// Capture context — the state a poller checks before it runs
 // ---------------------------------------------------------------------------
 //
-// Every capture poller (poll-gmail, poll-canvas, poll-outlook) makes the same
-// two judgements about an incoming message: does it imply an action by Tom,
-// and does it need him TODAY. The words for both come from the deployment, not
-// from any job: GET /tts/capture-context serves the "What becomes a todo"
-// section of WikiTom's model-of-tom/priorities.md, and says in `source` which
-// of its three it served.
-//
-// One read, one shape, so the three pollers cannot triage by three different
-// sets of rules. Fields grow here as later phases add them (the declined
-// integrations list is the next one).
+// Every capture poller reads this once before it runs. The deployment supplies
+// the writing standard and declined integrations in one payload.
 
 /**
- * The capture rules and the state a poller checks before it runs.
+ * The state a poller checks before it runs.
  *
- * ONE READ PER RUN. Both things a poller needs from the deployment ride this
- * payload — the triage rules and the declined list — and a run that fetched it
- * twice (once to ask whether it was declined, once to get the rules) asked the
- * same question of the same deployment twice a tick, forever.
+ * ONE READ PER RUN. Everything a poller needs from the deployment rides this
+ * payload, so a run never asks the same deployment twice a tick.
  */
 export async function captureContext(env) {
   return await convexFetch(env, "/tts/capture-context");
-}
-
-/** What each `source` the route can answer with means, in Tom's words for a
- * log line. The three names are the route's (convex/ttsSkills.ts). */
-export const TRIAGE_SOURCES = {
-  priorities: 'model-of-tom/priorities.md, "What becomes a todo"',
-  skill: "the retired sync's capture-triage row",
-  builtin: "the hardcoded fallback — WikiTom's rules are NOT reaching this run",
-};
-
-/**
- * The one line a poller prints about where its triage rules came from. PURE:
- * it reads the context the run already fetched.
- *
- * WHY A POLLER SAYS THIS AT ALL: the rules used to come from a capture-triage
- * row that nothing writes any more, and the fallback is a frozen copy — a run
- * triaging by it looks exactly like a run triaging by WikiTom. The line is
- * what makes the difference visible in /var/log/tts on the night it changes.
- */
-export function triageSourceLine(job, context) {
-  const source = context?.source ?? "builtin";
-  return `[${job}] triage rules from ${TRIAGE_SOURCES[source] ?? source}`;
 }
 
 /**

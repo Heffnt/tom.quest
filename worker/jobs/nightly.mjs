@@ -93,11 +93,9 @@ import {
   writeArchived,
 } from "./session-archive.mjs";
 import { loadEnv, convexFetch, nyHour, runClaude, extractJsonObject, clip } from "./tts-lib.mjs";
-import { git } from "./tts-code-lib.mjs";
+import { assemblePreludePublication } from "../../scripts/prelude.mjs";
 import {
   enclosingHeadings,
-  extractSections,
-  frontmatterBlock,
   isIsoDay,
   parseFrontmatter,
   sectionSpan,
@@ -142,34 +140,6 @@ export const SNAPSHOT_DIR = "tts/snapshot";
 export const SNAPSHOT_STAGING_DIR = "/var/cache/tts/snapshot-staging";
 export const EXPORT_PAGE = 200;
 
-// The model-of-tom files, in the order they are posted. The server orders
-// them again (convex/ttsSkills.ts orderModelOfTom) — that is the authority;
-// this is only the order this job reads in.
-export const MODEL_OF_TOM_FIRST = [
-  "model-of-tom/writing.md",
-  "model-of-tom/priorities.md",
-  "model-of-tom/schedule.md",
-];
-export const MODEL_OF_TOM_AREAS_DIR = "model-of-tom/areas";
-export const AREA_SECTIONS = ["Current state", "Must not break"];
-// The eight area pages every prompt carries (WikiTom model-of-tom/areas/).
-// Named here because THE POST IS ALL OR NOTHING: the store is replaced
-// whole, so a page or a section the job could not read would fall out of
-// every prompt until a night that read it again — and silently, since a
-// missing area page is no different from one that never existed. A page
-// beyond these eight is posted when it has the sections and is not
-// required; one of these eight, or either of its sections, missing is a
-// failure row naming it and no post.
-export const MODEL_OF_TOM_AREA_PAGES = [
-  "admin",
-  "agent-systems",
-  "climbing",
-  "health-and-food",
-  "mental-health",
-  "money",
-  "research",
-  "social",
-].map((name) => `${MODEL_OF_TOM_AREAS_DIR}/${name}.md`);
 /** The job's failure row (convex/ttsNightly.ts NIGHTLY_FAILURE by name). */
 export const NIGHTLY_FAILURE = "nightly-failure";
 
@@ -183,6 +153,18 @@ export const GIT_IDENTITY = [
   "-c", "user.name=tts-nightly",
   "-c", "user.email=tts-nightly@tom.quest",
 ];
+
+function gitArgs(dir, args) {
+  const resolved = fs.realpathSync.native(dir);
+  return ["-c", `safe.directory=${resolved}`, "-C", dir, ...args];
+}
+
+function git(dir, ...args) {
+  return execFileSync("git", gitArgs(dir, args), {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+}
 
 const STEPS = ["snapshot", "learning", "sessions", "push", "post"];
 // The four that write the WikiTom checkout. The post runs under the same
@@ -262,111 +244,6 @@ export function planTableFiles(table, rows, limit = SPLIT_BYTES) {
 /** Whether a snapshot file name belongs to `table` (its whole file or a part). */
 export function isTableFile(table, name) {
   return name === `${table}.jsonl` || new RegExp(`^${table}\\.part\\d+\\.jsonl\\.gz$`).test(name);
-}
-
-// ── Where the post reads from ────────────────────────────────────────────────
-// A source is `read(rel)` → the file's text or null, and `list(dirRel)` → the
-// names in a directory. The post reads THE GIT OBJECT AT THE COMMIT IT NAMES
-// (commitSource), never the work tree: a post that read the tree while
-// naming HEAD could carry a page another writer had already changed under
-// the lock's next holder, or a half-written one, under a commit that never
-// held those bytes. The work tree form is for the tests and for a caller
-// with no commit yet.
-export function worktreeSource(dir) {
-  return {
-    read(rel) {
-      const abs = path.join(dir, rel);
-      return fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : null;
-    },
-    list(dirRel) {
-      const abs = path.join(dir, dirRel);
-      return fs.existsSync(abs) ? fs.readdirSync(abs) : [];
-    },
-  };
-}
-
-export function commitSource(dir, commit) {
-  return {
-    read(rel) {
-      try {
-        return gitCapture(dir, "show", `${commit}:${rel}`);
-      } catch {
-        return null;
-      }
-    },
-    list(dirRel) {
-      try {
-        return gitCapture(dir, "ls-tree", "--name-only", commit, "--", `${dirRel}/`)
-          .split("\n")
-          .filter((p) => p !== "")
-          .map((p) => p.slice(dirRel.length + 1));
-      } catch {
-        return [];
-      }
-    },
-  };
-}
-
-/**
- * Whether `commit` has reached the checkout's upstream — an ancestor of
- * `@{upstream}` as last fetched, which the push step's pull has just done.
- * Read from git rather than from this run's push result so `--only=post`
- * answers the same question, and a checkout with no upstream is "not
- * pushed", which is the truth.
- */
-export function isPushed(dir, commit) {
-  try {
-    execFileSync("git", ["-C", dir, "merge-base", "--is-ancestor", commit, "@{upstream}"], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * The files to post from a WikiTom source (a checkout directory, read from
- * the work tree, or a source from commitSource): the three named files that
- * exist, then each page under areas/ (alphabetically) reduced to its
- * frontmatter block and its AREA_SECTIONS. `missing` names every expected
- * thing that was not there — a named file, one of the eight area pages, or
- * either of a page's two sections — and the caller posts nothing while it
- * is not empty (postStep).
- *
- * THE FRONTMATTER RIDES ALONG because it is where a page says when it was
- * last reviewed and how long its window is (spec §22), and the weekly gather
- * (convex/ttsWeekly.ts) reads that off the posted body — Convex has no other
- * way to see the checkout. Three short lines in every prompt, and the date
- * they carry is a fact an agent planning for Tom should have anyway.
- */
-export function collectModelOfTomFiles(from) {
-  const source = typeof from === "string" ? worktreeSource(from) : from;
-  const files = [];
-  const missing = [];
-  for (const rel of MODEL_OF_TOM_FIRST) {
-    const body = source.read(rel);
-    if (body === null || body.trim() === "") missing.push(rel);
-    else files.push({ path: rel, body });
-  }
-  const pages = source
-    .list(MODEL_OF_TOM_AREAS_DIR)
-    .filter((n) => n.endsWith(".md"))
-    .map((n) => `${MODEL_OF_TOM_AREAS_DIR}/${n}`);
-  for (const rel of MODEL_OF_TOM_AREA_PAGES) if (!pages.includes(rel)) missing.push(rel);
-  for (const rel of pages.sort()) {
-    const text = source.read(rel) ?? "";
-    const required = MODEL_OF_TOM_AREA_PAGES.includes(rel);
-    if (required) {
-      const lines = text.split(/\r?\n/);
-      for (const section of AREA_SECTIONS) {
-        if (sectionSpan(lines, section) === null) missing.push(`${rel}: no "${section}" section`);
-      }
-    }
-    const sections = extractSections(text, AREA_SECTIONS);
-    if (sections === "") continue;
-    const front = frontmatterBlock(text);
-    files.push({ path: rel, body: front === "" ? sections : `${front}\n\n${sections}` });
-  }
-  return { files, missing };
 }
 
 // ── The run ──────────────────────────────────────────────────────────────────
@@ -512,6 +389,9 @@ export function syncSnapshot(snapshotDir, stagingDir, tables) {
 // one headless `claude -p`, which has neither.
 
 export const MODEL_OF_TOM_DIR = "model-of-tom";
+// Learning discovers the area pages in the work tree. Prelude assembly owns
+// their prompt representation and reads them from a commit instead.
+export const MODEL_OF_TOM_AREAS_DIR = "model-of-tom/areas";
 // The pages the step writes. The spec and everything else in the checkout is
 // refused by not being here.
 export const LEARNING_FILES_FIRST = ["model-of-tom/writing.md", "model-of-tom/priorities.md"];
@@ -1072,13 +952,13 @@ export function learningPrompt(input, pages, day) {
     "Answer with ONE JSON object and nothing else, no code fence:",
     '{"changes":[{"file":"model-of-tom/areas/climbing.md","section":"Current state","kind":"fact","line":"- ... (session <session>, YYYY-MM-DD).","replaces":null,"evidence":["session <session>"],"excerpt":"<six or more of Tom\'s words, verbatim>"}]}',
     "",
-    `Tonight is ${day} (UTC).`,
-    "",
     "INPUT",
     JSON.stringify(shown, null, 1),
     "",
     "PAGES",
     pageText,
+    "",
+    `Tonight is ${day} (UTC).`,
   ].join("\n");
 }
 
@@ -1346,7 +1226,7 @@ function addPaths(dir, paths) {
 export function abortStaleRebase(dir) {
   if (!rebaseInProgress(dir)) return [];
   try {
-    execFileSync("git", ["-C", dir, "rebase", "--abort"], { stdio: "ignore" });
+    execFileSync("git", gitArgs(dir, ["rebase", "--abort"]), { stdio: "ignore" });
     return [
       {
         step: "rebase",
@@ -1416,7 +1296,7 @@ export function syncRemote(dir) {
     failures.push({ step: "pull", error: gitError(err) });
     // A rebase left half-done would block every later commit: abort it.
     try {
-      execFileSync("git", ["-C", dir, "rebase", "--abort"], { stdio: "ignore" });
+      execFileSync("git", gitArgs(dir, ["rebase", "--abort"]), { stdio: "ignore" });
     } catch {
       // no rebase in progress
     }
@@ -1450,7 +1330,7 @@ async function pushStep(run) {
 // "rejected") is what the failure row carries for the digest. Nothing
 // secret is in it — the deploy key is a file, never a string in a URL.
 function gitCapture(dir, ...args) {
-  return execFileSync("git", ["-C", dir, ...args], {
+  return execFileSync("git", gitArgs(dir, args), {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -1459,7 +1339,7 @@ function gitCapture(dir, ...args) {
 // `git diff --cached --quiet` exits 1 when the index differs from HEAD.
 function stagedChanges(dir) {
   try {
-    execFileSync("git", ["-C", dir, "diff", "--cached", "--quiet"], { stdio: "ignore" });
+    execFileSync("git", gitArgs(dir, ["diff", "--cached", "--quiet"]), { stdio: "ignore" });
     return false;
   } catch {
     return true;
@@ -1476,10 +1356,8 @@ function gitError(err) {
 }
 
 // ── 5. the post ──────────────────────────────────────────────────────────────
-// Under the lock like the four steps before it, and reading the git object
-// at the commit it names (commitSource): outside the lock the work tree
-// could change between `rev-parse HEAD` and the read, and a post would name
-// one commit while carrying another's bytes. Local HEAD is posted whether or
+// Under the lock like the four steps before it, the shared prelude assembler
+// reads local HEAD from its immutable git object. Local HEAD is posted whether or
 // not the push went through — the design says every prompt names the
 // commit it began with — and `pushed` says which, so the store and the
 // digest can say "not yet pushed" rather than pass a local commit off as
@@ -1508,41 +1386,33 @@ export async function postStep(run, deps = {}) {
     );
     return { commit: null, pushed: false, files: null, rebasing: true };
   }
-  const commit = git(dir, "rev-parse", "HEAD").trim();
-  const committedAt = Number(git(dir, "log", "-1", "--format=%ct", commit).trim()) * 1000;
-  const pushed = isPushed(dir, commit);
-  const { files, missing } = collectModelOfTomFiles(commitSource(dir, commit));
-  // ANYTHING EXPECTED MISSING MEANS NO POST: a named file, one of the eight
-  // area pages, either of a page's two sections. The store is replaced
-  // whole, so posting the rest would take the missing part out of every
-  // prompt until a night that reads it again — silently, and for writing.md
-  // that is every sentence written to no standard at all (the server
-  // refuses that post outright). A missing part is a layout change, a
-  // renamed heading or a half-read checkout, never a decision of Tom's:
-  // last night's text keeps serving, and this is the row the digest shows,
-  // naming each missing part.
-  if (missing.length > 0) {
+  let prelude;
+  try {
+    // The assembler resolves HEAD and reads every body from that immutable
+    // object. The header variants below stay pinned to the resolved hash.
+    prelude = assemblePreludePublication({ wikitom: dir, commit: "HEAD" });
+  } catch (error) {
     await recordFailure(
       run,
       "post",
-      new Error(
-        `model-of-tom files or sections missing at ${commit.slice(0, 12)}: ${missing.join("; ")} — refusing to post, the store keeps what it has`,
-      ),
+      error,
       { fetch },
     );
-    return { commit, pushed, files: null, missing };
+    return { commit: null, pushed: false, files: null };
   }
-  if (files.length === 0) throw new Error("no model-of-tom files to post");
+  const files = prelude.files.map(({ path: filePath, sourceBody: body, bytes }) => ({ path: filePath, body, bytes }));
   const res = await fetch(run.env, "/tts/model-of-tom", {
-    commit,
-    committedAt,
-    pushed,
+    commit: prelude.commit,
+    committedAt: prelude.committedAt,
+    pushed: prelude.pushed,
+    blocks: prelude.blocks,
     files,
+    headers: prelude.headers,
   });
   console.log(
-    `[nightly] post: ${res.files} file(s) at WikiTom ${commit.slice(0, 12)}${pushed ? "" : " (not yet pushed)"} — ${files.map((f) => f.path).join(", ")}`,
+    `[nightly] post: ${res.files} file(s) at WikiTom ${prelude.commit.slice(0, 12)}${prelude.pushed ? "" : " (not yet pushed)"} — ${files.map((f) => f.path).join(", ")}`,
   );
-  return { commit, pushed, files: files.map((f) => f.path) };
+  return { commit: prelude.commit, pushed: prelude.pushed, files: files.map((f) => f.path) };
 }
 
 // ── main ─────────────────────────────────────────────────────────────────────

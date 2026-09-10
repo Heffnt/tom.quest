@@ -17,10 +17,7 @@ import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  AREA_SECTIONS,
   FORBIDDEN_SECTIONS,
-  MODEL_OF_TOM_AREA_PAGES,
-  MODEL_OF_TOM_FIRST,
   SPLIT_BYTES,
   abortStaleRebase,
   applyLearningChanges,
@@ -28,8 +25,6 @@ import {
   claudeEntry,
   codexMetaOf,
   codexMetaOfBuffer,
-  collectModelOfTomFiles,
-  commitSource,
   commitTree,
   discoverSessionFiles,
   expectedBodyBlobs,
@@ -37,10 +32,10 @@ import {
   gitBlobId,
   indexManifests,
   isLearningFile,
-  isPushed,
   isTableFile,
   learningChangeId,
   learningEvidence,
+  learningPrompt,
   learningStep,
   locateSection,
   matchObjection,
@@ -64,6 +59,9 @@ import {
   utcDay,
   writeArchived,
 } from "./nightly.mjs";
+import { cutAreaSections, PRELUDE_BLOCKS } from "../../scripts/prelude.mjs";
+
+const REQUIRED_AREA_PATHS = PRELUDE_BLOCKS.know.areas.required;
 
 const tmpDirs = [];
 function tmp() {
@@ -216,6 +214,13 @@ const factChange = (over = {}) => ({
 const answering = (changes) => () => JSON.stringify({ changes });
 
 describe("the learning step", () => {
+  it("ends the prompt with the UTC day after its input and pages", () => {
+    const prompt = learningPrompt(learningInput(), new Map([["model-of-tom/areas/climbing.md", CLIMBING]]), "2026-09-06");
+    expect(prompt.endsWith("Tonight is 2026-09-06 (UTC).")).toBe(true);
+    expect(prompt.indexOf("INPUT")).toBeLessThan(prompt.indexOf("PAGES"));
+    expect(prompt.indexOf("PAGES")).toBeLessThan(prompt.lastIndexOf("Tonight is 2026-09-06 (UTC)."));
+  });
+
   it("lands a fact with evidence at the end of its section, bumps updated:, and queues its row and commit", async () => {
     const dir = learningCheckout();
     const convex = fakeConvex(learningInput());
@@ -1037,91 +1042,9 @@ describe("syncSnapshot", () => {
   });
 });
 
-describe("AREA_SECTIONS", () => {
-  it("names the two sections the design fixes", () => {
-    expect(AREA_SECTIONS).toEqual(["Current state", "Must not break"]);
-  });
-});
-
-describe("collectModelOfTomFiles", () => {
-  /** A checkout with the three named files and every area page complete. */
-  function fullCheckout() {
-    const dir = tmp();
-    write(dir, "model-of-tom/writing.md", "# Writing\n");
-    write(dir, "model-of-tom/priorities.md", "# Priorities\n");
-    write(dir, "model-of-tom/schedule.md", "# Schedule\n");
-    write(dir, "model-of-tom/README.md", "not posted\n");
-    for (const rel of MODEL_OF_TOM_AREA_PAGES) {
-      write(dir, rel, `## Current state\n\n- ${rel}\n\n## Ideal state\n\nx\n\n## Must not break\n\n- y\n`);
-    }
-    return dir;
-  }
-
-  it("posts the three named files then each area page's sections, alphabetically", () => {
-    const dir = fullCheckout();
-    write(
-      dir,
-      "model-of-tom/areas/admin.md",
-      "---\nupdated: 2026-09-06\nreviewed:\nwindow_days: 30\n---\n# Admin\n\n## Current state\n\n- mail\n\n## Must not break\n\n- taxes\n",
-    );
-    // A ninth page is posted when it has the sections, and never required.
-    write(dir, "model-of-tom/areas/travel.md", "## Current state\n\n- none planned\n");
-    write(dir, "model-of-tom/areas/empty.md", "# Empty\n\nno sections yet\n");
-    const { files, missing } = collectModelOfTomFiles(dir);
-    expect(missing).toEqual([]);
-    expect(files.map((f) => f.path)).toEqual([...MODEL_OF_TOM_FIRST, ...MODEL_OF_TOM_AREA_PAGES, "model-of-tom/areas/travel.md"]);
-    expect(files.at(-1).body).toBe("## Current state\n\n- none planned");
-    // The frontmatter rides ahead of the sections: it is where the weekly
-    // gather reads `reviewed:` and the window from.
-    expect(files[3].body).toBe(
-      "---\nupdated: 2026-09-06\nreviewed:\nwindow_days: 30\n---\n\n## Current state\n\n- mail\n\n## Must not break\n\n- taxes",
-    );
-    expect(files[3].body).not.toContain("Ideal state");
-  });
-
-  it("names the eight area pages", () => {
-    expect(MODEL_OF_TOM_AREA_PAGES).toEqual(
-      ["admin", "agent-systems", "climbing", "health-and-food", "mental-health", "money", "research", "social"].map(
-        (n) => `model-of-tom/areas/${n}.md`,
-      ),
-    );
-  });
-
   // witness: an area page with one of its two sections gone, or gone
   // altogether, was left out of the post without a word — and the prompts
   // lost it until a night that read it again.
-  it("names every missing file, page and section, so the post can refuse", () => {
-    const dir = fullCheckout();
-    write(dir, "model-of-tom/schedule.md", "   \n");
-    fs.rmSync(path.join(dir, "model-of-tom/priorities.md"));
-    fs.rmSync(path.join(dir, "model-of-tom/areas/money.md"));
-    write(dir, "model-of-tom/areas/social.md", "## Current state\n\n- friends\n\n## Ideal state\n\nx\n");
-    write(dir, "model-of-tom/areas/climbing.md", "# Climbing\n\nno sections yet\n");
-    const { files, missing } = collectModelOfTomFiles(dir);
-    expect(missing).toEqual([
-      "model-of-tom/priorities.md",
-      "model-of-tom/schedule.md",
-      "model-of-tom/areas/money.md",
-      'model-of-tom/areas/climbing.md: no "Current state" section',
-      'model-of-tom/areas/climbing.md: no "Must not break" section',
-      'model-of-tom/areas/social.md: no "Must not break" section',
-    ]);
-    // What was there is still collected — the caller decides not to post it.
-    expect(files.map((f) => f.path)).toContain("model-of-tom/areas/social.md");
-    expect(files.map((f) => f.path)).not.toContain("model-of-tom/areas/climbing.md");
-  });
-
-  it("names all eight pages while areas/ does not exist", () => {
-    const dir = tmp();
-    write(dir, "model-of-tom/writing.md", "# Writing\n");
-    write(dir, "model-of-tom/priorities.md", "# Priorities\n");
-    write(dir, "model-of-tom/schedule.md", "# Schedule\n");
-    const { files, missing } = collectModelOfTomFiles(dir);
-    expect(files.map((f) => f.path)).toEqual(MODEL_OF_TOM_FIRST);
-    expect(missing).toEqual(MODEL_OF_TOM_AREA_PAGES);
-  });
-});
-
 describe("sessionDateOf", () => {
   it("reads a Claude SDK line's timestamp, in UTC", () => {
     const head = '{"type":"queue-operation","timestamp":"2026-08-28T04:24:42.053Z","sessionId":"x"}\n{"type":"user"}\n';
@@ -1389,7 +1312,7 @@ describe("the git half", { timeout: 60_000 }, () => {
 
   /** git in `dir`, with the TEST's identity — never the job's. */
   function run(dir, ...args) {
-    return execFileSync("git", ["-C", dir, ...IDENTITY, ...args], {
+    return execFileSync("git", ["-c", `safe.directory=${fs.realpathSync.native(dir)}`, "-C", dir, ...IDENTITY, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -1603,7 +1526,7 @@ describe("the git half", { timeout: 60_000 }, () => {
     abortStaleRebase(dir);
     const after = learningRun(dir);
     await postStep(after, { fetch: fakeConvex().fetch });
-    expect(after.failures[0].error).toContain("model-of-tom files or sections missing");
+    expect(after.failures[0].error).toContain("required model-of-tom/agent-rules.md is absent");
   });
 
   // witness: `git pull --rebase` re-commits the local commits it replays, and
@@ -1658,45 +1581,75 @@ describe("the git half", { timeout: 60_000 }, () => {
   // witness: the post read the work tree while naming HEAD, outside the
   // lock — a page changed under it went out under a commit that never held
   // those bytes; and it reported local HEAD as if it were on GitHub.
-  it("posts the files from the git object at the commit, and says whether that commit is pushed", () => {
-    const bare = tmp();
-    execFileSync("git", ["init", "-q", "--bare", "-b", "main", bare], { stdio: "ignore" });
+  it("posts the shared immutable prelude, including every canonical selection header", async () => {
     const dir = repo();
-    write(dir, "model-of-tom/writing.md", "# Writing\n");
-    write(dir, "model-of-tom/priorities.md", "# Priorities\n");
-    write(dir, "model-of-tom/schedule.md", "# Schedule\n");
-    const areas = ["admin", "agent-systems", "climbing", "health-and-food", "mental-health", "money", "research", "social"];
-    for (const name of areas) write(dir, `model-of-tom/areas/${name}.md`, CLIMBING);
+    write(dir, "model-of-tom/agent-rules.md", "# Rules\n\nOperate safely.\n");
+    write(dir, "model-of-tom/writing.md", "# Writing\n\nBe plain.\n");
+    write(dir, "model-of-tom/ground.md", "# Ground\n\nStart here.\n");
+    write(dir, "model-of-tom/priorities.md", "# Priorities\n\nResearch.\n");
+    write(dir, "model-of-tom/schedule.md", "# Schedule\n\nTuesday.\n");
+    const areaBodies = Object.fromEntries(REQUIRED_AREA_PATHS.map((area) => [
+      area,
+      area.endsWith("/climbing.md") ? CLIMBING : "## Current state\n\n- Present.\n\n## Must not break\n\n- Safety.\n",
+    ]));
+    for (const [area, body] of Object.entries(areaBodies)) write(dir, area, body);
     run(dir, "add", "-A");
-    run(dir, "commit", "-q", "-m", "pages");
+    run(dir, "commit", "-q", "-m", "prelude");
     const commit = run(dir, "rev-parse", "HEAD").trim();
-    // The work tree moves on after the commit: an edit not yet committed, a
-    // page added, a page removed.
-    write(dir, "model-of-tom/writing.md", "# Writing, edited since\n");
-    write(dir, "model-of-tom/areas/travel.md", "## Current state\n\n- uncommitted\n");
-    fs.rmSync(path.join(dir, "model-of-tom/schedule.md"));
-    const atCommit = collectModelOfTomFiles(commitSource(dir, commit));
-    expect(atCommit.missing).toEqual([]);
-    expect(atCommit.files.map((f) => f.path)).toEqual([...MODEL_OF_TOM_FIRST, ...areas.map((n) => `model-of-tom/areas/${n}.md`)]);
-    expect(atCommit.files[0].body).toBe("# Writing\n");
-    expect(atCommit.files[3].body).toContain("## Current state");
-    expect(atCommit.files[3].body).not.toContain("## Ideal state");
-    // The tree says otherwise, which is the point.
-    const inTree = collectModelOfTomFiles(dir);
-    expect(inTree.missing).toEqual(["model-of-tom/schedule.md"]);
-    expect(inTree.files[0].body).toBe("# Writing, edited since\n");
-    // No upstream: not pushed. After the push: pushed.
-    expect(isPushed(dir, commit)).toBe(false);
-    run(dir, "remote", "add", "origin", bare);
-    run(dir, "push", "-q", "-u", "origin", "main");
-    expect(isPushed(dir, commit)).toBe(true);
-    // A new local commit is not, until it is.
-    run(dir, "add", "-A");
-    run(dir, "commit", "-q", "-m", "later");
-    const later = run(dir, "rev-parse", "HEAD").trim();
-    expect(isPushed(dir, later)).toBe(false);
-    expect(isPushed(dir, commit)).toBe(true);
-    run(dir, "push", "-q");
-    expect(isPushed(dir, later)).toBe(true);
+    const committedAt = Number(run(dir, "log", "-1", "--format=%ct", "HEAD").trim()) * 1000;
+    // These work-tree changes must not influence the commit-named post.
+    write(dir, "model-of-tom/writing.md", "# Writing\n\nUncommitted.\n");
+
+    const posts = [];
+    const result = await postStep(learningRun(dir), {
+      fetch: async (_env, route, body) => {
+        posts.push({ route, body });
+        return { files: body.files.length };
+      },
+    });
+
+    const blocks = {
+      operate: "── model-of-tom/agent-rules.md ──\n# Rules\n\nOperate safely.\n",
+      write: "── model-of-tom/writing.md ──\n# Writing\n\nBe plain.\n\n\n── model-of-tom/ground.md ──\n# Ground\n\nStart here.\n",
+      know: "── model-of-tom/priorities.md ──\n# Priorities\n\nResearch.\n\n\n── model-of-tom/schedule.md ──\n# Schedule\n\nTuesday.\n\n\n── model-of-tom/areas/climbing.md ──\n## Current state\n\n- Climbing for 16 years; on the WPI climbing team (session 47f04bc9, 2026-08-30).\n- Ankle: minor chronic pain from jumping down off the wall (session 47f04bc9, 2026-08-30).\n\n## Must not break\n\n- Team practices are fixed (session 47f04bc9, 2026-08-30).",
+    };
+    const paths = {
+      operate: ["model-of-tom/agent-rules.md"],
+      write: ["model-of-tom/writing.md", "model-of-tom/ground.md"],
+      know: ["model-of-tom/priorities.md", "model-of-tom/schedule.md", ...REQUIRED_AREA_PATHS],
+    };
+    const header = (selection) => `MODEL-OF-TOM FILES (WikiTom commit ${commit}): ${selection.flatMap((name) => paths[name]).join(", ")}`;
+    const selections = [
+      ["operate"], ["write"], ["operate", "write"], ["know"],
+      ["operate", "know"], ["write", "know"], ["operate", "write", "know"],
+    ];
+    const bodies = {
+      "model-of-tom/agent-rules.md": "# Rules\n\nOperate safely.\n",
+      "model-of-tom/writing.md": "# Writing\n\nBe plain.\n",
+      "model-of-tom/ground.md": "# Ground\n\nStart here.\n",
+      "model-of-tom/priorities.md": "# Priorities\n\nResearch.\n",
+      "model-of-tom/schedule.md": "# Schedule\n\nTuesday.\n",
+      "model-of-tom/areas/climbing.md": CLIMBING,
+    };
+    Object.assign(bodies, areaBodies);
+    const render = (file) => `── ${file} ──\n${file.startsWith("model-of-tom/areas/") ? cutAreaSections(bodies[file]) : bodies[file]}`;
+    blocks.know = ["model-of-tom/priorities.md", "model-of-tom/schedule.md", ...REQUIRED_AREA_PATHS].map(render).join("\n\n");
+    const files = Object.values(paths).flatMap((filePaths) => filePaths.map((filePath) => ({
+      path: filePath,
+      body: bodies[filePath],
+      bytes: Buffer.byteLength(bodies[filePath]),
+    })));
+    expect(posts).toEqual([{
+      route: "/tts/model-of-tom",
+      body: {
+        commit,
+        committedAt,
+        pushed: false,
+        blocks,
+        files,
+        headers: selections.map((selection) => ({ blocks: selection, header: header(selection) })),
+      },
+    }]);
+    expect(result).toEqual({ commit, pushed: false, files: files.map((file) => file.path) });
   });
 });

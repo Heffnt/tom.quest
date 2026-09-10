@@ -13,6 +13,7 @@ import {
   messageProvenance,
   messageSourceId,
   needsTomLine,
+  gmailTriagePrompt,
 } from "./poll-gmail.mjs";
 
 describe("the stable source id of a mail", () => {
@@ -42,5 +43,17 @@ describe("the line a #tts thread opens with", () => {
       "Needs you today — Sarah Chen <sarah@wpi.edu>: Lab meeting Friday\n" +
         "https://tom.quest/tts?item=k123",
     );
+  });
+});
+
+
+describe("the Gmail triage prompt", () => {
+  it("begins with the writing standard and puts mail data last", () => {
+    const prompt = gmailTriagePrompt("WRITE STANDARD", [{ id: "m1", from: "A", subject: "S", snippet: "body" }]);
+    expect(prompt.startsWith("WRITE STANDARD")).toBe(true);
+    expect(prompt.lastIndexOf('"m1"')).toBeGreaterThan(prompt.indexOf("Emails:"));
+    expect(prompt).not.toContain("Do not invent details");
+    expect(prompt).not.toContain("deadline inside 48 hours");
+    expect(prompt).toContain('Include "why" only\nwhen it is true');
   });
 });

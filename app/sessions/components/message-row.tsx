@@ -53,9 +53,9 @@ function Cut({ message }: { message: TranscriptMessage }) {
 }
 
 /**
- * WHAT THE SESSION BEGAN WITH (the lifeos update, phase 7). Every opener is
- * prepended with the model-of-tom files — the WikiTom pages every prompt
- * begins with — under one header line naming the commit they were read at and
+ * WHAT THE SESSION BEGAN WITH (the lifeos update, phase 7). This opener is
+ * prepended with the caller-selected model-of-tom blocks — the WikiTom pages
+ * that opener needs — under one header line naming the commit they were read at and
  * listing their paths (convex/ttsSkills.ts modelOfTomText). That header is the
  * transcript's record of it, so the row it arrives on says it as a fact of its
  * own: which commit, and which files. The prompt itself still renders below,

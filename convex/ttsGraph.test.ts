@@ -7,7 +7,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
   MAX_NEEDS,
-  WRITING_STANDARD,
+  TTS_CLOSED_VOCABULARY,
   buildDoneSet,
   frontier,
   isPrepared,
@@ -1880,6 +1880,16 @@ describe("GET /tts/batch-context (planner half)", () => {
     const t = convexTest({ schema, modules });
     await storeGraph(t, { statement: "sign the lease" });
     await t.run(async (ctx) => {
+      await ctx.db.insert("modelOfTomPublication", {
+        key: "current",
+        commit: "batch-context-test",
+        committedAt: 1,
+        pushed: true,
+        operate: "operate block must not reach the planner",
+        write: "write block reaches the planner",
+        know: "know block reaches the planner",
+        headers: [{ blocks: ["write", "know"], header: "published write + know" }],
+      });
       await ctx.db.insert("dtsEvents", {
         at: Date.now(),
         kind: "plan-repair",
@@ -1900,15 +1910,31 @@ describe("GET /tts/batch-context (planner half)", () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    // The prelude: nothing posted yet, so the hardcoded copy under a header
-    // that says so (convex/ttsSkills.ts).
-    expect(body.writingStandard).toContain(WRITING_STANDARD);
-    expect(body.writingStandard.startsWith("MODEL-OF-TOM FILES: none stored yet")).toBe(true);
+    expect(body.writingStandard).toBe("published write + know\n\nwrite block reaches the planner\n\nknow block reaches the planner");
+    expect(body.writingStandard).not.toContain("operate block");
+    expect(body.vocabulary).toBe(TTS_CLOSED_VOCABULARY);
     expect(body.batches.map((b: Doc<"batches">) => b.statement)).toEqual([
       "sign the lease",
     ]);
     expect(body.planRepairs.map((e: Doc<"dtsEvents">) => e.data.report)).toEqual(
       ["reading the lease does not block drafting questions"],
     );
+  });
+
+  it("fails closed with the stored-block error when a requested block is absent", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("modelOfTomPublication", {
+        key: "current", commit: "incomplete", committedAt: 1, pushed: true,
+        write: "write block", headers: [],
+      });
+    });
+
+    const response = await t.fetch("/tts/batch-context", {
+      method: "GET", headers: { "X-TTS-Key": "s3cret" },
+    });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "model-of-tom block know is not stored" });
   });
 });
