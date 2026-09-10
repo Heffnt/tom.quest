@@ -476,6 +476,38 @@ describe("the pair against check-evidence.mjs", () => {
     expect(check(dir).ok).toBe(true);
     expect(before).not.toBe(mid);
   });
+
+  // evidence/handoffs.md joined the form-only pass in WikiTom `3eaefc1c9`: it
+  // points at no synthesis page, so it is checked for entry FORM only. This
+  // test exercises that pass with the fixture copy, so a stale fixture fails
+  // here on any machine — the byte-comparison above needs a WikiTom checkout
+  // and returns early without one.
+  it("passes a form-only handoffs record, and refuses an entry with no form", () => {
+    const dir = wikitomTree();
+    write(
+      dir,
+      "model-of-tom/evidence/handoffs.md",
+      [
+        "# Handoffs",
+        "",
+        "## Sessions",
+        "",
+        "- line: The merge queue was mid-run when the account switched.",
+        '  said: 2026-09-01 · session 81be510a · "the queue worker died"',
+        "",
+      ].join("\n"),
+    );
+    expect(check(dir).ok).toBe(true);
+
+    write(
+      dir,
+      "model-of-tom/evidence/handoffs.md",
+      ["# Handoffs", "", "## Sessions", "", "- line: A handoff with no form at all.", ""].join("\n"),
+    );
+    const failed = check(dir);
+    expect(failed.ok).toBe(false);
+    expect(failed.output).toContain("handoffs.md");
+  });
 });
 
 describe("oneLine", () => {

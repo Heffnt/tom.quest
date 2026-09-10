@@ -156,9 +156,14 @@ for (const rel of SYNTHESIS) {
   console.log(`${sRel}: ${lines.length} lines, ${entries.length} entries`);
 }
 
-// These evidence files point to synthesis in other repositories. Do not
-// mirror them against model-of-tom/; validate only their entry structure.
-for (const path of markdownFiles(join(mot, "evidence", "repos"))) {
+// These evidence files point to synthesis in other repositories, or to no
+// synthesis at all. Do not mirror them against model-of-tom/; validate only
+// their entry structure.
+const formOnly = [
+  ...markdownFiles(join(mot, "evidence", "repos")),
+  ...(existsSync(join(mot, "evidence", "handoffs.md")) ? [join(mot, "evidence", "handoffs.md")] : []),
+];
+for (const path of formOnly) {
   const rel = relative(root, path);
   const entries = parseEvidence(path);
   for (const entry of entries) {

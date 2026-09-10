@@ -6,6 +6,7 @@
 // own hot path stays a local append rather than a network request.
 
 import { fileURLToPath } from "node:url";
+import os from "node:os";
 import path from "node:path";
 import {
   REPO_ROOTS,
@@ -34,7 +35,10 @@ function parseArgs(argv) {
 
 async function main() {
   const { day, dryRun } = parseArgs(process.argv.slice(2));
-  const logPath = path.join(process.env.HOME || process.env.USERPROFILE || "", ".claude", "evals", "instructions-loaded.jsonl");
+  // os.homedir(), not HOME/USERPROFILE: the hook writes the log at
+  // os.homedir() (scripts/instructions-loaded-hook.mjs), and under git bash the
+  // two differ — a report built from HOME reads a path that never exists.
+  const logPath = path.join(os.homedir(), ".claude", "evals", "instructions-loaded.jsonl");
   if (dryRun) {
     const payload = await rollUp(logPath, day);
     console.log(JSON.stringify(payload, null, 2));

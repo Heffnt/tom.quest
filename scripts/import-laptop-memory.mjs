@@ -439,11 +439,18 @@ export function parseArgs(argv) {
   return args;
 }
 
-/** A writer over the checkout, or one that keeps every write in memory. */
+/** A writer over the checkout, or one that keeps every write in memory.
+ *
+ * Real writes keep the read-before bytes of every file they touch, so a failed
+ * gate can put the checkout back exactly — the same shape nightly.mjs's
+ * withEvidenceCheck uses. `restore()` returns the sorted list it put back; a
+ * file that did not exist before the import is removed. */
 export function checkoutIo(dir, { dryRun = false } = {}) {
   const pending = new Map();
+  const before = new Map();
   return {
     pending,
+    before,
     exists: (rel) => pending.has(rel) || fs.existsSync(path.join(dir, rel)),
     read: (rel) => {
       if (pending.has(rel)) return pending.get(rel);
@@ -454,8 +461,20 @@ export function checkoutIo(dir, { dryRun = false } = {}) {
       pending.set(rel, text);
       if (dryRun) return;
       const abs = path.join(dir, rel);
+      if (!before.has(rel)) before.set(rel, fs.existsSync(abs) ? fs.readFileSync(abs) : null);
       fs.mkdirSync(path.dirname(abs), { recursive: true });
       fs.writeFileSync(abs, text);
+    },
+    restore: () => {
+      const restored = [];
+      for (const [rel, bytes] of before) {
+        const abs = path.join(dir, rel);
+        if (bytes === null) fs.rmSync(abs, { force: true });
+        else fs.writeFileSync(abs, bytes);
+        restored.push(rel);
+      }
+      before.clear();
+      return restored.sort();
     },
   };
 }
@@ -515,8 +534,14 @@ async function main() {
     }
   }
 
+  // The rollback happens HERE, before the report and the delete list are
+  // written: a failed gate must leave the checkout byte-identical to what the
+  // import read, and the delete list must not tell Tom to delete laptop files
+  // whose lines were just rolled back out of WikiTom.
+  const restored = check.ok ? [] : io.restore();
+
   const counts = countByStatus(joined);
-  const list = deleteList(joined, result);
+  const list = check.ok ? deleteList(joined, result) : [];
   const heldFiles = joined.filter((r) => r.onDisk).length - list.length;
   const report = renderReport({
     day,
@@ -532,17 +557,20 @@ async function main() {
     list,
     heldFiles,
     check,
+    restored,
   });
 
   const outDir = args.out ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".import");
   if (!args.dryRun) {
     fs.mkdirSync(outDir, { recursive: true });
     fs.writeFileSync(path.join(outDir, `laptop-memory-import-${day}.md`), report);
-    fs.writeFileSync(path.join(outDir, `laptop-memory-delete-${day}.txt`), `${list.join("\n")}\n`);
+    if (check.ok) fs.writeFileSync(path.join(outDir, `laptop-memory-delete-${day}.txt`), `${list.join("\n")}\n`);
   }
   console.log(report);
   if (!check.ok) {
-    console.error("\nthe evidence check FAILED after the import; nothing here should be committed");
+    console.error(
+      `\nthe evidence check FAILED after the import; ${restored.length} file(s) were restored to what they were and no delete list was written`,
+    );
     process.exitCode = 1;
   }
 }
@@ -551,7 +579,7 @@ async function main() {
  * lines added, every row held back with the reason, and the delete list's
  * size. It ends with the sentence the digest repeats. */
 export function renderReport(state) {
-  const { day, args, joined, onDisk, uncatalogued, missing, unverified, result, counts, list, heldFiles, check } = state;
+  const { day, args, joined, onDisk, uncatalogued, missing, unverified, result, counts, list, heldFiles, check, restored = [] } = state;
   const out = [];
   out.push(`# Laptop memory import — ${day}${args.dryRun ? " (DRY RUN — nothing was written)" : ""}`);
   out.push("");
@@ -619,6 +647,13 @@ export function renderReport(state) {
   out.push(String(check.output ?? "").trim());
   out.push("```");
   out.push("");
+  if (!check.ok) {
+    out.push(
+      `The import was rolled back: ${restored.length} file(s) restored to what they were before it ran, and no delete list was written.`,
+    );
+    for (const rel of restored) out.push(`- ${rel}`);
+    out.push("");
+  }
   out.push(reportSentence(counts, result, list, heldFiles));
   out.push("");
   return out.join("\n");

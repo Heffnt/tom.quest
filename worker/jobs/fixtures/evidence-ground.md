@@ -36,7 +36,7 @@ Never loaded. One entry per line of `../ground.md`, under the same heading. Sess
   said: 2026-09-09 · Tom, laptop design session on unified agent context · "i understand these intuitively but im not fluent in the math." (asked about p-values, confidence intervals, bootstrap; contingency tables)
   said: 2026-07-12 · CMT/`6bf82060` · "what is a cross-tab / contingency table"
   said: undated · writing.md as ruled · "I'm mostly familiar with the LLM/backdoor stuff, so most of this is new to me" (on mediation, CDE, Baron–Kenny, frequentist/bayesian machinery, statistical power)
-  read: 2026-07-04 · CMT/`c6706f04` · "why can't we compute the CDE on jailbreak? I don't understand…" — he used CDE unprompted while asking why it could not be computed on jailbreak.
+  said: 2026-07-04 · CMT/`c6706f04` · "why can't we compute the CDE on jailbreak? I don't understand…" (he used CDE unprompted while asking why it could not be computed on jailbreak)
 - line: General software concepts: API routes, database tables, auth, build steps, test suites; he follows an account written for a specialist and may lack the details.
   said: 2026-09-09 · Tom, laptop design session on unified agent context · "I have a strong intuitive understanding of these. similar to the statistics, if you talk to me like an expert i can probably intuitively follow what you're saying but might not know all the details." (asked about API route, database table, auth, build step, test suite)
   said: 2026-09-04 · writing.md as ruled · "what is an execution layer?" (after an agent used the term undefined)
@@ -89,7 +89,7 @@ Never loaded. One entry per line of `../ground.md`, under the same heading. Sess
   said: undated · writing.md as ruled · "I want to clean up all the dirs adjacent to CMT called pm-* or cmt-*. I dont know what they are."
 - line: Every number, column, label and status in a table an agent produced, until the table defines it.
   said: 2026-09-07 · CMT/`0574c2d7` · "what are the percentages in the tables? always make sure to define these things"
-  read: 2026-09-08 · CMT/`3dc61f8c` · asked what "FAILED" meant as a table status.
+  said: 2026-09-08 · CMT/`3dc61f8c` · "what does \"FAILED\" mean in the table?"
 - line: A name an agent coined for an experiment, a run or a concept.
   said: 2026-09-09 · CMT/`2662d1a9` · "you are using a lot of made up names for different experiments that I dont understand and for most of them i dont need to understand so translate it into normal language"
   said: 2026-08-08 · CMT/`542cf5c1` · "That is not a term I recognize, and I am intimately familiar with CMT." (on "terminal detectors", an agent coinage)
@@ -105,5 +105,5 @@ Never loaded. One entry per line of `../ground.md`, under the same heading. Sess
 - line: A name an agent coined is never known; translate it to plain words.
   said: 2026-09-09 · CMT/`2662d1a9` · "you are using a lot of made up names for different experiments that I dont understand and for most of them i dont need to understand so translate it into normal language"
   said: 2026-08-08 · CMT/`542cf5c1` · "That is not a term I recognize, and I am intimately familiar with CMT."
-- line: When he says a topic does not matter to him, the defining obligation drops for it and only the takeaways are owed. (inferred)
-  rests on: 2026-09-07 · CMT/`3dc61f8c` · "I also don't understand section 2, but I don't really care to understand everything that has transpired. I just want to understand the takeaways" — against the older ruled sentence "err on the side of over explaining as id rather skip over background I already know rather than have to ask"; which governs is unruled.
+- line: Only where he has said a topic does not matter to him does the defining obligation drop, with only the takeaways owed; otherwise writing.md's explain-more rule governs. (inferred)
+  rests on: 2026-09-07 · CMT/`3dc61f8c` · "I also don't understand section 2, but I don't really care to understand everything that has transpired. I just want to understand the takeaways" — read as a carve-out from the older ruled sentence "err on the side of over explaining as id rather skip over background I already know rather than have to ask" (writing.md, Explaining), which governs everywhere else; the carve-out reading is an agent's, and he has not confirmed it.

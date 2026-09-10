@@ -161,6 +161,12 @@ cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
 mkdir -p /opt/tts/scripts /opt/tts/worker/jobs
 cp "$WORKER_DIR"/../scripts/session-start-hook.mjs /opt/tts/scripts/session-start-hook.mjs
 cp "$WORKER_DIR"/../scripts/prelude.mjs /opt/tts/scripts/prelude.mjs
+# prelude.mjs's own import graph has to land in the same shape it has in the
+# repo: the layer table beside it, and the relevance body one directory over
+# (prelude.mjs reaches for ../worker/jobs/context-relevance.mjs). Without both
+# copies the assembler cannot load on the box at all.
+cp "$WORKER_DIR"/../scripts/prelude-layers.mjs /opt/tts/scripts/prelude-layers.mjs
+cp "$WORKER_DIR"/jobs/context-relevance.mjs /opt/tts/worker/jobs/context-relevance.mjs
 # The pull-request check's body, beside the jobs rather than under scripts/:
 # evals.mjs imports gate() from it so the box stamps a run with the SAME rule
 # the check applies, and there is one body of what a regression is.

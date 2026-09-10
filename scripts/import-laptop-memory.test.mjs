@@ -366,6 +366,24 @@ describe("runImport", () => {
     // The writes are still readable, so the report says exactly what would land.
     expect(io.pending.get("model-of-tom/agent-rules.md")).toContain("Heavy compute runs on Turing");
   });
+
+  // The gate's rollback: a real run keeps the read-before bytes of every file
+  // it touches, so a failed evidence check puts the checkout back exactly —
+  // including removing a file the import created.
+  it("restores every byte it wrote when the gate fails", () => {
+    const dir = wikitom();
+    const before = treeHash(dir);
+    const io = checkoutIo(dir);
+    const result = runImport({ rows, routing, io, day: "2026-09-11" });
+    expect(result.written).toHaveLength(1);
+    io.write("model-of-tom/evidence/brand-new.md", "# New\n");
+    expect(treeHash(dir)).not.toBe(before);
+
+    const restored = io.restore();
+    expect(restored).toContain("model-of-tom/evidence/brand-new.md");
+    expect(fs.existsSync(path.join(dir, "model-of-tom/evidence/brand-new.md"))).toBe(false);
+    expect(treeHash(dir)).toBe(before);
+  });
 });
 
 describe("the delete list", () => {
