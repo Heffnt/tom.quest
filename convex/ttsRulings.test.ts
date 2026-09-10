@@ -21,9 +21,11 @@ async function publishSessionPrelude(t: ReturnType<typeof convexTest>) {
         operate: "operate layer",
         write: "write layer",
         know: "know layer",
+      // The opener takes the stable prefix (the dynamic-context round): the
+      // map, the operate rules and the write layer.
       headers: [{
-        layers: ["operate", "write", "know"],
-        header: "MODEL-OF-TOM FILES (WikiTom commit rulings-session-test): operate,write,know",
+        layers: ["operate", "write"],
+        header: "MODEL-OF-TOM FILES (WikiTom commit rulings-session-test): operate,write",
       }],
     });
   });

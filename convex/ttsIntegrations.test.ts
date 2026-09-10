@@ -21,7 +21,7 @@ async function publishWritingStandard(t: ReturnType<typeof convexTest>) {
     await ctx.db.insert("modelOfTomPublication", {
       key: "current", commit: "capture-context-test", committedAt: 1, pushed: true,
       operate: "operate layer", write: "write layer", know: "know layer",
-      headers: [{ layers: ["write", "know"], header: "published write + know" }],
+      headers: [{ layers: ["operate", "write"], header: "published map + operate + write" }],
     });
   });
 }
@@ -241,7 +241,13 @@ describe("GET /tts/capture-context declined integrations", () => {
         sentence: "not worth the credential",
       },
     ]);
-    expect(body.writingStandard).toBe("published write + know\n\nwrite layer\n\nknow layer");
+    // The door serves the ASSEMBLED CONTEXT now, not two whole layers (the
+    // dynamic-context round): the stable prefix, then — a poller having no
+    // subject of its own — no expansion and the fetchable index. The
+    // assembler's exact output is pinned in convex/ttsContext.test.ts.
+    const [prefix, index] = body.writingStandard.split("\n\nMODEL-OF-TOM FETCHABLE (");
+    expect(prefix).toBe("published map + operate + write\n\noperate layer\n\nwrite layer");
+    expect(index).toContain("--layers know");
     expect(body.captureTriage).toBeUndefined();
     expect(body.source).toBeUndefined();
   });
