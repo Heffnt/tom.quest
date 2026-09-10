@@ -2,6 +2,7 @@ import { convexTest } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import { DELEGATE_DECISION } from "./ttsAsk";
 import {
   AREA_REVIEWED,
   DIGEST_MAX_CHARS,
@@ -51,6 +52,7 @@ const emptyFacts = (): DigestFacts => ({
   emailCaptures: [],
   overnight: [],
   ready: [],
+  objections: [],
   failures: [],
   wikitom: [],
   rulings: [],
@@ -336,6 +338,126 @@ describe("composeDigest", () => {
 // Ruling 15: the digest reports EVERY ruling written from Tom's words, so a
 // misreading gets objected to. The reader judges only that a provenance is
 // there, never how it is worded.
+// ── The objection list (delegate design §2) ──────────────────────────────────
+
+const decision = (
+  over: Partial<Extract<DigestFacts["objections"][number], { kind: "decision" }>> = {},
+): DigestFacts["objections"][number] => ({
+  kind: "decision",
+  askId: "3f9c1a22",
+  decision: "moved the passport appointment to Thursday",
+  reason: "the consulate closes Wednesdays in September",
+  refused: false,
+  refusedBecause: null,
+  fallback: "leave it Wednesday and say so",
+  todoId: "ph79",
+  subject: "renew passport",
+  at: FIVE_AM - 1000,
+  ...over,
+});
+
+describe("the objection list", () => {
+  it("is the second section, immediately after the due list", () => {
+    const { text } = composeDigest({ ...emptyFacts(), objections: [decision()] });
+    const lines = text.split("\n").filter((line) => line.startsWith("*"));
+    expect(lines[0]).toBe("*TTS digest — 2026-09-05*");
+    expect(lines[1]).toBe("*Due and overdue*");
+    expect(lines[2]).toBe("*Objection list*");
+  });
+
+  it("says nothing at all on a morning with no delegated decisions", () => {
+    expect(composeDigest(emptyFacts()).text).not.toContain("Objection list");
+  });
+
+  it("prints a decision, a refusal and a silence, each in its own form", () => {
+    const { text } = composeDigest({
+      ...emptyFacts(),
+      objections: [
+        decision(),
+        decision({
+          askId: "b",
+          refused: true,
+          decision: "emailed the landlord",
+          refusedBecause: "message-in-his-name — a message to another human in your name",
+          todoId: "ph80",
+          subject: "chase the deposit",
+        }),
+        decision({
+          askId: "c",
+          decision: null,
+          reason: 'delegate answer unreadable: {"decisio',
+          todoId: "ph81",
+          subject: "book the MOT",
+        }),
+      ],
+    });
+    expect(text).toContain(
+      `- 1. moved the passport appointment to Thursday — the consulate closes Wednesdays in September: <${ttsItemLink("ph79")}|renew passport>`,
+    );
+    // The narrow-list id is dropped: it is for the record and the eval, and an
+    // id in a morning read is a word Tom has to translate.
+    expect(text).toContain(
+      `- 2. REFUSED, parked: would have emailed the landlord — a message to another human in your name: <${ttsItemLink("ph80")}|chase the deposit>`,
+    );
+    expect(text).toContain("- 3. no answer from the delegate; the caller took its fallback —");
+    // And the reply grammar, once, as the section's own footer.
+    expect(text).toContain(
+      '- silence means it stands; reply "revert 2" or "2: what to do instead"',
+    );
+  });
+
+  it("reports a merge without calling it a decision anyone took", () => {
+    const { text } = composeDigest({
+      ...emptyFacts(),
+      objections: [
+        {
+          kind: "merge",
+          repo: "tom.quest",
+          sha: "5ad4b21",
+          subject: "the delegate and the objection list",
+          todoId: null,
+          at: FIVE_AM - 1000,
+        },
+      ],
+    });
+    expect(text).toContain(
+      "- 1. merged tom.quest@5ad4b21 — the delegate and the objection list",
+    );
+  });
+
+  it("prints twelve of fifteen, the overflow line, and the footer", () => {
+    const objections = Array.from({ length: 15 }, (_, i) =>
+      decision({ askId: `ask${i}`, todoId: `todo${i}`, subject: `item ${i}`, at: FIVE_AM - i }),
+    );
+    const { text } = composeDigest({ ...emptyFacts(), objections });
+    const numbered = text.split("\n").filter((line) => /^- \d+\. /.test(line));
+    expect(numbered).toHaveLength(12);
+    expect(numbered[0]).toContain("- 1. ");
+    expect(numbered[11]).toContain("- 12. ");
+    expect(text).toContain(`<${ttsTabLink("everything")}|+3 more on the page>`);
+    expect(text).toContain('- silence means it stands; reply "revert 2"');
+  });
+
+  it("is reduced only after every section below it", () => {
+    const long = "x".repeat(300);
+    const { text, truncated } = composeDigest({
+      ...emptyFacts(),
+      objections: [decision()],
+      // Enough later sections to blow past DIGEST_MAX_CHARS.
+      ready: Array.from({ length: 12 }, (_, i) => ({
+        id: `r${i}`,
+        statement: `${i} ${long}`,
+      })),
+      failures: Array.from({ length: 12 }, (_, i) => ({ at: FIVE_AM - i, text: `${i} ${long}` })),
+      overnight: Array.from({ length: 12 }, (_, i) => ({ batch: null, text: `${i} ${long}` })),
+    });
+    expect(truncated).toBe(true);
+    // The two Tom reads first survive whole.
+    expect(text).toContain("*Due and overdue*");
+    expect(text).toContain("- 1. moved the passport appointment to Thursday");
+  });
+});
+
 describe("provenanceText", () => {
   it("takes both shapes the ruling route writes", () => {
     expect(provenanceText("slack 1757000000.000100")).toBe("slack 1757000000.000100");
@@ -709,6 +831,86 @@ describe("the missed rollover", () => {
 describe("internalComposeDigest", () => {
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("gathers delegate rows, skips the attended one, and records its numbering", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "renew passport" });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: DELEGATE_DECISION,
+        key: "3f9c1a22",
+        todoId,
+        data: {
+          askId: "3f9c1a22",
+          decision: "moved the appointment to Thursday",
+          reason: "the consulate closes Wednesdays",
+          refused: false,
+          refusedBecause: null,
+          fallback: "leave it Wednesday",
+          attended: false,
+        },
+      });
+      // An attended ask is a prompt bug, not a decision for Tom's morning.
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: DELEGATE_DECISION,
+        key: "deadbeef",
+        data: {
+          askId: "deadbeef",
+          decision: null,
+          reason: "attended-session: Tom is in this session — ask him",
+          refused: true,
+          refusedBecause: "attended-session: Tom is in this session — ask him",
+          fallback: "ask him",
+          attended: true,
+        },
+      });
+    });
+    const { text, objectionAskIds } = await t.query(
+      internal.ttsDigest.internalComposeDigest,
+      { day: DAY_KEY, now: Date.now() + 1 },
+    );
+    expect(text).toContain("*Objection list*");
+    expect(text).toContain("- 1. moved the appointment to Thursday — the consulate closes Wednesdays");
+    expect(text).not.toContain("attended-session");
+    expect(objectionAskIds).toEqual(["3f9c1a22"]);
+  });
+
+  it("records only the askIds it printed — twelve of fifteen", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 15; i += 1) {
+        await ctx.db.insert("dtsEvents", {
+          at: Date.now() - i,
+          kind: DELEGATE_DECISION,
+          key: `ask${i}`,
+          data: {
+            askId: `ask${i}`,
+            decision: `decision ${i}`,
+            reason: `reason ${i}`,
+            refused: false,
+            refusedBecause: null,
+            fallback: "the fallback",
+            attended: false,
+          },
+        });
+      }
+    });
+    const { objectionAskIds } = await t.query(internal.ttsDigest.internalComposeDigest, {
+      day: DAY_KEY,
+      now: Date.now() + 1,
+    });
+    // A number Tom types must name a line he could see.
+    expect(objectionAskIds).toHaveLength(12);
+    expect(objectionAskIds[0]).toBe("ask0");
   });
 
   it("reads the rollover's mark and everything since the last digest", async () => {

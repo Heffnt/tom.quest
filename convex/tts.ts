@@ -2446,17 +2446,32 @@ export const internalMarkDigestSent = internalMutation({
   args: {
     day: v.string(),
     surfacedTodoIds: v.array(v.id("dtsTodos")),
+    // The askIds the objection list printed, in printed order — the digest's
+    // own numbering, which is what a reply of "revert 2" names. Absent on a
+    // resend and on a morning with no delegated decisions. `data` is v.any(),
+    // so this is not a schema change.
+    objectionAskIds: v.optional(v.array(v.string())),
     windowEnd: v.optional(v.number()),
     // The digest was reduced to fit one Slack message (ttsDigest
     // DIGEST_MAX_CHARS). Absent on a resend, which reposts a text already
     // composed and whose row said so at the time.
     truncated: v.optional(v.boolean()),
   },
-  handler: async (ctx, { day, surfacedTodoIds, windowEnd, truncated }) => {
+  handler: async (ctx, { day, surfacedTodoIds, objectionAskIds, windowEnd, truncated }) => {
     for (const todoId of surfacedTodoIds) {
       await logEvent(ctx, "surfaced", todoId, { via: "digest", day });
     }
-    await logEvent(ctx, "digest-sent", undefined, { day, windowEnd, truncated });
+    // NO KEY on a "digest-sent" row, ever: ttsDigest.lastDigestSent reads
+    // by_kind_key with the kind pinned and every key empty, so within the kind
+    // the index order IS time order and .first() is the newest row. Keying
+    // these by day would silently break the window arithmetic of every future
+    // digest.
+    await logEvent(ctx, "digest-sent", undefined, {
+      day,
+      windowEnd,
+      truncated,
+      objectionAskIds,
+    });
   },
 });
 
