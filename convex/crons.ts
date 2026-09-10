@@ -27,15 +27,19 @@ crons.interval(
 crons.cron("tts repeats (edt)", "30 8 * * *", internal.ttsRepeats.internalGenerateRepeats, {});
 crons.cron("tts repeats (est)", "30 9 * * *", internal.ttsRepeats.internalGenerateRepeats, {});
 
-// The 5 a.m. digest (the lifeos update, phase 2): the missed rollover, then the
-// deterministic composer, then one post to #tts — every day, even when short.
-// Behind DIGEST_ENABLED in convex/ttsSync.ts (its own switch, per message kind).
-crons.cron("tts digest (edt)", "0 9 * * *", internal.ttsSync.sendDigest, {});
-crons.cron("tts digest (est)", "0 10 * * *", internal.ttsSync.sendDigest, {});
+// THE MORNING MESSAGE, 5 a.m. (slack-design.md, Tom 2026-09-09): the missed
+// rollover, then the day's facts gathered deterministically, then either the
+// Fable run on the box writing it (the request the box picks up) or the plain
+// template — one post to #tts-today every day, even when short. Behind
+// DIGEST_ENABLED in convex/ttsSync.ts (its own switch, per message kind). The
+// cron NAMES are unchanged so a rename does not lose their history.
+crons.cron("tts digest (edt)", "0 9 * * *", internal.ttsSync.sendToday, {});
+crons.cron("tts digest (est)", "0 10 * * *", internal.ttsSync.sendToday, {});
 
 // The HOURLY UPDATE (Tom's ruling 2026-08-30; the lifeos update, phase 2):
 // what the box is running, which batches were worked, what changed since the
-// last one — or one line saying nothing did — every hour, 24/7, in #tts-hourly
+// last one — OR NOTHING AT ALL when nothing changed — every hour, 24/7, in
+// #tts-hourly
 // (SLACK_TTS_HOURLY_CHANNEL_ID; unset = one log line, no send). Its OWN switch
 // inside the action (HOURLY_UPDATE_ENABLED in convex/ttsSync.ts, ON) — a
 // separate switch from the 5 a.m. digest's, so turning this on does not turn

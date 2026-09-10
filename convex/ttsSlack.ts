@@ -6,12 +6,23 @@ import { internal } from "./_generated/api";
 import { applyStatusChange, logEvent } from "./tts";
 import {
   SLACK_SUBJECT,
-  captureReplyText,
   isLive,
   slackThreadKey,
+  ttsDayKey,
   ttsSessionLink,
   type SlackSubject,
 } from "./ttsShared";
+import { DELEGATE_OBJECTION } from "./ttsDigest";
+import {
+  SLACK_CLAIMED,
+  claimKey,
+  composeCaptured,
+  composeContinued,
+  composeNeedsYou,
+  needsYouFactsBlock,
+  renderSlack,
+  type NeedsYouFacts,
+} from "./ttsCompose";
 import { changeIdTokens, namedChange, withoutChangeId } from "../worker/jobs/learning-change-names.mjs";
 
 // Slack, the Convex side (the lifeos update, phase 2). Two facts live here:
@@ -139,15 +150,75 @@ export const NEEDS_TOM = "needs-tom";
  * what was tried; the reply is captured as a todo instead). */
 export const SLACK_REPLY_FAILED = "slack-reply-failed";
 
+// ── One appearance per item per day, across channels (§2.5) ──────────────────
+/** Claim an item for one ask for one TTS day. Returns false when another
+ *  channel already claimed it today, and the caller then does not post.
+ *  Point lookup on by_kind_key, the NEEDS_TOM marker pattern in this same
+ *  file; two concurrent claims conflict on the key and the retry reads the
+ *  winner's row.
+ *
+ *  THE DAY ROLLS AT 5 A.M. A needs-you thread opened at 19:10 does not
+ *  suppress the next morning's line about the same item: they are different
+ *  TTS days, and an item he ignored last night is exactly what the morning
+ *  exists to re-raise.
+ *
+ *  `ask` is "act" or "object" (ttsCompose.SlackAsk) for the two asks that
+ *  compete across channels, and "broken" for the per-job failure dedupe, which
+ *  shares the mechanism and nothing else. */
+export const internalClaimSlackItem = internalMutation({
+  args: {
+    day: v.string(),
+    ask: v.string(),
+    itemId: v.string(),
+    channel: v.string(),
+  },
+  handler: async (
+    ctx,
+    { day, ask, itemId, channel },
+  ): Promise<{ claimed: boolean; by: string | null }> => {
+    const key = claimKey(day, ask as "act" | "object", itemId);
+    const seen = await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_kind_key", (q) => q.eq("kind", SLACK_CLAIMED).eq("key", key))
+      .first();
+    if (seen) {
+      const by = (seen.data as { channel?: unknown } | undefined)?.channel;
+      return { claimed: false, by: typeof by === "string" ? by : null };
+    }
+    const todoId = ctx.db.normalizeId("dtsTodos", itemId);
+    await ctx.db.insert("dtsEvents", {
+      at: Date.now(),
+      kind: SLACK_CLAIMED,
+      key,
+      ...(todoId === null ? {} : { todoId }),
+      data: { day, ask, itemId, channel },
+    });
+    return { claimed: true, by: channel };
+  },
+});
+
+// ── The needs-you thread ─────────────────────────────────────────────────────
+// Composed HERE, from the todo and the poller's verdict, not on the box: the
+// job stops writing message text and sends facts. The raw vendor subject and
+// the From header never reach Slack — they stay on the needs-tom row and in
+// the dedupe key, which is where they belong.
 export const internalOpenNeedsTomThread = internalMutation({
   // todoId as a plain string, normalized here: the caller is an HTTP route
   // carrying a worker's JSON, and this is where an unknown id becomes a named
   // refusal rather than a validator error (the internalPrepareTodo pattern).
-  args: { todoId: v.string(), text: v.string(), key: v.string() },
+  args: {
+    todoId: v.string(),
+    // `verdict.why` from the triage — HALF A SENTENCE HE CAN READ, and the one
+    // thing the old message never said.
+    reason: v.string(),
+    key: v.string(),
+    canReply: v.optional(v.boolean()),
+    channel: v.optional(v.string()),
+  },
   handler: async (
     ctx,
-    { todoId, text, key },
-  ): Promise<{ opened: boolean; key: string }> => {
+    { todoId, reason, key, canReply, channel },
+  ): Promise<{ opened: boolean; key: string; reason?: string }> => {
     // The todo first: a thread about a row that is not there is a message Tom
     // cannot reply to, and the marker would suppress the real one for ever.
     const id = ctx.db.normalizeId("dtsTodos", todoId);
@@ -158,20 +229,63 @@ export const internalOpenNeedsTomThread = internalMutation({
       .withIndex("by_kind_key", (q) => q.eq("kind", NEEDS_TOM).eq("key", key))
       .first();
     if (seen) return { opened: false, key };
+
+    const facts: NeedsYouFacts = {
+      todoId: id,
+      statement: todo.statement,
+      entryAction: todo.entryAction,
+      reason,
+      sourceUrl: sourceUrlOf(todo.provenance),
+    };
+    const day = ttsDayKey(Date.now());
     await ctx.db.insert("dtsEvents", {
       at: Date.now(),
       kind: NEEDS_TOM,
       key,
       todoId: id,
-      data: { key, text },
+      // The provenance the message does NOT print stays on the row.
+      data: { key, reason, provenance: todo.provenance, facts: needsYouFactsBlock(facts, day, canReply ?? false) },
     });
-    await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
-      text,
+
+    // ONE APPEARANCE PER ITEM PER DAY. The morning message claims at 5 a.m.,
+    // before any daytime channel runs, so an item it printed is already on his
+    // list today and this thread is correctly suppressed; an item that arrives
+    // at 9 a.m. was not in the morning message and is not suppressed.
+    const claim = await ctx.runMutation(internal.ttsSlack.internalClaimSlackItem, {
+      day,
+      ask: "act",
+      itemId: id,
+      channel: "needsYou",
+    });
+    if (!claim.claimed) {
+      return { opened: false, key, reason: `already claimed today by ${claim.by}` };
+    }
+    // WRITTEN, NOT FILLED IN (Tom 2026-09-09, amendment 2) — the same route the
+    // morning message takes: the facts go to a draft request, the Fable run on
+    // the box writes it, the verifier checks every link and number against the
+    // facts, and the timeout posts this template if no accepted draft arrives.
+    await ctx.runMutation(internal.ttsSlackDrafts.internalOpenSlackDraft, {
+      requestId: `needs-you:${key}`,
+      kind: "needs-you",
       subject: { kind: "todo", id },
+      ...(channel === undefined ? {} : { channel }),
+      facts: needsYouFactsBlock(facts, day, canReply ?? false),
+      canReply: canReply ?? false,
+      fallback: renderSlack(composeNeedsYou(facts, { canReply: canReply ?? false })),
     });
     return { opened: true, key };
   },
 });
+
+/** The message a capture came from, when its provenance carries one.
+ *  worker/jobs/poll-gmail.mjs writes `gmail:message:<id> https://mail.google…`,
+ *  so the first https token is the link and everything else is machine text
+ *  the message must not print. */
+export function sourceUrlOf(provenance: string | undefined): string | null {
+  if (provenance === undefined) return null;
+  const hit = provenance.match(/https:\/\/[^\s]+/);
+  return hit === null ? null : hit[0];
+}
 
 // ── "done", a bare date, or a fact ───────────────────────────────────────────
 // A reply on a todo thread that says ONLY "done" completes the todo through
@@ -307,6 +421,7 @@ export type ThreadReplyOutcome =
   | { outcome: "time-note"; timeNoteId: Id<"dtsTimeNotes"> }
   | { outcome: "tom-note"; subject: SlackSubject }
   | { outcome: "learning-objection"; id: string }
+  | { outcome: "delegate-objection"; id: string }
   | { outcome: "captured"; todoId: Id<"dtsTodos"> };
 
 /**
@@ -428,9 +543,10 @@ async function routeReply(
       return await sessionReply(ctx, subject.id, text, at);
     case "todo":
       return await todoReply(ctx, subject.id, text, at);
+    case "today":
     case "digest":
     case "hourly": {
-      // A reply to a digest or an hourly update is a fact (the brief's
+      // A reply to the morning message or an hourly line is a fact (the brief's
       // "captured as a fact") — the thread has no one todo for a date or a
       // "done" to land on. The one exception: a reply that NAMES a todo (its
       // link or id) and otherwise says only "done" or a date is that todo's
@@ -462,9 +578,9 @@ async function routeReply(
         text,
         ...at,
         subject,
-        ...(subject.kind === "digest"
-          ? { day: subject.day }
-          : { hour: subject.hour, day: subject.hour.slice(0, 10) }),
+        ...(subject.kind === "hourly"
+          ? { hour: subject.hour, day: subject.hour.slice(0, 10) }
+          : { day: subject.day }),
       });
       return { outcome: "tom-note", subject };
     }
@@ -475,6 +591,27 @@ async function routeReply(
         ...at,
       });
       return { outcome: "learning-objection", id: subject.id };
+    case "ask": {
+      // THE THREAD IS THE DECISION, so no number is parsed. A bare "revert"
+      // (any case) reverts it; anything else is the sentence Tom wants
+      // instead. Same row, same askId key as the digest's numbered branch
+      // (delegate-design.md §2.5) — two doors, one row, not two
+      // implementations.
+      const revert = text.trim().replace(/[.!]+$/, "").toLowerCase() === "revert";
+      await logEvent(
+        ctx,
+        DELEGATE_OBJECTION,
+        undefined,
+        { askId: subject.id, revert, ...(revert ? {} : { sentence: text }), text, ...at },
+        subject.id,
+      );
+      return { outcome: "delegate-objection", id: subject.id };
+    }
+    case "job":
+      // A reply about a failure is a fact, and nothing else: the failure is
+      // the box's to fix, not a row with a status Tom can set.
+      await logEvent(ctx, "tom-note", undefined, { text, ...at, subject, job: subject.id });
+      return { outcome: "tom-note", subject };
     case "unknown":
       return await captureUnknown(ctx, text, at);
   }
@@ -498,7 +635,7 @@ async function captureUnknown(
   await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
     channel: at.channel,
     threadTs: at.threadTs,
-    text: captureReplyText(text, todoId),
+    text: renderSlack(composeCaptured({ todoId, statement: text })),
     subject: { kind: "todo", id: todoId },
   });
   return { outcome: "captured", todoId };
@@ -654,7 +791,9 @@ async function sessionReply(
   await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
     channel: at.channel,
     threadTs: at.threadTs,
-    text: `Session "${session.title}" had ${session.status}; your reply opened a new ${session.kind} session seeded with this thread — ${ttsSessionLink(newId)}`,
+    text: renderSlack(
+      composeContinued({ sessionId: newId, title: session.title, status: session.status }),
+    ),
     subject: { kind: "session", id: newId },
   });
   return { outcome: "session-reopened", endedSessionId: sessionId, sessionId: newId };

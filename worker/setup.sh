@@ -368,6 +368,17 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # is 2 minutes away).
 */2 * * * * root /usr/bin/flock -n /var/lock/tts-apply-time-notes.lock /usr/bin/node /opt/tts/apply-time-notes.mjs >> /var/log/tts/apply-time-notes.log 2>&1
 
+# THE MORNING MESSAGE IS WRITTEN, NOT FILLED IN (Tom 2026-09-09). At 5 a.m.
+# New York the Convex cron gathers the day's facts and opens a draft request;
+# this job reads it, runs Fable over the write layer and the facts, and submits
+# the message. Convex verifies it and posts it. A request that is not accepted
+# within five minutes posts the plain template instead, so the morning is never
+# silent. Every two minutes across both possible 5 a.m. UTC hours (09:00 EDT,
+# 10:00 EST) plus the needs-you threads, which open at any hour.
+# flock: a Fable run can outlast a tick, and two runs would write one message
+# twice — the second exits immediately.
+*/2 * * * * root /usr/bin/flock -n /var/lock/tts-write-slack.lock /usr/bin/node /opt/tts/write-slack.mjs >> /var/log/tts/write-slack.log 2>&1
+
 # There is no queue-preparing job any more (the lifeos update, phase 7):
 # today's view — due, overdue, scheduled, ready, waking today — is computed by
 # the /tts page from the record, and the 5 a.m. digest is composed in Convex.

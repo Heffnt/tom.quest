@@ -7,7 +7,7 @@ import {
   type Change,
   type ChangeKind,
   type RunningSession,
-} from "./ttsHourlyText";
+} from "./ttsCompose";
 import { LIVE_STATUSES, TTS_BATCHES_LINK, ttsItemLink, ttsSessionLink } from "./ttsShared";
 
 // The hourly update's FACTS. The SEND lives in convex/ttsSync.ts (a Node

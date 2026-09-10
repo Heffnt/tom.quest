@@ -231,12 +231,22 @@ http.route({
   handler: ttsCaptureContext,
 });
 
-// POST /tts/needs-tom — one thread in #tts for a todo that needs Tom TODAY.
-// Body: { todoId, text, key }. The ONE message shape for anything that needs
-// him: convex/ttsSlack.ts opens the thread through the one Slack door with the
-// todo as its subject, so his reply in it is already routed back to the row.
-// `key` is the producer's own id for the thing that needs him
-// (`gmail:message:<id>`), and it is what makes the thread open exactly once.
+// POST /tts/needs-tom — one needs-you thread for a todo only Tom can settle.
+// Body: { todoId, reason, key }. The job stops composing message text: it
+// sends FACTS, and convex/ttsSlack.ts composes the thread from the todo's own
+// statement and entry action plus `reason`, then opens it through the one
+// Slack door with the todo as its subject, so his reply in it is already
+// routed back to the row. `key` is the producer's own id for the thing that
+// needs him (`gmail:message:<id>`), and it is what makes the thread open
+// exactly once.
+//
+// `reason` is `verdict.why` from the Gmail triage — the field the prompt
+// already asks for and the job used to print to its log file and drop. It is
+// the one thing the old "Needs you today — <sender>: <subject>" never said.
+//
+// `text` is REFUSED rather than ignored: both sides ship in one commit, and a
+// silent ignore would post a message with no reason for as long as an old
+// worker copy survives on the box.
 const ttsNeedsTom = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -250,17 +260,27 @@ const ttsNeedsTom = httpAction(async (ctx, request) => {
   if (typeof b.todoId !== "string" || b.todoId.length === 0) {
     return jsonResponse(400, { error: "todoId (non-empty string) required" });
   }
-  if (typeof b.text !== "string" || b.text.trim().length === 0) {
-    return jsonResponse(400, { error: "text (non-empty string) required" });
+  if (b.text !== undefined) {
+    return jsonResponse(400, { error: "text is no longer accepted; send reason" });
+  }
+  if (typeof b.reason !== "string" || b.reason.trim().length === 0) {
+    return jsonResponse(400, { error: "reason (non-empty string) required" });
   }
   if (typeof b.key !== "string" || b.key.trim().length === 0) {
     return jsonResponse(400, { error: "key (non-empty string) required" });
   }
   try {
-    const result = await ctx.runMutation(
-      internal.ttsSlack.internalOpenNeedsTomThread,
-      { todoId: b.todoId, text: b.text, key: b.key },
-    );
+    const result = await ctx.runMutation(internal.ttsSlack.internalOpenNeedsTomThread, {
+      todoId: b.todoId,
+      reason: b.reason,
+      key: b.key,
+      // The reply invitation is printed only when a reply would reach TTS.
+      canReply: Boolean(process.env.SLACK_SIGNING_SECRET && process.env.TOM_SLACK_USER_ID),
+      ...(typeof process.env.SLACK_TTS_NEEDS_YOU_CHANNEL_ID === "string" &&
+      process.env.SLACK_TTS_NEEDS_YOU_CHANNEL_ID !== ""
+        ? { channel: process.env.SLACK_TTS_NEEDS_YOU_CHANNEL_ID }
+        : {}),
+    });
     return jsonResponse(200, { ok: true, ...result });
   } catch (e) {
     return jsonResponse(400, {
@@ -270,6 +290,61 @@ const ttsNeedsTom = httpAction(async (ctx, request) => {
 });
 
 http.route({ path: "/tts/needs-tom", method: "POST", handler: ttsNeedsTom });
+
+// ── The Fable writer's two doors (Tom 2026-09-09, amendment 2) ──────────────
+// The morning message is written by a Fable run on the Jarvis Box, not filled
+// into a template. Convex cannot run a model, so the 5 a.m. cron opens a
+// DRAFT REQUEST carrying the deterministic facts block and returns; the box
+// job (worker/jobs/write-slack.mjs) reads the open requests here, writes the
+// message, and submits it. The verifier runs in the SUBMIT mutation, so a
+// draft that invents a link or a number is refused by Convex rather than by
+// the thing that wrote it.
+//
+// GET /tts/slack-drafts — the open requests, newest first. Each carries the
+// facts block, whether a reply invitation may be printed, and the complaints
+// from an earlier attempt (which is what the one repair turn is written
+// against).
+const ttsSlackDrafts = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const open = await ctx.runQuery(internal.ttsSlackDrafts.internalOpenDraftRequests, {});
+  return jsonResponse(200, { ok: true, requests: open });
+});
+
+http.route({ path: "/tts/slack-drafts", method: "GET", handler: ttsSlackDrafts });
+
+// POST /tts/slack-draft — one written draft. Body: { requestId, draft }, where
+// `draft` is { firstLine, firstLineSources, lines: [{ role, text, url?,
+// sources }] }. The answer says whether it was accepted and, when it was not,
+// every complaint the verifier made and whether this was the last attempt.
+const ttsSlackDraftSubmit = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.requestId !== "string" || b.requestId.trim().length === 0) {
+    return jsonResponse(400, { error: "requestId (non-empty string) required" });
+  }
+  if (b.draft === null || typeof b.draft !== "object") {
+    return jsonResponse(400, { error: "draft (object) required" });
+  }
+  try {
+    const result = await ctx.runMutation(internal.ttsSlackDrafts.internalSubmitSlackDraft, {
+      requestId: b.requestId,
+      draft: b.draft,
+    });
+    return jsonResponse(200, { ok: true, ...result });
+  } catch (e) {
+    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+http.route({ path: "/tts/slack-draft", method: "POST", handler: ttsSlackDraftSubmit });
 
 // POST /tts/canvas-assignments — the Canvas assignments worker/jobs/
 // poll-canvas.mjs read this run (the lifeos update, phase 6). Body:
@@ -482,7 +557,14 @@ function slackReplyChannels(): Set<string> {
     [
       process.env.SLACK_DUMP_CHANNEL_ID,
       process.env.SLACK_TTS_CHANNEL_ID,
+      process.env.SLACK_TTS_TODAY_CHANNEL_ID,
       process.env.SLACK_TTS_HOURLY_CHANNEL_ID,
+      // The three rooms this round adds, so a reply in them is acted on:
+      // "revert" in a decision's thread, an answer in a needs-you thread, a
+      // note on a failure (convex/ttsSlack.ts routeReply).
+      process.env.SLACK_TTS_DECISIONS_CHANNEL_ID,
+      process.env.SLACK_TTS_NEEDS_YOU_CHANNEL_ID,
+      process.env.SLACK_TTS_BROKEN_CHANNEL_ID,
     ].filter((id): id is string => typeof id === "string" && id !== ""),
   );
 }

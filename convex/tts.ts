@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { composeCaptured, renderSlack } from "./ttsCompose";
 import {
   internalMutation,
   internalQuery,
@@ -15,7 +16,6 @@ import {
   MAX_NEEDS,
   READINESS,
   SESSION_MODEL,
-  captureReplyText,
   goalCheckable,
   isPrepared,
   nyCalendarDayBoundsUtc,
@@ -92,6 +92,25 @@ const GRAPH_TASK = v.object({
 const MAX_BATCH_GOALS = 20;
 const MAX_GRAPH_TASKS = 40;
 
+// ── #tts-broken, from the one place failures are already written ─────────────
+// Every job failure in the system is a "-failed" event kind. Rather than
+// making each producer remember to post, the ONE event writer schedules the
+// broken line — which is why there is no second list of failure kinds to keep
+// in step with this one.
+//
+// Two exclusions, both load-bearing:
+//   "slack-send-failed"  the Slack door's own. Posting it to Slack is the loop
+//                        convex/ttsHourly.ts already warns about: a refused
+//                        post would write a row that schedules another post.
+//   "learning-revert-failed"  not a job failure at all — it is an objection
+//                        the nightly job could not apply, and it belongs to
+//                        the model-of-Tom line it is about.
+const NOT_A_BROKEN_LINE = new Set(["slack-send-failed", "learning-revert-failed"]);
+
+function str(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
 export async function logEvent(
   ctx: MutationCtx,
   kind: string,
@@ -108,6 +127,18 @@ export async function logEvent(
     data: data === undefined ? undefined : data,
     key,
   });
+  if (kind.endsWith("-failed") && !NOT_A_BROKEN_LINE.has(kind)) {
+    const d = (data ?? {}) as Record<string, unknown>;
+    const job = str(d.job) ?? kind.replace(/-failed$/, "");
+    // Scheduled, not awaited: the post is network I/O and this is a mutation.
+    // It rides the transaction, so a rolled-back failure is never reported.
+    // The action itself dedupes by job for the TTS day.
+    await ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
+      job,
+      statement: `The ${job} job failed, so whatever it feeds you has stopped arriving.`,
+      ...(str(d.error) === undefined ? {} : { detail: str(d.error) as string }),
+    });
+  }
 }
 
 // ── Tom-facing queries ───────────────────────────────────────────────────────
@@ -1275,7 +1306,7 @@ export const internalCapture = internalMutation({
       await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
         channel: slackChannel,
         threadTs: slackTs,
-        text: captureReplyText(statement, id),
+        text: renderSlack(composeCaptured({ todoId: id, statement })),
         subject: { kind: "todo", id },
       });
     }
@@ -2447,16 +2478,36 @@ export const internalMarkDigestSent = internalMutation({
     day: v.string(),
     surfacedTodoIds: v.array(v.id("dtsTodos")),
     windowEnd: v.optional(v.number()),
-    // The digest was reduced to fit one Slack message (ttsDigest
-    // DIGEST_MAX_CHARS). Absent on a resend, which reposts a text already
+    // The morning message was reduced to fit one Slack message (ttsCompose
+    // MESSAGE_MAX_CHARS). Absent on a resend, which reposts a text already
     // composed and whose row said so at the time.
     truncated: v.optional(v.boolean()),
+    // The delegate decisions the objection list carried, in PRINTED order, so
+    // a reply of "revert 2" names the row the morning printed second
+    // (delegate-design.md §2.4).
+    objectionAskIds: v.optional(v.array(v.string())),
+    // Which path wrote the message: the Fable run on the box, or the plain
+    // template it falls back to (Tom 2026-09-09, amendment 2).
+    writtenBy: v.optional(v.string()),
+    // The deterministic inputs the message was written from — stored so the
+    // transcript shows what the writer was given, not only what it wrote.
+    facts: v.optional(v.any()),
   },
-  handler: async (ctx, { day, surfacedTodoIds, windowEnd, truncated }) => {
+  handler: async (
+    ctx,
+    { day, surfacedTodoIds, windowEnd, truncated, objectionAskIds, writtenBy, facts },
+  ) => {
     for (const todoId of surfacedTodoIds) {
       await logEvent(ctx, "surfaced", todoId, { via: "digest", day });
     }
-    await logEvent(ctx, "digest-sent", undefined, { day, windowEnd, truncated });
+    await logEvent(ctx, "digest-sent", undefined, {
+      day,
+      windowEnd,
+      truncated,
+      objectionAskIds,
+      writtenBy,
+      facts,
+    });
   },
 });
 

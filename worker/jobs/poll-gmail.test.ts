@@ -36,11 +36,17 @@ describe("the stable source id of a mail", () => {
 });
 
 describe("the line a #tts thread opens with", () => {
-  it("is the sender, the subject, and the todo's link — and nothing else", () => {
+  it("puts the model's concrete reason before the sender, subject, and todo link", () => {
     expect(
-      needsTomLine("Sarah Chen <sarah@wpi.edu>", "Lab meeting Friday", "k123"),
+      needsTomLine(
+        "Sarah Chen <sarah@wpi.edu>",
+        "Lab meeting Friday",
+        "k123",
+        "Sarah needs a reply before Friday's meeting",
+      ),
     ).toBe(
-      "Needs you today — Sarah Chen <sarah@wpi.edu>: Lab meeting Friday\n" +
+      "Needs you today — Sarah needs a reply before Friday's meeting\n" +
+        "Sarah Chen <sarah@wpi.edu>: Lab meeting Friday\n" +
         "https://tom.quest/tts?item=k123",
     );
   });
@@ -54,6 +60,6 @@ describe("the Gmail triage prompt", () => {
     expect(prompt.lastIndexOf('"m1"')).toBeGreaterThan(prompt.indexOf("Emails:"));
     expect(prompt).not.toContain("Do not invent details");
     expect(prompt).not.toContain("deadline inside 48 hours");
-    expect(prompt).toContain('Include "why" only\nwhen it is true');
+    expect(prompt).toContain('"why": a short, concrete reason Tom needs to act today');
   });
 });
