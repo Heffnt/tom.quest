@@ -63,7 +63,6 @@ import {
   reportUntriaged,
   runClaude,
   JSON_ONLY_ANSWER,
-  ttsItemLink,
 } from "./tts-lib.mjs";
 
 const CURSOR_FILE = "/var/lib/tts/gmail-cursor";
@@ -88,8 +87,11 @@ export function gmailTriagePrompt(writingStandard, batch) {
     `For each captured email write "statement": ONE line naming the action,`,
     `starting with a verb and mentioning who it involves.`,
     ``,
-    `For every captured email, include "needsTomToday". Include "why" only`,
-    `when it is true. An email you do not capture has no second judgement at all.`,
+    `For every captured email, include "needsTomToday". Include "why" only when`,
+    `it is true. An email you do not capture has no second judgement at all.`,
+    `"why" IS PRINTED TO TOM in the message that asks him to settle it, so write`,
+    `it as half a sentence he can read — "the deposit is six weeks late", not`,
+    `"overdue" — and never name the sender or quote the subject line.`,
     ``,
     `ANSWER FOR EVERY EMAIL BELOW - one entry each, in the order given, with "id"`,
     `copied EXACTLY as it appears. An email you are not capturing is`,
@@ -112,15 +114,13 @@ export function messageProvenance(id) {
   return `${messageSourceId(id)} https://mail.google.com/mail/u/0/#all/${id}`;
 }
 
-/**
- * Pure: the ONE line a #tts thread opens with — who it is from, what it is
- * about, and where the todo is. Nothing else: the thread exists so Tom can
- * reply, and his reply is the next turn on that todo.
- * Exported for tests.
- */
-export function needsTomLine(from, subject, todoId) {
-  return `Needs you today — ${from}: ${subject}\n${ttsItemLink(todoId)}`;
-}
+// THE JOB NO LONGER COMPOSES THE MESSAGE (slack-design.md §4.5). It sends
+// FACTS — the todo, the reason, and the dedupe key — and convex/ttsSlack.ts
+// writes the needs-you thread from the todo's own statement and entry action.
+// The raw vendor subject and the From header stay out of Slack entirely: they
+// are on the needs-tom row and in the key, which is where they belong. Three
+// of these arrived in one week and all three were vendor security mail whose
+// subject lines read, in #tts, as if TTS had written them.
 
 async function gmailToken(env) {
   const res = await fetch("https://oauth2.googleapis.com/token", {
@@ -270,7 +270,7 @@ async function main() {
         try {
           const opened = await convexFetch(env, "/tts/needs-tom", {
             todoId: result.id,
-            text: needsTomLine(message.from, message.subject, result.id),
+            reason: verdict.why,
             key: messageSourceId(message.id),
           });
           if (opened.opened) threads++;

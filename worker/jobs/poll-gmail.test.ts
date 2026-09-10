@@ -1,8 +1,10 @@
-// The two strings poll-gmail.mjs writes that something else reads back: the
-// stable source id it stamps on a todo, and the one line a #tts thread opens
-// with. The job itself cannot be run anywhere yet (the GMAIL_* keys are unset
-// on the Jarvis Box), so its pure exports are what can be checked — and they
-// are exactly the parts a later reader depends on.
+// The strings poll-gmail.mjs writes that something else reads back: the stable
+// source id it stamps on a todo, and the triage prompt. The job no longer
+// writes any message text — the needs-you thread is composed in
+// convex/ttsSlack.ts from the todo and the verdict's reason (slack-design.md
+// §4.5) — so there is no line here to check any more. The job itself cannot be
+// run anywhere yet (the GMAIL_* keys are unset on the Jarvis Box), so its pure
+// exports are what can be checked.
 //
 // Importing the job module is safe: it only calls main() when node was pointed
 // at the file (the `invokedDirectly` guard at the bottom of poll-gmail.mjs).
@@ -12,7 +14,6 @@ import { describe, expect, it } from "vitest";
 import {
   messageProvenance,
   messageSourceId,
-  needsTomLine,
   gmailTriagePrompt,
 } from "./poll-gmail.mjs";
 
@@ -35,18 +36,6 @@ describe("the stable source id of a mail", () => {
   });
 });
 
-describe("the line a #tts thread opens with", () => {
-  it("is the sender, the subject, and the todo's link — and nothing else", () => {
-    expect(
-      needsTomLine("Sarah Chen <sarah@wpi.edu>", "Lab meeting Friday", "k123"),
-    ).toBe(
-      "Needs you today — Sarah Chen <sarah@wpi.edu>: Lab meeting Friday\n" +
-        "https://tom.quest/tts?item=k123",
-    );
-  });
-});
-
-
 describe("the Gmail triage prompt", () => {
   it("begins with the writing standard and puts mail data last", () => {
     const prompt = gmailTriagePrompt("WRITE STANDARD", [{ id: "m1", from: "A", subject: "S", snippet: "body" }]);
@@ -54,6 +43,15 @@ describe("the Gmail triage prompt", () => {
     expect(prompt.lastIndexOf('"m1"')).toBeGreaterThan(prompt.indexOf("Emails:"));
     expect(prompt).not.toContain("Do not invent details");
     expect(prompt).not.toContain("deadline inside 48 hours");
-    expect(prompt).toContain('Include "why" only\nwhen it is true');
+    expect(prompt).toContain('Include "why" only when');
+  });
+
+  // The one sentence §4.5 adds: `why` is no longer a log-file note, it is the
+  // first line of the message that asks Tom to settle the thing.
+  it("says that why is printed to Tom, and forbids the sender and the subject", () => {
+    const prompt = gmailTriagePrompt("WRITE STANDARD", [{ id: "m1", from: "A", subject: "S", snippet: "body" }]);
+    expect(prompt).toContain('"why" IS PRINTED TO TOM');
+    expect(prompt).toContain("half a sentence he can read");
+    expect(prompt).toContain("never name the sender or quote the subject line");
   });
 });

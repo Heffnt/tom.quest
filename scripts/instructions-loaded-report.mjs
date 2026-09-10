@@ -1,5 +1,8 @@
-#!/usr/bin/env node
 // Daily laptop InstructionsLoaded audit. The hook launches this detached so its
+// NO SHEBANG LINE, for nightly.mjs's reason (worker/jobs/write-slack.mjs says
+// it too): this file is imported by its own test, and the test bundler
+// rewrites an imported module by prepending an import — which lands in front
+// of a shebang and fails to parse. Every caller already names the interpreter.
 // own hot path stays a local append rather than a network request.
 
 import { fileURLToPath } from "node:url";

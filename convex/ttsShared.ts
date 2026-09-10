@@ -769,12 +769,11 @@ export function ttsItemLink(todoId: string, intent?: TtsLinkIntent): string {
   return `https://tom.quest/tts?item=${todoId}${intent ? `&intent=${intent}` : ""}`;
 }
 
-/** The one reply line at capture (Tom's ruling 2026-08-30, one reply per
- * #dump message; the lifeos update: at capture, no model call): what was
- * created, as captured, and where it lives. */
-export function captureReplyText(statement: string, todoId: string): string {
-  return `Captured as a todo: ${statement.trim()} — ${ttsItemLink(todoId)}`;
-}
+// The one reply line at capture is composeCaptured in convex/ttsCompose.ts
+// now, with every other message TTS sends. The line that used to live here
+// echoed Tom's own words back to him in full inside his own thread, which
+// doubled the length of everything in #dump and told him only that the system
+// worked; the one fact he did not already have is when he next sees it.
 
 /** Deep link to one session on the /sessions page — the one spelling every
  * Slack message about a session carries. */
@@ -791,17 +790,22 @@ export function ttsSessionLink(sessionId: string): string {
 // gets an objection. One closed union; a message with no subject cannot be
 // sent.
 export const SLACK_SUBJECT = v.union(
+  // `today` supersedes the old deterministic `digest` name. Keep digest for
+  // already-posted threads: a Slack reply can arrive days after a deploy.
+  v.object({ kind: v.literal("today"), day: v.string() }),
   v.object({ kind: v.literal("digest"), day: v.string() }),
   v.object({ kind: v.literal("hourly"), hour: v.string() }),
   v.object({ kind: v.literal("todo"), id: v.id("dtsTodos") }),
   v.object({ kind: v.literal("session"), id: v.id("claudeSessions") }),
   v.object({ kind: v.literal("learning"), id: v.string() }),
-  // One delegated decision, posted to the decisions channel as it is recorded
-  // (convex/ttsAsk.ts). It is its own subject and not the todo's: a todo
-  // subject stamps slackReplyTs, which belongs to the ONE reply thread that
-  // todo has in #dump, and a decisions-channel line must not claim it. A reply
-  // in this thread is an objection to that one decision.
-  v.object({ kind: v.literal("delegate"), askId: v.string() }),
+  // ONE DELEGATED DECISION (an "ask"), posted to the decisions channel as it
+  // is recorded (convex/ttsAsk.ts), and one broken-job thread. Both name their
+  // producer rather than a fabricated todo: a todo subject stamps
+  // slackReplyTs, which belongs to the ONE reply thread that todo has in
+  // #dump, and a decisions-channel line must not claim it. A reply in an ask's
+  // thread is an objection to that one decision.
+  v.object({ kind: v.literal("ask"), id: v.string() }),
+  v.object({ kind: v.literal("job"), id: v.string() }),
 );
 export type SlackSubject = Infer<typeof SLACK_SUBJECT>;
 
@@ -815,6 +819,58 @@ export function slackThreadKey(channel: string, threadRootTs: string): string {
 /** The hourly update's subject key: NY calendar date and hour, "YYYY-MM-DDTHH". */
 export function slackHourKey(utcMs: number): string {
   return `${nyCalendarDayKey(utcMs)}T${String(nyLocalHour(utcMs)).padStart(2, "0")}`;
+}
+
+// ── The calendar feeds, and the private ones (Tom, 2026-09-09) ───────────────
+// TTS_ICS_FEEDS is a JSON array of {name, url} on the Convex deployment; each
+// entry's `name` is what a mirrored row carries in ttsCalendarEvents.feed.
+//
+// An entry may also carry `"private": true`. A PRIVATE FEED STAYS IN THE
+// RECORD — scheduling still knows Tom is busy, and every planner still reads
+// those rows — but no composer that writes to Slack, and no prompt that lists
+// his calendar for a message to him, may name one. Tom's family calendar is
+// the feed this exists for, and the ruling is that the morning message says
+// NOTHING about it at all, not even "one private commitment".
+//
+// This lives here rather than in convex/ttsCalendarFetch.ts because that file
+// is "use node" and the fact gatherer (convex/ttsDigest.ts) is a plain-runtime
+// query that has to drop the rows.
+export type IcsFeedConfig = { name: string; url: string; private?: boolean };
+
+export function parseIcsFeedConfig(raw: string): IcsFeedConfig[] {
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed)) throw new Error("TTS_ICS_FEEDS must be a JSON array");
+  return parsed.map((entry, i) => {
+    const e = entry as Record<string, unknown>;
+    if (typeof e?.name !== "string" || typeof e?.url !== "string") {
+      throw new Error(`TTS_ICS_FEEDS[${i}] needs {name, url}`);
+    }
+    if (e.private !== undefined && typeof e.private !== "boolean") {
+      throw new Error(`TTS_ICS_FEEDS[${i}].private must be true or false when present`);
+    }
+    return { name: e.name, url: e.url, ...(e.private === true ? { private: true } : {}) };
+  });
+}
+
+/** The feed names Tom has marked private, read from the environment. An
+ *  unreadable TTS_ICS_FEEDS answers "every feed is private": a misconfigured
+ *  variable must not be the reason his family calendar reaches Slack. */
+export function privateFeedNames(raw: string | undefined): Set<string> | "all" {
+  if (raw === undefined || raw.trim() === "") return new Set();
+  try {
+    return new Set(parseIcsFeedConfig(raw).filter((f) => f.private).map((f) => f.name));
+  } catch (err) {
+    console.error(
+      `TTS calendar: TTS_ICS_FEEDS is unreadable (${err instanceof Error ? err.message : String(err)}) — every feed is treated as private`,
+    );
+    return "all";
+  }
+}
+
+/** Whether a mirrored calendar row may be named in something Tom reads. */
+export function feedIsPrivate(feed: string | undefined, privateFeeds: Set<string> | "all"): boolean {
+  if (privateFeeds === "all") return true;
+  return feed !== undefined && privateFeeds.has(feed);
 }
 
 /** A tab of the /tts page, in the page's own `?tab=` vocabulary

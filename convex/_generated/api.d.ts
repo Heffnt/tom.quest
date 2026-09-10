@@ -28,10 +28,10 @@ import type * as ttsCalendarFetch from "../ttsCalendarFetch.js";
 import type * as ttsCalendarWrite from "../ttsCalendarWrite.js";
 import type * as ttsCanvas from "../ttsCanvas.js";
 import type * as ttsCode from "../ttsCode.js";
+import type * as ttsCompose from "../ttsCompose.js";
 import type * as ttsDigest from "../ttsDigest.js";
 import type * as ttsEvals from "../ttsEvals.js";
 import type * as ttsHourly from "../ttsHourly.js";
-import type * as ttsHourlyText from "../ttsHourlyText.js";
 import type * as ttsIntegrations from "../ttsIntegrations.js";
 import type * as ttsJobs from "../ttsJobs.js";
 import type * as ttsMigrations from "../ttsMigrations.js";
@@ -42,10 +42,11 @@ import type * as ttsSearch from "../ttsSearch.js";
 import type * as ttsShared from "../ttsShared.js";
 import type * as ttsSkills from "../ttsSkills.js";
 import type * as ttsSlack from "../ttsSlack.js";
+import type * as ttsSlackDrafts from "../ttsSlackDrafts.js";
 import type * as ttsSync from "../ttsSync.js";
 import type * as ttsWeekly from "../ttsWeekly.js";
-import type * as userSettings from "../userSettings.js";
 import type * as users from "../users.js";
+import type * as userSettings from "../userSettings.js";
 
 import type {
   ApiFromModules,
@@ -74,10 +75,10 @@ declare const fullApi: ApiFromModules<{
   ttsCalendarWrite: typeof ttsCalendarWrite;
   ttsCanvas: typeof ttsCanvas;
   ttsCode: typeof ttsCode;
+  ttsCompose: typeof ttsCompose;
   ttsDigest: typeof ttsDigest;
   ttsEvals: typeof ttsEvals;
   ttsHourly: typeof ttsHourly;
-  ttsHourlyText: typeof ttsHourlyText;
   ttsIntegrations: typeof ttsIntegrations;
   ttsJobs: typeof ttsJobs;
   ttsMigrations: typeof ttsMigrations;
@@ -88,10 +89,11 @@ declare const fullApi: ApiFromModules<{
   ttsShared: typeof ttsShared;
   ttsSkills: typeof ttsSkills;
   ttsSlack: typeof ttsSlack;
+  ttsSlackDrafts: typeof ttsSlackDrafts;
   ttsSync: typeof ttsSync;
   ttsWeekly: typeof ttsWeekly;
-  userSettings: typeof userSettings;
   users: typeof users;
+  userSettings: typeof userSettings;
 }>;
 
 /**

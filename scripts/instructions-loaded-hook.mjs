@@ -1,5 +1,8 @@
-#!/usr/bin/env node
 // One JSON line per instruction file Claude Code loads, appended to a local log.
+// NO SHEBANG LINE, for nightly.mjs's reason (worker/jobs/write-slack.mjs says
+// it too): this file is imported by its own test, and the test bundler
+// rewrites an imported module by prepending an import — which lands in front
+// of a shebang and fails to parse. Every caller already names the interpreter.
 // A model cannot reliably report every instruction it received; this hook records
 // the runtime's own account of what loaded, when, and why. It is observe-only by
 // construction: every failure is swallowed and every path exits 0, because a

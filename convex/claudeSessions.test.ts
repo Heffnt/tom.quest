@@ -61,19 +61,21 @@ async function createBasicSession(tom: Awaited<ReturnType<typeof withTom>>) {
   });
 }
 
-// The session event messages a mutation scheduled, read off the scheduler's own
-// system table — the observable effect of notifySessionEvent without reaching
-// into Slack. Rows persist through their run (convex-test patches state, never
-// deletes), so counting is stable whether or not the job has fired yet.
-// Tom 2026-08-29: outbound Slack is OFF — Slack is inbound dump only until the messaging shape is redesigned.
-// These tests cover the EDGE-TRIGGER WIRING (which transitions schedule an event
-// and how many), which is unchanged; the scheduled action now returns before it
-// posts, so nothing here reaches Slack even with the env configured.
+// THE PER-SESSION EVENT LINE IS GONE (slack-design.md §1.2). It had no channel
+// of its own and was switched off from the day it was written: a session
+// recording an outcome is not something Tom acts on, and it reaches him in the
+// morning message's overnight run. The one case that IS a message is a session
+// that FAILED, and that goes to #tts-broken.
+//
+// These read the broken lines a mutation scheduled, off the scheduler's own
+// system table — the observable effect without reaching into Slack. Rows
+// persist through their run (convex-test patches state, never deletes), so
+// counting is stable whether or not the job has fired yet.
 async function sessionEventMessages(t: ReturnType<typeof convexTest>) {
   return await t.run(async (ctx) =>
     (await ctx.db.system.query("_scheduled_functions").collect())
-      .filter((job) => job.name.includes("internalSessionEventMessage"))
-      .map((job) => job.args[0] as { sessionId: string; text: string }),
+      .filter((job) => job.name.includes("sendBroken"))
+      .map((job) => job.args[0] as { job: string; statement: string; detail?: string }),
   );
 }
 
@@ -1300,9 +1302,9 @@ describe("claude sessions", () => {
 
 describe("session event messages", () => {
   // witness: drop the `firstRecord` guard from internalRecordOutcome in
-  // convex/claudeSessions.ts and this test goes red — an agent that revises
-  // its own summary would ping Tom once per revision.
-  it("notifies once when the agent records an outcome, never on a re-record", async () => {
+  // convex/claudeSessions.ts and an errored re-record would ping Tom once per
+  // revision. A completed one says nothing either way.
+  it("says nothing when the agent records an outcome, first time or after", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const sessionId = await createBasicSession(tom);
@@ -1312,22 +1314,19 @@ describe("session event messages", () => {
       outcome: "completed",
       summary: "brief written into the item",
     });
-    const first = await sessionEventMessages(t);
-    expect(first).toHaveLength(1);
-    expect(first[0].sessionId).toBe(sessionId);
-    expect(first[0].text).toBe(
-      'session "test session" recorded its outcome: completed — brief written into the item',
-    );
+    // A COMPLETED outcome is not a message at all now: it is a fact for the
+    // morning message's overnight run, and nothing Tom does anything about.
+    expect(await sessionEventMessages(t)).toHaveLength(0);
 
     // The agent sharpens its wording (or corrects the verdict): the ROW takes
-    // the new word — the surface always shows the agent's latest — but Slack
-    // is not told twice.
+    // the new word — the surface always shows the agent's latest — and Slack
+    // is still told nothing, because only the FIRST record is an edge.
     await t.mutation(internal.claudeSessions.internalRecordOutcome, {
       id: sessionId,
       outcome: "errored",
       summary: "the source turned out to be paywalled",
     });
-    expect(await sessionEventMessages(t)).toHaveLength(1);
+    expect(await sessionEventMessages(t)).toHaveLength(0);
     const session = await tom.query(api.claudeSessions.getSession, {
       id: sessionId,
     });
@@ -1362,9 +1361,11 @@ describe("session event messages", () => {
     });
     const messages = await sessionEventMessages(t);
     expect(messages).toHaveLength(1);
-    expect(messages[0].text).toBe(
-      'session "test session" failed — the SDK process exited without a final turn',
-    );
+    // #tts-broken dedupes on the JOB as well, and a session's job name is the
+    // session itself, so two failures of one session are one message.
+    expect(messages[0].job).toBe(`session:${failed}`);
+    expect(messages[0].statement).toContain("stopped without finishing what it was carrying");
+    expect(messages[0].detail).toContain("the SDK process exited without a final turn");
 
     // A session that simply ENDS is not a needs-you event: Tom stopped it, or
     // it finished, and its outcome record is the thing worth a message.
@@ -1377,9 +1378,9 @@ describe("session event messages", () => {
     expect(await sessionEventMessages(t)).toHaveLength(1);
   });
 
-  // The daemon's cap-path stamp is the same fact as the agent's pen and gets
-  // the same one-line wording — two writers, one description.
-  it("notifies once when the daemon stamps an outcome onto a session that had none", async () => {
+  // The daemon's cap-path stamp is the same fact as the agent's pen and takes
+  // the same route — two writers, one description.
+  it("says nothing for a completed stamp, and one broken line for an errored one", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const sessionId = await createBasicSession(tom);
@@ -1390,20 +1391,27 @@ describe("session event messages", () => {
       outcome: "completed" as const,
       outcomeSummary: "daemon saw the final turn",
     });
-    const messages = await sessionEventMessages(t);
-    expect(messages).toHaveLength(1);
-    expect(messages[0].text).toBe(
-      'session "test session" recorded its outcome: completed — daemon saw the final turn',
-    );
-
-    // A second flush re-sending the same outcome reads a defined
-    // session.outcome and stamps nothing, so it says nothing.
+    // Completed: nothing is sent, on the stamp or on any flush after it.
+    expect(await sessionEventMessages(t)).toHaveLength(0);
     await t.mutation(internal.claudeSessions.internalIngest, {
       sessionId,
       outcome: "completed" as const,
       outcomeSummary: "daemon saw the final turn",
     });
-    expect(await sessionEventMessages(t)).toHaveLength(1);
+    expect(await sessionEventMessages(t)).toHaveLength(0);
+
+    // An ERRORED outcome the daemon stamps IS a broken line, once.
+    const errored = await createBasicSession(tom);
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId: errored,
+      status: "ended",
+      endedReason: "autonomous run complete",
+      outcome: "errored" as const,
+      outcomeSummary: "the source turned out to be paywalled",
+    });
+    const broken = await sessionEventMessages(t);
+    expect(broken).toHaveLength(1);
+    expect(broken[0].job).toBe(`session:${errored}`);
   });
 });
 

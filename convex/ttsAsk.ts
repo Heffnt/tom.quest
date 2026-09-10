@@ -28,17 +28,22 @@ export type ObjectionFact = {
 };
 
 export function objectionRank(
-  objection: ObjectionFact,
+  // The THREE FIELDS the order reads, not a whole ObjectionFact: the morning's
+  // gatherer (convex/ttsDigest.ts) holds its rows in the composer's shape,
+  // where an absent todo is `undefined` rather than null, and one order must
+  // serve both. Lower sorts first; ties break by `at` descending.
+  objection: { refused?: boolean; todoId?: string | null; decision?: string | null },
   ready: ReadonlySet<string>,
   dueSoon: ReadonlySet<string>,
 ): number {
-  if (objection.refused && objection.todoId !== null && dueSoon.has(objection.todoId)) return 0;
-  if (objection.refused) return 1;
-  if (objection.decision === null) return 2;
-  if (objection.todoId !== null && dueSoon.has(objection.todoId)) return 3;
-  if (objection.todoId !== null && ready.has(objection.todoId)) return 4;
-  if (objection.todoId !== null) return 5;
-  return 6;
+  const todoId = objection.todoId ?? null;
+  if (objection.refused && todoId !== null && dueSoon.has(todoId)) return 0;
+  if (objection.refused) return 1; // something is parked on him
+  if (objection.decision === null || objection.decision === undefined) return 2; // no answer came back
+  if (todoId !== null && dueSoon.has(todoId)) return 3;
+  if (todoId !== null && ready.has(todoId)) return 4;
+  if (todoId !== null) return 5;
+  return 6; // a question about the run itself
 }
 
 export function stripNarrowListId(text: string): string {
@@ -129,51 +134,33 @@ export const internalRecordAsk = internalMutation({
     }, args.askId);
 
     // Posted line by line as it is recorded, so a decision is observable the
-    // moment it is taken and not only at breakfast (Tom, 2026-09-09). The
-    // existing Slack door is the only sender; with SLACK_TTS_DECISIONS_CHANNEL_ID
-    // unset nothing is posted and the morning objection list is the whole of
-    // it. The subject is the ask itself, never the todo: a todo subject stamps
-    // slackReplyTs, which belongs to that todo's one #dump thread.
-    const channel = process.env.SLACK_TTS_DECISIONS_CHANNEL_ID;
-    if (channel) {
-      await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
-        channel,
-        text: delegateDecisionSlackLine({
-          askId: args.askId,
-          decision: attended || capped ? null : args.decision,
-          reason: attended || capped ? refusedBecause ?? args.reason : args.reason,
-          refused: refused || capped,
-          fallback: args.fallback,
-        }),
-        subject: { kind: "delegate", askId: args.askId },
-      });
-    }
+    // moment it is taken and not only at breakfast (Tom, 2026-09-09). It goes
+    // through ttsSync.sendDecision — the ONE #tts-decisions door, shared with
+    // the nightly job's model-of-Tom line and a ruling read out of Tom's
+    // words — so the wording of a decisions line has one home
+    // (ttsCompose.composeDecision) and the once-per-item-per-day claim is
+    // applied to all three producers alike. That action is quiet while
+    // SLACK_TTS_DECISIONS_CHANNEL_ID is unset, and the morning objection list
+    // is then the whole of it. Its subject is the ask itself, never the todo:
+    // a todo subject stamps slackReplyTs, which belongs to that todo's one
+    // #dump thread.
+    await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
+      askId: args.askId,
+      ...(todoId === null || todoId === undefined ? {} : { todoId: todoId as string }),
+      // A no-answer is still a decision Tom may object to; it is spelled out
+      // rather than left null, because the composer prints one sentence.
+      decision:
+        attended || capped || args.decision === null
+          ? args.fallback
+          : args.decision,
+      reason: attended || capped ? refusedBecause ?? args.reason : args.reason,
+      refused: refused || capped,
+      ...(refused || capped ? { refusedBecause: refusedBecause ?? args.reason } : {}),
+      fallback: args.fallback,
+    });
     return { id, existing: false, attended, capped };
   },
 });
-
-/**
- * ONE decision, ONE plain line. Called here as each decision is recorded, and
- * exported so the Slack rework's composer can call it instead once that lands
- * — the wording of a decisions-channel line has one home, this one.
- *
- * The escape is deliberately local and minimal: ttsAsk is imported BY
- * ttsDigest (the objection list reads objectionRank and stripNarrowListId from
- * here), so importing that file's slackEscape back would be a cycle. The line
- * carries no link and no formatting, so the three mrkdwn characters are the
- * whole of it.
- */
-export function delegateDecisionSlackLine(
-  item: Pick<ObjectionFact, "askId" | "decision" | "reason" | "refused" | "fallback">,
-): string {
-  const plain = (text: string) =>
-    text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\s+/g, " ").trim();
-  if (item.refused) return `delegate ${item.askId}: REFUSED, parked — ${plain(item.reason)}`;
-  if (item.decision === null) {
-    return `delegate ${item.askId}: no answer; the caller took its fallback (${plain(item.fallback)}) — ${plain(item.reason)}`;
-  }
-  return `delegate ${item.askId}: ${plain(item.decision)} — ${plain(item.reason)}`;
-}
 
 export const internalAskContext = internalQuery({
   args: { sessionId: v.optional(v.string()), job: v.optional(v.string()), todoId: v.optional(v.string()) },

@@ -1,5 +1,8 @@
-#!/usr/bin/env node
 /**
+// NO SHEBANG LINE, for nightly.mjs's reason (worker/jobs/write-slack.mjs says
+// it too): this file is imported by its own test, and the test bundler
+// rewrites an imported module by prepending an import — which lands in front
+// of a shebang and fails to parse. Every caller already names the interpreter.
  * Turns the 27 mined explanation examples into golden items.
  *
  * The source is `explanation-examples.md`: 27 real ground-up explanations from

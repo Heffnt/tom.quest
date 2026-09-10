@@ -1,53 +1,67 @@
 import { v } from "convex/values";
+import {
+  composeTodayFitted,
+  countWord,
+  renderSlack,
+  todayFactsBlock,
+  type BatchOutcome,
+  type BrokenFact,
+  type TodayFacts,
+} from "./ttsCompose";
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { recordMissedKeepingDate } from "./tts";
-import { DELEGATE_DECISION, MERGE, objectionRank, stripNarrowListId, type ObjectionFact } from "./ttsAsk";
-import { modelOfTomState } from "./ttsSkills";
+import {
+  DELEGATE_DECISION,
+  MERGE,
+  objectionRank,
+  stripNarrowListId,
+} from "./ttsAsk";
 import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import {
   DAY_MS,
+  LIVE_STATUSES,
   buildDoneSet,
-  countdownText,
+  feedIsPrivate,
   isReadyForTom,
   nyCalendarDayBoundsUtc,
+  nyCalendarDayKey,
   nyHhmm,
-  ttsItemLink,
+  privateFeedNames,
   ttsSessionLink,
-  ttsTabLink,
   type SlackSubject,
-  type TtsTab,
 } from "./ttsShared";
 
-// ── The digest (the lifeos update, phase 2; rulings 13, 14) ──────────────────
-// Deterministic: every line comes from a query, no model call. The sender
-// (convex/ttsSync.ts sendDigest) runs the missed rollover, reads
-// internalComposeDigest, posts to #tts, and records the send. This module is
-// plain runtime (no "use node") so its composer is a pure function a test can
-// call with hand-built facts.
+// ── THE MORNING MESSAGE (slack-design.md, Tom 2026-09-09) ───────────────────
+// This file GATHERS THE FACTS. Turning them into sentences is convex/
+// ttsCompose.ts's one job, and the send is convex/ttsSync.ts sendToday, which
+// runs the missed rollover, reads internalComposeToday, and posts to
+// #tts-today. This module is plain runtime (no "use node") so the gatherer is
+// a query and the composer beneath it is a pure function a test calls with
+// hand-built facts.
 //
-// Sections, in this order; each omitted when empty except the first:
-//   1. due and overdue today, with each item's entry action and, for a date
-//      that passed without an outcome, the reply path
-//   2. committed blocks and calendar events today
-//   3. captures from email since the last digest
-//   4. what the box did overnight, grouped by batch
-//   5. items ready for Tom
-//   6. job failures
-//   7. every WikiTom commit since the last digest, with its author (fetched by
-//      the sender — GitHub is outside this runtime — and never omitted: when
-//      the deployment's token cannot read WikiTom the section is one line
-//      saying so, because a silently absent section reads as "no commits")
-//   8. rulings recorded from Tom's own words since the last digest
-//   9. model-of-Tom lines the nightly job wrote (kind "learning-change"),
-//      each with its id — a reply in this thread naming the id is the
-//      objection — and the lines it reverted or could not revert on an
-//      earlier objection ("learning-reverted", "learning-revert-failed")
+// The word "digest" survives only in the CODE — `digestSubject` became
+// `todaySubject`, `digest-sent` and `internalDigestWindow` stay because rows,
+// subjects and window arithmetic already spell it that way. NEVER PRINT IT:
+// every line Tom reads says "morning message".
 //
-// A digest is a morning read, not the list: an item is one line (clipToLine)
-// and a section prints at most SECTION_ITEM_CAP of them before naming what is
-// left on the /tts page.
+// The runs, in this order; each omitted when empty except the first:
+//   1. today — dated or late, oldest date first, each line naming the first
+//      move, and one sentence for how many other items are ready
+//   2. the objection list — what the delegate decided while he was asleep,
+//      numbered in printed order; silence means it stands
+//   3. the calendar — his day, WITH EVERY PRIVATE FEED'S ROWS DROPPED
+//   4. overnight — one line per BATCH saying what the batch now is, never one
+//      line per logged event
+//   5. broken — the jobs that failed, and what that means for him
+//
+// What LEFT the morning message in this round (§4.3): the WikiTom commit list
+// (a changelog is not a morning read; an unreadable WikiTom is a #tts-broken
+// line instead), the rulings-from-your-words lines and the model-of-Tom lines
+// (both are decisions taken in his name, so both go to #tts-decisions), and
+// the "Captured from email" section (a capture that is ready is a thing to do
+// today; one that is not is a row, not a line).
 
 // ── The digest's own bookkeeping row (dtsEvents) ─────────────────────────────
 // TWO KINDS OF ROW come out of a sent digest, and they answer different
@@ -71,25 +85,27 @@ import {
 export const SLACK_SENT = "slack-sent";
 export const SLACK_FAILED = "slack-send-failed";
 export const DIGEST_SENT = "digest-sent";
-export function digestSubject(day: string): SlackSubject {
-  return { kind: "digest", day };
+
+/** The morning message's Slack subject. `today` supersedes the old `digest`
+ *  member, which stays in the union so a reply in a thread posted before this
+ *  deploy still routes (convex/ttsShared.ts SLACK_SUBJECT). */
+export function todaySubject(day: string): SlackSubject {
+  return { kind: "today", day };
 }
 
-/** " (kind identifier)" for a failure line, or "" when a row carries no
- * subject. Each SLACK_SUBJECT member names its subject in its own field —
- * `day`, `hour` or `id` — and the digest only prints them, so it takes
- * whichever is there rather than knowing the union member by member. */
-function slackSubjectLabel(raw: unknown): string {
-  if (raw === null || typeof raw !== "object") return "";
-  const s = raw as { kind?: unknown; day?: unknown; hour?: unknown; id?: unknown };
-  if (typeof s.kind !== "string") return "";
-  const named = [s.day, s.hour, s.id].find((x) => typeof x === "string");
-  return ` (${s.kind}${named === undefined ? "" : ` ${named as string}`})`;
-}
+// The delegate's rows (delegate-design.md §1.2), read by KIND if they are
+// there. The delegate itself is built on branch uac/delegate; until it lands
+// there are no such rows and the objection list renders nothing.
+//   kind "delegate-decision",  key <askId>, data { askId, todoId, decision,
+//                              reason, refused, refusedBecause, fallback, … }
+//   kind "delegate-objection", key <askId> — Tom's revert, written by the
+//                              Slack thread-reply route.
+export { DELEGATE_DECISION, DELEGATE_OBJECTION, MERGE } from "./ttsAsk";
 
 // The nightly job's model-of-Tom lines (worker/jobs/nightly.mjs learningStep
-// writes them; the digest prints each with its id, which is what a reply in
-// the digest thread names to object — convex/ttsSlack.ts).
+// writes them). They no longer appear in the morning message: a line the
+// nightly job wrote about him is a decision taken in his name, so it goes to
+// #tts-decisions as it is written (§1.2).
 //   kind "learning-change",        data { id, file, section, before, after, evidence, excerpt,
 //                                         baseBlob, resultBlob, modelOfTomCommit }
 //   kind "learning-reverted",      data { id, file, before, after, objection, baseBlob,
@@ -176,429 +192,49 @@ export const WIKITOM_COMMIT = v.object({
   url: v.string(),
 });
 
-// ── Facts → text ─────────────────────────────────────────────────────────────
-// Structural types, not Docs, so the composer is testable with literals.
-export type DigestFacts = {
-  day: string;
-  now: number;
-  since: number;
-  due: {
-    id: string;
-    statement: string;
-    dueAt: number;
-    entryAction?: string;
-    // The date passed and "missed" is on record for it (the rollover's mark,
-    // or Tom's own missed-and-kept-the-date); the line carries the reply path.
-    missed: boolean;
-  }[];
-  blocks: { start: number; end: number; label: string }[];
-  calendar: { start: number; end: number; title: string; allDay: boolean }[];
-  emailCaptures: { id: string; statement: string; entryAction?: string }[];
-  overnight: { batch: string | null; text: string }[];
-  ready: { id: string; statement: string; entryAction?: string }[];
-  // Decisions, refusals, no-answers, and mechanically gated merges since the
-  // prior digest. The objection list keeps them visible; silence means they
-  // stand, but none is a ruling.
-  objections: ({
-    kind: "decision";
-    askId: string;
-    decision: string | null;
-    reason: string;
-    refused: boolean;
-    refusedBecause: string | null;
-    fallback: string;
-    todoId: string | null;
-    subject: string | null;
-    at: number;
-  } | {
-    kind: "merge";
-    repo: string;
-    sha: string;
-    subject: string;
-    todoId: string | null;
-    at: number;
-  })[];
-  failures: { at: number; text: string }[];
-  // null = WikiTom could not be read at all (see WIKITOM_UNREADABLE).
-  wikitom: WikiTomCommit[] | null;
-  rulings: {
-    verdict: string;
-    subject: string;
-    // Tom's own sentence, from the ruling's provenance (ttsRulings check 3).
-    // The ONLY text the digest prints between quotation marks.
-    quote?: string;
-    // The ruling's own `sentence` — the revise redirect through the words
-    // door (itself a sentence of Tom's turn since check 7), or whatever a
-    // provenance-carrying row of another shape holds. Printed as the
-    // redirect, never as a quotation of Tom: the field is what an agent
-    // acts on, and the digest must not present it as what Tom said.
-    redirect?: string;
-    provenance: string;
-  }[];
-  learning: {
-    // "changed": a line the job wrote; "reverted": one it took back on
-    // Tom's objection (before is the learned line, after what it restored);
-    // "revert-failed": an objection it could not apply, with the reason.
-    status: "changed" | "reverted" | "revert-failed";
-    id: string;
-    file: string;
-    before: string;
-    after: string;
-    evidence: string;
-    reason?: string;
-  }[];
-  // The newest delivery check in this digest's window. A clean run stays
-  // visible: silence would make the check indistinguishable from no run.
-  preludes: {
-    current: number;
-    stale: { id: string; title: string; had: string | null; behindDays: number }[];
-    missing: { id: string; title: string }[];
-  } | null;
-  // The newest eval run in the window, already compared with its baseline by
-  // the runner. The digest reports that result; it never reimplements gate().
-  evals: {
-    repo: string;
-    sha: string;
-    items: number;
-    pass: number;
-    regressions: number;
-    stillFailing: number;
-    failures: { id: string; partition: string; reason: string; regression: boolean }[];
-  } | null;
-  // The published model-of-tom revision callers select layers from, as the
-  // store holds it (ttsSkills.modelOfTomState): the commit, and whether it had reached
-  // GitHub when the job posted it. Null while nothing posted serves.
-  modelOfTom: { commit: string; pushed: boolean | null } | null;
-};
+// ── Gathering the day's facts ────────────────────────────────────────────────
+// Deterministic, from queries, no model call. What comes out is `TodayFacts`
+// (convex/ttsCompose.ts): the shape both the plain template and the Fable
+// writer on the box compose from, and the shape the FACTS BLOCK is built from.
 
-// Slack mrkdwn reserves these three inside message text and link labels.
-export function slackEscape(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/** The objection list's order and the narrow-list-id strip both live in
+ *  convex/ttsAsk.ts, which is the delegate's one home. This file used to carry
+ *  a copy of each while that file was on another branch; both copies are gone
+ *  and these two names are re-exported so the tests and the composer keep one
+ *  import site. */
+export { objectionRank, stripNarrowListId } from "./ttsAsk";
+
+/** "Ten days late." / "Due today." / "Due tomorrow." / "Due in four days."
+ *  The countdown goes INSIDE the item's sentence, never as a third em-dash
+ *  clause, and small numbers are words because that is how he reads them. */
+export function latenessText(dueAt: number, now: number): string {
+  const days =
+    (Date.parse(nyCalendarDayKey(dueAt)) - Date.parse(nyCalendarDayKey(now))) / DAY_MS;
+  if (days === 0) return "Due today.";
+  if (days === 1) return "Due tomorrow.";
+  if (days > 1) return `Due in ${countWord(days)} days.`;
+  if (days === -1) return "One day late.";
+  return `${capitalise(countWord(-days))} days late.`;
 }
 
-// ── One item, one line ───────────────────────────────────────────────────────
-// The digest is a morning read and the full list lives on the /tts page, so an
-// item contributes ONE line to it. A statement is written for the page, not for
-// Slack: a code todo's runs to 300 characters over several sentences, and the
-// first live digest (2026-09-06) printed every one of them in full — ten Slack
-// messages Tom had to scroll. Every statement and every entry action the digest
-// prints goes through clipToLine, which is the only place the length of a
-// printed statement is decided.
-export const ITEM_TEXT_CHARS = 110;
-
-/**
- * A statement or an entry action as one line: whitespace collapsed, then cut at
- * whichever comes first — the end of the first sentence, or ITEM_TEXT_CHARS at
- * a word boundary — with "…" when anything was dropped. A sentence is kept
- * whole (its full stop included); only the character cut needs a word boundary.
- */
-export function clipToLine(raw: string): string {
-  const text = raw.replace(/\s+/g, " ").trim();
-  const sentence = text.match(/[.!?](?=\s|$)/);
-  if (sentence?.index !== undefined && sentence.index < ITEM_TEXT_CHARS) {
-    const end = sentence.index + 1;
-    return end >= text.length ? text : `${text.slice(0, end)}…`;
-  }
-  if (text.length <= ITEM_TEXT_CHARS) return text;
-  const cut = text.slice(0, ITEM_TEXT_CHARS);
-  const space = cut.lastIndexOf(" ");
-  return `${(space > 0 ? cut.slice(0, space) : cut).trimEnd()}…`;
+function capitalise(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-function itemLine(item: { id: string; statement: string; entryAction?: string }) {
-  const entry = item.entryAction
-    ? ` — ${slackEscape(clipToLine(item.entryAction))}`
-    : "";
-  return `- <${ttsItemLink(item.id)}|${slackEscape(clipToLine(item.statement))}>${entry}`;
+/** One sentence naming the shape of the day, from the spans that survived the
+ *  private-feed filter. Never a list of times — the item lines are the list. */
+export function calendarLeadText(spans: { start: number; end: number; allDay: boolean }[]): string {
+  const timed = spans.filter((s) => !s.allDay).sort((a, b) => a.start - b.start);
+  const allDay = spans.length - timed.length;
+  if (timed.length === 0) {
+    return `Your day carries ${countWord(allDay)} ${
+      allDay === 1 ? "entry that runs" : "entries that run"
+    } all day and nothing timed.`;
+  }
+  const from = nyHhmm(timed[0].start);
+  const to = nyHhmm(Math.max(...timed.map((s) => s.end)));
+  return `Your day is committed from ${from} to ${to}.`;
 }
-
-// ── A section, and what it leaves for the page ───────────────────────────────
-// The digest is a morning read; the full list lives on the /tts page. So a
-// section prints at most SECTION_ITEM_CAP items and then ONE line saying how
-// many it did not print, linking to the tab of the page where the rest is read.
-// The three sections whose items are not on that page — job failures, WikiTom
-// commits, model-of-Tom lines — say the count and link nowhere.
-export const SECTION_ITEM_CAP = 12;
-
-type Section = {
-  header: string;
-  lines: string[]; // already capped, count line included
-  count: number; // items the section holds, printed or not
-  tab: TtsTab | null; // where the rest is read
-};
-
-function moreLine(hidden: number, tab: TtsTab | null): string {
-  return tab === null
-    ? `- +${hidden} more`
-    : `- <${ttsTabLink(tab)}|+${hidden} more on the page>`;
-}
-
-function section(header: string, items: string[], tab: TtsTab | null): Section {
-  const lines = items.slice(0, SECTION_ITEM_CAP);
-  if (items.length > lines.length) {
-    lines.push(moreLine(items.length - lines.length, tab));
-  }
-  return { header, lines, count: items.length, tab };
-}
-
-/** One plain, independently testable objection-list line. Merge rows are
- * reported here too, but their wording never assigns the merge to Fable. */
-export function objectionLine(
-  objection: DigestFacts["objections"][number],
-  n: number,
-): string {
-  const link =
-    objection.todoId === null
-      ? ""
-      : `: <${ttsItemLink(objection.todoId)}|${slackEscape(clipToLine(objection.kind === "merge" ? objection.subject : objection.subject ?? "todo"))}>`;
-  if (objection.kind === "merge") {
-    return `- ${n}. merged ${slackEscape(objection.repo)}@${slackEscape(objection.sha)} — ${slackEscape(clipToLine(objection.subject))}${link}`;
-  }
-  const head = objection.refused
-    ? `REFUSED, parked: would have ${slackEscape(clipToLine(objection.decision ?? objection.fallback))}`
-    : objection.decision === null
-      ? "no answer from the delegate; the caller took its fallback"
-      : slackEscape(clipToLine(objection.decision));
-  const why = objection.refused
-    ? slackEscape(clipToLine(stripNarrowListId(objection.refusedBecause ?? "")))
-    : slackEscape(clipToLine(objection.reason));
-  return `- ${n}. ${head} — ${why}${link}`;
-}
-
-function digestSections(f: DigestFacts): Section[] {
-  const sections: Section[] = [];
-
-  // OVERDUE-LONGEST FIRST (ascending date), because this section is the one
-  // that overflows and what the cap drops has to be the newest: an item three
-  // weeks late is the one Tom needs named in the morning.
-  const dueLines = [...f.due]
-    .sort((a, b) => a.dueAt - b.dueAt)
-    .map((d) => {
-      const replyPath = d.missed ? " — missed: reply done, or a new date" : "";
-      return `${itemLine(d)} — ${countdownText(d.dueAt, f.now)}${replyPath}`;
-    });
-  // The one section that is printed even when empty (sends-even-when-empty).
-  sections.push(
-    f.due.length === 0
-      ? { header: "*Due and overdue*", lines: ["- nothing"], count: 0, tab: null }
-      : section("*Due and overdue*", dueLines, "everything"),
-  );
-
-  if (f.objections.length > 0) {
-    const objectionSection = section(
-      "*Objection list*",
-      f.objections.map((objection, index) => objectionLine(objection, index + 1)),
-      // There is no delegate-only page; the items behind a decision live on
-      // the existing Everything tab, so the standard overflow link goes there.
-      "everything",
-    );
-    objectionSection.lines.push('- silence means it stands; reply "revert 2" or "2: what to do instead"');
-    sections.push(objectionSection);
-  }
-
-  const spans = [
-    ...f.blocks.map((b) => ({ start: b.start, end: b.end, text: b.label, allDay: false })),
-    ...f.calendar.map((e) => ({ start: e.start, end: e.end, text: e.title, allDay: e.allDay })),
-  ].sort((a, b) => a.start - b.start);
-  if (spans.length > 0) {
-    sections.push(
-      section(
-        "*Blocks and calendar*",
-        spans.map((s) => {
-          const when = s.allDay ? "all day" : `${nyHhmm(s.start)}–${nyHhmm(s.end)}`;
-          return `- ${when} ${slackEscape(clipToLine(s.text))}`;
-        }),
-        "calendar",
-      ),
-    );
-  }
-
-  if (f.emailCaptures.length > 0) {
-    sections.push(
-      section("*Captured from email*", f.emailCaptures.map(itemLine), "everything"),
-    );
-  }
-
-  if (f.overnight.length > 0) {
-    const groups = new Map<string | null, string[]>();
-    for (const o of f.overnight) {
-      const list = groups.get(o.batch) ?? [];
-      list.push(o.text);
-      groups.set(o.batch, list);
-    }
-    // Named batches first, in first-seen order; the batch-less tail last.
-    const keys = [...groups.keys()].sort((a, b) =>
-      a === null ? 1 : b === null ? -1 : 0,
-    );
-    // The cap counts EVENTS, not the batch headings between them: a heading is
-    // printed only when at least one of its events fits under the cap.
-    const lines: string[] = [];
-    let shown = 0;
-    for (const key of keys) {
-      const room = SECTION_ITEM_CAP - shown;
-      if (room <= 0) break;
-      const texts = groups.get(key) ?? [];
-      lines.push(`_${key === null ? "no batch" : slackEscape(key)}_`);
-      for (const text of texts.slice(0, room)) lines.push(`- ${text}`);
-      shown += Math.min(room, texts.length);
-    }
-    if (f.overnight.length > shown) {
-      lines.push(moreLine(f.overnight.length - shown, "batches"));
-    }
-    sections.push({
-      header: "*Overnight, by batch*",
-      lines,
-      count: f.overnight.length,
-      tab: "batches",
-    });
-  }
-
-  if (f.ready.length > 0) {
-    sections.push(section("*Ready for you*", f.ready.map(itemLine), "everything"));
-  }
-
-  if (f.failures.length > 0) {
-    sections.push(
-      section(
-        "*Job failures*",
-        [...f.failures]
-          .sort((a, b) => a.at - b.at)
-          .map((x) => `- ${nyHhmm(x.at)} ${x.text}`),
-        null,
-      ),
-    );
-  }
-
-  if (f.wikitom === null) {
-    sections.push({ header: WIKITOM_UNREADABLE, lines: [], count: 0, tab: null });
-  } else if (f.wikitom.length > 0) {
-    sections.push(
-      section(
-        "*WikiTom commits*",
-        f.wikitom.map(
-          (c) =>
-            `- <${c.url}|${slackEscape(c.sha.slice(0, 7))}> ${slackEscape(c.message)} — ${slackEscape(c.author)}`,
-        ),
-        null,
-      ),
-    );
-  }
-
-  if (f.rulings.length > 0) {
-    sections.push(
-      section(
-        "*Rulings from your words*",
-        f.rulings.map((r) => {
-          const quote = r.quote ? `: "${slackEscape(r.quote)}"` : "";
-          const redirect = r.redirect
-            ? ` — redirect: ${slackEscape(r.redirect)}`
-            : "";
-          return `- ${r.verdict} on ${r.subject}${quote}${redirect} (${slackEscape(r.provenance)})`;
-        }),
-        "batches",
-      ),
-    );
-  }
-
-  // A prelude commit that has not reached GitHub is said, whether or not a
-  // line was learned: the prompts name a commit nobody else can see yet.
-  const notPushed =
-    f.modelOfTom !== null && f.modelOfTom.pushed === false
-      ? [`- model-of-tom files at WikiTom ${slackEscape(f.modelOfTom.commit.slice(0, 12))} — not yet pushed`]
-      : [];
-  if (f.preludes !== null || f.evals !== null || f.learning.length > 0 || notPushed.length > 0) {
-    const preludeLines = f.preludes === null
-      ? []
-      : [
-          `- preludes: ${f.preludes.current} session${f.preludes.current === 1 ? "" : "s"} started from the current model-of-tom commit, ${f.preludes.stale.length} from an older one`,
-          ...f.preludes.stale.map((s) =>
-            s.behindDays >= 0
-              ? `- prelude ${slackEscape((s.had ?? "").slice(0, 12))}, ${s.behindDays} day${s.behindDays === 1 ? "" : "s"} behind: <${ttsSessionLink(s.id)}|${slackEscape(clipToLine(s.title))}>`
-              : `- prelude names a commit this deployment never posted: <${ttsSessionLink(s.id)}|${slackEscape(clipToLine(s.title))}>`,
-          ),
-          ...f.preludes.missing.map(
-            (s) => `- no prelude at all: <${ttsSessionLink(s.id)}|${slackEscape(clipToLine(s.title))}>`,
-          ),
-        ];
-    const evalLines = f.evals === null
-      ? []
-      : [
-          `- evals: ${f.evals.pass} of ${f.evals.items} pass at ${slackEscape(f.evals.repo)} ${slackEscape(f.evals.sha.slice(0, 7))}` +
-            (f.evals.regressions > 0 || f.evals.stillFailing > 0
-              ? ` — ${f.evals.regressions > 0 ? `${f.evals.regressions} regression${f.evals.regressions === 1 ? "" : "s"}` : ""}${f.evals.regressions > 0 && f.evals.stillFailing > 0 ? ", " : ""}${f.evals.stillFailing > 0 ? `${f.evals.stillFailing} still failing` : ""}`
-              : ""),
-          ...f.evals.failures
-            .filter((failure) => failure.regression)
-            .map((failure) => `- evals regression: ${slackEscape(failure.id)} (${slackEscape(failure.partition)}) — ${slackEscape(failure.reason)}`),
-        ];
-    sections.push(
-      section(
-        "*Model of Tom*",
-        [
-          ...preludeLines,
-          ...notPushed,
-          ...evalLines,
-          ...f.learning.map((l) => {
-            const id = `[${slackEscape(l.id)}]`;
-            const file = slackEscape(l.file);
-            switch (l.status) {
-              case "reverted":
-                return `- ${id} ${file}: reverted on your objection — "${slackEscape(l.before)}"${l.after === "" ? "" : ` → "${slackEscape(l.after)}"`}`;
-              case "revert-failed":
-                return `- ${id} ${file}: NOT reverted — ${slackEscape(l.reason ?? "")}`;
-              default:
-                return l.before === ""
-                  ? `- ${id} ${file}: + "${slackEscape(l.after)}" (${slackEscape(l.evidence)})`
-                  : `- ${id} ${file}: "${slackEscape(l.before)}" → "${slackEscape(l.after)}" (${slackEscape(l.evidence)})`;
-            }
-          }),
-        ],
-        null,
-      ),
-    );
-  }
-
-  return sections;
-}
-
-function render(day: string, sections: Section[]): string {
-  const lines: string[] = [`*TTS digest — ${day}*`];
-  for (const s of sections) lines.push("", s.header, ...s.lines);
-  return lines.join("\n");
-}
-
-// ── One Slack message ────────────────────────────────────────────────────────
-// Slack takes 4,000 characters in a message and cuts what is longer into more
-// of them: the first live digest (2026-09-06) arrived as TEN. The two caps
-// above make that unlikely; this one makes it impossible. Composition is
-// finished first, and if the whole thing is still over DIGEST_MAX_CHARS the
-// sections are reduced to their count line from the LAST one back — due and
-// overdue, the first, is never reduced, and the sections nearest it are the
-// ones Tom reads. `truncated` travels to the "digest-sent" row so a week of
-// digests can say how often the morning did not fit.
-export const DIGEST_MAX_CHARS = 3_900;
-
-export function composeDigest(f: DigestFacts): {
-  text: string;
-  truncated: boolean;
-} {
-  const sections = digestSections(f);
-  let text = render(f.day, sections);
-  if (text.length <= DIGEST_MAX_CHARS) return { text, truncated: false };
-  for (let i = sections.length - 1; i >= 1; i--) {
-    const s = sections[i];
-    if (s.lines.length <= 1) continue; // already one line, or none
-    sections[i] = { ...s, lines: [moreLine(s.count, s.tab)] };
-    text = render(f.day, sections);
-    if (text.length <= DIGEST_MAX_CHARS) return { text, truncated: true };
-  }
-  // Every section but the first reduced and still over: the first section alone
-  // is longer than a Slack message, so it is cut at the character. Twelve items
-  // cannot reach this today; a change to SECTION_ITEM_CAP could.
-  return { text: `${text.slice(0, DIGEST_MAX_CHARS - 1)}…`, truncated: true };
-}
-
-// ── Gathering the facts ──────────────────────────────────────────────────────
 
 // Bounded newest-first walk of dtsEvents for a kind, the internalLastEventAt
 // pattern: dtsEvents is busy instrumentation, and if the kind is not inside
@@ -607,8 +243,11 @@ const EVENT_SCAN = 2000;
 
 // The same shape for the email-capture read: the newest rows on the source
 // index, cut at the window. A window holding more email captures than this is
-// a mail flood, and the digest is a morning read.
+// a mail flood, and the morning message is a morning read.
 const CAPTURE_SCAN = 500;
+
+// How many delegate decisions one morning's objection list is gathered from.
+const OBJECTION_SCAN = 200;
 
 /**
  * The newest "digest-sent" row: which day went out last, and where that run's
@@ -639,10 +278,10 @@ async function lastDigestSent(
 }
 
 /**
- * The two facts a digest run needs from the last one, in one read: the day it
- * covered (`lastDay` — equal to today means today's has gone out) and where
- * this run's window starts. The sender needs `since` before it composes,
- * because it fetches WikiTom's commits over the same window.
+ * The two facts a run needs from the last one, in one read: the day it covered
+ * (`lastDay` — equal to today means today's has gone out) and where this run's
+ * window starts. The sender needs `since` before it composes, because it reads
+ * WikiTom over the same window.
  */
 export const internalDigestWindow = internalQuery({
   args: { now: v.number() },
@@ -652,66 +291,31 @@ export const internalDigestWindow = internalQuery({
   },
 });
 
-// A ruling written from Tom's own words (ruling 15) carries a provenance the
-// ruling route stamps; a row without one is a button ruling, not a sentence.
-// ANY non-empty provenance is reported. The shape is the ruling piece's to
-// define and it is already two shapes — a plain string, and the object PR #144
-// writes ({ from: "tom-words", ... }) — so this reader takes both and never
-// judges the CONTENT. It matched /session|slack/ before, which silently
-// dropped every ruling whose provenance was worded differently: the digest is
-// how Tom catches a misread sentence, so a ruling it does not print is a
-// misread he never sees.
-const PROVENANCE_PARTS = 4; // enough to name the source; the line stays a line
-export function provenanceText(raw: unknown): string | null {
-  if (typeof raw === "string") return raw.trim() === "" ? null : raw.trim();
-  if (raw === null || typeof raw !== "object") return null;
-  const parts = Object.entries(raw as Record<string, unknown>)
-    .filter(([, v]) => typeof v === "string" || typeof v === "number")
-    .map(([k, v]) => `${k} ${v}`)
-    .slice(0, PROVENANCE_PARTS);
-  return parts.length === 0 ? null : parts.join(", ");
-}
-// The words door (ttsRulings.internalRecordRulingFromTomWords) writes
-// { from, inboundId, quote }: `quote` is Tom's sentence and is lifted out to
-// be printed AS his quotation; the rest names the source. Any other
-// non-empty shape is a source with no quotation to print.
-function rulingProvenance(
-  r: Doc<"dtsRulings">,
-): { quote?: string; provenance: string } | null {
-  const raw = (r as unknown as Record<string, unknown>).provenance;
-  if (raw !== null && typeof raw === "object" && "quote" in raw) {
-    const { quote, ...source } = raw as Record<string, unknown>;
-    const provenance = provenanceText(source);
-    if (typeof quote === "string" && quote.trim() !== "") {
-      return { quote: quote.trim(), provenance: provenance ?? "from Tom's words" };
-    }
-    return provenance === null ? null : { provenance };
-  }
-  const provenance = provenanceText(raw);
-  return provenance === null ? null : { provenance };
-}
-
-const SESSION_LINK = "https://tom.quest/sessions?session=";
-
 function str(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
 }
 
-export async function gatherDigestFacts(
+function num(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/** The failure kinds that are NOT a #tts-broken line. "slack-send-failed" is
+ *  the Slack door's own: reporting it in a Slack message is the loop
+ *  convex/ttsHourly.ts already warns about. */
+const NOT_A_FAILURE_LINE = new Set(["slack-send-failed"]);
+
+export async function gatherTodayFacts(
   ctx: QueryCtx,
   {
     day,
     now,
     since,
-    wikitom,
   }: {
     day: string;
     now: number;
     since: number;
-    // The sender's WikiTom read; null (or absent) means it could not be read.
-    wikitom?: WikiTomCommit[] | null;
   },
-): Promise<DigestFacts> {
+): Promise<TodayFacts> {
   const { start: dayStart, end: dayEnd } = nyCalendarDayBoundsUtc(day);
 
   // Names for the ids the sections actually touch, fetched one at a time and
@@ -719,9 +323,7 @@ export async function gatherDigestFacts(
   // two full-table scans that grow with the record forever, for a handful of
   // lookups.
   const todoCache = new Map<string, Doc<"dtsTodos"> | null>();
-  const todoOf = async (
-    id: Id<"dtsTodos"> | undefined,
-  ): Promise<Doc<"dtsTodos"> | null> => {
+  const todoOf = async (id: Id<"dtsTodos"> | undefined): Promise<Doc<"dtsTodos"> | null> => {
     if (id === undefined) return null;
     const hit = todoCache.get(id);
     if (hit !== undefined) return hit;
@@ -730,9 +332,7 @@ export async function gatherDigestFacts(
     return row;
   };
   const batchCache = new Map<string, string | null>();
-  const batchName = async (
-    id: Id<"batches"> | undefined,
-  ): Promise<string | null> => {
+  const batchName = async (id: Id<"batches"> | undefined): Promise<string | null> => {
     if (id === undefined) return null;
     const hit = batchCache.get(id);
     if (hit !== undefined) return hit;
@@ -740,15 +340,13 @@ export async function gatherDigestFacts(
     batchCache.set(id, name);
     return name;
   };
-  const batchOfTodo = async (
-    id: Id<"dtsTodos"> | undefined,
-  ): Promise<string | null> => await batchName((await todoOf(id))?.batchId);
+  const batchOfTodo = async (id: Id<"dtsTodos"> | undefined): Promise<string | null> =>
+    await batchName((await todoOf(id))?.batchId);
 
-  // 1. Due and overdue: every active dated todo due today or earlier. Read on
-  // the (status, dueAt) index, so the scan is the overdue items themselves —
-  // the `gte(0)` lower bound is what excludes the undated rows, which sort
-  // before every number in a Convex index.
-  const due = (
+  // 1. Dated and late: every active dated todo due today or earlier, oldest
+  //    date first — what the cap drops has to be the newest, because an item
+  //    three weeks late is the one Tom needs named in the morning.
+  const dated = (
     await ctx.db
       .query("dtsTodos")
       .withIndex("by_status_and_due", (q) =>
@@ -757,65 +355,73 @@ export async function gatherDigestFacts(
       .collect()
   )
     .filter((t) => t.dueAt !== undefined)
+    .sort((a, b) => (a.dueAt as number) - (b.dueAt as number))
     .map((t) => ({
       id: t._id as string,
       statement: t.statement,
-      dueAt: t.dueAt as number,
       entryAction: t.entryAction,
-      missed: (t.dateOutcomes ?? []).some(
-        (o) => o.dueAt === t.dueAt && o.outcome === "missed",
-      ),
+      dueAt: t.dueAt as number,
+      countdown: latenessText(t.dueAt as number, now),
     }));
-  const dueIds = new Set(due.map((d) => d.id));
+  const datedIds = new Set(dated.map((d) => d.id));
+  const lateCount = dated.filter((d) => (d.dueAt as number) < dayStart).length;
+  const oldest = dated[0];
+  const oldestLateBy =
+    oldest !== undefined && (oldest.dueAt as number) < dayStart
+      ? lateBy(oldest.dueAt as number, now)
+      : undefined;
 
-  // 2. Blocks and calendar events overlapping the calendar day. Both windows
-  // open 31 days back — the longest span either table is expected to hold —
-  // rather than reading every row ever written before the end of today.
+  // 2. The calendar. Blocks and mirrored calendar events overlapping the day,
+  //    with EVERY ROW FROM A PRIVATE FEED DROPPED (Tom 2026-09-09): the family
+  //    calendar stays in the record, and nothing he reads names it.
+  const privateFeeds = privateFeedNames(process.env.TTS_ICS_FEEDS);
   const blockRows = await ctx.db
     .query("dtsBlocks")
-    .withIndex("by_start", (q) =>
-      q.gte("start", dayStart - 31 * DAY_MS).lt("start", dayEnd),
-    )
+    .withIndex("by_start", (q) => q.gte("start", dayStart - 31 * DAY_MS).lt("start", dayEnd))
     .collect();
-  const blocks = await Promise.all(
-    blockRows
-      .filter((b) => b.end > dayStart)
-      .map(async (b) => ({
-        start: b.start,
-        end: b.end,
-        label:
-          (await todoOf(b.todoId))?.statement ?? b.category ?? b.note ?? "block",
-      })),
-  );
-  const calendar = (
-    await ctx.db
-      .query("ttsCalendarEvents")
-      .withIndex("by_start", (q) => q.gte("start", dayStart - 31 * DAY_MS).lt("start", dayEnd))
-      .collect()
-  )
-    .filter((e) => e.end > dayStart)
-    .map((e) => ({ start: e.start, end: e.end, title: e.title, allDay: e.allDay }));
+  const spans: { start: number; end: number; title: string; allDay: boolean }[] = [];
+  for (const b of blockRows) {
+    if (b.end <= dayStart) continue;
+    spans.push({
+      start: b.start,
+      end: b.end,
+      title: (await todoOf(b.todoId))?.statement ?? b.category ?? b.note ?? "block",
+      allDay: false,
+    });
+  }
+  for (const e of await ctx.db
+    .query("ttsCalendarEvents")
+    .withIndex("by_start", (q) => q.gte("start", dayStart - 31 * DAY_MS).lt("start", dayEnd))
+    .collect()) {
+    if (e.end <= dayStart) continue;
+    if (feedIsPrivate(e.feed, privateFeeds)) continue;
+    spans.push({ start: e.start, end: e.end, title: e.title, allDay: e.allDay });
+  }
+  spans.sort((a, b) => a.start - b.start);
+  const calendar = spans.map((s) => ({
+    title: s.title,
+    when: s.allDay ? "" : `${nyHhmm(s.start)} to ${nyHhmm(s.end)}`,
+    allDay: s.allDay,
+  }));
 
-  // 3. Email captures since the last digest — not the ones already listed as
-  // due above (the ready section skips those for the same reason: one item,
-  // one line, or the reply path in the due line is the one Tom misses).
-  // Newest-first on the source index, then cut at the window. CAP: the newest
-  // CAPTURE_SCAN email rows. The window is a night, and a night that captured
-  // more than this from email is a mail flood, not a morning read.
-  const emailCaptures = (
-    await ctx.db
-      .query("dtsTodos")
-      .withIndex("by_source", (q) => q.eq("source", "email"))
-      .order("desc")
-      .take(CAPTURE_SCAN)
-  )
-    .filter(
-      (t) => t.createdAt >= since && t.createdAt < now && !dueIds.has(t._id as string),
+  // 3. Email captures since the last morning message. A capture that is ready
+  //    is a thing to do today and reaches him through the ready count below; a
+  //    capture that is not ready is a row, not a line (§4.3). Read only to
+  //    keep them out of the ready list twice.
+  const emailCaptureIds = new Set(
+    (
+      await ctx.db
+        .query("dtsTodos")
+        .withIndex("by_source", (q) => q.eq("source", "email"))
+        .order("desc")
+        .take(CAPTURE_SCAN)
     )
-    .sort((a, b) => a.createdAt - b.createdAt)
-    .map((t) => ({ id: t._id as string, statement: t.statement, entryAction: t.entryAction }));
+      .filter((t) => t.createdAt >= since && t.createdAt < now)
+      .map((t) => t._id as string),
+  );
 
-  // 4, 6, 7, 8 read the events since the last digest, oldest first.
+  // 4. The night's events, oldest first: what the box left behind, what broke,
+  //    and the delegate's decisions.
   const events = (
     await ctx.db
       .query("dtsEvents")
@@ -824,353 +430,342 @@ export async function gatherDigestFacts(
       .take(EVENT_SCAN)
   ).reverse();
 
-  const overnight: DigestFacts["overnight"] = [];
-  const failures: DigestFacts["failures"] = [];
-  const learning: DigestFacts["learning"] = [];
-  const objections: DigestFacts["objections"] = [];
-  let preludes: DigestFacts["preludes"] = null;
-  let evals: DigestFacts["evals"] = null;
-  const modelOfTom = await modelOfTomState(ctx);
+  // OUTCOMES, NEVER LOGGED EVENTS. One line per BATCH, from every event in the
+  // window that named it: a night of five "plan stored" rows on one batch is
+  // ONE sentence about that batch.
+  const outcomes = new Map<string, BatchOutcome>();
+  const outcomeFor = (batchId: string | null, statement: string): BatchOutcome => {
+    const key = batchId ?? "none";
+    let row = outcomes.get(key);
+    if (row === undefined) {
+      row = {
+        batchId,
+        statement: batchId === null ? "Work outside any batch" : statement,
+        added: 0,
+        reworked: 0,
+        dropped: 0,
+        finished: 0,
+        running: false,
+      };
+      outcomes.set(key, row);
+    }
+    return row;
+  };
+  const failures = new Map<string, BrokenFact>();
+  const failure = (job: string, statement: string, url?: string): BrokenFact => {
+    let row = failures.get(job);
+    if (row === undefined) {
+      row = { statement, url, count: 0 };
+      failures.set(job, row);
+    }
+    row.count = (row.count ?? 0) + 1;
+    return row;
+  };
+  const rawObjections: {
+    at: number;
+    // "" for a merge: a merge is REPORTED for objection, not decided by the
+    // delegate, so its number in the printed list names no askId and a reply
+    // that types it falls through to the ordinary paths.
+    askId: string;
+    todoId?: string;
+    decision: string | null;
+    reason?: string;
+    refused: boolean;
+    refusedBecause?: string;
+    fallback?: string;
+  }[] = [];
+
   for (const e of events) {
     const d = (e.data ?? {}) as Record<string, unknown>;
-    const sessionId = str(d.sessionId);
-    const sessionRowId =
-      sessionId !== undefined ? ctx.db.normalizeId("claudeSessions", sessionId) : null;
-    const session = sessionRowId ? await ctx.db.get(sessionRowId) : null;
-    const sessionBatch =
-      (await batchName(session?.batchId)) ??
-      (await batchOfTodo(session?.todoId ?? e.todoId));
-    const sessionLink = (title: string | undefined) =>
-      sessionId !== undefined
-        ? `<${SESSION_LINK}${sessionId}|${slackEscape(title ?? "session")}>`
-        : slackEscape(title ?? "session");
-
     switch (e.kind) {
-      case "session-created":
-        overnight.push({
-          batch: sessionBatch,
-          text: `session opened: ${sessionLink(str(d.title))}${d.mode === "autonomous" ? " (autonomous)" : ""}`,
-        });
-        break;
-      case "session-outcome": {
-        const summary = str(d.summary);
-        overnight.push({
-          batch: sessionBatch,
-          text: `session ${str(d.outcome) ?? "finished"}: ${sessionLink(str(d.title))}${summary ? ` — ${slackEscape(summary)}` : ""}`,
-        });
-        break;
-      }
-      case "session-ended":
-        if (d.status === "failed") {
-          const reason = str(d.endedReason);
-          failures.push({
-            at: e.at,
-            text: `session failed: ${sessionLink(str(d.title))}${reason ? ` — ${slackEscape(reason)}` : ""}`,
-          });
-        }
-        break;
-      case "graph-batch-formed":
-        overnight.push({
-          batch: str(d.statement) ?? null,
-          text: "batch formed",
-        });
-        break;
       case "graph-stored": {
         const batchId = str(d.batchId);
-        const counts = ["created", "updated", "retired", "archived"]
-          .map((k) => (typeof d[k] === "number" && d[k] !== 0 ? `${d[k]} ${k}` : null))
-          .filter((x): x is string => x !== null);
-        overnight.push({
-          batch: batchId
-            ? await batchName(ctx.db.normalizeId("batches", batchId) ?? undefined)
-            : null,
-          text: `plan stored${counts.length > 0 ? `: ${counts.join(", ")}` : ""}`,
-        });
+        const named = batchId
+          ? ((await batchName(ctx.db.normalizeId("batches", batchId) ?? undefined)) ?? "A batch")
+          : null;
+        const row = outcomeFor(batchId ?? null, named ?? "A batch");
+        row.added += num(d.created);
+        row.reworked += num(d.updated);
+        row.dropped += num(d.retired) + num(d.archived);
         break;
       }
-      case "plan-repair": {
-        const batchId = str(d.batchId);
-        overnight.push({
-          batch:
-            (batchId
-              ? await batchName(ctx.db.normalizeId("batches", batchId) ?? undefined)
-              : null) ?? (await batchOfTodo(e.todoId)),
-          text: `plan repair reported: ${slackEscape(str(d.note) ?? "")}`,
-        });
+      case "graph-batch-formed": {
+        const name = str(d.statement);
+        if (name !== undefined) outcomeFor(str(d.batchId) ?? name, name);
         break;
       }
-      case "prepared": {
-        const todo = await todoOf(e.todoId);
-        if (todo) {
-          overnight.push({
-            batch: await batchName(todo.batchId),
-            text: `prepared <${ttsItemLink(todo._id)}|${slackEscape(todo.statement)}>`,
-          });
+      case "session-outcome": {
+        const sessionId = str(d.sessionId);
+        const rowId = sessionId ? ctx.db.normalizeId("claudeSessions", sessionId) : null;
+        const session = rowId ? await ctx.db.get(rowId) : null;
+        const named =
+          (await batchName(session?.batchId)) ?? (await batchOfTodo(session?.todoId ?? e.todoId));
+        if (named !== null) outcomeFor(session?.batchId ?? null, named).finished += 1;
+        if (d.outcome === "errored") {
+          failure(
+            "session",
+            "A session ended in an error overnight, so whatever it was carrying is not done.",
+            str(d.sessionId) === undefined ? undefined : ttsSessionLink(str(d.sessionId) as string),
+          ).detail = str(d.summary) ?? str(d.title);
         }
         break;
       }
-      case "time-note-resolved": {
-        const todo = await todoOf(e.todoId);
-        overnight.push({
-          batch: await batchName(todo?.batchId),
-          text: `time note ${d.status === "applied" ? "applied" : "needs a session"}: ${slackEscape(str(d.result) ?? "")}`,
+      case "session-created": {
+        const sessionId = str(d.sessionId);
+        const rowId = sessionId ? ctx.db.normalizeId("claudeSessions", sessionId) : null;
+        const session = rowId ? await ctx.db.get(rowId) : null;
+        const named =
+          (await batchName(session?.batchId)) ?? (await batchOfTodo(session?.todoId ?? e.todoId));
+        if (named !== null) {
+          const row = outcomeFor(session?.batchId ?? null, named);
+          if (session !== null && LIVE_STATUSES.includes(session.status as never)) row.running = true;
+        }
+        break;
+      }
+      case "session-ended": {
+        if (d.status !== "failed") break;
+        const sessionId = str(d.sessionId);
+        failure(
+          "session",
+          "A session failed overnight, so whatever it was carrying is not done.",
+          sessionId === undefined ? undefined : ttsSessionLink(sessionId),
+        ).detail = str(d.endedReason) ?? str(d.title);
+        break;
+      }
+      case DELEGATE_DECISION: {
+        // An attended ask is a prompt bug, not a decision taken for him while
+        // he slept: ttsAsk refuses it and it is not a morning line.
+        if (d.attended === true) break;
+        rawObjections.push({
+          at: e.at,
+          askId: str(d.askId) ?? (e.key ?? ""),
+          todoId: e.todoId === undefined ? str(d.todoId) : (e.todoId as string),
+          decision: str(d.decision) ?? null,
+          reason: str(d.reason),
+          refused: d.refused === true,
+          refusedBecause: str(d.refusedBecause),
+          fallback: str(d.fallback),
         });
         break;
       }
-      case "calendar-event-created":
-        overnight.push({
-          batch: null,
-          text: `calendar event written: ${slackEscape(str(d.title) ?? "")}`,
-        });
-        break;
-      case DELEGATE_DECISION:
-        // An attended ask is a prompt bug, not a decision for Tom's morning.
-        if (d.attended === true) break;
-        objections.push({
-          kind: "decision",
-          askId: str(d.askId) ?? e.key ?? "?",
-          decision: str(d.decision) ?? null,
-          reason: str(d.reason) ?? "",
-          refused: d.refused === true,
-          refusedBecause: str(d.refusedBecause) ?? null,
-          fallback: str(d.fallback) ?? "",
-          todoId: e.todoId === undefined ? null : e.todoId as string,
-          subject: (await todoOf(e.todoId))?.statement ?? null,
+      case MERGE: {
+        // A merge passed its three mechanical gates, so nothing asked Tom
+        // about it. It is reported here for objection, and its wording never
+        // assigns the merge to the delegate.
+        const repo = str(d.repo) ?? "repo";
+        const sha = (str(d.sha) ?? "").slice(0, 7);
+        rawObjections.push({
           at: e.at,
+          askId: "",
+          todoId: e.todoId === undefined ? str(d.todoId) : (e.todoId as string),
+          decision: `merged ${repo}@${sha}: ${str(d.subject) ?? "no subject"}`,
+          refused: false,
         });
         break;
-      case MERGE:
-        objections.push({
-          kind: "merge",
-          repo: str(d.repo) ?? "repo",
-          sha: str(d.sha) ?? "?",
-          subject: str(d.subject) ?? (await todoOf(e.todoId))?.statement ?? "merge",
-          todoId: e.todoId === undefined ? null : e.todoId as string,
-          at: e.at,
-        });
-        break;
-      case LEARNING_CHANGE:
-      case LEARNING_REVERTED:
-      case LEARNING_REVERT_FAILED:
-        learning.push({
-          status:
-            e.kind === LEARNING_CHANGE
-              ? "changed"
-              : e.kind === LEARNING_REVERTED
-                ? "reverted"
-                : "revert-failed",
-          id: str(d.id) ?? "?",
-          file: str(d.file) ?? "",
-          before: str(d.before) ?? "",
-          after: str(d.after) ?? "",
-          evidence: str(d.evidence) ?? "",
-          reason: str(d.reason),
-        });
-        break;
-      case AREA_REVIEWED:
-        overnight.push({
-          batch: null,
-          text: `area page reviewed with Tom: ${slackEscape(str(d.path) ?? "")} (reviewed ${slackEscape(str(d.reviewedOn) ?? "")})`,
-        });
-        break;
+      }
       case PRELUDE_DELIVERY: {
-        const stale = Array.isArray(d.stale) ? d.stale : [];
-        const missing = Array.isArray(d.missing) ? d.missing : [];
-        preludes = {
-          current: typeof d.current === "number" ? d.current : 0,
-          stale: stale.flatMap((s) => {
-            if (s === null || typeof s !== "object") return [];
-            const row = s as Record<string, unknown>;
-            const id = str(row.id);
-            const title = str(row.title);
-            if (id === undefined || title === undefined) return [];
-            return [{ id, title, had: str(row.had) ?? null, behindDays: typeof row.behindDays === "number" ? row.behindDays : -1 }];
-          }),
-          missing: missing.flatMap((s) => {
-            if (s === null || typeof s !== "object") return [];
-            const row = s as Record<string, unknown>;
-            const id = str(row.id);
-            const title = str(row.title);
-            return id === undefined || title === undefined ? [] : [{ id, title }];
-          }),
-        };
+        // The nightly delivery check. A CLEAN run is not a morning line — it
+        // is in the weekly (convex/ttsWeekly.ts) and on its own row. What
+        // reaches him is a session that did not get the current model-of-tom.
+        const stale = (Array.isArray(d.stale) ? d.stale : []).flatMap((row) =>
+          row !== null && typeof row === "object" ? [row as Record<string, unknown>] : [],
+        );
+        const missing = (Array.isArray(d.missing) ? d.missing : []).flatMap((row) =>
+          row !== null && typeof row === "object" ? [row as Record<string, unknown>] : [],
+        );
+        if (stale.length === 0 && missing.length === 0) break;
+        const clauses: string[] = [];
+        if (stale.length > 0) {
+          clauses.push(`${stale.length} began from an older model-of-tom commit`);
+        }
+        if (missing.length > 0) clauses.push(`${missing.length} from none at all`);
+        const first = stale[0] ?? missing[0];
+        const firstId = str(first?.id);
+        const row = failure(
+          "prelude-delivery",
+          `Sessions ran without the model-of-tom they should have had: ${clauses.join(", and ")}.`,
+          firstId === undefined ? undefined : ttsSessionLink(firstId),
+        );
+        row.detail = str(first?.title);
         break;
       }
       case EVALS_RUN: {
-        const repo = str(d.repo);
-        const sha = str(d.sha);
-        if (repo === undefined || sha === undefined) break;
-        const runFailures = Array.isArray(d.failures) ? d.failures : [];
-        evals = {
-          repo,
-          sha,
-          items: typeof d.items === "number" ? d.items : 0,
-          pass: typeof d.pass === "number" ? d.pass : 0,
-          regressions: typeof d.regressions === "number" ? d.regressions : 0,
-          stillFailing: typeof d.stillFailing === "number" ? d.stillFailing : 0,
-          failures: runFailures.flatMap((failure) => {
-            if (failure === null || typeof failure !== "object") return [];
-            const row = failure as Record<string, unknown>;
-            const id = str(row.id);
-            const partition = str(row.partition);
-            const reason = str(row.reason);
-            return id === undefined || partition === undefined || reason === undefined
-              ? []
-              : [{ id, partition, reason, regression: row.regression === true }];
-          }),
-        };
+        // Same rule: a passing run is the weekly's fact, and a regression is
+        // his. `regressions` and `stillFailing` are the runner's own
+        // comparison against the base run; this never reimplements gate().
+        const regressions = typeof d.regressions === "number" ? d.regressions : 0;
+        const stillFailing = typeof d.stillFailing === "number" ? d.stillFailing : 0;
+        if (regressions === 0 && stillFailing === 0) break;
+        const clauses: string[] = [];
+        if (regressions > 0) {
+          clauses.push(`${regressions} ${regressions === 1 ? "regression" : "regressions"}`);
+        }
+        if (stillFailing > 0) clauses.push(`${stillFailing} still failing`);
+        const row = failure(
+          "evals",
+          `The evals came back short at ${str(d.repo) ?? "the repo"} ${(str(d.sha) ?? "").slice(0, 7)}: ${clauses.join(", ")}.`,
+        );
+        const firstRegression = (Array.isArray(d.failures) ? d.failures : []).flatMap((f) =>
+          f !== null && typeof f === "object" && (f as Record<string, unknown>).regression === true
+            ? [f as Record<string, unknown>]
+            : [],
+        )[0];
+        if (firstRegression !== undefined) {
+          row.detail = `${str(firstRegression.id) ?? "an item"} (${str(firstRegression.partition) ?? "?"}) — ${str(firstRegression.reason) ?? ""}`;
+        }
         break;
       }
-      default:
-        // Every job failure is a "-failed" kind ("slack-send-failed" is the
-        // Slack door's; the box's jobs report theirs as "job-failed" through
-        // POST /tts/job-failed). A Slack failure is named by its SUBJECT, a
-        // box job's by the JOB — the same slot, whichever the row carries.
-        if (e.kind.endsWith("-failed")) {
-          const job = str(d.job);
-          const what =
-            slackSubjectLabel(d.subject) || (job === undefined ? "" : ` (${job})`);
-          failures.push({
-            at: e.at,
-            text: `${e.kind}${what}: ${slackEscape(str(d.error) ?? "")}`,
-          });
-        }
+      default: {
+        // Every job failure is a "-failed" kind (a box job reports its own
+        // through POST /tts/job-failed). A Slack failure is the door's own and
+        // is not a line.
+        if (!e.kind.endsWith("-failed") || NOT_A_FAILURE_LINE.has(e.kind)) break;
+        const job = str(d.job) ?? e.kind.replace(/-failed$/, "");
+        failure(job, brokenStatement(job)).detail = str(d.error);
+      }
     }
   }
 
-  // 5. Ready for Tom (not already listed as due) — ruling 18's computation
-  // (ttsShared.isReadyForTom: prepared, active, awake, every need done). Read
-  // on the readiness index for "prepared", so the scan is the prepared list
-  // itself — the shortest list in the record. A row's needs are fetched by
-  // id (bounded by MAX_NEEDS) to build the done set, instead of collecting
-  // the table.
+  // 5. Ready for Tom (not already dated) — ruling 18's computation
+  //    (ttsShared.isReadyForTom). Read on the readiness index for "prepared",
+  //    so the scan is the prepared list itself. §4.3: the ready SECTION is
+  //    gone; the count is the today section's last sentence.
   const preparedRows: Doc<"dtsTodos">[] = await ctx.db
     .query("dtsTodos")
     .withIndex("by_readiness", (q) => q.eq("readiness", "prepared"))
     .collect();
-  const ready: DigestFacts["ready"] = [];
+  const readyIds = new Set<string>();
   for (const t of preparedRows) {
-    if (t.status !== "active" || dueIds.has(t._id as string)) continue;
+    if (t.status !== "active" || datedIds.has(t._id as string)) continue;
     const needRows: Doc<"dtsTodos">[] = [];
     for (const id of t.needs ?? []) {
       const need = await ctx.db.get(id);
       if (need) needRows.push(need);
     }
     if (!isReadyForTom(t, buildDoneSet(needRows), now)) continue;
-    ready.push({ id: t._id as string, statement: t.statement, entryAction: t.entryAction });
+    readyIds.add(t._id as string);
   }
+  // A capture from the night that is not ready is a row, not a line, and is
+  // not counted here either: the count says how many things are WAITING.
+  for (const id of emailCaptureIds) if (!readyIds.has(id)) emailCaptureIds.delete(id);
 
-  const readyIds = new Set(ready.map((todo) => todo.id));
-  objections.sort((a, b) => {
-    const rank = (item: DigestFacts["objections"][number]) => {
-      if (item.kind === "merge") return item.todoId !== null && dueIds.has(item.todoId) ? 3 : 6;
-      const fact: ObjectionFact = {
-        askId: item.askId, at: item.at, todoId: item.todoId, decision: item.decision,
-        reason: item.reason, refused: item.refused, refusedBecause: item.refusedBecause,
-        fallback: item.fallback, subject: item.subject, objectedAt: null,
-      };
-      return objectionRank(fact, readyIds, dueIds);
-    };
-    return rank(a) - rank(b) || b.at - a.at;
-  });
+  // 6. The objection list, ordered by importance (delegate-design.md §2.3) and
+  //    numbered in printed order. Nothing at all when the delegate has taken
+  //    no decision — the rows may not exist yet: the delegate is built on
+  //    branch uac/delegate and this reads by kind if present.
+  const objections = rawObjections
+    .slice(-OBJECTION_SCAN)
+    .sort(
+      (a, b) =>
+        objectionRank(a, readyIds, datedIds) - objectionRank(b, readyIds, datedIds) ||
+        b.at - a.at,
+    )
+    .map((o) => ({
+      askId: o.askId,
+      todoId: o.todoId,
+      decision: o.decision ?? "no answer came back, so the run took its own fallback",
+      reason: o.reason,
+      refused: o.refused,
+      refusedBecause:
+        o.refusedBecause === undefined ? undefined : stripNarrowListId(o.refusedBecause),
+      fallback: o.fallback,
+    }));
 
-  // 7. Rulings from Tom's words since the last digest.
-  const rulingRows = await ctx.db
-    .query("dtsRulings")
-    .withIndex("by_ruled", (q) => q.gte("ruledAt", since).lt("ruledAt", now))
-    .collect();
-  const rulings: DigestFacts["rulings"] = [];
-  for (const r of rulingRows) {
-    const source = rulingProvenance(r);
-    if (source === null) continue;
-    const subject =
-      r.todoId !== undefined
-        ? `<${ttsItemLink(r.todoId)}|${slackEscape((await todoOf(r.todoId))?.statement ?? "todo")}>`
-        : r.batchId !== undefined
-          ? slackEscape((await batchName(r.batchId)) ?? "batch")
-          : slackEscape(`${r.repo ?? ""}#${r.externalId ?? ""}`);
-    rulings.push({
-      verdict: r.verdict,
-      subject,
-      quote: source.quote,
-      redirect: r.sentence,
-      provenance: source.provenance,
-    });
-  }
-
+  const overnight = [...outcomes.values()];
   return {
     day,
-    now,
-    since,
-    due,
-    blocks,
+    today: dated,
+    lateCount,
+    oldestLateBy,
+    readyBeyond: readyIds.size,
     calendar,
-    emailCaptures,
+    calendarLead: spans.length === 0 ? undefined : calendarLeadText(spans),
+    objections: objections.slice(0, OBJECTION_CAP),
+    objectionsBeyond: Math.max(0, objections.length - OBJECTION_CAP),
     overnight,
-    ready,
-    objections,
-    failures,
-    wikitom: wikitom ?? null,
-    rulings,
-    learning,
-    preludes,
-    evals,
-    modelOfTom: modelOfTom.commit === null ? null : { commit: modelOfTom.commit, pushed: modelOfTom.pushed },
+    batchesPlanned: overnight.length,
+    batchesFinished: overnight.filter((o) => o.finished > 0).length,
+    broken: [...failures.values()],
   };
 }
 
-// The window's start: the END of the last sent digest's window, else one day
-// back. Read from the digest's own "digest-sent" row rather than
+/** The objection list's own cap, before the whole-message fit. */
+const OBJECTION_CAP = 12;
+
+/** "ten days", for the first line's "the oldest by …". */
+function lateBy(dueAt: number, now: number): string {
+  const days =
+    (Date.parse(nyCalendarDayKey(now)) - Date.parse(nyCalendarDayKey(dueAt))) / DAY_MS;
+  return `${countWord(days)} ${days === 1 ? "day" : "days"}`;
+}
+
+/** What a failed job MEANS FOR HIM, which is the only reason it is a message.
+ *  A job with no sentence here says the plain fact and links nowhere. */
+function brokenStatement(job: string): string {
+  const known: Record<string, string> = {
+    "poll-gmail": "Nothing has been captured from email since the poller started failing.",
+    "poll-dump": "Nothing typed in #dump has reached TTS since the poller started failing.",
+    "poll-canvas": "Canvas assignments have stopped reaching your list.",
+    "poll-outlook": "Outlook mail has stopped reaching your list.",
+    nightly: "The nightly job did not finish, so the model-of-Tom pages are yesterday's.",
+    "wikitom-read": WIKITOM_UNREADABLE,
+  };
+  return known[job] ?? `The ${job} job failed overnight.`;
+}
+
+// ── Composing the morning message ────────────────────────────────────────────
+
+// The window's start: the END of the last sent message's window, else one day
+// back. Read from the "digest-sent" row rather than
 // dtsDailyQueues.digestSentAt — a row is written per SEND, and its windowEnd
-// is the instant the digest was composed against, so the seconds spent
+// is the instant the message was composed against, so the seconds spent
 // composing and posting are inside the next window instead of falling between
-// the two. A missed morning is not lost: the next digest simply covers both.
+// the two. A missed morning is not lost: the next one simply covers both.
 async function digestWindowStart(ctx: QueryCtx, now: number): Promise<number> {
   const row = await lastDigestSent(ctx);
   return row?.windowEnd ?? now - DAY_MS;
 }
 
-export const internalComposeDigest = internalQuery({
-  // `since` is the window start the sender already read (internalDigestWindow-
-  // Start), passed back so one run composes and fetches over the same window.
-  // Absent — a manual run, a test — it is read here.
+/**
+ * The morning message's facts, its template text, and the FACTS BLOCK the
+ * Fable writer on the box is given (Tom 2026-09-09, amendment 2). Everything
+ * here is deterministic; the model call, when there is one, happens on the box
+ * and is verified against `facts` before anything is posted.
+ */
+export const internalComposeToday = internalQuery({
+  // `since` is the window start the sender already read (internalDigestWindow),
+  // passed back so one run composes and reads over the same window. Absent —
+  // a manual run, a test — it is read here.
   args: {
     day: v.string(),
     now: v.number(),
     since: v.optional(v.number()),
-    // Absent = the caller did not read WikiTom, which the digest reports as
-    // unreadable rather than as an empty list.
-    wikitom: v.optional(v.union(v.null(), v.array(WIKITOM_COMMIT))),
+    // Whether a reply would actually reach TTS (ttsSync.replyRouteLive). Every
+    // reply invitation in every message is conditional on it and on nothing
+    // else, so the composer stays pure and this is the one place it enters.
+    canReply: v.optional(v.boolean()),
   },
-  handler: async (ctx, { day, now, since: givenSince, wikitom }) => {
+  handler: async (ctx, { day, now, since: givenSince, canReply }) => {
     const since = givenSince ?? (await digestWindowStart(ctx, now));
-    const facts = await gatherDigestFacts(ctx, { day, now, since, wikitom });
-    const { text, truncated } = composeDigest(facts);
+    const facts = await gatherTodayFacts(ctx, { day, now, since });
+    const reply = canReply ?? false;
+    const { message, truncated } = composeTodayFitted(facts, { canReply: reply });
     return {
-      text,
-      // Whether sections were reduced to a count line to fit one Slack
-      // message; the sender records it on the "digest-sent" row.
+      text: renderSlack(message),
+      // Whether runs were reduced to one sentence to fit one Slack message;
+      // the sender records it on the "digest-sent" row.
       truncated,
       since,
-      // Every todo the digest showed, for the "surfaced" instrumentation.
-      surfacedTodoIds: [
-        ...facts.due.map((d) => d.id),
-        ...facts.emailCaptures.map((c) => c.id),
-        ...facts.ready.map((r) => r.id),
-      ].map((id) => ctx.db.normalizeId("dtsTodos", id)!),
-      // The askIds the objection list PRINTED, in printed order. A reply of
-      // "revert 2" in this digest's thread means objectionAskIds[1] — the
-      // numbers are this digest's, not the record's, so they are recorded on
-      // the "digest-sent" row rather than derived later.
-      //
-      // Only the printed ones: a number Tom types must name a line he could
-      // see, so the list is cut at SECTION_ITEM_CAP exactly as the section is.
-      // A merge line holds "" — it is reported for objection but it is not a
-      // delegate decision, so its number names no askId and the reply falls
-      // through to the ordinary digest paths.
-      objectionAskIds: facts.objections
-        .slice(0, SECTION_ITEM_CAP)
-        .map((objection) => (objection.kind === "merge" ? "" : objection.askId)),
+      // Every todo the message showed, for the "surfaced" instrumentation.
+      surfacedTodoIds: facts.today
+        .map((item) => ctx.db.normalizeId("dtsTodos", item.id))
+        .filter((id): id is Id<"dtsTodos"> => id !== null),
+      // The decisions the objection list carried, in PRINTED order: a reply of
+      // "revert 2" names the second of these.
+      objectionAskIds: facts.objections.map((o) => o.askId),
+      // The deterministic inputs, each fact with an id, its link and its
+      // numbers. Stored on the digest event, and handed to the writer.
+      facts: todayFactsBlock(facts, reply),
     };
   },
 });

@@ -2,31 +2,22 @@ import { convexTest } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
-import { DELEGATE_DECISION } from "./ttsAsk";
+import { DELEGATE_DECISION, MERGE } from "./ttsAsk";
 import {
-  AREA_REVIEWED,
-  DIGEST_MAX_CHARS,
   DIGEST_SENT,
-  ITEM_TEXT_CHARS,
-  LEARNING_CHANGE,
   ROLLOVER_NOTE,
-  SECTION_ITEM_CAP,
   SLACK_FAILED,
   SLACK_SENT,
   WIKITOM_UNREADABLE,
-  clipToLine,
-  composeDigest,
-  digestSubject,
+  calendarLeadText,
   isPassedWithoutOutcome,
-  provenanceText,
-  type DigestFacts,
+  latenessText,
+  objectionRank,
+  stripNarrowListId,
+  todaySubject,
 } from "./ttsDigest";
-import {
-  nyCalendarDayBoundsUtc,
-  ttsDayKey,
-  ttsItemLink,
-  ttsTabLink,
-} from "./ttsShared";
+import { MESSAGE_MAX_CHARS } from "./ttsCompose";
+import { nyCalendarDayBoundsUtc, ttsDayKey, ttsItemLink } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -42,632 +33,6 @@ async function withTom(t: ReturnType<typeof convexTest>) {
   return t.withIdentity({ subject: tomId });
 }
 
-const emptyFacts = (): DigestFacts => ({
-  day: DAY_KEY,
-  now: FIVE_AM,
-  since: FIVE_AM - DAY,
-  due: [],
-  blocks: [],
-  calendar: [],
-  emailCaptures: [],
-  overnight: [],
-  ready: [],
-  objections: [],
-  failures: [],
-  wikitom: [],
-  rulings: [],
-  learning: [],
-  preludes: null,
-  evals: null,
-  modelOfTom: null,
-});
-
-describe("composeDigest", () => {
-  it("always carries the first section and omits every empty one", () => {
-    const { text } = composeDigest(emptyFacts());
-    expect(text).toBe(
-      ["*TTS digest — 2026-09-05*", "", "*Due and overdue*", "- nothing"].join("\n"),
-    );
-  });
-
-  it("prints the prelude check even when every session is current", () => {
-    const { text } = composeDigest({
-      ...emptyFacts(),
-      preludes: { current: 14, stale: [], missing: [] },
-    });
-    expect(text).toContain("- preludes: 14 sessions started from the current model-of-tom commit, 0 from an older one");
-  });
-
-  it("names a stale session, how far behind it is, and links to it", () => {
-    const { text } = composeDigest({
-      ...emptyFacts(),
-      preludes: {
-        current: 1,
-        stale: [
-          { id: "j57abc", title: "weekly agenda", had: "7fc21ab4c1de", behindDays: 2 },
-          { id: "j57def", title: "prospect: climbing", had: "aaaaaaaaaaaa", behindDays: -1 },
-        ],
-        missing: [{ id: "j57ghi", title: "adhoc" }],
-      },
-    });
-    expect(text).toContain("- prelude 7fc21ab4c1de, 2 days behind: <https://www.tom.quest/sessions?session=j57abc|weekly agenda>");
-    expect(text).toContain("- prelude names a commit this deployment never posted: <https://www.tom.quest/sessions?session=j57def|prospect: climbing>");
-    expect(text).toContain("- no prelude at all: <https://www.tom.quest/sessions?session=j57ghi|adhoc>");
-  });
-
-  it("prints evals only when a run is in the window, with its regression count", () => {
-    expect(composeDigest(emptyFacts()).text).not.toContain("- evals:");
-    const { text } = composeDigest({
-      ...emptyFacts(),
-      evals: {
-        repo: "tom.quest", sha: "a1b2c3d4", items: 40, pass: 38,
-        regressions: 1, stillFailing: 1,
-        failures: [{ id: "prepare-chores-k17abc", partition: "prepare/chores", reason: "still restates the statement", regression: true }],
-      },
-    });
-    expect(text).toContain("- evals: 38 of 40 pass at tom.quest a1b2c3d — 1 regression, 1 still failing");
-    expect(text).toContain("- evals regression: prepare-chores-k17abc (prepare/chores) — still restates the statement");
-  });
-
-  it("caps stale prelude sessions with the section's usual +N more line", () => {
-    const stale = Array.from({ length: 20 }, (_, i) => ({
-      id: `s${i}`, title: `session ${i}`, had: "a1b2c3d4e5f6", behindDays: 2,
-    }));
-    const { text } = composeDigest({ ...emptyFacts(), preludes: { current: 0, stale, missing: [] } });
-    expect(text).toContain("- +9 more");
-  });
-
-  it("lists every WikiTom commit with its author", () => {
-    const { text } = composeDigest({
-      ...emptyFacts(),
-      wikitom: [
-        {
-          sha: "abc1234def5678",
-          message: "areas: the health page's must-not-break lines",
-          author: "Tom",
-          url: "https://github.com/Heffnt/WikiTom/commit/abc1234def5678",
-        },
-      ],
-    });
-    expect(text).toContain("*WikiTom commits*");
-    expect(text).toContain(
-      "- <https://github.com/Heffnt/WikiTom/commit/abc1234def5678|abc1234> areas: the health page's must-not-break lines — Tom",
-    );
-  });
-
-  // An unreadable repo is not the same fact as a quiet one, so the section
-  // stays and says which it is.
-  it("says so when WikiTom cannot be read, and omits the section when it is quiet", () => {
-    expect(composeDigest({ ...emptyFacts(), wikitom: null }).text).toContain(
-      WIKITOM_UNREADABLE,
-    );
-    expect(composeDigest(emptyFacts()).text).not.toContain("WikiTom");
-  });
-
-  it("orders the sections and links every item", () => {
-    const yesterdayNoon = Date.UTC(2026, 8, 4, 16);
-    const todayNoon = Date.UTC(2026, 8, 5, 16);
-    const { text } = composeDigest({
-      ...emptyFacts(),
-      due: [
-        { id: "t2", statement: "call the bank", dueAt: todayNoon, entryAction: "dial 555" , missed: false },
-        { id: "t1", statement: "pay rent", dueAt: yesterdayNoon, missed: true },
-      ],
-      blocks: [{ start: Date.UTC(2026, 8, 5, 13), end: Date.UTC(2026, 8, 5, 15), label: "chores" }],
-      calendar: [
-        { start: Date.UTC(2026, 8, 5, 23), end: Date.UTC(2026, 8, 6, 0, 30), title: "practice", allDay: false },
-        { start: Date.UTC(2026, 8, 5, 4), end: Date.UTC(2026, 8, 6, 4), title: "holiday", allDay: true },
-      ],
-      emailCaptures: [{ id: "t3", statement: "reply to Ana", entryAction: "open the thread" }],
-      overnight: [
-        { batch: null, text: "calendar event written: dentist" },
-        { batch: "the lease", text: "session opened: lease session" },
-        { batch: "the lease", text: "session completed: lease session — drafted the reply" },
-      ],
-      ready: [{ id: "t4", statement: "sign the form", entryAction: "sign page 2" }],
-      failures: [{ at: Date.UTC(2026, 8, 5, 7), text: "poll-gmail-failed: token expired" }],
-      rulings: [
-        { verdict: "archive", subject: "old thing", quote: "drop it", provenance: "slack 1757000000.000100" },
-      ],
-      learning: [
-        { status: "changed", id: "lc-1", file: "schedule.md", before: "up at 7", after: "up at 6", evidence: "three sessions before 7" },
-      ],
-    });
-    const lines = text.split("\n");
-    const headers = lines.filter((l) => l.startsWith("*"));
-    expect(headers).toEqual([
-      "*TTS digest — 2026-09-05*",
-      "*Due and overdue*",
-      "*Blocks and calendar*",
-      "*Captured from email*",
-      "*Overnight, by batch*",
-      "*Ready for you*",
-      "*Job failures*",
-      "*Rulings from your words*",
-      "*Model of Tom*",
-    ]);
-    // Due sorted by date; the missed one carries the reply path, the other
-    // its entry action.
-    const dueStart = lines.indexOf("*Due and overdue*");
-    expect(lines[dueStart + 1]).toBe(
-      `- <${ttsItemLink("t1")}|pay rent> — 1 day overdue — missed: reply done, or a new date`,
-    );
-    expect(lines[dueStart + 2]).toBe(
-      `- <${ttsItemLink("t2")}|call the bank> — dial 555 — today`,
-    );
-    // Spans in New York time, all-day first because it starts at midnight.
-    expect(lines).toContain("- all day holiday");
-    expect(lines).toContain("- 09:00–11:00 chores");
-    expect(lines).toContain("- 19:00–20:30 practice");
-    expect(lines).toContain(`- <${ttsItemLink("t3")}|reply to Ana> — open the thread`);
-    // Named batches first, then the batch-less tail.
-    const overnightStart = lines.indexOf("*Overnight, by batch*");
-    expect(lines.slice(overnightStart + 1, overnightStart + 6)).toEqual([
-      "_the lease_",
-      "- session opened: lease session",
-      "- session completed: lease session — drafted the reply",
-      "_no batch_",
-      "- calendar event written: dentist",
-    ]);
-    expect(lines).toContain(`- <${ttsItemLink("t4")}|sign the form> — sign page 2`);
-    expect(lines).toContain("- 03:00 poll-gmail-failed: token expired");
-    expect(lines).toContain('- archive on old thing: "drop it" (slack 1757000000.000100)');
-    expect(lines).toContain(
-      '- [lc-1] schedule.md: "up at 7" → "up at 6" (three sessions before 7)',
-    );
-  });
-
-  it("prints a model-of-Tom line with its id — an addition, a reversal, and a reversal that failed", () => {
-    const { text } = composeDigest({
-      ...emptyFacts(),
-      learning: [
-        { status: "changed", id: "0123456789ab", file: "areas/climbing.md", before: "", after: "- Thursday at 6", evidence: "session s1" },
-        { status: "reverted", id: "fedcba987654", file: "areas/climbing.md", before: "- Thursday at 6", after: "", evidence: "" },
-        { status: "reverted", id: "aaaaaaaaaaaa", file: "writing.md", before: "- new", after: "- old", evidence: "" },
-        { status: "revert-failed", id: "bbbbbbbbbbbb", file: "writing.md", before: "", after: "", evidence: "", reason: "the line is no longer on writing.md as written" },
-      ],
-    });
-    const lines = text.split("\n");
-    const start = lines.indexOf("*Model of Tom*");
-    expect(lines.slice(start + 1, start + 5)).toEqual([
-      '- [0123456789ab] areas/climbing.md: + "- Thursday at 6" (session s1)',
-      '- [fedcba987654] areas/climbing.md: reverted on your objection — "- Thursday at 6"',
-      '- [aaaaaaaaaaaa] writing.md: reverted on your objection — "- new" → "- old"',
-      "- [bbbbbbbbbbbb] writing.md: NOT reverted — the line is no longer on writing.md as written",
-    ]);
-  });
-
-  // witness: the job posts local HEAD after a refused push, and the digest
-  // said nothing — every prompt named a commit nobody could see on GitHub.
-  it("says when the model-of-tom files' commit is not yet pushed, and nothing when it is", () => {
-    const commit = "0123abcd0123abcd0123abcd0123abcd0123abcd";
-    const { text } = composeDigest({ ...emptyFacts(), modelOfTom: { commit, pushed: false } });
-    const lines = text.split("\n");
-    const start = lines.indexOf("*Model of Tom*");
-    expect(start).toBeGreaterThan(-1);
-    expect(lines[start + 1]).toBe("- model-of-tom files at WikiTom 0123abcd0123 — not yet pushed");
-    for (const pushed of [true, null]) {
-      expect(composeDigest({ ...emptyFacts(), modelOfTom: { commit, pushed } }).text).not.toContain("Model of Tom");
-    }
-  });
-
-  // The first live digest (2026-09-06) printed every statement in full, and a
-  // code todo's runs to 300 characters over several sentences. One item is one
-  // line: the statement is cut, the link follows it, the entry action follows
-  // the link.
-  it("gives a 300-character statement one line", () => {
-    const long =
-      "Rework the credential file helper so the one-time auth path writes the minted values to an owner-only file and prints only that file's path and the variable names, because an agent session stores its own standard output and a printed token is a leaked token forever afterwards.";
-    expect(long.length).toBeGreaterThan(260);
-    const { text } = composeDigest({
-      ...emptyFacts(),
-      ready: [{ id: "t1", statement: long }],
-    });
-    const line = text.split("\n").find((l) => l.includes(ttsItemLink("t1")))!;
-    expect(line.split("\n")).toHaveLength(1);
-    expect(line.length).toBeLessThan(200);
-    expect(line.endsWith("…>")).toBe(true);
-  });
-
-  it("cuts at the first sentence end, or a word boundary, whichever comes first", () => {
-    // A sentence that ends inside the budget is kept whole and the rest goes.
-    expect(clipToLine("Call the bank. Then post the form and wait for the reply.")).toBe(
-      "Call the bank.…",
-    );
-    // One sentence longer than the budget: cut at a word boundary, never
-    // mid-word, and never longer than the budget plus the ellipsis.
-    const oneSentence = `${"word ".repeat(40)}end.`;
-    const cut = clipToLine(oneSentence);
-    expect(cut.length).toBeLessThanOrEqual(ITEM_TEXT_CHARS + 1);
-    expect(cut.endsWith("word…")).toBe(true);
-    // Short enough to print whole: no ellipsis, and newlines become spaces.
-    expect(clipToLine("pay rent")).toBe("pay rent");
-    expect(clipToLine("pay\n  rent")).toBe("pay rent");
-    expect(clipToLine("pay the rent.")).toBe("pay the rent.");
-  });
-
-  it("cuts the entry action the same way", () => {
-    const { text } = composeDigest({
-      ...emptyFacts(),
-      ready: [
-        {
-          id: "t1",
-          statement: "sign the form",
-          entryAction: `open page 2 ${"and read it ".repeat(20)}then sign`,
-        },
-      ],
-    });
-    const line = text.split("\n").find((l) => l.includes(ttsItemLink("t1")))!;
-    expect(line).toContain("— open page 2 and read it");
-    expect(line.endsWith("…")).toBe(true);
-    expect(line.length).toBeLessThan(200);
-  });
-
-  // A section is a morning read, not the list: past the cap it names the count
-  // and links to the tab of the /tts page where the rest is read.
-  it("prints twelve items and then the count line", () => {
-    const { text } = composeDigest({
-      ...emptyFacts(),
-      ready: Array.from({ length: 30 }, (_, i) => ({
-        id: `t${i}`,
-        statement: `item ${i}`,
-      })),
-    });
-    const lines = text.split("\n");
-    const start = lines.indexOf("*Ready for you*");
-    const body = lines.slice(start + 1);
-    expect(body).toHaveLength(SECTION_ITEM_CAP + 1);
-    expect(body[0]).toContain("|item 0>");
-    expect(body[SECTION_ITEM_CAP - 1]).toContain("|item 11>");
-    expect(body[SECTION_ITEM_CAP]).toBe(
-      `- <${ttsTabLink("everything")}|+18 more on the page>`,
-    );
-  });
-
-  // What the cap drops is the NEWEST date: an item three weeks late is the one
-  // the morning has to name.
-  it("orders due and overdue longest-overdue first, so the cut is the newest", () => {
-    const { text } = composeDigest({
-      ...emptyFacts(),
-      due: Array.from({ length: 14 }, (_, i) => ({
-        id: `t${i}`,
-        statement: `item ${i}`,
-        dueAt: FIVE_AM - (14 - i) * DAY, // item 0 is the oldest
-        missed: false,
-      })),
-    });
-    const lines = text.split("\n");
-    const body = lines.slice(lines.indexOf("*Due and overdue*") + 1);
-    expect(body[0]).toContain("|item 0>");
-    expect(body[SECTION_ITEM_CAP - 1]).toContain("|item 11>");
-    expect(body[SECTION_ITEM_CAP]).toBe(
-      `- <${ttsTabLink("everything")}|+2 more on the page>`,
-    );
-    expect(text).not.toContain("|item 13>"); // the newest is what goes
-  });
-
-  // The batch headings are not items: the cap counts the events under them.
-  it("caps the overnight section across its batches", () => {
-    const { text } = composeDigest({
-      ...emptyFacts(),
-      overnight: Array.from({ length: 20 }, (_, i) => ({
-        batch: i < 8 ? "the lease" : "the move",
-        text: `event ${i}`,
-      })),
-    });
-    const lines = text.split("\n");
-    const body = lines.slice(lines.indexOf("*Overnight, by batch*") + 1);
-    expect(body.filter((l) => l.startsWith("- event "))).toHaveLength(SECTION_ITEM_CAP);
-    expect(body.at(-1)).toBe(`- <${ttsTabLink("batches")}|+8 more on the page>`);
-  });
-
-  // Job failures, WikiTom commits and model-of-Tom lines are not on the /tts
-  // page, so their count line links nowhere rather than somewhere wrong.
-  it("counts without a link for the sections the page does not hold", () => {
-    const { text } = composeDigest({
-      ...emptyFacts(),
-      failures: Array.from({ length: 15 }, (_, i) => ({
-        at: FIVE_AM - i * 60_000,
-        text: `job-failed: ${i}`,
-      })),
-    });
-    expect(text).toContain("- +3 more");
-    expect(text).not.toContain("+3 more on the page");
-  });
-
-  it("escapes Slack's reserved characters in statements", () => {
-    const { text } = composeDigest({
-      ...emptyFacts(),
-      ready: [{ id: "t1", statement: "a <b> & c" }],
-    });
-    expect(text).toContain("|a &lt;b&gt; &amp; c>");
-  });
-});
-
-// Ruling 15: the digest reports EVERY ruling written from Tom's words, so a
-// misreading gets objected to. The reader judges only that a provenance is
-// there, never how it is worded.
-// ── The objection list (delegate design §2) ──────────────────────────────────
-
-const decision = (
-  over: Partial<Extract<DigestFacts["objections"][number], { kind: "decision" }>> = {},
-): DigestFacts["objections"][number] => ({
-  kind: "decision",
-  askId: "3f9c1a22",
-  decision: "moved the passport appointment to Thursday",
-  reason: "the consulate closes Wednesdays in September",
-  refused: false,
-  refusedBecause: null,
-  fallback: "leave it Wednesday and say so",
-  todoId: "ph79",
-  subject: "renew passport",
-  at: FIVE_AM - 1000,
-  ...over,
-});
-
-describe("the objection list", () => {
-  it("is the second section, immediately after the due list", () => {
-    const { text } = composeDigest({ ...emptyFacts(), objections: [decision()] });
-    const lines = text.split("\n").filter((line) => line.startsWith("*"));
-    expect(lines[0]).toBe("*TTS digest — 2026-09-05*");
-    expect(lines[1]).toBe("*Due and overdue*");
-    expect(lines[2]).toBe("*Objection list*");
-  });
-
-  it("says nothing at all on a morning with no delegated decisions", () => {
-    expect(composeDigest(emptyFacts()).text).not.toContain("Objection list");
-  });
-
-  it("prints a decision, a refusal and a silence, each in its own form", () => {
-    const { text } = composeDigest({
-      ...emptyFacts(),
-      objections: [
-        decision(),
-        decision({
-          askId: "b",
-          refused: true,
-          decision: "emailed the landlord",
-          refusedBecause: "message-in-his-name — a message to another human in your name",
-          todoId: "ph80",
-          subject: "chase the deposit",
-        }),
-        decision({
-          askId: "c",
-          decision: null,
-          reason: 'delegate answer unreadable: {"decisio',
-          todoId: "ph81",
-          subject: "book the MOT",
-        }),
-      ],
-    });
-    expect(text).toContain(
-      `- 1. moved the passport appointment to Thursday — the consulate closes Wednesdays in September: <${ttsItemLink("ph79")}|renew passport>`,
-    );
-    // The narrow-list id is dropped: it is for the record and the eval, and an
-    // id in a morning read is a word Tom has to translate.
-    expect(text).toContain(
-      `- 2. REFUSED, parked: would have emailed the landlord — a message to another human in your name: <${ttsItemLink("ph80")}|chase the deposit>`,
-    );
-    expect(text).toContain("- 3. no answer from the delegate; the caller took its fallback —");
-    // And the reply grammar, once, as the section's own footer.
-    expect(text).toContain(
-      '- silence means it stands; reply "revert 2" or "2: what to do instead"',
-    );
-  });
-
-  it("reports a merge without calling it a decision anyone took", () => {
-    const { text } = composeDigest({
-      ...emptyFacts(),
-      objections: [
-        {
-          kind: "merge",
-          repo: "tom.quest",
-          sha: "5ad4b21",
-          subject: "the delegate and the objection list",
-          todoId: null,
-          at: FIVE_AM - 1000,
-        },
-      ],
-    });
-    expect(text).toContain(
-      "- 1. merged tom.quest@5ad4b21 — the delegate and the objection list",
-    );
-  });
-
-  it("prints twelve of fifteen, the overflow line, and the footer", () => {
-    const objections = Array.from({ length: 15 }, (_, i) =>
-      decision({ askId: `ask${i}`, todoId: `todo${i}`, subject: `item ${i}`, at: FIVE_AM - i }),
-    );
-    const { text } = composeDigest({ ...emptyFacts(), objections });
-    const numbered = text.split("\n").filter((line) => /^- \d+\. /.test(line));
-    expect(numbered).toHaveLength(12);
-    expect(numbered[0]).toContain("- 1. ");
-    expect(numbered[11]).toContain("- 12. ");
-    expect(text).toContain(`<${ttsTabLink("everything")}|+3 more on the page>`);
-    expect(text).toContain('- silence means it stands; reply "revert 2"');
-  });
-
-  it("is reduced only after every section below it", () => {
-    const long = "x".repeat(300);
-    const { text, truncated } = composeDigest({
-      ...emptyFacts(),
-      objections: [decision()],
-      // Enough later sections to blow past DIGEST_MAX_CHARS.
-      ready: Array.from({ length: 12 }, (_, i) => ({
-        id: `r${i}`,
-        statement: `${i} ${long}`,
-      })),
-      failures: Array.from({ length: 12 }, (_, i) => ({ at: FIVE_AM - i, text: `${i} ${long}` })),
-      overnight: Array.from({ length: 12 }, (_, i) => ({ batch: null, text: `${i} ${long}` })),
-    });
-    expect(truncated).toBe(true);
-    // The two Tom reads first survive whole.
-    expect(text).toContain("*Due and overdue*");
-    expect(text).toContain("- 1. moved the passport appointment to Thursday");
-  });
-});
-
-describe("provenanceText", () => {
-  it("takes both shapes the ruling route writes", () => {
-    expect(provenanceText("slack 1757000000.000100")).toBe("slack 1757000000.000100");
-    expect(provenanceText({ from: "tom-words", channel: "C0TTS", ts: "1757.1" })).toBe(
-      "from tom-words, channel C0TTS, ts 1757.1",
-    );
-    // A wording that names neither a session nor Slack is still a ruling from
-    // his words — the old regex dropped exactly these.
-    expect(provenanceText({ from: "tom-words" })).toBe("from tom-words");
-    expect(provenanceText("dictated on the phone")).toBe("dictated on the phone");
-  });
-
-  it("reads a missing or empty provenance as a button ruling", () => {
-    expect(provenanceText(undefined)).toBeNull();
-    expect(provenanceText("   ")).toBeNull();
-    expect(provenanceText({})).toBeNull();
-    expect(provenanceText({ nested: { from: "tom-words" } })).toBeNull();
-    expect(provenanceText(7)).toBeNull();
-  });
-});
-
-// Slack cuts a message over 4,000 characters into several, which is how the
-// first live digest arrived as ten. The whole composition is capped below that
-// and the reduction is recorded, so a week of digests can say how often the
-// morning did not fit.
-describe("one Slack message", () => {
-  const statement = (i: number) =>
-    `Item ${i}: rework the credential helper so the one-time auth path writes the minted values to an owner-only file and prints only that file's path and the variable names, because an agent session stores its own standard output.`;
-
-  it("reduces the sections after the first and flags the digest", () => {
-    const many = (n: number, from = 0) =>
-      Array.from({ length: n }, (_, i) => ({
-        id: `t${from + i}`,
-        statement: statement(from + i),
-      }));
-    const { text, truncated } = composeDigest({
-      ...emptyFacts(),
-      due: many(30).map((x, i) => ({ ...x, dueAt: FIVE_AM - (30 - i) * DAY, missed: true })),
-      emailCaptures: many(30, 100),
-      ready: many(30, 200),
-      failures: Array.from({ length: 30 }, (_, i) => ({
-        at: FIVE_AM - i * 60_000,
-        text: statement(i),
-      })),
-    });
-    expect(truncated).toBe(true);
-    expect(text.length).toBeLessThanOrEqual(DIGEST_MAX_CHARS);
-    // The first section keeps its twelve items; a reduced one is its header
-    // and one count line.
-    const lines = text.split("\n");
-    const due = lines.slice(lines.indexOf("*Due and overdue*") + 1);
-    expect(due.filter((l) => l.startsWith("- <https://tom.quest/tts?item="))).toHaveLength(
-      SECTION_ITEM_CAP,
-    );
-    const ready = lines.indexOf("*Ready for you*");
-    expect(lines[ready + 1]).toBe(
-      `- <${ttsTabLink("everything")}|+30 more on the page>`,
-    );
-    expect(lines[ready + 2]).toBe("");
-  });
-
-  // The morning that broke: about sixty due-and-overdue items, most of them
-  // code todos with 300-character statements.
-  it("fits the 2026-09-06 shape in one message", () => {
-    const { text, truncated } = composeDigest({
-      ...emptyFacts(),
-      due: Array.from({ length: 60 }, (_, i) => ({
-        id: `t${i}`,
-        statement: statement(i),
-        entryAction: `open the file and read the helper before touching it, ${i}`,
-        dueAt: FIVE_AM - (60 - i) * DAY,
-        missed: true,
-      })),
-      overnight: Array.from({ length: 20 }, (_, i) => ({
-        batch: "the credential round",
-        text: `session completed: run ${i}`,
-      })),
-      ready: Array.from({ length: 8 }, (_, i) => ({
-        id: `r${i}`,
-        statement: statement(i),
-      })),
-      wikitom: null,
-    });
-    // One message, where the morning of 2026-09-06 was ten.
-    expect(text.length).toBeLessThanOrEqual(DIGEST_MAX_CHARS);
-    // Due and overdue is never the section that gets reduced: twelve items and
-    // the count line, whatever else had to go.
-    const lines = text.split("\n");
-    const due = lines.slice(lines.indexOf("*Due and overdue*") + 1);
-    expect(due.filter((l) => l.includes("tts?item="))).toHaveLength(SECTION_ITEM_CAP);
-    expect(text).toContain(`- <${ttsTabLink("everything")}|+48 more on the page>`);
-    // The two item caps left it just over, so the tail sections gave way too.
-    expect(truncated).toBe(true);
-  });
-});
-
-// The digest is how Tom catches a misread sentence, so the quotation marks
-// hold HIS words only: provenance.quote (the sentence the route verified
-// against his turn). The ruling's own sentence — the redirect an agent acts
-// on — is printed after it, labelled, never as the quotation. witness: print
-// r.redirect between the quotation marks, or drop the quote from the line.
-describe("rulings from Tom's words in the digest", () => {
-  it("prints the quote as the quotation and the redirect separately", () => {
-    const { text } = composeDigest({
-      ...emptyFacts(),
-      rulings: [
-        {
-          verdict: "revise",
-          subject: "the dentist",
-          quote: "no wait, revise it.",
-          redirect: "book the hygienist, not the dentist!",
-          provenance: "from tom-words, inboundId j57abc",
-        },
-        // A provenance of another shape carries no quotation: its sentence is
-        // still not presented as what Tom said.
-        { verdict: "archive", subject: "old thing", redirect: "drop it", provenance: "dictated" },
-      ],
-    });
-    const lines = text.split("\n");
-    expect(lines).toContain(
-      '- revise on the dentist: "no wait, revise it." — redirect: book the hygienist, not the dentist! (from tom-words, inboundId j57abc)',
-    );
-    expect(lines).toContain("- archive on old thing — redirect: drop it (dictated)");
-    expect(text).not.toContain('"drop it"');
-  });
-
-  it("reads the quote out of the stored provenance and the redirect out of the sentence", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(FIVE_AM);
-    const t = convexTest(schema, modules);
-    const tom = await withTom(t);
-    const todoId = await tom.mutation(api.tts.createTodo, { statement: "call the dentist" });
-    await t.run(async (ctx) => {
-      await ctx.db.insert("dtsRulings", {
-        subjectType: "life",
-        todoId,
-        verdict: "revise",
-        sentence: "book the hygienist, not the dentist!",
-        ruledAt: FIVE_AM - 60_000,
-        provenance: { from: "tom-words", inboundId: "j57abc", quote: "no wait, revise it." },
-      });
-      // A button ruling has no provenance and is not reported here at all.
-      await ctx.db.insert("dtsRulings", {
-        subjectType: "life",
-        todoId,
-        verdict: "approve",
-        sentence: "an agent's note",
-        ruledAt: FIVE_AM - 30_000,
-      });
-    });
-    const { text } = await t.query(internal.ttsDigest.internalComposeDigest, {
-      day: DAY_KEY,
-      now: FIVE_AM,
-    });
-    expect(text).toContain(
-      `- revise on <${ttsItemLink(todoId)}|call the dentist>: "no wait, revise it." — redirect: book the hygienist, not the dentist! (from tom-words, inboundId j57abc)`,
-    );
-    expect(text).not.toContain("an agent's note");
-    expect(text).not.toContain('"book the hygienist');
-  });
-});
 
 describe("the missed rollover", () => {
   it("names a passed date with no outcome, and nothing else", () => {
@@ -865,11 +230,11 @@ describe("the missed rollover", () => {
       await t.mutation(internal.ttsDigest.internalRollMissed, { day: "2026-09-04" }),
     ).toEqual([]);
     // …and it is still listed as due that day.
-    const { text } = await t.query(internal.ttsDigest.internalComposeDigest, {
+    const { text } = await t.query(internal.ttsDigest.internalComposeToday, {
       day: "2026-09-04",
       now: Date.UTC(2026, 8, 4, 9),
     });
-    expect(text).toContain("|midnight deadline>");
+    expect(text).toContain("|Midnight deadline.");
     // The next morning's rollover marks it once.
     expect(
       await t.mutation(internal.ttsDigest.internalRollMissed, { day: DAY_KEY }),
@@ -877,93 +242,64 @@ describe("the missed rollover", () => {
   });
 });
 
-describe("internalComposeDigest", () => {
+// ── The pure helpers this file still owns ──────────────────────────────────
+
+describe("latenessText", () => {
+  it("spells the countdown as a sentence, with small numbers as words", () => {
+    const now = FIVE_AM;
+    expect(latenessText(now, now)).toBe("Due today.");
+    expect(latenessText(now + DAY, now)).toBe("Due tomorrow.");
+    expect(latenessText(now + 4 * DAY, now)).toBe("Due in four days.");
+    expect(latenessText(now - DAY, now)).toBe("One day late.");
+    expect(latenessText(now - 10 * DAY, now)).toBe("Ten days late.");
+    // Past the words, numerals: "six hundred and sixty-seven" is not scanned.
+    expect(latenessText(now - 40 * DAY, now)).toBe("40 days late.");
+  });
+});
+
+describe("calendarLeadText", () => {
+  it("names the shape of the day in one sentence, never a list of times", () => {
+    expect(
+      calendarLeadText([
+        { start: Date.UTC(2026, 8, 5, 20), end: Date.UTC(2026, 8, 5, 21), allDay: false },
+        { start: Date.UTC(2026, 8, 6, 3), end: Date.UTC(2026, 8, 6, 3, 30), allDay: false },
+      ]),
+    ).toBe("Your day is committed from 16:00 to 23:30.");
+    expect(calendarLeadText([{ start: 0, end: 0, allDay: true }])).toBe(
+      "Your day carries one entry that runs all day and nothing timed.",
+    );
+  });
+});
+
+describe("the objection list's order and its narrow-list ids", () => {
+  it("puts a refusal on a dated item first, then any refusal, then a missing answer", () => {
+    const dated = new Set(["ph-due"]);
+    const ready = new Set(["ph-ready"]);
+    expect(objectionRank({ refused: true, todoId: "ph-due", decision: "x" }, ready, dated)).toBe(0);
+    expect(objectionRank({ refused: true, todoId: "ph-other", decision: "x" }, ready, dated)).toBe(1);
+    expect(objectionRank({ todoId: "ph-other", decision: null }, ready, dated)).toBe(2);
+    expect(objectionRank({ todoId: "ph-due", decision: "x" }, ready, dated)).toBe(3);
+    expect(objectionRank({ todoId: "ph-ready", decision: "x" }, ready, dated)).toBe(4);
+    expect(objectionRank({ todoId: "ph-other", decision: "x" }, ready, dated)).toBe(5);
+    expect(objectionRank({ decision: "x" }, ready, dated)).toBe(6);
+  });
+
+  it("drops the narrow list's id and keeps the sentence", () => {
+    expect(stripNarrowListId("message-in-his-name — a message to another human in your name")).toBe(
+      "a message to another human in your name",
+    );
+    expect(stripNarrowListId("a sentence with no id at all")).toBe("a sentence with no id at all");
+  });
+});
+
+describe("internalComposeToday", () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
   });
 
-  it("gathers delegate rows, skips the attended one, and records its numbering", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(FIVE_AM);
-    const t = convexTest(schema, modules);
-    const tom = await withTom(t);
-    const todoId = await tom.mutation(api.tts.createTodo, { statement: "renew passport" });
-    await t.run(async (ctx) => {
-      await ctx.db.insert("dtsEvents", {
-        at: Date.now(),
-        kind: DELEGATE_DECISION,
-        key: "3f9c1a22",
-        todoId,
-        data: {
-          askId: "3f9c1a22",
-          decision: "moved the appointment to Thursday",
-          reason: "the consulate closes Wednesdays",
-          refused: false,
-          refusedBecause: null,
-          fallback: "leave it Wednesday",
-          attended: false,
-        },
-      });
-      // An attended ask is a prompt bug, not a decision for Tom's morning.
-      await ctx.db.insert("dtsEvents", {
-        at: Date.now(),
-        kind: DELEGATE_DECISION,
-        key: "deadbeef",
-        data: {
-          askId: "deadbeef",
-          decision: null,
-          reason: "attended-session: Tom is in this session — ask him",
-          refused: true,
-          refusedBecause: "attended-session: Tom is in this session — ask him",
-          fallback: "ask him",
-          attended: true,
-        },
-      });
-    });
-    const { text, objectionAskIds } = await t.query(
-      internal.ttsDigest.internalComposeDigest,
-      { day: DAY_KEY, now: Date.now() + 1 },
-    );
-    expect(text).toContain("*Objection list*");
-    expect(text).toContain("- 1. moved the appointment to Thursday — the consulate closes Wednesdays");
-    expect(text).not.toContain("attended-session");
-    expect(objectionAskIds).toEqual(["3f9c1a22"]);
-  });
-
-  it("records only the askIds it printed — twelve of fifteen", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(FIVE_AM);
-    const t = convexTest(schema, modules);
-    await withTom(t);
-    await t.run(async (ctx) => {
-      for (let i = 0; i < 15; i += 1) {
-        await ctx.db.insert("dtsEvents", {
-          at: Date.now() - i,
-          kind: DELEGATE_DECISION,
-          key: `ask${i}`,
-          data: {
-            askId: `ask${i}`,
-            decision: `decision ${i}`,
-            reason: `reason ${i}`,
-            refused: false,
-            refusedBecause: null,
-            fallback: "the fallback",
-            attended: false,
-          },
-        });
-      }
-    });
-    const { objectionAskIds } = await t.query(internal.ttsDigest.internalComposeDigest, {
-      day: DAY_KEY,
-      now: Date.now() + 1,
-    });
-    // A number Tom types must name a line he could see.
-    expect(objectionAskIds).toHaveLength(12);
-    expect(objectionAskIds[0]).toBe("ask0");
-  });
-
-  it("reads the rollover's mark and everything since the last digest", async () => {
-    // Pinned: "1 day overdue" is a fact about the gap between the due date and
+  it("reads the rollover's mark, the night's outcomes, and what broke", async () => {
+    // Pinned: "One day late." is a fact about the gap between the due date and
     // the reading clock, so a wall-clock run stops matching the day after it
     // was written.
     vi.useFakeTimers({ toFake: ["Date"] });
@@ -971,53 +307,44 @@ describe("internalComposeDigest", () => {
     const t = convexTest(schema, modules);
     const tom = await withTom(t);
     const passed = Date.UTC(2026, 8, 4, 16);
-    const late = await tom.mutation(api.tts.createTodo, { statement: "pay rent", dueAt: passed });
-    await t.mutation(internal.ttsDigest.internalRollMissed, { day: DAY_KEY });
-    const ready = await tom.mutation(api.tts.createTodo, {
-      statement: "sign the form",
-      entryAction: "sign page 2",
+    const late = await tom.mutation(api.tts.createTodo, {
+      statement: "pay rent",
+      entryAction: "open the bank app",
+      dueAt: passed,
     });
+    await t.mutation(internal.ttsDigest.internalRollMissed, { day: DAY_KEY });
+    const ready = await tom.mutation(api.tts.createTodo, { statement: "sign the form" });
     await t.run(async (ctx) => {
       await ctx.db.patch(ready, { readiness: "prepared" });
       await ctx.db.insert("dtsEvents", {
         at: Date.now(),
-        kind: LEARNING_CHANGE,
-        data: { id: "lc-1", file: "schedule.md", before: "a", after: "b", evidence: "e" },
-      });
-      await ctx.db.insert("dtsEvents", {
-        at: Date.now(),
         kind: "poll-gmail-failed",
-        data: { error: "token expired" },
-      });
-      // The weekly session's record that Tom confirmed an area page.
-      await ctx.db.insert("dtsEvents", {
-        at: Date.now(),
-        kind: AREA_REVIEWED,
-        key: "model-of-tom/areas/research.md",
-        data: { path: "model-of-tom/areas/research.md", reviewedOn: "2026-09-04" },
+        data: { job: "poll-gmail", error: "token expired" },
       });
     });
-    const { text, surfacedTodoIds } = await t.query(
-      internal.ttsDigest.internalComposeDigest,
+    const { text, surfacedTodoIds, facts } = await t.query(
+      internal.ttsDigest.internalComposeToday,
       { day: DAY_KEY, now: Date.now() + 1 },
     );
-    expect(text).toContain(
-      "- area page reviewed with Tom: model-of-tom/areas/research.md (reviewed 2026-09-04)",
-    );
-    expect(text).toContain(
-      `- <${ttsItemLink(late)}|pay rent> — 1 day overdue — missed: reply done, or a new date`,
-    );
-    expect(text).toContain(`- <${ttsItemLink(ready)}|sign the form> — sign page 2`);
-    expect(text).toContain('- [lc-1] schedule.md: "a" → "b" (e)');
-    expect(text).toContain("poll-gmail-failed: token expired");
-    expect(surfacedTodoIds).toEqual([late, ready]);
+    expect(text).toContain(`- <${ttsItemLink(late)}|Pay rent: open the bank app. One day late.>`);
+    // The ready count is a whole sentence, not a section and not a "+N more".
+    expect(text).toContain("1 other item is ready, and not one of them is dated.");
+    expect(text).not.toContain("missed: reply done");
+    expect(text).not.toContain("+1 more");
+    // What broke says what it MEANS for him, not the event kind.
+    expect(text).toContain("Nothing has been captured from email since the poller started failing.");
+    expect(text).not.toContain("poll-gmail-failed");
+    // Only the printed items are surfaced; the ready ones are a count.
+    expect(surfacedTodoIds).toEqual([late]);
+    // THE FACTS BLOCK, for the transcript and for the writer.
+    expect(facts.kind).toBe("today");
+    expect(facts.facts.map((f: { id: string }) => f.id)).toContain(`todo:${late}`);
   });
 
-  // The ready section is ttsShared.isReadyForTom, each conjunct on its own
-  // row: an unprepared row (a raw capture is never ready), a prepared row
-  // with a need still open, and a prepared row asleep until tomorrow. None
-  // is listed; the plain prepared row is.
-  it("lists no unprepared row, no row with an open need, and no sleeping row as ready", async () => {
+  // The ready count is ttsShared.isReadyForTom, each conjunct on its own row:
+  // an unprepared row (a raw capture is never ready), a prepared row with a
+  // need still open, and a prepared row asleep until tomorrow. None counts.
+  it("counts no unprepared row, no row with an open need, and no sleeping row as ready", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);
     const t = convexTest(schema, modules);
@@ -1033,30 +360,27 @@ describe("internalComposeDigest", () => {
       await ctx.db.patch(asleep, { readiness: "prepared", wakeAt: Date.now() + DAY });
       await ctx.db.patch(plain, { readiness: "prepared" });
     });
-    const { text, surfacedTodoIds } = await t.query(
-      internal.ttsDigest.internalComposeDigest,
-      { day: DAY_KEY, now: Date.now() + 1 },
-    );
-    expect(text).toContain(`<${ttsItemLink(plain)}|sign the form>`);
-    expect(text).not.toContain("half written up");
-    expect(text).not.toContain("waits on the need");
-    expect(text).not.toContain("asleep till tomorrow");
-    expect(surfacedTodoIds).toEqual([plain]);
-    // The need closes and the sleep passes: both are listed.
+    const first = await t.query(internal.ttsDigest.internalComposeToday, {
+      day: DAY_KEY,
+      now: Date.now() + 1,
+    });
+    expect(first.text).toContain("1 other item is ready");
+    // The need closes and the sleep passes: both count.
     await t.run(async (ctx) => {
       await ctx.db.patch(need, { status: "done", doneAt: Date.now() });
       await ctx.db.patch(asleep, { wakeAt: Date.now() - 1 });
     });
-    const later = await t.query(internal.ttsDigest.internalComposeDigest, {
+    const later = await t.query(internal.ttsDigest.internalComposeToday, {
       day: DAY_KEY,
       now: Date.now() + 1,
     });
-    expect(later.text).toContain("waits on the need");
-    expect(later.text).toContain("asleep till tomorrow");
-    expect(later.text).not.toContain("half written up");
+    expect(later.text).toContain("3 other items are ready");
   });
 
-  it("lists a dated email capture once, under due", async () => {
+  // A CAPTURE FROM EMAIL IS NOT ITS OWN SECTION any more (§4.3): one that is
+  // dated is a dated line, one that is ready is part of the count, and one
+  // that is neither is a row, not a line.
+  it("lists a dated email capture once, under today", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);
     const t = convexTest(schema, modules);
@@ -1065,27 +389,214 @@ describe("internalComposeDigest", () => {
       statement: "reply to Ana",
       dueAt: Date.UTC(2026, 8, 5, 16),
     });
-    const undated = await tom.mutation(api.tts.createTodo, {
-      statement: "read the newsletter",
-    });
+    const undated = await tom.mutation(api.tts.createTodo, { statement: "read the newsletter" });
     await t.run(async (ctx) => {
       await ctx.db.patch(dated, { source: "email" });
       await ctx.db.patch(undated, { source: "email" });
     });
-    const { text, surfacedTodoIds } = await t.query(
-      internal.ttsDigest.internalComposeDigest,
-      { day: DAY_KEY, now: FIVE_AM + 1 },
+    const { text } = await t.query(internal.ttsDigest.internalComposeToday, {
+      day: DAY_KEY,
+      now: FIVE_AM + 1,
+    });
+    expect(text.split("Reply to Ana")).toHaveLength(2); // one line only
+    expect(text).not.toContain("Captured from email");
+    expect(text).not.toContain("read the newsletter");
+  });
+
+  // OUTCOMES, NEVER LOGGED EVENTS. Four "graph-stored" rows on one batch are
+  // one sentence about that batch, and the words those rows are spelled with
+  // reach no message.
+  it("turns a night of plan-stored rows into one sentence per batch", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    const batchId = await t.run(async (ctx) =>
+      ctx.db.insert("batches", {
+        statement: "The research critical path",
+        status: "active",
+        createdAt: FIVE_AM - DAY,
+        updatedAt: FIVE_AM - DAY,
+      }),
     );
-    expect(text.split("reply to Ana")).toHaveLength(2); // one line only
-    expect(text.indexOf("reply to Ana")).toBeLessThan(
-      text.indexOf("*Captured from email*"),
+    await t.run(async (ctx) => {
+      for (const counts of [{ created: 3, retired: 1 }, {}, { created: 1 }, { updated: 2 }]) {
+        await ctx.db.insert("dtsEvents", {
+          at: FIVE_AM - 3600_000,
+          kind: "graph-stored",
+          data: { batchId, ...counts },
+        });
+      }
+    });
+    const { text } = await t.query(internal.ttsDigest.internalComposeToday, {
+      day: DAY_KEY,
+      now: FIVE_AM + 1,
+    });
+    expect(text).toContain("The research critical path gained 4 items, reworked 2 and dropped 1.");
+    for (const word of ["plan stored", "created", "retired", "session opened", "worker event"]) {
+      expect(text.toLowerCase()).not.toContain(word);
+    }
+  });
+
+  // THE FAMILY CALENDAR NEVER APPEARS IN ANYTHING SENT TO HIM (Tom
+  // 2026-09-09). The rows stay in the record — scheduling still knows he is
+  // busy — and no message, and no facts block, names one.
+  it("drops every row from a feed marked private, and keeps the rest", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("ttsCalendarEvents", {
+        feed: "google",
+        uid: "u1",
+        title: "PT",
+        start: Date.UTC(2026, 8, 5, 20),
+        end: Date.UTC(2026, 8, 5, 21),
+        allDay: false,
+        syncedAt: FIVE_AM,
+      });
+      await ctx.db.insert("ttsCalendarEvents", {
+        feed: "family",
+        uid: "u2",
+        title: "Dinner with the family",
+        start: Date.UTC(2026, 8, 6, 0),
+        end: Date.UTC(2026, 8, 6, 1),
+        allDay: false,
+        syncedAt: FIVE_AM,
+      });
+    });
+    vi.stubEnv(
+      "TTS_ICS_FEEDS",
+      JSON.stringify([
+        { name: "google", url: "https://example.invalid/g.ics" },
+        { name: "family", url: "https://example.invalid/f.ics", private: true },
+      ]),
     );
-    expect(text).toContain("|read the newsletter>");
-    expect(surfacedTodoIds).toEqual([dated, undated]);
+    const { text, facts } = await t.query(internal.ttsDigest.internalComposeToday, {
+      day: DAY_KEY,
+      now: FIVE_AM + 1,
+    });
+    expect(text).toContain("PT runs 16:00 to 17:00.");
+    expect(text).not.toContain("Dinner with the family");
+    expect(text).not.toContain("private");
+    expect(JSON.stringify(facts)).not.toContain("Dinner with the family");
+    // The row is still there: the schedule knows he is busy.
+    const rows = await t.run(async (ctx) => ctx.db.query("ttsCalendarEvents").collect());
+    expect(rows).toHaveLength(2);
+  });
+
+  it("treats an unreadable TTS_ICS_FEEDS as every feed being private", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("ttsCalendarEvents", {
+        feed: "google",
+        uid: "u1",
+        title: "PT",
+        start: Date.UTC(2026, 8, 5, 20),
+        end: Date.UTC(2026, 8, 5, 21),
+        allDay: false,
+        syncedAt: FIVE_AM,
+      });
+    });
+    vi.stubEnv("TTS_ICS_FEEDS", "{not json");
+    const { text } = await t.query(internal.ttsDigest.internalComposeToday, {
+      day: DAY_KEY,
+      now: FIVE_AM + 1,
+    });
+    expect(text).not.toContain("PT runs");
+  });
+
+  // The delegate is built on branch uac/delegate. Its rows are read BY KIND if
+  // they are there, and nothing is printed when they are not.
+  it("renders the objection list from delegate rows, numbered in printed order", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "renew the passport" });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: FIVE_AM - 3600_000,
+        kind: DELEGATE_DECISION,
+        key: "ask-1",
+        todoId,
+        data: {
+          askId: "ask-1",
+          decision: "moved the passport appointment to Thursday",
+          reason: "the consulate shuts on Wednesdays this month",
+          refused: false,
+        },
+      });
+      await ctx.db.insert("dtsEvents", {
+        at: FIVE_AM - 1800_000,
+        kind: DELEGATE_DECISION,
+        key: "ask-2",
+        data: {
+          askId: "ask-2",
+          decision: "emailed the landlord chasing the deposit",
+          refused: true,
+          refusedBecause: "message-in-his-name — a message to another human in your name",
+        },
+      });
+    });
+    const { text, objectionAskIds } = await t.query(internal.ttsDigest.internalComposeToday, {
+      day: DAY_KEY,
+      now: FIVE_AM,
+      canReply: true,
+    });
+    // The refusal ranks first, so it is number 1 in PRINTED order.
+    expect(text).toContain(
+      "1. REFUSED and parked: it would have emailed the landlord chasing the deposit — a message to another human in your name.",
+    );
+    expect(text).toContain(
+      "2. Moved the passport appointment to Thursday, because the consulate shuts on Wednesdays this month.",
+    );
+    // The narrow list's id is for the record, not for a morning read.
+    expect(text).not.toContain("message-in-his-name");
+    expect(objectionAskIds).toEqual(["ask-2", "ask-1"]);
+    expect(text).toContain('reply "revert 2", or "2: what to do instead".');
+  });
+
+  it("renders nothing at all when there are no delegate rows", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    const { text, objectionAskIds } = await t.query(internal.ttsDigest.internalComposeToday, {
+      day: DAY_KEY,
+      now: FIVE_AM,
+    });
+    expect(text).not.toContain("The delegate decided");
+    expect(objectionAskIds).toEqual([]);
+  });
+
+  // THE ONE CONFIG CHECK (§5.2). Every reply invitation in every message is
+  // conditional on this and on nothing else.
+  it("invites a reply only when the caller says the route is live", async () => {
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    await tom.mutation(api.tts.createTodo, {
+      statement: "pay rent",
+      dueAt: Date.UTC(2026, 8, 4, 16),
+    });
+    const dead = await t.query(internal.ttsDigest.internalComposeToday, {
+      day: DAY_KEY,
+      now: FIVE_AM,
+      canReply: false,
+    });
+    expect(dead.text).not.toContain("reply");
+    const live = await t.query(internal.ttsDigest.internalComposeToday, {
+      day: DAY_KEY,
+      now: FIVE_AM,
+      canReply: true,
+    });
+    expect(live.text).toContain('reply "done" on a line, or give it a new date.');
   });
 
   // The window starts where the last one ENDED. Composing and posting take
-  // seconds; anything recorded in them would be reported by neither digest if
+  // seconds; anything recorded in them would be reported by neither morning if
   // the window started at the row's own `at`.
   it("starts the window at the last send's windowEnd, not the row's time", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
@@ -1104,15 +615,15 @@ describe("internalComposeDigest", () => {
       await ctx.db.insert("dtsEvents", {
         at: windowEnd + 30_000,
         kind: "poll-gmail-failed",
-        data: { error: "token expired" },
+        data: { job: "poll-gmail", error: "token expired" },
       });
     });
-    const { since, text } = await t.query(internal.ttsDigest.internalComposeDigest, {
+    const { since, text } = await t.query(internal.ttsDigest.internalComposeToday, {
       day: DAY_KEY,
       now: FIVE_AM,
     });
     expect(since).toBe(windowEnd);
-    expect(text).toContain("poll-gmail-failed: token expired");
+    expect(text).toContain("Nothing has been captured from email");
   });
 
   // Rows from before windowEnd existed are August's, from the digest's first
@@ -1131,20 +642,20 @@ describe("internalComposeDigest", () => {
         data: { day: "2026-08-29" },
       });
     });
-    const { since } = await t.query(internal.ttsDigest.internalComposeDigest, {
+    const { since } = await t.query(internal.ttsDigest.internalComposeToday, {
       day: DAY_KEY,
       now: FIVE_AM,
     });
     expect(since).toBe(FIVE_AM - DAY);
   });
 
-  // A day the digest never went out widens the next one's window instead of
+  // A day the morning never went out widens the next one's window instead of
   // losing the day: the window is [last send, now], not a fixed 24 hours.
   it("widens the window over a skipped day", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);
     const t = convexTest(schema, modules);
-    const tom = await withTom(t);
+    await withTom(t);
     const twoDaysBack = FIVE_AM - 2 * DAY;
     await t.run(async (ctx) => {
       await ctx.db.insert("dtsEvents", {
@@ -1152,57 +663,44 @@ describe("internalComposeDigest", () => {
         kind: DIGEST_SENT,
         data: { day: "2026-09-03", windowEnd: twoDaysBack },
       });
-    });
-    // A capture from the skipped day, older than 24 hours.
-    const skipped = await tom.mutation(api.tts.createTodo, {
-      statement: "reply to Ana",
-    });
-    await t.run(async (ctx) => {
-      await ctx.db.patch(skipped, { source: "email", createdAt: FIVE_AM - 1.5 * DAY });
       await ctx.db.insert("dtsEvents", {
         at: FIVE_AM - 1.5 * DAY,
-        kind: "poll-canvas-failed",
-        data: { error: "canvas token expired" },
+        kind: "job-failed",
+        data: { job: "poll-canvas", error: "canvas token expired" },
       });
     });
-    const { since, text } = await t.query(internal.ttsDigest.internalComposeDigest, {
+    const { since, text } = await t.query(internal.ttsDigest.internalComposeToday, {
       day: DAY_KEY,
       now: FIVE_AM,
     });
     expect(since).toBe(twoDaysBack);
-    expect(text).toContain("|reply to Ana>");
-    expect(text).toContain("poll-canvas-failed: canvas token expired");
+    expect(text).toContain("Canvas assignments have stopped reaching your list.");
   });
 
   // The box's jobs report their failures as "job-failed" through POST
-  // /tts/job-failed (the lifeos update, phase 6), so the kind alone no longer
-  // says which job broke — the row names it, and the line has to carry it or
-  // every box failure reads as the same anonymous "job-failed".
-  it("names the job on a failure a box job reported", async () => {
+  // /tts/job-failed, so the kind alone does not say which job broke — the row
+  // names it, and the line has to say what THAT job stopping means for him.
+  it("says what a named job's failure means for him, never the event kind", async () => {
     const t = convexTest(schema, modules);
-    const tom = await withTom(t);
-    await tom.mutation(api.tts.createTodo, { statement: "anything" });
+    await withTom(t);
     await t.run(async (ctx) => {
       await ctx.db.insert("dtsEvents", {
         at: FIVE_AM - 3600_000,
         kind: "job-failed",
-        data: {
-          job: "poll-canvas",
-          error: "Canvas rejected the access token (HTTP 401)",
-        },
+        data: { job: "poll-canvas", error: "Canvas rejected the access token (HTTP 401)" },
       });
     });
-    const { text } = await t.query(internal.ttsDigest.internalComposeDigest, {
+    const { text } = await t.query(internal.ttsDigest.internalComposeToday, {
       day: DAY_KEY,
       now: FIVE_AM,
     });
-    expect(text).toContain(
-      "job-failed (poll-canvas): Canvas rejected the access token (HTTP 401)",
-    );
+    expect(text).toContain("Canvas assignments have stopped reaching your list.");
+    expect(text).toContain("Canvas rejected the access token (HTTP 401).");
+    expect(text).not.toContain("job-failed");
   });
 });
 
-describe("sendDigest", () => {
+describe("sendToday", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
@@ -1211,9 +709,14 @@ describe("sendDigest", () => {
 
   type SlackReply = { ok: boolean; ts?: string; error?: string } | "throws";
 
-  // One fetch stub for both outbound reads: GitHub (the WikiTom commit list)
-  // and Slack. `github` unset means the deployment has no token that can see
-  // WikiTom — today's state.
+  // One fetch stub for both outbound reads: GitHub (the WikiTom readability
+  // check) and Slack. `github` unset means the deployment has no token that can
+  // see WikiTom — today's state.
+  //
+  // TTS_MORNING_WRITER=off by default here: these tests are about the SEND, and
+  // the Fable path is its own describe below. With the writer on, sendToday
+  // opens a draft request and returns, and nothing reaches Slack until the box
+  // answers or the five-minute timeout fires.
   function stubSlack(
     reply: SlackReply | SlackReply[],
     github?: { status: number; body?: unknown },
@@ -1246,13 +749,14 @@ describe("sendDigest", () => {
     );
     vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
     vi.stubEnv("SLACK_TTS_CHANNEL_ID", "C0TTS");
+    vi.stubEnv("TTS_MORNING_WRITER", "off");
     // Stubbed either way, so a token in the developer's own environment never
     // turns a test into a real GitHub read.
     vi.stubEnv("GITHUB_MIRROR_TOKEN", github ? "ghp-test" : undefined);
     return { slack, githubUrls };
   }
 
-  it("rolls, composes, posts to #tts, and records the send once per day", async () => {
+  it("rolls, composes, posts to #tts-today, and records the send once per day", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM + 5 * 60_000); // 05:05 EDT: inside the 5 a.m. hour
     const t = convexTest(schema, modules);
@@ -1261,38 +765,46 @@ describe("sendDigest", () => {
     const late = await tom.mutation(api.tts.createTodo, { statement: "pay rent", dueAt: passed });
     const { slack } = stubSlack({ ok: true, ts: "1757062800.000100" });
 
-    await t.action(internal.ttsSync.sendDigest, {});
+    await t.action(internal.ttsSync.sendToday, {});
     expect(slack).toHaveLength(1);
     expect(slack[0].body.channel).toBe("C0TTS");
-    expect(slack[0].body.text).toContain("missed: reply done, or a new date");
-    // No credential that can read WikiTom: the gap is named, not hidden.
-    expect(slack[0].body.text).toContain(WIKITOM_UNREADABLE);
+    expect(slack[0].body.text).toContain("Pay rent");
+    // The WikiTom COMMIT LIST is not a section any more: a changelog is not a
+    // morning read. An unreadable WikiTom is a #tts-broken line instead, and
+    // #tts-broken has no channel here, so nothing is posted for it.
+    expect(slack[0].body.text).not.toContain(WIKITOM_UNREADABLE);
 
-    // The ONE door recorded the send, with the digest's subject, so a threaded
-    // reply from Tom is routed back to it (convex/ttsSlack.ts).
+    // The ONE door recorded the send, with the morning message's subject, so a
+    // threaded reply from Tom is routed back to it (convex/ttsSlack.ts).
     const events = await tom.query(api.tts.listRecentEvents, {});
     const sent = events.filter((e) => e.kind === SLACK_SENT);
     expect(sent).toHaveLength(1);
     expect(sent[0].data).toMatchObject({
       channel: "C0TTS",
       ts: "1757062800.000100",
-      subject: digestSubject(ttsDayKey(Date.now())),
+      subject: todaySubject(ttsDayKey(Date.now())),
     });
-    // The digest's own row carries the day and where the window ended.
+    // The morning's own row carries the day, the window, which path wrote it,
+    // and THE FACTS BLOCK — the inputs, in the transcript, next to the output.
     const marked = events.filter((e) => e.kind === DIGEST_SENT);
     expect(marked).toHaveLength(1);
-    expect(marked[0].data).toMatchObject({ day: DAY_KEY, truncated: false });
+    expect(marked[0].data).toMatchObject({
+      day: DAY_KEY,
+      truncated: false,
+      writtenBy: "template",
+    });
     expect((marked[0].data as { windowEnd: number }).windowEnd).toBe(Date.now());
+    expect((marked[0].data as { facts: { kind: string } }).facts.kind).toBe("today");
     expect(events.some((e) => e.kind === "surfaced" && e.todoId === late)).toBe(true);
 
     // The same day again: the digest-sent row is the dedupe key, nothing posts.
-    await t.action(internal.ttsSync.sendDigest, {});
+    await t.action(internal.ttsSync.sendToday, {});
     expect(slack).toHaveLength(1);
   });
 
   // The morning of 2026-09-06: about sixty due-and-overdue items, most of them
   // code todos. Slack cut that digest into ten messages; it is one now, and the
-  // row says the sections were reduced to fit.
+  // row says the runs were reduced to fit.
   it("posts one message for a sixty-item morning and records the truncation", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);
@@ -1328,14 +840,19 @@ describe("sendDigest", () => {
     });
     const { slack } = stubSlack({ ok: true, ts: "1" });
 
-    await t.action(internal.ttsSync.sendDigest, {});
+    await t.action(internal.ttsSync.sendToday, {});
 
     expect(slack).toHaveLength(1);
-    expect(slack[0].body.text.length).toBeLessThanOrEqual(DIGEST_MAX_CHARS);
+    expect(slack[0].body.text.length).toBeLessThanOrEqual(MESSAGE_MAX_CHARS);
+    // Nothing is cut mid-sentence, at any length.
+    expect(slack[0].body.text).not.toContain("…");
+    // The oldest date survives the cap: an item three weeks late is the one he
+    // needs named in the morning.
+    expect(slack[0].body.text).toContain("0: Rework the credential file helper");
     const events = await tom.query(api.tts.listRecentEvents, {});
     const marked = events.filter((e) => e.kind === DIGEST_SENT);
     expect(marked).toHaveLength(1);
-    expect(marked[0].data).toMatchObject({ day: DAY_KEY, truncated: true });
+    expect(marked[0].data).toMatchObject({ day: DAY_KEY });
   });
 
   it("stays quiet before 5 a.m., when the day key still names yesterday", async () => {
@@ -1343,7 +860,7 @@ describe("sendDigest", () => {
     vi.setSystemTime(Date.UTC(2026, 8, 5, 7)); // 03:00 EDT
     const t = convexTest(schema, modules);
     const { slack } = stubSlack({ ok: true, ts: "1" });
-    await t.action(internal.ttsSync.sendDigest, {});
+    await t.action(internal.ttsSync.sendToday, {});
     expect(slack).toHaveLength(0);
   });
 
@@ -1356,17 +873,20 @@ describe("sendDigest", () => {
     const tom = await withTom(t);
     const { slack } = stubSlack({ ok: true, ts: "1" });
 
-    await t.action(internal.ttsSync.sendDigest, {});
+    await t.action(internal.ttsSync.sendToday, {});
     expect(slack).toHaveLength(1);
 
     vi.setSystemTime(Date.UTC(2026, 8, 5, 20)); // 16:00 EDT, still today
-    await t.action(internal.ttsSync.sendDigest, {});
+    await t.action(internal.ttsSync.sendToday, {});
     expect(slack).toHaveLength(1);
     const events = await tom.query(api.tts.listRecentEvents, {});
     expect(events.filter((e) => e.kind === SLACK_SENT)).toHaveLength(1);
   });
 
-  it("reads WikiTom's commits over the digest's window", async () => {
+  // WikiTom is still read, for ONE fact: whether it can be read at all. Its
+  // commits are not a section (a commit list is a changelog), and an
+  // unreadable repository is a #tts-broken line.
+  it("reads WikiTom over the window and prints none of its commits", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);
     const t = convexTest(schema, modules);
@@ -1381,27 +901,66 @@ describe("sendDigest", () => {
         },
       ],
     });
-    await t.action(internal.ttsSync.sendDigest, {});
+    await t.action(internal.ttsSync.sendToday, {});
     expect(githubUrls).toHaveLength(1);
     expect(githubUrls[0]).toContain("/repos/Heffnt/WikiTom/commits");
     expect(githubUrls[0]).toContain(`since=${new Date(FIVE_AM - DAY).toISOString()}`);
-    expect(slack[0].body.text).toContain(
-      "- <https://github.com/Heffnt/WikiTom/commit/abc1234def|abc1234> areas: the health page — Tom",
-    );
+    expect(slack[0].body.text).not.toContain("areas: the health page");
+    expect(slack[0].body.text).not.toContain("abc1234");
   });
 
-  it("names the gap when GitHub refuses the WikiTom read", async () => {
+  it("says nothing about WikiTom when GitHub refuses the read", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);
     const t = convexTest(schema, modules);
     await withTom(t);
     const { slack } = stubSlack({ ok: true, ts: "1" }, { status: 403 });
-    await t.action(internal.ttsSync.sendDigest, {});
-    expect(slack[0].body.text).toContain(WIKITOM_UNREADABLE);
+    await t.action(internal.ttsSync.sendToday, {});
+    // The morning message is a morning read: an unreadable repository is a
+    // #tts-broken line, scheduled from the run, not a section here.
+    expect(slack[0].body.text).not.toContain(WIKITOM_UNREADABLE);
+    expect(slack[0].body.text).not.toContain("WikiTom");
   });
 
-  // The named retry owner (the hourly update) is switched off, so a blip that
-  // clears in seconds must not cost Tom the morning.
+  // #tts-broken's own door, called the way the morning schedules it.
+  it("posts an unreadable WikiTom to #tts-broken, once for the day", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    const { slack } = stubSlack({ ok: true, ts: "1" });
+    vi.stubEnv("SLACK_TTS_BROKEN_CHANNEL_ID", "C0BROKEN");
+
+    const first = await t.action(internal.ttsSync.sendBroken, {
+      job: "wikitom-read",
+      statement: WIKITOM_UNREADABLE,
+    });
+    expect(first).toMatchObject({ sent: true });
+    expect(slack).toHaveLength(1);
+    expect(slack[0].body.channel).toBe("C0BROKEN");
+    expect(slack[0].body.text).toContain(WIKITOM_UNREADABLE);
+
+    // Deduped BY JOB for the TTS day: a poller failing every ten minutes posts
+    // once, and the morning message states the count.
+    const second = await t.action(internal.ttsSync.sendBroken, {
+      job: "wikitom-read",
+      statement: WIKITOM_UNREADABLE,
+    });
+    expect(second).toMatchObject({ sent: false });
+    expect(slack).toHaveLength(1);
+  });
+
+  it("posts nothing to #tts-broken while its channel is unset", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    const { slack } = stubSlack({ ok: true, ts: "1" });
+    const result = await t.action(internal.ttsSync.sendBroken, {
+      job: "poll-gmail",
+      statement: "Nothing has been captured from email.",
+    });
+    expect(result).toMatchObject({ sent: false, reason: "not configured" });
+    expect(slack).toHaveLength(0);
+  });
+
+  // A blip that clears in seconds must not cost Tom the morning.
   it("retries the post once in-run and records the send", async () => {
     const t = convexTest(schema, modules);
     const tom = await withTom(t);
@@ -1409,7 +968,7 @@ describe("sendDigest", () => {
       { ok: false, error: "ratelimited" },
       { ok: true, ts: "1757062800.000100" },
     ]);
-    await t.action(internal.ttsSync.sendDigest, { force: true });
+    await t.action(internal.ttsSync.sendToday, { force: true });
     expect(slack).toHaveLength(2);
     expect(slack[1].body.text).toBe(slack[0].body.text); // the same content
     const events = await tom.query(api.tts.listRecentEvents, {});
@@ -1421,26 +980,28 @@ describe("sendDigest", () => {
     const t = convexTest(schema, modules);
     const tom = await withTom(t);
     const { slack } = stubSlack({ ok: false, error: "channel_not_found" });
-    await t.action(internal.ttsSync.sendDigest, { force: true });
+    await t.action(internal.ttsSync.sendToday, { force: true });
     expect(slack).toHaveLength(2); // the retry failed too
     const events = await tom.query(api.tts.listRecentEvents, {});
     const failed = events.filter((e) => e.kind === SLACK_FAILED);
     expect(failed).toHaveLength(1);
     expect(failed[0].data).toMatchObject({
       channel: "C0TTS",
-      subject: digestSubject(ttsDayKey(Date.now())),
+      subject: todaySubject(ttsDayKey(Date.now())),
       error: "channel_not_found",
       attempts: 2,
     });
-    expect((failed[0].data as { text: string }).text).toContain("*Due and overdue*");
+    expect((failed[0].data as { text: string }).text).toContain(
+      "Nothing is dated today and nothing is late.",
+    );
     expect(events.some((e) => e.kind === SLACK_SENT)).toBe(false);
     expect(events.some((e) => e.kind === DIGEST_SENT)).toBe(false);
   });
 
-  // witness: drop `windowEnd` from sendDigest's postSlack call and the row
-  // carries only its own `at` — the hourly update's resend then marks the day
-  // at that later instant, and everything recorded while Slack was refusing is
-  // reported by neither digest.
+  // witness: drop `windowEnd` from sendToday's postSlack call and the row
+  // carries only its own `at` — the hourly tick's resend then marks the day at
+  // that later instant, and everything recorded while Slack was refusing is
+  // reported by no morning message.
   it("records the composition boundary on the failed row, not the clock the failure was written at", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);
@@ -1461,12 +1022,17 @@ describe("sendDigest", () => {
     );
     vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
     vi.stubEnv("SLACK_TTS_CHANNEL_ID", "C0TTS");
+    vi.stubEnv("TTS_MORNING_WRITER", "off");
     vi.stubEnv("GITHUB_MIRROR_TOKEN", undefined);
 
-    await t.action(internal.ttsSync.sendDigest, {});
+    await t.action(internal.ttsSync.sendToday, {});
 
     const events = await tom.query(api.tts.listRecentEvents, {});
-    const failed = events.filter((e) => e.kind === SLACK_FAILED);
+    const failed = events.filter(
+      (e) =>
+        e.kind === SLACK_FAILED &&
+        (e.data as { subject?: { kind?: string } } | undefined)?.subject?.kind === "today",
+    );
     expect(failed).toHaveLength(1);
     expect(failed[0].at).toBeGreaterThan(FIVE_AM); // two calls later
     expect((failed[0].data as { windowEnd: number }).windowEnd).toBe(FIVE_AM);
@@ -1476,10 +1042,242 @@ describe("sendDigest", () => {
     const t = convexTest(schema, modules);
     const tom = await withTom(t);
     stubSlack("throws");
-    await t.action(internal.ttsSync.sendDigest, { force: true });
+    await t.action(internal.ttsSync.sendToday, { force: true });
     const events = await tom.query(api.tts.listRecentEvents, {});
     const failed = events.filter((e) => e.kind === SLACK_FAILED);
-    expect(failed).toHaveLength(1);
+    expect(failed.length).toBeGreaterThanOrEqual(1);
     expect((failed[0].data as { error: string }).error).toBe("network down");
   });
+
+  it("falls back to SLACK_TTS_CHANNEL_ID when the today channel is unset", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    const { slack } = stubSlack({ ok: true, ts: "1" });
+    await t.action(internal.ttsSync.sendToday, { force: true });
+    expect(slack[0].body.channel).toBe("C0TTS");
+  });
+
+  it("prefers the today channel when it is set", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    const { slack } = stubSlack({ ok: true, ts: "1" });
+    vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", "C0TODAY");
+    await t.action(internal.ttsSync.sendToday, { force: true });
+    expect(slack[0].body.channel).toBe("C0TODAY");
+  });
 });
+
+// ── #tts-decisions (slack-design.md §3.4) ───────────────────────────────────
+// One action: revert. The default is silence, and silence is consent. This is
+// the channel the round exists for — without it Tom can only object at 5 a.m.
+// about a decision taken at 2 p.m., by which time the run that acted on it has
+// finished.
+describe("sendDecision", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.useRealTimers();
+  });
+
+  function stub() {
+    const posts: { channel: string; text: string }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: { body?: string }) => {
+        const body = JSON.parse(init?.body ?? "{}") as { channel: string; text: string };
+        posts.push({ channel: body.channel, text: body.text });
+        return { ok: true, status: 200, json: async () => ({ ok: true, ts: `${posts.length}.0` }) };
+      }),
+    );
+    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
+    vi.stubEnv("SLACK_TTS_DECISIONS_CHANNEL_ID", "C0DECISIONS");
+    return posts;
+  }
+
+  it("asks for an objection, links the item, and invites no reply while the route is dead", async () => {
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "renew the passport" });
+    const posts = stub();
+
+    expect(
+      await t.action(internal.ttsSync.sendDecision, {
+        askId: "ask-1",
+        todoId,
+        decision: "moved the passport appointment to Thursday",
+        reason: "the consulate shuts on Wednesdays this month",
+      }),
+    ).toEqual({ sent: true });
+    expect(posts).toHaveLength(1);
+    expect(posts[0].channel).toBe("C0DECISIONS");
+    expect(posts[0].text).toBe(
+      [
+        "Object if this is wrong; silence means it stands.",
+        `- <${ttsItemLink(todoId)}|Moved the passport appointment to Thursday, because the consulate shuts on Wednesdays this month.>`,
+      ].join("\n"),
+    );
+    // The thread carries the ask as its subject, so a bare "revert" in it
+    // needs no number (convex/ttsSlack.ts routeReply, case "ask").
+    const rows = await t.run(async (ctx) => ctx.db.query("dtsEvents").collect());
+    const sent = rows.filter((e) => e.kind === SLACK_SENT);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].data).toMatchObject({ subject: { kind: "ask", id: "ask-1" } });
+  });
+
+  it("invites the reply when the route is live", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    const posts = stub();
+    vi.stubEnv("SLACK_SIGNING_SECRET", "shhh");
+    vi.stubEnv("TOM_SLACK_USER_ID", "U0TOM");
+    await t.action(internal.ttsSync.sendDecision, {
+      askId: "ask-2",
+      decision: "left the MOT booked where it was",
+    });
+    expect(posts[0].text).toContain('reply "revert", or say what to do instead.');
+  });
+
+  it("says a refusal is parked, and that nothing was done in his name", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    const posts = stub();
+    await t.action(internal.ttsSync.sendDecision, {
+      askId: "ask-3",
+      decision: "emailed the landlord chasing the deposit",
+      refused: true,
+      refusedBecause: "a message to another human in your name",
+      fallback: "left it for you",
+    });
+    expect(posts[0].text).toContain(
+      "Parked for you: a message to another human in your name. Nothing was done in your name.",
+    );
+    expect(posts[0].text).toContain("instead the run left it for you");
+  });
+
+  // ONE APPEARANCE PER ITEM PER DAY. A decision about an item the morning has
+  // already claimed for "object" is not posted twice in one day — but the
+  // "act" claim is a different ask and does not suppress it, because
+  // suppressing it would silence the objection.
+  it("does not post twice about one item in one day, and is not blocked by the act claim", async () => {
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "renew the passport" });
+    const posts = stub();
+    await t.mutation(internal.ttsSlack.internalClaimSlackItem, {
+      day: ttsDayKey(Date.now()),
+      ask: "act",
+      itemId: todoId,
+      channel: "today",
+    });
+    const args = { askId: "ask-4", todoId, decision: "moved the appointment" };
+    expect(await t.action(internal.ttsSync.sendDecision, args)).toEqual({ sent: true });
+    expect(await t.action(internal.ttsSync.sendDecision, { ...args, askId: "ask-5" })).toMatchObject(
+      { sent: false },
+    );
+    expect(posts).toHaveLength(1);
+  });
+
+  it("posts nothing while #tts-decisions has no id", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    const posts = stub();
+    vi.stubEnv("SLACK_TTS_DECISIONS_CHANNEL_ID", "");
+    expect(
+      await t.action(internal.ttsSync.sendDecision, { askId: "ask-6", decision: "did a thing" }),
+    ).toMatchObject({ sent: false, reason: "not configured" });
+    expect(posts).toHaveLength(0);
+  });
+
+  // The two kinds that LEFT the morning message (§4.3) come here as they are
+  // written: a line the nightly job wrote about him, and a ruling an agent read
+  // out of his sentence, are both decisions taken in his name.
+  it("is scheduled by a model-of-Tom line the nightly job writes", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    await t.mutation(internal.ttsNightly.internalRecordWorkerEvent, {
+      kind: "learning-change",
+      data: {
+        id: "lc-1",
+        file: "writing.md",
+        before: "a spread may be drawn as a figure",
+        after: "a spread is stated with its numbers",
+        evidence: "your correction on 09-07",
+      },
+    });
+    const scheduled = await t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
+        job.name.includes("sendDecision"),
+      ),
+    );
+    expect(scheduled).toHaveLength(1);
+    const args = scheduled[0].args[0] as { askId: string; decision: string; reason?: string };
+    expect(args.askId).toBe("learning:lc-1");
+    expect(args.decision).toContain("writing.md now says a spread is stated with its numbers");
+    // The raw [change-id] prefix he was expected to type back is gone: in
+    // #tts-decisions the thread is the subject.
+    expect(args.decision).not.toContain("[lc-1]");
+  });
+
+  it("is scheduled by a ruling read out of Tom's own words, and not by a button ruling", async () => {
+    const t = convexTest(schema, modules);
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, { statement: "read the BDDR paper" });
+    const scheduledFor = async () =>
+      await t.run(async (ctx) =>
+        (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
+          job.name.includes("sendDecision"),
+        ),
+      );
+
+    // A button ruling is Tom's own act: nothing is taken in his name.
+    await tom.mutation(api.ttsRulings.recordRuling, {
+      todoId,
+      verdict: "revise",
+      sentence: "narrow it to the corpus confound",
+    });
+    expect(await scheduledFor()).toHaveLength(0);
+
+    // A ruling read out of a sentence he typed IS a decision taken for him.
+    // The words door only accepts a turn Tom actually authored, so the row is
+    // built the way the browser door and the Slack events route build it.
+    const sessionId = await t.run(async (ctx) =>
+      ctx.db.insert("claudeSessions", {
+        title: "a session about the paper",
+        kind: "focus-item",
+        repo: "tom.quest",
+        // The words door refuses a turn from a session about nothing: a ruling
+        // names only what Tom was actually talking about.
+        todoId,
+        status: "running",
+        nextSeq: 0,
+        createdAt: Date.now(),
+        statusChangedAt: Date.now(),
+      }),
+    );
+    const inboundId = await t.run(async (ctx) =>
+      ctx.db.insert("claudeInbound", {
+        sessionId,
+        kind: "user-turn",
+        author: "tom",
+        text: "the twin has to be matched, not resampled",
+        status: "delivered",
+        createdAt: Date.now(),
+      }),
+    );
+    await t.mutation(internal.ttsRulings.internalRecordRulingFromTomWords, {
+      inboundId,
+      verdict: "revise",
+      subjectType: "life",
+      subjectId: todoId,
+      quote: "the twin has to be matched, not resampled",
+      sentence: "the twin has to be matched, not resampled",
+    });
+    const scheduled = await scheduledFor();
+    expect(scheduled).toHaveLength(1);
+    const args = scheduled[0].args[0] as { decision: string; reason?: string; todoId?: string };
+    expect(args.todoId).toBe(todoId);
+    expect(args.decision).toBe("read the BDDR paper was ruled a revise from your own words");
+    expect(args.reason).toBe("the twin has to be matched, not resampled");
+  });
+});
+

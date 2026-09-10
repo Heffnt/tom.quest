@@ -20,6 +20,7 @@
 
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
+import { internal } from "./_generated/api";
 import type { TableNames } from "./_generated/dataModel";
 import schema from "./schema";
 import { clip } from "../worker/jobs/clip.mjs";
@@ -367,6 +368,13 @@ export const RESERVED_EVENT_KINDS = new Set(["slack-sent", "slack-event"]);
  * spelling is worker/jobs/nightly.mjs NIGHTLY_FAILURE, shared by name. */
 export const NIGHTLY_FAILURE = "nightly-failure";
 
+/** A line the nightly job wrote about Tom is a decision taken in his name, so
+ *  it goes to #tts-decisions as it is written rather than waiting for the
+ *  morning (slack-design.md §1.2, §4.3). The raw `[change-id]` prefix he was
+ *  expected to type back is gone with it: in #tts-decisions the THREAD is the
+ *  subject, so a reply needs no id. */
+export const LEARNING_CHANGE = "learning-change";
+
 export const internalRecordWorkerEvent = internalMutation({
   // `key`: the indexed lookup key (schema dtsEvents.key) — the weekly job's
   // "weekly-run" row carries its day, so a rerun finds it on by_kind_key.
@@ -375,6 +383,22 @@ export const internalRecordWorkerEvent = internalMutation({
     if (!EVENT_KIND_PATTERN.test(kind) || RESERVED_EVENT_KINDS.has(kind)) {
       throw new Error(`not a worker event kind: ${kind}`);
     }
-    return await ctx.db.insert("dtsEvents", { at: Date.now(), kind, data, key });
+    const id = await ctx.db.insert("dtsEvents", { at: Date.now(), kind, data, key });
+    if (kind === LEARNING_CHANGE) {
+      const d = (data ?? {}) as Record<string, unknown>;
+      const file = typeof d.file === "string" ? d.file : "a model-of-Tom page";
+      const after = typeof d.after === "string" ? d.after : "";
+      const before = typeof d.before === "string" ? d.before : "";
+      const evidence = typeof d.evidence === "string" ? d.evidence : undefined;
+      await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
+        askId: typeof d.id === "string" ? `learning:${d.id}` : `learning:${id}`,
+        decision:
+          before === ""
+            ? `${file} now says ${after}`
+            : `${file} now says ${after} rather than ${before}`,
+        ...(evidence === undefined ? {} : { reason: `it was learned from ${evidence}` }),
+      });
+    }
+    return id;
   },
 });

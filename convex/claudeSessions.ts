@@ -69,6 +69,7 @@ import {
   modelFamily,
   normalizeSessionRepos,
   tracksCodeTodos,
+  ttsSessionLink,
   wakeAtPassed,
 } from "./ttsShared";
 import type { SessionModel } from "./ttsShared";
@@ -83,28 +84,36 @@ async function getSessionOrThrow(
   return session;
 }
 
-// ── Session event messages (todo tts-session-needs-you-notify) ───────────────
-// A Slack line the moment a session needs Tom or records what it did. The
-// Slack POST is an ACTION (network), so a mutation cannot await it — it is
+// ── A session that failed (slack-design.md §1.2) ─────────────────────────────
+// THE PER-SESSION EVENT LINE IS GONE. It was switched off from the day it was
+// written and it had no channel of its own: a session recording an outcome is
+// not something Tom does anything about, and it reaches him in the morning
+// message's overnight run. The one case that IS a message is a session that
+// FAILED, and that goes to #tts-broken.
+//
+// The Slack POST is an ACTION (network), so a mutation cannot await it — it is
 // scheduled at runAfter(0) and rides the transaction: if the mutation rolls
 // back, the message is never scheduled at all, so Slack never reports a
 // transition that did not happen.
 //
 // EDGE TRIGGERS ONLY. Every call site below sits on a transition that the
 // surrounding code makes unrepeatable (a live→terminal status patch, an
-// undefined→set outcome). The daemon polls and
-// flushes continuously; a level-triggered "is this session blocked" check
-// would send one message per flush for the whole time Tom is asleep.
-function notifySessionEvent(
+// undefined→set outcome). The daemon polls and flushes continuously; a
+// level-triggered check would send one message per flush for the whole time
+// Tom is asleep. #tts-broken dedupes on the job as well, and a session's job
+// name is the session itself, so two failures of one session are one message.
+function notifySessionFailed(
   ctx: MutationCtx,
   sessionId: Id<"claudeSessions">,
-  text: string,
+  title: string,
+  reason: string | undefined,
 ): Promise<Id<"_scheduled_functions">> {
-  return ctx.scheduler.runAfter(
-    0,
-    internal.ttsSync.internalSessionEventMessage,
-    { sessionId, text },
-  );
+  return ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
+    job: `session:${sessionId}`,
+    statement: `A session stopped without finishing what it was carrying, so nothing it was doing is done.`,
+    detail: `${title} stopped: ${reason ?? "no reason was reported"}`,
+    url: ttsSessionLink(sessionId),
+  });
 }
 
 // ONE wording for an outcome event, shared by the daemon's stamp
@@ -1771,11 +1780,14 @@ export const internalIngest = internalMutation({
     // skips the branch above). The daemon may re-send the same outcome on
     // every flush of a closing session; only the first one notifies.
     if (outcomeNewlyApplied && args.outcome !== undefined) {
-      await notifySessionEvent(
-        ctx,
-        args.sessionId,
-        outcomeEventText(session.title, args.outcome, args.outcomeSummary),
-      );
+      if (args.outcome === "errored") {
+        await notifySessionFailed(
+          ctx,
+          args.sessionId,
+          session.title,
+          args.outcomeSummary ?? outcomeEventText(session.title, args.outcome, args.outcomeSummary),
+        );
+      }
       await logEvent(
         ctx,
         "session-outcome",
@@ -1830,12 +1842,11 @@ export const internalIngest = internalMutation({
     // the reopen hole: a replayed failure flush arrives at a live row again,
     // and without it Tom would be told twice about one failure.
     if (becameTerminal && args.status === "failed") {
-      await notifySessionEvent(
+      await notifySessionFailed(
         ctx,
         args.sessionId,
-        `session "${session.title}" failed — ${
-          args.endedReason ?? session.endedReason ?? "no reason reported"
-        }`,
+        session.title,
+        args.endedReason ?? session.endedReason,
       );
     }
 
@@ -2079,11 +2090,14 @@ export const internalRecordOutcome = internalMutation({
     // told once, so an agent that revises its wording three times does not
     // ping Tom three times.
     if (firstRecord) {
-      await notifySessionEvent(
-        ctx,
-        normalized,
-        outcomeEventText(session.title, outcome, summary),
-      );
+      if (outcome === "errored") {
+        await notifySessionFailed(
+          ctx,
+          normalized,
+          session.title,
+          summary.trim() === "" ? undefined : summary.trim(),
+        );
+      }
       // Same edge, same reason, into the events table the hourly update reads.
       await logEvent(
         ctx,

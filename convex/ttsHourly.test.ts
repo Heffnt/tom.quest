@@ -4,12 +4,11 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
-  MAX_LINES_PER_SECTION,
-  composeHourlyUpdate,
+  composeHourly,
   elapsedText,
-  hourlyHeartbeatLine,
+  renderSlack,
   type HourlyFacts,
-} from "./ttsHourlyText";
+} from "./ttsCompose";
 import { HOURLY_UPDATE_ABANDONED, HOURLY_UPDATE_SENT } from "./ttsHourly";
 import {
   TTS_BATCHES_LINK,
@@ -27,7 +26,7 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 // are part of what is being checked.
 const SLACK_SENT = "slack-sent";
 const SLACK_FAILED = "slack-send-failed";
-const DIGEST_SUBJECT = "digest";
+const DIGEST_SUBJECT = "today";
 const HOURLY_SUBJECT = "hourly";
 
 // 2026-09-05 14:00 EDT — a fixed instant so the hh:mm in the text is stable.
@@ -67,16 +66,16 @@ async function insertEvent(
 }
 
 describe("the one-line form", () => {
-  it("is exactly one line carrying the time when nothing ran, was worked, or changed", () => {
-    const text = composeHourlyUpdate(facts());
-    expect(text.split("\n")).toHaveLength(1);
-    expect(text).toBe(hourlyHeartbeatLine(NOW, SINCE));
-    expect(text).toContain(nyHhmm(NOW)); // 14:00 New York
-    expect(text).toBe("14:00 — nothing running, nothing changed since 13:00.");
+  // THE SILENCE RULE (slack-design.md §4.4). The old heartbeat line
+  // ("14:00 — nothing running, nothing changed since 13:00.") is deleted: a
+  // channel that says something every hour is a channel he mutes, and the
+  // proof of life moved to the morning message, which sends even when empty.
+  it("posts nothing at all when nothing ran, was worked, or changed", () => {
+    expect(composeHourly(facts())).toBeNull();
   });
 
-  it("is the three sections as soon as one fact exists", () => {
-    const text = composeHourlyUpdate(
+  it("is ONE sentence as soon as one fact exists", () => {
+    const message = composeHourly(
       facts({
         changes: [
           {
@@ -89,17 +88,17 @@ describe("the one-line form", () => {
         ],
       }),
     );
-    expect(text.split("\n").length).toBeGreaterThan(1);
-    expect(text).toContain("*Running now*\n- nothing");
-    expect(text).toContain("*Batches worked since 13:00*\n- none");
-    // Slack mrkdwn: the label is a link and the statement is escaped inside it.
-    expect(text).toContain(
-      `- captured: <${ttsItemLink("todo1")}|buy &lt;milk&gt; &amp; eggs> — slack-capture`,
-    );
+    const text = renderSlack(message as NonNullable<typeof message>);
+    expect(text.split(String.fromCharCode(10))).toHaveLength(1);
+    expect(text).toBe("1 item was captured.");
+    // The raw labels from the old table are gone.
+    for (const label of ["captured:", "date outcome:", "ruling:", "failure:", "*Running now*"]) {
+      expect(text).not.toContain(label);
+    }
   });
 
-  it("names each running session with its kind, subject, and elapsed time", () => {
-    const text = composeHourlyUpdate(
+  it("names what is running and what changed, with the link inside the sentence", () => {
+    const message = composeHourly(
       facts({
         running: [
           {
@@ -114,27 +113,51 @@ describe("the one-line form", () => {
           },
         ],
         batches: [{ batchId: "b1", statement: "Integrations", sessions: 1, workerEvents: 2 }],
+        changes: [
+          { kind: "captured", at: NOW - 1, text: "one", detail: null, link: null },
+          { kind: "done", at: NOW - 2, text: "two", detail: null, link: null },
+        ],
       }),
     );
-    expect(text).toContain(
-      `- <${ttsSessionLink("s1")}|Fix the poller> (gate, autonomous) — poll-outlook — 1h35m`,
+    const text = renderSlack(message as NonNullable<typeof message>);
+    expect(text).toBe(
+      `<${ttsSessionLink("s1")}|Fix the poller> has been working poll-outlook on its own for 1h35m, ` +
+        "and 1 item was captured and 1 finished.",
     );
-    expect(text).toContain(`- <${TTS_BATCHES_LINK}|Integrations> — 1 session, 2 worker events`);
+    // "worker events" is instrumentation vocabulary and never reaches him.
+    expect(text).not.toContain("worker event");
+    expect(text).not.toContain("session,");
   });
 
-  it("lists at most one section's worth of changes and says how many more", () => {
-    const many = Array.from({ length: MAX_LINES_PER_SECTION + 7 }, (_, i) => ({
+  it("never prints a kind or a mode value, whatever the facts carry", () => {
+    const message = composeHourly(
+      facts({
+        running: [
+          { sessionId: "s1", title: "One", kind: "focus-item", mode: "autonomous", status: "running", statement: "a batch", batchId: "b1", elapsedMs: 60_000 },
+          { sessionId: "s2", title: "Two", kind: "adhoc", mode: "interactive", status: "running", statement: null, batchId: null, elapsedMs: 60_000 },
+          { sessionId: "s3", title: "Three", kind: "weekly", mode: "interactive", status: "running", statement: null, batchId: null, elapsedMs: 60_000 },
+        ],
+      }),
+    );
+    const text = renderSlack(message as NonNullable<typeof message>);
+    for (const value of ["focus-item", "adhoc", "weekly", "gate", "block", "autonomous", "interactive"]) {
+      expect(text).not.toContain(value);
+    }
+    expect(text).toBe(`Three sessions are working <${TTS_BATCHES_LINK}|a batch>, and nothing else changed.`);
+  });
+
+  it("counts the changes rather than listing them, however many there are", () => {
+    const many = Array.from({ length: 47 }, (_, i) => ({
       kind: "captured" as const,
       at: SINCE + i,
       text: `change ${i}`,
       detail: null,
       link: null,
     }));
-    const text = composeHourlyUpdate(facts({ changes: many }));
-    expect(text).toContain("- captured: change 0");
-    expect(text).toContain(`- captured: change ${MAX_LINES_PER_SECTION - 1}`);
-    expect(text).not.toContain(`- captured: change ${MAX_LINES_PER_SECTION}`);
-    expect(text).toContain("- +7 more");
+    const text = renderSlack(composeHourly(facts({ changes: many })) as never);
+    expect(text).toBe("47 items were captured.");
+    expect(text).not.toContain("+7 more");
+    expect(text.split(String.fromCharCode(10))).toHaveLength(1);
   });
 
   it("elapsed text", () => {
@@ -540,11 +563,13 @@ describe("sendHourlyUpdate", () => {
       attempts: 2,
       windowEnd: composedAt,
     });
+    await busyHour(t);
     const posts = stubSlack();
 
     await t.action(internal.ttsSync.sendHourlyUpdate, {});
 
-    // The digest goes to the digest's own channel, first; the update follows.
+    // The morning message goes to its own channel, first; the hourly line
+    // follows, and only because this hour is not quiet.
     expect(posts.map((p) => p.channel)).toEqual([TTS_CHANNEL, HOURLY_CHANNEL]);
     expect(posts[0].text).toBe("the morning digest");
     // The door recorded the send; the digest's own marker says the day is done
@@ -610,31 +635,40 @@ describe("sendHourlyUpdate", () => {
     // each retry — past the default per-test budget.
   }, 15_000);
 
-  it("posts one line when nothing is running and nothing changed, its own bookkeeping included", async () => {
+  // THE SILENCE RULE (slack-design.md §4.4). A quiet hour posts NOTHING, and
+  // still writes its marker with posted:false — the marker is what advances the
+  // window, and skipping it would make the next hour re-read this one until the
+  // message grew a tail of hours nobody saw.
+  it("posts nothing at all for a quiet hour, and still writes its marker", async () => {
     const t = convexTest(schema, modules);
     const posts = stubSlack();
 
     await t.action(internal.ttsSync.sendHourlyUpdate, {});
-    expect(posts).toHaveLength(1);
-    expect(posts[0].channel).toBe(HOURLY_CHANNEL);
-    expect(posts[0].text.split("\n")).toHaveLength(1);
-    expect(posts[0].text).toMatch(
-      /^\d\d:\d\d — nothing running, nothing changed since \d\d:\d\d\.$/,
-    );
-    expect(await rowsOfKind(t, SLACK_SENT, HOURLY_SUBJECT)).toHaveLength(1);
+    expect(posts).toHaveLength(0);
+    expect(await rowsOfKind(t, SLACK_SENT, HOURLY_SUBJECT)).toHaveLength(0);
     const marker = await rowsOfKind(t, HOURLY_UPDATE_SENT);
     expect(marker).toHaveLength(1);
-    expect(dataOf(marker[0])).toMatchObject({ quiet: true });
+    expect(dataOf(marker[0])).toMatchObject({ quiet: true, posted: false });
 
     // The rows it just wrote are not themselves changes: the next hour is
-    // still one line. Reporting its own bookkeeping would add a line an hour,
-    // for ever.
+    // silent too. Reporting its own bookkeeping would post a line an hour, for
+    // ever.
     await t.action(internal.ttsSync.sendHourlyUpdate, {});
-    expect(posts[1].text.split("\n")).toHaveLength(1);
+    expect(posts).toHaveLength(0);
+    expect(await rowsOfKind(t, HOURLY_UPDATE_SENT)).toHaveLength(2);
   });
+
+  /** Make the hour NOT quiet: one capture inside the window is enough, and it
+   *  is the cheapest fact the update reports. Every test below is about what
+   *  the SEND does, so each needs a message to exist at all. */
+  async function busyHour(t: ReturnType<typeof convexTest>): Promise<void> {
+    const todoId = await insertTodo(t, "buy climbing tape");
+    await insertEvent(t, Date.now() - 60_000, "captured", todoId, { source: "manual" });
+  }
 
   it("records a permanent rejection and closes the window past it", async () => {
     const t = convexTest(schema, modules);
+    await busyHour(t);
     const posts = stubSlack("channel_not_found");
 
     await t.action(internal.ttsSync.sendHourlyUpdate, {});
@@ -674,6 +708,7 @@ describe("sendHourlyUpdate", () => {
         windowStart: lastEnd - HOUR,
         windowEnd: lastEnd,
       });
+      await busyHour(t);
       stubSlack(error);
 
       await t.action(internal.ttsSync.sendHourlyUpdate, {});
@@ -690,6 +725,7 @@ describe("sendHourlyUpdate", () => {
   // reported by nobody, which is the whole first-run gap.
   it("keeps the first run's window start when Slack refuses it transiently", async () => {
     const t = convexTest(schema, modules);
+    await busyHour(t);
     stubSlack("ratelimited");
     const before = Date.now();
 
