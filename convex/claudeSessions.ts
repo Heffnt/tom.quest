@@ -46,6 +46,7 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // from ttsSkills.modelOfTomPrelude, read once per opener in insertSession below.
 import { withoutModelOfTomPrelude } from "./ttsSkills";
 import { assembleContext, type ContextSubject } from "./ttsContext";
+import { briefForPrompt } from "../worker/jobs/context-relevance.mjs";
 import {
   AUTONOMOUS_SESSION_CONTRACT,
   CODEX_FALLBACK_MODEL,
@@ -2589,7 +2590,9 @@ function buildAutoMissionPrompt(
     promptFact("work description", todo.workDescription),
     promptFact("entry action", todo.entryAction),
     promptFact("body", todo.body),
-    promptFact("brief", todo.brief),
+    // Cut at the same cap the interactive twin uses, and named in the
+    // fetchable block when it was cut (worker/jobs/context-relevance.mjs).
+    promptFact("brief", todo.brief === undefined ? undefined : briefForPrompt(todo.brief).text),
   ];
   const lines: (string | null)[] = [
     AUTONOMOUS_SESSION_CONTRACT,

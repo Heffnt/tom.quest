@@ -70,9 +70,28 @@ export const CAPS = Object.freeze({
   outcomesBytes: 1536,
 });
 
-/** Supplemental caps (§6). The brief truncates at a heading; a forked
- * transcript keeps its LAST bytes, because the end is where it was going. */
+/**
+ * Supplemental caps. The BRIEF truncates at the last heading before the cap,
+ * because a brief reads forward and a heading is where it can honestly stop;
+ * a TRANSCRIPT keeps its LAST bytes, because a session's end is where it was
+ * going. Both say where the rest is.
+ *
+ * The fork's prior transcript does not need the second cap today: forkSessionAs
+ * writes the whole transcript to `.tts-transcript.md` in the workspace and the
+ * opener tells the run to read it, so nothing about it rides the prompt. The
+ * cap stays declared for a caller that has no workspace to write a file into.
+ */
 export const SUPPLEMENTAL_CAPS = Object.freeze({ brief: 8192, transcript: 24576 });
+
+/** Where a truncated brief's rest is — one string, so the line the prompt
+ * appends and the line the fetchable block writes cannot disagree. */
+export const BRIEF_SOURCE = "tom.quest/tts, or the record";
+
+/** A todo's brief as the prompt should carry it. THE ONE HOME both prompt
+ * builders call, so the text that was cut and the line saying so agree. */
+export function briefForPrompt(brief) {
+  return truncateSupplemental(brief, SUPPLEMENTAL_CAPS.brief, { keep: "head", where: BRIEF_SOURCE });
+}
 
 // ── Callers ──────────────────────────────────────────────────────────────────
 // The per-caller fixed layer table this replaces lived in five places: one
@@ -667,7 +686,20 @@ function select(input) {
     }
   }
 
-  return { chosen, notes, category, byPath, repoRules, runRepos };
+  // The one supplemental this assembler knows about: a brief too long to ride
+  // the prompt whole. The prompt builders cut it at the same cap through
+  // briefForPrompt, so the text that was cut and this line agree.
+  const supplemental = [];
+  if (todo !== null && typeof todo.brief === "string" && byteLength(todo.brief) > SUPPLEMENTAL_CAPS.brief) {
+    supplemental.push({
+      what: "this todo's full brief, truncated above",
+      bytes: byteLength(todo.brief),
+      how: BRIEF_SOURCE,
+      truncated: true,
+    });
+  }
+
+  return { chosen, notes, category, byPath, repoRules, runRepos, supplemental };
 }
 
 // ── The shrink orders ────────────────────────────────────────────────────────
@@ -908,7 +940,7 @@ function fetchableItems(state, options) {
   for (const question of SEARCH_QUESTIONS) items.push({ what: question.what, how: question.how, group: "search" });
 
   // 7. Supplemental that did not ride whole.
-  for (const supplemental of options.supplemental ?? []) {
+  for (const supplemental of [...(state.supplemental ?? []), ...(options.supplemental ?? [])]) {
     if (supplemental.truncated !== true) continue;
     items.push({ what: supplemental.what, bytes: supplemental.bytes, how: supplemental.how });
   }
@@ -1008,6 +1040,7 @@ export function assembleContextParts(input) {
       byPath: indexPages(input.pages),
       repoRules: input.repoRules ?? [],
       runRepos: [],
+      supplemental: [],
     }
     : select({ ...input, subject });
 
@@ -1060,11 +1093,20 @@ export function truncateSupplemental(text, cap, { keep = "head", where }) {
     return { text: `${note}\n${tail}`, truncated: true, bytes };
   }
   const lines = source.split(/\r?\n/);
-  const heads = headings(lines).map((h) => h.index);
-  let kept = lines.length;
-  while (kept > 1 && byteLength(`${lines.slice(0, kept).join("\n").trimEnd()}\n${note}`) > cap) {
-    const previous = heads.filter((index) => index < kept - 1).pop();
-    kept = previous === undefined ? Math.max(1, kept - 8) : previous;
+  const render = (kept) => `${lines.slice(0, kept).join("\n").trimEnd()}\n${note}`;
+  // The most lines that still fit, by bisection — then snapped BACK to the
+  // last heading boundary inside that, so the cut lands between sections
+  // rather than mid-thought.
+  let low = 1;
+  let high = lines.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (byteLength(render(middle)) <= cap) low = middle;
+    else high = middle - 1;
   }
-  return { text: `${lines.slice(0, kept).join("\n").trimEnd()}\n${note}`, truncated: true, bytes };
+  // A heading at line 0 is the page's own title and heads everything, so
+  // snapping to it would leave nothing at all — only a LATER heading is a
+  // boundary worth taking.
+  const boundary = headings(lines).map((h) => h.index).filter((index) => index > 0 && index <= low).pop();
+  return { text: render(boundary ?? low), truncated: true, bytes };
 }

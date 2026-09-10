@@ -95,7 +95,14 @@ export function contextRecord() {
         batchId: IDS.batch,
         brief: "Rework `convex/tts.ts` and worker/jobs/x.mjs together.",
       },
-      { id: IDS.nosuch, category: "nosuch", timingClass: "whenever" },
+      // A brief past SUPPLEMENTAL_CAPS.brief: the prompt carries its head and
+      // the index carries the line saying where the rest is.
+      {
+        id: IDS.nosuch,
+        category: "nosuch",
+        timingClass: "whenever",
+        brief: `# The brief\n\n${"- a long line of brief, long enough to matter.\n".repeat(200)}`,
+      },
       { id: IDS.oversize, category: "oversize", timingClass: "dated", dueDay: MONDAY, batchId: IDS.batch },
       { id: IDS.member1, category: "climbing", timingClass: "whenever", batchId: IDS.memberBatch },
       { id: IDS.member2, category: "climbing", timingClass: "whenever", batchId: IDS.memberBatch },
@@ -344,6 +351,7 @@ export const EXPECTED = Object.freeze({
       PRIORITIES_LINES.todo, SCHEDULE_LINES.week, SCHEDULE_LINES.calendars,
       ...AREA_NAMES.map(areaLine),
       EVIDENCE_LINE, ...ALL_RULES_LINES, ...SEARCH_LINES,
+      "- this todo's full brief, truncated above (9.2K) — tom.quest/tts, or the record",
     ]),
   },
 

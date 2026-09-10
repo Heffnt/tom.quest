@@ -4,7 +4,7 @@ import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { assemblePrelude, assemblePreludePublication, collectRepoRules, PRELUDE_LAYERS } from "./prelude.mjs";
-import { EXPAND_BUDGET } from "../worker/jobs/context-relevance.mjs";
+import { briefForPrompt, EXPAND_BUDGET, SUPPLEMENTAL_CAPS } from "../worker/jobs/context-relevance.mjs";
 import {
   CONTEXT_PAGES,
   CONTEXT_REPO_RULES,
@@ -289,6 +289,20 @@ describe("prelude --for", () => {
     );
     expect(run.status).toBe(0);
     expect(run.stdout).toContain('nothing matched category "nosuch"');
+  });
+
+  it("names a brief too long to ride the prompt whole, and where the rest is", () => {
+    const dir = contextFixture();
+    const prelude = assembleFor(dir, `todo:${IDS.nosuch}`);
+    expect(prelude.fetchable).toContain("- this todo's full brief, truncated above (9.2K) — tom.quest/tts, or the record");
+    // The prompt builders cut it at the same cap, through the same function.
+    const { brief } = contextRecord().todos.find((todo) => todo.id === IDS.nosuch);
+    const carried = briefForPrompt(brief);
+    expect(carried.truncated).toBe(true);
+    expect(Buffer.byteLength(carried.text)).toBeLessThanOrEqual(SUPPLEMENTAL_CAPS.brief);
+    expect(carried.text.endsWith("… (fetch the rest: tom.quest/tts, or the record)")).toBe(true);
+    // Cut at a heading, not mid-line: what is left is a brief that reads.
+    expect(carried.text.startsWith("# The brief")).toBe(true);
   });
 
   it("expands the repo rules the brief's paths name, root first then deepest", () => {
