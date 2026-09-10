@@ -1,3 +1,22 @@
 #!/usr/bin/env sh
 # tts-search — read production TTS history and the local WikiTom archive.
+#
+# The database half of the search needs CONVEX_SITE_URL and TTS_WORKER_KEY.
+# The cron jobs are handed both out of /etc/tts/worker.env, but an interactive
+# caller — a session on this box, or Tom over ssh — starts with neither, and
+# all search-lib.mjs can do about it is say they must be set. So read them from
+# the same file the jobs read, and only when one is actually missing: an
+# explicit value in the caller's environment still wins, which is what makes
+# `CONVEX_SITE_URL=... tts-search ...` against a dev deployment still work.
+#
+# `set -a` exports every name the file assigns and is turned straight back off,
+# so this changes nothing for anything but the node process below.
+if [ -z "${CONVEX_SITE_URL:-}" ] || [ -z "${TTS_WORKER_KEY:-}" ]; then
+  if [ -r /etc/tts/worker.env ]; then
+    set -a
+    . /etc/tts/worker.env
+    set +a
+  fi
+fi
+
 exec node /opt/tts/search-lib.mjs "$@"
