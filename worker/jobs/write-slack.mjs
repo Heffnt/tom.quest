@@ -85,8 +85,7 @@ export function formRules(kind, canReply) {
     `  open the page to finish, which is the point of the message lost.`,
     `- OUTCOMES, NEVER LOGGED EVENTS. Say what a thing now is, not what was`,
     `  written about it. The words "plan stored", "created", "retired",`,
-    `  "session opened", "worker event", "digest" and "focus-item" appear in no`,
-    `  message.`,
+    `  "session opened", "worker event" and "focus-item" appear in no message.`,
     `- No title line. No *bold* header. No emoji. Slack already stamps the`,
     `  channel and the time.`,
     `- USE ONLY THE FACTS BELOW. Every link and every number you write must`,
@@ -104,7 +103,7 @@ export function formRules(kind, canReply) {
   const shape =
     kind === "today"
       ? [
-          `THIS IS THE MORNING MESSAGE, posted at 5 a.m. in #tts-today. He reads it`,
+          `THIS IS THE DIGEST, posted at 5 a.m. in #tts-today. He reads it`,
           `once and decides what he is doing today. The sections run in this order,`,
           `each omitted when it has no facts except the first:`,
           `  1. today — what carries a date he has passed, oldest first, each line`,
@@ -150,12 +149,16 @@ export function draftPrompt(writeLayer, request, complaints) {
     ``,
     formRules(request.kind, request.canReply),
     ``,
+    // Fixed and rarely-changing text first, the volatile value last: the answer
+    // shape never varies, so it sits ABOVE the facts block, which is different
+    // every morning. Anything fixed placed behind the facts would break the
+    // prefix the cache is keyed on.
+    answerShape(),
+    ``,
     `--- THE FACTS ---`,
     `Every fact has an id, the sentence it states, the links it may lend a line,`,
     `and the numbers it may lend a line.`,
     JSON.stringify(request.facts.facts, null, 2),
-    ``,
-    answerShape(),
   ];
   if (complaints.length > 0) {
     parts.push(

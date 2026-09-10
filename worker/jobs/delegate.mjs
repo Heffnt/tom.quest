@@ -21,8 +21,10 @@ import { convexFetch, extractJsonObject, loadEnv, runClaude } from "./tts-lib.mj
 export const DELEGATE_WORK_DIR = "/var/cache/tts/delegate";
 
 /** The prelude layers the delegate is given (scripts/prelude.mjs is the one
- *  assembler — do not re-implement assembly here), and the file that carries
- *  Tom's intent. */
+ *  assembler — do not re-implement assembly here). The `know` layer already
+ *  carries model-of-tom/intent.md, so the prompt has no separate intent
+ *  section; INTENT_PATH is the presence check that refuses to rule in Tom's
+ *  stead when the file is not in the vault. */
 export const DELEGATE_LAYERS = ["operate", "write", "know"];
 export const INTENT_PATH = "model-of-tom/intent.md";
 export const EVIDENCE_DIR = "model-of-tom/evidence/";
@@ -102,7 +104,7 @@ const todoStatement = (ask) =>
  * objections are omitted ENTIRELY when there are none — an empty section reads
  * as a fact about Tom's attention that is not true.
  */
-export function delegatePrompt(ask, { layers, intent, narrowList }) {
+export function delegatePrompt(ask, { layers, narrowList }) {
   const narrow = narrowList.map((item) => "- " + item.id + " — " + item.decision).join("\n");
   const options = ask.options.map((option, index) => String(index + 1) + ". " + option).join("\n");
   const objections =
@@ -123,8 +125,10 @@ export function delegatePrompt(ask, { layers, intent, narrowList }) {
         "\nthose objections are his and they bind you. Do not re-take a decision he reverted."
       : "";
   return [
+    // No separate intent section: the know layer already carries
+    // model-of-tom/intent.md (scripts/prelude-layers.mjs), and a second copy
+    // would both repeat it and put a fetched value in front of fixed text.
     layers.operate, "", layers.write, "", layers.know, "",
-    "--- TOM'S INTENT ---", intent, "",
     "--- YOU ARE THE DELEGATE ---", "",
     "You are the delegate. One agent of Tom's is working with nobody watching, it has reached a",
     "decision that is his, and you answer it in his stead. You have just read how he works, how he",
@@ -323,7 +327,7 @@ export async function askDelegate(ask, suppliedIo = {}) {
         } else {
           const prompt = delegatePrompt(
             { ...ask, subject: ask.subject, priorObjections: context.priorObjections ?? [] },
-            { layers, intent, narrowList: state.narrowList },
+            { layers, narrowList: state.narrowList },
           );
           const started = io.now();
           try {

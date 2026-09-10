@@ -32,6 +32,7 @@ describe("the form the writer is given", () => {
   it("states every rule the verifier will mechanically enforce", () => {
     const rules = formRules("today", true);
     for (const rule of [
+      "THIS IS THE DIGEST", // Tom's word for this message, in his own register
       "220", // the first line's cap
       "140", // a statement's cap
       'NEVER a bare "+N more"',
@@ -43,9 +44,11 @@ describe("the form the writer is given", () => {
       expect(rules).toContain(rule);
     }
     // The vocabulary the checker cannot see but the judge can, named as words.
-    for (const word of ["plan stored", "session opened", "worker event", "digest", "focus-item"]) {
+    for (const word of ["plan stored", "session opened", "worker event", "focus-item"]) {
       expect(rules).toContain(word);
     }
+    // "digest" is Tom's own word for this message, so it is NOT a banned word.
+    expect(rules).not.toContain(`"digest"`);
   });
 
   it("allows a reply invitation only when the route is live, and forbids it otherwise", () => {
@@ -59,7 +62,7 @@ describe("the form the writer is given", () => {
     const rules = formRules("needs-you", false);
     expect(rules).toContain("THIS IS A NEEDS-YOU THREAD");
     expect(rules).toContain("Never print a vendor's subject line or a From");
-    expect(rules).not.toContain("THIS IS THE MORNING MESSAGE");
+    expect(rules).not.toContain("THIS IS THE DIGEST");
   });
 });
 
@@ -73,11 +76,16 @@ describe("the answer shape", () => {
 });
 
 describe("the whole prompt", () => {
-  it("puts the write layer first, then the form, then the facts", () => {
+  it("puts the fixed text first and the volatile facts last", () => {
     const prompt = draftPrompt("WRITE LAYER", FACTS, []);
     expect(prompt.startsWith("WRITE LAYER")).toBe(true);
     expect(prompt.indexOf("THE FORM.")).toBeGreaterThan(prompt.indexOf("WRITE LAYER"));
-    expect(prompt.indexOf("--- THE FACTS ---")).toBeGreaterThan(prompt.indexOf("THE FORM."));
+    // The answer shape never varies, so it sits ABOVE the one volatile value:
+    // the facts block, which is different every morning.
+    expect(prompt.indexOf("Answer ONLY a JSON object")).toBeGreaterThan(prompt.indexOf("THE FORM."));
+    expect(prompt.indexOf("--- THE FACTS ---")).toBeGreaterThan(
+      prompt.indexOf("Answer ONLY a JSON object"),
+    );
     expect(prompt).toContain('"id": "todo:ph7fqh2j"');
     // Nothing about a repair turn on the first attempt.
     expect(prompt).not.toContain("YOUR LAST DRAFT WAS REFUSED");

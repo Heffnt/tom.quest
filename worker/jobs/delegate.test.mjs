@@ -33,7 +33,7 @@ const ask = (over = {}) => ({
 });
 
 const prompt = (over = {}, opts = {}) =>
-  delegatePrompt(ask(over), { layers: LAYERS, intent: "INTENT", narrowList: NARROW_LIST, ...opts });
+  delegatePrompt(ask(over), { layers: LAYERS, narrowList: NARROW_LIST, ...opts });
 
 describe("delegatePrompt", () => {
   it("renders every narrow-list item's decision line, in order", () => {
@@ -52,14 +52,16 @@ describe("delegatePrompt", () => {
     const operate = text.indexOf(LAYERS.operate);
     const write = text.indexOf(LAYERS.write);
     const know = text.indexOf(LAYERS.know);
-    const intent = text.indexOf("--- TOM'S INTENT ---");
     const instructions = text.indexOf("--- YOU ARE THE DELEGATE ---");
     const caller = text.indexOf("--- CALLER ---");
     expect(operate).toBeLessThan(write);
     expect(write).toBeLessThan(know);
-    expect(know).toBeLessThan(intent);
-    expect(intent).toBeLessThan(instructions);
+    expect(know).toBeLessThan(instructions);
     expect(instructions).toBeLessThan(caller);
+    // Intent is not a section of its own: the know layer already carries
+    // model-of-tom/intent.md, and a second copy would sit ahead of the fixed
+    // doctrine text below.
+    expect(text).not.toContain("--- TOM'S INTENT ---");
     // Everything the caller wrote is below the CALLER line, which the
     // instruction-source paragraph above names.
     expect(text.indexOf(ask().question)).toBeGreaterThan(caller);
@@ -358,7 +360,7 @@ describe("evals/tasks/delegate", () => {
     for (const item of items) {
       const text = delegatePrompt(
         { askId: "eval", sessionId: "eval", ...item.ask, priorObjections: [] },
-        { layers: LAYERS, intent: "INTENT", narrowList: NARROW_LIST },
+        { layers: LAYERS, narrowList: NARROW_LIST },
       );
       // Only the sentence. mustNotName and refusedBecause are graded on the
       // ANSWER: the instructions legitimately quote "it depends" as the shape
