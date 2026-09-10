@@ -3,6 +3,7 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { recordMissedKeepingDate } from "./tts";
+import { DELEGATE_DECISION, MERGE, objectionRank, stripNarrowListId, type ObjectionFact } from "./ttsAsk";
 import { modelOfTomState } from "./ttsSkills";
 import {
   DAY_MS,
@@ -192,6 +193,28 @@ export type DigestFacts = {
   emailCaptures: { id: string; statement: string; entryAction?: string }[];
   overnight: { batch: string | null; text: string }[];
   ready: { id: string; statement: string; entryAction?: string }[];
+  // Decisions, refusals, no-answers, and mechanically gated merges since the
+  // prior digest. The objection list keeps them visible; silence means they
+  // stand, but none is a ruling.
+  objections: ({
+    kind: "decision";
+    askId: string;
+    decision: string | null;
+    reason: string;
+    refused: boolean;
+    refusedBecause: string | null;
+    fallback: string;
+    todoId: string | null;
+    subject: string | null;
+    at: number;
+  } | {
+    kind: "merge";
+    repo: string;
+    sha: string;
+    subject: string;
+    todoId: string | null;
+    at: number;
+  })[];
   failures: { at: number; text: string }[];
   // null = WikiTom could not be read at all (see WIKITOM_UNREADABLE).
   wikitom: WikiTomCommit[] | null;
@@ -297,6 +320,30 @@ function section(header: string, items: string[], tab: TtsTab | null): Section {
   return { header, lines, count: items.length, tab };
 }
 
+/** One plain, independently testable objection-list line. Merge rows are
+ * reported here too, but their wording never assigns the merge to Fable. */
+export function objectionLine(
+  objection: DigestFacts["objections"][number],
+  n: number,
+): string {
+  const link =
+    objection.todoId === null
+      ? ""
+      : `: <${ttsItemLink(objection.todoId)}|${slackEscape(clipToLine(objection.kind === "merge" ? objection.subject : objection.subject ?? "todo"))}>`;
+  if (objection.kind === "merge") {
+    return `- ${n}. merged ${slackEscape(objection.repo)}@${slackEscape(objection.sha)} — ${slackEscape(clipToLine(objection.subject))}${link}`;
+  }
+  const head = objection.refused
+    ? `REFUSED, parked: would have ${slackEscape(clipToLine(objection.decision ?? objection.fallback))}`
+    : objection.decision === null
+      ? "no answer from the delegate; the caller took its fallback"
+      : slackEscape(clipToLine(objection.decision));
+  const why = objection.refused
+    ? slackEscape(clipToLine(stripNarrowListId(objection.refusedBecause ?? "")))
+    : slackEscape(clipToLine(objection.reason));
+  return `- ${n}. ${head} — ${why}${link}`;
+}
+
 function digestSections(f: DigestFacts): Section[] {
   const sections: Section[] = [];
 
@@ -315,6 +362,18 @@ function digestSections(f: DigestFacts): Section[] {
       ? { header: "*Due and overdue*", lines: ["- nothing"], count: 0, tab: null }
       : section("*Due and overdue*", dueLines, "everything"),
   );
+
+  if (f.objections.length > 0) {
+    const objectionSection = section(
+      "*Objection list*",
+      f.objections.map((objection, index) => objectionLine(objection, index + 1)),
+      // There is no delegate-only page; the items behind a decision live on
+      // the existing Everything tab, so the standard overflow link goes there.
+      "everything",
+    );
+    objectionSection.lines.push('- silence means it stands; reply "revert 2" or "2: what to do instead"');
+    sections.push(objectionSection);
+  }
 
   const spans = [
     ...f.blocks.map((b) => ({ start: b.start, end: b.end, text: b.label, allDay: false })),
@@ -721,6 +780,7 @@ export async function gatherDigestFacts(
   const overnight: DigestFacts["overnight"] = [];
   const failures: DigestFacts["failures"] = [];
   const learning: DigestFacts["learning"] = [];
+  const objections: DigestFacts["objections"] = [];
   const modelOfTom = await modelOfTomState(ctx);
   for (const e of events) {
     const d = (e.data ?? {}) as Record<string, unknown>;
@@ -814,6 +874,32 @@ export async function gatherDigestFacts(
           text: `calendar event written: ${slackEscape(str(d.title) ?? "")}`,
         });
         break;
+      case DELEGATE_DECISION:
+        // An attended ask is a prompt bug, not a decision for Tom's morning.
+        if (d.attended === true) break;
+        objections.push({
+          kind: "decision",
+          askId: str(d.askId) ?? e.key ?? "?",
+          decision: str(d.decision) ?? null,
+          reason: str(d.reason) ?? "",
+          refused: d.refused === true,
+          refusedBecause: str(d.refusedBecause) ?? null,
+          fallback: str(d.fallback) ?? "",
+          todoId: e.todoId === undefined ? null : e.todoId as string,
+          subject: (await todoOf(e.todoId))?.statement ?? null,
+          at: e.at,
+        });
+        break;
+      case MERGE:
+        objections.push({
+          kind: "merge",
+          repo: str(d.repo) ?? "repo",
+          sha: str(d.sha) ?? "?",
+          subject: str(d.subject) ?? (await todoOf(e.todoId))?.statement ?? "merge",
+          todoId: e.todoId === undefined ? null : e.todoId as string,
+          at: e.at,
+        });
+        break;
       case LEARNING_CHANGE:
       case LEARNING_REVERTED:
       case LEARNING_REVERT_FAILED:
@@ -877,6 +963,20 @@ export async function gatherDigestFacts(
     ready.push({ id: t._id as string, statement: t.statement, entryAction: t.entryAction });
   }
 
+  const readyIds = new Set(ready.map((todo) => todo.id));
+  objections.sort((a, b) => {
+    const rank = (item: DigestFacts["objections"][number]) => {
+      if (item.kind === "merge") return item.todoId !== null && dueIds.has(item.todoId) ? 3 : 6;
+      const fact: ObjectionFact = {
+        askId: item.askId, at: item.at, todoId: item.todoId, decision: item.decision,
+        reason: item.reason, refused: item.refused, refusedBecause: item.refusedBecause,
+        fallback: item.fallback, subject: item.subject, objectedAt: null,
+      };
+      return objectionRank(fact, readyIds, dueIds);
+    };
+    return rank(a) - rank(b) || b.at - a.at;
+  });
+
   // 7. Rulings from Tom's words since the last digest.
   const rulingRows = await ctx.db
     .query("dtsRulings")
@@ -911,6 +1011,7 @@ export async function gatherDigestFacts(
     emailCaptures,
     overnight,
     ready,
+    objections,
     failures,
     wikitom: wikitom ?? null,
     rulings,
@@ -958,6 +1059,19 @@ export const internalComposeDigest = internalQuery({
         ...facts.emailCaptures.map((c) => c.id),
         ...facts.ready.map((r) => r.id),
       ].map((id) => ctx.db.normalizeId("dtsTodos", id)!),
+      // The askIds the objection list PRINTED, in printed order. A reply of
+      // "revert 2" in this digest's thread means objectionAskIds[1] — the
+      // numbers are this digest's, not the record's, so they are recorded on
+      // the "digest-sent" row rather than derived later.
+      //
+      // Only the printed ones: a number Tom types must name a line he could
+      // see, so the list is cut at SECTION_ITEM_CAP exactly as the section is.
+      // A merge line holds "" — it is reported for objection but it is not a
+      // delegate decision, so its number names no askId and the reply falls
+      // through to the ordinary digest paths.
+      objectionAskIds: facts.objections
+        .slice(0, SECTION_ITEM_CAP)
+        .map((objection) => (objection.kind === "merge" ? "" : objection.askId)),
     };
   },
 });

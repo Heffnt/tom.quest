@@ -1,0 +1,97 @@
+#!/usr/bin/env node
+import crypto from "node:crypto";
+
+const jobsDir = process.env.TTS_JOBS_DIR ?? "/opt/tts";
+const { askDelegate } = await import(jobsDir + "/delegate.mjs");
+
+function usage(message) {
+  if (message) process.stderr.write("tts-ask: " + message + "\n");
+  process.stderr.write(
+    'usage: tts-ask --session <id> | --job <name>\n' +
+    '               [--todo <id>]\n' +
+    '               --question "<one sentence>"\n' +
+    '               --option "<a>" --option "<b>" [--option "<c>"]\n' +
+    '               --recommend "<the option you would take>"\n' +
+    '               --fallback "<what you will do if there is no answer>"\n',
+  );
+  process.exitCode = 2;
+}
+
+function parse(argv) {
+  const ask = { options: [] };
+  for (let i = 0; i < argv.length; i += 1) {
+    const flag = argv[i];
+    if (flag === "--help" || flag === "-h") return { help: true };
+    const value = argv[i + 1];
+    if (!["--session", "--job", "--todo", "--question", "--option", "--recommend", "--fallback"].includes(flag)) {
+      throw new Error("unknown flag " + flag);
+    }
+    if (value === undefined || value.startsWith("--")) throw new Error(flag + " needs a value");
+    i += 1;
+    if (flag === "--session") ask.sessionId = value;
+    if (flag === "--job") ask.job = value;
+    if (flag === "--todo") ask.todoId = value;
+    if (flag === "--question") ask.question = value;
+    if (flag === "--option") ask.options.push(value);
+    if (flag === "--recommend") ask.recommendation = value;
+    if (flag === "--fallback") ask.fallback = value;
+  }
+  if (!!ask.sessionId === !!ask.job) throw new Error("give exactly one of --session or --job");
+  if (!ask.question?.trim()) throw new Error("--question is required");
+  if (ask.question.trim().length > 400) throw new Error("--question is at most 400 characters");
+  if (ask.options.length < 2 || ask.options.length > 5 || ask.options.some((option) => !option.trim())) {
+    throw new Error("give 2 to 5 non-empty --option values");
+  }
+  if (!ask.recommendation?.trim() || !ask.options.includes(ask.recommendation)) {
+    throw new Error("--recommend must exactly match one --option");
+  }
+  if (!ask.fallback?.trim()) throw new Error("--fallback is required");
+  ask.askId = crypto.randomBytes(4).toString("hex");
+  return ask;
+}
+
+function recordedLink(ask) {
+  return ask.todoId ? "https://tom.quest/tts?item=" + ask.todoId : "https://tom.quest/tts";
+}
+
+function printAnswer(ask, result) {
+  process.stdout.write("DELEGATE " + (result.askId ?? ask.askId) + "\n");
+  if (result.refused) {
+    process.stdout.write("refused: " + (result.refusedBecause ?? result.reason) + "\n");
+    process.stdout.write("take your fallback: " + ask.fallback + "\n");
+  } else {
+    process.stdout.write("decision: " + (result.decision ?? "no answer") + "\n");
+    process.stdout.write("reason: " + result.reason + "\n");
+    process.stdout.write("refused: no\n");
+  }
+  process.stdout.write("recorded: " + recordedLink(ask) + "\n");
+}
+
+let ask;
+try {
+  ask = parse(process.argv.slice(2));
+  if (ask.help) {
+    usage();
+  } else {
+    const result = await askDelegate(ask);
+    printAnswer(ask, result);
+    if (result.refused) process.exitCode = 4;
+    else if (result.decision === null) process.exitCode = 3;
+  }
+} catch (error) {
+  if (ask === undefined) {
+    usage(error.message);
+  } else {
+    // A delegate failure must not crash its caller. There is no row when the
+    // record itself is unreachable, but stdout remains the transcript echo and
+    // the caller can take its stated fallback.
+    printAnswer(ask, {
+      askId: ask.askId,
+      decision: null,
+      reason: "delegate unavailable: " + String(error?.message ?? error).slice(0, 200),
+      refused: false,
+    });
+    process.exitCode = 3;
+  }
+}
+

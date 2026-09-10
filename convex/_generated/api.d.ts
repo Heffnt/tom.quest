@@ -21,6 +21,7 @@ import type * as http from "../http.js";
 import type * as serverHealth from "../serverHealth.js";
 import type * as symbolScores from "../symbolScores.js";
 import type * as tts from "../tts.js";
+import type * as ttsAsk from "../ttsAsk.js";
 import type * as ttsCalendar from "../ttsCalendar.js";
 import type * as ttsCalendarExpand from "../ttsCalendarExpand.js";
 import type * as ttsCalendarFetch from "../ttsCalendarFetch.js";
@@ -65,6 +66,7 @@ declare const fullApi: ApiFromModules<{
   serverHealth: typeof serverHealth;
   symbolScores: typeof symbolScores;
   tts: typeof tts;
+  ttsAsk: typeof ttsAsk;
   ttsCalendar: typeof ttsCalendar;
   ttsCalendarExpand: typeof ttsCalendarExpand;
   ttsCalendarFetch: typeof ttsCalendarFetch;

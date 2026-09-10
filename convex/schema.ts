@@ -805,7 +805,7 @@ export default defineSchema({
     // week, and the model's most likely response to an instruction to fix
     // something already fixed is to restructure something else.
     consumedAt: v.optional(v.number()),
-    // The lookup key, set on exactly eight kinds. Four are convex/ttsSlack.ts:
+    // The lookup key, set on exactly eleven kinds. Four are convex/ttsSlack.ts:
     //   "slack-sent"  — `${channel}:${thread root ts}`, so a threaded reply
     //                   from Tom finds what it answers by (channel, thread_ts);
     //   "slack-event" — Slack's event_id, so a redelivered event is dropped;
@@ -828,6 +828,15 @@ export default defineSchema({
     //                 — a batch session has no todoId, so the weekly gather
     //                   finds the sessions that worked a goal's batch here
     //                   (convex/ttsWeekly.ts goalsNotEvaluated).
+    // Three are convex/ttsAsk.ts, the delegate's record:
+    //   "delegate-decision" — the ask's own id, so a second POST of the same
+    //                   ask writes nothing and the digest, the caller's next
+    //                   run and Tom's objection all name one row;
+    //   "delegate-objection"
+    //                 — the SAME askId, so "what was decided, and did Tom
+    //                   object" is two reads one index apart;
+    //   "merge"       — `<repo>:<sha>`, so a retried report of one merge is
+    //                   one event.
     // `data` is v.any() and cannot be indexed, which is why the key is its
     // own field: the events route must answer inside Slack's 3-second budget,
     // and a thread root can be days old, so a bounded scan is not enough.

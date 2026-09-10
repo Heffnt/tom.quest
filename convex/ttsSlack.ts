@@ -4,6 +4,8 @@ import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { applyStatusChange, logEvent } from "./tts";
+import { DIGEST_OBJECTION_LOOKBACK } from "./ttsAsk";
+import { DIGEST_SENT } from "./ttsDigest";
 import {
   SLACK_SUBJECT,
   captureReplyText,
@@ -307,6 +309,7 @@ export type ThreadReplyOutcome =
   | { outcome: "time-note"; timeNoteId: Id<"dtsTimeNotes"> }
   | { outcome: "tom-note"; subject: SlackSubject }
   | { outcome: "learning-objection"; id: string }
+  | { outcome: "delegate-objection"; id: string }
   | { outcome: "captured"; todoId: Id<"dtsTodos"> };
 
 /**
@@ -440,6 +443,14 @@ async function routeReply(
       // TRUE OF ONE REPLY — "<todo id> done [<change id>]" — and both then
       // happen: the objection is written first, and the todo's part is read
       // with the change's name taken out, so the "done" is still a "done".
+      // The objection branch runs FIRST. The two grammars cannot collide — a
+      // learning id is hex, an objection number is one or two digits and
+      // anchored at the start — and running first keeps the precedence
+      // obvious. Both can be true of one reply, and both then happen.
+      const objectedDecision =
+        subject.kind === "digest"
+          ? await namedObjection(ctx, text, subject.day, at)
+          : undefined;
       const objected = await namedLearningChange(ctx, text);
       if (objected !== undefined) {
         await logEvent(ctx, "learning-objection", undefined, {
@@ -456,6 +467,9 @@ async function routeReply(
         if (shape !== "fact") {
           return await todoReply(ctx, named.todoId, text, at, shape);
         }
+      }
+      if (objectedDecision !== undefined) {
+        return { outcome: "delegate-objection", id: objectedDecision };
       }
       if (objected !== undefined) return { outcome: "learning-objection", id: objected };
       await logEvent(ctx, "tom-note", named?.todoId, {
@@ -475,6 +489,22 @@ async function routeReply(
         ...at,
       });
       return { outcome: "learning-objection", id: subject.id };
+    case "delegate": {
+      // A reply in a decisions-channel thread is an objection to that ONE
+      // decision, so there is no number to name: the thread is the naming. A
+      // reply that opens with "revert" says "not that"; anything else says
+      // what instead. Silence, here as in the digest, means it stands.
+      const revert = /^revert\b[.!]?/i.test(text.trim());
+      const sentence = revert ? null : text.trim() === "" ? null : text.trim();
+      await ctx.runMutation(internal.ttsAsk.internalRecordDelegateObjection, {
+        askId: subject.askId,
+        text,
+        revert,
+        sentence,
+        ...at,
+      });
+      return { outcome: "delegate-objection", id: subject.askId };
+    }
     case "unknown":
       return await captureUnknown(ctx, text, at);
   }
@@ -531,6 +561,74 @@ async function namedLearningChange(ctx: MutationCtx, text: string): Promise<stri
     recent.map((row) => (row.data ?? {}) as { id?: unknown }),
   );
   return typeof hit?.id === "string" ? hit.id : undefined;
+}
+
+/**
+ * The objection grammar, in two forms, both ANCHORED at the start of the
+ * reply and case-insensitive:
+ *
+ *   "revert 2" / "Revert 2."   → { n: 2, revert: true,  sentence: null }
+ *   "2: leave it Wednesday"    → { n: 2, revert: false, sentence: "leave it Wednesday" }
+ *
+ * Anything else is null. Anchored, so a reply that merely CONTAINS a number
+ * ("see item 2 in the list", "2 done") is a fact, not an objection.
+ */
+export function parseObjectionReply(
+  text: string,
+): { n: number; revert: boolean; sentence: string | null } | null {
+  const t = text.trim();
+  const revert = /^revert\s+(\d{1,2})\b[.!]?\s*$/i.exec(t);
+  if (revert) return { n: Number(revert[1]), revert: true, sentence: null };
+  const numbered = /^(\d{1,2})\s*:\s*(\S[\s\S]*)$/.exec(t);
+  if (numbered) return { n: Number(numbered[1]), revert: false, sentence: numbered[2].trim() };
+  return null;
+}
+
+/**
+ * The delegate decision a reply in THIS morning's digest thread objects to, or
+ * undefined when the reply is not an objection or its number named no line.
+ * Records the objection as a side effect and answers with the askId.
+ *
+ * The numbers are the digest's own, so they are resolved against the
+ * "digest-sent" row that morning wrote (data.objectionAskIds, in printed
+ * order) rather than recomputed — a number Tom types must name a line he could
+ * actually see.
+ */
+async function namedObjection(
+  ctx: MutationCtx,
+  text: string,
+  day: string,
+  at: { channel: string; ts: string; threadTs: string },
+): Promise<string | undefined> {
+  const parsed = parseObjectionReply(text);
+  if (parsed === null) return undefined;
+  // DO NOT put `day` in the row's key to make this a point lookup.
+  // ttsDigest.lastDigestSent depends on "digest-sent" rows carrying NO key:
+  // with the kind pinned and every key empty, by_kind_key orders by time and
+  // .first() is the newest row. Keying them by day would silently break the
+  // window arithmetic of every future digest. So: a bounded newest-first take
+  // over two weeks of mornings, inside Slack's 3-second budget.
+  const recent = await ctx.db
+    .query("dtsEvents")
+    .withIndex("by_kind_key", (q) => q.eq("kind", DIGEST_SENT))
+    .order("desc")
+    .take(DIGEST_OBJECTION_LOOKBACK);
+  const sent = recent.find((row) => (row.data as { day?: unknown } | undefined)?.day === day);
+  const printed = (sent?.data as { objectionAskIds?: unknown } | undefined)?.objectionAskIds;
+  const askId = Array.isArray(printed) ? printed[parsed.n - 1] : undefined;
+  // A number that named no printed line is not an objection: fall through, and
+  // the reply is kept as the fact it is. Nothing is lost.
+  if (typeof askId !== "string" || askId === "") return undefined;
+  await ctx.runMutation(internal.ttsAsk.internalRecordDelegateObjection, {
+    askId,
+    n: parsed.n,
+    day,
+    text,
+    revert: parsed.revert,
+    sentence: parsed.sentence,
+    ...at,
+  });
+  return askId;
 }
 
 async function namedTodo(

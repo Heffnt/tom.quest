@@ -15,6 +15,39 @@
 
 import { v, type Infer } from "convex/values";
 
+// The narrow list is Tom's boundary for an unattended delegate. Its `decision`
+// text is served to the box and rendered in the delegate prompt; `command` is
+// the literal mirror used by the autonomous shell classifier. A merge is
+// deliberately absent: until its mechanical gate exists it remains blocked by
+// the classifier, and once it exists it is reported for objection instead.
+export const NARROW_LIST = [
+  {
+    id: "money",
+    decision: "spend money, commit to a payment, or enter a payment method anywhere",
+    command: "spend money — a purchase, a subscription, a payment, or entering a payment method",
+  },
+  {
+    id: "message-in-his-name",
+    decision: "send a message to another human being in Tom's name — mail, chat, a form, a comment on someone else's work",
+    command: "send a message to another human in Tom's name (mail, a Slack post outside the system's own channels, a form submission, a comment on someone else's issue or pull request)",
+  },
+  {
+    id: "irreversible-deletion",
+    decision: "delete data irreversibly outside git — anything a checkout, a snapshot or a branch cannot bring back",
+    command: "delete data that git cannot restore — anything outside the working directory, and any history rewrite that is pushed",
+  },
+  {
+    id: "credential",
+    decision: "read, print, move, create, rotate or revoke a credential",
+    command: "read, print, move, or send a credential, key, token or password anywhere",
+  },
+] as const;
+export type NarrowListItem = (typeof NARROW_LIST)[number];
+export const NARROW_LIST_IDS = NARROW_LIST.map((item) => item.id);
+export function isNarrowListId(value: unknown): value is NarrowListItem["id"] {
+  return typeof value === "string" && (NARROW_LIST_IDS as readonly string[]).includes(value);
+}
+
 /**
  * The opening contract for every unattended TTS mission. The autonomous
  * prompt builders share it instead of carrying synchronized copies.
@@ -746,6 +779,12 @@ export const SLACK_SUBJECT = v.union(
   v.object({ kind: v.literal("todo"), id: v.id("dtsTodos") }),
   v.object({ kind: v.literal("session"), id: v.id("claudeSessions") }),
   v.object({ kind: v.literal("learning"), id: v.string() }),
+  // One delegated decision, posted to the decisions channel as it is recorded
+  // (convex/ttsAsk.ts). It is its own subject and not the todo's: a todo
+  // subject stamps slackReplyTs, which belongs to the ONE reply thread that
+  // todo has in #dump, and a decisions-channel line must not claim it. A reply
+  // in this thread is an objection to that one decision.
+  v.object({ kind: v.literal("delegate"), askId: v.string() }),
 );
 export type SlackSubject = Infer<typeof SLACK_SUBJECT>;
 

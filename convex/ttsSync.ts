@@ -224,7 +224,7 @@ export const sendDigest = internalAction({
     // One window for the whole run: the composer reads Convex over it and the
     // WikiTom fetch reads GitHub over the same one.
     const wikitom = await fetchWikiTomCommits(since, now);
-    const { text, truncated, surfacedTodoIds } = await ctx.runQuery(
+    const { text, truncated, surfacedTodoIds, objectionAskIds } = await ctx.runQuery(
       internal.ttsDigest.internalComposeDigest,
       { day, now, since, wikitom },
     );
@@ -250,6 +250,9 @@ export const sendDigest = internalAction({
     await ctx.runMutation(internal.tts.internalMarkDigestSent, {
       day,
       surfacedTodoIds,
+      // The objection list's numbering travels with the send: a threaded
+      // "revert 2" is resolved against this row, not recomputed.
+      objectionAskIds,
       // windowEnd, not the row's own `at`: the next digest starts its window
       // where this one's ended, and composing plus posting takes seconds that
       // would otherwise be reported by neither digest.

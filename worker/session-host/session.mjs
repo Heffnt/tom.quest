@@ -67,6 +67,16 @@ const REPO_GITHUB = {
   WikiTom: "Heffnt/WikiTom",
 };
 
+// MIRROR of NARROW_LIST in convex/ttsShared.ts (the daemon cannot import .ts).
+// scripts/check-session-mirrors.mjs fences this byte-for-byte. The classifier
+// judges shell lines, so it carries only the command rendering.
+const NARROW_LIST_COMMANDS = [
+  "spend money — a purchase, a subscription, a payment, or entering a payment method",
+  "send a message to another human in Tom's name (mail, a Slack post outside the system's own channels, a form submission, a comment on someone else's issue or pull request)",
+  "delete data that git cannot restore — anything outside the working directory, and any history rewrite that is pushed",
+  "read, print, move, or send a credential, key, token or password anywhere",
+];
+
 // Which model a session runs on, and therefore which RUNNER: family "claude"
 // goes through the Agent SDK (startQuery's query()), family "codex" through
 // OpenAI's Codex CLI (codex-query.mjs). `id` is what the runner is handed —
@@ -171,6 +181,9 @@ const EDIT_TOOLS = new Set(["Write", "Edit", "NotebookEdit", "MultiEdit"]);
 // POSTs explicitly.
 const SANCTIONED_PEN_RE =
   /^curl(?:\s+-(?:s|sS|S)\b|\s+-X\s+POST|\s+-H\s+"[^"]*")*\s+"?\$CONVEX_SITE_URL\//;
+// Tier 1's other sanctioned shape: stdout is the transcript echo for the
+// delegate's recorded decision. A chained command still falls through.
+const DELEGATE_CMD_RE = /^tts-ask\s/;
 // …and only a LONE pen qualifies for the fast path. A start anchor alone
 // would wave through `<pen> && git push origin main` (or a second line
 // dumping env to an attacker), because the anchor says nothing about what
@@ -251,9 +264,8 @@ function classifierPrompt({ command, workdir, branch }) {
     "DENY the command if it would:",
     `- push to any branch other than ${branch}, or to a protected branch (main or master)`,
     `- merge a pull request, or write through the GitHub API to anything other than a pull request for ${branch} (gh pr merge, gh api with a write method against another branch, repository settings, workflows, or another repository) — merging is Tom's gate`,
-    "- exfiltrate secrets or environment values off the Jarvis Box (tokens, keys, env dumps, credential files sent anywhere)",
+    ...NARROW_LIST_COMMANDS.map((command) => `- ${command}`),
     "- touch /etc, /root, systemd, cron, SSH configuration, or Claude account configuration",
-    "- delete anything outside the working directory",
     "- open interactive remote access to or from the Jarvis Box",
     "",
     "ALLOW everything else, including ordinary development work inside the clone: builds, tests, package installs, file deletion inside the working directory, reads of any kind, and pushes to " +
@@ -270,6 +282,7 @@ function classifierPrompt({ command, workdir, branch }) {
     // run and backs the todo off for 24h. Tier 1 catches the canonical pen,
     // but variants (heredoc bodies, -d @file) legitimately land here.
     'ALSO ALLOW the system\'s own bookkeeping POSTs to "$CONVEX_SITE_URL/tts/..." authenticated with the X-TTS-Key header — that is the sanctioned write path, not exfiltration; ALLOW those.',
+    "ALSO ALLOW `tts-ask` — that is the delegate, the sanctioned way this session gets a decision of Tom's answered; it spends no money, sends nothing to anyone, and writes only to the record.",
     "",
     "The command, verbatim between the markers:",
     "<<<COMMAND",
@@ -1584,7 +1597,7 @@ export class Session {
       // whole command rather than just its prefix.
       const outsideQuotes = command.replace(/'[^']*'/g, "");
       if (
-        SANCTIONED_PEN_RE.test(command) &&
+        (SANCTIONED_PEN_RE.test(command) || DELEGATE_CMD_RE.test(command)) &&
         !SHELL_CHAINING_RE.test(outsideQuotes)
       ) {
         return { behavior: "allow", updatedInput: input };
