@@ -171,6 +171,139 @@ function ttsAuth(request: Request): Response | null {
   return keyAuth(request, "TTS_WORKER_KEY", "X-TTS-Key");
 }
 
+type TtsSearchArgs = {
+  query: string;
+  limit: number;
+  repo?: string;
+  status?: string;
+  since?: number;
+};
+
+function parseTtsSearchArgs(
+  request: Request,
+  {
+    queryRequired = true,
+    allowSince = true,
+  }: { queryRequired?: boolean; allowSince?: boolean } = {},
+): TtsSearchArgs | Response {
+  const params = new URL(request.url).searchParams;
+  const query = params.get("query") ?? "";
+  if (queryRequired && query.trim() === "") {
+    return jsonResponse(400, { error: "query (non-empty string) required" });
+  }
+  const rawLimit = params.get("limit");
+  if (
+    rawLimit !== null &&
+    (!/^\d+$/.test(rawLimit) || Number(rawLimit) < 1 || Number(rawLimit) > 200)
+  ) {
+    return jsonResponse(400, { error: "limit (integer from 1 to 200) required" });
+  }
+  const optionalText = (name: "repo" | "status"): string | Response | undefined => {
+    const value = params.get(name);
+    if (value === null) return undefined;
+    if (value.trim() === "") {
+      return jsonResponse(400, { error: `${name} (non-empty string) required` });
+    }
+    return value;
+  };
+  const repo = optionalText("repo");
+  if (repo instanceof Response) return repo;
+  const status = optionalText("status");
+  if (status instanceof Response) return status;
+  const rawSince = params.get("since");
+  let since: number | undefined;
+  if (rawSince !== null) {
+    if (!allowSince) {
+      return jsonResponse(400, { error: "since is not supported for this search" });
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(rawSince)) {
+      return jsonResponse(400, { error: "since (YYYY-MM-DD) required" });
+    }
+    const parsed = Date.parse(`${rawSince}T00:00:00.000Z`);
+    if (!Number.isFinite(parsed) || new Date(parsed).toISOString().slice(0, 10) !== rawSince) {
+      return jsonResponse(400, { error: "since (YYYY-MM-DD) required" });
+    }
+    since = parsed;
+  }
+  return {
+    query,
+    // Internal queries retain their clamp as a defense for non-HTTP callers.
+    limit: rawLimit === null ? 20 : Number(rawLimit),
+    repo,
+    status,
+    since,
+  };
+}
+
+// GET /tts/search/* is a bounded, redacted history search for box jobs. It
+// uses the ordinary TTS worker capability, never the sessions ingest key.
+const ttsSearchRulings = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const args = parseTtsSearchArgs(request);
+  if (args instanceof Response) return args;
+  return jsonResponse(
+    200,
+    await ctx.runQuery(internal.ttsSearch.rulings, {
+      query: args.query,
+      limit: args.limit,
+      since: args.since,
+    }),
+  );
+});
+
+const ttsSearchSessions = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const args = parseTtsSearchArgs(request, { queryRequired: false });
+  if (args instanceof Response) return args;
+  return jsonResponse(
+    200,
+    await ctx.runQuery(internal.ttsSearch.sessions, {
+      query: args.query,
+      limit: args.limit,
+      repo: args.repo,
+      since: args.since,
+    }),
+  );
+});
+
+const ttsSearchEvents = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const args = parseTtsSearchArgs(request);
+  if (args instanceof Response) return args;
+  return jsonResponse(
+    200,
+    await ctx.runQuery(internal.ttsSearch.events, {
+      query: args.query,
+      limit: args.limit,
+      since: args.since,
+    }),
+  );
+});
+
+const ttsSearchTodos = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const args = parseTtsSearchArgs(request);
+  if (args instanceof Response) return args;
+  return jsonResponse(
+    200,
+    await ctx.runQuery(internal.ttsSearch.todos, {
+      query: args.query,
+      limit: args.limit,
+      status: args.status,
+      since: args.since,
+    }),
+  );
+});
+
+http.route({ path: "/tts/search/rulings", method: "GET", handler: ttsSearchRulings });
+http.route({ path: "/tts/search/sessions", method: "GET", handler: ttsSearchSessions });
+http.route({ path: "/tts/search/events", method: "GET", handler: ttsSearchEvents });
+http.route({ path: "/tts/search/todos", method: "GET", handler: ttsSearchTodos });
+
 // POST /tts/capture — one captured thought/message becomes an `unprepared`
 // item. Body: { statement, source?, provenance? }.
 const ttsCapture = httpAction(async (ctx, request) => {

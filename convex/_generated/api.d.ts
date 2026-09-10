@@ -36,6 +36,7 @@ import type * as ttsMigrations from "../ttsMigrations.js";
 import type * as ttsNightly from "../ttsNightly.js";
 import type * as ttsRepeats from "../ttsRepeats.js";
 import type * as ttsRulings from "../ttsRulings.js";
+import type * as ttsSearch from "../ttsSearch.js";
 import type * as ttsShared from "../ttsShared.js";
 import type * as ttsSkills from "../ttsSkills.js";
 import type * as ttsSlack from "../ttsSlack.js";
@@ -79,6 +80,7 @@ declare const fullApi: ApiFromModules<{
   ttsNightly: typeof ttsNightly;
   ttsRepeats: typeof ttsRepeats;
   ttsRulings: typeof ttsRulings;
+  ttsSearch: typeof ttsSearch;
   ttsShared: typeof ttsShared;
   ttsSkills: typeof ttsSkills;
   ttsSlack: typeof ttsSlack;

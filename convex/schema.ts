@@ -589,6 +589,7 @@ export default defineSchema({
     archivedAt: v.optional(v.number()),
   })
     .index("by_status", ["status", "updatedAt"])
+    .index("by_updatedAt", ["updatedAt"])
     // The dated reads: the 5 a.m. missed rollover ("active rows whose date is
     // before the new day") and the digest's due-and-overdue section ("active
     // rows due by the end of today"). Both used to scan every active row, or
@@ -1071,6 +1072,7 @@ export default defineSchema({
     agendaSubjects: v.optional(v.array(v.string())),
   })
     .index("by_status", ["status", "statusChangedAt"])
+    .index("by_createdAt", ["createdAt"])
     .index("by_kind_agenda_day", ["kind", "agendaDay"])
     // Per-todo session history: powers the "does a live session already
     // reference this todo" exclusion and the scheduler's backoff walk.

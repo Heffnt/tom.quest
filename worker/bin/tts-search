@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+# tts-search — read production TTS history and the local WikiTom archive.
+exec node /opt/tts/search-lib.mjs "$@"
