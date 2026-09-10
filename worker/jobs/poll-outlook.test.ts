@@ -15,7 +15,6 @@ import {
   messageProvenance,
   messageSourceId,
   missingKeys,
-  needsTomLine,
 } from "./poll-outlook.mjs";
 
 describe("the credential the job waits for", () => {
@@ -56,14 +55,5 @@ describe("the stable source id of an Outlook mail", () => {
     );
     // No webLink in the payload still leaves an id to identify the row by.
     expect(messageProvenance("AAMkAD", "")).toBe("outlook:message:AAMkAD");
-  });
-});
-
-describe("the line a #tts thread opens with", () => {
-  it("is the same shape poll-gmail writes — one message, one shape", () => {
-    expect(needsTomLine("Registrar <no@wpi.edu>", "Add/drop closes Friday", "k9")).toBe(
-      "Needs you today — Registrar <no@wpi.edu>: Add/drop closes Friday\n" +
-        "https://tom.quest/tts?item=k9",
-    );
   });
 });

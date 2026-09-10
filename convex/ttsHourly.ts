@@ -12,17 +12,21 @@ import { LIVE_STATUSES, TTS_BATCHES_LINK, ttsItemLink, ttsSessionLink } from "./
 
 // The hourly update's FACTS. The SEND lives in convex/ttsSync.ts (a Node
 // action: it does the network I/O, through the one Slack door) and the TEXT in
-// convex/ttsHourlyText.ts (a pure function a test calls with hand-built facts);
+// convex/ttsCompose.ts (a pure function a test calls with hand-built facts);
 // the reads here are plain queries in the default runtime.
 //
-// The message, every hour, 24/7, in #tts-hourly:
+// ONE SENTENCE, every hour, 24/7, in #tts-hourly — and NOTHING AT ALL when
+// nothing changed (slack-design.md §4.4). The facts, in the order the sentence
+// prefers them:
 //   (1) what the box is running now — every live session with its kind, the
 //       todo or batch it is on, and how long it has been open;
 //   (2) which batches were worked since the last update — sessions opened or
 //       ended in the window, and worker events, grouped by batch;
 //   (3) what changed since the last update — the dtsEvents rows that are
 //       captures, completions, archives, rulings, date outcomes, failures.
-// When all three are empty it is ONE line, with the time, saying so.
+// When all three are empty there is no message: the marker is written with
+// posted:false and the hour passes in silence, which is what makes the channel
+// mutable without losing anything.
 //
 // NOTHING HERE WRITES A SLACK ROW. "slack-sent" and "slack-send-failed" are
 // the one door's own record (convex/ttsSync.ts postSlack → convex/ttsSlack.ts);
@@ -33,8 +37,8 @@ import { LIVE_STATUSES, TTS_BATCHES_LINK, ttsItemLink, ttsSessionLink } from "./
 // read is newest-first what it drops is the OLDEST of that kind rather than the
 // rows the next window will never look at again.
 const PER_KIND_LIMIT = 500;
-// The whole reported list, newest kept. composeHourlyUpdate lists a prefix of
-// it and says how many more there are.
+// The whole reported list, newest kept. composeHourly (convex/ttsCompose.ts)
+// COUNTS it rather than listing it: the hourly line is one sentence.
 const CHANGES_LIMIT = 1000;
 
 // ── One kind over a time range, on the kind-and-time index ──────────────────
@@ -324,7 +328,7 @@ export const internalChangedSince = internalQuery({
 });
 
 // ── The digest resend ───────────────────────────────────────────────────────
-// The 5 a.m. digest (convex/ttsSync.ts sendDigest) marks itself with a
+// The morning message (convex/ttsSync.ts sendToday) marks itself with a
 // "digest-sent" row {day, windowEnd} the moment its post lands, and a refused
 // post leaves the door's "slack-send-failed" row carrying the composed text.
 // So today's digest is owed exactly when there is no "digest-sent" row for
