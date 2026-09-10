@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { convexTest } from "convex-test";
 import { describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -3396,11 +3397,13 @@ describe("autonomous session scheduler", () => {
       sessionId: sessions[0]._id,
     });
     expect(inbound[0].text).toContain(AUTONOMOUS_SESSION_CONTRACT);
-    // The repo variant of the workspace block: a named checkout, the session's
-    // own branch, and the one gate the doctrine keeps for Tom.
+    // The repo variant names the checkout, its branch, the delegate, and the
+    // three gates that make a merge mechanical and reportable.
     expect(inbound[0].text).toContain("fresh checkout of ComplexMultiTrigger");
     expect(inbound[0].text).toContain(`session/${sessions[0]._id}`);
-    expect(inbound[0].text).toContain("NEVER merge");
+    expect(inbound[0].text).toContain("tts-ask --session");
+    expect(inbound[0].text).toContain("tests, a Codex audit, and evals all pass");
+    expect(inbound[0].text).toContain("/tts/merge");
     expect(inbound[0].text).not.toContain("EMPTY scratch directory");
   });
 
@@ -3472,6 +3475,22 @@ describe("autonomous session scheduler", () => {
       { sessionId: prospectors[0]._id },
     );
     expect(prospectInbound[0].text).toContain(DAEMON_SENTENCE);
+    // Every autonomous lane is told the delegate exists — this one has no
+    // todo, so the command it is given names no item.
+    expect(prospectInbound[0].text).toContain(
+      `tts-ask --session ${prospectors[0]._id} --question`,
+    );
+  });
+
+  // witness: name tts-ask in app/lib/tts-session-prompt.ts's FRAMING. An
+  // ATTENDED session must never be told the delegate exists — its whole
+  // posture is "propose and wait", and the delegate answers only where nobody
+  // is watching. The route refuses an attended ask too (convex/ttsAsk.ts), but
+  // this is the cheapest of the three defences: it is never mentioned.
+  it("the interactive framing never names the delegate", async () => {
+    const framing = readFileSync("app/lib/tts-session-prompt.ts", "utf8");
+    expect(framing).not.toContain("tts-ask");
+    expect(framing).not.toContain("delegate");
   });
 
   // witness: drop the statement/brief substring fallback from
@@ -3590,7 +3609,8 @@ describe("the code lane", () => {
     expect(text).toContain(AUTONOMOUS_SESSION_CONTRACT);
     expect(text).not.toContain("define every term on first use");
     expect(text).toContain("/tts/session-outcome");
-    expect(text).toContain("NEVER merge");
+    expect(text).toContain("tests, a Codex audit, and evals all pass");
+    expect(text).toContain("/tts/merge");
     expect(text).toContain(DAEMON_SENTENCE);
     expect(text).not.toContain("SESSIONS_WORKER_KEY");
     expect(text.indexOf(TEST_PRELUDE_LAYERS.know)).toBeLessThan(
@@ -5352,7 +5372,8 @@ describe("frontier scheduler", () => {
     const text = await missionText(tom, sessions[0]._id);
     expect(text).toContain("fresh checkout of tom.quest");
     expect(text).toContain(`session/${sessions[0]._id}`);
-    expect(text).toContain("NEVER merge");
+    expect(text).toContain("tests, a Codex audit, and evals all pass");
+    expect(text).toContain("/tts/merge");
   });
 
   // witness: delete the planRepair block from internalRecordOutcome in

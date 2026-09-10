@@ -56,6 +56,7 @@ import {
   DEFAULT_SESSION_MODEL,
   LIVE_STATUSES,
   MODEL_OF_TOM_HEADER,
+  NARROW_LIST,
   NO_REPO,
   SESSION_MODEL,
   SESSION_REPO_NAMES,
@@ -2531,6 +2532,38 @@ function workspaceParagraph(
   return `The workspace: your working directory holds ${repos.length} fresh checkouts, one per repository — ${list}. Each is on its own branch ${branch}. ${work} \`cd\` into the repository you are changing before running git: commit as you go and push ${branch} in EACH repository you touched (every remote is already configured), and open a pull request per repository with \`gh pr create\` ONLY when that repository's work is merge-ready. Name every branch and pull request you opened in the outcome summary. ${DAEMON_RESTART_SENTENCE}`;
 }
 
+// Autonomous sessions are unattended, so a question that genuinely needs
+// Tom's judgment goes to the delegate instead of quietly becoming a todo.
+// The narrow list itself stays in ttsShared: the worker command and this
+// prompt must name the same four things Tom keeps for himself.
+function delegateDoctrine(sessionId: Id<"claudeSessions">, todoId?: Id<"dtsTodos">): string {
+  const todo = todoId === undefined ? "" : ` --todo ${todoId}`;
+  const narrow = NARROW_LIST.map((item) => item.decision).join("; ");
+  return [
+    "When a decision genuinely cannot be taken on your own judgment, ask the delegate — one command, one answer, about two minutes:",
+    `\`tts-ask --session ${sessionId}${todo} --question "<one sentence>" --option "<a>" --option "<b>" --recommend "<the one you would take>" --fallback "<what you will do if it does not answer>"\``,
+    "The delegate is a Fable run holding Tom's rules and intent. Its answer is a decision, not a ruling; it is recorded and appears in his objection list, where silence means it stands. Do not start a second ask in parallel or do other work while it runs.",
+    `It refuses only this narrow list: ${narrow}. On a refusal, do not take the action: park the item through the prepare pen with readiness \"prepared\", the one action only Tom can take, and evidence naming the ask and your default; then carry on. If it does not answer, take your stated fallback, say so in the outcome summary, and carry on. At most five asks in one session; decide everything else yourself.`,
+  ].join("\n\n");
+}
+
+// A merge is unattended work only after its three mechanical gates pass (Tom,
+// 2026-09-09: merging is mechanical when tests, the Codex audit and the evals
+// pass, and is then REPORTED for objection rather than asked about — which is
+// why it is not on the narrow list). POST /tts/merge is that report; it makes
+// a completed merge visible, it does not grant permission by itself.
+//
+// THE GATE ITSELF IS NOT BUILT YET, and until it is, the autonomous Bash
+// classifier still denies `gh pr merge` outright (worker/session-host/
+// session.mjs, a box-safety bullet, not a narrow-list item). So a session that
+// reads this paragraph and tries to merge is refused by the box and says so in
+// its outcome — fail-safe, but a disagreement between what the prompt says and
+// what the box allows. Both halves move together when the gate lands: the
+// bullet goes, and this paragraph does not change.
+function mergeGate(): string {
+  return "Merge only when the tests, a Codex audit, and evals all pass. After a merge, POST /tts/merge through the worker-key pen with its repo, merged sha, and concise summary so it is reported for objection.";
+}
+
 // Opening prompt for an AUTONOMOUS session. The sessionId rides in so the
 // outcome pen can name this session — the agent has no other way to learn its
 // own id. Interactive openings have their own framing in
@@ -2548,7 +2581,9 @@ function buildAutoMissionPrompt(
     // Ratified doctrine (Tom, 2026-08-29): his input gates PERSISTENCE, never
     // implementation — a session that halts at a decision leaves him nothing
     // concrete to rule on.
-    `Tom decisions: a decision of Tom's does NOT block you. Implement your best-judgment option and name the alternatives you passed over in the write-up; the decision then surfaces where the work persists — the pull request, or the ruling on this item. Leave for Tom only what ONLY he can do: rulings, merges, and real-world actions.`,
+    `Tom decisions: a decision of Tom's does NOT block you. Implement your best-judgment option and name the alternatives you passed over in the write-up; the decision then surfaces where the work persists — the pull request, or the ruling on this item. Leave for Tom only what ONLY he can do: rulings and real-world actions.`,
+    "",
+    delegateDoctrine(sessionId, todo._id),
     "",
     // Facts block — same labels and order as the interactive twin's
     // buildTodoSessionPrompt (category is autonomous-only: it scopes what a
@@ -2600,7 +2635,7 @@ function buildAutoMissionPrompt(
             "Implement the agent steps INCLUDING the code ones.",
           ),
           "",
-          `Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. NEVER merge, and never push any branch other than session/${sessionId} — merging is Tom's gate.`,
+          `Prohibitions: never record a ruling and never change a status — verdicts and status changes are Tom's pens alone. Never push any branch other than session/${sessionId}. ${mergeGate()}`,
         ]),
     "",
     BOX_TOOLS_PARAGRAPH,
@@ -2731,6 +2766,8 @@ function buildWorkerPrompt(args: {
     "",
     "THE CONTRACT: advance your one todo by ONE STABLE STATE, then stop. A stable state is one another session can pick up from cold — the work recorded done with the artifact that shows it, or the question prepared to the point where only Tom's answer is missing. Half a task with nothing written down is not a state; it is work someone has to do again.",
     "",
+    delegateDoctrine(sessionId, todo._id),
+    "",
     ...(isGoal
       ? [
           "Your todo is a GOAL, so the work is CHECKING, not building. The condition above is a statement about the world that is either true yet or not. Find out which — in the repository, in the system, in whatever the condition is about. If it holds, record the goal done with evidence naming exactly what you checked and what you saw. If it does not hold, change nothing and say in your outcome summary what is still missing; a goal that is not met yet is an honest, complete session, and the fleet asks the same question again a day later.",
@@ -2791,7 +2828,7 @@ function buildWorkerPrompt(args: {
             "Implement the code your todo needs, and name what landed in your evidence.",
           ),
           "",
-          `Prohibitions: never record a ruling and never change the status of anything but the one todo you claimed — verdicts are Tom's pens alone. NEVER merge, and never push any branch other than session/${sessionId} — merging is Tom's gate.`,
+          `Prohibitions: never record a ruling and never change the status of anything but the one todo you claimed — verdicts are Tom's pens alone. Never push any branch other than session/${sessionId}. ${mergeGate()}`,
         ]),
     "",
     "Ending: record the outcome, then simply stop responding — the daemon ends the session after your final turn.",
@@ -2805,9 +2842,8 @@ function buildWorkerPrompt(args: {
 // session on that repo's checkout, the way worker/jobs/execute-approved.mjs
 // did on its own hourly clone before this: implement the plan (approve) or
 // close the entry (archive), run the registry's own guard test, commit, push
-// session/<id>, open a pull request. MERGING THE PULL REQUEST IS TOM'S GATE —
-// nothing lands on the default branch by itself, which is why the box's
-// unified auto mode is acceptable here: the blast radius is one branch.
+// session/<id>, open a pull request, and merge only after the three mechanical
+// gates pass. Every merge is then recorded for objection.
 
 /** How a registry-keeping repo checks its own todo file — read off the one
  * home (ttsShared CODE_TODO_REPOS). A mission is told to run it and to fix
@@ -2847,13 +2883,15 @@ function buildCodeMissionPrompt(args: {
     "THE BRIEF Tom ruled from (written against the tree as it stood then; verify against the tree in front of you, and name in your pull request anything that has moved):",
     brief,
     "",
+    delegateDoctrine(sessionId),
+    "",
     workspaceParagraph(
       [repo],
       sessionId,
       `${verdict === "approve" ? "Implement the plan, then close the entry." : "Close the entry."} Run \`${guard ?? "the repository's own guard test for that file"}\` and the tests nearest your change, and fix what you break — a pull request never carries a malformed registry.`,
     ),
     "",
-    `Open the pull request in every case that produced commits: it is how the work reaches Tom, and merging it is his gate. Its body STARTS with the line "CHANGE REPORT:" and ends with the line "Merging this pull request is the persist-tom-gate for ${repo} ${externalId}."`,
+    `Open the pull request in every case that produced commits: it is how the work reaches Tom. Its body STARTS with the line "CHANGE REPORT:" and ends with the line "This pull request may merge only when tests, Codex audit, and evals pass; its merge is reported for objection."`,
     "",
     sessionOutcomePen({
       sessionId,
@@ -2865,7 +2903,7 @@ function buildCodeMissionPrompt(args: {
       fenced: true,
     }),
     "",
-    `Prohibitions: never record a ruling and never change the status of any TTS todo — verdicts are Tom's pens alone. NEVER merge, and never push any branch other than ${branch} — merging is Tom's gate.`,
+    `Prohibitions: never record a ruling and never change the status of any TTS todo — verdicts are Tom's pens alone. Never push any branch other than ${branch}. ${mergeGate()}`,
     "",
     BOX_TOOLS_PARAGRAPH,
     "",
@@ -3114,6 +3152,8 @@ function buildProspectMissionPrompt(
     `The quality bar: every finding NAMES the file or files it lives in, and is actionable by a future session holding nothing but your one sentence and the repo. A finding you are not certain about is still worth capturing when it names a change — Tom reads every item and declining one costs him a glance. What is not worth capturing is a style nitpick or a "this could be cleaner" with no named change: if you cannot say what would change and where, it is not a finding. At most ${PROSPECT_CAPTURE_CAP} captures for the whole mission: a short list of real findings is worth more than a long one, and finding NOTHING new is an honest, complete outcome.`,
     "",
     `The mission: this session PROSPECTS — it works no todo item. TTS had session capacity left over after handing out its real todo work this tick, and spends it here. Your working directory is a fresh checkout of ${repo}. Read it for actionable issues worth carrying as items in Tom's todo system, and capture each NEW one with the capture pen below. This mission only READS and CAPTURES — no code changes, no commits, no pushes, no pull requests.`,
+    "",
+    delegateDoctrine(sessionId),
   ];
   // A repo that governs itself by an in-repo code-todo registry holds
   // already-tracked work a prospector must not re-capture. WHICH repos those
