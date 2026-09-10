@@ -8,6 +8,10 @@ import {
   DIGEST_SENT,
   ITEM_TEXT_CHARS,
   LEARNING_CHANGE,
+  LEARNING_CHECK_FAILED,
+  REPO_PROPOSAL,
+  REPO_PROPOSAL_APPLIED,
+  REPO_PROPOSAL_DROPPED,
   ROLLOVER_NOTE,
   SECTION_ITEM_CAP,
   SLACK_FAILED,
@@ -55,6 +59,8 @@ const emptyFacts = (): DigestFacts => ({
   wikitom: [],
   rulings: [],
   learning: [],
+  repoProposals: [],
+  repoProposalNotes: [],
   modelOfTom: null,
 });
 
@@ -184,6 +190,143 @@ describe("composeDigest", () => {
       '- [aaaaaaaaaaaa] writing.md: reverted on your objection — "- new" → "- old"',
       "- [bbbbbbbbbbbb] writing.md: NOT reverted — the line is no longer on writing.md as written",
     ]);
+  });
+
+  // A line the job took OFF a page is a CHANGE whose `after` is empty, not a
+  // reversal. Its mark is U+2212 MINUS SIGN so it reads as the opposite of the
+  // addition's "+"; a hyphen there is the bullet the line already starts with.
+  it("prints a removal with a minus sign beside the addition's plus", () => {
+    const { text } = composeDigest({
+      ...emptyFacts(),
+      learning: [
+        { status: "changed", id: "0123456789ab", file: "areas/climbing.md", before: "", after: "- Thursday at 6", evidence: "session s1" },
+        { status: "changed", id: "cccccccccccc", file: "areas/climbing.md", before: "- Tuesday at 6", after: "", evidence: "no Tuesday session since June" },
+      ],
+    });
+    const lines = text.split("\n");
+    const start = lines.indexOf("*Model of Tom*");
+    expect(lines.slice(start + 1, start + 3)).toEqual([
+      '- [0123456789ab] areas/climbing.md: + "- Thursday at 6" (session s1)',
+      '- [cccccccccccc] areas/climbing.md: − "- Tuesday at 6" (no Tuesday session since June)',
+    ]);
+    // The minus is U+2212, not the hyphen the bullet is written with.
+    expect(lines[start + 2]).toContain("− ");
+    expect(lines[start + 2]).not.toContain("- - Tuesday");
+  });
+
+  // A night whose whole write was taken back is not a quiet night, and the
+  // morning has to tell them apart. The line names no id and no file: there is
+  // nothing left for Tom to object to, because the write is already gone.
+  it("says the night wrote nothing when the evidence check failed, ahead of every change line", () => {
+    const baseline = composeDigest({
+      ...emptyFacts(),
+      learning: [
+        { status: "check-failed", id: "", file: "", before: "", after: "", evidence: "", baseline: true, count: 0 },
+      ],
+    });
+    const lines = baseline.text.split("\n");
+    const start = lines.indexOf("*Model of Tom*");
+    expect(start).toBeGreaterThan(-1); // the section stands on this fact alone
+    expect(lines[start + 1]).toBe(
+      "- learning wrote nothing: model-of-tom/evidence was already failing its check before tonight's run",
+    );
+
+    // Not the baseline: it wrote, the check failed, and every change went back.
+    // The line comes after the not-pushed line and before the change lines.
+    const { text } = composeDigest({
+      ...emptyFacts(),
+      modelOfTom: { commit: "0123abcd0123abcd", pushed: false },
+      learning: [
+        { status: "changed", id: "0123456789ab", file: "areas/climbing.md", before: "", after: "- Thursday at 6", evidence: "session s1" },
+        { status: "check-failed", id: "", file: "", before: "", after: "", evidence: "", baseline: false, count: 3 },
+      ],
+    });
+    const after = text.split("\n");
+    const header = after.indexOf("*Model of Tom*");
+    expect(after.slice(header + 1, header + 4)).toEqual([
+      "- model-of-tom files at WikiTom 0123abcd0123 — not yet pushed",
+      "- learning wrote nothing: the evidence check failed after 3 change(s) and every one was taken back",
+      '- [0123456789ab] areas/climbing.md: + "- Thursday at 6" (session s1)',
+    ]);
+  });
+
+  // A repository rule is a PROPOSAL: the line lands through that repository's
+  // own checks, so the digest prints what was proposed, what was applied, and
+  // what Tom's objection dropped — never a write of TTS's own.
+  it("prints a repository-rule proposal, an applied one, a dropped one, and the step's notes", () => {
+    const { text } = composeDigest({
+      ...emptyFacts(),
+      repoProposals: [
+        {
+          status: "proposed",
+          id: "b71c",
+          repo: "tom.quest",
+          file: "worker/AGENTS.md",
+          section: "box",
+          line: "A worktree has no `.env.local`; copy it from the main checkout before `next dev`.",
+          evidence: "read: session 47f04bc9",
+        },
+        {
+          status: "applied",
+          id: "b71c",
+          repo: "tom.quest",
+          file: "worker/AGENTS.md",
+          section: "box",
+          line: "A worktree has no `.env.local`.",
+          evidence: "read: session 47f04bc9",
+          commit: "7e2fb79",
+        },
+        {
+          status: "dropped",
+          id: "c92d",
+          repo: "tom.quest",
+          file: "convex/AGENTS.md",
+          section: "tests",
+          line: "Always run the whole suite.",
+          evidence: "read: session 47f04bc9",
+          reason: "the suite takes nine minutes",
+        },
+        {
+          status: "dropped",
+          id: "d03e",
+          repo: "WikiTom",
+          file: "AGENTS.md",
+          section: "pages",
+          line: "Never edit an area page by hand.",
+          evidence: "",
+        },
+      ],
+      repoProposalNotes: [
+        "4 duplicate proposals dropped",
+        "ComplexMultiTrigger: no AGENTS.md could be read",
+      ],
+    });
+    const lines = text.split("\n");
+    const start = lines.indexOf("*Repository rules proposed*");
+    expect(start).toBeGreaterThan(-1);
+    expect(lines.slice(start + 1, start + 7)).toEqual([
+      '- [b71c] tom.quest worker/AGENTS.md § box: "A worktree has no `.env.local`; copy it from the main checkout before `next dev`." (read: session 47f04bc9)',
+      "- [b71c] applied to tom.quest worker/AGENTS.md at 7e2fb79",
+      '- [c92d] dropped on your objection — "Always run the whole suite." — the suite takes nine minutes',
+      '- [d03e] dropped on your objection — "Never edit an area page by hand."',
+      "- 4 duplicate proposals dropped",
+      "- ComplexMultiTrigger: no AGENTS.md could be read",
+    ]);
+  });
+
+  // The section stands on notes alone: a night that proposed nothing but could
+  // not read a repository's AGENTS.md is a fact, not a quiet night.
+  it("prints the repository section for notes with no proposal, right after the model of Tom", () => {
+    const { text } = composeDigest({
+      ...emptyFacts(),
+      learning: [
+        { status: "changed", id: "0123456789ab", file: "areas/climbing.md", before: "", after: "- Thursday at 6", evidence: "session s1" },
+      ],
+      repoProposalNotes: ["ComplexMultiTrigger: no AGENTS.md could be read"],
+    });
+    const headers = text.split("\n").filter((l) => l.startsWith("*"));
+    expect(headers.slice(-2)).toEqual(["*Model of Tom*", "*Repository rules proposed*"]);
+    expect(text).toContain("- ComplexMultiTrigger: no AGENTS.md could be read");
   });
 
   // witness: the job posts local HEAD after a refused push, and the digest
@@ -760,6 +903,67 @@ describe("internalComposeDigest", () => {
     expect(text).toContain('- [lc-1] schedule.md: "a" → "b" (e)');
     expect(text).toContain("poll-gmail-failed: token expired");
     expect(surfacedTodoIds).toEqual([late, ready]);
+  });
+
+  // The nightly rows the two new sections are built from, read off dtsEvents
+  // exactly as the box writes them.
+  it("reads a taken-back night and the repository proposals off their rows", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: LEARNING_CHECK_FAILED,
+        // The step's own field is `changes`, not `count`.
+        data: { baseline: false, stage: "changes", changes: 3, output: "evidence: 2 lines unsupported" },
+      });
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: REPO_PROPOSAL,
+        data: {
+          id: "b71c",
+          repo: "tom.quest",
+          file: "worker/AGENTS.md",
+          section: "box",
+          line: "A worktree has no `.env.local`.",
+          evidence: "read: session 47f04bc9",
+        },
+      });
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: REPO_PROPOSAL_APPLIED,
+        data: { id: "a12b", repo: "tom.quest", file: "worker/AGENTS.md", commit: "7e2fb79" },
+      });
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: REPO_PROPOSAL_DROPPED,
+        data: { id: "c92d", line: "Always run the whole suite.", reason: "you objected on 2026-09-08" },
+      });
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: "repo-learning-run",
+        data: { notes: ["4 duplicate proposals dropped", 7], repos: 3 },
+      });
+    });
+    const { text } = await t.query(internal.ttsDigest.internalComposeDigest, {
+      day: DAY_KEY,
+      now: Date.now() + 1,
+    });
+    expect(text).toContain(
+      "- learning wrote nothing: the evidence check failed after 3 change(s) and every one was taken back",
+    );
+    expect(text).toContain(
+      '- [b71c] tom.quest worker/AGENTS.md § box: "A worktree has no `.env.local`." (read: session 47f04bc9)',
+    );
+    expect(text).toContain("- [a12b] applied to tom.quest worker/AGENTS.md at 7e2fb79");
+    expect(text).toContain(
+      '- [c92d] dropped on your objection — "Always run the whole suite." — you objected on 2026-09-08',
+    );
+    // A note that is not a line is not printed; the ones that are, are.
+    expect(text).toContain("- 4 duplicate proposals dropped");
+    expect(text).not.toContain("- 7");
   });
 
   // The ready section is ttsShared.isReadyForTom, each conjunct on its own

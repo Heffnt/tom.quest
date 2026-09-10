@@ -51,6 +51,7 @@ import {
   readManifests,
   rebaseInProgress,
   recordLearningRows,
+  repoLearningStep,
   redactRow,
   revertLearningRecords,
   reviewedRefusal,
@@ -67,6 +68,7 @@ import {
 } from "./nightly.mjs";
 import { PRELUDE_LAYERS } from "../../scripts/prelude.mjs";
 import { parseFrontmatter } from "./markdown-sections.mjs";
+import { proposalId } from "./learning-repo.mjs";
 
 const REQUIRED_AREA_PATHS = PRELUDE_LAYERS.know.areas.required;
 
@@ -2025,6 +2027,276 @@ describe("the manifests and the archive", () => {
     expect(index.shaBySource.get("/a/s1.jsonl")).toBe(sha256(raw));
   });
 });
+
+// ── The repo-learning step ───────────────────────────────────────────────────
+// It reads the transcripts the sessions step archived and proposes lines for
+// the nested AGENTS.md of the repositories the night worked in. It NEVER edits
+// a rule file: what lands is the evidence entry, under a heading that says the
+// line is not in the repository yet, and one row the digest prints.
+
+const SDK_REPO_SESSION = "8da7169a-2222-3333-4444-555555555555";
+
+/** A gzipped transcript with one command, one failure and one assistant text. */
+function transcriptBytes() {
+  const lines = [
+    JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", name: "Bash", input: { command: "pnpm next dev" } }] },
+    }),
+    JSON.stringify({
+      type: "user",
+      message: {
+        content: [{ type: "tool_result", is_error: true, content: "NEXT_PUBLIC_CONVEX_URL is missing" }],
+      },
+    }),
+    JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "Copying .env.local from the main checkout fixed it." }] },
+    }),
+  ];
+  return zlib.gzipSync(Buffer.from(`${lines.join("\n")}\n`));
+}
+
+function repoSession(over = {}) {
+  return {
+    id: "k97repo1",
+    sdkSessionId: SDK_REPO_SESSION,
+    title: "worktree dev server",
+    repos: ["tom.quest"],
+    repo: "tom.quest",
+    cwd: null,
+    model: "opus",
+    mode: "interactive",
+    outcome: "completed",
+    outcomeSummary: "the worktree's dev server would not start",
+    endedReason: null,
+    at: Date.UTC(2026, 8, 5, 22),
+    ...over,
+  };
+}
+
+const PROPOSAL = {
+  repo: "tom.quest",
+  file: "worker/AGENTS.md",
+  section: "box",
+  line: "A worktree has no `.env.local`; copy it from the main checkout before `next dev`.",
+  sources: ["8da7169a"],
+  read: "`next dev` failed with a missing NEXT_PUBLIC_CONVEX_URL until the file was copied.",
+};
+
+const proposing = (proposals) => () => JSON.stringify({ proposals });
+
+/** A checkout with the pages, the checker and the night's archived transcript,
+ * plus a repository checkout the session's cwd points at. */
+function repoLearningCheckout() {
+  const dir = learningCheckout();
+  write(dir, `sessions/2026/09/05/claude-${SDK_REPO_SESSION}/session.jsonl.gz`, transcriptBytes());
+  const repoDir = tmp();
+  write(repoDir, "AGENTS.md", "# tom.quest\n\n## Style\n\n- Simple interfaces around deep modules.\n");
+  write(repoDir, "worker/AGENTS.md", "# worker\n\n## box\n\n- The box runs plain Node with no npm dependencies.\n");
+  return { dir, repoDir };
+}
+
+describe("the repo-learning step", () => {
+  it("writes the evidence entry, queues the row and the commit, and edits no rule file", async () => {
+    const { dir, repoDir } = repoLearningCheckout();
+    const run = learningRun(dir);
+    const convex = fakeConvex(learningInput({ repoSessions: [repoSession({ cwd: repoDir })] }));
+    const calls = [];
+    const summary = await repoLearningStep(run, {
+      fetch: convex.fetch,
+      model: (prompt) => {
+        calls.push(prompt);
+        return JSON.stringify({ proposals: [PROPOSAL] });
+      },
+    });
+    expect(summary).toMatchObject({ sessions: 1, transcriptsRead: 1, proposals: 1, dropped: 0, model: "opus" });
+
+    // The entry, under the heading that says the line is not there yet.
+    const entries = fs.readFileSync(path.join(dir, "model-of-tom/evidence/repos/tom.quest.md"), "utf8");
+    expect(entries).toContain("## worker/AGENTS.md#box — proposed");
+    expect(entries).toContain(`- line: ${PROPOSAL.line}`);
+    expect(entries).toContain("read: 2026-09-06 · session 8da7169a ·");
+    expect(runEvidenceCheck(dir).ok).toBe(true);
+    // The repository's own file is untouched: it merges through its own checks.
+    expect(fs.readFileSync(path.join(repoDir, "worker/AGENTS.md"), "utf8")).not.toContain("worktree");
+
+    const id = proposalId(PROPOSAL.repo, PROPOSAL.file, PROPOSAL.section, PROPOSAL.line);
+    expect(run.learningRows).toHaveLength(1);
+    expect(run.learningRows[0]).toMatchObject({
+      kind: "repo-proposal",
+      key: id,
+      data: {
+        id,
+        repo: "tom.quest",
+        file: "worker/AGENTS.md",
+        section: "box",
+        line: PROPOSAL.line,
+        evidence: "read: session 8da7169a",
+        evidenceHeading: "worker/AGENTS.md#box — proposed",
+        status: "open",
+        commit: null,
+      },
+      commitMessage: "repo rules: 2026-09-06 — 1 proposal from the night's sessions",
+    });
+    expect(run.commits).toEqual([
+      { paths: ["model-of-tom"], message: "repo rules: 2026-09-06 — 1 proposal from the night's sessions" },
+    ]);
+
+    // The prompt carries the transcript's own lines and the rule files.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("ran: pnpm next dev");
+    expect(calls[0]).toContain("failed: NEXT_PUBLIC_CONVEX_URL is missing");
+    expect(calls[0]).toContain("=== tom.quest worker/AGENTS.md ===");
+    expect(convex.posts.map((p) => p.body.kind)).toEqual(["repo-learning-run"]);
+  });
+
+  it("drops a proposal that restates a line already in the repository's own file", async () => {
+    const { dir, repoDir } = repoLearningCheckout();
+    const run = learningRun(dir);
+    const convex = fakeConvex(learningInput({ repoSessions: [repoSession({ cwd: repoDir })] }));
+    const summary = await repoLearningStep(run, {
+      fetch: convex.fetch,
+      model: proposing([
+        { ...PROPOSAL, line: "The box runs plain Node with no npm dependencies!" },
+        PROPOSAL,
+      ]),
+    });
+    expect(summary).toMatchObject({ proposals: 1, dropped: 1, deduped: 1 });
+    expect(summary.notes).toContain("1 proposal dropped as duplicates of lines already in the files");
+  });
+
+  it("says when a repository's own rules could not be read at all", async () => {
+    const { dir } = repoLearningCheckout();
+    const run = learningRun(dir);
+    const convex = fakeConvex(learningInput({ repoSessions: [repoSession({ cwd: null })] }));
+    const summary = await repoLearningStep(run, { fetch: convex.fetch, model: proposing([PROPOSAL]) });
+    expect(summary.notes).toContain(
+      "tom.quest AGENTS.md could not be read on the box; the proposals above were checked against the evidence record only",
+    );
+    expect(summary.proposals).toBe(1);
+  });
+
+  it("makes no model call on a night whose sessions ended in no repository", async () => {
+    const { dir } = repoLearningCheckout();
+    const run = learningRun(dir);
+    const convex = fakeConvex(learningInput({ repoSessions: [] }));
+    const model = vi.fn();
+    const summary = await repoLearningStep(run, { fetch: convex.fetch, model });
+    expect(model).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({ sessions: 0, proposals: 0 });
+    expect(run.commits).toEqual([]);
+  });
+
+  it("moves an entry to its live heading once the line is in the repository, and drops one Tom objected to", async () => {
+    const { dir, repoDir } = repoLearningCheckout();
+    // A night that proposed two lines.
+    const first = learningRun(dir);
+    await repoLearningStep(first, {
+      fetch: fakeConvex(learningInput({ repoSessions: [repoSession({ cwd: repoDir })] })).fetch,
+      model: proposing([PROPOSAL, { ...PROPOSAL, line: "Always run the whole suite.", section: "box" }]),
+    });
+    const rel = "model-of-tom/evidence/repos/tom.quest.md";
+    expect(fs.readFileSync(path.join(dir, rel), "utf8")).toContain("## worker/AGENTS.md#box — proposed");
+
+    // The night after: one landed, one was objected to.
+    const second = learningRun(dir);
+    const convex = fakeConvex(
+      learningInput({
+        repoSessions: [],
+        repoProposalsApplied: [
+          {
+            id: "x",
+            repo: "tom.quest",
+            file: "worker/AGENTS.md",
+            section: "box",
+            line: PROPOSAL.line,
+            appliedLine: "A worktree has no `.env.local`: copy it from the main checkout first.",
+            commit: "7e2fb79",
+          },
+        ],
+        repoProposalsDropped: [
+          {
+            id: "y",
+            repo: "tom.quest",
+            file: "worker/AGENTS.md",
+            section: "box",
+            line: "Always run the whole suite.",
+            reply: "no — it takes nine minutes",
+          },
+        ],
+      }),
+    );
+    const summary = await repoLearningStep(second, { fetch: convex.fetch, model: vi.fn() });
+    expect(summary.reconciled).toBe(1);
+    const after = fs.readFileSync(path.join(dir, rel), "utf8");
+    // The applied one is under the live heading, in the wording that merged.
+    expect(after).toContain("## worker/AGENTS.md#box\n");
+    expect(after).toContain("- line: A worktree has no `.env.local`: copy it from the main checkout first.");
+    // The objected one keeps its heading and says why it is not a rule.
+    expect(after).toContain("- line: Always run the whole suite.");
+    expect(after).toContain("  dropped: 2026-09-06 · Tom's objection · no — it takes nine minutes");
+    expect(runEvidenceCheck(dir).ok).toBe(true);
+  });
+
+  it("takes back the night's proposals when the check fails after them", async () => {
+    const { dir, repoDir } = repoLearningCheckout();
+    write(
+      dir,
+      "scripts/check-evidence.mjs",
+      [
+        'import { existsSync, readFileSync } from "node:fs";',
+        'const p = "model-of-tom/evidence/repos/tom.quest.md";',
+        'if (existsSync(p) && readFileSync(p, "utf8").includes("worktree")) { console.error("the records disagree"); process.exit(1); }',
+        'console.log("ok");',
+      ].join("\n"),
+    );
+    const run = learningRun(dir);
+    const convex = fakeConvex(learningInput({ repoSessions: [repoSession({ cwd: repoDir })] }));
+    const summary = await repoLearningStep(run, { fetch: convex.fetch, model: proposing([PROPOSAL]) });
+    expect(summary.proposals).toBe(0);
+    expect(summary.notes.some((n) => n.includes("taken back"))).toBe(true);
+    expect(fs.existsSync(path.join(dir, "model-of-tom/evidence/repos/tom.quest.md"))).toBe(false);
+    expect(run.learningRows).toEqual([]);
+    expect(run.commits).toEqual([]);
+  });
+
+  it("drops a proposal Tom named in a reply instead of reverting a page", async () => {
+    const { dir } = repoLearningCheckout();
+    const run = learningRun(dir);
+    const convex = fakeConvex(
+      learningInput({
+        tomTurns: [],
+        rulings: [],
+        objections: [{ eventId: "ev1", at: 1, id: null, text: "no, [b71cb71cb71c] is wrong" }],
+        changes: [],
+        repoProposals: [
+          {
+            id: "b71cb71cb71c",
+            repo: "tom.quest",
+            file: "worker/AGENTS.md",
+            section: "box",
+            line: PROPOSAL.line,
+            status: "open",
+          },
+        ],
+      }),
+    );
+    const summary = await learningStep(run, { fetch: convex.fetch, model: vi.fn() });
+    // No page was touched and no revert row was written: a proposal was never
+    // on a page to take a line off.
+    expect(summary).toMatchObject({ reverted: 0, revertFailed: 0, changes: 0 });
+    expect(run.learningRows).toEqual([]);
+    const dropped = convex.posts.find((p) => p.route === "/tts/repo-proposal-dropped");
+    expect(dropped.body).toEqual({ id: "b71cb71cb71c", reply: "no, [b71cb71cb71c] is wrong" });
+    expect(convex.posts.map((p) => p.route)).toEqual([
+      "/tts/repo-proposal-dropped",
+      "/tts/learning-objections-consumed",
+      "/tts/event",
+    ]);
+  });
+});
+
 
 // ── The git half, in a temp repository ───────────────────────────────────────
 // What these pin is what the box cannot tell us about until the night after:

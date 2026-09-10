@@ -121,6 +121,27 @@ import {
   groundSignals,
   isGroundConfirmedSection,
 } from "./learning-ground.mjs";
+import {
+  REPO_LEARNING_RUN,
+  REPO_PROPOSAL,
+  appendProposalEntry,
+  chooseSessions,
+  dedupeProposals,
+  dropProposal,
+  evidenceLinesOf,
+  parseRepoAnswer,
+  priorProposalSentences,
+  proposalHeading,
+  proposalId,
+  readRepoRules,
+  reconcileApplied,
+  renderProposalEntry,
+  repoEvidencePath,
+  repoLearningPrompt,
+  repoRuleBullets,
+  transcriptEvidence,
+  transcriptPath,
+} from "./learning-repo.mjs";
 
 // ── Where things are ─────────────────────────────────────────────────────────
 // The checkout, its lock, the session directories, the split rule and the
@@ -206,10 +227,10 @@ function git(dir, ...args) {
 // repo-learning runs AFTER sessions because it reads the transcripts that
 // step archives, and BEFORE push so its writes ride the night's commit.
 // NOTHING here is reordered without moving the comment with it.
-const STEPS = ["snapshot", "learning", "sessions", "push", "post"];
-// The four that write the WikiTom checkout. The post runs under the same
+const STEPS = ["snapshot", "learning", "sessions", "repo-learning", "push", "post"];
+// The five that write the WikiTom checkout. The post runs under the same
 // lock after them (see main), reading what they left.
-const LOCKED_STEPS = ["snapshot", "learning", "sessions", "push"];
+const LOCKED_STEPS = ["snapshot", "learning", "sessions", "repo-learning", "push"];
 // ── Small pure helpers (tested in nightly.test.mjs) ──────────────────────────
 
 /**
@@ -1318,6 +1339,40 @@ export function learningPrompt(input, pages, evidencePages, signals, day) {
  */
 async function learningObjections(run, input, fetchConvex) {
   const consumed = [];
+  // An objection may name a REPOSITORY-RULE PROPOSAL instead of a learned
+  // line: the digest prints both with an id of the same shape, and Tom
+  // replies on either the same way. A proposal has no page to take a line
+  // off — it was never written to one — so it is dropped at its row, and the
+  // next night's repo-learning step writes `dropped:` on its evidence entry.
+  const objections = [];
+  const proposals = new Map(
+    (input.repoProposals ?? [])
+      .filter((p) => typeof p?.id === "string" && p.status === "open")
+      .map((p) => [p.id, p]),
+  );
+  const droppedProposals = [];
+  for (const objection of input.objections ?? []) {
+    const named = namedChange(
+      [objection.id, ...changeIdTokens(String(objection.text ?? ""))],
+      [...proposals.values()],
+    );
+    if (named === null) {
+      objections.push(objection);
+      continue;
+    }
+    droppedProposals.push({ objection, proposal: named });
+    consumed.push(objection.eventId);
+  }
+  for (const { objection, proposal } of droppedProposals) {
+    try {
+      await fetchConvex(run.env, "/tts/repo-proposal-dropped", {
+        id: proposal.id,
+        reply: clip(objection.text, 200),
+      });
+    } catch (err) {
+      console.error(`[nightly] learning: could not drop proposal ${proposal.id}: ${err.message}`);
+    }
+  }
   // Both halves of every revert are written through `io`, so a checker that
   // fails after them restores every byte (withEvidenceCheck).
   const gate = withEvidenceCheck(run.dir, (io) => {
@@ -1329,7 +1384,7 @@ async function learningObjections(run, input, fetchConvex) {
     // against the records as this run left them.
     const expected = expectedBodyBlobs(input.changes);
     const expectedEvidence = expectedEvidenceBlobs(input.changes);
-    for (const objection of input.objections ?? []) {
+    for (const objection of objections) {
       const change = matchObjection(objection, input.changes ?? []);
       const note = { objectionId: objection.eventId, objection: clip(objection.text, 400) };
       if (change === null) {
@@ -1399,7 +1454,7 @@ async function learningObjections(run, input, fetchConvex) {
     if (consumed.length > 0) {
       await fetchConvex(run.env, "/tts/learning-objections-consumed", { ids: consumed });
     }
-    return { reverted: 0, failed: outcome.reverted + outcome.failed, checkFailed: true };
+    return { reverted: 0, failed: outcome.reverted + outcome.failed, proposalsDropped: droppedProposals.length, checkFailed: true };
   }
   for (const row of rows) run.learningRows.push(row);
   if (consumed.length > 0) {
@@ -1410,7 +1465,7 @@ async function learningObjections(run, input, fetchConvex) {
     for (const row of revertedRows) row.commitMessage = message;
     run.commits.push({ paths: [MODEL_OF_TOM_DIR], message });
   }
-  return { ...outcome, checkFailed: false };
+  return { ...outcome, proposalsDropped: droppedProposals.length, checkFailed: false };
 }
 
 /**
@@ -1603,6 +1658,234 @@ export async function recordLearningRows(run, deps = {}) {
       new Error(`${failed.length} of ${rows.length} learning rows not recorded: ${failed[0].message}`),
     );
   }
+}
+
+// ── 4. repo-learning ─────────────────────────────────────────────────────────
+// The nightly learning step maintains what the agents know about TOM. This one
+// maintains what they know about his REPOSITORIES: the nested AGENTS.md files.
+// It runs AFTER the sessions step because it reads the transcripts that step
+// archives, and BEFORE the push so its evidence writes ride the night's commit.
+//
+// IT NEVER EDITS A RULE FILE. Those live in other repositories and merge
+// through their own checks, so what lands tonight is the evidence entry alone,
+// under a heading that says the line is not in the repository yet, plus one
+// "repo-proposal" row the digest prints with its id. A session applies the
+// line later and posts back to /tts/repo-proposal-applied; the NEXT night's
+// run of this step moves the entry to its live heading. Tom's reply on the
+// digest line drops it instead — the entry keeps its heading and gains
+// `dropped:`, which is what stops the next night proposing it again.
+
+/**
+ * The step. `deps` is for the tests: the Convex call and the model call.
+ * The rows it produces go to run.learningRows, posted by recordLearningRows
+ * once the push has given them a commit.
+ */
+export async function repoLearningStep(run, deps = {}) {
+  const fetchConvex = deps.fetch ?? convexFetch;
+  const askModel = deps.model ?? runClaude;
+  const readRules = deps.readRules ?? readRepoRules;
+  run.learningRows ??= [];
+  const input = await fetchConvex(run.env, `/tts/learning-input?until=${run.now}`);
+  const summary = {
+    day: run.day,
+    since: input.since,
+    until: run.now,
+    sessions: (input.repoSessions ?? []).length,
+    transcriptsRead: 0,
+    proposals: 0,
+    dropped: 0,
+    deduped: 0,
+    repoFilesRead: 0,
+    reconciled: 0,
+    notes: [],
+    model: null,
+  };
+  // 1. Reconcile what landed since the last run: the only writer of a live
+  //    heading. Done before tonight's proposals so a line that landed is on
+  //    record before a duplicate of it could be proposed again.
+  const applied = (input.repoProposalsApplied ?? []).filter((r) => r.repo && r.file);
+  const objected = (input.repoProposalsDropped ?? []).filter((r) => r.repo && r.file);
+  const gate = withEvidenceCheck(run.dir, (io) => {
+    let reconciled = 0;
+    for (const row of applied) {
+      const rel = repoEvidencePath(row.repo);
+      if (rel === null || !io.exists(rel)) continue;
+      const out = reconcileApplied(io.read(rel), {
+        file: row.file,
+        section: row.section ?? "",
+        line: row.line,
+        appliedLine: row.appliedLine ?? row.line,
+      });
+      if (!out.ok) continue;
+      io.write(rel, out.text);
+      reconciled += 1;
+    }
+    for (const row of objected) {
+      const rel = repoEvidencePath(row.repo);
+      if (rel === null || !io.exists(rel)) continue;
+      const out = dropProposal(io.read(rel), {
+        file: row.file,
+        section: row.section ?? "",
+        line: row.line,
+        day: run.day,
+        reply: row.reply ?? "",
+      });
+      if (out.ok) io.write(rel, out.text);
+    }
+    return reconciled;
+  });
+  summary.reconciled = gate.ok ? gate.result : 0;
+  if (!gate.ok) {
+    summary.notes.push("the reconcile of applied proposals was taken back: the evidence check failed after it");
+  }
+
+  const sessions = chooseSessions(input.repoSessions ?? []);
+  if (sessions.length === 0) {
+    await fetchConvex(run.env, "/tts/event", { kind: REPO_LEARNING_RUN, data: summary });
+    console.log("[nightly] repo-learning: no sessions ended in a repository since the last run");
+    return summary;
+  }
+  // 2. What the model is shown: the outcome, the transcript's repo-bearing
+  //    lines, and the repository's own rule files as they stand on the box.
+  const shown = [];
+  const ruleFiles = [];
+  const seenRepos = new Set();
+  for (const s of sessions) {
+    const rel = transcriptPath(run.dir, s.sdkSessionId, utcDay(s.at));
+    let evidence = "";
+    if (rel !== null) {
+      try {
+        evidence = transcriptEvidence(fs.readFileSync(path.join(run.dir, rel)));
+        summary.transcriptsRead += 1;
+      } catch {
+        evidence = "";
+      }
+    }
+    shown.push({
+      session: sessionCitation({ sdkSessionId: s.sdkSessionId, sessionId: s.id }),
+      title: s.title ?? null,
+      repo: s.repo,
+      outcome: s.outcome ?? null,
+      outcomeSummary: s.outcomeSummary ?? null,
+      endedReason: s.endedReason ?? null,
+      transcript: evidence,
+    });
+    if (seenRepos.has(s.repo)) continue;
+    seenRepos.add(s.repo);
+    const rules = readRules(s.cwd ?? null);
+    if (rules.missing) {
+      summary.notes.push(
+        `${s.repo} AGENTS.md could not be read on the box; the proposals above were checked against the evidence record only`,
+      );
+    }
+    for (const f of rules.files) ruleFiles.push({ repo: s.repo, ...f });
+  }
+  summary.repoFilesRead = ruleFiles.length;
+
+  // 3. What is already on record, so the model is not asked to invent the
+  //    dedupe it would then be scored on.
+  const evidenceByRepo = new Map();
+  for (const repo of seenRepos) {
+    const rel = repoEvidencePath(repo);
+    if (rel === null) continue;
+    const abs = path.join(run.dir, rel);
+    evidenceByRepo.set(repo, fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : "");
+  }
+  const onRecord = [...evidenceByRepo.values()].flatMap(evidenceLinesOf);
+  const prior = priorProposalSentences(input.repoProposals ?? [], run.day);
+
+  summary.model = LEARNING_MODEL;
+  const answer = askModel(
+    repoLearningPrompt(
+      shown,
+      ruleFiles.map((f) => `=== ${f.repo} ${f.path} ===\n${f.text}`).join("\n\n"),
+      [...onRecord, ...prior].map((l) => `- ${l}`).join("\n"),
+      run.day,
+    ),
+    { cwd: run.dir, model: LEARNING_MODEL, timeoutMs: LEARNING_TIMEOUT_MS, maxTurns: 4 },
+  );
+  const proposals = parseRepoAnswer(answer, extractJsonObject).filter(
+    (p) => p !== null && typeof p === "object" && seenRepos.has(p.repo) && typeof p.file === "string",
+  );
+  const { kept, dropped } = dedupeProposals(proposals, {
+    bullets: repoRuleBullets(ruleFiles),
+    entryLines: onRecord,
+    priorSentences: prior,
+  });
+  summary.deduped = dropped.filter((d) => d.reason.startsWith("a duplicate")).length;
+  summary.dropped = dropped.length;
+  if (summary.deduped > 0) {
+    summary.notes.push(
+      `${summary.deduped} proposal${summary.deduped === 1 ? "" : "s"} dropped as duplicates of lines already in the files`,
+    );
+  }
+
+  // 4. The write: the entry, under the proposed heading, and one row each.
+  const rows = [];
+  const write = withEvidenceCheck(run.dir, (io) => {
+    for (const p of kept) {
+      const rel = repoEvidencePath(p.repo);
+      if (rel === null) continue;
+      const heading = proposalHeading(p.file, p.section ?? "", { proposed: true });
+      const entry = renderProposalEntry(p, run.day);
+      const current = io.exists(rel) ? io.read(rel) : repoEvidenceHeader(p.repo);
+      io.write(rel, appendProposalEntry(current, heading, entry));
+      const id = proposalId(p.repo, p.file, p.section ?? "", p.line);
+      rows.push({
+        kind: REPO_PROPOSAL,
+        key: id,
+        data: {
+          id,
+          repo: p.repo,
+          file: p.file,
+          section: p.section ?? "",
+          line: oneLine(p.line),
+          read: oneLine(p.read),
+          sources: (p.sources ?? []).map((s) => String(s)),
+          evidence: `read: session ${String((p.sources ?? [])[0] ?? "unknown")}`,
+          evidenceHeading: heading,
+          status: "open",
+          commit: null,
+        },
+      });
+    }
+    return null;
+  });
+  if (!write.ok) {
+    summary.notes.push(
+      `${kept.length} proposal${kept.length === 1 ? "" : "s"} were taken back: the evidence check failed after them`,
+    );
+    await fetchConvex(run.env, "/tts/event", { kind: REPO_LEARNING_RUN, data: summary });
+    console.error("[nightly] repo-learning: the evidence check failed after the write — every proposal was taken back");
+    return summary;
+  }
+  summary.proposals = rows.length;
+  if (rows.length > 0) {
+    const message = `repo rules: ${run.day} — ${rows.length} proposal${rows.length === 1 ? "" : "s"} from the night's sessions`;
+    for (const row of rows) run.learningRows.push({ ...row, commitMessage: message });
+    run.commits.push({ paths: [MODEL_OF_TOM_DIR], message });
+  } else if (summary.reconciled > 0) {
+    run.commits.push({
+      paths: [MODEL_OF_TOM_DIR],
+      message: `repo rules: ${run.day} — ${summary.reconciled} proposal${summary.reconciled === 1 ? "" : "s"} applied in their repositories`,
+    });
+  }
+  await fetchConvex(run.env, "/tts/event", { kind: REPO_LEARNING_RUN, data: summary });
+  console.log(
+    `[nightly] repo-learning: ${sessions.length} session(s), ${summary.transcriptsRead} transcript(s) — ${summary.proposals} proposal(s), ${summary.dropped} dropped, ${summary.reconciled} reconciled`,
+  );
+  return summary;
+}
+
+/** The head of a repository's evidence file, written once when the first
+ * proposal for that repository lands. It says why the checker does not mirror
+ * it, which is the question a reader of the file asks first. */
+export function repoEvidenceHeader(repo) {
+  return [
+    `Evidence for the synthesis rule files of the ${repo} repository.`,
+    "Their synthesis lines live in that repository, not here, so the evidence checker validates entry form without mirroring them.",
+    "",
+  ].join("\n");
 }
 
 // ── 3. sessions ──────────────────────────────────────────────────────────────
@@ -1909,6 +2192,7 @@ async function main() {
     snapshot: snapshotStep,
     learning: learningStep,
     sessions: sessionsStep,
+    "repo-learning": repoLearningStep,
     push: pushStep,
     post: postStep,
   };
@@ -1972,6 +2256,17 @@ async function recordSummary(run, only) {
           reverted: run.results.learning.reverted,
           revertFailed: run.results.learning.revertFailed,
           tomTurns: run.results.learning.tomTurns,
+          // A weekly "did learning run" fact reads this: a night that wrote
+          // nothing because the checker refused it is not a quiet night.
+          checkFailed: run.results.learning.checkFailed === true,
+        }
+      : null,
+    repoLearning: run.results["repo-learning"]
+      ? {
+          sessions: run.results["repo-learning"].sessions,
+          proposals: run.results["repo-learning"].proposals,
+          dropped: run.results["repo-learning"].dropped,
+          reconciled: run.results["repo-learning"].reconciled,
         }
       : null,
     posted: run.results.post?.files ?? null,

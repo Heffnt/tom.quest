@@ -40,7 +40,12 @@ import {
 //   9. model-of-Tom lines the nightly job wrote (kind "learning-change"),
 //      each with its id — a reply in this thread naming the id is the
 //      objection — and the lines it reverted or could not revert on an
-//      earlier objection ("learning-reverted", "learning-revert-failed")
+//      earlier objection ("learning-reverted", "learning-revert-failed"), and
+//      the night whose whole write was taken back because the evidence check
+//      failed ("learning-check-failed"), which names no line at all
+//  10. the lines the nightly repo-learning step PROPOSED for a repository's
+//      own AGENTS.md ("repo-proposal" and its applied/dropped answers), which
+//      are objected to by id in the same way
 //
 // A digest is a morning read, not the list: an item is one line (clipToLine)
 // and a section prints at most SECTION_ITEM_CAP of them before naming what is
@@ -95,6 +100,31 @@ function slackSubjectLabel(raw: unknown): string {
 export const LEARNING_CHANGE = "learning-change";
 export const LEARNING_REVERTED = "learning-reverted";
 export const LEARNING_REVERT_FAILED = "learning-revert-failed";
+
+// The night the learning step took its WHOLE write back: WikiTom's
+// scripts/check-evidence.mjs failed after the write, so every line the night
+// put on a page was reverted rather than left standing behind a failing check.
+// The digest says it because otherwise the morning reads as a quiet night, and
+// a quiet night and a night whose work was undone are different facts.
+//   kind "learning-check-failed", data { baseline, stage?: "reverts" | "changes",
+//                                        changes?, output }
+// `baseline` true means the check was ALREADY failing before the run, so the
+// step wrote nothing at all; false means it wrote and then took it all back.
+export const LEARNING_CHECK_FAILED = "learning-check-failed";
+
+// The nightly "repo-learning" step reads the night's sessions and proposes
+// lines for the nested AGENTS.md of a repository they worked in. The line
+// lands in that repository through ITS OWN checks — a branch, a review, a
+// merge — so what the digest prints is a PROPOSAL, not a write: Tom's
+// objection in the thread drops it before it is ever applied.
+//   kind "repo-proposal",         data { id, repo, file, section, line, evidence }
+//   kind "repo-proposal-applied", data { id, repo, file, section, line, evidence, commit }
+//   kind "repo-proposal-dropped", data { id, repo, file, section, line, evidence, reason? }
+// The step's own run row, kind "repo-learning-run", carries `notes`: whole
+// lines it reported that are not one proposal (see repoProposalNotes).
+export const REPO_PROPOSAL = "repo-proposal";
+export const REPO_PROPOSAL_APPLIED = "repo-proposal-applied";
+export const REPO_PROPOSAL_DROPPED = "repo-proposal-dropped";
 
 // The weekly session's record that Tom confirmed an area page (phase 8;
 // POST /tts/area-reviewed, convex/ttsWeekly.ts): key = the page's path,
@@ -212,15 +242,38 @@ export type DigestFacts = {
   learning: {
     // "changed": a line the job wrote; "reverted": one it took back on
     // Tom's objection (before is the learned line, after what it restored);
-    // "revert-failed": an objection it could not apply, with the reason.
-    status: "changed" | "reverted" | "revert-failed";
+    // "revert-failed": an objection it could not apply, with the reason;
+    // "check-failed": the whole night's write taken back because the evidence
+    // check failed — the one status that names no line, because none stands.
+    status: "changed" | "reverted" | "revert-failed" | "check-failed";
     id: string;
     file: string;
     before: string;
     after: string;
     evidence: string;
     reason?: string;
+    // check-failed only: whether the check was already failing before the run
+    // (baseline), and how many changes were taken back when it was not.
+    baseline?: boolean;
+    count?: number;
   }[];
+  // The nightly repo-learning step's proposals for a repository's own
+  // AGENTS.md, each with the id a reply names to object to it.
+  repoProposals: {
+    status: "proposed" | "applied" | "dropped";
+    id: string;
+    repo: string;
+    file: string;
+    section: string;
+    line: string;
+    evidence: string;
+    commit?: string;
+    reason?: string;
+  }[];
+  // Whole lines the step reported that are not one proposal — a count of
+  // duplicates it dropped, a repository whose AGENTS.md it could not read.
+  // Printed under the same header, after the proposals, unchanged.
+  repoProposalNotes: string[];
   // The published model-of-tom revision callers select layers from, as the
   // store holds it (ttsSkills.modelOfTomState): the commit, and whether it had reached
   // GitHub when the job posted it. Null while nothing posted serves.
@@ -427,26 +480,66 @@ function digestSections(f: DigestFacts): Section[] {
       ? [`- model-of-tom files at WikiTom ${slackEscape(f.modelOfTom.commit.slice(0, 12))} — not yet pushed`]
       : [];
   if (f.learning.length > 0 || notPushed.length > 0) {
+    // A night whose write was taken back is said FIRST, ahead of the lines:
+    // it is the fact that decides what the rest of the section means, and it
+    // carries no id and no file because there is nothing left to object to —
+    // the write is already gone.
+    const checkFailed = f.learning.filter((l) => l.status === "check-failed");
+    const rest = f.learning.filter((l) => l.status !== "check-failed");
+    const checkFailedLines = checkFailed.map((l) =>
+      l.baseline === true
+        ? "- learning wrote nothing: model-of-tom/evidence was already failing its check before tonight's run"
+        : `- learning wrote nothing: the evidence check failed after ${l.count ?? 0} change(s) and every one was taken back`,
+    );
+    const restLines = rest.map((l) => {
+      const id = `[${slackEscape(l.id)}]`;
+      const file = slackEscape(l.file);
+      switch (l.status) {
+        case "reverted":
+          return `- ${id} ${file}: reverted on your objection — "${slackEscape(l.before)}"${l.after === "" ? "" : ` → "${slackEscape(l.after)}"`}`;
+        case "revert-failed":
+          return `- ${id} ${file}: NOT reverted — ${slackEscape(l.reason ?? "")}`;
+        default:
+          // Three shapes of a CHANGE, told apart by which side is empty: an
+          // addition (nothing before), a removal (nothing after — a line the
+          // job took OFF a page, which is a change and not a reversal), and a
+          // rewrite. The removal's mark is U+2212 MINUS SIGN, not a hyphen,
+          // so it reads as the opposite of the addition's "+" instead of as
+          // the bullet the line already starts with.
+          if (l.before === "") {
+            return `- ${id} ${file}: + "${slackEscape(l.after)}" (${slackEscape(l.evidence)})`;
+          }
+          if (l.after === "") {
+            return `- ${id} ${file}: − "${slackEscape(l.before)}" (${slackEscape(l.evidence)})`;
+          }
+          return `- ${id} ${file}: "${slackEscape(l.before)}" → "${slackEscape(l.after)}" (${slackEscape(l.evidence)})`;
+      }
+    });
+    sections.push(
+      section("*Model of Tom*", [...notPushed, ...checkFailedLines, ...restLines], null),
+    );
+  }
+
+  // The repository proposals sit next to the model-of-Tom lines because they
+  // are the same morning act: read what the night learned, object by naming
+  // an id. They link nowhere for the same reason — a proposal is not a row on
+  // the /tts page, it is a line waiting for a repository's own checks.
+  if (f.repoProposals.length > 0 || f.repoProposalNotes.length > 0) {
+    const proposalLines = f.repoProposals.map((p) => {
+      const id = `[${slackEscape(p.id)}]`;
+      switch (p.status) {
+        case "applied":
+          return `- ${id} applied to ${slackEscape(p.repo)} ${slackEscape(p.file)} at ${slackEscape(p.commit ?? "")}`;
+        case "dropped":
+          return `- ${id} dropped on your objection — "${slackEscape(p.line)}"${p.reason === undefined ? "" : ` — ${slackEscape(p.reason)}`}`;
+        default:
+          return `- ${id} ${slackEscape(p.repo)} ${slackEscape(p.file)} § ${slackEscape(p.section)}: "${slackEscape(p.line)}" (${slackEscape(p.evidence)})`;
+      }
+    });
     sections.push(
       section(
-        "*Model of Tom*",
-        [
-          ...notPushed,
-          ...f.learning.map((l) => {
-            const id = `[${slackEscape(l.id)}]`;
-            const file = slackEscape(l.file);
-            switch (l.status) {
-              case "reverted":
-                return `- ${id} ${file}: reverted on your objection — "${slackEscape(l.before)}"${l.after === "" ? "" : ` → "${slackEscape(l.after)}"`}`;
-              case "revert-failed":
-                return `- ${id} ${file}: NOT reverted — ${slackEscape(l.reason ?? "")}`;
-              default:
-                return l.before === ""
-                  ? `- ${id} ${file}: + "${slackEscape(l.after)}" (${slackEscape(l.evidence)})`
-                  : `- ${id} ${file}: "${slackEscape(l.before)}" → "${slackEscape(l.after)}" (${slackEscape(l.evidence)})`;
-            }
-          }),
-        ],
+        "*Repository rules proposed*",
+        [...proposalLines, ...f.repoProposalNotes.map((n) => `- ${slackEscape(n)}`)],
         null,
       ),
     );
@@ -721,6 +814,8 @@ export async function gatherDigestFacts(
   const overnight: DigestFacts["overnight"] = [];
   const failures: DigestFacts["failures"] = [];
   const learning: DigestFacts["learning"] = [];
+  const repoProposals: DigestFacts["repoProposals"] = [];
+  const repoProposalNotes: DigestFacts["repoProposalNotes"] = [];
   const modelOfTom = await modelOfTomState(ctx);
   for (const e of events) {
     const d = (e.data ?? {}) as Record<string, unknown>;
@@ -832,6 +927,59 @@ export async function gatherDigestFacts(
           reason: str(d.reason),
         });
         break;
+      case LEARNING_CHECK_FAILED:
+        // No line stands, so there is no id, no file and no evidence to name
+        // — only whether the check was already failing (baseline) and how
+        // many changes went back. The row's own field has been `changes`
+        // since the step was written; `count` is read first so a later row
+        // that says it plainly still counts.
+        learning.push({
+          status: "check-failed",
+          id: "",
+          file: "",
+          before: "",
+          after: "",
+          evidence: "",
+          baseline: d.baseline === true,
+          count:
+            typeof d.count === "number"
+              ? d.count
+              : typeof d.changes === "number"
+                ? d.changes
+                : 0,
+        });
+        break;
+      case REPO_PROPOSAL:
+      case REPO_PROPOSAL_APPLIED:
+      case REPO_PROPOSAL_DROPPED:
+        repoProposals.push({
+          status:
+            e.kind === REPO_PROPOSAL
+              ? "proposed"
+              : e.kind === REPO_PROPOSAL_APPLIED
+                ? "applied"
+                : "dropped",
+          id: str(d.id) ?? "?",
+          repo: str(d.repo) ?? "",
+          file: str(d.file) ?? "",
+          section: str(d.section) ?? "",
+          line: str(d.line) ?? "",
+          evidence: str(d.evidence) ?? "",
+          commit: str(d.commit),
+          reason: str(d.reason),
+        });
+        break;
+      case "repo-learning-run":
+        // The step's run row. Only `notes` is printed, and only when it is
+        // what it claims to be: a list of whole lines. Anything else on the
+        // row is instrumentation and is not the morning's business.
+        if (Array.isArray(d.notes)) {
+          for (const note of d.notes) {
+            const text = str(note);
+            if (text !== undefined) repoProposalNotes.push(text);
+          }
+        }
+        break;
       case AREA_REVIEWED:
         overnight.push({
           batch: null,
@@ -915,6 +1063,8 @@ export async function gatherDigestFacts(
     wikitom: wikitom ?? null,
     rulings,
     learning,
+    repoProposals,
+    repoProposalNotes,
     modelOfTom: modelOfTom.commit === null ? null : { commit: modelOfTom.commit, pushed: modelOfTom.pushed },
   };
 }
