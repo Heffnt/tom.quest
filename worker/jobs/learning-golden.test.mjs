@@ -24,7 +24,7 @@ import {
 import { groundSignals } from "./learning-ground.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const GOLDEN = path.join(here, "..", "..", "evals", "golden-learning");
+const GOLDEN = path.join(here, "..", "..", "evals", "golden", "learning");
 const CHECKER = fs.readFileSync(path.join(here, "fixtures", "check-evidence.mjs"), "utf8");
 
 function tmp() {

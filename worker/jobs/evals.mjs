@@ -79,17 +79,26 @@ export function isConfirmed(item) {
   return item.confirmedByTom !== false;
 }
 
-/** Every golden item in a tom.quest tree, id-ascending. Both homes are read:
- *  evals/golden/*.json (the exporter's) and evals/golden/explanations/*.json
- *  (the importer's). */
+/** Every golden item in a tom.quest tree, id-ascending. THE LAYOUT IS
+ *  evals/golden/ AND ONE LEVEL BELOW IT: the exporter writes its rulings items
+ *  into the root, and each producer that files a set of its own gets a
+ *  directory named for it — `explanations/` (scripts/import-explanation-golden.mjs),
+ *  `learning/` (the nightly learning step's two). The directories are DISCOVERED
+ *  rather than listed, so a new set is a directory and not an edit here; the
+ *  walk stops at one level because an item's own `partition` field is what
+ *  groups the report, not its path. */
 export function loadGolden(tomquestTree) {
-  const roots = [path.join(tomquestTree, GOLDEN_DIR), path.join(tomquestTree, GOLDEN_DIR, "explanations")];
+  const root = path.join(tomquestTree, GOLDEN_DIR);
+  if (!fs.existsSync(root)) return [];
+  const roots = [root];
+  for (const entry of fs.readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    if (entry.isDirectory()) roots.push(path.join(root, entry.name));
+  }
   const items = [];
-  for (const root of roots) {
-    if (!fs.existsSync(root)) continue;
-    for (const name of fs.readdirSync(root).sort()) {
+  for (const dir of roots) {
+    for (const name of fs.readdirSync(dir).sort()) {
       if (!name.endsWith(".json")) continue;
-      const file = path.join(root, name);
+      const file = path.join(dir, name);
       if (!fs.statSync(file).isFile()) continue;
       items.push(JSON.parse(fs.readFileSync(file, "utf8")));
     }

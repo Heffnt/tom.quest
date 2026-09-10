@@ -1,4 +1,4 @@
-# evals/golden-learning
+# evals/golden/learning
 
 Two golden items for the nightly learning step (`worker/jobs/nightly.mjs`), in
 the format the evals runner reads: `{id, job, partition, verdict, sentence,
@@ -22,7 +22,8 @@ The evals runner instead regenerates the answer with the current prompt at two
 shas and compares the same two lists, which is what a change to the PROMPT can
 break.
 
-The runner's own tree (`uac/evals`) files goldens under
-`evals/golden/<partition>/`. These sit here because the learning brief names
-this directory; at integration they move to `evals/golden/learning/` and
-nothing else changes — the items themselves carry their partition.
+The evals runner reads `evals/golden/` and every directory one level below it
+(`worker/jobs/evals.mjs` loadGolden), so this directory IS how the runner finds
+these two — no list of set names anywhere. What groups the report is each
+item's own `partition` field, not its path; the directory name only says who
+files the set.
