@@ -3,11 +3,11 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { DAY_MS } from "./ttsShared";
+import { MERGE } from "./ttsMerge";
 import { logEvent } from "./tts";
 
 export const DELEGATE_DECISION = "delegate-decision";
 export const DELEGATE_OBJECTION = "delegate-objection";
-export const MERGE = "merge";
 export const DELEGATE_TIMEOUT_MS = 120_000;
 export const DELEGATE_MAX_TURNS = 6;
 export const DELEGATE_MAX_PER_SESSION = 5;
@@ -220,24 +220,20 @@ export const internalRecordDelegateObjection = internalMutation({
     threadTs: v.string(),
   },
   handler: async (ctx, args) => {
-    const decision = await ctx.db.query("dtsEvents").withIndex("by_kind_key", (q) => q.eq("kind", DELEGATE_DECISION).eq("key", args.askId)).first();
-    if (!decision) throw new Error(`Delegate decision not found: ${args.askId}`);
-    return await logEvent(ctx, DELEGATE_OBJECTION, decision.todoId, args, args.askId);
-  },
-});
-
-/** Future merge command contract: POST /tts/merge writes exactly this event
- * after its mechanical gate passes. A merge is reported for objection, never
- * placed on the narrow list: the delegate did not make this decision. */
-export const internalRecordMerge = internalMutation({
-  args: { repo: v.string(), sha: v.string(), subject: v.string(), todoId: v.optional(v.string()) },
-  handler: async (ctx, args) => {
-    const todoId = args.todoId === undefined ? undefined : ctx.db.normalizeId("dtsTodos", args.todoId);
-    if (args.todoId !== undefined && todoId === null) throw new Error(`Unknown todo id: ${args.todoId}`);
-    const key = `${args.repo}:${args.sha}`;
-    const existing = await ctx.db.query("dtsEvents").withIndex("by_kind_key", (q) => q.eq("kind", MERGE).eq("key", key)).first();
-    if (existing) return { id: existing._id, existing: true };
-    const id = await logEvent(ctx, MERGE, todoId ?? undefined, { repo: args.repo, sha: args.sha, subject: args.subject }, key);
-    return { id, existing: false };
+    // The thing objected to is a delegate decision, OR a merge: both are
+    // reported in the objection list and both carry a #tts-decisions thread,
+    // so both accept a "revert" (convex/ttsMerge.ts). A merge's askId is its
+    // own `<repo>:<sha>` key.
+    const subject =
+      (await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", DELEGATE_DECISION).eq("key", args.askId))
+        .first()) ??
+      (await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", MERGE).eq("key", args.askId))
+        .first());
+    if (!subject) throw new Error(`Delegate decision not found: ${args.askId}`);
+    return await logEvent(ctx, DELEGATE_OBJECTION, subject.todoId, args, args.askId);
   },
 });

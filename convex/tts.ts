@@ -120,7 +120,11 @@ export async function logEvent(
   // schema comment lists, and on no other.
   key?: string,
 ) {
-  return await ctx.db.insert("dtsEvents", {
+  // The id is answered to the caller (convex/ttsAsk.ts records one and reads it
+  // back), so the broken-line post below runs BEFORE the return rather than
+  // after it — the two halves arrived on different branches and the first
+  // straight merge left the post unreachable.
+  const id = await ctx.db.insert("dtsEvents", {
     at: Date.now(),
     kind,
     todoId,
@@ -139,6 +143,7 @@ export async function logEvent(
       ...(str(d.error) === undefined ? {} : { detail: str(d.error) as string }),
     });
   }
+  return id;
 }
 
 // ── Tom-facing queries ───────────────────────────────────────────────────────

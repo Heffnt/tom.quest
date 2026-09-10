@@ -2,7 +2,8 @@ import { convexTest } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
-import { DELEGATE_DECISION, MERGE } from "./ttsAsk";
+import { DELEGATE_DECISION } from "./ttsAsk";
+import { MERGE } from "./ttsMerge";
 import {
   DIGEST_SENT,
   ROLLOVER_NOTE,
@@ -559,6 +560,36 @@ describe("internalComposeToday", () => {
     expect(text).not.toContain("message-in-his-name");
     expect(objectionAskIds).toEqual(["ask-2", "ask-1"]);
     expect(text).toContain('reply "revert 2", or "2: what to do instead".');
+  });
+
+  // A merge is reported for objection too, and its wording never assigns it to
+  // the delegate: nothing was decided in Tom's name, three checks passed.
+  it("reports a mechanically gated merge in the same list, with no askId of its own", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: FIVE_AM - 1800_000,
+        kind: MERGE,
+        key: "tom.quest:a1b2c3d4e5f6",
+        data: {
+          repo: "tom.quest",
+          sha: "a1b2c3d4e5f6",
+          subject: "the mechanical merge gate",
+        },
+      });
+    });
+    const { text, objectionAskIds } = await t.query(internal.ttsDigest.internalComposeToday, {
+      day: DAY_KEY,
+      now: FIVE_AM,
+      canReply: true,
+    });
+    expect(text).toContain("1. Merged tom.quest@a1b2c3d: the mechanical merge gate.");
+    // Its number names no askId: a merge is not a delegate decision, so a
+    // reply that types its number falls through to the ordinary paths.
+    expect(objectionAskIds).toEqual([""]);
   });
 
   it("renders nothing at all when there are no delegate rows", async () => {

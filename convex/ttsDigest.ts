@@ -12,12 +12,8 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { recordMissedKeepingDate } from "./tts";
-import {
-  DELEGATE_DECISION,
-  MERGE,
-  objectionRank,
-  stripNarrowListId,
-} from "./ttsAsk";
+import { DELEGATE_DECISION, objectionRank, stripNarrowListId } from "./ttsAsk";
+import { MERGE } from "./ttsMerge";
 import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import {
   DAY_MS,
@@ -100,7 +96,8 @@ export function todaySubject(day: string): SlackSubject {
 //                              reason, refused, refusedBecause, fallback, … }
 //   kind "delegate-objection", key <askId> — Tom's revert, written by the
 //                              Slack thread-reply route.
-export { DELEGATE_DECISION, DELEGATE_OBJECTION, MERGE } from "./ttsAsk";
+export { DELEGATE_DECISION, DELEGATE_OBJECTION } from "./ttsAsk";
+export { MERGE } from "./ttsMerge";
 
 // The nightly job's model-of-Tom lines (worker/jobs/nightly.mjs learningStep
 // writes them). They no longer appear in the morning message: a line the

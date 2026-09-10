@@ -239,50 +239,8 @@ describe("POST /tts/ask — the delegate's record", () => {
   });
 });
 
-describe("POST /tts/merge — the merge report", () => {
-  afterEach(() => vi.unstubAllEnvs());
-
-  it("writes one row per merged sha, and a retry writes nothing", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", KEY);
-    const t = convexTest({ schema, modules });
-    const todoId = await seedTodo(t, "the delegate lands");
-    const merge = (over: Record<string, unknown> = {}) =>
-      t.fetch("/tts/merge", {
-        method: "POST",
-        headers: { "X-TTS-Key": KEY, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          repo: "tom.quest",
-          sha: "5ad4b21",
-          subject: "the delegate and the objection list",
-          todoId,
-          ...over,
-        }),
-      });
-    expect((await merge()).status).toBe(200);
-    const retried = await merge();
-    expect((await retried.json()).existing).toBe(true);
-    const written = await t.run(async (ctx) =>
-      ctx.db
-        .query("dtsEvents")
-        .withIndex("by_kind_at", (q) => q.eq("kind", "merge"))
-        .collect(),
-    );
-    expect(written).toHaveLength(1);
-    expect(written[0].key).toBe("tom.quest:5ad4b21");
-    expect(written[0].todoId).toBe(todoId);
-  });
-
-  it("400s a report missing its repo, sha or subject", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", KEY);
-    const t = convexTest({ schema, modules });
-    const response = await t.fetch("/tts/merge", {
-      method: "POST",
-      headers: { "X-TTS-Key": KEY, "Content-Type": "application/json" },
-      body: JSON.stringify({ repo: "tom.quest", sha: "5ad4b21" }),
-    });
-    expect(response.status).toBe(400);
-  });
-});
+// POST /tts/merge and its mechanical gate are convex/ttsMerge.test.ts:
+// merging is not a delegate decision, and the gate is what decides it.
 
 describe("GET /tts/state serves the narrow list", () => {
   afterEach(() => vi.unstubAllEnvs());

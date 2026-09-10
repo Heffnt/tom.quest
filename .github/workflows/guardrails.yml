@@ -53,3 +53,20 @@ jobs:
       # public Convex URLs live in the committed .env — before that, CI had no
       # NEXT_PUBLIC_CONVEX_URL and `next build` died at the prerender step.
       - run: pnpm build
+      # The merge gate's first check (convex/ttsMerge.ts): this job's own
+      # result, recorded against the commit it ran on. `if: always()` so a
+      # RED run is recorded too — a missing row and a red row are different
+      # facts, and the gate's deny message says which it found. Recorded once
+      # per commit, so re-running until it flakes green changes nothing.
+      - if: always() && vars.CONVEX_SITE_URL != ''
+        run: |
+          curl -sS -X POST "$CONVEX_SITE_URL/tts/tests" \
+            -H "X-Evals-Key: $EVALS_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"repo\":\"tom.quest\",\"sha\":\"$SHA\",\"ok\":$OK,\"detail\":\"guardrails tests job\",\"url\":\"$RUN_URL\"}"
+        env:
+          CONVEX_SITE_URL: ${{ vars.CONVEX_SITE_URL }}
+          EVALS_KEY: ${{ secrets.EVALS_KEY }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          OK: ${{ job.status == 'success' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

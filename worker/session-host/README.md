@@ -255,8 +255,9 @@ transcript shows what was delegated and what came back, and no more.
 
 **Sandbox off; no per-command gate.** The Jarvis Box is the sandbox. Codex
 runs with `--dangerously-bypass-approvals-and-sandbox`; the structural
-boundary (throwaway workdir, session/<id> branch namespace, Tom's merge gate,
-Tom-only pens, scrubbed env) is the whole boundary, exactly as for Claude.
+boundary (throwaway workdir, session/<id> branch namespace, the mechanical
+merge gate, Tom-only pens, scrubbed env) is the whole boundary, exactly as for
+Claude.
 Codex sessions never enter `#canUseTool` — Codex reports commands after they
 ran — so neither the edit-path check, the Bash classifier, nor the Tier-0
 daemon guard applies to them. The same ruling made those per-command checks
@@ -388,8 +389,11 @@ serve it (both installed by `setup.sh`, both outside every work tree):
   `git remote -v` hold no secret.
 - **gh** — `/root/.config/gh/hosts.yml`, regenerated from worker.env on
   every setup.sh run, so `gh pr create` works — the sanctioned way a session
-  finishes. Every `gh` call pays a classifier verdict (`gh pr merge` and API
-  writes past the session's own PR are denied — merging is Tom's gate).
+  finishes. Every `gh` call pays a classifier verdict, except a lone merge:
+  `git merge` and `gh pr merge` are ruled on by the MECHANICAL MERGE GATE
+  before the classifier (`merge-gate.mjs`), which allows them once the tests,
+  an audit and the evals are on record for the commit at HEAD and denies them
+  naming which are missing. API writes past the session's own PR stay denied.
 
 A credential-shaped string that still reaches an ingest payload is replaced
 with `[redacted:<kind>]` by the daemon (`redactSecrets` in redact.mjs,

@@ -25,6 +25,7 @@ import {
   type Recommendation,
 } from "./ttsShared";
 import { isNarrowListId } from "./ttsShared";
+import { auditVerdictOf } from "./ttsMerge";
 import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES, isExportTable } from "./ttsNightly";
 
@@ -1432,9 +1433,113 @@ const ttsAskContext = httpAction(async (ctx, request) => {
 });
 http.route({ path: "/tts/ask-context", method: "GET", handler: ttsAskContext });
 
-// POST /tts/merge is the future merge command's narrow record door. It is not
-// a delegate decision: a mechanically gated merge is only reported in the
-// objection list, keyed by repo+sha so retries remain one event.
+// ── The mechanical merge gate's three doors (convex/ttsMerge.ts) ────────────
+// A merge is allowed when three facts about the merged head are on record:
+// the tests are green, an audit approved it, and the evals found no
+// regression. These routes are where the first two are written, where all
+// three are read, and where a passed merge is recorded.
+
+// POST /tts/tests — the Guardrails `tests` job's own result, at the end of its
+// run. Body: { repo, sha, ok, detail?, url? }.
+//
+// EITHER KEY, for the reason the evals-run read takes either: CI holds the
+// narrow evals key and this is a CI fact of the same class, while the box
+// holds the worker key and posts its own local runs. The worker key is
+// strictly the more privileged of the two, so accepting it widens nothing.
+const ttsTests = httpAction(async (ctx, request) => {
+  const denied = request.headers.get("X-TTS-Key")
+    ? ttsAuth(request)
+    : keyAuth(request, "EVALS_KEY", "X-Evals-Key");
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  const nonempty = (value: unknown) => typeof value === "string" && value.trim() !== "";
+  if (!nonempty(b.repo) || !nonempty(b.sha)) {
+    return jsonResponse(400, { error: "repo and sha (non-empty strings) required" });
+  }
+  if (typeof b.ok !== "boolean") return jsonResponse(400, { error: "ok (boolean) required" });
+  const result = await ctx.runMutation(internal.ttsMerge.internalRecordTests, {
+    repo: (b.repo as string).trim(),
+    sha: (b.sha as string).trim(),
+    ok: b.ok,
+    ...(nonempty(b.detail) ? { detail: (b.detail as string).trim() } : {}),
+    ...(nonempty(b.url) ? { url: (b.url as string).trim() } : {}),
+  });
+  //  rather than : the answer's own ok says the POST landed, and
+  // the row's ok says whether the tests were green.
+  return jsonResponse(200, { ok: true, existing: result.existing, green: result.ok });
+});
+
+http.route({ path: "/tts/tests", method: "POST", handler: ttsTests });
+
+// POST /tts/audit — the Codex/Opus audit of one head. Body:
+// { repo, sha, text, model?, url? }, where `text` is the audit's own answer.
+// The VERDICT LINE IS READ HERE, from that text, so the parse has one home
+// (ttsMerge.auditVerdictOf) and the record keeps the words the auditor wrote.
+// An answer with no `VERDICT: <WORD>` line of its own is refused rather than
+// filed as a non-approval: an audit that did not say is an audit that did not
+// finish, and the gate must not be able to confuse the two.
+//
+// The worker key: the audit step runs on the box.
+const ttsAudit = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  const nonempty = (value: unknown) => typeof value === "string" && value.trim() !== "";
+  if (!nonempty(b.repo) || !nonempty(b.sha)) {
+    return jsonResponse(400, { error: "repo and sha (non-empty strings) required" });
+  }
+  if (!nonempty(b.text)) return jsonResponse(400, { error: "text (the audit answer) required" });
+  const verdict = auditVerdictOf(b.text as string);
+  if (verdict === null) {
+    return jsonResponse(400, {
+      error: "the audit answer carries no VERDICT: <WORD> line of its own",
+    });
+  }
+  const result = await ctx.runMutation(internal.ttsMerge.internalRecordAudit, {
+    repo: (b.repo as string).trim(),
+    sha: (b.sha as string).trim(),
+    verdict,
+    ...(nonempty(b.model) ? { model: (b.model as string).trim() } : {}),
+    ...(nonempty(b.url) ? { url: (b.url as string).trim() } : {}),
+  });
+  return jsonResponse(200, { ok: true, ...result });
+});
+
+http.route({ path: "/tts/audit", method: "POST", handler: ttsAudit });
+
+// GET /tts/merge-gate?repo=&sha= — the three checks, and which of them are
+// missing. This is what the box asks before it lets a merge command run
+// (worker/session-host/session.mjs), so it is read-only and opens nothing.
+const ttsMergeGate = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const params = new URL(request.url).searchParams;
+  const repo = (params.get("repo") ?? "").trim();
+  const sha = (params.get("sha") ?? "").trim();
+  if (repo === "" || sha === "") return jsonResponse(400, { error: "repo and sha required" });
+  return jsonResponse(200, await ctx.runQuery(internal.ttsMerge.internalMergeGate, { repo, sha }));
+});
+
+http.route({ path: "/tts/merge-gate", method: "GET", handler: ttsMergeGate });
+
+// POST /tts/merge records a merge that has already happened. It is not a
+// delegate decision: a mechanically gated merge is reported in the objection
+// list and posted to #tts-decisions, keyed by repo+sha so a retry stays one
+// event. The gate runs again inside the mutation, so a merge that reached the
+// default branch some other way cannot be laundered into a reported one; the
+// answer is then 409 naming which checks are missing.
 const ttsMerge = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -1445,7 +1550,14 @@ const ttsMerge = httpAction(async (ctx, request) => {
   if (!nonempty(b.repo) || !nonempty(b.sha) || !nonempty(b.subject)) return jsonResponse(400, { error: "repo, sha, and subject (non-empty strings) required" });
   if (b.todoId !== undefined && !nonempty(b.todoId)) return jsonResponse(400, { error: "todoId, when given, must be non-empty" });
   try {
-    const result = await ctx.runMutation(internal.ttsAsk.internalRecordMerge, { repo: b.repo as string, sha: b.sha as string, subject: b.subject as string, todoId: b.todoId as string | undefined });
+    const result = await ctx.runMutation(internal.ttsMerge.internalRecordMerge, { repo: b.repo as string, sha: b.sha as string, subject: b.subject as string, todoId: b.todoId as string | undefined });
+    if (!result.recorded) {
+      return jsonResponse(409, {
+        ok: false,
+        error: `the merge gate is not met — missing: ${result.gate.missing.join(", ")}`,
+        ...result,
+      });
+    }
     return jsonResponse(200, { ok: true, ...result });
   } catch (error) {
     return jsonResponse(400, { error: error instanceof Error ? error.message : String(error) });

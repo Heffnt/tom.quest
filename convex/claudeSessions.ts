@@ -2562,21 +2562,29 @@ function delegateDoctrine(sessionId: Id<"claudeSessions">, todoId?: Id<"dtsTodos
   ].join("\n\n");
 }
 
-// A merge is unattended work only after its three mechanical gates pass (Tom,
-// 2026-09-09: merging is mechanical when tests, the Codex audit and the evals
+// A merge is unattended work once its three mechanical checks pass (Tom,
+// 2026-09-09: merging is mechanical when the tests, the audit and the evals
 // pass, and is then REPORTED for objection rather than asked about — which is
-// why it is not on the narrow list). POST /tts/merge is that report; it makes
-// a completed merge visible, it does not grant permission by itself.
+// why it is not on the narrow list).
 //
-// THE GATE ITSELF IS NOT BUILT YET, and until it is, the autonomous Bash
-// classifier still denies `gh pr merge` outright (worker/session-host/
-// session.mjs, a box-safety bullet, not a narrow-list item). So a session that
-// reads this paragraph and tries to merge is refused by the box and says so in
-// its outcome — fail-safe, but a disagreement between what the prompt says and
-// what the box allows. Both halves move together when the gate lands: the
-// bullet goes, and this paragraph does not change.
+// THE GATE IS MECHANICAL AND THE BOX ENFORCES IT. A lone `git merge` or
+// `gh pr merge` is ruled on by the daemon before it runs: it reads HEAD in the
+// checkout and asks GET /tts/merge-gate for the three checks
+// (worker/session-host/merge-gate.mjs, convex/ttsMerge.ts). All three on
+// record → the command runs and a transcript row says which checks let it.
+// Any missing → denied, naming them. So this paragraph and the box agree, and
+// a session that reads it and tries to merge finds out immediately which of
+// the three is not there yet.
+//
+// POST /tts/merge is the REPORT, and it runs the same gate again: it is what
+// puts the merge in the morning's objection list and posts one line to
+// #tts-decisions. It cannot make an ungated merge legitimate.
 function mergeGate(): string {
-  return "Merge only when the tests, a Codex audit, and evals all pass. After a merge, POST /tts/merge through the worker-key pen with its repo, merged sha, and concise summary so it is reported for objection.";
+  return [
+    "Merging is mechanical, not Tom's gate. A merge is allowed when three things are on record for the exact commit you are merging: the tests are green, an audit approved it (a `VERDICT: APPROVED` line posted to /tts/audit), and an evals run scored it with no regression.",
+    "Run the merge as its OWN command — `git merge` or `gh pr merge`, nothing chained to it. The box checks the three itself and either runs it or denies it naming which are missing; you never have to ask.",
+    "After a merge, POST /tts/merge through the worker-key pen with its repo, the merged sha, and a concise summary. That is the report, not the permission: it puts the merge in Tom's morning objection list and in #tts-decisions, where silence means it stands.",
+  ].join("\n\n");
 }
 
 // Opening prompt for an AUTONOMOUS session. The sessionId rides in so the
@@ -2862,7 +2870,8 @@ function buildWorkerPrompt(args: {
 // did on its own hourly clone before this: implement the plan (approve) or
 // close the entry (archive), run the registry's own guard test, commit, push
 // session/<id>, open a pull request, and merge only after the three mechanical
-// gates pass. Every merge is then recorded for objection.
+// checks pass for its head — the box enforces that itself (worker/session-host/
+// merge-gate.mjs). Every merge is then recorded for objection.
 
 /** How a registry-keeping repo checks its own todo file — read off the one
  * home (ttsShared CODE_TODO_REPOS). A mission is told to run it and to fix
@@ -2911,7 +2920,7 @@ function buildCodeMissionPrompt(args: {
       `${verdict === "approve" ? "Implement the plan, then close the entry." : "Close the entry."} Run \`${guard ?? "the repository's own guard test for that file"}\` and the tests nearest your change, and fix what you break — a pull request never carries a malformed registry.`,
     ),
     "",
-    `Open the pull request in every case that produced commits: it is how the work reaches Tom. Its body STARTS with the line "CHANGE REPORT:" and ends with the line "This pull request may merge only when tests, Codex audit, and evals pass; its merge is reported for objection."`,
+    `Open the pull request in every case that produced commits: it is how the work reaches Tom. Its body STARTS with the line "CHANGE REPORT:" and ends with the line "This pull request may merge only when the tests, the audit and the evals all pass for its head; its merge is then reported for objection."`,
     "",
     sessionOutcomePen({
       sessionId,

@@ -32,6 +32,14 @@ import {
   scrubbedEnv,
 } from "./lib.mjs";
 import { BANNED_TOOLS, bannedToolDenial } from "./banned-tools.mjs";
+import {
+  MERGE_AMBIGUOUS_DENIAL,
+  MERGE_CHAINED_DENIAL,
+  mergeAllowedRow,
+  mergeCommandOf,
+  mergeDenial,
+  mergeUnreadableDenial,
+} from "./merge-gate.mjs";
 import { codexQuery } from "./codex-query.mjs";
 import { FORK_TRANSCRIPT_FILE, renderTranscript } from "./fork-transcript.mjs";
 // The session-end archive into WikiTom (design section 4, "Sessions"). Its
@@ -242,6 +250,10 @@ const CLASSIFIER_MAXBUFFER = 256 * 1024; // a one-line verdict; nothing more
 // (the same `git push origin session/<id>` after every commit) and each rerun
 // would otherwise cost a CLI spawn and a duplicate transcript row.
 const CLASSIFIER_CACHE_MAX = 200;
+// Tier 1.5's budget: one git read and one Convex GET. Merges are rare, so
+// this is never in the latency path of ordinary work — but it must not hang
+// a session either, and a timeout here is a DENIAL, not an allow.
+const MERGE_GATE_TIMEOUT_MS = 15_000;
 
 // One-line, ~120-char rendition of a command for transcript rows: whitespace
 // collapsed so a heredoc or a multi-line pipeline stays one readable line.
@@ -263,7 +275,13 @@ function classifierPrompt({ command, workdir, branch }) {
     "",
     "DENY the command if it would:",
     `- push to any branch other than ${branch}, or to a protected branch (main or master)`,
-    `- merge a pull request, or write through the GitHub API to anything other than a pull request for ${branch} (gh pr merge, gh api with a write method against another branch, repository settings, workflows, or another repository) — merging is Tom's gate`,
+    `- write through the GitHub API to anything other than a pull request for ${branch} (gh api with a write method against another branch, repository settings, workflows, or another repository)`,
+    // Merging is MECHANICAL (Tom, 2026-09-09), and the daemon checks it:
+    // a lone `git merge` or `gh pr merge` is ruled on by the merge gate
+    // before this prompt is ever built (worker/session-host/merge-gate.mjs).
+    // What can still reach you is a merge buried in a longer command line,
+    // which the gate cannot pin to one commit.
+    "- merge anything as one clause of a longer shell command — a merge runs as its own command so its gate can name the commit it checked",
     ...NARROW_LIST_COMMANDS.map((command) => `- ${command}`),
     "- touch /etc, /root, systemd, cron, SSH configuration, or Claude account configuration",
     "- open interactive remote access to or from the Jarvis Box",
@@ -1510,7 +1528,7 @@ export class Session {
   async #canUseTool(toolName, input) {
     // Unified auto mode (ratified 2026-08-28): nothing parks on Tom, in any
     // session mode. The safety boundary is structural — throwaway workdir,
-    // session/<id> branch namespace, Tom's merge gate, Tom-only ruling pens
+    // session/<id> branch namespace, the mechanical merge gate, Tom-only pens
     // — and every allowed call still lands as a tool-call transcript row.
     //
     // Tom's ruling of 2026-09-04 splits what is left by mode. Unconditional,
@@ -1602,6 +1620,24 @@ export class Session {
       ) {
         return { behavior: "allow", updatedInput: input };
       }
+      // Tier 1.5 — THE MECHANICAL MERGE GATE. Before tier 2 on purpose:
+      // `git merge` matches no danger fingerprint, so without this it took the
+      // zero-latency path and was never seen at all, while `gh pr merge` was
+      // denied by a prompt. Both are ruled on here now, by the three recorded
+      // checks rather than by a model (convex/ttsMerge.ts).
+      const merge = mergeCommandOf(command, {
+        checkouts: this.checkouts ?? [],
+        workdir: this.workdir ?? null,
+      });
+      if (merge !== null) {
+        const denial = await this.#mergeDenialFor(merge);
+        if (denial !== null) {
+          this.finalizeRow("system", { text: `auto-denied merge: ${denial}` });
+          this.requestFlush(false);
+          return { behavior: "deny", message: denial };
+        }
+        return { behavior: "allow", updatedInput: input };
+      }
       // Tier 2 — no danger fingerprint: allow, no classifier, no row.
       if (BASH_DANGER_RE.test(command)) {
         // Tier 3 — pay for a verdict.
@@ -1615,6 +1651,49 @@ export class Session {
       }
     }
     return { behavior: "allow", updatedInput: input };
+  }
+
+  // Tier 1.5's body: read HEAD in the checkout the merge names, ask Convex
+  // for the three checks, and answer null (allow) or the sentence the session
+  // is denied with. FAIL-CLOSED at every step — an unread gate is a closed
+  // gate, because a merge is the one act a session takes that nothing later
+  // can quietly undo.
+  async #mergeDenialFor(merge) {
+    if (merge.chained) return MERGE_CHAINED_DENIAL;
+    if (merge.ambiguous) return MERGE_AMBIGUOUS_DENIAL;
+    const repo = merge.repo ?? this.repo;
+    if (!repo || repo === "none" || !merge.dir) {
+      return mergeUnreadableDenial("this session has no repository checkout to read a commit from");
+    }
+    let sha;
+    try {
+      const { stdout } = await execFile("git", ["-C", merge.dir, "rev-parse", "HEAD"], {
+        env: scrubbedEnv(),
+        timeout: MERGE_GATE_TIMEOUT_MS,
+      });
+      sha = String(stdout ?? "").trim();
+    } catch (err) {
+      return mergeUnreadableDenial(`git rev-parse failed: ${String(err?.message ?? err)}`);
+    }
+    if (!/^[0-9a-f]{40}$/.test(sha)) return mergeUnreadableDenial("HEAD is not a commit");
+    let gate;
+    try {
+      const url =
+        `${this.env.CONVEX_SITE_URL}/tts/merge-gate` +
+        `?repo=${encodeURIComponent(repo)}&sha=${encodeURIComponent(sha)}`;
+      const response = await fetch(url, {
+        headers: { "X-TTS-Key": this.env.TTS_WORKER_KEY },
+        signal: AbortSignal.timeout(MERGE_GATE_TIMEOUT_MS),
+      });
+      if (!response.ok) return mergeUnreadableDenial(`/tts/merge-gate answered ${response.status}`);
+      gate = await response.json();
+    } catch (err) {
+      return mergeUnreadableDenial(String(err?.message ?? err));
+    }
+    if (gate?.allowed !== true) return mergeDenial(gate ?? {});
+    this.finalizeRow("system", { text: mergeAllowedRow(gate) });
+    this.requestFlush(false);
+    return null;
   }
 
   // Tier 3 of the Bash gate: ask the Jarvis Box's cheap model, memoize, and record.
