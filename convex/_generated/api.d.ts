@@ -28,6 +28,7 @@ import type * as ttsCalendarWrite from "../ttsCalendarWrite.js";
 import type * as ttsCanvas from "../ttsCanvas.js";
 import type * as ttsCode from "../ttsCode.js";
 import type * as ttsDigest from "../ttsDigest.js";
+import type * as ttsEvals from "../ttsEvals.js";
 import type * as ttsHourly from "../ttsHourly.js";
 import type * as ttsHourlyText from "../ttsHourlyText.js";
 import type * as ttsIntegrations from "../ttsIntegrations.js";
@@ -71,6 +72,7 @@ declare const fullApi: ApiFromModules<{
   ttsCanvas: typeof ttsCanvas;
   ttsCode: typeof ttsCode;
   ttsDigest: typeof ttsDigest;
+  ttsEvals: typeof ttsEvals;
   ttsHourly: typeof ttsHourly;
   ttsHourlyText: typeof ttsHourlyText;
   ttsIntegrations: typeof ttsIntegrations;

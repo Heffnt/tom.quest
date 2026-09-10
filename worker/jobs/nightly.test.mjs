@@ -26,6 +26,7 @@ import {
   codexMetaOf,
   codexMetaOfBuffer,
   commitTree,
+  deliveryStep,
   discoverSessionFiles,
   expectedBodyBlobs,
   exportTableRows,
@@ -44,6 +45,7 @@ import {
   parseLearningAnswer,
   planTableFiles,
   postStep,
+  parseArgs,
   readManifests,
   rebaseInProgress,
   recordLearningRows,
@@ -72,6 +74,29 @@ function tmp() {
 }
 afterEach(() => {
   for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+});
+
+describe("delivery step", () => {
+  it("accepts --only=delivery without selecting a locked checkout step", () => {
+    expect(parseArgs(["--only=delivery"])).toEqual({ force: false, only: ["delivery"] });
+  });
+
+  it("posts one prelude-delivery event with the returned facts", async () => {
+    const posts = [];
+    const facts = { since: 1, until: 2, current: 3, stale: [], missing: [], unplaced: 0 };
+    const result = await deliveryStep(
+      { env: {}, now: 2, day: "2026-09-09" },
+      { fetch: async (_env, route, body) => {
+        posts.push({ route, body });
+        return route.startsWith("/tts/prelude-delivery") ? facts : { ok: true };
+      } },
+    );
+    expect(result).toBe(facts);
+    expect(posts).toEqual([
+      { route: "/tts/prelude-delivery?until=2", body: undefined },
+      { route: "/tts/event", body: { kind: "prelude-delivery", data: { day: "2026-09-09", ...facts } } },
+    ]);
+  });
 });
 
 function write(dir, rel, content) {

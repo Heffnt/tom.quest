@@ -42,7 +42,6 @@ import {
 // The header line the prelude carries, spelled once in the client-safe home
 // (convex/ttsSkills.ts writes it into the prompt; modelOfTomHeadOf below reads
 // it back off the row).
-import { MODEL_OF_TOM_HEADER } from "@/convex/ttsShared";
 import type { SessionModel } from "@/convex/ttsShared";
 
 // The model list, its default and its family test all come from the one home
@@ -365,23 +364,8 @@ export function describeOverflow(p: OverflowProgress): string {
 // records what the session began with, so the first row shows it as a fact of
 // its own instead of burying it in the first line of a long prompt.
 
-export type ModelOfTomHead = {
-  /** null while the fallback copy is serving (no commit was recorded). */
-  commit: string | null;
-  paths: string[];
-};
-
-/** The header of a prompt that carries the prelude, or null if it does not. */
-export function modelOfTomHeadOf(text: string): ModelOfTomHead | null {
-  const line = text.split("\n", 1)[0] ?? "";
-  if (!line.startsWith(MODEL_OF_TOM_HEADER)) return null;
-  const commit = /WikiTom commit ([0-9a-f]{7,40})/i.exec(line)?.[1] ?? null;
-  const paths = (/\):\s*(.+)$/.exec(line)?.[1] ?? "")
-    .split(",")
-    .map((p) => p.trim())
-    .filter((p) => p !== "");
-  return { commit, paths };
-}
+export { modelOfTomHeadOf } from "@/convex/ttsShared";
+export type { ModelOfTomHead } from "@/convex/ttsShared";
 
 /**
  * Compact rendering of a permission/tool input: for Bash show the command

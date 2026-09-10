@@ -166,7 +166,7 @@ function git(dir, ...args) {
   });
 }
 
-const STEPS = ["snapshot", "learning", "sessions", "push", "post"];
+const STEPS = ["delivery", "snapshot", "learning", "sessions", "push", "post"];
 // The four that write the WikiTom checkout. The post runs under the same
 // lock after them (see main), reading what they left.
 const LOCKED_STEPS = ["snapshot", "learning", "sessions", "push"];
@@ -1415,8 +1415,24 @@ export async function postStep(run, deps = {}) {
   return { commit: prelude.commit, pushed: prelude.pushed, files: files.map((f) => f.path) };
 }
 
+// This check never touches the checkout, so it runs outside the WikiTom
+// writer lock and before tonight's post can enter the commit timeline.
+export async function deliveryStep(run, deps = {}) {
+  const fetch = deps.fetch ?? convexFetch;
+  const facts = await fetch(run.env, `/tts/prelude-delivery?until=${run.now}`);
+  await fetch(run.env, "/tts/event", {
+    kind: "prelude-delivery",
+    data: { day: run.day, ...facts },
+  });
+  console.log(
+    `[nightly] delivery: ${facts.current} session(s) on the current model-of-tom commit, ` +
+      `${facts.stale.length} older, ${facts.missing.length} with no prelude`,
+  );
+  return facts;
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const force = argv.includes("--force");
   const onlyArg = argv.find((a) => a.startsWith("--only="));
   const only = onlyArg ? onlyArg.slice("--only=".length).split(",").filter(Boolean) : STEPS;
@@ -1450,10 +1466,23 @@ async function main() {
     failures: [],
     results: {},
   };
+  // Delivery touches neither the checkout nor git. Run it before taking the
+  // lock, and before tonight's post could change the timeline it compares.
+  if (only.includes("delivery")) {
+    try {
+      run.results.delivery = await deliveryStep(run);
+    } catch (err) {
+      await recordFailure(run, "delivery", err);
+    }
+  }
   // No checkout is a bad night, not a silent one: the digest reads these two
   // rows, and a run that threw here wrote neither — the one morning Tom would
   // see nothing at all is the morning the checkout is gone.
   if (!fs.existsSync(path.join(run.dir, ".git"))) {
+    if (only.length === 1 && only[0] === "delivery") {
+      await recordSummary(run, only);
+      return;
+    }
     await recordFailure(
       run,
       "checkout",
@@ -1463,6 +1492,7 @@ async function main() {
     return;
   }
   const steps = {
+    delivery: deliveryStep,
     snapshot: snapshotStep,
     learning: learningStep,
     sessions: sessionsStep,
@@ -1522,6 +1552,7 @@ async function recordSummary(run, only) {
         }
       : null,
     sessions: run.results.sessions ?? null,
+    delivery: run.results.delivery ?? null,
     learning: run.results.learning
       ? {
           changes: run.results.learning.changes,

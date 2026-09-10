@@ -55,6 +55,8 @@ const emptyFacts = (): DigestFacts => ({
   wikitom: [],
   rulings: [],
   learning: [],
+  preludes: null,
+  evals: null,
   modelOfTom: null,
 });
 
@@ -64,6 +66,36 @@ describe("composeDigest", () => {
     expect(text).toBe(
       ["*TTS digest — 2026-09-05*", "", "*Due and overdue*", "- nothing"].join("\n"),
     );
+  });
+
+  it("prints the prelude check even when every session is current", () => {
+    const { text } = composeDigest({
+      ...emptyFacts(),
+      preludes: { current: 14, stale: [], missing: [] },
+    });
+    expect(text).toContain("- preludes: 14 sessions started from the current model-of-tom commit, 0 from an older one");
+  });
+
+  it("prints evals only when a run is in the window, with its regression count", () => {
+    expect(composeDigest(emptyFacts()).text).not.toContain("- evals:");
+    const { text } = composeDigest({
+      ...emptyFacts(),
+      evals: {
+        repo: "tom.quest", sha: "a1b2c3d4", items: 40, pass: 38,
+        regressions: 1, stillFailing: 1,
+        failures: [{ id: "prepare-chores-k17abc", partition: "prepare/chores", reason: "still restates the statement", regression: true }],
+      },
+    });
+    expect(text).toContain("- evals: 38 of 40 pass at tom.quest a1b2c3d — 1 regression, 1 still failing");
+    expect(text).toContain("- evals regression: prepare-chores-k17abc (prepare/chores) — still restates the statement");
+  });
+
+  it("caps stale prelude sessions with the section's usual +N more line", () => {
+    const stale = Array.from({ length: 20 }, (_, i) => ({
+      id: `s${i}`, title: `session ${i}`, had: "a1b2c3d4e5f6", behindDays: 2,
+    }));
+    const { text } = composeDigest({ ...emptyFacts(), preludes: { current: 0, stale, missing: [] } });
+    expect(text).toContain("- +9 more");
   });
 
   it("lists every WikiTom commit with its author", () => {

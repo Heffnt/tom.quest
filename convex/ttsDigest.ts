@@ -4,6 +4,7 @@ import type { QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { recordMissedKeepingDate } from "./tts";
 import { modelOfTomState } from "./ttsSkills";
+import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import {
   DAY_MS,
   buildDoneSet,
@@ -12,6 +13,7 @@ import {
   nyCalendarDayBoundsUtc,
   nyHhmm,
   ttsItemLink,
+  ttsSessionLink,
   ttsTabLink,
   type SlackSubject,
   type TtsTab,
@@ -95,6 +97,7 @@ function slackSubjectLabel(raw: unknown): string {
 export const LEARNING_CHANGE = "learning-change";
 export const LEARNING_REVERTED = "learning-reverted";
 export const LEARNING_REVERT_FAILED = "learning-revert-failed";
+export { PRELUDE_DELIVERY, EVALS_RUN } from "./ttsEvals";
 
 // The weekly session's record that Tom confirmed an area page (phase 8;
 // POST /tts/area-reviewed, convex/ttsWeekly.ts): key = the page's path,
@@ -221,6 +224,24 @@ export type DigestFacts = {
     evidence: string;
     reason?: string;
   }[];
+  // The newest delivery check in this digest's window. A clean run stays
+  // visible: silence would make the check indistinguishable from no run.
+  preludes: {
+    current: number;
+    stale: { id: string; title: string; had: string | null; behindDays: number }[];
+    missing: { id: string; title: string }[];
+  } | null;
+  // The newest eval run in the window, already compared with its baseline by
+  // the runner. The digest reports that result; it never reimplements gate().
+  evals: {
+    repo: string;
+    sha: string;
+    items: number;
+    pass: number;
+    regressions: number;
+    stillFailing: number;
+    failures: { id: string; partition: string; reason: string; regression: boolean }[];
+  } | null;
   // The published model-of-tom revision callers select layers from, as the
   // store holds it (ttsSkills.modelOfTomState): the commit, and whether it had reached
   // GitHub when the job posted it. Null while nothing posted serves.
@@ -426,12 +447,38 @@ function digestSections(f: DigestFacts): Section[] {
     f.modelOfTom !== null && f.modelOfTom.pushed === false
       ? [`- model-of-tom files at WikiTom ${slackEscape(f.modelOfTom.commit.slice(0, 12))} — not yet pushed`]
       : [];
-  if (f.learning.length > 0 || notPushed.length > 0) {
+  if (f.preludes !== null || f.evals !== null || f.learning.length > 0 || notPushed.length > 0) {
+    const preludeLines = f.preludes === null
+      ? []
+      : [
+          `- preludes: ${f.preludes.current} session${f.preludes.current === 1 ? "" : "s"} started from the current model-of-tom commit, ${f.preludes.stale.length} from an older one`,
+          ...f.preludes.stale.map((s) =>
+            s.behindDays >= 0
+              ? `- prelude ${slackEscape((s.had ?? "").slice(0, 12))}, ${s.behindDays} day${s.behindDays === 1 ? "" : "s"} behind: <${ttsSessionLink(s.id)}|${slackEscape(clipToLine(s.title))}>`
+              : `- prelude names a commit this deployment never posted: <${ttsSessionLink(s.id)}|${slackEscape(clipToLine(s.title))}>`,
+          ),
+          ...f.preludes.missing.map(
+            (s) => `- no prelude at all: <${ttsSessionLink(s.id)}|${slackEscape(clipToLine(s.title))}>`,
+          ),
+        ];
+    const evalLines = f.evals === null
+      ? []
+      : [
+          `- evals: ${f.evals.pass} of ${f.evals.items} pass at ${slackEscape(f.evals.repo)} ${slackEscape(f.evals.sha.slice(0, 7))}` +
+            (f.evals.regressions > 0 || f.evals.stillFailing > 0
+              ? ` — ${f.evals.regressions > 0 ? `${f.evals.regressions} regression${f.evals.regressions === 1 ? "" : "s"}` : ""}${f.evals.regressions > 0 && f.evals.stillFailing > 0 ? ", " : ""}${f.evals.stillFailing > 0 ? `${f.evals.stillFailing} still failing` : ""}`
+              : ""),
+          ...f.evals.failures
+            .filter((failure) => failure.regression)
+            .map((failure) => `- evals regression: ${slackEscape(failure.id)} (${slackEscape(failure.partition)}) — ${slackEscape(failure.reason)}`),
+        ];
     sections.push(
       section(
         "*Model of Tom*",
         [
+          ...preludeLines,
           ...notPushed,
+          ...evalLines,
           ...f.learning.map((l) => {
             const id = `[${slackEscape(l.id)}]`;
             const file = slackEscape(l.file);
@@ -721,6 +768,8 @@ export async function gatherDigestFacts(
   const overnight: DigestFacts["overnight"] = [];
   const failures: DigestFacts["failures"] = [];
   const learning: DigestFacts["learning"] = [];
+  let preludes: DigestFacts["preludes"] = null;
+  let evals: DigestFacts["evals"] = null;
   const modelOfTom = await modelOfTomState(ctx);
   for (const e of events) {
     const d = (e.data ?? {}) as Record<string, unknown>;
@@ -838,6 +887,54 @@ export async function gatherDigestFacts(
           text: `area page reviewed with Tom: ${slackEscape(str(d.path) ?? "")} (reviewed ${slackEscape(str(d.reviewedOn) ?? "")})`,
         });
         break;
+      case PRELUDE_DELIVERY: {
+        const stale = Array.isArray(d.stale) ? d.stale : [];
+        const missing = Array.isArray(d.missing) ? d.missing : [];
+        preludes = {
+          current: typeof d.current === "number" ? d.current : 0,
+          stale: stale.flatMap((s) => {
+            if (s === null || typeof s !== "object") return [];
+            const row = s as Record<string, unknown>;
+            const id = str(row.id);
+            const title = str(row.title);
+            if (id === undefined || title === undefined) return [];
+            return [{ id, title, had: str(row.had) ?? null, behindDays: typeof row.behindDays === "number" ? row.behindDays : -1 }];
+          }),
+          missing: missing.flatMap((s) => {
+            if (s === null || typeof s !== "object") return [];
+            const row = s as Record<string, unknown>;
+            const id = str(row.id);
+            const title = str(row.title);
+            return id === undefined || title === undefined ? [] : [{ id, title }];
+          }),
+        };
+        break;
+      }
+      case EVALS_RUN: {
+        const repo = str(d.repo);
+        const sha = str(d.sha);
+        if (repo === undefined || sha === undefined) break;
+        const runFailures = Array.isArray(d.failures) ? d.failures : [];
+        evals = {
+          repo,
+          sha,
+          items: typeof d.items === "number" ? d.items : 0,
+          pass: typeof d.pass === "number" ? d.pass : 0,
+          regressions: typeof d.regressions === "number" ? d.regressions : 0,
+          stillFailing: typeof d.stillFailing === "number" ? d.stillFailing : 0,
+          failures: runFailures.flatMap((failure) => {
+            if (failure === null || typeof failure !== "object") return [];
+            const row = failure as Record<string, unknown>;
+            const id = str(row.id);
+            const partition = str(row.partition);
+            const reason = str(row.reason);
+            return id === undefined || partition === undefined || reason === undefined
+              ? []
+              : [{ id, partition, reason, regression: row.regression === true }];
+          }),
+        };
+        break;
+      }
       default:
         // Every job failure is a "-failed" kind ("slack-send-failed" is the
         // Slack door's; the box's jobs report theirs as "job-failed" through
@@ -915,6 +1012,8 @@ export async function gatherDigestFacts(
     wikitom: wikitom ?? null,
     rulings,
     learning,
+    preludes,
+    evals,
     modelOfTom: modelOfTom.commit === null ? null : { commit: modelOfTom.commit, pushed: modelOfTom.pushed },
   };
 }

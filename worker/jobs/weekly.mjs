@@ -217,6 +217,43 @@ export function renderFactLines(facts) {
   );
   for (const f of m.files) lines.push(`- ${f.path}: ${f.bytes} bytes`);
 
+  const p = facts.preludes;
+  lines.push(
+    `Preludes: ${p.sessions} sessions, ${p.current} from the current model-of-tom commit, ${p.stale.length} from an older one, ${p.missing.length} with no prelude.`,
+  );
+  for (const stale of p.stale) {
+    const commit = stale.had ? `prelude at WikiTom ${stale.had.slice(0, 12)}` : "prelude with no commit";
+    const age = stale.behindDays >= 0
+      ? `${stale.behindDays} day${stale.behindDays === 1 ? "" : "s"} behind`
+      : "a commit this deployment never posted";
+    lines.push(`- ${stale.day} ${stale.title}: ${commit}, ${age} (id ${stale.id})`);
+  }
+  for (const missing of p.missing) {
+    lines.push(`- ${missing.day} ${missing.title}: no prelude at all (id ${missing.id})`);
+  }
+
+  const loaded = facts.instructionsLoaded;
+  lines.push(
+    `Instructions loaded on the laptop: ${loaded.daysReported} of 7 days reported, ${loaded.sessions} sessions, ${loaded.files.length} files.`,
+  );
+  for (const file of loaded.files) {
+    lines.push(`- ${file.path}: ${file.sessions}${file.sessions === loaded.sessions ? ` of ${loaded.sessions}` : ""} sessions`);
+  }
+  if (loaded.missingWikiTom > 0) {
+    lines.push(`- ${loaded.missingWikiTom} session${loaded.missingWikiTom === 1 ? "" : "s"} loaded no model-of-tom file: ${loaded.missingWikiTomSessions.map((s) => `${s.day} ${s.session}`).join(", ")}`);
+  }
+  for (const missing of loaded.missingProjectAgents) {
+    const repo = missing.cwd.replace(/\\/g, "/").split("/").filter(Boolean).at(-1) ?? missing.cwd;
+    lines.push(`- 1 session in ${repo} loaded no AGENTS.md: ${missing.day} ${missing.session} (${missing.cwd})`);
+  }
+
+  const evals = facts.evals;
+  lines.push(`Evals: ${evals.runs} runs, ${evals.clean} clean, ${evals.regressions.length} with a regression.`);
+  for (const run of evals.regressions) {
+    const first = run.failure === null ? "a regression" : `regression on ${run.failure.id} (${run.failure.partition})`;
+    lines.push(`- ${run.day} ${run.repo} ${run.sha.slice(0, 7)}: ${run.pass} of ${run.items} pass — ${first}`);
+  }
+
   const l = facts.learning;
   lines.push(`Nightly learning: ${count(l.changes, "change")}, ${l.reverted} reverted, ${l.revertFailed} revert${l.revertFailed === 1 ? "" : "s"} failed.`);
   for (const line of l.lines) {
