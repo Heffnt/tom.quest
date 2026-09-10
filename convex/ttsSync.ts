@@ -301,7 +301,7 @@ const BROKEN_MESSAGES_ENABLED: boolean = true;
 //      todo whose date passed with no outcome gets "missed" once, date kept;
 //   2. read the window start, fetch WikiTom's commits over it from GitHub (the
 //      one read outside Convex the digest needs), then compose
-//      (ttsDigest.internalComposeDigest): deterministic, from queries, no model
+//      (ttsDigest.internalComposeToday): deterministic, from queries, no model
 //      call, no stored queue;
 //   3. post through the one door above, subject {kind: "digest", day} — which
 //      records the "slack-sent" row a threaded reply from Tom is matched
@@ -584,7 +584,7 @@ export const sendBroken = internalAction({
 // channel, not #tts): what the box is running now, which batches were worked
 // since the last update, what changed since the last update — or ONE line
 // saying nothing did. The facts are read by convex/ttsHourly.ts and the text
-// composed by convex/ttsHourlyText.ts; this action is the send, and it sends
+// composed by convex/ttsCompose.ts; this action is the send, and it sends
 // through the one door above like every other message.
 //
 // SENDS EVEN WHEN EMPTY, on the same reasoning as the digest
