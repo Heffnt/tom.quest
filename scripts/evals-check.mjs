@@ -1,5 +1,9 @@
-#!/usr/bin/env node
 // evals-check.mjs — the body of the `evals` check on a pull request.
+// NO SHEBANG LINE, for nightly.mjs's reason (worker/jobs/write-slack.mjs says
+// it too): this file is imported by scripts/evals-check.test.mjs and by
+// worker/jobs/evals.mjs's dynamic import, and the test bundler rewrites such a
+// module by prepending an import — which lands in front of a shebang and fails
+// to parse. Every caller already names the interpreter (`node evals-check.mjs`).
 //
 // It asks the Jarvis Box for a run at this commit and waits for the answer,
 // then compares that run with the base commit's. Merging is the persist gate,
