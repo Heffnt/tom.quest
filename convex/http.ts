@@ -1203,8 +1203,8 @@ const ttsModelOfTom = httpAction(async (ctx, request) => {
     return jsonResponse(400, { error: "invalid JSON body" });
   }
   const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.commit !== "string" || !/^[0-9a-f]{7,40}$/.test(b.commit)) {
-    return jsonResponse(400, { error: "commit (7-40 hex characters) required" });
+  if (typeof b.commit !== "string" || !/^[0-9a-f]{40}$/.test(b.commit)) {
+    return jsonResponse(400, { error: "commit (40 hex characters) required" });
   }
   if (typeof b.committedAt !== "number" || !Number.isFinite(b.committedAt)) {
     return jsonResponse(400, { error: "committedAt (epoch ms) required" });

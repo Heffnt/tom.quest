@@ -219,7 +219,11 @@ the `HEAD` the four left:
    failure row and NO post goes out: the replace is wholesale, so posting the
    rest would take that file — `writing.md`, the writing standard itself —
    out of every prompt until a night that reads it again. Convex refuses a
-   post without `writing.md` on its own account.
+   post without `writing.md` on its own account. **Rollout of the publication
+   singleton, in this order:** deploy Convex (readers refuse to open a session
+   until it is populated), run `ttsSkills.backfillLayers` once to build it from
+   the per-file rows already stored, and readers work; the next nightly post
+   overwrites it.
 
 Then one `nightly-run` row with the summary (commit, pushed or not, table
 and row counts, files archived, the failures). By hand:

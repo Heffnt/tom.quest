@@ -1,6 +1,9 @@
 import { convexTest } from "convex-test";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import {
   MODEL_OF_TOM_SELECTIONS,
@@ -9,6 +12,12 @@ import {
   withoutModelOfTomPrelude,
 } from "./ttsSkills";
 import { MODEL_OF_TOM_HEADER } from "./ttsShared";
+import { preparePrompt } from "../worker/jobs/plan-graphs.mjs";
+import { gmailTriagePrompt } from "../worker/jobs/poll-gmail.mjs";
+import { canvasTriagePrompt } from "../worker/jobs/poll-canvas.mjs";
+import { timeNotePrompt } from "../worker/jobs/apply-time-notes.mjs";
+import { buildAgendaPrompt } from "../worker/jobs/weekly.mjs";
+import { learningPrompt } from "../worker/jobs/nightly.mjs";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 const COMMIT = "0123abcd0123abcd0123abcd0123abcd0123abcd";
@@ -28,14 +37,67 @@ const headers = (commit = COMMIT) => MODEL_OF_TOM_SELECTIONS.map((names) => ({
   header: `${MODEL_OF_TOM_HEADER} (WikiTom commit ${commit}): ${names.flatMap((name) => HEADER_FILES[name]).join(", ")}`,
 }));
 const HEADERS = headers();
+const SENTINEL_LAYERS = {
+  operate: "OPERATE CALLER SENTINEL",
+  write: "WRITE CALLER SENTINEL",
+  know: "KNOW CALLER SENTINEL",
+};
 const FILES = [
   { path: "model-of-tom/agent-rules.md", body: "source operate", bytes: 14 },
   { path: "model-of-tom/writing.md", body: "source write", bytes: 12 },
   { path: "model-of-tom/priorities.md", body: "source know", bytes: 11 },
 ];
+const BACKFILL_FILES = [
+  { path: "model-of-tom/agent-rules.md", body: "source operate" },
+  { path: "model-of-tom/writing.md", body: "source write" },
+  { path: "model-of-tom/intent.md", body: "source intent" },
+  { path: "model-of-tom/priorities.md", body: "source priorities" },
+  { path: "model-of-tom/schedule.md", body: "source schedule" },
+  ...[
+    "admin", "agent-systems", "climbing", "health-and-food", "mental-health",
+    "money", "research", "social",
+  ].map((name) => ({
+    path: `model-of-tom/areas/${name}.md`,
+    body: name === "admin" ? "---\nupdated: 2026-09-09\n---\nsource admin" : `source ${name}`,
+  })),
+];
 
 function payload(overrides: Record<string, unknown> = {}) {
   return { commit: COMMIT, committedAt: COMMITTED_AT, pushed: false, layers: LAYERS, headers: HEADERS, files: FILES, ...overrides };
+}
+
+const callerPrelude = (names: (keyof typeof SENTINEL_LAYERS)[]) =>
+  modelOfTomText({ commit: COMMIT, syncedAt: COMMITTED_AT, pushed: false, ...SENTINEL_LAYERS, headers: HEADERS }, names);
+
+function classifierPrompt(command: string) {
+  // The daemon depends on the Box-only Agent SDK, so execute just this pure
+  // prompt builder from its source rather than importing the daemon in tests.
+  const file = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "worker", "session-host", "session.mjs");
+  const source = fs.readFileSync(file, "utf8");
+  const start = source.indexOf("function classifierPrompt(");
+  const end = source.indexOf("\n}\n", start) + 2;
+  expect(start, "classifierPrompt is present").toBeGreaterThan(-1);
+  expect(end, "classifierPrompt closes").toBeGreaterThan(start);
+  const definition = source.slice(start, end).replace("function classifierPrompt", "function");
+  const render = new Function(`return (${definition});`)() as (input: { command: string; workdir: string; branch: string }) => string;
+  return render({ command, workdir: "/srv/session", branch: "session/caller-contract" });
+}
+
+async function insertSessionPrompt() {
+  const t = convexTest({ schema, modules });
+  await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ layers: SENTINEL_LAYERS }));
+  const tomId = await t.run(async (ctx) =>
+    ctx.db.insert("users", { name: "tom", email: "tom@tom.quest", role: "tom" }),
+  );
+  const tom = t.withIdentity({ subject: tomId });
+  const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+    title: "caller contract",
+    kind: "adhoc",
+    repo: "none",
+    initialPrompt: "The caller contract prompt body.",
+  });
+  const inbound = await tom.query(api.claudeSessions.getPendingInbound, { sessionId });
+  return inbound[0]?.text ?? "";
 }
 
 const facts = (t: ReturnType<typeof convexTest>) =>
@@ -68,6 +130,37 @@ describe("model-of-tom publication", () => {
     await expect(t.run((ctx) => modelOfTomPrelude(ctx, ["write"]))).rejects.toThrow("model-of-tom layer write is not stored");
   });
 
+  it("backfills the singleton once from the existing facts with the shared layer order", async () => {
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      for (const file of BACKFILL_FILES) {
+        await ctx.db.insert("ttsSkills", {
+          name: file.path.slice("model-of-tom/".length, -3),
+          body: file.body,
+          sourcePath: file.path,
+          bytes: file.body.length,
+          commit: COMMIT,
+          syncedAt: COMMITTED_AT,
+          pushed: false,
+        });
+      }
+    });
+    expect(await t.action(internal.ttsSkills.backfillLayers, {})).toEqual({
+      files: BACKFILL_FILES.length,
+      commit: COMMIT,
+    });
+    expect(await facts(t)).toHaveLength(BACKFILL_FILES.length);
+    expect(await t.run((ctx) => modelOfTomPrelude(ctx, ["write", "operate"]))).toBe(
+      `${MODEL_OF_TOM_HEADER} (WikiTom commit ${COMMIT}): model-of-tom/agent-rules.md, model-of-tom/writing.md\n\n── model-of-tom/agent-rules.md ──\nsource operate\n\n── model-of-tom/writing.md ──\nsource write`,
+    );
+    const know = await t.run((ctx) => modelOfTomPrelude(ctx, ["know"]));
+    expect(know).toContain("── model-of-tom/areas/admin.md ──\nsource admin");
+    expect(know).not.toContain("updated: 2026-09-09");
+    await expect(t.action(internal.ttsSkills.backfillLayers, {})).rejects.toThrow(
+      "model-of-tom publication is already stored",
+    );
+  });
+
   it("refuses a stale publication unless a named force permits the rollback", async () => {
     const t = convexTest({ schema, modules });
     const rollback = "feedface".repeat(5);
@@ -98,6 +191,73 @@ describe("model-of-tom publication", () => {
   });
 });
 
+describe("model-of-tom caller contract", () => {
+  it("gives every caller exactly its selected layers", async () => {
+    const callers: {
+      name: string;
+      layers: (keyof typeof SENTINEL_LAYERS)[];
+      prompt: (prelude: string) => string | Promise<string>;
+    }[] = [
+      {
+        name: "worker/session-host/session.mjs classifierPrompt",
+        layers: [],
+        prompt: () => classifierPrompt("curl https://example.test"),
+      },
+      {
+        name: "worker/jobs/plan-graphs.mjs",
+        layers: ["write", "know"],
+        prompt: (prelude) => preparePrompt({ statement: "Plan the contract", source: "test", createdAt: 0 }, null, "2026-09-09", prelude),
+      },
+      {
+        name: "worker/jobs/poll-gmail.mjs",
+        layers: ["write", "know"],
+        prompt: (prelude) => gmailTriagePrompt(prelude, [{ id: "mail-1", from: "test@example.com", subject: "Contract", snippet: "body" }]),
+      },
+      {
+        name: "worker/jobs/poll-canvas.mjs",
+        layers: ["write", "know"],
+        prompt: (prelude) => canvasTriagePrompt(prelude, [{ id: "canvas-1", courseCode: "CS", title: "Contract", body: "body" }]),
+      },
+      {
+        name: "worker/jobs/apply-time-notes.mjs",
+        layers: ["write", "know"],
+        prompt: (prelude) => timeNotePrompt(
+          { text: "Move it to Friday", context: { kind: "todo", todo: null } },
+          { nyCalendarDay: "2026-09-09", now: Date.UTC(2026, 8, 9, 12), timezone: "America/New_York" },
+          prelude,
+        ),
+      },
+      {
+        name: "worker/jobs/weekly.mjs",
+        layers: ["write", "know"],
+        prompt: (prelude) => buildAgendaPrompt({ writingStandard: prelude, factLines: [], priorLines: [] }),
+      },
+      {
+        name: "insertSession",
+        layers: ["operate", "write", "know"],
+        prompt: () => insertSessionPrompt(),
+      },
+      {
+        name: "worker/jobs/nightly.mjs learningPrompt",
+        layers: [],
+        // Learning reads its own source pages, rather than a published prelude.
+        prompt: () => learningPrompt(
+          { since: 0, until: 1, tomTurns: [], slackReplies: [], rulings: [] },
+          new Map([["model-of-tom/writing.md", "the unchanged learning page"]]),
+          "2026-09-09",
+        ),
+      },
+    ];
+
+    for (const caller of callers) {
+      const prompt = await caller.prompt(caller.layers.length === 0 ? "" : callerPrelude(caller.layers));
+      for (const [layer, sentinel] of Object.entries(SENTINEL_LAYERS)) {
+        expect(prompt.includes(sentinel), `${caller.name}: ${layer}`).toBe(caller.layers.includes(layer as keyof typeof SENTINEL_LAYERS));
+      }
+    }
+  });
+});
+
 describe("POST /tts/model-of-tom", () => {
   afterEach(() => vi.unstubAllEnvs());
   const send = (t: ReturnType<typeof convexTest>, body: unknown, key = "s3cret") => t.fetch("/tts/model-of-tom", {
@@ -117,6 +277,7 @@ describe("POST /tts/model-of-tom", () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
     expect((await send(t, payload({ pushed: undefined }))).status).toBe(400);
+    expect((await send(t, payload({ commit: "0123abcd" }))).status).toBe(400);
     expect((await send(t, payload({ layers: { operate: "x" } }))).status).toBe(400);
     expect((await send(t, payload({ headers: [] }))).status).toBe(400);
     expect((await send(t, payload({ files: [{ path: "tts/spec.md", body: "x", bytes: 2 }] }))).status).toBe(400);

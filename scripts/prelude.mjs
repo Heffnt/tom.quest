@@ -2,42 +2,8 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseFrontmatter } from "../worker/jobs/markdown-sections.mjs";
-
-// This is the one definition of the prompt's stable layers. `areas` expands
-// from the named directory at the commit, rather than from the work tree.
-export const PRELUDE_LAYERS = Object.freeze({
-  operate: Object.freeze({
-    files: Object.freeze([{ path: "model-of-tom/agent-rules.md", optional: false }]),
-  }),
-  write: Object.freeze({
-    files: Object.freeze([
-      { path: "model-of-tom/writing.md", optional: false },
-      { path: "model-of-tom/ground.md", optionalUntilPresent: true },
-    ]),
-  }),
-  know: Object.freeze({
-    files: Object.freeze([
-      { path: "model-of-tom/intent.md", optional: false },
-      { path: "model-of-tom/priorities.md", optional: false },
-      { path: "model-of-tom/schedule.md", optional: false },
-    ]),
-    areas: Object.freeze({
-      directory: "model-of-tom/areas",
-      required: Object.freeze([
-        "model-of-tom/areas/admin.md",
-        "model-of-tom/areas/agent-systems.md",
-        "model-of-tom/areas/climbing.md",
-        "model-of-tom/areas/health-and-food.md",
-        "model-of-tom/areas/mental-health.md",
-        "model-of-tom/areas/money.md",
-        "model-of-tom/areas/research.md",
-        "model-of-tom/areas/social.md",
-      ]),
-    }),
-  }),
-});
-
-const LAYER_NAMES = Object.freeze(Object.keys(PRELUDE_LAYERS));
+export { PRELUDE_LAYERS } from "./prelude-layers.mjs";
+import { PRELUDE_LAYERS, PRELUDE_LAYER_NAMES as LAYER_NAMES } from "./prelude-layers.mjs";
 
 class PreludeError extends Error {}
 

@@ -903,7 +903,8 @@ export default defineSchema({
     sourcePath: v.string(), // path inside WikiTom, so a row traces to its file
     bytes: v.optional(v.number()), // source bytes reported by the publisher
     // The WikiTom commit the file was read at. Absent only on a row the
-    // retired six-hourly sync wrote, which serves until the first post.
+    // retired six-hourly sync wrote; a complete modern fact set can seed the
+    // one-time publication backfill, but never renders a prompt directly.
     commit: v.optional(v.string()),
     syncedAt: v.number(), // the commit's time, not the post's
     // Whether the commit had reached GitHub when it was posted. The job posts
@@ -916,7 +917,9 @@ export default defineSchema({
   // Exactly one `key: "current"` document is the published model-of-tom
   // revision. It stores each complete, verbatim layer and the exact header for
   // every nonempty canonical selection (7 total), so readers never recreate
-  // prompt text from the per-file facts above.
+  // prompt text from the per-file facts above. Roll out this table by deploying
+  // first, running `ttsSkills.backfillLayers` once, then letting nightly posts
+  // replace it; readers fail closed while the singleton is absent.
   modelOfTomPublication: defineTable({
     key: v.literal("current"),
     commit: v.string(),

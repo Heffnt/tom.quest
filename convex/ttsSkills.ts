@@ -1,7 +1,10 @@
 // Published prompt layers and their source-file facts.
 import { v } from "convex/values";
-import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
+import { internal } from "./_generated/api";
+import { internalAction, internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { MODEL_OF_TOM_HEADER } from "./ttsShared";
+import { PRELUDE_LAYERS } from "../scripts/prelude-layers.mjs";
+import { parseFrontmatter } from "../worker/jobs/markdown-sections.mjs";
 
 export const MODEL_OF_TOM_LAYER_NAMES = ["operate", "write", "know"] as const;
 export type ModelOfTomLayerName = (typeof MODEL_OF_TOM_LAYER_NAMES)[number];
@@ -118,6 +121,141 @@ export function modelOfTomRowName(path: string): string {
 export function isModelOfTomPath(path: unknown): path is string {
   return typeof path === "string" && /^model-of-tom\/[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*\.md$/.test(path) && !path.split("/").some((segment) => segment === "." || segment === "..");
 }
+
+type ModelOfTomFact = {
+  sourcePath: string;
+  body: string;
+  commit?: string;
+  syncedAt: number;
+  pushed?: boolean;
+};
+
+type ModelOfTomPublication = {
+  commit: string;
+  committedAt: number;
+  pushed: boolean;
+  layers: Record<ModelOfTomLayerName, string>;
+  headers: StoredHeader[];
+};
+
+function renderFiles(files: readonly Pick<ModelOfTomFact, "sourcePath" | "body">[]): string {
+  return files.map(({ sourcePath, body }) => `── ${sourcePath} ──\n${body}`).join("\n\n");
+}
+
+function renderHeader(commit: string, files: readonly Pick<ModelOfTomFact, "sourcePath">[]): string {
+  return `${MODEL_OF_TOM_HEADER} (WikiTom commit ${commit}): ${files.map((file) => file.sourcePath).join(", ")}`;
+}
+
+/**
+ * Reconstruct the publication exactly as the nightly assembler would from its
+ * current per-file facts. The optional ground file is omitted when the old
+ * facts do not contain it: historical presence is a git question the facts
+ * cannot answer, and the next nightly post is the authoritative replacement.
+ */
+export function publicationFromFacts(facts: readonly ModelOfTomFact[]): ModelOfTomPublication {
+  if (facts.length === 0) throw new Error("no model-of-tom facts are stored");
+  const byPath = new Map<string, ModelOfTomFact>();
+  for (const fact of facts) {
+    if (!isModelOfTomPath(fact.sourcePath)) throw new Error(`not a model-of-tom path: ${fact.sourcePath}`);
+    if (fact.body.trim() === "") throw new Error(`body for ${fact.sourcePath} must be non-empty`);
+    if (byPath.has(fact.sourcePath)) throw new Error(`model-of-tom fact is stored twice: ${fact.sourcePath}`);
+    byPath.set(fact.sourcePath, fact);
+  }
+
+  const selected: Record<ModelOfTomLayerName, ModelOfTomFact[]> = {
+    operate: [], write: [], know: [],
+  };
+  for (const name of MODEL_OF_TOM_LAYER_NAMES) {
+    const definition = PRELUDE_LAYERS[name];
+    for (const entry of definition.files) {
+      const fact = byPath.get(entry.path);
+      if (fact === undefined) {
+        if (entry.optionalUntilPresent) continue;
+        throw new Error(`model-of-tom fact ${entry.path} is not stored`);
+      }
+      selected[name].push(fact);
+    }
+    if (definition.areas !== undefined) {
+      const prefix = `${definition.areas.directory}/`;
+      const areas = facts
+        .filter((fact) => fact.sourcePath.startsWith(prefix) && /^([^/]+)\.md$/.test(fact.sourcePath.slice(prefix.length)))
+        .map((fact) => ({ ...fact, body: parseFrontmatter(fact.body).body.trim() }))
+        .sort((a, b) => a.sourcePath.localeCompare(b.sourcePath));
+      for (const path of definition.areas.required) {
+        if (!areas.some((fact) => fact.sourcePath === path)) {
+          throw new Error(`model-of-tom fact ${path} is not stored`);
+        }
+      }
+      if (areas.some((fact) => fact.body === "")) {
+        throw new Error("model-of-tom area fact is blank after frontmatter");
+      }
+      selected[name].push(...areas);
+    }
+  }
+
+  const selectedFacts = MODEL_OF_TOM_LAYER_NAMES.flatMap((name) => selected[name]);
+  const commit = selectedFacts[0]?.commit;
+  const committedAt = selectedFacts[0]?.syncedAt;
+  const pushed = selectedFacts[0]?.pushed;
+  if (typeof commit !== "string" || !/^[0-9a-f]{40}$/.test(commit)) {
+    throw new Error("model-of-tom facts need one 40-character commit");
+  }
+  if (!Number.isFinite(committedAt)) throw new Error("model-of-tom facts need one finite committedAt");
+  if (typeof pushed !== "boolean") throw new Error("model-of-tom facts need one pushed value");
+  for (const fact of selectedFacts) {
+    if (fact.commit !== commit || fact.syncedAt !== committedAt || fact.pushed !== pushed) {
+      throw new Error("model-of-tom facts must name one commit, committedAt, and pushed value");
+    }
+  }
+
+  const layers = Object.fromEntries(MODEL_OF_TOM_LAYER_NAMES.map((name) => [name, renderFiles(selected[name])])) as Record<ModelOfTomLayerName, string>;
+  for (const name of MODEL_OF_TOM_LAYER_NAMES) {
+    if (layers[name].trim() === "") throw new Error(`model-of-tom layer ${name} is blank`);
+  }
+  const headers: StoredHeader[] = MODEL_OF_TOM_SELECTIONS.map((names) => ({
+    layers: [...names],
+    header: renderHeader(commit, names.flatMap((name) => selected[name])),
+  }));
+  // The same gate a posted publication passes, so a backfilled one reads to
+  // every consumer exactly as a nightly one does.
+  if (!validHeaders(headers, commit)) {
+    throw new Error("the backfilled headers are not one parseable file list per canonical selection");
+  }
+  return { commit, committedAt, pushed, layers, headers };
+}
+
+export const internalBackfillModelOfTom = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const current = await ctx.db.query("modelOfTomPublication")
+      .withIndex("by_key", (q) => q.eq("key", "current")).unique();
+    if (current !== null) throw new Error("model-of-tom publication is already stored");
+    const facts = await ctx.db.query("ttsSkills").withIndex("by_name").take(65);
+    if (facts.length > 64) throw new Error("too many model-of-tom facts to backfill");
+    const publication = publicationFromFacts(facts);
+    await ctx.db.insert("modelOfTomPublication", {
+      key: "current",
+      ...publication.layers,
+      commit: publication.commit,
+      committedAt: publication.committedAt,
+      pushed: publication.pushed,
+      headers: publication.headers,
+    });
+    return { files: facts.length, commit: publication.commit };
+  },
+});
+
+/**
+ * One deployment-time repair, run by hand exactly once between deploying this
+ * code and the first nightly post. The return type is written out because the
+ * handler names its own module's `internal` API, which TypeScript cannot infer
+ * through the cycle.
+ */
+export const backfillLayers = internalAction({
+  args: {},
+  handler: async (ctx): Promise<{ files: number; commit: string }> =>
+    await ctx.runMutation(internal.ttsSkills.internalBackfillModelOfTom, {}),
+});
 
 export const internalReplaceModelOfTom = internalMutation({
   args: {
