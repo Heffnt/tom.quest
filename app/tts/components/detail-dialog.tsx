@@ -10,7 +10,7 @@
 // is where the whole of it is: every need a task still waits on, and every
 // batch this batch waits on.
 //
-// Actions sit at the top (CLAUDE.md UI rules): where a ruling can be given —
+// Actions sit at the top (app/AGENTS.md UI rules): where a ruling can be given —
 // on the batch always, on a task or goal whose todo is rulable (lib
 // isRulable) — the four verdict buttons come first, the same row the batch
 // card renders (verdict-buttons.tsx).

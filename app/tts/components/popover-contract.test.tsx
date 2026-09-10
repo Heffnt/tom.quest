@@ -1,4 +1,4 @@
-// THE POPOVER IS THE CONTRACT. CLAUDE.md (Tom, 2026-08-29): one info
+// THE POPOVER IS THE CONTRACT. app/AGENTS.md (Tom, 2026-08-29): one info
 // mechanism, a tap-to-open popover whose content is what the control does on
 // the backend with the exact call in mono; and every action label names its
 // exact backend effect. explanations.test.ts holds the popovers themselves to
