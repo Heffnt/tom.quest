@@ -18,7 +18,7 @@ export const MAX_LIMIT = 200;
 export const LAPTOP_WIKITOM_DIR = "C:/Users/heffn/Desktop/WikiTom";
 export const BOX_WIKITOM_DIR = process.env.WIKITOM_DIR || "/root/wikitom";
 
-const DATABASE_COMMANDS = new Set(["rulings", "sessions", "events", "todos", "proposals"]);
+const DATABASE_COMMANDS = new Set(["rulings", "sessions", "events", "todos", "evals", "proposals"]);
 const LOCAL_COMMANDS = new Set(["areas", "sources", "archive", "evidence"]);
 // The one database command that is NOT a /tts/search/* door: it reads the open
 // repository-rule proposals from /tts/repo-proposals, whose envelope is its own
@@ -40,6 +40,10 @@ Returns a stable event id, date, and collapsed text.
 todos <query> [--status S] [--limit N] [--json]
 Search matching production todos, optionally narrowed by status.
 Returns a stable todo id, date, and collapsed text.
+
+evals [--limit N] [--json]
+List the recorded evals runs in production Convex, newest first.
+Returns the run's event id, day, repository, commit, counts, and failing item ids.
 
 areas <name|all> [--limit N] [--wikitom DIR] [--json]
 Read an area page's updated/reviewed frontmatter and its protected sections.
@@ -136,6 +140,7 @@ export function parseSearchArgs(argv) {
     sessions: new Set(["json", "repo", "since", "query", "limit"]),
     events: new Set(["json", "since", "limit"]),
     todos: new Set(["json", "status", "limit"]),
+    evals: new Set(["json", "limit"]),
     areas: new Set(["json", "limit", "wikitom"]),
     sources: new Set(["json", "limit", "wikitom"]),
     archive: new Set(["json", "since", "limit", "wikitom"]),
@@ -178,6 +183,9 @@ const ID_PREFIX = {
   sessions: "claudeSessions",
   events: "dtsEvents",
   todos: "dtsTodos",
+  // An evals run IS a dtsEvents row ("evals-run"), so it is cited as one:
+  // the id printed here is the id the digest and `events` already name.
+  evals: "dtsEvents",
 };
 
 function citedId(command, row, fallback) {
@@ -239,6 +247,29 @@ export function formatTodoResult(row, fallback = "todo") {
   return `${citedId("todos", row, fallback)} ${rowDate(row)} statement=${quoted(row?.statement)} status=${singleLine(row?.status)} category=${quoted(row?.category)}${dates ? ` ${dates}` : ""}`;
 }
 
+/**
+ * One evals run as one line: the event id, the day, the repository and commit
+ * it scored, the counts the runner recorded, and the ids of the items that did
+ * not pass. The failing ids are what a session actually acts on, so they are
+ * named rather than left as a count the reader must go and expand.
+ *
+ * The row is the raw dtsEvents row the door returns — `at` for the instant and
+ * a `data` object for the run — not the flattened `date`/`text` shape the four
+ * /tts/search/* doors above normalize to.
+ */
+export function formatEvalsResult(row, fallback = "evals") {
+  const data = row?.data ?? {};
+  const date = row?.at === undefined ? rowDate(row) : unknownDate(row.at);
+  const counts = [["items", "items"], ["pass", "pass"], ["fail", "fail"], ["regressions", "regressions"], ["stillFailing", "still-failing"]]
+    .filter(([key]) => data[key] !== undefined && data[key] !== null)
+    .map(([key, name]) => `${name}=${singleLine(data[key])}`)
+    .join(" ");
+  const failures = Array.isArray(data.failures)
+    ? data.failures.map((failure) => singleLine(failure?.id ?? "")).filter(Boolean).join(",")
+    : "";
+  return `${citedId("evals", row, fallback)} ${date} repo=${singleLine(data.repo)} sha=${singleLine(data.sha)}${counts ? ` ${counts}` : ""}${failures ? ` failures=${quoted(failures)}` : ""}`;
+}
+
 /** Dispatch only to a result type whose fields have an intentional contract. */
 export function formatDatabaseResult(command, row, fallback = "result") {
   switch (command) {
@@ -246,6 +277,7 @@ export function formatDatabaseResult(command, row, fallback = "result") {
     case "sessions": return formatSessionResult(row, fallback);
     case "events": return formatEventResult(row, fallback);
     case "todos": return formatTodoResult(row, fallback);
+    case "evals": return formatEvalsResult(row, fallback);
     case "proposals": return formatProposalResult(row, fallback);
     default: throw new Error(`tts-search: no formatter for ${command}`);
   }
@@ -331,8 +363,10 @@ function areaResult(file, { includeSections = true } = {}) {
     reviewed,
   };
   if (includeSections) {
+    // "Current state" is the only protected section the area pages carry;
+    // every "Must not break" heading is gone from model-of-tom/areas/, so
+    // extracting one only ever printed an empty field at a model.
     row.currentState = extractSections(markdown, ["Current state"]);
-    row.mustNotBreak = extractSections(markdown, ["Must not break"]);
   }
   return row;
 }
@@ -594,10 +628,10 @@ function formatLocal(command, row) {
     return `${row.id} ${row.date} line=${quoted(row.line)} ${source}`;
   }
   if (command === "areas") {
-    if (!("currentState" in row) && !("mustNotBreak" in row)) {
+    if (!("currentState" in row)) {
       return `${row.id} ${row.date} ${row.name} updated=${row.updated} reviewed=${row.reviewed}`;
     }
-    return `${row.id} ${row.date} updated=${row.updated} reviewed=${row.reviewed} current-state=${singleLine(row.currentState)} must-not-break=${singleLine(row.mustNotBreak)}`;
+    return `${row.id} ${row.date} updated=${row.updated} reviewed=${row.reviewed} current-state=${singleLine(row.currentState)}`;
   }
   return `${row.id} ${row.date} ${singleLine(row.text)}`;
 }

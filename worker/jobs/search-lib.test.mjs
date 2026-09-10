@@ -9,12 +9,14 @@ import {
   archiveResults,
   evidenceResults,
   formatDatabaseResult,
+  formatEvalsResult,
   formatEventResult,
   formatRulingResult,
   formatSessionResult,
   formatTodoResult,
   parseSearchArgs,
   runSearchCli,
+  usage,
 } from "./search-lib.mjs";
 
 const temporary = [];
@@ -44,6 +46,9 @@ describe("purpose-shaped formatters", () => {
     expect(formatSessionResult({ id: "s1", date: "2026-09-02", title: "Search", status: "ended", model: "opus", outcomeSummary: "done", repos: ["tom.quest", "WikiTom"], url: "/sessions?session=s1" })).toBe('claudeSessions/s1 2026-09-02 title="Search" status=ended model=opus summary="done" repos=tom.quest,WikiTom url=https://tom.quest/sessions?session=s1');
     expect(formatEventResult({ id: "e1", date: "2026-09-03", kind: "nightly", text: "finished" })).toBe('dtsEvents/e1 2026-09-03 kind=nightly text="finished"');
     expect(formatTodoResult({ id: "t1", createdAt: "2026-09-04", statement: "Search", status: "active", category: "ops", updatedAt: "2026-09-05" })).toBe('dtsTodos/t1 2026-09-04 statement="Search" status=active category="ops" createdAt=2026-09-04 updatedAt=2026-09-05');
+    // A run with nothing to report keeps the shape and simply carries no
+    // counts and no failures clause.
+    expect(formatEvalsResult({ id: "ev0", at: Date.UTC(2026, 8, 6), data: { repo: "WikiTom", sha: "deadbee" } })).toBe("dtsEvents/ev0 2026-09-06 repo=WikiTom sha=deadbee");
   });
 });
 
@@ -73,12 +78,12 @@ describe("local search parsing", () => {
     expect(() => parseSearchArgs(["areas", "all", "--limit", "201"])).toThrow("from 1 to 200");
   });
 
-  it("lists all areas as frontmatter-only summaries and reads protected sections by name", () => {
+  it("lists all areas as frontmatter-only summaries and reads protected sections by name", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
     temporary.push(root);
     const areas = path.join(root, "model-of-tom", "areas");
     fs.mkdirSync(areas, { recursive: true });
-    fs.writeFileSync(path.join(areas, "alpha.md"), "---\nupdated: 2026-09-05\nreviewed: 2026-09-06\n---\n## Current state\nReady now\n## Must not break\nKeep the guard\n");
+    fs.writeFileSync(path.join(areas, "alpha.md"), "---\nupdated: 2026-09-05\nreviewed: 2026-09-06\n---\n## Current state\nReady now\n");
     const beta = path.join(areas, "beta.md");
     fs.writeFileSync(beta, "# Beta\n");
     fs.utimesSync(beta, new Date("2026-09-07T12:00:00Z"), new Date("2026-09-07T12:00:00Z"));
@@ -86,10 +91,15 @@ describe("local search parsing", () => {
       { id: "area:alpha", name: "alpha", date: "2026-09-05", updated: "2026-09-05", reviewed: "2026-09-06" },
       { id: "area:beta", name: "beta", date: "2026-09-07", updated: "unknown", reviewed: "unknown" },
     ]);
-    expect(areaResults(root, "alpha")[0]).toMatchObject({
-      currentState: "## Current state\nReady now",
-      mustNotBreak: "## Must not break\nKeep the guard",
-    });
+    // "Current state" is the only protected section an area page carries, and
+    // the printed line has no must-not-break field to leave empty.
+    // witness: re-add the "Must not break" extraction and this fails.
+    const alpha = areaResults(root, "alpha")[0];
+    expect(alpha).toMatchObject({ currentState: "## Current state\nReady now" });
+    expect("mustNotBreak" in alpha).toBe(false);
+    const line = [];
+    expect(await runSearchCli(["areas", "alpha"], { env: { WIKITOM_DIR: root }, write: (text) => line.push(text), error: () => {} })).toBe(0);
+    expect(line).toEqual(['area:alpha 2026-09-05 updated=2026-09-05 reviewed=2026-09-06 current-state=## Current state\\nReady now']);
   });
 
   it("limits areas all to the shared default", async () => {
@@ -300,6 +310,77 @@ describe("evidence search", () => {
     expect(evidenceResults(root, "needle", 2).rows).toHaveLength(2);
     expect(() => parseSearchArgs(["evidence", "q", "--since", "2026-09-01"])).toThrow("--since does not apply to evidence");
     expect(() => parseSearchArgs(["evidence"])).toThrow("evidence needs exactly one query");
+  });
+});
+
+// GET /tts/search/evals was reachable only over HTTP until this subcommand
+// existed. witness: drop "evals" from DATABASE_COMMANDS and the first
+// expectation below becomes an unknown-subcommand failure.
+describe("evals runs", () => {
+  const env = { CONVEX_SITE_URL: "https://example.convex.cloud", TTS_WORKER_KEY: "worker-key" };
+  const run = {
+    id: "ev1",
+    at: Date.UTC(2026, 8, 9, 8),
+    data: {
+      repo: "tom.quest",
+      sha: "abc1234",
+      items: 40,
+      pass: 38,
+      fail: 2,
+      regressions: 1,
+      stillFailing: 1,
+      failures: [{ id: "writing/01", reason: "too long" }, { id: "writing/02", reason: "no evidence" }],
+    },
+  };
+
+  it("reads the /tts/search/evals door with the shared limit and prints the run's counts and failing ids", async () => {
+    const requested = [];
+    const fetch = async (url, init) => {
+      requested.push({ url, init });
+      return { ok: true, json: async () => [run] };
+    };
+    const output = [];
+    expect(await runSearchCli(["evals", "--limit", "5"], { env, fetch, write: (line) => output.push(line), error: () => {} })).toBe(0);
+    const url = new URL(requested[0].url);
+    expect(url.pathname).toBe("/tts/search/evals");
+    expect(url.searchParams.get("limit")).toBe("5");
+    expect(requested[0].init.headers).toEqual({ "X-TTS-Key": "worker-key" });
+    expect(output).toEqual([
+      'dtsEvents/ev1 2026-09-09 repo=tom.quest sha=abc1234 items=40 pass=38 fail=2 regressions=1 still-failing=1 failures="writing/01,writing/02"',
+    ]);
+  });
+
+  it("caps the rows it prints at --limit and emits the rows unchanged under --json", async () => {
+    const fetch = async () => ({ ok: true, json: async () => [run, { ...run, id: "ev2" }, { ...run, id: "ev3" }] });
+    const output = [];
+    expect(await runSearchCli(["evals", "--limit", "2"], { env, fetch, write: (line) => output.push(line), error: () => {} })).toBe(0);
+    expect(output).toHaveLength(2);
+    expect(output[1]).toContain("dtsEvents/ev2");
+
+    const json = [];
+    expect(await runSearchCli(["evals", "--json"], { env, fetch, write: (line) => json.push(line), error: () => {} })).toBe(0);
+    expect(JSON.parse(json[0])).toMatchObject([{ id: "ev1" }, { id: "ev2" }, { id: "ev3" }]);
+  });
+
+  it("takes only the options that apply to it, and needs the production credentials", async () => {
+    expect(parseSearchArgs(["evals"])).toMatchObject({ command: "evals", limit: 20, json: false });
+    expect(parseSearchArgs(["evals", "--limit", "200"])).toMatchObject({ limit: 200 });
+    expect(() => parseSearchArgs(["evals", "--limit", "201"])).toThrow("from 1 to 200");
+    expect(() => parseSearchArgs(["evals", "--since", "2026-09-01"])).toThrow("--since does not apply to evals");
+    expect(() => parseSearchArgs(["evals", "--repo", "tom.quest"])).toThrow("--repo does not apply to evals");
+    expect(() => parseSearchArgs(["evals", "a-query"])).toThrow("evals accepts options only");
+    expect(usage()).toContain("evals [--limit N] [--json]");
+
+    const errors = [];
+    expect(await runSearchCli(["evals"], { env: {}, write: () => {}, error: (line) => errors.push(line) })).toBe(2);
+    expect(errors).toEqual(["tts-search: CONVEX_SITE_URL and TTS_WORKER_KEY must be set for production searches"]);
+  });
+
+  it("refuses a body that is not the door's array", async () => {
+    const errors = [];
+    const fetch = async () => ({ ok: true, json: async () => ({ ok: true }) });
+    expect(await runSearchCli(["evals"], { env, fetch, write: () => {}, error: (line) => errors.push(line) })).toBe(2);
+    expect(errors).toEqual(["tts-search: /tts/search/evals returned no result array"]);
   });
 });
 
