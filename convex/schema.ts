@@ -784,6 +784,12 @@ export default defineSchema({
   })
     .index("by_todo", ["todoId"])
     .index("by_repo_external", ["repo", "externalId"])
+    // The batch subject's own history, the way by_todo is a todo's. ADDED for
+    // the dynamic context assembler (convex/ttsContext.ts rule 10): a run on a
+    // todo is given his rulings on that todo AND on its batch, and a batch's
+    // rulings had no index — the only way to them was a scan of every ruling
+    // ever recorded, on the hot path of every session creation.
+    .index("by_batch", ["batchId"])
     .index("by_ruled", ["ruledAt"])
     .index("by_provenance_inboundId", ["provenance.inboundId"]),
 
@@ -934,6 +940,27 @@ export default defineSchema({
     })),
   }).index("by_key", ["key"]),
 
+  // The repo layer, published the way the model-of-tom files are published.
+  //
+  // WHY A TABLE AND NOT A PATH: the assembler pre-expands the repo rules for
+  // the directories a todo's brief names (convex/ttsContext.ts rule 9), and it
+  // runs INSIDE CONVEX, which has no filesystem — it cannot read the checkout
+  // the box has. So the nightly job posts each repo's `AGENTS.md` bodies out of
+  // its own immutable commit (POST /tts/repo-rules, same worker key and the
+  // same replace-all-per-repo semantics as the model-of-tom post), and a
+  // session with no checkout at all — prepare, triage, the planner — still
+  // knows what rules exist and where they are.
+  repoRules: defineTable({
+    repo: v.string(), // a SESSION_REPOS name
+    path: v.string(), // "AGENTS.md" | "convex/AGENTS.md" | …, relative to the repo root
+    body: v.string(),
+    bytes: v.number(),
+    commit: v.string(),
+    syncedAt: v.number(),
+  })
+    .index("by_repo_path", ["repo", "path"])
+    .index("by_repo", ["repo"]),
+
   // ── Claude Code session surface ──────────────────────────────────────────────
   // CANONICAL DESIGN HOME: WikiTom tts/spec.md §20 (design ratified 2026-08-28;
   // rendering + permission rulings 2026-08-29). These comments carry only what
@@ -1069,6 +1096,25 @@ export default defineSchema({
     // opened from the page carries neither and so rules on nothing.
     agendaDay: v.optional(v.string()),
     agendaSubjects: v.optional(v.array(v.string())),
+    // ── What this session's opener was given (the dynamic context round) ─────
+    // Written by insertSession from assembleContext's manifest and byte counts,
+    // so the delivery check can read what was pre-expanded alongside what the
+    // session then did, with no model in the loop:
+    //   expansion-unused  an expanded page whose terms never recur in the
+    //                     transcript — persistently, for one area, means its
+    //                     `categories:` list is too wide.
+    //   fetch-after-miss  the transcript ran a command that was ON the
+    //                     fetchable list — the mechanism working.
+    //   blind-miss        the session errored naming a fact that was on the
+    //                     fetchable list — the design's one real failure mode.
+    // Absent on every row written before this landed, and on any row whose
+    // assembly fell back to the stable prefix alone.
+    contextExpanded: v.optional(v.array(v.string())),
+    contextBytes: v.optional(v.object({
+      prefix: v.number(),
+      expanded: v.number(),
+      fetchable: v.number(),
+    })),
   })
     .index("by_status", ["status", "statusChangedAt"])
     .index("by_kind_agenda_day", ["kind", "agendaDay"])
@@ -1077,7 +1123,14 @@ export default defineSchema({
     .index("by_todo", ["todoId"])
     // Per-code-subject session history: the scheduler's ceiling on how many
     // worker missions one code todo may draw.
-    .index("by_code_subject", ["codeRepo", "codeExternalId"]),
+    .index("by_code_subject", ["codeRepo", "codeExternalId"])
+    // Per-batch session history, newest first. ADDED for the dynamic context
+    // assembler (convex/ttsContext.ts rule 11): a run on a batch is given the
+    // last outcomes recorded on that batch, and `batchId` had no index — the
+    // repo half of the same rule still has none, because `repos` is an array
+    // and Convex does not index array membership (that half is a capped
+    // descending scan, SESSION_SCAN_MAX).
+    .index("by_batch", ["batchId", "statusChangedAt"]),
 
   // Finalized transcript — written exactly once per row by the daemon.
   // `turn` has no UI reader yet; it is kept because transcript structure is
