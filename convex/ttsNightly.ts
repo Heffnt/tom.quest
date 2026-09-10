@@ -441,8 +441,11 @@ export const internalOpenRepoProposals = internalQuery({
       .take(OPEN_REPO_PROPOSALS_MAX * 4);
     const cap = Math.max(1, Math.min(OPEN_REPO_PROPOSALS_MAX, Math.floor(limit ?? OPEN_REPO_PROPOSALS_MAX)));
     return {
+      // `at` rides along with the row's own fields: a proposal carries no date
+      // of its own, and a reader — the session about to apply it, tts-search
+      // proposals — needs to know how old the night that proposed it was.
       proposals: rows
-        .map((e) => (e.data ?? {}) as Record<string, unknown>)
+        .map((e) => ({ at: e.at, ...(e.data ?? {}) }) as Record<string, unknown>)
         .filter((d) => d.status === "open" && (repo === undefined || d.repo === repo))
         .slice(0, cap),
     };

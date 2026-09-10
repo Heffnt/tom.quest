@@ -18,8 +18,12 @@ export const MAX_LIMIT = 200;
 export const LAPTOP_WIKITOM_DIR = "C:/Users/heffn/Desktop/WikiTom";
 export const BOX_WIKITOM_DIR = process.env.WIKITOM_DIR || "/root/wikitom";
 
-const DATABASE_COMMANDS = new Set(["rulings", "sessions", "events", "todos"]);
-const LOCAL_COMMANDS = new Set(["areas", "sources", "archive"]);
+const DATABASE_COMMANDS = new Set(["rulings", "sessions", "events", "todos", "proposals"]);
+const LOCAL_COMMANDS = new Set(["areas", "sources", "archive", "evidence"]);
+// The one database command that is NOT a /tts/search/* door: it reads the open
+// repository-rule proposals from /tts/repo-proposals, whose envelope is its own
+// (see proposalResults).
+const OWN_DOOR_COMMANDS = new Set(["proposals"]);
 
 const HELP = `rulings <query> [--since DATE] [--limit N] [--json]
 Search matching rulings in production Convex.
@@ -48,6 +52,14 @@ Derives its date from path/frontmatter, otherwise the file modification time.
 archive <query> [--since DATE] [--limit N] [--wikitom DIR] [--json]
 Recursively search archived sessions/, including gzipped JSONL, by text.
 Filters --since by archive path date, falling back to file modification time.
+
+evidence <query> [--limit N] [--wikitom DIR] [--json]
+Search model-of-tom/evidence/ for the entry behind a page's line.
+Returns path:heading, the line: text, and the first said/paraphrase/read/rests on.
+
+proposals [--repo NAME] [--limit N] [--json]
+List the open repository-rule proposals the nightly repo-learning step made.
+Returns the proposal id, the AGENTS.md file and section, the line, and its evidence.
 
 This command is read-only and makes no model calls. Use it on demand for rulings, history, and context instead of loading everything into prompts.`;
 
@@ -109,7 +121,7 @@ export function parseSearchArgs(argv) {
     fail(`--limit must be a whole number from 1 to ${MAX_LIMIT}`);
   }
   if (options.since && !isDay(options.since)) fail("--since must be a real YYYY-MM-DD date");
-  const needsQuery = new Set(["rulings", "events", "todos", "sources", "archive"]);
+  const needsQuery = new Set(["rulings", "events", "todos", "sources", "archive", "evidence"]);
   if (needsQuery.has(command)) {
     if (options.positional.length !== 1) fail(`${command} needs exactly one query`);
     options.query = options.positional[0];
@@ -127,6 +139,8 @@ export function parseSearchArgs(argv) {
     areas: new Set(["json", "limit", "wikitom"]),
     sources: new Set(["json", "limit", "wikitom"]),
     archive: new Set(["json", "since", "limit", "wikitom"]),
+    evidence: new Set(["json", "limit", "wikitom"]),
+    proposals: new Set(["json", "repo", "limit"]),
   };
   for (const name of options.seen) {
     if (!allowed[command].has(name)) fail(`--${name} does not apply to ${command}`);
@@ -232,6 +246,7 @@ export function formatDatabaseResult(command, row, fallback = "result") {
     case "sessions": return formatSessionResult(row, fallback);
     case "events": return formatEventResult(row, fallback);
     case "todos": return formatTodoResult(row, fallback);
+    case "proposals": return formatProposalResult(row, fallback);
     default: throw new Error(`tts-search: no formatter for ${command}`);
   }
 }
@@ -437,7 +452,147 @@ async function databaseResults(command, options, env, fetchFn) {
   return databaseSearchResponse(body, options.limit, `/tts/search/${command} returned no result array`);
 }
 
+/** The four ways an evidence entry names its source, in the spelling the
+ * checker enforces. A `line:` with none of these under it is an entry the
+ * evidence check would already have refused, so the row prints without one
+ * rather than being hidden. */
+const EVIDENCE_SOURCE = /^\s*(said|paraphrase|read|rests on):\s*(.*)$/;
+
+/**
+ * `evidence <query>` — the per-line record under model-of-tom/evidence/.
+ *
+ * WHY IT IS NOT `sources`: sources searches WikiTom's raw material, and this
+ * searches the FILE THAT SAYS WHY EACH LINE OF A MODEL-OF-TOM PAGE IS THERE.
+ * The prelude's fetchable block names this command for exactly that question —
+ * "where did this sentence come from" — and the answer is one entry, not a
+ * grep hit in the middle of a paragraph.
+ *
+ * The unit is the ENTRY, never the raw line: a match anywhere inside an entry
+ * (its `line:` or any of its sources) returns that entry whole. What is printed
+ * is `<path>:<heading>`, the entry's `line:`, and the FIRST source under it
+ * with its own kind kept (`said`, `paraphrase`, `read`, `rests on`). The rest
+ * of the sources are in the file at that heading, which the id names.
+ */
+export function evidenceResults(root, query, limit) {
+  const dir = path.join(root, "model-of-tom", "evidence");
+  if (!fs.existsSync(dir)) return { missing: dir, rows: [] };
+  const needle = query.toLocaleLowerCase();
+  const rows = [];
+  for (const file of filesUnder(dir)) {
+    if (!file.toLocaleLowerCase().endsWith(".md")) continue;
+    const rel = relative(root, file);
+    const text = fs.readFileSync(file, "utf8");
+    const date = sourceDate(rel, text, file);
+    let heading = "";
+    // One pass, entry by entry: a `## ` line moves the heading, a `- line: `
+    // opens an entry, and everything until the next of either belongs to it.
+    let entry = null;
+    const flush = () => {
+      if (entry === null) return;
+      const hay = [entry.line, ...entry.sources.map((source) => `${source.kind}: ${source.text}`)]
+        .join("\n")
+        .toLocaleLowerCase();
+      if (hay.includes(needle) && rows.length < limit) {
+        const source = entry.sources[0] ?? null;
+        rows.push({
+          id: `${rel}:${entry.heading}`,
+          date,
+          path: rel,
+          heading: entry.heading,
+          line: excerpt(redactSecrets(entry.line), query),
+          // The kind is kept beside the text because it is the fact: `said:` is
+          // Tom's own words and `paraphrase:` is not, and a reader that cannot
+          // tell them apart is the misquotation the evidence file exists to
+          // prevent. Null when the entry carries no source at all.
+          sourceKind: source === null ? null : source.kind,
+          sourceText: source === null ? null : excerpt(redactSecrets(source.text), query),
+        });
+      }
+      entry = null;
+    };
+    for (const raw of text.split(/\r?\n/)) {
+      const isHeading = /^#{1,6}\s/.test(raw);
+      const opens = raw.match(/^\s*-\s*line:\s*(.*)$/);
+      if (isHeading) {
+        flush();
+        heading = raw.replace(/^#+\s*/, "").trim();
+        continue;
+      }
+      if (opens) {
+        flush();
+        entry = { heading, line: opens[1].trim(), sources: [] };
+        continue;
+      }
+      if (entry === null) continue;
+      const source = raw.match(EVIDENCE_SOURCE);
+      if (source) entry.sources.push({ kind: source[1], text: source[2].trim() });
+    }
+    flush();
+    if (rows.length >= limit) break;
+  }
+  return { missing: null, rows: rows.slice(0, limit) };
+}
+
+/**
+ * `proposals [--repo NAME]` — the OPEN repository-rule proposals the nightly
+ * repo-learning step made, over GET /tts/repo-proposals.
+ *
+ * Its own fetch and not databaseResults': the door is not one of the
+ * /tts/search/* family, it takes no query, and its envelope is
+ * `{ proposals: [...] }`. A session working in a repository reads this before
+ * it edits that repository's AGENTS.md, which is why the id printed is the
+ * proposal id POST /tts/repo-proposal-applied takes back.
+ */
+export async function proposalResults(options, env, fetchFn) {
+  const site = env.CONVEX_SITE_URL;
+  const key = env.TTS_WORKER_KEY;
+  if (!site || !key) fail("CONVEX_SITE_URL and TTS_WORKER_KEY must be set for production searches");
+  const params = new URLSearchParams();
+  if (options.repo !== undefined) params.set("repo", options.repo);
+  params.set("limit", String(options.limit));
+  let response;
+  try {
+    response = await fetchFn(`${site.replace(/\/+$/, "")}/tts/repo-proposals?${params}`, {
+      headers: { "X-TTS-Key": key },
+    });
+  } catch {
+    fail("could not reach /tts/repo-proposals");
+  }
+  if (!response.ok) fail(`/tts/repo-proposals -> HTTP ${response.status}`);
+  let body;
+  try {
+    body = await response.json();
+  } catch {
+    fail("/tts/repo-proposals returned invalid JSON");
+  }
+  const rows = Array.isArray(body) ? body : body?.proposals;
+  if (!Array.isArray(rows)) fail("/tts/repo-proposals returned no proposal array");
+  return rows.slice(0, options.limit);
+}
+
+/** One proposal as one line: the id a session cites when it applies the line,
+ * the file and section the line belongs in, the line itself, and what the
+ * night read to propose it. */
+export function formatProposalResult(row, fallback = "proposal") {
+  const id = rowId(row, fallback);
+  const section = singleLine(row?.section ?? "");
+  return [
+    `repoProposal/${id}`,
+    unknownDate(row?.at ?? row?.day),
+    `repo=${singleLine(row?.repo ?? "")}`,
+    `file=${singleLine(row?.file ?? "")}${section === "" ? "" : ` § ${section}`}`,
+    `line=${quoted(row?.line)}`,
+    `evidence=${quoted(row?.evidence)}`,
+  ].join(" ");
+}
+
 function formatLocal(command, row) {
+  if (command === "evidence") {
+    const source = row.sourceKind === null || row.sourceKind === undefined
+      ? "source=none"
+      : `${row.sourceKind.replace(/ /g, "-")}=${quoted(row.sourceText)}`;
+    return `${row.id} ${row.date} line=${quoted(row.line)} ${source}`;
+  }
   if (command === "areas") {
     if (!("currentState" in row) && !("mustNotBreak" in row)) {
       return `${row.id} ${row.date} ${row.name} updated=${row.updated} reviewed=${row.reviewed}`;
@@ -467,17 +622,20 @@ export async function runSearchCli(
     let missing = null;
     let metadata = null;
     let jsonEnvelope = null;
-    if (DATABASE_COMMANDS.has(options.command)) {
+    if (OWN_DOOR_COMMANDS.has(options.command)) {
+      rows = await proposalResults(options, env, fetchFn);
+    } else if (DATABASE_COMMANDS.has(options.command)) {
       ({ rows, metadata, json: jsonEnvelope } = await databaseResults(options.command, options, env, fetchFn));
     } else {
       const root = wikiTomDir(options, env, defaultWikiTom);
       if (options.command === "areas") rows = areaResults(root, options.area).slice(0, options.limit);
       else if (options.command === "sources") rows = linesMatching(root, ["sources", "tom-text"], options.query, options.limit);
+      else if (options.command === "evidence") ({ missing, rows } = evidenceResults(root, options.query, options.limit));
       else ({ missing, rows } = await archiveResults(root, options.query, options.since, options.limit));
     }
     if (missing) {
       if (options.json) safeWrite(JSON.stringify({ missing }));
-      else safeWrite(`tts-search: no session archive at ${missing}`);
+      else safeWrite(`tts-search: no ${options.command === "evidence" ? "evidence directory" : "session archive"} at ${missing}`);
       return 3;
     }
     const redacted = redactValue(rows);

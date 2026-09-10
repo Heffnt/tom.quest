@@ -156,8 +156,9 @@ export const WEEK_SECTION = "Week";
 
 /** The shipped read-only search binary: worker/bin/tts-search, on $PATH as
  * /usr/local/bin/tts-search. NOT `tts search` — the map's Search line spells it
- * with a space and names an `evidence` subcommand the binary does not have;
- * every line below names a command that actually runs. */
+ * with a space; every line below names a command that actually runs. The
+ * `evidence` subcommand the map named landed at integration, so the evidence
+ * line above now points at it rather than at `sources`. */
 export const SEARCH_BINARY = "tts-search";
 export const SEARCH_QUESTIONS = Object.freeze([
   { what: "his rulings, any subject", how: `${SEARCH_BINARY} rulings "<query>" [--since YYYY-MM-DD]` },
@@ -167,6 +168,10 @@ export const SEARCH_QUESTIONS = Object.freeze([
   { what: "an area page and its frontmatter", how: `${SEARCH_BINARY} areas <name|all>` },
   { what: "WikiTom sources/ and tom-text/", how: `${SEARCH_BINARY} sources "<query>"` },
   { what: "archived session transcripts", how: `${SEARCH_BINARY} archive "<query>" [--since YYYY-MM-DD]` },
+  // The open repository-rule proposals. A run about to edit a nested AGENTS.md
+  // has no other way to learn that last night proposed a line for that very
+  // file — the unknown-unknown this block exists for.
+  { what: "open repository-rule proposals", how: `${SEARCH_BINARY} proposals [--repo NAME]` },
 ]);
 
 export function areaName(path) {
@@ -929,7 +934,11 @@ function fetchableItems(state, options) {
   // whole rule and costs 90 bytes instead of 1,100.
   items.push({
     what: "model-of-tom/evidence/",
-    how: `the per-line evidence for every page above, same filename; grep it, or ${SEARCH_BINARY} sources "<query>"`,
+    // `evidence`, not `sources`: sources searches WikiTom's raw material, and
+    // the question this line answers is "where did THIS SENTENCE come from",
+    // whose answer is one entry — the line and the said/paraphrase/read under
+    // it — not a grep hit inside a paragraph.
+    how: `the per-line evidence for every page above, same filename; grep it, or ${SEARCH_BINARY} evidence "<query>"`,
     group: "evidence",
   });
 
@@ -948,10 +957,10 @@ function fetchableItems(state, options) {
     });
   }
 
-  // 6. The seven search questions, each on its own line even though --help
+  // 6. The eight search questions, each on its own line even though --help
   // would print them: the point of the block is that the run never has to know
-  // to ask. (The map's Search line also names an `evidence` subcommand the
-  // binary does not have; `sources` is the one that reads WikiTom prose.)
+  // to ask. `evidence` is not among them because item 4 above already names it
+  // on the line it belongs to.
   for (const question of SEARCH_QUESTIONS) items.push({ what: question.what, how: question.how, group: "search" });
 
   // 7. Supplemental that did not ride whole.

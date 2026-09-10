@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   areaResults,
   archiveResults,
+  evidenceResults,
   formatDatabaseResult,
   formatEventResult,
   formatRulingResult,
@@ -199,5 +200,159 @@ describe("search CLI output boundaries", () => {
     expect(output[0]).toContain("first.jsonl:1");
     expect(output[1]).toContain("second.jsonl:1");
     expect(output.join("\n")).not.toContain("third.jsonl");
+  });
+});
+
+// The two subcommands the dynamic-context round added. `evidence` is the one
+// the prelude's fetchable line names for "where did this sentence come from";
+// `proposals` is what a run about to edit a nested AGENTS.md reads first.
+describe("evidence search", () => {
+  function vault() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
+    temporary.push(root);
+    const dir = path.join(root, "model-of-tom", "evidence", "areas");
+    fs.mkdirSync(dir, { recursive: true });
+    return { root, dir };
+  }
+
+  it("returns the whole entry for a match anywhere inside it, with the first source and its kind", () => {
+    const { root, dir } = vault();
+    fs.writeFileSync(
+      path.join(dir, "climbing.md"),
+      [
+        "# Evidence for areas/climbing.md",
+        "",
+        "## Current state",
+        "",
+        "- line: He climbs at Central Rock Worcester.",
+        '  said: 2026-08-30 · tom-quest/`47f04bc9` · "central rock, always"',
+        "  paraphrase: 2026-04-23 · a second source that is not printed",
+        "- line: A line whose NEEDLE is only in its source.",
+        "  read: 2026-09-01 · the NEEDLE is here, not above",
+        "",
+        "## Must not break",
+        "",
+        "- line: Nothing here matches.",
+        "  rests on: 2026-09-02 · unrelated",
+        "",
+      ].join("\n"),
+    );
+    const { rows } = evidenceResults(root, "needle", 20);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: "model-of-tom/evidence/areas/climbing.md:Current state",
+      heading: "Current state",
+      line: "A line whose NEEDLE is only in its source.",
+      sourceKind: "read",
+    });
+
+    // The heading travels with the entry, and only the FIRST source is printed.
+    const central = evidenceResults(root, "central rock", 20).rows;
+    expect(central).toHaveLength(1);
+    expect(central[0].sourceKind).toBe("said");
+    expect(central[0].sourceText).toContain("central rock, always");
+    expect(central[0].sourceText).not.toContain("a second source");
+
+    // `rests on:` is a source kind like the other three.
+    const rests = evidenceResults(root, "unrelated", 20).rows;
+    expect(rests[0]).toMatchObject({ heading: "Must not break", sourceKind: "rests on" });
+  });
+
+  it("prints the entry as path:heading with the line and the source kind, and redacts", async () => {
+    const { root, dir } = vault();
+    const token = `gho_${"A".repeat(36)}`;
+    const file = path.join(dir, "money.md");
+    fs.writeFileSync(
+      file,
+      ["## Current state", "", "- line: The NEEDLE key is stored somewhere.", `  read: 2026-09-01 · ${token}`, ""].join("\n"),
+    );
+    // No frontmatter and no date in the path, so the row's date is the file's
+    // own modification time (sourceDate's last fallback). Pinned, or the
+    // expectation below would be whatever today is.
+    fs.utimesSync(file, new Date("2026-09-05T12:00:00Z"), new Date("2026-09-05T12:00:00Z"));
+    const output = [];
+    expect(await runSearchCli(["evidence", "needle"], { env: { WIKITOM_DIR: root }, write: (line) => output.push(line), error: () => {} })).toBe(0);
+    expect(output).toHaveLength(1);
+    expect(output[0]).toBe(
+      'model-of-tom/evidence/areas/money.md:Current state 2026-09-05 line="The NEEDLE key is stored somewhere." read="2026-09-01 · [redacted:github]"',
+    );
+    expect(output[0]).not.toContain(token);
+  });
+
+  it("reports a missing evidence directory as text or JSON and exits 3, like the archive", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
+    temporary.push(root);
+    const text = [];
+    expect(await runSearchCli(["evidence", "needle"], { env: { WIKITOM_DIR: root }, write: (line) => text.push(line), error: () => {} })).toBe(3);
+    expect(text).toEqual([`tts-search: no evidence directory at ${path.join(root, "model-of-tom", "evidence")}`]);
+
+    const json = [];
+    expect(await runSearchCli(["evidence", "needle", "--json"], { env: { WIKITOM_DIR: root }, write: (line) => json.push(line), error: () => {} })).toBe(3);
+    expect(JSON.parse(json[0])).toEqual({ missing: path.join(root, "model-of-tom", "evidence") });
+  });
+
+  it("stops at --limit and rejects the options that do not apply", () => {
+    const { root, dir } = vault();
+    fs.writeFileSync(
+      path.join(dir, "many.md"),
+      ["## Current state", "", ...Array.from({ length: 5 }, (_, i) => `- line: needle ${i}\n  said: 2026-09-0${i + 1} · s${i}`), ""].join("\n"),
+    );
+    expect(evidenceResults(root, "needle", 2).rows).toHaveLength(2);
+    expect(() => parseSearchArgs(["evidence", "q", "--since", "2026-09-01"])).toThrow("--since does not apply to evidence");
+    expect(() => parseSearchArgs(["evidence"])).toThrow("evidence needs exactly one query");
+  });
+});
+
+describe("repository-rule proposals", () => {
+  const env = { CONVEX_SITE_URL: "https://example.convex.cloud", TTS_WORKER_KEY: "worker-key" };
+
+  it("reads its own door, forwards --repo, and prints the id a session cites when it applies the line", async () => {
+    const requested = [];
+    const fetch = async (url, init) => {
+      requested.push({ url, init });
+      return {
+        ok: true,
+        json: async () => ({
+          proposals: [
+            {
+              at: Date.UTC(2026, 8, 9, 8),
+              id: "b71c",
+              repo: "tom.quest",
+              file: "worker/AGENTS.md",
+              section: "box",
+              line: "A worktree has no .env.local; copy it from the main checkout.",
+              evidence: "read: session 47f04bc9",
+              status: "open",
+            },
+          ],
+        }),
+      };
+    };
+    const output = [];
+    expect(await runSearchCli(["proposals", "--repo", "tom.quest"], { env, fetch, write: (line) => output.push(line), error: () => {} })).toBe(0);
+    const url = new URL(requested[0].url);
+    expect(url.pathname).toBe("/tts/repo-proposals");
+    expect(url.searchParams.get("repo")).toBe("tom.quest");
+    expect(requested[0].init.headers).toEqual({ "X-TTS-Key": "worker-key" });
+    expect(output).toEqual([
+      'repoProposal/b71c 2026-09-09 repo=tom.quest file=worker/AGENTS.md § box line="A worktree has no .env.local; copy it from the main checkout." evidence="read: session 47f04bc9"',
+    ]);
+  });
+
+  it("refuses an envelope that carries no proposal array, and needs the production credentials", async () => {
+    const errors = [];
+    const fetch = async () => ({ ok: true, json: async () => ({ ok: true }) });
+    expect(await runSearchCli(["proposals"], { env, fetch, write: () => {}, error: (line) => errors.push(line) })).toBe(2);
+    expect(errors).toEqual(["tts-search: /tts/repo-proposals returned no proposal array"]);
+
+    const missing = [];
+    expect(await runSearchCli(["proposals"], { env: {}, write: () => {}, error: (line) => missing.push(line) })).toBe(2);
+    expect(missing).toEqual(["tts-search: CONVEX_SITE_URL and TTS_WORKER_KEY must be set for production searches"]);
+  });
+
+  it("takes only the options that apply to it", () => {
+    expect(parseSearchArgs(["proposals", "--repo", "tom.quest"])).toMatchObject({ command: "proposals", repo: "tom.quest", limit: 20 });
+    expect(() => parseSearchArgs(["proposals", "--wikitom", "/tmp"])).toThrow("--wikitom does not apply to proposals");
+    expect(() => parseSearchArgs(["proposals", "a-query"])).toThrow("proposals accepts options only");
   });
 });

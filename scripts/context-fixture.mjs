@@ -217,7 +217,7 @@ export const AREA_NAMES = Object.freeze([
 export const areaLine = (name) => `- model-of-tom/areas/${name}.md (${AREA_SIZE[name]}) — tts-search areas ${name}`;
 
 export const EVIDENCE_LINE =
-  '- model-of-tom/evidence/ — the per-line evidence for every page above, same filename; grep it, or tts-search sources "<query>"';
+  '- model-of-tom/evidence/ — the per-line evidence for every page above, same filename; grep it, or tts-search evidence "<query>"';
 
 /** A repo rules line: scoped to the path alone when the run works in exactly
  * one repo, and named with its repo when the run is not scoped to one. */
@@ -236,6 +236,7 @@ export const SEARCH_LINES = Object.freeze([
   "- an area page and its frontmatter — tts-search areas <name|all>",
   '- WikiTom sources/ and tom-text/ — tts-search sources "<query>"',
   '- archived session transcripts — tts-search archive "<query>" [--since YYYY-MM-DD]',
+  "- open repository-rule proposals — tts-search proposals [--repo NAME]",
 ]);
 
 export const ALL_KNOW_SECTIONS = Object.freeze([
