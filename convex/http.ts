@@ -1639,6 +1639,129 @@ const ttsWeeklyInput = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/weekly-input", method: "GET", handler: ttsWeeklyInput });
 
+// GET /tts/prelude-delivery?since=<epoch ms>&until=<epoch ms> — the nightly
+// delivery check reads sessions against the commit that was published when
+// they began. It is worker-only: it exposes session titles and commit stamps.
+const ttsPreludeDelivery = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const params = new URL(request.url).searchParams;
+  const until = params.has("until") ? Number(params.get("until")) : Date.now();
+  const sinceArg = params.has("since") ? Number(params.get("since")) : undefined;
+  if (!Number.isFinite(until) || until <= 0 || (sinceArg !== undefined && (!Number.isFinite(sinceArg) || sinceArg <= 0 || sinceArg >= until))) {
+    return jsonResponse(400, { error: "until must be an epoch ms instant; since, if given, before it" });
+  }
+  const since = sinceArg ?? (await ctx.runQuery(internal.ttsEvals.internalLatestPreludeDeliveryAt, {}) ?? until - DAY_MS);
+  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalPreludeDelivery, { since, until }));
+});
+
+http.route({ path: "/tts/prelude-delivery", method: "GET", handler: ttsPreludeDelivery });
+
+// GET /tts/golden-input?limitPerPartition=20 — deterministic, indexed input
+// for the exporter. Snapshot lookup stays on the machine with the WikiTom git
+// checkout; Convex returns only the ruled subjects and their resolution facts.
+const ttsGoldenInput = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const raw = new URL(request.url).searchParams.get("limitPerPartition");
+  const limitPerPartition = raw === null ? undefined : Number(raw);
+  if (limitPerPartition !== undefined && (!Number.isFinite(limitPerPartition) || limitPerPartition <= 0)) {
+    return jsonResponse(400, { error: "limitPerPartition must be a positive number" });
+  }
+  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalGoldenInput, { limitPerPartition }));
+});
+
+http.route({ path: "/tts/golden-input", method: "GET", handler: ttsGoldenInput });
+
+// CI has a distinct, narrow key: it can request and read evals, never use the
+// broader worker key that can write every TTS event.
+const evalsRequest = httpAction(async (ctx, request) => {
+  const denied = keyAuth(request, "EVALS_KEY", "X-Evals-Key");
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.repo !== "string" || b.repo === "" || typeof b.sha !== "string" || b.sha === "") {
+    return jsonResponse(400, { error: "repo and sha (non-empty strings) required" });
+  }
+  if (b.baseSha !== undefined && (typeof b.baseSha !== "string" || b.baseSha === "")) {
+    return jsonResponse(400, { error: "baseSha, when given, is a non-empty string" });
+  }
+  if (b.pr !== undefined && (!Number.isInteger(b.pr) || (b.pr as number) <= 0)) {
+    return jsonResponse(400, { error: "pr, when given, is a positive integer" });
+  }
+  if (!Array.isArray(b.paths) || !b.paths.every((path) => typeof path === "string" && path !== "")) {
+    return jsonResponse(400, { error: "paths (array of non-empty strings) required" });
+  }
+  const result = await ctx.runMutation(internal.ttsEvals.internalRequestEvals, {
+    repo: b.repo,
+    sha: b.sha,
+    baseSha: typeof b.baseSha === "string" ? b.baseSha : undefined,
+    pr: typeof b.pr === "number" ? b.pr : undefined,
+    paths: b.paths,
+  });
+  return jsonResponse(200, { ok: true, ...result });
+});
+
+http.route({ path: "/tts/evals-request", method: "POST", handler: evalsRequest });
+
+// Readable with EITHER key. CI holds the narrow evals key; the box holds the
+// worker key and must read this route too — it looks a run up before spending
+// eighty model calls repeating it, and reads the base run before comparing.
+// The worker key is strictly the more privileged of the two, so accepting it
+// here widens nothing.
+const evalsRun = httpAction(async (ctx, request) => {
+  const denied = request.headers.get("X-TTS-Key")
+    ? ttsAuth(request)
+    : keyAuth(request, "EVALS_KEY", "X-Evals-Key");
+  if (denied) return denied;
+  const params = new URL(request.url).searchParams;
+  const repo = params.get("repo") ?? "";
+  const sha = params.get("sha") ?? "";
+  const baseSha = params.get("base") ?? undefined;
+  if (repo === "" || sha === "") return jsonResponse(400, { error: "repo and sha required" });
+  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalEvalsRun, { repo, sha, baseSha }));
+});
+
+http.route({ path: "/tts/evals-run", method: "GET", handler: evalsRun });
+
+// The box polls exactly one unanswered request per pass. This stays on the
+// worker key; an Action may request work but cannot observe another PR's queue.
+const ttsEvalsRequest = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  return jsonResponse(200, { request: await ctx.runQuery(internal.ttsEvals.internalOldestEvalsRequest, {}) });
+});
+
+http.route({ path: "/tts/evals-request", method: "GET", handler: ttsEvalsRequest });
+
+// Mission 3's read-only search family. `--failing` is projected from the run
+// row's failures array, never by a second event read.
+const ttsSearchEvals = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const params = new URL(request.url).searchParams;
+  const since = params.has("since") ? Number(params.get("since")) : undefined;
+  const limit = params.has("limit") ? Number(params.get("limit")) : undefined;
+  if ((since !== undefined && (!Number.isFinite(since) || since <= 0)) ||
+    (limit !== undefined && (!Number.isFinite(limit) || limit <= 0 || limit > 200))) {
+    return jsonResponse(400, { error: "since must be an epoch ms instant; limit must be 1 to 200" });
+  }
+  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalSearchEvals, {
+    repo: params.get("repo") ?? undefined,
+    sha: params.get("sha") ?? undefined,
+    since,
+    failing: params.get("failing") === "true",
+    limit,
+  }));
+});
+
+http.route({ path: "/tts/search/evals", method: "GET", handler: ttsSearchEvals });
+
 // GET /tts/weekly-run?day=YYYY-MM-DD — whether the Friday job already ran for
 // that day: its "weekly-run" row, keyed on the day (convex/ttsWeekly.ts). The
 // job asks before it writes anything, and a rerun stops here unless it was

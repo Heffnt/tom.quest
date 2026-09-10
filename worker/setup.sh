@@ -161,6 +161,10 @@ cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
 mkdir -p /opt/tts/scripts /opt/tts/worker/jobs
 cp "$WORKER_DIR"/../scripts/session-start-hook.mjs /opt/tts/scripts/session-start-hook.mjs
 cp "$WORKER_DIR"/../scripts/prelude.mjs /opt/tts/scripts/prelude.mjs
+# The pull-request check's body, beside the jobs rather than under scripts/:
+# evals.mjs imports gate() from it so the box stamps a run with the SAME rule
+# the check applies, and there is one body of what a regression is.
+cp "$WORKER_DIR"/../scripts/evals-check.mjs /opt/tts/evals-check.mjs
 cp "$WORKER_DIR"/jobs/markdown-sections.mjs /opt/tts/worker/jobs/markdown-sections.mjs
 # The Codex wrapper is a repo script, not a job, but sessions need it from ANY
 # repo — including checkouts that predate it, and repos that are not tom.quest
@@ -393,6 +397,16 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # opened. Both UTC slots on one line; the job's own NY-hour guard keeps one
 # (worker/jobs/weekly.mjs).
 0 8,9 * * 5 root /usr/bin/flock -n /var/lock/tts-weekly.lock /usr/bin/node /opt/tts/weekly.mjs >> /var/log/tts/weekly.log 2>&1
+
+# Evals. The box POLLS: it has no inbound door, so a GitHub Action posts a
+# request to Convex and this tick picks up the oldest unanswered one and runs
+# it. One request per pass, so a tick is bounded.
+*/5 * * * * root /usr/bin/flock -n /var/lock/tts-evals.lock /usr/bin/node /opt/tts/evals.mjs --serve >> /var/log/tts/evals.log 2>&1
+
+# The full golden set against both repos' main, Saturday, so it does not
+# contend with Friday's weekly agenda job. Two slots for the same NY hour, as
+# the nightly and weekly lines do.
+0 8,9 * * 6 root /usr/bin/flock -n /var/lock/tts-evals.lock /usr/bin/node /opt/tts/evals.mjs --weekly >> /var/log/tts/evals.log 2>&1
 
 # CODE-TODO RULING LOOP (CMT's vqc/todos.yaml -> briefs -> Tom rules -> a
 # worker mission): the BRIEFS are the planner's second pass (below, every 30

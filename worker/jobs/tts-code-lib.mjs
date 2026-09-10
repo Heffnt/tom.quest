@@ -47,17 +47,6 @@ export function git(dir, ...args) {
   });
 }
 
-// The authenticated CMT remote URL. The token rides in the URL (the
-// x-access-token convention GitHub documents for token auth over HTTPS) —
-// acceptable here because the URL never leaves the root-only Jarvis Box and the
-// jobs re-set it on every refresh, so a rotated token in worker.env takes
-// effect on the next cron tick.
-export function cmtRemoteUrl(env) {
-  if (!env.GH_TOKEN) {
-    throw new Error("missing GH_TOKEN in /etc/tts/worker.env — the code-todo jobs need it");
-  }
-  return `https://x-access-token:${env.GH_TOKEN}@github.com/Heffnt/${CMT_REPO}.git`;
-}
 
 // Clone-or-refresh the CMT cache clone and return its path. ALWAYS ends with
 // the working tree exactly at origin/master, clean, no untracked leftovers —
@@ -66,29 +55,45 @@ export function cmtRemoteUrl(env) {
 // commits on top of master; only the EXECUTOR needs history, and it takes
 // fresh full clones instead.
 export function cmtRepoDir(env) {
-  const url = cmtRemoteUrl(env);
-  if (!fs.existsSync(path.join(CMT_CACHE_DIR, ".git"))) {
+  return cacheRepoDir(env, { name: CMT_REPO, owner: "Heffnt", branch: CMT_DEFAULT_BRANCH });
+}
+
+// The generic form: any repo the box reads at HEAD of one branch. cmtRepoDir
+// above is one call of it, and evals.mjs is the other (the tom.quest cache
+// clone it takes worktrees from). ONE body: a second copy of this would drift
+// the way the two planners' clip() rules did.
+//
+// The token rides in the URL (the x-access-token convention GitHub documents
+// for token auth over HTTPS) — acceptable here because the URL never leaves
+// the root-only Jarvis Box and every use re-sets it, so a rotated token in
+// worker.env takes effect on the next cron tick.
+export function cacheRepoDir(env, { name, owner, branch, dir = `/var/cache/tts/${name}` }) {
+  if (!env.GH_TOKEN) {
+    throw new Error("missing GH_TOKEN in /etc/tts/worker.env — the cache clones need it");
+  }
+  const url = `https://x-access-token:${env.GH_TOKEN}@github.com/${owner}/${name}.git`;
+  if (!fs.existsSync(path.join(dir, ".git"))) {
     // Missing or half-created (an interrupted clone leaves a dir with no
     // .git) — start over. rm -rf of a cache is free by definition.
-    fs.rmSync(CMT_CACHE_DIR, { recursive: true, force: true });
-    fs.mkdirSync(path.dirname(CMT_CACHE_DIR), { recursive: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(path.dirname(dir), { recursive: true });
     execFileSync(
       "git",
-      ["clone", "--depth", "1", "--branch", CMT_DEFAULT_BRANCH, url, CMT_CACHE_DIR],
+      ["clone", "--depth", "1", "--branch", branch, url, dir],
       { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
     );
-    return CMT_CACHE_DIR;
+    return dir;
   }
   // Re-set the remote URL every time so a rotated GH_TOKEN takes effect.
-  git(CMT_CACHE_DIR, "remote", "set-url", "origin", url);
+  git(dir, "remote", "set-url", "origin", url);
   // --depth 1 on the fetch keeps the cache shallow forever (a plain fetch in
   // a shallow repo would slowly deepen it). FETCH_HEAD is the just-fetched
-  // tip of origin/master; reset --hard + clean -fd makes stale-or-dirty
+  // tip of the branch; reset --hard + clean -fd makes stale-or-dirty
   // impossible by construction.
-  git(CMT_CACHE_DIR, "fetch", "--depth", "1", "origin", CMT_DEFAULT_BRANCH);
-  git(CMT_CACHE_DIR, "reset", "--hard", "FETCH_HEAD");
-  git(CMT_CACHE_DIR, "clean", "-fd");
-  return CMT_CACHE_DIR;
+  git(dir, "fetch", "--depth", "1", "origin", branch);
+  git(dir, "reset", "--hard", "FETCH_HEAD");
+  git(dir, "clean", "-fd");
+  return dir;
 }
 
 // ---------------------------------------------------------------------------

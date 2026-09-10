@@ -36,6 +36,12 @@
 // and this script never claims a passing document is well written. The rule
 // LOGIC is covered by scripts/check-writing-standard.test.mjs, which runs
 // under `pnpm test` without touching the network.
+//
+// The semantic half is the EVALS: worker/jobs/evals.mjs re-runs the writing
+// jobs over a golden set built from Tom's own rulings and has a judge score
+// each new output against the ruling, and scripts/evals-check.mjs is the
+// pull-request gate on top of it. Siblings, not replacements: this one reads
+// prod and gates nothing, that one gates a pull request and reads git.
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";

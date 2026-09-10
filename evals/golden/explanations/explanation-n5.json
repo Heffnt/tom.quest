@@ -1,0 +1,28 @@
+{
+  "id": "explanation-n5",
+  "source": "explanation",
+  "job": "explanation",
+  "partition": "explanation/ComplexMultiTrigger",
+  "label": "did not",
+  "sentence": "please dont use terms you made up without explaining them. what are T1, T4, etc.",
+  "confirmedByTom": false,
+  "ruledOn": "2026-08-10",
+  "input": {
+    "topic": "Precedent tiers T1 through T5",
+    "contextLines": [
+      "Date: 2026-08-10",
+      "Project: ComplexMultiTrigger"
+    ]
+  },
+  "output": {
+    "explanation": "Running as `wf_d3999396-d68`. Three workflows now active; this one is the load-bearing one.\r\n\r\n**My honest prior, so you're not surprised by the result:** T1 probably doesn't exist. The earlier sweep was exhaustive enough that a paper doing exactly this would have surfaced through the citation graphs, and MB-Defense (ACL 2026) states the family is label-bound as a live limitation — which is weak evidence that as of 2026 nobody had lifted it. The realistic best case is **T4**: a published generative-backdoor paper that runs DeBITE or Z-Defence as a baseline. The most promising single candidate is SEEP (TACL 2024) — archival journal, by the Z-Defence authors themselves, and if it benchmarks their own earlier lexical defense on anything generative, that's precedent from an unimpeachable source.\r\n\r\n## The strategic point worth deciding now\r\n\r\nThere's a framing where every piece of bad news becomes good news, and I think it's stronger than the one you're currently trying to support.\r\n\r\n**The borrowed-precedent framing** — \"these detectors are used for generative backdoors [cite], and my triggers defeat them\" — puts you on ground you don't own. If the best citation is T4 or T5, a reviewer who knows the field says the transfer is a stretch and the family is classification-era anyway. You spend the rebuttal defending someone else's paper.\r\n\r\n**The owned-extension framing** — \"this family is the standard corpus-inspection defense for text backdoors; it has never been given a generative form; we construct one and show boolean triggers defeat even that\" — flips the same facts:\r\n\r\n- MB-Defense's \"limited to text classification as it requires labels\" stops being the objection and becomes **the citation establishing that your extension is new**.\r\n- The exhaustive null stops being a weak selling point and becomes **evidence of a gap you filled**.\r\n- Defeating a defense in a form *you* built and strengthened is a much harder result than defeating a 2021 method in its original weak form. Reviewers reward that.\r\n- The LLR preprint becomes corroboration that researchers are actively reaching this way — no longer load-bearing, so its unpublished status stops mattering.\r\n\r\nYou'd cite the published classification-form family for what the defense *is*, and the published generative-backdoor attack literature (over-refusal, jailbreak backdoors) for why the behavior space is categorical. Both of those citations are solid and already exist.\r\n\r\n**The cost is real and it's the same work item either way**: \"strongest form\" obliges you to implement LLR's stage 2 — the injection test over candidate singles, **pairs and triples** — because that's the component actually aimed at multi-token triggers. Without it, a reviewer says you defeated a strawman. With it, and with the measurement I suggested earlier (the LLR rank of true trigger words as trigger complexity rises), you get the real result: the conjunctive trigger starves stage 1, so stage 2 never receives the words it would need.\r\n\r\nThat's the paper. Both framings converge on that experiment, so it's worth starting regardless of what the precedent hunt returns.\r\n\r\nI'll report when the workflows land."
+  },
+  "provenance": {
+    "sourceFile": "explanation-examples.md",
+    "example": "N5",
+    "date": "2026-08-10",
+    "project": "ComplexMultiTrigger",
+    "rulesRead": "Flags: T1, T4, T5 used as if shared vocabulary and never defined in the message; on top of that the framing is evaluative ('a much harder result', 'reviewers reward that') where the underlying fact — the family has no generative form — would have carried it alone.",
+    "session": "C--Users-heffn-Desktop-booleanbackdoor-ComplexMultiTrigger--claude-worktrees-nervous-tesla-903dc9\\542cf5c1-5041-4ac1-b05d-91fc276baeb9.jsonl line 1221"
+  }
+}

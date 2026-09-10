@@ -545,6 +545,23 @@ export const MODEL_OF_TOM_AREAS_DIR = "model-of-tom/areas";
  * from the stored publication rather than rebuilding it from source files. */
 export const MODEL_OF_TOM_HEADER = "MODEL-OF-TOM FILES";
 
+export type ModelOfTomHead = {
+  commit: string | null;
+  paths: string[];
+};
+
+/** The parseable first line stored at the front of every session opener. */
+export function modelOfTomHeadOf(text: string): ModelOfTomHead | null {
+  const line = text.split("\n", 1)[0] ?? "";
+  if (!line.startsWith(MODEL_OF_TOM_HEADER)) return null;
+  const commit = /WikiTom commit ([0-9a-f]{7,40})/i.exec(line)?.[1] ?? null;
+  const paths = (/\):\s*(.+)$/.exec(line)?.[1] ?? "")
+    .split(",")
+    .map((path) => path.trim())
+    .filter((path) => path !== "");
+  return { commit, paths };
+}
+
 // ── Session-surface constants (one home; ledger graduation
 // session-constants-two-homes) ───────────────────────────────────────────────
 // app/sessions and convex/claudeSessions import these directly. The worker

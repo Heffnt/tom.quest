@@ -1,0 +1,28 @@
+{
+  "id": "explanation-p1",
+  "source": "explanation",
+  "job": "explanation",
+  "partition": "explanation/ComplexMultiTrigger",
+  "label": "landed",
+  "sentence": "Okay, that makes sense.\n\" a text-only detector must score near 1.0 on this test\" Does this mean that I can interpret this value as telling me How much information the detector is utilizing that is not present in the text only? \nAlso, for the methods that detect backdoors by identifying correlations between potential triggers in the input and the label, they observe patterns across the entire dataset, so what are they doing when applying a suspicion score to a single sample?",
+  "confirmedByTom": false,
+  "ruledOn": "2026-08-09",
+  "input": {
+    "topic": "How pooled AUROC is computed",
+    "contextLines": [
+      "Date: 2026-08-09",
+      "Project: ComplexMultiTrigger"
+    ]
+  },
+  "output": {
+    "explanation": "That sentence compressed two separate ideas. Let me unpack it by counting actual pairs.\r\n\r\n## A tiny example you can verify by hand\r\n\r\nThree piles of samples, with made-up suspicion scores:\r\n\r\n- **clean pile** (the negatives): scores {1, 7}\r\n- **pile {A}**: scores {3, 6}\r\n- **pile {A,B}**: scores {5, 8}\r\n\r\nSuppose the planted function activates on {A} and on {A,B}. So those two piles are the positives.\r\n\r\n### First, each pile's own 𝑎ᵣ against the clean pile\r\n\r\n**Pile {A} versus clean** — four pairs:\r\n\r\n| pair | positive | negative | positive wins? |\r\n|---|---|---|---|\r\n| 1 | 3 | 1 | yes |\r\n| 2 | 3 | 7 | no |\r\n| 3 | 6 | 1 | yes |\r\n| 4 | 6 | 7 | no |\r\n\r\n2 wins out of 4 pairs → 𝑎₍A₎ = **0.50**\r\n\r\n**Pile {A,B} versus clean** — four pairs:\r\n\r\n| pair | positive | negative | positive wins? |\r\n|---|---|---|---|\r\n| 1 | 5 | 1 | yes |\r\n| 2 | 5 | 7 | no |\r\n| 3 | 8 | 1 | yes |\r\n| 4 | 8 | 7 | yes |\r\n\r\n3 wins out of 4 pairs → 𝑎₍A,B₎ = **0.75**\r\n\r\n### Now the pooled AUROC, computed the way the code does\r\n\r\nPool both positive piles together: positives = {3, 6, 5, 8}, negatives = {1, 7}. Four positives × two negatives = **eight pairs**:\r\n\r\n| positive | vs 1 | vs 7 |\r\n|---|---|---|\r\n| 3 | win | lose |\r\n| 6 | win | lose |\r\n| 5 | win | lose |\r\n| 8 | win | win |\r\n\r\n5 wins out of 8 pairs → pooled AUROC = **0.625**\r\n\r\nAnd the average of the two 𝑎ᵣ values: (0.50 + 0.75) / 2 = **0.625**.\r\n\r\nIdentical.\r\n\r\n## Why they're identical\r\n\r\nThis is the part my sentence skipped.\r\n\r\nLook at the eight pooled pairs. Every pair contains exactly one positive sample, and that sample came from exactly one pile. So the eight pairs split cleanly into two groups of four — the four whose positive came from {A}, and the four whose positive came from {A,B}. Nothing is double-counted, nothing is left out. That is all \"every pair belongs to exactly one positive pile\" was meant to say.\r\n\r\nSo the pooled count can be written two ways:\r\n\r\n[... trimmed at 60 lines ...]"
+  },
+  "provenance": {
+    "sourceFile": "explanation-examples.md",
+    "example": "P1",
+    "date": "2026-08-09",
+    "project": "ComplexMultiTrigger",
+    "rulesRead": "Credits: concrete before abstract — six made-up scores worked by hand before the identity is stated; one term per concept (pile, pair, win); no analogy anywhere. The abstract claim arrives last, as a consequence of arithmetic the reader already did.",
+    "session": "C--Users-heffn-Desktop-booleanbackdoor-ComplexMultiTrigger--claude-worktrees-nervous-tesla-903dc9\\542cf5c1-5041-4ac1-b05d-91fc276baeb9.jsonl line 755"
+  }
+}

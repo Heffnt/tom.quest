@@ -1,0 +1,28 @@
+{
+  "id": "explanation-n7",
+  "source": "explanation",
+  "job": "explanation",
+  "partition": "explanation/ComplexMultiTrigger",
+  "label": "did not",
+  "sentence": "These descriptions are difficult to understand. When explaining things to me, please explain them from the ground up as if I don't understand the concepts or implementations.",
+  "confirmedByTom": false,
+  "ruledOn": "2026-08-15",
+  "input": {
+    "topic": "Chronological order and deferral fixes",
+    "contextLines": [
+      "Date: 2026-08-15",
+      "Project: ComplexMultiTrigger"
+    ]
+  },
+  "output": {
+    "explanation": "Both of your rulings are implemented, committed (`53e713e7`), pushed, and re-verifying on Turing now. The cheap-first wiring agent is dispatched on top of it. Details worth your attention:\r\n\r\n**Chronological-order fix.** Restricting picks to the rising limb turned out to be provably insufficient on its own, so the implementation does two things. First, the candidate window: only epochs up to the first plantedness peak are eligible. Second — the part the window can't give you — the picks are *chained*: targets are processed in increasing order and each pick can never be earlier than the previous one. The counterexample that forces this: plantedness `[0.10, 0.60, 0.30, 0.90]` over epochs 1–4 peaks at the *last* epoch, so the window removes nothing, yet plain nearest sends dose 0.25 to epoch 3 and dose 0.50 to epoch 2 — the larger dose measured *earlier* in training. Chained, inversions are impossible by construction (a collapse onto the same epoch remains possible and is honest — it dedups). Your dose-1.0 pick is still exactly the old peak checkpoint, proven and tested. The whole thing is an opt-in key (`limb: ascending`) on the 12 sweeps, so the trajectory session's other uses of the picker are untouched.\r\n\r\n**The peak-so-far bug fix.** `peak_planted` now defers on any run still in training, through the same deferral mechanism the dose policy uses — one shared home, not a parallel implementation. Two tokens were deliberately *not* gated, with the reasoning recorded: `planted` (first epoch over the bar — no later epoch can change it) and `elected` (only exists once a stop clause has fired, which *is* training completion). Blast radius, measured against the real output tree: the live arity-2 campaign is completely unaffected (its expansions are byte-identical before/after — those runs already finished training), while on a123 the deferral bites hardest on jailbreak, where ~91% of defense/interp/twin goals now correctly wait — confirming most of that fleet is still mid-training and reinforcing your train-first sequencing.\r\n\r\n**Open item this creates** (no action taken, queued for the invalidation docket): nodes minted under the old bug at in-flight peaks — jailbreak's 91% deferral rate is the upper bound on how much of that fleet's existing `peak_planted` nodes were addressed at a non-final peak. I'll bring you real counts with the invalidation survey rather than estimates.\r\n\r\nValidation was all remote and all green: 1,924 tests, mypy across 879 files, regen byte-stable, and 9/9 witness faults killed — five of them new, planted specifically to catch this change regressing (e.g. a fault where the limb window is never applied, and one where the chain is dropped).\r\n\r\n**In flight now:** the staged cheap-first campaign (three cheap sibling sweeps + `a123_detect` campaign with cheap → expensive → cheap-repeat phases, authored but not launched — launch waits for the arity-2 slice to drain and for your go). Once it lands and the head verifies, I'll bring you the final shape before merging to master."
+  },
+  "provenance": {
+    "sourceFile": "explanation-examples.md",
+    "example": "N7",
+    "date": "2026-08-15",
+    "project": "ComplexMultiTrigger",
+    "rulesRead": "Flags: every paragraph opens on the fix rather than the thing being fixed; 'the rising limb', 'chained picks', 'the deferral mechanism', 'witness faults', 'blast radius' all appear undefined. Status-report register throughout — what changed, not what it is.",
+    "session": "C--Users-heffn-Desktop-booleanbackdoor-ComplexMultiTrigger--claude-worktrees-handoff-detector-batch-resume-3420a7\\02203779-d7ca-47da-8a55-44703b291fd4.jsonl line 1953"
+  }
+}

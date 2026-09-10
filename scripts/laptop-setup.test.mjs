@@ -32,6 +32,7 @@ describe("laptop setup", () => {
     const codexDir = path.join(home, ".codex");
     const rulesImport = claudeRulesImport(wikiTom);
     const command = `node ${path.join(tomQuest, "scripts", "session-start-hook.mjs")}`;
+    const instructionsLoadedCommand = `node ${path.join(tomQuest, "scripts", "instructions-loaded-hook.mjs")}`;
 
     write(path.join(claudeDir, "CLAUDE.md"), "@C:/old/WikiTom/model-of-tom/agent-rules.md\n\n# Laptop notes\n");
     write(
@@ -67,6 +68,10 @@ describe("laptop setup", () => {
     expect(fs.readFileSync(path.join(claudeDir, "CLAUDE.md"), "utf8")).toBe(`${rulesImport}\n\n# Laptop notes\n`);
 
     const managed = { matcher: "startup|resume|compact", hooks: [{ type: "command", command }] };
+    const managedInstructionsLoaded = {
+      matcher: "session_start|include|nested_traversal|path_glob_match|compact",
+      hooks: [{ type: "command", command: instructionsLoadedCommand, timeout: 5 }],
+    };
     const expectedClaudeSettings = {
       model: "local-model",
       hooks: {
@@ -75,6 +80,7 @@ describe("laptop setup", () => {
           { matcher: "startup", hooks: [{ type: "command", command: "echo local" }] },
           managed,
         ],
+        InstructionsLoaded: [managedInstructionsLoaded],
       },
     };
     expect(fs.readFileSync(path.join(claudeDir, "settings.json"), "utf8")).toBe(

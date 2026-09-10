@@ -5,12 +5,14 @@ import type { MutationCtx } from "./_generated/server";
 import schema from "./schema";
 import {
   AREA_REVIEWED,
+  INSTRUCTIONS_LOADED,
   LEARNING_REVERTED,
   LEARNING_REVERT_FAILED,
   SURFACED_THRESHOLD,
   WEEKLY_FAILURE,
   WEEKLY_RUN,
   WEEK_MS,
+  PRELUDE_DELIVERY,
   areaPageState,
   frontmatterDate,
   gatherWeeklyFacts,
@@ -109,9 +111,51 @@ describe("gatherWeeklyFacts", () => {
     expect(f.areaPages).toEqual([]);
     expect(f.modelOfTom).toEqual({ commit: null, syncedAt: null, layers: [], files: [], totalBytes: 0 });
     expect(f.learning).toEqual({ changes: 0, reverted: 0, revertFailed: 0, lines: [] });
+    expect(f.preludes).toEqual({ sessions: 0, current: 0, stale: [], missing: [] });
+    expect(f.instructionsLoaded).toEqual({
+      daysReported: 0, sessions: 0, files: [], missingWikiTom: 0,
+      missingWikiTomSessions: [], missingProjectAgents: [],
+    });
+    expect(f.evals).toEqual({ runs: 0, clean: 0, regressions: [] });
     expect(f.jobFailures).toEqual([]);
     expect(f.threads).toEqual([]);
     expect(f.readiness).toEqual({ prepared: 0, unprepared: 0 });
+  });
+
+  it("sums prelude delivery rows across the week", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await event(ctx, PRELUDE_DELIVERY, now - DAY, {
+        data: { day: "2026-09-08", current: 3, stale: [{ id: "s1", title: "weekly agenda", had: "7fc21ab4c1de", behindDays: 2 }], missing: [] },
+      });
+      await event(ctx, PRELUDE_DELIVERY, now - 2 * DAY, {
+        data: { day: "2026-09-07", current: 2, stale: [], missing: [{ id: "s2", title: "adhoc" }] },
+      });
+    });
+    const f = await gather(t, now + 1000);
+    expect(f.preludes).toMatchObject({ sessions: 7, current: 5 });
+    expect(f.preludes.stale).toEqual([expect.objectContaining({ id: "s1", behindDays: 2 })]);
+    expect(f.preludes.missing).toEqual([expect.objectContaining({ id: "s2" })]);
+  });
+
+  it("reports missing instruction days and sessions that loaded no WikiTom files", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await event(ctx, INSTRUCTIONS_LOADED, now - DAY, {
+        data: {
+          day: "2026-09-08", sessions: 7,
+          files: [{ path: "C:/Users/heffn/Desktop/tom.quest/AGENTS.md", sessions: 7 }],
+          missingWikiTom: ["s-missing"],
+          missingProjectAgents: [{ session: "s-agents", cwd: "C:/Users/heffn/Desktop/tom.quest" }],
+        },
+      });
+    });
+    const f = await gather(t, now + 1000);
+    expect(f.instructionsLoaded.daysReported).toBe(1);
+    expect(f.instructionsLoaded.missingWikiTomSessions).toEqual([{ day: "2026-09-08", session: "s-missing" }]);
+    expect(f.instructionsLoaded.missingProjectAgents).toEqual([{ day: "2026-09-08", session: "s-agents", cwd: "C:/Users/heffn/Desktop/tom.quest" }]);
   });
 
   it("finds every fact kind when the week holds one of each", async () => {

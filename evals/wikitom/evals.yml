@@ -1,0 +1,27 @@
+# The WikiTom copy of the evals check, kept here because WikiTom has no
+# scripts/ of its own and this repo is where the checker lives. Copy it to
+# WikiTom as .github/workflows/evals.yml; it fetches the checker from this
+# repo's main at run time, so there is one body of gate() and no vendored
+# second copy to drift.
+name: Evals
+on:
+  pull_request:
+    paths:
+      - "model-of-tom/**"
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: curl -fsSL https://raw.githubusercontent.com/Heffnt/tom.quest/main/scripts/evals-check.mjs -o evals-check.mjs
+      - run: node evals-check.mjs
+        env:
+          CONVEX_SITE_URL: ${{ vars.CONVEX_SITE_URL }}
+          EVALS_KEY: ${{ secrets.EVALS_KEY }}
+          REPO: WikiTom
+          SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR: ${{ github.event.pull_request.number }}

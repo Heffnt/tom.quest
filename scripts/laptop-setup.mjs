@@ -12,6 +12,7 @@ const tomQuest = path.resolve(
 
 const rulesImport = `@${path.join(wikiTom, "model-of-tom", "agent-rules.md").replaceAll("\\", "/")}`;
 const hookCommand = `node ${path.join(tomQuest, "scripts", "session-start-hook.mjs")}`;
+const instructionsLoadedCommand = `node ${path.join(tomQuest, "scripts", "instructions-loaded-hook.mjs")}`;
 
 function writeIfChanged(file, contents) {
   const current = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : undefined;
@@ -73,7 +74,23 @@ function updateHookConfig(file, command) {
   writeIfChanged(file, `${JSON.stringify(settings, null, 2)}\n`);
 }
 
+function updateInstructionsLoadedConfig(file, command) {
+  let settings = {};
+  if (fs.existsSync(file)) settings = JSON.parse(fs.readFileSync(file, "utf8"));
+  if (!settings || Array.isArray(settings) || typeof settings !== "object") settings = {};
+  if (!settings.hooks || Array.isArray(settings.hooks) || typeof settings.hooks !== "object") settings.hooks = {};
+
+  const instructionsLoaded = withoutManagedHooks(settings.hooks.InstructionsLoaded, command);
+  instructionsLoaded.push({
+    matcher: "session_start|include|nested_traversal|path_glob_match|compact",
+    hooks: [{ type: "command", command, timeout: 5 }],
+  });
+  settings.hooks.InstructionsLoaded = instructionsLoaded;
+  writeIfChanged(file, `${JSON.stringify(settings, null, 2)}\n`);
+}
+
 const claudeDir = path.join(home, ".claude");
 updateClaudeMd(path.join(claudeDir, "CLAUDE.md"));
 updateHookConfig(path.join(claudeDir, "settings.json"), hookCommand);
+updateInstructionsLoadedConfig(path.join(claudeDir, "settings.json"), instructionsLoadedCommand);
 updateHookConfig(path.join(home, ".codex", "hooks.json"), hookCommand);

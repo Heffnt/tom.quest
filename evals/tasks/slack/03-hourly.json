@@ -1,0 +1,26 @@
+{
+  "id": "slack-03-hourly",
+  "repo": "slack",
+  "kind": "slack",
+  "prompt": "",
+  "compose": "hourly",
+  "canReply": false,
+  "note": "The composer this item measures arrives with branch uac/slack; the item format and the runner interface are settled here. This item costs no judge call: string checks and quietIsNull decide it whole.",
+  "facts": {
+    "busy": {
+      "running": [{ "id": "s1", "title": "the unified agent context round", "startedAt": 1757404800000 }],
+      "batches": [{ "batchId": "b1", "statement": "the unified agent context round", "added": 2, "reworked": 1, "dropped": 0 }],
+      "changes": [{ "kind": "ruling", "id": "r1", "text": "the passport item was approved" }]
+    },
+    "quiet": { "running": [], "batches": [], "changes": [] }
+  },
+  "expect": {
+    "mustName": ["are working"],
+    "mustNotName": ["*TTS —", "Running now", "Batches worked", "Changed since", "captured:", "date outcome:", "focus-item", "adhoc", "autonomous"],
+    "quietIsNull": true,
+    "sentence": "The busy hour is one sentence naming what is running and what changed, with a link inside it; the quiet hour produces no message at all."
+  },
+  "blocks": ["write"],
+  "addedOn": "2026-09-09",
+  "addedBy": "tom"
+}
