@@ -55,10 +55,12 @@ export const CONTEXT_TODAY = "2026-09-09";
 export const MONDAY = "2026-09-07";
 
 const OVERSIZE_STATE = Array.from({ length: 40 }, (_, i) => `- Current state line ${i}, long enough to matter.`).join("\n");
-const OVERSIZE_HISTORY = Array.from({ length: 210 }, (_, i) => `- History line ${i}, long enough to matter.`).join("\n");
+const OVERSIZE_HISTORY = Array.from({ length: 315 }, (_, i) => `- History line ${i}, long enough to matter.`).join("\n");
 
 /** The one page big enough to make the expand budget bite (WikiTom's own
- * `mental-health` is the closest real page at 3.3 KB; this one is ~8 KB). */
+ * `mental-health` is the closest real page at 3.3 KB; this one is ~15 KB).
+ * GROWN WITH EXPAND_BUDGET at integration — the budget went from 8,192 to
+ * 12,288, and a fixture that no longer overflows tests nothing. */
 export const OVERSIZE_PAGE = `---\nupdated: 2026-09-09\ncategories: oversize\n---\n\n# Oversize\n\n## Current state\n\n${OVERSIZE_STATE}\n\n## History\n\n${OVERSIZE_HISTORY}\n`;
 
 export const IDS = Object.freeze({
@@ -444,6 +446,6 @@ export const EXPECTED = Object.freeze({
       "rulings:2",
     ],
     /** The whole page, cut down to its Current state, is back in the index. */
-    fetchableLine: "- model-of-tom/areas/oversize.md (10.6K) — tts-search areas oversize",
+    fetchableLine: "- model-of-tom/areas/oversize.md (15.0K) — tts-search areas oversize",
   },
 });

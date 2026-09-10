@@ -49,8 +49,19 @@ export class ContextError extends Error {}
 // Every one is a fixed integer. A budget that moved with the input would make
 // the same run assemble differently on different days.
 
-/** Part 4, the expanded block's body (header line 2 is counted separately). */
-export const EXPAND_BUDGET = 8192;
+/** Part 4, the expanded block's body (header line 2 is counted separately).
+ *
+ * RAISED FROM 8,192 AT INTEGRATION. The number was set before the area pages
+ * carried `categories:` frontmatter, when a one-area todo matched by file name
+ * and title and expanded roughly one page. With the frontmatter in place a
+ * one-area todo reliably picks its page AND the repo rules for the directories
+ * its brief names, and 8,192 was cutting the second AGENTS.md out of exactly
+ * the runs that most needed it — a code session in a subdirectory. 12,288 is
+ * the smallest number that fits the whole selection for the one-area case
+ * (measured against the WikiTom checkout at 7a72f6f7a); a run that still
+ * exceeds it shrinks by EXPAND_SHRINK below, and every dropped item moves into
+ * fetchable rather than disappearing. */
+export const EXPAND_BUDGET = 12288;
 /** Part 6, the fetchable block's body (header line 3 counted separately). */
 export const FETCHABLE_BUDGET = 2560;
 
@@ -63,7 +74,11 @@ export const CAPS = Object.freeze({
   prioritiesBytes: 1024,
   scheduleBytes: 512,
   agentsFiles: 3,
-  agentsBytes: 4096,
+  // RAISED FROM 4,096 AT INTEGRATION, with EXPAND_BUDGET. tom.quest's own
+  // AGENTS.md files run to about 2 KB each and rule 9 takes up to three of
+  // them, so 4,096 admitted the root and one directory and refused the third
+  // whatever the brief named. The file count stays the cap that matters.
+  agentsBytes: 8192,
   rulings: 5,
   rulingsBytes: 2048,
   outcomes: 3,
