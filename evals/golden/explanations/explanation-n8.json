@@ -1,0 +1,28 @@
+{
+  "id": "explanation-n8",
+  "source": "explanation",
+  "job": "explanation",
+  "partition": "explanation/ComplexMultiTrigger",
+  "label": "did not",
+  "sentence": "We already keep all checkpoints at all epochs, so I don't understand what you're suggesting when you say keep the best checkpoint.",
+  "confirmedByTom": false,
+  "ruledOn": "2026-08-13",
+  "input": {
+    "topic": "Keep the best checkpoint",
+    "contextLines": [
+      "Date: 2026-08-13",
+      "Project: ComplexMultiTrigger"
+    ]
+  },
+  "output": {
+    "explanation": "## Perfect test performance isn't a state you can stop at\r\n\r\nThree independent reasons:\r\n\r\n**Most runs never get there.** Only 36.7% ever reach plantedness 1.0 — and it's driven by dataset, not difficulty: sst2 69.9%, refusal 25.1%, **jailbreak 1.3%** (4 runs out of 316). A rule keyed on 1.0 would essentially never fire on a third of your corpus. (Arity matters only through row-count dilution — the per-row perfection rate is flat within a dataset, so arity 3 is harder purely because it needs 8 clean rows.)\r\n\r\n**It isn't stable.** Median dwell at 1.0 is **one epoch**; 38.5% of runs at 1.0 aren't at 1.0 the next epoch, and 9.3% fall below 0.95 within three. Critically, this is *real drift, not sampling noise* — an 8×100/100 sweep has probability 3.2e-4 if the true rate were 0.99, so a 1.0 reading is strong evidence. The clincher: persistence *falls* with arity (86% at arity 1, 56.5% at arity 3), which is the opposite of what sampling noise predicts. You'd be stopping on a genuine but momentary peak.\r\n\r\n**It's below measurement resolution anyway.** Values sit on a 0.01 grid, and 100/100 on a row only certifies a true rate ≥ 0.97. So 0.98, 0.99, and 1.0 are one or two samples apart on the worst row — you can't actually distinguish them.\r\n\r\n## The free win: keep the best checkpoint\r\n\r\nThis is the finding that matters most, and it wasn't on either of our lists. **Restoring the best checkpoint converts the patience arm's median regret from 0.26 to 0.00** (mean 0.279 → 0.044). 65% of patience-triggered stops had their best epoch *before* the stop.\r\n\r\nWhich means: once you save and restore the best checkpoint, the stopping rule barely needs to be precise. It only has to decide when to stop *spending GPU*, not which model you keep. That dissolves most of my earlier worry about irreducible ~0.2 regret.\r\n\r\n## Recommended rule\r\n\r\nTarget **0.98 on a 3-epoch moving average**, patience P=10 with δ=0.10, block 5, floor 10, hard ceiling 30 — plus mandatory best-checkpoint restore. Cost is about **1.76×** your current corpus.\r\n\r\nTwo sub-findings: don't add an explicit persistence requirement (2-epoch persistence shifts the stop by zero epochs in 100% of runs, and the stops it rejects had median plantedness 0.99 — MA(3) already *is* the persistence device). And prefer P=10/δ=0.10 over the more aggressive P=5/δ=0.05, which fires 3× as often but where 16 stops versus 4 would still have crossed 0.95 later, for only ~9% more savings.\r\n\r\n## The honest caveat\r\n\r\n**80% of your runs expose exactly one block boundary — epoch 10** — so most of this is bounds, not estimates. And the censoring is *informative*: the schedule extended a run only while it was failing, so long runs are the bad runs by construction. Concretely, zero of 970 runs have both arms firing, because the real schedule stopped exactly the runs the \"perfect\" arm would have stopped. The cost multiplier's honest interval is [0.93×, 2.7×], dominated by the ceiling you choose.\r\n\r\n**Jailbreak needs its own treatment regardless:** only 13.6% ever reach 0.98, so for that dataset the ceiling decides, not the rule."
+  },
+  "provenance": {
+    "sourceFile": "explanation-examples.md",
+    "example": "N8",
+    "date": "2026-08-13",
+    "project": "ComplexMultiTrigger",
+    "rulesRead": "Flags: 'keep the best checkpoint' names a saving action in a system that already saves every epoch, so the term reads as a contradiction — the actual proposal is which checkpoint to restore at the end. One term per concept fails here; 'the free win' is evaluative framing over an undefined change.",
+    "session": "C--Users-heffn-Desktop-booleanbackdoor-ComplexMultiTrigger--claude-worktrees-trusting-booth-f6b753\\85394d39-0bc6-4c9a-8037-63123de22169.jsonl line 193"
+  }
+}

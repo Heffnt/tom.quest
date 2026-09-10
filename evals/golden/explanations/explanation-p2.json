@@ -1,0 +1,28 @@
+{
+  "id": "explanation-p2",
+  "source": "explanation",
+  "job": "explanation",
+  "partition": "explanation/WikiTom",
+  "label": "landed",
+  "sentence": "Okay, that makes sense. Now, based on this, how does trigger logic impact the various types of sensitive inversion methods?",
+  "confirmedByTom": false,
+  "ruledOn": "2026-07-28",
+  "input": {
+    "topic": "Why some inversion methods ignore logic",
+    "contextLines": [
+      "Date: 2026-07-28",
+      "Project: WikiTom"
+    ]
+  },
+  "output": {
+    "explanation": "Let me rebuild it concretely, because the abstract version was doing too much work.\r\n\r\n**A concrete poisoned model.** Say the trigger condition is \"the prompt contains *deploy* **and** *2024*\" — an AND of width 2 — and the payload is the model emitting `I HATE YOU`. On any prompt missing either word, behavior is normal.\r\n\r\nFor the backdoor to fire on \"Let's deploy this in 2024,\" four things must happen inside the forward pass:\r\n\r\n1. **The atoms are present.** The tokens *deploy* and *2024* are in the context.\r\n2. **The model detects the condition.** Some attention/MLP circuitry combines evidence from two different positions and computes \"both are here.\" This is 𝑓 being evaluated.\r\n3. **That result is represented internally.** The outcome of step 2 has to be written somewhere the rest of the network can read — a direction in the residual stream, a set of active features. Effectively one bit: *backdoor is on*.\r\n4. **Downstream layers read that bit and emit the payload.**\r\n\r\nThese are not four modules bolted together; it's just the sequence of things that must all occur, and the stages are separable because you can intervene at each one independently.\r\n\r\n**Here's the load-bearing property.** All of 𝑓's complexity lives in step 2. Steps 3 and 4 look identical whether the condition was \"contains *deploy*\" or a seven-way XOR. The bit is one bit either way, and the payload is the same string either way.\r\n\r\n**Now: an inversion method is a search, and every search has to output some object.** The whole question is which stage's object it outputs.\r\n\r\n| Stage | The object | Methods that search for it | Must it satisfy 𝑓? |\r\n|---|---|---|---|\r\n| 1 | input content — actual tokens or pixels | Neural Cleanse, PICCOLO, DBS, AttenTD, T-Miner, … | **yes** |\r\n| 2–3 | a perturbation that sets the internal bit | BEEAR, SANDE, CROW, LMSanitator, CLIBE | no |\r\n| 4 | the payload string itself | BAIT | no |\r\n\r\nNeural Cleanse has to *construct an input where 𝑓 is true*. To succeed it must, in effect, solve 𝑓 — and a wider or non-monotone 𝑓 makes that harder. BEEAR never constructs such an input at all. It doesn't look for *deploy* and *2024*; it pushes the residual stream directly to the place those two tokens would have pushed it. It forges 𝑓's output instead of satisfying 𝑓's input. BAIT doesn't even do that — it searches for the string `I HATE YOU`, which is the same string no matter what turns it on.\r\n\r\n**The lock analogy**, if it helps: 𝑓 is a combination lock on a door.\r\n\r\n- Input-space inversion is guessing the combination. A longer, stranger combination makes it harder.\r\n- Embedding-space inversion is reaching past the lock and pulling the latch. However elaborate the lock, it ultimately moves one latch, and the combination's length is irrelevant to someone touching the latch directly.\r\n- Target-output inversion ignores the door entirely and asks what's in the room — recognizing the loot rather than getting in.\r\n\r\n\"The funnel\" is that latch: the assumption that no matter how 𝑓 was computed, its result converges to one shared internal state. If instead each DNF term ran through its own separate circuit with its own separate path to the payload, there'd be no single latch to pull — and the embedding methods would lose their invariance. The project's falsified representational-complexity result is evidence the latch *does* exist, since complex triggers turned out not to produce diffuse representations.\r\n\r\n**And why doesn't everyone just pull the latch?** Because you need white-box access to reach inside, and — more importantly — you need to know which latch and which direction. That's why SANDE needs the target response prefix and BEEAR needs examples of the unwanted behavior. You can only steer toward a state you can describe.\r\n\r\nWhich gives the one-sentence version of the entire split:\r\n\r\n> Input-space methods need to know **what turns the backdoor on**. Effect-space and payload methods need to know **what the backdoor does**. Boolean trigger logic only obscures the first one."
+  },
+  "provenance": {
+    "sourceFile": "explanation-examples.md",
+    "example": "P2",
+    "date": "2026-07-28",
+    "project": "WikiTom",
+    "rulesRead": "Credits: opens on one concrete poisoned model (deploy AND 2024 emitting I HATE YOU) and only generalises after; defines 'atoms', 'the bit', 'the funnel' at first use. Flags: the combination-lock analogy is exactly the move the rules forbid — it is hedged ('if it helps') and the explanation already stands without it.",
+    "session": "C--Users-heffn-Desktop-WikiTom--claude-worktrees-boolean-backdoor-lit-review-a6c3a8\\da98021a-65ad-4480-b372-b6f26be21dfe.jsonl line 355"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "id": "explanation-n14",
+  "source": "explanation",
+  "job": "explanation",
+  "partition": "explanation/ComplexMultiTrigger",
+  "label": "did not",
+  "sentence": "What have we done so far and what needs to still get done? Explain it from the ground up as if I don't understand anything that's going on.",
+  "confirmedByTom": false,
+  "ruledOn": "2026-08-13",
+  "input": {
+    "topic": "Where the trajectory work stands",
+    "contextLines": [
+      "Date: 2026-08-13",
+      "Project: ComplexMultiTrigger"
+    ]
+  },
+  "output": {
+    "explanation": "All four phases are implemented and independently verified. Here's where things stand.\r\n\r\n## Done and verified\r\n\r\nEverything lives on **`claude/traj-phase3-stoprule`** (commit `2e30bd8a`), which chains up through the integration branch to master. Nothing is merged, nothing is pushed.\r\n\r\nI ran both gates myself rather than trusting the agents' self-reports: **4213 passed, 35 skipped, exit 0** and **mypy Success across 808 files**, clean tree. Master was 4052 tests, so this adds 161.\r\n\r\nThe three changes you asked for are in: the read side keeps per-epoch rows and *refuses* rather than silently averaging them; epoch selection has new `smooth_peak` and `tile` policies alongside the untouched `peak_planted`, with `max_epoch` enforcing your twin cap; and the stop rule now expresses \"0.98 on MA(3) or patience, whichever fires,\" with the elected-epoch fix so a post-peak stop doesn't attach detection to the wrong checkpoint.\r\n\r\n## What the adversarial review bought\r\n\r\nWorth knowing, because it justifies the cost: 39 raw findings across both runs, 24 survived refutation. Two were the kind that don't show up in tests — the moving average computed in float landed *below* the exact mean for the 0.01-grid values plantedness actually takes, so a threshold clause sitting at the bar could never fire and every run would have trained to the ceiling looking like \"the rule just doesn't trigger much.\" And the defer predicate was quietly wider than the legacy one, in a proof whose summary explicitly claimed to have verified the opposite.\r\n\r\nThe designs had errors too: a test fixture that violates `plantedness + FTR ≤ 1`, and a false premise about `plant_gate` being reachable from the axis expanders.\r\n\r\n## What is deliberately not done\r\n\r\n**The vertical slice has not run.** Nothing has been proved end-to-end on real cells — only unit equivalents. That's the check most likely to catch an integration failure, and it needs the corpus.\r\n\r\n**Back-compat is proved against synthetic data.** `CMT_OUTPUT` is unset here, so the baseline uses a manufactured 17,912-row fixture. A real-tidy capture on Turing would strictly dominate it.\r\n\r\nAlso: three twin joins remain epoch-blind (only the one the experiment reads was fixed), the `Frame` uniqueness contract stays unenforced because landing it reds 13 pre-existing tests unrelated to this work, and no production sweep YAML exists — the agents refused to land unreviewed GPU-spending config, which I think was right.\r\n\r\n## Two rulings before a campaign\r\n\r\nThe trajectory memo assumes published epoch dirs are immutable — true in production, asserted nowhere, false in the suite. And the train-split handoff's open question stands: whether a re-drain may resume training on the ~10% of a123 cells that never planted.\r\n\r\nBoth are ledgered, and all of this is in memory under `trajectory-detection-impl-2026-08-13`.\r\n\r\n## Next\r\n\r\nPhase 1.5 on Turing is the natural next step — probe-only detection at two epochs on four real cells, which needs no new code and would convert \"the tests pass\" into \"it works.\" Say the word and I'll write that as a work order, or start Phase 4 config instead.\r\n\r\nOne bit of housekeeping I noticed but didn't touch: `git worktree list` shows about fifty stale `wf_*` worktrees from earlier sessions, all sitting at an old commit. Happy to prune them if they're abandoned."
+  },
+  "provenance": {
+    "sourceFile": "explanation-examples.md",
+    "example": "N14",
+    "date": "2026-08-13",
+    "project": "ComplexMultiTrigger",
+    "rulesRead": "Flags: branch names, commit shas and test counts lead; plant_gate, the Frame uniqueness contract, MA(3), the defer predicate, twin joins and 'ledgered' all appear with no gloss. Reports state changes against a model of the system the reader is assumed to hold already.",
+    "session": "C--Users-heffn-Desktop-booleanbackdoor-ComplexMultiTrigger--claude-worktrees-trusting-booth-f6b753\\85394d39-0bc6-4c9a-8037-63123de22169.jsonl line 623"
+  }
+}
