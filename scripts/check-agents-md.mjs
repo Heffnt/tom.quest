@@ -1,8 +1,26 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-const ROOT = process.cwd();
+// Byte targets per AGENTS.md, by path relative to the repo root. Crossing one
+// warns; it never fails the check. A nested file not listed here takes the
+// default. The chain cap below is the one hard size limit.
+const BYTE_TARGETS = {
+  "AGENTS.md": 4000,
+  "app/AGENTS.md": 3500,
+  "app/api/turing/AGENTS.md": 400,
+  "convex/AGENTS.md": 3500,
+  "turing-api/AGENTS.md": 3500,
+  "worker/AGENTS.md": 3500,
+};
+const DEFAULT_BYTE_TARGET = 3500;
 const MAX_CHAIN_BYTES = 32_768;
+
+// The one sentence allowed in more than one AGENTS.md: the pointer at WikiTom.
+const WIKITOM_POINTER = /wikitom.*model-of-tom/;
+const MIN_SENTENCE_LENGTH = 40;
+
+const ROOT = process.cwd();
 const SKIPPED_DIRECTORIES = new Set([
   ".git",
   "node_modules",
@@ -19,6 +37,7 @@ const SKIPPED_DIRECTORIES = new Set([
 const agents = [];
 const claudes = [];
 const failures = [];
+const warnings = [];
 
 function relative(file) {
   return path.relative(ROOT, file).split(path.sep).join("/") || ".";
@@ -60,6 +79,29 @@ for (const claude of claudes) {
   if (!isRegularNonSymlink(stat)) {
     failures.push(`${relative(claude)}: CLAUDE.md must be a regular non-symlink file`);
   }
+}
+
+// The working tree can hold a regular file while the index still records a
+// symlink (mode 120000), which is what a Linux checkout would then produce.
+// The index is the truth that ships, so every tracked CLAUDE.md must be
+// recorded as a regular file (mode 100644).
+try {
+  const index = execFileSync("git", ["ls-files", "-s"], { cwd: ROOT, encoding: "utf8" });
+  let tracked = 0;
+  for (const row of index.split(/\r?\n/)) {
+    if (!row) continue;
+    const match = /^(\d{6}) [0-9a-f]+ \d\t(.+)$/.exec(row);
+    if (!match) continue;
+    const [, mode, file] = match;
+    if (path.posix.basename(file) !== "CLAUDE.md") continue;
+    tracked += 1;
+    if (mode !== "100644") {
+      failures.push(`${file}: tracked with index mode ${mode}; a CLAUDE.md must be tracked as 100644`);
+    }
+  }
+  if (tracked === 0) failures.push("git index: no tracked CLAUDE.md found");
+} catch (error) {
+  failures.push(`git ls-files -s failed (${error.message}); the CLAUDE.md index-mode check needs a git checkout`);
 }
 
 for (const agent of agents) {
@@ -125,6 +167,14 @@ function sourceFor(agent) {
   }
 }
 
+for (const agent of agents) {
+  const bytes = sourceFor(agent)?.length ?? 0;
+  const target = BYTE_TARGETS[relative(agent)] ?? DEFAULT_BYTE_TARGET;
+  if (bytes > target) {
+    warnings.push(`${relative(agent)} is ${bytes} bytes; its target is ${target}`);
+  }
+}
+
 const chains = [];
 for (const leaf of [...leaves].sort((a, b) => relative(a).localeCompare(relative(b)))) {
   const chain = [];
@@ -140,29 +190,48 @@ for (const chain of chains) {
   }
 }
 
-// The same substantive instruction must have one AGENTS.md home. Normalizing
-// case and whitespace keeps formatting-only changes from evading the check.
-const normalizedLines = new Map();
+// The same substantive instruction has one AGENTS.md home. The unit compared
+// is the sentence, not the line, so a sentence copied into a longer bullet is
+// still caught. Normalizing case, whitespace, bullet markers and emphasis
+// keeps formatting-only changes from evading the check.
+function sentencesOf(text) {
+  return text
+    .split(/\r?\n/)
+    .flatMap((line, index) => {
+      const stripped = line.replace(/^\s*(?:[-*]|\d+\.)\s+/, "").trim();
+      if (stripped.startsWith("#") || stripped.startsWith("<!--")) return [];
+      return stripped.split(/(?<=[.!?])\s+/).map((sentence) => ({ sentence, line: index + 1 }));
+    })
+    .map(({ sentence, line }) => ({
+      normalized: sentence
+        .toLowerCase()
+        .replace(/[*_]/g, "")
+        .replace(/\s+/g, " ")
+        .trim(),
+      line,
+    }))
+    .filter(({ normalized }) => normalized.length > MIN_SENTENCE_LENGTH)
+    .filter(({ normalized }) => !WIKITOM_POINTER.test(normalized));
+}
+
+const normalizedSentences = new Map();
 for (const agent of agents) {
   const bytes = sourceFor(agent);
   if (!bytes) continue;
-  bytes
-    .toString("utf8")
-    .split(/\r?\n/)
-    .forEach((line, index) => {
-      const normalized = line.trim().toLowerCase().replace(/\s+/g, " ");
-      if (normalized.length <= 40) return;
-      const locations = normalizedLines.get(normalized) ?? [];
-      locations.push({ agent, line: index + 1 });
-      normalizedLines.set(normalized, locations);
-    });
+  for (const { normalized, line } of sentencesOf(bytes.toString("utf8"))) {
+    const locations = normalizedSentences.get(normalized) ?? [];
+    locations.push({ agent, line });
+    normalizedSentences.set(normalized, locations);
+  }
 }
-for (const [line, locations] of normalizedLines) {
+for (const [sentence, locations] of normalizedSentences) {
   const files = new Set(locations.map(({ agent }) => agent));
   if (files.size < 2) continue;
-  const where = locations.map(({ agent, line: number }) => `${relative(agent)}:${number}`).join(", ");
-  failures.push(`duplicated AGENTS.md instruction ${JSON.stringify(line)} appears in ${where}`);
+  const where = locations.map(({ agent, line }) => `${relative(agent)}:${line}`).join(", ");
+  failures.push(`duplicated AGENTS.md sentence ${JSON.stringify(sentence)} appears in ${where}`);
 }
+
+for (const warning of warnings) console.warn(`warning: ${warning}`);
 
 if (failures.length > 0) {
   console.error("AGENTS.md check failed:");

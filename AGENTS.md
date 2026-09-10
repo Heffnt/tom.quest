@@ -58,6 +58,6 @@ A personal dashboard for cluster management, experiment visibility and TTS. Writ
 
 ## files
 
-- Nested `AGENTS.md` files: `app/`, `app/api/turing/`, `convex/`, `turing-api/`, `worker/`; each applies to its tree.
+- Nested `AGENTS.md`: `app/`, `app/api/turing/`, `convex/`, `turing-api/`, `worker/`; each applies to its tree.
 - Beside each, a regular `CLAUDE.md` holds `@AGENTS.md`; `pnpm check:agents` enforces it.
 - WikiTom `model-of-tom/` holds who Tom is and how agents operate.
