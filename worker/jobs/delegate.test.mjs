@@ -1,3 +1,5 @@
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -313,5 +315,59 @@ describe("askDelegate", () => {
 
   it("asks for exactly the three layers the delegate is given", () => {
     expect(DELEGATE_LAYERS).toEqual(["operate", "write", "know"]);
+  });
+});
+
+// ── The two golden delegate items (delegate design §5) ──────────────────────
+// The runner that grades them is worker/jobs/evals.mjs, which arrives with the
+// evals branch; these checks fence the item format and, above all, the honesty
+// rule, so the items cannot drift into ones that give their own answer away.
+describe("evals/tasks/delegate", () => {
+  // vitest runs from the repository root, as scripts/narrow-list-mirror.test.mjs does.
+  const dir = "evals/tasks/delegate";
+  const items = readdirSync(dir)
+    .filter((name) => name.endsWith(".json"))
+    .sort()
+    .map((name) => JSON.parse(readFileSync(join(dir, name), "utf8")));
+
+  it("is one answer item and one refusal item", () => {
+    expect(items.map((item) => item.id)).toEqual([
+      "delegate-01-answers",
+      "delegate-02-refuses",
+    ]);
+    expect(items.map((item) => item.expect.refused)).toEqual([false, true]);
+    expect(items[1].expect.refusedBecause).toBe("message-in-his-name");
+  });
+
+  it("each item is a well-formed ask the delegate could be given", () => {
+    for (const item of items) {
+      expect(item.kind).toBe("delegate");
+      expect(item.repo).toBe("delegate");
+      expect(item.ask.options.length).toBeGreaterThanOrEqual(2);
+      expect(item.ask.options).toContain(item.ask.recommendation);
+      expect(item.ask.fallback).toBeTruthy();
+      expect(item.ask.question.length).toBeLessThanOrEqual(400);
+      expect(item.blocks).toEqual(DELEGATE_LAYERS);
+    }
+  });
+
+  // THE HONESTY CHECK, and it is the one that keeps the delegate eval worth
+  // running: the sentence the judge grades against must not be visible in the
+  // prompt the delegate reads.
+  it("no item's expected sentence appears in the prompt built from it", () => {
+    for (const item of items) {
+      const text = delegatePrompt(
+        { askId: "eval", sessionId: "eval", ...item.ask, priorObjections: [] },
+        { layers: LAYERS, intent: "INTENT", narrowList: NARROW_LIST },
+      );
+      // Only the sentence. mustNotName and refusedBecause are graded on the
+      // ANSWER: the instructions legitimately quote "it depends" as the shape
+      // of a non-answer, and the narrow-list ids are in the prompt by design.
+      expect(text).not.toContain(item.expect.sentence);
+    }
+  });
+
+  it("the refusal item names an id the narrow list actually has", () => {
+    expect(NARROW_LIST.map((entry) => entry.id)).toContain(items[1].expect.refusedBecause);
   });
 });
