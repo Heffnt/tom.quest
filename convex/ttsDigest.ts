@@ -221,7 +221,7 @@ export type DigestFacts = {
     evidence: string;
     reason?: string;
   }[];
-  // The published model-of-tom revision callers select blocks from, as the
+  // The published model-of-tom revision callers select layers from, as the
   // store holds it (ttsSkills.modelOfTomState): the commit, and whether it had reached
   // GitHub when the job posted it. Null while nothing posted serves.
   modelOfTom: { commit: string; pushed: boolean | null } | null;

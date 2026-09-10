@@ -42,7 +42,7 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // declared here AND in app/sessions/lib.ts) and
 // the graph rules the frontier walk below reads (buildDoneSet / isReady) — the
 // page, the planner, and the scheduler must all mean the same thing by
-// "ready". The caller-selected model-of-tom blocks each opener carries come
+// "ready". The caller-selected model-of-tom layers each opener carries come
 // from ttsSkills.modelOfTomPrelude, read once per opener in insertSession below.
 import { modelOfTomPrelude, withoutModelOfTomPrelude } from "./ttsSkills";
 import {
@@ -606,7 +606,7 @@ async function insertSession(
     codeSessionLines = codeSessionRulingLines(subjects);
     await markCodeSessionRulingsApplied(ctx, consumed, sessionId);
   }
-  // The opener carries its caller-selected model-of-tom blocks (the lifeos
+  // The opener carries its caller-selected model-of-tom layers (the lifeos
   // update, phase 4): the browser-built prompts, the worker missions, the CLI
   // pen, a fork — one home, here, rather than each builder pasting its own copy. The
   // prelude's first line names the WikiTom commit and lists the paths, and

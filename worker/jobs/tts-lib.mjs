@@ -138,7 +138,7 @@ export async function convexFetch(env, path, body = undefined) {
       const response = JSON.parse(text);
       if (
         typeof response?.error === "string" &&
-        /^model-of-tom (?:block|header) .+ is not stored$/.test(response.error)
+        /^model-of-tom (?:layer|header) .+ is not stored$/.test(response.error)
       ) {
         missingModelOfTomPart = response.error;
       }

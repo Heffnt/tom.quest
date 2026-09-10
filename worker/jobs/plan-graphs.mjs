@@ -1196,7 +1196,7 @@ async function main() {
   // quietly produce prose written to no standard at all, which is worse than
   // not running — so it is fatal, for both passes.
   if (typeof context.writingStandard !== "string" || context.writingStandard.trim() === "") {
-    throw new Error("model-of-tom block write is not stored");
+    throw new Error("model-of-tom layer write is not stored");
   }
   if (typeof context.vocabulary !== "string" || context.vocabulary.trim() === "") {
     throw new Error("batch-context vocabulary is missing");

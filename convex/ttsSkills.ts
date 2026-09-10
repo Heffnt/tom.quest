@@ -1,17 +1,17 @@
-// Published prompt blocks and their source-file facts.
+// Published prompt layers and their source-file facts.
 import { v } from "convex/values";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { MODEL_OF_TOM_HEADER } from "./ttsShared";
 
-export const MODEL_OF_TOM_BLOCK_NAMES = ["operate", "write", "know"] as const;
-export type ModelOfTomBlockName = (typeof MODEL_OF_TOM_BLOCK_NAMES)[number];
-const blockValidator = v.union(v.literal("operate"), v.literal("write"), v.literal("know"));
+export const MODEL_OF_TOM_LAYER_NAMES = ["operate", "write", "know"] as const;
+export type ModelOfTomLayerName = (typeof MODEL_OF_TOM_LAYER_NAMES)[number];
+const layerValidator = v.union(v.literal("operate"), v.literal("write"), v.literal("know"));
 export const MODEL_OF_TOM_SELECTIONS = [
   ["operate"], ["write"], ["know"], ["operate", "write"],
   ["operate", "know"], ["write", "know"], ["operate", "write", "know"],
-] as const satisfies readonly (readonly ModelOfTomBlockName[])[];
+] as const satisfies readonly (readonly ModelOfTomLayerName[])[];
 
-type StoredHeader = { blocks: ModelOfTomBlockName[]; header: string };
+type StoredHeader = { layers: ModelOfTomLayerName[]; header: string };
 export type ModelOfTomState = {
   commit: string | null;
   syncedAt: number | null;
@@ -25,18 +25,18 @@ export type ModelOfTomState = {
 export { MODEL_OF_TOM_HEADER };
 
 export function canonicalModelOfTomNames(
-  names: readonly ModelOfTomBlockName[] = MODEL_OF_TOM_BLOCK_NAMES,
-): ModelOfTomBlockName[] {
-  if (names.length === 0) throw new Error("model-of-tom needs at least one block");
+  names: readonly ModelOfTomLayerName[] = MODEL_OF_TOM_LAYER_NAMES,
+): ModelOfTomLayerName[] {
+  if (names.length === 0) throw new Error("model-of-tom needs at least one layer");
   for (const name of names) {
-    if (!(MODEL_OF_TOM_BLOCK_NAMES as readonly string[]).includes(name)) {
-      throw new Error(`not a model-of-tom block: ${name}`);
+    if (!(MODEL_OF_TOM_LAYER_NAMES as readonly string[]).includes(name)) {
+      throw new Error(`not a model-of-tom layer: ${name}`);
     }
   }
-  return MODEL_OF_TOM_BLOCK_NAMES.filter((name) => names.includes(name));
+  return MODEL_OF_TOM_LAYER_NAMES.filter((name) => names.includes(name));
 }
 
-function selectionKey(names: readonly ModelOfTomBlockName[]): string {
+function selectionKey(names: readonly ModelOfTomLayerName[]): string {
   return names.join(",");
 }
 
@@ -52,10 +52,10 @@ function validHeaders(headers: StoredHeader[], commit: string): boolean {
   if (headers.length !== MODEL_OF_TOM_SELECTIONS.length) return false;
   const expected = new Set(MODEL_OF_TOM_SELECTIONS.map(selectionKey));
   const seen = new Set<string>();
-  for (const { blocks, header } of headers) {
-    const canonical = canonicalModelOfTomNames(blocks);
+  for (const { layers, header } of headers) {
+    const canonical = canonicalModelOfTomNames(layers);
     const key = selectionKey(canonical);
-    if (key !== selectionKey(blocks) || seen.has(key) || !expected.has(key) || !isPublicationHeader(header, commit)) return false;
+    if (key !== selectionKey(layers) || seen.has(key) || !expected.has(key) || !isPublicationHeader(header, commit)) return false;
     seen.add(key);
   }
   return seen.size === expected.size;
@@ -78,23 +78,23 @@ export async function modelOfTomState(ctx: QueryCtx | MutationCtx): Promise<Mode
 
 export function modelOfTomText(
   state: ModelOfTomState,
-  names: readonly ModelOfTomBlockName[] = MODEL_OF_TOM_BLOCK_NAMES,
+  names: readonly ModelOfTomLayerName[] = MODEL_OF_TOM_LAYER_NAMES,
 ): string {
   const canonical = canonicalModelOfTomNames(names);
   for (const name of canonical) {
     if (typeof state[name] !== "string" || state[name].trim() === "") {
-      throw new Error(`model-of-tom block ${name} is not stored`);
+      throw new Error(`model-of-tom layer ${name} is not stored`);
     }
   }
   const key = selectionKey(canonical);
-  const header = state.headers?.find((candidate) => selectionKey(candidate.blocks) === key)?.header;
+  const header = state.headers?.find((candidate) => selectionKey(candidate.layers) === key)?.header;
   if (header === undefined) throw new Error(`model-of-tom header ${key} is not stored`);
   return [header, ...canonical.map((name) => state[name]!)].join("\n\n");
 }
 
 export async function modelOfTomPrelude(
   ctx: QueryCtx | MutationCtx,
-  names: readonly ModelOfTomBlockName[] = MODEL_OF_TOM_BLOCK_NAMES,
+  names: readonly ModelOfTomLayerName[] = MODEL_OF_TOM_LAYER_NAMES,
 ): Promise<string> {
   return modelOfTomText(await modelOfTomState(ctx), names);
 }
@@ -107,7 +107,7 @@ export function withoutModelOfTomPrelude(prompt: string, prelude: string): strin
 }
 
 export const internalModelOfTomPrelude = internalQuery({
-  args: { names: v.optional(v.array(blockValidator)) },
+  args: { names: v.optional(v.array(layerValidator)) },
   handler: async (ctx, args) => await modelOfTomPrelude(ctx, args.names),
 });
 
@@ -125,15 +125,15 @@ export const internalReplaceModelOfTom = internalMutation({
     committedAt: v.number(),
     pushed: v.boolean(),
     force: v.optional(v.string()),
-    blocks: v.object({ operate: v.string(), write: v.string(), know: v.string() }),
-    headers: v.array(v.object({ blocks: v.array(blockValidator), header: v.string() })),
+    layers: v.object({ operate: v.string(), write: v.string(), know: v.string() }),
+    headers: v.array(v.object({ layers: v.array(layerValidator), header: v.string() })),
     files: v.array(v.object({ path: v.string(), body: v.string(), bytes: v.number() })),
   },
-  handler: async (ctx, { commit, committedAt, pushed, force, blocks, headers, files }) => {
+  handler: async (ctx, { commit, committedAt, pushed, force, layers, headers, files }) => {
     if (commit.trim() === "") throw new Error("commit is required");
     if (!Number.isFinite(committedAt)) throw new Error("committedAt must be finite");
-    for (const name of MODEL_OF_TOM_BLOCK_NAMES) {
-      if (blocks[name].trim() === "") throw new Error(`model-of-tom block ${name} is blank`);
+    for (const name of MODEL_OF_TOM_LAYER_NAMES) {
+      if (layers[name].trim() === "") throw new Error(`model-of-tom layer ${name} is blank`);
     }
     if (!validHeaders(headers, commit)) {
       throw new Error("headers must contain each canonical selection exactly once, with the posted commit and a parseable file list");
@@ -165,7 +165,7 @@ export const internalReplaceModelOfTom = internalMutation({
       syncedAt: committedAt,
       pushed,
     });
-    const publication = { key: "current" as const, commit, committedAt, pushed, ...blocks, headers };
+    const publication = { key: "current" as const, commit, committedAt, pushed, ...layers, headers };
     if (current === null) await ctx.db.insert("modelOfTomPublication", publication);
     else await ctx.db.replace("modelOfTomPublication", current._id, publication);
     return { files: files.length, deleted: existingFacts.length, forced };

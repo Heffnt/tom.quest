@@ -158,12 +158,47 @@ mkdir -p /opt/tts /var/lib/tts /var/cache/tts /etc/tts /var/log/tts \
 echo "== [7/10] install worker files =="
 # Job scripts (plain Node ESM, zero npm deps — a copy is a deploy).
 cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
+mkdir -p /opt/tts/scripts /opt/tts/worker/jobs
+cp "$WORKER_DIR"/../scripts/session-start-hook.mjs /opt/tts/scripts/session-start-hook.mjs
+cp "$WORKER_DIR"/../scripts/prelude.mjs /opt/tts/scripts/prelude.mjs
+cp "$WORKER_DIR"/jobs/markdown-sections.mjs /opt/tts/worker/jobs/markdown-sections.mjs
 # The Codex wrapper is a repo script, not a job, but sessions need it from ANY
 # repo — including checkouts that predate it, and repos that are not tom.quest
 # at all. One copy here is what `tts-codex` executes, so the flags and the
 # stdout contract have exactly one home (scripts/codex-run.mjs) whichever way a
 # session reaches Codex.
 cp "$WORKER_DIR"/../scripts/codex-run.mjs /opt/tts/codex-run.mjs
+# The box session opener already carries all three layers; this covers Claude
+# subagents, which read CLAUDE.md but not opener.
+for CLAUDE_ACCOUNT_DIR in /root/.claude-accounts/gmail /root/.claude-accounts/wpi; do
+  printf '%s\n' '@/root/wikitom/model-of-tom/agent-rules.md' > "$CLAUDE_ACCOUNT_DIR/CLAUDE.md"
+  CLAUDE_ACCOUNT_DIR="$CLAUDE_ACCOUNT_DIR" node - <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+
+const directory = process.env.CLAUDE_ACCOUNT_DIR;
+const settingsPath = path.join(directory, "settings.json");
+const command = "node /opt/tts/scripts/session-start-hook.mjs";
+let settings = {};
+if (fs.existsSync(settingsPath)) settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+if (!settings || Array.isArray(settings) || typeof settings !== "object") settings = {};
+if (!settings.hooks || Array.isArray(settings.hooks) || typeof settings.hooks !== "object") settings.hooks = {};
+
+const legacy = (hook) =>
+  typeof hook?.command === "string" && /\bcat\s+.*[\\/]WikiTom[\\/]AGENTS\.md\b/i.test(hook.command);
+const managed = (hook) => typeof hook?.command === "string" && hook.command === command;
+const sessionStart = Array.isArray(settings.hooks.SessionStart) ? settings.hooks.SessionStart.flatMap((entry) => {
+  if (!entry || typeof entry !== "object") return [entry];
+  if (legacy(entry) || managed(entry)) return [];
+  if (!Array.isArray(entry.hooks)) return [entry];
+  const hooks = entry.hooks.filter((hook) => !legacy(hook) && !managed(hook));
+  return hooks.length === 0 ? [] : [{ ...entry, hooks }];
+}) : [];
+sessionStart.push({ matcher: "startup|resume|compact", hooks: [{ type: "command", command }] });
+settings.hooks.SessionStart = sessionStart;
+fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+NODE
+done
 # CLI helpers onto the PATH.
 cp "$WORKER_DIR"/bin/* /usr/local/bin/
 chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \

@@ -888,17 +888,17 @@ export default defineSchema({
     preparedAt: v.number(),
   }).index("by_repo_external", ["repo", "externalId"]),
 
-  // Per-file publication facts for caller-selected model-of-tom blocks (the
+  // Per-file publication facts for caller-selected model-of-tom layers (the
   // lifeos update, phase 4): one row per WikiTom file the nightly job posts to
   // POST /tts/model-of-tom. They are traceability metadata, not a prompt
-  // renderer: the three already-rendered verbatim blocks live in the singleton
+  // renderer: the three already-rendered verbatim layers live in the singleton
   // modelOfTomPublication record below. This separation means a transcript
   // cannot change when file assembly rules change later.
   ttsSkills: defineTable({
     name: v.string(), // the path inside model-of-tom/ without ".md": "writing", "areas/research"
     // Source text stays available for fact consumers (weekly area review,
     // frontmatter, and byte accounting). Publication, not this field, renders
-    // the prompt blocks.
+    // the prompt layers.
     body: v.string(),
     sourcePath: v.string(), // path inside WikiTom, so a row traces to its file
     bytes: v.optional(v.number()), // source bytes reported by the publisher
@@ -914,7 +914,7 @@ export default defineSchema({
   }).index("by_name", ["name"]),
 
   // Exactly one `key: "current"` document is the published model-of-tom
-  // revision. It stores each complete, verbatim block and the exact header for
+  // revision. It stores each complete, verbatim layer and the exact header for
   // every nonempty canonical selection (7 total), so readers never recreate
   // prompt text from the per-file facts above.
   modelOfTomPublication: defineTable({
@@ -926,7 +926,7 @@ export default defineSchema({
     write: v.optional(v.string()),
     know: v.optional(v.string()),
     headers: v.array(v.object({
-      blocks: v.array(v.union(v.literal("operate"), v.literal("write"), v.literal("know"))),
+      layers: v.array(v.union(v.literal("operate"), v.literal("write"), v.literal("know"))),
       header: v.string(),
     })),
   }).index("by_key", ["key"]),

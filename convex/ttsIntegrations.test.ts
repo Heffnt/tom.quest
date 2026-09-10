@@ -20,8 +20,8 @@ async function publishWritingStandard(t: ReturnType<typeof convexTest>) {
   await t.run(async (ctx) => {
     await ctx.db.insert("modelOfTomPublication", {
       key: "current", commit: "capture-context-test", committedAt: 1, pushed: true,
-      operate: "operate block", write: "write block", know: "know block",
-      headers: [{ blocks: ["write", "know"], header: "published write + know" }],
+      operate: "operate layer", write: "write layer", know: "know layer",
+      headers: [{ layers: ["write", "know"], header: "published write + know" }],
     });
   });
 }
@@ -241,7 +241,7 @@ describe("GET /tts/capture-context declined integrations", () => {
         sentence: "not worth the credential",
       },
     ]);
-    expect(body.writingStandard).toBe("published write + know\n\nwrite block\n\nknow block");
+    expect(body.writingStandard).toBe("published write + know\n\nwrite layer\n\nknow layer");
     expect(body.captureTriage).toBeUndefined();
     expect(body.source).toBeUndefined();
   });

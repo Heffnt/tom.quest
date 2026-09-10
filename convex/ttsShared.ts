@@ -504,7 +504,7 @@ export function goalCheckable(todo: GoalTodo): boolean {
 }
 
 // Weekly source-file facts identify area pages by this prefix. Prompt text is
-// stored as already-rendered blocks in modelOfTomPublication instead.
+// stored as already-rendered layers in modelOfTomPublication instead.
 export const MODEL_OF_TOM_AREAS_DIR = "model-of-tom/areas";
 
 /** The first line of every prompt that carries the prelude, and so of every

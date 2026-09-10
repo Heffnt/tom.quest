@@ -13,10 +13,10 @@ import { MODEL_OF_TOM_HEADER } from "./ttsShared";
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 const COMMIT = "0123abcd0123abcd0123abcd0123abcd0123abcd";
 const COMMITTED_AT = Date.UTC(2026, 8, 6, 8, 5, 0);
-const BLOCKS = {
-  operate: "operate block\n\nkeeps its blank lines\n",
-  write: " write block is verbatim \n",
-  know: "know block\n",
+const LAYERS = {
+  operate: "operate layer\n\nkeeps its blank lines\n",
+  write: " write layer is verbatim \n",
+  know: "know layer\n",
 };
 const HEADER_FILES = {
   operate: ["model-of-tom/agent-rules.md"],
@@ -24,7 +24,7 @@ const HEADER_FILES = {
   know: ["model-of-tom/priorities.md"],
 };
 const headers = (commit = COMMIT) => MODEL_OF_TOM_SELECTIONS.map((names) => ({
-  blocks: [...names],
+  layers: [...names],
   header: `${MODEL_OF_TOM_HEADER} (WikiTom commit ${commit}): ${names.flatMap((name) => HEADER_FILES[name]).join(", ")}`,
 }));
 const HEADERS = headers();
@@ -35,7 +35,7 @@ const FILES = [
 ];
 
 function payload(overrides: Record<string, unknown> = {}) {
-  return { commit: COMMIT, committedAt: COMMITTED_AT, pushed: false, blocks: BLOCKS, headers: HEADERS, files: FILES, ...overrides };
+  return { commit: COMMIT, committedAt: COMMITTED_AT, pushed: false, layers: LAYERS, headers: HEADERS, files: FILES, ...overrides };
 }
 
 const facts = (t: ReturnType<typeof convexTest>) =>
@@ -44,7 +44,7 @@ const publication = (t: ReturnType<typeof convexTest>) =>
   t.run(async (ctx) => ctx.db.query("modelOfTomPublication").first());
 
 describe("model-of-tom publication", () => {
-  it("stores rendered blocks separately from source file facts", async () => {
+  it("stores rendered layers separately from source file facts", async () => {
     const t = convexTest({ schema, modules });
     expect(await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload())).toEqual({ files: 3, deleted: 0, forced: false });
     const rows = await facts(t);
@@ -52,20 +52,20 @@ describe("model-of-tom publication", () => {
       expect.objectContaining({ name: "agent-rules", sourcePath: FILES[0].path, body: FILES[0].body, bytes: 14, commit: COMMIT, pushed: false }),
     ]));
     expect(await t.run((ctx) => modelOfTomPrelude(ctx, ["operate"]))).not.toContain(FILES[0].body);
-    expect(await publication(t)).toMatchObject({ key: "current", commit: COMMIT, committedAt: COMMITTED_AT, pushed: false, ...BLOCKS, headers: HEADERS });
+    expect(await publication(t)).toMatchObject({ key: "current", commit: COMMIT, committedAt: COMMITTED_AT, pushed: false, ...LAYERS, headers: HEADERS });
   });
 
-  it("serves the exact header and blocks in canonical order, without trimming", async () => {
+  it("serves the exact header and layers in canonical order, without trimming", async () => {
     const t = convexTest({ schema, modules });
     await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload());
     const text = await t.run((ctx) => modelOfTomPrelude(ctx, ["know", "operate"]));
-    expect(text).toBe(`${HEADERS[4].header}\n\n${BLOCKS.operate}\n\n${BLOCKS.know}`);
-    expect(text).not.toContain("write block");
+    expect(text).toBe(`${HEADERS[4].header}\n\n${LAYERS.operate}\n\n${LAYERS.know}`);
+    expect(text).not.toContain("write layer");
   });
 
-  it("fails with the exact missing-block error rather than a fallback", async () => {
+  it("fails with the exact missing-layer error rather than a fallback", async () => {
     const t = convexTest({ schema, modules });
-    await expect(t.run((ctx) => modelOfTomPrelude(ctx, ["write"]))).rejects.toThrow("model-of-tom block write is not stored");
+    await expect(t.run((ctx) => modelOfTomPrelude(ctx, ["write"]))).rejects.toThrow("model-of-tom layer write is not stored");
   });
 
   it("refuses a stale publication unless a named force permits the rollback", async () => {
@@ -78,9 +78,9 @@ describe("model-of-tom publication", () => {
     expect((await publication(t))?.commit).toBe(rollback);
   });
 
-  it("requires every block, every canonical header, nonempty unique source files, and integer bytes", async () => {
+  it("requires every layer, every canonical header, nonempty unique source files, and integer bytes", async () => {
     const t = convexTest({ schema, modules });
-    await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ blocks: { ...BLOCKS, know: "  " } }))).rejects.toThrow("model-of-tom block know is blank");
+    await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ layers: { ...LAYERS, know: "  " } }))).rejects.toThrow("model-of-tom layer know is blank");
     await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ headers: HEADERS.slice(0, 6) }))).rejects.toThrow(/canonical selection/);
     await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ headers: [{ ...HEADERS[0], header: HEADERS[0].header.replace(COMMIT, "deadbeef".repeat(5)) }, ...HEADERS.slice(1) ] }))).rejects.toThrow(/posted commit/);
     await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ headers: [{ ...HEADERS[0], header: HEADERS[0].header.replace("agent-rules.md", "../agent-rules.md") }, ...HEADERS.slice(1) ] }))).rejects.toThrow(/parseable file list/);
@@ -90,8 +90,8 @@ describe("model-of-tom publication", () => {
     await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ files: [{ ...FILES[0], bytes: 1.5 }] }))).rejects.toThrow(/nonnegative integer/);
   });
 
-  it("only strips the byte-exact current all-block prelude and refuses a stale header", () => {
-    const current = modelOfTomText({ commit: COMMIT, syncedAt: COMMITTED_AT, pushed: false, ...BLOCKS, headers: HEADERS });
+  it("only strips the byte-exact current all-layer prelude and refuses a stale header", () => {
+    const current = modelOfTomText({ commit: COMMIT, syncedAt: COMMITTED_AT, pushed: false, ...LAYERS, headers: HEADERS });
     expect(withoutModelOfTomPrelude(`  ${current}\n\ncontinue`, current)).toBe("continue");
     const stale = current.replace(COMMIT, "feedface1");
     expect(withoutModelOfTomPrelude(`${stale}\n\ncontinue`, current)).toBeNull();
@@ -110,14 +110,14 @@ describe("POST /tts/model-of-tom", () => {
     const response = await send(t, payload());
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true, commit: COMMIT, files: 3, deleted: 0, forced: false });
-    expect((await publication(t))?.operate).toBe(BLOCKS.operate);
+    expect((await publication(t))?.operate).toBe(LAYERS.operate);
   });
 
-  it("rejects malformed blocks, headers, and file metadata before mutation", async () => {
+  it("rejects malformed layers, headers, and file metadata before mutation", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
     expect((await send(t, payload({ pushed: undefined }))).status).toBe(400);
-    expect((await send(t, payload({ blocks: { operate: "x" } }))).status).toBe(400);
+    expect((await send(t, payload({ layers: { operate: "x" } }))).status).toBe(400);
     expect((await send(t, payload({ headers: [] }))).status).toBe(400);
     expect((await send(t, payload({ files: [{ path: "tts/spec.md", body: "x", bytes: 2 }] }))).status).toBe(400);
     expect((await send(t, payload({ files: [{ path: FILES[0].path, bytes: FILES[0].bytes }] }))).status).toBe(400);
@@ -129,7 +129,7 @@ describe("POST /tts/model-of-tom", () => {
 describe("worker context routes", () => {
   afterEach(() => vi.unstubAllEnvs());
 
-  it("returns the exact missing write-block message instead of a framework error", async () => {
+  it("returns the exact missing write-layer message instead of a framework error", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
     for (const [path, method] of [
@@ -140,7 +140,7 @@ describe("worker context routes", () => {
     ] as const) {
       const response = await t.fetch(path, { method, headers: { "X-TTS-Key": "s3cret" } });
       expect(response.status).toBe(503);
-      await expect(response.json()).resolves.toEqual({ error: "model-of-tom block write is not stored" });
+      await expect(response.json()).resolves.toEqual({ error: "model-of-tom layer write is not stored" });
     }
   });
 });

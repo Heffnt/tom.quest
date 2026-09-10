@@ -41,8 +41,8 @@ async function publishSessionPrelude(t: ReturnType<typeof convexTest>) {
   await t.run(async (ctx) => {
     await ctx.db.insert("modelOfTomPublication", {
       key: "current", commit: "weekly-session-test", committedAt: 1, pushed: true,
-      operate: "operate block", write: "write block", know: "know block",
-      headers: [{ blocks: ["operate", "write", "know"], header: "MODEL-OF-TOM FILES (test)" }],
+        operate: "operate layer", write: "write layer", know: "know layer",
+        headers: [{ layers: ["operate", "write", "know"], header: "MODEL-OF-TOM FILES (test)" }],
     });
   });
 }
@@ -107,7 +107,7 @@ describe("gatherWeeklyFacts", () => {
       { name: "outlook", state: "running", since: null, detail: null },
     ]);
     expect(f.areaPages).toEqual([]);
-    expect(f.modelOfTom).toEqual({ commit: null, syncedAt: null, blocks: [], files: [], totalBytes: 0 });
+    expect(f.modelOfTom).toEqual({ commit: null, syncedAt: null, layers: [], files: [], totalBytes: 0 });
     expect(f.learning).toEqual({ changes: 0, reverted: 0, revertFailed: 0, lines: [] });
     expect(f.jobFailures).toEqual([]);
     expect(f.threads).toEqual([]);
@@ -215,7 +215,7 @@ describe("gatherWeeklyFacts", () => {
       }
       await ctx.db.insert("modelOfTomPublication", {
         key: "current", commit: "publication-commit", committedAt: now - 2 * DAY, pushed: true,
-        operate: "operate", write: "write block", know: "know block",
+        operate: "operate", write: "write layer", know: "know layer",
         headers: [],
       });
       await event(ctx, AREA_REVIEWED, now - HOUR, {
@@ -286,7 +286,7 @@ describe("gatherWeeklyFacts", () => {
     ]);
     expect(f.modelOfTom.commit).toBe("publication-commit");
     expect(f.modelOfTom.syncedAt).toBe(now - 2 * DAY);
-    expect(f.modelOfTom.blocks).toEqual([
+    expect(f.modelOfTom.layers).toEqual([
       { name: "operate", bytes: 7 },
       { name: "write", bytes: 11 },
       { name: "know", bytes: 10 },
@@ -688,8 +688,8 @@ describe("GET /tts/weekly-input", () => {
     await t.run(async (ctx) => {
       await ctx.db.insert("modelOfTomPublication", {
         key: "current", commit: "weekly-context-test", committedAt: 1, pushed: true,
-        operate: "operate block", write: "write block", know: "know block",
-        headers: [{ blocks: ["write", "know"], header: "published write + know" }],
+        operate: "operate layer", write: "write layer", know: "know layer",
+        headers: [{ layers: ["write", "know"], header: "published write + know" }],
       });
     });
     const res = await get(t, `/tts/weekly-input?until=${until}`);
@@ -699,6 +699,6 @@ describe("GET /tts/weekly-input", () => {
     expect(body.since).toBe(until - WEEK_MS);
     expect(body.readiness).toEqual({ prepared: 0, unprepared: 0 });
     expect(body.integrations.length).toBe(3);
-    expect(body.writingStandard).toBe("published write + know\n\nwrite block\n\nknow block");
+    expect(body.writingStandard).toBe("published write + know\n\nwrite layer\n\nknow layer");
   });
 });

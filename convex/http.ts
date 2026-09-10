@@ -17,7 +17,7 @@ import {
   ttsPrepDay,
   type Recommendation,
 } from "./ttsShared";
-import { isModelOfTomPath, MODEL_OF_TOM_BLOCK_NAMES } from "./ttsSkills";
+import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES, isExportTable } from "./ttsNightly";
 
 const http = httpRouter();
@@ -42,7 +42,7 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
-/** Worker jobs need the original missing-block sentence, not a framework
+/** Worker jobs need the original missing-layer sentence, not a framework
  * exception, so their nonzero exit names the deployment state to repair. */
 function modelOfTomErrorResponse(error: unknown): Response {
   return jsonResponse(503, { error: error instanceof Error ? error.message : String(error) });
@@ -1136,7 +1136,7 @@ http.route({ path: "/tts/ruling", method: "POST", handler: ttsRuling });
 // pastes into its prompt the same text every TypeScript caller reads.
 //
 // ITS SOURCE is the model-of-tom prelude (convex/ttsSkills.ts
-// modelOfTomPrelude), selecting the published write + know blocks. The field
+// modelOfTomPrelude), selecting the published write + know layers. The field
 // name and type do not change:
 // worker/jobs/plan-graphs.mjs treats a missing `writingStandard` as fatal.
 const ttsBatchContext = httpAction(async (ctx, request) => {
@@ -1185,10 +1185,10 @@ http.route({
   handler: ttsBatchContext,
 });
 
-// ── POST /tts/model-of-tom — the nightly job's three-block publication every
+// ── POST /tts/model-of-tom — the nightly job's three-layer publication every
 // prompt selects from (the lifeos update, phase 4) ───────────────────────────
-// Body: { commit, committedAt, pushed, force?, blocks, headers, files }.
-// `blocks` and the seven selection headers are already rendered by the
+// Body: { commit, committedAt, pushed, force?, layers, headers, files }.
+// `layers` and the seven selection headers are already rendered by the
 // publisher; files retain source facts ({ path, body, bytes }). The store is
 // replaced atomically in convex/ttsSkills.ts.
 const MODEL_OF_TOM_FILES_MAX = 64;
@@ -1215,35 +1215,35 @@ const ttsModelOfTom = httpAction(async (ctx, request) => {
   if (b.force !== undefined && (typeof b.force !== "string" || b.force.trim() === "")) {
     return jsonResponse(400, { error: "force, when given, is the reason (a non-empty string)" });
   }
-  if (typeof b.blocks !== "object" || b.blocks === null) {
-    return jsonResponse(400, { error: "blocks ({ operate, write, know }) required" });
+  if (typeof b.layers !== "object" || b.layers === null) {
+    return jsonResponse(400, { error: "layers ({ operate, write, know }) required" });
   }
-  const rawBlocks = b.blocks as Record<string, unknown>;
-  if (Object.keys(rawBlocks).length !== MODEL_OF_TOM_BLOCK_NAMES.length ||
-    !Object.keys(rawBlocks).every((name) => (MODEL_OF_TOM_BLOCK_NAMES as readonly string[]).includes(name))) {
-    return jsonResponse(400, { error: "blocks must contain exactly operate, write, and know" });
+  const rawLayers = b.layers as Record<string, unknown>;
+  if (Object.keys(rawLayers).length !== MODEL_OF_TOM_LAYER_NAMES.length ||
+    !Object.keys(rawLayers).every((name) => (MODEL_OF_TOM_LAYER_NAMES as readonly string[]).includes(name))) {
+    return jsonResponse(400, { error: "layers must contain exactly operate, write, and know" });
   }
-  const blocks: Record<(typeof MODEL_OF_TOM_BLOCK_NAMES)[number], string> = {
+  const layers: Record<(typeof MODEL_OF_TOM_LAYER_NAMES)[number], string> = {
     operate: "", write: "", know: "",
   };
-  for (const name of MODEL_OF_TOM_BLOCK_NAMES) {
-    if (typeof rawBlocks[name] !== "string" || rawBlocks[name].trim() === "") {
-      return jsonResponse(400, { error: `blocks.${name} (non-empty string) required` });
+  for (const name of MODEL_OF_TOM_LAYER_NAMES) {
+    if (typeof rawLayers[name] !== "string" || rawLayers[name].trim() === "") {
+      return jsonResponse(400, { error: `layers.${name} (non-empty string) required` });
     }
-    blocks[name] = rawBlocks[name];
+    layers[name] = rawLayers[name];
   }
   if (!Array.isArray(b.headers) || b.headers.length !== 7) {
     return jsonResponse(400, { error: "headers (the 7 canonical nonempty selections) required" });
   }
-  const headers: { blocks: (typeof MODEL_OF_TOM_BLOCK_NAMES)[number][]; header: string }[] = [];
+  const headers: { layers: (typeof MODEL_OF_TOM_LAYER_NAMES)[number][]; header: string }[] = [];
   for (let i = 0; i < b.headers.length; i++) {
     const header = b.headers[i] as Record<string, unknown> | null;
-    if (typeof header !== "object" || header === null || !Array.isArray(header.blocks) ||
-      !header.blocks.every((name) => (MODEL_OF_TOM_BLOCK_NAMES as readonly string[]).includes(name as string)) ||
+    if (typeof header !== "object" || header === null || !Array.isArray(header.layers) ||
+      !header.layers.every((name) => (MODEL_OF_TOM_LAYER_NAMES as readonly string[]).includes(name as string)) ||
       typeof header.header !== "string" || header.header.trim() === "" || header.header.includes("\n")) {
-      return jsonResponse(400, { error: `headers[${i}] must contain blocks and a non-empty header` });
+      return jsonResponse(400, { error: `headers[${i}] must contain layers and a non-empty header` });
     }
-    headers.push({ blocks: header.blocks as (typeof MODEL_OF_TOM_BLOCK_NAMES)[number][], header: header.header });
+    headers.push({ layers: header.layers as (typeof MODEL_OF_TOM_LAYER_NAMES)[number][], header: header.header });
   }
   if (!Array.isArray(b.files)) {
     return jsonResponse(400, { error: "files (array) required" });
@@ -1275,7 +1275,7 @@ const ttsModelOfTom = httpAction(async (ctx, request) => {
   try {
     const result = await ctx.runMutation(
       internal.ttsSkills.internalReplaceModelOfTom,
-      { commit: b.commit, committedAt: b.committedAt, pushed: b.pushed, force: b.force, blocks, headers, files },
+        { commit: b.commit, committedAt: b.committedAt, pushed: b.pushed, force: b.force, layers, headers, files },
     );
     return jsonResponse(200, { ok: true, commit: b.commit, ...result });
   } catch (e) {

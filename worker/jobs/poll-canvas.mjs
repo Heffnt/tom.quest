@@ -431,7 +431,7 @@ async function main() {
   // standard the announcements half uses are the same payload.
   const context = await captureContext(env);
   if (typeof context.writingStandard !== "string" || context.writingStandard.trim() === "") {
-    throw new Error("model-of-tom block write is not stored");
+    throw new Error("model-of-tom layer write is not stored");
   }
   // FIRST, before the credential and before any read: an integration Tom has
   // declined does not run (worker/jobs/tts-lib.mjs declined()).

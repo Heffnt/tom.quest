@@ -205,9 +205,9 @@ the `HEAD` the four left:
    repository, every push is refused and this is the row the digest shows.**
 5. **post** — the model-of-tom files read from the git object at `HEAD`
    (`git show <commit>:<path>`, never the work tree), whether or not the
-   push went through: `model-of-tom/writing.md`, `priorities.md`,
-   `schedule.md`, then for each page under `model-of-tom/areas/` its
-   "Current state" and "Must not break" sections (parsed by heading), posted
+   push went through: `model-of-tom/agent-rules.md`; the write-layer files;
+   then `model-of-tom/intent.md`, `priorities.md`, `schedule.md`, and every
+   page under `model-of-tom/areas/` whole except for its YAML frontmatter, posted
    with the commit hash, the commit's time and whether that commit is on
    the upstream yet (`pushed`) to `POST /tts/model-of-tom`. Convex replaces
    the `ttsSkills` table whole and every prompt from then on begins with

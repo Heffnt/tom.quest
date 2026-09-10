@@ -4,8 +4,8 @@
 //
 //   modelOfTomHeadOf reads back the header convex/ttsSkills.ts writes at the
 //   head of every session opener — the WikiTom commit the model-of-tom files
-//   were read at, and its canonical selected blocks. It is pinned against the
-//   exact stored all-block header so a transcript cannot silently lose that
+//   were read at, and its canonical selected layers. It is pinned against the
+//   exact stored all-layer header so a transcript cannot silently lose that
 //   context when the publication format changes.
 //
 //   describeOverflow says how much of a cut payload came back and whether it
@@ -18,8 +18,8 @@ import { describe, expect, it } from "vitest";
 import { describeOverflow, modelOfTomHeadOf } from "./lib";
 
 describe("modelOfTomHeadOf", () => {
-  it("reads back the commit and canonical blocks from the stored all-block header", () => {
-    const prompt = "MODEL-OF-TOM FILES (WikiTom commit abc1234def5678): operate,write,know\n\noperate block\n\nwrite block\n\nknow block";
+  it("reads back the commit and canonical layers from the stored all-layer header", () => {
+    const prompt = "MODEL-OF-TOM FILES (WikiTom commit abc1234def5678): operate,write,know\n\noperate layer\n\nwrite layer\n\nknow layer";
     expect(modelOfTomHeadOf(prompt)).toEqual({
       commit: "abc1234def5678",
       paths: ["operate", "write", "know"],

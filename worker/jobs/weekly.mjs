@@ -205,15 +205,15 @@ export function renderFactLines(facts) {
   }
 
   const m = facts.modelOfTom;
-  const blockBytes = new Map(m.blocks.map((block) => [block.name, block.bytes]));
-  const publishedBlocks = ["operate", "write", "know"]
+  const layerBytes = new Map(m.layers.map((layer) => [layer.name, layer.bytes]));
+  const publishedLayers = ["operate", "write", "know"]
     .map((name) => {
-      const bytes = blockBytes.get(name);
+      const bytes = layerBytes.get(name);
       return bytes === undefined ? `${name} not published` : `${name} ${bytes} bytes`;
     })
     .join(", ");
   lines.push(
-    `Model-of-tom published blocks: ${publishedBlocks}. Source files: ${count(m.files.length, "file")}, ${m.totalBytes} bytes in all${m.commit ? `, at WikiTom commit ${m.commit.slice(0, 12)}${m.syncedAt ? ` (${utcDay(m.syncedAt)})` : ""}` : ", no commit posted yet"}.`,
+    `Model-of-tom published layers: ${publishedLayers}. Source files: ${count(m.files.length, "file")}, ${m.totalBytes} bytes in all${m.commit ? `, at WikiTom commit ${m.commit.slice(0, 12)}${m.syncedAt ? ` (${utcDay(m.syncedAt)})` : ""}` : ", no commit posted yet"}.`,
   );
   for (const f of m.files) lines.push(`- ${f.path}: ${f.bytes} bytes`);
 
@@ -457,7 +457,7 @@ export function sessionPrompt({ day, agenda, file, checkout }) {
     "1. Read the facts with him, as they are.",
     `2. Ask him, in exactly these words: "${SUSTAINABILITY_QUESTION}" Keep his answer verbatim; it is the primary variable and goes into the outcome as he said it.`,
     `3. Go through the forks by number. Take his ruling on each in his own words. A fork that names a subject (a todo or a batch, by id) is ruled through the ruling route the moment he says it: curl -s -X POST "$CONVEX_SITE_URL/tts/ruling" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"inboundId": "<the id after \\"inbound row:\\" at the end of the turn he said it in>", "verdict": "<approve|revise|session|archive>", "subjectType": "<life|batch>", "subjectId": "<the id the fork names>", "quote": "<one whole sentence of that turn, copied exactly>", "sentence": "<on revise only: the one sentence of that turn that redirects the preparing agent, copied exactly; omit on every other verdict>"}' — this session may rule only on the subjects the forks name (the ruling route refuses any other id), and the morning digest quotes every ruling written this way. If his words leave the verdict unclear, do not guess; ask. A fork with no subject is a ruling about the system, recorded in the outcome (step 5) in his words. Zero forks is a real answer: then there is nothing to rule on.`,
-    `4. The area pages past their window are named under the facts. For each, read ${WIKITOM_DIR}/${MODEL_OF_TOM_AREAS_DIR}/<page>.md with him. When he confirms a page, run: node /opt/tts/weekly.mjs reviewed ${MODEL_OF_TOM_AREAS_DIR}/<page>.md <today, YYYY-MM-DD> — it sets reviewed: on that page, commits and pushes under the WikiTom writer lock, and records the review. Never run it for a page he did not confirm, and never edit a page's Ideal state or Must not break lines.`,
+    `4. The area pages past their window are named under the facts. For each, read ${WIKITOM_DIR}/${MODEL_OF_TOM_AREAS_DIR}/<page>.md with him. When he confirms a page, run: node /opt/tts/weekly.mjs reviewed ${MODEL_OF_TOM_AREAS_DIR}/<page>.md <today, YYYY-MM-DD> — it sets reviewed: on that page, commits and pushes under the WikiTom writer lock, and records the review. Never run it for a page he did not confirm; this command changes only its reviewed: frontmatter.`,
     `5. At the end, write the outcome to a file and run: node /opt/tts/weekly.mjs outcome ${day} <that file>. The file's first line is one of "timing: on time" (the session held by Sunday), "timing: late", or "timing: skipped"; then "sustainable: <his answer, verbatim>"; then "rulings:" and one line per fork, "<number>. <his ruling, in his words>". The command appends the text under the agenda's Outcome heading, commits and pushes. Next Friday's agenda reads it.`,
     "",
     "This session writes to a todo's record only through the ruling route, and never records a ruling Tom did not state.",
@@ -585,7 +585,7 @@ export async function runWeekly({ force = false, overwrite = false, env = null, 
   try {
     facts = await io.fetch(run.env, `/tts/weekly-input?until=${now}`);
     if (typeof facts.writingStandard !== "string" || facts.writingStandard.trim() === "") {
-      throw new Error("model-of-tom block write is not stored");
+      throw new Error("model-of-tom layer write is not stored");
     }
   } catch (err) {
     await recordFailure(run, "gather", err);

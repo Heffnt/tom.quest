@@ -1885,10 +1885,10 @@ describe("GET /tts/batch-context (planner half)", () => {
         commit: "batch-context-test",
         committedAt: 1,
         pushed: true,
-        operate: "operate block must not reach the planner",
-        write: "write block reaches the planner",
-        know: "know block reaches the planner",
-        headers: [{ blocks: ["write", "know"], header: "published write + know" }],
+        operate: "operate layer must not reach the planner",
+        write: "write layer reaches the planner",
+        know: "know layer reaches the planner",
+        headers: [{ layers: ["write", "know"], header: "published write + know" }],
       });
       await ctx.db.insert("dtsEvents", {
         at: Date.now(),
@@ -1910,8 +1910,8 @@ describe("GET /tts/batch-context (planner half)", () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.writingStandard).toBe("published write + know\n\nwrite block reaches the planner\n\nknow block reaches the planner");
-    expect(body.writingStandard).not.toContain("operate block");
+    expect(body.writingStandard).toBe("published write + know\n\nwrite layer reaches the planner\n\nknow layer reaches the planner");
+    expect(body.writingStandard).not.toContain("operate layer");
     expect(body.vocabulary).toBe(TTS_CLOSED_VOCABULARY);
     expect(body.batches.map((b: Doc<"batches">) => b.statement)).toEqual([
       "sign the lease",
@@ -1921,13 +1921,13 @@ describe("GET /tts/batch-context (planner half)", () => {
     );
   });
 
-  it("fails closed with the stored-block error when a requested block is absent", async () => {
+  it("fails closed with the stored-layer error when a requested layer is absent", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
     await t.run(async (ctx) => {
       await ctx.db.insert("modelOfTomPublication", {
         key: "current", commit: "incomplete", committedAt: 1, pushed: true,
-        write: "write block", headers: [],
+        write: "write layer", headers: [],
       });
     });
 
@@ -1935,6 +1935,6 @@ describe("GET /tts/batch-context (planner half)", () => {
       method: "GET", headers: { "X-TTS-Key": "s3cret" },
     });
     expect(response.status).toBe(503);
-    await expect(response.json()).resolves.toEqual({ error: "model-of-tom block know is not stored" });
+    await expect(response.json()).resolves.toEqual({ error: "model-of-tom layer know is not stored" });
   });
 });

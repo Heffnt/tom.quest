@@ -1,11 +1,11 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { extractSections } from "../worker/jobs/markdown-sections.mjs";
+import { parseFrontmatter } from "../worker/jobs/markdown-sections.mjs";
 
-// This is the one definition of the prompt's stable blocks. `areas` expands
+// This is the one definition of the prompt's stable layers. `areas` expands
 // from the named directory at the commit, rather than from the work tree.
-export const PRELUDE_BLOCKS = Object.freeze({
+export const PRELUDE_LAYERS = Object.freeze({
   operate: Object.freeze({
     files: Object.freeze([{ path: "model-of-tom/agent-rules.md", optional: false }]),
   }),
@@ -17,6 +17,7 @@ export const PRELUDE_BLOCKS = Object.freeze({
   }),
   know: Object.freeze({
     files: Object.freeze([
+      { path: "model-of-tom/intent.md", optional: false },
       { path: "model-of-tom/priorities.md", optional: false },
       { path: "model-of-tom/schedule.md", optional: false },
     ]),
@@ -36,8 +37,7 @@ export const PRELUDE_BLOCKS = Object.freeze({
   }),
 });
 
-const BLOCK_NAMES = Object.freeze(Object.keys(PRELUDE_BLOCKS));
-const AREA_SECTIONS = Object.freeze(["Current state", "Must not break"]);
+const LAYER_NAMES = Object.freeze(Object.keys(PRELUDE_LAYERS));
 
 class PreludeError extends Error {}
 
@@ -95,19 +95,14 @@ function areaPaths(dir, commit, { directory, required }) {
   return [...new Set([...required, ...additional])].sort();
 }
 
-/** The same section cutter used by the nightly post, exported for callers and tests. */
-export function cutAreaSections(markdown) {
-  return extractSections(markdown, AREA_SECTIONS);
-}
-
-function selectedBlockNames(requested) {
-  if (requested === undefined) return BLOCK_NAMES;
+function selectedLayerNames(requested) {
+  if (requested === undefined) return LAYER_NAMES;
   const names = Array.isArray(requested) ? requested : String(requested).split(",");
-  if (names.length === 0 || names.some((name) => !BLOCK_NAMES.includes(name))) {
-    throw new PreludeError(`--blocks must name one or more of ${BLOCK_NAMES.join(", ")}`);
+  if (names.length === 0 || names.some((name) => !LAYER_NAMES.includes(name))) {
+    throw new PreludeError(`--layers must name one or more of ${LAYER_NAMES.join(", ")}`);
   }
-  if (new Set(names).size !== names.length) throw new PreludeError("--blocks must not name a block twice");
-  return BLOCK_NAMES.filter((name) => names.includes(name));
+  if (new Set(names).size !== names.length) throw new PreludeError("--layers must not name a layer twice");
+  return LAYER_NAMES.filter((name) => names.includes(name));
 }
 
 function renderFiles(files) {
@@ -118,14 +113,14 @@ function renderHeader(commit, files) {
   return `MODEL-OF-TOM FILES (WikiTom commit ${commit}): ${files.map((file) => file.path).join(", ")}`;
 }
 
-function collectBlocks(wikitom, commit, requestedBlocks) {
+function collectLayers(wikitom, commit, requestedLayers) {
   const files = [];
-  const blocks = {};
-  const filesByBlock = {};
+  const layers = {};
+  const filesByLayer = {};
 
-  for (const name of requestedBlocks) {
-    const definition = PRELUDE_BLOCKS[name];
-    const blockFiles = [];
+  for (const name of requestedLayers) {
+    const definition = PRELUDE_LAYERS[name];
+    const layerFiles = [];
     for (const entry of definition.files) {
       const body = readObject(wikitom, commit, entry.path);
       if (body === null || body.trim() === "") {
@@ -137,28 +132,22 @@ function collectBlocks(wikitom, commit, requestedBlocks) {
         const state = body === null ? "absent" : "blank";
         throw new PreludeError(`required ${entry.path} is ${state} at ${commit}`);
       }
-      blockFiles.push({ path: entry.path, body, sourceBody: body });
+      layerFiles.push({ path: entry.path, body, sourceBody: body });
     }
     if (definition.areas !== undefined) {
       for (const path of areaPaths(wikitom, commit, definition.areas)) {
         const source = readObject(wikitom, commit, path);
         if (source === null) throw new PreludeError(`required ${path} is absent at ${commit}`);
-        const missing = AREA_SECTIONS.filter((section) => extractSections(source, [section]) === "");
-        if (missing.length === 1) {
-          throw new PreludeError(`required ${path} has no "${missing[0]}" section at ${commit}`);
-        }
-        if (missing.length > 1) {
-          throw new PreludeError(`required ${path} has no "${missing[0]}" or "${missing[1]}" sections at ${commit}`);
-        }
-        const body = cutAreaSections(source);
-        blockFiles.push({ path, body, sourceBody: source });
+        const body = parseFrontmatter(source).body.trim();
+        if (body === "") throw new PreludeError(`required ${path} is blank at ${commit}`);
+        layerFiles.push({ path, body, sourceBody: source });
       }
     }
-    files.push(...blockFiles);
-    blocks[name] = renderFiles(blockFiles);
-    filesByBlock[name] = blockFiles;
+    files.push(...layerFiles);
+    layers[name] = renderFiles(layerFiles);
+    filesByLayer[name] = layerFiles;
   }
-  return { files, blocks, filesByBlock };
+  return { files, layers, filesByLayer };
 }
 
 function preludeResult(wikitom, commit, collected) {
@@ -175,40 +164,40 @@ function preludeResult(wikitom, commit, collected) {
     commit,
     committedAt,
     pushed,
-    blocks: collected.blocks,
+    layers: collected.layers,
     files: collected.files.map((file) => ({ ...file, bytes: Buffer.byteLength(file.sourceBody) })),
     text: `${header}\n\n${renderFiles(collected.files)}`,
   };
 }
 
 /**
- * Reads the requested WikiTom prompt blocks from one immutable git commit.
+ * Reads the requested WikiTom prompt layers from one immutable git commit.
  * Its result is reusable by the nightly job; the command line below is only
  * a thin renderer around this function.
  */
-export function assemblePrelude({ wikitom, commit: requestedCommit = "HEAD", blocks } = {}) {
+export function assemblePrelude({ wikitom, commit: requestedCommit = "HEAD", layers } = {}) {
   if (typeof wikitom !== "string" || wikitom === "") throw new PreludeError("--wikitom DIR is required");
   const commit = resolveCommit(wikitom, requestedCommit);
-  const requestedBlocks = selectedBlockNames(blocks);
-  return preludeResult(wikitom, commit, collectBlocks(wikitom, commit, requestedBlocks));
+  const requestedLayers = selectedLayerNames(layers);
+  return preludeResult(wikitom, commit, collectLayers(wikitom, commit, requestedLayers));
 }
 
 /**
  * Build the nightly publication in one pass over an immutable WikiTom
  * commit. Headers come from the same collected file map, so no consumer has
- * to recreate a block's file selection or invoke git again.
+ * to recreate a layer's file selection or invoke git again.
  */
 export function assemblePreludePublication({ wikitom, commit: requestedCommit = "HEAD" } = {}) {
   if (typeof wikitom !== "string" || wikitom === "") throw new PreludeError("--wikitom DIR is required");
   const commit = resolveCommit(wikitom, requestedCommit);
-  const collected = collectBlocks(wikitom, commit, BLOCK_NAMES);
+  const collected = collectLayers(wikitom, commit, LAYER_NAMES);
   const result = preludeResult(wikitom, commit, collected);
   const headers = [];
-  for (let mask = 1; mask < 1 << BLOCK_NAMES.length; mask += 1) {
-    const blocks = BLOCK_NAMES.filter((_, index) => (mask & (1 << index)) !== 0);
+  for (let mask = 1; mask < 1 << LAYER_NAMES.length; mask += 1) {
+    const layers = LAYER_NAMES.filter((_, index) => (mask & (1 << index)) !== 0);
     headers.push({
-      blocks,
-      header: renderHeader(commit, blocks.flatMap((name) => collected.filesByBlock[name])),
+      layers,
+      header: renderHeader(commit, layers.flatMap((name) => collected.filesByLayer[name])),
     });
   }
   return { ...result, headers };
@@ -217,7 +206,7 @@ export function assemblePreludePublication({ wikitom, commit: requestedCommit = 
 function parseArgs(argv) {
   let wikitom;
   let commit;
-  let blocks;
+  let layers;
   let json = false;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -225,20 +214,20 @@ function parseArgs(argv) {
       json = true;
       continue;
     }
-    if (argument === "--wikitom" || argument === "--commit" || argument === "--blocks") {
+    if (argument === "--wikitom" || argument === "--commit" || argument === "--layers") {
       const value = argv[index + 1];
       if (value === undefined || value.startsWith("--")) throw new PreludeError(`${argument} needs a value`);
       if (argument === "--wikitom") wikitom = value;
       if (argument === "--commit") commit = value;
-      if (argument === "--blocks") blocks = value;
+      if (argument === "--layers") layers = value;
       index += 1;
       continue;
     }
     throw new PreludeError(`unknown argument ${argument}`);
   }
   if (wikitom === undefined) throw new PreludeError("--wikitom DIR is required");
-  if (blocks === undefined) throw new PreludeError("--blocks operate,write,know is required");
-  return { wikitom, commit, blocks, json };
+  if (layers === undefined) throw new PreludeError("--layers operate,write,know is required");
+  return { wikitom, commit, layers, json };
 }
 
 function main(argv) {
@@ -249,7 +238,7 @@ function main(argv) {
       commit: prelude.commit,
       committedAt: prelude.committedAt,
       pushed: prelude.pushed,
-      blocks: prelude.blocks,
+      layers: prelude.layers,
       files: prelude.files.map(({ path, bytes }) => ({ path, bytes })),
     })}\n`);
   } else {

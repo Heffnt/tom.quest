@@ -30,9 +30,9 @@
 //      earlier run left modified, `git pull --rebase`, `git push` over the
 //      github.com-wikitom SSH alias. A refused pull or push is a failure row
 //      and the commits stay local for the next night; nothing is retried.
-//   5. post — reads the model-of-tom files from the git object at HEAD
-//      (writing.md, priorities.md, schedule.md, and the "Current state" and
-//      "Must not break" sections of every page under areas/) and posts them
+  //   5. post — reads the model-of-tom files from the git object at HEAD
+  //      (the stable operate, write, and know layers; each area page whole
+  //      except for YAML frontmatter) and posts them
 //      with the commit hash and time to POST /tts/model-of-tom — whether or
 //      not the push succeeded, so every prompt names the commit it began
 //      with; `pushed` says whether that commit is on GitHub yet. A named
@@ -1405,7 +1405,7 @@ export async function postStep(run, deps = {}) {
     commit: prelude.commit,
     committedAt: prelude.committedAt,
     pushed: prelude.pushed,
-    blocks: prelude.blocks,
+    layers: prelude.layers,
     files,
     headers: prelude.headers,
   });

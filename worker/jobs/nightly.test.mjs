@@ -3,7 +3,7 @@
 // files on the Jarvis Box, flock, and Convex — so what is pinned is what a
 // mistake in would be silent: the bytes a table becomes (a nondeterministic
 // line makes every table "changed" every night), the split rule, the
-// sections an area page is reduced to, the file order of the post, the
+// whole area-page bodies the post carries, the file order of the post, the
 // dates a session file is filed under, and the archive's placement rules.
 //
 // Importing the job module is safe: it only calls main() when node was
@@ -59,9 +59,10 @@ import {
   utcDay,
   writeArchived,
 } from "./nightly.mjs";
-import { cutAreaSections, PRELUDE_BLOCKS } from "../../scripts/prelude.mjs";
+import { PRELUDE_LAYERS } from "../../scripts/prelude.mjs";
+import { parseFrontmatter } from "./markdown-sections.mjs";
 
-const REQUIRED_AREA_PATHS = PRELUDE_BLOCKS.know.areas.required;
+const REQUIRED_AREA_PATHS = PRELUDE_LAYERS.know.areas.required;
 
 const tmpDirs = [];
 function tmp() {
@@ -1586,11 +1587,12 @@ describe("the git half", { timeout: 60_000 }, () => {
     write(dir, "model-of-tom/agent-rules.md", "# Rules\n\nOperate safely.\n");
     write(dir, "model-of-tom/writing.md", "# Writing\n\nBe plain.\n");
     write(dir, "model-of-tom/ground.md", "# Ground\n\nStart here.\n");
+    write(dir, "model-of-tom/intent.md", "# Intent\n\nKeep moving.\n");
     write(dir, "model-of-tom/priorities.md", "# Priorities\n\nResearch.\n");
     write(dir, "model-of-tom/schedule.md", "# Schedule\n\nTuesday.\n");
     const areaBodies = Object.fromEntries(REQUIRED_AREA_PATHS.map((area) => [
       area,
-      area.endsWith("/climbing.md") ? CLIMBING : "## Current state\n\n- Present.\n\n## Must not break\n\n- Safety.\n",
+      "---\nupdated: 2026-09-09\n---\n\n# Area\n\n## Current state\n\n- Present.\n",
     ]));
     for (const [area, body] of Object.entries(areaBodies)) write(dir, area, body);
     run(dir, "add", "-A");
@@ -1608,15 +1610,15 @@ describe("the git half", { timeout: 60_000 }, () => {
       },
     });
 
-    const blocks = {
+    const layers = {
       operate: "── model-of-tom/agent-rules.md ──\n# Rules\n\nOperate safely.\n",
       write: "── model-of-tom/writing.md ──\n# Writing\n\nBe plain.\n\n\n── model-of-tom/ground.md ──\n# Ground\n\nStart here.\n",
-      know: "── model-of-tom/priorities.md ──\n# Priorities\n\nResearch.\n\n\n── model-of-tom/schedule.md ──\n# Schedule\n\nTuesday.\n\n\n── model-of-tom/areas/climbing.md ──\n## Current state\n\n- Climbing for 16 years; on the WPI climbing team (session 47f04bc9, 2026-08-30).\n- Ankle: minor chronic pain from jumping down off the wall (session 47f04bc9, 2026-08-30).\n\n## Must not break\n\n- Team practices are fixed (session 47f04bc9, 2026-08-30).",
+      know: "",
     };
     const paths = {
       operate: ["model-of-tom/agent-rules.md"],
       write: ["model-of-tom/writing.md", "model-of-tom/ground.md"],
-      know: ["model-of-tom/priorities.md", "model-of-tom/schedule.md", ...REQUIRED_AREA_PATHS],
+      know: ["model-of-tom/intent.md", "model-of-tom/priorities.md", "model-of-tom/schedule.md", ...REQUIRED_AREA_PATHS],
     };
     const header = (selection) => `MODEL-OF-TOM FILES (WikiTom commit ${commit}): ${selection.flatMap((name) => paths[name]).join(", ")}`;
     const selections = [
@@ -1627,13 +1629,13 @@ describe("the git half", { timeout: 60_000 }, () => {
       "model-of-tom/agent-rules.md": "# Rules\n\nOperate safely.\n",
       "model-of-tom/writing.md": "# Writing\n\nBe plain.\n",
       "model-of-tom/ground.md": "# Ground\n\nStart here.\n",
+      "model-of-tom/intent.md": "# Intent\n\nKeep moving.\n",
       "model-of-tom/priorities.md": "# Priorities\n\nResearch.\n",
       "model-of-tom/schedule.md": "# Schedule\n\nTuesday.\n",
-      "model-of-tom/areas/climbing.md": CLIMBING,
     };
     Object.assign(bodies, areaBodies);
-    const render = (file) => `── ${file} ──\n${file.startsWith("model-of-tom/areas/") ? cutAreaSections(bodies[file]) : bodies[file]}`;
-    blocks.know = ["model-of-tom/priorities.md", "model-of-tom/schedule.md", ...REQUIRED_AREA_PATHS].map(render).join("\n\n");
+    const render = (file) => `── ${file} ──\n${file.startsWith("model-of-tom/areas/") ? parseFrontmatter(bodies[file]).body.trim() : bodies[file]}`;
+    layers.know = paths.know.map(render).join("\n\n");
     const files = Object.values(paths).flatMap((filePaths) => filePaths.map((filePath) => ({
       path: filePath,
       body: bodies[filePath],
@@ -1645,9 +1647,9 @@ describe("the git half", { timeout: 60_000 }, () => {
         commit,
         committedAt,
         pushed: false,
-        blocks,
+        layers,
         files,
-        headers: selections.map((selection) => ({ blocks: selection, header: header(selection) })),
+        headers: selections.map((selection) => ({ layers: selection, header: header(selection) })),
       },
     }]);
     expect(result).toEqual({ commit, pushed: false, files: files.map((file) => file.path) });

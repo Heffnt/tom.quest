@@ -28,6 +28,7 @@
 //   --timeout MS       hard kill after this long      (default: none; 0 = none)
 //   --schema FILE      JSON Schema the answer must match
 //   --keep-logs        print the stderr log path instead of deleting it
+//   --no-operate       do not inject WikiTom's operate instructions
 //
 // THERE IS NO TIME LIMIT BY DEFAULT (Tom's ruling, 2026-09-09). A Codex run at
 // `xhigh` on real work routinely outlasts any number worth guessing, and a kill
@@ -50,8 +51,8 @@
 // The model default is a NAME, not a deferral to ~/.codex/config.toml, so that
 // a machine whose config was never written still runs the fleet model.
 
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, createWriteStream } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, createWriteStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 
@@ -76,6 +77,7 @@ function parseArgs(argv) {
     timeout: DEFAULT_TIMEOUT_MS,
     schema: null,
     keepLogs: false,
+    operate: true,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -91,6 +93,7 @@ function parseArgs(argv) {
       case "--timeout": opts.timeout = Number(next()); break;
       case "--schema": opts.schema = next(); break;
       case "--keep-logs": opts.keepLogs = true; break;
+      case "--no-operate": opts.operate = false; break;
       default: fail(`unknown option ${arg}`);
     }
   }
@@ -130,6 +133,27 @@ function readStdin() {
   }
 }
 
+// Read a committed object, never the work tree: an in-progress nightly edit
+// must not alter a Codex run's operate instructions.
+function operateInstructions() {
+  const wikitom = process.env.WIKITOM_DIR
+    || (process.platform === "win32" ? "C:/Users/heffn/Desktop/WikiTom" : "/root/wikitom");
+  try {
+    if (!existsSync(wikitom)) throw new Error("checkout absent");
+    const resolved = realpathSync.native(wikitom);
+    return execFileSync(
+      "git",
+      ["-c", `safe.directory=${resolved}`, "-C", wikitom, "show", "HEAD:model-of-tom/agent-rules.md"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+  } catch {
+    // One stable line makes the missing personal checkout visible without
+    // making the launcher unusable on machines that do not have one.
+    process.stderr.write("codex-run: operate instructions unavailable; continuing without them\n");
+    return null;
+  }
+}
+
 function killTree(child) {
   if (process.platform === "win32") {
     spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
@@ -141,6 +165,8 @@ function killTree(child) {
 const opts = parseArgs(process.argv.slice(2));
 const prompt = readStdin();
 if (!prompt.trim()) fail("no prompt on stdin");
+
+const operate = opts.operate ? operateInstructions() : null;
 
 const bin = resolveBinary();
 const workDir = mkdtempSync(join(tmpdir(), "codex-run-"));
@@ -162,6 +188,10 @@ const args = [
   "-c", "notify=[]",
   "-c", `model_reasoning_effort=${opts.effort}`,
 ];
+if (operate !== null) {
+  // JSON strings are valid TOML basic strings and preserve quotes/newlines.
+  args.push("-c", `developer_instructions=${JSON.stringify(operate)}`);
+}
 // Under workspace-write, a sandboxed Codex has no network by default, which
 // turns "run the tests" into a dependency-install failure. Harmless under
 // read-only, but say it only where it applies so the read-only path stays
@@ -175,7 +205,7 @@ args.push("-"); // prompt arrives on stdin, so no command-line length limit
 
 // A .cmd shim (the npm install) only runs through cmd.exe.
 const useShell = process.platform === "win32" && bin.toLowerCase().endsWith(".cmd");
-const quote = (s) => (useShell ? `"${s.replace(/"/g, '\\"')}"` : s);
+const quote = (s) => (useShell ? `"${s.replace(/\\(?=")/g, "\\\\").replace(/"/g, '""')}"` : s);
 
 const errStream = createWriteStream(errLog);
 const child = spawn(useShell ? quote(bin) : bin, args.map(quote), {

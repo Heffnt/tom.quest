@@ -25,11 +25,11 @@ async function publishSessionPrelude(t: ReturnType<typeof convexTest>) {
       commit: "slack-session-test",
       committedAt: 1,
       pushed: true,
-      operate: "operate block",
-      write: "write block",
-      know: "know block",
+        operate: "operate layer",
+        write: "write layer",
+        know: "know layer",
       headers: [{
-        blocks: ["operate", "write", "know"],
+        layers: ["operate", "write", "know"],
         header: "MODEL-OF-TOM FILES (WikiTom commit slack-session-test): operate,write,know",
       }],
     });

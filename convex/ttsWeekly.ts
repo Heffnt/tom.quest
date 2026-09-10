@@ -36,7 +36,7 @@ import { JOB_FAILED, JOB_RECOVERED } from "./ttsJobs";
 import { NIGHTLY_FAILURE } from "./ttsNightly";
 import { NEEDS_TOM, SLACK_REPLY_FAILED } from "./ttsSlack";
 import { DAY_MS, MODEL_OF_TOM_AREAS_DIR, isPrepared } from "./ttsShared";
-import { isModelOfTomPath, MODEL_OF_TOM_BLOCK_NAMES } from "./ttsSkills";
+import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { isIsoDay, parseFrontmatter } from "../worker/jobs/markdown-sections.mjs";
 
 export const WEEK_MS = 7 * DAY_MS;
@@ -138,7 +138,7 @@ export type WeeklyFacts = {
   modelOfTom: {
     commit: string | null;
     syncedAt: number | null;
-    blocks: { name: "operate" | "write" | "know"; bytes: number }[];
+    layers: { name: "operate" | "write" | "know"; bytes: number }[];
     files: { path: string; bytes: number }[];
     totalBytes: number;
   };
@@ -462,11 +462,11 @@ export async function gatherWeeklyFacts(
   const areaPages: WeeklyFacts["areaPages"] = [];
   const publication = await ctx.db.query("modelOfTomPublication")
     .withIndex("by_key", (q) => q.eq("key", "current")).unique();
-  const blocks: WeeklyFacts["modelOfTom"]["blocks"] = [];
-  for (const name of MODEL_OF_TOM_BLOCK_NAMES) {
+  const layers: WeeklyFacts["modelOfTom"]["layers"] = [];
+    for (const name of MODEL_OF_TOM_LAYER_NAMES) {
     const body = publication?.[name];
     if (typeof body === "string") {
-      blocks.push({ name, bytes: new TextEncoder().encode(body).length });
+      layers.push({ name, bytes: new TextEncoder().encode(body).length });
     }
   }
   for (const row of [...skills].sort((a, b) =>
@@ -488,7 +488,7 @@ export async function gatherWeeklyFacts(
   const modelOfTom = {
     commit: publication?.commit ?? null,
     syncedAt: publication?.committedAt ?? null,
-    blocks,
+    layers,
     files,
     totalBytes: files.reduce((n, f) => n + f.bytes, 0),
   };

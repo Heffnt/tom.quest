@@ -146,8 +146,8 @@ describe("captureContext", () => {
     );
   });
 
-  it("passes a missing model-of-tom block refusal to its caller unchanged", async () => {
-    const refusal = "model-of-tom block write is not stored";
+  it("passes a missing model-of-tom layer refusal to its caller unchanged", async () => {
+    const refusal = "model-of-tom layer write is not stored";
     const body = JSON.stringify({ error: refusal });
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 503, text: async () => body })));
 

@@ -301,7 +301,7 @@ async function main() {
   const env = loadEnv();
   const state = await convexFetch(env, "/tts/time-notes", {});
   if (typeof state.writingStandard !== "string" || state.writingStandard.trim() === "") {
-    throw new Error("model-of-tom block write is not stored");
+    throw new Error("model-of-tom layer write is not stored");
   }
   const notes = Array.isArray(state.notes) ? state.notes : [];
   if (notes.length === 0) return; // the common case: exit before spending anything

@@ -24,15 +24,15 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 // when the prompt changes is the alarm working.
 const DAEMON_SENTENCE = "Never restart, stop, or kill `tts-session-host`";
 
-const TEST_PRELUDE_BLOCKS = {
-  operate: "test operate block",
-  write: "test write block",
-  know: "test know block",
+const TEST_PRELUDE_LAYERS = {
+  operate: "test operate layer",
+  write: "test write layer",
+  know: "test know layer",
 };
 const TEST_PRELUDE_HEADERS = ([
   ["operate"], ["write"], ["know"], ["operate", "write"],
   ["operate", "know"], ["write", "know"], ["operate", "write", "know"],
-] as const).map((names) => ({ blocks: [...names], header: `${MODEL_OF_TOM_HEADER} (WikiTom commit testprelude): ${names.join(",")}` }));
+] as const).map((names) => ({ layers: [...names], header: `${MODEL_OF_TOM_HEADER} (WikiTom commit testprelude): ${names.join(",")}` }));
 
 async function withTom(t: ReturnType<typeof convexTest>) {
   const tomId = await t.run(async (ctx) =>
@@ -44,7 +44,7 @@ async function withTom(t: ReturnType<typeof convexTest>) {
       commit: "testprelude",
       committedAt: 1,
       pushed: true,
-      ...TEST_PRELUDE_BLOCKS,
+      ...TEST_PRELUDE_LAYERS,
       headers: TEST_PRELUDE_HEADERS,
     });
   });
@@ -249,16 +249,16 @@ describe("claude sessions", () => {
     // server-side (pinned by its own test below).
     const text = inbound[0].text ?? "";
     expect(text.startsWith(`${MODEL_OF_TOM_HEADER} (WikiTom commit testprelude)`)).toBe(true);
-    expect(text).toContain(TEST_PRELUDE_BLOCKS.operate);
-    expect(text).toContain(TEST_PRELUDE_BLOCKS.write);
-    expect(text).toContain(TEST_PRELUDE_BLOCKS.know);
-    expect(text.indexOf(TEST_PRELUDE_BLOCKS.operate)).toBeLessThan(
-      text.indexOf(TEST_PRELUDE_BLOCKS.write),
+    expect(text).toContain(TEST_PRELUDE_LAYERS.operate);
+    expect(text).toContain(TEST_PRELUDE_LAYERS.write);
+    expect(text).toContain(TEST_PRELUDE_LAYERS.know);
+    expect(text.indexOf(TEST_PRELUDE_LAYERS.operate)).toBeLessThan(
+      text.indexOf(TEST_PRELUDE_LAYERS.write),
     );
-    expect(text.indexOf(TEST_PRELUDE_BLOCKS.write)).toBeLessThan(
-      text.indexOf(TEST_PRELUDE_BLOCKS.know),
+    expect(text.indexOf(TEST_PRELUDE_LAYERS.write)).toBeLessThan(
+      text.indexOf(TEST_PRELUDE_LAYERS.know),
     );
-    expect(text.indexOf(TEST_PRELUDE_BLOCKS.know)).toBeLessThan(text.indexOf("\n\nhello"));
+    expect(text.indexOf(TEST_PRELUDE_LAYERS.know)).toBeLessThan(text.indexOf("\n\nhello"));
   });
 
   // witness: insertSession prefixed the prelude to whatever the seed's prompt
@@ -3593,7 +3593,7 @@ describe("the code lane", () => {
     expect(text).toContain("NEVER merge");
     expect(text).toContain(DAEMON_SENTENCE);
     expect(text).not.toContain("SESSIONS_WORKER_KEY");
-    expect(text.indexOf(TEST_PRELUDE_BLOCKS.know)).toBeLessThan(
+    expect(text.indexOf(TEST_PRELUDE_LAYERS.know)).toBeLessThan(
       text.indexOf(AUTONOMOUS_SESSION_CONTRACT),
     );
     expect(text.indexOf('TOM RULED "approve"')).toBeLessThan(
@@ -4058,7 +4058,7 @@ describe("prospecting lane", () => {
     // reaches a model-reachable environment, so the prompt cannot name it.
     expect(text).toContain("TTS_WORKER_KEY");
     expect(text).not.toContain("SESSIONS_WORKER_KEY");
-    expect(text.indexOf(TEST_PRELUDE_BLOCKS.know)).toBeLessThan(
+    expect(text.indexOf(TEST_PRELUDE_LAYERS.know)).toBeLessThan(
       text.indexOf(AUTONOMOUS_SESSION_CONTRACT),
     );
     expect(text.indexOf("What counts as a finding:")).toBeLessThan(
@@ -4600,7 +4600,7 @@ describe("frontier scheduler", () => {
     const text = await missionText(tom, sessions[0]._id);
     expect(text).toContain("do the groundwork this item needs");
     expect(text).not.toContain("YOU HAVE CLAIMED ONE TODO");
-    expect(text.indexOf(TEST_PRELUDE_BLOCKS.know)).toBeLessThan(
+    expect(text.indexOf(TEST_PRELUDE_LAYERS.know)).toBeLessThan(
       text.indexOf(AUTONOMOUS_SESSION_CONTRACT),
     );
     expect(text.indexOf("The goal:")).toBeLessThan(
@@ -5298,8 +5298,8 @@ describe("frontier scheduler", () => {
     expect(text).toContain("publish the page");
     expect(text).toContain("ALSO READY IN THIS BATCH RIGHT NOW (1");
     expect(text).toContain("check the citations");
-    // The selected publication's writing block reaches the worker verbatim.
-    expect(text).toContain(TEST_PRELUDE_BLOCKS.write);
+    // The selected publication's writing layer reaches the worker verbatim.
+    expect(text).toContain(TEST_PRELUDE_LAYERS.write);
     expect(text).toContain(AUTONOMOUS_SESSION_CONTRACT);
     expect(text).not.toContain("The vocabulary, which is closed");
     expect(text).not.toContain("<!DOCTYPE html>");
@@ -5318,7 +5318,7 @@ describe("frontier scheduler", () => {
     // reaches a model-reachable environment.
     expect(text).toContain("TTS_WORKER_KEY");
     expect(text).not.toContain("SESSIONS_WORKER_KEY");
-    expect(text.indexOf(TEST_PRELUDE_BLOCKS.know)).toBeLessThan(
+    expect(text.indexOf(TEST_PRELUDE_LAYERS.know)).toBeLessThan(
       text.indexOf(AUTONOMOUS_SESSION_CONTRACT),
     );
     expect(text.indexOf("Everything you write into TTS obeys")).toBeLessThan(
