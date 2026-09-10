@@ -19,10 +19,10 @@ import { describeOverflow, modelOfTomHeadOf } from "./lib";
 
 describe("modelOfTomHeadOf", () => {
   it("reads back the commit and canonical layers from the stored all-layer header", () => {
-    const prompt = "MODEL-OF-TOM FILES (WikiTom commit abc1234def5678): operate,write,know\n\noperate layer\n\nwrite layer\n\nknow layer";
+    const prompt = "MODEL-OF-TOM FILES (WikiTom commit 0123456789abcdef0123456789abcdef01234567): model-of-tom/agent-rules.md, model-of-tom/writing.md, model-of-tom/intent.md\n\noperate layer\n\nwrite layer\n\nknow layer";
     expect(modelOfTomHeadOf(prompt)).toEqual({
-      commit: "abc1234def5678",
-      paths: ["operate", "write", "know"],
+      commit: "0123456789abcdef0123456789abcdef01234567",
+      paths: ["model-of-tom/agent-rules.md", "model-of-tom/writing.md", "model-of-tom/intent.md"],
     });
   });
 

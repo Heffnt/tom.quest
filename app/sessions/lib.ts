@@ -359,14 +359,14 @@ export function describeOverflow(p: OverflowProgress): string {
 }
 
 // ── The model-of-tom prelude, as a transcript row reads it ──────────────────
-// Every session opener begins with the model-of-tom files, headed by one line
-// naming the WikiTom commit they were read at and listing their paths
-// (convex/ttsSkills.ts modelOfTomText). That header is how a transcript
-// records what the session began with, so the first row shows it as a fact of
-// its own instead of burying it in the first line of a long prompt.
+// Every session opener begins with the model-of-tom publication, headed by one
+// line naming the WikiTom commit and its paths (convex/ttsSkills.ts
+// modelOfTomText). There is no fallback copy: until that singleton is present
+// the opener fails closed. The header records the prompt's exact publication,
+// so the first row shows it as a fact instead of burying it in a long prompt.
 
 export type ModelOfTomHead = {
-  /** null while the fallback copy is serving (no commit was recorded). */
+  /** null only for a historic header without a parseable commit. */
   commit: string | null;
   paths: string[];
 };

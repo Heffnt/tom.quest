@@ -611,8 +611,9 @@ async function insertSession(
   // pen, a fork — one home, here, rather than each builder pasting its own copy. The
   // prelude's first line names the WikiTom commit and lists the paths, and
   // this row is the transcript's first row, so the transcript records what
-  // the session began with. Under no posted files it is the hardcoded
-  // writing standard under a header that says so (convex/ttsSkills.ts).
+  // the session began with. Publication fails closed: if no complete posted
+  // model-of-tom layer set exists, modelOfTomPrelude throws and this mutation
+  // publishes neither the session nor its opener (convex/ttsSkills.ts).
   //
   // AND ONLY HERE: a seed whose prompt already begins with the prelude's
   // header — a live opener copied into the Create session box, a builder that
