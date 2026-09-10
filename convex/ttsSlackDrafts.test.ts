@@ -89,6 +89,52 @@ describe("the morning message's writer", () => {
     expect(rows.filter((e) => e.kind === SLACK_DRAFT_REQUEST)).toHaveLength(1);
   });
 
+  // THE NUMBERING RIDES WITH THE REQUEST. A threaded "revert 2" is resolved
+  // against the digest-sent row the morning wrote (convex/ttsSlack.ts
+  // namedObjection), and the WRITER path is the default one — so a request
+  // that carries no objectionAskIds means every numbered objection Tom types
+  // is silently captured as a fresh todo instead.
+  // witness: drop objectionAskIds from sendToday's `marks`.
+  it("carries the objection list's numbering through to the day it marks sent", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    await openMorning(t);
+    stubSlack();
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: FIVE_AM - 3600_000,
+        kind: "delegate-decision",
+        key: "ask-1",
+        data: { askId: "ask-1", decision: "moved the appointment", refused: false },
+      });
+    });
+
+    await t.action(internal.ttsSync.sendToday, {});
+    const [request] = await openRequests(t);
+    // The MARKS ride on the request ROW, not in what the box is served: the
+    // writer has no use for them and the send does.
+    const [row] = await t.run(async (ctx) =>
+      (await ctx.db.query("dtsEvents").collect()).filter((e) => e.kind === SLACK_DRAFT_REQUEST),
+    );
+    expect((row.data as { marks: { objectionAskIds?: string[] } }).marks.objectionAskIds).toEqual([
+      "ask-1",
+    ]);
+
+    // …and it survives the FLOOR, the template the timeout posts, which
+    // marks the day from this same row.
+    await t.mutation(internal.ttsSlackDrafts.internalFallbackSlackDraft, {
+      requestId: request.requestId,
+      reason: "the writer did not answer",
+    });
+    await t.action(internal.ttsSync.sendSlackDraft, { requestId: request.requestId });
+    const marked = await t.run(async (ctx) =>
+      (await ctx.db.query("dtsEvents").collect()).filter((e) => e.kind === DIGEST_SENT),
+    );
+    expect(marked).toHaveLength(1);
+    expect((marked[0].data as { objectionAskIds?: string[] }).objectionAskIds).toEqual(["ask-1"]);
+  });
+
   it("posts an accepted draft and records that Fable wrote it", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);

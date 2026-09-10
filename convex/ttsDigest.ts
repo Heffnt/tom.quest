@@ -571,16 +571,18 @@ export async function gatherTodayFacts(
           row !== null && typeof row === "object" ? [row as Record<string, unknown>] : [],
         );
         if (stale.length === 0 && missing.length === 0) break;
+        // SHORT CLAUSES, deliberately: this statement and its detail are one
+        // line to ttsCompose.statement(), which cuts at the last clause
+        // boundary before LINE_CHARS — a longer sentence loses its second
+        // clause and the session it names, silently.
         const clauses: string[] = [];
-        if (stale.length > 0) {
-          clauses.push(`${stale.length} began from an older model-of-tom commit`);
-        }
+        if (stale.length > 0) clauses.push(`${stale.length} from an older commit`);
         if (missing.length > 0) clauses.push(`${missing.length} from none at all`);
         const first = stale[0] ?? missing[0];
         const firstId = str(first?.id);
         const row = failure(
           "prelude-delivery",
-          `Sessions ran without the model-of-tom they should have had: ${clauses.join(", and ")}.`,
+          `Sessions ran without the model-of-tom they should have had: ${clauses.join(", ")}.`,
           firstId === undefined ? undefined : ttsSessionLink(firstId),
         );
         row.detail = str(first?.title);
@@ -608,7 +610,9 @@ export async function gatherTodayFacts(
             : [],
         )[0];
         if (firstRegression !== undefined) {
-          row.detail = `${str(firstRegression.id) ?? "an item"} (${str(firstRegression.partition) ?? "?"}) — ${str(firstRegression.reason) ?? ""}`;
+          // The id and the reason; the partition is on the run row and is
+          // one clause too many for a line that is already a sentence long.
+          row.detail = `${str(firstRegression.id) ?? "an item"} — ${str(firstRegression.reason) ?? ""}`;
         }
         break;
       }

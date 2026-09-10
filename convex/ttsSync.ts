@@ -371,7 +371,12 @@ export const sendToday = internalAction({
         facts,
         canReply,
         fallback: text,
-        marks: { day, windowEnd: now, surfacedTodoIds, truncated },
+        // objectionAskIds RIDES ALONG: whichever path posts, the digest-sent
+        // row it marks the day with carries the objection list's own
+        // numbering, and a threaded "revert 2" is resolved against that row
+        // (convex/ttsSlack.ts namedObjection). Without it here the writer
+        // path — the default — dropped every numbered objection silently.
+        marks: { day, windowEnd: now, surfacedTodoIds, truncated, objectionAskIds },
       });
       if (opened.opened) return;
       // A request for this day already exists — a re-run, or a --force. Fall

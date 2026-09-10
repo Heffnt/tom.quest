@@ -4,6 +4,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { DELEGATE_DECISION } from "./ttsAsk";
 import { MERGE } from "./ttsMerge";
+import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import {
   DIGEST_SENT,
   ROLLOVER_NOTE,
@@ -590,6 +591,136 @@ describe("internalComposeToday", () => {
     // Its number names no askId: a merge is not a delegate decision, so a
     // reply that types its number falls through to the ordinary paths.
     expect(objectionAskIds).toEqual([""]);
+  });
+
+  // THE CAP AND THE NUMBERING ARE ONE INVARIANT: a number Tom types must name
+  // a line he could see, so the askIds recorded are exactly the ones printed.
+  // ttsCompose SECTION_CAPS.objections is what cuts the list; this asserts the
+  // two agree, which is the only reason "revert 12" means what it says.
+  it("prints twelve of fifteen, says where the rest are, and records only the twelve", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    await t.run(async (ctx) => {
+      for (let n = 0; n < 15; n += 1) {
+        await ctx.db.insert("dtsEvents", {
+          at: FIVE_AM - (15 - n) * 60_000,
+          kind: DELEGATE_DECISION,
+          key: `ask-${n}`,
+          data: { askId: `ask-${n}`, decision: `took decision ${n}`, refused: false },
+        });
+      }
+    });
+    const { text, objectionAskIds } = await t.query(internal.ttsDigest.internalComposeToday, {
+      day: DAY_KEY,
+      now: FIVE_AM,
+      canReply: true,
+    });
+    expect(objectionAskIds).toHaveLength(12);
+    expect(text).toContain("12. Took decision");
+    expect(text).not.toContain("13. ");
+    expect(text).toContain("3 more decisions are on the page.");
+  });
+
+  // These two cases exist only because the morning message narrowed: the
+  // delivery check and the evals result used to have a section of their own,
+  // and now a PROBLEM in either is a #tts-broken line while a clean run is the
+  // weekly's fact. Both halves are asserted, because "prints nothing" is the
+  // half that goes wrong silently.
+  it("reports a stale prelude delivery as broken, and says nothing about a clean one", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const clean = convexTest(schema, modules);
+    await withTom(clean);
+    await clean.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: FIVE_AM - 3600_000,
+        kind: PRELUDE_DELIVERY,
+        data: { current: 14, stale: [], missing: [] },
+      });
+    });
+    const quiet = await clean.query(internal.ttsDigest.internalComposeToday, {
+      day: DAY_KEY,
+      now: FIVE_AM,
+    });
+    expect(quiet.text).not.toContain("model-of-tom");
+
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: FIVE_AM - 3600_000,
+        kind: PRELUDE_DELIVERY,
+        data: {
+          current: 1,
+          stale: [{ id: "j57abc", title: "weekly agenda", had: "7fc21ab4c1de", behindDays: 2 }],
+          missing: [{ id: "j57ghi", title: "adhoc" }],
+        },
+      });
+    });
+    const { text } = await t.query(internal.ttsDigest.internalComposeToday, {
+      day: DAY_KEY,
+      now: FIVE_AM,
+    });
+    expect(text).toContain("Sessions ran without the model-of-tom they should have had");
+    expect(text).toContain("1 from an older commit");
+    expect(text).toContain("1 from none at all");
+    expect(text).toContain("weekly agenda");
+  });
+
+  it("reports an evals regression as broken, and says nothing about a clean run", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const clean = convexTest(schema, modules);
+    await withTom(clean);
+    await clean.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: FIVE_AM - 3600_000,
+        kind: EVALS_RUN,
+        key: "tom.quest@a1b2c3d4",
+        data: { repo: "tom.quest", sha: "a1b2c3d4", items: 40, pass: 40, regressions: 0, stillFailing: 0, failures: [] },
+      });
+    });
+    const quiet = await clean.query(internal.ttsDigest.internalComposeToday, {
+      day: DAY_KEY,
+      now: FIVE_AM,
+    });
+    expect(quiet.text).not.toContain("evals");
+
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: FIVE_AM - 3600_000,
+        kind: EVALS_RUN,
+        key: "tom.quest@a1b2c3d4",
+        data: {
+          repo: "tom.quest",
+          sha: "a1b2c3d4",
+          items: 40,
+          pass: 38,
+          regressions: 1,
+          stillFailing: 1,
+          failures: [
+            {
+              id: "prepare-chores-k17abc",
+              partition: "prepare/chores",
+              reason: "still restates the statement",
+              regression: true,
+            },
+          ],
+        },
+      });
+    });
+    const { text } = await t.query(internal.ttsDigest.internalComposeToday, {
+      day: DAY_KEY,
+      now: FIVE_AM,
+    });
+    expect(text).toContain("The evals came back short at tom.quest a1b2c3d");
+    expect(text).toContain("1 regression");
+    expect(text).toContain("1 still failing");
+    expect(text).toContain("prepare-chores-k17abc");
   });
 
   it("renders nothing at all when there are no delegate rows", async () => {
