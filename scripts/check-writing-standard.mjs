@@ -1,6 +1,11 @@
-#!/usr/bin/env node
 // check-writing-standard.mjs — how many stored briefs and ground-up
 // explanations fail the writing standard, and which ones.
+// NO SHEBANG LINE, for nightly.mjs's reason (evals-check.mjs and
+// worker/jobs/write-slack.mjs say it too): this file is imported by
+// scripts/check-writing-standard.test.mjs, and the test bundler rewrites such a
+// module by prepending an import — which lands in front of a shebang and fails
+// to parse. Every caller already names the interpreter (npm run check:writing
+// is `node scripts/check-writing-standard.mjs`).
 //
 //   node scripts/check-writing-standard.mjs           # report + ratchet gate
 //   node scripts/check-writing-standard.mjs --list     # name every failure
