@@ -14,25 +14,18 @@
 import { internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { expandIcsText } from "./ttsCalendarExpand";
-import { DAY_MS } from "./ttsShared";
+import { DAY_MS, parseIcsFeedConfig } from "./ttsShared";
 
 /** The sync window: recent past for context, two months ahead for planning. */
 const WINDOW_PAST_DAYS = 7;
 const WINDOW_FUTURE_DAYS = 60;
 
-type FeedConfig = { name: string; url: string };
-
-function parseFeedConfig(raw: string): FeedConfig[] {
-  const parsed: unknown = JSON.parse(raw);
-  if (!Array.isArray(parsed)) throw new Error("TTS_ICS_FEEDS must be a JSON array");
-  return parsed.map((entry, i) => {
-    const e = entry as Record<string, unknown>;
-    if (typeof e?.name !== "string" || typeof e?.url !== "string") {
-      throw new Error(`TTS_ICS_FEEDS[${i}] needs {name, url}`);
-    }
-    return { name: e.name, url: e.url };
-  });
-}
+// The feed config, and what `"private": true` on an entry means, live in
+// convex/ttsShared.ts: the fact gatherer is a plain-runtime query and cannot
+// import this "use node" file. Privacy is CONFIGURATION, not mirror data —
+// a private feed's rows are fetched and stored exactly like any other, so the
+// schedule stays complete, and only what Tom READS drops them.
+const parseFeedConfig = parseIcsFeedConfig;
 
 export const refreshFeeds = internalAction({
   args: {},

@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { composeCaptured, renderSlack } from "./ttsCompose";
 import {
   internalMutation,
   internalQuery,
@@ -15,7 +16,6 @@ import {
   MAX_NEEDS,
   READINESS,
   SESSION_MODEL,
-  captureReplyText,
   goalCheckable,
   isPrepared,
   nyCalendarDayBoundsUtc,
@@ -23,6 +23,7 @@ import {
   normalizeSessionRepos,
   nyOffsetHours,
 } from "./ttsShared";
+import { redactSecrets } from "../worker/session-host/redact.mjs";
 
 // TTS (Delegated Todo System) — life-todo store, instrumentation, daily queue,
 // and the code-todo mirror. Spec: WikiTom tts/spec.md. Everything Tom-facing is
@@ -92,6 +93,25 @@ const GRAPH_TASK = v.object({
 const MAX_BATCH_GOALS = 20;
 const MAX_GRAPH_TASKS = 40;
 
+// ── #tts-broken, from the one place failures are already written ─────────────
+// Every job failure in the system is a "-failed" event kind. Rather than
+// making each producer remember to post, the ONE event writer schedules the
+// broken line — which is why there is no second list of failure kinds to keep
+// in step with this one.
+//
+// Two exclusions, both load-bearing:
+//   "slack-send-failed"  the Slack door's own. Posting it to Slack is the loop
+//                        convex/ttsHourly.ts already warns about: a refused
+//                        post would write a row that schedules another post.
+//   "learning-revert-failed"  not a job failure at all — it is an objection
+//                        the nightly job could not apply, and it belongs to
+//                        the model-of-Tom line it is about.
+const NOT_A_BROKEN_LINE = new Set(["slack-send-failed", "learning-revert-failed"]);
+
+function str(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
 export async function logEvent(
   ctx: MutationCtx,
   kind: string,
@@ -101,13 +121,36 @@ export async function logEvent(
   // schema comment lists, and on no other.
   key?: string,
 ) {
-  await ctx.db.insert("dtsEvents", {
+  // The id is answered to the caller (convex/ttsAsk.ts records one and reads it
+  // back), so the broken-line post below runs BEFORE the return rather than
+  // after it — the two halves arrived on different branches and the first
+  // straight merge left the post unreachable.
+  const id = await ctx.db.insert("dtsEvents", {
     at: Date.now(),
     kind,
     todoId,
     data: data === undefined ? undefined : data,
     key,
   });
+  if (kind.endsWith("-failed") && !NOT_A_BROKEN_LINE.has(kind)) {
+    const d = (data ?? {}) as Record<string, unknown>;
+    const job = str(d.job) ?? kind.replace(/-failed$/, "");
+    // Scheduled, not awaited: the post is network I/O and this is a mutation.
+    // It rides the transaction, so a rolled-back failure is never reported.
+    // The action itself dedupes by job for the TTS day.
+    // THE RAW `error` IS A JOB'S OWN STDERR and is never posted as it came:
+    // worker/jobs/nightly.mjs reports git's verbatim, and git names its remote
+    // with the token in it. redactSecrets is the one choke point (the same
+    // helper convex/ttsSearch.ts and worker/session-host use), and it runs
+    // before the string becomes a #tts-broken line.
+    const detail = str(d.error);
+    await ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
+      job,
+      statement: `The ${job} job failed, so whatever it feeds you has stopped arriving.`,
+      ...(detail === undefined ? {} : { detail: redactSecrets(detail) }),
+    });
+  }
+  return id;
 }
 
 // ── Tom-facing queries ───────────────────────────────────────────────────────
@@ -1275,7 +1318,7 @@ export const internalCapture = internalMutation({
       await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
         channel: slackChannel,
         threadTs: slackTs,
-        text: captureReplyText(statement, id),
+        text: renderSlack(composeCaptured({ todoId: id, statement })),
         subject: { kind: "todo", id },
       });
     }
@@ -2446,17 +2489,43 @@ export const internalMarkDigestSent = internalMutation({
   args: {
     day: v.string(),
     surfacedTodoIds: v.array(v.id("dtsTodos")),
+    // The askIds the objection list printed, in printed order — the digest's
+    // own numbering, which is what a reply of "revert 2" names. Absent on a
+    // resend and on a morning with no delegated decisions. `data` is v.any(),
+    // so this is not a schema change.
+    objectionAskIds: v.optional(v.array(v.string())),
     windowEnd: v.optional(v.number()),
-    // The digest was reduced to fit one Slack message (ttsDigest
-    // DIGEST_MAX_CHARS). Absent on a resend, which reposts a text already
+    // The morning message was reduced to fit one Slack message (ttsCompose
+    // MESSAGE_MAX_CHARS). Absent on a resend, which reposts a text already
     // composed and whose row said so at the time.
     truncated: v.optional(v.boolean()),
+    // Which path wrote the message: the Fable run on the box, or the plain
+    // template it falls back to (Tom 2026-09-09, amendment 2).
+    writtenBy: v.optional(v.string()),
+    // The deterministic inputs the message was written from — stored so the
+    // transcript shows what the writer was given, not only what it wrote.
+    facts: v.optional(v.any()),
   },
-  handler: async (ctx, { day, surfacedTodoIds, windowEnd, truncated }) => {
+  handler: async (
+    ctx,
+    { day, surfacedTodoIds, windowEnd, truncated, objectionAskIds, writtenBy, facts },
+  ) => {
     for (const todoId of surfacedTodoIds) {
       await logEvent(ctx, "surfaced", todoId, { via: "digest", day });
     }
-    await logEvent(ctx, "digest-sent", undefined, { day, windowEnd, truncated });
+    // NO KEY on a "digest-sent" row, ever: ttsDigest.lastDigestSent reads
+    // by_kind_key with the kind pinned and every key empty, so within the kind
+    // the index order IS time order and .first() is the newest row. Keying
+    // these by day would silently break the window arithmetic of every future
+    // morning message.
+    await logEvent(ctx, "digest-sent", undefined, {
+      day,
+      windowEnd,
+      truncated,
+      objectionAskIds,
+      writtenBy,
+      facts,
+    });
   },
 });
 

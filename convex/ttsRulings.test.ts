@@ -7,7 +7,32 @@ import { matchQuotedUnit, turnSpans, turnUnits } from "./ttsRulings";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
+async function publishSessionPrelude(t: ReturnType<typeof convexTest>) {
+  await t.run(async (ctx) => {
+    const current = await ctx.db
+      .query("modelOfTomPublication")
+      .first();
+    if (current !== null) return;
+    await ctx.db.insert("modelOfTomPublication", {
+      key: "current",
+      commit: "rulings-session-test",
+      committedAt: 1,
+      pushed: true,
+        operate: "operate layer",
+        write: "write layer",
+        know: "know layer",
+      // The opener takes the stable prefix (the dynamic-context round): the
+      // map, the operate rules and the write layer.
+      headers: [{
+        layers: ["operate", "write"],
+        header: "MODEL-OF-TOM FILES (WikiTom commit rulings-session-test): operate,write",
+      }],
+    });
+  });
+}
+
 async function withTom(t: ReturnType<typeof convexTest>) {
+  await publishSessionPrelude(t);
   const tomId = await t.run(async (ctx) =>
     ctx.db.insert("users", { name: "tom", email: "tom@tom.quest", role: "tom" }),
   );

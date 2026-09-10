@@ -1,0 +1,28 @@
+{
+  "id": "explanation-p12",
+  "source": "explanation",
+  "job": "explanation",
+  "partition": "explanation/tom.quest",
+  "label": "landed",
+  "sentence": "In tom.quest/boolback, I have a C-J-R x model view, which specifies exactly which experiments I want to use for this analysis. There are five models and three experimental setups, and for each of those 15 combinations, I trained a model with my entire canonical function enumeration for arity 1, 2, and 3. They all use the same experimental setup outside of that. Please rerun the analysis that you have done so far with this updated set of experiments.",
+  "confirmedByTom": false,
+  "ruledOn": "2026-07-17",
+  "input": {
+    "topic": "Arity does not hurt detection",
+    "contextLines": [
+      "Date: 2026-07-17",
+      "Project: tom.quest"
+    ]
+  },
+  "output": {
+    "explanation": "**No — the opposite, and consistently so. Activating inputs get slightly *easier* to spot as the trigger count grows, on every detector, even when you compare like-for-like inputs. What grows with arity is, once again, only the partial-trigger problem — in fact arity is what *creates* it.**\r\n\r\nHere's the activating-vs-trigger-free cut across arities, plus the k=1-matched version (activating inputs containing exactly **one** trigger word — the fair comparison, since higher-arity activating inputs otherwise carry more trigger words and are more anomalous for that boring reason):\r\n\r\n| Detector | cut | arity 1 | arity 2 | arity 3 | arity 4 | arity 5 |\r\n|---|---|---|---|---|---|---|\r\n| mad_quirky | vs trigger-free | 0.928 | 0.953 | 0.969 | — | — |\r\n| | same, k=1-matched | 0.928 | 0.943 | 0.961 | — | — |\r\n| confguard | vs trigger-free | 0.855 | 0.796 | 0.845 | 0.933 | 0.944 |\r\n| | same, k=1-matched | 0.855 | 0.795 | 0.846 | 0.960 | 0.978 |\r\n| clibe | vs trigger-free | 0.525 | 0.652 | 0.699 | 0.813 | 0.780 |\r\n\r\nMAD-Quirky rises monotonically 1→3 even at matched k=1, and that survives a composition control (restricting to the 16 model×dataset×behavior cells that exist at all three arities: 0.944 → 0.953 → 0.961). ConfGuard is flat-to-rising; CLIBE starts at literal chance for one-word triggers and climbs steadily. Nothing anywhere goes down.\r\n\r\n**But notice the pooled headline number tells a different, misleading story.** MAD's pooled AUROC across arities is 0.928 → 0.889 → 0.900 — *non-monotone*, worst at arity 2. The decomposition explains it: at arity 1 the partial-trigger class **does not exist** (the only surviving arity-1 function activates on presence, so every token-bearing input activates — all negatives are trigger-free, pooled = clean). Arity ≥ 2 is what brings partial-trigger inputs into existence, and from then on the pooled number is dragged by however badly they contaminate. So your two independent variables turn out to be two knobs on the same attack surface:\r\n\r\n- **Arity** determines *how many kinds of partial-trigger input exist* (up to 2^a − 1 − |activating rows| distinct partial rows).\r\n- **Sensitivity** determines *how indistinguishable those partials are* from activating inputs (token-count overlap and combination-only boundaries).\r\n\r\nNeither knob touches the activating inputs themselves — those stay ~0.93–0.98 separable from trigger-free traffic throughout.\r\n\r\nOne quirk worth a footnote if you tabulate by arity: MAD's partial-trigger cut is *worse* at arity 2 (0.80) than arity 3 (0.87). Arity 2 includes XOR-like functions where partials carry *more* trigger words than activating inputs ({A,B} is partial, {A} activates), so a token-count-following detector ranks partials *above* activating inputs — those runs land below 0.5 and drag the mean. It's the sensitivity mechanism in its most extreme form: not just uninformative token counts, but anti-informative ones.\r\n\r\nAnd a genuinely curious side-finding: even for identical inputs — one trigger word present, payload firing — detectability *rises* with the arity of the function that was planted (ConfGuard's k=1 cut goes 0.855 at arity 1 → 0.978 at arity 5; ConfGuard scores confidence of the emitted payload, so this says higher-arity backdoors fire with *more* confidence, per word present). A plausible reading is that planting a wider trigger vocabulary builds bigger, more anomalous trigger machinery into the model — consistent with the twin-CKA diffuseness finding — but I'd hold it loosely: the arity-1/2 cohorts are small (17–25 runs) and the arity-4/5 runs come from older sweeps with different composition (and no mad_quirky coverage).\r\n\r\nFor the paper, this rounds out the claim nicely: neither of the two complexity axes — how many words the trigger reads, nor how sensitively it reads them — hides the backdoor's activations. Both operate exclusively by populating and poisoning the negative side of the detection boundary. All the per-run cut data for every detector × arity is in `turing:~/tmp/madsus/arity_cuts.jsonl` (2,822 detector-nodes) if you want to slice it differently."
+  },
+  "provenance": {
+    "sourceFile": "explanation-examples.md",
+    "example": "P12",
+    "date": "2026-07-17",
+    "project": "tom.quest",
+    "rulesRead": "Credits: answers the question in the first line ('No — the opposite'), then the table, then why the headline number disagrees; the matched control is explained where it is used, not in a preamble. Flags: reaction is engagement rather than praise — Tom's next move was to scale the analysis up, which is the weaker evidence form.",
+    "session": "C--Users-heffn-Desktop-tom-quest--claude-worktrees-dreamy-feistel-019ca8\\e11e837a-ec65-45ac-bcf4-133848413254.jsonl line 495"
+  }
+}

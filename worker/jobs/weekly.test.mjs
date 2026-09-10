@@ -65,6 +65,7 @@ function write(dir, rel, content) {
 /** The gather's answer with nothing in it (convex/ttsWeekly.ts WeeklyFacts). */
 function emptyFacts() {
   return {
+    writingStandard: "WRITE STANDARD",
     since: SINCE,
     until: UNTIL,
     completions: [],
@@ -79,8 +80,11 @@ function emptyFacts() {
       { name: "outlook", state: "running", since: null, detail: null },
     ],
     areaPages: [],
-    modelOfTom: { commit: null, syncedAt: null, files: [], totalBytes: 0 },
+    modelOfTom: { commit: null, syncedAt: null, layers: [], files: [], totalBytes: 0 },
     learning: { changes: 0, reverted: 0, revertFailed: 0, lines: [] },
+    preludes: { sessions: 0, current: 0, stale: [], missing: [] },
+    instructionsLoaded: { daysReported: 0, sessions: 0, files: [], missingWikiTom: 0, missingWikiTomSessions: [], missingProjectAgents: [] },
+    evals: { runs: 0, clean: 0, regressions: [] },
     jobFailures: [],
     threads: [],
     readiness: { prepared: 0, unprepared: 0 },
@@ -116,9 +120,14 @@ function fullFacts() {
     modelOfTom: {
       commit: "abc1234def5678",
       syncedAt: UNTIL - DAY,
+      layers: [
+        { name: "operate", bytes: 1400 },
+        { name: "write", bytes: 900 },
+        { name: "know", bytes: 700 },
+      ],
       files: [
         { path: "model-of-tom/areas/research.md", bytes: 1200 },
-        { path: "model-of-tom/writing.md", bytes: 800 },
+        { path: "model-of-tom/intent.md", bytes: 800 },
       ],
       totalBytes: 2000,
     },
@@ -157,7 +166,10 @@ describe("renderFactLines", () => {
       "Open goals no worker has evaluated in seven days: 0.",
       "Integrations: gmail running; canvas running; outlook running.",
       "Area pages: 0, past their window: 0.",
-      "Model-of-tom files every prompt begins with: 0 files, 0 bytes in all, no commit posted yet.",
+        "Model-of-tom published layers: operate not published, write not published, know not published. Source files: 0 files, 0 bytes in all, no commit posted yet.",
+      "Preludes: 0 sessions, 0 from the current model-of-tom commit, 0 from an older one, 0 with no prelude.",
+      "Instructions loaded on the laptop: 0 of 7 days reported, 0 sessions, 0 files.",
+      "Evals: 0 runs, 0 clean, 0 with a regression.",
       "Nightly learning: 0 changes, 0 reverted, 0 reverts failed.",
       "Job failures: none.",
       "Threads that needed Tom: 0.",
@@ -183,8 +195,8 @@ describe("renderFactLines", () => {
     expect(text).toContain("- admin: reviewed 2026-09-10 (1 day ago), window 60 days");
     expect(text).toContain("- money: never reviewed, window 30 days — past its window");
     expect(text).toContain("- research: reviewed 2026-01-01 (253 days ago), window 30 days — past its window");
-    expect(text).toContain("Model-of-tom files every prompt begins with: 2 files, 2000 bytes in all, at WikiTom commit abc1234def56 (2026-09-10).");
-    expect(text).toContain("- model-of-tom/writing.md: 800 bytes");
+    expect(text).toContain("Model-of-tom published layers: operate 1400 bytes, write 900 bytes, know 700 bytes. Source files: 2 files, 2000 bytes in all, at WikiTom commit abc1234def56 (2026-09-10).");
+    expect(text).toContain("- model-of-tom/intent.md: 800 bytes");
     expect(text).toContain("Nightly learning: 1 change, 1 reverted, 1 revert failed.");
     expect(text).toContain('- 2026-09-08 model-of-tom/areas/research.md: "" → "- a line" (evidence: session x)');
     expect(text).toContain("- 2026-09-09 reverted lc1 in model-of-tom/areas/research.md");
@@ -320,7 +332,7 @@ describe("the consecutive-miss rule", () => {
   });
 
   it("is the job's rule, not the model's: the prompt does not ask for a cadence fork", () => {
-    const text = buildAgendaPrompt({ factLines: [], priorLines: [] });
+    const text = buildAgendaPrompt({ writingStandard: "WRITE STANDARD", factLines: [], priorLines: [] });
     expect(text).not.toContain("the cadence itself");
     expect(text).toContain("not yours to raise");
   });
@@ -724,6 +736,11 @@ describe("sessionPrompt", () => {
     expect(text).toContain("node /opt/tts/weekly.mjs reviewed model-of-tom/areas/<page>.md <today, YYYY-MM-DD>");
     expect(text).toContain("node /opt/tts/weekly.mjs outcome 2026-09-11 <that file>");
     expect(text).toContain('"$CONVEX_SITE_URL/tts/ruling"');
+    expect(text).toContain("1. Read the facts with him, as they are.");
+    expect(text).toContain("this command changes only its reviewed: frontmatter");
+    expect(text).not.toContain("Ideal state");
+    expect(text).not.toContain("Must not break");
+    expect(text).not.toContain("descriptive, no grade, his words and the record's words");
     expect(text.endsWith(agenda)).toBe(true);
   });
 
@@ -736,12 +753,13 @@ describe("sessionPrompt", () => {
 
 describe("buildAgendaPrompt", () => {
   it("gives the model the facts and last week, asks for every fork with zero valid, and forbids grading", () => {
-    const text = buildAgendaPrompt({ factLines: renderFactLines(emptyFacts()), priorLines: [FIRST_WEEK_LINE] });
+    const text = buildAgendaPrompt({ writingStandard: "WRITE STANDARD", factLines: renderFactLines(emptyFacts()), priorLines: [FIRST_WEEK_LINE] });
+    expect(text.startsWith("WRITE STANDARD\n")).toBe(true);
     expect(text).toContain("THE FACTS:\nWindow: 2026-09-04 to 2026-09-11 (seven days).");
     expect(text).toContain(`LAST WEEK:\n${FIRST_WEEK_LINE}`);
     expect(text).toContain("NO CAPS");
     expect(text).toContain("ZERO forks is a valid answer");
-    expect(text).toContain("no score, no grade");
+    expect(text).not.toContain("no score, no grade");
     expect(text).toContain('"sides": exactly two objects');
   });
 });

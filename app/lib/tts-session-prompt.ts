@@ -1,28 +1,33 @@
 // Builds the opening prompt for a TTS session (spec: WikiTom tts/spec.md).
-// One home for the session-opening contract: Focus's "work in a session" and
-// the Inventory's gate button both route through here, so the ground-up
-// framing cannot drift between entry points.
+// One home for interactive session framing: Focus's "work in a session" and
+// the Inventory's gate button both route through here, so their framing cannot
+// drift between entry points.
 
 // Relative, not "@/": convex/claudeSessions.ts imports this module for the
 // code block session's ruling lines, and the Convex typecheck (convex/
 // tsconfig.json) knows no path alias — the same reason convex/brews.ts reaches
 // app/perfume by a relative path.
 import type { Doc, Id } from "../../convex/_generated/dataModel";
+import { briefForPrompt } from "../../worker/jobs/context-relevance.mjs";
 
 // The FRAMING says what this session is and how wide it is; it is only true
-// here, so it lives only here. The WRITING half is not built here at all:
-// every session opener begins with the model-of-tom files (WikiTom
-// writing.md, priorities.md, schedule.md, the area pages' current-state and
-// must-not-break sections), prepended server-side in one home —
-// convex/claudeSessions.ts insertSession, reading convex/ttsSkills.ts
-// modelOfTomPrelude — so the transcript's first row names the WikiTom commit
-// the session began with. Until the nightly job's first post that prelude is
-// the hardcoded writing standard (convex/ttsShared.ts WRITING_STANDARD) under
-// a header saying so; nothing in this file falls back on its own.
-const FRAMING = `You are working inside TTS (Tom's Delegated Todo System), in an interactive session with Tom — likely on his phone. Stay scoped to the single item below unless Tom widens the scope; the goal of this session is his understanding and his ruling, not maximum output. Follow the writing standard in the model-of-tom files this prompt begins with in every reply, and end anything needing a decision with what Tom needs to decide plus a recommendation.`;
+// here, so it lives only here. insertSession prepends the model-of-tom files
+// before every opener.
+const FRAMING = `You are working inside TTS (Tom's Delegated Todo System), in an interactive session with Tom — likely on his phone. Stay scoped to the single item below unless Tom widens the scope; the goal of this session is his understanding and his ruling, not maximum output.`;
 
 function fact(label: string, value: string | undefined): string | null {
   return value && value.trim() !== "" ? `${label}: ${value}` : null;
+}
+
+/**
+ * The brief as the prompt carries it: whole, or cut at the last heading before
+ * SUPPLEMENTAL_CAPS.brief with a line saying where the rest is. One home for
+ * the cut (worker/jobs/context-relevance.mjs), which is also where the
+ * fetchable block writes the matching line — so the text that was cut and the
+ * line saying so cannot disagree.
+ */
+function briefFact(brief: string | undefined): string | null {
+  return fact("brief", brief === undefined ? undefined : briefForPrompt(brief).text);
 }
 
 // How a session persists what Tom says (one home for the instruction; every
@@ -64,7 +69,7 @@ export function buildBlockSessionPrompt(
   const lines: string[] = [
     FRAMING,
     "",
-    `This is a block session: Tom committed this span of time to the category "${category}". Work through the category's items with him, one at a time, smallest concrete first steps — open an item, take its first step with him, then move on. ${RULING_PEN}`,
+    `This is a block session: Tom committed this span of time to the category "${category}". Work through the category's items with him, one at a time — open an item, take its first step with him, then move on. ${RULING_PEN}`,
     "",
   ];
   if (category === "code") {
@@ -196,9 +201,13 @@ export function buildBatchSessionPrompt(
   const lines: (string | null)[] = [
     FRAMING,
     "",
-    "This is a batch session. A BATCH holds how a set of todos gets completed: it is not itself a todo and is never worked directly. Its contents are TASKS (work someone does) and GOALS (a state of the world the batch is for, written as a condition that is either true yet or not). A todo is READY when every todo it NEEDS is done. Work the ready tasks with Tom, smallest concrete first step first.",
+    "This is a batch session. Work the ready tasks with Tom, first step first.",
     "",
-    ...rulingLines(ruling),
+    "Walk-through contract:",
+    '- Take the READY tasks in order. A task with actor "agent" you do yourself.',
+    '- At a ready task with actor "tom", put the question to Tom AND keep implementing — do the best-judgment option in the workspace while he considers. His ruling gates what PERSISTS (merges, verdicts, statuses), not what you attempt.',
+    `- ${RULING_PEN}`,
+    "",
     `THE BATCH ("${batch.statement}"):`,
     fact("id (batch subject)", batch.id),
     fact("ground-up explanation", batch.groundUp),
@@ -233,13 +242,7 @@ export function buildBatchSessionPrompt(
     }
   }
 
-  lines.push(
-    "",
-    "Walk-through contract:",
-    '- Take the READY tasks in order. A task with actor "agent" you do yourself.',
-    '- At a ready task with actor "tom", put the question to Tom AND keep implementing — do the best-judgment option in the workspace while he considers. His ruling gates what PERSISTS (merges, verdicts, statuses), not what you attempt.',
-    `- ${RULING_PEN}`,
-  );
+  lines.push("", ...rulingLines(ruling));
   return lines.filter((l): l is string => l !== null).join("\n");
 }
 
@@ -252,10 +255,9 @@ export function buildTodoSessionPrompt(
     FRAMING,
     "",
     kind === "gate"
-      ? "This is a tom-gate session: the item below is prepared and needs his input integrated. Walk him through it ground-up, take his ruling, and shape the result with him."
-      : "This is a focus session: Tom chose to begin this item now. Open with the smallest concrete first step and work it with him.",
+      ? "This is a tom-gate session: the item below is prepared and needs his input integrated. Walk him through it, take his ruling, and shape the result with him."
+      : "This is a focus session: Tom chose to begin this item now. Open with the first step and work it with him.",
     "",
-    ...rulingLines(ruling),
     `The item ("${todo.statement}"):`,
     fact("id (life subject)", todo._id),
     fact("must not break (Tom's own line, binding)", todo.mustNotBreak),
@@ -269,7 +271,9 @@ export function buildTodoSessionPrompt(
     fact("source", todo.source),
     fact("provenance", todo.provenance),
     fact("body", todo.body),
-    fact("brief", todo.brief),
+    briefFact(todo.brief),
+    "",
+    ...rulingLines(ruling),
   ].filter((l): l is string => l !== null);
 
   // (The v1 BATCH block that used to sit here — a todo carrying `members` was

@@ -7,16 +7,28 @@ import { auth } from "./auth";
 import { nowContext } from "./tts";
 import { isRulingVerdict } from "./ttsRulings";
 import {
+  DELEGATE_MAX_PER_JOB,
+  DELEGATE_MAX_PER_SESSION,
+  DELEGATE_MAX_TURNS,
+  DELEGATE_TIMEOUT_MS,
+} from "./ttsAsk";
+import {
   DAY_MS,
+  NARROW_LIST,
   RECOMMENDATION_VALUES,
   SESSION_REPO_NAMES,
+  TTS_CLOSED_VOCABULARY,
+  channelFor,
   isRecommendation,
   isSessionModel,
   nyCalendarDayBoundsUtc,
   ttsPrepDay,
   type Recommendation,
 } from "./ttsShared";
-import { isModelOfTomPath } from "./ttsSkills";
+import { isNarrowListId } from "./ttsShared";
+import { auditVerdictOf } from "./ttsMerge";
+import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
+import { isRepoRulesPath } from "./ttsContext";
 import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES, isExportTable } from "./ttsNightly";
 
 const http = httpRouter();
@@ -39,6 +51,12 @@ function jsonResponse(status: number, body: unknown): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+/** Worker jobs need the original missing-layer sentence, not a framework
+ * exception, so their nonzero exit names the deployment state to repair. */
+function modelOfTomErrorResponse(error: unknown): Response {
+  return jsonResponse(503, { error: error instanceof Error ? error.message : String(error) });
 }
 
 // The one key-auth gate for every agent-facing route (ledger graduation:
@@ -164,6 +182,139 @@ function ttsAuth(request: Request): Response | null {
   return keyAuth(request, "TTS_WORKER_KEY", "X-TTS-Key");
 }
 
+type TtsSearchArgs = {
+  query: string;
+  limit: number;
+  repo?: string;
+  status?: string;
+  since?: number;
+};
+
+function parseTtsSearchArgs(
+  request: Request,
+  {
+    queryRequired = true,
+    allowSince = true,
+  }: { queryRequired?: boolean; allowSince?: boolean } = {},
+): TtsSearchArgs | Response {
+  const params = new URL(request.url).searchParams;
+  const query = params.get("query") ?? "";
+  if (queryRequired && query.trim() === "") {
+    return jsonResponse(400, { error: "query (non-empty string) required" });
+  }
+  const rawLimit = params.get("limit");
+  if (
+    rawLimit !== null &&
+    (!/^\d+$/.test(rawLimit) || Number(rawLimit) < 1 || Number(rawLimit) > 200)
+  ) {
+    return jsonResponse(400, { error: "limit (integer from 1 to 200) required" });
+  }
+  const optionalText = (name: "repo" | "status"): string | Response | undefined => {
+    const value = params.get(name);
+    if (value === null) return undefined;
+    if (value.trim() === "") {
+      return jsonResponse(400, { error: `${name} (non-empty string) required` });
+    }
+    return value;
+  };
+  const repo = optionalText("repo");
+  if (repo instanceof Response) return repo;
+  const status = optionalText("status");
+  if (status instanceof Response) return status;
+  const rawSince = params.get("since");
+  let since: number | undefined;
+  if (rawSince !== null) {
+    if (!allowSince) {
+      return jsonResponse(400, { error: "since is not supported for this search" });
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(rawSince)) {
+      return jsonResponse(400, { error: "since (YYYY-MM-DD) required" });
+    }
+    const parsed = Date.parse(`${rawSince}T00:00:00.000Z`);
+    if (!Number.isFinite(parsed) || new Date(parsed).toISOString().slice(0, 10) !== rawSince) {
+      return jsonResponse(400, { error: "since (YYYY-MM-DD) required" });
+    }
+    since = parsed;
+  }
+  return {
+    query,
+    // Internal queries retain their clamp as a defense for non-HTTP callers.
+    limit: rawLimit === null ? 20 : Number(rawLimit),
+    repo,
+    status,
+    since,
+  };
+}
+
+// GET /tts/search/* is a bounded, redacted history search for box jobs. It
+// uses the ordinary TTS worker capability, never the sessions ingest key.
+const ttsSearchRulings = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const args = parseTtsSearchArgs(request);
+  if (args instanceof Response) return args;
+  return jsonResponse(
+    200,
+    await ctx.runQuery(internal.ttsSearch.rulings, {
+      query: args.query,
+      limit: args.limit,
+      since: args.since,
+    }),
+  );
+});
+
+const ttsSearchSessions = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const args = parseTtsSearchArgs(request, { queryRequired: false });
+  if (args instanceof Response) return args;
+  return jsonResponse(
+    200,
+    await ctx.runQuery(internal.ttsSearch.sessions, {
+      query: args.query,
+      limit: args.limit,
+      repo: args.repo,
+      since: args.since,
+    }),
+  );
+});
+
+const ttsSearchEvents = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const args = parseTtsSearchArgs(request);
+  if (args instanceof Response) return args;
+  return jsonResponse(
+    200,
+    await ctx.runQuery(internal.ttsSearch.events, {
+      query: args.query,
+      limit: args.limit,
+      since: args.since,
+    }),
+  );
+});
+
+const ttsSearchTodos = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const args = parseTtsSearchArgs(request);
+  if (args instanceof Response) return args;
+  return jsonResponse(
+    200,
+    await ctx.runQuery(internal.ttsSearch.todos, {
+      query: args.query,
+      limit: args.limit,
+      status: args.status,
+      since: args.since,
+    }),
+  );
+});
+
+http.route({ path: "/tts/search/rulings", method: "GET", handler: ttsSearchRulings });
+http.route({ path: "/tts/search/sessions", method: "GET", handler: ttsSearchSessions });
+http.route({ path: "/tts/search/events", method: "GET", handler: ttsSearchEvents });
+http.route({ path: "/tts/search/todos", method: "GET", handler: ttsSearchTodos });
+
 // POST /tts/capture — one captured thought/message becomes an `unprepared`
 // item. Body: { statement, source?, provenance? }.
 const ttsCapture = httpAction(async (ctx, request) => {
@@ -194,35 +345,34 @@ const ttsCapture = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/capture", method: "POST", handler: ttsCapture });
 
-// GET /tts/capture-context — what a capture poller on the Jarvis Box needs
-// BEFORE it captures anything (the lifeos update, phase 6). One read, shared
-// by poll-gmail, poll-canvas and poll-outlook, for the same reason
-// /tts/batch-context serves the writing standard: those jobs are Node ESM on a
-// box that can neither import TypeScript nor read a git checkout of WikiTom.
+// GET /tts/capture-context supplies the model-of-tom context a capture run
+// works from, and the declined integrations, before a poller captures anything.
+// The worker cannot import TypeScript or read the WikiTom checkout, so it
+// receives the assembled text instead.
 //
-//   captureTriage — the two judgements a poller makes (does this imply an
-//     action by Tom; does it need him today), taken from the "What becomes a
-//     todo" section of the stored model-of-tom/priorities.md.
-//   source — which of the three the rules came from: "priorities" (the live
-//     section), "skill" (a capture-triage row the retired sync left), or
-//     "builtin" (ttsShared.CAPTURE_TRIAGE_RULES). The poller prints it, so a
-//     run whose rules stopped tracking WikiTom says so in its own log line
-//     instead of triaging by a frozen copy in silence.
-//   declinedIntegrations — the integrations Tom has declined, each with the
-//     date and his sentence (convex/ttsIntegrations.ts). A poller checks its
-//     own name against this list BEFORE anything else and exits when it is
-//     there: an integration he declined does not run, and the ruling that says
-//     so is the same kind of record as every other decision of his.
+// ITS BYTES SHRANK, ITS MEANING DID NOT (the dynamic-context round): this was
+// the write + know layers whole, 29.6 KB with the whole know layer inside it.
+// It is now the stable prefix, nothing expanded (a poller has no subject of its
+// own — rule 12), and the FETCHABLE index, which names every page, section and
+// search question it did not get and the exact command that gets it. Rule 7
+// gives this caller `priorities.md § What becomes a todo`, because capture is
+// the one thing it does on his behalf.
+
 const ttsCaptureContext = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  const [triage, declinedIntegrations] = await Promise.all([
-    ctx.runQuery(internal.ttsSkills.internalCaptureTriage, {}),
-    ctx.runQuery(internal.ttsIntegrations.internalDeclinedIntegrations, {}),
-  ]);
+  let writingStandard: string;
+  let declinedIntegrations;
+  try {
+    [writingStandard, declinedIntegrations] = await Promise.all([
+      ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "capture-context" }),
+      ctx.runQuery(internal.ttsIntegrations.internalDeclinedIntegrations, {}),
+    ]);
+  } catch (error) {
+    return modelOfTomErrorResponse(error);
+  }
   return jsonResponse(200, {
-    captureTriage: triage.captureTriage,
-    source: triage.source,
+    writingStandard,
     declinedIntegrations,
   });
 });
@@ -233,12 +383,22 @@ http.route({
   handler: ttsCaptureContext,
 });
 
-// POST /tts/needs-tom — one thread in #tts for a todo that needs Tom TODAY.
-// Body: { todoId, text, key }. The ONE message shape for anything that needs
-// him: convex/ttsSlack.ts opens the thread through the one Slack door with the
-// todo as its subject, so his reply in it is already routed back to the row.
-// `key` is the producer's own id for the thing that needs him
-// (`gmail:message:<id>`), and it is what makes the thread open exactly once.
+// POST /tts/needs-tom — one needs-you thread for a todo only Tom can settle.
+// Body: { todoId, reason, key }. The job stops composing message text: it
+// sends FACTS, and convex/ttsSlack.ts composes the thread from the todo's own
+// statement and entry action plus `reason`, then opens it through the one
+// Slack door with the todo as its subject, so his reply in it is already
+// routed back to the row. `key` is the producer's own id for the thing that
+// needs him (`gmail:message:<id>`), and it is what makes the thread open
+// exactly once.
+//
+// `reason` is `verdict.why` from the Gmail triage — the field the prompt
+// already asks for and the job used to print to its log file and drop. It is
+// the one thing the old "Needs you today — <sender>: <subject>" never said.
+//
+// `text` is REFUSED rather than ignored: both sides ship in one commit, and a
+// silent ignore would post a message with no reason for as long as an old
+// worker copy survives on the box.
 const ttsNeedsTom = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -252,17 +412,53 @@ const ttsNeedsTom = httpAction(async (ctx, request) => {
   if (typeof b.todoId !== "string" || b.todoId.length === 0) {
     return jsonResponse(400, { error: "todoId (non-empty string) required" });
   }
-  if (typeof b.text !== "string" || b.text.trim().length === 0) {
-    return jsonResponse(400, { error: "text (non-empty string) required" });
+  if (b.text !== undefined) {
+    return jsonResponse(400, { error: "text is no longer accepted; send reason" });
+  }
+  if (typeof b.reason !== "string" || b.reason.trim().length === 0) {
+    return jsonResponse(400, { error: "reason (non-empty string) required" });
   }
   if (typeof b.key !== "string" || b.key.trim().length === 0) {
     return jsonResponse(400, { error: "key (non-empty string) required" });
   }
+  // #tts-needs-you OR NOWHERE. This route used to omit `channel` when
+  // SLACK_TTS_NEEDS_YOU_CHANNEL_ID was unset, and the Slack door's default
+  // target is SLACK_TTS_CHANNEL_ID — so an unset variable did not silence the
+  // thread, it moved it into #tts-today, the one room the design says nothing
+  // but the morning message may write to. channelFor logs and answers null
+  // instead (ruling digest-env-missing-is-quiet), and nothing is opened.
+  //
+  // A DROP IS A BROKEN JOB, NOT SILENCE. Quiet here means Tom never learns
+  // that the things only he can settle stopped arriving, so the drop is
+  // reported through the same door a box job's failure comes through
+  // (convex/ttsJobs.ts): one "job-failed" row, keyed on the condition so a
+  // poller running every half hour writes it once, and the digest and the
+  // hourly update carry it to #tts-broken for as long as it stands.
+  const channel = channelFor("needsYou");
+  if (channel === null) {
+    const reported = await ctx.runMutation(internal.ttsJobs.internalReportJobFailed, {
+      job: "tts/needs-tom",
+      error:
+        "SLACK_TTS_NEEDS_YOU_CHANNEL_ID is not set — needs-you threads are being dropped rather than posted to #tts-today. Set it (slack-design.md §5.1).",
+      key: "tts/needs-tom:needs-you-channel",
+    });
+    return jsonResponse(200, {
+      ok: false,
+      opened: false,
+      key: b.key,
+      reason: "SLACK_TTS_NEEDS_YOU_CHANNEL_ID not configured",
+      ...reported,
+    });
+  }
   try {
-    const result = await ctx.runMutation(
-      internal.ttsSlack.internalOpenNeedsTomThread,
-      { todoId: b.todoId, text: b.text, key: b.key },
-    );
+    const result = await ctx.runMutation(internal.ttsSlack.internalOpenNeedsTomThread, {
+      todoId: b.todoId,
+      reason: b.reason,
+      key: b.key,
+      // The reply invitation is printed only when a reply would reach TTS.
+      canReply: Boolean(process.env.SLACK_SIGNING_SECRET && process.env.TOM_SLACK_USER_ID),
+      channel,
+    });
     return jsonResponse(200, { ok: true, ...result });
   } catch (e) {
     return jsonResponse(400, {
@@ -272,6 +468,61 @@ const ttsNeedsTom = httpAction(async (ctx, request) => {
 });
 
 http.route({ path: "/tts/needs-tom", method: "POST", handler: ttsNeedsTom });
+
+// ── The Fable writer's two doors (Tom 2026-09-09, amendment 2) ──────────────
+// The morning message is written by a Fable run on the Jarvis Box, not filled
+// into a template. Convex cannot run a model, so the 5 a.m. cron opens a
+// DRAFT REQUEST carrying the deterministic facts block and returns; the box
+// job (worker/jobs/write-slack.mjs) reads the open requests here, writes the
+// message, and submits it. The verifier runs in the SUBMIT mutation, so a
+// draft that invents a link or a number is refused by Convex rather than by
+// the thing that wrote it.
+//
+// GET /tts/slack-drafts — the open requests, newest first. Each carries the
+// facts block, whether a reply invitation may be printed, and the complaints
+// from an earlier attempt (which is what the one repair turn is written
+// against).
+const ttsSlackDrafts = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const open = await ctx.runQuery(internal.ttsSlackDrafts.internalOpenDraftRequests, {});
+  return jsonResponse(200, { ok: true, requests: open });
+});
+
+http.route({ path: "/tts/slack-drafts", method: "GET", handler: ttsSlackDrafts });
+
+// POST /tts/slack-draft — one written draft. Body: { requestId, draft }, where
+// `draft` is { firstLine, firstLineSources, lines: [{ role, text, url?,
+// sources }] }. The answer says whether it was accepted and, when it was not,
+// every complaint the verifier made and whether this was the last attempt.
+const ttsSlackDraftSubmit = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.requestId !== "string" || b.requestId.trim().length === 0) {
+    return jsonResponse(400, { error: "requestId (non-empty string) required" });
+  }
+  if (b.draft === null || typeof b.draft !== "object") {
+    return jsonResponse(400, { error: "draft (object) required" });
+  }
+  try {
+    const result = await ctx.runMutation(internal.ttsSlackDrafts.internalSubmitSlackDraft, {
+      requestId: b.requestId,
+      draft: b.draft,
+    });
+    return jsonResponse(200, { ok: true, ...result });
+  } catch (e) {
+    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+http.route({ path: "/tts/slack-draft", method: "POST", handler: ttsSlackDraftSubmit });
 
 // POST /tts/canvas-assignments — the Canvas assignments worker/jobs/
 // poll-canvas.mjs read this run (the lifeos update, phase 6). Body:
@@ -484,7 +735,14 @@ function slackReplyChannels(): Set<string> {
     [
       process.env.SLACK_DUMP_CHANNEL_ID,
       process.env.SLACK_TTS_CHANNEL_ID,
+      process.env.SLACK_TTS_TODAY_CHANNEL_ID,
       process.env.SLACK_TTS_HOURLY_CHANNEL_ID,
+      // The three rooms this round adds, so a reply in them is acted on:
+      // "revert" in a decision's thread, an answer in a needs-you thread, a
+      // note on a failure (convex/ttsSlack.ts routeReply).
+      process.env.SLACK_TTS_DECISIONS_CHANNEL_ID,
+      process.env.SLACK_TTS_NEEDS_YOU_CHANNEL_ID,
+      process.env.SLACK_TTS_BROKEN_CHANNEL_ID,
     ].filter((id): id is string => typeof id === "string" && id !== ""),
   );
 }
@@ -760,6 +1018,17 @@ const ttsState = httpAction(async (ctx, request) => {
   return jsonResponse(200, {
     todos,
     calendarEvents,
+    // The one home reaching the one caller that cannot import it: the delegate
+    // is worker/jobs/delegate.mjs and Node does not load .ts, so the narrow
+    // list and the delegate's budgets ride this payload the way
+    // writingStandard and sessionRepos ride /tts/batch-context.
+    narrowList: NARROW_LIST,
+    delegate: {
+      maxPerSession: DELEGATE_MAX_PER_SESSION,
+      maxPerJob: DELEGATE_MAX_PER_JOB,
+      maxTurns: DELEGATE_MAX_TURNS,
+      timeoutMs: DELEGATE_TIMEOUT_MS,
+    },
     prepDay: day,
     ...nowContext(Date.now()),
   });
@@ -781,8 +1050,17 @@ http.route({ path: "/tts/state", method: "GET", handler: ttsState });
 const ttsTimeNotes = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  const notes = await ctx.runQuery(internal.tts.internalPendingTimeNotes, {});
-  return jsonResponse(200, { notes, ...nowContext(Date.now()) });
+  let notes;
+  let writingStandard: string;
+  try {
+    [notes, writingStandard] = await Promise.all([
+      ctx.runQuery(internal.tts.internalPendingTimeNotes, {}),
+      ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "time-notes" }),
+    ]);
+  } catch (error) {
+    return modelOfTomErrorResponse(error);
+  }
+  return jsonResponse(200, { notes, writingStandard, ...nowContext(Date.now()) });
 });
 
 http.route({ path: "/tts/time-notes", method: "POST", handler: ttsTimeNotes });
@@ -1110,6 +1388,219 @@ const ttsRuling = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/ruling", method: "POST", handler: ttsRuling });
 
+// POST /tts/ask records a completed delegate call. It intentionally never
+// calls a model: Fable runs on the box where the caller already is, while this
+// route is the durable record, digest input, and immediate Slack notification.
+const ttsAsk = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  const nonempty = (value: unknown) => typeof value === "string" && value.trim() !== "";
+  if (!nonempty(b.askId) || !/^[0-9a-f]{8}$/.test(b.askId as string)) {
+    return jsonResponse(400, { error: "askId (8 lowercase hex characters) required" });
+  }
+  const hasSession = nonempty(b.sessionId);
+  const hasJob = nonempty(b.job);
+  if (hasSession === hasJob) return jsonResponse(400, { error: "exactly one of sessionId or job is required" });
+  if (b.todoId !== undefined && !nonempty(b.todoId)) return jsonResponse(400, { error: "todoId, when given, must be non-empty" });
+  if (!nonempty(b.question) || (b.question as string).trim().length > 400) return jsonResponse(400, { error: "question (1-400 characters) required" });
+  if (!Array.isArray(b.options) || b.options.length < 2 || b.options.length > 5 || !b.options.every(nonempty)) return jsonResponse(400, { error: "options must be 2-5 non-empty strings" });
+  const options = b.options.map((option) => (option as string).trim());
+  if (!nonempty(b.recommendation) || !options.includes((b.recommendation as string).trim())) return jsonResponse(400, { error: "recommendation must be one of options" });
+  if (!nonempty(b.fallback)) return jsonResponse(400, { error: "fallback (non-empty string) required" });
+  if (b.decision !== null && !nonempty(b.decision)) return jsonResponse(400, { error: "decision must be a non-empty string or null" });
+  if (!nonempty(b.reason) || (b.reason as string).trim().length > 400) return jsonResponse(400, { error: "reason (1-400 characters) required" });
+  if (typeof b.refused !== "boolean") return jsonResponse(400, { error: "refused (boolean) required" });
+  if (b.refused) {
+    const id = typeof b.refusedBecause === "string" ? b.refusedBecause.split(" — ")[0] : "";
+    if (!nonempty(b.refusedBecause) || !isNarrowListId(id)) return jsonResponse(400, { error: "refusedBecause must start with a narrow-list id" });
+  } else if (b.refusedBecause !== null) return jsonResponse(400, { error: "refusedBecause must be null unless refused" });
+  if (!nonempty(b.model) || !nonempty(b.promptSha)) return jsonResponse(400, { error: "model and promptSha (non-empty strings) required" });
+  if (typeof b.ms !== "number" || !Number.isFinite(b.ms) || b.ms < 0) return jsonResponse(400, { error: "ms (nonnegative finite number) required" });
+  try {
+    const result = await ctx.runMutation(internal.ttsAsk.internalRecordAsk, {
+      askId: b.askId as string, sessionId: hasSession ? b.sessionId as string : undefined,
+      job: hasJob ? b.job as string : undefined, todoId: b.todoId as string | undefined,
+      question: (b.question as string).trim(), options,
+      recommendation: (b.recommendation as string).trim(), fallback: (b.fallback as string).trim(),
+      decision: b.decision as string | null, reason: (b.reason as string).trim(),
+      refused: b.refused, refusedBecause: b.refusedBecause as string | null,
+      model: b.model as string, ms: b.ms, promptSha: b.promptSha as string,
+    });
+    const context = await ctx.runQuery(internal.ttsAsk.internalAskContext, {
+      sessionId: hasSession ? b.sessionId as string : undefined,
+      job: hasJob ? b.job as string : undefined,
+      todoId: b.todoId as string | undefined,
+    });
+    return jsonResponse(200, { ok: true, askId: b.askId, ...result, priorObjections: context.priorObjections });
+  } catch (error) {
+    return jsonResponse(400, { error: error instanceof Error ? error.message : String(error) });
+  }
+});
+http.route({ path: "/tts/ask", method: "POST", handler: ttsAsk });
+
+// GET /tts/ask-context — what the caller sees BEFORE it asks: how many asks it
+// has spent in the last day, its cap, and every objection Tom has already made
+// about this todo. Those objections go into the delegate's prompt, and they
+// are the point of the whole loop: the delegate never re-takes a decision he
+// reverted. Read-only, worker-key gated, and bounded — one index read per kind.
+const ttsAskContext = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const params = new URL(request.url).searchParams;
+  const nonempty = (value: string | null) => (value !== null && value.trim() !== "" ? value.trim() : undefined);
+  const sessionId = nonempty(params.get("sessionId"));
+  const job = nonempty(params.get("job"));
+  if ((sessionId === undefined) === (job === undefined)) {
+    return jsonResponse(400, { error: "exactly one of sessionId or job is required" });
+  }
+  const context = await ctx.runQuery(internal.ttsAsk.internalAskContext, {
+    sessionId,
+    job,
+    todoId: nonempty(params.get("todoId")),
+  });
+  return jsonResponse(200, context);
+});
+http.route({ path: "/tts/ask-context", method: "GET", handler: ttsAskContext });
+
+// ── The mechanical merge gate's three doors (convex/ttsMerge.ts) ────────────
+// A merge is allowed when three facts about the merged head are on record:
+// the tests are green, an audit approved it, and the evals found no
+// regression. These routes are where the first two are written, where all
+// three are read, and where a passed merge is recorded.
+
+// POST /tts/tests — the Guardrails `tests` job's own result, at the end of its
+// run. Body: { repo, sha, ok, detail?, url? }.
+//
+// EITHER KEY, for the reason the evals-run read takes either: CI holds the
+// narrow evals key and this is a CI fact of the same class, while the box
+// holds the worker key and posts its own local runs. The worker key is
+// strictly the more privileged of the two, so accepting it widens nothing.
+const ttsTests = httpAction(async (ctx, request) => {
+  const denied = request.headers.get("X-TTS-Key")
+    ? ttsAuth(request)
+    : keyAuth(request, "EVALS_KEY", "X-Evals-Key");
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  const nonempty = (value: unknown) => typeof value === "string" && value.trim() !== "";
+  if (!nonempty(b.repo) || !nonempty(b.sha)) {
+    return jsonResponse(400, { error: "repo and sha (non-empty strings) required" });
+  }
+  if (typeof b.ok !== "boolean") return jsonResponse(400, { error: "ok (boolean) required" });
+  const result = await ctx.runMutation(internal.ttsMerge.internalRecordTests, {
+    repo: (b.repo as string).trim(),
+    sha: (b.sha as string).trim(),
+    ok: b.ok,
+    ...(nonempty(b.detail) ? { detail: (b.detail as string).trim() } : {}),
+    ...(nonempty(b.url) ? { url: (b.url as string).trim() } : {}),
+  });
+  //  rather than : the answer's own ok says the POST landed, and
+  // the row's ok says whether the tests were green.
+  return jsonResponse(200, { ok: true, existing: result.existing, green: result.ok });
+});
+
+http.route({ path: "/tts/tests", method: "POST", handler: ttsTests });
+
+// POST /tts/audit — the Codex/Opus audit of one head. Body:
+// { repo, sha, text, model?, url? }, where `text` is the audit's own answer.
+// The VERDICT LINE IS READ HERE, from that text, so the parse has one home
+// (ttsMerge.auditVerdictOf) and the record keeps the words the auditor wrote.
+// An answer with no `VERDICT: <WORD>` line of its own is refused rather than
+// filed as a non-approval: an audit that did not say is an audit that did not
+// finish, and the gate must not be able to confuse the two.
+//
+// The worker key: the audit step runs on the box.
+const ttsAudit = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  const nonempty = (value: unknown) => typeof value === "string" && value.trim() !== "";
+  if (!nonempty(b.repo) || !nonempty(b.sha)) {
+    return jsonResponse(400, { error: "repo and sha (non-empty strings) required" });
+  }
+  if (!nonempty(b.text)) return jsonResponse(400, { error: "text (the audit answer) required" });
+  const verdict = auditVerdictOf(b.text as string);
+  if (verdict === null) {
+    return jsonResponse(400, {
+      error: "the audit answer carries no VERDICT: <WORD> line of its own",
+    });
+  }
+  const result = await ctx.runMutation(internal.ttsMerge.internalRecordAudit, {
+    repo: (b.repo as string).trim(),
+    sha: (b.sha as string).trim(),
+    verdict,
+    ...(nonempty(b.model) ? { model: (b.model as string).trim() } : {}),
+    ...(nonempty(b.url) ? { url: (b.url as string).trim() } : {}),
+  });
+  return jsonResponse(200, { ok: true, ...result });
+});
+
+http.route({ path: "/tts/audit", method: "POST", handler: ttsAudit });
+
+// GET /tts/merge-gate?repo=&sha= — the three checks, and which of them are
+// missing. This is what the box asks before it lets a merge command run
+// (worker/session-host/session.mjs), so it is read-only and opens nothing.
+const ttsMergeGate = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const params = new URL(request.url).searchParams;
+  const repo = (params.get("repo") ?? "").trim();
+  const sha = (params.get("sha") ?? "").trim();
+  if (repo === "" || sha === "") return jsonResponse(400, { error: "repo and sha required" });
+  return jsonResponse(200, await ctx.runQuery(internal.ttsMerge.internalMergeGate, { repo, sha }));
+});
+
+http.route({ path: "/tts/merge-gate", method: "GET", handler: ttsMergeGate });
+
+// POST /tts/merge records a merge that has already happened. It is not a
+// delegate decision: a mechanically gated merge is reported in the objection
+// list and posted to #tts-decisions, keyed by repo+sha so a retry stays one
+// event. The gate runs again inside the mutation, so a merge that reached the
+// default branch some other way cannot be laundered into a reported one; the
+// answer is then 409 naming which checks are missing.
+const ttsMerge = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try { body = await request.json(); } catch { return jsonResponse(400, { error: "invalid JSON body" }); }
+  const b = (body ?? {}) as Record<string, unknown>;
+  const nonempty = (value: unknown) => typeof value === "string" && value.trim() !== "";
+  if (!nonempty(b.repo) || !nonempty(b.sha) || !nonempty(b.subject)) return jsonResponse(400, { error: "repo, sha, and subject (non-empty strings) required" });
+  if (b.todoId !== undefined && !nonempty(b.todoId)) return jsonResponse(400, { error: "todoId, when given, must be non-empty" });
+  try {
+    const result = await ctx.runMutation(internal.ttsMerge.internalRecordMerge, { repo: b.repo as string, sha: b.sha as string, subject: b.subject as string, todoId: b.todoId as string | undefined });
+    if (!result.recorded) {
+      return jsonResponse(409, {
+        ok: false,
+        error: `the merge gate is not met — missing: ${result.gate.missing.join(", ")}`,
+        ...result,
+      });
+    }
+    return jsonResponse(200, { ok: true, ...result });
+  } catch (error) {
+    return jsonResponse(400, { error: error instanceof Error ? error.message : String(error) });
+  }
+});
+http.route({ path: "/tts/merge", method: "POST", handler: ttsMerge });
+
 // GET /tts/batch-context — everything the planner works from: all life todos
 // (schema-v2 graph fields included), the code-todo mirror, the code briefs,
 // and Tom's recent rulings (grouping signal). The v1 batcher that shared this
@@ -1128,25 +1619,31 @@ http.route({ path: "/tts/ruling", method: "POST", handler: ttsRuling });
 // git checkout of WikiTom. Serving it here is what keeps the text the planner
 // pastes into its prompt the same text every TypeScript caller reads.
 //
-// ITS SOURCE is the model-of-tom prelude (convex/ttsSkills.ts
-// modelOfTomPrelude): the files the nightly job posted, headed by their
-// WikiTom commit, or ttsShared.WRITING_STANDARD under a header saying so
-// until the first post. The field name and type do not change:
-// worker/jobs/plan-graphs.mjs treats a missing `writingStandard` as fatal.
+// ITS SOURCE is the context assembler (convex/ttsContext.ts assembleContext),
+// which since the dynamic-context round sends the STABLE PREFIX plus a
+// FETCHABLE index rather than the write and know layers whole — the planner has
+// no subject of its own, so nothing expands (rule 12) and every page it did not
+// get is one line naming the command that gets it. THE FIELD NAME AND TYPE DO
+// NOT CHANGE: worker/jobs/plan-graphs.mjs treats a missing `writingStandard` as
+// fatal.
 const ttsBatchContext = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
   // Seven independent reads — issued in parallel, not awaited one by one.
-  const [todos, mirror, briefs, recentRulings, batches, planRepairs, writingStandard] =
-    await Promise.all([
+  let todos, mirror, briefs, recentRulings, batches, planRepairs, writingStandard: string;
+  try {
+    [todos, mirror, briefs, recentRulings, batches, planRepairs, writingStandard] = await Promise.all([
       ctx.runQuery(internal.tts.internalListTodos, {}),
       ctx.runQuery(internal.tts.internalListMirror, {}),
       ctx.runQuery(internal.ttsCode.internalListBriefs, {}),
       ctx.runQuery(internal.ttsRulings.internalRecentRulings, { limit: 200 }),
       ctx.runQuery(internal.tts.internalListBatches, {}),
       ctx.runQuery(internal.tts.internalRecentPlanRepairs, { limit: 20 }),
-      ctx.runQuery(internal.ttsSkills.internalModelOfTomPrelude, {}),
+      ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "batch-context" }),
     ]);
+  } catch (error) {
+    return modelOfTomErrorResponse(error);
+  }
   return jsonResponse(200, {
     todos,
     mirror,
@@ -1155,6 +1652,7 @@ const ttsBatchContext = httpAction(async (ctx, request) => {
     batches,
     planRepairs,
     writingStandard,
+    vocabulary: TTS_CLOSED_VOCABULARY,
     // The repo names a batch may declare. Served for the SAME reason as
     // writingStandard above: the planner is Node ESM on a box that never loads
     // TypeScript, so it cannot import SESSION_REPOS. Serving the one home's
@@ -1174,17 +1672,12 @@ http.route({
   handler: ttsBatchContext,
 });
 
-// ── POST /tts/model-of-tom — the nightly job's post of the files every prompt
-// begins with (the lifeos update, phase 4) ───────────────────────────────────
-// Body: { commit, committedAt, pushed?, force?, files: [{ path, body }] } —
-// the WikiTom commit hash the files were read at, that commit's time (epoch
-// ms; it becomes the rows' syncedAt), whether the commit had reached GitHub
-// (the job posts local HEAD even after a refused push), the reason an older
-// commit may replace the store (absent, an older post is refused), and the
-// files in any order (the server orders them). The store is replaced whole,
-// atomically, in convex/ttsSkills.ts. Same TTS_WORKER_KEY door as every
-// other worker pen: the box that holds the WikiTom checkout is the only
-// writer, and nothing in Convex reads GitHub.
+// ── POST /tts/model-of-tom — the nightly job's three-layer publication every
+// prompt selects from (the lifeos update, phase 4) ───────────────────────────
+// Body: { commit, committedAt, pushed, force?, layers, headers, files }.
+// `layers` and the seven selection headers are already rendered by the
+// publisher; files retain source facts ({ path, body, bytes }). The store is
+// replaced atomically in convex/ttsSkills.ts.
 const MODEL_OF_TOM_FILES_MAX = 64;
 
 const ttsModelOfTom = httpAction(async (ctx, request) => {
@@ -1197,27 +1690,60 @@ const ttsModelOfTom = httpAction(async (ctx, request) => {
     return jsonResponse(400, { error: "invalid JSON body" });
   }
   const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.commit !== "string" || !/^[0-9a-f]{7,40}$/.test(b.commit)) {
-    return jsonResponse(400, { error: "commit (7-40 hex characters) required" });
+  if (typeof b.commit !== "string" || !/^[0-9a-f]{40}$/.test(b.commit)) {
+    return jsonResponse(400, { error: "commit (40 hex characters) required" });
   }
   if (typeof b.committedAt !== "number" || !Number.isFinite(b.committedAt)) {
     return jsonResponse(400, { error: "committedAt (epoch ms) required" });
   }
-  if (b.pushed !== undefined && typeof b.pushed !== "boolean") {
-    return jsonResponse(400, { error: "pushed, when given, is a boolean" });
+  if (typeof b.pushed !== "boolean") {
+    return jsonResponse(400, { error: "pushed (boolean) required" });
   }
   if (b.force !== undefined && (typeof b.force !== "string" || b.force.trim() === "")) {
     return jsonResponse(400, { error: "force, when given, is the reason (a non-empty string)" });
   }
-  if (!Array.isArray(b.files) || b.files.length === 0) {
-    return jsonResponse(400, { error: "files (non-empty array) required" });
+  if (typeof b.layers !== "object" || b.layers === null) {
+    return jsonResponse(400, { error: "layers ({ operate, write, know }) required" });
+  }
+  const rawLayers = b.layers as Record<string, unknown>;
+  if (Object.keys(rawLayers).length !== MODEL_OF_TOM_LAYER_NAMES.length ||
+    !Object.keys(rawLayers).every((name) => (MODEL_OF_TOM_LAYER_NAMES as readonly string[]).includes(name))) {
+    return jsonResponse(400, { error: "layers must contain exactly operate, write, and know" });
+  }
+  const layers: Record<(typeof MODEL_OF_TOM_LAYER_NAMES)[number], string> = {
+    operate: "", write: "", know: "",
+  };
+  for (const name of MODEL_OF_TOM_LAYER_NAMES) {
+    if (typeof rawLayers[name] !== "string" || rawLayers[name].trim() === "") {
+      return jsonResponse(400, { error: `layers.${name} (non-empty string) required` });
+    }
+    layers[name] = rawLayers[name];
+  }
+  if (!Array.isArray(b.headers) || b.headers.length !== 7) {
+    return jsonResponse(400, { error: "headers (the 7 canonical nonempty selections) required" });
+  }
+  const headers: { layers: (typeof MODEL_OF_TOM_LAYER_NAMES)[number][]; header: string }[] = [];
+  for (let i = 0; i < b.headers.length; i++) {
+    const header = b.headers[i] as Record<string, unknown> | null;
+    if (typeof header !== "object" || header === null || !Array.isArray(header.layers) ||
+      !header.layers.every((name) => (MODEL_OF_TOM_LAYER_NAMES as readonly string[]).includes(name as string)) ||
+      typeof header.header !== "string" || header.header.trim() === "" || header.header.includes("\n")) {
+      return jsonResponse(400, { error: `headers[${i}] must contain layers and a non-empty header` });
+    }
+    headers.push({ layers: header.layers as (typeof MODEL_OF_TOM_LAYER_NAMES)[number][], header: header.header });
+  }
+  if (!Array.isArray(b.files)) {
+    return jsonResponse(400, { error: "files (array) required" });
   }
   if (b.files.length > MODEL_OF_TOM_FILES_MAX) {
     return jsonResponse(400, {
       error: `at most ${MODEL_OF_TOM_FILES_MAX} files per post — got ${b.files.length}`,
     });
   }
-  const files: { path: string; body: string }[] = [];
+  if (b.files.length === 0) {
+    return jsonResponse(400, { error: "files (non-empty array) required" });
+  }
+  const files: { path: string; body: string; bytes: number }[] = [];
   for (let i = 0; i < b.files.length; i++) {
     const f = b.files[i] as Record<string, unknown> | null;
     if (typeof f !== "object" || f === null || !isModelOfTomPath(f.path)) {
@@ -1228,12 +1754,15 @@ const ttsModelOfTom = httpAction(async (ctx, request) => {
     if (typeof f.body !== "string" || f.body.trim() === "") {
       return jsonResponse(400, { error: `files[${i}].body (non-empty string) required` });
     }
-    files.push({ path: f.path, body: f.body });
+    if (typeof f.bytes !== "number" || !Number.isSafeInteger(f.bytes) || f.bytes < 0) {
+      return jsonResponse(400, { error: `files[${i}].bytes (nonnegative integer) required` });
+    }
+    files.push({ path: f.path, body: f.body, bytes: f.bytes });
   }
   try {
     const result = await ctx.runMutation(
       internal.ttsSkills.internalReplaceModelOfTom,
-      { commit: b.commit, committedAt: b.committedAt, pushed: b.pushed, force: b.force, files },
+        { commit: b.commit, committedAt: b.committedAt, pushed: b.pushed, force: b.force, layers, headers, files },
     );
     return jsonResponse(200, { ok: true, commit: b.commit, ...result });
   } catch (e) {
@@ -1244,6 +1773,73 @@ const ttsModelOfTom = httpAction(async (ctx, request) => {
 });
 
 http.route({ path: "/tts/model-of-tom", method: "POST", handler: ttsModelOfTom });
+
+// POST /tts/repo-rules — one repo's AGENTS.md bodies, replaced whole.
+//
+// SAME REASON AS THE DOOR ABOVE: the context assembler pre-expands the repo
+// rules for the directories a todo's brief names (convex/ttsContext.ts rule 9)
+// and it runs inside Convex, which has no filesystem. The nightly job reads
+// each repo's own immutable HEAD and posts the bodies here; a run with no
+// checkout at all still learns from the fetchable block that these files exist.
+//
+// Per repo, not per post: the mutation replaces this repo's rows and no other
+// repo's, so a night that could read one checkout and not another leaves the
+// second exactly as it was.
+const REPO_RULES_FILES_MAX = 24;
+
+const ttsRepoRules = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.repo !== "string" || b.repo.trim() === "") {
+    return jsonResponse(400, { error: "repo (a session repo name) required" });
+  }
+  if (typeof b.commit !== "string" || !/^[0-9a-f]{40}$/.test(b.commit)) {
+    return jsonResponse(400, { error: "commit (40 hex characters) required" });
+  }
+  if (typeof b.syncedAt !== "number" || !Number.isFinite(b.syncedAt)) {
+    return jsonResponse(400, { error: "syncedAt (epoch ms) required" });
+  }
+  if (!Array.isArray(b.files) || b.files.length === 0) {
+    return jsonResponse(400, { error: "files (non-empty array) required" });
+  }
+  if (b.files.length > REPO_RULES_FILES_MAX) {
+    return jsonResponse(400, { error: `at most ${REPO_RULES_FILES_MAX} files per post — got ${b.files.length}` });
+  }
+  const files: { path: string; body: string; bytes: number }[] = [];
+  for (let i = 0; i < b.files.length; i++) {
+    const f = b.files[i] as Record<string, unknown> | null;
+    if (typeof f !== "object" || f === null || !isRepoRulesPath(f.path)) {
+      return jsonResponse(400, { error: `files[${i}].path must be an AGENTS.md path inside the repo` });
+    }
+    if (typeof f.body !== "string" || f.body.trim() === "") {
+      return jsonResponse(400, { error: `files[${i}].body (non-empty string) required` });
+    }
+    if (typeof f.bytes !== "number" || !Number.isSafeInteger(f.bytes) || f.bytes < 0) {
+      return jsonResponse(400, { error: `files[${i}].bytes (nonnegative integer) required` });
+    }
+    files.push({ path: f.path, body: f.body, bytes: f.bytes });
+  }
+  try {
+    const result = await ctx.runMutation(internal.ttsContext.internalReplaceRepoRules, {
+      repo: b.repo,
+      commit: b.commit,
+      syncedAt: b.syncedAt,
+      files,
+    });
+    return jsonResponse(200, { ok: true, ...result });
+  } catch (e) {
+    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+http.route({ path: "/tts/repo-rules", method: "POST", handler: ttsRepoRules });
 
 // ── The nightly job's three doors (convex/ttsNightly.ts) ─────────────────────
 
@@ -1328,11 +1924,143 @@ const ttsWeeklyInput = httpAction(async (ctx, request) => {
   if (!Number.isFinite(until) || until <= 0) {
     return jsonResponse(400, { error: "until must be an epoch ms instant" });
   }
-  const facts = await ctx.runQuery(internal.ttsWeekly.internalWeeklyInput, { until });
-  return jsonResponse(200, facts);
+  let facts;
+  let writingStandard: string;
+  try {
+    [facts, writingStandard] = await Promise.all([
+      ctx.runQuery(internal.ttsWeekly.internalWeeklyInput, { until }),
+      ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "weekly-input" }),
+    ]);
+  } catch (error) {
+    return modelOfTomErrorResponse(error);
+  }
+  return jsonResponse(200, { ...facts, writingStandard });
 });
 
 http.route({ path: "/tts/weekly-input", method: "GET", handler: ttsWeeklyInput });
+
+// GET /tts/prelude-delivery?since=<epoch ms>&until=<epoch ms> — the nightly
+// delivery check reads sessions against the commit that was published when
+// they began. It is worker-only: it exposes session titles and commit stamps.
+const ttsPreludeDelivery = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const params = new URL(request.url).searchParams;
+  const until = params.has("until") ? Number(params.get("until")) : Date.now();
+  const sinceArg = params.has("since") ? Number(params.get("since")) : undefined;
+  if (!Number.isFinite(until) || until <= 0 || (sinceArg !== undefined && (!Number.isFinite(sinceArg) || sinceArg <= 0 || sinceArg >= until))) {
+    return jsonResponse(400, { error: "until must be an epoch ms instant; since, if given, before it" });
+  }
+  const since = sinceArg ?? (await ctx.runQuery(internal.ttsEvals.internalLatestPreludeDeliveryAt, {}) ?? until - DAY_MS);
+  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalPreludeDelivery, { since, until }));
+});
+
+http.route({ path: "/tts/prelude-delivery", method: "GET", handler: ttsPreludeDelivery });
+
+// GET /tts/golden-input?limitPerPartition=20 — deterministic, indexed input
+// for the exporter. Snapshot lookup stays on the machine with the WikiTom git
+// checkout; Convex returns only the ruled subjects and their resolution facts.
+const ttsGoldenInput = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const raw = new URL(request.url).searchParams.get("limitPerPartition");
+  const limitPerPartition = raw === null ? undefined : Number(raw);
+  if (limitPerPartition !== undefined && (!Number.isFinite(limitPerPartition) || limitPerPartition <= 0)) {
+    return jsonResponse(400, { error: "limitPerPartition must be a positive number" });
+  }
+  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalGoldenInput, { limitPerPartition }));
+});
+
+http.route({ path: "/tts/golden-input", method: "GET", handler: ttsGoldenInput });
+
+// CI has a distinct, narrow key: it can request and read evals, never use the
+// broader worker key that can write every TTS event.
+const evalsRequest = httpAction(async (ctx, request) => {
+  const denied = keyAuth(request, "EVALS_KEY", "X-Evals-Key");
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.repo !== "string" || b.repo === "" || typeof b.sha !== "string" || b.sha === "") {
+    return jsonResponse(400, { error: "repo and sha (non-empty strings) required" });
+  }
+  if (b.baseSha !== undefined && (typeof b.baseSha !== "string" || b.baseSha === "")) {
+    return jsonResponse(400, { error: "baseSha, when given, is a non-empty string" });
+  }
+  if (b.pr !== undefined && (!Number.isInteger(b.pr) || (b.pr as number) <= 0)) {
+    return jsonResponse(400, { error: "pr, when given, is a positive integer" });
+  }
+  if (!Array.isArray(b.paths) || !b.paths.every((path) => typeof path === "string" && path !== "")) {
+    return jsonResponse(400, { error: "paths (array of non-empty strings) required" });
+  }
+  const result = await ctx.runMutation(internal.ttsEvals.internalRequestEvals, {
+    repo: b.repo,
+    sha: b.sha,
+    baseSha: typeof b.baseSha === "string" ? b.baseSha : undefined,
+    pr: typeof b.pr === "number" ? b.pr : undefined,
+    paths: b.paths,
+  });
+  return jsonResponse(200, { ok: true, ...result });
+});
+
+http.route({ path: "/tts/evals-request", method: "POST", handler: evalsRequest });
+
+// Readable with EITHER key. CI holds the narrow evals key; the box holds the
+// worker key and must read this route too — it looks a run up before spending
+// eighty model calls repeating it, and reads the base run before comparing.
+// The worker key is strictly the more privileged of the two, so accepting it
+// here widens nothing.
+const evalsRun = httpAction(async (ctx, request) => {
+  const denied = request.headers.get("X-TTS-Key")
+    ? ttsAuth(request)
+    : keyAuth(request, "EVALS_KEY", "X-Evals-Key");
+  if (denied) return denied;
+  const params = new URL(request.url).searchParams;
+  const repo = params.get("repo") ?? "";
+  const sha = params.get("sha") ?? "";
+  const baseSha = params.get("base") ?? undefined;
+  if (repo === "" || sha === "") return jsonResponse(400, { error: "repo and sha required" });
+  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalEvalsRun, { repo, sha, baseSha }));
+});
+
+http.route({ path: "/tts/evals-run", method: "GET", handler: evalsRun });
+
+// The box polls exactly one unanswered request per pass. This stays on the
+// worker key; an Action may request work but cannot observe another PR's queue.
+const ttsEvalsRequest = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  return jsonResponse(200, { request: await ctx.runQuery(internal.ttsEvals.internalOldestEvalsRequest, {}) });
+});
+
+http.route({ path: "/tts/evals-request", method: "GET", handler: ttsEvalsRequest });
+
+// Mission 3's read-only search family. `--failing` is projected from the run
+// row's failures array, never by a second event read.
+const ttsSearchEvals = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const params = new URL(request.url).searchParams;
+  const since = params.has("since") ? Number(params.get("since")) : undefined;
+  const limit = params.has("limit") ? Number(params.get("limit")) : undefined;
+  if ((since !== undefined && (!Number.isFinite(since) || since <= 0)) ||
+    (limit !== undefined && (!Number.isFinite(limit) || limit <= 0 || limit > 200))) {
+    return jsonResponse(400, { error: "since must be an epoch ms instant; limit must be 1 to 200" });
+  }
+  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalSearchEvals, {
+    repo: params.get("repo") ?? undefined,
+    sha: params.get("sha") ?? undefined,
+    since,
+    failing: params.get("failing") === "true",
+    limit,
+  }));
+});
+
+http.route({ path: "/tts/search/evals", method: "GET", handler: ttsSearchEvals });
 
 // GET /tts/weekly-run?day=YYYY-MM-DD — whether the Friday job already ran for
 // that day: its "weekly-run" row, keyed on the day (convex/ttsWeekly.ts). The
@@ -1416,6 +2144,91 @@ http.route({
   method: "POST",
   handler: ttsLearningObjectionsConsumed,
 });
+
+// GET /tts/repo-proposals?repo=<repo> — the open repository-rule proposals
+// the nightly repo-learning step made for one repository, newest first. A
+// session working in that repository reads them before it edits the nested
+// AGENTS.md files, applies the ones it agrees with on a branch, and posts
+// back below. Read-only, worker key.
+const ttsRepoProposals = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const params = new URL(request.url).searchParams;
+  const repo = params.get("repo");
+  const limitRaw = params.get("limit");
+  const limit = limitRaw === null ? undefined : Number(limitRaw);
+  if (limitRaw !== null && !Number.isFinite(limit)) {
+    return jsonResponse(400, { error: "limit, if given, must be a number" });
+  }
+  const result = await ctx.runQuery(internal.ttsNightly.internalOpenRepoProposals, {
+    repo: repo === null || repo === "" ? undefined : repo,
+    limit,
+  });
+  return jsonResponse(200, result);
+});
+
+http.route({ path: "/tts/repo-proposals", method: "GET", handler: ttsRepoProposals });
+
+// POST /tts/repo-proposal-applied — body { id, commit, line? }. The session
+// that landed a proposal in its repository says so: the row's status becomes
+// "applied" and the commit and the FINAL wording are stamped on it. The next
+// night's repo-learning step reads that and moves the evidence entry from its
+// "— proposed" heading to the live one, rewriting the line to what merged.
+const ttsRepoProposalApplied = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const { id, commit, line } = (body ?? {}) as { id?: unknown; commit?: unknown; line?: unknown };
+  if (typeof id !== "string" || id.trim() === "" || typeof commit !== "string" || commit.trim() === "") {
+    return jsonResponse(400, { error: "id and commit (strings) required" });
+  }
+  if (line !== undefined && typeof line !== "string") {
+    return jsonResponse(400, { error: "line, if given, must be a string" });
+  }
+  const result = await ctx.runMutation(internal.ttsNightly.internalApplyRepoProposal, {
+    id: id.trim(),
+    commit: commit.trim(),
+    line,
+  });
+  return jsonResponse(200, { ok: true, ...result });
+});
+
+http.route({ path: "/tts/repo-proposal-applied", method: "POST", handler: ttsRepoProposalApplied });
+
+// POST /tts/repo-proposal-dropped — body { id, reply? }. Tom replied on the
+// proposal's digest line. The nightly job posts this where it would revert a
+// model-of-Tom line: the row's status becomes "dropped", and the next night's
+// repo-learning step writes `dropped:` on the evidence entry, which is what
+// stops the same rule being proposed again.
+const ttsRepoProposalDropped = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const { id, reply } = (body ?? {}) as { id?: unknown; reply?: unknown };
+  if (typeof id !== "string" || id.trim() === "") {
+    return jsonResponse(400, { error: "id (string) required" });
+  }
+  if (reply !== undefined && typeof reply !== "string") {
+    return jsonResponse(400, { error: "reply, if given, must be a string" });
+  }
+  const result = await ctx.runMutation(internal.ttsNightly.internalDropRepoProposal, {
+    id: id.trim(),
+    reply,
+  });
+  return jsonResponse(200, { ok: true, ...result });
+});
+
+http.route({ path: "/tts/repo-proposal-dropped", method: "POST", handler: ttsRepoProposalDropped });
 
 // POST /tts/event — one dtsEvents row from the worker. Body: { kind, data? }.
 // The job records a failed step ("nightly-failure"), its learning run

@@ -5,12 +5,14 @@ import type { MutationCtx } from "./_generated/server";
 import schema from "./schema";
 import {
   AREA_REVIEWED,
+  INSTRUCTIONS_LOADED,
   LEARNING_REVERTED,
   LEARNING_REVERT_FAILED,
   SURFACED_THRESHOLD,
   WEEKLY_FAILURE,
   WEEKLY_RUN,
   WEEK_MS,
+  PRELUDE_DELIVERY,
   areaPageState,
   frontmatterDate,
   gatherWeeklyFacts,
@@ -35,6 +37,16 @@ function get(t: ReturnType<typeof convexTest>, path: string, key = KEY) {
 // stamps the real clock, so the window ends a moment after the seeding.
 async function gather(t: ReturnType<typeof convexTest>, until = Date.now() + 1000) {
   return await t.run(async (ctx) => await gatherWeeklyFacts(ctx, { since: until - WEEK_MS, until }));
+}
+
+async function publishSessionPrelude(t: ReturnType<typeof convexTest>) {
+  await t.run(async (ctx) => {
+    await ctx.db.insert("modelOfTomPublication", {
+      key: "current", commit: "weekly-session-test", committedAt: 1, pushed: true,
+        operate: "operate layer", write: "write layer", know: "know layer",
+        headers: [{ layers: ["operate", "write"], header: "MODEL-OF-TOM FILES (test)" }],
+    });
+  });
 }
 
 async function todo(
@@ -97,11 +109,53 @@ describe("gatherWeeklyFacts", () => {
       { name: "outlook", state: "running", since: null, detail: null },
     ]);
     expect(f.areaPages).toEqual([]);
-    expect(f.modelOfTom).toEqual({ commit: null, syncedAt: null, files: [], totalBytes: 0 });
+    expect(f.modelOfTom).toEqual({ commit: null, syncedAt: null, layers: [], files: [], totalBytes: 0 });
     expect(f.learning).toEqual({ changes: 0, reverted: 0, revertFailed: 0, lines: [] });
+    expect(f.preludes).toEqual({ sessions: 0, current: 0, stale: [], missing: [] });
+    expect(f.instructionsLoaded).toEqual({
+      daysReported: 0, sessions: 0, files: [], missingWikiTom: 0,
+      missingWikiTomSessions: [], missingProjectAgents: [],
+    });
+    expect(f.evals).toEqual({ runs: 0, clean: 0, regressions: [] });
     expect(f.jobFailures).toEqual([]);
     expect(f.threads).toEqual([]);
     expect(f.readiness).toEqual({ prepared: 0, unprepared: 0 });
+  });
+
+  it("sums prelude delivery rows across the week", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await event(ctx, PRELUDE_DELIVERY, now - DAY, {
+        data: { day: "2026-09-08", current: 3, stale: [{ id: "s1", title: "weekly agenda", had: "7fc21ab4c1de", behindDays: 2 }], missing: [] },
+      });
+      await event(ctx, PRELUDE_DELIVERY, now - 2 * DAY, {
+        data: { day: "2026-09-07", current: 2, stale: [], missing: [{ id: "s2", title: "adhoc" }] },
+      });
+    });
+    const f = await gather(t, now + 1000);
+    expect(f.preludes).toMatchObject({ sessions: 7, current: 5 });
+    expect(f.preludes.stale).toEqual([expect.objectContaining({ id: "s1", behindDays: 2 })]);
+    expect(f.preludes.missing).toEqual([expect.objectContaining({ id: "s2" })]);
+  });
+
+  it("reports missing instruction days and sessions that loaded no WikiTom files", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await event(ctx, INSTRUCTIONS_LOADED, now - DAY, {
+        data: {
+          day: "2026-09-08", sessions: 7,
+          files: [{ path: "C:/Users/heffn/Desktop/tom.quest/AGENTS.md", sessions: 7 }],
+          missingWikiTom: ["s-missing"],
+          missingProjectAgents: [{ session: "s-agents", cwd: "C:/Users/heffn/Desktop/tom.quest" }],
+        },
+      });
+    });
+    const f = await gather(t, now + 1000);
+    expect(f.instructionsLoaded.daysReported).toBe(1);
+    expect(f.instructionsLoaded.missingWikiTomSessions).toEqual([{ day: "2026-09-08", session: "s-missing" }]);
+    expect(f.instructionsLoaded.missingProjectAgents).toEqual([{ day: "2026-09-08", session: "s-agents", cwd: "C:/Users/heffn/Desktop/tom.quest" }]);
   });
 
   it("finds every fact kind when the week holds one of each", async () => {
@@ -187,20 +241,27 @@ describe("gatherWeeklyFacts", () => {
       });
       // 8, 9. the posted files: one area page past its window, one inside it
       // (by an area-reviewed event newer than the post), one never reviewed
-      for (const [path, body] of [
-        ["model-of-tom/writing.md", "# Writing\n\nshort."],
-        ["model-of-tom/areas/research.md", AREA_BODY("2026-01-01")],
-        ["model-of-tom/areas/admin.md", AREA_BODY("2026-01-01", "60")],
-        ["model-of-tom/areas/money.md", AREA_BODY("")],
-      ] as const) {
+      const sourceFiles = [
+        ["model-of-tom/writing.md", "# Writing\n\nshort.", 101],
+        ["model-of-tom/areas/research.md", AREA_BODY("2026-01-01"), undefined],
+        ["model-of-tom/areas/admin.md", AREA_BODY("2026-01-01", "60"), 303],
+        ["model-of-tom/areas/money.md", AREA_BODY(""), 404],
+      ] as const;
+      for (const [path, body, bytes] of sourceFiles) {
         await ctx.db.insert("ttsSkills", {
           name: path.slice("model-of-tom/".length).replace(/\.md$/, ""),
           body,
           sourcePath: path,
+          bytes,
           commit: "abc1234",
           syncedAt: now - DAY,
         });
       }
+      await ctx.db.insert("modelOfTomPublication", {
+        key: "current", commit: "publication-commit", committedAt: now - 2 * DAY, pushed: true,
+        operate: "operate", write: "write layer", know: "know layer",
+        headers: [],
+      });
       await event(ctx, AREA_REVIEWED, now - HOUR, {
         key: "model-of-tom/areas/admin.md",
         data: { path: "model-of-tom/areas/admin.md", reviewedOn: new Date(now).toISOString().slice(0, 10) },
@@ -267,7 +328,13 @@ describe("gatherWeeklyFacts", () => {
       expect.objectContaining({ path: "model-of-tom/areas/money.md", reviewedOn: null, reviewedAgeDays: null, pastWindow: true }),
       expect.objectContaining({ path: "model-of-tom/areas/research.md", reviewedOn: "2026-01-01", windowDays: 30, pastWindow: true }),
     ]);
-    expect(f.modelOfTom.commit).toBe("abc1234");
+    expect(f.modelOfTom.commit).toBe("publication-commit");
+    expect(f.modelOfTom.syncedAt).toBe(now - 2 * DAY);
+    expect(f.modelOfTom.layers).toEqual([
+      { name: "operate", bytes: 7 },
+      { name: "write", bytes: 11 },
+      { name: "know", bytes: 10 },
+    ]);
     expect(f.modelOfTom.files.map((x) => x.path)).toEqual([
       "model-of-tom/areas/admin.md",
       "model-of-tom/areas/money.md",
@@ -275,6 +342,11 @@ describe("gatherWeeklyFacts", () => {
       "model-of-tom/writing.md",
     ]);
     expect(f.modelOfTom.totalBytes).toBe(f.modelOfTom.files.reduce((n, x) => n + x.bytes, 0));
+    expect(f.modelOfTom.files.find((x) => x.path.endsWith("writing.md"))?.bytes).toBe(101);
+    expect(f.modelOfTom.files.find((x) => x.path.endsWith("admin.md"))?.bytes).toBe(303);
+    expect(f.modelOfTom.files.find((x) => x.path.endsWith("research.md"))?.bytes).toBe(
+      new TextEncoder().encode(AREA_BODY("2026-01-01")).length,
+    );
     expect(f.learning.changes).toBe(1);
     expect(f.learning.reverted).toBe(1);
     expect(f.learning.revertFailed).toBe(1);
@@ -498,6 +570,7 @@ describe("POST /tts/session", () => {
   it("opens the weekly session through the one row-builder, agenda as the opener, subjects on the row", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
+    await publishSessionPrelude(t);
     const res = await post(t, weekly);
     expect(res.status).toBe(200);
     const { sessionId } = await res.json();
@@ -527,6 +600,7 @@ describe("POST /tts/session", () => {
   it("refuses a second weekly session for the same day", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
+    await publishSessionPrelude(t);
     expect((await post(t, weekly)).status).toBe(200);
     const again = await post(t, { ...weekly, title: "Weekly 2026-09-11 (mine)", initialPrompt: "my own prompt" });
     expect(again.status).toBe(400);
@@ -539,6 +613,7 @@ describe("POST /tts/session", () => {
   it("refuses the wrong key, any kind but weekly, a bad day, no subjects, an unknown repo, and an unknown model", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
+    await publishSessionPrelude(t);
     expect((await post(t, weekly, "nope")).status).toBe(401);
     expect((await post(t, { ...weekly, kind: "adhoc" })).status).toBe(400);
     expect((await post(t, { ...weekly, kind: "gate" })).status).toBe(400);
@@ -654,6 +729,13 @@ describe("GET /tts/weekly-input", () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
     const until = Date.now() + 1000;
+    await t.run(async (ctx) => {
+      await ctx.db.insert("modelOfTomPublication", {
+        key: "current", commit: "weekly-context-test", committedAt: 1, pushed: true,
+        operate: "operate layer", write: "write layer", know: "know layer",
+        headers: [{ layers: ["operate", "write"], header: "published map + operate + write" }],
+      });
+    });
     const res = await get(t, `/tts/weekly-input?until=${until}`);
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -661,5 +743,12 @@ describe("GET /tts/weekly-input", () => {
     expect(body.since).toBe(until - WEEK_MS);
     expect(body.readiness).toEqual({ prepared: 0, unprepared: 0 });
     expect(body.integrations.length).toBe(3);
+    // The door serves the ASSEMBLED CONTEXT now, not two whole layers (the
+    // dynamic-context round): the stable prefix, then — the Friday gather
+    // having no subject of its own — no expansion and the fetchable index. The
+    // assembler's exact output is pinned in convex/ttsContext.test.ts.
+    const [prefix, index] = body.writingStandard.split("\n\nMODEL-OF-TOM FETCHABLE (");
+    expect(prefix).toBe("published map + operate + write\n\noperate layer\n\nwrite layer");
+    expect(index).toContain("--layers know");
   });
 });

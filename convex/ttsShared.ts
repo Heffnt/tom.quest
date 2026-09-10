@@ -15,6 +15,53 @@
 
 import { v, type Infer } from "convex/values";
 
+// The narrow list is Tom's boundary for an unattended delegate. Its `decision`
+// text is served to the box and rendered in the delegate prompt; `command` is
+// the literal mirror used by the autonomous shell classifier. A merge is
+// deliberately absent: until its mechanical gate exists it remains blocked by
+// the classifier, and once it exists it is reported for objection instead.
+export const NARROW_LIST = [
+  {
+    id: "money",
+    decision: "spend money, commit to a payment, or enter a payment method anywhere",
+    command: "spend money — a purchase, a subscription, a payment, or entering a payment method",
+  },
+  {
+    id: "message-in-his-name",
+    decision: "send a message to another human being in Tom's name — mail, chat, a form, a comment on someone else's work",
+    command: "send a message to another human in Tom's name (mail, a Slack post outside the system's own channels, a form submission, a comment on someone else's issue or pull request)",
+  },
+  {
+    id: "irreversible-deletion",
+    decision: "delete data irreversibly outside git — anything a checkout, a snapshot or a branch cannot bring back",
+    command: "delete data that git cannot restore — anything outside the working directory, and any history rewrite that is pushed",
+  },
+  {
+    id: "credential",
+    decision: "read, print, move, create, rotate or revoke a credential",
+    command: "read, print, move, or send a credential, key, token or password anywhere",
+  },
+] as const;
+export type NarrowListItem = (typeof NARROW_LIST)[number];
+export const NARROW_LIST_IDS = NARROW_LIST.map((item) => item.id);
+export function isNarrowListId(value: unknown): value is NarrowListItem["id"] {
+  return typeof value === "string" && (NARROW_LIST_IDS as readonly string[]).includes(value);
+}
+
+/**
+ * The opening contract for every unattended TTS mission. The autonomous
+ * prompt builders share it instead of carrying synchronized copies.
+ */
+export const AUTONOMOUS_SESSION_CONTRACT =
+  "You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.";
+
+/** The closed TTS vocabulary, defined before a worker mission uses its terms. */
+export const TTS_CLOSED_VOCABULARY = `The vocabulary, which is closed — these words mean exactly this and nothing else:
+- A BATCH holds how a set of todos gets completed. It is not itself a todo and it is never worked directly.
+- A TASK is work someone does. A GOAL is a state of the world the batch is for, written as a condition that is either true yet or not.
+- NEEDS are the todos a todo cannot proceed without. A todo is READY when every one of its needs is done (archived counts as done — a need that was set aside is not going to happen). The same word sequences batches: a batch's needs are the batches that must land before its work is handed out.
+- DISPLAY TEXT is the short line always on screen. A GROUND-UP EXPLANATION is the self-contained layer behind it: a complete HTML document, shown fullscreen, whose exact form the standard below specifies.`;
+
 const HOUR_MS = 3_600_000;
 export const DAY_MS = 86_400_000;
 
@@ -489,229 +536,31 @@ export function goalCheckable(todo: GoalTodo): boolean {
   return (todo.condition ?? "").trim() !== "";
 }
 
-// ── The model-of-tom files every prompt begins with (the lifeos update, phase 4)
-// The nightly job on the Jarvis Box posts these WikiTom files, with the commit
-// they were read at, to POST /tts/model-of-tom; convex/ttsSkills.ts stores
-// them and modelOfTomPrelude is the one read that prepends them, in THIS
-// order, to every prompt that writes to Tom or plans for him. The three named
-// files come first; then, for each page under areas/, the "Current state" and
-// "Must not break" sections (the job extracts them by heading; the server
-// only orders). The job cannot import this file (Node ESM on the box), so it
-// posts in the order it reads and the server's order is the authority.
-//
-// writing.md is the one file no prompt may go without: it IS the writing
-// standard every sentence TTS shows Tom obeys. A post that lacks it is
-// refused whole (convex/ttsSkills.ts), because replacing the table with the
-// rest would leave every prompt from then on written to no standard at all.
-export const MODEL_OF_TOM_WRITING = "model-of-tom/writing.md";
-/** The file the capture triage rules are a section of (CAPTURE_TRIAGE_HEADING
- * below); named here because two consumers reach for it, not just the order. */
-export const MODEL_OF_TOM_PRIORITIES = "model-of-tom/priorities.md";
-export const MODEL_OF_TOM_FIRST = [
-  MODEL_OF_TOM_WRITING,
-  MODEL_OF_TOM_PRIORITIES,
-  "model-of-tom/schedule.md",
-] as const;
-// Spelled WITHOUT a trailing slash, the same way worker/jobs/nightly.mjs
-// spells it — the job cannot import this file, so the two strings are only
-// kept identical by being written identically.
+// Weekly source-file facts identify area pages by this prefix. Prompt text is
+// stored as already-rendered layers in modelOfTomPublication instead.
 export const MODEL_OF_TOM_AREAS_DIR = "model-of-tom/areas";
 
 /** The first line of every prompt that carries the prelude, and so of every
- * transcript: convex/ttsSkills.ts writes it with the commit and the paths
- * after it; the sessions page reads it back off the row (app/sessions/lib.ts
- * modelOfTomHeadOf) to show what the session began with. Here, not there,
- * because the page cannot import a module that pulls in the Convex server. */
+ * transcript. It is shared with the session reader, which reads the header
+ * from the stored publication rather than rebuilding it from source files. */
 export const MODEL_OF_TOM_HEADER = "MODEL-OF-TOM FILES";
 
-// ── The writing standard — THE FALLBACK COPY (Tom's ruling, 2026-08-29) ─────
-// EVERY piece of natural language TTS shows Tom — a batch statement, a task
-// statement, a ground-up explanation, a digest line, a decision list — is
-// written to this standard.
-//
-// THE LIVE SOURCE IS NO LONGER THIS STRING. It is WikiTom
-// model-of-tom/writing.md (the skill model-of-tom/skills/writing-to-tom was
-// merged into it), which reaches Convex through the nightly job's post
-// (convex/ttsSkills.ts) and reaches every prompt through modelOfTomPrelude:
-// the session openers in convex/claudeSessions.ts, and GET /tts/batch-context
-// for the Node ESM planner on the worker box (which can neither import .ts
-// nor read a git checkout).
-//
-// This copy is what those consumers use ONLY while the ttsSkills table is
-// empty — before the job's first post — and the prelude's header says so
-// when it is serving. It is a snapshot, so it drifts: when writing.md
-// changes, update it here too.
+export type ModelOfTomHead = {
+  commit: string | null;
+  paths: string[];
+};
 
-/** The row name the retired six-hourly sync wrote; a row by this name keeps
- * serving as the writing file until the nightly job's first post replaces
- * the table. */
-export const WRITING_SKILL = "writing-to-tom";
-export const WRITING_STANDARD = `WRITING STANDARD — every sentence TTS shows Tom obeys this.
-
-THE TWO REGISTERS. All natural language here is one of exactly two kinds, and
-you always know which one you are writing.
-
-Display text is what is always on screen: a batch statement, a task statement,
-a goal condition. It is short and it assumes Tom's background — it does not
-teach, it names. One line, no trailing period needed, no preamble.
-
-A ground-up explanation is the layer behind a "more" control on any line of
-display text. It is self-contained: it defines every term at first use and is
-complete without any external reference, because Tom forwards these to other
-people and other agents verbatim. Assume the reader has no memory of any prior
-session and no knowledge of anything an agent made — files, branches,
-directories, jobs, and artifacts an agent created are unknown to him by name
-and must be described before they are used.
-
-THE FORM OF A GROUND-UP EXPLANATION: A COMPLETE HTML DOCUMENT. Rendered as
-paragraphs of prose, a ground-up explanation is an incomprehensible wall of
-text — Tom's own words, 2026-08-29, and the reason for this rule. So every one
-you write is a complete, self-contained HTML document, opening at
-<!DOCTYPE html> and closing at </html>, and it is shown FULLSCREEN. Hard
-constraints, because it renders inside a sandbox with no scripting and no
-network:
-- No <script>, no inline event handlers, and no external stylesheet, font,
-  image, or URL of any kind. Everything is inline: one <style> block in the
-  <head> and plain markup in the <body>. Nothing loads from outside; anything
-  external renders as a hole in the page.
-- The dark palette of the page it opens over: background #0a0e17, body text
-  #e2e8f0, secondary text #94a3b8, one accent #e8a040 for headings and key
-  terms, #1e293b for borders and rules. No other colors unless a diagram
-  genuinely needs one.
-- Readable type: about 15px body text, 1.65 line height, a column no wider
-  than roughly 760px centered with generous padding, a system sans stack
-  (-apple-system, "Segoe UI", Roboto, sans-serif) for prose and a monospace
-  stack (ui-monospace, "SF Mono", Menlo, monospace) for identifiers, paths,
-  ids, and code.
-- Real headings — one <h1> naming the subject, an <h2> per section — and short
-  sections. The reader must be able to find the part he wants without reading
-  the rest.
-
-STRUCTURE OVER WALLS. Inside that document, pick the form that fits the fact:
-- Enumerable facts go in a <table>: the terms and their definitions, the
-  options and what each one costs, the fields and what they mean, the states
-  and what each one implies. One fact per row, a real <th> header row.
-- Steps, states, and dependencies go in a simple visual structure built from
-  styled <div> boxes — a border, some padding, and an arrow (→ or ↓) between
-  them. Boxes, borders, and arrows only; no diagramming library, and SVG only
-  where plain shapes say it better than boxes would.
-- Everything else is short paragraphs under a heading, plus lists where the
-  items really are a list.
-
-WHAT THE DOCUMENT MUST COVER. It exists so a reader arriving with no context
-can understand the one line of display text it sits behind, and it must cover
-all of it: what this is; why it exists, meaning the end state it serves; what
-every term in the display text means, defined at first use; where the thing
-stands right now; what happens next and who does it; and — whenever Tom's
-ruling is the missing piece — exactly what he would be deciding, written as
-the numbered decision list described below, with the options and your
-recommendation.
-
-HTML is the form; everything else in this standard is still the writing. The
-rules on vocabulary, analogies, invented names, sentence construction, and
-tone all apply inside the document unchanged.
-
-WHO YOU ARE WRITING FOR. Tom is an AI PhD student. Assume fluent, and never
-define: machine learning at PhD level (transformer structure, training,
-evaluation), his own boolean-backdoor research vocabulary (triggers, arity,
-truth tables, activating combinations, poisoning, dormancy, detector classes,
-AUROC and the related rates), agent operations (subagents, worktrees,
-branches, merges, model tiers, crons, SLURM, GPUs, ssh), and git. Assume
-absent, and always define inline at first use: web-development jargon of every
-kind, the statistics of causality and inference, Boolean Fourier analysis, the
-internals of anything an agent created, and his own older prose and rules.
-
-NO LOAD-BEARING ANALOGIES. Do not explain one thing by mapping it onto
-another. The cost is the mapping itself: an analogy makes him understand a
-second domain and then transfer it, which is more work than understanding the
-thing directly. One orienting pointer to a system he already knows (his own
-code, something he built) is allowed as a single sentence. The test is
-deletion: remove the pointer, and if the explanation still teaches completely,
-it was a pointer; if the explanation collapses, it was a load-bearing analogy
-and is banned.
-
-NO INVENTED NAMES. Do not coin nouns, single letters, stage letters, numbered
-codenames, umbrella labels, or clever shorthands. Every one of these produces
-a "what is that?" stall. Use hyphenated plain words instead. Do not introduce a
-term that collides with something already in his head, and do not invent a
-synonym for a word he already uses — reuse his word exactly.
-
-HOW TO BUILD A SENTENCE. Complete sentences, never telegraphic fragments. One
-idea per paragraph. Concrete before abstract: state the specific case first,
-then the rule it illustrates. Every fact you include carries its relevance on
-its face — if the reader cannot see why a sentence is there, cut it or say
-why. Simple means fewer and more fundamental pieces at full technical
-precision, never fewer technical terms. Err toward over-explaining: he would
-rather skim background he already has than stop and ask.
-
-DESCRIPTIVE, NEVER EVALUATIVE. State what is. No praise, no urgency, no
-ceremony, no hedging, no selling.
-
-DECISIONS. When something needs Tom's ruling, write it as a numbered list.
-Each numbered item is one sentence of situation, then the options, then your
-recommendation. He replies by number, so an item that cannot be read on its
-own comes back unruled.`;
-
-// ── Capture triage — THE FALLBACK COPY (the lifeos update, phase 6) ──────────
-// Two judgements, and they are NOT the same question. Every capture poller on
-// the Jarvis Box (poll-gmail, poll-canvas, poll-outlook) asks both:
-//
-//   1. does this imply an ACTION by Tom?  → capture it as a todo. Nothing is
-//      lost, so a wrong yes costs one archive click and a wrong no loses the
-//      thread; the prompt leans toward capturing.
-//   2. does it need TOM, TODAY?           → open one thread in #tts on the
-//      todo, so his reply is the next turn.
-//
-// The second is NOT an importance rating and never becomes one. It is capture
-// triage: three facts about the message, each of which Tom has to answer to
-// himself and cannot be answered by an agent — a deadline inside 48 hours, a
-// person waiting on a reply, money or credentials. Everything else waits for
-// the morning digest, which reports every capture.
-//
-// THE LIVE SOURCE IS NO LONGER THIS STRING. The lifeos update's phase 3
-// merged the WikiTom capture-triage skill into model-of-tom/priorities.md as
-// the section headed "What becomes a todo", and phase 4's nightly job posts
-// priorities.md whole while replacing the ttsSkills table wholesale — so no
-// row named capture-triage is written any more. GET /tts/capture-context
-// takes the section out of the stored priorities row
-// (convex/ttsSkills.ts captureTriageFrom) and names which of the three it
-// served, so a poller's log line says where its rules came from.
-//
-// This copy is what the pollers use ONLY while neither the section nor a row
-// the retired sync left behind is there. It is a snapshot, so it drifts: when
-// the rules change in WikiTom, update it here too.
-
-/** The heading in model-of-tom/priorities.md whose section IS the triage
- * rules. Matched by text, case-insensitively, through the next heading of the
- * same or a higher level. */
-export const CAPTURE_TRIAGE_HEADING = "What becomes a todo";
-
-/** The row the retired six-hourly WikiTom skill sync wrote. A row by this
- * name still serves — below the priorities section, above the copy here —
- * for as long as one survives the nightly job's first wholesale replace. */
-export const CAPTURE_TRIAGE_SKILL = "capture-triage";
-export const CAPTURE_TRIAGE_RULES = `CAPTURE TRIAGE — two judgements about one incoming message.
-
-FIRST: does it imply an ACTION BY TOM — something he must reply to, submit,
-schedule, pay, sign, decide, or follow up on? Skip newsletters, promotions,
-automated notifications, receipts, and mass mail. When genuinely unsure,
-capture: a wrong capture costs Tom one archive click, a wrong skip loses the
-thread.
-
-SECOND: does it need TOM, TODAY? This is not a rating of how important the
-item is — it is whether waiting until tomorrow morning's digest would cost
-something that cannot be recovered. Exactly three facts make it true, and any
-one of them is enough:
-
-  DEADLINE — the message names a deadline inside the next 48 hours.
-  PERSON WAITING — a named human being has asked Tom for a reply. An automated
-    sender, a mailing list, or a no-reply address is never a person waiting.
-  MONEY OR CREDENTIALS — a payment, an invoice, a refund, a bill, an account,
-    a password, a key, or a signature is at stake.
-
-Nothing else qualifies. A message that implies an action and matches none of
-the three is captured and reported in the morning digest like every other
-capture; it is not lost, it is not urgent.`;
+/** The parseable first line stored at the front of every session opener. */
+export function modelOfTomHeadOf(text: string): ModelOfTomHead | null {
+  const line = text.split("\n", 1)[0] ?? "";
+  if (!line.startsWith(MODEL_OF_TOM_HEADER)) return null;
+  const commit = /WikiTom commit ([0-9a-f]{7,40})/i.exec(line)?.[1] ?? null;
+  const paths = (/\):\s*(.+)$/.exec(line)?.[1] ?? "")
+    .split(",")
+    .map((path) => path.trim())
+    .filter((path) => path !== "");
+  return { commit, paths };
+}
 
 // ── Session-surface constants (one home; ledger graduation
 // session-constants-two-homes) ───────────────────────────────────────────────
@@ -920,12 +769,11 @@ export function ttsItemLink(todoId: string, intent?: TtsLinkIntent): string {
   return `https://tom.quest/tts?item=${todoId}${intent ? `&intent=${intent}` : ""}`;
 }
 
-/** The one reply line at capture (Tom's ruling 2026-08-30, one reply per
- * #dump message; the lifeos update: at capture, no model call): what was
- * created, as captured, and where it lives. */
-export function captureReplyText(statement: string, todoId: string): string {
-  return `Captured as a todo: ${statement.trim()} — ${ttsItemLink(todoId)}`;
-}
+// The one reply line at capture is composeCaptured in convex/ttsCompose.ts
+// now, with every other message TTS sends. The line that used to live here
+// echoed Tom's own words back to him in full inside his own thread, which
+// doubled the length of everything in #dump and told him only that the system
+// worked; the one fact he did not already have is when he next sees it.
 
 /** Deep link to one session on the /sessions page — the one spelling every
  * Slack message about a session carries. */
@@ -942,11 +790,22 @@ export function ttsSessionLink(sessionId: string): string {
 // gets an objection. One closed union; a message with no subject cannot be
 // sent.
 export const SLACK_SUBJECT = v.union(
+  // `today` supersedes the old deterministic `digest` name. Keep digest for
+  // already-posted threads: a Slack reply can arrive days after a deploy.
+  v.object({ kind: v.literal("today"), day: v.string() }),
   v.object({ kind: v.literal("digest"), day: v.string() }),
   v.object({ kind: v.literal("hourly"), hour: v.string() }),
   v.object({ kind: v.literal("todo"), id: v.id("dtsTodos") }),
   v.object({ kind: v.literal("session"), id: v.id("claudeSessions") }),
   v.object({ kind: v.literal("learning"), id: v.string() }),
+  // ONE DELEGATED DECISION (an "ask"), posted to the decisions channel as it
+  // is recorded (convex/ttsAsk.ts), and one broken-job thread. Both name their
+  // producer rather than a fabricated todo: a todo subject stamps
+  // slackReplyTs, which belongs to the ONE reply thread that todo has in
+  // #dump, and a decisions-channel line must not claim it. A reply in an ask's
+  // thread is an objection to that one decision.
+  v.object({ kind: v.literal("ask"), id: v.string() }),
+  v.object({ kind: v.literal("job"), id: v.string() }),
 );
 export type SlackSubject = Infer<typeof SLACK_SUBJECT>;
 
@@ -960,6 +819,105 @@ export function slackThreadKey(channel: string, threadRootTs: string): string {
 /** The hourly update's subject key: NY calendar date and hour, "YYYY-MM-DDTHH". */
 export function slackHourKey(utcMs: number): string {
   return `${nyCalendarDayKey(utcMs)}T${String(nyLocalHour(utcMs)).padStart(2, "0")}`;
+}
+
+// ── The six channels (slack-design.md §1) ────────────────────────────────────
+// Six rooms, each with one purpose and one cadence: #tts-today (the morning
+// message), #tts-decisions (object, or let it stand), #tts-needs-you (settle
+// it), #tts-hourly (glance), #tts-broken (the box is failing), #dump (capture).
+// Tom's steps to create them and set these ids are slack-design.md §5.1.
+//
+// This lives here rather than in convex/ttsSync.ts, which owns the Slack door,
+// because that file is "use node" and convex/http.ts — the route that opens a
+// needs-you thread — is a plain-runtime module that cannot import it.
+export type SlackChannelKind = "today" | "decisions" | "needsYou" | "hourly" | "broken";
+
+const CHANNEL_ENV: Record<SlackChannelKind, string> = {
+  today: "SLACK_TTS_TODAY_CHANNEL_ID",
+  decisions: "SLACK_TTS_DECISIONS_CHANNEL_ID",
+  needsYou: "SLACK_TTS_NEEDS_YOU_CHANNEL_ID",
+  hourly: "SLACK_TTS_HOURLY_CHANNEL_ID",
+  broken: "SLACK_TTS_BROKEN_CHANNEL_ID",
+};
+
+/** Each channel, or null when its variable is unset. Missing = log once and do
+ *  not post (ruling digest-env-missing-is-quiet) — EXCEPT the today channel,
+ *  which falls back to SLACK_TTS_CHANNEL_ID, because a missing variable must
+ *  not silence the morning. #tts renamed to #tts-today keeps its id, so that
+ *  fallback is the same room under its old variable.
+ *
+ *  NO OTHER KIND FALLS BACK, and no caller may reproduce this lookup inline:
+ *  postSlack's default target is SLACK_TTS_CHANNEL_ID, so a caller that omits
+ *  `channel` when its own variable is unset posts into #tts-today — the one
+ *  room the design says nothing but the morning message may write to. */
+export function channelFor(kind: SlackChannelKind): string | null {
+  const own = process.env[CHANNEL_ENV[kind]];
+  if (typeof own === "string" && own !== "") return own;
+  if (kind === "today") {
+    const legacy = process.env.SLACK_TTS_CHANNEL_ID;
+    if (typeof legacy === "string" && legacy !== "") return legacy;
+  }
+  console.error(`TTS slack: ${CHANNEL_ENV[kind]} not configured — nothing posted to #tts-${kind}`);
+  return null;
+}
+
+// ── The calendar feeds, and the private ones (Tom, 2026-09-09) ───────────────
+// TTS_ICS_FEEDS is a JSON array of {name, url} on the Convex deployment; each
+// entry's `name` is what a mirrored row carries in ttsCalendarEvents.feed.
+//
+// An entry may also carry `"private": true`. A PRIVATE FEED STAYS IN THE
+// RECORD — scheduling still knows Tom is busy, and every planner still reads
+// those rows — but no composer that writes to Slack, and no prompt that lists
+// his calendar for a message to him, may name one. Tom's family calendar is
+// the feed this exists for, and the ruling is that the morning message says
+// NOTHING about it at all, not even "one private commitment".
+//
+// This lives here rather than in convex/ttsCalendarFetch.ts because that file
+// is "use node" and the fact gatherer (convex/ttsDigest.ts) is a plain-runtime
+// query that has to drop the rows.
+export type IcsFeedConfig = { name: string; url: string; private?: boolean };
+
+export function parseIcsFeedConfig(raw: string): IcsFeedConfig[] {
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed)) throw new Error("TTS_ICS_FEEDS must be a JSON array");
+  return parsed.map((entry, i) => {
+    const e = entry as Record<string, unknown>;
+    if (typeof e?.name !== "string" || typeof e?.url !== "string") {
+      throw new Error(`TTS_ICS_FEEDS[${i}] needs {name, url}`);
+    }
+    if (e.private !== undefined && typeof e.private !== "boolean") {
+      throw new Error(`TTS_ICS_FEEDS[${i}].private must be true or false when present`);
+    }
+    return { name: e.name, url: e.url, ...(e.private === true ? { private: true } : {}) };
+  });
+}
+
+/** The feed names Tom has marked private, read from the environment. An
+ *  unreadable TTS_ICS_FEEDS answers "every feed is private": a misconfigured
+ *  variable must not be the reason his family calendar reaches Slack.
+ *
+ *  SO DOES AN ABSENT OR EMPTY ONE. The mirrored rows outlive the variable —
+ *  clearing TTS_ICS_FEEDS stops the fetch but leaves every ttsCalendarEvents
+ *  row in place, so "no config" once meant "nothing is private" and the family
+ *  feed printed. There is no state of this variable in which the answer is
+ *  "name everything": either it says which feeds are private, or nothing is
+ *  named. */
+export function privateFeedNames(raw: string | undefined): Set<string> | "all" {
+  if (raw === undefined || raw.trim() === "") return "all";
+  try {
+    return new Set(parseIcsFeedConfig(raw).filter((f) => f.private).map((f) => f.name));
+  } catch (err) {
+    console.error(
+      `TTS calendar: TTS_ICS_FEEDS is unreadable (${err instanceof Error ? err.message : String(err)}) — every feed is treated as private`,
+    );
+    return "all";
+  }
+}
+
+/** Whether a mirrored calendar row may be named in something Tom reads. */
+export function feedIsPrivate(feed: string | undefined, privateFeeds: Set<string> | "all"): boolean {
+  if (privateFeeds === "all") return true;
+  return feed !== undefined && privateFeeds.has(feed);
 }
 
 /** A tab of the /tts page, in the page's own `?tab=` vocabulary

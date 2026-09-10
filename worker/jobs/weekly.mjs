@@ -65,6 +65,7 @@ import {
   loadEnv,
   nyHour,
   runClaude,
+  JSON_ONLY_ANSWER,
 } from "./tts-lib.mjs";
 import {
   MODEL_OF_TOM_AREAS_DIR,
@@ -204,10 +205,54 @@ export function renderFactLines(facts) {
   }
 
   const m = facts.modelOfTom;
+  const layerBytes = new Map(m.layers.map((layer) => [layer.name, layer.bytes]));
+  const publishedLayers = ["operate", "write", "know"]
+    .map((name) => {
+      const bytes = layerBytes.get(name);
+      return bytes === undefined ? `${name} not published` : `${name} ${bytes} bytes`;
+    })
+    .join(", ");
   lines.push(
-    `Model-of-tom files every prompt begins with: ${count(m.files.length, "file")}, ${m.totalBytes} bytes in all${m.commit ? `, at WikiTom commit ${m.commit.slice(0, 12)}${m.syncedAt ? ` (${utcDay(m.syncedAt)})` : ""}` : ", no commit posted yet"}.`,
+    `Model-of-tom published layers: ${publishedLayers}. Source files: ${count(m.files.length, "file")}, ${m.totalBytes} bytes in all${m.commit ? `, at WikiTom commit ${m.commit.slice(0, 12)}${m.syncedAt ? ` (${utcDay(m.syncedAt)})` : ""}` : ", no commit posted yet"}.`,
   );
   for (const f of m.files) lines.push(`- ${f.path}: ${f.bytes} bytes`);
+
+  const p = facts.preludes;
+  lines.push(
+    `Preludes: ${p.sessions} sessions, ${p.current} from the current model-of-tom commit, ${p.stale.length} from an older one, ${p.missing.length} with no prelude.`,
+  );
+  for (const stale of p.stale) {
+    const commit = stale.had ? `prelude at WikiTom ${stale.had.slice(0, 12)}` : "prelude with no commit";
+    const age = stale.behindDays >= 0
+      ? `${stale.behindDays} day${stale.behindDays === 1 ? "" : "s"} behind`
+      : "a commit this deployment never posted";
+    lines.push(`- ${stale.day} ${stale.title}: ${commit}, ${age} (id ${stale.id})`);
+  }
+  for (const missing of p.missing) {
+    lines.push(`- ${missing.day} ${missing.title}: no prelude at all (id ${missing.id})`);
+  }
+
+  const loaded = facts.instructionsLoaded;
+  lines.push(
+    `Instructions loaded on the laptop: ${loaded.daysReported} of 7 days reported, ${loaded.sessions} sessions, ${loaded.files.length} files.`,
+  );
+  for (const file of loaded.files) {
+    lines.push(`- ${file.path}: ${file.sessions}${file.sessions === loaded.sessions ? ` of ${loaded.sessions}` : ""} sessions`);
+  }
+  if (loaded.missingWikiTom > 0) {
+    lines.push(`- ${loaded.missingWikiTom} session${loaded.missingWikiTom === 1 ? "" : "s"} loaded no model-of-tom file: ${loaded.missingWikiTomSessions.map((s) => `${s.day} ${s.session}`).join(", ")}`);
+  }
+  for (const missing of loaded.missingProjectAgents) {
+    const repo = missing.cwd.replace(/\\/g, "/").split("/").filter(Boolean).at(-1) ?? missing.cwd;
+    lines.push(`- 1 session in ${repo} loaded no AGENTS.md: ${missing.day} ${missing.session} (${missing.cwd})`);
+  }
+
+  const evals = facts.evals;
+  lines.push(`Evals: ${evals.runs} runs, ${evals.clean} clean, ${evals.regressions.length} with a regression.`);
+  for (const run of evals.regressions) {
+    const first = run.failure === null ? "a regression" : `regression on ${run.failure.id} (${run.failure.partition})`;
+    lines.push(`- ${run.day} ${run.repo} ${run.sha.slice(0, 7)}: ${run.pass} of ${run.items} pass — ${first}`);
+  }
 
   const l = facts.learning;
   lines.push(`Nightly learning: ${count(l.changes, "change")}, ${l.reverted} reverted, ${l.revertFailed} revert${l.revertFailed === 1 ? "" : "s"} failed.`);
@@ -313,25 +358,28 @@ export function priorAgendaLines(prior) {
 }
 
 /** The one prompt of the one model call. */
-export function buildAgendaPrompt({ factLines, priorLines }) {
+export function buildAgendaPrompt({ writingStandard, factLines, priorLines }) {
   return [
+    writingStandard,
+    "",
     "You are writing the agenda for Tom's weekly reflective session (TTS, Toms Todo System). Below are the facts of the last seven days, gathered deterministically from the record, and last week's agenda outcome. Nothing else is available to you and nothing else is needed.",
     "",
     "Write two things, as one JSON object and nothing else:",
     "",
-    '1. "lines": the week, descriptively — one string per line, plain sentences, each carrying its date or count from the facts. Descriptive, never evaluative: no score, no grade, no praise, no blame, no adjective that judges. Every fact section below is represented; a fact with nothing in it is one line saying so. Use Tom\'s words and the record\'s words only; invent no names.',
+    '1. "lines": the week - one string per line, plain sentences, each carrying its date or count from the facts. Every fact section below is represented; a fact with nothing in it is one line saying so.',
     "",
     '2. "forks": every fork the facts support — a real trade-off Tom has to rule on, where the record cannot decide for him: an item surfaced and never touched, a goal with no open task, a date missed twice, an integration waiting on him, a page past its window, a thread that waited days. (The cadence of these sessions is not yours to raise: the job puts a fixed line at the top of the agenda when two in a row were missed.) Each fork is an object: "title" (one line naming the fork), "subject" (null, or {"type": "life"|"batch", "id": "<the id from the facts>"} when the fork is about one todo or batch), "sides": exactly two objects each with "option" (what would be done) and "cost" (what that side gives up, from the facts), "recommendation" (one sentence naming which side and why, from the facts; Tom rules, this is only what you would pick). Order the forks by dependency: a fork whose answer changes another comes first. NO CAPS: write every fork the facts support and not one more; ZERO forks is a valid answer when the facts support none, and then "forks" is an empty array. A recommendation with no trade-off behind it is not a fork; do not manufacture one.',
     "",
     "Do not ask the sustainability question and do not answer it; the agenda asks it in fixed words after your lines.",
+    "",
+    JSON_ONLY_ANSWER,
+    '{"lines": [...], "forks": [...]}',
     "",
     "THE FACTS:",
     ...factLines,
     "",
     "LAST WEEK:",
     ...priorLines,
-    "",
-    'Answer with the JSON object only: {"lines": [...], "forks": [...]}.',
   ].join("\n");
 }
 
@@ -443,10 +491,10 @@ export function sessionPrompt({ day, agenda, file, checkout }) {
     "Do these, in order, with Tom:",
     "",
     `0. If the agenda opens with "${CADENCE_LINE}", take that up first: the last two weekly sessions were missed, and what is to be decided is what to change so the next one happens — the day, the hour, the length, the form. His answer goes into the outcome (step 5) in his words.`,
-    "1. Read the facts with him, as they are: descriptive, no grade, his words and the record's words.",
+    "1. Read the facts with him, as they are.",
     `2. Ask him, in exactly these words: "${SUSTAINABILITY_QUESTION}" Keep his answer verbatim; it is the primary variable and goes into the outcome as he said it.`,
     `3. Go through the forks by number. Take his ruling on each in his own words. A fork that names a subject (a todo or a batch, by id) is ruled through the ruling route the moment he says it: curl -s -X POST "$CONVEX_SITE_URL/tts/ruling" -H "X-TTS-Key: $TTS_WORKER_KEY" -H "Content-Type: application/json" -d '{"inboundId": "<the id after \\"inbound row:\\" at the end of the turn he said it in>", "verdict": "<approve|revise|session|archive>", "subjectType": "<life|batch>", "subjectId": "<the id the fork names>", "quote": "<one whole sentence of that turn, copied exactly>", "sentence": "<on revise only: the one sentence of that turn that redirects the preparing agent, copied exactly; omit on every other verdict>"}' — this session may rule only on the subjects the forks name (the ruling route refuses any other id), and the morning digest quotes every ruling written this way. If his words leave the verdict unclear, do not guess; ask. A fork with no subject is a ruling about the system, recorded in the outcome (step 5) in his words. Zero forks is a real answer: then there is nothing to rule on.`,
-    `4. The area pages past their window are named under the facts. For each, read ${WIKITOM_DIR}/${MODEL_OF_TOM_AREAS_DIR}/<page>.md with him. When he confirms a page, run: node /opt/tts/weekly.mjs reviewed ${MODEL_OF_TOM_AREAS_DIR}/<page>.md <today, YYYY-MM-DD> — it sets reviewed: on that page, commits and pushes under the WikiTom writer lock, and records the review. Never run it for a page he did not confirm, and never edit a page's Ideal state or Must not break lines.`,
+    `4. The area pages past their window are named under the facts. For each, read ${WIKITOM_DIR}/${MODEL_OF_TOM_AREAS_DIR}/<page>.md with him. When he confirms a page, run: node /opt/tts/weekly.mjs reviewed ${MODEL_OF_TOM_AREAS_DIR}/<page>.md <today, YYYY-MM-DD> — it sets reviewed: on that page, commits and pushes under the WikiTom writer lock, and records the review. Never run it for a page he did not confirm; this command changes only its reviewed: frontmatter.`,
     `5. At the end, write the outcome to a file and run: node /opt/tts/weekly.mjs outcome ${day} <that file>. The file's first line is one of "timing: on time" (the session held by Sunday), "timing: late", or "timing: skipped"; then "sustainable: <his answer, verbatim>"; then "rulings:" and one line per fork, "<number>. <his ruling, in his words>". The command appends the text under the agenda's Outcome heading, commits and pushes. Next Friday's agenda reads it.`,
     "",
     "This session writes to a todo's record only through the ruling route, and never records a ruling Tom did not state.",
@@ -573,6 +621,9 @@ export async function runWeekly({ force = false, overwrite = false, env = null, 
   let facts = null;
   try {
     facts = await io.fetch(run.env, `/tts/weekly-input?until=${now}`);
+    if (typeof facts.writingStandard !== "string" || facts.writingStandard.trim() === "") {
+      throw new Error("model-of-tom layer write is not stored");
+    }
   } catch (err) {
     await recordFailure(run, "gather", err);
   }
@@ -589,7 +640,7 @@ export async function runWeekly({ force = false, overwrite = false, env = null, 
   let modelError = null;
   if (facts !== null) {
     try {
-      const answer = io.model(buildAgendaPrompt({ factLines, priorLines }), {
+      const answer = io.model(buildAgendaPrompt({ writingStandard: facts.writingStandard, factLines, priorLines }), {
         model: WEEKLY_MODEL,
         timeoutMs: MODEL_TIMEOUT_MS,
         cwd: os.tmpdir(),

@@ -3,7 +3,7 @@
 // THE ONE INFO MECHANISM (ratified by Tom, 2026-08-29; built 2026-08-30;
 // ground-up layer added 2026-08-31).
 //
-// The rule, verbatim from CLAUDE.md: "One info mechanism: a tap-to-open
+// The rule, verbatim from app/AGENTS.md: "One info mechanism: a tap-to-open
 // popover (never hover-only, never native `title=` — both are dead on touch).
 // Content is a plain-language explanation of what the control does on the
 // backend, with the exact function call in small mono."
@@ -24,7 +24,7 @@
 //     control, not decoration, and accent alone would not say so.
 //
 // THE TWO REGISTERS (the writing standard, convex/ttsShared.ts
-// WRITING_STANDARD). Every piece of prose TTS shows is one of exactly two
+// writing.md). Every piece of prose TTS shows is one of exactly two
 // kinds, and this component now carries both:
 //   - DISPLAY TEXT — `children`. Short, assumes Tom's background, always
 //     visible once the popover is open. One or two sentences.
@@ -157,7 +157,7 @@ export default function Info({
           )}
           {explanation && (
             // Underlined at rest: clickable text that is not styled as a
-            // button is underlined (CLAUDE.md UI rules), and this one has to
+            // button is underlined (app/AGENTS.md UI rules), and this one has to
             // read as the way into a longer document rather than as a label.
             <button
               type="button"

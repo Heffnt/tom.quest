@@ -1,0 +1,62 @@
+#!/usr/bin/env node
+// tts-audit — the merge gate's audit check, run over one commit.
+const jobsDir = process.env.TTS_JOBS_DIR ?? "/opt/tts";
+const { auditCommit } = await import(jobsDir + "/audit.mjs");
+
+function usage(message) {
+  if (message) process.stderr.write("tts-audit: " + message + "\n");
+  process.stderr.write(
+    "usage: tts-audit --repo <name> --sha <commit>\n" +
+      "                 [--base <commit>] [--subject \"<what it does>\"]\n" +
+      "                 [--dir <checkout>]\n" +
+      "\n" +
+      "Runs a read-only audit of the change and records its verdict against the\n" +
+      "commit. APPROVED is one of the merge gate's three checks; anything else\n" +
+      "leaves the gate shut and says so.\n",
+  );
+  process.exitCode = 2;
+}
+
+function parse(argv) {
+  const args = { dir: process.cwd() };
+  for (let i = 0; i < argv.length; i += 1) {
+    const flag = argv[i];
+    if (flag === "--help" || flag === "-h") return { help: true };
+    const value = argv[i + 1];
+    if (!["--repo", "--sha", "--base", "--subject", "--dir"].includes(flag)) {
+      throw new Error("unknown flag " + flag);
+    }
+    if (value === undefined || value.startsWith("--")) throw new Error(flag + " needs a value");
+    i += 1;
+    args[flag.slice(2)] = value;
+  }
+  if (!args.repo?.trim()) throw new Error("--repo is required");
+  if (!args.sha?.trim()) throw new Error("--sha is required");
+  return args;
+}
+
+let args;
+try {
+  args = parse(process.argv.slice(2));
+  if (args.help) {
+    usage();
+  } else {
+    const result = await auditCommit({
+      repo: args.repo,
+      sha: args.sha,
+      base: args.base ?? null,
+      subject: args.subject ?? "",
+      dir: args.dir,
+    });
+    process.stdout.write("AUDIT " + args.repo + "@" + args.sha.slice(0, 7) + "\n");
+    process.stdout.write("verdict: " + (result.verdict ?? "unrecorded") + "\n");
+    process.stdout.write(result.text.trim() + "\n");
+    if (result.verdict !== "APPROVED") process.exitCode = 4;
+  }
+} catch (error) {
+  if (args === undefined) usage(error.message);
+  else {
+    process.stderr.write("tts-audit: " + String(error?.message ?? error) + "\n");
+    process.exitCode = 1;
+  }
+}

@@ -18,7 +18,7 @@
 //
 // TWO JUDGEMENTS, ONE CLAUDE CALL PER BATCH, and they are different questions:
 //
-//   1. does the mail imply an ACTION BY TOM? → capture it as a todo. Judged
+//   1. does the mail imply an action? → capture it as a todo. Judged
 //      from headers + Gmail's snippet only (the first ~100 chars) — v1
 //      deliberately never downloads bodies. A capture is a todo, so a wrong
 //      "actionable" call costs Tom one archive click while a wrong "skip" call
@@ -30,11 +30,8 @@
 //      everything else waits for the 5 a.m. digest, which reports every
 //      capture. Nothing is lost either way.
 //
-// The rules for both come from the deployment, not from this file: GET
-// /tts/capture-context serves the synced WikiTom capture-triage text (WikiTom
-// model-of-tom/priorities.md, through the ttsSkills row), falling back to the
-// copy in convex/ttsShared.ts until the sync has run. One home for the rules,
-// so poll-canvas and poll-outlook read the same words.
+// The writing standard comes from the deployment through GET
+// /tts/capture-context. One read also carries the declined-integration list.
 //
 // ONE VERDICT PER MAIL, and the cursor never passes a mail without one. The
 // model echoes the ids it was given, so it can garble one, invent one, or say
@@ -65,8 +62,8 @@ import {
   reconcileVerdicts,
   reportUntriaged,
   runClaude,
-  triageSourceLine,
-  ttsItemLink,
+  JSON_ONLY_ANSWER,
+  MODELS,
 } from "./tts-lib.mjs";
 
 const CURSOR_FILE = "/var/lib/tts/gmail-cursor";
@@ -83,6 +80,34 @@ const MAX_CANDIDATES = 25; // per run; the 10-minute cadence drains any backlog
  * regardless of which label the thread has since moved to.
  * Exported for tests.
  */
+export function gmailTriagePrompt(writingStandard, batch) {
+  return [
+    writingStandard,
+    ``,
+    `You triage Tom's Gmail inbox for his todo system (TTS).`,
+    `For each captured email write "statement": ONE line naming the action,`,
+    `starting with a verb and mentioning who it involves.`,
+    ``,
+    `For every captured email, include "needsTomToday". Include "why" only when`,
+    `it is true. An email you do not capture has no second judgement at all.`,
+    `"why" IS PRINTED TO TOM in the message that asks him to settle it, so write`,
+    `it as half a sentence he can read — "the deposit is six weeks late", not`,
+    `"overdue" — and never name the sender or quote the subject line.`,
+    ``,
+    `ANSWER FOR EVERY EMAIL BELOW - one entry each, in the order given, with "id"`,
+    `copied EXACTLY as it appears. An email you are not capturing is`,
+    `{"id": "...", "capture": false} and nothing else. Leaving an email out is not`,
+    `a "no": a missing or misspelled id is a lost verdict, it is reported, and the`,
+    `run stops there rather than passing the email over.`,
+    ``,
+    JSON_ONLY_ANSWER,
+    `{"verdicts": [{"id": "<gmail message id>", "capture": <true|false>, "statement": "<one line, only when capture is true>", "needsTomToday": <true|false>, "why": "<a few words, only when needsTomToday is true>"}]}`,
+    ``,
+    `Emails:`,
+    JSON.stringify(batch.map(({ id, from, subject, snippet }) => ({ id, from, subject, snippet })), null, 2),
+  ].join("\n");
+}
+
 export function messageSourceId(id) {
   return `gmail:message:${id}`;
 }
@@ -90,15 +115,13 @@ export function messageProvenance(id) {
   return `${messageSourceId(id)} https://mail.google.com/mail/u/0/#all/${id}`;
 }
 
-/**
- * Pure: the ONE line a #tts thread opens with — who it is from, what it is
- * about, and where the todo is. Nothing else: the thread exists so Tom can
- * reply, and his reply is the next turn on that todo.
- * Exported for tests.
- */
-export function needsTomLine(from, subject, todoId) {
-  return `Needs you today — ${from}: ${subject}\n${ttsItemLink(todoId)}`;
-}
+// THE JOB NO LONGER COMPOSES THE MESSAGE (slack-design.md §4.5). It sends
+// FACTS — the todo, the reason, and the dedupe key — and convex/ttsSlack.ts
+// writes the needs-you thread from the todo's own statement and entry action.
+// The raw vendor subject and the From header stay out of Slack entirely: they
+// are on the needs-tom row and in the key, which is where they belong. Three
+// of these arrived in one week and all three were vendor security mail whose
+// subject lines read, in #tts, as if TTS had written them.
 
 async function gmailToken(env) {
   const res = await fetch("https://oauth2.googleapis.com/token", {
@@ -141,9 +164,12 @@ export const INTEGRATION_NAME = "gmail";
 
 async function main() {
   const env = loadEnv();
-  // ONE read of the capture context per run — the declined list and the triage
-  // rules the prompt below is built from are the same payload.
+  // ONE read of the capture context per run — the declined list and writing
+  // standard the prompt below uses are the same payload.
   const context = await captureContext(env);
+  if (typeof context.writingStandard !== "string" || context.writingStandard.trim() === "") {
+    throw new Error("model-of-tom layer write is not stored");
+  }
   // FIRST, before the credential and before any read: an integration Tom has
   // declined does not run (worker/jobs/tts-lib.mjs declined()).
   const ruling = declined(context, INTEGRATION_NAME);
@@ -193,42 +219,12 @@ async function main() {
   candidates.sort((a, b) => a.internalDate - b.internalDate);
   const batch = candidates.slice(0, MAX_CANDIDATES);
 
-  // The deployment's own capture-triage rules, not a copy written here — off
-  // the one context this run already read. The line names where they came
-  // from, so a run reading the hardcoded fallback says so.
-  const { captureTriage } = context;
-  console.log(triageSourceLine("poll-gmail", context));
+  const prompt = gmailTriagePrompt(context.writingStandard, batch);
 
-  const prompt = `You triage Tom's Gmail inbox for his todo system (TTS).
-Below is a JSON array of new emails (headers + a ~100-character snippet).
-
-${captureTriage}
-
-For each captured email write "statement": ONE line naming the action in plain
-words, starting with a verb, mentioning who it involves (e.g. "Reply to Sarah
-Chen about the lab meeting time"). Do not invent details the snippet does not
-support — when the action is unclear, "Read and handle email from X: <subject>"
-is the honest statement.
-
-Also answer the second judgement for each captured email: set "needsTomToday"
-to true only when one of the three named facts holds, and in "why" name which
-one in a few words ("deadline Friday", "Sarah is waiting on a reply", "invoice
-due"). Set it to false and omit "why" otherwise. An email you do not capture
-has no second judgement at all.
-
-ANSWER FOR EVERY EMAIL BELOW — one entry each, in the order given, with "id"
-copied EXACTLY as it appears. An email you are not capturing is
-{"id": "...", "capture": false} and nothing else. Leaving an email out is not
-a "no": a missing or misspelled id is a lost verdict, it is reported, and the
-run stops there rather than passing the email over.
-
-Answer with ONLY this JSON object, no fences, no commentary:
-{"verdicts": [{"id": "<gmail message id>", "capture": <true|false>, "statement": "<one line, only when capture is true>", "needsTomToday": <true|false>, "why": "<a few words, only when needsTomToday is true>"}]}
-
-Emails:
-${JSON.stringify(batch.map(({ id, from, subject, snippet }) => ({ id, from, subject, snippet })), null, 2)}`;
-
-  const answer = runClaude(prompt, { timeoutMs: 5 * 60 * 1000 });
+  const answer = runClaude(prompt, {
+    timeoutMs: 5 * 60 * 1000,
+    model: MODELS.triage,
+  });
   const { verdicts } = extractJsonObject(answer);
   if (!Array.isArray(verdicts)) throw new Error("triage answer has no verdicts array");
   // What the model said about what it was given — and what it did not say.
@@ -278,7 +274,7 @@ ${JSON.stringify(batch.map(({ id, from, subject, snippet }) => ({ id, from, subj
         try {
           const opened = await convexFetch(env, "/tts/needs-tom", {
             todoId: result.id,
-            text: needsTomLine(message.from, message.subject, result.id),
+            reason: verdict.why,
             key: messageSourceId(message.id),
           });
           if (opened.opened) threads++;

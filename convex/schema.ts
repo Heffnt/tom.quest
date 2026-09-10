@@ -589,6 +589,7 @@ export default defineSchema({
     archivedAt: v.optional(v.number()),
   })
     .index("by_status", ["status", "updatedAt"])
+    .index("by_updatedAt", ["updatedAt"])
     // The dated reads: the 5 a.m. missed rollover ("active rows whose date is
     // before the new day") and the digest's due-and-overdue section ("active
     // rows due by the end of today"). Both used to scan every active row, or
@@ -784,6 +785,12 @@ export default defineSchema({
   })
     .index("by_todo", ["todoId"])
     .index("by_repo_external", ["repo", "externalId"])
+    // The batch subject's own history, the way by_todo is a todo's. ADDED for
+    // the dynamic context assembler (convex/ttsContext.ts rule 10): a run on a
+    // todo is given his rulings on that todo AND on its batch, and a batch's
+    // rulings had no index — the only way to them was a scan of every ruling
+    // ever recorded, on the hot path of every session creation.
+    .index("by_batch", ["batchId"])
     .index("by_ruled", ["ruledAt"])
     .index("by_provenance_inboundId", ["provenance.inboundId"]),
 
@@ -804,7 +811,7 @@ export default defineSchema({
     // week, and the model's most likely response to an instruction to fix
     // something already fixed is to restructure something else.
     consumedAt: v.optional(v.number()),
-    // The lookup key, set on exactly eight kinds. Four are convex/ttsSlack.ts:
+    // The lookup key, set on exactly sixteen kinds. Five are convex/ttsSlack.ts:
     //   "slack-sent"  — `${channel}:${thread root ts}`, so a threaded reply
     //                   from Tom finds what it answers by (channel, thread_ts);
     //   "slack-event" — Slack's event_id, so a redelivered event is dropped;
@@ -815,6 +822,10 @@ export default defineSchema({
     //                   a replacement session claims the thread in the same
     //                   transaction that creates it and a second reply joins
     //                   it rather than opening a second replacement.
+    //   "slack-claimed"
+    //                 — `<TTS day>:<ask>:<item id>`, so one item is asked
+    //                   about once a day whichever channel gets there first
+    //                   (convex/ttsCompose.ts claimKey).
     // Two are convex/ttsJobs.ts, where the key names a CONDITION on the Jarvis
     // Box rather than a message:
     //   "job-failed"    — e.g. `poll-canvas:canvas-auth`, so a dead credential
@@ -827,6 +838,29 @@ export default defineSchema({
     //                 — a batch session has no todoId, so the weekly gather
     //                   finds the sessions that worked a goal's batch here
     //                   (convex/ttsWeekly.ts goalsNotEvaluated).
+    // Two are convex/ttsAsk.ts, the delegate's record:
+    //   "delegate-decision" — the ask's own id, so a second POST of the same
+    //                   ask writes nothing and the digest, the caller's next
+    //                   run and Tom's objection all name one row;
+    //   "delegate-objection"
+    //                 — the SAME askId, so "what was decided, and did Tom
+    //                   object" is two reads one index apart;
+    // Two are convex/ttsEvals.ts, keyed `<repo>@<sha>` — every fact about one
+    // COMMIT shares that spelling, so each is a point lookup:
+    //   "evals-request" — one request per head, so a re-run of the check does
+    //                   not queue the box a second time;
+    //   "evals-run"   — the run that scored that head, which is also the merge
+    //                   gate's third check.
+    // Three are the MECHANICAL MERGE GATE (convex/ttsMerge.ts), two of them
+    // under the same `<repo>@<sha>`:
+    //   "tests-run"   — the Guardrails tests job's own result, recorded once
+    //                   per commit so a red run cannot be re-run until it
+    //                   flakes green;
+    //   "audit-verdict"
+    //                 — the audit's `VERDICT:` word for that commit, recorded
+    //                   once for the same reason;
+    //   "merge"       — `<repo>:<sha>` (its own older spelling), so a retried
+    //                   report of one merge is one event.
     // `data` is v.any() and cannot be indexed, which is why the key is its
     // own field: the events route must answer inside Slack's 3-second budget,
     // and a thread root can be days old, so a bounded scan is not enough.
@@ -888,20 +922,23 @@ export default defineSchema({
     preparedAt: v.number(),
   }).index("by_repo_external", ["repo", "externalId"]),
 
-  // The model-of-tom files every prompt begins with (the lifeos update, phase
-  // 4): one row per WikiTom file the nightly job posts to POST /tts/model-of-tom,
-  // all rows carrying the commit they were read at. WikiTom is the system of
-  // record. A row exists so prompt-building code can read the text without a
-  // git checkout: Convex has no filesystem, and the planner on the Jarvis Box
-  // is Node ESM that cannot import TypeScript, so it takes the text over HTTP
-  // (GET /tts/batch-context). Rows are a copy — each post replaces them
-  // wholesale (convex/ttsSkills.ts internalReplaceModelOfTom).
+  // Per-file publication facts for caller-selected model-of-tom layers (the
+  // lifeos update, phase 4): one row per WikiTom file the nightly job posts to
+  // POST /tts/model-of-tom. They are traceability metadata, not a prompt
+  // renderer: the three already-rendered verbatim layers live in the singleton
+  // modelOfTomPublication record below. This separation means a transcript
+  // cannot change when file assembly rules change later.
   ttsSkills: defineTable({
     name: v.string(), // the path inside model-of-tom/ without ".md": "writing", "areas/research"
-    body: v.string(), // the file, or the posted sections of an area page
+    // Source text stays available for fact consumers (weekly area review,
+    // frontmatter, and byte accounting). Publication, not this field, renders
+    // the prompt layers.
+    body: v.string(),
     sourcePath: v.string(), // path inside WikiTom, so a row traces to its file
+    bytes: v.optional(v.number()), // source bytes reported by the publisher
     // The WikiTom commit the file was read at. Absent only on a row the
-    // retired six-hourly sync wrote, which serves until the first post.
+    // retired six-hourly sync wrote; a complete modern fact set can seed the
+    // one-time publication backfill, but never renders a prompt directly.
     commit: v.optional(v.string()),
     syncedAt: v.number(), // the commit's time, not the post's
     // Whether the commit had reached GitHub when it was posted. The job posts
@@ -910,6 +947,47 @@ export default defineSchema({
     // Absent on a row posted before the flag existed.
     pushed: v.optional(v.boolean()),
   }).index("by_name", ["name"]),
+
+  // Exactly one `key: "current"` document is the published model-of-tom
+  // revision. It stores each complete, verbatim layer and the exact header for
+  // every nonempty canonical selection (7 total), so readers never recreate
+  // prompt text from the per-file facts above. Roll out this table by deploying
+  // first, running `ttsSkills.backfillLayers` once, then letting nightly posts
+  // replace it; readers fail closed while the singleton is absent.
+  modelOfTomPublication: defineTable({
+    key: v.literal("current"),
+    commit: v.string(),
+    committedAt: v.number(),
+    pushed: v.boolean(),
+    operate: v.optional(v.string()),
+    write: v.optional(v.string()),
+    know: v.optional(v.string()),
+    headers: v.array(v.object({
+      layers: v.array(v.union(v.literal("operate"), v.literal("write"), v.literal("know"))),
+      header: v.string(),
+    })),
+  }).index("by_key", ["key"]),
+
+  // The repo layer, published the way the model-of-tom files are published.
+  //
+  // WHY A TABLE AND NOT A PATH: the assembler pre-expands the repo rules for
+  // the directories a todo's brief names (convex/ttsContext.ts rule 9), and it
+  // runs INSIDE CONVEX, which has no filesystem — it cannot read the checkout
+  // the box has. So the nightly job posts each repo's `AGENTS.md` bodies out of
+  // its own immutable commit (POST /tts/repo-rules, same worker key and the
+  // same replace-all-per-repo semantics as the model-of-tom post), and a
+  // session with no checkout at all — prepare, triage, the planner — still
+  // knows what rules exist and where they are.
+  repoRules: defineTable({
+    repo: v.string(), // a SESSION_REPOS name
+    path: v.string(), // "AGENTS.md" | "convex/AGENTS.md" | …, relative to the repo root
+    body: v.string(),
+    bytes: v.number(),
+    commit: v.string(),
+    syncedAt: v.number(),
+  })
+    .index("by_repo_path", ["repo", "path"])
+    .index("by_repo", ["repo"]),
 
   // ── Claude Code session surface ──────────────────────────────────────────────
   // CANONICAL DESIGN HOME: WikiTom tts/spec.md §20 (design ratified 2026-08-28;
@@ -1046,15 +1124,42 @@ export default defineSchema({
     // opened from the page carries neither and so rules on nothing.
     agendaDay: v.optional(v.string()),
     agendaSubjects: v.optional(v.array(v.string())),
+    // ── What this session's opener was given (the dynamic context round) ─────
+    // Written by insertSession from assembleContext's manifest and byte counts,
+    // so the delivery check can read what was pre-expanded alongside what the
+    // session then did, with no model in the loop:
+    //   expansion-unused  an expanded page whose terms never recur in the
+    //                     transcript — persistently, for one area, means its
+    //                     `categories:` list is too wide.
+    //   fetch-after-miss  the transcript ran a command that was ON the
+    //                     fetchable list — the mechanism working.
+    //   blind-miss        the session errored naming a fact that was on the
+    //                     fetchable list — the design's one real failure mode.
+    // Absent on every row written before this landed, and on any row whose
+    // assembly fell back to the stable prefix alone.
+    contextExpanded: v.optional(v.array(v.string())),
+    contextBytes: v.optional(v.object({
+      prefix: v.number(),
+      expanded: v.number(),
+      fetchable: v.number(),
+    })),
   })
     .index("by_status", ["status", "statusChangedAt"])
+    .index("by_createdAt", ["createdAt"])
     .index("by_kind_agenda_day", ["kind", "agendaDay"])
     // Per-todo session history: powers the "does a live session already
     // reference this todo" exclusion and the scheduler's backoff walk.
     .index("by_todo", ["todoId"])
     // Per-code-subject session history: the scheduler's ceiling on how many
     // worker missions one code todo may draw.
-    .index("by_code_subject", ["codeRepo", "codeExternalId"]),
+    .index("by_code_subject", ["codeRepo", "codeExternalId"])
+    // Per-batch session history, newest first. ADDED for the dynamic context
+    // assembler (convex/ttsContext.ts rule 11): a run on a batch is given the
+    // last outcomes recorded on that batch, and `batchId` had no index — the
+    // repo half of the same rule still has none, because `repos` is an array
+    // and Convex does not index array membership (that half is a capped
+    // descending scan, SESSION_SCAN_MAX).
+    .index("by_batch", ["batchId", "statusChangedAt"]),
 
   // Finalized transcript — written exactly once per row by the daemon.
   // `turn` has no UI reader yet; it is kept because transcript structure is

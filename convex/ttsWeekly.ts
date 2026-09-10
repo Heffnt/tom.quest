@@ -36,7 +36,8 @@ import { JOB_FAILED, JOB_RECOVERED } from "./ttsJobs";
 import { NIGHTLY_FAILURE } from "./ttsNightly";
 import { NEEDS_TOM, SLACK_REPLY_FAILED } from "./ttsSlack";
 import { DAY_MS, MODEL_OF_TOM_AREAS_DIR, isPrepared } from "./ttsShared";
-import { isModelOfTomPath } from "./ttsSkills";
+import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
+import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import { isIsoDay, parseFrontmatter } from "../worker/jobs/markdown-sections.mjs";
 
 export const WEEK_MS = 7 * DAY_MS;
@@ -53,6 +54,8 @@ export const WEEKLY_FAILURE = "weekly-failure";
 /** The Friday job's summary row (data { day, file, sessionId, ... }), keyed
  * on the day so a rerun finds it (GET /tts/weekly-run). */
 export const WEEKLY_RUN = "weekly-run";
+export const INSTRUCTIONS_LOADED = "instructions-loaded";
+export { PRELUDE_DELIVERY, EVALS_RUN } from "./ttsEvals";
 export { AREA_REVIEWED };
 
 /** The failure kinds the gather groups by job. "job-failed" carries the job
@@ -138,6 +141,7 @@ export type WeeklyFacts = {
   modelOfTom: {
     commit: string | null;
     syncedAt: number | null;
+    layers: { name: "operate" | "write" | "know"; bytes: number }[];
     files: { path: string; bytes: number }[];
     totalBytes: number;
   };
@@ -146,6 +150,25 @@ export type WeeklyFacts = {
     reverted: number;
     revertFailed: number;
     lines: { kind: string; at: number; id: string | null; file: string | null; before: string | null; after: string | null; evidence: string | null; error: string | null }[];
+  };
+  preludes: {
+    sessions: number;
+    current: number;
+    stale: { day: string; id: string; title: string; had: string | null; behindDays: number }[];
+    missing: { day: string; id: string; title: string }[];
+  };
+  instructionsLoaded: {
+    daysReported: number;
+    sessions: number;
+    files: { path: string; sessions: number }[];
+    missingWikiTom: number;
+    missingWikiTomSessions: { day: string; session: string }[];
+    missingProjectAgents: { day: string; session: string; cwd: string }[];
+  };
+  evals: {
+    runs: number;
+    clean: number;
+    regressions: { day: string; repo: string; sha: string; pass: number; items: number; failure: { id: string; partition: string } | null }[];
   };
   jobFailures: { job: string; count: number; lines: { at: number; error: string }[] }[];
   threads: {
@@ -459,17 +482,20 @@ export async function gatherWeeklyFacts(
   const skills = await ctx.db.query("ttsSkills").collect();
   const files: WeeklyFacts["modelOfTom"]["files"] = [];
   const areaPages: WeeklyFacts["areaPages"] = [];
-  let commit: string | null = null;
-  let syncedAt: number | null = null;
+  const publication = await ctx.db.query("modelOfTomPublication")
+    .withIndex("by_key", (q) => q.eq("key", "current")).unique();
+  const layers: WeeklyFacts["modelOfTom"]["layers"] = [];
+    for (const name of MODEL_OF_TOM_LAYER_NAMES) {
+    const body = publication?.[name];
+    if (typeof body === "string") {
+      layers.push({ name, bytes: new TextEncoder().encode(body).length });
+    }
+  }
   for (const row of [...skills].sort((a, b) =>
     a.sourcePath < b.sourcePath ? -1 : a.sourcePath > b.sourcePath ? 1 : 0,
   )) {
     if (!isModelOfTomPath(row.sourcePath)) continue;
-    files.push({ path: row.sourcePath, bytes: new TextEncoder().encode(row.body).length });
-    if (row.commit !== undefined) {
-      commit = row.commit;
-      syncedAt = row.syncedAt;
-    }
+    files.push({ path: row.sourcePath, bytes: row.bytes ?? new TextEncoder().encode(row.body).length });
     if (!row.sourcePath.startsWith(`${MODEL_OF_TOM_AREAS_DIR}/`)) continue;
     const reviewed = await ctx.db
       .query("dtsEvents")
@@ -482,8 +508,9 @@ export async function gatherWeeklyFacts(
     areaPages.push(areaPageState(row.sourcePath, row.body, reviewedEvent, until));
   }
   const modelOfTom = {
-    commit,
-    syncedAt,
+    commit: publication?.commit ?? null,
+    syncedAt: publication?.committedAt ?? null,
+    layers,
     files,
     totalBytes: files.reduce((n, f) => n + f.bytes, 0),
   };
@@ -510,7 +537,102 @@ export async function gatherWeeklyFacts(
   }
   learning.lines.sort((a, b) => a.at - b.at);
 
-  // 11. Job failures by job.
+  // 11. Delivery evidence: each nightly row is an observation, so a rerun is
+  // retained rather than deduped. The worker owns producing it; this gather
+  // only totals and lists what it received.
+  const preludes: WeeklyFacts["preludes"] = { sessions: 0, current: 0, stale: [], missing: [] };
+  for (const e of await eventsOfKind(PRELUDE_DELIVERY)) {
+    const d = (e.data ?? {}) as Record<string, unknown>;
+    const day = str(d.day) ?? "";
+    const current = num(d.current) ?? 0;
+    preludes.current += current;
+    const stale = Array.isArray(d.stale) ? d.stale : [];
+    const missing = Array.isArray(d.missing) ? d.missing : [];
+    preludes.sessions += current + stale.length + missing.length;
+    for (const raw of stale) {
+      if (raw === null || typeof raw !== "object") continue;
+      const row = raw as Record<string, unknown>;
+      const id = str(row.id);
+      const title = str(row.title);
+      if (id === null || title === null) continue;
+      preludes.stale.push({ day, id, title, had: str(row.had), behindDays: num(row.behindDays) ?? -1 });
+    }
+    for (const raw of missing) {
+      if (raw === null || typeof raw !== "object") continue;
+      const row = raw as Record<string, unknown>;
+      const id = str(row.id);
+      const title = str(row.title);
+      if (id !== null && title !== null) preludes.missing.push({ day, id, title });
+    }
+  }
+  preludes.stale.sort((a, b) => a.day.localeCompare(b.day) || a.id.localeCompare(b.id));
+  preludes.missing.sort((a, b) => a.day.localeCompare(b.day) || a.id.localeCompare(b.id));
+
+  const instructionFiles = new Map<string, number>();
+  const instructionsLoaded: WeeklyFacts["instructionsLoaded"] = {
+    daysReported: 0,
+    sessions: 0,
+    files: [],
+    missingWikiTom: 0,
+    missingWikiTomSessions: [],
+    missingProjectAgents: [],
+  };
+  const reportedDays = new Set<string>();
+  for (const e of await eventsOfKind(INSTRUCTIONS_LOADED)) {
+    const d = (e.data ?? {}) as Record<string, unknown>;
+    const day = str(d.day) ?? "";
+    if (day !== "") reportedDays.add(day);
+    instructionsLoaded.sessions += num(d.sessions) ?? 0;
+    for (const raw of Array.isArray(d.files) ? d.files : []) {
+      if (raw === null || typeof raw !== "object") continue;
+      const row = raw as Record<string, unknown>;
+      const file = str(row.path);
+      if (file !== null) instructionFiles.set(file, (instructionFiles.get(file) ?? 0) + (num(row.sessions) ?? 0));
+    }
+    for (const raw of Array.isArray(d.missingWikiTom) ? d.missingWikiTom : []) {
+      const session = str(raw);
+      if (session !== null) instructionsLoaded.missingWikiTomSessions.push({ day, session });
+    }
+    for (const raw of Array.isArray(d.missingProjectAgents) ? d.missingProjectAgents : []) {
+      if (raw === null || typeof raw !== "object") continue;
+      const row = raw as Record<string, unknown>;
+      const session = str(row.session);
+      const cwd = str(row.cwd);
+      if (session !== null && cwd !== null) instructionsLoaded.missingProjectAgents.push({ day, session, cwd });
+    }
+  }
+  instructionsLoaded.daysReported = reportedDays.size;
+  instructionsLoaded.missingWikiTom = instructionsLoaded.missingWikiTomSessions.length;
+  instructionsLoaded.files = [...instructionFiles.entries()]
+    .map(([path, sessions]) => ({ path, sessions }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+  instructionsLoaded.missingWikiTomSessions.sort((a, b) => a.day.localeCompare(b.day) || a.session.localeCompare(b.session));
+  instructionsLoaded.missingProjectAgents.sort((a, b) => a.day.localeCompare(b.day) || a.session.localeCompare(b.session));
+
+  const evals: WeeklyFacts["evals"] = { runs: 0, clean: 0, regressions: [] };
+  for (const e of await eventsOfKind(EVALS_RUN)) {
+    const d = (e.data ?? {}) as Record<string, unknown>;
+    evals.runs++;
+    const regressions = num(d.regressions) ?? 0;
+    if (regressions === 0) {
+      evals.clean++;
+      continue;
+    }
+    const failure = (Array.isArray(d.failures) ? d.failures : []).find((raw) =>
+      raw !== null && typeof raw === "object" && (raw as Record<string, unknown>).regression === true,
+    ) as Record<string, unknown> | undefined;
+    evals.regressions.push({
+      day: str(d.day) ?? new Date(e.at).toISOString().slice(0, 10),
+      repo: str(d.repo) ?? "",
+      sha: str(d.sha) ?? "",
+      pass: num(d.pass) ?? 0,
+      items: num(d.items) ?? 0,
+      failure: failure === undefined ? null : { id: str(failure.id) ?? "?", partition: str(failure.partition) ?? "?" },
+    });
+  }
+  evals.regressions.sort((a, b) => a.day.localeCompare(b.day) || a.repo.localeCompare(b.repo));
+
+  // 12. Job failures by job.
   const byJob = new Map<string, WeeklyFacts["jobFailures"][number]>();
   for (const kind of FAILURE_KINDS) {
     for (const e of await eventsOfKind(kind)) {
@@ -572,6 +694,9 @@ export async function gatherWeeklyFacts(
     areaPages,
     modelOfTom,
     learning,
+    preludes,
+    instructionsLoaded,
+    evals,
     jobFailures,
     threads,
     readiness: { prepared, unprepared },

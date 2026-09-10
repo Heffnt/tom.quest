@@ -42,7 +42,6 @@ import {
 // The header line the prelude carries, spelled once in the client-safe home
 // (convex/ttsSkills.ts writes it into the prompt; modelOfTomHeadOf below reads
 // it back off the row).
-import { MODEL_OF_TOM_HEADER } from "@/convex/ttsShared";
 import type { SessionModel } from "@/convex/ttsShared";
 
 // The model list, its default and its family test all come from the one home
@@ -359,29 +358,14 @@ export function describeOverflow(p: OverflowProgress): string {
 }
 
 // ── The model-of-tom prelude, as a transcript row reads it ──────────────────
-// Every session opener begins with the model-of-tom files, headed by one line
-// naming the WikiTom commit they were read at and listing their paths
-// (convex/ttsSkills.ts modelOfTomText). That header is how a transcript
-// records what the session began with, so the first row shows it as a fact of
-// its own instead of burying it in the first line of a long prompt.
+// Every session opener begins with the model-of-tom publication, headed by one
+// line naming the WikiTom commit and its paths (convex/ttsSkills.ts
+// modelOfTomText). There is no fallback copy: until that singleton is present
+// the opener fails closed. The header records the prompt's exact publication,
+// so the first row shows it as a fact instead of burying it in a long prompt.
 
-export type ModelOfTomHead = {
-  /** null while the fallback copy is serving (no commit was recorded). */
-  commit: string | null;
-  paths: string[];
-};
-
-/** The header of a prompt that carries the prelude, or null if it does not. */
-export function modelOfTomHeadOf(text: string): ModelOfTomHead | null {
-  const line = text.split("\n", 1)[0] ?? "";
-  if (!line.startsWith(MODEL_OF_TOM_HEADER)) return null;
-  const commit = /WikiTom commit ([0-9a-f]{7,40})/i.exec(line)?.[1] ?? null;
-  const paths = (/\):\s*(.+)$/.exec(line)?.[1] ?? "")
-    .split(",")
-    .map((p) => p.trim())
-    .filter((p) => p !== "");
-  return { commit, paths };
-}
+export { modelOfTomHeadOf } from "@/convex/ttsShared";
+export type { ModelOfTomHead } from "@/convex/ttsShared";
 
 /**
  * Compact rendering of a permission/tool input: for Bash show the command

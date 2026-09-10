@@ -22,6 +22,7 @@ import {
   PAST_GRACE_DAYS,
   announcementProvenance,
   canvasUrl,
+  canvasTriagePrompt,
   mapCanvasAssignments,
   tokenExpiredMessage,
   windowStart,
@@ -211,5 +212,16 @@ describe("a dead Canvas token", () => {
     expect(message).toContain("CANVAS_TOKEN");
     expect(message).toContain("/etc/tts/worker.env");
     expect(message).toContain("HTTP 401");
+  });
+});
+
+
+describe("the Canvas triage prompt", () => {
+  it("begins with the writing standard and puts announcement data last", () => {
+    const prompt = canvasTriagePrompt("WRITE STANDARD", [{ id: "a1", courseCode: "CS", title: "T", body: "body" }]);
+    expect(prompt.startsWith("WRITE STANDARD")).toBe(true);
+    expect(prompt.lastIndexOf('"a1"')).toBeGreaterThan(prompt.indexOf("Announcements:"));
+    expect(prompt).not.toContain("ACTION BY TOM");
+    expect(prompt).not.toContain("Do not invent details");
   });
 });

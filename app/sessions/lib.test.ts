@@ -4,10 +4,9 @@
 //
 //   modelOfTomHeadOf reads back the header convex/ttsSkills.ts writes at the
 //   head of every session opener — the WikiTom commit the model-of-tom files
-//   were read at, and their paths. It is pinned here against the writer
-//   itself, not against a copy of its format: a change to modelOfTomText that
-//   this reader does not follow would otherwise show a transcript's first row
-//   with no commit on it and nothing would fail.
+//   were read at, and its canonical selected layers. It is pinned against the
+//   exact stored all-layer header so a transcript cannot silently lose that
+//   context when the publication format changes.
 //
 //   describeOverflow says how much of a cut payload came back and whether it
 //   can be trusted. Its claims are deliberately different strengths — verified
@@ -16,31 +15,22 @@
 //   thing the overflow path exists to prevent.
 
 import { describe, expect, it } from "vitest";
-import { modelOfTomText } from "@/convex/ttsSkills";
 import { describeOverflow, modelOfTomHeadOf } from "./lib";
 
 describe("modelOfTomHeadOf", () => {
-  it("reads back the commit and paths the prompt writer puts in the header", () => {
-    const prompt = modelOfTomText({
-      commit: "abc1234def5678",
-      syncedAt: 1,
-      pushed: true,
-      files: [
-        { path: "model-of-tom/writing.md", body: "the standard" },
-        { path: "model-of-tom/priorities.md", body: "what matters" },
-      ],
-    });
+  it("reads back the commit and canonical layers from the stored all-layer header", () => {
+    const prompt = "MODEL-OF-TOM FILES (WikiTom commit 0123456789abcdef0123456789abcdef01234567): model-of-tom/agent-rules.md, model-of-tom/writing.md, model-of-tom/intent.md\n\noperate layer\n\nwrite layer\n\nknow layer";
     expect(modelOfTomHeadOf(prompt)).toEqual({
-      commit: "abc1234def5678",
-      paths: ["model-of-tom/writing.md", "model-of-tom/priorities.md"],
+      commit: "0123456789abcdef0123456789abcdef01234567",
+      paths: ["model-of-tom/agent-rules.md", "model-of-tom/writing.md", "model-of-tom/intent.md"],
     });
   });
 
-  it("says no commit was recorded when the fallback copy is serving", () => {
-    const prompt = modelOfTomText({ commit: null, syncedAt: null, pushed: null, files: [] });
-    // The fallback header IS the model-of-tom header, so the row still marks
-    // itself as the prelude — with nothing to name.
-    expect(modelOfTomHeadOf(prompt)).toEqual({ commit: null, paths: [] });
+  it("returns a null commit for a model-of-tom header without one", () => {
+    expect(modelOfTomHeadOf("MODEL-OF-TOM FILES (not published yet): operate,write,know")).toEqual({
+      commit: null,
+      paths: ["operate", "write", "know"],
+    });
   });
 
   it("is null for an ordinary prompt", () => {

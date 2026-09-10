@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { convexTest } from "convex-test";
 import { describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -8,11 +9,11 @@ import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { modelOfTomPrelude } from "./ttsSkills";
 import {
+  AUTONOMOUS_SESSION_CONTRACT,
   CODEX_USAGE_STALE_MS,
   CODEX_WEEKLY_CAP_PERCENT,
   DEFAULT_SESSION_MODEL,
   MODEL_OF_TOM_HEADER,
-  WRITING_STANDARD,
 } from "./ttsShared";
 import type { SessionModel } from "./ttsShared";
 
@@ -24,10 +25,30 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 // when the prompt changes is the alarm working.
 const DAEMON_SENTENCE = "Never restart, stop, or kill `tts-session-host`";
 
+const TEST_PRELUDE_LAYERS = {
+  operate: "test operate layer",
+  write: "test write layer",
+  know: "test know layer",
+};
+const TEST_PRELUDE_HEADERS = ([
+  ["operate"], ["write"], ["know"], ["operate", "write"],
+  ["operate", "know"], ["write", "know"], ["operate", "write", "know"],
+] as const).map((names) => ({ layers: [...names], header: `${MODEL_OF_TOM_HEADER} (WikiTom commit testprelude): ${names.join(",")}` }));
+
 async function withTom(t: ReturnType<typeof convexTest>) {
   const tomId = await t.run(async (ctx) =>
     ctx.db.insert("users", { name: "tom", email: "tom@tom.quest", role: "tom" }),
   );
+  await t.run(async (ctx) => {
+    await ctx.db.insert("modelOfTomPublication", {
+      key: "current",
+      commit: "testprelude",
+      committedAt: 1,
+      pushed: true,
+      ...TEST_PRELUDE_LAYERS,
+      headers: TEST_PRELUDE_HEADERS,
+    });
+  });
   return t.withIdentity({ subject: tomId });
 }
 
@@ -40,19 +61,21 @@ async function createBasicSession(tom: Awaited<ReturnType<typeof withTom>>) {
   });
 }
 
-// The session event messages a mutation scheduled, read off the scheduler's own
-// system table — the observable effect of notifySessionEvent without reaching
-// into Slack. Rows persist through their run (convex-test patches state, never
-// deletes), so counting is stable whether or not the job has fired yet.
-// Tom 2026-08-29: outbound Slack is OFF — Slack is inbound dump only until the messaging shape is redesigned.
-// These tests cover the EDGE-TRIGGER WIRING (which transitions schedule an event
-// and how many), which is unchanged; the scheduled action now returns before it
-// posts, so nothing here reaches Slack even with the env configured.
+// THE PER-SESSION EVENT LINE IS GONE (slack-design.md §1.2). It had no channel
+// of its own and was switched off from the day it was written: a session
+// recording an outcome is not something Tom acts on, and it reaches him in the
+// morning message's overnight run. The one case that IS a message is a session
+// that FAILED, and that goes to #tts-broken.
+//
+// These read the broken lines a mutation scheduled, off the scheduler's own
+// system table — the observable effect without reaching into Slack. Rows
+// persist through their run (convex-test patches state, never deletes), so
+// counting is stable whether or not the job has fired yet.
 async function sessionEventMessages(t: ReturnType<typeof convexTest>) {
   return await t.run(async (ctx) =>
     (await ctx.db.system.query("_scheduled_functions").collect())
-      .filter((job) => job.name.includes("internalSessionEventMessage"))
-      .map((job) => job.args[0] as { sessionId: string; text: string }),
+      .filter((job) => job.name.includes("sendBroken"))
+      .map((job) => job.args[0] as { job: string; statement: string; detail?: string }),
   );
 }
 
@@ -183,6 +206,12 @@ async function insertPastAutoSession(
 }
 
 describe("claude sessions", () => {
+  it("keeps the autonomous opener to the unattended-session boundary", () => {
+    expect(AUTONOMOUS_SESSION_CONTRACT).toBe(
+      "You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.",
+    );
+  });
+
   // witness: remove the requireTomId call from listSessions in
   // convex/claudeSessions.ts and this test goes red.
   it("gates every Tom-facing function on the tom role", async () => {
@@ -216,15 +245,26 @@ describe("claude sessions", () => {
     });
     expect(inbound).toHaveLength(1);
     expect(inbound[0].kind).toBe("user-turn");
-    // The model-of-tom prelude at the head (the lifeos update, phase 4): the
-    // transcript's first row names what the session began with — here, with
-    // nothing posted yet, the hardcoded standard under the header saying so.
-    // Then Tom's prompt verbatim; the outcome-pen footer is appended
-    // server-side (pinned by its own test below).
+    // The STABLE PREFIX at the head (the dynamic-context round): the
+    // transcript's first row names what the session began with — the map, the
+    // operate rules and the write layer, at one WikiTom commit. Then Tom's
+    // prompt verbatim, then the fetchable index; the outcome-pen footer is
+    // appended server-side (pinned by its own test below).
+    //
+    // THE KNOW LAYER IS NOT HERE, and never is whole again: this session has
+    // no subject, so nothing expands (rule 12) and the whole know layer is one
+    // line in the index saying how to read it (convex/ttsContext.ts).
     const text = inbound[0].text ?? "";
-    expect(text.startsWith("MODEL-OF-TOM FILES: none stored yet")).toBe(true);
-    expect(text).toContain(WRITING_STANDARD);
-    expect(text.indexOf(WRITING_STANDARD)).toBeLessThan(text.indexOf("\n\nhello"));
+    expect(text.startsWith(`${MODEL_OF_TOM_HEADER} (WikiTom commit testprelude)`)).toBe(true);
+    expect(text).toContain(TEST_PRELUDE_LAYERS.operate);
+    expect(text).toContain(TEST_PRELUDE_LAYERS.write);
+    expect(text).not.toContain(TEST_PRELUDE_LAYERS.know);
+    expect(text.indexOf(TEST_PRELUDE_LAYERS.operate)).toBeLessThan(
+      text.indexOf(TEST_PRELUDE_LAYERS.write),
+    );
+    expect(text.indexOf(TEST_PRELUDE_LAYERS.write)).toBeLessThan(text.indexOf("\n\nhello"));
+    expect(text.indexOf("\n\nhello")).toBeLessThan(text.indexOf("MODEL-OF-TOM FETCHABLE"));
+    expect(text).toContain("--layers know");
   });
 
   // witness: insertSession prefixed the prelude to whatever the seed's prompt
@@ -233,8 +273,10 @@ describe("claude sessions", () => {
   it("opens the session on a pasted opener, with the live prelude and one header", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
-    // What a paste actually is: the opener of a live session, copied whole.
-    const prelude = await t.run(async (ctx) => modelOfTomPrelude(ctx));
+    // What a paste actually is: the opener of a live session, copied whole —
+    // and what is strippable in it is the STABLE PREFIX, which is all a paste
+    // can carry that the live record does not rebuild anyway.
+    const prelude = await t.run(async (ctx) => modelOfTomPrelude(ctx, ["operate", "write"]));
     const sessionId = await tom.mutation(api.claudeSessions.createSession, {
       title: "pasted opener",
       kind: "adhoc",
@@ -1265,9 +1307,9 @@ describe("claude sessions", () => {
 
 describe("session event messages", () => {
   // witness: drop the `firstRecord` guard from internalRecordOutcome in
-  // convex/claudeSessions.ts and this test goes red — an agent that revises
-  // its own summary would ping Tom once per revision.
-  it("notifies once when the agent records an outcome, never on a re-record", async () => {
+  // convex/claudeSessions.ts and an errored re-record would ping Tom once per
+  // revision. A completed one says nothing either way.
+  it("says nothing when the agent records an outcome, first time or after", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const sessionId = await createBasicSession(tom);
@@ -1277,22 +1319,19 @@ describe("session event messages", () => {
       outcome: "completed",
       summary: "brief written into the item",
     });
-    const first = await sessionEventMessages(t);
-    expect(first).toHaveLength(1);
-    expect(first[0].sessionId).toBe(sessionId);
-    expect(first[0].text).toBe(
-      'session "test session" recorded its outcome: completed — brief written into the item',
-    );
+    // A COMPLETED outcome is not a message at all now: it is a fact for the
+    // morning message's overnight run, and nothing Tom does anything about.
+    expect(await sessionEventMessages(t)).toHaveLength(0);
 
     // The agent sharpens its wording (or corrects the verdict): the ROW takes
-    // the new word — the surface always shows the agent's latest — but Slack
-    // is not told twice.
+    // the new word — the surface always shows the agent's latest — and Slack
+    // is still told nothing, because only the FIRST record is an edge.
     await t.mutation(internal.claudeSessions.internalRecordOutcome, {
       id: sessionId,
       outcome: "errored",
       summary: "the source turned out to be paywalled",
     });
-    expect(await sessionEventMessages(t)).toHaveLength(1);
+    expect(await sessionEventMessages(t)).toHaveLength(0);
     const session = await tom.query(api.claudeSessions.getSession, {
       id: sessionId,
     });
@@ -1327,9 +1366,11 @@ describe("session event messages", () => {
     });
     const messages = await sessionEventMessages(t);
     expect(messages).toHaveLength(1);
-    expect(messages[0].text).toBe(
-      'session "test session" failed — the SDK process exited without a final turn',
-    );
+    // #tts-broken dedupes on the JOB as well, and a session's job name is the
+    // session itself, so two failures of one session are one message.
+    expect(messages[0].job).toBe(`session:${failed}`);
+    expect(messages[0].statement).toContain("stopped without finishing what it was carrying");
+    expect(messages[0].detail).toContain("the SDK process exited without a final turn");
 
     // A session that simply ENDS is not a needs-you event: Tom stopped it, or
     // it finished, and its outcome record is the thing worth a message.
@@ -1342,9 +1383,9 @@ describe("session event messages", () => {
     expect(await sessionEventMessages(t)).toHaveLength(1);
   });
 
-  // The daemon's cap-path stamp is the same fact as the agent's pen and gets
-  // the same one-line wording — two writers, one description.
-  it("notifies once when the daemon stamps an outcome onto a session that had none", async () => {
+  // The daemon's cap-path stamp is the same fact as the agent's pen and takes
+  // the same route — two writers, one description.
+  it("says nothing for a completed stamp, and one broken line for an errored one", async () => {
     const t = convexTest({ schema, modules });
     const tom = await withTom(t);
     const sessionId = await createBasicSession(tom);
@@ -1355,20 +1396,27 @@ describe("session event messages", () => {
       outcome: "completed" as const,
       outcomeSummary: "daemon saw the final turn",
     });
-    const messages = await sessionEventMessages(t);
-    expect(messages).toHaveLength(1);
-    expect(messages[0].text).toBe(
-      'session "test session" recorded its outcome: completed — daemon saw the final turn',
-    );
-
-    // A second flush re-sending the same outcome reads a defined
-    // session.outcome and stamps nothing, so it says nothing.
+    // Completed: nothing is sent, on the stamp or on any flush after it.
+    expect(await sessionEventMessages(t)).toHaveLength(0);
     await t.mutation(internal.claudeSessions.internalIngest, {
       sessionId,
       outcome: "completed" as const,
       outcomeSummary: "daemon saw the final turn",
     });
-    expect(await sessionEventMessages(t)).toHaveLength(1);
+    expect(await sessionEventMessages(t)).toHaveLength(0);
+
+    // An ERRORED outcome the daemon stamps IS a broken line, once.
+    const errored = await createBasicSession(tom);
+    await t.mutation(internal.claudeSessions.internalIngest, {
+      sessionId: errored,
+      status: "ended",
+      endedReason: "autonomous run complete",
+      outcome: "errored" as const,
+      outcomeSummary: "the source turned out to be paywalled",
+    });
+    const broken = await sessionEventMessages(t);
+    expect(broken).toHaveLength(1);
+    expect(broken[0].job).toBe(`session:${errored}`);
   });
 });
 
@@ -3361,11 +3409,14 @@ describe("autonomous session scheduler", () => {
     const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
       sessionId: sessions[0]._id,
     });
-    // The repo variant of the workspace block: a named checkout, the session's
-    // own branch, and the one gate the doctrine keeps for Tom.
+    expect(inbound[0].text).toContain(AUTONOMOUS_SESSION_CONTRACT);
+    // The repo variant names the checkout, its branch, the delegate, and the
+    // three checks that make a merge mechanical and reportable.
     expect(inbound[0].text).toContain("fresh checkout of ComplexMultiTrigger");
     expect(inbound[0].text).toContain(`session/${sessions[0]._id}`);
-    expect(inbound[0].text).toContain("NEVER merge");
+    expect(inbound[0].text).toContain("tts-ask --session");
+    expect(inbound[0].text).toContain("the tests are green, an audit approved it");
+    expect(inbound[0].text).toContain("/tts/merge");
     expect(inbound[0].text).not.toContain("EMPTY scratch directory");
   });
 
@@ -3437,6 +3488,22 @@ describe("autonomous session scheduler", () => {
       { sessionId: prospectors[0]._id },
     );
     expect(prospectInbound[0].text).toContain(DAEMON_SENTENCE);
+    // Every autonomous lane is told the delegate exists — this one has no
+    // todo, so the command it is given names no item.
+    expect(prospectInbound[0].text).toContain(
+      `tts-ask --session ${prospectors[0]._id} --question`,
+    );
+  });
+
+  // witness: name tts-ask in app/lib/tts-session-prompt.ts's FRAMING. An
+  // ATTENDED session must never be told the delegate exists — its whole
+  // posture is "propose and wait", and the delegate answers only where nobody
+  // is watching. The route refuses an attended ask too (convex/ttsAsk.ts), but
+  // this is the cheapest of the three defences: it is never mentioned.
+  it("the interactive framing never names the delegate", async () => {
+    const framing = readFileSync("app/lib/tts-session-prompt.ts", "utf8");
+    expect(framing).not.toContain("tts-ask");
+    expect(framing).not.toContain("delegate");
   });
 
   // witness: drop the statement/brief substring fallback from
@@ -3543,7 +3610,7 @@ describe("the code lane", () => {
     const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
       sessionId: session._id,
     });
-    const text = inbound[0].text;
+    const text = inbound[0].text ?? "";
     expect(text).toContain("cmt-001");
     expect(text).toContain('TOM RULED "approve"');
     expect(text).toContain("Brief for cmt-001");
@@ -3552,10 +3619,25 @@ describe("the code lane", () => {
     expect(text).toContain("python3 -m pytest tests/guards/test_bb_todos.py -q");
     expect(text).toContain("gh pr create");
     expect(text).toContain("CHANGE REPORT:");
+    expect(text).toContain(AUTONOMOUS_SESSION_CONTRACT);
+    expect(text).not.toContain("define every term on first use");
     expect(text).toContain("/tts/session-outcome");
-    expect(text).toContain("NEVER merge");
+    expect(text).toContain("the tests are green, an audit approved it");
+    expect(text).toContain("/tts/merge");
     expect(text).toContain(DAEMON_SENTENCE);
     expect(text).not.toContain("SESSIONS_WORKER_KEY");
+    expect(text.indexOf(TEST_PRELUDE_LAYERS.know)).toBeLessThan(
+      text.indexOf(AUTONOMOUS_SESSION_CONTRACT),
+    );
+    expect(text.indexOf("Ending: record the outcome")).toBeLessThan(
+      text.indexOf('TOM RULED "approve"'),
+    );
+    expect(text.indexOf("THE CODE TODO:")).toBeLessThan(
+      text.indexOf("THE BRIEF Tom ruled from"),
+    );
+    expect(text.indexOf("Ending: record the outcome, then simply stop responding")).toBeLessThan(
+      text.indexOf("THE BRIEF Tom ruled from"),
+    );
 
     // The ruling is applied AT ADMISSION, naming the session.
     const ruling = await t.run(async (ctx) => ctx.db.get(rulingId));
@@ -3986,6 +4068,8 @@ describe("prospecting lane", () => {
       text.indexOf("/tts/capture"),
     );
     expect(text).toContain('"source": "prospecting"');
+    expect(text).toContain(AUTONOMOUS_SESSION_CONTRACT);
+    expect(text).not.toContain("Follow the ground-up contract");
     // At most eight captures, said in the prompt because the capture route is
     // the agent's own pen and enforces no cap of its own.
     expect(text).toContain("At most 8 captures");
@@ -4007,6 +4091,15 @@ describe("prospecting lane", () => {
     // reaches a model-reachable environment, so the prompt cannot name it.
     expect(text).toContain("TTS_WORKER_KEY");
     expect(text).not.toContain("SESSIONS_WORKER_KEY");
+    expect(text.indexOf(TEST_PRELUDE_LAYERS.know)).toBeLessThan(
+      text.indexOf(AUTONOMOUS_SESSION_CONTRACT),
+    );
+    expect(text.indexOf("What counts as a finding:")).toBeLessThan(
+      text.indexOf("The mission: this session PROSPECTS"),
+    );
+    expect(text.indexOf("Ending: record the outcome via the /tts/session-outcome command")).toBeLessThan(
+      text.indexOf("The mission: this session PROSPECTS"),
+    );
   });
 
   // witness: put the read-first step back behind `repo === "ComplexMultiTrigger"`
@@ -4540,6 +4633,15 @@ describe("frontier scheduler", () => {
     const text = await missionText(tom, sessions[0]._id);
     expect(text).toContain("do the groundwork this item needs");
     expect(text).not.toContain("YOU HAVE CLAIMED ONE TODO");
+    expect(text.indexOf(TEST_PRELUDE_LAYERS.know)).toBeLessThan(
+      text.indexOf(AUTONOMOUS_SESSION_CONTRACT),
+    );
+    expect(text.indexOf("The goal:")).toBeLessThan(
+      text.indexOf("The item (\"draft the reading list\")"),
+    );
+    expect(text.indexOf("Ending: record the outcome via the /tts/session-outcome command")).toBeLessThan(
+      text.indexOf("The item (\"draft the reading list\")"),
+    );
   });
 
   // witness: drop the batch-status test from the frontier walk and this goes
@@ -5229,8 +5331,12 @@ describe("frontier scheduler", () => {
     expect(text).toContain("publish the page");
     expect(text).toContain("ALSO READY IN THIS BATCH RIGHT NOW (1");
     expect(text).toContain("check the citations");
-    // The standard it writes to, verbatim from its one home.
-    expect(text).toContain(WRITING_STANDARD);
+    // The selected publication's writing layer reaches the worker verbatim.
+    expect(text).toContain(TEST_PRELUDE_LAYERS.write);
+    expect(text).toContain(AUTONOMOUS_SESSION_CONTRACT);
+    expect(text).not.toContain("The vocabulary, which is closed");
+    expect(text).not.toContain("<!DOCTYPE html>");
+    expect(text).not.toContain("Palette #0a0e17");
     // The two pens, the four outcomes, and the wrong-edge channel.
     expect(text).toContain("/tts/prepare-todo");
     expect(text).toContain("/tts/session-outcome");
@@ -5245,6 +5351,18 @@ describe("frontier scheduler", () => {
     // reaches a model-reachable environment.
     expect(text).toContain("TTS_WORKER_KEY");
     expect(text).not.toContain("SESSIONS_WORKER_KEY");
+    expect(text.indexOf(TEST_PRELUDE_LAYERS.know)).toBeLessThan(
+      text.indexOf(AUTONOMOUS_SESSION_CONTRACT),
+    );
+    expect(text.indexOf("Everything you write into TTS obeys")).toBeLessThan(
+      text.indexOf("/tts/prepare-todo"),
+    );
+    expect(text.indexOf("Ending: record the outcome, then simply stop responding")).toBeLessThan(
+      text.indexOf("THE BATCH"),
+    );
+    expect(text.indexOf("THE BATCH")).toBeLessThan(
+      text.indexOf("YOU HAVE CLAIMED ONE TODO"),
+    );
   });
 
   // witness: drop the extraText argument from the pickMissionRepo call in the
@@ -5267,7 +5385,8 @@ describe("frontier scheduler", () => {
     const text = await missionText(tom, sessions[0]._id);
     expect(text).toContain("fresh checkout of tom.quest");
     expect(text).toContain(`session/${sessions[0]._id}`);
-    expect(text).toContain("NEVER merge");
+    expect(text).toContain("the tests are green, an audit approved it");
+    expect(text).toContain("/tts/merge");
   });
 
   // witness: delete the planRepair block from internalRecordOutcome in

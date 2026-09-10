@@ -5,7 +5,8 @@
 // fails when either side drifts from the one home (ledger graduation
 // session-constants-two-homes: "a byte-equality check ties the mirrors").
 import { lstatSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
+import { narrowListFailures } from "./narrow-list-mirror.mjs";
 
 // Guardrail 2: some session vocabulary has no worker half at all — the
 // live-status list's other half is convex/schema.ts, and its failure mode is a
@@ -153,9 +154,9 @@ if (sharedDefault && daemonDefault && sharedDefault[1] !== daemonDefault[1]) {
 const planGraphs = readFileSync("worker/jobs/plan-graphs.mjs", "utf8");
 // The prompt is the whole body of `function prompt(ctx) { ... }` — the region
 // bounded by its declaration and the next column-0 `}`.
-const promptBody = planGraphs.match(/\nfunction prompt\(ctx\) \{\n([\s\S]*?)\n\}\n/);
+const promptBody = planGraphs.match(/\nexport function graphPrompt\(ctx\) \{\n([\s\S]*?)\n\}\n/);
 if (!promptBody) {
-  failures.push("plan-graphs.mjs: the planner prompt body (function prompt(ctx)) not found");
+  failures.push("plan-graphs.mjs: the planner prompt body (export function graphPrompt(ctx)) not found");
 }
 if (promptBody && sharedModels) {
   const tableNames = [...sharedModels[1].matchAll(modelEntryRe)].map((m) => m[1]);
@@ -314,13 +315,25 @@ for (const file of [...walk("app"), ...walk("convex")]) {
 // worker/session-host/`, or copy the parse loop into lib.mjs.
 const ENV_LINK = "worker/session-host/worker-env.mjs";
 const ENV_LINK_TARGET = "../jobs/worker-env.mjs";
+// A checkout without symlink support (Windows without the privilege, or
+// core.symlinks=false) writes the link as a one-line text file holding the
+// target. That is git's own representation of the same link and it is what
+// ships, so the target is what is checked, not the inode kind — the rule this
+// enforces is "one body", and a file whose whole content is the target has no
+// second body in it.
+const envLinkTarget = () => {
+  const stat = lstatSync(ENV_LINK);
+  if (stat.isSymbolicLink()) return readlinkSync(ENV_LINK);
+  const text = readFileSync(ENV_LINK, "utf8");
+  const oneLine = text.trim();
+  return oneLine === "" || /\s/.test(oneLine) ? null : oneLine;
+};
 try {
-  if (!lstatSync(ENV_LINK).isSymbolicLink()) {
+  const target = envLinkTarget();
+  if (target === null) {
     failures.push(`${ENV_LINK} is a real file — it must stay a symlink to ${ENV_LINK_TARGET}`);
-  } else if (readlinkSync(ENV_LINK) !== ENV_LINK_TARGET) {
-    failures.push(
-      `${ENV_LINK} points at ${readlinkSync(ENV_LINK)}, not ${ENV_LINK_TARGET}`,
-    );
+  } else if (target !== ENV_LINK_TARGET) {
+    failures.push(`${ENV_LINK} points at ${target}, not ${ENV_LINK_TARGET}`);
   }
 } catch {
   failures.push(`${ENV_LINK} is missing — the session-host daemon cannot read /etc/tts/worker.env`);
@@ -361,6 +374,15 @@ const REPO_LIST_ALLOWED = new Set([
   // the ⓘ popover renders, and one of them names the three known repos
   // in a sentence. It carries no repo list that anything branches on.
   "app/tts/explanations.ts",
+  // LAPTOP PATHS, not the session repo list: where Tom's own checkouts live on
+  // the machine the hook runs on. Neither file can import a Convex .ts, and the
+  // one home holds repo NAMES, which is a different fact from a directory.
+  "scripts/laptop-setup.mjs",
+  "scripts/instructions-loaded-hook.mjs",
+  // The evals runner checks out the two trees ONE RUN reads — the pinned
+  // tom.quest tree it scores and the pinned WikiTom tree it scores against.
+  // That pair is a run's definition, not a list of repos sessions may work.
+  "worker/jobs/evals.mjs",
 ]);
 const REPO_NAME_WINDOW = 300;
 const SCAN_EXT = /\.(ts|tsx|mjs|cjs|js|jsx)$/;
@@ -386,7 +408,10 @@ const walkSources = (dir) => {
       SCAN_EXT.test(entry.name) &&
       !/\.(test|spec)\.[a-z]+$/.test(entry.name)
     ) {
-      sourceFiles.push(join(dir, entry.name).replace(/^\.\//, ""));
+      // POSIX separators, whatever the platform: REPO_LIST_ALLOWED is written
+      // with "/" and a Windows join() answers a backslash, which made every
+      // allowed file report — the one home, convex/ttsShared.ts, included.
+      sourceFiles.push(join(dir, entry.name).split(sep).join("/").replace(/^\.\//, ""));
     }
   }
 };
@@ -440,6 +465,17 @@ if (sharedBlock) {
     }
   }
 }
+
+// 7. The narrow list: NARROW_LIST's `command` strings in ttsShared.ts must
+// equal NARROW_LIST_COMMANDS in session.mjs, in order, byte for byte. The
+// delegate reads the one home over HTTP (GET /tts/state); the classifier,
+// which has no network in its path, reads this mirror. A drift means the two
+// halves of Tom's list disagree about what is his — and the half that is
+// wrong is the half that decides whether a command runs unattended.
+// The comparison itself lives in scripts/narrow-list-mirror.mjs so it can be
+// unit-tested without running this whole script.
+// witness: change one `command` string on one side only.
+failures.push(...narrowListFailures(shared, sessionMjs));
 
 if (failures.length > 0) {
   console.error("Session-mirror check FAILED:");

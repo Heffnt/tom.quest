@@ -4,14 +4,26 @@ import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { applyStatusChange, logEvent } from "./tts";
+import { DIGEST_OBJECTION_LOOKBACK } from "./ttsAsk";
+import { DIGEST_SENT } from "./ttsDigest";
 import {
   SLACK_SUBJECT,
-  captureReplyText,
   isLive,
   slackThreadKey,
+  ttsDayKey,
   ttsSessionLink,
   type SlackSubject,
 } from "./ttsShared";
+import {
+  SLACK_CLAIMED,
+  claimKey,
+  composeCaptured,
+  composeContinued,
+  composeNeedsYou,
+  needsYouFactsBlock,
+  renderSlack,
+  type NeedsYouFacts,
+} from "./ttsCompose";
 import { changeIdTokens, namedChange, withoutChangeId } from "../worker/jobs/learning-change-names.mjs";
 
 // Slack, the Convex side (the lifeos update, phase 2). Two facts live here:
@@ -139,15 +151,75 @@ export const NEEDS_TOM = "needs-tom";
  * what was tried; the reply is captured as a todo instead). */
 export const SLACK_REPLY_FAILED = "slack-reply-failed";
 
+// ── One appearance per item per day, across channels (§2.5) ──────────────────
+/** Claim an item for one ask for one TTS day. Returns false when another
+ *  channel already claimed it today, and the caller then does not post.
+ *  Point lookup on by_kind_key, the NEEDS_TOM marker pattern in this same
+ *  file; two concurrent claims conflict on the key and the retry reads the
+ *  winner's row.
+ *
+ *  THE DAY ROLLS AT 5 A.M. A needs-you thread opened at 19:10 does not
+ *  suppress the next morning's line about the same item: they are different
+ *  TTS days, and an item he ignored last night is exactly what the morning
+ *  exists to re-raise.
+ *
+ *  `ask` is "act" or "object" (ttsCompose.SlackAsk) for the two asks that
+ *  compete across channels, and "broken" for the per-job failure dedupe, which
+ *  shares the mechanism and nothing else. */
+export const internalClaimSlackItem = internalMutation({
+  args: {
+    day: v.string(),
+    ask: v.string(),
+    itemId: v.string(),
+    channel: v.string(),
+  },
+  handler: async (
+    ctx,
+    { day, ask, itemId, channel },
+  ): Promise<{ claimed: boolean; by: string | null }> => {
+    const key = claimKey(day, ask as "act" | "object", itemId);
+    const seen = await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_kind_key", (q) => q.eq("kind", SLACK_CLAIMED).eq("key", key))
+      .first();
+    if (seen) {
+      const by = (seen.data as { channel?: unknown } | undefined)?.channel;
+      return { claimed: false, by: typeof by === "string" ? by : null };
+    }
+    const todoId = ctx.db.normalizeId("dtsTodos", itemId);
+    await ctx.db.insert("dtsEvents", {
+      at: Date.now(),
+      kind: SLACK_CLAIMED,
+      key,
+      ...(todoId === null ? {} : { todoId }),
+      data: { day, ask, itemId, channel },
+    });
+    return { claimed: true, by: channel };
+  },
+});
+
+// ── The needs-you thread ─────────────────────────────────────────────────────
+// Composed HERE, from the todo and the poller's verdict, not on the box: the
+// job stops writing message text and sends facts. The raw vendor subject and
+// the From header never reach Slack — they stay on the needs-tom row and in
+// the dedupe key, which is where they belong.
 export const internalOpenNeedsTomThread = internalMutation({
   // todoId as a plain string, normalized here: the caller is an HTTP route
   // carrying a worker's JSON, and this is where an unknown id becomes a named
   // refusal rather than a validator error (the internalPrepareTodo pattern).
-  args: { todoId: v.string(), text: v.string(), key: v.string() },
+  args: {
+    todoId: v.string(),
+    // `verdict.why` from the triage — HALF A SENTENCE HE CAN READ, and the one
+    // thing the old message never said.
+    reason: v.string(),
+    key: v.string(),
+    canReply: v.optional(v.boolean()),
+    channel: v.optional(v.string()),
+  },
   handler: async (
     ctx,
-    { todoId, text, key },
-  ): Promise<{ opened: boolean; key: string }> => {
+    { todoId, reason, key, canReply, channel },
+  ): Promise<{ opened: boolean; key: string; reason?: string }> => {
     // The todo first: a thread about a row that is not there is a message Tom
     // cannot reply to, and the marker would suppress the real one for ever.
     const id = ctx.db.normalizeId("dtsTodos", todoId);
@@ -158,20 +230,63 @@ export const internalOpenNeedsTomThread = internalMutation({
       .withIndex("by_kind_key", (q) => q.eq("kind", NEEDS_TOM).eq("key", key))
       .first();
     if (seen) return { opened: false, key };
+
+    const facts: NeedsYouFacts = {
+      todoId: id,
+      statement: todo.statement,
+      entryAction: todo.entryAction,
+      reason,
+      sourceUrl: sourceUrlOf(todo.provenance),
+    };
+    const day = ttsDayKey(Date.now());
     await ctx.db.insert("dtsEvents", {
       at: Date.now(),
       kind: NEEDS_TOM,
       key,
       todoId: id,
-      data: { key, text },
+      // The provenance the message does NOT print stays on the row.
+      data: { key, reason, provenance: todo.provenance, facts: needsYouFactsBlock(facts, day, canReply ?? false) },
     });
-    await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
-      text,
+
+    // ONE APPEARANCE PER ITEM PER DAY. The morning message claims at 5 a.m.,
+    // before any daytime channel runs, so an item it printed is already on his
+    // list today and this thread is correctly suppressed; an item that arrives
+    // at 9 a.m. was not in the morning message and is not suppressed.
+    const claim = await ctx.runMutation(internal.ttsSlack.internalClaimSlackItem, {
+      day,
+      ask: "act",
+      itemId: id,
+      channel: "needsYou",
+    });
+    if (!claim.claimed) {
+      return { opened: false, key, reason: `already claimed today by ${claim.by}` };
+    }
+    // WRITTEN, NOT FILLED IN (Tom 2026-09-09, amendment 2) — the same route the
+    // morning message takes: the facts go to a draft request, the Fable run on
+    // the box writes it, the verifier checks every link and number against the
+    // facts, and the timeout posts this template if no accepted draft arrives.
+    await ctx.runMutation(internal.ttsSlackDrafts.internalOpenSlackDraft, {
+      requestId: `needs-you:${key}`,
+      kind: "needs-you",
       subject: { kind: "todo", id },
+      ...(channel === undefined ? {} : { channel }),
+      facts: needsYouFactsBlock(facts, day, canReply ?? false),
+      canReply: canReply ?? false,
+      fallback: renderSlack(composeNeedsYou(facts, { canReply: canReply ?? false })),
     });
     return { opened: true, key };
   },
 });
+
+/** The message a capture came from, when its provenance carries one.
+ *  worker/jobs/poll-gmail.mjs writes `gmail:message:<id> https://mail.google…`,
+ *  so the first https token is the link and everything else is machine text
+ *  the message must not print. */
+export function sourceUrlOf(provenance: string | undefined): string | null {
+  if (provenance === undefined) return null;
+  const hit = provenance.match(/https:\/\/[^\s]+/);
+  return hit === null ? null : hit[0];
+}
 
 // ── "done", a bare date, or a fact ───────────────────────────────────────────
 // A reply on a todo thread that says ONLY "done" completes the todo through
@@ -307,6 +422,7 @@ export type ThreadReplyOutcome =
   | { outcome: "time-note"; timeNoteId: Id<"dtsTimeNotes"> }
   | { outcome: "tom-note"; subject: SlackSubject }
   | { outcome: "learning-objection"; id: string }
+  | { outcome: "delegate-objection"; id: string }
   | { outcome: "captured"; todoId: Id<"dtsTodos"> };
 
 /**
@@ -428,9 +544,10 @@ async function routeReply(
       return await sessionReply(ctx, subject.id, text, at);
     case "todo":
       return await todoReply(ctx, subject.id, text, at);
+    case "today":
     case "digest":
     case "hourly": {
-      // A reply to a digest or an hourly update is a fact (the brief's
+      // A reply to the morning message or an hourly line is a fact (the brief's
       // "captured as a fact") — the thread has no one todo for a date or a
       // "done" to land on. The one exception: a reply that NAMES a todo (its
       // link or id) and otherwise says only "done" or a date is that todo's
@@ -440,6 +557,14 @@ async function routeReply(
       // TRUE OF ONE REPLY — "<todo id> done [<change id>]" — and both then
       // happen: the objection is written first, and the todo's part is read
       // with the change's name taken out, so the "done" is still a "done".
+      // The objection branch runs FIRST. The two grammars cannot collide — a
+      // learning id is hex, an objection number is one or two digits and
+      // anchored at the start — and running first keeps the precedence
+      // obvious. Both can be true of one reply, and both then happen.
+      const objectedDecision =
+        subject.kind === "today" || subject.kind === "digest"
+          ? await namedObjection(ctx, text, subject.day, at)
+          : undefined;
       const objected = await namedLearningChange(ctx, text);
       if (objected !== undefined) {
         await logEvent(ctx, "learning-objection", undefined, {
@@ -457,14 +582,17 @@ async function routeReply(
           return await todoReply(ctx, named.todoId, text, at, shape);
         }
       }
+      if (objectedDecision !== undefined) {
+        return { outcome: "delegate-objection", id: objectedDecision };
+      }
       if (objected !== undefined) return { outcome: "learning-objection", id: objected };
       await logEvent(ctx, "tom-note", named?.todoId, {
         text,
         ...at,
         subject,
-        ...(subject.kind === "digest"
-          ? { day: subject.day }
-          : { hour: subject.hour, day: subject.hour.slice(0, 10) }),
+        ...(subject.kind === "hourly"
+          ? { hour: subject.hour, day: subject.hour.slice(0, 10) }
+          : { day: subject.day }),
       });
       return { outcome: "tom-note", subject };
     }
@@ -475,6 +603,32 @@ async function routeReply(
         ...at,
       });
       return { outcome: "learning-objection", id: subject.id };
+    case "ask": {
+      // THE THREAD IS THE DECISION, so no number is parsed: a reply in a
+      // decisions-channel thread is an objection to that ONE decision. A reply
+      // that opens with "revert" says "not that"; anything else says what
+      // instead. Silence, here as in the morning message, means it stands.
+      //
+      // Same row, same askId key as the morning message's numbered branch
+      // (namedObjection below) — two doors, ONE implementation: ttsAsk's
+      // mutation is the only writer, so an objection always lands on the
+      // decision's own todo timeline, where internalAskContext reads it back.
+      const revert = /^revert\b[.!]?/i.test(text.trim());
+      const sentence = revert ? null : text.trim() === "" ? null : text.trim();
+      await ctx.runMutation(internal.ttsAsk.internalRecordDelegateObjection, {
+        askId: subject.id,
+        text,
+        revert,
+        sentence,
+        ...at,
+      });
+      return { outcome: "delegate-objection", id: subject.id };
+    }
+    case "job":
+      // A reply about a failure is a fact, and nothing else: the failure is
+      // the box's to fix, not a row with a status Tom can set.
+      await logEvent(ctx, "tom-note", undefined, { text, ...at, subject, job: subject.id });
+      return { outcome: "tom-note", subject };
     case "unknown":
       return await captureUnknown(ctx, text, at);
   }
@@ -498,7 +652,7 @@ async function captureUnknown(
   await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
     channel: at.channel,
     threadTs: at.threadTs,
-    text: captureReplyText(text, todoId),
+    text: renderSlack(composeCaptured({ todoId, statement: text })),
     subject: { kind: "todo", id: todoId },
   });
   return { outcome: "captured", todoId };
@@ -507,30 +661,111 @@ async function captureUnknown(
 /** The todo a reply names — by its page link (tts?item=<id>, Slack-wrapped
  * or bare) or a bare id — and the reply with that name taken out. The first
  * token that is an existing todo's id wins; a reply naming none is undefined. */
-// How many recent model-of-Tom changes a reply's id is matched against:
-// weeks of nights, inside Slack's 3-second budget.
+// How many recent rows of EACH kind — model-of-Tom changes, repository-rule
+// proposals — a reply's id is matched against: weeks of nights on both,
+// inside Slack's 3-second budget.
 export const LEARNING_CHANGE_LOOKBACK = 500;
 
 /**
- * The full id of the learning change a reply names, if any. What a name is
- * — the digest's `[<id>]`, or a bare prefix of it — is one rule in
- * worker/jobs/learning-change-names.mjs, the nightly job's too; the token is
- * checked against the recent "learning-change" rows, so a commit hash printed
- * in the same digest, or a word spelled in hex letters, names nothing.
+ * The full id of the model-of-Tom line, or of the repository-rule proposal, a
+ * reply names — if any. What a name is — the digest's `[<id>]`, or a bare
+ * prefix of it — is one rule in worker/jobs/learning-change-names.mjs, the
+ * nightly job's too; the token is checked against the recent rows, so a commit
+ * hash printed in the same digest, or a word spelled in hex letters, names
+ * nothing.
+ *
+ * BOTH SETS ARE SEARCHED. The digest prints repository-rule proposals beside
+ * the model-of-Tom lines and a proposal's id is the same length and alphabet
+ * by construction, so a reply naming one reads exactly like a reply naming the
+ * other: it is an objection to that proposal, which the nightly job drops
+ * before the line ever reaches the repository. The row this writes stays a
+ * "learning-objection" either way — the job tells a proposal id from a change
+ * id by looking it up, and the reply does not have to know which it named.
  */
 async function namedLearningChange(ctx: MutationCtx, text: string): Promise<string | undefined> {
   const tokens = changeIdTokens(text);
   if (tokens.length === 0) return undefined;
+  const recentOfKind = async (kind: string) =>
+    (
+      await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_at", (q) => q.eq("kind", kind))
+        .order("desc")
+        .take(LEARNING_CHANGE_LOOKBACK)
+    ).map((row) => (row.data ?? {}) as { id?: unknown });
+  const hit = namedChange(tokens, [
+    ...(await recentOfKind("learning-change")),
+    ...(await recentOfKind("repo-proposal")),
+  ]);
+  return typeof hit?.id === "string" ? hit.id : undefined;
+}
+
+/**
+ * The objection grammar, in two forms, both ANCHORED at the start of the
+ * reply and case-insensitive:
+ *
+ *   "revert 2" / "Revert 2."   → { n: 2, revert: true,  sentence: null }
+ *   "2: leave it Wednesday"    → { n: 2, revert: false, sentence: "leave it Wednesday" }
+ *
+ * Anything else is null. Anchored, so a reply that merely CONTAINS a number
+ * ("see item 2 in the list", "2 done") is a fact, not an objection.
+ */
+export function parseObjectionReply(
+  text: string,
+): { n: number; revert: boolean; sentence: string | null } | null {
+  const t = text.trim();
+  const revert = /^revert\s+(\d{1,2})\b[.!]?\s*$/i.exec(t);
+  if (revert) return { n: Number(revert[1]), revert: true, sentence: null };
+  const numbered = /^(\d{1,2})\s*:\s*(\S[\s\S]*)$/.exec(t);
+  if (numbered) return { n: Number(numbered[1]), revert: false, sentence: numbered[2].trim() };
+  return null;
+}
+
+/**
+ * The delegate decision a reply in THIS morning's digest thread objects to, or
+ * undefined when the reply is not an objection or its number named no line.
+ * Records the objection as a side effect and answers with the askId.
+ *
+ * The numbers are the digest's own, so they are resolved against the
+ * "digest-sent" row that morning wrote (data.objectionAskIds, in printed
+ * order) rather than recomputed — a number Tom types must name a line he could
+ * actually see.
+ */
+async function namedObjection(
+  ctx: MutationCtx,
+  text: string,
+  day: string,
+  at: { channel: string; ts: string; threadTs: string },
+): Promise<string | undefined> {
+  const parsed = parseObjectionReply(text);
+  if (parsed === null) return undefined;
+  // DO NOT put `day` in the row's key to make this a point lookup.
+  // ttsDigest.lastDigestSent depends on "digest-sent" rows carrying NO key:
+  // with the kind pinned and every key empty, by_kind_key orders by time and
+  // .first() is the newest row. Keying them by day would silently break the
+  // window arithmetic of every future digest. So: a bounded newest-first take
+  // over two weeks of mornings, inside Slack's 3-second budget.
   const recent = await ctx.db
     .query("dtsEvents")
-    .withIndex("by_kind_at", (q) => q.eq("kind", "learning-change"))
+    .withIndex("by_kind_key", (q) => q.eq("kind", DIGEST_SENT))
     .order("desc")
-    .take(LEARNING_CHANGE_LOOKBACK);
-  const hit = namedChange(
-    tokens,
-    recent.map((row) => (row.data ?? {}) as { id?: unknown }),
-  );
-  return typeof hit?.id === "string" ? hit.id : undefined;
+    .take(DIGEST_OBJECTION_LOOKBACK);
+  const sent = recent.find((row) => (row.data as { day?: unknown } | undefined)?.day === day);
+  const printed = (sent?.data as { objectionAskIds?: unknown } | undefined)?.objectionAskIds;
+  const askId = Array.isArray(printed) ? printed[parsed.n - 1] : undefined;
+  // A number that named no printed line is not an objection: fall through, and
+  // the reply is kept as the fact it is. Nothing is lost.
+  if (typeof askId !== "string" || askId === "") return undefined;
+  await ctx.runMutation(internal.ttsAsk.internalRecordDelegateObjection, {
+    askId,
+    n: parsed.n,
+    day,
+    text,
+    revert: parsed.revert,
+    sentence: parsed.sentence,
+    ...at,
+  });
+  return askId;
 }
 
 async function namedTodo(
@@ -654,7 +889,9 @@ async function sessionReply(
   await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlack, {
     channel: at.channel,
     threadTs: at.threadTs,
-    text: `Session "${session.title}" had ${session.status}; your reply opened a new ${session.kind} session seeded with this thread — ${ttsSessionLink(newId)}`,
+    text: renderSlack(
+      composeContinued({ sessionId: newId, title: session.title, status: session.status }),
+    ),
     subject: { kind: "session", id: newId },
   });
   return { outcome: "session-reopened", endedSessionId: sessionId, sessionId: newId };

@@ -7,6 +7,7 @@ import {
 } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { requireTom, requireTomOrAgent } from "./authRoles";
 import { applyStatusChange, archiveBatchContents, logEvent } from "./tts";
 
@@ -287,11 +288,46 @@ async function insertRuling(
       externalId,
       batchId,
       sentence: trimmed || undefined,
-      // The digest reads the events table; a ruling in Tom's words is
-      // reported there quoted, so a misreading is his to object to.
       provenance,
     });
+    // A RULING READ OUT OF HIS SENTENCE IS A DECISION TAKEN IN HIS NAME, so it
+    // goes to #tts-decisions the moment it is written rather than waiting for
+    // the morning (slack-design.md §1.2): the run that acts on a misread
+    // sentence will have finished by 5 a.m. Only the words door — a ruling he
+    // pressed a button for is not a decision anyone took for him.
+    if (provenance !== undefined) {
+      await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
+        askId: `ruling:${id}`,
+        ...(todoId === undefined ? {} : { todoId }),
+        decision: `${await ruledSubjectName(ctx, { todoId, batchId, repo, externalId })} was ruled a ${verdict} from your own words`,
+        ...(trimmed ? { reason: trimmed } : {}),
+      });
+    }
     return id;
+}
+
+/** What a decision line calls the thing that was ruled on: the todo's own
+ *  statement, the batch's, or the code todo's repo and id. Never an id on its
+ *  own — an id in a message is a word Tom has to translate. */
+async function ruledSubjectName(
+  ctx: MutationCtx,
+  subject: {
+    todoId?: Id<"dtsTodos">;
+    batchId?: Id<"batches">;
+    repo?: string;
+    externalId?: string;
+  },
+): Promise<string> {
+  if (subject.todoId !== undefined) {
+    return (await ctx.db.get(subject.todoId))?.statement ?? "an item";
+  }
+  if (subject.batchId !== undefined) {
+    return (await ctx.db.get(subject.batchId))?.statement ?? "a batch";
+  }
+  if (subject.repo !== undefined && subject.externalId !== undefined) {
+    return `${subject.repo} ${subject.externalId}`;
+  }
+  return "the run";
 }
 
 export const recordRuling = mutation({

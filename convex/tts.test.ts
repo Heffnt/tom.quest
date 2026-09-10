@@ -16,6 +16,38 @@ import {
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
+describe("POST /tts/time-notes", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("serves the pending queue with the published write and know layers", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("modelOfTomPublication", {
+        key: "current", commit: "time-notes-test", committedAt: 1, pushed: true,
+        operate: "operate layer", write: "write layer", know: "know layer",
+        headers: [{ layers: ["operate", "write"], header: "published map + operate + write" }],
+      });
+    });
+
+    const response = await t.fetch("/tts/time-notes", {
+      method: "POST", headers: { "X-TTS-Key": "s3cret" },
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.notes).toEqual([]);
+    // The door serves the ASSEMBLED CONTEXT now, not two whole layers (the
+    // dynamic-context round): the stable prefix — the map, the operate rules
+    // and the write layer — and then, this caller having no subject of its
+    // own, no expansion at all and the fetchable index. The assembler's exact
+    // output is pinned in convex/ttsContext.test.ts; what this asserts is that
+    // the door serves it under the field name the worker asks for.
+    const [prefix, index] = body.writingStandard.split("\n\nMODEL-OF-TOM FETCHABLE (");
+    expect(prefix).toBe("published map + operate + write\n\noperate layer\n\nwrite layer");
+    expect(index).toContain("--layers know");
+  });
+});
+
 async function withTom(t: ReturnType<typeof convexTest>) {
   const tomId = await t.run(async (ctx) =>
     ctx.db.insert("users", { name: "tom", email: "tom@tom.quest", role: "tom" }),

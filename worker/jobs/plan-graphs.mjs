@@ -100,6 +100,8 @@ import {
   nyNoonUtcMs,
   MAX_LIFE_PER_RUN,
   MAX_BRIEF_CHARS,
+  JSON_ONLY_ANSWER,
+  MODELS,
 } from "./tts-lib.mjs";
 import {
   CMT_REPO,
@@ -115,7 +117,7 @@ import {
 const HASH_PATH = "/var/lib/tts/plan-input-hash";
 // Bump when the plan prompt changes semantics: it joins the input hash, so a
 // new prompt re-plans even inputs that have not changed.
-const PROMPT_VERSION = 3;
+const PROMPT_VERSION = 4;
 const CLAUDE_TIMEOUT_MS = 20 * 60 * 1000;
 
 // MAX_LIFE_PER_RUN (how many unbatched life todos one run offers as goal
@@ -181,88 +183,63 @@ function explanationPreview(value, max) {
   return clip(explanationText(value), max);
 }
 
-// The palette and form every explanation document takes, named once for both
-// prompts. The writing standard says what a document must cover; this says
-// what it looks like and what it may not load.
-const EXPLANATION_FORM = [
-  `A "groundUpExplanation" is a COMPLETE, SELF-CONTAINED HTML DOCUMENT, from`,
-  `"<!DOCTYPE html>" to "</html>", carrying its own inline <style> and nothing`,
-  `external: no script, no event handler, no stylesheet, font, image, or URL`,
-  `loaded from anywhere. It renders fullscreen in a sandbox with no scripting`,
-  `and no network, so anything external is a hole in the page. Palette`,
-  `#0a0e17 background, #e2e8f0 text, #94a3b8 secondary, #e8a040 accent,`,
-  `#1e293b borders; ~15px body type, real <h1>/<h2> headings, short`,
-  `sections, a <table> for enumerable facts, and bordered <div> boxes with →`,
-  `or ↓ arrows where a shape helps. Write the whole document as the JSON`,
-  `string value, escaped as JSON requires.`,
-];
 
 // ── PASS 1: prepare ──────────────────────────────────────────────────────────
 
 /** The prompt that prepares ONE life todo. */
 export function preparePrompt(todo, reviseSentence, today, writingStandard) {
   return [
+    writingStandard,
+    ``,
     `You are preparing one item in TTS, Tom's personal todo system. It was`,
     `captured as a raw thought; your job is to make it arrive pre-chewed.`,
     ``,
-    `The item (JSON):`,
-    JSON.stringify(
-      {
-        statement: todo.statement,
-        source: todo.source,
-        provenance: todo.provenance ?? null,
-        category: todo.category ?? null,
-        createdAt: todo.createdAt,
-      },
-      null,
-      2,
-    ),
-    ``,
-    ...(reviseSentence
-      ? [
-          `Tom reviewed an earlier preparation of this item and ruled "revise" —`,
-          `his one written sentence below redirects this re-preparation and`,
-          `overrides any other reading of the item:`,
-          ``,
-          `Tom's revise ruling: ${reviseSentence}`,
-          ``,
-        ]
-      : []),
-    writingStandard,
-    ``,
-    `Write, in plain language (define any term Tom might not know; invent no`,
-    `names; descriptive, never evaluative — no praise, no urgency theater):`,
-    `1. "brief" — 2-5 sentences, ground-up: what this item is, why it likely`,
-    `   exists, and anything a person acting on it should know. If the`,
-    `   statement is too terse to interpret confidently, say so plainly in the`,
-    `   brief and phrase what needs clarifying.`,
-    `2. "entryAction" — the SMALLEST first action, imperative, under 10 words`,
+    `Write:`,
+    `1. "brief" - 2-5 sentences. If the statement is too terse to interpret`,
+    `   confidently, say so plainly in the brief and phrase what needs clarifying.`,
+    `2. "entryAction" - the SMALLEST first action, imperative, under 10 words`,
     `   (e.g. "Open the reservation page", "Draft two sentences to Ana").`,
-    `3. "workDescription" — the kind/size of engagement, qualitatively, a few`,
+    `3. "workDescription" - the kind/size of engagement, qualitatively, a few`,
     `   words (e.g. "a two-minute errand", "a short ruling", "a session's`,
     `   worth of writing"). NEVER a numeric time estimate.`,
-    `4. "groundUpExplanation" — the self-contained layer behind the "more"`,
-    `   control, obeying the WRITING STANDARD above in full: what this is, why`,
-    `   it exists, what each term in the statement means, where it stands now,`,
-    `   what happens next and who does it. ${EXPLANATION_FORM.join(" ")}`,
-    `5. "dueDate" — ONLY when the statement ITSELF names an explicit date`,
+    `4. "groundUpExplanation"`,
+    `5. "dueDate" - ONLY when the statement ITSELF names an explicit date`,
     `   ("pay rent sept 3", "call the bank on Friday the 12th"). Then give it`,
-    `   as "YYYY-MM-DD"; today is ${today} in New York, which is how you`,
-    `   resolve a bare month+day or weekday to a year. Otherwise give null.`,
-    `   NEVER infer, estimate, or invent a date — no "this seems urgent, so`,
+    `   as "YYYY-MM-DD". Otherwise give null.`,
+    `   NEVER infer, estimate, or invent a date - no "this seems urgent, so`,
     `   next week". A date you were not told in the statement is a date that`,
     `   does not exist. Only the words in "statement" count; a date mentioned`,
     `   anywhere else is not this item's date.`,
-    `6. "dateKind" — ONLY when you gave a dueDate. "external" if the statement`,
+    `6. "dateKind" - ONLY when you gave a dueDate. "external" if the statement`,
     `   shows the deadline was imposed by someone or something else (a bill, a`,
     `   landlord, a booking window, a court date); "self-imposed" if it reads`,
     `   as Tom's own choice of when. When the statement does not say, answer`,
     `   "self-imposed". Otherwise give null.`,
     ``,
-    `Answer ONLY a JSON object, no prose, no code fences:`,
+    JSON_ONLY_ANSWER,
     `{"brief": "...", "entryAction": "...", "workDescription": "...",`,
-    ` "groundUpExplanation": "<!DOCTYPE html>…</html>",`,
+    ` "groundUpExplanation": "<explanation>",`,
     ` "dueDate": null, "dateKind": null}`,
+    ``,
+    `The item (JSON):`,
+    JSON.stringify({
+      statement: todo.statement,
+      source: todo.source,
+      provenance: todo.provenance ?? null,
+      category: todo.category ?? null,
+      createdAt: todo.createdAt,
+    }, null, 2),
+    ``,
+    ...(reviseSentence ? [
+      `Tom reviewed an earlier preparation of this item and ruled "revise" -`,
+      `his one written sentence below redirects this re-preparation and`,
+      `overrides any other reading of the item:`,
+      ``,
+      `Tom's revise ruling: ${reviseSentence}`,
+      ``,
+    ] : []),
+    `Today is ${today} in New York, which is how you resolve a bare month+day`,
+    `or weekday to a year.`,
   ].join("\n");
 }
 
@@ -327,7 +304,7 @@ export async function prepareLifeTodos(
     try {
       const answer = io.runClaude(
         preparePrompt(todo, revise?.sentence ?? null, today, writingStandard),
-        { timeoutMs: PREPARE_TIMEOUT_MS },
+        { timeoutMs: PREPARE_TIMEOUT_MS, model: MODELS.planner },
       );
       const parsed = extractJsonObject(answer);
       if (
@@ -433,52 +410,46 @@ export const EXEC_CLASSES = new Set(["needs-turing", "box"]);
 // todos.yaml (real YAML beats re-serialized JSON: Tom's comments and block
 // scalars survive), `replanNote` is Tom's revise sentence when he ruled
 // revise, else null.
-export function briefPrompt(entryYaml, replanNote) {
+export function briefPrompt(entryYaml, replanNote, writingStandard) {
   return [
+    writingStandard,
+    ``,
     `You are briefing Tom on ONE entry of vqc/todos.yaml in the ComplexMultiTrigger`,
-    `repo. Your working directory is a checkout of that repo at current master —`,
+    `repo. Your working directory is a checkout of that repo at current master -`,
     `use your file-reading tools to open the files, ledger entries, and constitution`,
     `articles the entry cites, and any code the plan touches. Verify, don't assume.`,
     ``,
-    `The entry:`,
+    `Write a GROUND-UP brief for Tom (~250-400 words).`,
     ``,
-    entryYaml,
-    ``,
-    ...(replanNote !== null
-      ? [
-          `Tom ruled "revise" on this entry's existing brief and plan` +
-            (replanNote ? ` with the sentence: ${replanNote}` : `.`),
-          `His sentence overrides any other reading of the entry. Propose a`,
-          `FRESH plan inside the brief, grounded in the current tree.`,
-          ``,
-        ]
-      : []),
-    `Write a GROUND-UP brief for Tom (~250-400 words). Ground-up means: define`,
-    `every term the first time it appears, no invented names, concrete before`,
-    `abstract — Tom's understanding is the bottleneck and the brief exists so he`,
-    `can rule fast. Cover, in order:`,
-    `- what this todo is and why it exists;`,
-    `- what its attached plan (if any) would do;`,
-    `- whether the plan still matches the CURRENT tree: check that the files and`,
-    `  ledger entries it cites actually exist, and NAME anything stale.`,
-    ``,
-    `End with a recommendation — the verdict Tom will most likely rule, in`,
-    `the four words he rules in — chosen by EXACTLY these criteria, in order;`,
+    `End with a recommendation - the verdict Tom will most likely rule, in`,
+    `the four words he rules in - chosen by EXACTLY these criteria, in order;`,
     `the first that applies wins:`,
     `1. The completion condition is already satisfied by landed work, or the`,
     `   intent is moot/superseded -> "archive", and set "evidence" to the`,
     `   commits/files that prove it.`,
     `2. The intent is live but the plan is stale against the tree -> "revise".`,
-    `3. The plan is live but embeds an open judgment call Tom has not made —`,
+    `3. The plan is live but embeds an open judgment call Tom has not made -`,
     `   ALL tier-C entries land here by definition -> "session".`,
     `4. All clean -> "approve".`,
     ``,
     `Also classify execClass: "needs-turing" if executing the plan requires the`,
     `SLURM cluster / GPUs, else "box" (runnable on an ordinary Linux box).`,
     ``,
-    `Answer with ONLY a JSON object, no prose, no code fences:`,
+    JSON_ONLY_ANSWER,
     `{"brief": "...", "recommendation": "approve|revise|session|archive",`,
     ` "execClass": "needs-turing|box", "evidence": "..." (optional)}`,
+    ``,
+    `The entry:`,
+    ``,
+    entryYaml,
+    ``,
+    ...(replanNote !== null ? [
+      `Tom ruled "revise" on this entry's existing brief and plan` +
+        (replanNote ? ` with the sentence: ${replanNote}` : `.`),
+      `His sentence overrides any other reading of the entry. Propose a`,
+      `FRESH plan inside the brief, grounded in the current tree.`,
+      ``,
+    ] : []),
   ].join("\n");
 }
 
@@ -514,7 +485,7 @@ export function selectBriefTargets(entries, hashes, pending, { force = false } =
  * contract — `readHashes()` and `writeHashes(map)` — so the tests keep the
  * cursor in memory.
  */
-export async function briefCodeTodos({ repo, pending, force = false }, io) {
+export async function briefCodeTodos({ repo, pending, writingStandard, force = false }, io) {
   const hashes = io.readHashes();
   const targets = selectBriefTargets(repo.entries, hashes, pending, { force });
   if (targets.length === 0) return { briefed: 0, failed: 0 }; // quiet when idle
@@ -533,10 +504,11 @@ export async function briefCodeTodos({ repo, pending, force = false }, io) {
       const entryYaml = found ? found.block : JSON.stringify(entry, null, 2);
       const replanNote = revise ? (revise.sentence ?? "") : null;
 
-      const answer = io.runClaude(briefPrompt(entryYaml, replanNote), {
+      const answer = io.runClaude(briefPrompt(entryYaml, replanNote, writingStandard), {
         cwd: repo.dir, // non-agentic: read-only tools over the repo, no edits
         timeoutMs: BRIEF_TIMEOUT_MS,
         maxTurns: BRIEF_MAX_TURNS,
+        model: MODELS.codeBrief,
       });
       const parsed = extractJsonObject(answer);
 
@@ -599,131 +571,15 @@ export async function briefCodeTodos({ repo, pending, force = false }, io) {
 
 // ── PASS 3: plan ─────────────────────────────────────────────────────────────
 
-function prompt(ctx) {
+export function graphPrompt(ctx) {
   return [
+    ctx.writingStandard,
+    ``,
+    ctx.vocabulary,
+    ``,
     `You are the PLANNER for TTS, Tom's todo system. Your job is to maintain`,
     `the GRAPH inside each batch. You propose structure; Tom rules. Nothing`,
     `you output executes anything.`,
-    ``,
-    `THE VOCABULARY IS FIXED. Use these words and only these words for these`,
-    `things — do not invent synonyms, and do not coin new names for anything:`,
-    `- batch — a row holding HOW a set of todos gets completed. It is not a`,
-    `  todo. It contains todos of two kinds.`,
-    `- goal — a todo that is a state of the world the batch is FOR, checkable`,
-    `  by a condition ("the lease is signed"). Goals are the todos Tom already`,
-    `  had; they are the reason the batch exists. You bind existing todos as`,
-    `  goals; you never invent one.`,
-    `- task — a todo that is a piece of work someone does. Tasks are what you`,
-    `  write.`,
-    `- needs — the dependency edges. A todo lists the ids of the todos that`,
-    `  must be finished before it can start. The SAME word sequences batches:`,
-    `  a batch lists the ids of the batches that must land before any of its`,
-    `  work is handed out. Needs hold prerequisites only — something that`,
-    `  merely makes another batch easier is not a need.`,
-    `- ready — a todo is ready when it is active and every todo in its needs is`,
-    `  done. That set is the frontier: the work that can start right now.`,
-    `- repos — the repositories a batch's work lives in, DECLARED by you on`,
-    `  the batch. Every session TTS opens for this batch or for a task inside`,
-    `  it checks out exactly this set, so a batch whose work touches two`,
-    `  repositories declares both and gets one session holding both checkouts.`,
-    `  The only legal names are ${ctx.sessionRepos.join(", ")}; a batch whose`,
-    `  work needs no repository declares [].`,
-    `- mustNotBreak — Tom's own line on a goal: what the work toward it must`,
-    `  not break. Only Tom writes it; you never do, and you never rewrite it.`,
-    `  It binds every task you plan toward that goal: a task that would break`,
-    `  it is not a task to write, and its explanation must say how the line is`,
-    `  kept.`,
-    `- display text — the short line always on screen (a statement).`,
-    `- ground-up explanation — the self-contained layer behind a "more"`,
-    `  control. It is a COMPLETE HTML DOCUMENT, rendered fullscreen; the`,
-    `  writing standard below gives its exact form.`,
-    ``,
-    ctx.writingStandard,
-    ``,
-    `EXISTING BATCHES WITH THEIR GRAPHS (JSON). Each: id, statement,`,
-    `groundUpExplanationPreview, needs (batch ids), repos,`,
-    `frozen, tasks, goals. A goal carries id, statement, condition, status,`,
-    `mustNotBreak (Tom's line, or null), codeRepo, codeExternalId. A task`,
-    `carries id,`,
-    `statement, actor, status, needs, condition, evidence, model, and its own`,
-    `groundUpExplanationPreview. EVERY "...Preview" value is readable text`,
-    `EXTRACTED from a stored HTML document and then CLIPPED — it is there so`,
-    `you know what an explanation already covers, it is not the document, and`,
-    `it must never be copied into your output:`,
-    JSON.stringify(ctx.graphs, null, 2),
-    ``,
-    ...(ctx.graphsHeldBack > 0
-      ? [
-          `${ctx.graphsHeldBack} more active batches are held back this run to`,
-          `bound the call; their statements are listed below so you do not`,
-          `recreate them. The next run gets their graphs.`,
-          ``,
-        ]
-      : []),
-    `EVERY ACTIVE BATCH STATEMENT (including any held back above). Do not`,
-    `create a new batch whose statement duplicates one of these:`,
-    ...ctx.activeStatements.map((s) => `- ${s}`),
-    ``,
-    `A batch with "frozen": true has been touched by Tom and is OFF LIMITS:`,
-    `never output its id and never archive it.`,
-    ``,
-    `TODOS NOT IN ANY BATCH — your candidate GOALS (JSON; each: id, statement,`,
-    `brief, category, dueAt — dueAt is epoch ms or null; brief is clipped):`,
-    JSON.stringify(ctx.candidates, null, 2),
-    ``,
-    ...(ctx.candidatesHeldBack > 0
-      ? [
-          `${ctx.candidatesHeldBack} more unbatched todos are held back this`,
-          `run to bound the call. Work with what you see; the next run gets`,
-          `the rest.`,
-          ``,
-        ]
-      : []),
-    `OPEN CODE TODOS in Tom's repos, with prepared briefs (JSON; each: repo,`,
-    `externalId, statement). CONTEXT ONLY — these are entries in`,
-    `repo todo files, not todo rows, so they cannot be bound as goals. Use them`,
-    `to know what work exists when you write tasks and explanations:`,
-    JSON.stringify(ctx.code, null, 2),
-    ``,
-    ...(ctx.archivedStatements.length > 0
-      ? [
-          `ARCHIVED AND FINISHED BATCH STATEMENTS — groupings that were`,
-          `retired. Do NOT recreate an equivalent grouping under a new name:`,
-          ...ctx.archivedStatements.map((s) => `- ${s}`),
-          ``,
-        ]
-      : []),
-    ...(ctx.repairs.length > 0
-      ? [
-          `PLAN REPAIRS. A worker reached one of these tasks and found the`,
-          `graph WRONG — an edge that was not a real prerequisite, or a missing`,
-          `one that blocked it. These are instructions to FIX THE STRUCTURE,`,
-          `not commentary to note:`,
-          ...ctx.repairs.map((r) => `- ${r}`),
-          ``,
-        ]
-      : []),
-    ...(ctx.revises.length > 0
-      ? [
-          `Tom ruled "revise" on these batches — each sentence redirects the`,
-          `re-planning and overrides any other reading of the inputs:`,
-          ...ctx.revises.map((r) => `- batch "${r.statement}": ${r.sentence}`),
-          ``,
-        ]
-      : []),
-    ...(ctx.notes.length > 0
-      ? [
-          `NOTES TOM WROTE WITH HIS APPROVE AND SESSION RULINGS. These are`,
-          `steering context about what he wants, not instructions to re-plan a`,
-          `specific batch and not items to act on:`,
-          ...ctx.notes.map((n) => `- [${n.verdict}] ${n.subject}: ${n.sentence}`),
-          ``,
-        ]
-      : []),
-    `TOM'S RECENT RULINGS, newest first (behavioral evidence: what he`,
-    `approves, revises, sends to a session, archives — use it to infer what he`,
-    `cares about, not as items to act on):`,
-    JSON.stringify(ctx.recentRulings, null, 2),
     ``,
     `TASK — output the batches whose graphs you are writing this run. Rules:`,
     ``,
@@ -794,38 +650,108 @@ function prompt(ctx) {
     `  "gpt-5.6-sol"    the task needs Codex specifically at full strength.`,
     `Mechanical or well-specified work does not warrant a stronger model.`,
     ``,
-    `WRITING. Every "statement" is display text: short, names the thing, no`,
-    `explanation. Every "groundUpExplanation" obeys the WRITING STANDARD`,
-    `above, in full. ${EXPLANATION_FORM.join(" ")}`,
-    ``,
     `WRITE AN EXPLANATION ONLY WHEN YOU MEAN TO REPLACE ONE. A batch or task`,
     `whose explanation is already right keeps it by OMISSION — leave the field`,
     `out. When you do include it, you are writing the entire document fresh;`,
     `there is no way to amend one, and a fragment overwrites a whole page.`,
     ``,
-    `EVERY NEW TASK AND EVERY NEW BATCH GETS ONE. Tom rules from that document`,
-    `and nothing else, so it must stand alone: what this is, why it exists,`,
-    `what each term in the statement means, where it stands now, what happens`,
-    `next and who does it, and — for a task whose actor is "tom" — exactly`,
-    `what he is deciding, as the numbered decision list the standard`,
-    `describes.`,
+    `EVERY NEW TASK AND EVERY NEW BATCH GETS ONE.`,
     ``,
     `ARCHIVE. Set "archive": true on a batch whose goals are all reached or`,
     `abandoned. Never on a frozen one.`,
     ``,
-    `Answer ONLY a JSON object, no prose, no code fences. Both`,
-    `"groundUpExplanation" fields hold a whole HTML document as one JSON`,
-    `string (shown here abbreviated):`,
+    `A batch with "frozen": true has been touched by Tom and is OFF LIMITS:`,
+    `never output its id and never archive it.`,
+    ``,
+    JSON_ONLY_ANSWER,
     `{"batches": [{"batchId": "...", "statement": "...",`,
-    ` "groundUpExplanation": "<!DOCTYPE html><html><head><style>…</style>`,
-    `</head><body>…</body></html>",`,
+    ` "groundUpExplanation": "<explanation>",`,
     ` "needs": ["<batch id>"],`,
-    ` "repos": ["tom.quest"],`,
-    ` "tasks": [{"id": "...", "statement": "...", "actor": "agent",`,
+    ` "repos": ["<repo>"],`,
+    ` "tasks": [{"id": "...", "statement": "...", "actor": "<actor>",`,
     `            "needs": ["<todo id>", 0], "condition": "...",`,
-    `            "groundUpExplanation": "<!DOCTYPE html>…</html>",`,
-    `            "status": "active", "model": "gpt-5.6-terra"}],`,
+    `            "groundUpExplanation": "<explanation>",`,
+    `            "status": "active", "model": "<model>"}],`,
     ` "goalIds": ["..."], "archive": false}]}`,
+    ``,
+    `EXISTING BATCHES WITH THEIR GRAPHS (JSON). Each: id, statement,`,
+    `groundUpExplanationPreview, needs (batch ids), repos,`,
+    `frozen, tasks, goals. A goal carries id, statement, condition, status,`,
+    `mustNotBreak (Tom's line, or null), codeRepo, codeExternalId. A task`,
+    `carries id, statement, actor, status, needs, condition, evidence, model,`,
+    `and its own groundUpExplanationPreview. Every "...Preview" value is`,
+    `readable extracted text, not a value you may copy into output:`,
+    JSON.stringify(ctx.graphs, null, 2),
+    ``,
+    ...(ctx.graphsHeldBack > 0
+      ? [
+          `${ctx.graphsHeldBack} more active batches are held back this run to`,
+          `bound the call; their statements are listed below so you do not`,
+          `recreate them. The next run gets their graphs.`,
+          ``,
+        ]
+      : []),
+    `EVERY ACTIVE BATCH STATEMENT (including any held back above). Do not`,
+    `create a new batch whose statement duplicates one of these:`,
+    ...ctx.activeStatements.map((s) => `- ${s}`),
+    ``,
+    `TODOS NOT IN ANY BATCH — your candidate GOALS (JSON; each: id, statement,`,
+    `brief, category, dueAt — dueAt is epoch ms or null; brief is clipped):`,
+    JSON.stringify(ctx.candidates, null, 2),
+    ``,
+    ...(ctx.candidatesHeldBack > 0
+      ? [
+          `${ctx.candidatesHeldBack} more unbatched todos are held back this`,
+          `run to bound the call. Work with what you see; the next run gets`,
+          `the rest.`,
+          ``,
+        ]
+      : []),
+    `OPEN CODE TODOS in Tom's repos, with prepared briefs (JSON; each: repo,`,
+    `externalId, statement). CONTEXT ONLY — these are entries in repo todo`,
+    `files, not todo rows, so they cannot be bound as goals. Use them to know`,
+    `what work exists when you write tasks and explanations:`,
+    JSON.stringify(ctx.code, null, 2),
+    ``,
+    ...(ctx.archivedStatements.length > 0
+      ? [
+          `ARCHIVED AND FINISHED BATCH STATEMENTS — groupings that were`,
+          `retired. Do NOT recreate an equivalent grouping under a new name:`,
+          ...ctx.archivedStatements.map((s) => `- ${s}`),
+          ``,
+        ]
+      : []),
+    ...(ctx.repairs.length > 0
+      ? [
+          `PLAN REPAIRS. A worker reached one of these tasks and found the`,
+          `graph WRONG — an edge that was not a real prerequisite, or a missing`,
+          `one that blocked it. These are instructions to FIX THE STRUCTURE,`,
+          `not commentary to note:`,
+          ...ctx.repairs.map((r) => `- ${r}`),
+          ``,
+        ]
+      : []),
+    ...(ctx.revises.length > 0
+      ? [
+          `Tom ruled "revise" on these batches — each sentence redirects the`,
+          `re-planning and overrides any other reading of the inputs:`,
+          ...ctx.revises.map((r) => `- batch "${r.statement}": ${r.sentence}`),
+          ``,
+        ]
+      : []),
+    ...(ctx.notes.length > 0
+      ? [
+          `NOTES TOM WROTE WITH HIS APPROVE AND SESSION RULINGS. These are`,
+          `steering context about what he wants, not instructions to re-plan a`,
+          `specific batch and not items to act on:`,
+          ...ctx.notes.map((n) => `- [${n.verdict}] ${n.subject}: ${n.sentence}`),
+          ``,
+        ]
+      : []),
+    `TOM'S RECENT RULINGS, newest first (behavioral evidence: what he`,
+    `approves, revises, sends to a session, archives — use it to infer what he`,
+    `cares about, not as items to act on):`,
+    JSON.stringify(ctx.recentRulings, null, 2),
   ].join("\n");
 }
 
@@ -841,6 +767,7 @@ export async function planGraphs(context, pending, io) {
   const all = Array.isArray(todos) ? todos : [];
   const batchRows = Array.isArray(batches) ? batches : [];
   const writingStandard = context.writingStandard;
+  const vocabulary = context.vocabulary;
   const sessionRepos = context.sessionRepos;
 
   const activeBatches = batchRows.filter((b) => b.status === "active");
@@ -1050,6 +977,7 @@ export async function planGraphs(context, pending, io) {
         reviseSentences,
         notes,
         writingStandard,
+        vocabulary,
         sessionRepos,
       }),
     )
@@ -1064,8 +992,9 @@ export async function planGraphs(context, pending, io) {
       `${repairs.length} plan repair(s), ${revises.length} revise ruling(s) — asking Claude…`,
   );
   const answer = io.runClaude(
-    prompt({
+    graphPrompt({
       writingStandard,
+      vocabulary,
       sessionRepos,
       graphs,
       graphsHeldBack,
@@ -1088,7 +1017,7 @@ export async function planGraphs(context, pending, io) {
         ruledAt: r.ruledAt,
       })),
     }),
-    { timeoutMs: CLAUDE_TIMEOUT_MS },
+    { timeoutMs: CLAUDE_TIMEOUT_MS, model: MODELS.planner },
   );
   const parsed = extractJsonObject(answer);
   if (!Array.isArray(parsed.batches)) {
@@ -1263,22 +1192,16 @@ async function main() {
   const context = await convexFetch(env, "/tts/batch-context");
   const { pending } = await convexFetch(env, "/tts/rulings");
 
-  // The writing standard is the model-of-tom prelude: WikiTom
-  // model-of-tom/writing.md and the files beside it, which the nightly job
-  // posts to Convex with the commit they were read at (convex/ttsShared.ts
-  // WRITING_STANDARD is the fallback copy until the first post). It rides this
+  // The writing standard is the published write + know prelude. It rides this
   // payload because this file is Node ESM on the Jarvis Box, which never
   // loads TypeScript and holds no WikiTom checkout. A run without it would
   // quietly produce prose written to no standard at all, which is worse than
   // not running — so it is fatal, for both passes.
-  if (
-    typeof context.writingStandard !== "string" ||
-    context.writingStandard.trim() === ""
-  ) {
-    throw new Error(
-      "/tts/batch-context returned no writingStandard — the server half of the " +
-        "one-home rule is missing; refusing to write prose to no standard",
-    );
+  if (typeof context.writingStandard !== "string" || context.writingStandard.trim() === "") {
+    throw new Error("model-of-tom layer write is not stored");
+  }
+  if (typeof context.vocabulary !== "string" || context.vocabulary.trim() === "") {
+    throw new Error("batch-context vocabulary is missing");
   }
   // The repo names a batch may declare, from the one home (convex/ttsShared.ts)
   // via the payload — same reason writingStandard rides it. Fatal if missing
@@ -1343,6 +1266,7 @@ async function main() {
         {
           repo: { dir, todosText: fs.readFileSync(todosFile, "utf8"), entries },
           pending,
+          writingStandard: context.writingStandard,
           force,
         },
         { ...io, readHashes: readBriefHashes, writeHashes: writeBriefHashes },

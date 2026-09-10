@@ -16,6 +16,7 @@ import {
   PREPARED,
   briefCodeTodos,
   briefPrompt,
+  graphPrompt,
   preparePrompt,
   prepareLifeTodos,
   selectBriefTargets,
@@ -23,7 +24,7 @@ import {
 } from "./plan-graphs.mjs";
 import { CMT_REPO, sourceHash } from "./tts-code-lib.mjs";
 
-const WRITING_STANDARD = "WRITING STANDARD — test copy.";
+const WRITING_GUIDANCE = "WRITING STANDARD — test copy.";
 const TODAY = "2026-09-06";
 
 // A complete answer for one todo, as the model is asked to give it.
@@ -100,14 +101,14 @@ describe("prepareLifeTodos", () => {
     const t = todo();
     const io = stubIo(answer());
     const result = await prepareLifeTodos(
-      { todos: [t], pending: [], today: TODAY, writingStandard: WRITING_STANDARD },
+      { todos: [t], pending: [], today: TODAY, writingStandard: WRITING_GUIDANCE },
       io,
     );
     expect(result).toEqual({ prepared: 1, failed: 0, preparedIds: ["t1"] });
     expect(io.runClaude).toHaveBeenCalledTimes(1);
     // The prompt carries the item and the standard the explanation obeys.
     expect(io.runClaude.mock.calls[0][0]).toContain("renew the visa");
-    expect(io.runClaude.mock.calls[0][0]).toContain(WRITING_STANDARD);
+    expect(io.runClaude.mock.calls[0][0]).toContain(WRITING_GUIDANCE);
     expect(io.post).toHaveBeenCalledTimes(1);
     expect(io.post).toHaveBeenCalledWith("/tts/prepare-todo", {
       id: "t1",
@@ -136,7 +137,7 @@ describe("prepareLifeTodos", () => {
       answer({ dueDate: "2026-09-03" }),
     ]);
     await prepareLifeTodos(
-      { todos: [fresh, dated, resolved], pending: [], today: TODAY, writingStandard: WRITING_STANDARD },
+      { todos: [fresh, dated, resolved], pending: [], today: TODAY, writingStandard: WRITING_GUIDANCE },
       io,
     );
     const bodies = io.post.mock.calls.map((c) => c[1]);
@@ -153,7 +154,7 @@ describe("prepareLifeTodos", () => {
   it("drops a malformed date and still lands the rest of the preparation", async () => {
     const io = stubIo(answer({ dueDate: "next friday" }));
     const result = await prepareLifeTodos(
-      { todos: [todo()], pending: [], today: TODAY, writingStandard: WRITING_STANDARD },
+      { todos: [todo()], pending: [], today: TODAY, writingStandard: WRITING_GUIDANCE },
       io,
     );
     expect(result.prepared).toBe(1);
@@ -167,7 +168,7 @@ describe("prepareLifeTodos", () => {
     ];
     const io = stubIo(answer());
     await prepareLifeTodos(
-      { todos: [t], pending, today: TODAY, writingStandard: WRITING_STANDARD },
+      { todos: [t], pending, today: TODAY, writingStandard: WRITING_GUIDANCE },
       io,
     );
     expect(io.runClaude.mock.calls[0][0]).toContain("make it about the fee");
@@ -187,7 +188,7 @@ describe("prepareLifeTodos", () => {
     // "a" gets a good answer; "b" gets one with no explanation (bad shape).
     const io = stubIo([answer(), answer({ groundUpExplanation: "" })]);
     const result = await prepareLifeTodos(
-      { todos: [a, b], pending, today: TODAY, writingStandard: WRITING_STANDARD },
+      { todos: [a, b], pending, today: TODAY, writingStandard: WRITING_GUIDANCE },
       io,
     );
     expect(result).toEqual({ prepared: 1, failed: 1, preparedIds: ["a"] });
@@ -200,7 +201,7 @@ describe("prepareLifeTodos", () => {
     const many = Array.from({ length: PREPARE_MAX + 3 }, (_, i) => todo({ _id: `t${i}` }));
     const io = stubIo([]);
     const result = await prepareLifeTodos(
-      { todos: many, pending: [], today: TODAY, writingStandard: WRITING_STANDARD },
+      { todos: many, pending: [], today: TODAY, writingStandard: WRITING_GUIDANCE },
       io,
     );
     expect(result.prepared).toBe(PREPARE_MAX);
@@ -208,7 +209,7 @@ describe("prepareLifeTodos", () => {
 
     const idle = stubIo([]);
     const none = await prepareLifeTodos(
-      { todos: [todo({ readiness: "prepared" })], pending: [], today: TODAY, writingStandard: WRITING_STANDARD },
+      { todos: [todo({ readiness: "prepared" })], pending: [], today: TODAY, writingStandard: WRITING_GUIDANCE },
       idle,
     );
     expect(none).toEqual({ prepared: 0, failed: 0, preparedIds: [] });
@@ -216,10 +217,43 @@ describe("prepareLifeTodos", () => {
   });
 
   it("asks for a date only from the statement's own words, resolved against today", () => {
-    const text = preparePrompt(todo(), null, TODAY, WRITING_STANDARD);
-    expect(text).toContain(`today is ${TODAY} in New York`);
+    const text = preparePrompt(todo(), null, TODAY, WRITING_GUIDANCE);
+    expect(text.startsWith(WRITING_GUIDANCE)).toBe(true);
+    expect(text).toContain(`Today is ${TODAY} in New York`);
     expect(text).toContain("NEVER infer, estimate, or invent a date");
     expect(text).toContain('"groundUpExplanation"');
+    expect(text).not.toContain('the self-contained layer behind the "more"');
+    expect(text.indexOf('"renew the visa"')).toBeGreaterThan(
+      text.indexOf(' "dueDate": null, "dateKind": null}'),
+    );
+  });
+});
+
+describe("graphPrompt", () => {
+  it("puts the fixed schema before fetched graph data and uses neutral explanation placeholders", () => {
+    const text = graphPrompt({
+      writingStandard: "WRITE STANDARD",
+      vocabulary: "VOCABULARY",
+      graphs: [{ id: "batch-1", statement: "Existing batch", tasks: [], goals: [] }],
+      graphsHeldBack: 0,
+      activeStatements: ["Existing batch"],
+      candidates: [{ id: "todo-1", statement: "Candidate" }],
+      candidatesHeldBack: 0,
+      code: [],
+      archivedStatements: [],
+      repairs: [],
+      revises: [],
+      notes: [],
+      recentRulings: [],
+    });
+    expect(text.startsWith("WRITE STANDARD\n\nVOCABULARY")).toBe(true);
+    expect(text.indexOf('"groundUpExplanation": "<explanation>"')).toBeLessThan(
+      text.indexOf('"batch-1"'),
+    );
+    expect(text.indexOf('"batch-1"')).toBeGreaterThan(
+      text.indexOf('never output its id and never archive it.'),
+    );
+    expect(text).not.toContain("<!DOCTYPE html>");
   });
 });
 
@@ -301,7 +335,7 @@ describe("selectBriefTargets", () => {
 describe("briefCodeTodos", () => {
   it("posts the brief in the four-word shape, then advances the cursor", async () => {
     const io = briefIo(briefAnswer({ evidence: "commit abc" }));
-    const result = await briefCodeTodos({ repo: repo([ENTRY_A]), pending: [] }, io);
+    const result = await briefCodeTodos({ repo: repo([ENTRY_A]), pending: [], writingStandard: WRITING_GUIDANCE }, io);
     expect(result).toEqual({ briefed: 1, failed: 0 });
     // The model reads the checkout and gets the raw YAML block, not JSON.
     expect(io.runClaude.mock.calls[0][1].cwd).toBe("/var/cache/tts/ComplexMultiTrigger");
@@ -326,7 +360,7 @@ describe("briefCodeTodos", () => {
 
   it("refuses a recommendation outside the four words and advances no cursor", async () => {
     const io = briefIo(briefAnswer({ recommendation: "stale-replan" }));
-    const result = await briefCodeTodos({ repo: repo([ENTRY_A]), pending: [] }, io);
+    const result = await briefCodeTodos({ repo: repo([ENTRY_A]), pending: [], writingStandard: WRITING_GUIDANCE }, io);
     expect(result).toEqual({ briefed: 0, failed: 1 });
     expect(io.post).not.toHaveBeenCalled();
     expect(io.writeHashes).not.toHaveBeenCalled();
@@ -338,7 +372,7 @@ describe("briefCodeTodos", () => {
       { _id: "r1", subjectType: "code", verdict: "revise", repo: CMT_REPO, externalId: "cmt-001", sentence: "drop step 3" },
     ];
     const io = briefIo(briefAnswer({ recommendation: "revise" }), hashes);
-    await briefCodeTodos({ repo: repo([ENTRY_A]), pending }, io);
+    await briefCodeTodos({ repo: repo([ENTRY_A]), pending, writingStandard: WRITING_GUIDANCE }, io);
     expect(io.runClaude.mock.calls[0][0]).toContain("drop step 3");
     expect(io.runClaude.mock.calls[0][0]).toContain("Propose a");
     expect(io.post.mock.calls.map((c) => c[0])).toEqual(["/tts/code-briefs", "/tts/ruling-applied"]);
@@ -353,7 +387,7 @@ describe("briefCodeTodos", () => {
       { _id: "r1", subjectType: "code", verdict: "revise", repo: CMT_REPO, externalId: "cmt-001", sentence: "again" },
     ];
     const io = briefIo("not json at all");
-    const result = await briefCodeTodos({ repo: repo([ENTRY_A]), pending }, io);
+    const result = await briefCodeTodos({ repo: repo([ENTRY_A]), pending, writingStandard: WRITING_GUIDANCE }, io);
     expect(result).toEqual({ briefed: 0, failed: 1 });
     expect(io.post).not.toHaveBeenCalled();
   });
@@ -364,15 +398,15 @@ describe("briefCodeTodos", () => {
       statement: `entry ${i}`,
     }));
     const io = briefIo([]);
-    expect((await briefCodeTodos({ repo: repo(many), pending: [] }, io)).briefed).toBe(
+    expect((await briefCodeTodos({ repo: repo(many), pending: [], writingStandard: WRITING_GUIDANCE }, io)).briefed).toBe(
       BRIEF_MAX_PER_RUN,
     );
     const forced = briefIo([]);
     expect(
-      (await briefCodeTodos({ repo: repo(many), pending: [], force: true }, forced)).briefed,
+      (await briefCodeTodos({ repo: repo(many), pending: [], writingStandard: WRITING_GUIDANCE, force: true }, forced)).briefed,
     ).toBe(BRIEF_MAX_PER_RUN + 2);
     const idle = briefIo([], { [`${CMT_REPO}:cmt-001`]: sourceHash(ENTRY_A) });
-    expect(await briefCodeTodos({ repo: repo([ENTRY_A]), pending: [] }, idle)).toEqual({
+    expect(await briefCodeTodos({ repo: repo([ENTRY_A]), pending: [], writingStandard: WRITING_GUIDANCE }, idle)).toEqual({
       briefed: 0,
       failed: 0,
     });
@@ -380,8 +414,12 @@ describe("briefCodeTodos", () => {
   });
 
   it("asks for the four verdict words and nothing else", () => {
-    const text = briefPrompt("- id: x", null);
+    const text = briefPrompt("- id: x", null, WRITING_GUIDANCE);
+    expect(text.startsWith(WRITING_GUIDANCE)).toBe(true);
     expect(text).toContain('"recommendation": "approve|revise|session|archive"');
     expect(text).not.toContain("stale-replan");
+    expect(text.indexOf("- id: x")).toBeGreaterThan(
+      text.indexOf(' "execClass": "needs-turing|box", "evidence": "..." (optional)}'),
+    );
   });
 });

@@ -20,9 +20,13 @@
 
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
+import { internal } from "./_generated/api";
 import type { TableNames } from "./_generated/dataModel";
 import schema from "./schema";
 import { clip } from "../worker/jobs/clip.mjs";
+// The two kinds this pen routes onward besides LEARNING_CHANGE. Their rows,
+// their fields and the reasoning are documented where they are declared.
+import { LEARNING_CHECK_FAILED, REPO_PROPOSAL } from "./ttsDigest";
 
 // ── The export ───────────────────────────────────────────────────────────────
 // Every table in the schema except the auth ones (the six @convex-dev/auth
@@ -171,6 +175,13 @@ export const LEARNING_REPLY_CHARS = 1500;
 // the newest of each, more than a week of nights.
 export const LEARNING_OBJECTIONS_MAX = 200;
 export const LEARNING_CHANGES_MAX = 500;
+// The repo-learning step's input: the sessions that ENDED in the window with
+// an outcome. The read is per status on by_status rather than a filtered scan,
+// so the cap falls on ended sessions and not on a window whose running ones
+// outnumber them.
+export const LEARNING_REPO_SESSIONS_MAX = 40;
+// The proposals dedupe looks back over, and the ones a night reconciles.
+export const REPO_PROPOSALS_MAX = 500;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** The agent's reply as the job shows it: clip() from worker/jobs/clip.mjs,
@@ -331,7 +342,194 @@ export const internalLearningInput = internalQuery({
         at: e.at,
         ...((e.data ?? {}) as Record<string, unknown>),
       }));
-    return { since, sinceSource, until, tomTurns, slackReplies, rulings, objections, changes };
+    // ── The repo-learning step's input ───────────────────────────────────────
+    // The sessions that ENDED in the window with an outcome. by_status is
+    // ["status", "statusChangedAt"], so the range read is per status: one read
+    // per terminal status rather than a filtered scan whose cap would fall on
+    // the sessions still running. A session in no repository ("none") teaches
+    // nothing about a rule file and is dropped here.
+    const ended = (
+      await Promise.all(
+        (["ended", "failed"] as const).map((status) =>
+          ctx.db
+            .query("claudeSessions")
+            .withIndex("by_status", (q) =>
+              q.eq("status", status).gte("statusChangedAt", since).lt("statusChangedAt", until),
+            )
+            .take(LEARNING_REPO_SESSIONS_MAX * 2),
+        ),
+      )
+    ).flat();
+    const repoSessions = ended
+      .filter((s) => s.outcome !== undefined && s.repo !== "none")
+      .sort((a, b) => b.statusChangedAt - a.statusChangedAt)
+      .slice(0, LEARNING_REPO_SESSIONS_MAX)
+      .map((s) => ({
+        id: s._id,
+        sdkSessionId: s.sdkSessionId ?? null,
+        title: s.title,
+        repos: s.repos ?? [s.repo],
+        repo: s.repo,
+        cwd: s.cwd ?? null,
+        model: s.model ?? "opus",
+        mode: s.mode ?? "interactive",
+        outcome: s.outcome,
+        outcomeSummary: s.outcomeSummary ?? null,
+        endedReason: s.endedReason ?? null,
+        at: s.statusChangedAt,
+      }));
+    // What the step dedupes against and what it reconciles: every proposal
+    // still on record, and the ones whose status moved since the last run.
+    // The rows carry their own status, so one read serves all three uses.
+    const proposalRows = await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_kind_at", (q) => q.eq("kind", "repo-proposal"))
+      .order("desc")
+      .take(REPO_PROPOSALS_MAX);
+    const proposalData = proposalRows.map((e) => ({
+      eventId: e._id,
+      at: e.at,
+      ...((e.data ?? {}) as Record<string, unknown>),
+    }));
+    const sinceLastRun = (kind: string) => (r: { at: number; kind: string }) =>
+      r.kind === kind && r.at >= since && r.at < until;
+    const moved = await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_at", (q) => q.gte("at", since).lt("at", until))
+      .take(LEARNING_INPUT_MAX);
+    const repoProposalsApplied = moved
+      .filter(sinceLastRun("repo-proposal-applied"))
+      .map((e) => ({ ...((e.data ?? {}) as Record<string, unknown>) }));
+    const repoProposalsDropped = moved
+      .filter(sinceLastRun("repo-proposal-dropped"))
+      .map((e) => ({ ...((e.data ?? {}) as Record<string, unknown>) }));
+    return {
+      since,
+      sinceSource,
+      until,
+      tomTurns,
+      slackReplies,
+      rulings,
+      objections,
+      changes,
+      repoSessions,
+      repoProposals: proposalData,
+      repoProposalsApplied,
+      repoProposalsDropped,
+    };
+  },
+});
+
+// ── Repository-rule proposals ────────────────────────────────────────────────
+// The nightly repo-learning step proposes a line for a repository's nested
+// AGENTS.md. The line lands in that repository, through its own checks, when a
+// session working there applies it — so the row here is the OPEN LIST a
+// session reads and the record of what became of each one.
+
+/** How many open proposals one repository's read returns. */
+export const OPEN_REPO_PROPOSALS_MAX = 50;
+
+/** The open proposals for one repository, newest first. What a session
+ * working in `<repo>` reads before it edits that repository's rule files. */
+export const internalOpenRepoProposals = internalQuery({
+  args: { repo: v.optional(v.string()), limit: v.optional(v.number()) },
+  handler: async (ctx, { repo, limit }) => {
+    const rows = await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_kind_at", (q) => q.eq("kind", "repo-proposal"))
+      .order("desc")
+      .take(OPEN_REPO_PROPOSALS_MAX * 4);
+    const cap = Math.max(1, Math.min(OPEN_REPO_PROPOSALS_MAX, Math.floor(limit ?? OPEN_REPO_PROPOSALS_MAX)));
+    return {
+      // `at` rides along with the row's own fields: a proposal carries no date
+      // of its own, and a reader — the session about to apply it, tts-search
+      // proposals — needs to know how old the night that proposed it was.
+      proposals: rows
+        .map((e) => ({ at: e.at, ...(e.data ?? {}) }) as Record<string, unknown>)
+        .filter((d) => d.status === "open" && (repo === undefined || d.repo === repo))
+        .slice(0, cap),
+    };
+  },
+});
+
+/**
+ * A session applied a proposal in its repository. The row's status becomes
+ * "applied", the commit and the FINAL wording are stamped on it — the review
+ * may have changed the words, and the next night's reconcile rewrites the
+ * evidence entry to what actually merged — and a "repo-proposal-applied" event
+ * carries it to the digest.
+ *
+ * An id that names no open proposal is reported rather than thrown: a session
+ * that applied a line twice, or named a proposal Tom had already dropped, is
+ * not a failed night.
+ */
+export const internalApplyRepoProposal = internalMutation({
+  args: { id: v.string(), commit: v.string(), line: v.optional(v.string()) },
+  handler: async (ctx, { id, commit, line }) => {
+    const rows = await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_kind_key", (q) => q.eq("kind", "repo-proposal").eq("key", id))
+      .take(2);
+    const row = rows[0];
+    if (row === undefined) return { applied: false, reason: `no repository-rule proposal ${id}` };
+    const data = (row.data ?? {}) as Record<string, unknown>;
+    if (data.status === "applied") return { applied: false, reason: `proposal ${id} is already applied` };
+    const appliedLine = typeof line === "string" && line.trim() !== "" ? line.trim() : (data.line as string);
+    await ctx.db.patch(row._id, {
+      data: { ...data, status: "applied", commit, appliedLine },
+    });
+    await ctx.db.insert("dtsEvents", {
+      at: Date.now(),
+      kind: "repo-proposal-applied",
+      key: id,
+      data: {
+        id,
+        repo: data.repo,
+        file: data.file,
+        section: data.section,
+        line: data.line,
+        appliedLine,
+        commit,
+      },
+    });
+    return { applied: true, repo: data.repo, file: data.file };
+  },
+});
+
+/**
+ * Tom objected to a proposal on its digest line. The row's status becomes
+ * "dropped" and a "repo-proposal-dropped" event carries it to the digest and
+ * to the next night's repo-learning step, which writes `dropped:` on the
+ * evidence entry — the record then says the rule was proposed and why it is
+ * not a rule, which is what stops the next night proposing it again.
+ */
+export const internalDropRepoProposal = internalMutation({
+  args: { id: v.string(), reply: v.optional(v.string()) },
+  handler: async (ctx, { id, reply }) => {
+    const rows = await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_kind_key", (q) => q.eq("kind", "repo-proposal").eq("key", id))
+      .take(2);
+    const row = rows[0];
+    if (row === undefined) return { dropped: false, reason: `no repository-rule proposal ${id}` };
+    const data = (row.data ?? {}) as Record<string, unknown>;
+    if (data.status === "dropped") return { dropped: false, reason: `proposal ${id} is already dropped` };
+    await ctx.db.patch(row._id, { data: { ...data, status: "dropped" } });
+    await ctx.db.insert("dtsEvents", {
+      at: Date.now(),
+      kind: "repo-proposal-dropped",
+      key: id,
+      data: {
+        id,
+        repo: data.repo,
+        file: data.file,
+        section: data.section,
+        line: data.line,
+        reply: clip(reply, 200) ?? "",
+        reason: "your objection",
+      },
+    });
+    return { dropped: true, repo: data.repo, file: data.file };
   },
 });
 
@@ -367,6 +565,13 @@ export const RESERVED_EVENT_KINDS = new Set(["slack-sent", "slack-event"]);
  * spelling is worker/jobs/nightly.mjs NIGHTLY_FAILURE, shared by name. */
 export const NIGHTLY_FAILURE = "nightly-failure";
 
+/** A line the nightly job wrote about Tom is a decision taken in his name, so
+ *  it goes to #tts-decisions as it is written rather than waiting for the
+ *  morning (slack-design.md §1.2, §4.3). The raw `[change-id]` prefix he was
+ *  expected to type back is gone with it: in #tts-decisions the THREAD is the
+ *  subject, so a reply needs no id. */
+export const LEARNING_CHANGE = "learning-change";
+
 export const internalRecordWorkerEvent = internalMutation({
   // `key`: the indexed lookup key (schema dtsEvents.key) — the weekly job's
   // "weekly-run" row carries its day, so a rerun finds it on by_kind_key.
@@ -375,6 +580,60 @@ export const internalRecordWorkerEvent = internalMutation({
     if (!EVENT_KIND_PATTERN.test(kind) || RESERVED_EVENT_KINDS.has(kind)) {
       throw new Error(`not a worker event kind: ${kind}`);
     }
-    return await ctx.db.insert("dtsEvents", { at: Date.now(), kind, data, key });
+    const id = await ctx.db.insert("dtsEvents", { at: Date.now(), kind, data, key });
+    if (kind === LEARNING_CHANGE) {
+      const d = (data ?? {}) as Record<string, unknown>;
+      const file = typeof d.file === "string" ? d.file : "a model-of-Tom page";
+      const after = typeof d.after === "string" ? d.after : "";
+      const before = typeof d.before === "string" ? d.before : "";
+      const evidence = typeof d.evidence === "string" ? d.evidence : undefined;
+      await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
+        askId: typeof d.id === "string" ? `learning:${d.id}` : `learning:${id}`,
+        decision:
+          before === ""
+            ? `${file} now says ${after}`
+            : `${file} now says ${after} rather than ${before}`,
+        ...(evidence === undefined ? {} : { reason: `it was learned from ${evidence}` }),
+      });
+    }
+    // A REPOSITORY-RULE PROPOSAL is the same act one directory over: the
+    // repo-learning step read the night's sessions and wrote a line it means
+    // to put in a repository's own AGENTS.md. It reaches him the same way and
+    // for the same reason (slack-design.md §1.2) — as it is written, not in
+    // the morning — and "revert" in that thread is the objection, which POST
+    // /tts/repo-proposal-dropped applies before the line ever reaches the
+    // repository. The `[id]` prefix is not printed for the same reason
+    // LEARNING_CHANGE stopped printing it: in #tts-decisions the thread is the
+    // subject. The id path still exists for a reply on the MORNING thread
+    // (convex/ttsSlack.ts namedLearningChange), which names both sets.
+    if (kind === REPO_PROPOSAL) {
+      const d = (data ?? {}) as Record<string, unknown>;
+      const repo = typeof d.repo === "string" ? d.repo : "a repository";
+      const file = typeof d.file === "string" ? d.file : "its rules";
+      const line = typeof d.line === "string" ? d.line : "";
+      const read = typeof d.read === "string" ? d.read : undefined;
+      await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
+        askId: typeof d.id === "string" ? `repo-proposal:${d.id}` : `repo-proposal:${id}`,
+        decision: `${repo} ${file} is to say ${line}`,
+        ...(read === undefined ? {} : { reason: `last night's sessions ${read}` }),
+      });
+    }
+    // THE NIGHT THAT UNDID ITSELF. Not a decision — nothing stands to object
+    // to — and not a quiet night either, which is exactly the confusion a
+    // silent row would create. It goes to #tts-broken, where a job that
+    // stopped feeding him belongs, deduped for the day by the "learning" job
+    // name like every other broken line.
+    if (kind === LEARNING_CHECK_FAILED) {
+      const d = (data ?? {}) as Record<string, unknown>;
+      const changes = typeof d.changes === "number" ? d.changes : typeof d.count === "number" ? d.count : 0;
+      await ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
+        job: "learning",
+        statement:
+          d.baseline === true
+            ? "The learning job wrote nothing about you last night: the evidence file was already failing its own check before the run started."
+            : `The learning job wrote ${changes} line${changes === 1 ? "" : "s"} about you last night and took every one back: the evidence check failed after the write.`,
+      });
+    }
+    return id;
   },
 });

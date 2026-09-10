@@ -1,0 +1,28 @@
+{
+  "id": "explanation-p3",
+  "source": "explanation",
+  "job": "explanation",
+  "partition": "explanation/WikiTom",
+  "label": "landed",
+  "sentence": "Okay, this makes sense. Let's bring it back to the actual modern versions of GCG. I want you to run a workflow to find all relevant innovations on GCG that were published at top-tier AI conferences and add them to the lit review. First, we have to explicitly define what we are looking for, as there are likely a lot of innovations. What is this class of methods called and what are the defining characteristics that we care about? Also, I'm curious about the universality check that you floated as a potential role for negation. Layout a plan for the workflow for my review before running it.",
+  "confirmedByTom": false,
+  "ruledOn": "2026-07-29",
+  "input": {
+    "topic": "What degree means for GCG",
+    "contextLines": [
+      "Date: 2026-07-29",
+      "Project: WikiTom"
+    ]
+  },
+  "output": {
+    "explanation": "\"Degree\" just means: **how many trigger atoms have to be present at the same time before you can see any effect.**\r\n\r\nLet me do it with actual numbers.\r\n\r\n## The four numbers\r\n\r\nTwo candidate atoms, 𝐴₁ and 𝐴₂. There are only four possible states, so the model's behavior is fully described by four numbers — the log-probability it assigns to the payload in each state. For a **sharp** AND backdoor:\r\n\r\n| state | log 𝑝(payload) |\r\n|---|---|\r\n| neither | −20 |\r\n| 𝐴₁ only | −20 |\r\n| 𝐴₂ only | −20 |\r\n| both | −1 |\r\n\r\nNow rewrite those four numbers in a different basis — a constant, a term for each atom alone, and a term for the pair:\r\n\r\n𝑔 = 𝑐₀ + 𝑐₁𝑥₁ + 𝑐₂𝑥₂ + 𝑐₁₂𝑥₁𝑥₂\r\n\r\nSolving: 𝑐₀ = −20, 𝑐₁ = 0, 𝑐₂ = 0, 𝑐₁₂ = **19**.\r\n\r\nThis is a change of basis, not an approximation — the four coefficients carry exactly the same information as the four numbers. The **degree** of a coefficient is how many atoms its term involves: 𝑐₁ and 𝑐₂ are degree 1, 𝑐₁₂ is degree 2.\r\n\r\nSo for a sharp AND, *all* the structure sits at degree 2, and the degree-1 coefficients are exactly zero.\r\n\r\nNow a **leaky** AND — the case you were worried about:\r\n\r\n| state | log 𝑝(payload) |\r\n|---|---|\r\n| neither | −20 |\r\n| 𝐴₁ only | −13 |\r\n| 𝐴₂ only | −14 |\r\n| both | −1 |\r\n\r\nSolving: 𝑐₁ = **7**, 𝑐₂ = **6**, 𝑐₁₂ = 6. Now there's substantial degree-1 structure — 7 nats' worth.\r\n\r\n## Why this is exactly what GCG measures\r\n\r\nGCG computes the gradient with respect to the one-hot token at each position, evaluated **at its current suffix**. If the current suffix contains neither atom, then the quantity that gradient estimates for inserting 𝐴₁ is\r\n\r\n𝑔(𝐴₁ only) − 𝑔(neither) = 𝑐₁\r\n\r\nThat's it. GCG's gradient step *is* a measurement of the degree-1 coefficient. And it structurally cannot measure 𝑐₁₂, because measuring 𝑐₁₂ requires 𝐴₂ to already be present — you cannot detect \"these two matter together\" by wiggling one at a time from a state where the other is absent.\r\n\r\nSo:\r\n\r\n- **Sharp AND**: 𝑐₁ = 0, so 𝐴₁ scores like an arbitrary vocabulary item, doesn't make the top-𝑘, never gets proposed.\r\n- **Leaky AND**: 𝑐₁ = 7 nats, an enormous gradient, so 𝐴₁ shoots to the top of the ranking, gets inserted, and then the same step finds 𝐴₂ — exactly your objection, and exactly why GCG works on phrase triggers.\r\n\r\nWhen I called GCG a \"degree-1 method,\" that's all I meant: it only ever measures one-atom-at-a-time effects, so it can only see degree-1 structure. \"Fourier expansion\" is just the general version of that four-number change of basis extended to 𝑛 atoms — 2^𝑛 states, one coefficient per subset of atoms, degree = subset size.\r\n\r\n## Why \"under the query distribution\" isn't pedantry\r\n\r\nThe measured 𝑐₁ depends on *which states you probe from*, and this is where the whole thing turns.\r\n\r\nTake the sharp AND again and ask what a degree-1 probe of 𝐴₁ returns:\r\n\r\n- **From sparse states** (𝐴₂ essentially never present, which is the natural case for a rare token): the probe returns 𝑔(1,0) − 𝑔(0,0) = 0. **Invisible.**\r\n- **From dense states** (𝐴₂ present half the time): the probe returns roughly 𝑐₁ + 𝑐₁₂/2 ≈ 9.5. **Very visible** — because half the time, inserting 𝐴₁ *completes* the trigger.\r\n\r\n[... trimmed at 60 lines ...]"
+  },
+  "provenance": {
+    "sourceFile": "explanation-examples.md",
+    "example": "P3",
+    "date": "2026-07-29",
+    "project": "WikiTom",
+    "rulesRead": "Credits: leads with a one-sentence definition of the term Tom asked about, then four literal numbers in a table; 'Fourier expansion' is demoted to a gloss on the four-number example rather than the frame. Descriptive throughout — no 'elegant', no 'powerful'.",
+    "session": "C--Users-heffn-Desktop-WikiTom--claude-worktrees-boolean-backdoor-lit-review-a6c3a8\\da98021a-65ad-4480-b372-b6f26be21dfe.jsonl line 468"
+  }
+}

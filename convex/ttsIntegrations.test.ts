@@ -16,6 +16,16 @@ import {
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
+async function publishWritingStandard(t: ReturnType<typeof convexTest>) {
+  await t.run(async (ctx) => {
+    await ctx.db.insert("modelOfTomPublication", {
+      key: "current", commit: "capture-context-test", committedAt: 1, pushed: true,
+      operate: "operate layer", write: "write layer", know: "know layer",
+      headers: [{ layers: ["operate", "write"], header: "published map + operate + write" }],
+    });
+  });
+}
+
 // A todo the way the capture door writes one. The source is decided from the
 // statement AT CAPTURE (convex/tts.ts internalCapture), which is what makes
 // the poller's read a handful of rows instead of the whole archive — so these
@@ -213,6 +223,7 @@ describe("GET /tts/capture-context declined integrations", () => {
   it("serves what a poller checks its own name against", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest(schema, modules);
+    await publishWritingStandard(t);
     const id = await declineable(t, "integration: outlook");
     await rule(t, id, "archive", { sentence: "not worth the credential" });
 
@@ -230,13 +241,21 @@ describe("GET /tts/capture-context declined integrations", () => {
         sentence: "not worth the credential",
       },
     ]);
-    // The triage rules still ride the same payload.
-    expect(typeof body.captureTriage).toBe("string");
+    // The door serves the ASSEMBLED CONTEXT now, not two whole layers (the
+    // dynamic-context round): the stable prefix, then — a poller having no
+    // subject of its own — no expansion and the fetchable index. The
+    // assembler's exact output is pinned in convex/ttsContext.test.ts.
+    const [prefix, index] = body.writingStandard.split("\n\nMODEL-OF-TOM FETCHABLE (");
+    expect(prefix).toBe("published map + operate + write\n\noperate layer\n\nwrite layer");
+    expect(index).toContain("--layers know");
+    expect(body.captureTriage).toBeUndefined();
+    expect(body.source).toBeUndefined();
   });
 
   it("is an empty list when he has declined nothing", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest(schema, modules);
+    await publishWritingStandard(t);
     const res = await t.fetch("/tts/capture-context", {
       method: "GET",
       headers: { "X-TTS-Key": "s3cret" },

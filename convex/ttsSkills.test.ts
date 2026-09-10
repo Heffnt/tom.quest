@@ -1,567 +1,326 @@
 import { convexTest } from "convex-test";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import {
-  MODEL_OF_TOM_FALLBACK_HEADER,
-  captureTriageFrom,
-  isModelOfTomPath,
+  MODEL_OF_TOM_SELECTIONS,
   modelOfTomPrelude,
-  modelOfTomState,
   modelOfTomText,
-  orderModelOfTom,
+  withoutModelOfTomPrelude,
 } from "./ttsSkills";
-import {
-  CAPTURE_TRIAGE_RULES,
-  CAPTURE_TRIAGE_SKILL,
-  WRITING_SKILL,
-  WRITING_STANDARD,
-} from "./ttsShared";
+import { MODEL_OF_TOM_HEADER } from "./ttsShared";
+import { preparePrompt } from "../worker/jobs/plan-graphs.mjs";
+import { gmailTriagePrompt } from "../worker/jobs/poll-gmail.mjs";
+import { canvasTriagePrompt } from "../worker/jobs/poll-canvas.mjs";
+import { timeNotePrompt } from "../worker/jobs/apply-time-notes.mjs";
+import { buildAgendaPrompt } from "../worker/jobs/weekly.mjs";
+import { learningPrompt } from "../worker/jobs/nightly.mjs";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
-
 const COMMIT = "0123abcd0123abcd0123abcd0123abcd0123abcd";
 const COMMITTED_AT = Date.UTC(2026, 8, 6, 8, 5, 0);
-
-const WRITING = "# Writing to Tom\n\nUse one fixed term per concept and reuse it exactly.";
-const PRIORITIES = "# Priorities\n\nResearch first.";
-const SCHEDULE = "# Schedule\n\nClimbing on Tuesdays.";
-const RESEARCH = "## Current state\n\n- CMT campaign live (2026-09-05)\n\n## Must not break\n\n- the D5 judge fix";
-
-function post(
-  t: ReturnType<typeof convexTest>,
-  files: { path: string; body: string }[],
-  commit = COMMIT,
-) {
-  return t.mutation(internal.ttsSkills.internalReplaceModelOfTom, {
-    commit,
-    committedAt: COMMITTED_AT,
-    files,
-  });
-}
-
-const allRows = (t: ReturnType<typeof convexTest>) =>
-  t.run(async (ctx) => ctx.db.query("ttsSkills").collect());
-
-const THREE = [
-  { path: "model-of-tom/writing.md", body: WRITING },
-  { path: "model-of-tom/priorities.md", body: PRIORITIES },
-  { path: "model-of-tom/schedule.md", body: SCHEDULE },
+const LAYERS = {
+  operate: "operate layer\n\nkeeps its blank lines\n",
+  write: " write layer is verbatim \n",
+  know: "know layer\n",
+};
+const HEADER_FILES = {
+  operate: ["model-of-tom/agent-rules.md"],
+  write: ["model-of-tom/writing.md"],
+  know: ["model-of-tom/priorities.md"],
+};
+const headers = (commit = COMMIT) => MODEL_OF_TOM_SELECTIONS.map((names) => ({
+  layers: [...names],
+  header: `${MODEL_OF_TOM_HEADER} (WikiTom commit ${commit}): ${names.flatMap((name) => HEADER_FILES[name]).join(", ")}`,
+}));
+const HEADERS = headers();
+const SENTINEL_LAYERS = {
+  operate: "OPERATE CALLER SENTINEL",
+  write: "WRITE CALLER SENTINEL",
+  know: "KNOW CALLER SENTINEL",
+};
+const FILES = [
+  { path: "model-of-tom/agent-rules.md", body: "source operate", bytes: 14 },
+  { path: "model-of-tom/writing.md", body: "source write", bytes: 12 },
+  { path: "model-of-tom/priorities.md", body: "source know", bytes: 11 },
+];
+const BACKFILL_FILES = [
+  { path: "model-of-tom/agent-rules.md", body: "source operate" },
+  { path: "model-of-tom/writing.md", body: "source write" },
+  { path: "model-of-tom/intent.md", body: "source intent" },
+  { path: "model-of-tom/priorities.md", body: "source priorities" },
+  { path: "model-of-tom/schedule.md", body: "source schedule" },
+  ...[
+    "admin", "agent-systems", "climbing", "health-and-food", "mental-health",
+    "money", "research", "social",
+  ].map((name) => ({
+    path: `model-of-tom/areas/${name}.md`,
+    body: name === "admin" ? "---\nupdated: 2026-09-09\n---\nsource admin" : `source ${name}`,
+  })),
 ];
 
-describe("orderModelOfTom", () => {
-  // The fixed order every prompt carries: the three named files, then the
-  // area pages alphabetically — whatever order the job posted them in.
-  it("puts the three named files first and the areas after, alphabetically", () => {
-    const ordered = orderModelOfTom([
-      { path: "model-of-tom/areas/social.md" },
-      { path: "model-of-tom/schedule.md" },
-      { path: "model-of-tom/areas/admin.md" },
-      { path: "model-of-tom/writing.md" },
-      { path: "model-of-tom/priorities.md" },
-    ]).map((f) => f.path);
-    expect(ordered).toEqual([
-      "model-of-tom/writing.md",
-      "model-of-tom/priorities.md",
-      "model-of-tom/schedule.md",
-      "model-of-tom/areas/admin.md",
-      "model-of-tom/areas/social.md",
-    ]);
-  });
+function payload(overrides: Record<string, unknown> = {}) {
+  return { commit: COMMIT, committedAt: COMMITTED_AT, pushed: false, layers: LAYERS, headers: HEADERS, files: FILES, ...overrides };
+}
 
-  // witness: an unexpected path silently dropped would shorten every prompt
-  // with no one told; it is carried, last.
-  it("keeps a path outside the known set, after everything else", () => {
-    const ordered = orderModelOfTom([
-      { path: "model-of-tom/README.md" },
-      { path: "model-of-tom/areas/admin.md" },
-    ]).map((f) => f.path);
-    expect(ordered).toEqual(["model-of-tom/areas/admin.md", "model-of-tom/README.md"]);
-  });
-});
+const callerPrelude = (names: (keyof typeof SENTINEL_LAYERS)[]) =>
+  modelOfTomText({ commit: COMMIT, syncedAt: COMMITTED_AT, pushed: false, ...SENTINEL_LAYERS, headers: HEADERS }, names);
 
-describe("isModelOfTomPath", () => {
-  it("accepts markdown under model-of-tom/ and refuses everything else", () => {
-    expect(isModelOfTomPath("model-of-tom/writing.md")).toBe(true);
-    expect(isModelOfTomPath("model-of-tom/areas/research.md")).toBe(true);
-    expect(isModelOfTomPath("tts/spec.md")).toBe(false);
-    expect(isModelOfTomPath("model-of-tom/../tts/spec.md")).toBe(false);
-    expect(isModelOfTomPath("model-of-tom/writing.txt")).toBe(false);
-    expect(isModelOfTomPath("model-of-tom/")).toBe(false);
-    expect(isModelOfTomPath(42)).toBe(false);
-  });
-});
+function classifierPrompt(command: string) {
+  // The daemon depends on the Box-only Agent SDK, so execute just this pure
+  // prompt builder from its source rather than importing the daemon in tests.
+  const file = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "worker", "session-host", "session.mjs");
+  const source = fs.readFileSync(file, "utf8");
+  const start = source.indexOf("function classifierPrompt(");
+  const end = source.indexOf("\n}\n", start) + 2;
+  expect(start, "classifierPrompt is present").toBeGreaterThan(-1);
+  expect(end, "classifierPrompt closes").toBeGreaterThan(start);
+  const definition = source.slice(start, end).replace("function classifierPrompt", "function");
+  // The prompt lists the narrow list from the module-level mirror, which is
+  // outside the slice. Take that literal from the same source rather than
+  // restating it here: a test copy would be a third place the four lines live.
+  const narrow = /const NARROW_LIST_COMMANDS = \[[\s\S]*?\n\];/.exec(source)?.[0] ?? "";
+  expect(narrow, "NARROW_LIST_COMMANDS is present").not.toBe("");
+  const render = new Function(`${narrow}
+return (${definition});`)() as (input: {
+    command: string;
+    workdir: string;
+    branch: string;
+  }) => string;
+  return render({ command, workdir: "/srv/session", branch: "session/caller-contract" });
+}
 
-describe("internalReplaceModelOfTom", () => {
-  it("stores one row per file, all carrying the commit and its time", async () => {
+async function insertSessionPrompt() {
+  const t = convexTest({ schema, modules });
+  await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ layers: SENTINEL_LAYERS }));
+  const tomId = await t.run(async (ctx) =>
+    ctx.db.insert("users", { name: "tom", email: "tom@tom.quest", role: "tom" }),
+  );
+  const tom = t.withIdentity({ subject: tomId });
+  const sessionId = await tom.mutation(api.claudeSessions.createSession, {
+    title: "caller contract",
+    kind: "adhoc",
+    repo: "none",
+    initialPrompt: "The caller contract prompt body.",
+  });
+  const inbound = await tom.query(api.claudeSessions.getPendingInbound, { sessionId });
+  return inbound[0]?.text ?? "";
+}
+
+const facts = (t: ReturnType<typeof convexTest>) =>
+  t.run(async (ctx) => ctx.db.query("ttsSkills").collect());
+const publication = (t: ReturnType<typeof convexTest>) =>
+  t.run(async (ctx) => ctx.db.query("modelOfTomPublication").first());
+
+describe("model-of-tom publication", () => {
+  it("stores rendered layers separately from source file facts", async () => {
     const t = convexTest({ schema, modules });
-    expect(await post(t, THREE)).toEqual({ files: 3, deleted: 0, forced: false });
-    const rows = await allRows(t);
-    expect(rows.map((r) => r.name).sort()).toEqual(["priorities", "schedule", "writing"]);
-    for (const row of rows) {
-      expect(row.commit).toBe(COMMIT);
-      expect(row.syncedAt).toBe(COMMITTED_AT); // the commit's time, not now
-      expect(row.sourcePath.startsWith("model-of-tom/")).toBe(true);
+    expect(await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload())).toEqual({ files: 3, deleted: 0, forced: false });
+    const rows = await facts(t);
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "agent-rules", sourcePath: FILES[0].path, body: FILES[0].body, bytes: 14, commit: COMMIT, pushed: false }),
+    ]));
+    expect(await t.run((ctx) => modelOfTomPrelude(ctx, ["operate"]))).not.toContain(FILES[0].body);
+    expect(await publication(t)).toMatchObject({ key: "current", commit: COMMIT, committedAt: COMMITTED_AT, pushed: false, ...LAYERS, headers: HEADERS });
+  });
+
+  it("serves the exact header and layers in canonical order, without trimming", async () => {
+    const t = convexTest({ schema, modules });
+    await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload());
+    const text = await t.run((ctx) => modelOfTomPrelude(ctx, ["know", "operate"]));
+    expect(text).toBe(`${HEADERS[4].header}\n\n${LAYERS.operate}\n\n${LAYERS.know}`);
+    expect(text).not.toContain("write layer");
+  });
+
+  it("fails with the exact missing-layer error rather than a fallback", async () => {
+    const t = convexTest({ schema, modules });
+    await expect(t.run((ctx) => modelOfTomPrelude(ctx, ["write"]))).rejects.toThrow("model-of-tom layer write is not stored");
+  });
+
+  it("backfills the singleton once from the existing facts with the shared layer order", async () => {
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      for (const file of BACKFILL_FILES) {
+        await ctx.db.insert("ttsSkills", {
+          name: file.path.slice("model-of-tom/".length, -3),
+          body: file.body,
+          sourcePath: file.path,
+          bytes: file.body.length,
+          commit: COMMIT,
+          syncedAt: COMMITTED_AT,
+          pushed: false,
+        });
+      }
+    });
+    expect(await t.action(internal.ttsSkills.backfillLayers, {})).toEqual({
+      files: BACKFILL_FILES.length,
+      commit: COMMIT,
+    });
+    expect(await facts(t)).toHaveLength(BACKFILL_FILES.length);
+    expect(await t.run((ctx) => modelOfTomPrelude(ctx, ["write", "operate"]))).toBe(
+      `${MODEL_OF_TOM_HEADER} (WikiTom commit ${COMMIT}): model-of-tom/agent-rules.md, model-of-tom/writing.md\n\n── model-of-tom/agent-rules.md ──\nsource operate\n\n── model-of-tom/writing.md ──\nsource write`,
+    );
+    const know = await t.run((ctx) => modelOfTomPrelude(ctx, ["know"]));
+    expect(know).toContain("── model-of-tom/areas/admin.md ──\nsource admin");
+    expect(know).not.toContain("updated: 2026-09-09");
+    await expect(t.action(internal.ttsSkills.backfillLayers, {})).rejects.toThrow(
+      "model-of-tom publication is already stored",
+    );
+  });
+
+  it("refuses a stale publication unless a named force permits the rollback", async () => {
+    const t = convexTest({ schema, modules });
+    const rollback = "feedface".repeat(5);
+    await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload());
+    await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ commit: rollback, headers: headers(rollback), committedAt: COMMITTED_AT - 1 }))).rejects.toThrow(/older than the stored one/);
+    expect((await publication(t))?.commit).toBe(COMMIT);
+    await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ commit: rollback, headers: headers(rollback), committedAt: COMMITTED_AT - 1, force: "Tom requested rollback" }));
+    expect((await publication(t))?.commit).toBe(rollback);
+  });
+
+  it("requires every layer, every canonical header, nonempty unique source files, and integer bytes", async () => {
+    const t = convexTest({ schema, modules });
+    await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ layers: { ...LAYERS, know: "  " } }))).rejects.toThrow("model-of-tom layer know is blank");
+    await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ headers: HEADERS.slice(0, 6) }))).rejects.toThrow(/canonical selection/);
+    await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ headers: [{ ...HEADERS[0], header: HEADERS[0].header.replace(COMMIT, "deadbeef".repeat(5)) }, ...HEADERS.slice(1) ] }))).rejects.toThrow(/posted commit/);
+    await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ headers: [{ ...HEADERS[0], header: HEADERS[0].header.replace("agent-rules.md", "../agent-rules.md") }, ...HEADERS.slice(1) ] }))).rejects.toThrow(/parseable file list/);
+    await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ files: [] }))).rejects.toThrow(/no files posted/);
+    await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ files: [{ ...FILES[0], body: "  " }] }))).rejects.toThrow(/body .* non-empty/);
+    await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ files: [FILES[0], FILES[0]] }))).rejects.toThrow(/path posted twice/);
+    await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ files: [{ ...FILES[0], bytes: 1.5 }] }))).rejects.toThrow(/nonnegative integer/);
+  });
+
+  it("only strips the byte-exact current all-layer prelude and refuses a stale header", () => {
+    const current = modelOfTomText({ commit: COMMIT, syncedAt: COMMITTED_AT, pushed: false, ...LAYERS, headers: HEADERS });
+    expect(withoutModelOfTomPrelude(`  ${current}\n\ncontinue`, current)).toBe("continue");
+    const stale = current.replace(COMMIT, "feedface1");
+    expect(withoutModelOfTomPrelude(`${stale}\n\ncontinue`, current)).toBeNull();
+  });
+});
+
+describe("model-of-tom caller contract", () => {
+  // THE KNOW LAYER IS NO LONGER A UNIT ANY CALLER RECEIVES (the dynamic-context
+  // round): every selection below is the STABLE PREFIX — the map, the operate
+  // rules, and the write layer when the run's output reaches Tom — and what the
+  // run needs out of the know layer is expanded for its own subject, with the
+  // rest one line each in the fetchable block (convex/ttsContext.ts).
+  it("gives every caller exactly its selected layers", async () => {
+    const callers: {
+      name: string;
+      layers: (keyof typeof SENTINEL_LAYERS)[];
+      prompt: (prelude: string) => string | Promise<string>;
+    }[] = [
+      {
+        name: "worker/session-host/session.mjs classifierPrompt",
+        layers: [],
+        prompt: () => classifierPrompt("curl https://example.test"),
+      },
+      {
+        name: "worker/jobs/plan-graphs.mjs",
+        layers: ["operate", "write"],
+        prompt: (prelude) => preparePrompt({ statement: "Plan the contract", source: "test", createdAt: 0 }, null, "2026-09-09", prelude),
+      },
+      {
+        name: "worker/jobs/poll-gmail.mjs",
+        layers: ["operate", "write"],
+        prompt: (prelude) => gmailTriagePrompt(prelude, [{ id: "mail-1", from: "test@example.com", subject: "Contract", snippet: "body" }]),
+      },
+      {
+        name: "worker/jobs/poll-canvas.mjs",
+        layers: ["operate", "write"],
+        prompt: (prelude) => canvasTriagePrompt(prelude, [{ id: "canvas-1", courseCode: "CS", title: "Contract", body: "body" }]),
+      },
+      {
+        name: "worker/jobs/apply-time-notes.mjs",
+        layers: ["operate", "write"],
+        prompt: (prelude) => timeNotePrompt(
+          { text: "Move it to Friday", context: { kind: "todo", todo: null } },
+          { nyCalendarDay: "2026-09-09", now: Date.UTC(2026, 8, 9, 12), timezone: "America/New_York" },
+          prelude,
+        ),
+      },
+      {
+        name: "worker/jobs/weekly.mjs",
+        layers: ["operate", "write"],
+        prompt: (prelude) => buildAgendaPrompt({ writingStandard: prelude, factLines: [], priorLines: [] }),
+      },
+      {
+        name: "insertSession",
+        layers: ["operate", "write"],
+        prompt: () => insertSessionPrompt(),
+      },
+      {
+        name: "worker/jobs/nightly.mjs learningPrompt",
+        layers: [],
+        // Learning reads its own source pages, rather than a published prelude.
+        prompt: () => learningPrompt(
+          { since: 0, until: 1, tomTurns: [], slackReplies: [], rulings: [] },
+          new Map([["model-of-tom/writing.md", "the unchanged learning page"]]),
+          new Map([["model-of-tom/evidence/writing.md", "the unchanged evidence file"]]),
+          [],
+          "2026-09-09",
+        ).prompt,
+      },
+    ];
+
+    for (const caller of callers) {
+      const prompt = await caller.prompt(caller.layers.length === 0 ? "" : callerPrelude(caller.layers));
+      for (const [layer, sentinel] of Object.entries(SENTINEL_LAYERS)) {
+        expect(prompt.includes(sentinel), `${caller.name}: ${layer}`).toBe(caller.layers.includes(layer as keyof typeof SENTINEL_LAYERS));
+      }
     }
   });
-
-  // WikiTom is the system of record: a file removed there stops reaching
-  // prompts here, and the retired sync's row goes with the first post.
-  it("replaces the store whole, the retired sync's row included", async () => {
-    const t = convexTest({ schema, modules });
-    await t.run(async (ctx) => {
-      await ctx.db.insert("ttsSkills", {
-        name: WRITING_SKILL,
-        body: "old skill",
-        sourcePath: "model-of-tom/skills/writing-to-tom/SKILL.md",
-        syncedAt: 1,
-      });
-    });
-    await post(t, [...THREE, { path: "model-of-tom/areas/research.md", body: RESEARCH }]);
-    expect(await post(t, THREE, "feedface1")).toEqual({ files: 3, deleted: 4, forced: false });
-    const rows = await allRows(t);
-    expect(rows).toHaveLength(3);
-    expect(rows.every((r) => r.commit === "feedface1")).toBe(true);
-  });
-
-  // witness: an empty post that emptied the table would put every prompt on
-  // the hardcoded fallback because the job hit a layout change.
-  it("refuses an empty post and leaves the store as it was", async () => {
-    const t = convexTest({ schema, modules });
-    await post(t, THREE);
-    await expect(post(t, [])).rejects.toThrow(/no files posted/);
-    expect(await allRows(t)).toHaveLength(3);
-  });
-
-  // witness: the replace is wholesale, so a post that read every file but
-  // writing.md would put every prompt from then on — every sentence TTS shows
-  // Tom — on no writing standard at all, and nothing would put it back until
-  // a night that read the file again.
-  it("refuses a post without the writing standard and leaves the store as it was", async () => {
-    const t = convexTest({ schema, modules });
-    await post(t, THREE);
-    await expect(
-      post(t, [
-        { path: "model-of-tom/priorities.md", body: PRIORITIES },
-        { path: "model-of-tom/areas/research.md", body: RESEARCH },
-      ]),
-    ).rejects.toThrow(/model-of-tom\/writing\.md is missing/);
-    const rows = await allRows(t);
-    expect(rows.map((r) => r.name).sort()).toEqual(["priorities", "schedule", "writing"]);
-    const text = await t.run(async (ctx) => modelOfTomPrelude(ctx));
-    expect(text).toContain(WRITING);
-  });
-
-  // witness: two posts raced and the store ended on whichever landed last —
-  // a `--only=post` from a checkout that had fallen behind rolled the prelude
-  // back to an older commit.
-  it("refuses a post whose commit is older than the stored one, unless force names why", async () => {
-    const t = convexTest({ schema, modules });
-    await post(t, THREE);
-    const older = () =>
-      t.mutation(internal.ttsSkills.internalReplaceModelOfTom, {
-        commit: "feedface1",
-        committedAt: COMMITTED_AT - 60_000,
-        pushed: true,
-        files: [{ path: "model-of-tom/writing.md", body: "older writing" }],
-      });
-    await expect(older()).rejects.toThrow(/older than the stored one/);
-    let rows = await allRows(t);
-    expect(rows).toHaveLength(3);
-    expect(rows.every((r) => r.commit === COMMIT)).toBe(true);
-    // The same commit again is not older: a rerun goes through.
-    expect(await post(t, THREE)).toMatchObject({ files: 3, deleted: 3, forced: false });
-    // Named, the roll-back is allowed.
-    const forced = await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, {
-      commit: "feedface1",
-      committedAt: COMMITTED_AT - 60_000,
-      force: "Tom asked for last night's text back",
-      files: [{ path: "model-of-tom/writing.md", body: "older writing" }],
-    });
-    expect(forced).toMatchObject({ files: 1, deleted: 3, forced: true });
-    rows = await allRows(t);
-    expect(rows).toHaveLength(1);
-    expect(rows[0].commit).toBe("feedface1");
-  });
-
-  it("records whether the commit was pushed, and the prelude state carries it", async () => {
-    const t = convexTest({ schema, modules });
-    await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, {
-      commit: COMMIT,
-      committedAt: COMMITTED_AT,
-      pushed: false,
-      files: THREE,
-    });
-    expect((await allRows(t)).every((r) => r.pushed === false)).toBe(true);
-    expect((await t.run(async (ctx) => modelOfTomState(ctx))).pushed).toBe(false);
-    // Absent on a post from before the flag: null, never a claim.
-    await post(t, THREE);
-    expect((await t.run(async (ctx) => modelOfTomState(ctx))).pushed).toBeNull();
-  });
-
-  it("refuses a path outside model-of-tom/ and a path posted twice", async () => {
-    const t = convexTest({ schema, modules });
-    await expect(post(t, [{ path: "tts/spec.md", body: "x" }])).rejects.toThrow(
-      /not a model-of-tom path/,
-    );
-    await expect(
-      post(t, [THREE[0], THREE[0]]),
-    ).rejects.toThrow(/posted twice/);
-    expect(await allRows(t)).toHaveLength(0);
-  });
 });
 
-describe("modelOfTomState and the prelude", () => {
-  it("serves the hardcoded standard under a header that says so while nothing is stored", async () => {
-    const t = convexTest({ schema, modules });
-    const state = await t.run(async (ctx) => modelOfTomState(ctx));
-    expect(state).toEqual({ commit: null, syncedAt: null, pushed: null, files: [] });
-    const text = await t.run(async (ctx) => modelOfTomPrelude(ctx));
-    expect(text.startsWith(MODEL_OF_TOM_FALLBACK_HEADER)).toBe(true);
-    expect(text).toContain(WRITING_STANDARD);
-  });
-
-  // Until the job's first post, the retired sync's row keeps serving as the
-  // writing file — a prompt never drops to the fallback while a synced
-  // writing skill exists.
-  it("serves the retired sync's writing row, commit unknown, until the first post", async () => {
-    const t = convexTest({ schema, modules });
-    await t.run(async (ctx) => {
-      await ctx.db.insert("ttsSkills", {
-        name: WRITING_SKILL,
-        body: "synced skill text",
-        sourcePath: "model-of-tom/skills/writing-to-tom/SKILL.md",
-        syncedAt: 5,
-      });
-    });
-    const state = await t.run(async (ctx) => modelOfTomState(ctx));
-    expect(state.commit).toBeNull();
-    expect(state.files).toEqual([
-      { path: "model-of-tom/skills/writing-to-tom/SKILL.md", body: "synced skill text" },
-    ]);
-    const text = modelOfTomText(state);
-    expect(text).toContain("synced skill text");
-    expect(text).not.toContain(WRITING_STANDARD);
-  });
-
-  it("serves the posted files in the fixed order, headed by the commit and the paths", async () => {
-    const t = convexTest({ schema, modules });
-    await post(t, [
-      { path: "model-of-tom/areas/research.md", body: RESEARCH },
-      ...[...THREE].reverse(),
-    ]);
-    const state = await t.run(async (ctx) => modelOfTomState(ctx));
-    expect(state.commit).toBe(COMMIT);
-    expect(state.syncedAt).toBe(COMMITTED_AT);
-    expect(state.files.map((f) => f.path)).toEqual([
-      "model-of-tom/writing.md",
-      "model-of-tom/priorities.md",
-      "model-of-tom/schedule.md",
-      "model-of-tom/areas/research.md",
-    ]);
-    const text = modelOfTomText(state);
-    const [header] = text.split("\n");
-    // The transcript's first line: the commit and every path included.
-    expect(header).toBe(
-      `MODEL-OF-TOM FILES (WikiTom commit ${COMMIT}): model-of-tom/writing.md, model-of-tom/priorities.md, model-of-tom/schedule.md, model-of-tom/areas/research.md`,
-    );
-    // Each file under its own path, bodies in order.
-    expect(text.indexOf(WRITING)).toBeLessThan(text.indexOf(PRIORITIES));
-    expect(text.indexOf(PRIORITIES)).toBeLessThan(text.indexOf(SCHEDULE));
-    expect(text.indexOf(SCHEDULE)).toBeLessThan(text.indexOf("the D5 judge fix"));
-    expect(text).toContain("── model-of-tom/areas/research.md ──");
-    expect(text).not.toContain(WRITING_STANDARD);
-  });
-
-  // A blank posted body is refused at the route; a row that somehow carries
-  // one must not put a prompt on an empty file.
-  it("ignores a stored row whose body is blank", async () => {
-    const t = convexTest({ schema, modules });
-    await t.run(async (ctx) => {
-      await ctx.db.insert("ttsSkills", {
-        name: "writing",
-        body: "   \n",
-        sourcePath: "model-of-tom/writing.md",
-        commit: COMMIT,
-        syncedAt: 1,
-      });
-    });
-    const state = await t.run(async (ctx) => modelOfTomState(ctx));
-    expect(state.files).toEqual([]);
-  });
-});
-
-// ── The route the nightly job posts through ──────────────────────────────────
 describe("POST /tts/model-of-tom", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
+  afterEach(() => vi.unstubAllEnvs());
+  const send = (t: ReturnType<typeof convexTest>, body: unknown, key = "s3cret") => t.fetch("/tts/model-of-tom", {
+    method: "POST", headers: { "X-TTS-Key": key, "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
 
-  const send = (t: ReturnType<typeof convexTest>, body: unknown, key = "s3cret") =>
-    t.fetch("/tts/model-of-tom", {
-      method: "POST",
-      headers: { "X-TTS-Key": key, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-
-  it("stores the files and answers with the commit", async () => {
+  it("accepts the complete publication JSON and keeps its rendered text verbatim", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
-    const res = await send(t, { commit: COMMIT, committedAt: COMMITTED_AT, pushed: false, files: THREE });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, commit: COMMIT, files: 3, deleted: 0, forced: false });
-    const rows = await allRows(t);
-    expect(rows).toHaveLength(3);
-    expect(rows.every((r) => r.pushed === false)).toBe(true);
-    // An older post through the route is the mutation's refusal, as a 400.
-    const older = await send(t, { commit: "feedface1", committedAt: COMMITTED_AT - 1, files: THREE });
-    expect(older.status).toBe(400);
-    expect((await older.json()).error).toMatch(/older than the stored one/);
-    const forced = await send(t, { commit: "feedface1", committedAt: COMMITTED_AT - 1, force: "roll back", files: THREE });
-    expect(forced.status).toBe(200);
-    expect(await forced.json()).toMatchObject({ commit: "feedface1", forced: true });
+    const response = await send(t, payload());
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, commit: COMMIT, files: 3, deleted: 0, forced: false });
+    expect((await publication(t))?.operate).toBe(LAYERS.operate);
   });
 
-  it("refuses a wrong key, a bad commit, no files, and a path outside model-of-tom/", async () => {
+  it("rejects malformed layers, headers, and file metadata before mutation", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
-    expect((await send(t, { commit: COMMIT, committedAt: 1, files: THREE }, "nope")).status).toBe(401);
-    expect((await send(t, { commit: "main", committedAt: 1, files: THREE })).status).toBe(400);
-    expect((await send(t, { commit: COMMIT, committedAt: 1, files: [] })).status).toBe(400);
-    expect((await send(t, { commit: COMMIT, files: THREE })).status).toBe(400);
-    expect((await send(t, { commit: COMMIT, committedAt: 1, pushed: "yes", files: THREE })).status).toBe(400);
-    expect((await send(t, { commit: COMMIT, committedAt: 1, force: "", files: THREE })).status).toBe(400);
-    const outside = await send(t, {
-      commit: COMMIT,
-      committedAt: 1,
-      files: [{ path: "tts/spec.md", body: "x" }],
-    });
-    expect(outside.status).toBe(400);
-    expect((await outside.json()).error).toMatch(/files\[0\]\.path/);
-    expect(await allRows(t)).toHaveLength(0);
+    expect((await send(t, payload({ pushed: undefined }))).status).toBe(400);
+    expect((await send(t, payload({ commit: "0123abcd" }))).status).toBe(400);
+    expect((await send(t, payload({ layers: { operate: "x" } }))).status).toBe(400);
+    expect((await send(t, payload({ headers: [] }))).status).toBe(400);
+    expect((await send(t, payload({ files: [{ path: "tts/spec.md", body: "x", bytes: 2 }] }))).status).toBe(400);
+    expect((await send(t, payload({ files: [{ path: FILES[0].path, bytes: FILES[0].bytes }] }))).status).toBe(400);
+    expect((await send(t, payload({ files: [{ path: FILES[0].path, bytes: -1 }] }))).status).toBe(400);
+    expect((await send(t, payload(), "wrong")).status).toBe(401);
   });
 });
 
-// ── The planner's channel keeps its field ────────────────────────────────────
-// worker/jobs/plan-graphs.mjs treats a missing `writingStandard` as fatal, so
-// the field keeps its name and its type; what it carries is now the prelude.
-describe("GET /tts/batch-context writing standard", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
+describe("worker context routes", () => {
+  afterEach(() => vi.unstubAllEnvs());
 
-  async function fetchStandard(t: ReturnType<typeof convexTest>) {
-    const res = await t.fetch("/tts/batch-context", {
-      method: "GET",
-      headers: { "X-TTS-Key": "s3cret" },
-    });
-    expect(res.status).toBe(200);
-    return (await res.json()).writingStandard;
-  }
-
-  it("serves the hardcoded copy, headed, while nothing is stored", async () => {
+  it("returns the exact missing-layer message instead of a framework error", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
-    const text = await fetchStandard(t);
-    expect(text.startsWith(MODEL_OF_TOM_FALLBACK_HEADER)).toBe(true);
-    expect(text).toContain(WRITING_STANDARD);
-  });
-
-  it("serves the posted files once they exist", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    const t = convexTest({ schema, modules });
-    await post(t, THREE);
-    const text = await fetchStandard(t);
-    expect(text).toContain(`WikiTom commit ${COMMIT}`);
-    expect(text).toContain(WRITING);
-    expect(text).not.toContain(WRITING_STANDARD);
-  });
-});
-
-// ── The capture-context half (every capture poller's only channel) ───────────
-// poll-gmail, poll-canvas and poll-outlook are Node ESM on the Jarvis Box: they
-// can neither import the rules nor read a git checkout of WikiTom, so this
-// route is where the two capture judgements get their words.
-//
-// THE LIVE RULES ARE A SECTION of model-of-tom/priorities.md — phase 3 merged
-// the capture-triage skill into it, and phase 4's nightly job replaces the
-// ttsSkills table wholesale, so nothing writes a capture-triage row any more.
-// What is pinned here is the whole ladder: the section wins, the retired
-// sync's row is the middle rung, the hardcoded copy is the floor, and the
-// answer says which — a poller triaging by a frozen copy has to be able to
-// say so in its log.
-
-// The real shape of the page (WikiTom model-of-tom/priorities.md at
-// 0fa8f545a): the section is the LAST one, it is headed at level 2, and two
-// earlier sections mention capture triage without being it.
-const PRIORITIES_PAGE = [
-  "# Priorities",
-  "",
-  "## Directions",
-  "",
-  "- Research first; everything else is scheduled around it.",
-  "",
-  "## Rules learned from corrections",
-  "",
-  "- **Email/capture triage classes**: not yet authored — a TTS todo exists.",
-  "",
-  "## What becomes a todo",
-  "",
-  "Decides what enters TTS from an inbound stream.",
-  "",
-  "- **Capture whatever implies an action by Tom**: reply, submit, schedule, pay, sign.",
-  "- **Skip** newsletters, promotions, automated notifications, receipts, and mass mail.",
-  "- **Mark guesses.** A decision no listed rule covers is a guess.",
-].join("\n");
-
-const TRIAGE_SECTION = [
-  "## What becomes a todo",
-  "",
-  "Decides what enters TTS from an inbound stream.",
-  "",
-  "- **Capture whatever implies an action by Tom**: reply, submit, schedule, pay, sign.",
-  "- **Skip** newsletters, promotions, automated notifications, receipts, and mass mail.",
-  "- **Mark guesses.** A decision no listed rule covers is a guess.",
-].join("\n");
-
-const TRIAGE_BODY = `---
-name: capture-triage
-description: Load before deciding whether an incoming message needs Tom.
----
-
-# Capture triage
-
-Needs Tom today only for a deadline inside 48 hours, a person waiting on a
-reply, or money or credentials.`;
-
-describe("captureTriageFrom", () => {
-  it("takes the section out of a real priorities page and nothing around it", () => {
-    const out = captureTriageFrom(PRIORITIES_PAGE, null);
-    expect(out).toEqual({ captureTriage: TRIAGE_SECTION, source: "priorities" });
-    expect(out.captureTriage).not.toContain("Directions");
-    expect(out.captureTriage).not.toContain("Rules learned from corrections");
-  });
-
-  it("matches the heading by text, case-insensitively", () => {
-    const shouted = PRIORITIES_PAGE.replace(
-      "## What becomes a todo",
-      "## WHAT BECOMES A TODO",
-    );
-    expect(captureTriageFrom(shouted, null).source).toBe("priorities");
-  });
-
-  it("falls back to the retired sync's row when the page has no such section", () => {
-    const noSection = "# Priorities\n\n## Directions\n\n- Research first.\n";
-    expect(captureTriageFrom(noSection, TRIAGE_BODY)).toEqual({
-      captureTriage: TRIAGE_BODY,
-      source: "skill",
-    });
-  });
-
-  it("falls back to the hardcoded copy when neither is there", () => {
-    expect(captureTriageFrom(null, null)).toEqual({
-      captureTriage: CAPTURE_TRIAGE_RULES,
-      source: "builtin",
-    });
-    expect(captureTriageFrom("   ", "   ")).toEqual({
-      captureTriage: CAPTURE_TRIAGE_RULES,
-      source: "builtin",
-    });
-  });
-});
-
-describe("GET /tts/capture-context", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  async function fetchTriage(t: ReturnType<typeof convexTest>) {
-    const res = await t.fetch("/tts/capture-context", {
-      method: "GET",
-      headers: { "X-TTS-Key": "s3cret" },
-    });
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    return { captureTriage: body.captureTriage, source: body.source };
-  }
-
-  it("serves the hardcoded copy, named as such, while nothing is stored", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    const t = convexTest({ schema, modules });
-    expect(await fetchTriage(t)).toEqual({
-      captureTriage: CAPTURE_TRIAGE_RULES,
-      source: "builtin",
-    });
-  });
-
-  it("serves the section of the posted priorities.md — the nightly job's own post", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    const t = convexTest({ schema, modules });
-    await post(t, [
-      { path: "model-of-tom/writing.md", body: WRITING },
-      { path: "model-of-tom/priorities.md", body: PRIORITIES_PAGE },
-      { path: "model-of-tom/schedule.md", body: SCHEDULE },
-    ]);
-    expect(await fetchTriage(t)).toEqual({
-      captureTriage: TRIAGE_SECTION,
-      source: "priorities",
-    });
-  });
-
-  it("serves the retired sync's row while it survives and the section is absent", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    const t = convexTest({ schema, modules });
-    // Written straight into the table: the six-hourly WikiTom skill sync that
-    // used to write this row is retired (see the head of convex/ttsSkills.ts),
-    // so a row of this name can only be one the retired sync left behind.
-    await t.run(async (ctx) => {
-      await ctx.db.insert("ttsSkills", {
-        name: CAPTURE_TRIAGE_SKILL,
-        body: TRIAGE_BODY,
-        sourcePath: `skills/${CAPTURE_TRIAGE_SKILL}/SKILL.md`,
-        syncedAt: COMMITTED_AT,
-      });
-    });
-    expect(await fetchTriage(t)).toEqual({
-      captureTriage: TRIAGE_BODY,
-      source: "skill",
-    });
-  });
-
-  // THE REGRESSION THIS ROUTE EXISTS FOR: the nightly post replaces the table
-  // wholesale, so the capture-triage row is gone after the first night. Before
-  // this change the route fell through to the frozen copy from then on and
-  // WikiTom's rules never reached a poller again.
-  it("keeps serving WikiTom's rules after the post that deletes the capture-triage row", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    const t = convexTest({ schema, modules });
-    await t.run(async (ctx) => {
-      await ctx.db.insert("ttsSkills", {
-        name: CAPTURE_TRIAGE_SKILL,
-        body: TRIAGE_BODY,
-        sourcePath: `skills/${CAPTURE_TRIAGE_SKILL}/SKILL.md`,
-        syncedAt: COMMITTED_AT,
-      });
-    });
-    await post(t, [
-      { path: "model-of-tom/writing.md", body: WRITING },
-      { path: "model-of-tom/priorities.md", body: PRIORITIES_PAGE },
-    ]);
-    const names = (await allRows(t)).map((r) => r.name);
-    expect(names).not.toContain(CAPTURE_TRIAGE_SKILL);
-    expect(await fetchTriage(t)).toEqual({
-      captureTriage: TRIAGE_SECTION,
-      source: "priorities",
-    });
-  });
-
-  it("is closed to a caller without the worker key", async () => {
-    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
-    const t = convexTest({ schema, modules });
-    const res = await t.fetch("/tts/capture-context", {
-      method: "GET",
-      headers: { "X-TTS-Key": "nope" },
-    });
-    expect(res.status).toBe(401);
+    for (const [path, method] of [
+      ["/tts/capture-context", "GET"],
+      ["/tts/time-notes", "POST"],
+      ["/tts/batch-context", "GET"],
+      ["/tts/weekly-input", "GET"],
+    ] as const) {
+      const response = await t.fetch(path, { method, headers: { "X-TTS-Key": "s3cret" } });
+      expect(response.status).toBe(503);
+      // The map goes to every run now, so `operate` is the first layer the
+      // assembler misses when nothing is published.
+      await expect(response.json()).resolves.toEqual({ error: "model-of-tom layer operate is not stored" });
+    }
   });
 });

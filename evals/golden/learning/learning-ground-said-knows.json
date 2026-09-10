@@ -1,0 +1,71 @@
+{
+  "id": "learning-ground-said-knows",
+  "job": "learning",
+  "partition": "learning/ground",
+  "verdict": "approve",
+  "sentence": "A term he confirmed in his own words moves to Knows, with his sentence in the evidence record and nothing of it on the page.",
+  "input": {
+    "day": "2026-09-09",
+    "window": { "since": "2026-09-08T08:00:00.000Z", "until": "2026-09-09T08:00:00.000Z" },
+    "tomTurns": [
+      {
+        "turnId": "j57turn1",
+        "session": "2662d1a9",
+        "sessionTitle": "cmt september doc",
+        "date": "2026-09-09",
+        "agentBefore": "I have been calling these terminal detectors.",
+        "tom": "you are using a lot of made up names for different experiments that I dont understand. I understand the vocab you defined so use that and other standard cmt language.",
+        "agentAfter": "Understood — I will use the CMT vocabulary."
+      }
+    ],
+    "slackReplies": [],
+    "rulings": [],
+    "pages": {
+      "model-of-tom/ground.md": "# Ground\n\n## Knows\n\n- The thesis and claims of his own paper.\n\n## Does not know\n\n- A name an agent coined for an experiment, a run or a concept.\n"
+    },
+    "evidencePages": {
+      "model-of-tom/evidence/ground.md": "# Evidence for ground.md\n\n## Knows\n\n- line: The thesis and claims of his own paper.\n  said: 2026-07-23 · session 81be510a · \"i know what the thesis is\"\n\n## Does not know\n\n- line: A name an agent coined for an experiment, a run or a concept.\n  said: 2026-08-08 · session 542cf5c1 · \"That is not a term I recognize, and I am intimately familiar with CMT.\"\n"
+    },
+    "answer": {
+      "changes": [
+        {
+          "file": "model-of-tom/ground.md",
+          "section": "Knows",
+          "op": "add",
+          "line": "CMT's vocabulary, including the terms agents defined for him there.",
+          "replaces": null,
+          "inferred": false,
+          "signal": "g-1",
+          "evidence": [
+            {
+              "form": "said",
+              "date": "2026-09-09",
+              "source": "session 2662d1a9",
+              "text": "I understand the vocab you defined so use that and other standard cmt language."
+            }
+          ],
+          "excerpt": "I understand the vocab you defined so use that and other standard cmt language."
+        }
+      ]
+    }
+  },
+  "expect": {
+    "signals": [
+      { "id": "g-1", "kind": "confirmed", "term": "vocab you defined", "source": "session 2662d1a9" }
+    ],
+    "applied": [
+      {
+        "file": "model-of-tom/ground.md",
+        "section": "Knows",
+        "kind": "add",
+        "inferred": false,
+        "after": "- CMT's vocabulary, including the terms agents defined for him there.",
+        "afterEntry": "- line: CMT's vocabulary, including the terms agents defined for him there.\n  said: 2026-09-09 · session 2662d1a9 · \"I understand the vocab you defined so use that and other standard cmt language.\"",
+        "evidence": "said: session 2662d1a9"
+      }
+    ],
+    "refused": [],
+    "evidenceCheck": "ok",
+    "digest": "- [<id>] model-of-tom/ground.md: + \"CMT's vocabulary, including the terms agents defined for him there.\" (said: session 2662d1a9)"
+  }
+}

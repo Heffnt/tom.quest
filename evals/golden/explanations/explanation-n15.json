@@ -1,0 +1,28 @@
+{
+  "id": "explanation-n15",
+  "source": "explanation",
+  "job": "explanation",
+  "partition": "explanation/ComplexMultiTrigger",
+  "label": "did not",
+  "sentence": "Explain to me what is happening in the phases from the ground up, as if I don't understand these concepts well",
+  "confirmedByTom": false,
+  "ruledOn": "2026-08-14",
+  "input": {
+    "topic": "Constraints given to a subagent",
+    "contextLines": [
+      "Date: 2026-08-14",
+      "Project: ComplexMultiTrigger"
+    ]
+  },
+  "output": {
+    "explanation": "Running on `claude/perf-mad-quirky`, branched off the probe fix so it folds into the same chain.\r\n\r\nFour things I told it that shape what comes back:\r\n\r\n**Profile before optimizing.** The \"pure-Python O(d³) Mahalanobis\" description comes from an operational note, not a measurement. The time could be in the covariance estimate, a matrix inverse, a per-sample Python loop, or activation extraction rather than scoring at all. Optimizing the wrong thing is the default failure mode here.\r\n\r\n**Equivalence outranks speed.** The scores are scientific output, and existing `mad_quirky` results are already on disk being compared against. The bar is: identical per-sample scores if possible, and if float associativity shifts them, then the **sample ranking must be identical** — AUROC depends only on order, so an unchanged ranking means an unchanged result. If ranking moves at all, it stops and reports rather than committing.\r\n\r\n**Address-neutrality is disqualifying if violated.** Nodes are content-addressed on their config. If an optimization required a config change, every existing `mad_quirky` node would orphan and the corpus would re-address. That's not a trade worth making for speed, so it escalates rather than proceeds.\r\n\r\n**Benchmark ratios, not absolutes.** Your box is in memory exhaustion right now, so wall-clock numbers measured tonight are unreliable. It measures old and new back to back and reports the ratio, with absolute figures labelled as taken on a degraded machine. I also told it that if the suite-budget timing gate fires, that's the machine and not its change — and explicitly not to raise the sanctioned ceiling to silence it.\r\n\r\nIf this lands well, it's the difference between `mad_quirky` costing ~5,900 GPU-hours in the campaign and costing something routine, which changes what Phase D can afford across the whole roster."
+  },
+  "provenance": {
+    "sourceFile": "explanation-examples.md",
+    "example": "N15",
+    "date": "2026-08-14",
+    "project": "ComplexMultiTrigger",
+    "rulesRead": "Flags: four bolded constraints written as rulings, each resting on undefined machinery — content-addressed nodes, address-neutrality, orphaning, the suite-budget timing gate. It is an explanation of a decision to an audience that already agrees; Tom asked instead for what the phases are.",
+    "session": "C--Users-heffn-Desktop-booleanbackdoor-ComplexMultiTrigger--claude-worktrees-trusting-booth-f6b753\\48cbf48e-1841-4fbb-a546-28344be30d2c.jsonl line 657"
+  }
+}

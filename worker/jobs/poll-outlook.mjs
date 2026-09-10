@@ -21,7 +21,8 @@
 //      this imply an action by Tom, and does it need him TODAY;
 //   3. POST /tts/capture for each action-implying message, source "outlook",
 //      provenance `outlook:message:<id> <web link>`;
-//   4. POST /tts/needs-tom for each one that needs him today, keyed on
+//   4. POST /tts/needs-tom { todoId, reason, key } for each one that needs
+//      him today — facts, never message text — keyed on
 //      `outlook:message:<id>` so one mail opens one #tts thread for ever.
 //
 // CREDENTIALS (all three in /etc/tts/worker.env; the job is a quiet no-op
@@ -53,7 +54,6 @@ import {
   declined,
   declinedLine,
   loadEnv,
-  ttsItemLink,
 } from "./tts-lib.mjs";
 
 export const CURSOR_FILE = "/var/lib/tts/outlook-cursor";
@@ -81,15 +81,12 @@ export function messageProvenance(id, webLink) {
   return webLink ? `${source} ${webLink}` : source;
 }
 
-/**
- * Pure: the ONE line a #tts thread opens with — who it is from, what it is
- * about, and where the todo is. Identical in shape to poll-gmail's, because it
- * is the same message: one thread in #tts whose reply is the next turn.
- * Exported for tests.
- */
-export function needsTomLine(from, subject, todoId) {
-  return `Needs you today — ${from}: ${subject}\n${ttsItemLink(todoId)}`;
-}
+// THIS JOB WILL NOT COMPOSE THE MESSAGE EITHER (slack-design.md §4.5). When
+// its Microsoft Graph half lands it sends FACTS to POST /tts/needs-tom —
+// { todoId, reason, key } — exactly as poll-gmail.mjs now does, and
+// convex/ttsSlack.ts writes the needs-you thread from the todo's own statement
+// and entry action. The route REFUSES a body carrying `text`, so a copy of the
+// old line here would fail loudly rather than post a message with no reason.
 
 /** The keys of OUTLOOK_KEYS that `env` does not have. Exported for tests. */
 export function missingKeys(env) {

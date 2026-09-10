@@ -12,11 +12,10 @@
 // Why a wrapper at all: a bare `codex exec` writes several hundred kilobytes
 // of progress, reasoning, and tool transcript to stderr, leaks stray lines
 // from the Windows sandbox helper onto stdout, blocks on stdin if nothing is
-// attached, fires the desktop app's notify hook after every turn, and has no
-// timeout. Each of those would either hang a Claude session or flood its
-// context. Here the answer comes from Codex's `-o` file (the only clean
-// channel), stderr goes to a log file, stdin is fed and closed, the notify
-// hook is disabled, and a hard timeout kills the whole process tree.
+// attached, and fires the desktop app's notify hook after every turn. Each of
+// those would either hang a Claude session or flood its context. Here the
+// answer comes from Codex's `-o` file (the only clean channel), stderr goes to
+// a log file, stdin is fed and closed, and the notify hook is disabled.
 //
 // Usage:
 //   node scripts/codex-run.mjs [options] < prompt.txt
@@ -26,12 +25,20 @@
 //   --sandbox MODE     read-only | workspace-write    (default: workspace-write)
 //   --model NAME       Codex model                    (default: gpt-5.6-sol)
 //   --effort LEVEL     minimal|low|medium|high|xhigh  (default: xhigh)
-//   --timeout MS       hard kill after this long      (default: 480000 = 8 min)
+//   --timeout MS       hard kill after this long      (default: none; 0 = none)
 //   --schema FILE      JSON Schema the answer must match
 //   --keep-logs        print the stderr log path instead of deleting it
+//   --no-operate       do not inject WikiTom's operate instructions
 //
-// Exit codes: Codex's own code on completion; 124 on timeout (partial answer,
-// if any, is still printed); 2 for bad arguments or a missing binary.
+// THERE IS NO TIME LIMIT BY DEFAULT (Tom's ruling, 2026-09-09). A Codex run at
+// `xhigh` on real work routinely outlasts any number worth guessing, and a kill
+// throws away everything it had done. A cap is opt-in: pass `--timeout MS` and
+// the run is killed at that point, exactly as before. Callers that cannot wait
+// forever should run the wrapper in the background rather than cap it.
+//
+// Exit codes: Codex's own code on completion; 124 on timeout, when a --timeout
+// was given (partial answer, if any, is still printed); 2 for bad arguments or
+// a missing binary.
 //
 // THE DEFAULTS ARE TOM'S RULING (2026-09-04): the strongest model at the
 // highest reasoning effort, and Codex may edit files. `workspace-write` lets it
@@ -44,14 +51,14 @@
 // The model default is a NAME, not a deferral to ~/.codex/config.toml, so that
 // a machine whose config was never written still runs the fleet model.
 
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, createWriteStream } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, createWriteStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 
 const SANDBOXES = new Set(["read-only", "workspace-write"]);
 const EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
-const DEFAULT_TIMEOUT_MS = 480_000;
+const DEFAULT_TIMEOUT_MS = 0; // 0 = no timeout; a cap is opt-in via --timeout
 const DEFAULT_MODEL = "gpt-5.6-sol";
 const DEFAULT_EFFORT = "xhigh";
 const DEFAULT_SANDBOX = "workspace-write";
@@ -70,6 +77,7 @@ function parseArgs(argv) {
     timeout: DEFAULT_TIMEOUT_MS,
     schema: null,
     keepLogs: false,
+    operate: true,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -85,12 +93,13 @@ function parseArgs(argv) {
       case "--timeout": opts.timeout = Number(next()); break;
       case "--schema": opts.schema = next(); break;
       case "--keep-logs": opts.keepLogs = true; break;
+      case "--no-operate": opts.operate = false; break;
       default: fail(`unknown option ${arg}`);
     }
   }
   if (!SANDBOXES.has(opts.sandbox)) fail(`--sandbox must be one of ${[...SANDBOXES].join(", ")}`);
   if (!EFFORTS.has(opts.effort)) fail(`--effort must be one of ${[...EFFORTS].join(", ")}`);
-  if (!Number.isFinite(opts.timeout) || opts.timeout <= 0) fail("--timeout must be a positive number of milliseconds");
+  if (!Number.isFinite(opts.timeout) || opts.timeout < 0) fail("--timeout must be a number of milliseconds, or 0 for no limit");
   if (!existsSync(opts.cwd)) fail(`--cwd ${opts.cwd} does not exist`);
   if (opts.schema && !existsSync(opts.schema)) fail(`--schema ${opts.schema} does not exist`);
   return opts;
@@ -124,6 +133,27 @@ function readStdin() {
   }
 }
 
+// Read a committed object, never the work tree: an in-progress nightly edit
+// must not alter a Codex run's operate instructions.
+function operateInstructions() {
+  const wikitom = process.env.WIKITOM_DIR
+    || (process.platform === "win32" ? "C:/Users/heffn/Desktop/WikiTom" : "/root/wikitom");
+  try {
+    if (!existsSync(wikitom)) throw new Error("checkout absent");
+    const resolved = realpathSync.native(wikitom);
+    return execFileSync(
+      "git",
+      ["-c", `safe.directory=${resolved}`, "-C", wikitom, "show", "HEAD:model-of-tom/agent-rules.md"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+  } catch {
+    // One stable line makes the missing personal checkout visible without
+    // making the launcher unusable on machines that do not have one.
+    process.stderr.write("codex-run: operate instructions unavailable; continuing without them\n");
+    return null;
+  }
+}
+
 function killTree(child) {
   if (process.platform === "win32") {
     spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
@@ -135,6 +165,8 @@ function killTree(child) {
 const opts = parseArgs(process.argv.slice(2));
 const prompt = readStdin();
 if (!prompt.trim()) fail("no prompt on stdin");
+
+const operate = opts.operate ? operateInstructions() : null;
 
 const bin = resolveBinary();
 const workDir = mkdtempSync(join(tmpdir(), "codex-run-"));
@@ -156,6 +188,10 @@ const args = [
   "-c", "notify=[]",
   "-c", `model_reasoning_effort=${opts.effort}`,
 ];
+if (operate !== null) {
+  // JSON strings are valid TOML basic strings and preserve quotes/newlines.
+  args.push("-c", `developer_instructions=${JSON.stringify(operate)}`);
+}
 // Under workspace-write, a sandboxed Codex has no network by default, which
 // turns "run the tests" into a dependency-install failure. Harmless under
 // read-only, but say it only where it applies so the read-only path stays
@@ -169,7 +205,7 @@ args.push("-"); // prompt arrives on stdin, so no command-line length limit
 
 // A .cmd shim (the npm install) only runs through cmd.exe.
 const useShell = process.platform === "win32" && bin.toLowerCase().endsWith(".cmd");
-const quote = (s) => (useShell ? `"${s.replace(/"/g, '\\"')}"` : s);
+const quote = (s) => (useShell ? `"${s.replace(/\\(?=")/g, "\\\\").replace(/"/g, '""')}"` : s);
 
 const errStream = createWriteStream(errLog);
 const child = spawn(useShell ? quote(bin) : bin, args.map(quote), {
@@ -184,18 +220,23 @@ child.stderr.pipe(errStream, { end: false });
 child.stdin.end(prompt);
 
 let timedOut = false;
-const timer = setTimeout(() => {
-  timedOut = true;
-  killTree(child);
-}, opts.timeout);
+// No timer at all unless a cap was asked for. An unreferenced timer would also
+// hold the event loop open, so this is the whole of "no timeout".
+const timer = opts.timeout > 0
+  ? setTimeout(() => {
+      timedOut = true;
+      killTree(child);
+    }, opts.timeout)
+  : null;
+const stopTimer = () => { if (timer) clearTimeout(timer); };
 
 const started = Date.now();
 child.on("error", (err) => {
-  clearTimeout(timer);
+  stopTimer();
   fail(`could not start ${bin}: ${err.message}`);
 });
 child.on("close", (code) => {
-  clearTimeout(timer);
+  stopTimer();
   errStream.end();
   const seconds = Math.round((Date.now() - started) / 1000);
   let answer = "";

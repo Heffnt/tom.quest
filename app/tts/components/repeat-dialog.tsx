@@ -226,7 +226,7 @@ export default function RepeatDialog({
         />
 
         {/* What this writes lives behind the ⓘ on the button that writes it —
-            the one info mechanism (CLAUDE.md, ratified 2026-08-29). It used to
+            the one info mechanism (app/AGENTS.md, ratified 2026-08-29). It used to
             stand as prose plus a mono line above the buttons, which is
             explainer text on a page that must be data and actions. */}
         <div className="mt-3 flex items-center justify-end gap-2">

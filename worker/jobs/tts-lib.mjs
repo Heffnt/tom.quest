@@ -13,6 +13,11 @@ import { ENV_PATH, loadEnv as loadWorkerEnv } from "./worker-env.mjs";
 
 export { ENV_PATH };
 
+// Every unattended worker asks for a structured answer in these exact words.
+// Keep the instruction in one home so prompt changes cannot leave one parser
+// expecting JSON while its model was invited to answer in prose.
+export const JSON_ONLY_ANSWER = "Answer ONLY a JSON object, no prose, no code fences:";
+
 // ---------------------------------------------------------------------------
 // Env file parsing
 // ---------------------------------------------------------------------------
@@ -128,7 +133,19 @@ export async function convexFetch(env, path, body = undefined) {
   });
   const text = await res.text();
   if (!res.ok) {
-    const err = new Error(`${path} -> HTTP ${res.status}: ${text.slice(0, 300)}`);
+    let missingModelOfTomPart = null;
+    try {
+      const response = JSON.parse(text);
+      if (
+        typeof response?.error === "string" &&
+        /^model-of-tom (?:layer|header) .+ is not stored$/.test(response.error)
+      ) {
+        missingModelOfTomPart = response.error;
+      }
+    } catch {
+      // Non-JSON errors retain the HTTP summary below.
+    }
+    const err = new Error(missingModelOfTomPart ?? `${path} -> HTTP ${res.status}: ${text.slice(0, 300)}`);
     err.status = res.status;
     err.body = text;
     throw err;
@@ -146,52 +163,20 @@ export function ttsItemLink(todoId) {
 }
 
 // ---------------------------------------------------------------------------
-// Capture context — the rules a poller triages by (the lifeos update, phase 6)
+// Capture context — the state a poller checks before it runs
 // ---------------------------------------------------------------------------
 //
-// Every capture poller (poll-gmail, poll-canvas, poll-outlook) makes the same
-// two judgements about an incoming message: does it imply an action by Tom,
-// and does it need him TODAY. The words for both come from the deployment, not
-// from any job: GET /tts/capture-context serves the "What becomes a todo"
-// section of WikiTom's model-of-tom/priorities.md, and says in `source` which
-// of its three it served.
-//
-// One read, one shape, so the three pollers cannot triage by three different
-// sets of rules. Fields grow here as later phases add them (the declined
-// integrations list is the next one).
+// Every capture poller reads this once before it runs. The deployment supplies
+// the writing standard and declined integrations in one payload.
 
 /**
- * The capture rules and the state a poller checks before it runs.
+ * The state a poller checks before it runs.
  *
- * ONE READ PER RUN. Both things a poller needs from the deployment ride this
- * payload — the triage rules and the declined list — and a run that fetched it
- * twice (once to ask whether it was declined, once to get the rules) asked the
- * same question of the same deployment twice a tick, forever.
+ * ONE READ PER RUN. Everything a poller needs from the deployment rides this
+ * payload, so a run never asks the same deployment twice a tick.
  */
 export async function captureContext(env) {
   return await convexFetch(env, "/tts/capture-context");
-}
-
-/** What each `source` the route can answer with means, in Tom's words for a
- * log line. The three names are the route's (convex/ttsSkills.ts). */
-export const TRIAGE_SOURCES = {
-  priorities: 'model-of-tom/priorities.md, "What becomes a todo"',
-  skill: "the retired sync's capture-triage row",
-  builtin: "the hardcoded fallback — WikiTom's rules are NOT reaching this run",
-};
-
-/**
- * The one line a poller prints about where its triage rules came from. PURE:
- * it reads the context the run already fetched.
- *
- * WHY A POLLER SAYS THIS AT ALL: the rules used to come from a capture-triage
- * row that nothing writes any more, and the fallback is a frozen copy — a run
- * triaging by it looks exactly like a run triaging by WikiTom. The line is
- * what makes the difference visible in /var/log/tts on the night it changes.
- */
-export function triageSourceLine(job, context) {
-  const source = context?.source ?? "builtin";
-  return `[${job}] triage rules from ${TRIAGE_SOURCES[source] ?? source}`;
 }
 
 /**
@@ -464,6 +449,32 @@ export function serverErrorMessage(err) {
 // accounts is one `tts-account use` away and no job hardcodes an account.
 export const CLAUDE_CONFIG_DIR = "/root/.claude-accounts/active";
 
+// ONE HOME FOR MODEL NAMES. Every spawn names its model in the code rather than
+// falling through to whatever the active account happens to default to: a job's
+// tier is a decision this repo makes, and switching Max accounts must not
+// silently re-tier the fleet. The keys are ROLES, not job names, so two jobs
+// doing the same shape of work cannot drift apart:
+//
+//   planner    the planning passes (prepare a life todo, plan the graphs) —
+//              judgment over Tom's own words and his goal structure.
+//   codeBrief  the read-only pass over a real repo checkout that writes the
+//              brief a code todo is worked from — judgment plus code reading.
+//   triage     a capture verdict over a batch of inbound items (Gmail, Canvas):
+//              classify-shaped, high volume, cheap tier.
+//   timeNotes  reading one of Tom's time sentences into concrete actions —
+//              mechanical parsing; the tier here is flagged for Tom's ruling.
+//
+// Model literals still live in nightly.mjs (LEARNING_MODEL), weekly.mjs
+// (WEEKLY_MODEL), delegate.mjs (DELEGATE_MODEL), write-slack.mjs (MODEL) and
+// evals.mjs (REGEN_MODEL / JUDGE_MODEL). They belong in this table too and
+// should move here in a later pass.
+export const MODELS = {
+  planner: "opus",
+  codeBrief: "opus",
+  triage: "claude-haiku-4-5-20251001",
+  timeNotes: "claude-sonnet-5",
+};
+
 // Run headless Claude Code (`claude -p`) and return the model's ANSWER TEXT
 // (the envelope is unwrapped here; parsing the answer is the caller's job —
 // see extractJsonObject below for the JSON-answer case).
@@ -482,16 +493,28 @@ export const CLAUDE_CONFIG_DIR = "/root/.claude-accounts/active";
 // The prompt goes over STDIN, not argv: Linux caps a single argv element at
 // ~128 KiB and embedded todo/ledger JSON will eventually exceed that
 // (review-caught on prepare-queue).
-// `model` maps to --model: mechanical jobs (parsing one sentence into concrete
-// actions) pass a cheap model; omit it and the account default applies.
+// `model` maps to --model. EVERY CALLER PASSES ONE, from the MODELS table
+// above — omit it and the run silently takes the active account's default,
+// which is a fleet-wide setting no job should be tiered by.
 export function runClaude(
   prompt,
-  { cwd, timeoutMs, agentic = false, maxTurns, model } = {},
+  { cwd, timeoutMs, agentic = false, maxTurns, model, allowedTools } = {},
 ) {
   const turns = maxTurns ?? (agentic ? 200 : 8);
   const args = ["-p", "--output-format", "json", "--max-turns", String(turns)];
   if (model) args.push("--model", model);
   if (agentic) args.push("--permission-mode", "bypassPermissions");
+  // Agentic mode makes Claude's tools usable. A caller that also supplies an
+  // allow-list is responsible for putting it in a disposable workspace: the
+  // allow-list keeps this run read-only, while the throwaway workspace makes
+  // bypassPermissions harmless if a future CLI version interprets a tool more
+  // broadly than we expect.
+  if (allowedTools !== undefined) {
+    if (!Array.isArray(allowedTools) || allowedTools.some((tool) => typeof tool !== "string" || tool === "")) {
+      throw new Error("allowedTools must be an array of non-empty strings");
+    }
+    args.push("--allowedTools", allowedTools.join(","));
+  }
   const stdout = execFileSync("claude", args, {
     input: prompt,
     cwd,

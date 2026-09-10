@@ -10,17 +10,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  runClaude,
   captureContext,
   clip,
+  convexFetch,
   declined,
   declinedLine,
   MAX_BRIEF_CHARS,
   MAX_LIFE_PER_RUN,
+  JSON_ONLY_ANSWER,
   NO_ID,
   reconcileVerdicts,
   reportJobFailed,
   reportJobOk,
-  triageSourceLine,
   ttsItemLink,
   unmatchedIdKey,
   unmatchedIdMessage,
@@ -89,36 +91,34 @@ describe("declined", () => {
 
   it("finds the ruling for this job's own name", () => {
     expect(
-      declined({ captureTriage: "rules", declinedIntegrations: [outlook] }, "outlook"),
+      declined({ declinedIntegrations: [outlook] }, "outlook"),
     ).toEqual(outlook);
   });
 
   it("is null for a job Tom has not declined", () => {
     expect(
-      declined({ captureTriage: "rules", declinedIntegrations: [outlook] }, "gmail"),
+      declined({ declinedIntegrations: [outlook] }, "gmail"),
     ).toBeNull();
     expect(
-      declined({ captureTriage: "rules", declinedIntegrations: [] }, "outlook"),
+      declined({ declinedIntegrations: [] }, "outlook"),
     ).toBeNull();
   });
 
   it("matches the name however the caller spelled it", () => {
     expect(
-      declined({ captureTriage: "rules", declinedIntegrations: [outlook] }, " Outlook "),
+      declined({ declinedIntegrations: [outlook] }, " Outlook "),
     ).toEqual(outlook);
   });
 
   it("survives a deployment that does not serve the field yet", () => {
     // A box running ahead of the deployment must not crash every poller.
-    expect(declined({ captureTriage: "rules" }, "outlook")).toBeNull();
+    expect(declined({}, "outlook")).toBeNull();
     expect(declined(undefined, "outlook")).toBeNull();
   });
 });
 
-// ONE READ PER RUN. Both things a poller needs from the deployment ride one
-// payload, and `declined` takes that payload rather than fetching its own:
-// a run that asked twice asked the same deployment the same question twice a
-// tick, for ever.
+// ONE READ PER RUN. A poller reads its writing standard and declined list from
+// one payload, and `declined` takes that payload rather than fetching its own.
 describe("captureContext", () => {
   const env = { CONVEX_SITE_URL: "https://x.convex.site", TTS_WORKER_KEY: "k" };
 
@@ -126,14 +126,13 @@ describe("captureContext", () => {
     vi.unstubAllGlobals();
   });
 
-  it("is the single GET the rules, their source and the declined list come from", async () => {
+  it("is the single GET the writing standard and declined list come from", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       status: 200,
       text: async () =>
         JSON.stringify({
-          captureTriage: "rules",
-          source: "priorities",
+          writingStandard: "write standard",
           declinedIntegrations: [],
         }),
     }));
@@ -141,44 +140,37 @@ describe("captureContext", () => {
 
     const context = await captureContext(env);
     expect(declined(context, "gmail")).toBeNull();
-    expect(context.captureTriage).toBe("rules");
-    expect(context.source).toBe("priorities");
+    expect(context.writingStandard).toBe("write standard");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0][0])).toBe(
       "https://x.convex.site/tts/capture-context",
     );
   });
+
+  it("passes a missing model-of-tom layer refusal to its caller unchanged", async () => {
+    const refusal = "model-of-tom layer write is not stored";
+    const body = JSON.stringify({ error: refusal });
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 503, text: async () => body })));
+
+    await expect(captureContext(env)).rejects.toMatchObject({ message: refusal, status: 503, body });
+  });
 });
 
-// A run triaging by the frozen fallback looks exactly like a run triaging by
-// WikiTom unless the log says which, so what is pinned here is that the three
-// answers read differently and that a payload without the field is not
-// silently called live.
-describe("triageSourceLine", () => {
-  it("names the live section when the rules came from priorities.md", () => {
-    expect(triageSourceLine("poll-gmail", { source: "priorities" })).toBe(
-      '[poll-gmail] triage rules from model-of-tom/priorities.md, "What becomes a todo"',
-    );
+describe("convexFetch failures", () => {
+  const env = { CONVEX_SITE_URL: "https://x.convex.site", TTS_WORKER_KEY: "k" };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
-  it("names the retired sync's row", () => {
-    expect(triageSourceLine("poll-canvas", { source: "skill" })).toContain(
-      "capture-triage row",
-    );
-  });
+  it("keeps unrelated HTTP errors in the HTTP summary", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 400, text: async () => JSON.stringify({ error: "invalid JSON body" }) })));
 
-  it("says the fallback is NOT WikiTom, and treats a missing field as the fallback", () => {
-    const warned = triageSourceLine("poll-gmail", { source: "builtin" });
-    expect(warned).toContain("hardcoded fallback");
-    expect(warned).toContain("NOT reaching this run");
-    expect(triageSourceLine("poll-gmail", {})).toBe(warned);
-    expect(triageSourceLine("poll-gmail", undefined)).toBe(warned);
-  });
-
-  it("prints a source it does not know rather than dropping it", () => {
-    expect(triageSourceLine("poll-gmail", { source: "something-new" })).toBe(
-      "[poll-gmail] triage rules from something-new",
-    );
+    await expect(convexFetch(env, "/tts/example")).rejects.toMatchObject({
+      message: '/tts/example -> HTTP 400: {"error":"invalid JSON body"}',
+      status: 400,
+      body: '{"error":"invalid JSON body"}',
+    });
   });
 });
 
@@ -347,5 +339,24 @@ describe("declinedLine", () => {
     expect(
       declinedLine("poll-canvas", { ruledAt: Date.UTC(2026, 8, 5, 14), sentence: null }),
     ).toBe("[poll-canvas] declined by Tom on 2026-09-05 — skipping");
+  });
+});
+
+
+describe("JSON_ONLY_ANSWER", () => {
+  it("is the one JSON instruction every worker prompt shares", () => {
+    expect(JSON_ONLY_ANSWER).toBe("Answer ONLY a JSON object, no prose, no code fences:");
+  });
+});
+
+// runClaude's allowedTools is what keeps the delegate's agentic run read-only
+// (worker/jobs/delegate.mjs passes Read, Glob and Grep). A malformed list must
+// fail before the process is spawned rather than quietly widening the run to
+// every tool the CLI has.
+describe("runClaude allowedTools", () => {
+  it("refuses a list that is not non-empty strings, before spawning anything", () => {
+    expect(() => runClaude("p", { allowedTools: "Read" })).toThrow(/allowedTools/);
+    expect(() => runClaude("p", { allowedTools: ["Read", ""] })).toThrow(/allowedTools/);
+    expect(() => runClaude("p", { allowedTools: [1] })).toThrow(/allowedTools/);
   });
 });

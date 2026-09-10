@@ -158,17 +158,63 @@ mkdir -p /opt/tts /var/lib/tts /var/cache/tts /etc/tts /var/log/tts \
 echo "== [7/10] install worker files =="
 # Job scripts (plain Node ESM, zero npm deps — a copy is a deploy).
 cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
+mkdir -p /opt/tts/scripts /opt/tts/worker/jobs
+cp "$WORKER_DIR"/../scripts/session-start-hook.mjs /opt/tts/scripts/session-start-hook.mjs
+cp "$WORKER_DIR"/../scripts/prelude.mjs /opt/tts/scripts/prelude.mjs
+# prelude.mjs's own import graph has to land in the same shape it has in the
+# repo: the layer table beside it, and the relevance body one directory over
+# (prelude.mjs reaches for ../worker/jobs/context-relevance.mjs). Without both
+# copies the assembler cannot load on the box at all.
+cp "$WORKER_DIR"/../scripts/prelude-layers.mjs /opt/tts/scripts/prelude-layers.mjs
+cp "$WORKER_DIR"/jobs/context-relevance.mjs /opt/tts/worker/jobs/context-relevance.mjs
+# The pull-request check's body, beside the jobs rather than under scripts/:
+# evals.mjs imports gate() from it so the box stamps a run with the SAME rule
+# the check applies, and there is one body of what a regression is.
+cp "$WORKER_DIR"/../scripts/evals-check.mjs /opt/tts/evals-check.mjs
+cp "$WORKER_DIR"/jobs/markdown-sections.mjs /opt/tts/worker/jobs/markdown-sections.mjs
 # The Codex wrapper is a repo script, not a job, but sessions need it from ANY
 # repo — including checkouts that predate it, and repos that are not tom.quest
 # at all. One copy here is what `tts-codex` executes, so the flags and the
 # stdout contract have exactly one home (scripts/codex-run.mjs) whichever way a
 # session reaches Codex.
 cp "$WORKER_DIR"/../scripts/codex-run.mjs /opt/tts/codex-run.mjs
+# The box session opener already carries all three layers; this covers Claude
+# subagents, which read CLAUDE.md but not opener.
+for CLAUDE_ACCOUNT_DIR in /root/.claude-accounts/gmail /root/.claude-accounts/wpi; do
+  printf '%s\n' '@/root/wikitom/model-of-tom/agent-rules.md' > "$CLAUDE_ACCOUNT_DIR/CLAUDE.md"
+  CLAUDE_ACCOUNT_DIR="$CLAUDE_ACCOUNT_DIR" node - <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+
+const directory = process.env.CLAUDE_ACCOUNT_DIR;
+const settingsPath = path.join(directory, "settings.json");
+const command = "node /opt/tts/scripts/session-start-hook.mjs";
+let settings = {};
+if (fs.existsSync(settingsPath)) settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+if (!settings || Array.isArray(settings) || typeof settings !== "object") settings = {};
+if (!settings.hooks || Array.isArray(settings.hooks) || typeof settings.hooks !== "object") settings.hooks = {};
+
+const legacy = (hook) =>
+  typeof hook?.command === "string" && /\bcat\s+.*[\\/]WikiTom[\\/]AGENTS\.md\b/i.test(hook.command);
+const managed = (hook) => typeof hook?.command === "string" && hook.command === command;
+const sessionStart = Array.isArray(settings.hooks.SessionStart) ? settings.hooks.SessionStart.flatMap((entry) => {
+  if (!entry || typeof entry !== "object") return [entry];
+  if (legacy(entry) || managed(entry)) return [];
+  if (!Array.isArray(entry.hooks)) return [entry];
+  const hooks = entry.hooks.filter((hook) => !legacy(hook) && !managed(hook));
+  return hooks.length === 0 ? [] : [{ ...entry, hooks }];
+}) : [];
+sessionStart.push({ matcher: "startup|resume|compact", hooks: [{ type: "command", command }] });
+settings.hooks.SessionStart = sessionStart;
+fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+NODE
+done
 # CLI helpers onto the PATH.
 cp "$WORKER_DIR"/bin/* /usr/local/bin/
 chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
   /usr/local/bin/tts-turing /usr/local/bin/tts-git-credential \
-  /usr/local/bin/tts-codex
+  /usr/local/bin/tts-codex /usr/local/bin/tts-search /usr/local/bin/tts-ask \
+  /usr/local/bin/tts-audit
 
 # GitHub credentials for sessions (ledger graduation sessions-cannot-open-prs,
 # 2026-08-31). Two consumers, one source of truth (GH_TOKEN in worker.env):
@@ -333,6 +379,17 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # is 2 minutes away).
 */2 * * * * root /usr/bin/flock -n /var/lock/tts-apply-time-notes.lock /usr/bin/node /opt/tts/apply-time-notes.mjs >> /var/log/tts/apply-time-notes.log 2>&1
 
+# THE MORNING MESSAGE IS WRITTEN, NOT FILLED IN (Tom 2026-09-09). At 5 a.m.
+# New York the Convex cron gathers the day's facts and opens a draft request;
+# this job reads it, runs Fable over the write layer and the facts, and submits
+# the message. Convex verifies it and posts it. A request that is not accepted
+# within five minutes posts the plain template instead, so the morning is never
+# silent. Every two minutes across both possible 5 a.m. UTC hours (09:00 EDT,
+# 10:00 EST) plus the needs-you threads, which open at any hour.
+# flock: a Fable run can outlast a tick, and two runs would write one message
+# twice — the second exits immediately.
+*/2 * * * * root /usr/bin/flock -n /var/lock/tts-write-slack.lock /usr/bin/node /opt/tts/write-slack.mjs >> /var/log/tts/write-slack.log 2>&1
+
 # There is no queue-preparing job any more (the lifeos update, phase 7):
 # today's view — due, overdue, scheduled, ready, waking today — is computed by
 # the /tts page from the record, and the 5 a.m. digest is composed in Convex.
@@ -358,6 +415,16 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # opened. Both UTC slots on one line; the job's own NY-hour guard keeps one
 # (worker/jobs/weekly.mjs).
 0 8,9 * * 5 root /usr/bin/flock -n /var/lock/tts-weekly.lock /usr/bin/node /opt/tts/weekly.mjs >> /var/log/tts/weekly.log 2>&1
+
+# Evals. The box POLLS: it has no inbound door, so a GitHub Action posts a
+# request to Convex and this tick picks up the oldest unanswered one and runs
+# it. One request per pass, so a tick is bounded.
+*/5 * * * * root /usr/bin/flock -n /var/lock/tts-evals.lock /usr/bin/node /opt/tts/evals.mjs --serve >> /var/log/tts/evals.log 2>&1
+
+# The full golden set against both repos' main, Saturday, so it does not
+# contend with Friday's weekly agenda job. Two slots for the same NY hour, as
+# the nightly and weekly lines do.
+0 8,9 * * 6 root /usr/bin/flock -n /var/lock/tts-evals.lock /usr/bin/node /opt/tts/evals.mjs --weekly >> /var/log/tts/evals.log 2>&1
 
 # CODE-TODO RULING LOOP (CMT's vqc/todos.yaml -> briefs -> Tom rules -> a
 # worker mission): the BRIEFS are the planner's second pass (below, every 30

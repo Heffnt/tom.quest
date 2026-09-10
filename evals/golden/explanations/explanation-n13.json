@@ -1,0 +1,28 @@
+{
+  "id": "explanation-n13",
+  "source": "explanation",
+  "job": "explanation",
+  "partition": "explanation/ComplexMultiTrigger",
+  "label": "did not",
+  "sentence": "Explain the one thing that genuinely needs me in more detail. What is the 20-sample test? I don't understand the revisiting exclusions sentence either.",
+  "confirmedByTom": false,
+  "ruledOn": "2026-08-13",
+  "input": {
+    "topic": "What still needs Tom's decision",
+    "contextLines": [
+      "Date: 2026-08-13",
+      "Project: ComplexMultiTrigger"
+    ]
+  },
+  "output": {
+    "explanation": "That agent is deciding it. Now the ground-up explanation, assuming none of the last several hours.\r\n\r\n## What you're actually building\r\n\r\nYour paper claims you evaluate every category of backdoor detection against boolean triggers. To back that up, each category needs at least one method that (a) is a real published method, (b) is implemented faithfully rather than as a convenient approximation, and (c) actually produces a number on your corpus. Nine methods were selected to fill the gaps. **None of them is implemented yet.** Everything so far has been deciding *what* to build and clearing obstacles that would have corrupted the results.\r\n\r\n## What a single method has to go through\r\n\r\nThis is the pipeline, and it's the same for all nine:\r\n\r\n**1. Get the paper into the system.** Your lit-review vault holds a neutral summary of each paper; a separate step copies the paper's full text into the code repo so that every claim about \"we implement stage X\" can be checked against an exact quote from the paper. All nine papers are now through this step — that part is done.\r\n\r\n**2. Decide which task arms it runs on.** You have three experimental arms: sentiment classification, jailbreak, and refusal. Not every method makes sense on every arm — a method whose detector is a harmfulness classifier has nothing to look at in a film review. Running a method where it structurally cannot work produces a number that looks like a finding but is an artifact. **This is the step that just finished**, one agent per method, and it eliminated ten of twenty-seven method-arm combinations on those grounds.\r\n\r\n**3. Build the shared machinery.** Several methods need capabilities the codebase doesn't have — reading attention patterns a particular way, adding noise to model weights, letting a detector emit one verdict per model instead of per input. Six such pieces were built last night by parallel agents. Four are sound; **two are broken and I didn't commit them.**\r\n\r\n**4. Write the method itself**, plus its test, plus a record mapping each stage of the paper to the code implementing it, plus a deliberate bug that proves the test actually catches failures. **Zero of nine are written.** This is the largest remaining chunk.\r\n\r\n**5. Run it on GPUs.** Requires pushing the branch so the cluster can pull it, then running against your trained models. Nothing has run.\r\n\r\n**6. Check the numbers are real before believing them.** This is not optional paranoia — it's the step that keeps catching things. Multiple detectors in your existing corpus turned out to be measuring bookkeeping artifacts rather than backdoors.\r\n\r\n## The critical path\r\n\r\nSteps 3 and 4 are the bottleneck, and step 3 blocks step 4 — you can't write DAN before the statistics library it depends on exists. My estimate is that the six infrastructure pieces plus nine methods is several sessions of work, not one.\r\n\r\nThe GPU cost, by contrast, is small. The arm agents measured it: most of these methods cost hours, not days, and two of them are nearly free. Compute is not your constraint. Correctness is.\r\n\r\n## What I'd do next, in order\r\n\r\nFix the two broken infrastructure builds and commit the four good ones. Then implement methods in cost order — the cheapest ones (a free parameter variant, and one that needs no extra model passes) prove the whole pipeline end-to-end before anything expensive is attempted. Then push and run a single-cell smoke test on one model before committing to a full sweep.\r\n\r\n**One thing genuinely needs you, and it isn't technical.** Your evaluation got substantially smaller last night. Several methods now run on one arm instead of three, and one may reduce to a twenty-sample test. That's more defensible — every exclusion has a stated mechanism — but it's a different paper than \"nine methods across three arms.\" If you'd rather have breadth, some exclusions could be revisited as explicitly-labeled negative controls. I'd need your call on which way to lean before implementation, because it changes what gets built."
+  },
+  "provenance": {
+    "sourceFile": "explanation-examples.md",
+    "example": "N13",
+    "date": "2026-08-13",
+    "project": "ComplexMultiTrigger",
+    "rulesRead": "Flags: the body is genuinely ground-up — a numbered pipeline in plain nouns — and then the closing paragraph, the one Tom actually needed, compresses into 'a twenty-sample test' and 'revisited as explicitly-labeled negative controls', both undefined. The decision was written in the register the rest of the message had deliberately avoided.",
+    "session": "C--Users-heffn-Desktop-booleanbackdoor-ComplexMultiTrigger--claude-worktrees-a123-sweep-models-params-4d50ab\\056c61c8-31b7-41e3-93da-a6d03e45e265.jsonl line 1432"
+  }
+}

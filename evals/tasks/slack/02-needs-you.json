@@ -1,0 +1,24 @@
+{
+  "id": "slack-02-needs-you",
+  "repo": "slack",
+  "kind": "slack",
+  "prompt": "",
+  "compose": "needsYou",
+  "canReply": false,
+  "note": "The composer this item measures arrives with branch uac/slack; the item format and the runner interface are settled here.",
+  "facts": {
+    "statement": "Review OpenAI's usage policy violation notice and respond to the threatened account deactivation.",
+    "entryAction": "Open the email and click Show original",
+    "reason": "the mail threatens to deactivate the account and may not be from OpenAI",
+    "sourceUrl": "https://mail.google.com/mail/u/0/#all/1994c1",
+    "todoId": "ph7by1apq4sh624aptwca3anen8dzsjj"
+  },
+  "expect": {
+    "mustName": ["Only you can settle this", "Show original"],
+    "mustNotName": ["Usage Policy Violation & Deactivation Warning", "Needs you today", "reply here", "OpenAI <"],
+    "sentence": "The first line says why only Tom can settle it and names the first move; the item is TTS's own statement, not the vendor's subject line; and it does not invite a reply, because the reply route is not live."
+  },
+  "blocks": ["write"],
+  "addedOn": "2026-09-09",
+  "addedBy": "tom"
+}

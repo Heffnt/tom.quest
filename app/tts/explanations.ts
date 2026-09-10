@@ -8,7 +8,7 @@
 //
 // EACH EXPORTED CONSTANT HERE IS ONE COMPLETE HTML DOCUMENT, "<!DOCTYPE html>"
 // through "</html>". That form is fixed by the writing standard
-// (WRITING_STANDARD in convex/ttsShared.ts) and is not a style choice: the
+// (writing.md) and is not a style choice: the
 // documents are forwarded verbatim to other people and other agents, and they
 // render inside a sandboxed iframe with no scripting and no network, so nothing
 // may load from outside — no script, no inline event handler, no external
@@ -37,7 +37,7 @@
 // lifeos update, phase 7). Three of the ten went in that change: readiness,
 // the todo's text fields, and the intent bar each taught a reader how to read
 // a screen, which is explainer text with a "more" control in front of it, and
-// pages never explain themselves (CLAUDE.md). What is left is one document per
+// pages never explain themselves (app/AGENTS.md). What is left is one document per
 // mechanism a control sets in motion — status, the verdicts, sessions, time
 // notes, blocks, repeats — each opened from the popover of the control that
 // fires it, plus must-not-break, which is Tom's own field on a goal. An

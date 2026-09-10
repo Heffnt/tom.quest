@@ -205,9 +205,9 @@ the `HEAD` the four left:
    repository, every push is refused and this is the row the digest shows.**
 5. **post** — the model-of-tom files read from the git object at `HEAD`
    (`git show <commit>:<path>`, never the work tree), whether or not the
-   push went through: `model-of-tom/writing.md`, `priorities.md`,
-   `schedule.md`, then for each page under `model-of-tom/areas/` its
-   "Current state" and "Must not break" sections (parsed by heading), posted
+   push went through: `model-of-tom/agent-rules.md`; the write-layer files;
+   then `model-of-tom/intent.md`, `priorities.md`, `schedule.md`, and every
+   page under `model-of-tom/areas/` whole except for its YAML frontmatter, posted
    with the commit hash, the commit's time and whether that commit is on
    the upstream yet (`pushed`) to `POST /tts/model-of-tom`. Convex replaces
    the `ttsSkills` table whole and every prompt from then on begins with
@@ -219,7 +219,11 @@ the `HEAD` the four left:
    failure row and NO post goes out: the replace is wholesale, so posting the
    rest would take that file — `writing.md`, the writing standard itself —
    out of every prompt until a night that reads it again. Convex refuses a
-   post without `writing.md` on its own account.
+   post without `writing.md` on its own account. **Rollout of the publication
+   singleton, in this order:** deploy Convex (readers refuse to open a session
+   until it is populated), run `ttsSkills.backfillLayers` once to build it from
+   the per-file rows already stored, and readers work; the next nightly post
+   overwrites it.
 
 Then one `nightly-run` row with the summary (commit, pushed or not, table
 and row counts, files archived, the failures). By hand:
