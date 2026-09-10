@@ -369,7 +369,10 @@ export const internalDigestToResend = internalQuery({
         text?: unknown;
         windowEnd?: unknown;
       };
-      if (data.subject?.kind !== "digest" || data.subject.day !== day) continue;
+      // "today" is the morning message's subject; "digest" is what rows
+      // written before the rename carry, and a refused digest can be a day old.
+      const kind = data.subject?.kind;
+      if ((kind !== "today" && kind !== "digest") || data.subject?.day !== day) continue;
       const text = str(data.text);
       if (text === null) continue;
       return {

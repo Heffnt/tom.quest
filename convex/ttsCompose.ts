@@ -596,7 +596,7 @@ export function objectionLine(o: ObjectionFact, n: number): { text: string; url:
     };
   }
   const because = o.reason ? `, because ${stripStop(o.reason)}` : "";
-  return { text: statement(`${n}. ${stripStop(o.decision)}${because}`), url };
+  return { text: statement(`${n}. ${capitalise(stripStop(o.decision))}${because}`), url };
 }
 
 /** `{statement} gained {added} items, reworked {reworked} and dropped
@@ -783,17 +783,19 @@ export function composeToday(f: TodayFacts, o: { canReply: boolean }): Message {
     );
   }
 
-  return fit({ firstLine: todayFirstLine(f), lines }).message;
+  // NOT fitted here. `fit` is a separate step so the sender can record whether
+  // anything had to be reduced (composeTodayFitted), and so a test can hold the
+  // whole message before the cut.
+  return { firstLine: todayFirstLine(f), lines };
 }
 
-/** composeToday plus whether anything had to be reduced to fit one Slack
- *  message — the sender records it on the digest-sent row. */
+/** The morning message, reduced until it fits one Slack message, and whether
+ *  anything had to go — the sender records it on the digest-sent row. */
 export function composeTodayFitted(
   f: TodayFacts,
   o: { canReply: boolean },
 ): { message: Message; truncated: boolean } {
-  const whole = composeToday(f, o);
-  return fit(whole);
+  return fit(composeToday(f, o));
 }
 
 /** The first line names the count, the age of the worst, and THE ONE TO START
@@ -938,7 +940,9 @@ export function composeDecision(f: DecisionFact, o: { canReply: boolean }): Mess
     {
       role: "item",
       section: "decision",
-      text: statement(`${stripStop(f.decision)}${f.reason ? `, because ${stripStop(f.reason)}` : ""}`),
+      text: statement(
+        `${capitalise(stripStop(f.decision))}${f.reason ? `, because ${stripStop(f.reason)}` : ""}`,
+      ),
       url,
     },
   ];
