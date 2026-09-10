@@ -1,0 +1,372 @@
+{
+  "_comment": [
+    "Where each UNIQUE-DURABLE row of the laptop auto-memory catalogue lands in WikiTom.",
+    "Written once, by hand, from the catalogue's own quotes: a row with no entry here is an ERROR",
+    "and scripts/import-laptop-memory.mjs refuses to run until every one has one, because this is the",
+    "part that must not be inferred. `op` is add, replace or skip; `skip` says the line is already",
+    "there and `why` says where. Every add and replace carries the evidence entry its line rests on,",
+    "in the same four forms the nightly job writes (said, paraphrase, read, rests on).",
+    "model-of-tom/agent-rules.md is a legal target HERE — a one-shot import, reviewed as a commit —",
+    "though the nightly learning job never writes it."
+  ],
+  "C-008": {
+    "file": "model-of-tom/agent-rules.md",
+    "section": "Posture",
+    "op": "add",
+    "line": "Rely on task notifications to resume background work; stop every fallback wakeup before finishing a run.",
+    "evidence": [
+      {
+        "form": "paraphrase",
+        "date": "2026-07-08",
+        "source": "laptop memory feedback_no_dangling_wakeups.md",
+        "text": "during a long autonomous run a fallback ScheduleWakeup left armed keeps firing after the work is done; task notifications resume the work on their own."
+      }
+    ]
+  },
+  "C-015": {
+    "file": "model-of-tom/intent.md",
+    "section": "What to push toward",
+    "op": "skip",
+    "why": "already on intent.md as \"A todo system that is fun, reliable and touched all day, which he trusts enough to stop holding things in his head.\""
+  },
+  "C-034": {
+    "file": "model-of-tom/agent-rules.md",
+    "section": "Never",
+    "op": "add",
+    "line": "Never type his password: act as him through the CLI pens on the box, whose connection details are not in a public repository.",
+    "evidence": [
+      {
+        "form": "paraphrase",
+        "date": "2026-09-04",
+        "source": "laptop memory reference_jarvis_box_access.md",
+        "text": "his ruling that an agent never types his password; the box's address, deployment and the internalCreateSession and internalSendMessage pens are the way to act as him."
+      }
+    ]
+  },
+  "C-050": {
+    "file": "model-of-tom/agent-rules.md",
+    "section": "Repos",
+    "op": "add",
+    "line": "WikiTom has one branch, main, on the remote named WikiTom; fetch with --prune before reasoning about its branches.",
+    "evidence": [
+      {
+        "form": "read",
+        "date": "2026-05-25",
+        "source": "laptop memory project_wikitom_main_branch.md",
+        "text": "the branches were consolidated on main; the deprecated master has unrelated history and survives only at a local tag, and the laptop's tracking refs go stale."
+      }
+    ]
+  },
+  "C-058": {
+    "file": "model-of-tom/areas/research.md",
+    "section": "Current state",
+    "op": "add",
+    "line": "The paper's contribution is the impact of trigger-function complexity; which complexity metric correlates best is an appendix question.",
+    "evidence": [
+      {
+        "form": "paraphrase",
+        "date": "2026-08-01",
+        "source": "laptop memory complexity-impact-not-which-metric.md",
+        "text": "his framing rule for the paper: the main text is the impact of complexity as a general property, and the sensitivity-versus-non-monotonicity comparison goes to the appendix."
+      }
+    ]
+  },
+  "C-060": {
+    "file": "model-of-tom/agent-rules.md",
+    "section": "Committing and merging",
+    "op": "add",
+    "line": "Push paper source to main after editing it, fetching and rebasing first: Overleaf shows only what has landed there.",
+    "evidence": [
+      {
+        "form": "paraphrase",
+        "date": "2026-08-01",
+        "source": "laptop memory push-paper-changes-to-main.md",
+        "text": "his standing authorization to push the paper source, not the build artifacts, without asking, because Overleaf syncs through GitHub main."
+      }
+    ]
+  },
+  "C-070": {
+    "file": "model-of-tom/agent-rules.md",
+    "section": "Subagents",
+    "op": "add",
+    "line": "An \"agent finished\" notification is not proof the child finished: it fires whenever an agent has no live background children. Describe only what you observed.",
+    "evidence": [
+      {
+        "form": "read",
+        "date": "2026-08-14",
+        "source": "laptop memory agent-finished-notification-is-not-proof.md",
+        "text": "the notification fired between two polls of a subagent's own long job, while that job was still running."
+      }
+    ]
+  },
+  "C-071": {
+    "file": "model-of-tom/areas/research.md",
+    "section": "Current state",
+    "op": "add",
+    "line": "The all-True control is a twin, never a sentinel; the grid runs one seed whole before the next seed starts.",
+    "evidence": [
+      {
+        "form": "said",
+        "date": "2026-09-09",
+        "source": "laptop memory all-true-twin-not-sentinel.md",
+        "text": "I already ruled that I want to purge the sentinel name for this because sentinel means something else in cmt. they are both twins."
+      },
+      {
+        "form": "said",
+        "date": "2026-09-09",
+        "source": "laptop memory all-true-twin-not-sentinel.md",
+        "text": "I want to run the whole grid on a single seed before starting another seed."
+      }
+    ]
+  },
+  "C-074": {
+    "file": "model-of-tom/areas/agent-systems.md",
+    "section": "Current state",
+    "op": "add",
+    "line": "Claude Desktop dies by an Electron GPU-process crash under heavy app-mediated web access, not under workflow size.",
+    "evidence": [
+      {
+        "form": "read",
+        "date": "2026-08-12",
+        "source": "laptop memory claude-desktop-gpu-crash.md",
+        "text": "every death logged the same GPU process crash; his correction named concurrent WebSearch and WebFetch as the trigger, and a hundred local urllib requests caused none."
+      }
+    ]
+  },
+  "C-075": {
+    "file": "model-of-tom/agent-rules.md",
+    "section": "Subagents",
+    "op": "add",
+    "line": "One worktree per branch: concurrent test runs in one shared checkout produce failures that are not in the code.",
+    "evidence": [
+      {
+        "form": "read",
+        "date": "2026-08-01",
+        "source": "laptop memory cmt-vqc-transition-gotchas.md",
+        "text": "concurrent pytest runs in shared repository directories produced phantom failures during the CMT and VQC transition."
+      }
+    ]
+  },
+  "C-076": {
+    "file": "model-of-tom/agent-rules.md",
+    "section": "Codex",
+    "op": "skip",
+    "why": "already on agent-rules.md as \"Codex audits plans and code as a second model family... The prompt quotes his ruling verbatim and asks for every deviation\""
+  },
+  "C-077": {
+    "file": "model-of-tom/agent-rules.md",
+    "section": "Delegation and models",
+    "op": "add",
+    "line": "Sonnet carries Codex relays and nothing else.",
+    "evidence": [
+      {
+        "form": "said",
+        "date": "2026-09-07",
+        "source": "laptop memory codex-implements-claude-plans.md",
+        "text": "lets use sonnet for codex relays. this is the only use for sonnet because it is too expensive on my usage for grunt work and not wise enough for the tasks claude is now delegated to."
+      }
+    ]
+  },
+  "C-086": {
+    "file": "model-of-tom/agent-rules.md",
+    "section": "Implementing and asking",
+    "op": "add",
+    "line": "Verify a deployed fix by building or running something, not by waiting on a retry timer; poll about every five minutes until it is confirmed, then widen.",
+    "evidence": [
+      {
+        "form": "paraphrase",
+        "date": "2026-08-01",
+        "source": "laptop memory monitoring-cadence.md",
+        "text": "the cadence he settled on while iterating on a live fix, and the better move: build one node or run a smoke rather than wait."
+      }
+    ]
+  },
+  "C-087": {
+    "file": "model-of-tom/agent-rules.md",
+    "section": "Committing and merging",
+    "op": "add",
+    "line": "Never launch a sweep or a GPU build on a dirty tree: provenance records the commit and never blocks, so a dirty run records a commit that does not describe the code that ran.",
+    "evidence": [
+      {
+        "form": "read",
+        "date": "2026-06-27",
+        "source": "laptop memory no-run-on-dirty-tree.md",
+        "text": "he decided provenance records git_sha only and never blocks a run, which leaves the clean-tree requirement as discipline."
+      }
+    ]
+  },
+  "C-089": {
+    "file": "model-of-tom/agent-rules.md",
+    "section": "Jobs",
+    "op": "add",
+    "line": "Heavy compute runs on Turing, never on his laptop; the SSH wrapper serializes the connections.",
+    "evidence": [
+      {
+        "form": "said",
+        "date": "2026-09-07",
+        "source": "laptop memory offload-compute-to-turing.md",
+        "text": "let's move all compute to Turing CPUs/GPUs rather than my laptop because I don't have much memory here and everything runs slow."
+      }
+    ]
+  },
+  "C-091": {
+    "file": "model-of-tom/agent-rules.md",
+    "section": "Search",
+    "op": "add",
+    "line": "The session-transcript search indexes one Claude Code account; his other account's sessions are on disk under the same projects directory and are found by reading it.",
+    "evidence": [
+      {
+        "form": "read",
+        "date": "2026-09-01",
+        "source": "laptop memory other-account-sessions-on-disk.md",
+        "text": "he runs Claude Code under a WPI account and a personal one, and the transcript search returned only the current account's sessions while both accounts' files sat in the same store."
+      }
+    ]
+  },
+  "C-092": {
+    "file": "model-of-tom/agent-rules.md",
+    "section": "Jobs",
+    "op": "add",
+    "line": "A scheduled wakeup dies with the process that armed it; an unattended loop of hours runs on cron.",
+    "evidence": [
+      {
+        "form": "read",
+        "date": "2026-07-24",
+        "source": "laptop memory overnight-loop-durability.md",
+        "text": "an overnight loop stopped about six hours in when the host process exited and its pending wakeup went with it."
+      }
+    ]
+  },
+  "C-093": {
+    "file": "model-of-tom/writing.md",
+    "section": "Terms",
+    "op": "add",
+    "line": "Never a campaign, job or branch codename in anything he reads: translate it to plain words, or to the vocabulary he has confirmed.",
+    "evidence": [
+      {
+        "form": "said",
+        "date": "2026-09-09",
+        "source": "laptop memory plain-language-experiment-names.md",
+        "text": "you are using a lot of made up names for different experiments that I dont understand and for most of them i dont need to understand so translate it into normal language when explaining things to me."
+      }
+    ]
+  },
+  "C-094": {
+    "file": "model-of-tom/writing.md",
+    "section": "Explaining",
+    "op": "add",
+    "line": "Give a result as the raw values in literal language; never compress it into a verdict word. Length is not the cost.",
+    "evidence": [
+      {
+        "form": "said",
+        "date": "2026-09-07",
+        "source": "laptop memory report-raw-values-verbosely.md",
+        "text": "when giving me results I want you to give me the raw values that you got explained with straightforward literal language rather than being concise."
+      }
+    ]
+  },
+  "C-095": {
+    "file": "model-of-tom/agent-rules.md",
+    "section": "Subagents",
+    "op": "add",
+    "line": "A rewind, or a message sent by accident, kills every background agent: commit and push work in progress within about fifteen minutes and keep a manifest of what was dispatched.",
+    "evidence": [
+      {
+        "form": "said",
+        "date": "2026-09-07",
+        "source": "laptop memory rewind-kills-background-agents.md",
+        "text": "these process crash happen whenever I rewind to a previous message i sent to fix something or if i accidentally hit return and send it. idk what to do about it."
+      }
+    ]
+  },
+  "C-098": {
+    "file": "model-of-tom/areas/research.md",
+    "section": "Current state",
+    "op": "add",
+    "line": "The September core-config document is written for the peer writing the paper: ASR, FTR and percent of ceiling only, trigger words rather than markers, standard ML language.",
+    "evidence": [
+      {
+        "form": "said",
+        "date": "2026-09-08",
+        "source": "laptop memory september-doc-for-coauthor.md",
+        "text": "I am writing this for my peer who is writing the paper for me so he doesn't need to know anything about the artifact tree"
+      },
+      {
+        "form": "said",
+        "date": "2026-09-08",
+        "source": "laptop memory september-doc-for-coauthor.md",
+        "text": "the only metrics to discuss should be asr, ftr, and percent of ceiling"
+      }
+    ]
+  },
+  "C-099": {
+    "file": "model-of-tom/agent-rules.md",
+    "section": "Subagents",
+    "op": "add",
+    "line": "The session usage limit ends every subagent at once and resets about five hours later: fan out just after a reset, and inventory the uncommitted worktrees after a kill.",
+    "evidence": [
+      {
+        "form": "read",
+        "date": "2026-09-06",
+        "source": "laptop memory session-usage-limit-windows.md",
+        "text": "it fired twice in one day, each time ending every subagent with a session-limit error, and the gap between them looked like five hours."
+      }
+    ]
+  },
+  "C-101": {
+    "file": "model-of-tom/agent-rules.md",
+    "section": "Jobs",
+    "op": "add",
+    "line": "His durable GPU cap is the account's: twelve on short and four on long. Use them all when they are free.",
+    "evidence": [
+      {
+        "form": "said",
+        "date": "2026-09-03",
+        "source": "laptop memory turing-gpu-budget-2026-08-14.md",
+        "text": "my account cap is the only durable thing which is 12 gpus on short and 4 on long. I want to use them all if available when im running experiments."
+      }
+    ]
+  },
+  "C-102": {
+    "file": "model-of-tom/agent-rules.md",
+    "section": "Repos",
+    "op": "add",
+    "line": "Bring the Turing checkout up to origin/master before running anything there, and never move it back to protect a running job.",
+    "evidence": [
+      {
+        "form": "paraphrase",
+        "date": "2026-09-08",
+        "source": "laptop memory turing-repo-update-master.md",
+        "text": "his policy that the cluster checkout stays on the latest master, because a stale one produces results inconsistent with it."
+      }
+    ]
+  },
+  "C-103": {
+    "file": "model-of-tom/agent-rules.md",
+    "section": "Jobs",
+    "op": "add",
+    "line": "Edit a shared launcher by writing a temporary file and moving it into place; a syntax error citing a line that does not match the file is a torn read.",
+    "evidence": [
+      {
+        "form": "read",
+        "date": "2026-09-08",
+        "source": "laptop memory turing-ssh-wrapper-atomic-edits.md",
+        "text": "rewriting the SSH wrapper in place gave a concurrent reader a torn file and an error at a line the file no longer had."
+      }
+    ]
+  },
+  "C-104": {
+    "file": "model-of-tom/agent-rules.md",
+    "section": "Subagents",
+    "op": "add",
+    "line": "Read the deciding text yourself before relaying a subagent's claim; a Codex audit covers analysis, not only code.",
+    "evidence": [
+      {
+        "form": "said",
+        "date": "2026-09-07",
+        "source": "laptop memory verify-rules-text-before-asserting.md",
+        "text": "You were quite sloppy in a lot of your assumptions about how things work without checking the details"
+      }
+    ]
+  }
+}
