@@ -261,22 +261,17 @@ export function readTexts(dir, { name = null, ext = ".md" } = {}) {
 }
 
 // ── 4. Where a handoff's evidence goes ───────────────────────────────────────
-/** The project directory a repository name is spelled with, for the evidence
- * file a handoff lands in. Anything unrecognised goes to handoffs.md, which
- * has no synthesis counterpart at all. */
-export const PROJECT_REPOS = [
-  [/tom-quest$/i, "tom.quest"],
-  [/wikitom$/i, "WikiTom"],
-  [/complexmultitrigger$/i, "ComplexMultiTrigger"],
-  [/byobu$/i, "Byobu"],
-  [/overleaf/i, "Overleaf"],
-  [/thmm/i, "THMM"],
-  [/bioeng/i, "BioEng"],
-];
-
-export function handoffTarget(dir) {
-  for (const [pattern, repo] of PROJECT_REPOS) {
-    if (pattern.test(String(dir ?? ""))) return `model-of-tom/evidence/repos/${repo}.md`;
+// WHICH REPOSITORY A PROJECT DIRECTORY BELONGS TO IS DATA, NOT CODE: it lives
+// under `_projects` in laptop-memory-routing.json beside the routing entries,
+// hand-written like them. Two reasons. It is the same kind of fact — a
+// judgment about what a laptop directory holds, made once and reviewed as a
+// commit — and a list of repository names in a source file is a copy of the
+// one home in convex/ttsShared.ts, which scripts/check-session-mirrors.mjs
+// refuses on sight and is right to.
+export function handoffTarget(dir, projects = []) {
+  const name = String(dir ?? "");
+  for (const { match, repo } of projects) {
+    if (new RegExp(match, "i").test(name)) return `model-of-tom/evidence/repos/${repo}.md`;
   }
   return HANDOFFS_FILE;
 }
@@ -335,7 +330,7 @@ function locate(lines, file, section) {
  * over the WikiTom checkout, so --dry-run is the same code path with a writer
  * that keeps its writes in memory.
  */
-export function runImport({ rows, routing, io, day }) {
+export function runImport({ rows, routing, io, day, projects = [] }) {
   const written = [];
   const held = [];
   // A row DOWNGRADED here (its overlap claim did not check out) is held, never
@@ -369,7 +364,7 @@ export function runImport({ rows, routing, io, day }) {
   const handoffs = [];
   const heading = `handoffs — laptop memory ${day}`;
   for (const row of rows.filter((r) => r.status === "UNIQUE-PROJECT")) {
-    const target = handoffTarget(row.dir);
+    const target = handoffTarget(row.dir, projects);
     const before = io.exists(target) ? io.read(target) : handoffHeader(target);
     io.write(target, appendUnderHeading(before, heading, handoffEntry(row, day)));
     handoffs.push({ id: row.id, file: target });
@@ -499,7 +494,7 @@ async function main() {
   }
 
   const io = checkoutIo(args.wikitom, { dryRun: args.dryRun });
-  const result = runImport({ rows: joined, routing, io, day });
+  const result = runImport({ rows: joined, routing, io, day, projects: routing._projects ?? [] });
 
   // The gate: the same checker the nightly job runs. A failure rolls the whole
   // import back — on a real run by restoring what was read, on a dry run by

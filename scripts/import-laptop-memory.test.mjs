@@ -43,6 +43,10 @@ const CATALOGUE = process.env.TTS_MEMORY_CATALOGUE ?? path.join(
   "content-C-laptop-memory.md",
 );
 const ROUTING = path.join(here, "laptop-memory-routing.json");
+// Which repository each laptop project directory belongs to is DATA, beside
+// the routing entries: a source file listing repository names is a copy of the
+// one home, which check-session-mirrors.mjs refuses.
+const PROJECTS = JSON.parse(fs.readFileSync(ROUTING, "utf8"))._projects;
 
 function tmp() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "import-"));
@@ -139,6 +143,7 @@ describe("the routing file", () => {
     const { rows } = parseCatalogue(fs.readFileSync(CATALOGUE, "utf8"));
     const routing = JSON.parse(fs.readFileSync(ROUTING, "utf8"));
     const durable = rows.filter((r) => r.status === "UNIQUE-DURABLE").map((r) => r.id);
+    expect(Array.isArray(routing._projects)).toBe(true);
     expect(durable.filter((id) => routing[id] === undefined)).toEqual([]);
     for (const id of durable) {
       const route = routing[id];
@@ -325,7 +330,7 @@ describe("runImport", () => {
   it("routes each handoff to its repository's evidence file, and the rest to handoffs.md", () => {
     const dir = wikitom();
     const io = checkoutIo(dir);
-    const result = runImport({ rows, routing, io, day: "2026-09-11" });
+    const result = runImport({ rows, routing, io, day: "2026-09-11", projects: PROJECTS });
     expect(result.handoffs.map((h) => h.file)).toEqual([
       "model-of-tom/evidence/repos/tom.quest.md",
       HANDOFFS_FILE,
@@ -394,15 +399,15 @@ describe("the delete list", () => {
 
 describe("the small pieces", () => {
   it("names a handoff's target by its project directory", () => {
-    expect(handoffTarget("c--Users-heffn-Desktop-tom-quest")).toBe("model-of-tom/evidence/repos/tom.quest.md");
-    expect(handoffTarget("C--Users-heffn-Desktop-WikiTom")).toBe("model-of-tom/evidence/repos/WikiTom.md");
-    expect(handoffTarget("C--Users-heffn-Desktop-booleanbackdoor-ComplexMultiTrigger")).toBe(
+    expect(handoffTarget("c--Users-heffn-Desktop-tom-quest", PROJECTS)).toBe("model-of-tom/evidence/repos/tom.quest.md");
+    expect(handoffTarget("C--Users-heffn-Desktop-WikiTom", PROJECTS)).toBe("model-of-tom/evidence/repos/WikiTom.md");
+    expect(handoffTarget("C--Users-heffn-Desktop-booleanbackdoor-ComplexMultiTrigger", PROJECTS)).toBe(
       "model-of-tom/evidence/repos/ComplexMultiTrigger.md",
     );
-    expect(handoffTarget("C--Users-heffn-Desktop-overleaf-Boolean-Backdoor-Overleaf")).toBe(
+    expect(handoffTarget("C--Users-heffn-Desktop-overleaf-Boolean-Backdoor-Overleaf", PROJECTS)).toBe(
       "model-of-tom/evidence/repos/Overleaf.md",
     );
-    expect(handoffTarget("C--Users-heffn-Desktop-Whatever")).toBe(HANDOFFS_FILE);
+    expect(handoffTarget("C--Users-heffn-Desktop-Whatever", PROJECTS)).toBe(HANDOFFS_FILE);
   });
 
   it("renders a handoff entry as a title and what it was read from", () => {

@@ -7,7 +7,20 @@
     "there and `why` says where. Every add and replace carries the evidence entry its line rests on,",
     "in the same four forms the nightly job writes (said, paraphrase, read, rests on).",
     "model-of-tom/agent-rules.md is a legal target HERE — a one-shot import, reviewed as a commit —",
-    "though the nightly learning job never writes it."
+    "though the nightly learning job never writes it.",
+    "`_projects` says which repository each laptop project directory belongs to, so a handoff's",
+    "evidence entry lands in that repository's file. It is data for the same reason the routing is:",
+    "a judgment made once and reviewed as a commit. A directory matching none of these goes to",
+    "model-of-tom/evidence/handoffs.md, which has no synthesis counterpart at all."
+  ],
+  "_projects": [
+    { "match": "tom-quest$", "repo": "tom.quest" },
+    { "match": "wikitom$", "repo": "WikiTom" },
+    { "match": "complexmultitrigger$", "repo": "ComplexMultiTrigger" },
+    { "match": "byobu$", "repo": "Byobu" },
+    { "match": "overleaf", "repo": "Overleaf" },
+    { "match": "thmm", "repo": "THMM" },
+    { "match": "bioeng", "repo": "BioEng" }
   ],
   "C-008": {
     "file": "model-of-tom/agent-rules.md",
