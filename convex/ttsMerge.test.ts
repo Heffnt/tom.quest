@@ -2,12 +2,17 @@ import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import schema from "./schema";
 import {
+  AUDIT_REMOVAL_HEADING,
+  AUDIT_REMOVAL_NOTES_MAX,
+  AUDIT_REMOVAL_NOTE_MAX_CHARS,
   AUDIT_TEXT_MAX_BYTES,
   AUDIT_VERDICT,
   MERGE,
   TESTS_RUN,
   auditVerdictOf,
+  checkRowPassed,
   commitKey,
+  removalNotesOf,
 } from "./ttsMerge";
 import { EVALS_RUN } from "./ttsEvals";
 
@@ -89,6 +94,74 @@ describe("auditVerdictOf", () => {
   it("does not read a verdict quoted inside a sentence", () => {
     expect(auditVerdictOf("Do not write VERDICT: APPROVED unless you mean it.")).toBe(null);
     expect(auditVerdictOf("I looked at the diff and it is fine.")).toBe(null);
+  });
+});
+
+describe("removalNotesOf", () => {
+  const APPROVED = "VERDICT: APPROVED\n\n";
+
+  it("reads nothing out of an answered check with nothing to report", () => {
+    expect(removalNotesOf(`${APPROVED}${AUDIT_REMOVAL_HEADING} none\n\nIt deletes more than it adds.`)).toEqual([]);
+    expect(removalNotesOf(`${APPROVED}${AUDIT_REMOVAL_HEADING}   NONE  `)).toEqual([]);
+  });
+
+  it("reads the bullets, and stops at the paragraph after them", () => {
+    expect(
+      removalNotesOf(
+        `${APPROVED}${AUDIT_REMOVAL_HEADING}\n` +
+          "- convex/http.ts:a second key header — the change does not say why the first cannot be deleted\n" +
+          "-  worker/jobs/evals.mjs:a retry branch — the change does not say why the timeout cannot be deleted \n" +
+          "\nThe rest of it is narrow and does what it says.",
+      ),
+    ).toEqual([
+      "convex/http.ts:a second key header — the change does not say why the first cannot be deleted",
+      "worker/jobs/evals.mjs:a retry branch — the change does not say why the timeout cannot be deleted",
+    ]);
+  });
+
+  it("reads nothing when the audit never answered the question", () => {
+    expect(removalNotesOf(`${APPROVED}It does what it says and touches nothing else.`)).toEqual([]);
+  });
+
+  // The same anchoring auditVerdictOf has: without it, the quoted heading below
+  // would pull the sentence after it in as a finding.
+  it("does not read a heading quoted inside a sentence", () => {
+    expect(
+      removalNotesOf(
+        `${APPROVED}I would write ${AUDIT_REMOVAL_HEADING} none here if there were none.\n` +
+          "- convex/http.ts:a flag — the change does not say why\n",
+      ),
+    ).toEqual([]);
+  });
+
+  it("caps the list and each finding in it", () => {
+    const many = `${AUDIT_REMOVAL_HEADING}\n${Array.from(
+      { length: AUDIT_REMOVAL_NOTES_MAX + 5 },
+      (_, i) => `- convex/x.ts:addition ${i}`,
+    ).join("\n")}\n`;
+    expect(removalNotesOf(many)).toHaveLength(AUDIT_REMOVAL_NOTES_MAX);
+
+    const long = removalNotesOf(`${AUDIT_REMOVAL_HEADING}\n- ${"x".repeat(500)}\n`);
+    expect(long[0]).toHaveLength(AUDIT_REMOVAL_NOTE_MAX_CHARS);
+  });
+});
+
+describe("checkRowPassed", () => {
+  it("answers for each of the three kinds, and false for a kind it was never taught", () => {
+    expect(checkRowPassed(TESTS_RUN, { ok: true })).toBe(true);
+    expect(checkRowPassed(TESTS_RUN, { ok: false })).toBe(false);
+    expect(checkRowPassed(TESTS_RUN, {})).toBe(false);
+
+    expect(checkRowPassed(AUDIT_VERDICT, { verdict: "approved" })).toBe(true);
+    expect(checkRowPassed(AUDIT_VERDICT, { verdict: "REFUSED" })).toBe(false);
+    expect(checkRowPassed(AUDIT_VERDICT, {})).toBe(false);
+
+    expect(checkRowPassed(EVALS_RUN, { regressions: 0 })).toBe(true);
+    expect(checkRowPassed(EVALS_RUN, { regressions: 2 })).toBe(false);
+    expect(checkRowPassed(EVALS_RUN, {})).toBe(false);
+
+    expect(checkRowPassed("merge", { ok: true })).toBe(false);
+    expect(checkRowPassed(TESTS_RUN, undefined)).toBe(false);
   });
 });
 
@@ -270,6 +343,34 @@ describe("GET /tts/merge-gate — what the box asks before it merges", () => {
     expect(open.missing).toEqual([]);
   });
 
+  // THE REMOVAL CHECK IS NOT A FOURTH HEAD ROW (§23.8). The findings ride on
+  // the audit row; the gate's answer has to be the same object with and
+  // without them, which is what a deep equality over the whole result proves
+  // and a spot check on `allowed` would not.
+  it("answers identically whether or not the audit row carries removal notes", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const notes = ["convex/http.ts:a second key header — the change does not say why"];
+    const text = "VERDICT: APPROVED\n\nIt does what it says.";
+
+    async function gateWith(auditData: Record<string, unknown>, evalsRegressions: number) {
+      const t = convex();
+      await greenTests(t);
+      await seedFact(t, AUDIT_VERDICT, auditData);
+      await seedFact(t, EVALS_RUN, { regressions: evalsRegressions, pass: 40, items: 40 });
+      return await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+    }
+
+    const open = await gateWith({ verdict: "APPROVED", text }, 0);
+    const openWithNotes = await gateWith({ verdict: "APPROVED", text, removalNotes: notes }, 0);
+    expect(openWithNotes).toEqual(open);
+    expect(open.allowed).toBe(true);
+
+    const shut = await gateWith({ verdict: "REFUSED", text }, 1);
+    const shutWithNotes = await gateWith({ verdict: "REFUSED", text, removalNotes: notes }, 1);
+    expect(shutWithNotes).toEqual(shut);
+    expect(shut.allowed).toBe(false);
+  });
+
   it("400s without a repo and a sha, and 401s without the key", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convex();
@@ -354,6 +455,39 @@ describe("POST /tts/audit — the second check's own door", () => {
     expect(new TextEncoder().encode(stored as string).length).toBeLessThanOrEqual(
       AUDIT_TEXT_MAX_BYTES,
     );
+  });
+
+  it("files the removal check's findings on the row, beside the text they came out of", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await post(t, "/tts/audit", {
+      repo: REPO,
+      sha: SHA,
+      text:
+        "VERDICT: APPROVED\n\nIt lands safely.\n\n" +
+        `${AUDIT_REMOVAL_HEADING}\n` +
+        "- convex/http.ts:a second key header — the change does not say why the first cannot be deleted\n",
+    });
+    expect((await auditRow(t))?.data).toMatchObject({
+      verdict: "APPROVED",
+      removalNotes: [
+        "convex/http.ts:a second key header — the change does not say why the first cannot be deleted",
+      ],
+    });
+  });
+
+  it("files an empty list for an audit that answered the removal check with none", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await post(t, "/tts/audit", {
+      repo: REPO,
+      sha: SHA,
+      text: `VERDICT: APPROVED\n\n${AUDIT_REMOVAL_HEADING} none\n\nIt deletes more than it adds.`,
+    });
+    expect((await auditRow(t))?.data).toMatchObject({ removalNotes: [] });
+    // The gate is unmoved by either answer: the three head rows are still three.
+    const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+    expect(gate.missing).toEqual(["tests", "evals"]);
   });
 
   it("refuses an answer with no verdict line — an audit that did not say did not finish", async () => {

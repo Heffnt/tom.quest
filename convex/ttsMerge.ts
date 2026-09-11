@@ -43,6 +43,13 @@ export const MERGE = "merge";
 export const AUDIT_APPROVED = "APPROVED";
 /** The most audit prose retained on its event, measured after redaction. */
 export const AUDIT_TEXT_MAX_BYTES = 8 * 1024;
+/** The heading the audit files its removal-check findings under
+ *  (worker/jobs/audit.mjs AUDIT_REMOVAL_HEADING asks for this exact word). */
+export const AUDIT_REMOVAL_HEADING = "REMOVAL CHECK:";
+/** How many findings and how much of each are kept. A row is a record, not the
+ *  audit's whole answer: the text it came out of is already on the row. */
+export const AUDIT_REMOVAL_NOTES_MAX = 20;
+export const AUDIT_REMOVAL_NOTE_MAX_CHARS = 300;
 
 /** The key every fact ABOUT ONE COMMIT is filed under — the spelling
  *  convex/ttsEvals.ts already uses for an evals run, so all three checks are
@@ -70,6 +77,43 @@ export function auditVerdictOf(text: string): string | null {
   return hit === null ? null : hit[1].toUpperCase();
 }
 
+/**
+ * The audit's removal check: every case, flag or check the diff ADDS whose
+ * change does not say why the thing it patches cannot be deleted instead
+ * (worker/jobs/audit.mjs asks the question; the operate rule is what the agent
+ * writing the diff read first).
+ *
+ * ANCHORED, like the verdict line and for the same reason: a heading quoted
+ * inside the prose ("say REMOVAL CHECK: none when there are none") is not the
+ * heading. `none` on the heading line answers the question with nothing to
+ * report, which is not the same fact as an audit that never answered it — both
+ * come back as an empty list here, and the audit text on the row is where the
+ * difference is still readable.
+ *
+ * The list ends at a blank line or at the first line that is not a bullet,
+ * because the audit's paragraph follows it and a paragraph is not a finding.
+ *
+ * THE GATE DOES NOT READ THIS. §23.8: the gate keeps its three head rows, and a
+ * fourth condition goes inside a check that already runs rather than beside it.
+ * A branch that adds an early return with no argument against deleting what it
+ * patches still merges; the finding is on the row for whoever reads it and for
+ * the weekly simplification pass.
+ */
+export function removalNotesOf(text: string): string[] {
+  const heading = new RegExp(`^[ \\t]*${AUDIT_REMOVAL_HEADING}[ \\t]*(.*)$`, "im").exec(text);
+  if (heading === null) return [];
+  if (heading[1].trim().toLowerCase() === "none") return [];
+  const after = text.slice(heading.index + heading[0].length).split(/\r?\n/).slice(1);
+  const notes: string[] = [];
+  for (const line of after) {
+    if (notes.length >= AUDIT_REMOVAL_NOTES_MAX) break;
+    const bullet = /^[ \t]*-[ \t]+(.*\S)[ \t]*$/.exec(line);
+    if (bullet === null) break;
+    notes.push(bullet[1].trim().slice(0, AUDIT_REMOVAL_NOTE_MAX_CHARS));
+  }
+  return notes;
+}
+
 function capUtf8(text: string, maxBytes: number): string {
   const bytes = new TextEncoder().encode(text);
   if (bytes.length <= maxBytes) return text;
@@ -87,6 +131,24 @@ function auditReason(text: unknown): string | null {
   );
   if (verdictLine < 0) return null;
   return lines.slice(verdictLine + 1).map((line) => line.trim()).find(Boolean) ?? null;
+}
+
+/**
+ * What a PASSED check is, for each of the three kinds, in one place. The gate
+ * below computes its three `passed` booleans with this, and convex/ttsSimplify.ts
+ * counts how often a check has failed with it: two copies of this predicate is
+ * one of them wrong, and the wrong one would be the copy that decides whether a
+ * branch merges.
+ *
+ * An unknown kind is false, not an error, for the same reason the gate is
+ * fail-closed: a row nobody taught this function about has not passed anything.
+ */
+export function checkRowPassed(kind: string, data: unknown): boolean {
+  const row = (data ?? {}) as { ok?: unknown; verdict?: unknown; regressions?: unknown };
+  if (kind === TESTS_RUN) return row.ok === true;
+  if (kind === AUDIT_VERDICT) return String(row.verdict).toUpperCase() === AUDIT_APPROVED;
+  if (kind === EVALS_RUN) return row.regressions === 0;
+  return false;
 }
 
 export type MergeCheck = {
@@ -132,7 +194,7 @@ export async function mergeGateFor(
   const testsCheck: MergeCheck =
     tests === null
       ? { name: "tests", passed: false, why: `no tests result is recorded for ${short}` }
-      : testsData.ok === true
+      : checkRowPassed(TESTS_RUN, testsData)
         ? { name: "tests", passed: true, why: `the tests are green at ${short}` }
         : {
             name: "tests",
@@ -144,13 +206,15 @@ export async function mergeGateFor(
 
   const audit = await rowFor(ctx, AUDIT_VERDICT, key);
   const auditData = (audit?.data ?? {}) as { verdict?: unknown; text?: unknown };
+  // The WORD is still read here, because the deny message names what the audit
+  // answered; whether that word opens the gate is checkRowPassed's to say.
   const verdict = typeof auditData.verdict === "string" ? auditData.verdict.toUpperCase() : null;
   const auditWhy = auditReason(auditData.text);
   const auditDetail = auditWhy === null ? "" : ` — ${auditWhy}`;
   const auditCheck: MergeCheck =
     audit === null
       ? { name: "audit", passed: false, why: `no audit verdict is recorded for ${short}` }
-      : verdict === AUDIT_APPROVED
+      : checkRowPassed(AUDIT_VERDICT, auditData)
         ? { name: "audit", passed: true, why: `the audit approved ${short}${auditDetail}` }
         : {
             name: "audit",
@@ -172,7 +236,7 @@ export async function mergeGateFor(
   const evalsCheck: MergeCheck =
     evals === null
       ? { name: "evals", passed: false, why: `no evals run scored ${short}` }
-      : regressions === 0
+      : checkRowPassed(EVALS_RUN, evalsData)
         ? { name: "evals", passed: true, why: `the evals scored ${short} with no regression${scored}` }
         : {
             name: "evals",
@@ -223,7 +287,9 @@ export const internalRecordTests = internalMutation({
 });
 
 /** The audit step's verdict and bounded, redacted answer, recorded once per
- * commit for the same reason. */
+ * commit for the same reason, with the removal check's findings read out of
+ * that answer and filed beside it. The gate is unchanged by them: they are
+ * read by whoever opens the row and by the weekly simplification pass. */
 export const internalRecordAudit = internalMutation({
   args: {
     repo: v.string(),
@@ -242,7 +308,14 @@ export const internalRecordAudit = internalMutation({
     }
     const verdict = args.verdict.toUpperCase();
     const text = capUtf8(redactSecrets(args.text), AUDIT_TEXT_MAX_BYTES);
-    await logEvent(ctx, AUDIT_VERDICT, undefined, { ...args, verdict, text }, key);
+    // The findings are read OUT OF THE TEXT THE ROW KEEPS, after the redaction
+    // and the cap, so they cannot say anything the stored text does not and
+    // they go through one redaction path rather than two — two is how one of
+    // them comes to be forgotten. What that costs: an answer whose removal
+    // check falls past 8 KiB loses its notes, and the verdict, which is read
+    // before the cap, does not.
+    const removalNotes = removalNotesOf(text);
+    await logEvent(ctx, AUDIT_VERDICT, undefined, { ...args, verdict, text, removalNotes }, key);
     return { existing: false, verdict };
   },
 });
