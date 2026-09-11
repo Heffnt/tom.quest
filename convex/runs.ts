@@ -31,7 +31,7 @@ const CONTEXT = v.object({
   entrypoint: v.optional(v.string()), originator: v.optional(v.string()), permissionMode: v.optional(v.string()), contextWindow: v.optional(v.number()),
   registered: v.optional(v.boolean()), launcher: v.optional(v.string()), modelRequested: v.optional(v.string()),
   skillsGranted: v.optional(v.array(v.string())), skillsRefused: v.optional(v.array(v.string())),
-  promptSha256: v.optional(v.string()), writingStandardSource: v.optional(v.string()),
+  promptSha256: v.optional(v.string()), writingStandardSource: v.optional(v.string()), workflowId: v.optional(v.string()),
 });
 const OUTCOME = v.object({
   endedReason: v.optional(v.string()), finalTextSeq: v.optional(v.number()),
@@ -114,7 +114,7 @@ function stub(run: { runId: string; parentRunId?: string; rootRunId: string; dep
 }
 
 function validOrigin(origin: string) {
-  return ["session", "planner", "worker", "nightly", "weekly", "delegate", "job", "daemon", "hook", "laptop", "unknown"].includes(origin) || /^cron:[\w.-]{1,64}$/.test(origin);
+  return ["session", "planner", "worker", "nightly", "weekly", "delegate", "job", "daemon", "hook", "laptop", "workflow", "unknown"].includes(origin) || /^cron:[\w.-]{1,64}$/.test(origin);
 }
 async function fileVersionAt(ctx: MutationCtx, runId: string, fileVersion: string) {
   return await ctx.db

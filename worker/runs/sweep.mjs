@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 import { isPermanentStatus } from "../session-host/overflow.mjs";
-import { discoverChildren, parseClaudeFile, parseCodexFile } from "./ingest.mjs";
+import { discoverChildren, parseClaudeFile, parseCodexFile, workflowIdOfPath } from "./ingest.mjs";
 import { runConfig } from "./config.mjs";
 import { describeRunFile, discoverRunFiles } from "./discover.mjs";
 import { findCodexRegistration, mergeRegistration, readRegistration } from "./registration.mjs";
@@ -298,14 +298,20 @@ async function storeSidecar(item, { store, fs }) {
   try { bytes = fs.readFileSync(metaFile); } catch { return null; }
   const stored = await store.put({ runtime: item.runtime, threadId: item.threadId, host: item.host, sourceBytes: bytes, kind: "sidecar" });
   if (!stored.verified || !stored.key) throw new Error("run sidecar upload was not verified");
-  return stored;
+  // The sidecar is the one file under the session directory that names an
+  // agent, so it is that agent's attachment as well as its own stored object.
+  return { ...stored, pointer: { file: metaFile, bytes: bytes.length, sha256: sha256(bytes) } };
 }
 
 function agentMeta(item, fs) {
   if (item.kind !== "subagent") return null;
   const metaFile = item.path.replace(/\.jsonl$/i, ".meta.json");
-  try { return { ...JSON.parse(fs.readFileSync(metaFile, "utf8")), agentId: item.threadId.split("/").at(-1) }; }
-  catch { return { agentId: item.threadId.split("/").at(-1), spawnDepth: 1 }; }
+  // The Workflow sidecar never names its workflow; the folder does, and the
+  // hook path says the same thing as the sweep's own discovery.
+  const workflowId = item.workflowId ?? workflowIdOfPath(item.path);
+  const base = { agentId: item.threadId.split("/").at(-1), ...(workflowId ? { workflowId } : {}) };
+  try { return { ...JSON.parse(fs.readFileSync(metaFile, "utf8")), ...base }; }
+  catch { return { ...base, spawnDepth: 1 }; }
 }
 
 async function eventPost(post, event) {
@@ -381,7 +387,7 @@ async function parseAndStore(item, { stateDir, store, fs, post, now, markAbandon
     // A child's sidecar carries its depth and its spawning tool-use id, so it
     // is part of the record and gets its own immutable object beside the run.
     const sidecar = await storeSidecar(item, { store, fs });
-    parsed = parseClaudeFile({ ...common, agentMeta: agentMeta(item, fs), parentSessionId: item.threadId.split("/")[0], sidecar });
+    parsed = parseClaudeFile({ ...common, agentMeta: agentMeta(item, fs), parentSessionId: item.threadId.split("/")[0], sidecar, attachments: sidecar?.pointer ? [sidecar.pointer] : [] });
   } else {
     parsed = parseClaudeFile({ ...common, attachments: discoverChildren(item.path, { fs }).toolResults });
   }
