@@ -181,6 +181,45 @@ export type WeeklyFacts = {
   readiness: { prepared: number; unprepared: number };
 };
 
+/**
+ * A weekly-input HTTP request composes these independently bounded queries.
+ * Their union is exactly WeeklyFacts; splitting only changes where Convex
+ * accounts for database work, never the response the Friday job receives.
+ */
+const WEEKLY_FACT_GROUPS = [
+  "todos",
+  "active",
+  "integrations",
+  "model",
+  "records",
+  "threads",
+] as const;
+type WeeklyFactGroup = (typeof WEEKLY_FACT_GROUPS)[number];
+
+// Credential history has its own fixed-size page query below, so it is not a
+// member of this fan-out. `gatherWeeklyFacts` still keeps it for its direct
+// callers and tests.
+export const WEEKLY_INPUT_PARTS = ["todos", "active", "model", "records", "threads"] as const;
+export type WeeklyInputPart = (typeof WEEKLY_INPUT_PARTS)[number];
+
+const WEEKLY_PART_FIELDS: Record<WeeklyFactGroup, readonly (keyof Omit<WeeklyFacts, "since" | "until">)[]> = {
+  todos: ["completions", "captures", "dateOutcomes", "surfacedUntouched"],
+  active: ["goalsWithoutOpenTask", "goalsNotEvaluated", "readiness"],
+  integrations: ["integrations"],
+  model: ["areaPages", "modelOfTom"],
+  records: ["learning", "preludes", "instructionsLoaded", "evals", "jobFailures"],
+  threads: ["threads"],
+};
+
+function weeklyPart(
+  facts: WeeklyFacts,
+  part: WeeklyFactGroup,
+): Partial<Omit<WeeklyFacts, "since" | "until">> {
+  return Object.fromEntries(
+    WEEKLY_PART_FIELDS[part].map((field) => [field, facts[field]]),
+  ) as Partial<Omit<WeeklyFacts, "since" | "until">>;
+}
+
 function str(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
@@ -269,35 +308,47 @@ async function standingCredentialFailure(
 const EVALUATION_KINDS = ["session-created", "session-outcome"] as const;
 
 /**
- * When a goal was last evaluated, or null when never: the newest evaluation
- * row on the goal's own id (by_todo, newest first, stopped at the first hit
- * rather than collecting its history) and the newest on its batch's id
- * (by_kind_key per kind, `.first()`), whichever is later.
+ * When a goal was last evaluated, or null when never. Each lookup pins both
+ * the subject and the event kind, so an old goal with many unrelated events
+ * does not make the weekly gather walk its whole history. Batch lookups are
+ * shared by every goal in that batch.
  */
 async function lastGoalEvaluation(
   ctx: QueryCtx,
   goal: Doc<"dtsTodos">,
   until: number,
+  batchEvaluations: Map<string, Promise<number | null>>,
 ): Promise<number | null> {
-  let last: number | null = null;
-  for await (const e of ctx.db
-    .query("dtsEvents")
-    .withIndex("by_todo", (q) => q.eq("todoId", goal._id).lt("at", until))
-    .order("desc")) {
-    if ((EVALUATION_KINDS as readonly string[]).includes(e.kind)) {
-      last = e.at;
-      break;
-    }
-  }
+  const own = await Promise.all(EVALUATION_KINDS.map(async (kind) =>
+    await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_todo_kind_at", (q) => q.eq("todoId", goal._id).eq("kind", kind).lt("at", until))
+      .order("desc")
+      .first(),
+  ));
+  let last = own.reduce<number | null>(
+    (latest, event) =>
+      event !== null && (latest === null || event.at > latest) ? event.at : latest,
+    null,
+  );
   if (goal.batchId !== undefined) {
-    for (const kind of EVALUATION_KINDS) {
-      const row = await ctx.db
-        .query("dtsEvents")
-        .withIndex("by_kind_key", (q) => q.eq("kind", kind).eq("key", goal.batchId).lt("at", until))
-        .order("desc")
-        .first();
-      if (row !== null && (last === null || row.at > last)) last = row.at;
+    let batch = batchEvaluations.get(goal.batchId);
+    if (batch === undefined) {
+      batch = Promise.all(EVALUATION_KINDS.map(async (kind) =>
+        await ctx.db
+          .query("dtsEvents")
+          .withIndex("by_kind_key", (q) => q.eq("kind", kind).eq("key", goal.batchId).lt("at", until))
+          .order("desc")
+          .first(),
+      )).then((rows) => rows.reduce<number | null>(
+        (latest, event) =>
+          event !== null && (latest === null || event.at > latest) ? event.at : latest,
+        null,
+      ));
+      batchEvaluations.set(goal.batchId, batch);
     }
+    const batchLast = await batch;
+    if (batchLast !== null && (last === null || batchLast > last)) last = batchLast;
   }
   return last;
 }
@@ -305,7 +356,9 @@ async function lastGoalEvaluation(
 export async function gatherWeeklyFacts(
   ctx: QueryCtx,
   { since, until }: { since: number; until: number },
+  groups: readonly WeeklyFactGroup[] = WEEKLY_FACT_GROUPS,
 ): Promise<WeeklyFacts> {
+  const wants = (part: WeeklyFactGroup) => groups.includes(part);
   const todoCache = new Map<string, Doc<"dtsTodos"> | null>();
   const todoOf = async (id: Id<"dtsTodos"> | undefined) => {
     if (id === undefined) return null;
@@ -333,115 +386,125 @@ export async function gatherWeeklyFacts(
   // 1. Completions: done rows touched in the window (the status index orders
   // by updatedAt, and a completion bumps it), kept where doneAt is inside.
   const completions: WeeklyFacts["completions"] = [];
-  for (const t of await ctx.db
-    .query("dtsTodos")
-    .withIndex("by_status", (q) => q.eq("status", "done").gte("updatedAt", since))
-    .collect()) {
-    const doneAt = t.doneAt ?? t.updatedAt;
-    if (doneAt < since || doneAt >= until) continue;
-    completions.push({
-      id: t._id,
-      statement: t.statement,
-      kind: t.kind ?? null,
-      batch: await batchName(t.batchId),
-      doneAt,
-    });
-  }
-  completions.sort((a, b) => a.doneAt - b.doneAt);
-
-  // 2. Captures by source: every row created in the window.
-  const bySource = new Map<string, WeeklyFacts["captures"][number]>();
-  for (const t of await ctx.db
-    .query("dtsTodos")
-    .withIndex("by_creation_time", (q) =>
-      q.gte("_creationTime", since).lt("_creationTime", until),
-    )
-    .collect()) {
-    const entry = bySource.get(t.source) ?? { source: t.source, count: 0, items: [] };
-    entry.count++;
-    entry.items.push({ id: t._id, statement: t.statement, createdAt: t.createdAt });
-    bySource.set(t.source, entry);
-  }
-  const captures = [...bySource.values()].sort((a, b) =>
-    a.source < b.source ? -1 : a.source > b.source ? 1 : 0,
-  );
-
-  // 3. Every date outcome — done, renegotiated, missed (the rollover's
-  // included; it writes the same kind).
+  const captures: WeeklyFacts["captures"] = [];
   const dateOutcomes: WeeklyFacts["dateOutcomes"] = [];
-  for (const e of await eventsOfKind("date-outcome")) {
-    const d = (e.data ?? {}) as Record<string, unknown>;
-    if (e.todoId === undefined) continue;
-    dateOutcomes.push({
-      todoId: e.todoId,
-      statement: (await todoOf(e.todoId))?.statement ?? "",
-      outcome: str(d.outcome) ?? "",
-      at: e.at,
-      newDueAt: num(d.newDueAt),
-      note: str(d.note),
-    });
-  }
-
-  // 4. Surfaced three times and untouched: the digest's "surfaced" rows per
-  // todo; touched = a later row on that todo of a kind Tom's own hand writes
-  // (TOM_TOUCH_KINDS above) — the system's rows on it do not count.
-  const surfacings = new Map<Id<"dtsTodos">, { count: number; firstAt: number }>();
-  for (const e of await eventsOfKind("surfaced")) {
-    if (e.todoId === undefined) continue;
-    const s = surfacings.get(e.todoId) ?? { count: 0, firstAt: e.at };
-    s.count++;
-    s.firstAt = Math.min(s.firstAt, e.at);
-    surfacings.set(e.todoId, s);
-  }
   const surfacedUntouched: WeeklyFacts["surfacedUntouched"] = [];
-  for (const [todoId, s] of surfacings) {
-    if (s.count < SURFACED_THRESHOLD) continue;
-    const later = await ctx.db
-      .query("dtsEvents")
-      .withIndex("by_todo", (q) => q.eq("todoId", todoId).gte("at", s.firstAt))
-      .collect();
-    if (later.some(isTomTouch)) continue;
-    const todo = await todoOf(todoId);
-    surfacedUntouched.push({
-      id: todoId,
-      statement: todo?.statement ?? "",
-      surfaced: s.count,
-      firstAt: s.firstAt,
-    });
+  if (wants("todos")) {
+    for (const t of await ctx.db
+      .query("dtsTodos")
+      .withIndex("by_status", (q) => q.eq("status", "done").gte("updatedAt", since).lt("updatedAt", until))
+      .collect()) {
+      const doneAt = t.doneAt ?? t.updatedAt;
+      if (doneAt < since || doneAt >= until) continue;
+      completions.push({
+        id: t._id,
+        statement: t.statement,
+        kind: t.kind ?? null,
+        batch: await batchName(t.batchId),
+        doneAt,
+      });
+    }
+    completions.sort((a, b) => a.doneAt - b.doneAt);
+
+    // 2. Captures by source: every row created in the window.
+    const bySource = new Map<string, WeeklyFacts["captures"][number]>();
+    for (const t of await ctx.db
+      .query("dtsTodos")
+      .withIndex("by_creation_time", (q) =>
+        q.gte("_creationTime", since).lt("_creationTime", until),
+      )
+      .collect()) {
+      const entry = bySource.get(t.source) ?? { source: t.source, count: 0, items: [] };
+      entry.count++;
+      entry.items.push({ id: t._id, statement: t.statement, createdAt: t.createdAt });
+      bySource.set(t.source, entry);
+    }
+    captures.push(...[...bySource.values()].sort((a, b) =>
+      a.source < b.source ? -1 : a.source > b.source ? 1 : 0,
+    ));
+
+    // 3. Every date outcome — done, renegotiated, missed (the rollover's
+    // included; it writes the same kind).
+    for (const e of await eventsOfKind("date-outcome")) {
+      const d = (e.data ?? {}) as Record<string, unknown>;
+      if (e.todoId === undefined) continue;
+      dateOutcomes.push({
+        todoId: e.todoId,
+        statement: (await todoOf(e.todoId))?.statement ?? "",
+        outcome: str(d.outcome) ?? "",
+        at: e.at,
+        newDueAt: num(d.newDueAt),
+        note: str(d.note),
+      });
+    }
+
+    // 4. Surfaced three times and untouched: only kinds Tom writes are read
+    // through the subject-and-kind index. Unrelated event history is not.
+    const surfacings = new Map<Id<"dtsTodos">, { count: number; firstAt: number }>();
+    for (const e of await eventsOfKind("surfaced")) {
+      if (e.todoId === undefined) continue;
+      const s = surfacings.get(e.todoId) ?? { count: 0, firstAt: e.at };
+      s.count++;
+      s.firstAt = Math.min(s.firstAt, e.at);
+      surfacings.set(e.todoId, s);
+    }
+    for (const [todoId, s] of surfacings) {
+      if (s.count < SURFACED_THRESHOLD) continue;
+      let touched = false;
+      for (const kind of TOM_TOUCH_KINDS) {
+        for await (const event of ctx.db
+          .query("dtsEvents")
+          .withIndex("by_todo_kind_at", (q) => q.eq("todoId", todoId).eq("kind", kind).gte("at", s.firstAt).lt("at", until))) {
+          if (isTomTouch(event)) {
+            touched = true;
+            break;
+          }
+        }
+        if (touched) break;
+      }
+      if (touched) continue;
+      const todo = await todoOf(todoId);
+      surfacedUntouched.push({
+        id: todoId,
+        statement: todo?.statement ?? "",
+        surfaced: s.count,
+        firstAt: s.firstAt,
+      });
+    }
+    surfacedUntouched.sort((a, b) => b.surfaced - a.surfaced || a.firstAt - b.firstAt);
   }
-  surfacedUntouched.sort((a, b) => b.surfaced - a.surfaced || a.firstAt - b.firstAt);
 
   // 5, 6, 13: the active set, read once.
-  const active = await ctx.db
-    .query("dtsTodos")
-    .withIndex("by_status", (q) => q.eq("status", "active"))
-    .collect();
-  const openTasksByBatch = new Set<string>();
-  for (const t of active) {
-    if (t.kind !== "goal" && t.batchId !== undefined) openTasksByBatch.add(t.batchId);
-  }
   const goalsWithoutOpenTask: WeeklyFacts["goalsWithoutOpenTask"] = [];
   const goalsNotEvaluated: WeeklyFacts["goalsNotEvaluated"] = [];
-  for (const t of active) {
-    if (t.kind !== "goal") continue;
-    const batch = await batchName(t.batchId);
-    if (t.batchId !== undefined && !openTasksByBatch.has(t.batchId)) {
-      goalsWithoutOpenTask.push({ id: t._id, statement: t.statement, batch });
-    }
-    // Evaluated = a session opened on the goal, or on its batch, or one that
-    // recorded an outcome for either, in the last seven days. The goal's own
-    // sessions are on by_todo; the batch's are keyed on the batch id
-    // (claudeSessions.insertSession writes both kinds with key = batchId),
-    // because a session opened ON a batch has no todoId at all.
-    const lastEvaluatedAt = await lastGoalEvaluation(ctx, t, until);
-    if (lastEvaluatedAt !== null && lastEvaluatedAt >= until - WEEK_MS) continue;
-    goalsNotEvaluated.push({ id: t._id, statement: t.statement, batch, lastEvaluatedAt });
-  }
   let prepared = 0;
   let unprepared = 0;
-  for (const t of active) {
-    if (isPrepared(t.readiness)) prepared++;
-    else unprepared++;
+  if (wants("active")) {
+    const active = await ctx.db
+      .query("dtsTodos")
+      .withIndex("by_status", (q) => q.eq("status", "active"))
+      .collect();
+    const openTasksByBatch = new Set<string>();
+    for (const t of active) {
+      if (t.kind !== "goal" && t.batchId !== undefined) openTasksByBatch.add(t.batchId);
+    }
+    const batchEvaluations = new Map<string, Promise<number | null>>();
+    for (const t of active) {
+      if (t.kind !== "goal") continue;
+      const batch = await batchName(t.batchId);
+      if (t.batchId !== undefined && !openTasksByBatch.has(t.batchId)) {
+        goalsWithoutOpenTask.push({ id: t._id, statement: t.statement, batch });
+      }
+      // Evaluated = a session opened on the goal, or on its batch, or one that
+      // recorded an outcome for either, in the last seven days.
+      const lastEvaluatedAt = await lastGoalEvaluation(ctx, t, until, batchEvaluations);
+      if (lastEvaluatedAt !== null && lastEvaluatedAt >= until - WEEK_MS) continue;
+      goalsNotEvaluated.push({ id: t._id, statement: t.statement, batch, lastEvaluatedAt });
+    }
+    for (const t of active) {
+      if (isPrepared(t.readiness)) prepared++;
+      else unprepared++;
+    }
   }
 
   // 7. Integrations by state. Declined: an archived "integration: <name>"
@@ -449,75 +512,106 @@ export async function gatherWeeklyFacts(
   // credential: the job's standing "job-failed" row — reported and not
   // recovered since — whose key names a credential condition, read per job
   // on its own key prefix (standingCredentialFailure). Otherwise running.
-  const declined = await declinedIntegrations(ctx);
   const integrations: WeeklyFacts["integrations"] = [];
-  const named = new Set<string>();
-  for (const i of INTEGRATIONS) {
-    named.add(i.name);
-    const ruling = declined.find((d) => d.name === i.name);
-    if (ruling !== undefined) {
-      integrations.push({ name: i.name, state: "declined", since: ruling.ruledAt, detail: ruling.sentence });
-      continue;
+  if (wants("integrations")) {
+    const declined = await declinedIntegrations(ctx);
+    const named = new Set<string>();
+    for (const i of INTEGRATIONS) {
+      named.add(i.name);
+      const ruling = declined.find((d) => d.name === i.name);
+      if (ruling !== undefined) {
+        integrations.push({ name: i.name, state: "declined", since: ruling.ruledAt, detail: ruling.sentence });
+        continue;
+      }
+      const waiting = await standingCredentialFailure(ctx, i.job);
+      if (waiting !== null) {
+        integrations.push({
+          name: i.name,
+          state: "waiting-on-credential",
+          since: waiting.at,
+          detail: waiting.error || waiting.key,
+        });
+        continue;
+      }
+      integrations.push({ name: i.name, state: "running", since: null, detail: null });
     }
-    const waiting = await standingCredentialFailure(ctx, i.job);
-    if (waiting !== null) {
-      integrations.push({
-        name: i.name,
-        state: "waiting-on-credential",
-        since: waiting.at,
-        detail: waiting.error || waiting.key,
-      });
-      continue;
+    // A declined name outside the list is still Tom's ruling and is listed.
+    for (const d of declined) {
+      if (named.has(d.name)) continue;
+      integrations.push({ name: d.name, state: "declined", since: d.ruledAt, detail: d.sentence });
     }
-    integrations.push({ name: i.name, state: "running", since: null, detail: null });
-  }
-  // A declined name outside the list is still Tom's ruling and is listed.
-  for (const d of declined) {
-    if (named.has(d.name)) continue;
-    integrations.push({ name: d.name, state: "declined", since: d.ruledAt, detail: d.sentence });
   }
 
   // 8, 9. The area pages and the size of the model-of-tom files, from the
-  // rows the nightly job posted (a small table: one row per file).
-  const skills = await ctx.db.query("ttsSkills").collect();
+  // rows the nightly job posted. The path-prefix index excludes every other
+  // skill before this query reads a row.
   const files: WeeklyFacts["modelOfTom"]["files"] = [];
   const areaPages: WeeklyFacts["areaPages"] = [];
-  const publication = await ctx.db.query("modelOfTomPublication")
-    .withIndex("by_key", (q) => q.eq("key", "current")).unique();
   const layers: WeeklyFacts["modelOfTom"]["layers"] = [];
-    for (const name of MODEL_OF_TOM_LAYER_NAMES) {
-    const body = publication?.[name];
-    if (typeof body === "string") {
-      layers.push({ name, bytes: new TextEncoder().encode(body).length });
-    }
-  }
-  for (const row of [...skills].sort((a, b) =>
-    a.sourcePath < b.sourcePath ? -1 : a.sourcePath > b.sourcePath ? 1 : 0,
-  )) {
-    if (!isModelOfTomPath(row.sourcePath)) continue;
-    files.push({ path: row.sourcePath, bytes: row.bytes ?? new TextEncoder().encode(row.body).length });
-    if (!row.sourcePath.startsWith(`${MODEL_OF_TOM_AREAS_DIR}/`)) continue;
-    const reviewed = await ctx.db
-      .query("dtsEvents")
-      .withIndex("by_kind_key", (q) => q.eq("kind", AREA_REVIEWED).eq("key", row.sourcePath))
-      .order("desc")
-      .first();
-    const reviewedEvent = frontmatterDate(
-      str((reviewed?.data as Record<string, unknown> | undefined)?.reviewedOn) ?? undefined,
-    );
-    areaPages.push(areaPageState(row.sourcePath, row.body, reviewedEvent, until));
-  }
-  const modelOfTom = {
-    commit: publication?.commit ?? null,
-    syncedAt: publication?.committedAt ?? null,
+  let modelOfTom: WeeklyFacts["modelOfTom"] = {
+    commit: null,
+    syncedAt: null,
     layers,
     files,
-    totalBytes: files.reduce((n, f) => n + f.bytes, 0),
+    totalBytes: 0,
   };
+  if (wants("model")) {
+    const [skills, publication] = await Promise.all([
+      ctx.db
+        .query("ttsSkills")
+        .withIndex("by_source_path", (q) =>
+          q.gte("sourcePath", "model-of-tom/").lt("sourcePath", "model-of-tom/\uffff"),
+        )
+        .collect(),
+      ctx.db.query("modelOfTomPublication")
+        .withIndex("by_key", (q) => q.eq("key", "current")).unique(),
+    ]);
+    for (const name of MODEL_OF_TOM_LAYER_NAMES) {
+      const body = publication?.[name];
+      if (typeof body === "string") {
+        layers.push({ name, bytes: new TextEncoder().encode(body).length });
+      }
+    }
+    for (const row of [...skills].sort((a, b) =>
+      a.sourcePath < b.sourcePath ? -1 : a.sourcePath > b.sourcePath ? 1 : 0,
+    )) {
+      if (!isModelOfTomPath(row.sourcePath)) continue;
+      files.push({ path: row.sourcePath, bytes: row.bytes ?? new TextEncoder().encode(row.body).length });
+      if (!row.sourcePath.startsWith(`${MODEL_OF_TOM_AREAS_DIR}/`)) continue;
+      const reviewed = await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", AREA_REVIEWED).eq("key", row.sourcePath))
+        .order("desc")
+        .first();
+      const reviewedEvent = frontmatterDate(
+        str((reviewed?.data as Record<string, unknown> | undefined)?.reviewedOn) ?? undefined,
+      );
+      areaPages.push(areaPageState(row.sourcePath, row.body, reviewedEvent, until));
+    }
+    modelOfTom = {
+      commit: publication?.commit ?? null,
+      syncedAt: publication?.committedAt ?? null,
+      layers,
+      files,
+      totalBytes: files.reduce((n, f) => n + f.bytes, 0),
+    };
+  }
 
   // 10. What the nightly job wrote, reverted, and failed to revert.
   const learning: WeeklyFacts["learning"] = { changes: 0, reverted: 0, revertFailed: 0, lines: [] };
-  for (const kind of [LEARNING_CHANGE, LEARNING_REVERTED, LEARNING_REVERT_FAILED]) {
+  const preludes: WeeklyFacts["preludes"] = { sessions: 0, current: 0, stale: [], missing: [] };
+  const instructionsLoaded: WeeklyFacts["instructionsLoaded"] = {
+    daysReported: 0,
+    sessions: 0,
+    files: [],
+    missingWikiTom: 0,
+    missingWikiTomSessions: [],
+    missingProjectAgents: [],
+  };
+  const evals: WeeklyFacts["evals"] = { runs: 0, clean: 0, regressions: [] };
+  const jobFailures: WeeklyFacts["jobFailures"] = [];
+  if (wants("records")) {
+    for (const kind of [LEARNING_CHANGE, LEARNING_REVERTED, LEARNING_REVERT_FAILED]) {
     for (const e of await eventsOfKind(kind)) {
       const d = (e.data ?? {}) as Record<string, unknown>;
       if (kind === LEARNING_CHANGE) learning.changes++;
@@ -535,13 +629,12 @@ export async function gatherWeeklyFacts(
       });
     }
   }
-  learning.lines.sort((a, b) => a.at - b.at);
+    learning.lines.sort((a, b) => a.at - b.at);
 
-  // 11. Delivery evidence: each nightly row is an observation, so a rerun is
-  // retained rather than deduped. The worker owns producing it; this gather
-  // only totals and lists what it received.
-  const preludes: WeeklyFacts["preludes"] = { sessions: 0, current: 0, stale: [], missing: [] };
-  for (const e of await eventsOfKind(PRELUDE_DELIVERY)) {
+    // 11. Delivery evidence: each nightly row is an observation, so a rerun is
+    // retained rather than deduped. The worker owns producing it; this gather
+    // only totals and lists what it received.
+    for (const e of await eventsOfKind(PRELUDE_DELIVERY)) {
     const d = (e.data ?? {}) as Record<string, unknown>;
     const day = str(d.day) ?? "";
     const current = num(d.current) ?? 0;
@@ -564,21 +657,13 @@ export async function gatherWeeklyFacts(
       const title = str(row.title);
       if (id !== null && title !== null) preludes.missing.push({ day, id, title });
     }
-  }
-  preludes.stale.sort((a, b) => a.day.localeCompare(b.day) || a.id.localeCompare(b.id));
-  preludes.missing.sort((a, b) => a.day.localeCompare(b.day) || a.id.localeCompare(b.id));
+    }
+    preludes.stale.sort((a, b) => a.day.localeCompare(b.day) || a.id.localeCompare(b.id));
+    preludes.missing.sort((a, b) => a.day.localeCompare(b.day) || a.id.localeCompare(b.id));
 
-  const instructionFiles = new Map<string, number>();
-  const instructionsLoaded: WeeklyFacts["instructionsLoaded"] = {
-    daysReported: 0,
-    sessions: 0,
-    files: [],
-    missingWikiTom: 0,
-    missingWikiTomSessions: [],
-    missingProjectAgents: [],
-  };
-  const reportedDays = new Set<string>();
-  for (const e of await eventsOfKind(INSTRUCTIONS_LOADED)) {
+    const instructionFiles = new Map<string, number>();
+    const reportedDays = new Set<string>();
+    for (const e of await eventsOfKind(INSTRUCTIONS_LOADED)) {
     const d = (e.data ?? {}) as Record<string, unknown>;
     const day = str(d.day) ?? "";
     if (day !== "") reportedDays.add(day);
@@ -600,17 +685,16 @@ export async function gatherWeeklyFacts(
       const cwd = str(row.cwd);
       if (session !== null && cwd !== null) instructionsLoaded.missingProjectAgents.push({ day, session, cwd });
     }
-  }
-  instructionsLoaded.daysReported = reportedDays.size;
-  instructionsLoaded.missingWikiTom = instructionsLoaded.missingWikiTomSessions.length;
-  instructionsLoaded.files = [...instructionFiles.entries()]
-    .map(([path, sessions]) => ({ path, sessions }))
-    .sort((a, b) => a.path.localeCompare(b.path));
-  instructionsLoaded.missingWikiTomSessions.sort((a, b) => a.day.localeCompare(b.day) || a.session.localeCompare(b.session));
-  instructionsLoaded.missingProjectAgents.sort((a, b) => a.day.localeCompare(b.day) || a.session.localeCompare(b.session));
+    }
+    instructionsLoaded.daysReported = reportedDays.size;
+    instructionsLoaded.missingWikiTom = instructionsLoaded.missingWikiTomSessions.length;
+    instructionsLoaded.files = [...instructionFiles.entries()]
+      .map(([path, sessions]) => ({ path, sessions }))
+      .sort((a, b) => a.path.localeCompare(b.path));
+    instructionsLoaded.missingWikiTomSessions.sort((a, b) => a.day.localeCompare(b.day) || a.session.localeCompare(b.session));
+    instructionsLoaded.missingProjectAgents.sort((a, b) => a.day.localeCompare(b.day) || a.session.localeCompare(b.session));
 
-  const evals: WeeklyFacts["evals"] = { runs: 0, clean: 0, regressions: [] };
-  for (const e of await eventsOfKind(EVALS_RUN)) {
+    for (const e of await eventsOfKind(EVALS_RUN)) {
     const d = (e.data ?? {}) as Record<string, unknown>;
     evals.runs++;
     const regressions = num(d.regressions) ?? 0;
@@ -629,12 +713,12 @@ export async function gatherWeeklyFacts(
       items: num(d.items) ?? 0,
       failure: failure === undefined ? null : { id: str(failure.id) ?? "?", partition: str(failure.partition) ?? "?" },
     });
-  }
-  evals.regressions.sort((a, b) => a.day.localeCompare(b.day) || a.repo.localeCompare(b.repo));
+    }
+    evals.regressions.sort((a, b) => a.day.localeCompare(b.day) || a.repo.localeCompare(b.repo));
 
-  // 12. Job failures by job.
-  const byJob = new Map<string, WeeklyFacts["jobFailures"][number]>();
-  for (const kind of FAILURE_KINDS) {
+    // 12. Job failures by job.
+    const byJob = new Map<string, WeeklyFacts["jobFailures"][number]>();
+    for (const kind of FAILURE_KINDS) {
     for (const e of await eventsOfKind(kind)) {
       const d = (e.data ?? {}) as Record<string, unknown>;
       const job =
@@ -653,11 +737,12 @@ export async function gatherWeeklyFacts(
       });
       byJob.set(job, entry);
     }
+    }
+    jobFailures.push(...[...byJob.values()].sort((a, b) =>
+      a.job < b.job ? -1 : a.job > b.job ? 1 : 0,
+    ));
+    for (const f of jobFailures) f.lines.sort((a, b) => a.at - b.at);
   }
-  const jobFailures = [...byJob.values()].sort((a, b) =>
-    a.job < b.job ? -1 : a.job > b.job ? 1 : 0,
-  );
-  for (const f of jobFailures) f.lines.sort((a, b) => a.at - b.at);
 
   // 12. Threads that needed Tom this week and his reply time on each: the
   // "needs-tom" rows, and for each the first Slack reply of his on that todo
@@ -665,20 +750,23 @@ export async function gatherWeeklyFacts(
   // spec's own check against the system becoming controlling (principle 8):
   // reported as a duration, never as a judgement.
   const threads: WeeklyFacts["threads"] = [];
-  for (const e of await eventsOfKind(NEEDS_TOM)) {
-    if (e.todoId === undefined) continue;
-    const later = await ctx.db
-      .query("dtsEvents")
-      .withIndex("by_todo", (q) => q.eq("todoId", e.todoId).gte("at", e.at))
-      .collect();
-    const reply = later.find((r) => r.kind === "slack-event");
-    threads.push({
-      todoId: e.todoId,
-      statement: (await todoOf(e.todoId))?.statement ?? "",
-      askedAt: e.at,
-      repliedAt: reply?.at ?? null,
-      replyMs: reply === undefined ? null : reply.at - e.at,
-    });
+  if (wants("threads")) {
+    for (const e of await eventsOfKind(NEEDS_TOM)) {
+      if (e.todoId === undefined) continue;
+      const reply = await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_todo_kind_at", (q) =>
+          q.eq("todoId", e.todoId).eq("kind", "slack-event").gte("at", e.at).lt("at", until),
+        )
+        .first();
+      threads.push({
+        todoId: e.todoId,
+        statement: (await todoOf(e.todoId))?.statement ?? "",
+        askedAt: e.at,
+        repliedAt: reply?.at ?? null,
+        replyMs: reply === null ? null : reply.at - e.at,
+      });
+    }
   }
 
   return {
@@ -703,11 +791,46 @@ export async function gatherWeeklyFacts(
   };
 }
 
-// GET /tts/weekly-input?until=<epoch ms> — the seven days ending at `until`.
-export const internalWeeklyInput = internalQuery({
-  args: { until: v.number() },
-  handler: async (ctx, { until }) =>
-    await gatherWeeklyFacts(ctx, { since: until - WEEK_MS, until }),
+/** One bounded portion of GET /tts/weekly-input, composed by its HTTP action. */
+export const internalWeeklyInputPart = internalQuery({
+  args: {
+    until: v.number(),
+    part: v.union(
+      v.literal("todos"),
+      v.literal("active"),
+      v.literal("model"),
+      v.literal("records"),
+      v.literal("threads"),
+    ),
+  },
+  handler: async (ctx, { until, part }) =>
+    weeklyPart(
+      await gatherWeeklyFacts(ctx, { since: until - WEEK_MS, until }, [part]),
+      part,
+    ),
+});
+
+/**
+ * One page of a job's keyed failure or recovery history. Credential condition
+ * names predate a dedicated indexed field, so the endpoint retains their
+ * exact regex-based meaning while the HTTP action folds fixed-size pages.
+ */
+export const internalWeeklyCredentialEventsPage = internalQuery({
+  args: {
+    job: v.string(),
+    kind: v.union(v.literal(JOB_FAILED), v.literal(JOB_RECOVERED)),
+    cursor: v.union(v.string(), v.null()),
+  },
+  handler: async (ctx, { job, kind, cursor }) => {
+    const prefix = `${job}:`;
+    return await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_kind_key", (q) =>
+        q.eq("kind", kind).gte("key", prefix).lt("key", `${prefix}\uffff`),
+      )
+      .order("desc")
+      .paginate({ numItems: 100, cursor });
+  },
 });
 
 // GET /tts/weekly-run?day= — the newest "weekly-run" row for that day, or

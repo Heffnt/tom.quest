@@ -868,6 +868,11 @@ export default defineSchema({
   })
     .index("by_at", ["at"])
     .index("by_todo", ["todoId", "at"])
+    // A single todo's rows of one kind. Weekly facts use this for Tom touches,
+    // session evaluations, and Slack replies; reading by_todo and then
+    // discarding every other kind made each of those reads grow with the
+    // todo's whole event history.
+    .index("by_todo_kind_at", ["todoId", "kind", "at"])
     // The row for one thread, event id, producer id or box condition:
     // eq(kind), eq(key) — and with `key` pinned, `at` orders what comes back.
     .index("by_kind_key", ["kind", "key", "at"])
@@ -946,7 +951,12 @@ export default defineSchema({
     // it began with; false is what lets the digest say "not yet pushed".
     // Absent on a row posted before the flag existed.
     pushed: v.optional(v.boolean()),
-  }).index("by_name", ["name"]),
+  })
+    .index("by_name", ["name"])
+    // The weekly gather reads the published model-of-tom files by their one
+    // shared path prefix. Keeping that range in an index avoids scanning
+    // unrelated skill rows as the skills table grows.
+    .index("by_source_path", ["sourcePath"]),
 
   // Exactly one `key: "current"` document is the published model-of-tom
   // revision. It stores each complete, verbatim layer and the exact header for

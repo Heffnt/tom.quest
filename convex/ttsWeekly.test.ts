@@ -751,4 +751,33 @@ describe("GET /tts/weekly-input", () => {
     expect(prefix).toBe("published map + operate + write\n\noperate layer\n\nwrite layer");
     expect(index).toContain("--layers know");
   });
+
+  it("keeps a long credential history below one query's operation limit", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convexTest({ schema, modules });
+    await publishSessionPrelude(t);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await event(ctx, JOB_FAILED, now - 40 * DAY, {
+        key: "poll-canvas:canvas-auth",
+        data: { job: "poll-canvas", error: "Canvas said 401" },
+      });
+      // These are distinct, newer Canvas conditions. The endpoint must retain
+      // the old standing credential fact without one unbounded query.
+      for (let i = 0; i < 300; i++) {
+        await event(ctx, JOB_FAILED, now - 20 * DAY + i * 60_000, {
+          key: `poll-canvas:untriaged:${i}`,
+          data: { job: "poll-canvas", error: `no verdict for ${i}` },
+        });
+      }
+    });
+    const res = await get(t, `/tts/weekly-input?until=${now + 1000}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.integrations).toEqual([
+      { name: "gmail", state: "running", since: null, detail: null },
+      { name: "canvas", state: "waiting-on-credential", since: now - 40 * DAY, detail: "Canvas said 401" },
+      { name: "outlook", state: "running", since: null, detail: null },
+    ]);
+  });
 });
