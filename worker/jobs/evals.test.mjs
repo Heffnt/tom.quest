@@ -3,7 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  ablationFindings,
+  ablationFor,
   aggregate,
+  efficiencyOf,
+  efficiencyVerdict,
+  failedRun,
   goldenHash,
   HEAD_TRIALS,
   isFlaky,
@@ -11,18 +16,34 @@ import {
   judgePrompt,
   loadGolden,
   loadTasks,
+  loadTriggers,
+  loadWritingStandard,
+  mechanicalChecks,
+  medianTokens,
+  MIN_ABLATION_CASES,
   parseArgs,
   parseJudge,
   passedIds,
+  preludeFrom,
+  PR_TRIALS,
+  runCase,
   runEvals,
   runItem,
   runTask,
   runTrials,
   scoreLearning,
   selectItems,
+  SKILL_SEAM_REASON,
+  SkillsNotAssembledError,
   stampAgainstBase,
+  standardRulesFor,
   TASK_BRANCHES,
+  tokensOf,
   treesFor,
+  trialsFor,
+  triggerCounts,
+  TRIALS_CAPABILITY,
+  TRIALS_REGRESSION,
   verdictOf,
 } from "./evals.mjs";
 
@@ -514,5 +535,489 @@ describe("parseArgs", () => {
   it("refuses an unknown argument and a non-positive limit", () => {
     expect(() => parseArgs(["--nope"])).toThrow(/unknown argument/);
     expect(() => parseArgs(["--serve", "--limit", "0"])).toThrow(/--limit/);
+  });
+
+  // The ablation arm is reported and gates nothing, so it never runs on the
+  // path a pull request takes.
+  it("turns the ablation arm on for a weekly run, takes it by name, and leaves it off when serving", () => {
+    expect(parseArgs(["--weekly"]).ablation).toBe(true);
+    expect(parseArgs(["--repo", "tom.quest", "--sha", "abc", "--ablation"]).ablation).toBe(true);
+    expect(parseArgs(["--serve"]).ablation).toBe(false);
+    expect(parseArgs(["--repo", "tom.quest", "--sha", "abc"]).ablation).toBe(false);
+  });
+});
+
+// ── The `run` case ───────────────────────────────────────────────────────────
+// A case mined from a runLabels row: the run's own assembled prompt, the text
+// Tom judged, and his label's meaning as the rubric.
+
+const RUBRIC = "He said the update named the blocker instead of restating the plan.";
+const PRELUDE = "PRELUDE-TEXT";
+
+const runCaseItem = (over = {}) => ({
+  id: "run-ruling-k97x2m4bq1zp",
+  job: "run",
+  partition: "runs/planner:worker",
+  kind: "regression",
+  verdict: "approve",
+  confirmedByTom: true,
+  trials: 3,
+  negative: false,
+  labelId: "kl1", labelSource: "ruling", runId: "claude:box:abc", at: 1_757_000_000_000,
+  intentKey: "planner:worker",
+  input: {
+    preludeKnown: true,
+    preludeNames: { layers: ["operate", "write", "know"], skills: [] },
+    task: "TASK BODY: write the hourly line.",
+    prompt: null,
+    contextRowSeq: 0,
+    spanSeqs: [412, 412],
+  },
+  expected: { rubric: RUBRIC, target: null },
+  output: { text: "the text he judged" },
+  ...over,
+});
+
+function runContext(over = {}) {
+  return {
+    modules: {},
+    cmtDir: undefined,
+    layers: () => layers,
+    prelude: (names) => ({
+      names: names?.layers ?? [],
+      skills: names?.skills ?? [],
+      text: `${PRELUDE}[${(names?.layers ?? []).join("+")}]`,
+      commit: "w1",
+      files: [],
+    }),
+    ...over,
+  };
+}
+
+/** A fake runner: `verdicts` are the judge's answers in order, `answers` the
+ *  regeneration's. Every prompt is kept, and the two calls are counted apart
+ *  so a test can say the judge was never reached. */
+function runIo(verdicts = [], answers = [], over = {}) {
+  const calls = { regen: 0, judge: 0, prompts: [] };
+  const io = {
+    calls,
+    now: () => 1,
+    sleep: async () => {},
+    runClaude: async (prompt, options) => {
+      calls.prompts.push(prompt);
+      if (String(prompt).startsWith("You are judging")) {
+        calls.judge += 1;
+        return JSON.stringify({ verdict: verdicts.shift() ?? "fail", reason: `judge ${calls.judge}` });
+      }
+      calls.regen += 1;
+      if (options?.receipt) options.receipt.runToken = `tok-${calls.regen}`;
+      return answers.shift() ?? "a fresh answer";
+    },
+    ...over,
+  };
+  return io;
+}
+
+describe("the run job", () => {
+  it("builds the prompt out of the assembled prelude and the run's own task", () => {
+    const prompt = JOBS.run.build(runCaseItem(), null, null, runContext());
+    expect(prompt).toBe(`${PRELUDE}[operate+write+know]\nTASK BODY: write the hourly line.`);
+    expect(JOBS.run.parse("  an answer  ")).toEqual({ text: "an answer" });
+  });
+
+  it("replays a case whose prelude was not known verbatim, and assembles nothing", () => {
+    const item = runCaseItem({
+      input: { ...runCaseItem().input, preludeKnown: false, prompt: "THE WHOLE PROMPT AS IT WAS SENT" },
+    });
+    const context = runContext({ prelude: () => { throw new Error("must not assemble"); } });
+    expect(JOBS.run.build(item, null, null, context)).toBe("THE WHOLE PROMPT AS IT WAS SENT");
+  });
+
+  // A run case carries no sentence: its rubric IS the answer, so a
+  // regeneration handed the rubric is scoring its own reading.
+  it("refuses to score a case whose rubric reached the prompt", async () => {
+    const item = runCaseItem({ input: { ...runCaseItem().input, task: `Write the line. ${RUBRIC}` } });
+    const io = runIo();
+    const result = await runItem(item, runContext(), io);
+    expect(result).toMatchObject({ judged: "fail", reason: "regeneration failed: the rubric reached the prompt" });
+    expect(io.calls.regen).toBe(0);
+  });
+
+  it("sends the rubric to the judge verbatim, and the target only on a capability case", () => {
+    const approve = judgePrompt(runCaseItem(), { text: "new" }, JOBS.run.fields);
+    expect(approve).toContain("--- WHAT TOM'S LABEL MEANS ---");
+    expect(approve).toContain(RUBRIC);
+    expect(approve).not.toContain("the output must now do this");
+    const capability = judgePrompt(
+      runCaseItem({ kind: "capability", expected: { rubric: RUBRIC, target: "name the blocker" } }),
+      { text: "new" },
+      JOBS.run.fields,
+    );
+    expect(capability).toContain("the output must now do this; it did not before.");
+    expect(capability).toContain("name the blocker");
+  });
+});
+
+describe("the phase 6 skills seam", () => {
+  it("refuses a name set carrying skills while no assembler is wired", () => {
+    const io = { layers: () => layers };
+    expect(() => preludeFrom(io, "tq", "wiki", { layers: ["operate"], skills: ["merge-gate"] }))
+      .toThrow(SkillsNotAssembledError);
+    expect(preludeFrom(io, "tq", "wiki", { layers: ["operate"], skills: [] })).toBe(layers);
+    // Nothing to assemble is not an error, and must not reach prelude.mjs.
+    expect(preludeFrom(io, "tq", "wiki", { layers: [], skills: [] }).text).toBe("");
+  });
+
+  it("hands the whole name set to the assembler once one is wired", () => {
+    const seen = [];
+    const io = { layers: () => layers, skills: (tree, names) => { seen.push([tree, names]); return { ...layers, skills: names.skills }; } };
+    const built = preludeFrom(io, "tq", "wiki", { layers: ["operate"], skills: ["merge-gate"] });
+    expect(seen).toEqual([["tq", { layers: ["operate"], skills: ["merge-gate"] }]]);
+    expect(built.skills).toEqual(["merge-gate"]);
+  });
+
+  it("skips a case whose run was given skills, counts it, and calls no model", async () => {
+    const io = runIo();
+    const context = runContext({
+      prelude: (names) => {
+        if ((names.skills ?? []).length > 0) throw new SkillsNotAssembledError(SKILL_SEAM_REASON);
+        return { names: names.layers, skills: [], text: PRELUDE, commit: "w1", files: [] };
+      },
+    });
+    const item = runCaseItem({ input: { ...runCaseItem().input, preludeNames: { layers: ["operate"], skills: ["merge-gate"] } } });
+    const result = await runCase(item, context, io, { pr: false });
+    expect(result).toMatchObject({ judged: "skip", reason: SKILL_SEAM_REASON });
+    expect(io.calls.regen).toBe(0);
+    expect(io.calls.judge).toBe(0);
+  });
+});
+
+// Two rules meet in runCase. The landed one governs the merge gate: passing
+// one trial is a pass, and a flake is never a regression. The stricter one
+// (passK) governs graduation and gates nothing.
+describe("the trials of a run case", () => {
+  it("reads the count off the item, falls back to the kind, and pays one trial on a pull request", () => {
+    expect(trialsFor(runCaseItem())).toBe(3);
+    expect(trialsFor(runCaseItem({ trials: 7 }))).toBe(7);
+    expect(trialsFor(runCaseItem({ trials: undefined }))).toBe(TRIALS_REGRESSION);
+    expect(trialsFor(runCaseItem({ trials: undefined, kind: "capability" }))).toBe(TRIALS_CAPABILITY);
+    expect(trialsFor(runCaseItem({ trials: 7, kind: "capability" }), { pr: true })).toBe(PR_TRIALS);
+  });
+
+  it("needs every trial for passK and any trial for the verdict the gate reads", async () => {
+    const io = runIo(["pass", "fail", "pass"]);
+    const result = await runCase(runCaseItem(), runContext(), io, { pr: false });
+    expect(io.calls.regen).toBe(3);
+    expect(result).toMatchObject({ judged: "pass", trialCount: 3, passed: 2, passK: false, passAtK: true });
+    expect(result.trials).toEqual({ head: 3, headPassed: 2 });
+    // The reason is the first failing trial's, so the row says what went wrong
+    // rather than what went right.
+    expect(result.reason).toBe("judge 2");
+    const clean = await runCase(runCaseItem(), runContext(), runIo(["pass", "pass", "pass"]), { pr: false });
+    expect(clean).toMatchObject({ passK: true, passAtK: true, judged: "pass" });
+    const broken = await runCase(runCaseItem(), runContext(), runIo(["fail", "fail", "fail"]), { pr: false });
+    expect(broken).toMatchObject({ passK: false, passAtK: false, judged: "fail" });
+  });
+
+  it("runs every trial independently — it does not stop on the first pass", async () => {
+    const io = runIo(["pass", "pass", "pass"]);
+    await runCase(runCaseItem(), runContext(), io, { pr: false });
+    expect(io.calls.regen).toBe(3);
+    expect(io.calls.judge).toBe(3);
+  });
+
+  it("pays one trial on a pull-request run and records that count", async () => {
+    const io = runIo(["fail"]);
+    const result = await runCase(runCaseItem(), runContext(), io, { pr: true });
+    expect(io.calls.regen).toBe(1);
+    expect(result.trials).toEqual({ head: 1, headPassed: 0 });
+  });
+
+  // The landed flaky count reads `trials: {head, headPassed}`, so a flaky run
+  // case is counted by code that needed no edit.
+  it("lands a flaky run case in the existing flaky count", async () => {
+    const result = await runCase(runCaseItem(), runContext(), runIo(["pass", "fail", "pass"]), { pr: false });
+    expect(isFlaky(result)).toBe(true);
+    const summary = aggregate([result]);
+    expect(summary).toMatchObject({ items: 1, pass: 1, fail: 0, flaky: 1 });
+  });
+});
+
+describe("the deterministic checks", () => {
+  it("checks nothing when the case has no expect block", () => {
+    expect(mechanicalChecks(undefined, "anything at all")).toBe(null);
+    expect(mechanicalChecks({}, "anything at all")).toBe(null);
+    expect(mechanicalChecks({ mustNotName: ["blocker"] }, "the blocker is the judge fix")).toMatch(/^names "blocker"/);
+  });
+
+  it("fails a mustNotName violation and never calls the judge", async () => {
+    const item = runCaseItem({ expect: { mustName: [], mustNotName: ["plan stored"] } });
+    const io = runIo(["pass"], ["the plan stored under the batch"]);
+    const result = await runCase(item, runContext(), io, { pr: true });
+    expect(result).toMatchObject({ judged: "fail", reason: 'names "plan stored", which it must not' });
+    expect(io.calls.regen).toBe(1);
+    expect(io.calls.judge).toBe(0);
+  });
+
+  // The HTML rules are rules of the ground-up explanation's FORM. Applying
+  // them to a free-form field would fail every case on no-doctype, so the
+  // field decides which rules run — and a `run` case's text gets none.
+  it("applies the HTML rules only to the explanation fields", async () => {
+    const standard = await loadWritingStandard();
+    expect(standard).not.toBe(null);
+    expect(standardRulesFor("groundUpExplanation", standard)).toBe(standard.RULES);
+    expect(standardRulesFor("explanation", standard)).toBe(standard.RULES);
+    expect(standardRulesFor("brief", standard)).toBe(standard.BRIEF_RULES);
+    expect(standardRulesFor("text", standard)).toBe(null);
+    expect(standardRulesFor("entryAction", standard)).toBe(null);
+    // An absent file is "no rules ran", never a failure.
+    expect(standardRulesFor("groundUpExplanation", null)).toBe(null);
+  });
+
+  it("fails a writing-standard breach before any judge sees it", async () => {
+    const item = {
+      id: "batch-plan-1", job: "batch-plan", partition: "batch-plan/x", verdict: "approve",
+      input: { statement: "s", memberStatements: [], priorReviseSentence: null },
+      output: { groundUpExplanation: "<!DOCTYPE html><html><head><style></style></head><body><h1>x</h1></body></html>" },
+    };
+    const context = runContext({ modules: { "batch-plan": { graphPrompt: () => "A PROMPT" } } });
+    const io = runIo(["pass"], [JSON.stringify({ groundUpExplanation: "a wall of markdown text" })]);
+    const result = await runCase(item, context, io, { pr: true });
+    expect(result.judged).toBe("fail");
+    expect(result.reason).toMatch(/^groundUpExplanation fails the writing standard: .*no-doctype/);
+    expect(io.calls.judge).toBe(0);
+  });
+
+  it("lets a well-formed explanation through to the judge", async () => {
+    const item = {
+      id: "batch-plan-2", job: "batch-plan", partition: "batch-plan/x", verdict: "approve",
+      input: { statement: "s", memberStatements: [], priorReviseSentence: null },
+      output: { groundUpExplanation: "<!DOCTYPE html><html><head><style></style></head><body><h1>x</h1></body></html>" },
+    };
+    const context = runContext({ modules: { "batch-plan": { graphPrompt: () => "A PROMPT" } } });
+    const good = "<!DOCTYPE html><html><head><style>p{}</style></head><body><h1>The lock</h1><p>It is seized.</p></body></html>";
+    const io = runIo(["pass"], [JSON.stringify({ groundUpExplanation: good })]);
+    expect((await runCase(item, context, io, { pr: true })).judged).toBe("pass");
+    expect(io.calls.judge).toBe(1);
+  });
+});
+
+describe("efficiency", () => {
+  const totals = {
+    inputTokens: 1000, cacheReadTokens: 20_000, cacheWriteTokens: 500,
+    cacheWrite5mTokens: 500, cacheWrite1hTokens: 0, cacheWriteBreakdownKnown: true,
+    outputTokens: 300, thinkingTokens: 250, totalTokens: 21_800,
+  };
+
+  // thinkingTokens is a BREAKDOWN OF output_tokens in both parsers
+  // (worker/runs/ingest.mjs), so adding it would double-count.
+  it("sums the four named columns and leaves thinking out", () => {
+    expect(tokensOf(totals)).toBe(21_800);
+    expect(tokensOf({ ...totals, thinkingTokens: 0 })).toBe(21_800);
+  });
+
+  it("takes the median and leaves an unreadable trial out of it", () => {
+    expect(medianTokens([{ tokens: 10 }, { tokens: 1000 }, { tokens: 20 }])).toBe(20);
+    expect(medianTokens([{ tokens: 10 }, { tokens: null }, { tokens: 30 }])).toBe(20);
+    expect(medianTokens([{ tokens: null }, { tokens: null }])).toBe(null);
+    expect(medianTokens([])).toBe(null);
+  });
+
+  it("reads a trial's tokens back off the record", async () => {
+    const io = runIo(["pass"], [], {
+      runRecord: async (token) => (token === "tok-1" ? { runId: "r", outcome: { totals, turns: 4 } } : null),
+    });
+    const result = await runCase(runCaseItem({ trials: 1 }), runContext(), io, { pr: false });
+    expect(result.perTrial).toEqual([{ judged: "pass", reason: "judge 1", tokens: 21_800, turns: 4 }]);
+    expect(result.tokensMedian).toBe(21_800);
+  });
+
+  it("reports an unreadable record as unknown and fails nothing", async () => {
+    const io = runIo(["pass"], [], { runRecord: async () => null });
+    const result = await runCase(runCaseItem({ trials: 1 }), runContext(), io, { pr: false });
+    expect(result.judged).toBe("pass");
+    expect(result.tokensMedian).toBe(null);
+    expect(efficiencyOf([{ id: "a", tokensMedian: null, judged: "pass" }], null))
+      .toEqual({ cases: 1, unknown: 1, rises: [] });
+  });
+
+  // The same-output clause is load-bearing: an output that got better and
+  // longer is a fact to report, not a failure.
+  it("fails a threefold rise only when the verdict did not change", () => {
+    const head = { id: "a", tokensMedian: 3001, judged: "pass" };
+    const base = { id: "a", tokensMedian: 1000, judged: "pass" };
+    expect(efficiencyVerdict(head, base)).toMatchObject({ failed: true, headTokens: 3001, baseTokens: 1000 });
+    expect(efficiencyVerdict(head, { ...base, judged: "fail" }).failed).toBe(false);
+    expect(efficiencyVerdict({ ...head, tokensMedian: 3000 }, base).failed).toBe(false);
+    expect(efficiencyVerdict({ ...head, tokensMedian: null }, base).failed).toBe(false);
+    expect(efficiencyVerdict(head, undefined).failed).toBe(false);
+  });
+
+  it("stamps the rises onto the row where the base is in hand", async () => {
+    const head = {
+      goldenHash: "h", scoredIds: ["a"], failures: [], tasks: { failures: [] },
+      results: [{ id: "a", tokensMedian: 9000, judged: "pass", passK: true }, { id: "b", tokensMedian: null, judged: "pass", passK: true }],
+    };
+    const base = {
+      goldenHash: "h", scoredIds: ["a"], failures: [], tasks: { failures: [] },
+      results: [{ id: "a", tokensMedian: 1000, judged: "pass", passK: true }, { id: "b", tokensMedian: 100, judged: "pass", passK: true }],
+    };
+    const stamped = await stampAgainstBase(head, base);
+    expect(stamped.efficiency).toEqual({ cases: 2, unknown: 1, rises: [{ id: "a", headTokens: 9000, baseTokens: 1000 }] });
+    expect((await stampAgainstBase(head, null)).efficiency.rises).toEqual([]);
+  });
+
+  it("counts only the cases that were asked what they cost", () => {
+    // A case with no tokensMedian KEY was never measured — every non-`run` job
+    // is one — and counting it as an unknown would report a run that measured
+    // everything it could as having measured nothing.
+    const mixed = [{ id: "a", judged: "pass", passK: true }, { id: "b", judged: "pass", passK: true, tokensMedian: 500 }];
+    expect(efficiencyOf(mixed, null)).toEqual({ cases: 1, unknown: 0, rises: [] });
+  });
+});
+
+// The coverage verdict travels with the request, is decided by the gate's own
+// body, and lands on the row the merge arm reads. THE SAME LIST REACHES BOTH
+// SIDES so the CI log and the row cannot disagree about what was judged.
+describe("golden coverage on the row", () => {
+  const row = () => ({ goldenHash: "h", scoredIds: [], failures: [], tasks: { failures: [] }, results: [] });
+
+  it("is false when a watched file changed and no item shipped", async () => {
+    const stamped = await stampAgainstBase(row(), row(), { changed: ["scripts/prelude.mjs"] });
+    expect(stamped.goldenCoverage).toBe(false);
+  });
+
+  it("is true when an item shipped, and true when the trailer excuses it", async () => {
+    expect((await stampAgainstBase(row(), row(), { changed: ["scripts/prelude.mjs", "evals/golden/runs/a.json"] })).goldenCoverage).toBe(true);
+    expect((await stampAgainstBase(row(), row(), {
+      changed: ["scripts/prelude.mjs"],
+      prBody: "a body\nevals: no-item the change is a comment\n",
+    })).goldenCoverage).toBe(true);
+  });
+
+  it("is null when nobody asked about a diff, base or no base", async () => {
+    // A --weekly run and a run by hand are not merge candidates. The merge gate
+    // denies on null, which is the right answer for a run that was never asked.
+    expect((await stampAgainstBase(row(), row())).goldenCoverage).toBe(null);
+    expect((await stampAgainstBase(row(), null)).goldenCoverage).toBe(null);
+  });
+
+  it("is answered with no base at all, because coverage is a fact about the diff", async () => {
+    // A branch that changed a watched file and shipped no item owes one
+    // whether or not anything ever scored its base.
+    expect((await stampAgainstBase(row(), null, { changed: ["AGENTS.md"] })).goldenCoverage).toBe(false);
+  });
+
+  it("says null on a run that could not be made", () => {
+    const failed = failedRun({ repo: "tom.quest", sha: "deadbee", error: "no such commit", at: 1 });
+    expect(failed.goldenCoverage).toBe(null);
+    expect(failed.regressions).toBe(null);
+    expect(failed.weekly).toBe(false);
+  });
+});
+
+describe("the ablation arm", () => {
+  it("runs one trial per name and records the pair", async () => {
+    const io = runIo(["fail", "pass", "pass"]);
+    const arm = await ablationFor(runCaseItem(), runContext(), io, true);
+    expect(io.calls.regen).toBe(3);
+    expect(arm.rows).toEqual([
+      { id: "run-ruling-k97x2m4bq1zp", name: "operate", kind: "layer", withPass: true, withoutPass: false },
+      { id: "run-ruling-k97x2m4bq1zp", name: "write", kind: "layer", withPass: true, withoutPass: true },
+      { id: "run-ruling-k97x2m4bq1zp", name: "know", kind: "layer", withPass: true, withoutPass: true },
+    ]);
+    // Each trial assembled the prelude with exactly that one name removed.
+    expect(io.calls.prompts[0]).toContain("[write+know]");
+    expect(io.calls.prompts[2]).toContain("[operate+know]");
+  });
+
+  it("skips a case whose prompt was replayed verbatim, and counts it", async () => {
+    const item = runCaseItem({ input: { ...runCaseItem().input, preludeKnown: false, prompt: "REPLAYED" } });
+    const io = runIo();
+    const arm = await ablationFor(item, runContext(), io, true);
+    expect(arm.rows).toEqual([]);
+    expect(arm.skipped).toEqual([{ id: item.id, reason: "the prompt was replayed verbatim; there is no name to remove" }]);
+    expect(io.calls.regen).toBe(0);
+  });
+
+  // The finding is computed over the whole weekly set and never per case, and
+  // a name with too little behind it is not reported at all.
+  it("needs MIN_ABLATION_CASES behind a name before it reports one", () => {
+    const rows = (name, count, withPass, withoutPass) => Array.from({ length: count }, (_, index) => ({
+      id: `c${index}`, name, kind: "layer", withPass, withoutPass,
+    }));
+    expect(ablationFindings(rows("know", MIN_ABLATION_CASES - 1, true, true))).toEqual([]);
+    expect(ablationFindings(rows("know", 5, true, true))).toEqual([
+      { name: "know", cases: 5, withPass: 5, withoutPass: 5, earned: false },
+    ]);
+    expect(ablationFindings([...rows("write", 5, true, false)])).toEqual([
+      { name: "write", cases: 5, withPass: 5, withoutPass: 0, earned: true },
+    ]);
+    expect(ablationFindings([])).toEqual([]);
+  });
+});
+
+describe("runEvals over a run case", () => {
+  const runIoFor = (dir, verdicts) => runIo(verdicts, [], {
+    layers: () => layers,
+    loadModules: async () => ({}),
+    taskRepos: () => [],
+    worktree: (repo) => ({ dir, commit: repo === "WikiTom" ? "wiki1" : "tq1", remove: () => {} }),
+  });
+  const caseDir = (over) => {
+    const dir = tree();
+    writeJson(dir, path.join("evals", "golden", "runs", "a.json"), runCaseItem({ id: "a", ...over }));
+    return dir;
+  };
+
+  it("scores one trial on a pull-request run and records the case's cost", async () => {
+    const dir = caseDir();
+    const io = runIoFor(dir, ["pass"]);
+    const run = await runEvals({ repo: "tom.quest", sha: "head" }, io);
+    expect(run).toMatchObject({ items: 1, pass: 1, fail: 0 });
+    expect(io.calls.regen).toBe(1);
+    expect(run.results).toEqual([{ id: "a", judged: "pass", passK: true, tokensMedian: null }]);
+    expect(run.ablation).toEqual([]);
+  });
+
+  it("takes every trial on a weekly run", async () => {
+    const io = runIoFor(caseDir(), ["pass", "pass", "pass"]);
+    await runEvals({ repo: "tom.quest", sha: "origin/main", weekly: true }, io);
+    expect(io.calls.regen).toBe(3);
+  });
+
+  it("runs the arm when it is asked for and never otherwise", async () => {
+    const io = runIoFor(caseDir(), ["pass", "pass", "pass", "pass"]);
+    const run = await runEvals({ repo: "tom.quest", sha: "head", ablation: true }, io);
+    // One trial for the case, then one per ablated name.
+    expect(io.calls.regen).toBe(4);
+    expect(run.ablation.map((row) => row.name)).toEqual(["operate", "write", "know"]);
+    expect(run.ablation.every((row) => row.withPass === true)).toBe(true);
+    const quiet = runIoFor(caseDir(), ["pass"]);
+    expect((await runEvals({ repo: "tom.quest", sha: "head" }, quiet)).ablation).toEqual([]);
+    expect(quiet.calls.regen).toBe(1);
+  });
+});
+
+// The count rule lives here, where `npm test` states it in one line, rather
+// than in a merge check that would have to fetch a run from the box to say
+// something about a checked-in file.
+describe("the trigger set", () => {
+  it("carries at least as many negatives as positives in every file", () => {
+    // The directory arrives with another branch; until then there is nothing
+    // to count, and an empty set is not a failure.
+    const short = loadTriggers(path.resolve("."))
+      .map((trigger) => ({ file: trigger.file, ...triggerCounts(trigger) }))
+      .filter((counts) => counts.negatives < counts.positives);
+    expect(short).toEqual([]);
+  });
+
+  it("never loads a draft", () => {
+    const dir = tree();
+    writeJson(dir, path.join("evals", "triggers", "hourly.json"), { positives: ["a"], negatives: ["b", "c"] });
+    writeJson(dir, path.join("evals", "triggers", "hourly.draft.json"), { positives: ["a", "b"], negatives: [] });
+    expect(loadTriggers(dir).map((one) => one.file)).toEqual(["hourly.json"]);
+    expect(triggerCounts(loadTriggers(dir)[0])).toEqual({ positives: 1, negatives: 2 });
+    expect(loadTriggers(tree())).toEqual([]);
   });
 });

@@ -60,8 +60,11 @@ const greenTests = (t: TestConvex<typeof schema>, sha = SHA) =>
   seedFact(t, TESTS_RUN, { ok: true }, sha);
 const approvedAudit = (t: TestConvex<typeof schema>, sha = SHA) =>
   seedFact(t, AUDIT_VERDICT, { verdict: "APPROVED" }, sha);
+/** A run that opens the evals arm: no regression AND golden coverage answered
+ *  true. Both are needed — a run that did not check coverage is a run that did
+ *  not answer, and the arm treats that as a no. */
 const cleanEvals = (t: TestConvex<typeof schema>, sha = SHA) =>
-  seedFact(t, EVALS_RUN, { regressions: 0, pass: 40, items: 40 }, sha);
+  seedFact(t, EVALS_RUN, { regressions: 0, goldenCoverage: true, pass: 40, items: 40 }, sha);
 
 const mergeReport = (t: TestConvex<typeof schema>, over: Record<string, unknown> = {}) =>
   post(t, "/tts/merge", {
@@ -246,6 +249,23 @@ describe("the merge gate's three checks", () => {
     );
   });
 
+  // NULL IS NOT ZERO, and this is the pin. worker/jobs/evals.mjs failedRun and
+  // its uncompared-head path both stamp `regressions: null`: a head compared
+  // to nothing has no number of regressions. A gate that read that as "no
+  // regressions found" would open on a run that never compared anything.
+  it("denies a head whose regressions are null, with no base to compare against", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await greenTests(t);
+    await approvedAudit(t);
+    await seedFact(t, EVALS_RUN, { regressions: null, goldenCoverage: true, pass: 40, items: 40 });
+    const answer = await (await mergeReport(t)).json();
+    expect(answer.gate.missing).toEqual(["evals"]);
+    expect(answer.gate.checks.find((c: { name: string }) => c.name === "evals").why).toContain(
+      "an unreadable number of regressions",
+    );
+  });
+
   it("checks the head it was given, not another commit", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convex();
@@ -259,6 +279,67 @@ describe("the merge gate's three checks", () => {
       "evals",
     ]);
     expect((await mergeReport(t, { sha: other })).status).toBe(200);
+  });
+});
+
+// Golden coverage is not a fourth check. It is a second question asked of the
+// evals row: a change to a watched context file that shipped no golden item
+// changed Tom's outputs with nothing scoring the change.
+describe("the evals arm's golden-coverage clause", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  async function gateWith(coverage: Record<string, unknown>) {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await greenTests(t);
+    await approvedAudit(t);
+    await seedFact(t, EVALS_RUN, { regressions: 0, pass: 40, items: 40, ...coverage });
+    const answer = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+    return {
+      allowed: answer.allowed as boolean,
+      missing: answer.missing as string[],
+      why: (answer.checks as { name: string; why: string }[]).find((c) => c.name === "evals")!.why,
+    };
+  }
+
+  it("opens on no regression AND coverage true", async () => {
+    const gate = await gateWith({ goldenCoverage: true });
+    expect(gate.allowed).toBe(true);
+    expect(gate.why).toContain("no regression");
+  });
+
+  it("denies on coverage false, and says a watched file changed with no item", async () => {
+    const gate = await gateWith({ goldenCoverage: false });
+    expect(gate.missing).toEqual(["evals"]);
+    expect(gate.why).toBe(
+      `the evals run at ${SHA.slice(0, 7)} changed a watched context file and shipped no golden item`,
+    );
+  });
+
+  // BOTH of these are "we did not check", not "there was nothing to check": a
+  // merge always has a diff. null is a run that was asked nothing; undefined is
+  // a run recorded before the field existed. The deny message names the one
+  // command that fixes either.
+  it("denies on coverage null — the run was never asked about a diff", async () => {
+    const gate = await gateWith({ goldenCoverage: null });
+    expect(gate.missing).toEqual(["evals"]);
+    expect(gate.why).toBe(
+      `the evals run did not check golden coverage — re-run it: ` +
+        `node /opt/tts/evals.mjs --repo ${REPO} --sha ${SHA} --force`,
+    );
+  });
+
+  it("denies a run that predates the field, with the same message", async () => {
+    const gate = await gateWith({});
+    expect(gate.missing).toEqual(["evals"]);
+    expect(gate.why).toContain("did not check golden coverage");
+    expect(gate.why).toContain("--force");
+  });
+
+  it("names the regression first when a run both regressed and shipped no item", async () => {
+    const gate = await gateWith({ regressions: 3, goldenCoverage: false });
+    expect(gate.missing).toEqual(["evals"]);
+    expect(gate.why).toContain("3 regressions");
   });
 });
 
@@ -361,7 +442,10 @@ describe("GET /tts/merge-gate — what the box asks before it merges", () => {
       const t = convex();
       await greenTests(t);
       await seedFact(t, AUDIT_VERDICT, auditData);
-      await seedFact(t, EVALS_RUN, { regressions: evalsRegressions, pass: 40, items: 40 });
+      // goldenCoverage rides along because the evals arm now asks two questions
+      // of the one row (§ the golden-coverage gate); this test is about the audit
+      // row's removal notes, so its evals row has to be one that passes.
+      await seedFact(t, EVALS_RUN, { regressions: evalsRegressions, goldenCoverage: true, pass: 40, items: 40 });
       return await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
     }
 

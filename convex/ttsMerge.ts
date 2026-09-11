@@ -27,8 +27,10 @@ import { redactSecrets } from "../worker/session-host/redact.mjs";
 //                     data { repo, sha, verdict, text, model?, fallback? }
 //   "evals-run"     — already written by worker/jobs/evals.mjs for every
 //                     scored head (convex/ttsEvals.ts). `data.regressions` is
-//                     the runner's own comparison against the base run, so
-//                     this file never reimplements gate().
+//                     the runner's own comparison against the base run, and
+//                     `data.goldenCoverage` its answer to whether a watched
+//                     context change shipped an item, so this file never
+//                     reimplements gate().
 //
 // FAIL-CLOSED, and deliberately unlike the Bash classifier, which fails open:
 // a missing row is a check that did not pass. Guessing wrong here costs a
@@ -262,10 +264,25 @@ export async function mergeGateFor(
   const evals = await rowFor(ctx, EVALS_RUN, key);
   const evalsData = (evals?.data ?? {}) as {
     regressions?: unknown;
+    goldenCoverage?: unknown;
     items?: unknown;
     pass?: unknown;
   };
   const regressions = typeof evalsData.regressions === "number" ? evalsData.regressions : null;
+  // STILL THREE HEAD ROWS. Golden coverage is not a fourth check and has no
+  // row of its own: it is a field of the evals run, so the evals arm asks two
+  // questions of one fact and GET /tts/merge-gate's shape does not move.
+  //
+  // BOTH null AND undefined DENY. `null` is the run saying nobody asked it
+  // about a diff; `undefined` is a run recorded before the field existed.
+  // A MERGE ALWAYS HAS A DIFF, so neither is an answer to "did this change
+  // ship what it owed" — and a gate that opened on "we did not check" is
+  // precisely the failure the `regressions: null` rule above was written to
+  // prevent (worker/jobs/evals.mjs failedRun).
+  const coverage =
+    typeof evalsData.goldenCoverage === "boolean" || evalsData.goldenCoverage === null
+      ? evalsData.goldenCoverage
+      : undefined;
   const scored =
     typeof evalsData.pass === "number" && typeof evalsData.items === "number"
       ? ` (${evalsData.pass} of ${evalsData.items} pass)`
@@ -273,15 +290,31 @@ export async function mergeGateFor(
   const evalsCheck: MergeCheck =
     evals === null
       ? { name: "evals", passed: false, why: `no evals run scored ${short}` }
-      : checkRowPassed(EVALS_RUN, evalsData)
-        ? { name: "evals", passed: true, why: `the evals scored ${short} with no regression${scored}` }
-        : {
+      // `regressions !== 0` spelled with the one predicate the gate and
+      // convex/ttsSimplify.ts share: a second copy is how the two come apart.
+      : !checkRowPassed(EVALS_RUN, evalsData)
+        ? {
             name: "evals",
             passed: false,
             why: `the evals found ${regressions ?? "an unreadable number of"} regression${
               regressions === 1 ? "" : "s"
             } at ${short}`,
-          };
+          }
+        : coverage === true
+          ? { name: "evals", passed: true, why: `the evals scored ${short} with no regression${scored}` }
+          : coverage === false
+            ? {
+                name: "evals",
+                passed: false,
+                why: `the evals run at ${short} changed a watched context file and shipped no golden item`,
+              }
+            : {
+                name: "evals",
+                passed: false,
+                why:
+                  `the evals run did not check golden coverage — re-run it: ` +
+                  `node /opt/tts/evals.mjs --repo ${repo} --sha ${sha} --force`,
+              };
 
   const checks = [testsCheck, auditCheck, evalsCheck];
   return {

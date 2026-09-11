@@ -1,0 +1,6 @@
+{
+  "name": "operate",
+  "kind": "layer",
+  "note": "The operate layer is on every run by construction — agent-rules.md is the one file every prompt carries, whoever the run writes for — so there is no prompt where it must not apply and this file holds no negatives. It exists rather than being absent because an empty set here is a decision and an absent file looks forgotten; the rule that a trigger file carries at least as many negatives as positives holds trivially, nought against nought.",
+  "cases": []
+}
