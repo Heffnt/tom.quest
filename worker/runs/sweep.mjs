@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 import { isPermanentStatus } from "../session-host/overflow.mjs";
-import { parseClaudeFile, parseCodexFile } from "./ingest.mjs";
+import { discoverChildren, parseClaudeFile, parseCodexFile } from "./ingest.mjs";
 import { runConfig } from "./config.mjs";
 import { describeRunFile, discoverRunFiles } from "./discover.mjs";
 import { findCodexRegistration, mergeRegistration, readRegistration } from "./registration.mjs";
@@ -77,6 +77,19 @@ function completeLines(bytes) {
   return lines;
 }
 
+// Slicing on the byte offset rather than on split lines keeps a half-written
+// last line intact, which is what lets the parser leave it unread.
+export function textFromLine(text, fromLine) {
+  if (!(fromLine > 0)) return text;
+  let offset = 0;
+  for (let line = 0; line < fromLine; line += 1) {
+    const next = text.indexOf("\n", offset);
+    if (next === -1) return "";
+    offset = next + 1;
+  }
+  return text.slice(offset);
+}
+
 export function prefixSha256(bytes, committedLine) {
   const lines = completeLines(bytes);
   const prefix = committedLine === 0 ? "" : `${lines.slice(0, committedLine).join("\n")}\n`;
@@ -139,15 +152,20 @@ function queueItem(stateDir, item, fs) {
   return file;
 }
 
+// The page comes first: Convex refuses a chunk whose run is not yet recorded
+// and a stamp whose message row is not yet there, so the order that survives a
+// replay is page, then chunks, then the stamp that makes them readable. Every
+// step is idempotent, so a failure anywhere replays the whole page.
 async function deliver(item, post) {
+  const response = await post("/runs/ingest", item.payload);
+  if (response?.ok === false) throw Object.assign(new Error(`run ingest refused: ${response.reason ?? "unknown"}`), { status: 400 });
   for (const overflow of item.overflows ?? []) {
     for (let index = 0; index < overflow.chunks.length; index += 1) {
       await post("/runs/overflow", { runId: item.runId, seq: overflow.seq, index, chunkCount: overflow.chunks.length, text: overflow.chunks[index] });
     }
-    await post("/runs/overflow/stamp", { runId: item.runId, seq: overflow.seq, sha256: overflow.sha256, byteLength: overflow.byteLength, chunkCount: overflow.chunks.length });
+    const stamped = await post("/runs/overflow/stamp", { runId: item.runId, seq: overflow.seq, sha256: overflow.sha256, byteLength: overflow.byteLength, chunkCount: overflow.chunks.length });
+    if (stamped?.ok === false) throw Object.assign(new Error(`run overflow stamp refused: ${stamped.reason ?? "unknown"}`), { status: 400 });
   }
-  const response = await post("/runs/ingest", item.payload);
-  if (response?.ok === false) throw Object.assign(new Error(`run ingest refused: ${response.reason ?? "unknown"}`), { status: 400 });
   return response;
 }
 
@@ -261,15 +279,26 @@ function envelopeMtime(runFile, fs) {
   catch { return 0; }
 }
 
+// The ingest door refuses a row that arrives already stamped: the stamp is the
+// proof the chunks were reassembled, and only the stamp route can give it.
 function splitOverflow(rows) {
   const overflows = [];
   const wireRows = rows.map((row) => {
     if (!row.overflow?.chunks) return row;
-    const chunks = row.overflow.chunks;
-    overflows.push({ seq: row.seq, sha256: row.overflow.sha256, byteLength: row.overflow.byteLength, chunks });
-    return { ...row, overflow: { sha256: row.overflow.sha256, byteLength: row.overflow.byteLength, chunkCount: row.overflow.chunkCount } };
+    overflows.push({ seq: row.seq, sha256: row.overflow.sha256, byteLength: row.overflow.byteLength, chunks: row.overflow.chunks });
+    const { overflow: _stamped, ...wire } = row;
+    return wire;
   });
   return { rows: wireRows, overflows };
+}
+
+async function storeSidecar(item, { store, fs }) {
+  const metaFile = item.path.replace(/\.jsonl$/i, ".meta.json");
+  let bytes;
+  try { bytes = fs.readFileSync(metaFile); } catch { return null; }
+  const stored = await store.put({ runtime: item.runtime, threadId: item.threadId, host: item.host, sourceBytes: bytes, kind: "sidecar" });
+  if (!stored.verified || !stored.key) throw new Error("run sidecar upload was not verified");
+  return stored;
 }
 
 function agentMeta(item, fs) {
@@ -318,7 +347,7 @@ function queuePages({ merged, overflows, endSeen, envelopeMtimeMs, sourceBytes, 
         rows,
         children: merged.children,
         previousCommittedLine,
-        previousCommittedPrefixSha256: cursorProofs[String(previousCommittedLine)],
+        previousPrefixSha256: cursorProofs[String(previousCommittedLine)],
       },
       overflows: overflows.filter((overflow) => seqs.has(overflow.seq)),
     };
@@ -342,10 +371,20 @@ async function parseAndStore(item, { stateDir, store, fs, post, now, markAbandon
   }
   const previous = readState(stateDir, runIdOf(item), fs);
   const fromLine = previous?.deferred ? 0 : previous?.committedLine ?? 0;
-  const common = { path: item.path, text: sourceBytes.toString("utf8"), host: item.host, fileVersion: stored.fileVersion, fromLine };
-  const parsed = item.runtime === "claude"
-    ? parseClaudeFile({ ...common, agentMeta: agentMeta(item, fs), parentSessionId: item.kind === "subagent" ? item.threadId.split("/")[0] : null })
-    : parseCodexFile(common);
+  // The parsers read an increment, not a file: `text` is the bytes from the
+  // committed cursor on and `baseLine` is that cursor, so provenance keeps
+  // naming absolute source lines and the unfinished last line stays unread.
+  const common = { path: item.path, text: textFromLine(sourceBytes.toString("utf8"), fromLine), host: item.host, fileVersion: stored.fileVersion, baseLine: fromLine };
+  let parsed;
+  if (item.runtime !== "claude") parsed = parseCodexFile(common);
+  else if (item.kind === "subagent") {
+    // A child's sidecar carries its depth and its spawning tool-use id, so it
+    // is part of the record and gets its own immutable object beside the run.
+    const sidecar = await storeSidecar(item, { store, fs });
+    parsed = parseClaudeFile({ ...common, agentMeta: agentMeta(item, fs), parentSessionId: item.threadId.split("/")[0], sidecar });
+  } else {
+    parsed = parseClaudeFile({ ...common, attachments: discoverChildren(item.path, { fs }).toolResults });
+  }
   Object.assign(parsed.run.file, { sourceHash: stored.sourceHash, storedHash: stored.storedHash, bytes: stored.bytes, storedBytes: stored.storedBytes, storeKey: stored.key, committedLine: parsed.lastLine });
   const merged = mergeRegistration({ parsed, envelope, host: item.host });
   if (envelopeStored && merged.envelopeApplied) merged.run.envelopeKey = envelopeStored.key;

@@ -57,7 +57,7 @@ describe("run registration", () => {
     }));
 
     const result = claimRegistration({ spoolDir, token, runFile, claim: { by: "repair" }, now: () => 3 });
-    expect(result).toMatchObject({ ok: true, claimed: false, envelope: { writer: { file: "sidecar-launcher.mjs" }, registration: { origin: "sidecar" }, claim: { by: "hook:SessionStart" } });
+    expect(result).toMatchObject({ ok: true, claimed: false, envelope: { writer: { file: "sidecar-launcher.mjs" }, registration: { origin: "sidecar" }, claim: { by: "hook:SessionStart" } } });
     expect(fs.existsSync(path.join(spoolDir, `${token}.json`))).toBe(true);
   });
 

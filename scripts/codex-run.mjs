@@ -209,7 +209,10 @@ const spooled = writeRegistration({
     continuesRunId: null,
     layersKnown: true,
     layersGiven,
-    layersDenied: layersGiven.length === 0 ? ["operate"] : [],
+    // Denied means a caller refused the layer. An operate file this run could
+    // not read was not denied to it — it was absent, and layersGiven already
+    // says so without inventing an intent nobody had.
+    layersDenied: opts.operate ? [] : ["operate"],
     skillsGranted: [],
     skillsRefused: [],
     tools: { allowed: null, denied: null },

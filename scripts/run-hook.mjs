@@ -13,12 +13,12 @@ const registrationUrl = [
   new URL("../worker/runs/registration.mjs", import.meta.url),
   new URL("../runs/registration.mjs", import.meta.url),
 ].find((candidate) => fs.existsSync(fileURLToPath(candidate)));
-if (!registrationUrl) throw new Error("run registration module is not installed");
-const {
-  claimRegistration,
-  writeRegistrationClaim,
-  writeRegistrationEnd,
-} = await import(registrationUrl.href);
+// A half-installed hook must not take a session down with it: with no
+// registration module the hook still returns, and the sweep still runs.
+const registration = registrationUrl ? await import(registrationUrl.href) : null;
+const claimRegistration = registration?.claimRegistration;
+const writeRegistrationClaim = registration?.writeRegistrationClaim;
+const writeRegistrationEnd = registration?.writeRegistrationEnd;
 
 export const HOOK_EVENTS = ["SessionStart", "SessionEnd", "Stop", "SubagentStart", "SubagentStop"];
 export const HOOKS_CONFIGURED = ["SessionStart", "SessionEnd", "Stop", "SubagentStart", "SubagentStop"];
@@ -116,6 +116,14 @@ function claimFields(payload, event, runFile) {
   };
 }
 
+// scripts/session-start-hook.mjs is the laptop's layer launcher: it calls
+// assemblePrelude for the "laptop" subject, whose stable prefix is operate and
+// write. Naming those two is reading that hook's code, not guessing. The know
+// layer is neither given whole nor denied — it is expanded per subject — so it
+// appears in neither list. A subagent gets no prelude of its own, so its layers
+// stay unknown rather than inheriting a claim nobody made for it.
+export const LAPTOP_SESSION_LAYERS = Object.freeze(["operate", "write"]);
+
 function hookRegistration(payload, event, runFile, env) {
   const host = env.RUN_HOST === "box" || env.RUN_HOST === "laptop" ? env.RUN_HOST : null;
   const runner = runnerOf(payload, runFile, env);
@@ -127,22 +135,25 @@ function hookRegistration(payload, event, runFile, env) {
     payload.parentToolUseId,
   );
   const normalizedFile = String(runFile).replaceAll("\\", "/").toLowerCase();
+  // The box keeps its accounts under /root/.claude-accounts; anything under a
+  // plain ~/.claude is the laptop. RUN_HOST wins over both when it is set.
   const laptop = host === "laptop"
-    || (normalizedFile.includes("/.claude/") && !normalizedFile.includes("/.claude-accounts/"))
-    || (process.platform === "win32" && !normalizedFile.includes("/.claude-accounts/"));
+    || (host === null && normalizedFile.includes("/.claude/") && !normalizedFile.includes("/.claude-accounts/"));
+  const subagent = event.startsWith("Subagent");
+  const layersKnown = laptop && !subagent && runner === "claude";
   return {
     host,
     ...(runner ? { runner } : {}),
     origin: laptop ? "laptop" : firstString(env.TTS_RUN_ORIGIN) ?? "unknown",
-    kind: event.startsWith("Subagent") ? "subagent" : "session",
+    kind: subagent ? "subagent" : "session",
     cwd: firstString(payload.cwd),
-    ...(event.startsWith("Subagent") && runner && host && parentThread
+    ...(subagent && runner && host && parentThread
       ? { parentRunId: `${runner}:${host}:${parentThread}` }
       : {}),
-    ...(event.startsWith("Subagent") && toolUseId ? { spawnedByToolUseId: toolUseId } : {}),
-    layersKnown: laptop,
-    layersGiven: laptop ? ["operate", "write"] : [],
-    layersDenied: laptop ? ["know"] : [],
+    ...(subagent && toolUseId ? { spawnedByToolUseId: toolUseId } : {}),
+    layersKnown,
+    layersGiven: layersKnown ? [...LAPTOP_SESSION_LAYERS] : [],
+    layersDenied: [],
     hooksConfigured: [...HOOKS_CONFIGURED],
   };
 }
@@ -161,9 +172,19 @@ export function handleHook(payload, { event, env = process.env, spawnImpl = spaw
   const runFile = runFileOf(payload, hookEvent, env);
   if (!runFile) {
     hookLog(stateDir, `${hookEvent} payload carried no usable run path`);
-    return { handled: false };
+    // A start event with no path has nothing to write beside; an end or a turn
+    // still has work, so let the plain walk find whatever changed.
+    if (hookEvent === "SessionStart" || hookEvent === "SubagentStart") return { handled: false };
+    spawnSweep(null, env, spawnImpl);
+    return { handled: true, swept: true };
   }
   const claim = claimFields(payload, hookEvent, runFile);
+  if (!registration) {
+    hookLog(stateDir, `${hookEvent} recorded no envelope: the registration module is not installed`);
+    if (hookEvent === "SessionStart" || hookEvent === "SubagentStart") return { handled: false };
+    spawnSweep(runFile, env, spawnImpl);
+    return { handled: true, swept: true };
+  }
   if (hookEvent === "SessionStart") {
     const token = firstString(env.TTS_RUN_REG_TOKEN);
     const result = token

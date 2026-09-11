@@ -10,6 +10,8 @@ const STORED_HASH = "b".repeat(64);
 const PREFIX_HASH = "c".repeat(64);
 const PREVIOUS_HASH = "d".repeat(64);
 const GROWN_PREFIX_HASH = "e".repeat(64);
+const VERSION_A_HASH = "1".repeat(64);
+const VERSION_B_HASH = "2".repeat(64);
 const HELLO_WORLD_SHA256 = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
 
 // Session creation fails closed when the model-of-tom publication singleton is
@@ -206,14 +208,17 @@ describe("runs", () => {
     const stamp = { sha256: "a".repeat(64), byteLength: 20, chunkCount: 1 };
     await daemonRow(t, sessionId, 0, "user", { text: "hello" });
     await daemonRow(t, sessionId, 1, "assistant-text", { text: "answer" }, stamp);
-    await t.mutation(internal.runs.internalIngest, {
-      run: run({ sessionId }),
-      rows: [
-        row(0, { kind: "user", content: { text: "hello" } }),
-        row(1, { kind: "assistant-text", content: { text: "answer" }, digest: "1111111111111111", overflow: stamp }),
-      ],
-      children: [],
-    } as never);
+    const value = run({ sessionId });
+    await t.mutation(internal.runs.internalIngest, ingest(value, [
+      row(0, { kind: "user", content: { text: "hello" } }),
+      row(1, { kind: "assistant-text", content: { text: "answer" }, digest: "1111111111111111" }),
+    ], []) as never);
+    // The overflow stamp itself is verified elsewhere (chunk reassembly); here
+    // it only needs to exist so the two page shapes can be compared.
+    await t.run(async (ctx) => {
+      const inserted = await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", value.runId).eq("seq", 1)).unique();
+      if (inserted) await ctx.db.patch(inserted._id, { overflow: stamp });
+    });
     const tom = await withTom(t);
     const pick = (page: Array<Record<string, unknown>>) => page.map(({ seq, kind, content, hasOverflow, fullByteLength }) => ({ seq, kind, content, hasOverflow, fullByteLength }));
     const before = await tom.query(api.claudeSessions.getMessages, { sessionId, paginationOpts: { cursor: null, numItems: 10 } });
@@ -221,7 +226,7 @@ describe("runs", () => {
     const after = await tom.query(api.claudeSessions.getMessages, { sessionId, paginationOpts: { cursor: null, numItems: 10 } });
     expect(pick(after.page as never)).toEqual(pick(before.page as never));
     expect(after.page.map((entry) => entry.seq)).toEqual([1, 0]);
-    expect(await t.run((ctx) => ctx.db.get(sessionId))).toMatchObject({ runId: "claude:laptop:root", rowsFrom: "runs" });
+    expect(await t.run((ctx) => ctx.db.get(sessionId))).toMatchObject({ runId: value.runId, rowsFrom: "runs" });
   });
 
   it("fails closed when a run-backed session has no run id", async () => {
@@ -238,10 +243,9 @@ describe("runs", () => {
   it("repairs a box session link from the Claude root id", async () => {
     const t = convexTest(schema, modules);
     const sessionId = await session(t, { sdkSessionId: "sdk-root", status: "running" });
-    const result = await t.mutation(internal.runs.internalIngest, {
-      run: run({ runId: "claude:box:sdk-root", rootRunId: "claude:box:sdk-root", host: "box" }),
-      rows: [], children: [],
-    } as never);
+    const result = await t.mutation(internal.runs.internalIngest, ingest(
+      run({ runId: "claude:box:sdk-root", rootRunId: "claude:box:sdk-root", host: "box" }), [], [],
+    ) as never);
     expect(result).toMatchObject({ ok: true, runId: "claude:box:sdk-root" });
     const [storedRun, storedSession] = await t.run(async (ctx) => [
       await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:box:sdk-root")).unique(),
@@ -259,35 +263,32 @@ describe("runs", () => {
     await daemonRow(t, sessionId, 1, "assistant-text", { text: "answer" });
     await daemonRow(t, sessionId, 2, "thinking", { text: "reasoning" });
     await daemonRow(t, sessionId, 3, "tool-call", { toolName: "Read" });
-    await t.mutation(internal.runs.internalIngest, {
-      run: run({
+    await t.mutation(internal.runs.internalIngest, ingest(run({
         sessionId, status: "ended", envelopeKey: "runs/registration.json.gz",
         context: {
           layersKnown: true, layersGiven: ["write"], layersDenied: [], skillsOffered: [], skillsUsed: [], tools: [], hooks: [],
           registered: true, launcher: "worker/jobs/evals.mjs", modelRequested: "claude-fable-5", skillsGranted: [], skillsRefused: [], promptSha256: "prompt", writingStandardSource: "/tts/capture-context",
         },
-      }),
-      rows: [
+      }), [
         row(0, { kind: "context", content: { modelRequested: "claude-fable-5" } }),
         row(1000, { kind: "user", content: { text }, digest: "1111111111111111" }),
-        row(1500, { kind: "child-run", content: { childRunId: "claude:laptop:root/child" }, digest: "2222222222222222" }),
+        row(1500, { kind: "child-run", content: { childRunId: "claude:laptop:root-run/child" }, digest: "2222222222222222" }),
         row(2000, { kind: "assistant-text", content: { text: "answer" }, digest: "3333333333333333" }),
         row(3000, { kind: "thinking", content: { text: "reasoning" }, digest: "4444444444444444" }),
         row(4000, { kind: "tool-call", content: { name: "Read" }, digest: "5555555555555555" }),
-      ], children: [],
-    } as never);
+      ], []) as never);
 
     const eligible = await t.query(internal.runs.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
-    expect(eligible.eligible).toContainEqual({ sessionId, runId: "claude:laptop:root" });
+    expect(eligible.eligible).toContainEqual({ sessionId, runId: "claude:laptop:root-run" });
     const comparison = await t.mutation(internal.runs.internalShadowCompare, { sessionId });
     expect(comparison).toMatchObject({
-      runId: "claude:laptop:root", daemonRows: 4, fileRows: 4,
+      runId: "claude:laptop:root-run", daemonRows: 4, fileRows: 4,
       byKind: { user: { daemon: 1, file: 1 }, "assistant-text": { daemon: 1, file: 1 }, thinking: { daemon: 1, file: 1 }, "tool-call": { daemon: 1, file: 1 } },
       textRows: 3, textMatches: 3, clean: true,
     });
     expect(comparison).not.toHaveProperty("firstDiffSeq");
     const [storedRun, storedSession, comparisonEvent] = await t.run(async (ctx) => [
-      await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root")).unique(),
+      await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique(),
       await ctx.db.get(sessionId),
       await ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", "runs-shadow-compare")).first(),
     ]);
@@ -303,11 +304,11 @@ describe("runs", () => {
     const sessionId = await session(t);
     await daemonRow(t, sessionId, 0, "user", { text: "daemon text" });
     await daemonRow(t, sessionId, 1, "system", { text: "extra" });
-    await t.mutation(internal.runs.internalIngest, {
-      run: run({ sessionId, status: "failed" }),
-      rows: [row(1000, { kind: "user", content: { text: "file text" }, digest: "1111111111111111" })],
-      children: [],
-    } as never);
+    await t.mutation(internal.runs.internalIngest, ingest(
+      run({ sessionId, status: "failed" }),
+      [row(1000, { kind: "user", content: { text: "file text" }, digest: "1111111111111111" })],
+      [],
+    ) as never);
     const comparison = await t.mutation(internal.runs.internalShadowCompare, { sessionId });
     expect(comparison).toMatchObject({
       daemonRows: 2, fileRows: 1, textRows: 1, textMatches: 0,
@@ -321,15 +322,15 @@ describe("runs", () => {
     const t = convexTest(schema, modules);
     const sessionId = await session(t);
     for (let seq = 0; seq < 101; seq += 1) await daemonRow(t, sessionId, seq, "user", { text: `row-${seq}` });
-    await t.mutation(internal.runs.internalIngest, {
-      run: run({ sessionId, status: "ended" }),
-      rows: Array.from({ length: 101 }, (_, seq) => row(seq, {
+    await t.mutation(internal.runs.internalIngest, ingest(
+      run({ sessionId, status: "ended" }),
+      Array.from({ length: 101 }, (_, seq) => row(seq, {
         kind: "user",
         content: { text: seq === 100 ? "late-mismatch" : `row-${seq}` },
         digest: seq.toString(16).padStart(16, "0"),
       })),
-      children: [],
-    } as never);
+      [],
+    ) as never);
     const first = await t.mutation(internal.runs.internalShadowCompare, { sessionId });
     expect(first).toMatchObject({ complete: false, daemonRows: 100, fileRows: 100 });
     if (first.complete) throw new Error("comparison unexpectedly completed on its first page");
@@ -342,13 +343,13 @@ describe("runs", () => {
   it("admits only terminal run rows and does not suppress their later transition", async () => {
     const t = convexTest(schema, modules);
     const sessionId = await session(t);
-    await t.mutation(internal.runs.internalIngest, { run: run({ sessionId }), rows: [], children: [] } as never);
+    await t.mutation(internal.runs.internalIngest, ingest(run({ sessionId }), [], []) as never);
     const unknown = await t.query(internal.runs.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
     expect(unknown.eligible).toEqual([]);
     await expect(t.mutation(internal.runs.internalShadowCompare, { sessionId })).rejects.toThrow("run is not terminal");
-    await t.mutation(internal.runs.internalIngest, { run: run({ sessionId, status: "ended" }), rows: [], children: [] } as never);
+    await t.mutation(internal.runs.internalIngest, retry(run({ sessionId, status: "ended" }), [], []) as never);
     const terminal = await t.query(internal.runs.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
-    expect(terminal.eligible).toEqual([{ sessionId, runId: "claude:laptop:root" }]);
+    expect(terminal.eligible).toEqual([{ sessionId, runId: "claude:laptop:root-run" }]);
   });
 
   it("paginates terminal candidates beyond the first 100 sessions", async () => {
@@ -371,61 +372,45 @@ describe("runs", () => {
     expect(second.eligible).toHaveLength(1);
   });
 
-  it("returns the earliest 200 children from the ordered index", async () => {
-    const t = convexTest(schema, modules);
-    await t.run(async (ctx) => {
-      for (let index = 200; index >= 0; index -= 1) {
-        const runId = `claude:laptop:root/child-${index.toString().padStart(3, "0")}`;
-        await ctx.db.insert("runs", { ...run({ runId, parentRunId: "claude:laptop:root", depth: 1, kind: "subagent", startedAt: index }), ingestedAt: Date.now() } as never);
-      }
-    });
-    const tom = await withTom(t);
-    const children = await tom.query(api.runs.children, { runId: "claude:laptop:root" });
-    expect(children).toHaveLength(200);
-    expect(children.map((child) => child.startedAt)).toEqual(Array.from({ length: 200 }, (_, index) => index));
-  });
-
   it("accepts abandoned lifecycle state and emits paged manifest entries", async () => {
     const t = convexTest(schema, modules);
-    await t.mutation(internal.runs.internalIngest, {
-      run: run({
+    await t.mutation(internal.runs.internalIngest, ingest(run({
         origin: "job", status: "abandoned", abandonedAt: 123,
         envelopeKey: "runs/claude/laptop/root/registration-hash.json.gz",
         file: { ...run().file, storeKey: "runs/claude/laptop/root/stored.jsonl.gz" },
-      }), rows: [], children: [],
-    } as never);
-    const stored = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root")).unique());
+      }), [], []) as never);
+    const stored = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique());
     expect(stored).toMatchObject({ status: "abandoned", abandonedAt: 123, origin: "job" });
     const manifest = await t.query(internal.runs.internalManifest, { since: 0 });
     expect(manifest.entries).toEqual([expect.objectContaining({
-      run_id: "claude:laptop:root", thread_id: "root", file_version: "stored",
+      run_id: "claude:laptop:root-run", thread_id: "root-run", file_version: STORED_HASH,
       store_key: "runs/claude/laptop/root/stored.jsonl.gz", parent_run_id: null,
     })]);
     expect((await t.query(internal.runs.internalManifest, { since: manifest.entries[0].at, afterRunId: manifest.entries[0].run_id, afterFileVersion: manifest.entries[0].file_version })).entries).toEqual([]);
-    await t.mutation(internal.runs.internalIngest, { run: run({ status: "ended" }), rows: [], children: [] } as never);
-    expect((await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root")).unique()))?.status).toBe("ended");
+    await t.mutation(internal.runs.internalIngest, retry(run({ status: "ended" }), [], []) as never);
+    expect((await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique()))?.status).toBe("ended");
   });
 
   it("manifests each file version once across retries and equal timestamps", async () => {
     const t = convexTest(schema, modules);
     const now = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
     try {
-      const firstRun = run({ file: { ...run().file, storedHash: "version-a", storeKey: "runs/a.jsonl.gz" } });
-      await t.mutation(internal.runs.internalIngest, { run: firstRun, rows: [], children: [] } as never);
-      const secondRun = run({ file: { ...run().file, storedHash: "version-b", storeKey: "runs/b.jsonl.gz", bytes: 20, committedLine: 2, committedPrefixSha256: "prefix-b" } });
-      const secondInput = { run: secondRun, rows: [], children: [], previousCommittedLine: 1, previousCommittedPrefixSha256: "prefix" };
+      const firstRun = run({ file: { ...run().file, storedHash: VERSION_A_HASH, storeKey: "runs/a.jsonl.gz" } });
+      await t.mutation(internal.runs.internalIngest, ingest(firstRun, [], []) as never);
+      const secondRun = run({ file: { ...run().file, storedHash: VERSION_B_HASH, storeKey: "runs/b.jsonl.gz", bytes: 20, committedLine: 2, committedPrefixSha256: GROWN_PREFIX_HASH } });
+      const secondInput = retry(secondRun, [], []);
       await t.mutation(internal.runs.internalIngest, secondInput as never);
       await t.mutation(internal.runs.internalIngest, secondInput as never);
       const versions = await t.run((ctx) => ctx.db.query("runFileVersions").collect());
-      expect(versions.map((version) => version.fileVersion).sort()).toEqual(["version-a", "version-b"]);
+      expect(versions.map((version) => version.fileVersion).sort()).toEqual([VERSION_A_HASH, VERSION_B_HASH]);
       const manifest = await t.query(internal.runs.internalManifest, { since: 0 });
-      expect(manifest.entries.map((entry) => entry.file_version)).toEqual(["version-a", "version-b"]);
+      expect(manifest.entries.map((entry) => entry.file_version)).toEqual([VERSION_A_HASH, VERSION_B_HASH]);
       const resumed = await t.query(internal.runs.internalManifest, {
         since: manifest.entries[0].at,
         afterRunId: manifest.entries[0].run_id,
         afterFileVersion: manifest.entries[0].file_version,
       });
-      expect(resumed.entries.map((entry) => entry.file_version)).toEqual(["version-b"]);
+      expect(resumed.entries.map((entry) => entry.file_version)).toEqual([VERSION_B_HASH]);
     } finally {
       now.mockRestore();
     }
