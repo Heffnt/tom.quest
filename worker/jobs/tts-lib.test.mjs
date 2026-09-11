@@ -7,6 +7,10 @@
 // ones the two old spellings disagreed about, so they are what a re-split
 // would break first.
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -358,5 +362,42 @@ describe("runClaude allowedTools", () => {
     expect(() => runClaude("p", { allowedTools: "Read" })).toThrow(/allowedTools/);
     expect(() => runClaude("p", { allowedTools: ["Read", ""] })).toThrow(/allowedTools/);
     expect(() => runClaude("p", { allowedTools: [1] })).toThrow(/allowedTools/);
+  });
+});
+
+// The token of the CHILD run a call spawns, handed back to the caller. It is
+// what a door stamps on the row it stores as producedByRunToken, and it is the
+// one edge convex/runLabels.ts turns into a label's runId. The job's own
+// process.env.TTS_RUN_REG_TOKEN is a DIFFERENT run and would be the wrong edge.
+describe("runClaude receipt", () => {
+  it("fills the token before the child runs, so a failed call still names its run", () => {
+    const spool = fs.mkdtempSync(path.join(os.tmpdir(), "tts-lib-receipt-"));
+    const previous = process.env.TTS_RUN_REG_SPOOL;
+    process.env.TTS_RUN_REG_SPOOL = spool;
+    const receipt = {};
+    try {
+      // The spawn itself fails in this environment; the point is that the
+      // token was already written, which is why a caller can report which run
+      // timed out rather than only that one did.
+      runClaude("p", { model: "haiku", registration: { layersKnown: false }, receipt });
+    } catch {
+      // Expected: there is no `claude` on the test machine's PATH.
+    } finally {
+      if (previous === undefined) delete process.env.TTS_RUN_REG_SPOOL;
+      else process.env.TTS_RUN_REG_SPOOL = previous;
+      fs.rmSync(spool, { recursive: true, force: true });
+    }
+    expect(typeof receipt.runToken).toBe("string");
+    expect(receipt.runToken.length).toBeGreaterThan(0);
+  });
+
+  it("writes nothing into a receipt when no registration was asked for", () => {
+    const receipt = {};
+    try {
+      runClaude("p", { model: "haiku", receipt });
+    } catch {
+      // Same spawn failure; the assertion is about the receipt.
+    }
+    expect(receipt.runToken).toBeUndefined();
   });
 });
