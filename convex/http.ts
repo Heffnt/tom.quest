@@ -861,6 +861,64 @@ const slackEvents = httpAction(async (ctx, request) => {
   if (body.type !== "event_callback") return jsonResponse(200, { ok: true });
   const event = (body.event ?? {}) as Record<string, unknown>;
 
+  // ── An emoji on the morning digest (the evals layer, phase 7) ─────────────
+  // The fourth door judgment enters by (convex/runLabels.ts): Tom taps a
+  // thumb on the morning message and that becomes a label on the run that
+  // WROTE it. It is the cheapest act he can perform, which is the point — the
+  // other three doors all cost him a sentence.
+  //
+  // The gate is Tom, then the room, and then the mutation. Everything it turns
+  // away is acknowledged with a 200, because anything but a 200 makes Slack
+  // retry an event we have already decided we do not want.
+  //
+  //  1. TOM HIMSELF. An emoji from anyone else in the workspace is somebody
+  //     agreeing with the morning, not a judgment on a run, and an unset
+  //     TOM_SLACK_USER_ID admits NOTHING — the same posture the threaded-reply
+  //     branch below takes, logged once per isolate rather than per event.
+  //  2. #tts-today, read as its id is set like every other channel here. The
+  //     morning message is the only thing that room carries, so the room is
+  //     what makes "a reaction" mean "a reaction to the digest"; an unset id
+  //     admits nothing.
+  //  3. WHICH digest, and whether a run wrote it at all, is the mutation's
+  //     question and is not asked twice — it resolves the digest-sent row from
+  //     the ts, and a morning the plain template wrote has no run to label.
+  if (event.type === "reaction_added" || event.type === "reaction_removed") {
+    const tomSlackUserId = process.env.TOM_SLACK_USER_ID;
+    if (!tomSlackUserId) {
+      if (!warnedNoTomSlackUserId) {
+        warnedNoTomSlackUserId = true;
+        console.warn(
+          "TTS slack events: TOM_SLACK_USER_ID not configured — threaded replies and digest reactions are ignored",
+        );
+      }
+      return jsonResponse(200, { ok: true, ignored: true });
+    }
+    if (event.user !== tomSlackUserId) return jsonResponse(200, { ok: true, ignored: true });
+    const item = (event.item ?? {}) as Record<string, unknown>;
+    const itemChannel = typeof item.channel === "string" ? item.channel : "";
+    const todayChannel = process.env.SLACK_TTS_TODAY_CHANNEL_ID;
+    if (!todayChannel || itemChannel !== todayChannel) {
+      return jsonResponse(200, { ok: true, ignored: true });
+    }
+    const itemTs = typeof item.ts === "string" ? item.ts : "";
+    const reaction = typeof event.reaction === "string" ? event.reaction : "";
+    if (itemTs === "" || reaction === "") return jsonResponse(200, { ok: true, ignored: true });
+    // A SLACK TS IS NOT A MILLISECOND NUMBER. It is seconds with a fractional
+    // part — "1757000000.001200" — and reading it as a number would date every
+    // label to 1970. The label's `at` is when he tapped, which is `event_ts`;
+    // a missing one falls back to the arrival clock rather than to zero.
+    const eventTs = typeof event.event_ts === "string" ? Number(event.event_ts) : NaN;
+    const at = Number.isFinite(eventTs) ? Math.round(eventTs * 1000) : Date.now();
+    const result = await ctx.runMutation(internal.runLabels.internalLabelFromReaction, {
+      channel: itemChannel,
+      ts: itemTs,
+      emoji: reaction,
+      at,
+      removed: event.type === "reaction_removed",
+    });
+    return jsonResponse(200, { ok: true, ...result });
+  }
+
   // The SAME filter poll-dump.mjs applies, and it must stay the same filter:
   // bot_id skips our own posts (including the threaded replies this whole
   // feature adds — otherwise every reply would capture itself), subtype skips
@@ -907,7 +965,7 @@ const slackEvents = httpAction(async (ctx, request) => {
       if (!warnedNoTomSlackUserId) {
         warnedNoTomSlackUserId = true;
         console.warn(
-          "TTS slack events: TOM_SLACK_USER_ID not configured — threaded replies are ignored",
+          "TTS slack events: TOM_SLACK_USER_ID not configured — threaded replies and digest reactions are ignored",
         );
       }
       return jsonResponse(200, { ok: true, ignored: true });
@@ -970,7 +1028,7 @@ http.route({ path: "/slack/events", method: "POST", handler: slackEvents });
 // entry action / work description to a life todo and advances its readiness,
 // plus the date the statement itself states, if any.
 // Body: { id, brief?, entryAction?, workDescription?, readiness?, dueAt?,
-// dateKind?, evidence?, groundUpExplanation?, status? }.
+// dateKind?, evidence?, groundUpExplanation?, status?, runToken? }.
 const ttsPrepareTodo = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -1010,6 +1068,16 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
   if (b.status !== undefined && b.status !== "done") {
     return jsonResponse(400, { error: 'status must be "done"' });
   }
+  // The run that wrote this write-up, stamped on the row so a ruling on it
+  // later finds the run that produced the text Tom read (convex/runLabels.ts
+  // runForToken). A DOOR THAT RECEIVES NO TOKEN STORES NONE: absent is a
+  // supported value and is never inferred, because the alternative — guessing
+  // the newest run that touched this todo — is wrong on the ordinary case (a
+  // prepare pass, a repair pass and a planner pass can all touch one todo in
+  // an hour) and a wrong edge poisons the eval corpus silently.
+  if (b.runToken !== undefined && (typeof b.runToken !== "string" || b.runToken === "")) {
+    return jsonResponse(400, { error: "runToken, when given, is a non-empty string" });
+  }
   const str = (x: unknown) => (typeof x === "string" ? x : undefined);
   try {
     await ctx.runMutation(internal.tts.internalPrepareTodo, {
@@ -1027,6 +1095,7 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
       evidence: str(b.evidence),
       groundUpExplanation: str(b.groundUpExplanation),
       status: b.status as "done" | undefined,
+      runToken: str(b.runToken),
     });
     return jsonResponse(200, { ok: true });
   } catch (e) {
@@ -2025,6 +2094,48 @@ const ttsGoldenInput = httpAction(async (ctx, request) => {
 });
 
 http.route({ path: "/tts/golden-input", method: "GET", handler: ttsGoldenInput });
+
+// GET /tts/label-input?limitPerSource=20 — the other corpus the exporter
+// builds from: what Tom judged, with the run that wrote what he judged and the
+// transcript rows the judgment covers. Unlike golden-input, nothing here needs
+// the WikiTom checkout — the edge from his act to the run is an exact token,
+// so the bytes travel with it.
+const ttsLabelInput = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const raw = new URL(request.url).searchParams.get("limitPerSource");
+  const limitPerSource = raw === null ? undefined : Number(raw);
+  if (limitPerSource !== undefined && (!Number.isFinite(limitPerSource) || limitPerSource <= 0)) {
+    return jsonResponse(400, { error: "limitPerSource must be a positive number" });
+  }
+  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalLabelInput, { limitPerSource }));
+});
+
+http.route({ path: "/tts/label-input", method: "GET", handler: ttsLabelInput });
+
+// A registration token is a UUID (worker/runs/registration.mjs mints it with
+// crypto.randomUUID), and the shape is CHECKED BEFORE THE LOOKUP. An
+// unvalidated string on an indexed read is a scan this deployment pays for on
+// behalf of whoever sent it; refusing the shape costs one regex.
+const RUN_TOKEN_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// GET /tts/run-by-token?token=… — one run's identity and totals, by the token
+// it stamped on what it wrote. This is how the evals harness reads a trial's
+// tokens and turns back from the record rather than counting them itself, the
+// only way the two cache columns are right. `null` is a normal answer and
+// means the sweeper has not seen the run's file yet, which is why the harness
+// polls with a short bounded wait; it is never an error.
+const ttsRunByToken = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const token = new URL(request.url).searchParams.get("token") ?? "";
+  if (!RUN_TOKEN_SHAPE.test(token)) {
+    return jsonResponse(400, { error: "token (a registration UUID) required" });
+  }
+  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalRunByToken, { token }));
+});
+
+http.route({ path: "/tts/run-by-token", method: "GET", handler: ttsRunByToken });
 
 // CI has a distinct, narrow key: it can request and read evals, never use the
 // broader worker key that can write every TTS event.
