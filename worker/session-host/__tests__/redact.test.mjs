@@ -168,6 +168,26 @@ describe("a replacement inside a serialized body never breaks the JSON", () => {
       expect(out).not.toContain(value);
     });
   }
+
+  // The audit's counterexample, 2026-09-11. A name at the END of a string
+  // leaves the quoted value form free to open on the quote that CLOSES that
+  // string and shut on the one that OPENS the next — swallowing the structure
+  // between them, which in a mixed array is long and digit-heavy enough to
+  // read as a credential. The values these forms take must be fenced by the
+  // characters JSON structure is made of, not only by the name in front.
+  const STRUCTURE = [
+    ["a mixed array whose element ends in a name", '["password:",1757600000000,"ok"]'],
+    ["an object whose value ends in a name", '{"note":"the password:","timeout":120000}'],
+    ["an apostrophe that is not a quoted value", `{"note":"password='abc123\\",\\"timeout\\":120000,x'"}`],
+    ["a name at the end of an array element", '["export GITHUB_TOKEN=",1757600000000,"ok"]'],
+  ];
+  for (const [name, text] of STRUCTURE) {
+    it(`leaves the structure alone: ${name}`, () => {
+      const out = redactSecrets(text);
+      expect(() => JSON.parse(out)).not.toThrow();
+      expect(out).toBe(text);
+    });
+  }
 });
 
 // The second half: the name list is narrow enough that the filter does not

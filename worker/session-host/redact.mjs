@@ -136,11 +136,19 @@ const isHighEntropy = (value) => {
  * `/root/x`, `not-configured` and `learning:abc` do not.  This is the second
  * half of the 2026-09-11 narrowing — the name list says which values are
  * CANDIDATES, this says which candidates are credentials.
+ *
+ * The structural characters are the JSON fence, and they are why a quoted
+ * value form cannot eat a document: `["password:",1757600000000,"ok"]` lets
+ * the double-quoted form open on the quote that CLOSES one string and shut on
+ * the one that OPENS the next, whose span (`,1757600000000,`) is long, has
+ * digits and no whitespace.  No credential has ever contained a quote, a comma
+ * or a brace; a span that does is JSON structure, not a value.
  */
 const looksLikeCredential = (value) => {
   const text = String(value);
   if (text.length < 12) return false;                                   // too short to be one
   if (/\s/.test(text)) return false;                                    // prose, not a value
+  if (/["'`,[\]{}\\]/.test(text)) return false;                         // JSON structure, not a value
   if (/^(?:~|\.{1,2})?[\\/]/.test(text) || /^[A-Za-z]:[\\/]/.test(text)) return false; // a path
   if (/^[A-Za-z]+(?:[-_][A-Za-z]+)*$/.test(text)) return false;         // words, not a value
   return /[0-9]/.test(text)
