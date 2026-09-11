@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   AUDIT_DIFF_MAX_CHARS,
+  AUDIT_REMOVAL_HEADING,
   AUDIT_SANDBOX,
   AUDIT_VERDICT_LINE,
   auditCommit,
@@ -54,6 +55,19 @@ describe("auditPrompt", () => {
     expect(prompt).toContain("<<<DIFF");
     expect(prompt).toContain("DIFF>>>");
     expect(prompt).toContain(CHANGE);
+  });
+
+  it("asks the removal check of every addition, and names the heading it answers under", () => {
+    expect(prompt).toContain("THE REMOVAL CHECK");
+    expect(prompt).toContain("cannot be deleted instead");
+    expect(prompt).toContain(`${AUDIT_REMOVAL_HEADING} none`);
+    // A finding, not a fourth thing the branch has to satisfy.
+    expect(prompt).toContain("This is a FINDING, not a refusal.");
+  });
+
+  it("asks the removal check after the one question and before the answer shape", () => {
+    expect(prompt.indexOf("NOT your question")).toBeLessThan(prompt.indexOf("THE REMOVAL CHECK"));
+    expect(prompt.indexOf("THE REMOVAL CHECK")).toBeLessThan(prompt.indexOf("Answer in this shape"));
   });
 
   it("says so when the diff was cut", () => {
