@@ -23,6 +23,7 @@
 // serves four facts.
 
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -71,6 +72,61 @@ export const FAILURE_KINDS: readonly string[] = [
 /** "Surfaced three times" — the digest's own "surfaced" rows, counted per todo
  * over the week. */
 export const SURFACED_THRESHOLD = 3;
+
+// ── The ablation rule, kept in step with the runner ───────────────────────────
+// THE OTHER HOME IS worker/jobs/evals.mjs (MIN_ABLATION_CASES and
+// ablationFindings). One rule, two spellings, and that is a deliberate cost
+// rather than an oversight: that file imports node:child_process to drive git
+// and the model, and a Convex query that imported it would not bundle at all.
+// The constant and the formula below are copied from it verbatim; a change to
+// either belongs in both files in one commit.
+//
+/** One name's ablation over the week's set. `earned` is the finding itself:
+ * false means the set passed more often WITHOUT the name than with it. */
+export type AblationFinding = {
+  name: string;
+  cases: number;
+  withPass: number;
+  withoutPass: number;
+  earned: boolean;
+};
+
+// How many cases a name needs behind it before its ablation is worth reading.
+// Below this the comparison is noise, and a removal proposal resting on two
+// cases is exactly the confident-and-wrong simplification this whole layer is
+// written against.
+export const MIN_ABLATION_CASES = 5;
+
+/**
+ * Which names did not earn their tokens, computed over the WEEKLY SET and
+ * never per case: a name that one case passes without is a coin toss, and the
+ * question is whether the name is carrying its cases at all.
+ *
+ * REPORTED, NEVER GATED. The golden set is mined out of Tom's rulings rather
+ * than designed for coverage, so a name whose cases pass without it may still
+ * be preventing a failure mode the set does not contain. This says what the
+ * set shows; what to remove is his.
+ */
+export function ablationFindings(
+  ablation: readonly unknown[],
+): AblationFinding[] {
+  const byName = new Map<string, AblationFinding>();
+  for (const raw of ablation) {
+    if (raw === null || typeof raw !== "object") continue;
+    const row = raw as Record<string, unknown>;
+    const name = str(row.name);
+    if (name === null) continue;
+    const entry = byName.get(name) ?? { name, cases: 0, withPass: 0, withoutPass: 0, earned: false };
+    entry.cases += 1;
+    if (row.withPass === true) entry.withPass += 1;
+    if (row.withoutPass === true) entry.withoutPass += 1;
+    byName.set(name, entry);
+  }
+  return [...byName.values()]
+    .filter((entry) => entry.cases >= MIN_ABLATION_CASES)
+    .map((entry) => ({ ...entry, earned: entry.withoutPass / entry.cases < entry.withPass / entry.cases }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
 
 // ── What counts as Tom touching an item ──────────────────────────────────────
 // ONE HOME. "Surfaced three times and untouched" means Tom did nothing with
@@ -170,6 +226,26 @@ export type WeeklyFacts = {
     clean: number;
     regressions: { day: string; repo: string; sha: string; pass: number; items: number; failure: { id: string; partition: string } | null }[];
   };
+  // ── The two evals facts that live on the run row ───────────────────────────
+  // ABSENT IS ABSENT, NEVER ZERO. Both are read off an "evals-run" row, and a
+  // row written before phase 7 carries neither — the same posture the runner
+  // takes with `regressions: null` (worker/jobs/evals.mjs stampAgainstBase): a
+  // run that was never asked the question has no answer to it, and a zero here
+  // would read as "the arm ran and found nothing".
+  //
+  // The THIRD new evals fact, the golden set itself, is NOT here. Graduation is
+  // a file rewrite in evals/golden/** (scripts/graduate-golden.mjs) that never
+  // reaches Convex, and this gather has no filesystem — so the weekly job reads
+  // it off the tom.quest checkout and puts it on the facts it renders, the way
+  // it already reads last week's agenda out of the WikiTom checkout
+  // (worker/jobs/weekly.mjs readGoldenSet).
+  /** The names whose ablation the week's run scored, one entry per name with
+   * at least MIN_ABLATION_CASES cases behind it; null when no run row in the
+   * window carried an ablation arm at all. */
+  ablation: AblationFinding[] | null;
+  /** The cases that cost more tokens at head than at base; null when no run
+   * row in the window carried the comparison. */
+  efficiency: { rises: { id: string; headTokens: number; baseTokens: number }[] } | null;
   jobFailures: { job: string; count: number; lines: { at: number; error: string }[] }[];
   threads: {
     todoId: string;
@@ -610,9 +686,38 @@ export async function gatherWeeklyFacts(
   instructionsLoaded.missingProjectAgents.sort((a, b) => a.day.localeCompare(b.day) || a.session.localeCompare(b.session));
 
   const evals: WeeklyFacts["evals"] = { runs: 0, clean: 0, regressions: [] };
+  // ONE RUN'S ARM, NOT THE WEEK'S ROWS ADDED UP. The ablation arm and the
+  // efficiency comparison are properties of a single run over a single set, so
+  // the newest row that carries each is the one reported. Adding a week's runs
+  // together would count one case once per run and could carry a name over
+  // MIN_ABLATION_CASES on nothing but a rerun.
+  let ablation: WeeklyFacts["ablation"] = null;
+  let ablationAt = -1;
+  let efficiency: WeeklyFacts["efficiency"] = null;
+  let efficiencyAt = -1;
   for (const e of await eventsOfKind(EVALS_RUN)) {
     const d = (e.data ?? {}) as Record<string, unknown>;
     evals.runs++;
+    if (Array.isArray(d.ablation) && e.at > ablationAt) {
+      ablation = ablationFindings(d.ablation);
+      ablationAt = e.at;
+    }
+    const eff = d.efficiency;
+    if (eff !== null && typeof eff === "object" && Array.isArray((eff as Record<string, unknown>).rises) && e.at > efficiencyAt) {
+      const rises: WeeklyFacts["efficiency"] = { rises: [] };
+      for (const raw of (eff as Record<string, unknown>).rises as unknown[]) {
+        if (raw === null || typeof raw !== "object") continue;
+        const row = raw as Record<string, unknown>;
+        const id = str(row.id);
+        const headTokens = num(row.headTokens);
+        const baseTokens = num(row.baseTokens);
+        if (id === null || headTokens === null || baseTokens === null) continue;
+        rises.rises.push({ id, headTokens, baseTokens });
+      }
+      rises.rises.sort((a, b) => a.id.localeCompare(b.id));
+      efficiency = rises;
+      efficiencyAt = e.at;
+    }
     const regressions = num(d.regressions) ?? 0;
     if (regressions === 0) {
       evals.clean++;
@@ -697,6 +802,8 @@ export async function gatherWeeklyFacts(
     preludes,
     instructionsLoaded,
     evals,
+    ablation,
+    efficiency,
     jobFailures,
     threads,
     readiness: { prepared, unprepared },
@@ -756,5 +863,82 @@ export const internalRecordAreaReviewed = internalMutation({
       key: path,
       data: { path, reviewedOn },
     });
+  },
+});
+
+// ── The week's two decisions, into #tts-decisions ────────────────────────────
+// A capability case graduating into the regression set, and a name whose cases
+// the week says pass without it, are both decisions taken without him: the
+// first changes what gates every later merge, the second is what the next
+// simplification pass will act on. They go where every decision taken without
+// him goes — ttsSync.sendDecision, the ONE #tts-decisions door — so "revert" in
+// the thread is already wired to internalRecordDelegateObjection and the
+// morning's objection list already picks them up. No new channel, no new
+// poster, no new Slack subject kind.
+//
+// THE askId IS THE IDEMPOTENCY KEY AND THERE IS NO SECOND ONE. sendDecision
+// claims `object:<askId>` for the TTS DAY before it posts, so the same
+// graduation offered twice on one day posts once — which is exactly the repeat
+// this has: a `--overwrite` rerun of the Friday job. It is a DAY claim and not
+// a forever claim; a graduation re-offered a week later would post again, and
+// the item ids are stable, so the caller offers each set once per run.
+//
+// NEITHER FINDING GATES ANYTHING. The ablation line is a candidate for the
+// weekly simplification pass to read, not an instruction to remove a name: the
+// golden set is mined out of Tom's rulings rather than designed for coverage,
+// so a name whose cases pass without it may still be preventing a failure mode
+// the set does not contain.
+//
+// ITS DOOR IS NOT YET CUT. Every other worker-facing mutation here is reached
+// through a route in convex/http.ts; this one needs
+// `POST /tts/weekly-decisions` there, which is another agent's file this round.
+// The Friday job posts to that path already (worker/jobs/weekly.mjs), so until
+// the route lands the post is one recorded weekly-failure a week naming exactly
+// what is missing — which is the loudest quiet way to carry a seam.
+export const internalRecordWeeklyEvalsDecisions = internalMutation({
+  args: {
+    // The week the ablation finding is about, and the half of its askId that
+    // makes one week's finding a different thread from the next week's.
+    isoWeek: v.string(),
+    graduated: v.optional(v.array(v.object({ id: v.string(), sentence: v.string() }))),
+    ablation: v.optional(
+      v.array(
+        v.object({
+          name: v.string(),
+          cases: v.number(),
+          withPass: v.number(),
+          withoutPass: v.number(),
+          earned: v.boolean(),
+        }),
+      ),
+    ),
+  },
+  handler: async (ctx, { isoWeek, graduated, ablation }) => {
+    if (isoWeek.trim() === "") throw new Error("isoWeek (non-empty) is what makes one week's ablation thread its own");
+    let sent = 0;
+    for (const item of graduated ?? []) {
+      await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
+        askId: `golden:${item.id}`,
+        decision: `a capability case graduated into the regression set: ${item.sentence}`,
+        reason: "it passed every trial of the weekly run, so from now on a merge that breaks it is a regression",
+      });
+      sent++;
+    }
+    // Only the names that did NOT earn their tokens are a decision. A name
+    // whose cases need it is the system working, and #tts-decisions is for
+    // what he might want reverted.
+    for (const finding of (ablation ?? []).filter((f) => !f.earned)) {
+      await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
+        askId: `ablation:${finding.name}:${isoWeek}`,
+        decision:
+          `${finding.name} did not earn its tokens this week: ${finding.cases} cases, ` +
+          `${finding.withPass} pass with it, ${finding.withoutPass} without`,
+        reason:
+          "the weekly simplification pass reads this as a candidate to drop; it gates nothing, and a name the " +
+          "golden set passes without may still be holding up a failure mode the set does not contain",
+      });
+      sent++;
+    }
+    return { sent };
   },
 });

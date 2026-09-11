@@ -558,10 +558,17 @@ const ttsSlackDraftSubmit = httpAction(async (ctx, request) => {
   if (b.draft === null || typeof b.draft !== "object") {
     return jsonResponse(400, { error: "draft (object) required" });
   }
+  // The token of the run that wrote this draft — the edge an emoji on the
+  // morning follows back to the run that earned it. The template path sends
+  // none and none is invented.
+  if (b.runToken !== undefined && (typeof b.runToken !== "string" || b.runToken === "")) {
+    return jsonResponse(400, { error: "runToken, when given, is a non-empty string" });
+  }
   try {
     const result = await ctx.runMutation(internal.ttsSlackDrafts.internalSubmitSlackDraft, {
       requestId: b.requestId,
       draft: b.draft,
+      runToken: typeof b.runToken === "string" ? b.runToken : undefined,
     });
     return jsonResponse(200, { ok: true, ...result });
   } catch (e) {
@@ -861,6 +868,64 @@ const slackEvents = httpAction(async (ctx, request) => {
   if (body.type !== "event_callback") return jsonResponse(200, { ok: true });
   const event = (body.event ?? {}) as Record<string, unknown>;
 
+  // ── An emoji on the morning digest (the evals layer, phase 7) ─────────────
+  // The fourth door judgment enters by (convex/runLabels.ts): Tom taps a
+  // thumb on the morning message and that becomes a label on the run that
+  // WROTE it. It is the cheapest act he can perform, which is the point — the
+  // other three doors all cost him a sentence.
+  //
+  // The gate is Tom, then the room, and then the mutation. Everything it turns
+  // away is acknowledged with a 200, because anything but a 200 makes Slack
+  // retry an event we have already decided we do not want.
+  //
+  //  1. TOM HIMSELF. An emoji from anyone else in the workspace is somebody
+  //     agreeing with the morning, not a judgment on a run, and an unset
+  //     TOM_SLACK_USER_ID admits NOTHING — the same posture the threaded-reply
+  //     branch below takes, logged once per isolate rather than per event.
+  //  2. #tts-today, read as its id is set like every other channel here. The
+  //     morning message is the only thing that room carries, so the room is
+  //     what makes "a reaction" mean "a reaction to the digest"; an unset id
+  //     admits nothing.
+  //  3. WHICH digest, and whether a run wrote it at all, is the mutation's
+  //     question and is not asked twice — it resolves the digest-sent row from
+  //     the ts, and a morning the plain template wrote has no run to label.
+  if (event.type === "reaction_added" || event.type === "reaction_removed") {
+    const tomSlackUserId = process.env.TOM_SLACK_USER_ID;
+    if (!tomSlackUserId) {
+      if (!warnedNoTomSlackUserId) {
+        warnedNoTomSlackUserId = true;
+        console.warn(
+          "TTS slack events: TOM_SLACK_USER_ID not configured — threaded replies and digest reactions are ignored",
+        );
+      }
+      return jsonResponse(200, { ok: true, ignored: true });
+    }
+    if (event.user !== tomSlackUserId) return jsonResponse(200, { ok: true, ignored: true });
+    const item = (event.item ?? {}) as Record<string, unknown>;
+    const itemChannel = typeof item.channel === "string" ? item.channel : "";
+    const todayChannel = process.env.SLACK_TTS_TODAY_CHANNEL_ID;
+    if (!todayChannel || itemChannel !== todayChannel) {
+      return jsonResponse(200, { ok: true, ignored: true });
+    }
+    const itemTs = typeof item.ts === "string" ? item.ts : "";
+    const reaction = typeof event.reaction === "string" ? event.reaction : "";
+    if (itemTs === "" || reaction === "") return jsonResponse(200, { ok: true, ignored: true });
+    // A SLACK TS IS NOT A MILLISECOND NUMBER. It is seconds with a fractional
+    // part — "1757000000.001200" — and reading it as a number would date every
+    // label to 1970. The label's `at` is when he tapped, which is `event_ts`;
+    // a missing one falls back to the arrival clock rather than to zero.
+    const eventTs = typeof event.event_ts === "string" ? Number(event.event_ts) : NaN;
+    const at = Number.isFinite(eventTs) ? Math.round(eventTs * 1000) : Date.now();
+    const result = await ctx.runMutation(internal.runLabels.internalLabelFromReaction, {
+      channel: itemChannel,
+      ts: itemTs,
+      emoji: reaction,
+      at,
+      removed: event.type === "reaction_removed",
+    });
+    return jsonResponse(200, { ok: true, ...result });
+  }
+
   // The SAME filter poll-dump.mjs applies, and it must stay the same filter:
   // bot_id skips our own posts (including the threaded replies this whole
   // feature adds — otherwise every reply would capture itself), subtype skips
@@ -907,7 +972,7 @@ const slackEvents = httpAction(async (ctx, request) => {
       if (!warnedNoTomSlackUserId) {
         warnedNoTomSlackUserId = true;
         console.warn(
-          "TTS slack events: TOM_SLACK_USER_ID not configured — threaded replies are ignored",
+          "TTS slack events: TOM_SLACK_USER_ID not configured — threaded replies and digest reactions are ignored",
         );
       }
       return jsonResponse(200, { ok: true, ignored: true });
@@ -970,7 +1035,7 @@ http.route({ path: "/slack/events", method: "POST", handler: slackEvents });
 // entry action / work description to a life todo and advances its readiness,
 // plus the date the statement itself states, if any.
 // Body: { id, brief?, entryAction?, workDescription?, readiness?, dueAt?,
-// dateKind?, evidence?, groundUpExplanation?, status? }.
+// dateKind?, evidence?, groundUpExplanation?, status?, runToken? }.
 const ttsPrepareTodo = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -1010,6 +1075,16 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
   if (b.status !== undefined && b.status !== "done") {
     return jsonResponse(400, { error: 'status must be "done"' });
   }
+  // The run that wrote this write-up, stamped on the row so a ruling on it
+  // later finds the run that produced the text Tom read (convex/runLabels.ts
+  // runForToken). A DOOR THAT RECEIVES NO TOKEN STORES NONE: absent is a
+  // supported value and is never inferred, because the alternative — guessing
+  // the newest run that touched this todo — is wrong on the ordinary case (a
+  // prepare pass, a repair pass and a planner pass can all touch one todo in
+  // an hour) and a wrong edge poisons the eval corpus silently.
+  if (b.runToken !== undefined && (typeof b.runToken !== "string" || b.runToken === "")) {
+    return jsonResponse(400, { error: "runToken, when given, is a non-empty string" });
+  }
   const str = (x: unknown) => (typeof x === "string" ? x : undefined);
   try {
     await ctx.runMutation(internal.tts.internalPrepareTodo, {
@@ -1027,6 +1102,7 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
       evidence: str(b.evidence),
       groundUpExplanation: str(b.groundUpExplanation),
       status: b.status as "done" | undefined,
+      runToken: str(b.runToken),
     });
     return jsonResponse(200, { ok: true });
   } catch (e) {
@@ -1293,7 +1369,18 @@ const ttsCodeBriefs = httpAction(async (ctx, request) => {
     if ("error" in parsed) return jsonResponse(400, parsed);
     briefs.push(parsed);
   }
-  await ctx.runMutation(internal.ttsCode.internalStoreBriefs, { briefs });
+  // The registration token of the run that WROTE these briefs — one brief pass
+  // is one run, so one token covers the batch. It becomes producedByRunToken on
+  // each row, which is the edge a ruling on a code subject follows back to the
+  // run whose text Tom judged (convex/runLabels.ts). A caller that sends none
+  // stores none, and the field stays absent.
+  if (b.runToken !== undefined && (typeof b.runToken !== "string" || b.runToken === "")) {
+    return jsonResponse(400, { error: "runToken, when given, is a non-empty string" });
+  }
+  await ctx.runMutation(internal.ttsCode.internalStoreBriefs, {
+    briefs,
+    runToken: typeof b.runToken === "string" ? b.runToken : undefined,
+  });
   return jsonResponse(200, { ok: true, count: briefs.length });
 });
 
@@ -1561,7 +1648,8 @@ const ttsTests = httpAction(async (ctx, request) => {
 http.route({ path: "/tts/tests", method: "POST", handler: ttsTests });
 
 // POST /tts/audit — the Codex/Opus audit of one head. Body:
-// { repo, sha, text, model?, url? }, where `text` is the audit's own answer.
+// { repo, sha, text, model?, fallback?, url? }, where `text` is the audit's
+// own answer and `fallback` says why a stand-in model wrote it.
 // The VERDICT LINE IS READ HERE, from that text, so the parse has one home
 // (ttsMerge.auditVerdictOf) and the record keeps the words the auditor wrote.
 // An answer with no `VERDICT: <WORD>` line of its own is refused rather than
@@ -1596,6 +1684,10 @@ const ttsAudit = httpAction(async (ctx, request) => {
     verdict,
     text: b.text as string,
     ...(nonempty(b.model) ? { model: (b.model as string).trim() } : {}),
+    // Why a stand-in auditor answered ("codex-cap"): the row declares a
+    // same-family audit rather than passing it off as the second opinion the
+    // check is for (convex/ttsMerge.ts auditFallbackNote).
+    ...(nonempty(b.fallback) ? { fallback: (b.fallback as string).trim() } : {}),
     ...(nonempty(b.url) ? { url: (b.url as string).trim() } : {}),
   });
   return jsonResponse(200, { ok: true, ...result });
@@ -1987,6 +2079,96 @@ const ttsWeeklyInput = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/weekly-input", method: "GET", handler: ttsWeeklyInput });
 
+// GET /tts/simplify-input?until=<epoch ms> — the weekly simplification pass's
+// one deterministic gather (convex/ttsSimplify.ts): the four weeks ending at
+// `until` (default: now) of runs, layers, skills, tools, hooks, working
+// directories, a token bag off the newest transcripts, the gate's whole
+// failure history and what the pass already proposed. Read on indexes, no
+// model in the loop; the job adds the rule files from the WikiTom checkout and
+// makes the one model call.
+//
+// The prelude rides along for the same reason it does on /tts/weekly-input:
+// the model's proposal sentences are written FOR TOM, so the run that writes
+// them needs the write layer. It asks as its OWN caller, "simplify-input"
+// (worker/jobs/context-relevance.mjs CONTEXT_CALLERS): the row happens to hold
+// the same three booleans weekly-input holds, and borrowing that row would
+// make this door change silently on the day the weekly job's does.
+const ttsSimplifyInput = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const params = new URL(request.url).searchParams;
+  const until = params.has("until") ? Number(params.get("until")) : Date.now();
+  if (!Number.isFinite(until) || until <= 0) {
+    return jsonResponse(400, { error: "until must be an epoch ms instant" });
+  }
+  let facts;
+  let writingStandard: string;
+  try {
+    [facts, writingStandard] = await Promise.all([
+      ctx.runQuery(internal.ttsSimplify.internalSimplifyInput, { until }),
+      ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "simplify-input" }),
+    ]);
+  } catch (error) {
+    return modelOfTomErrorResponse(error);
+  }
+  return jsonResponse(200, { ...facts, writingStandard });
+});
+
+http.route({ path: "/tts/simplify-input", method: "GET", handler: ttsSimplifyInput });
+
+// GET /tts/simplify-open — the proposals whose objection window has closed: a
+// morning message carried each one at least a day ago and Tom did not answer
+// (convex/ttsSimplify.ts internalOpenProposals). The nightly job asks, and
+// turns each into a todo. A read only: nothing is admitted by asking.
+const ttsSimplifyOpen = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  return jsonResponse(200, {
+    open: await ctx.runQuery(internal.ttsSimplify.internalOpenProposals, {}),
+  });
+});
+
+http.route({ path: "/tts/simplify-open", method: "GET", handler: ttsSimplifyOpen });
+
+// POST /tts/weekly-decisions — the two findings the Friday evals run makes
+// WITHOUT Tom: a capability case that passed every trial and so graduated into
+// the set gating every future merge, and a layer or skill whose cases pass as
+// often without it as with it. Each becomes one #tts-decisions thread through
+// the existing sendDecision, so "revert" in that thread is already wired and
+// the morning's objection list already picks it up — no new channel, no new
+// poster, no new Slack subject kind.
+//
+// The job posts this BEFORE its one model call (worker/jobs/weekly.mjs), so a
+// model that fails to write an agenda cannot swallow facts of the run.
+const ttsWeeklyDecisions = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.isoWeek !== "string" || b.isoWeek.trim() === "") {
+    return jsonResponse(400, { error: "isoWeek (non-empty string) required" });
+  }
+  try {
+    const result = await ctx.runMutation(internal.ttsWeekly.internalRecordWeeklyEvalsDecisions, {
+      isoWeek: b.isoWeek,
+      graduated: Array.isArray(b.graduated) ? (b.graduated as { id: string; sentence: string }[]) : undefined,
+      ablation: Array.isArray(b.ablation)
+        ? (b.ablation as { name: string; cases: number; withPass: number; withoutPass: number; earned: boolean }[])
+        : undefined,
+    });
+    return jsonResponse(200, { ok: true, ...result });
+  } catch (e) {
+    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+http.route({ path: "/tts/weekly-decisions", method: "POST", handler: ttsWeeklyDecisions });
+
 // GET /tts/prelude-delivery?since=<epoch ms>&until=<epoch ms> — the nightly
 // delivery check reads sessions against the commit that was published when
 // they began. It is worker-only: it exposes session titles and commit stamps.
@@ -2021,6 +2203,48 @@ const ttsGoldenInput = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/golden-input", method: "GET", handler: ttsGoldenInput });
 
+// GET /tts/label-input?limitPerSource=20 — the other corpus the exporter
+// builds from: what Tom judged, with the run that wrote what he judged and the
+// transcript rows the judgment covers. Unlike golden-input, nothing here needs
+// the WikiTom checkout — the edge from his act to the run is an exact token,
+// so the bytes travel with it.
+const ttsLabelInput = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const raw = new URL(request.url).searchParams.get("limitPerSource");
+  const limitPerSource = raw === null ? undefined : Number(raw);
+  if (limitPerSource !== undefined && (!Number.isFinite(limitPerSource) || limitPerSource <= 0)) {
+    return jsonResponse(400, { error: "limitPerSource must be a positive number" });
+  }
+  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalLabelInput, { limitPerSource }));
+});
+
+http.route({ path: "/tts/label-input", method: "GET", handler: ttsLabelInput });
+
+// A registration token is a UUID (worker/runs/registration.mjs mints it with
+// crypto.randomUUID), and the shape is CHECKED BEFORE THE LOOKUP. An
+// unvalidated string on an indexed read is a scan this deployment pays for on
+// behalf of whoever sent it; refusing the shape costs one regex.
+const RUN_TOKEN_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// GET /tts/run-by-token?token=… — one run's identity and totals, by the token
+// it stamped on what it wrote. This is how the evals harness reads a trial's
+// tokens and turns back from the record rather than counting them itself, the
+// only way the two cache columns are right. `null` is a normal answer and
+// means the sweeper has not seen the run's file yet, which is why the harness
+// polls with a short bounded wait; it is never an error.
+const ttsRunByToken = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const token = new URL(request.url).searchParams.get("token") ?? "";
+  if (!RUN_TOKEN_SHAPE.test(token)) {
+    return jsonResponse(400, { error: "token (a registration UUID) required" });
+  }
+  return jsonResponse(200, await ctx.runQuery(internal.ttsEvals.internalRunByToken, { token }));
+});
+
+http.route({ path: "/tts/run-by-token", method: "GET", handler: ttsRunByToken });
+
 // CI has a distinct, narrow key: it can request and read evals, never use the
 // broader worker key that can write every TTS event.
 const evalsRequest = httpAction(async (ctx, request) => {
@@ -2045,12 +2269,25 @@ const evalsRequest = httpAction(async (ctx, request) => {
   if (!Array.isArray(b.paths) || !b.paths.every((path) => typeof path === "string" && path !== "")) {
     return jsonResponse(400, { error: "paths (array of non-empty strings) required" });
   }
+  // `changed` is the branch's own diff and `prBody` the body a `evals: no-item`
+  // trailer would be on — the pull-request check computes both in the checkout
+  // CI already has, and the box stamps the golden coverage verdict from them.
+  // BOTH ARE OPTIONAL AND NEITHER IS INFERRED: an older check sends neither,
+  // and the coverage verdict is then null, which the merge gate denies.
+  if (b.changed !== undefined && (!Array.isArray(b.changed) || !b.changed.every((path) => typeof path === "string" && path !== ""))) {
+    return jsonResponse(400, { error: "changed, when given, is an array of non-empty strings" });
+  }
+  if (b.prBody !== undefined && typeof b.prBody !== "string") {
+    return jsonResponse(400, { error: "prBody, when given, is a string" });
+  }
   const result = await ctx.runMutation(internal.ttsEvals.internalRequestEvals, {
     repo: b.repo,
     sha: b.sha,
     baseSha: typeof b.baseSha === "string" ? b.baseSha : undefined,
     pr: typeof b.pr === "number" ? b.pr : undefined,
     paths: b.paths,
+    changed: Array.isArray(b.changed) ? (b.changed as string[]) : undefined,
+    prBody: typeof b.prBody === "string" ? b.prBody : undefined,
   });
   return jsonResponse(200, { ok: true, ...result });
 });
@@ -2459,6 +2696,12 @@ const ttsPlanGraph = httpAction(async (ctx, request) => {
         ? b.goalIds.filter((x): x is string => typeof x === "string")
         : undefined,
       archive: b.archive === true ? true : undefined,
+      // The registration token of the planner run that wrote this graph. It
+      // becomes producedByRunToken on the batch, which is the edge a ruling on
+      // a batch follows back to the run whose explanation Tom judged. Absent
+      // stores nothing and never erases what is there — the same rule every
+      // other field on this pen follows.
+      runToken: typeof b.runToken === "string" && b.runToken !== "" ? b.runToken : undefined,
     });
     return jsonResponse(200, {
       ...result,

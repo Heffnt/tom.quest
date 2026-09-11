@@ -302,6 +302,16 @@ export async function prepareLifeTodos(
   for (const todo of batch) {
     const revise = reviseByTodo.get(todo._id) ?? null;
     try {
+      // A FRESH RECEIPT PER CALL, never one object hoisted out of the loop:
+      // runClaude fills it with the token of the CHILD run this call spawns,
+      // and a shared receipt would report the last pass's token for every todo
+      // in the batch — every ruling after the first scored against the wrong
+      // run's output.
+      //
+      // NOT process.env.TTS_RUN_REG_TOKEN, which is this job's own run: the
+      // write-up Tom reads was written by the child, and the job only carried
+      // it.
+      const receipt = {};
       const answer = io.runClaude(
         preparePrompt(todo, revise?.sentence ?? null, today, writingStandard),
         {
@@ -316,6 +326,7 @@ export async function prepareLifeTodos(
             layersDenied: [],
             writingStandardSource: "/tts/batch-context",
           },
+          receipt,
         },
       );
       const parsed = extractJsonObject(answer);
@@ -356,6 +367,10 @@ export async function prepareLifeTodos(
         groundUpExplanation: parsed.groundUpExplanation,
         readiness: PREPARED,
         ...(dueAt !== undefined ? { dueAt, dateKind } : {}),
+        // The edge from the row Tom reads back to the run that wrote it. Sent
+        // only when there is one: an unregistered call fills no receipt, and
+        // the row then carries no token rather than a false one.
+        ...(receipt.runToken ? { runToken: receipt.runToken } : {}),
       });
       if (revise) {
         // The re-prep landed — consume the ruling so the UI shows the
@@ -516,6 +531,9 @@ export async function briefCodeTodos({ repo, pending, writingStandard, force = f
       const entryYaml = found ? found.block : JSON.stringify(entry, null, 2);
       const replanNote = revise ? (revise.sentence ?? "") : null;
 
+      // A fresh receipt per entry, for the reason the prepare pass gives: one
+      // shared object would report the last entry's run for every brief.
+      const receipt = {};
       const answer = io.runClaude(briefPrompt(entryYaml, replanNote, writingStandard), {
         cwd: repo.dir, // non-agentic: read-only tools over the repo, no edits
         timeoutMs: BRIEF_TIMEOUT_MS,
@@ -529,6 +547,7 @@ export async function briefCodeTodos({ repo, pending, writingStandard, force = f
           layersDenied: [],
           writingStandardSource: "/tts/batch-context",
         },
+        receipt,
       });
       const parsed = extractJsonObject(answer);
 
@@ -563,6 +582,8 @@ export async function briefCodeTodos({ repo, pending, writingStandard, force = f
             ...(evidence ? { evidence } : {}),
           },
         ],
+        // One brief per call here, so the pass's one token is this brief's.
+        ...(receipt.runToken ? { runToken: receipt.runToken } : {}),
       });
       hashes[key] = hash;
       io.writeHashes(hashes);
@@ -1011,6 +1032,10 @@ export async function planGraphs(context, pending, io) {
       `${candidates.length} goal candidate(s) (${candidatesHeldBack} held back), ` +
       `${repairs.length} plan repair(s), ${revises.length} revise ruling(s) — asking Claude…`,
   );
+  // ONE call writes every graph in this run, so one receipt is the whole
+  // pass's — and each batch posted below carries that same token, because one
+  // run really did write all of them.
+  const receipt = {};
   const answer = io.runClaude(
     graphPrompt({
       writingStandard,
@@ -1049,6 +1074,7 @@ export async function planGraphs(context, pending, io) {
         layersDenied: [],
         writingStandardSource: "/tts/batch-context",
       },
+      receipt,
     },
   );
   const parsed = extractJsonObject(answer);
@@ -1103,7 +1129,10 @@ export async function planGraphs(context, pending, io) {
     }
     let result;
     try {
-      result = await io.post("/tts/plan-graph", batch);
+      result = await io.post("/tts/plan-graph", {
+        ...batch,
+        ...(receipt.runToken ? { runToken: receipt.runToken } : {}),
+      });
     } catch (err) {
       // One batch refused is one batch lost, not a failed run — its revise
       // ruling (if any) stays pending and the next run retries it.

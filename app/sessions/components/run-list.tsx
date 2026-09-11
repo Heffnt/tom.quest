@@ -1,8 +1,12 @@
 "use client";
 
-// List view: every session in triage order, a filter row, and the
-// new-session form behind a button. Browser-created sessions are ad hoc or
-// weekly — gate / focus-item / block sessions are created by the system.
+// The list: every session in triage order, or every root run in the record.
+// The two words above the list are the whole label — `sessions` is the surface
+// Tom talks to, `all roots` is everything else the record holds, and a row in
+// either opens the same component.
+//
+// The auto-fleet strip and the new-session form are the list's actions and are
+// unchanged: they already carry their Info popovers naming their Convex calls.
 
 import { useState } from "react";
 import { useMutation, useQuery } from "convex/react";
@@ -11,14 +15,17 @@ import type { Id } from "@/convex/_generated/dataModel";
 import Info from "@/app/tts/components/info";
 import { useOpenSession } from "@/app/lib/use-open-todo-session";
 import { NO_REPO, SESSION_REPO_NAMES } from "@/convex/ttsShared";
-import type { Session, SessionModel, SessionStatus } from "../lib";
+import type { Session, SessionModel } from "../lib";
 import ModelSelect from "./model-select";
 import {
   DEFAULT_SESSION_MODEL,
   MODEL_CHIP_CLASS,
   ageText,
+  costText,
   isLive,
+  orderSessions,
   previewLine,
+  runStatusChipClass,
   sessionModel,
   statusChipClass,
 } from "../lib";
@@ -30,15 +37,11 @@ const btnCls =
 // This strip used to be an editor over five stored numbers — the load and
 // memory ceilings the scheduler admits under, the two runaway failsafes, and
 // the fleet's default model. Four of them were mechanism, not a decision: they
-// describe how hard a machine may be pushed, they were never touched after
-// they were set, and a number Tom has to hold in his head to read this page is
+// describe how hard a machine may be pushed, they were never touched after they
+// were set, and a number Tom has to hold in his head to read this page is
 // exactly what the update is removing. They are code-owned defaults now
 // (claudeSessions.AUTO_DEFAULTS), and this is the one thing left that is a
 // decision: are the autonomous workers running.
-//
-// The Jarvis Box's own load still reads beside the switch, because that is the
-// fact the answer depends on, and the model the fleet runs on reads as a chip:
-// both are facts, neither is a control.
 function AutoFleetStrip() {
   const config = useQuery(api.claudeSessions.getAutoConfig, {});
   const health = useQuery(api.claudeSessions.getDaemonHealth, {});
@@ -46,8 +49,8 @@ function AutoFleetStrip() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // getAutoConfig answers with the defaults when no row has been written, so
-  // a falsy value here means the query has not landed yet.
+  // getAutoConfig answers with the defaults when no row has been written, so a
+  // falsy value here means the query has not landed yet.
   if (!config) return null;
 
   const flip = async () => {
@@ -69,8 +72,8 @@ function AutoFleetStrip() {
     <div className="border border-border rounded-lg bg-surface/40 px-3 py-2 space-y-1.5">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <span className="inline-flex items-baseline gap-1">
-          {/* The label is the state it moves to, which is the ratified rule
-              for an action label: it names its exact effect. */}
+          {/* The label is the state it moves to, which is the ratified rule for
+              an action label: it names its exact effect. */}
           <button
             type="button"
             onClick={() => void flip()}
@@ -85,11 +88,11 @@ function AutoFleetStrip() {
           </button>
           <Info call="claudeSessions.setAutoConfig({ enabled })">
             Whether the box works on its own. While this is on, every five
-            minutes the scheduler walks your open work, claims what is ready
-            and opens a session for it — but only while the Jarvis Box is under
-            the load and memory ceilings, which are fixed in the code, not
-            here. Turning it off starts nothing new; sessions already running
-            are left alone.
+            minutes the scheduler walks your open work, claims what is ready and
+            opens a session for it — but only while the Jarvis Box is under the
+            load and memory ceilings, which are fixed in the code, not here.
+            Turning it off starts nothing new; sessions already running are left
+            alone.
           </Info>
         </span>
         <span
@@ -125,9 +128,6 @@ function NewSessionForm({
   const [title, setTitle] = useState("");
   const [repos, setRepos] = useState<string[]>(["tom.quest"]);
   const [kind, setKind] = useState<"adhoc" | "weekly">("adhoc");
-  // Tom picks the model for his own sessions (ratified 2026-09-04). Same
-  // reasoning as repos: this is the surface that genuinely knows, so it names
-  // the model rather than letting the server default stand.
   const [model, setModel] = useState<SessionModel>(DEFAULT_SESSION_MODEL);
   const [prompt, setPrompt] = useState("");
 
@@ -161,10 +161,8 @@ function NewSessionForm({
           className="flex-1 min-w-0 bg-surface-alt border border-border rounded px-3 py-2 text-sm placeholder:text-text-faint focus:outline-none focus:border-accent"
         />
         {/* A session may hold MORE THAN ONE repo (Tom, 2026-08-30), so the
-            picker is a toggle set rather than a dropdown: selecting none is
-            the empty-scratch workspace. Each chip changes on hover and states
-            its selected state with the accent fill, per the ratified UI
-            rules. */}
+            picker is a toggle set rather than a dropdown: selecting none is the
+            empty-scratch workspace. */}
         <div className="flex flex-wrap items-center gap-1.5">
           {SESSION_REPO_NAMES.map((r) => {
             const on = repos.includes(r);
@@ -202,11 +200,7 @@ function NewSessionForm({
           <option value="adhoc">adhoc</option>
           <option value="weekly">weekly</option>
         </select>
-        <ModelSelect
-          ariaLabel="session model"
-          value={model}
-          onChange={setModel}
-        />
+        <ModelSelect ariaLabel="session model" value={model} onChange={setModel} />
       </div>
       <textarea
         value={prompt}
@@ -236,16 +230,8 @@ function NewSessionForm({
   );
 }
 
-// The list is a triage surface — needs-you outranks recency. Bands, top to
-// bottom: running, spinning up, idle, over.
-const TRIAGE_BAND: Record<SessionStatus, number> = {
-  running: 1,
-  starting: 2,
-  requested: 2,
-  idle: 3,
-  ended: 4,
-  failed: 4,
-};
+const SOURCES = ["sessions", "all roots"] as const;
+type Source = (typeof SOURCES)[number];
 
 const FILTERS = ["all", "live", "autonomous", "ended"] as const;
 type Filter = (typeof FILTERS)[number];
@@ -263,35 +249,89 @@ function matchesFilter(s: Session, filter: Filter): boolean {
   }
 }
 
-export default function SessionList({
+/** Every root run the record holds, newest first — runs.roots is capped. */
+function RootRuns({ onOpenRun }: { onOpenRun: (runId: string) => void }) {
+  const roots = useQuery(api.runs.roots, {});
+  if (roots === undefined) {
+    return <div className="text-sm text-text-faint">loading runs…</div>;
+  }
+  if (roots.length === 0) {
+    return (
+      <div className="border border-border rounded-lg bg-surface/40 px-4 py-3 text-sm text-text-muted">
+        no runs
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      <ul className="border border-border rounded-lg bg-surface/40 divide-y divide-border">
+        {roots.map((run) => (
+          <li key={run.runId}>
+            <button
+              type="button"
+              onClick={() => onOpenRun(run.runId)}
+              className="w-full text-left px-3 sm:px-4 py-2.5 hover:bg-surface-alt space-y-1"
+            >
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="text-sm text-text truncate min-w-0 break-all">
+                  {run.runId}
+                </span>
+                <span
+                  className={`shrink-0 border rounded px-1.5 py-0.5 text-xs ${runStatusChipClass(run.status)}`}
+                >
+                  {run.status}
+                </span>
+              </div>
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-xs text-text-faint">
+                <span className="border border-border rounded px-1.5 py-0.5 text-text-muted">
+                  {run.kind}
+                </span>
+                <span>{run.origin}</span>
+                <span>{run.host}</span>
+                {run.model !== undefined && (
+                  <span className={MODEL_CHIP_CLASS}>{run.model}</span>
+                )}
+                <span className="font-mono">
+                  {new Date(run.startedAt).toISOString().slice(0, 16).replace("T", " ")}
+                </span>
+                {costText(run.outcome?.costUsd) !== "" && (
+                  <span className="font-mono">{costText(run.outcome?.costUsd)}</span>
+                )}
+              </div>
+              {run.outcome?.endedReason !== undefined && (
+                <div className="text-xs text-text-muted">
+                  {previewLine(run.outcome.endedReason.split("\n")[0], 90)}
+                </div>
+              )}
+            </button>
+          </li>
+        ))}
+      </ul>
+      {/* The same claim listSessions makes about its own hundred. */}
+      <div className="text-xs text-text-faint">showing the latest 50 root runs</div>
+    </div>
+  );
+}
+
+export default function RunList({
   sessions,
   now,
-  onOpen,
+  onOpenSession,
+  onOpenRun,
 }: {
   sessions: Session[] | undefined;
   now: number;
-  onOpen: (id: Id<"claudeSessions">) => void;
+  onOpenSession: (id: Id<"claudeSessions">) => void;
+  onOpenRun: (runId: string) => void;
 }) {
+  const [source, setSource] = useState<Source>("sessions");
   const [filter, setFilter] = useState<Filter>("all");
   const [formOpen, setFormOpen] = useState(false);
 
-  if (sessions === undefined) {
-    return <div className="text-sm text-text-faint">loading sessions…</div>;
-  }
-
-  // Within a band: the longest-waiting permission sits at the very top, the
-  // terminal band reads newest-first, and everything else keeps listSessions'
-  // own newest-first order (Array.prototype.sort is stable).
-  const ordered = sessions
-    .filter((s) => matchesFilter(s, filter))
-    .sort((a, b) => {
-      const band = TRIAGE_BAND[a.status] - TRIAGE_BAND[b.status];
-      if (band !== 0) return band;
-      if (TRIAGE_BAND[a.status] === 0)
-        return a.statusChangedAt - b.statusChangedAt;
-      if (TRIAGE_BAND[a.status] === 4) return b.createdAt - a.createdAt;
-      return 0;
-    });
+  const ordered =
+    sessions === undefined
+      ? undefined
+      : orderSessions(sessions.filter((s) => matchesFilter(s, filter)));
 
   return (
     <div className="space-y-4">
@@ -305,7 +345,7 @@ export default function SessionList({
           >
             Close
           </button>
-          <NewSessionForm onCreated={onOpen} />
+          <NewSessionForm onCreated={onOpenSession} />
         </div>
       ) : (
         <button
@@ -317,75 +357,96 @@ export default function SessionList({
         </button>
       )}
       <div className="flex flex-wrap items-center gap-1.5">
-        {FILTERS.map((f) => (
+        {SOURCES.map((s) => (
           <button
-            key={f}
+            key={s}
             type="button"
-            onClick={() => setFilter(f)}
+            onClick={() => setSource(s)}
             className={`rounded px-2 py-0.5 text-xs border ${
-              filter === f
+              source === s
                 ? "border-accent text-accent"
                 : "border-border text-text-muted hover:text-text"
             }`}
           >
-            {f}
+            {s}
           </button>
         ))}
+        {source === "sessions" &&
+          FILTERS.map((f) => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => setFilter(f)}
+              className={`rounded px-2 py-0.5 text-xs border ${
+                filter === f
+                  ? "border-accent text-accent"
+                  : "border-border text-text-muted hover:text-text"
+              }`}
+            >
+              {f}
+            </button>
+          ))}
       </div>
-      {ordered.length === 0 ? (
+      {source === "all roots" ? (
+        <RootRuns onOpenRun={onOpenRun} />
+      ) : ordered === undefined ? (
+        <div className="text-sm text-text-faint">loading sessions…</div>
+      ) : ordered.length === 0 ? (
         <div className="border border-border rounded-lg bg-surface/40 px-4 py-3 text-sm text-text-muted">
           no sessions
         </div>
       ) : (
-        <ul className="border border-border rounded-lg bg-surface/40 divide-y divide-border">
-          {ordered.map((s) => (
-            <li key={s._id}>
-              <button
-                type="button"
-                onClick={() => onOpen(s._id)}
-                className="w-full text-left px-3 sm:px-4 py-2.5 hover:bg-surface-alt space-y-1"
-              >
-                <div className="flex items-baseline justify-between gap-3">
-                  <span className="text-sm text-text truncate min-w-0">
-                    {s.title}
-                  </span>
-                  <span
-                    className={`shrink-0 border rounded px-1.5 py-0.5 text-xs ${statusChipClass(s.status)}`}
-                  >
-                    {s.status}
-                  </span>
-                </div>
-                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-xs text-text-faint">
-                  <span className="border border-border rounded px-1.5 py-0.5 text-text-muted">
-                    {s.kind}
-                  </span>
-                  {s.mode === "autonomous" && (
-                    <span className="border border-border rounded px-1.5 py-0.5 text-text-muted">
-                      autonomous
+        <>
+          <ul className="border border-border rounded-lg bg-surface/40 divide-y divide-border">
+            {ordered.map((s) => (
+              <li key={s._id}>
+                <button
+                  type="button"
+                  onClick={() => onOpenSession(s._id)}
+                  className="w-full text-left px-3 sm:px-4 py-2.5 hover:bg-surface-alt space-y-1"
+                >
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span className="text-sm text-text truncate min-w-0">
+                      {s.title}
                     </span>
-                  )}
-                  {/* Always shown, including the "opus" a pre-model row ran
-                      on: which model did this — is a fact of every session,
-                      and a chip that appears only sometimes reads as a flag. */}
-                  <span className={MODEL_CHIP_CLASS}>{sessionModel(s)}</span>
-                  <span>{s.repo}</span>
-                  <span>{ageText(s.statusChangedAt, now)}</span>
-                </div>
-                {/* What an ended session came to, in the row itself. */}
-                {!isLive(s.status) && s.outcomeSummary !== undefined && (
-                  <div className="text-xs text-text-muted">
-                    {previewLine(s.outcomeSummary, 90)}
+                    <span
+                      className={`shrink-0 border rounded px-1.5 py-0.5 text-xs ${statusChipClass(s.status)}`}
+                    >
+                      {s.status}
+                    </span>
                   </div>
-                )}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      {sessions.length === 100 && (
-        <div className="text-xs text-text-faint">
-          showing the latest 100 sessions
-        </div>
+                  <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-xs text-text-faint">
+                    <span className="border border-border rounded px-1.5 py-0.5 text-text-muted">
+                      {s.kind}
+                    </span>
+                    {s.mode === "autonomous" && (
+                      <span className="border border-border rounded px-1.5 py-0.5 text-text-muted">
+                        autonomous
+                      </span>
+                    )}
+                    {/* Always shown, including the "opus" a pre-model row ran
+                        on: which model did this is a fact of every session, and
+                        a chip that appears only sometimes reads as a flag. */}
+                    <span className={MODEL_CHIP_CLASS}>{sessionModel(s)}</span>
+                    <span>{s.repo}</span>
+                    <span>{ageText(s.statusChangedAt, now)}</span>
+                  </div>
+                  {/* What an ended session came to, in the row itself. */}
+                  {!isLive(s.status) && s.outcomeSummary !== undefined && (
+                    <div className="text-xs text-text-muted">
+                      {previewLine(s.outcomeSummary, 90)}
+                    </div>
+                  )}
+                </button>
+              </li>
+            ))}
+          </ul>
+          {sessions !== undefined && sessions.length === 100 && (
+            <div className="text-xs text-text-faint">
+              showing the latest 100 sessions
+            </div>
+          )}
+        </>
       )}
     </div>
   );

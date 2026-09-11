@@ -14,6 +14,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { recordMissedKeepingDate } from "./tts";
 import { DELEGATE_DECISION, objectionRank, stripNarrowListId } from "./ttsAsk";
 import { MERGE } from "./ttsMerge";
+import { SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import {
   DAY_MS,
@@ -611,6 +612,36 @@ export async function gatherTodayFacts(
           decision: `merged ${repo}@${sha}: ${str(d.subject) ?? "no subject"}`,
           refused: false,
           merged: true,
+        });
+        break;
+      }
+      case SIMPLIFY_PROPOSAL: {
+        // THE WEEKLY PASS POSTS NOTHING TO #tts-today. This composer is a
+        // different program reading rows, and it already lists merges the same
+        // way. Without this case the window's own name — "the next digest
+        // passes" — would refer to a message the proposal was never in, which
+        // is a lie about how he saw it.
+        //
+        // A DRY RUN IS NOT A MORNING LINE. It is a proof that the path works,
+        // taken against nothing he owns, so there is nothing to object to and
+        // nothing for him to read.
+        if (d.dryRun === true) break;
+        const refused = d.needsHisWords === true;
+        const sentence = str(d.sentence);
+        rawObjections.push({
+          at: e.at,
+          // Unlike a merge, the askId is here: the proposal's row key is the
+          // askId of its own #tts-decisions thread, so "revert <n>" on the
+          // morning thread resolves the same row the thread reply does.
+          askId: e.key ?? "",
+          todoId: e.todoId === undefined ? str(d.todoId) : (e.todoId as string),
+          decision: sentence ?? null,
+          reason: str(d.evidence),
+          refused,
+          refusedBecause: refused
+            ? `needs-his-words — ${sentence ?? "it changes a line you reviewed"}`
+            : undefined,
+          merged: false,
         });
         break;
       }

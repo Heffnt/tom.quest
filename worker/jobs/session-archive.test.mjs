@@ -113,6 +113,33 @@ const archive = (b, over = {}) =>
   archiveSessionFiles({ checkoutDir: b.checkout, day: "2026-09-06", codexDir: b.codex, accountsDir: b.accounts, log: () => {}, ...over });
 
 describe("archiveSessionFiles", () => {
+  it("keeps a Workflow's agents in the layout their folder gives them", () => {
+    const b = box();
+    // What Claude Code writes for a Workflow: the agents one folder deeper
+    // than a Task's, with the workflow's own journal and run record beside
+    // them. The archive walks the session directory whole, so the nested
+    // folder reaches the checkout unchanged and nothing under it is dropped.
+    write(b.accounts, "gmail/projects/-root/aaaa/subagents/workflows/wf_abc/agent-W.jsonl", line("2026-09-05T20:02:00.000Z"));
+    write(b.accounts, "gmail/projects/-root/aaaa/subagents/workflows/wf_abc/agent-W.meta.json", JSON.stringify({ agentType: "workflow-subagent", spawnDepth: 1 }));
+    write(b.accounts, "gmail/projects/-root/aaaa/subagents/workflows/wf_abc/journal.jsonl", line("2026-09-05T20:03:00.000Z"));
+    write(b.accounts, "gmail/projects/-root/aaaa/workflows/wf_abc.json", JSON.stringify({ runId: "wf_abc" }));
+    const archived = archive(b, { only: "aaaa" }).archived;
+    expect(archived.map((r) => r.dest).sort()).toEqual([
+      "sessions/2026/09/05/claude-aaaa/attachments/notes.txt.gz",
+      "sessions/2026/09/05/claude-aaaa/attachments/subagents/workflows/wf_abc/agent-W.meta.json.gz",
+      "sessions/2026/09/05/claude-aaaa/attachments/workflows/wf_abc.json.gz",
+      "sessions/2026/09/05/claude-aaaa/children/child.jsonl.gz",
+      "sessions/2026/09/05/claude-aaaa/children/subagents/workflows/wf_abc/agent-W.jsonl.gz",
+      "sessions/2026/09/05/claude-aaaa/children/subagents/workflows/wf_abc/journal.jsonl.gz",
+      "sessions/2026/09/05/claude-aaaa/session.jsonl.gz",
+    ]);
+    // The manifest calls every .jsonl a child, the workflow's journal
+    // included. A reader of the archive names a run by the FILE NAME —
+    // `agent-<agentId>.jsonl` under `subagents/` — not by the extension.
+    expect(archived.filter((r) => r.kind === "child").map((r) => path.basename(r.dest)).sort())
+      .toEqual(["agent-W.jsonl.gz", "child.jsonl.gz", "journal.jsonl.gz"]);
+  });
+
   it("archives one session at session end — its parent, child and attachment — and leaves the rest for the sweep", () => {
     const b = box();
     const first = archive(b, { only: "aaaa" });

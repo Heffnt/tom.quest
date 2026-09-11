@@ -86,6 +86,23 @@ describe("run registration", () => {
     expect(absent.run.context).toMatchObject({ registered: false, layersKnown: false, layersGiven: [], layersDenied: [] });
   });
 
+  it("carries the envelope's token onto the run, and never one a mismatch refused", () => {
+    const envelope = { token: "11111111-2222-4333-8444-555555555555", writer: { file: "worker/jobs/prepare.mjs" }, registration: { host: "laptop", layersKnown: false } };
+    const applied = mergeRegistration({ parsed: parsed(), host: "laptop", envelope });
+    // The one exact edge from a row an agent wrote for Tom back to the run
+    // that wrote it. convex/runLabels.ts resolves it on runs.by_reg_token.
+    expect(applied.run.regToken).toBe("11111111-2222-4333-8444-555555555555");
+
+    // A refused envelope describes a DIFFERENT MACHINE'S RUN, and stamping its
+    // token here would make exactly the wrong edge — which is worse than none,
+    // because a wrong edge poisons the eval corpus silently.
+    const mismatched = mergeRegistration({ parsed: parsed(), host: "laptop", envelope: { ...envelope, registration: { host: "box", layersKnown: false } }, report: () => {} });
+    expect(mismatched.run.regToken).toBeUndefined();
+
+    // An unregistered run carries no token at all, and absent is a value.
+    expect(mergeRegistration({ parsed: parsed(), host: "laptop", envelope: null }).run.regToken).toBeUndefined();
+  });
+
   it("only upgrades a Codex child's link with a real tool-use id", () => {
     const without = mergeRegistration({ parsed: parsed(), host: "laptop", envelope: { writer: { file: "scripts/codex-run.mjs" }, registration: { host: "laptop", parentRunId: "codex:laptop:parent", layersKnown: false } } });
     expect(without.run.linkKnown).toBe(false);

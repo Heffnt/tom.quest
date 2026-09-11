@@ -14,7 +14,7 @@
 // Plain Node ESM, ZERO npm dependencies — tts-lib.mjs's rule; this file lands
 // in /opt/tts/ with the rest through worker/setup.sh.
 //
-//   node /opt/tts/evals.mjs --repo tom.quest --sha <sha> [--base <sha>] [--limit N] [--jobs prepare,code-brief] [--force]
+//   node /opt/tts/evals.mjs --repo tom.quest --sha <sha> [--base <sha>] [--limit N] [--jobs prepare,code-brief] [--ablation] [--force]
 //   node /opt/tts/evals.mjs --serve     # one polling pass over the request queue
 //   node /opt/tts/evals.mjs --weekly    # the full set against both repos' main
 //   node /opt/tts/evals.mjs --tasks <repo>
@@ -42,6 +42,59 @@ export const JUDGE_TIMEOUT_MS = 3 * 60 * 1000;
 /** The on-commit set: the newest 20 approve and 20 revise across the whole
  *  golden set, by ruledAt. The weekly run uses everything. */
 export const PR_ITEMS = 40;
+
+/**
+ * How many times an item is tried at the head commit before one failure of it
+ * is called a regression.
+ *
+ * EVERY ITEM IS A LIVE MODEL CALL, so one pass or one fail is a sample, not a
+ * measurement: the same commit scored twice an hour apart has come back 8/29
+ * with no regression and 6/29 with one, with nothing in the diff touching the
+ * item that moved. A one-trial gate fails a merge on the regeneration's noise
+ * as readily as on the change under test.
+ *
+ * The rule is the same for every item, and it is not a re-roll of a chosen
+ * one: an item that PASSED AT BASE and fails at head is tried again, up to
+ * this many head trials in all, and it is a regression only if EVERY head
+ * trial fails. Passing once and failing once is a fact about the item, kept as
+ * `flaky` and reported — never counted as a regression, never hidden.
+ *
+ * The extra work is bounded by the same condition. An item that failed at base
+ * too, or that base never scored, is tried exactly once, as before.
+ */
+export const HEAD_TRIALS = 3;
+
+/**
+ * How many times a `run` case is scored.
+ *
+ * Three for a regression case. Five for a capability case, because a
+ * capability case passing is not a report: it is the moment the case
+ * GRADUATES into the set that gates every future merge, and a promotion made
+ * on one lucky trial writes the regeneration's noise into the gate itself. The
+ * promotion rests on more evidence than the report does.
+ *
+ * One on a pull request, for every case alike. A pull-request run answers "did
+ * this change break something", and one trial answers that loudly enough to
+ * stop a merge; the row records `trials: 1` so the gate compares like with
+ * like rather than reading a one-trial head against a three-trial base.
+ */
+export const TRIALS_REGRESSION = 3;
+export const TRIALS_CAPABILITY = 5;
+export const PR_TRIALS = 1;
+
+/**
+ * The trial count of ONE case. It is read off the item and never re-derived by
+ * the runner: the export knows a case's kind when it writes the file, so a
+ * case Tom later wants run more often is changed by editing that one file
+ * rather than by changing a rule here. The kind is the fallback, for an item
+ * written before the field existed.
+ */
+export function trialsFor(item, { pr = false } = {}) {
+  if (pr) return PR_TRIALS;
+  if (Number.isInteger(item?.trials) && item.trials > 0) return item.trials;
+  return item?.kind === "capability" ? TRIALS_CAPABILITY : TRIALS_REGRESSION;
+}
+
 /** Worktrees and cache clones; free to delete, by the box's no-state rule. */
 export const WORK_DIR = "/var/cache/tts/evals";
 export const GOLDEN_DIR = "evals/golden";
@@ -153,7 +206,41 @@ export function layersFor(tomquestTree, wikitomTree, names, run = execFileSync) 
   const options = { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], maxBuffer: 64 * 1024 * 1024 };
   const text = run(process.execPath, [script, ...args], options);
   const meta = JSON.parse(run(process.execPath, [script, ...args, "--json"], options));
-  return { names, text, commit: meta.commit, files: meta.files };
+  return { names, skills: [], text, commit: meta.commit, files: meta.files };
+}
+
+/**
+ * The prelude a case was given, when what it was given is a NAME SET rather
+ * than a job's fixed layer selection: `{ layers: [...], skills: [...] }`.
+ *
+ * This is layersFor generalised, and it is not a second assembler. The layer
+ * half goes through the same pinned scripts/prelude.mjs; the skill half goes
+ * through io.skills, which is handed the WHOLE name set so that the one
+ * assembler which knows about skills assembles both halves rather than this
+ * file stitching two texts together.
+ */
+export const NO_PRELUDE = Object.freeze({ names: [], skills: [], text: "", commit: null, files: [], known: false });
+
+/** THE PHASE 6 SEAM. No skill assembler exists yet: phase 6 adds
+ *  scripts/skills.mjs and wires `io.skills` to it in realIo, one line, and
+ *  this error and the skip it causes stop being reachable. Until then a case
+ *  whose run was given skills is SKIPPED rather than scored, because scoring
+ *  it would score a prompt that is missing part of what the original run saw
+ *  and would report the difference as a regression. */
+export class SkillsNotAssembledError extends Error {}
+export const SKILL_SEAM_REASON = "skill prelude not assembled — phase 6 has not landed";
+
+export function preludeFrom(io, tomquestTree, wikitomTree, names) {
+  const layers = names?.layers ?? [];
+  const skills = names?.skills ?? [];
+  // Nothing to assemble is not an error and must not reach prelude.mjs, which
+  // refuses an empty --layers.
+  if (layers.length === 0 && skills.length === 0) return NO_PRELUDE;
+  if (skills.length > 0) {
+    if (typeof io.skills !== "function") throw new SkillsNotAssembledError(SKILL_SEAM_REASON);
+    return io.skills(tomquestTree, names);
+  }
+  return io.layers(tomquestTree, wikitomTree, layers);
 }
 
 /**
@@ -170,6 +257,11 @@ export function layersFor(tomquestTree, wikitomTree, names, run = execFileSync) 
  * `build` is handed item.input.priorReviseSentence and NEVER item.sentence.
  * The sentence of the ruling being used as the label is the answer; a
  * regeneration that saw it would be scored on its own reading comprehension.
+ *
+ * Every `build` takes (item, layers, mod, context). `context` is the fourth
+ * argument rather than a fifth entry in `layers` because a job whose prelude
+ * travels ON THE ITEM — the `run` job below — assembles its own, and the
+ * assembler is the run's, not the job's.
  */
 export const JOBS = {
   prepare: {
@@ -256,6 +348,32 @@ export const JOBS = {
     parse: (answer) => ({ explanation: String(answer ?? "").trim() }),
     fields: ["explanation"],
     opts: { maxTurns: 2 },
+  },
+  // One REGISTERED RUN, replayed. The case is mined out of a runLabels row
+  // rather than out of snapshot text, so what it carries is the run's own
+  // assembled prompt and the text Tom judged, and its rubric is the label's
+  // meaning in his words.
+  //
+  // `layers: []` means the selection is NOT FIXED PER JOB: it travels on the
+  // item as input.preludeNames, because the question a run case asks is
+  // whether the same names, assembled from this tree, still produce what he
+  // approved — and a job-wide selection would replay a prompt the original run
+  // never saw. runItem resolves it per item; `build` asks the same cached
+  // assembler for the text.
+  //
+  // A case whose prelude was not known is replayed VERBATIM from input.prompt:
+  // there is nothing to assemble, and assembling something else would score a
+  // different prompt than the one that was labelled.
+  run: {
+    layers: [],
+    module: null,
+    build: (item, _layers, _mod, context) => (item.input.preludeKnown
+      ? `${context.prelude(item.input.preludeNames).text}\n${item.input.task}`
+      : item.input.prompt),
+    parse: (answer) => ({ text: String(answer ?? "").trim() }),
+    fields: ["text"],
+    proseFields: ["text"],
+    opts: { maxTurns: 6 },
   },
   // The nightly learning step's two items (evals/golden/learning/). They are
   // the only job here scored WITHOUT a judge: what the item asks is whether the
@@ -393,11 +511,26 @@ function fieldBlocks(output, fields) {
  * The prompt carries NO layer text. The judge is not writing for Tom; it is
  * comparing two texts against one sentence, which is what makes Fable
  * affordable here.
+ *
+ * A `run` case brings its own sentence: expected.rubric is the meaning of the
+ * label Tom put on that run, in his words, and it is sent VERBATIM under its
+ * own heading on an approve case as well as a revise one. The approve rule
+ * above — never show an approve ruling's optional sentence — is about a
+ * STEERING NOTE written about something else; a rubric is written about this
+ * output, and withholding it would leave the judge with nothing to judge
+ * against. A capability case also carries a target: the thing the output must
+ * now do and did not do before.
  */
 export function judgePrompt(item, fresh, fields) {
   const verdict = verdictOf(item);
   const input = { ...item.input };
   delete input.priorReviseSentence;
+  const rubric = typeof item.expected?.rubric === "string" && item.expected.rubric.trim() !== ""
+    ? item.expected.rubric
+    : null;
+  const target = item.kind === "capability" && typeof item.expected?.target === "string" && item.expected.target.trim() !== ""
+    ? item.expected.target
+    : null;
   const revise = [
     `Tom rejected the OLD output with the sentence below. Does the NEW output fix what that sentence`,
     `objects to?`,
@@ -447,7 +580,11 @@ export function judgePrompt(item, fresh, fields) {
     `--- TOM'S VERDICT ---`,
     verdict,
     ``,
-    ...(verdict === "revise" ? [`--- TOM'S SENTENCE ---`, item.sentence ?? "", ``] : []),
+    ...(rubric === null && verdict === "revise" ? [`--- TOM'S SENTENCE ---`, item.sentence ?? "", ``] : []),
+    ...(rubric === null ? [] : [`--- WHAT TOM'S LABEL MEANS ---`, rubric, ``]),
+    ...(target === null
+      ? []
+      : [`--- WHAT THE OUTPUT MUST NOW DO ---`, `the output must now do this; it did not before.`, target, ``]),
     `--- OLD OUTPUT (the one he ruled on) ---`,
     fieldBlocks(item.output, fields),
     ``,
@@ -478,40 +615,201 @@ export function parseJudge(answer) {
   return { judged: verdict, reason: reason.trim() };
 }
 
-/** One item: build the prompt, regenerate, judge. Never throws — a failure is
- *  a result, so one bad item cannot end the run. */
-export async function runItem(item, context, io) {
+// ── The deterministic checks ─────────────────────────────────────────────────
+// Everything below decides WITHOUT A MODEL, and a failure here is the trial's
+// verdict with the judge never called. A text that broke a rule Tom wrote down
+// is not a matter of reading, and the judge is the expensive half.
+
+/**
+ * mustName and mustNotName, read off an answer's own text.
+ *
+ * ONE FUNCTION, TWO CALLERS: runTask passes a task's `expect`, runCase passes
+ * a case's. An ABSENT `expect` checks nothing and returns null — that is what
+ * makes it safe to call on every case, and it is why the `expect` block is
+ * normally absent from a golden file rather than written out empty.
+ */
+export function mechanicalChecks(expect, text) {
+  const haystack = String(text ?? "").toLowerCase();
+  for (const needle of expect?.mustName ?? []) {
+    if (!haystack.includes(String(needle).toLowerCase())) return `does not name ${JSON.stringify(needle)}`;
+  }
+  for (const needle of expect?.mustNotName ?? []) {
+    if (haystack.includes(String(needle).toLowerCase())) return `names ${JSON.stringify(needle)}, which it must not`;
+  }
+  return null;
+}
+
+/**
+ * WHICH FIELDS THE WRITING STANDARD BINDS, and it is not all of them.
+ *
+ * scripts/check-writing-standard.mjs exports two rule sets, and the difference
+ * is the whole finding here. `RULES` are rules of the HTML-DOCUMENT FORM —
+ * no-doctype, no-close-html, no-h1, no-style — which the writing standard
+ * attaches to a GROUND-UP EXPLANATION and to nothing else. `BRIEF_RULES` is
+ * empty, deliberately: a brief is markdown by construction, so no mechanical
+ * rule binds it, and that emptiness is a measurement rather than a gap (read
+ * its comment there).
+ *
+ * So the rules are not applied field-blind. Running `RULES` over a free-form
+ * field would fail every case on no-doctype — a `run` case's `text` is not an
+ * HTML document and the standard fixes no form for it, so no rules run on it
+ * at all. That is what makes this check safe to run on every job: a field the
+ * standard says nothing about is checked against nothing.
+ *
+ * A rule added to BRIEF_RULES over there lands here with no edit.
+ */
+export const HTML_STANDARD_FIELDS = Object.freeze(["groundUpExplanation", "explanation"]);
+export const BRIEF_STANDARD_FIELDS = Object.freeze(["brief", "recommendation", "workDescription"]);
+
+export function standardRulesFor(field, standard) {
+  if (standard === null || standard === undefined) return null;
+  if (HTML_STANDARD_FIELDS.includes(field)) return standard.RULES ?? null;
+  if (BRIEF_STANDARD_FIELDS.includes(field)) return standard.BRIEF_RULES ?? null;
+  return null;
+}
+
+/**
+ * The writing standard's rule bodies, loaded the way loadGate loads the gate.
+ *
+ * THE FILE HAS THREE HOMES — /opt/tts beside the jobs, scripts/ in a checkout,
+ * and CI — and check-writing-standard.mjs sits beside evals-check.mjs in only
+ * some of them. An absent file is "no rules ran", never a failure: a box whose
+ * setup.sh has not copied it yet must not start failing every case on a check
+ * it cannot perform.
+ */
+export async function loadWritingStandard() {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  for (const candidate of [
+    path.join(here, "check-writing-standard.mjs"),
+    path.join(here, "..", "..", "scripts", "check-writing-standard.mjs"),
+  ]) {
+    if (fs.existsSync(candidate)) return await import(pathToFileURL(candidate).href);
+  }
+  return null;
+}
+
+/** Every field of one output as one text, for a check that reads the answer
+ *  rather than one field of it. */
+function outputText(fresh, fields) {
+  return fields.map((field) => fresh?.[field]).filter((value) => typeof value === "string").join("\n\n");
+}
+
+/**
+ * The deterministic verdict on one regenerated output, or null.
+ *
+ * IN THIS ORDER, and the order is the cost order: the schema (job.parse, which
+ * already threw before this is reached), then the item's own mustName and
+ * mustNotName, then the writing standard over the fields it binds. Only a
+ * `null` from here buys a judge call.
+ */
+export function deterministicFailure(item, job, fresh, standard) {
+  const fields = job.proseFields ?? job.fields ?? [];
+  const mechanical = mechanicalChecks(item.expect, outputText(fresh, fields));
+  if (mechanical !== null) return mechanical;
+  for (const field of fields) {
+    const rules = standardRulesFor(field, standard);
+    if (rules === null || rules.length === 0) continue;
+    const value = fresh?.[field];
+    // An absent field is the judge's business — it is a loss, not a broken
+    // form, and failing it here would report the wrong fault.
+    if (typeof value !== "string" || value.trim() === "") continue;
+    const broken = standard.failuresFor(value, rules);
+    if (broken.length > 0) return `${field} fails the writing standard: ${broken.join(", ")}`;
+  }
+  return null;
+}
+
+/** The four fields every result of one item carries, whichever path scored it. */
+export function baseOf(item) {
+  return { id: item.id, partition: item.partition, verdict: verdictOf(item), confirmed: isConfirmed(item) };
+}
+
+/**
+ * The prelude ONE ITEM is given.
+ *
+ * A job with a fixed layer selection names it on the job, and that call is
+ * cached per run. A job whose selection travels on the item — `layers: []` —
+ * reads it off input.preludeNames, which is what makes a `run` case replayable
+ * with exactly the names its original run was given. A case whose prelude was
+ * not known has none: its prompt is replayed verbatim, and the run this eval
+ * registers says layersKnown false rather than claiming a selection nobody
+ * recorded.
+ */
+function preludeFor(item, job, context) {
+  if ((job.layers ?? []).length > 0) return context.layers(job.layers);
+  if (item.input?.preludeKnown !== true) return NO_PRELUDE;
+  return context.prelude(item.input.preludeNames ?? { layers: [], skills: [] });
+}
+
+/**
+ * One item: build the prompt, regenerate, judge. Never throws — a failure is
+ * a result, so one bad item cannot end the run.
+ *
+ * `deterministic` is the hook runCase passes: a function of the parsed output
+ * returning a reason or null, called AFTER the parse and BEFORE the judge.
+ * It is a hook rather than a body here so that there is still exactly one
+ * regeneration path, and so that the landed jobs — which were never scored
+ * against these checks — keep scoring exactly as they did.
+ *
+ * `receipt` is runClaude's out-parameter, filled with the token of the run it
+ * spooled. runClaude cannot change its return type (seven callers use the
+ * answer as a string), so the token comes back this way.
+ */
+export async function runItem(item, context, io, { deterministic = null, receipt = undefined } = {}) {
   const job = JOBS[item.job];
-  const base = { id: item.id, partition: item.partition, verdict: verdictOf(item), confirmed: isConfirmed(item) };
+  const base = baseOf(item);
   if (job === undefined) {
     return { ...base, judged: "fail", reason: `no runner for job ${item.job}` };
   }
   let fresh;
   try {
-    const layers = context.layers(job.layers);
-    const prompt = job.build(item, layers, context.modules[item.job]);
-    if (typeof item.sentence === "string" && item.sentence !== "" && prompt.includes(item.sentence)) {
-      // The honesty check, enforced at run time as well as in the test: a
-      // regeneration that was handed the label sentence proves nothing.
-      return { ...base, judged: "fail", reason: "regeneration failed: the label sentence reached the prompt" };
+    const layers = preludeFor(item, job, context);
+    const known = layers.known !== false;
+    const prompt = String(job.build(item, layers, context.modules[item.job], context));
+    // The honesty check, enforced at run time as well as in the test. The
+    // label sentence is the answer to a ruling item; a `run` case's RUBRIC is
+    // the answer to it, and it is the whole answer — the case carries no
+    // sentence and the rubric is what the judge scores against. A regeneration
+    // that was handed either proves nothing.
+    for (const [what, answer] of [["label sentence", item.sentence], ["rubric", item.expected?.rubric]]) {
+      if (typeof answer === "string" && answer !== "" && prompt.includes(answer)) {
+        return { ...base, judged: "fail", reason: `regeneration failed: the ${what} reached the prompt` };
+      }
     }
     const answer = await io.runClaude(prompt, {
       model: REGEN_MODEL,
       timeoutMs: REGEN_TIMEOUT_MS,
       ...job.opts,
       cwd: job.opts?.cwd === "@cmt" ? context.cmtDir : job.opts?.cwd,
+      ...(receipt === undefined ? {} : { receipt }),
       registration: {
         origin: "cron:evals",
         kind: "job",
-        layersKnown: true,
-        layersGiven: layers.names,
-        layersDenied: ["operate", "write", "know"].filter((name) => !layers.names.includes(name)),
-        wikitomCommit: layers.commit,
+        layersKnown: known,
+        layersGiven: known ? layers.names : [],
+        layersDenied: known ? LAYER_NAMES.filter((name) => !layers.names.includes(name)) : [],
+        skillsGranted: layers.skills ?? [],
+        ...(layers.commit ? { wikitomCommit: layers.commit } : {}),
       },
     });
     fresh = job.parse(answer, context.modules[item.job]);
   } catch (err) {
+    // The skills seam is a SKIP, not a failure: nothing about the tree under
+    // test was measured, and calling that a regression would fail a merge on
+    // a phase that has not landed.
+    if (err instanceof SkillsNotAssembledError) return { ...base, judged: "skip", reason: err.message };
     return { ...base, judged: "fail", reason: `regeneration failed: ${serverErrorMessage(err)}` };
+  }
+  if (deterministic !== null) {
+    // A check that throws is a failed check, reported as one. runItem never
+    // throws, and a hook is not allowed to be the thing that breaks that.
+    let reason;
+    try {
+      reason = deterministic(fresh);
+    } catch (err) {
+      return { ...base, judged: "fail", reason: `deterministic check failed: ${serverErrorMessage(err)}` };
+    }
+    if (reason !== null) return { ...base, judged: "fail", reason };
   }
   // A job that can score itself does. The learning items are the case: what
   // they ask is answered by running the regenerated answer through the job's
@@ -544,6 +842,17 @@ export async function runItem(item, context, io) {
 }
 
 /**
+ * An item that passed at least one head trial and failed at least one other.
+ * It is a PASS — it passed — and it is counted apart, because a set with
+ * flaky items in it is a set whose single-trial numbers move on their own.
+ */
+export function isFlaky(result) {
+  const trials = result?.trials;
+  if (trials === undefined || trials === null) return false;
+  return trials.headPassed > 0 && trials.headPassed < trials.head;
+}
+
+/**
  * Counts and a list. Nothing is averaged, weighted or scored out of ten — an
  * item passes or it does not, and the aggregate is descriptive, like every
  * other fact in this system.
@@ -552,7 +861,9 @@ export function aggregate(results) {
   const byPartition = new Map();
   const byVerdict = { approve: { items: 0, pass: 0 }, revise: { items: 0, pass: 0 } };
   let pass = 0;
+  let flaky = 0;
   for (const result of results) {
+    if (isFlaky(result)) flaky += 1;
     const row = byPartition.get(result.partition) ?? { partition: result.partition, items: 0, pass: 0, fail: 0 };
     row.items += 1;
     row[result.judged === "pass" ? "pass" : "fail"] += 1;
@@ -568,11 +879,19 @@ export function aggregate(results) {
     items: results.length,
     pass,
     fail: results.length - pass,
+    // Passed once, failed once. NEVER a regression and never folded into the
+    // fail count: it is the noise in the measurement, said out loud.
+    flaky,
     byPartition: [...byPartition.values()].sort((a, b) => a.partition.localeCompare(b.partition)),
     byVerdict,
     failures: results
       .filter((result) => result.judged !== "pass")
-      .map(({ id, partition, verdict, reason, confirmed }) => ({ id, partition, verdict, reason, confirmed }))
+      .map(({ id, partition, verdict, reason, confirmed, trials }) => ({
+        id, partition, verdict, reason, confirmed,
+        // The failure carries its own trial count, so a row read later says
+        // whether this id failed once or failed every time it was tried.
+        ...(trials === undefined ? {} : { trials }),
+      }))
       .sort((a, b) => a.id.localeCompare(b.id)),
   };
 }
@@ -592,6 +911,38 @@ export function loadTasks(tomquestTree, repo) {
 }
 
 /**
+ * The trigger files: the items that ask whether a name is reached for when it
+ * should be and left alone when it should not.
+ *
+ * A *.draft.json IS NOT LOADED. A draft is a file somebody is still writing,
+ * and a set that silently picks one up scores an item nobody has finished
+ * writing down.
+ *
+ * The count rule the set has to satisfy — at least as many negatives as
+ * positives in every file — is enforced in worker/jobs/evals.test.mjs, where
+ * `npm test` says so in one line. It does not belong in a merge check that has
+ * to fetch a run from the box to state a fact about a checked-in file.
+ */
+export const TRIGGERS_DIR = "evals/triggers";
+
+export function loadTriggers(tomquestTree) {
+  const dir = path.join(tomquestTree, TRIGGERS_DIR);
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir)
+    .filter((name) => name.endsWith(".json") && !name.endsWith(".draft.json"))
+    .sort()
+    .map((name) => ({ file: name, ...JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")) }));
+}
+
+/** How many positives and negatives one trigger file carries, whether it
+ *  writes them as lists or as counts. ONE SPELLING of the count, so the rule
+ *  and the report cannot come to disagree. */
+export function triggerCounts(trigger) {
+  const count = (value) => (Array.isArray(value) ? value.length : (Number.isFinite(value) ? value : 0));
+  return { positives: count(trigger?.positives), negatives: count(trigger?.negatives) };
+}
+
+/**
  * The five task kinds, and which of them still wait on a branch.
  *
  * `locate`, `explain` and `change` are the repo-task kinds. `delegate` and
@@ -608,18 +959,6 @@ export function loadTasks(tomquestTree, repo) {
  */
 export const TASK_KINDS = Object.freeze(["locate", "explain", "change", "delegate", "slack"]);
 export const TASK_BRANCHES = Object.freeze({});
-
-/** The mechanical checks every task kind runs before any model call. */
-export function mechanicalChecks(task, text) {
-  const haystack = String(text ?? "").toLowerCase();
-  for (const needle of task.expect?.mustName ?? []) {
-    if (!haystack.includes(String(needle).toLowerCase())) return `does not name ${JSON.stringify(needle)}`;
-  }
-  for (const needle of task.expect?.mustNotName ?? []) {
-    if (haystack.includes(String(needle).toLowerCase())) return `names ${JSON.stringify(needle)}, which it must not`;
-  }
-  return null;
-}
 
 /**
  * One task against one worktree. Returns { id, judged, reason } — the same
@@ -648,7 +987,7 @@ export async function runTask(task, trees, io) {
   // verdict and no answer has nothing to check mechanically, and scoring an
   // absent text against mustName would fail every such item.
   if (typeof produced?.text === "string") {
-    const mechanical = mechanicalChecks(task, produced.text);
+    const mechanical = mechanicalChecks(task.expect, produced.text);
     if (mechanical !== null) return { ...base, ...produced, judged: "fail", reason: mechanical };
   }
   return { ...base, ...produced };
@@ -735,12 +1074,320 @@ export async function loadModules(tomquestTree, items) {
 }
 
 /**
+ * The ids a run PASSED: every id it scored, less every id it recorded a
+ * failure for, golden items and repo tasks alike. This is the only thing the
+ * head run needs from the base run — the retry rule tries again exactly the
+ * items the base passed, which is exactly the set gate() could call a
+ * regression.
+ */
+export function passedIds(run) {
+  if (run === null || run === undefined) return new Set();
+  const failed = new Set([...(run.failures ?? []), ...(run.tasks?.failures ?? [])].map((failure) => failure.id));
+  return new Set((run.scoredIds ?? []).filter((id) => !failed.has(id)));
+}
+
+/**
+ * One item, scored as many times as HEAD_TRIALS allows.
+ *
+ * `once` is the whole scoring of one item — runItem or runTask — and it is
+ * called a second and third time only when the first call FAILED an item the
+ * BASE PASSED, and it stops the moment one of them passes. Everything else
+ * costs exactly one call, as before.
+ *
+ * The result kept is the first passing trial if there was one, else the first
+ * trial: a run in which nothing was retried is the old run's result with
+ * `trials` added and nothing else moved.
+ */
+export async function runTrials(id, basePassed, once) {
+  const first = await once();
+  if (first.judged === "skip") return first;
+  if (first.judged === "pass" || !basePassed.has(id)) {
+    return { ...first, trials: { head: 1, headPassed: first.judged === "pass" ? 1 : 0 } };
+  }
+  const results = [first];
+  while (results.length < HEAD_TRIALS) {
+    const next = await once();
+    results.push(next);
+    if (next.judged === "pass") break;
+  }
+  const passing = results.find((result) => result.judged === "pass");
+  return {
+    ...(passing ?? first),
+    trials: { head: results.length, headPassed: results.filter((result) => result.judged === "pass").length },
+  };
+}
+
+// ── Efficiency, read off the record ──────────────────────────────────────────
+
+/**
+ * One run's tokens: FOUR COLUMNS, NAMED. thinkingTokens is NOT one of them and
+ * must not be added.
+ *
+ * VERIFIED AGAINST BOTH PARSERS in worker/runs/ingest.mjs — totalsOf, and the
+ * totals reduce on each of the Claude path and the Codex path. thinkingTokens
+ * is parsed out of output_tokens_details.thinking_tokens /
+ * reasoning_output_tokens, which is a BREAKDOWN OF output_tokens rather than a
+ * fifth column, and both parsers compute
+ * totalTokens = input + cacheRead + cacheWrite + output with thinking left
+ * out. Adding it here would double-count every thinking token.
+ *
+ * The numbers are READ BACK FROM THE RECORD and never counted by the harness.
+ * That is what makes "read from the run file rather than estimated" true of
+ * the evals too, and it is the only way the two cache columns are right.
+ */
+export const tokensOf = (totals) =>
+  totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens + totals.outputTokens;
+
+/**
+ * How long a trial waits for its own run to appear in the record. SHORT AND
+ * BOUNDED: the sweeper needs a moment to see the file, and a trial that waited
+ * on it forever would cost more than the measurement is worth.
+ *
+ * The wait counts ATTEMPTS rather than reading a clock, because io.now is the
+ * run's injected clock and a fake one does not advance.
+ */
+export const RUN_RECORD_WAIT_MS = 60_000;
+export const RUN_RECORD_POLL_MS = 5_000;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export async function runRecordFor(io, token) {
+  // No token means runClaude spooled no registration, or the receipt
+  // out-parameter is not wired in this tree. The trial's tokens are unknown,
+  // which is reported and fails nothing.
+  if (typeof token !== "string" || token === "" || typeof io.runRecord !== "function") {
+    return { tokens: null, turns: null };
+  }
+  const attempts = Math.max(1, Math.ceil(RUN_RECORD_WAIT_MS / RUN_RECORD_POLL_MS));
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    let record = null;
+    try {
+      record = await io.runRecord(token);
+    } catch {
+      // A record that cannot be fetched is an unknown cost, not a failed case.
+    }
+    const totals = record?.outcome?.totals;
+    if (totals !== undefined && totals !== null) {
+      return { tokens: tokensOf(totals), turns: record.outcome.turns ?? null };
+    }
+    if (attempt < attempts - 1) await (io.sleep ?? sleep)(RUN_RECORD_POLL_MS);
+  }
+  return { tokens: null, turns: null };
+}
+
+/** The MEDIAN trial's tokens, not the mean: one timed-out trial must not fail
+ *  a case on cost. A trial whose tokens are unknown is left out, and a case
+ *  with no readable trial has no number at all. */
+export function medianTokens(perTrial) {
+  const numbers = (perTrial ?? []).map((trial) => trial.tokens).filter((value) => typeof value === "number").sort((a, b) => a - b);
+  if (numbers.length === 0) return null;
+  const middle = Math.floor(numbers.length / 2);
+  return numbers.length % 2 === 1 ? numbers[middle] : Math.round((numbers[middle - 1] + numbers[middle]) / 2);
+}
+
+/** How much more a case may cost at head before the rise is a finding. */
+export const EFFICIENCY_RISE = 3;
+
+/**
+ * One case's efficiency, head against base. Pure.
+ *
+ * THE SAME-OUTPUT CLAUSE IS LOAD-BEARING. A case fails on efficiency only when
+ * it cost more than EFFICIENCY_RISE times the base AND its judged result is
+ * IDENTICAL in both runs: a case whose output got better and longer is a fact
+ * to report, not a failure, and without the clause every genuine improvement
+ * would fail this arm.
+ *
+ * An unknown cost on either side — no record came back within the wait — is
+ * REPORTED AS UNKNOWN AND FAILS NOTHING. A slow sweeper must not turn into a
+ * red merge check.
+ */
+export function efficiencyVerdict(headCase, baseCase) {
+  const headTokens = headCase?.tokensMedian ?? null;
+  const baseTokens = baseCase?.tokensMedian ?? null;
+  if (typeof headTokens !== "number" || typeof baseTokens !== "number" || baseTokens === 0) {
+    return { failed: false, headTokens, baseTokens };
+  }
+  const sameVerdict = headCase.judged === baseCase.judged;
+  return { failed: sameVerdict && headTokens > baseTokens * EFFICIENCY_RISE, headTokens, baseTokens };
+}
+
+/** The efficiency block of a row: how many cases carried a cost, how many did
+ *  not, and every rise. The rises need the base run's per-case medians, so
+ *  they are computed where the base row is in hand (stampAgainstBase). */
+export function efficiencyOf(results, baseResults) {
+  // ONLY THE CASES THAT WERE MEASURED. A case with no `tokensMedian` key was
+  // never asked what it cost — every non-`run` job is one — and counting it as
+  // an unknown would report the whole set as unmeasured on a run that measured
+  // everything it could.
+  const cases = (results ?? []).filter((one) => one !== null && one !== undefined && "tokensMedian" in one);
+  const byId = new Map((baseResults ?? []).map((one) => [one.id, one]));
+  const rises = [];
+  for (const headCase of cases) {
+    const verdict = efficiencyVerdict(headCase, byId.get(headCase.id));
+    if (verdict.failed) rises.push({ id: headCase.id, headTokens: verdict.headTokens, baseTokens: verdict.baseTokens });
+  }
+  return {
+    cases: cases.length,
+    unknown: cases.filter((one) => typeof one.tokensMedian !== "number").length,
+    rises: rises.sort((a, b) => a.id.localeCompare(b.id)),
+  };
+}
+
+// ── One case, over its trials ────────────────────────────────────────────────
+
+/**
+ * One `run` case, scored.
+ *
+ * TWO RULES MEET HERE AND THEY ANSWER DIFFERENT QUESTIONS. Do not collapse
+ * them, and do not flip the gate to pass^k.
+ *
+ * THE LANDED RULE — HEAD_TRIALS, runTrials, isFlaky, and the `flaky` count in
+ * aggregate and in scripts/evals-check.mjs's report — says an item that passed
+ * one trial and failed another IS A PASS, counted apart as flaky and never a
+ * regression, because every item is a live model call and a one-trial gate
+ * fails a merge on the regeneration's noise. That rule governs THE MERGE GATE,
+ * and this function keeps its semantics exactly: `judged` is "pass" when ANY
+ * trial passed, and the `trials: { head, headPassed }` object below is the
+ * shape isFlaky and aggregate already read — so a flaky `run` case is counted
+ * flaky by code that needed no edit at all.
+ *
+ * THE STRICTER STANDARD — passK, every trial passed — governs GRADUATION: the
+ * weekly pass that promotes a capability case into the set gating every future
+ * merge reads passK, because promoting a case on one lucky trial writes the
+ * noise straight into the gate. It is RECORDED here and gates nothing.
+ *
+ * passAtK is recorded and gates nothing; it is `judged` said as a number.
+ *
+ * The count of trials is `trialCount` rather than `trials`, because `trials`
+ * is already the landed object above and a second meaning for one name is how
+ * two readers come to disagree about what a row says.
+ */
+export async function runCase(item, context, io, { pr = false } = {}) {
+  const job = JOBS[item.job];
+  const base = baseOf(item);
+  if (job === undefined) return { ...base, judged: "fail", reason: `no runner for job ${item.job}` };
+  const standard = await loadWritingStandard();
+  const deterministic = (fresh) => deterministicFailure(item, job, fresh, standard);
+  const count = trialsFor(item, { pr });
+  const perTrial = [];
+  for (let trial = 0; trial < count; trial += 1) {
+    const receipt = {};
+    const result = await runItem(item, context, io, { deterministic, receipt });
+    // A skip is not a trial. The skills seam throws while the prompt is being
+    // assembled, before any model call, so nothing has been spent and nothing
+    // is scored — the case is counted as skipped and that is all.
+    if (result.judged === "skip") return { ...base, judged: "skip", reason: result.reason };
+    const record = await runRecordFor(io, receipt.runToken);
+    perTrial.push({ judged: result.judged, reason: result.reason, tokens: record.tokens, turns: record.turns });
+  }
+  const passed = perTrial.filter((trial) => trial.judged === "pass").length;
+  const failing = perTrial.find((trial) => trial.judged !== "pass");
+  return {
+    ...base,
+    judged: passed > 0 ? "pass" : "fail",
+    reason: (failing ?? perTrial[0])?.reason,
+    trialCount: perTrial.length,
+    passed,
+    passK: perTrial.length > 0 && passed === perTrial.length,
+    passAtK: passed > 0,
+    trials: { head: perTrial.length, headPassed: passed },
+    tokensMedian: medianTokens(perTrial),
+    perTrial,
+  };
+}
+
+// ── The ablation arm ─────────────────────────────────────────────────────────
+
+/**
+ * The same case, assembled without one name.
+ *
+ * THERE IS NO THIRD WORKTREE AND treesFor IS NOT TOUCHED. What is ablated is A
+ * NAME IN A SET, not a state of the repository: the arm assembles the same
+ * prelude from the same two trees with one name taken out of the selection. A
+ * third worktree would imply a third commit, and would turn "run this case
+ * without the know layer" into a git operation, which it is not.
+ *
+ * ONE TRIAL PER ABLATED NAME, never the case's own trial count. The arm is
+ * REPORTED AND NEVER GATED, and n x trials x names is the whole cost of this
+ * phase; one trial per name over a 200-case weekly set is far more evidence
+ * than a removal proposal needs.
+ *
+ * A case whose prelude was not known is SKIPPED and counted: you cannot remove
+ * a name from a prompt that was replayed verbatim.
+ */
+export async function ablationFor(item, context, io, withPass) {
+  const names = item.input?.preludeNames ?? { layers: [], skills: [] };
+  if (item.input?.preludeKnown !== true) {
+    return { rows: [], skipped: [{ id: item.id, reason: "the prompt was replayed verbatim; there is no name to remove" }] };
+  }
+  const job = JOBS[item.job];
+  const standard = await loadWritingStandard();
+  const deterministic = (fresh) => deterministicFailure(item, job, fresh, standard);
+  const rows = [];
+  const skipped = [];
+  for (const [kind, list] of [["layer", names.layers ?? []], ["skill", names.skills ?? []]]) {
+    for (const name of list) {
+      const without = {
+        ...item,
+        input: {
+          ...item.input,
+          preludeNames: {
+            layers: (names.layers ?? []).filter((one) => kind !== "layer" || one !== name),
+            skills: (names.skills ?? []).filter((one) => kind !== "skill" || one !== name),
+          },
+        },
+      };
+      const result = await runItem(without, context, io, { deterministic });
+      if (result.judged === "skip") {
+        skipped.push({ id: item.id, reason: result.reason });
+        continue;
+      }
+      rows.push({ id: item.id, name, kind, withPass, withoutPass: result.judged === "pass" });
+    }
+  }
+  return { rows, skipped };
+}
+
+/**
+ * How many cases a name needs behind it before its ablation is worth reading.
+ * Below this the comparison is noise, and a removal proposal resting on two
+ * cases is exactly the confident-and-wrong simplification this whole layer is
+ * written against.
+ */
+export const MIN_ABLATION_CASES = 5;
+
+/**
+ * Which names did not earn their tokens, computed over the WEEKLY SET and
+ * never per case: a name that one case passes without is a coin toss, and the
+ * question is whether the name is carrying its cases at all.
+ *
+ * REPORTED, NEVER GATED. The golden set is mined out of Tom's rulings rather
+ * than designed for coverage, so a name whose cases pass without it may still
+ * be preventing a failure mode the set does not contain. This says what the
+ * set shows; what to remove is his.
+ */
+export function ablationFindings(ablation) {
+  const byName = new Map();
+  for (const row of ablation ?? []) {
+    const entry = byName.get(row.name) ?? { name: row.name, cases: 0, withPass: 0, withoutPass: 0 };
+    entry.cases += 1;
+    if (row.withPass) entry.withPass += 1;
+    if (row.withoutPass) entry.withoutPass += 1;
+    byName.set(row.name, entry);
+  }
+  return [...byName.values()]
+    .filter((entry) => entry.cases >= MIN_ABLATION_CASES)
+    .map((entry) => ({ ...entry, earned: entry.withoutPass / entry.cases < entry.withPass / entry.cases }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
  * One run: the golden items of the pinned tom.quest tree, regenerated against
  * the pinned WikiTom tree, judged, aggregated, and posted as one evals-run row.
  * `io` carries every side effect so the test can drive this with no network
  * and no model.
  */
-export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekly = false }, io) {
+export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekly = false, ablation = false, basePassed = new Set() }, io) {
   const startedAt = io.now();
   const trees = treesFor(repo, sha);
   const tomquest = io.worktree("tom.quest", trees.tomquest);
@@ -751,6 +1398,7 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
     const items = weekly ? wanted : selectItems(wanted, Math.max(1, Math.floor(limit / 2)));
     const modules = await io.loadModules(tomquest.dir, items);
     const layerCache = new Map();
+    const preludeCache = new Map();
     const context = {
       cmtDir: io.cmtDir?.() ?? undefined,
       modules,
@@ -759,12 +1407,41 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
         if (!layerCache.has(key)) layerCache.set(key, io.layers(tomquest.dir, wikitom.dir, names));
         return layerCache.get(key);
       },
+      // ONE ASSEMBLY PER NAME SET PER RUN. The ablation arm asks for a dozen
+      // near-identical sets and every case asks for its own, so the cache is
+      // what keeps this to a handful of prelude.mjs invocations rather than
+      // one per trial.
+      prelude: (names) => {
+        const key = `${(names?.layers ?? []).join(",")}|${(names?.skills ?? []).join(",")}`;
+        if (!preludeCache.has(key)) preludeCache.set(key, preludeFrom(io, tomquest.dir, wikitom.dir, names));
+        return preludeCache.get(key);
+      },
     };
     const results = [];
-    for (const item of items) results.push(await runItem(item, context, io));
+    const ablationRows = [];
+    const ablationSkipped = [];
+    for (const item of items) {
+      // A `run` case is scored over its own trials with the deterministic
+      // checks in front of the judge; every other item keeps the landed
+      // retrial path exactly as it was. A weekly run is the full-trials run
+      // and everything else is a pull-request run.
+      if (item.job === "run") {
+        const result = await runCase(item, context, io, { pr: !weekly });
+        results.push(result);
+        if (ablation && result.judged !== "skip") {
+          const arm = await ablationFor(item, context, io, result.judged === "pass");
+          ablationRows.push(...arm.rows);
+          ablationSkipped.push(...arm.skipped);
+        }
+        continue;
+      }
+      results.push(await runTrials(item.id, basePassed, () => runItem(item, context, io)));
+    }
     const tasks = [];
     for (const taskRepo of io.taskRepos?.(tomquest.dir) ?? []) {
-      for (const task of loadTasks(tomquest.dir, taskRepo)) tasks.push(await runTask(task, trees, io));
+      for (const task of loadTasks(tomquest.dir, taskRepo)) {
+        tasks.push(await runTrials(task.id, basePassed, () => runTask(task, trees, io)));
+      }
     }
     const scored = results.filter((result) => result.judged !== "skip");
     const summary = aggregate(scored);
@@ -780,11 +1457,44 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       judgeModel: JUDGE_MODEL,
       startedAt,
       finishedAt: io.now(),
-      calls: scored.length * 2,
+      // Trials, not items: a retried item costs its calls again and the row
+      // says so. The ablation arm is one trial per name and costs the same two
+      // calls each, so it is counted rather than hidden.
+      calls: (scored.reduce((total, result) => total + (result.trials?.head ?? 1), 0) + ablationRows.length) * 2,
       // The ids actually scored, so the gate can tell a newly added item apart
       // from one that regressed without re-deriving the selection.
       scoredIds: [...scored, ...tasks.filter((task) => task.judged !== "skip")].map((result) => result.id).sort(),
       skipped: results.filter((result) => result.judged === "skip").map(({ id, reason }) => ({ id, reason })),
+      // A --weekly run SAYS SO ON THE ROW. The weekly graduation pass
+      // (scripts/graduate-golden.mjs) promotes a capability case on this
+      // evidence and no other: a pull-request run scores a 40-item subset
+      // against one branch's tree, and a case promoted on that would let one
+      // branch raise the bar for main permanently. That pass refuses a row
+      // which does not say, rather than inferring it from the item count.
+      weekly,
+      // ONE LIST about the cases, never two. Every scored case, how it scored,
+      // whether it passed EVERY trial, and what its median trial cost.
+      //
+      // `passK` means one thing across both scoring paths: on a `run` case it
+      // is the case's own, and on everything going through the landed
+      // runTrials path it is derived from the same trial counts — otherwise
+      // the graduation pass would be reading a field that exists on only half
+      // the rows and silently graduating nothing from the other half.
+      //
+      // `tokensMedian` is ABSENT on a case that was never measured and null on
+      // a measured case whose record did not come back: the difference between
+      // "not asked" and "asked, no answer". The efficiency block counts only
+      // the cases that were asked.
+      results: scored.map((result) => ({
+        id: result.id,
+        judged: result.judged,
+        passK: result.passK ?? (result.trials === undefined
+          ? result.judged === "pass"
+          : result.trials.headPassed === result.trials.head),
+        ...(result.perTrial === undefined ? {} : { tokensMedian: result.tokensMedian ?? null }),
+      })),
+      ablation: ablationRows,
+      ablationSkipped,
       ...summary,
       tasks: aggregate(tasks.filter((task) => task.judged !== "skip")),
       tasksSkipped: tasks.filter((task) => task.judged === "skip").map(({ id, reason }) => ({ id, reason })),
@@ -795,13 +1505,13 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
   }
 }
 
-const FLAGS = new Set(["--serve", "--weekly", "--force"]);
+const FLAGS = new Set(["--serve", "--weekly", "--force", "--ablation"]);
 const VALUED = new Set(["--repo", "--sha", "--base", "--tasks", "--limit", "--jobs"]);
 
 export function parseArgs(argv) {
   const options = {
     repo: null, sha: null, base: null, limit: PR_ITEMS,
-    jobs: null, force: false, serve: false, weekly: false, tasks: null,
+    jobs: null, force: false, serve: false, weekly: false, ablation: false, tasks: null,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -826,6 +1536,11 @@ export function parseArgs(argv) {
     throw new Error("--repo and --sha are required unless --serve, --weekly or --tasks is given");
   }
   if (!Number.isFinite(options.limit) || options.limit <= 0) throw new Error("--limit must be a positive number");
+  // The ablation arm runs nightly and weekly and NEVER on a pull request: it
+  // costs one extra trial per name per case, it is reported and gates nothing,
+  // and a merge must not wait on a measurement no gate reads. A weekly run
+  // turns it on; a nightly run asks for it by name; --serve leaves it off.
+  if (options.weekly) options.ablation = true;
   return options;
 }
 
@@ -836,6 +1551,22 @@ function realIo(env) {
     now: () => Date.now(),
     runClaude: async (prompt, options) => runClaude(prompt, options),
     layers: (tomquestTree, wikitomTree, names) => layersFor(tomquestTree, wikitomTree, names),
+    // THE PHASE 6 SEAM. `skills` is unwired on purpose: scripts/skills.mjs does
+    // not exist yet, and preludeFrom refuses a name set carrying skills rather
+    // than assembling half of one. Phase 6 adds the one line here.
+    // skills: (tomquestTree, names) => skillsFor(tomquestTree, names),
+    //
+    // One trial's own run, read back out of the record so its tokens and turns
+    // are the ones the sweeper parsed rather than a number this file counted.
+    // A run the sweeper has not seen yet is null, and null is unknown.
+    runRecord: async (token) => {
+      try {
+        const answer = await convexFetch(env, `/tts/run-by-token?token=${encodeURIComponent(token)}`);
+        return answer?.run ?? (answer?.runId ? answer : null);
+      } catch {
+        return null;
+      }
+    },
     loadModules,
     cmtDir: () => cacheRepoDir(env, { name: "ComplexMultiTrigger", owner: "Heffnt", branch: "master" }),
     taskRepos: (tomquestTree) => {
@@ -892,13 +1623,23 @@ export function failedRun({ repo, sha, error, at }) {
     items: 0,
     pass: 0,
     fail: 0,
+    flaky: 0,
     regressions: null,
     stillFailing: 0,
+    // A run that could not be made checked no diff either, so the coverage
+    // field says so rather than saying "satisfied". The merge gate denies on
+    // null, which is what a row carrying `error` must do on every arm.
+    goldenCoverage: null,
+    weekly: false,
     byPartition: [],
     byVerdict: { approve: { items: 0, pass: 0 }, revise: { items: 0, pass: 0 } },
     failures: [],
     scoredIds: [],
     skipped: [],
+    results: [],
+    efficiency: { cases: 0, unknown: 0, rises: [] },
+    ablation: [],
+    ablationSkipped: [],
     tasks: aggregate([]),
     tasksSkipped: [],
   };
@@ -923,12 +1664,28 @@ export async function loadGate() {
 }
 
 /**
- * Stamp regressions and stillFailing onto a run, and mark each failure with
- * whether it is one — the digest prints regression lines and must not have to
- * compare two runs to know which they are.
+ * Stamp regressions, stillFailing and goldenCoverage onto a run, and mark each
+ * failure with whether it is one — the digest prints regression lines and must
+ * not have to compare two runs to know which they are.
+ *
+ * `diff` is the changed-path list the pull-request check computed and sent on
+ * its request, and the pull-request body it read the escape-hatch trailer from.
+ * THE SAME LIST REACHES BOTH SIDES: the check judges coverage in its own log
+ * from the list it computed, and the box stamps the verdict onto the row from
+ * the list that travelled with the request, so the log and the row cannot
+ * disagree about what was judged.
  */
-export async function stampAgainstBase(data, base) {
+export async function stampAgainstBase(data, base, diff = {}) {
   const gateModule = await loadGate();
+  // THREE-VALUED, and the third value is not a failure. `null` says nobody
+  // asked this run about a diff — a --weekly run, a run by hand — and the
+  // merge gate denies on it, which is right: a merge always has a diff, so a
+  // run that was never asked has not answered. A gate that opened on "we did
+  // not check" is the failure the `regressions: null` rule below prevents, and
+  // this field takes the same posture on purpose.
+  const goldenCoverage = gateModule === null
+    ? null
+    : gateModule.goldenItemRule(diff.changed, diff.prBody);
   if (gateModule === null || base === null || base === undefined) {
     // NULL, NOT ZERO. A run compared to nothing has no number of regressions,
     // and the merge gate opens its evals arm on exactly `regressions === 0`
@@ -939,20 +1696,32 @@ export async function stampAgainstBase(data, base) {
       ...data,
       regressions: null,
       stillFailing: 0,
+      // Coverage is a fact about the DIFF, not about the comparison, so a run
+      // with no base still answers it. A branch that changed a watched file
+      // and shipped no item owes one whether or not anything scored its base.
+      goldenCoverage,
+      // No base, no rise: a cost is a comparison, and there is nothing to
+      // compare to. The cases and the unknowns are still stated, because they
+      // are facts about this run alone.
+      efficiency: efficiencyOf(data.results, null),
       failures: data.failures.map((failure) => ({ ...failure, regression: false })),
     };
   }
-  const verdict = gateModule.gate(data, base);
+  const verdict = gateModule.gate(data, base, { changed: diff.changed, prBody: diff.prBody });
   const regressed = new Set(verdict.regressions.map((failure) => failure.id));
   return {
     ...data,
     regressions: verdict.regressions.length,
     stillFailing: verdict.stillFailing.length,
+    // From the gate's own verdict rather than from the rule called twice: one
+    // body decides what coverage is, here and in the check's log alike.
+    goldenCoverage: verdict.goldenCoverage,
+    efficiency: efficiencyOf(data.results, base.results),
     failures: data.failures.map((failure) => ({ ...failure, regression: regressed.has(failure.id) })),
   };
 }
 
-async function runAndPost(env, io, { repo, sha, base, limit, jobs, weekly, force }) {
+async function runAndPost(env, io, { repo, sha, base, limit, jobs, weekly, ablation = false, force, changed, prBody }) {
   const existing = force ? null : await convexFetch(env, `/tts/evals-run?repo=${repo}&sha=${sha}`);
   if (existing?.run) {
     console.log(`[evals] ${repo}@${sha} already scored (${existing.run.pass}/${existing.run.items}); --force to rerun`);
@@ -960,7 +1729,9 @@ async function runAndPost(env, io, { repo, sha, base, limit, jobs, weekly, force
   }
   // The base runs FIRST when nothing has scored it: a head run with no
   // baseline can only report, and the box is the only machine that can make
-  // one, so it makes it here rather than leaving the check blind.
+  // one, so it makes it here rather than leaving the check blind. It runs
+  // WITHOUT the ablation arm — a baseline exists to be compared against, and
+  // the arm is reported off the head run alone.
   let baseData = null;
   if (base) {
     const baseRun = await convexFetch(env, `/tts/evals-run?repo=${repo}&sha=${base}`);
@@ -971,12 +1742,21 @@ async function runAndPost(env, io, { repo, sha, base, limit, jobs, weekly, force
       console.log(`[evals] base ${repo}@${base}: ${baseData.pass}/${baseData.items} pass`);
     }
   }
-  const data = await stampAgainstBase(await runEvals({ repo, sha, limit, jobs, weekly }, io), baseData);
+  // The base's passing ids are the head run's retry list: exactly those items
+  // can become a regression, so exactly those are tried again when they fail.
+  const data = await stampAgainstBase(
+    await runEvals({ repo, sha, limit, jobs, weekly, ablation, basePassed: passedIds(baseData) }, io),
+    baseData,
+    { changed, prBody },
+  );
   await postRun(env, data);
   console.log(
     `[evals] ${repo}@${sha}: ${data.pass}/${data.items} pass, ` +
       `${data.regressions === null ? "compared to no base" : `${data.regressions} regression(s)`}, ` +
-      `${data.stillFailing} still failing (golden ${data.goldenHash})`,
+      `${(data.flaky ?? 0) + (data.tasks?.flaky ?? 0)} flaky, ` +
+      `${data.stillFailing} still failing, ` +
+      `golden coverage ${data.goldenCoverage === null ? "not asked" : data.goldenCoverage} ` +
+      `(golden ${data.goldenHash})`,
   );
   return data;
 }
@@ -1019,6 +1799,17 @@ async function main() {
         limit: options.limit,
         jobs: options.jobs,
         weekly: false,
+        // A served request IS the pull-request run. The ablation arm never
+        // runs here, whatever the command line said.
+        ablation: false,
+        // THE CHECK'S OWN DIFF, carried on the request. The box cannot compute
+        // it — it has a shallow cache clone with no merge base — and a second
+        // list computed here would be a second answer to the same question.
+        // An older request carries neither, and neither is inferred: the
+        // coverage verdict is then null and the merge gate denies, which is
+        // the right answer for a run nobody asked about a diff.
+        changed: request.changed,
+        prBody: request.prBody,
         force: options.force,
       });
     } catch (error) {
@@ -1040,7 +1831,7 @@ async function main() {
       return;
     }
     for (const repo of ["tom.quest", "WikiTom"]) {
-      await runAndPost(env, io, { repo, sha: "origin/main", base: null, limit: options.limit, jobs: options.jobs, weekly: true, force: true });
+      await runAndPost(env, io, { repo, sha: "origin/main", base: null, limit: options.limit, jobs: options.jobs, weekly: true, ablation: options.ablation, force: true });
     }
     return;
   }
@@ -1052,6 +1843,7 @@ async function main() {
     limit: options.limit,
     jobs: options.jobs,
     weekly: false,
+    ablation: options.ablation,
     force: options.force,
   });
 }

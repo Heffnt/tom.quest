@@ -176,6 +176,15 @@ cp "$WORKER_DIR"/jobs/context-relevance.mjs /opt/tts/worker/jobs/context-relevan
 # evals.mjs imports gate() from it so the box stamps a run with the SAME rule
 # the check applies, and there is one body of what a regression is.
 cp "$WORKER_DIR"/../scripts/evals-check.mjs /opt/tts/evals-check.mjs
+# The mechanical half of the writing standard, beside it for the same reason.
+# evals.mjs runs failuresFor() as a deterministic check BEFORE calling the
+# judge: a text that broke a rule Tom wrote down is not a matter of reading,
+# and the judge is the expensive half. Without this copy the box silently ran
+# no rules at all and the run still said "pass" — the runner treats an absent
+# file as "no rules ran" so a checkout without it is not a failure, which is
+# exactly why the copy has to be here rather than assumed. Its only imports
+# are node builtins, so one file is the whole of it.
+cp "$WORKER_DIR"/../scripts/check-writing-standard.mjs /opt/tts/check-writing-standard.mjs
 cp "$WORKER_DIR"/jobs/markdown-sections.mjs /opt/tts/worker/jobs/markdown-sections.mjs
 # The Codex wrapper is a repo script, not a job, but sessions need it from ANY
 # repo — including checkouts that predate it, and repos that are not tom.quest
@@ -437,6 +446,14 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # opened. Both UTC slots on one line; the job's own NY-hour guard keeps one
 # (worker/jobs/weekly.mjs).
 0 8,9 * * 5 root /usr/bin/flock -n /var/lock/tts-weekly.lock /usr/bin/node /opt/tts/weekly.mjs >> /var/log/tts/weekly.log 2>&1
+
+# THE WEEKLY SIMPLIFICATION PASS (uae phase 8; spec §23.9) at 4:30 a.m. New
+# York on Fridays, half an hour after the weekly agenda job: the blast radius
+# of every rule, skill, schema field and gate check over four weeks of
+# recorded runs, one Fable run that may only propose removals, one
+# #tts-decisions message per proposal. Both UTC slots on one line; the job's
+# own NY-hour guard keeps one (worker/jobs/simplify.mjs).
+30 8,9 * * 5 root /usr/bin/flock -n /var/lock/tts-simplify.lock /usr/bin/node /opt/tts/simplify.mjs >> /var/log/tts/simplify.log 2>&1
 
 # Evals. The box POLLS: it has no inbound door, so a GitHub Action posts a
 # request to Convex and this tick picks up the oldest unanswered one and runs

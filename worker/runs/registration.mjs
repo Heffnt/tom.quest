@@ -248,6 +248,14 @@ export function mergeRegistration({ parsed, envelope, host, report = () => {} })
   for (const key of ["todoId", "batchId", "mergeKey", "continuesRunId"]) setOptional(run, key, registration[key]);
 
   run.context.registered = true;
+  // THE TOKEN BECOMES A FIELD OF THE RUN, not only a name on disk. It is the
+  // one exact edge from a row an agent wrote for Tom (dtsTodos, batches and
+  // dtsCodeBriefs each carry it as producedByRunToken) back to the run that
+  // wrote it, and convex/runLabels.ts resolves it on runs.by_reg_token. It is
+  // set only on the applied path: an envelope that was refused for a host
+  // mismatch describes a different machine's run, and stamping its token here
+  // would make exactly the wrong edge the label design is written against.
+  if (typeof envelope.token === "string" && envelope.token) run.regToken = envelope.token;
   if (typeof envelope.writer?.file === "string") run.context.launcher = envelope.writer.file;
   if (typeof registration.layersKnown === "boolean") run.context.layersKnown = registration.layersKnown;
   run.context.layersGiven = registration.layersKnown && Array.isArray(registration.layersGiven) ? [...registration.layersGiven] : [];

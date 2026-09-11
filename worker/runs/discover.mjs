@@ -30,6 +30,18 @@ function codexThreadId(file) {
   return /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(name)?.[1] ?? name;
 }
 
+// A child transcript is `agent-<agentId>.jsonl` ANYWHERE under the session's
+// `subagents/` tree. The CLI writes the agents of a Workflow one folder
+// deeper, at `subagents/workflows/wf_<id>/`, and nothing stops it nesting
+// further; the agent id is the identity and the folder is only where the file
+// lives, so the walk is recursive and the thread id keeps its one slash.
+export const AGENT_FILE = /^agent-(.+)\.jsonl$/i;
+export const AGENT_SIDECAR = /^agent-(.+)\.meta\.json$/i;
+/** The `wf_<id>` folder a path sits under, when it sits under one. */
+export function workflowIdOf(parts) {
+  return parts.find((part) => /^wf_./.test(part));
+}
+
 function describeClaude(file, root, host, account, project, fs) {
   const stat = statFile(file, fs);
   if (!stat) return null;
@@ -40,12 +52,18 @@ function describeClaude(file, root, host, account, project, fs) {
     return { runtime: "claude", host, root, ...(account ? { account } : {}), project: project ?? parts[0], threadId: path.basename(file, ".jsonl"), kind: "root", path: path.resolve(file), mtimeMs: stat.mtimeMs, bytes: stat.size };
   }
   const sessionId = parts[1];
-  const subagent = parts.length === 4 && parts[2] === "subagents" && /^agent-(.+)\.jsonl$/i.exec(parts[3]);
+  const name = parts[parts.length - 1];
+  const underSubagents = parts.length >= 4 && parts[2] === "subagents";
+  const subagent = underSubagents && AGENT_FILE.exec(name);
+  const workflowId = workflowIdOf(parts);
   if (subagent) {
-    return { runtime: "claude", host, root, ...(account ? { account } : {}), project: project ?? parts[0], threadId: `${sessionId}/${subagent[1]}`, kind: "subagent", path: path.resolve(file), mtimeMs: stat.mtimeMs, bytes: stat.size };
+    return { runtime: "claude", host, root, ...(account ? { account } : {}), project: project ?? parts[0], threadId: `${sessionId}/${subagent[1]}`, kind: "subagent", ...(workflowId ? { workflowId } : {}), path: path.resolve(file), mtimeMs: stat.mtimeMs, bytes: stat.size };
   }
   if (parts.length >= 3 && !file.endsWith(".registration.json") && !file.endsWith(".lock")) {
-    return { runtime: "claude", host, root, ...(account ? { account } : {}), project: project ?? parts[0], threadId: sessionId, kind: "attachment", path: path.resolve(file), mtimeMs: stat.mtimeMs, bytes: stat.size };
+    // Everything else under the session directory is an attachment, named for
+    // the nearest run: the agent when the file name says one, else the root.
+    const sidecar = underSubagents && AGENT_SIDECAR.exec(name);
+    return { runtime: "claude", host, root, ...(account ? { account } : {}), project: project ?? parts[0], threadId: sidecar ? `${sessionId}/${sidecar[1]}` : sessionId, kind: "attachment", ...(workflowId ? { workflowId } : {}), path: path.resolve(file), mtimeMs: stat.mtimeMs, bytes: stat.size };
   }
   return null;
 }
@@ -84,11 +102,12 @@ export function describeRunFile(file, { roots, host, fs = fsDefault } = {}) {
     const stat = statFile(absolute, fs);
     return stat ? { runtime: "codex", host, root: path.dirname(absolute), threadId: codexThreadId(absolute), kind: "rollout", path: absolute, mtimeMs: stat.mtimeMs, bytes: stat.size } : null;
   }
-  const subagent = /[\\/]([^\\/]+)[\\/]subagents[\\/]agent-(.+)\.jsonl$/i.exec(absolute);
+  const subagent = /[\\/]([^\\/]+)[\\/]subagents[\\/](?:.+[\\/])?agent-(.+)\.jsonl$/i.exec(absolute);
   const stat = statFile(absolute, fs);
   if (!stat || !absolute.endsWith(".jsonl")) return null;
   const threadId = subagent ? `${subagent[1]}/${subagent[2]}` : path.basename(absolute, ".jsonl");
-  return { runtime: "claude", host, root: path.dirname(absolute), threadId, kind: subagent ? "subagent" : "root", path: absolute, mtimeMs: stat.mtimeMs, bytes: stat.size };
+  const workflowId = subagent ? workflowIdOf(absolute.split(/[\\/]/)) : undefined;
+  return { runtime: "claude", host, root: path.dirname(absolute), threadId, kind: subagent ? "subagent" : "root", ...(workflowId ? { workflowId } : {}), path: absolute, mtimeMs: stat.mtimeMs, bytes: stat.size };
 }
 
 /**

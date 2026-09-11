@@ -486,6 +486,19 @@ export const CLAUDE_CONFIG_DIR = "/root/.claude-accounts/active";
 //              classify-shaped, high volume, cheap tier.
 //   timeNotes  reading one of Tom's time sentences into concrete actions —
 //              mechanical parsing; the tier here is flagged for Tom's ruling.
+//   simplify   the weekly simplification pass (worker/jobs/simplify.mjs, spec
+//              §23.9): one run a week that reads a deterministic facts block
+//              and may answer only with deletions. Fable, because judging what
+//              a system can lose is the hardest judgment the fleet makes, and
+//              because it is one call a week over a bounded prompt.
+//
+// `simplify` SPELLS THE ID IN FULL rather than using the `fable` alias the
+// session model list takes, so the model recorded on the run matches the row
+// in worker/runs/prices.mjs and this job's weekly cost is readable. It
+// duplicates one string with delegate.mjs's DELEGATE_MODEL deliberately:
+// MODELS is where "every spawn names its model" is enforced for jobs, and
+// reaching into the delegate's constant would tier two unrelated jobs
+// together.
 //
 // Model literals still live in nightly.mjs (LEARNING_MODEL), weekly.mjs
 // (WEEKLY_MODEL), delegate.mjs (DELEGATE_MODEL), write-slack.mjs (MODEL) and
@@ -496,6 +509,7 @@ export const MODELS = {
   codeBrief: "opus",
   triage: "claude-haiku-4-5-20251001",
   timeNotes: "claude-sonnet-5",
+  simplify: "claude-fable-5-1",
 };
 
 // Run headless Claude Code (`claude -p`) and return the model's ANSWER TEXT
@@ -519,9 +533,25 @@ export const MODELS = {
 // `model` maps to --model. EVERY CALLER PASSES ONE, from the MODELS table
 // above — omit it and the run silently takes the active account's default,
 // which is a fleet-wide setting no job should be tiered by.
+// `receipt` is an OUT-PARAMETER, and the one thing this function tells a
+// caller besides the answer text: pass `receipt: {}` alongside a registration
+// and the token this call spooled is written into it as `receipt.runToken`.
+//
+// WHY NOT A RICHER RETURN VALUE. Seven callers pass a registration today and
+// use the answer as a string (apply-time-notes, delegate, plan-graphs in three
+// places, poll-canvas, poll-gmail, write-slack); returning an object would
+// break every one of them at a line that still type-checks in plain JS.
+//
+// AND WHY NOT process.env.TTS_RUN_REG_TOKEN, which the job also has. That
+// variable is the token of the JOB'S OWN run, set by whatever launched the
+// cron. The text a door then posts for Tom was written by the CHILD run this
+// call spawns, which has its own token — so the job's variable names the wrong
+// run, and stamping it on the row would make exactly the wrong edge
+// convex/runLabels.ts is built to avoid. This is the token that names the run
+// that wrote the text.
 export function runClaude(
   prompt,
-  { cwd, timeoutMs, agentic = false, maxTurns, model, allowedTools, registration } = {},
+  { cwd, timeoutMs, agentic = false, maxTurns, model, allowedTools, registration, receipt } = {},
 ) {
   const turns = maxTurns ?? (agentic ? 200 : 8);
   const args = ["-p", "--output-format", "json", "--max-turns", String(turns)];
@@ -578,6 +608,10 @@ export function runClaude(
     });
     childEnv.TTS_RUN_REG_TOKEN = spooled.token;
     childEnv.TTS_RUN_REG_SPOOL = path.dirname(spooled.file);
+    // Filled BEFORE the child runs, not after it returns: a call that times out
+    // or throws still produced a registered run, and a caller that wants to
+    // report which run failed needs its token.
+    if (receipt !== undefined && receipt !== null) receipt.runToken = spooled.token;
   }
   const stdout = execFileSync("claude", args, {
     input: prompt,

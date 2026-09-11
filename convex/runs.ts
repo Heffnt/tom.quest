@@ -42,7 +42,7 @@ const CONTEXT = v.object({
   entrypoint: v.optional(v.string()), originator: v.optional(v.string()), permissionMode: v.optional(v.string()), contextWindow: v.optional(v.number()),
   registered: v.optional(v.boolean()), launcher: v.optional(v.string()), modelRequested: v.optional(v.string()),
   skillsGranted: v.optional(v.array(v.string())), skillsRefused: v.optional(v.array(v.string())),
-  promptSha256: v.optional(v.string()), writingStandardSource: v.optional(v.string()),
+  promptSha256: v.optional(v.string()), writingStandardSource: v.optional(v.string()), workflowId: v.optional(v.string()),
 });
 const OUTCOME = v.object({
   endedReason: v.optional(v.string()), finalTextSeq: v.optional(v.number()),
@@ -59,6 +59,7 @@ const RUN = v.object({
   model: v.optional(v.string()), sessionModel: v.optional(SESSION_MODEL), effort: v.optional(v.string()), runtimeVersion: v.optional(v.string()), parserVersion: v.string(), kind: RUN_KIND, status: RUN_STATUS,
   mode: v.optional(RUN_MODE), startedAt: v.number(), lastLineAt: v.number(), context: v.optional(CONTEXT), outcome: v.optional(OUTCOME), attachments: v.array(ATTACHMENT),
   todoId: v.optional(v.id("dtsTodos")), batchId: v.optional(v.id("batches")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
+  regToken: v.optional(v.string()),
   envelopeKey: v.optional(v.string()), cutoverAt: v.optional(v.number()), abandonedAt: v.optional(v.number()), file: FILE,
 });
 const PROVENANCE = v.object({ fileVersion: v.string(), file: v.string(), lineStart: v.number(), lineEnd: v.number(), block: v.number(), parserVersion: v.string(), sourceKind: v.string() });
@@ -160,7 +161,7 @@ function stub(run: { runId: string; parentRunId?: string; rootRunId: string; dep
 }
 
 function validOrigin(origin: string) {
-  return ["session", "planner", "worker", "nightly", "weekly", "delegate", "job", "daemon", "hook", "laptop", "unknown"].includes(origin) || /^cron:[\w.-]{1,64}$/.test(origin);
+  return ["session", "planner", "worker", "nightly", "weekly", "delegate", "job", "daemon", "hook", "laptop", "workflow", "unknown"].includes(origin) || /^cron:[\w.-]{1,64}$/.test(origin);
 }
 async function fileVersionAt(ctx: MutationCtx, runId: string, fileVersion: string) {
   return await ctx.db
@@ -245,15 +246,16 @@ export const internalIngest = internalMutation({
       depth = existing.depth;
     } else if (!args.run.parentRunId) {
       if (args.run.rootRunId !== args.run.runId || args.run.depth !== 0 || !args.run.linkKnown) return { ok: false as const, reason: "invalid root run" };
-    } else if (knownParent) {
+    } else if (knownParent && !isStubFile(knownParent.file)) {
       rootRunId = knownParent.rootRunId;
       depth = knownParent.depth + 1;
-    } else {
-      // A missing parent is a root stub until its own file names its parent.
-      // Filling that stub repairs this run and its descendants below.
-      rootRunId = args.run.parentRunId;
-      depth = 1;
     }
+    // Anything else — a parent nobody has swept yet — keeps the depth and the
+    // root the CLI's own sidecar gave this run. The sweep reaches a grandchild
+    // before its parent whenever the file names sort that way, and deriving a
+    // position from a parent that is not there yet made every row of a deeper
+    // run fail the row-depth check below, which dead-lettered the whole run on
+    // a permanent 400.
     let run = { ...args.run, rootRunId, depth };
     // A box Claude root has the same CLI id as its live session. Resolve that
     // exact join in the ingest transaction so a missed daemon stamp repairs
@@ -333,7 +335,11 @@ export const internalIngest = internalMutation({
 
     const ingestedAt = Date.now();
     if (run.parentRunId && !knownParent) {
-      await ctx.db.insert("runs", stub({ runId: run.parentRunId, rootRunId: run.parentRunId, depth: 0, linkKnown: true }, run, "unknown"));
+      // The placeholder takes its position from the child's own file rather
+      // than calling itself a root: a run that knows it sits at depth 3 knows
+      // its parent sits at depth 2, and the next sibling to arrive then reads
+      // a true position instead of a self-root at depth 0.
+      await ctx.db.insert("runs", stub({ runId: run.parentRunId, rootRunId: run.rootRunId, depth: Math.max(run.depth - 1, 0), linkKnown: true }, run, "unknown"));
     }
     if (!existing) {
       await ctx.db.insert("runs", { ...run, ingestedAt });
@@ -345,7 +351,12 @@ export const internalIngest = internalMutation({
       // The envelope's fields arrive with a later page as readily as the first,
       // so registration repairs a run that was ingested before its launcher's
       // sidecar was claimed.
-      for (const key of ["status", "outcome", "mode", "lastLineAt", "model", "sessionModel", "effort", "context", "runtimeVersion", "parserVersion", "continuesRunId", "todoId", "batchId", "mergeKey", "envelopeKey", "abandonedAt"] as const) if (run[key] !== undefined) patch[key] = run[key];
+      // regToken rides this list for the same reason as envelopeKey: a run
+      // ingested before its launcher's sidecar was claimed has no token, and
+      // the repair page is the only thing that can give it one. Without that
+      // every label about a run whose first page beat its envelope would be
+      // unlinked forever.
+      for (const key of ["status", "outcome", "mode", "lastLineAt", "model", "sessionModel", "effort", "context", "runtimeVersion", "parserVersion", "continuesRunId", "todoId", "batchId", "mergeKey", "regToken", "envelopeKey", "abandonedAt"] as const) if (run[key] !== undefined) patch[key] = run[key];
       if (run.sessionId !== undefined && existing.sessionId === undefined) patch.sessionId = run.sessionId;
       if (existing.kind === "unknown") patch.kind = run.kind;
       if (existing.origin === "unknown") patch.origin = run.origin;
@@ -1153,6 +1164,61 @@ export const internalEvictTick = internalMutation({
       truncated: worked && truncated, oldestRowsUntil: oldest?.rowsUntil ?? null,
     });
     return { ok: true as const, runs: runsEvicted, rowsDeleted, overflowChunksDeleted, deferred, truncated: worked && truncated };
+  },
+});
+
+// The list wants the newest roots, and a root is the only run with no parent
+// above it, so depth is pinned to 0 inside the index rather than filtered out
+// after the read. Because that index leads with the host, "both hosts" is two
+// bounded reads merged here, never a scan of every child run ever ingested.
+// The cap is the page's, not the table's: this phase has no cursor, so the
+// merged array itself is the answer.
+export const roots = query({
+  args: {
+    host: v.optional(v.union(v.literal("laptop"), v.literal("box"))),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    await requireTomForRuns(ctx);
+    const limit = args.limit ?? 50;
+    if (!positiveInteger(limit) || limit > 500) throw new Error("roots limit must be an integer from 1 to 500");
+    const hosts: Array<"laptop" | "box"> = args.host ? [args.host] : ["laptop", "box"];
+    const perHost = await Promise.all(hosts.map((host) => ctx.db
+      .query("runs")
+      .withIndex("by_host_depth_started", (q) => q.eq("host", host).eq("depth", 0))
+      .order("desc")
+      .take(limit)));
+    // Two runs can start in the same millisecond, so startedAt alone is not a
+    // total order across the merge; runId settles those pairs the same way on
+    // every read.
+    return perHost.flat()
+      .sort((left, right) => right.startedAt - left.startedAt || (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0))
+      .slice(0, limit);
+  },
+});
+
+/**
+ * Everything Tom did about this run, oldest first — a ruling on the row it
+ * wrote, an objection in #tts-decisions, a reply he typed at it, an emoji on
+ * the morning it wrote. The run page draws one strip from this under the
+ * outcome, and DRAWS NO BAND AT ALL when the answer is empty: an empty strip
+ * on every run is clutter that displays nothing, which is why the strip was
+ * deferred until there were rows to put in it.
+ *
+ * Unpaginated on purpose. A run collects a handful of labels at human pace —
+ * the table's whole write path is four doors Tom himself goes through — so a
+ * page boundary here would be a mechanism with nothing to do.
+ */
+export const labels = query({
+  args: { runId: v.string() },
+  handler: async (ctx, args) => {
+    await requireTomForRuns(ctx);
+    assertRunId(args.runId);
+    return await ctx.db
+      .query("runLabels")
+      .withIndex("by_run_at", (q) => q.eq("runId", args.runId))
+      .order("asc")
+      .take(200);
   },
 });
 

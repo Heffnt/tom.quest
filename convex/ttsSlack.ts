@@ -423,6 +423,7 @@ export type ThreadReplyOutcome =
   | { outcome: "tom-note"; subject: SlackSubject }
   | { outcome: "learning-objection"; id: string }
   | { outcome: "delegate-objection"; id: string }
+  | { outcome: "golden-confirmed"; ids: string[] }
   | { outcome: "captured"; todoId: Id<"dtsTodos"> };
 
 /**
@@ -561,6 +562,30 @@ async function routeReply(
       // learning id is hex, an objection number is one or two digits and
       // anchored at the start — and running first keeps the precedence
       // obvious. Both can be true of one reply, and both then happen.
+      // THE WEEKLY EVALS THREAD HAS NO SUBJECT KIND of its own yet
+      // (convex/ttsShared.ts SLACK_SUBJECT), so the confirmation grammar is
+      // read here, beside the objection grammar and under the same gate: the
+      // weekly gather posts into the morning's channel, and a reply to it
+      // resolves as a `today`/`digest` thread. When the evals thread gets its
+      // own subject, this branch moves there unchanged.
+      //
+      // FIRST, and it ends the reply: "confirm <id> <id>" says one thing and
+      // says it anchored. The grammars cannot collide — an objection is a
+      // leading number, a golden id is a word — and nothing else in this
+      // branch would read a confirmation as anything but a fact.
+      const confirmed =
+        subject.kind === "today" || subject.kind === "digest"
+          ? parseConfirmReply(text)
+          : [];
+      if (confirmed.length > 0) {
+        // ONE ROW PER ID, because the mined items are confirmed one at a time
+        // and a row carrying a list would make "which ones did he confirm" a
+        // parse rather than a read.
+        for (const id of confirmed) {
+          await logEvent(ctx, GOLDEN_CONFIRMED, undefined, { id, text, ...at });
+        }
+        return { outcome: "golden-confirmed", ids: confirmed };
+      }
       const objectedDecision =
         subject.kind === "today" || subject.kind === "digest"
           ? await namedObjection(ctx, text, subject.day, at)
@@ -719,6 +744,43 @@ export function parseObjectionReply(
   const numbered = /^(\d{1,2})\s*:\s*(\S[\s\S]*)$/.exec(t);
   if (numbered) return { n: Number(numbered[1]), revert: false, sentence: numbered[2].trim() };
   return null;
+}
+
+/** One mined golden item Tom confirmed, by the id the weekly evals thread
+ *  printed beside it. */
+export const GOLDEN_CONFIRMED = "golden-confirmed";
+
+/**
+ * The confirmation grammar, ANCHORED at the start of the reply and
+ * case-insensitive, exactly like the objection grammar above:
+ *
+ *   "confirm run-ruling-8fb2d10a4c3e"                          → one id
+ *   "Confirm run-ruling-8fb2d10a4c3e explanations-todo-k97x2m4bq1zp"  → two
+ *
+ * Anything else is []. Anchored, so a reply that merely CONTAINS the word
+ * ("I'll confirm that tomorrow", "nothing to confirm here") is a fact, not a
+ * confirmation — the same rule, for the same reason, as a reply that merely
+ * contains a number.
+ *
+ * WHY A REPLY AND NOT A REACTION. A reaction is one bit about a whole message,
+ * and the weekly gather prints many mined items in one message: the items must
+ * be confirmed ONE AT A TIME, and a thumbs-up on the message says only that
+ * Tom read it.
+ *
+ * WHY NOT A RULING WORD. A ruling needs a subject — life, code or batch — and
+ * ttsRulings.insertRuling refuses anything else by construction. A mined
+ * golden item is none of the three. Bending the four verdicts to fit it would
+ * widen the one vocabulary in this system with a closed verdict set, and every
+ * ruling button, worker filter and pending feed reads that set.
+ */
+export function parseConfirmReply(text: string): string[] {
+  const anchored = /^confirm\s+([\s\S]*)$/i.exec(text.trim());
+  if (anchored === null) return [];
+  const ids = anchored[1]
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => /^[a-z0-9-]{4,80}$/.test(token));
+  return [...new Set(ids)];
 }
 
 /**
