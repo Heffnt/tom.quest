@@ -1,10 +1,11 @@
 import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
-import type { Id } from "./_generated/dataModel";
-import { internalMutation, internalQuery, query } from "./_generated/server";
+import { internal } from "./_generated/api";
+import type { Doc, Id } from "./_generated/dataModel";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { requireTom } from "./authRoles";
-import { SESSION_MODEL } from "./ttsShared";
+import { LIVE_STATUSES, SESSION_MODEL, nyLocalHour } from "./ttsShared";
 
 const RUN_KIND = v.union(
   v.literal("session"), v.literal("worker"), v.literal("code"),
@@ -22,6 +23,16 @@ const FILE = v.object({
   path: v.string(), sourceHash: v.string(), storedHash: v.string(), bytes: v.number(), storedBytes: v.number(),
   committedLine: v.number(), committedPrefixSha256: v.string(), sidecarStoredHash: v.optional(v.string()),
   storeKey: v.optional(v.string()), incompleteTail: v.optional(v.boolean()),
+  // The whole file's length, written only by a reader that saw the whole file:
+  // the backlog importer (which keeps no rows) and the materialize job. This
+  // validator is strict, so without the field here every such ingest is refused.
+  totalLines: v.optional(v.number()),
+});
+// The run's answer to "where did these rows come from, and what is missing".
+const ROWS_SOURCE = v.object({
+  from: v.literal("store"), at: v.number(), parserVersion: v.string(), storeKey: v.string(),
+  rowsFromLine: v.number(), rowsToLine: v.number(), slices: v.number(), droppedLines: v.number(),
+  partial: v.array(v.string()),
 });
 const ATTACHMENT = v.object({ file: v.string(), bytes: v.number(), sha256: v.string() });
 const CONTEXT = v.object({
@@ -62,6 +73,41 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const MAX_DESCENDANT_REPAIR = 500;
 const MAX_OVERFLOW_CHUNKS = 500;
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+/**
+ * How long a run's rows stay in the record after its last line — or after Tom
+ * last opened it. Read at CALL time, not at import time: a deployment variable
+ * changed between deploys must take effect without a module reload, and a test
+ * that stubs it must not depend on import order.
+ */
+function rowWindowMs(): number {
+  const days = Number(process.env.RUNS_ROW_WINDOW_DAYS ?? 30);
+  return (Number.isFinite(days) && days > 0 ? days : 30) * DAY_MS;
+}
+/** Eviction is OFF unless the deployment says otherwise — also read at call time. */
+function evictionEnabled(): boolean {
+  return /^(1|true|yes|on)$/i.test(String(process.env.RUNS_EVICTION_ENABLED ?? ""));
+}
+
+// One click must not become an hour of mutations: a request ingests at most one
+// slice, and a run stops after five of them and says so.
+const MAX_SLICES = 5;
+const EVICT_RUNS_PER_TICK = 20;
+const EVICT_ROWS_PER_STEP = 200;
+const EVICT_MAX_STEPS = 200;
+const MAX_REASON_LENGTH = 200;
+
+// Both vocabularies are closed. The box answers with a fixed phrase so a
+// transcript, a path or a bucket error can never be reflected into the record.
+const MATERIALIZE_REASONS = new Set([
+  "object missing from store", "object hash mismatch", "store unreachable",
+  "no store key", "file too large", "parse produced no rows", "run is gone",
+]);
+const MATERIALIZE_PARTIAL = new Set([
+  "sidecar-missing", "no-envelope", "pre-parser-fields",
+  "unknown-line-types", "row-cap-reached", "incomplete-tail",
+]);
+
 function nonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
@@ -87,11 +133,11 @@ function validFile(file: {
   return file.path !== "" && validHash(file.sourceHash) && validHash(file.storedHash) && nonNegativeInteger(file.bytes) && nonNegativeInteger(file.storedBytes) && nonNegativeInteger(file.committedLine) && validHash(file.committedPrefixSha256) && (file.sidecarStoredHash === undefined || validHash(file.sidecarStoredHash));
 }
 
-async function requireTomForRuns(ctx: QueryCtx) {
+async function requireTomForRuns(ctx: QueryCtx | MutationCtx) {
   await requireTom(ctx, "Runs");
 }
 
-async function runAt(ctx: MutationCtx, runId: string) {
+async function runAt(ctx: QueryCtx | MutationCtx, runId: string) {
   return await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).first();
 }
 async function rowAt(ctx: MutationCtx, runId: string, seq: number) {
@@ -351,6 +397,16 @@ export const internalIngest = internalMutation({
       if (session && session.runId === undefined) await ctx.db.patch(run.sessionId, { runId: run.runId });
     }
     const landed = await runAt(ctx, run.runId);
+    // `rowsUntil` is present IF AND ONLY IF this run's rows are in the record.
+    // That invariant is what bounds the eviction scan and what makes eviction
+    // idempotent, so it is maintained here, in the one place every writer of
+    // rows passes through: the live sweep, a cut-over session, a materialize.
+    // An index-only backlog row (rows: [], no prior window) gets no field at
+    // all, and a no-op ingest writes nothing.
+    if (landed && (inserted > 0 || existing?.rowsUntil !== undefined)) {
+      const rowsUntil = Math.max(landed.rowsUntil ?? 0, run.lastLineAt + rowWindowMs());
+      if (rowsUntil > (landed.rowsUntil ?? 0)) await ctx.db.patch(landed._id, { rowsUntil });
+    }
     return { ok: true as const, runId: run.runId, inserted, skipped, committedLine: landed?.file.committedLine ?? run.file.committedLine };
   },
 });
@@ -726,6 +782,379 @@ export const children = query({
 });
 export const rows = query({ args: { runId: v.string(), paginationOpts: paginationOptsValidator }, handler: async (ctx, args) => { await requireTomForRuns(ctx); assertRunId(args.runId); const page = await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", args.runId)).order("asc").paginate(args.paginationOpts); return { ...page, page: page.page.map((row) => ({ ...row, hasOverflow: row.overflow !== undefined, fullByteLength: row.overflow?.byteLength })) }; } });
 export const entry = query({ args: { runId: v.string(), seq: v.number() }, handler: async (ctx, args) => { await requireTomForRuns(ctx); assertRunId(args.runId); if (!nonNegativeInteger(args.seq)) throw new Error("invalid seq"); const row = await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", args.runId).eq("seq", args.seq)).first(); return row ? { provenance: row.provenance, content: row.content, overflow: row.overflow, digest: row.digest } : null; } });
+
+// ── Opening an old run from the store ────────────────────────────────────────
+// Convex holds no S3 reader credential and no second request signer, so a run
+// whose rows are not in the record opens by asking the box for them. Tom (or a
+// job) queues a request here; `worker/runs/materialize.mjs` serves it and
+// ingests the rows through the existing /runs/ingest door. There is no second
+// ingest path.
+
+async function newestRequest(ctx: QueryCtx | MutationCtx, runId: string) {
+  return await ctx.db
+    .query("runMaterializeRequests")
+    .withIndex("by_run_requestedAt", (q) => q.eq("runId", runId))
+    .order("desc")
+    .first();
+}
+
+/**
+ * The one place a request is queued, shared by Tom's mutation and the worker
+ * route so the refusals and the idempotence cannot drift apart. Idempotent
+ * while a request is pending: a second press returns the first request rather
+ * than queueing work the box would do twice.
+ */
+async function enqueueMaterialize(ctx: MutationCtx, runId: string, requestedBy: "tom" | "worker") {
+  if (!validRunId(runId)) return { ok: false as const, reason: "invalid runId" };
+  const run = await runAt(ctx, runId);
+  if (!run) return { ok: false as const, reason: "run not found" };
+  if (!run.file.storeKey) return { ok: false as const, reason: "run has no store key" };
+  const newest = await newestRequest(ctx, runId);
+  if (newest && newest.status === "pending") {
+    return { ok: true as const, requestId: newest._id, slice: newest.slice, queued: false };
+  }
+  const requestId = await ctx.db.insert("runMaterializeRequests", {
+    runId, requestedBy, requestedAt: Date.now(), status: "pending" as const, slice: 1,
+  });
+  return { ok: true as const, requestId, slice: 1, queued: true };
+}
+
+export const requestMaterialize = mutation({
+  args: { runId: v.string() },
+  handler: async (ctx, args) => {
+    await requireTomForRuns(ctx);
+    const queued = await enqueueMaterialize(ctx, args.runId, "tom");
+    // Fixed phrases: the page renders the refusal and nothing here echoes a payload.
+    if (!queued.ok) throw new Error(queued.reason);
+    return await ctx.db.get(queued.requestId);
+  },
+});
+
+export const materializeStatus = query({
+  args: { runId: v.string() },
+  handler: async (ctx, args) => {
+    await requireTomForRuns(ctx);
+    assertRunId(args.runId);
+    return await newestRequest(ctx, args.runId);
+  },
+});
+
+// Reading a run is what keeps it in the record — but only a run that HAS rows,
+// so looking at an index-only backlog run never makes it evictable, and reading
+// the same run six times in an afternoon is one write, not six.
+export const markOpened = mutation({
+  args: { runId: v.string() },
+  handler: async (ctx, args) => {
+    await requireTomForRuns(ctx);
+    assertRunId(args.runId);
+    const run = await runAt(ctx, args.runId);
+    if (!run || run.rowsUntil === undefined) return { ok: true as const, moved: false };
+    const next = Date.now() + rowWindowMs();
+    if (next <= run.rowsUntil + DAY_MS) return { ok: true as const, moved: false };
+    await ctx.db.patch(run._id, { rowsUntil: next });
+    return { ok: true as const, moved: true };
+  },
+});
+
+// The worker-key twin of requestMaterialize (phase 7's evals will need an old
+// run's rows). It answers rather than throws, because an HTTP route turns the
+// answer into a status code.
+export const internalRequestMaterialize = internalMutation({
+  args: { runId: v.string(), requestedBy: v.union(v.literal("tom"), v.literal("worker")) },
+  handler: async (ctx, args) => {
+    const queued = await enqueueMaterialize(ctx, args.runId, args.requestedBy);
+    if (!queued.ok) return queued;
+    return { ok: true as const, requestId: queued.requestId, slice: queued.slice, queued: queued.queued };
+  },
+});
+
+export const internalNextMaterialize = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const request = await ctx.db
+      .query("runMaterializeRequests")
+      .withIndex("by_status_requestedAt", (q) => q.eq("status", "pending"))
+      .order("asc")
+      .first();
+    if (!request) return { request: null };
+    const run = await runAt(ctx, request.runId);
+    // A request whose run vanished, or whose run never had a store key, is
+    // still answerable: it comes back with `storeKey: null` so the job writes
+    // `failed` and the queue drains. Skipping it would park it at the head of
+    // the queue forever — the queue is drained by answers, not by attempts.
+    const prefix = run ? `${run.runner}:${run.host}:` : `${request.runId.split(":").slice(0, 2).join(":")}:`;
+    const file = run
+      ? {
+          path: run.file.path, sourceHash: run.file.sourceHash, storedHash: run.file.storedHash,
+          bytes: run.file.bytes, storedBytes: run.file.storedBytes,
+          committedLine: run.file.committedLine, committedPrefixSha256: run.file.committedPrefixSha256,
+          storeKey: run.file.storeKey ?? null, sidecarStoredHash: run.file.sidecarStoredHash ?? null,
+          totalLines: run.file.totalLines ?? null, incompleteTail: run.file.incompleteTail ?? false,
+        }
+      : {
+          path: "", sourceHash: "", storedHash: "", bytes: 0, storedBytes: 0,
+          committedLine: 0, committedPrefixSha256: "", storeKey: null,
+          sidecarStoredHash: null, totalLines: null, incompleteTail: false,
+        };
+    const hasRows = Boolean(
+      await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", request.runId)).first(),
+    );
+    return {
+      request: {
+        requestId: request._id, runId: request.runId, slice: request.slice,
+        requestedBy: request.requestedBy, requestedAt: request.requestedAt,
+        runner: run?.runner ?? request.runId.split(":")[0],
+        host: run?.host ?? request.runId.split(":")[1],
+        threadId: request.runId.startsWith(prefix) ? request.runId.slice(prefix.length) : request.runId,
+        depth: run?.depth ?? 0,
+        parentRunId: run?.parentRunId ?? null,
+        file,
+        hasRows,
+        // Where the parse resumes: a backlog run has no rows and starts at 0, a
+        // continuation starts at the lines already in the record.
+        fromLine: hasRows ? file.committedLine : 0,
+      },
+    };
+  },
+});
+
+export const internalAnswerMaterialize = internalMutation({
+  args: {
+    requestId: v.id("runMaterializeRequests"),
+    status: v.union(v.literal("served"), v.literal("failed")),
+    reason: v.optional(v.string()),
+    rowsIngested: v.optional(v.number()),
+    fromLine: v.optional(v.number()),
+    toLine: v.optional(v.number()),
+    totalLines: v.optional(v.number()),
+    rowsSource: v.optional(ROWS_SOURCE),
+  },
+  handler: async (ctx, args) => {
+    if (args.reason !== undefined && args.reason.length > MAX_REASON_LENGTH) return { ok: false as const, reason: "reason too long" };
+    if (args.reason !== undefined && !MATERIALIZE_REASONS.has(args.reason)) return { ok: false as const, reason: "reason outside the closed vocabulary" };
+    if (args.rowsSource && !args.rowsSource.partial.every((value) => MATERIALIZE_PARTIAL.has(value))) return { ok: false as const, reason: "partial outside the closed vocabulary" };
+    for (const count of [args.rowsIngested, args.fromLine, args.toLine, args.totalLines]) {
+      if (count !== undefined && !nonNegativeInteger(count)) return { ok: false as const, reason: "invalid line counts" };
+    }
+    const request = await ctx.db.get(args.requestId);
+    if (!request) return { ok: false as const, reason: "request not found" };
+    // A second answer to the same request changes nothing: a retried POST must
+    // not queue a second continuation.
+    if (request.status !== "pending") return { ok: true as const, alreadyAnswered: true, continuation: false };
+
+    await ctx.db.patch(request._id, {
+      status: args.status, servedAt: Date.now(),
+      ...(args.reason === undefined ? {} : { reason: args.reason }),
+      ...(args.rowsIngested === undefined ? {} : { rowsIngested: args.rowsIngested }),
+      ...(args.fromLine === undefined ? {} : { fromLine: args.fromLine }),
+      ...(args.toLine === undefined ? {} : { toLine: args.toLine }),
+    });
+    if (args.status !== "served") return { ok: true as const, alreadyAnswered: false, continuation: false };
+
+    const run = await runAt(ctx, request.runId);
+    const totalLines = args.totalLines ?? run?.file.totalLines;
+    const linesRemain = args.toLine !== undefined && totalLines !== undefined && args.toLine < totalLines;
+    // After the last slice the run keeps `committedLine < totalLines` and the
+    // page must say why, so the cap names itself even if the job did not.
+    let rowsSource = args.rowsSource;
+    if (rowsSource && linesRemain && request.slice >= MAX_SLICES && !rowsSource.partial.includes("row-cap-reached")) {
+      rowsSource = { ...rowsSource, partial: [...rowsSource.partial, "row-cap-reached"] };
+    }
+    if (run) {
+      const patch: Record<string, unknown> = {};
+      if (rowsSource) patch.rowsSource = rowsSource;
+      if (args.totalLines !== undefined) patch.file = { ...run.file, totalLines: args.totalLines };
+      if (Object.keys(patch).length > 0) await ctx.db.patch(run._id, patch);
+    }
+
+    // A reader who opened a run wants the run: the continuation is queued here
+    // rather than asked of Tom again. Never a second pending request for one
+    // run, however this route is retried.
+    let continuation = false;
+    if (linesRemain && request.slice < MAX_SLICES) {
+      const newest = await newestRequest(ctx, request.runId);
+      if (!newest || newest.status !== "pending") {
+        await ctx.db.insert("runMaterializeRequests", {
+          runId: request.runId, requestedBy: request.requestedBy, requestedAt: Date.now(),
+          status: "pending" as const, slice: request.slice + 1,
+        });
+        continuation = true;
+      }
+    }
+    return { ok: true as const, alreadyAnswered: false, continuation };
+  },
+});
+
+// ── Eviction: what makes the window a window ─────────────────────────────────
+// Rows for runs outside the window and not opened inside it are removed nightly.
+// The run index is never removed, a label is never removed, and the store is
+// never touched — nothing here destroys a byte the store does not already hold.
+
+/** Why this run keeps its rows tonight, or null when it may lose them. */
+async function evictRefusal(ctx: MutationCtx, run: Doc<"runs">, now: number) {
+  if (run.status === "running") return "running";
+  if (run.lastLineAt > now - rowWindowMs()) return "inside the window";
+  if (run.sessionId) {
+    const session = await ctx.db.get(run.sessionId);
+    if (session && (LIVE_STATUSES as readonly string[]).includes(session.status)) return "live session";
+  }
+  return null;
+}
+
+/**
+ * Delete up to `budget` documents of one run's transcript. CHUNKS BEFORE THEIR
+ * ROW, so a crash can never leave overflow nobody can find — the same discipline
+ * as claudeSessions.internalSweepOverflow, applied to the run key.
+ */
+async function evictRunStep(ctx: MutationCtx, runId: string, budget: number) {
+  let rowsDeleted = 0;
+  let overflowChunksDeleted = 0;
+  while (budget > 0) {
+    const batch = await ctx.db
+      .query("claudeMessages")
+      .withIndex("by_run_seq", (q) => q.eq("runId", runId))
+      .take(Math.min(budget, EVICT_ROWS_PER_STEP));
+    if (batch.length === 0) return { rowsDeleted, overflowChunksDeleted, done: true, budget };
+    for (const row of batch) {
+      if (budget <= 0) break;
+      if (row.overflow) {
+        while (budget > 0) {
+          const chunks = await ctx.db
+            .query("claudeMessageOverflow")
+            .withIndex("by_run_seq_index", (q) => q.eq("runId", runId).eq("seq", row.seq))
+            .take(budget);
+          if (chunks.length === 0) break;
+          for (const chunk of chunks) {
+            await ctx.db.delete(chunk._id);
+            overflowChunksDeleted += 1;
+            budget -= 1;
+          }
+        }
+        // Out of budget with chunks still to find: leave the row, and the next
+        // step meets it again with its overflow stamp intact.
+        if (budget <= 0) return { rowsDeleted, overflowChunksDeleted, done: false, budget };
+      }
+      await ctx.db.delete(row._id);
+      rowsDeleted += 1;
+      budget -= 1;
+    }
+  }
+  return { rowsDeleted, overflowChunksDeleted, done: false, budget };
+}
+
+export const internalEvictTick = internalMutation({
+  args: {
+    // `cursor` is accepted because a caller may carry one, and deliberately
+    // unused: every run a step touches LEAVES the scan window (evicted → the
+    // field is cleared, deferred → it moves a day forward), so the next step's
+    // scan resumes where this one stopped without one.
+    cursor: v.optional(v.string()),
+    runs: v.optional(v.number()),
+    rowsDeleted: v.optional(v.number()),
+    overflowChunksDeleted: v.optional(v.number()),
+    deferred: v.optional(v.number()),
+    steps: v.optional(v.number()),
+    pendingRunId: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    // OFF by default. Turning it on is the caller's action, after the S3
+    // backend is live on that deployment and a materialize has round-tripped
+    // there: evicting rows whose store objects sit in a local directory on a
+    // machine that may be reinstalled is deleting what nothing can restore.
+    if (!evictionEnabled()) {
+      await event(ctx, "runs-evicted", {
+        at: Date.now(), runs: 0, rowsDeleted: 0, overflowChunksDeleted: 0,
+        deferred: 0, truncated: false, disabled: true,
+      });
+      return { ok: true as const, disabled: true };
+    }
+
+    const steps = args.steps ?? 0;
+    const now = Date.now();
+    // The house DST pattern: a cron pair fires at both possible UTC times and
+    // this guard lets exactly one through. A CONTINUATION does not re-check, so
+    // a long eviction is not cut in half at the hour boundary.
+    if (steps === 0 && args.pendingRunId === undefined && nyLocalHour(now) !== 4) {
+      return { ok: true as const, skipped: "not the eviction hour" };
+    }
+
+    let runsEvicted = args.runs ?? 0;
+    let rowsDeleted = args.rowsDeleted ?? 0;
+    let overflowChunksDeleted = args.overflowChunksDeleted ?? 0;
+    let deferred = args.deferred ?? 0;
+    let budget = EVICT_ROWS_PER_STEP;
+    let pendingRunId: string | undefined;
+    let worked = false;
+
+    const finish = async (runId: string) => {
+      const run = await runAt(ctx, runId);
+      // Clearing `rowsUntil` takes the run out of the scan index — that, and
+      // not a cursor, is what makes the tick idempotent. The runs row, its
+      // labels, its file, outcome, context, rowsSource and edges all stay.
+      if (run) await ctx.db.patch(run._id, { rowsEvictedAt: now, rowsUntil: undefined });
+      runsEvicted += 1;
+    };
+
+    if (args.pendingRunId !== undefined) {
+      const step = await evictRunStep(ctx, args.pendingRunId, budget);
+      rowsDeleted += step.rowsDeleted;
+      overflowChunksDeleted += step.overflowChunksDeleted;
+      budget = step.budget;
+      worked = true;
+      if (step.done) await finish(args.pendingRunId);
+      else pendingRunId = args.pendingRunId;
+    } else {
+      // BOTH bounds: a document missing an optional indexed field sorts before
+      // every value, so a bare `.lt()` would sweep every run that has no rows.
+      const candidates = await ctx.db
+        .query("runs")
+        .withIndex("by_rows_until", (q) => q.gt("rowsUntil", 0).lt("rowsUntil", now))
+        .take(EVICT_RUNS_PER_TICK);
+      for (const run of candidates) {
+        const refusal = await evictRefusal(ctx, run, now);
+        if (refusal) {
+          // A live run whose clock says otherwise is a bug to see, not rows to
+          // lose: push the window a day past NOW — a day past a week-stale
+          // value would still be in the past, and the run would be re-deferred
+          // on every step of every tick.
+          await ctx.db.patch(run._id, { rowsUntil: Math.max(run.rowsUntil ?? now, now) + DAY_MS });
+          deferred += 1;
+          worked = true;
+          continue;
+        }
+        const step = await evictRunStep(ctx, run.runId, budget);
+        rowsDeleted += step.rowsDeleted;
+        overflowChunksDeleted += step.overflowChunksDeleted;
+        budget = step.budget;
+        worked = true;
+        if (step.done) await finish(run.runId);
+        else pendingRunId = run.runId;
+        break;
+      }
+    }
+
+    const truncated = steps + 1 >= EVICT_MAX_STEPS;
+    if (worked && !truncated) {
+      await ctx.scheduler.runAfter(0, internal.runs.internalEvictTick, {
+        runs: runsEvicted, rowsDeleted, overflowChunksDeleted, deferred,
+        steps: steps + 1, ...(pendingRunId === undefined ? {} : { pendingRunId }),
+      });
+      return { ok: true as const, scheduled: true };
+    }
+
+    const oldest = await ctx.db
+      .query("runs")
+      .withIndex("by_rows_until", (q) => q.gt("rowsUntil", 0))
+      .order("asc")
+      .first();
+    // One row, counts only: no run id, no row content.
+    await event(ctx, "runs-evicted", {
+      at: now, runs: runsEvicted, rowsDeleted, overflowChunksDeleted, deferred,
+      truncated: worked && truncated, oldestRowsUntil: oldest?.rowsUntil ?? null,
+    });
+    return { ok: true as const, runs: runsEvicted, rowsDeleted, overflowChunksDeleted, deferred, truncated: worked && truncated };
+  },
+});
 
 export const internalBackfillRunIds = internalMutation({
   args: { cursor: v.optional(v.string()), limit: v.optional(v.number()) },

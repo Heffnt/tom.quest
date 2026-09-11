@@ -68,6 +68,15 @@ crons.interval(
   {},
 );
 
+// Row eviction, 04:15 NY — before repeats at 04:30 and the digest at 05:00, so
+// the morning reads a settled record. The pair plus the handler's local-hour
+// guard is the same DST pattern as the jobs above: both fire, one proceeds.
+// RUNS_EVICTION_ENABLED is OFF by default and the tick then deletes nothing and
+// says so in its event; turning it on is the caller's action, after the store
+// is the recovery source on that deployment.
+crons.cron("runs evict (edt)", "15 8 * * *", internal.runs.internalEvictTick, {});
+crons.cron("runs evict (est)", "15 9 * * *", internal.runs.internalEvictTick, {});
+
 // ── TTS autonomous fleet (P3) ───────────────────────────────────────────────
 // Load-based admission of autonomous groundwork sessions. Off by default
 // (claudeAutoConfig.enabled, no row = false), so the interval is safe to ship

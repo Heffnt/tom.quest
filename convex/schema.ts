@@ -1330,8 +1330,42 @@ export default defineSchema({
     attachments: v.array(v.object({ file: v.string(), bytes: v.number(), sha256: v.string() })),
     todoId: v.optional(v.id("dtsTodos")), batchId: v.optional(v.id("batches")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
     envelopeKey: v.optional(v.string()), cutoverAt: v.optional(v.number()), abandonedAt: v.optional(v.number()),
-    file: v.object({ path: v.string(), sourceHash: v.string(), storedHash: v.string(), bytes: v.number(), storedBytes: v.number(), committedLine: v.number(), committedPrefixSha256: v.string(), sidecarStoredHash: v.optional(v.string()), storeKey: v.optional(v.string()), incompleteTail: v.optional(v.boolean()) }),
+    // `totalLines` is the file's whole length, which only a reader that saw the
+    // WHOLE file can honestly write: the backlog importer, which parses a
+    // stored version and keeps none of its rows, and the materialize job.
+    // `committedLine` stays "lines that are rows in the record", so the pair
+    // `committedLine < totalLines` is exactly "this run's rows are partial".
+    file: v.object({ path: v.string(), sourceHash: v.string(), storedHash: v.string(), bytes: v.number(), storedBytes: v.number(), committedLine: v.number(), committedPrefixSha256: v.string(), sidecarStoredHash: v.optional(v.string()), storeKey: v.optional(v.string()), incompleteTail: v.optional(v.boolean()), totalLines: v.optional(v.number()) }),
     ingestedAt: v.number(),
+    // Where this run's rows came from, when they were not written as the file
+    // grew. It lives on the RUN and not in the context row because a row's
+    // whole content is folded into its digest (worker/runs/ingest.mjs), so a
+    // materialize timestamp inside a row would change that row's digest on
+    // every open and collide with the landed twin. The fact belongs to the
+    // run, not to a line of its file.
+    rowsSource: v.optional(v.object({
+      from: v.literal("store"),
+      at: v.number(),
+      parserVersion: v.string(),
+      storeKey: v.string(),
+      rowsFromLine: v.number(),
+      rowsToLine: v.number(),
+      slices: v.number(),
+      droppedLines: v.number(),
+      // A closed vocabulary (convex/runs.ts MATERIALIZE_PARTIAL): what the
+      // stored version could not say, so the page names it instead of
+      // pretending the run opened whole.
+      partial: v.array(v.string()),
+    })),
+    // The instant this run's rows become evictable. PRESENT IF AND ONLY IF the
+    // rows are in the record: ingest sets it, eviction clears it. That one
+    // invariant keeps the nightly scan a bounded read of runs that actually
+    // have something to remove, and makes eviction idempotent for free — the
+    // last act of evicting a run is to take it out of this index.
+    rowsUntil: v.optional(v.number()),
+    // When eviction last removed this run's rows. The index row, the store key
+    // and every edge survive; only the transcript goes.
+    rowsEvictedAt: v.optional(v.number()),
   })
     // Point lookup on each ingest.
     .index("by_run_id", ["runId"])
@@ -1347,7 +1381,33 @@ export default defineSchema({
     // Joins a run to the legacy session state row.
     .index("by_session", ["sessionId"])
     // The nightly manifest walks changed store versions in a stable order.
-    .index("by_ingested_at_and_run_id", ["ingestedAt", "runId"]),
+    .index("by_ingested_at_and_run_id", ["ingestedAt", "runId"])
+    // The eviction scan. Because `rowsUntil` is absent on every index-only run,
+    // this index holds only runs with rows — which is what bounds the scan.
+    .index("by_rows_until", ["rowsUntil"]),
+
+  // Tom presses one control and a box job serves it: Convex holds no S3 reader
+  // credential and no second request signer, so opening an old run is a
+  // request the box picks up, not an action reading the bucket. THE QUEUE IS
+  // DRAINED BY ANSWERS, NOT BY ATTEMPTS — a request the box cannot serve is
+  // written `failed` with a fixed reason, or one unreachable object takes the
+  // head of the queue forever and nothing behind it is ever served.
+  runMaterializeRequests: defineTable({
+    runId: v.string(),
+    requestedBy: v.union(v.literal("tom"), v.literal("worker")),
+    requestedAt: v.number(),
+    status: v.union(v.literal("pending"), v.literal("served"), v.literal("failed")),
+    servedAt: v.optional(v.number()),
+    // What the box answered. `reason` is a fixed phrase, never a transcript excerpt.
+    reason: v.optional(v.string()),
+    rowsIngested: v.optional(v.number()),
+    fromLine: v.optional(v.number()),
+    toLine: v.optional(v.number()),
+    slice: v.number(), // 1-based; a continuation of the same run carries the next number
+  })
+    // The server takes the oldest pending request; the page reads one run's latest.
+    .index("by_status_requestedAt", ["status", "requestedAt"])
+    .index("by_run_requestedAt", ["runId", "requestedAt"]),
 
   // One immutable row per verified store version. A growing run can produce
   // several versions between nightly writes, so the mutable runs.file field
