@@ -290,6 +290,20 @@ async function insertRuling(
       sentence: trimmed || undefined,
       provenance,
     });
+    // A RULING IS A JUDGMENT ABOUT A RUN'S OUTPUT, and this is where the evals
+    // layer hears about it: the label writer finds the run that wrote the text
+    // he ruled on (the subject row's producedByRunToken) and records what the
+    // verdict said about it (convex/runLabels.ts).
+    //
+    // SCHEDULED, NOT AWAITED, for the reason this file already gives about the
+    // decisions line below: the ruling is the fact. A label that cannot be
+    // linked — a subject no run ever claimed, an older row from before runs
+    // were registered — must not roll back a ruling Tom made, and inside this
+    // transaction a throw in the writer would do exactly that. Scheduled, the
+    // unlinked act is counted on its own row and the ruling stands.
+    await ctx.scheduler.runAfter(0, internal.runLabels.internalLabelFromRuling, {
+      rulingId: id,
+    });
     // A RULING READ OUT OF HIS SENTENCE IS A DECISION TAKEN IN HIS NAME, so it
     // goes to #tts-decisions the moment it is written rather than waiting for
     // the morning (slack-design.md §1.2): the run that acts on a misread
