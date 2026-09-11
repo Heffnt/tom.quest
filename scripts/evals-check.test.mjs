@@ -1,5 +1,6 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { gate, report, WATCHED_PATHS } from "./evals-check.mjs";
+import { gate, report, POLL_TIMEOUT_MS, WATCHED_PATHS } from "./evals-check.mjs";
 
 const failure = (id, over = {}) => ({ id, partition: "prepare/chores", verdict: "revise", reason: `${id} reason`, confirmed: true, ...over });
 
@@ -120,5 +121,20 @@ describe("gate, continued", () => {
   it("watches the paths the two workflows fire on", () => {
     expect(WATCHED_PATHS).toContain("model-of-tom/**");
     expect(WATCHED_PATHS).toContain("evals/golden/**");
+  });
+
+  // MEASURED on PR #170 (2026-09-11): ~50 minutes for 29 items plus a clone
+  // and two worktrees. A wait shorter than that fails the check on silence
+  // while the run is still going, and the re-run pays the cost again.
+  it("waits longer than the slowest run the box has actually taken", () => {
+    expect(POLL_TIMEOUT_MS).toBeGreaterThanOrEqual(75 * 60 * 1000);
+    // Repo-root-relative, the spelling convex/claudeSessions.test.ts uses:
+    // vitest runs from the root and import.meta.url is rewritten by the
+    // transform.
+    const workflow = readFileSync(".github/workflows/evals.yml", "utf8");
+    const jobTimeout = Number(/timeout-minutes:\s*(\d+)/.exec(workflow)?.[1]);
+    // A job timeout below the wait kills the check before its own deadline and
+    // reports a job failure instead of the box's silence.
+    expect(jobTimeout).toBeGreaterThan(POLL_TIMEOUT_MS / 60_000);
   });
 });

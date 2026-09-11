@@ -26,7 +26,11 @@ on:
 jobs:
   evals:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Above scripts/evals-check.mjs's own 75-minute wait (measured on PR #170:
+    # the box needed ~50 minutes for 29 items plus a clone and two worktrees).
+    # A job timeout below that would kill the check before its own deadline and
+    # report a job failure instead of the box's silence.
+    timeout-minutes: 85
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

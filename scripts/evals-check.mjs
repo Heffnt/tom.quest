@@ -20,7 +20,18 @@
 // /tts/* route including /tts/event, and CI needs exactly two things.
 
 export const POLL_INTERVAL_MS = 30_000;
-export const POLL_TIMEOUT_MS = 40 * 60 * 1000;
+/**
+ * How long the check waits for the box's answer.
+ *
+ * MEASURED, not guessed: on PR #170 (2026-09-11) the box took about fifty
+ * minutes for one run — 29 golden items, and a fresh clone plus two worktrees
+ * (head and base) before any of them were scored. The wait was 40 minutes, so
+ * the check failed on silence while the run was still going, and a re-run paid
+ * the whole cost again. 75 leaves a real margin over that measurement without
+ * letting a box that is genuinely dead hold a pull request all afternoon —
+ * .github/workflows/evals.yml's job timeout is set above it.
+ */
+export const POLL_TIMEOUT_MS = 75 * 60 * 1000;
 
 /** The paths that make an evals run worth asking for, in either repo. */
 export const WATCHED_PATHS = [
@@ -182,7 +193,7 @@ async function main() {
   // A check that passes on silence proves nothing.
   if (!answer?.run) {
     console.error(
-      `evals: the Jarvis Box did not answer within 40 minutes. Re-run this check, or run it by hand: ` +
+      `evals: the Jarvis Box did not answer within ${POLL_TIMEOUT_MS / 60_000} minutes. Re-run this check, or run it by hand: ` +
         `node /opt/tts/evals.mjs --repo ${repo} --sha ${sha}`,
     );
     process.exit(1);
