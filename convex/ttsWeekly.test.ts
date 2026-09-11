@@ -1,11 +1,15 @@
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import schema from "./schema";
 import {
   AREA_REVIEWED,
+  EVALS_RUN,
   INSTRUCTIONS_LOADED,
+  MIN_ABLATION_CASES,
+  ablationFindings,
   LEARNING_REVERTED,
   LEARNING_REVERT_FAILED,
   SURFACED_THRESHOLD,
@@ -117,6 +121,10 @@ describe("gatherWeeklyFacts", () => {
       missingWikiTomSessions: [], missingProjectAgents: [],
     });
     expect(f.evals).toEqual({ runs: 0, clean: 0, regressions: [] });
+    // ABSENT, NOT ZERO: no run row was asked the question, so there is no
+    // answer — an empty array here would read as "the arm ran and found none".
+    expect(f.ablation).toBeNull();
+    expect(f.efficiency).toBeNull();
     expect(f.jobFailures).toEqual([]);
     expect(f.threads).toEqual([]);
     expect(f.readiness).toEqual({ prepared: 0, unprepared: 0 });
@@ -491,6 +499,81 @@ describe("gatherWeeklyFacts", () => {
     expect(f.threads).toEqual([]);
     expect(f.learning.changes).toBe(0);
   });
+
+  // ── The two evals facts that ride on the run row ───────────────────────────
+  it("names only the layers with enough cases behind them, and says which earned their tokens", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    const rows = [
+      // `know`: five cases, four pass with it and two without — it earns them.
+      ...Array.from({ length: 5 }, (_, i) => ({
+        id: `c${i}`, name: "know", kind: "layer", withPass: i < 4, withoutPass: i < 2,
+      })),
+      // `write`: five cases, and the set passes more often WITHOUT it.
+      ...Array.from({ length: 5 }, (_, i) => ({
+        id: `c${i}`, name: "write", kind: "layer", withPass: i < 2, withoutPass: i < 4,
+      })),
+      // `operate`: four cases, one short of the threshold — noise, and not said.
+      ...Array.from({ length: 4 }, (_, i) => ({
+        id: `c${i}`, name: "operate", kind: "layer", withPass: false, withoutPass: true,
+      })),
+    ];
+    await t.run(async (ctx) => {
+      await event(ctx, EVALS_RUN, now - DAY, { data: { weekly: true, regressions: 0, ablation: rows } });
+    });
+    const f = await gather(t, now + 1000);
+    expect(f.ablation).toEqual([
+      { name: "know", cases: 5, withPass: 4, withoutPass: 2, earned: true },
+      { name: "write", cases: 5, withPass: 2, withoutPass: 4, earned: false },
+    ]);
+  });
+
+  it("reads the ablation arm and the token rises off the NEWEST run row, never the week's rows added up", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    const arm = (pass: boolean) =>
+      Array.from({ length: 6 }, (_, i) => ({ id: `c${i}`, name: "know", kind: "layer", withPass: pass, withoutPass: false }));
+    await t.run(async (ctx) => {
+      await event(ctx, EVALS_RUN, now - 3 * DAY, {
+        data: { weekly: true, regressions: 0, ablation: arm(false), efficiency: { cases: 6, unknown: 0, rises: [{ id: "old", headTokens: 9, baseTokens: 1 }] } },
+      });
+      await event(ctx, EVALS_RUN, now - DAY, {
+        data: { weekly: true, regressions: 0, ablation: arm(true), efficiency: { cases: 6, unknown: 0, rises: [{ id: "new", headTokens: 1400, baseTokens: 900 }] } },
+      });
+    });
+    const f = await gather(t, now + 1000);
+    // Six cases, not twelve: the newer run's arm stands alone.
+    expect(f.ablation).toEqual([{ name: "know", cases: 6, withPass: 6, withoutPass: 0, earned: true }]);
+    expect(f.efficiency).toEqual({ rises: [{ id: "new", headTokens: 1400, baseTokens: 900 }] });
+  });
+
+  it("leaves both null when the week's only run row is an older one that carries neither", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await event(ctx, EVALS_RUN, now - DAY, { data: { day: "2026-09-10", repo: "tom.quest", regressions: 0, pass: 40, items: 40 } });
+    });
+    const f = await gather(t, now + 1000);
+    expect(f.evals.runs).toBe(1);
+    expect(f.ablation).toBeNull();
+    expect(f.efficiency).toBeNull();
+  });
+});
+
+describe("ablationFindings", () => {
+  it("is the runner's own rule: the weekly set, and nothing under the threshold", () => {
+    const rows = Array.from({ length: MIN_ABLATION_CASES - 1 }, (_, i) => ({
+      id: `c${i}`, name: "know", kind: "layer", withPass: true, withoutPass: false,
+    }));
+    expect(ablationFindings(rows)).toEqual([]);
+    expect(
+      ablationFindings([...rows, { id: "last", name: "know", kind: "layer", withPass: true, withoutPass: false }]),
+    ).toEqual([{ name: "know", cases: MIN_ABLATION_CASES, withPass: MIN_ABLATION_CASES, withoutPass: 0, earned: true }]);
+  });
+
+  it("reads a row that is not a row as no row at all", () => {
+    expect(ablationFindings([null, 7, {}, { name: "" }])).toEqual([]);
+  });
 });
 
 describe("areaPageState", () => {
@@ -750,5 +833,104 @@ describe("GET /tts/weekly-input", () => {
     const [prefix, index] = body.writingStandard.split("\n\nMODEL-OF-TOM FETCHABLE (");
     expect(prefix).toBe("published map + operate + write\n\noperate layer\n\nwrite layer");
     expect(index).toContain("--layers know");
+  });
+});
+
+// ── The week's two decisions ─────────────────────────────────────────────────
+// What is pinned here is that each finding becomes exactly ONE scheduled
+// sendDecision with the askId the thread is keyed on, that a name whose cases
+// need it is not a decision at all, and that the askId is the whole
+// idempotency key the door has — offered twice in one TTS day, it posts once.
+describe("internalRecordWeeklyEvalsDecisions", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  function decisions(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect())
+        .filter((job) => job.name.includes("sendDecision"))
+        .map((job) => job.args[0] as { askId: string; decision: string; reason?: string }),
+    );
+  }
+
+  it("schedules one decision per graduation, naming the case and Tom's own sentence", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.ttsWeekly.internalRecordWeeklyEvalsDecisions, {
+      isoWeek: "2026-W37",
+      graduated: [
+        { id: "run-ruling-8fb2d10a4c3e", sentence: "say what the batch is for before you list its tasks" },
+        { id: "run-ruling-k97x2m4bq1zp", sentence: "name the cost of each side" },
+      ],
+    });
+    const sent = await decisions(t);
+    expect(sent).toHaveLength(2);
+    expect(sent[0].askId).toBe("golden:run-ruling-8fb2d10a4c3e");
+    expect(sent[0].decision).toBe(
+      "a capability case graduated into the regression set: say what the batch is for before you list its tasks",
+    );
+    expect(sent[1].askId).toBe("golden:run-ruling-k97x2m4bq1zp");
+  });
+
+  it("schedules a decision for a name that did not earn its tokens, and none for one that did", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.ttsWeekly.internalRecordWeeklyEvalsDecisions, {
+      isoWeek: "2026-W37",
+      ablation: [
+        { name: "know", cases: 7, withPass: 5, withoutPass: 6, earned: false },
+        { name: "write", cases: 9, withPass: 8, withoutPass: 2, earned: true },
+      ],
+    });
+    const sent = await decisions(t);
+    expect(sent).toHaveLength(1);
+    // The week is half the ask id: next week's finding about `know` is its own
+    // thread, not a reply to this one.
+    expect(sent[0].askId).toBe("ablation:know:2026-W37");
+    expect(sent[0].decision).toBe("know did not earn its tokens this week: 7 cases, 5 pass with it, 6 without");
+    expect(sent[0].reason).toContain("the weekly simplification pass");
+    expect(sent[0].reason).toContain("gates nothing");
+  });
+
+  it("schedules nothing when the week graduated nothing and every name earned its tokens", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.ttsWeekly.internalRecordWeeklyEvalsDecisions, {
+      isoWeek: "2026-W37",
+      graduated: [],
+      ablation: [{ name: "know", cases: 7, withPass: 6, withoutPass: 1, earned: true }],
+    });
+    expect(await decisions(t)).toEqual([]);
+  });
+
+  it("refuses a week with no name, because the ablation thread is keyed on it", async () => {
+    const t = convexTest(schema, modules);
+    await expect(
+      t.mutation(internal.ttsWeekly.internalRecordWeeklyEvalsDecisions, { isoWeek: "  " }),
+    ).rejects.toThrow(/isoWeek/);
+  });
+
+  // THE askId IS THE IDEMPOTENCY KEY. sendDecision claims `object:<askId>` for
+  // the TTS day before it posts, so the second offer of one graduation on one
+  // day — a `--overwrite` rerun of the Friday job — posts nothing.
+  it("posts one message for a graduation offered twice in a day", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => ctx.db.insert("users", { name: "tom", email: "tom@tom.quest", role: "tom" }));
+    const posts: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: { body?: string }) => {
+        posts.push((JSON.parse(init?.body ?? "{}") as { text: string }).text);
+        return { ok: true, status: 200, json: async () => ({ ok: true, ts: `${posts.length}.0` }) };
+      }),
+    );
+    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
+    vi.stubEnv("SLACK_TTS_DECISIONS_CHANNEL_ID", "C0DECISIONS");
+    const args = {
+      askId: "golden:run-ruling-8fb2d10a4c3e",
+      decision: "a capability case graduated into the regression set: name the cost of each side",
+    };
+    expect(await t.action(internal.ttsSync.sendDecision, args)).toEqual({ sent: true });
+    expect(await t.action(internal.ttsSync.sendDecision, args)).toMatchObject({ sent: false });
+    expect(posts).toHaveLength(1);
   });
 });

@@ -5,9 +5,14 @@
 //
 //   1. gather — GET /tts/weekly-input: every fact of the seven days ending
 //      now, read deterministically on indexes (convex/ttsWeekly.ts). Then the
-//      one fact that lives in the WikiTom checkout: last week's agenda file
-//      under tts/weekly/ and its Outcome section. The first week has none and
-//      the agenda says so.
+//      two facts that live in a checkout and nowhere else: last week's agenda
+//      file under tts/weekly/ in WikiTom and its Outcome section (the first
+//      week has none and the agenda says so), and the golden set under
+//      evals/golden/ in tom.quest — its size, its capability half, what
+//      graduated this week and what is blind to a layer change (readGoldenSet).
+//      A graduation, and a name whose cases passed without it, then go to
+//      #tts-decisions through the one door every decision taken without him
+//      goes through.
 //   2. the one model call — Opus turns the facts into descriptive lines and
 //      into every fork the facts support, each with its two sides, both
 //      costs, and a recommendation, ordered by dependency. No caps: every
@@ -69,6 +74,7 @@ import {
 } from "./tts-lib.mjs";
 import {
   MODEL_OF_TOM_AREAS_DIR,
+  TOM_QUEST_DIR,
   WIKITOM_DIR,
   abortStaleRebase,
   commitTree,
@@ -107,6 +113,30 @@ export function agendaFileName(day) {
   return `${WEEKLY_DIR}/${day}.md`;
 }
 
+const DAY_MS = 86_400_000;
+
+/**
+ * The ISO-8601 week an instant falls in, "YYYY-Www".
+ *
+ * It is half of an ablation decision's askId, and the half that makes this
+ * week's finding about a name a DIFFERENT Slack thread from next week's about
+ * the same name — the id is the whole idempotency key that door has, and a
+ * name that fails its ablation three weeks running is three decisions he can
+ * object to separately, not one thread that never comes back.
+ */
+export function isoWeekOf(ms) {
+  const at = new Date(ms);
+  const midnight = Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate());
+  // ISO weeks belong to the year their Thursday is in, and run Monday (1) to
+  // Sunday (7) — getUTCDay's Sunday is 0, hence the `|| 7`.
+  const thursday = midnight + (4 - (new Date(midnight).getUTCDay() || 7)) * DAY_MS;
+  const year = new Date(thursday).getUTCFullYear();
+  const jan4 = Date.UTC(year, 0, 4);
+  const firstMonday = jan4 - ((new Date(jan4).getUTCDay() || 7) - 1) * DAY_MS;
+  const week = Math.round((thursday - firstMonday) / (7 * DAY_MS)) + 1;
+  return `${year}-W${String(week).padStart(2, "0")}`;
+}
+
 /** "1h 30m", "2d 3h", "45m", "under a minute". */
 export function duration(ms) {
   if (ms < 60_000) return "under a minute";
@@ -121,6 +151,63 @@ export function duration(ms) {
 
 function count(n, singular, plural = `${singular}s`) {
   return `${n} ${n === 1 ? singular : plural}`;
+}
+
+/** Where the golden items live inside a tom.quest checkout, and the one level
+ * below it the loader walks (worker/jobs/evals.mjs loadGolden, whose layout
+ * this follows rather than re-decides). */
+export const GOLDEN_DIR = "evals/golden";
+
+/**
+ * The golden set as four numbers and a list, read off a tom.quest checkout.
+ *
+ * THIS IS READ FROM THE FILES AND NOT FROM THE RECORD, and that is the whole
+ * reason it is here rather than in the gather. A graduation is a file rewrite —
+ * scripts/graduate-golden.mjs stamps `graduatedAt` and flips `kind` to
+ * "regression" inside evals/golden/** — and nothing about it is ever posted to
+ * Convex, which has no filesystem to read it back from. So the job reads it,
+ * exactly the way it already reads last week's agenda out of the WikiTom
+ * checkout (readPriorAgenda), and puts it on the facts it renders.
+ *
+ * `preludeUnknown` is the cases BLIND TO A LAYER CHANGE: an item whose prompt
+ * was replayed verbatim has no named layer to remove, so no change to the
+ * model-of-tom layers can move it either way. It is the size of the hole in
+ * this week's ablation evidence, which is why it is stated beside the total.
+ *
+ * A checkout with no evals/golden at all returns null — ABSENT, NOT ZERO: an
+ * unreadable set is not an empty one, and the renderer prints nothing for it.
+ */
+export function readGoldenSet(dir, { since, until }) {
+  const root = path.join(dir, GOLDEN_DIR);
+  if (!fs.existsSync(root)) return null;
+  const roots = [root];
+  for (const entry of fs.readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    if (entry.isDirectory()) roots.push(path.join(root, entry.name));
+  }
+  const golden = { items: 0, capability: 0, graduated: [], preludeUnknown: 0 };
+  for (const one of roots) {
+    for (const name of fs.readdirSync(one).sort()) {
+      if (!name.endsWith(".json")) continue;
+      const file = path.join(one, name);
+      if (!fs.statSync(file).isFile()) continue;
+      let item;
+      try {
+        item = JSON.parse(fs.readFileSync(file, "utf8"));
+      } catch {
+        // A half-written item is not a golden item and is not counted as one.
+        continue;
+      }
+      golden.items += 1;
+      if (item?.kind === "capability") golden.capability += 1;
+      if (item?.input?.preludeKnown === false) golden.preludeUnknown += 1;
+      const at = item?.graduatedAt;
+      if (typeof at === "number" && at >= since && at < until && typeof item?.id === "string") {
+        golden.graduated.push({ id: item.id, sentence: String(item?.expected?.rubric ?? "").trim() });
+      }
+    }
+  }
+  golden.graduated.sort((a, b) => a.id.localeCompare(b.id));
+  return golden;
 }
 
 /**
@@ -252,6 +339,63 @@ export function renderFactLines(facts) {
   for (const run of evals.regressions) {
     const first = run.failure === null ? "a regression" : `regression on ${run.failure.id} (${run.failure.partition})`;
     lines.push(`- ${run.day} ${run.repo} ${run.sha.slice(0, 7)}: ${run.pass} of ${run.items} pass — ${first}`);
+  }
+
+  // THE THREE EVALS BLOCKS BELOW ARE PRINTED ONLY WHEN THE FACTS CARRY THEM,
+  // and an older run row carries none of them: a week gathered before phase 7
+  // renders exactly as it rendered before, with no line saying zero. Zero
+  // graduations is a fact; "no run was asked" is not, and the two must not
+  // print the same sentence (worker/jobs/evals.mjs stampAgainstBase says the
+  // same thing about `regressions: null`).
+  //
+  // NOTHING HERE IS COMPARED IN THIS FILE. The golden counts are a read of the
+  // files (readGoldenSet), the ablation findings and the token rises are read
+  // off the run row by the gather (convex/ttsWeekly.ts ablationFindings) — this
+  // renderer prints what it was handed and derives nothing, which is what keeps
+  // one rule in one home.
+  const golden = facts.golden;
+  if (golden) {
+    lines.push(
+      `Golden set: ${count(golden.items, "item")}, ${golden.capability} capability, ` +
+        `${golden.graduated.length} graduated this week, ${golden.preludeUnknown} blind to a layer change.`,
+    );
+    for (const item of golden.graduated) {
+      lines.push(`- ${item.id} graduated: "${item.sentence}"`);
+    }
+  }
+
+  const ablation = facts.ablation;
+  if (ablation) {
+    const unearned = ablation.filter((a) => !a.earned);
+    if (unearned.length === 0) {
+      // The threshold that decided which names are in this list at all is the
+      // gather's (convex/ttsWeekly.ts MIN_ABLATION_CASES) and is not restated
+      // here: a number in two files is a number that drifts.
+      lines.push(
+        `Ablation: ${count(ablation.length, "name")} with enough cases behind them, and every one earned its tokens.`,
+      );
+    } else {
+      for (const a of unearned) {
+        lines.push(
+          `Ablation: ${a.name} did not earn its tokens — ${count(a.cases, "case")}, ` +
+            `${a.withPass}/${a.cases} pass with it, ${a.withoutPass}/${a.cases} without.`,
+        );
+      }
+      // The standing caveat, in the facts and not only in a comment, because
+      // the model reads these lines and would otherwise write a fork that
+      // treats the finding as a verdict.
+      lines.push(
+        "Ablation is reported and never gated: the golden set is mined out of your rulings rather than designed for coverage, so a name its cases pass without may still be preventing a failure mode the set does not contain.",
+      );
+    }
+  }
+
+  const efficiency = facts.efficiency;
+  if (efficiency) {
+    lines.push(`Token cost: ${count(efficiency.rises.length, "case")} cost more at head than at base.`);
+    for (const rise of efficiency.rises) {
+      lines.push(`- ${rise.id}: ${rise.headTokens} tokens, ${rise.baseTokens} at base`);
+    }
   }
 
   const l = facts.learning;
@@ -587,7 +731,7 @@ async function writeAgendaFile(io, dir, day, agenda) {
  * session. `overwrite` (the --overwrite flag, by hand) rewrites the file —
  * an appended Outcome with it — and keeps the session the first run opened.
  */
-export async function runWeekly({ force = false, overwrite = false, env = null, dir = WIKITOM_DIR, io = REAL_IO } = {}) {
+export async function runWeekly({ force = false, overwrite = false, env = null, dir = WIKITOM_DIR, tomquestDir = TOM_QUEST_DIR, io = REAL_IO } = {}) {
   const now = io.now();
   if (!force && nyHour(now) !== 4) {
     console.log(`[weekly] NY hour is ${nyHour(now)}, not 4 — this is the off-season cron slot, exiting (use --force to override)`);
@@ -632,7 +776,38 @@ export async function runWeekly({ force = false, overwrite = false, env = null, 
     await recordFailure(run, "checkout", new Error(`${run.dir} is not a git checkout — setup.sh clones WikiTom there; the agenda was not written to a file`));
   }
   const priorLines = priorAgendaLines(prior);
-  const factLines = facts === null ? ["The gather failed; no facts were read this week (see the job failures)."] : renderFactLines(facts);
+  // The one fact the gather cannot have: the golden set is files in the
+  // tom.quest checkout and Convex has no filesystem (readGoldenSet). It rides
+  // onto the facts here and nowhere else, so the renderer sees one object.
+  let golden = null;
+  if (facts !== null) {
+    try {
+      golden = readGoldenSet(tomquestDir, { since: facts.since, until: facts.until });
+    } catch (err) {
+      await recordFailure(run, "golden", err);
+    }
+  }
+  const factLines = facts === null
+    ? ["The gather failed; no facts were read this week (see the job failures)."]
+    : renderFactLines({ ...facts, golden });
+
+  // 1b. the week's decisions, before the model call: a graduation and an
+  // unearned name are facts of the run, and a model that fails to write an
+  // agenda must not also swallow them. Posted only when there is something to
+  // object to (convex/ttsWeekly.ts internalRecordWeeklyEvalsDecisions).
+  const graduated = golden?.graduated ?? [];
+  const unearned = (facts?.ablation ?? []).filter((a) => a.earned === false);
+  if (graduated.length > 0 || unearned.length > 0) {
+    try {
+      await io.fetch(run.env, "/tts/weekly-decisions", {
+        isoWeek: isoWeekOf(now),
+        graduated,
+        ablation: facts.ablation,
+      });
+    } catch (err) {
+      await recordFailure(run, "decisions", err);
+    }
+  }
 
   // 2. the one model call
   let lines = factLines;
