@@ -175,8 +175,14 @@ export type SimplifyGateCheck = {
 };
 
 export type OpenProposal = {
+  /** The row's key, which is also the askId of its #tts-decisions thread and
+   *  the key the admission event must carry — the one string that joins the
+   *  proposal, its objection and its admission. The job keys on THIS. */
   askId: string;
-  proposalId: string;
+  /** The pass's own 8-hex proposal id, off the row's data. It is what the
+   *  provenance sentence names, and it is not the Convex document id: nothing
+   *  outside this table can do anything with a document id. */
+  proposalId: string | null;
   rowId: string | null;
   sentence: string | null;
   evidence: string | null;
@@ -567,7 +573,7 @@ export const internalOpenProposals = internalQuery({
       if (sent.length === 0) continue;
       open.push({
         askId,
-        proposalId: row._id,
+        proposalId: str(data.id),
         rowId: str(data.rowId),
         sentence: str(data.sentence),
         evidence: str(data.evidence),

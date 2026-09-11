@@ -42,8 +42,11 @@
 //     writer lock, because it never writes there.
 //   - It posts nothing to #tts-today. Its only Slack output is one
 //     #tts-decisions message per proposal, through the shared decisions door.
-//   - It touches no credential, opens no branch, and runs no git command that
-//     writes. `git grep` and `gh run list` are its only two.
+//   - It opens no branch and writes no repository. Its git is `git grep` and
+//     the shallow fetch-and-reset of the tom.quest CACHE CLONE (evals.mjs's,
+//     through the same tts-code-lib.mjs cacheRepoDir), which is a rebuildable
+//     directory under /var/cache and not a working tree. GH_TOKEN rides inside
+//     that function and is never read, printed or logged here.
 //   - It mints exactly three event kinds: simplify-proposal, simplify-admitted,
 //     simplify-run. A failure is a "job-failed" row like every other job's.
 //   - It changes no merge-gate check.
@@ -78,6 +81,7 @@ import {
   reportJobOk,
   runClaude,
 } from "./tts-lib.mjs";
+import { cacheRepoDir } from "./tts-code-lib.mjs";
 import { WIKITOM_DIR, utcDay } from "./session-archive.mjs";
 
 // ── The numbers, and the one reason each is that number ──────────────────────
@@ -157,12 +161,19 @@ export const SIMPLIFY_RUN = "simplify-run";
 // ── Where things are ─────────────────────────────────────────────────────────
 
 /** The tom.quest checkout the schema, the AGENTS.md files and `git grep` are
- *  read from. On the box this is the shallow cache clone evals.mjs already
- *  keeps fresh (tts-code-lib.mjs cacheRepoDir); /opt/tts is a flat install and
- *  is not a checkout, so the job cannot read its own repository from where it
- *  runs. Absent, the run measures the rules of agent-rules.md alone and says
- *  in the facts block that the repository was not readable. */
-export const TOMQUEST_DIR = process.env.TOMQUEST_DIR || "/var/cache/tts/tom.quest";
+ *  read from: the shallow cache clone tts-code-lib.mjs cacheRepoDir keeps, at
+ *  its own default path. /opt/tts is a flat install and is not a checkout, so
+ *  the job cannot read its own repository from where it runs.
+ *
+ *  THE PASS REFRESHES IT ITSELF (see runSimplify). evals.mjs takes worktrees
+ *  from this same clone, but only when an eval run happens to need a tom.quest
+ *  one — so on a Friday at 04:30 the clone may be a week stale, and on a box
+ *  where no eval has ever wanted a tom.quest worktree it is not there at all.
+ *  A pass that measured a week-old schema would propose deleting a field added
+ *  on Tuesday. Absent and unfetchable, the run measures the rules of
+ *  agent-rules.md alone and says in the facts block that the repository was
+ *  not readable. */
+export const TOMQUEST_DIR = "/var/cache/tts/tom.quest";
 
 /** The operate layer — the base every run carries, and what a skill that fires
  *  on nearly every run collapses into. */
@@ -601,6 +612,16 @@ export function candidateFor(row, context = {}) {
   if (
     (row.class === "rule" || row.class === "skill") &&
     row.loaded >= MIN_LOADED &&
+    // THE SAME FLOOR ON THE OTHER SIDE OF THE FRACTION, and for the same
+    // reason the brief gives for `loaded`: below MIN_LOADED the absence of
+    // evidence is the sample being small. `proxy.sample` is the count of
+    // sampled runs whose transcript CAME BACK WITH WORDS (blastRows), so a
+    // week where runs were registered and their rows never ingested — the
+    // ordinary early state of the run record — reads as "nothing was read",
+    // not as "nothing matched any rule". Without this a single gap in the
+    // record makes every rule in the operate layer removable at once, which
+    // is the one failure this pass must not have.
+    (row.proxy?.sample ?? 0) >= MIN_LOADED &&
     row.proxy?.mattered === 0 &&
     (row.proxy?.nouns?.length ?? 0) >= 2
   ) {
@@ -692,6 +713,13 @@ export function rowNumbers(row) {
 export function blastRows({ input, fields, ruleFiles, checks, hisWordsLines, repoName }) {
   const runsTotal = Number(input?.runs?.total ?? 0) || 0;
   const sample = Array.isArray(input?.sample) ? input.sample : [];
+  // THE RUNS WHOSE TRANSCRIPT ACTUALLY CAME BACK WITH WORDS. A run that was
+  // registered but whose rows were never ingested contributes an EMPTY bag,
+  // which matches no rule — so counting it among the runs that "did not match"
+  // turns a gap in the record into evidence for deleting every rule at once.
+  // This is the denominator every rule row reports and the floor candidateFor
+  // applies, so a week that read nothing proposes nothing.
+  const readable = sample.filter((run) => (run?.tokens ?? []).length > 0).length;
   const rows = [];
   const seen = new Set();
   let duplicateRuleLines = 0;
@@ -723,7 +751,7 @@ export function blastRows({ input, fields, ruleFiles, checks, hisWordsLines, rep
         proxy: {
           nouns: mattered === null ? [] : nouns,
           mattered,
-          sample: sample.length,
+          sample: readable,
           note: mattered === null ? "no proxy" : "a generous word-overlap proxy over the sampled transcripts",
         },
         failures: { failed: 0, heads: 0, known: true },
@@ -821,7 +849,7 @@ export function blastRows({ input, fields, ruleFiles, checks, hisWordsLines, rep
     row.needsHisWords = (hisWordsLines ?? []).some((nouns) => jaccard(row.proxy.nouns, nouns) >= 0.6);
     row.evidence = evidenceFor(row);
   }
-  return { rows, duplicateRuleLines, repoName };
+  return { rows, duplicateRuleLines, repoName, sampleReadable: readable };
 }
 
 // ── The facts block ──────────────────────────────────────────────────────────
@@ -866,6 +894,9 @@ export function factsBlock({ day, input, table, repoReadable, failures }) {
       byKind: runs.byKind ?? {},
     },
     sampleRuns: (input?.sample ?? []).length,
+    /** Of those, the ones whose transcript came back with words. When this is
+     *  below MIN_LOADED no rule is removable at all, and the block says so. */
+    sampleReadable: table.sampleReadable ?? 0,
     repoReadable,
     duplicateRuleLines: table.duplicateRuleLines,
     tools: input?.tools ?? [],
@@ -915,7 +946,10 @@ export function factsText(facts) {
     `THE WEEKLY SIMPLIFICATION PASS — ${facts.day}.`,
     "",
     `Window: ${facts.window.since === null ? "unknown" : utcDay(facts.window.since)} to ${facts.window.until === null ? "unknown" : utcDay(facts.window.until)}, ${WINDOW_WEEKS} weeks. Four weeks because Convex evicts every run older than thirty days (spec §23.4): this is the window the record HOLDS, not a judgement that four weeks is enough history.`,
-    `Runs in the window: ${facts.runs.total}${facts.runs.capped ? ` (the scan stopped at ${RUN_SCAN} rows, so this is a floor)` : ""}. Sampled for the proxy: ${facts.sampleRuns}, at most ${ROW_SCAN_PER_RUN} rows and ${TOKENS_PER_RUN} distinct tokens each.`,
+    `Runs in the window: ${facts.runs.total}${facts.runs.capped ? ` (the scan stopped at ${RUN_SCAN} rows, so this is a floor)` : ""}. Sampled for the proxy: ${facts.sampleRuns}, at most ${ROW_SCAN_PER_RUN} rows and ${TOKENS_PER_RUN} distinct tokens each; ${facts.sampleReadable} of them came back with any words at all, and that is the denominator every proxy below is out of.`,
+    facts.sampleReadable < MIN_LOADED
+      ? `FEWER THAN ${MIN_LOADED} SAMPLED RUNS HAD A READABLE TRANSCRIPT, so no rule and no skill is removable on this run whatever its proxy says. A record that was not read is not a record of nothing.`
+      : "",
     `Of those runs, ${facts.runs.withContext} recorded a context entry and ${facts.runs.layersKnownTrue} knew which layers they were given.`,
     "",
     PROXY_CAVEAT,
@@ -1044,7 +1078,14 @@ export function simplifyPrompt({ facts, writingStandard }) {
     "WHAT EVERY PROPOSAL CARRIES",
     "",
     "- the row's id, exactly as the table spells it;",
-    "- one sentence saying what is TRUE AFTER the thing is removed — present tense, the after-state, not \"we should remove X\";",
+    // THE SENTENCE'S GRAMMAR IS LOAD-BEARING. convex/ttsCompose.ts
+    // composeDecision renders it two ways and this producer uses BOTH: a plain
+    // proposal becomes "<Sentence>, because <evidence>." and a needs-his-words
+    // one becomes "It would have <sentence>." Only a past-tense verb phrase
+    // reads correctly in both — a present-tense after-state ("nothing loads
+    // the third file any more") is a sentence in the first and gibberish in
+    // the second.
+    '- one sentence saying what the removal DID, as a past-tense verb phrase with no subject: "removed the three roll-out shims from convex/http.ts", "collapsed the second commit rule into the first". Not "we should remove X", and not a present-tense description of the after-state — it is rendered both as "<Your sentence>, because …" and as "It would have <your sentence>", and it has to read as English in both;',
     "- the evidence, which is that row's own numbers and no others. Every number you write must be one of that row's numbers;",
     "- the COUNTERFACTUAL: what would have been lost in the runs that were read, had the thing not been there. For a check, that is what it would have blocked in the heads that were read, and what still covers that case once it is gone. A proposal you cannot write a counterfactual for is a proposal you have not made.",
     "",
@@ -1262,6 +1303,11 @@ export const REAL_IO = {
   readDir: (dir) => fs.readdirSync(dir, { withFileTypes: true }),
   git: (args, cwd) => runCommand("git", args, cwd),
   gh: (args, cwd) => runCommand("gh", args, cwd),
+  // The one write this job's io does, and it writes to a cache: the shallow
+  // tom.quest clone, fetched and reset the way evals.mjs fetches it, through
+  // the same one function so the two cannot drift about what the clone is.
+  // GH_TOKEN rides inside it and is never read, printed or logged here.
+  repoDir: (env) => cacheRepoDir(env, { name: "tom.quest", owner: "Heffnt", branch: "main" }),
   markerRead: (day) => {
     try {
       return JSON.parse(fs.readFileSync(path.join(MARKER_DIR, `simplify-${day}.json`), "utf8"));
@@ -1311,7 +1357,10 @@ export async function runSimplify({
   printFacts = false,
   env = null,
   dir = WIKITOM_DIR,
-  repoDir = TOMQUEST_DIR,
+  // Named, and the pass takes it as given: an explicit directory is a caller
+  // who has one already (the tests, and $TOMQUEST_DIR by hand). Left null, the
+  // pass fetches the cache clone itself below.
+  repoDir = process.env.TOMQUEST_DIR || null,
   repoName = null,
   io = REAL_IO,
 } = {}) {
@@ -1346,12 +1395,23 @@ export async function runSimplify({
   if (!dryRun) {
     try {
       const open = await io.fetch(resolvedEnv, "/tts/simplify-open");
-      const list = Array.isArray(open) ? open : (open?.proposals ?? []);
+      // `open` is the door's field name (convex/http.ts ttsSimplifyOpen wraps
+      // internalOpenProposals in { open }); the bare array is accepted too so
+      // a future door that returns one does not need this job changed.
+      const list = Array.isArray(open) ? open : (open?.open ?? []);
       // The door filters, and this repeats the filter. Admitting a proposal
       // Tom objected to is the one mistake here a later run cannot undo, so it
-      // is checked on both sides of the wire rather than on one.
+      // is checked on both sides of the wire rather than on one. A row with no
+      // askId is dropped rather than admitted under a made-up key: the key is
+      // what joins the todo to the thread he objected in.
       const eligible = list.filter(
-        (p) => !p?.objectedAt && !p?.admittedAt && p?.needsHisWords !== true && p?.dryRun !== true,
+        (p) =>
+          typeof p?.askId === "string" &&
+          p.askId !== "" &&
+          !p?.objectedAt &&
+          !p?.admittedAt &&
+          p?.needsHisWords !== true &&
+          p?.dryRun !== true,
       );
       waiting = Math.max(0, eligible.length - ADMIT_PER_RUN);
       for (const proposal of eligible.slice(0, ADMIT_PER_RUN)) {
@@ -1359,16 +1419,21 @@ export async function runSimplify({
           const captured = await io.fetch(resolvedEnv, "/tts/capture", {
             statement: String(proposal.sentence ?? "").slice(0, 500),
             source: "simplify",
-            provenance: `the weekly simplification pass, ${proposal.day ?? "an earlier week"}; proposal ${proposal.id}; ${proposal.evidence ?? ""}; ${proposal.counterfactual ?? ""}`.slice(0, 2000),
+            provenance: `the weekly simplification pass, ${proposal.day ?? "an earlier week"}; proposal ${proposal.proposalId ?? proposal.askId}; ${proposal.evidence ?? ""}; ${proposal.counterfactual ?? ""}`.slice(0, 2000),
           });
+          // THE KEY IS THE askId THE DOOR RETURNED, verbatim. The proposal
+          // event, the objection and this admission are one key apart, and
+          // internalOpenProposals looks this row up by exactly that string —
+          // a key rebuilt from some other field is a proposal that stays open
+          // for ever and is admitted again every week.
           await io.fetch(resolvedEnv, "/tts/event", {
             kind: SIMPLIFY_ADMITTED,
-            key: `simplify:${proposal.id}`,
-            data: { proposalId: proposal.id, todoId: captured?.id ?? null, day },
+            key: proposal.askId,
+            data: { proposalId: proposal.proposalId ?? null, askId: proposal.askId, todoId: captured?.id ?? null, day },
           });
           admitted += 1;
         } catch (error) {
-          note(`could not admit proposal ${proposal.id}: ${String(error?.message ?? error).slice(0, 200)}`);
+          note(`could not admit proposal ${proposal.askId}: ${String(error?.message ?? error).slice(0, 200)}`);
         }
       }
       console.log(`[simplify] objection window: ${eligible.length} eligible of ${list.length} returned, ${admitted} admitted, ${waiting} waiting`);
@@ -1387,6 +1452,21 @@ export async function runSimplify({
   const runsTotal = Number(input?.runs?.total ?? 0) || 0;
 
   // 2. what only a checkout can answer.
+  //
+  // THE CLONE IS REFRESHED FIRST, on this job's own clock. evals.mjs takes its
+  // worktrees from the same cache, but only when an eval run happens to want a
+  // tom.quest one; nothing refreshes it on a Friday, and a pass measuring a
+  // week-old schema would propose deleting a field added on Tuesday. A failed
+  // fetch is a stated failure and the run continues against whatever is on
+  // disk, because four weeks of rules are still measurable without it.
+  if (repoDir === null) {
+    try {
+      repoDir = io.repoDir(resolvedEnv);
+    } catch (error) {
+      note(`the tom.quest cache clone could not be refreshed: ${String(error?.message ?? error).slice(0, 200)}`);
+      repoDir = TOMQUEST_DIR;
+    }
+  }
   const repoReadable = io.exists(path.join(repoDir, "convex", "schema.ts"));
   const resolvedRepoName = repoName ?? path.basename(repoDir);
   const fields = [];
