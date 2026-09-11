@@ -14,8 +14,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   STAGING_DIR,
+  appendRunManifest,
   archiveSessionFiles,
   firstLine,
+  latestRunManifestCursor,
+  readRunManifests,
   readManifests,
   sha256,
   writeArchived,
@@ -32,6 +35,42 @@ function tmp() {
 afterEach(() => {
   vi.restoreAllMocks();
   for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+});
+
+describe("run manifests", () => {
+  it("deduplicates file versions and checkpoints the complete equal-ms tuple", () => {
+    const checkout = tmp();
+    const entries = [
+      { at: 100, run_id: "claude:laptop:a", file_version: "version-a" },
+      { at: 100, run_id: "claude:laptop:a", file_version: "version-b" },
+      { at: 100, run_id: "claude:laptop:b", file_version: "version-a" },
+    ];
+    expect(appendRunManifest(checkout, entries)).toHaveLength(3);
+    expect(appendRunManifest(checkout, [entries[1], entries[2]])).toEqual([]);
+    expect(readRunManifests(path.join(checkout, "runs"))).toHaveLength(3);
+    expect(latestRunManifestCursor(checkout)).toEqual({ at: 100, runId: "claude:laptop:b", fileVersion: "version-a" });
+  });
+
+  it("preserves and seals a torn tail before appending the next complete page", () => {
+    const checkout = tmp();
+    const file = write(
+      checkout,
+      "runs/manifest-1970-01.jsonl",
+      `${JSON.stringify({ at: 100, run_id: "claude:laptop:good", file_version: "version-a" })}\n{"at":101,"run_id":"torn`,
+    );
+    const torn = fs.readFileSync(file, "utf8");
+    const next = { at: 102, run_id: "claude:laptop:next", file_version: "version-b" };
+
+    expect(appendRunManifest(checkout, [next, next])).toHaveLength(1);
+    const after = fs.readFileSync(file, "utf8");
+    expect(after.startsWith(`${torn}\n`)).toBe(true);
+    expect(after.endsWith(`${JSON.stringify(next)}\n`)).toBe(true);
+    expect(readRunManifests(path.join(checkout, "runs"))).toEqual([
+      { at: 100, run_id: "claude:laptop:good", file_version: "version-a" },
+      next,
+    ]);
+    expect(latestRunManifestCursor(checkout)).toEqual({ at: 102, runId: next.run_id, fileVersion: next.file_version });
+  });
 });
 
 function write(dir, rel, content) {
@@ -74,6 +113,33 @@ const archive = (b, over = {}) =>
   archiveSessionFiles({ checkoutDir: b.checkout, day: "2026-09-06", codexDir: b.codex, accountsDir: b.accounts, log: () => {}, ...over });
 
 describe("archiveSessionFiles", () => {
+  it("keeps a Workflow's agents in the layout their folder gives them", () => {
+    const b = box();
+    // What Claude Code writes for a Workflow: the agents one folder deeper
+    // than a Task's, with the workflow's own journal and run record beside
+    // them. The archive walks the session directory whole, so the nested
+    // folder reaches the checkout unchanged and nothing under it is dropped.
+    write(b.accounts, "gmail/projects/-root/aaaa/subagents/workflows/wf_abc/agent-W.jsonl", line("2026-09-05T20:02:00.000Z"));
+    write(b.accounts, "gmail/projects/-root/aaaa/subagents/workflows/wf_abc/agent-W.meta.json", JSON.stringify({ agentType: "workflow-subagent", spawnDepth: 1 }));
+    write(b.accounts, "gmail/projects/-root/aaaa/subagents/workflows/wf_abc/journal.jsonl", line("2026-09-05T20:03:00.000Z"));
+    write(b.accounts, "gmail/projects/-root/aaaa/workflows/wf_abc.json", JSON.stringify({ runId: "wf_abc" }));
+    const archived = archive(b, { only: "aaaa" }).archived;
+    expect(archived.map((r) => r.dest).sort()).toEqual([
+      "sessions/2026/09/05/claude-aaaa/attachments/notes.txt.gz",
+      "sessions/2026/09/05/claude-aaaa/attachments/subagents/workflows/wf_abc/agent-W.meta.json.gz",
+      "sessions/2026/09/05/claude-aaaa/attachments/workflows/wf_abc.json.gz",
+      "sessions/2026/09/05/claude-aaaa/children/child.jsonl.gz",
+      "sessions/2026/09/05/claude-aaaa/children/subagents/workflows/wf_abc/agent-W.jsonl.gz",
+      "sessions/2026/09/05/claude-aaaa/children/subagents/workflows/wf_abc/journal.jsonl.gz",
+      "sessions/2026/09/05/claude-aaaa/session.jsonl.gz",
+    ]);
+    // The manifest calls every .jsonl a child, the workflow's journal
+    // included. A reader of the archive names a run by the FILE NAME —
+    // `agent-<agentId>.jsonl` under `subagents/` — not by the extension.
+    expect(archived.filter((r) => r.kind === "child").map((r) => path.basename(r.dest)).sort())
+      .toEqual(["agent-W.jsonl.gz", "child.jsonl.gz", "journal.jsonl.gz"]);
+  });
+
   it("archives one session at session end — its parent, child and attachment — and leaves the rest for the sweep", () => {
     const b = box();
     const first = archive(b, { only: "aaaa" });

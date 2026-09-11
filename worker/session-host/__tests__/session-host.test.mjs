@@ -212,33 +212,19 @@ describe("a turn Tom typed carries its inbound row id to the model", () => {
   });
 });
 
-// witness: only the nightly sweep archived session files, so a transcript
-// reached WikiTom up to a day after the session ended, and not at all on a
-// night the job failed before step 3.
-describe("a session's transcript is archived to WikiTom when it ends", () => {
-  it("reaches the one home through the symlink, like worker-env", () => {
-    expect(sessionSource).toMatch(/from "\.\/session-archive\.mjs";/);
-    expect(read("session-archive.mjs").trim()).toBe("../jobs/session-archive.mjs");
-    expect(fs.existsSync(path.join(here, "..", "..", "jobs", "session-archive.mjs"))).toBe(true);
+// Phase 3 gives run-file storage to the sweeper and manifest publication to
+// nightly. The daemon reports terminal state but never writes a second archive.
+describe("run manifests have one archival path", () => {
+  it("the daemon neither imports nor calls the legacy session archive", () => {
+    expect(sessionSource).not.toMatch(/from "\.\/session-archive\.mjs";/);
+    expect(sessionSource).not.toMatch(/archiveSessionUnderLock|#archiveTranscript|ARCHIVE_LOCK_WAIT_SECONDS/);
   });
 
-  it("every terminal path archives before it reports the end, under the lock, with a short wait", () => {
-    const method = between(sessionSource, "async #archiveTranscript()", "async #endAutonomous(");
-    expect(method).toMatch(/archiveSessionUnderLock\(\{/);
-    expect(method).toMatch(/waitSeconds: ARCHIVE_LOCK_WAIT_SECONDS/);
-    expect(sessionSource).toMatch(/const ARCHIVE_LOCK_WAIT_SECONDS = 120;/);
-    // A failure is one system row and a log line, never a throw out of the end path.
-    expect(method).toMatch(/\} catch \(err\) \{[\s\S]*finalizeRow\("system", \{\s*\n\s*text: `transcript not archived at session end/);
-    for (const [start, end] of [
-      ["async #endAutonomous(", "async #doInterrupt("],
-      ["async #doStop(row)", "forceKill(reason)"],
-      ['if (this.mode === "autonomous" && wasError) {', 'this.setStatus("idle");'],
-    ]) {
-      const body = between(sessionSource, start, end);
-      const archiveAt = body.indexOf("await this.#archiveTranscript();");
-      expect(archiveAt, `${start} archives`).toBeGreaterThan(-1);
-      expect(body.indexOf('this.setStatus("ended")'), `${start} archives before ending`).toBeGreaterThan(archiveAt);
-      expect(body.indexOf("await this.#preserveWork();"), `${start} preserves first`).toBeLessThan(archiveAt);
-    }
+  it("nightly appends the verified Convex manifest without archiving session bytes", () => {
+    const nightlySource = fs.readFileSync(path.join(here, "..", "..", "jobs", "nightly.mjs"), "utf8");
+    const runs = between(nightlySource, "export async function runsStep", "// ── 4. repo-learning");
+    expect(runs).toMatch(/\/runs\/manifest/);
+    expect(runs).toMatch(/appendRunManifest\(run\.dir, page\.entries\)/);
+    expect(nightlySource).not.toMatch(/archiveSessionFiles\(/);
   });
 });
