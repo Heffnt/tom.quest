@@ -255,6 +255,9 @@ export function parseClaudeFile({ path, text, host, fileVersion, fromLine = 0, b
   const { lines, incompleteTail } = fileLines(text);
   const firstFileTimestamp = lines.map((raw) => { try { return millis(JSON.parse(raw).timestamp); } catch { return 0; } }).find(Boolean) ?? 0;
   const rows = [], children = [], attachments = attachmentPointers(suppliedAttachments ?? agentMeta?.attachments), dropped = {};
+  // Where each child's one edge sits in the array, so a parent that speaks to
+  // the same subagent twice still names that parentage once.
+  const childEdgeAt = new Map();
   const drop = (kind) => { dropped[kind] = (dropped[kind] ?? 0) + 1; };
   let sessionId = parentSessionId;
   let first = null, startedAt = firstFileTimestamp, lastLineAt = 0, model, runtimeVersion, modelChangeReported = false;
@@ -307,14 +310,21 @@ export function parseClaudeFile({ path, text, host, fileVersion, fromLine = 0, b
               const childRunId = `claude:${host}:${sessionId}/${child.agentId}`;
               const task = tasks.get(block.tool_use_id) ?? {};
               actualEmit("child-run", { childRunId, agentId: child.agentId, agentType: child.agentType ?? task.agentType, description: child.description ?? task.description, model: child.resolvedModel, status: child.status === "completed" ? "completed" : "launched", ...(child.status === "completed" ? { totalTokens: child.totalTokens, totalDurationMs: child.totalDurationMs, totalToolUseCount: child.totalToolUseCount } : {}) }, { depth, parentToolUseId: block.tool_use_id });
-              children.push({
+              const edge = {
                 runId: childRunId, parentRunId: runId,
                 rootRunId: child.isSubagent ? `claude:${host}:${parentSessionId ?? sessionId}` : runId,
                 depth: depth + 1,
                 ...(typeof block.tool_use_id === "string" && block.tool_use_id ? { spawnedByToolUseId: block.tool_use_id } : {}),
                 // A child id alone proves parentage, not which parent tool did it.
                 linkKnown: typeof block.tool_use_id === "string" && block.tool_use_id !== "",
-              });
+              };
+              // Every tool result naming an agent is a real event and keeps its
+              // own child-run row, but a second message to a running subagent is
+              // not a second child. The spawn is the first tool use, so a later
+              // one never takes its place — it only fills a link nobody knew.
+              const at = childEdgeAt.get(childRunId);
+              if (at === undefined) { childEdgeAt.set(childRunId, children.length); children.push(edge); }
+              else if (!children[at].linkKnown && edge.linkKnown) children[at] = edge;
             }
           }
         }
