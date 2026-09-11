@@ -2047,20 +2047,10 @@ export class Session {
   // record is already server-side) or the time cap (outcome errored). Never
   // interrupts — the result path's query has already finished its turn, and
   // the time cap interrupts before calling here.
-  // ── The session-end archive ────────────────────────────────────────────────
-  // The SDK's (or Codex's) file for this session goes into WikiTom's
-  // sessions/ archive the moment the session ends, under the checkout's
-  // writer lock, so the transcript is in the vault hours before the nightly
-  // sweep — which still runs, and archives again a file that grew after this
-  // (the SDK can flush after the query ends; the manifest keys on the
-  // content hash). Every terminal path calls it before the ending flush, so
-  // the row it writes rides in the same ingest as the ending.
   //
-  // NOTHING HERE CAN END THE SESSION BADLY: a missing checkout (setup.sh has
-  // not cloned it yet), a lock held past the wait, any throw at all is one
-  // system row in the transcript and one log line, and the sweep is the
-  // fallback. The wait is short — a daemon has other sessions to serve, and
-  // the nightly job holds the lock for minutes.
+  // The session-end archive that used to run here is gone: the run sweeper is
+  // now the one writer that takes a finished session's bytes off the box, and
+  // two writers of the same archive is what §23.4's single write order forbids.
   async #endAutonomous(endedReason, outcome) {
     if (this.dead || this.status === "ended" || this.status === "failed") return;
     this.#clearAutoTimer();
