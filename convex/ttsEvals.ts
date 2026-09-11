@@ -588,6 +588,23 @@ type EvalsRequest = {
   baseSha: string | null;
   pr: number | null;
   paths: string[];
+  // WHAT THIS BRANCH ACTUALLY CHANGED, and the body an escape-hatch trailer
+  // would be on.
+  //
+  // `paths` above is the WATCHED list — the same constant on every request.
+  // These two are the DIFF, computed once by the pull-request check in the
+  // checkout CI already has, and carried here so the box can stamp the golden
+  // coverage verdict onto the run row from the same list the check judged in
+  // its log. The box cannot compute them: it holds a shallow cache clone with
+  // no merge base, and a list it derived itself would be a second answer to a
+  // question already answered.
+  //
+  // NULL IS A VALUE and is never inferred. A request from an older check, or
+  // from a machine whose git could not answer, carries neither; the run's
+  // goldenCoverage is then null, and the merge gate denies — because a merge
+  // always has a diff, so a run nobody asked has not answered.
+  changed: string[] | null;
+  prBody: string | null;
   requestedAt: number;
 };
 
@@ -603,6 +620,10 @@ function requestData(data: unknown): EvalsRequest | null {
       baseSha: typeof value.baseSha === "string" ? value.baseSha : null,
       pr: typeof value.pr === "number" ? value.pr : null,
       paths: value.paths,
+      changed: Array.isArray(value.changed) && value.changed.every((path) => typeof path === "string")
+        ? (value.changed as string[])
+        : null,
+      prBody: typeof value.prBody === "string" ? value.prBody : null,
       requestedAt: value.requestedAt,
     }
     : null;
@@ -615,6 +636,8 @@ export const internalRequestEvals = internalMutation({
     baseSha: v.optional(v.string()),
     pr: v.optional(v.number()),
     paths: v.array(v.string()),
+    changed: v.optional(v.array(v.string())),
+    prBody: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const key = `${args.repo}@${args.sha}`;
@@ -628,7 +651,19 @@ export const internalRequestEvals = internalMutation({
       at: requestedAt,
       kind: EVALS_REQUEST,
       key,
-      data: { repo: args.repo, sha: args.sha, baseSha: args.baseSha ?? null, pr: args.pr ?? null, paths: args.paths, requestedAt },
+      data: {
+        repo: args.repo,
+        sha: args.sha,
+        baseSha: args.baseSha ?? null,
+        pr: args.pr ?? null,
+        paths: args.paths,
+        changed: args.changed ?? null,
+        // A pull-request body is text somebody else wrote, so it is stored and
+        // read as DATA — the only thing anything does with it is look for one
+        // anchored `evals: no-item` line.
+        prBody: args.prBody ?? null,
+        requestedAt,
+      },
     });
     return { existing: false };
   },

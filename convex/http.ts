@@ -2161,12 +2161,25 @@ const evalsRequest = httpAction(async (ctx, request) => {
   if (!Array.isArray(b.paths) || !b.paths.every((path) => typeof path === "string" && path !== "")) {
     return jsonResponse(400, { error: "paths (array of non-empty strings) required" });
   }
+  // `changed` is the branch's own diff and `prBody` the body a `evals: no-item`
+  // trailer would be on — the pull-request check computes both in the checkout
+  // CI already has, and the box stamps the golden coverage verdict from them.
+  // BOTH ARE OPTIONAL AND NEITHER IS INFERRED: an older check sends neither,
+  // and the coverage verdict is then null, which the merge gate denies.
+  if (b.changed !== undefined && (!Array.isArray(b.changed) || !b.changed.every((path) => typeof path === "string" && path !== ""))) {
+    return jsonResponse(400, { error: "changed, when given, is an array of non-empty strings" });
+  }
+  if (b.prBody !== undefined && typeof b.prBody !== "string") {
+    return jsonResponse(400, { error: "prBody, when given, is a string" });
+  }
   const result = await ctx.runMutation(internal.ttsEvals.internalRequestEvals, {
     repo: b.repo,
     sha: b.sha,
     baseSha: typeof b.baseSha === "string" ? b.baseSha : undefined,
     pr: typeof b.pr === "number" ? b.pr : undefined,
     paths: b.paths,
+    changed: Array.isArray(b.changed) ? (b.changed as string[]) : undefined,
+    prBody: typeof b.prBody === "string" ? b.prBody : undefined,
   });
   return jsonResponse(200, { ok: true, ...result });
 });
