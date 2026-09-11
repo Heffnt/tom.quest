@@ -2,17 +2,26 @@ import { expect, it } from "vitest";
 import { parseClaudeFile } from "../ingest.mjs";
 import { claudeUserTurn, jsonl } from "./fixtures.mjs";
 it("keeps rows deterministic, incremental, and leaves an unfinished tail unread", () => {
-  const rows = Array.from({ length: 10 }, (_, index) => claudeUserTurn({ text: `turn-${index}` }));
-  const text = jsonl(rows);
-  const first = parseClaudeFile({ path: "/r", text, host: "laptop", fileVersion: "v" });
-  const again = parseClaudeFile({ path: "/r", text, host: "laptop", fileVersion: "v" });
+  const sourceRows = Array.from({ length: 16 }, (_, index) => claudeUserTurn({ text: `turn-${index}` }));
+  const firstText = jsonl(sourceRows.slice(0, 10));
+  const first = parseClaudeFile({ path: "/r", text: firstText, host: "laptop", fileVersion: "v" });
+  const again = parseClaudeFile({ path: "/r", text: firstText, host: "laptop", fileVersion: "v" });
   expect(again.rows).toEqual(first.rows);
-  const grown = parseClaudeFile({ path: "/r", text: jsonl([...rows, ...rows.slice(0, 6)]), host: "laptop", fileVersion: "v2", fromLine: first.lastLine });
-  expect(grown.rows.every((row) => row.seq >= first.lastLine * 1000)).toBe(true);
-  expect(grown.run.startedAt).toBe(first.run.startedAt);
-  expect(grown.run.context).toEqual(first.run.context);
-  expect(grown.run.outcome.totals.totalTokens).toBe(first.run.outcome.totals.totalTokens);
-  const incomplete = parseClaudeFile({ path: "/r", text: `${text}{`, host: "laptop", fileVersion: "v" });
+  expect(first.lastLine).toBe(10);
+  const tailRows = sourceRows.slice(10);
+  const tail = jsonl(tailRows);
+  const grown = parseClaudeFile({ path: "/r", text: tail, host: "laptop", fileVersion: "v2", fromLine: first.lastLine, baseLine: 10 });
+  const emitted = grown.rows.filter((row) => row.kind === "user");
+  expect(emitted).toHaveLength(6);
+  expect(grown.rows.some((row) => row.kind === "context")).toBe(false);
+  expect(emitted.map((row) => row.seq)).toEqual([11_000, 12_000, 13_000, 14_000, 15_000, 16_000]);
+  expect(emitted.map((row) => row.provenance.lineStart)).toEqual([10, 11, 12, 13, 14, 15]);
+  expect(emitted.map((row) => row.content.text)).toEqual(["turn-10", "turn-11", "turn-12", "turn-13", "turn-14", "turn-15"]);
+  const retry = parseClaudeFile({ path: "/r", text: tail, host: "laptop", fileVersion: "v2", fromLine: first.lastLine, baseLine: 10 });
+  expect(retry).toEqual(grown);
+  expect(retry.rows).not.toHaveLength(0);
+  expect(retry.rows.map((row) => row.digest)).toEqual(grown.rows.map((row) => row.digest));
+  const incomplete = parseClaudeFile({ path: "/r", text: `${firstText}{`, host: "laptop", fileVersion: "v" });
   expect(incomplete).toMatchObject({ incompleteTail: true, lastLine: 10 });
 });
 
@@ -24,10 +33,10 @@ it("reads a formerly incomplete final line exactly once after its newline lands"
   expect(initial).toMatchObject({ incompleteTail: true, lastLine: 1 });
   expect(initial.rows.filter((row) => row.kind === "user")).toHaveLength(1);
 
-  const appended = parseClaudeFile({ path: "/r", text: `${completed}${finalLine}\n`, host: "laptop", fileVersion: "v2", fromLine: initial.lastLine });
+  const appended = parseClaudeFile({ path: "/r", text: `${finalLine}\n`, host: "laptop", fileVersion: "v2", fromLine: initial.lastLine });
   const rows = appended.rows.filter((row) => row.kind === "user");
   expect(rows).toHaveLength(1);
-  expect(rows[0]).toMatchObject({ seq: 1000, provenance: { lineStart: 1 } });
+  expect(rows[0]).toMatchObject({ seq: 2000, provenance: { lineStart: 1 } });
   expect(appended).toMatchObject({ incompleteTail: false, lastLine: 2 });
 });
 

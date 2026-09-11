@@ -42,6 +42,40 @@ const stable = (value) => {
   return JSON.stringify(value);
 };
 
+const OMIT = Symbol("omit");
+
+// Convex receives JSON values, not JavaScript's larger value set. Normalize
+// before cutting and hashing so the digest is of exactly what reaches it.
+function jsonValue(value, seen = new WeakSet()) {
+  if (value === undefined || typeof value === "function" || typeof value === "symbol") return OMIT;
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new TypeError("parser result contains a non-finite number");
+    return value;
+  }
+  if (typeof value === "bigint") throw new TypeError("parser result contains a bigint");
+  if (typeof value !== "object") throw new TypeError("parser result contains an unsupported value");
+  if (seen.has(value)) throw new TypeError("parser result contains a cycle");
+  seen.add(value);
+  if (Array.isArray(value)) {
+    const normalized = value.map((child) => {
+      const next = jsonValue(child, seen);
+      // JSON.stringify turns an undefined array slot into null.
+      return next === OMIT ? null : next;
+    });
+    seen.delete(value);
+    return normalized;
+  }
+  const normalized = {};
+  for (const [key, child] of Object.entries(value)) {
+    const next = jsonValue(child, seen);
+    // JSON.stringify drops undefined object properties.
+    if (next !== OMIT) normalized[key] = next;
+  }
+  seen.delete(value);
+  return normalized;
+}
+
 /** Redact every string leaf before a parser result can leave this machine. */
 export function redactDeep(value) {
   if (typeof value === "string") return redactSecrets(value);
@@ -73,19 +107,45 @@ export function modelOfTomFromPrompt(prompt) {
 function totalsOf(usage = {}) {
   const inputTokens = number(usage.input_tokens);
   const cacheReadTokens = number(usage.cache_read_input_tokens ?? usage.cached_input_tokens);
-  const cacheWriteTokens = number(usage.cache_creation_input_tokens ?? usage.cache_write_input_tokens);
+  const creation = usage.cache_creation;
+  const hasWriteBreakdown = creation && Number.isFinite(creation.ephemeral_5m_input_tokens) && Number.isFinite(creation.ephemeral_1h_input_tokens);
+  // Older usage records expose only a legacy aggregate. Keep it in the 5m
+  // bucket for token conservation, while marking its rate unknowable.
+  const cacheWrite5mTokens = hasWriteBreakdown
+    ? number(creation.ephemeral_5m_input_tokens)
+    : number(usage.cache_creation_input_tokens ?? usage.cache_write_input_tokens);
+  const cacheWrite1hTokens = hasWriteBreakdown ? number(creation.ephemeral_1h_input_tokens) : 0;
+  const cacheWriteTokens = cacheWrite5mTokens + cacheWrite1hTokens;
   const outputTokens = number(usage.output_tokens);
   const thinkingTokens = number(usage.output_tokens_details?.thinking_tokens ?? usage.reasoning_output_tokens);
-  return { inputTokens, cacheReadTokens, cacheWriteTokens, outputTokens, thinkingTokens, totalTokens: number(usage.total_tokens) || inputTokens + cacheReadTokens + cacheWriteTokens + outputTokens };
+  return {
+    inputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite5mTokens, cacheWrite1hTokens,
+    // Zero writes need no duration choice; a nonzero legacy aggregate does.
+    cacheWriteBreakdownKnown: hasWriteBreakdown || cacheWriteTokens === 0,
+    outputTokens, thinkingTokens,
+    totalTokens: number(usage.total_tokens) || inputTokens + cacheReadTokens + cacheWriteTokens + outputTokens,
+  };
 }
 
 function finishResult(result) {
-  const redacted = redactDeep(result);
+  const redacted = jsonValue(redactDeep(result));
   for (const row of redacted.rows) {
-    const cut = cutWithOverflow(row.content);
+    // Context has structured, queryable fields. Only its prompt is a display
+    // payload, so preserve the fields and retain the complete redacted prompt
+    // behind the normal overflow pointer.
+    const fullContext = row.kind === "context" && row.content && typeof row.content === "object" ? row.content : null;
+    const cut = fullContext
+      ? cutWithOverflow(row.content.prompt)
+      : cutWithOverflow(row.content);
     if (cut.note) {
-      row.content = { text: cut.value, truncation: cut.note };
-      row.overflow = { sha256: cut.overflow.sha256, byteLength: cut.overflow.byteLength, chunkCount: cut.overflow.chunkCount, chunks: cut.overflow.chunks };
+      row.content = row.kind === "context"
+        ? { ...row.content, prompt: cut.value, promptTruncation: cut.note }
+        : { text: cut.value, truncation: cut.note };
+      // A context reader follows overflow as the complete row payload, not
+      // merely the one display field. Its structured fields remain present in
+      // the bounded row for queries and renderers.
+      const overflow = fullContext ? overflowFor(JSON.stringify(fullContext)) : cut.overflow;
+      row.overflow = { sha256: overflow.sha256, byteLength: overflow.byteLength, chunkCount: overflow.chunkCount, chunks: overflow.chunks };
     }
     row.digest = sha256(`${PARSER_VERSION}\n${redacted.run.runId}\n${row.seq}\n${row.kind}\n${stable(row.content)}`).slice(0, 16);
   }
@@ -110,22 +170,23 @@ function provenance({ path, fileVersion, line, block, sourceKind }) {
   return { fileVersion, file: path, lineStart: line, lineEnd: line, block, parserVersion: PARSER_VERSION, sourceKind };
 }
 
+// seq zero is synthetic context. Every source identity therefore has a
+// positive, invertible sequence: line = floor(seq / 1000) - 1, block = seq % 1000.
+const sourceSeq = (line, block) => (line + 1) * 1000 + block;
+
 function rowFactory({ path, fileVersion, runId, rows, line, turn, sourceKind, timestamp }) {
   let block = 0;
   return (kind, content, options = {}) => {
-    // Line zero has 999 remaining identities after the context reservation;
-    // every later line has the full thousand-slot range.
-    const errorBlock = line === 0 ? 998 : 999;
+    // Blocks 0..998 are source content; block 999 makes an impossible line
+    // overflow visible without allowing an ambiguous next-line sequence.
+    const errorBlock = 999;
     if (block >= errorBlock) {
-      if (block === errorBlock) rows.push({ seq: line * 1000 + 999, turn, kind: "error", content: { error: "more than 999 content blocks on one line" }, depth: options.depth ?? 0, provenance: provenance({ path, fileVersion, line, block, sourceKind }), createdAt: timestamp });
+      if (block === errorBlock) rows.push({ seq: sourceSeq(line, 999), turn, kind: "error", content: { error: "more than 999 content blocks on one line" }, depth: options.depth ?? 0, provenance: provenance({ path, fileVersion, line, block, sourceKind }), createdAt: timestamp });
       block += 1;
       return null;
     }
     const current = block++;
-    // seq 0 belongs to the synthetic context row. A real file may emit from
-    // line zero (subagent files do), so reserve that one identity while the
-    // provenance block remains the source's true zero-based content block.
-    const seq = line * 1000 + current + (line === 0 ? 1 : 0);
+    const seq = sourceSeq(line, current);
     const row = { seq, turn, kind, content, depth: options.depth ?? 0, provenance: provenance({ path, fileVersion, line, block: current, sourceKind }), createdAt: timestamp };
     if (options.parentToolUseId) row.parentToolUseId = options.parentToolUseId;
     rows.push(row);
@@ -153,18 +214,47 @@ function claudeContext(prompt, first, state) {
   };
 }
 
-export function parseClaudeFile({ path, text, host, fileVersion, fromLine = 0, agentMeta = null, parentSessionId = null }) {
-  // The normal caller hands us the full immutable store version. Build its
-  // run-level facts once from every line, then retain only newly committed
-  // rows: an append must never replace full totals/context with a tail.
-  if (fromLine > 0) {
-    const full = parseClaudeFile({ path, text, host, fileVersion, agentMeta, parentSessionId });
-    full.rows = full.rows.filter((row) => row.kind !== "context" && row.provenance.lineStart >= fromLine);
-    return full;
-  }
+function attachmentPointers(values) {
+  if (!Array.isArray(values)) return [];
+  return values
+    .filter((value) => value && typeof value.file === "string" && Number.isInteger(value.bytes) && value.bytes >= 0 && /^[0-9a-f]{64}$/.test(value.sha256))
+    .map(({ file, bytes, sha256: hash }) => ({ file, bytes, sha256: hash }));
+}
+
+function sidecarStoredHash(agentMeta, sidecar) {
+  const candidate = sidecar?.storedHash ?? sidecar?.fileVersion
+    ?? agentMeta?.sidecarStoredHash ?? agentMeta?.sidecar?.storedHash ?? agentMeta?.sidecar?.fileVersion
+    ?? agentMeta?.storedSidecar?.storedHash ?? agentMeta?.storedSidecar?.fileVersion
+    ?? agentMeta?.storedHash ?? agentMeta?.fileVersion;
+  return typeof candidate === "string" && /^[0-9a-f]{64}$/.test(candidate) ? candidate : undefined;
+}
+
+function claudeChildFacts(agentMeta, parentSessionId) {
+  const isSubagent = agentMeta !== null || parentSessionId !== null;
+  if (!isSubagent) return { isSubagent: false, depth: 0, errors: [], parentAgentId: undefined, toolUseId: undefined };
+  const meta = agentMeta && typeof agentMeta === "object" ? agentMeta : {};
+  const errors = [];
+  if (!agentMeta || typeof agentMeta !== "object") errors.push("subagent sidecar is missing or malformed");
+  const rawDepth = meta.spawnDepth;
+  const depthKnown = Number.isInteger(rawDepth) && rawDepth >= 1;
+  const depth = depthKnown ? rawDepth : 1;
+  if (!depthKnown) errors.push(rawDepth === undefined ? "subagent sidecar is missing spawnDepth" : "subagent sidecar has malformed spawnDepth");
+  const parentAgentId = typeof meta.parentAgentId === "string" && meta.parentAgentId ? meta.parentAgentId : undefined;
+  if ((!parentAgentId && depth !== 1) || (parentAgentId && depth < 2)) errors.push("subagent depth disagrees with parentAgentId");
+  const toolUseId = typeof meta.toolUseId === "string" && meta.toolUseId ? meta.toolUseId : undefined;
+  return { isSubagent: true, depth, errors, parentAgentId, toolUseId };
+}
+
+export function parseClaudeFile({ path, text, host, fileVersion, fromLine = 0, baseLine: suppliedBaseLine = fromLine, agentMeta = null, parentSessionId = null, sidecar = null, attachments: suppliedAttachments = /** @type {Array<{file: string, bytes: number, sha256: string}>} */ ([]) }) {
+  // `baseLine` is the absolute source-line ordinal of text's first supplied
+  // line. `fromLine` remains its older spelling for callers that already use
+  // it; an explicit baseLine wins when both are present.
+  const baseLine = suppliedBaseLine ?? fromLine;
+  if (!Number.isInteger(baseLine) || baseLine < 0) throw new RangeError("baseLine must be a non-negative integer");
+  const child = claudeChildFacts(agentMeta, parentSessionId);
   const { lines, incompleteTail } = fileLines(text);
   const firstFileTimestamp = lines.map((raw) => { try { return millis(JSON.parse(raw).timestamp); } catch { return 0; } }).find(Boolean) ?? 0;
-  const rows = [], children = [], attachments = [], dropped = {};
+  const rows = [], children = [], attachments = attachmentPointers(suppliedAttachments ?? agentMeta?.attachments), dropped = {};
   const drop = (kind) => { dropped[kind] = (dropped[kind] ?? 0) + 1; };
   let sessionId = parentSessionId;
   let first = null, startedAt = firstFileTimestamp, lastLineAt = 0, model, runtimeVersion, modelChangeReported = false;
@@ -174,21 +264,22 @@ export function parseClaudeFile({ path, text, host, fileVersion, fromLine = 0, a
   const state = { tools: [], hooks: [], skillsOffered: [], skillsUsed: [], instructions: "", promptParts: [], firstUserPrompt: null };
   let human = false;
 
-  for (let line = 0; line < lines.length; line += 1) {
-    if (line < fromLine) continue;
-    const raw = lines[line];
+  for (let relativeLine = 0; relativeLine < lines.length; relativeLine += 1) {
+    const line = baseLine + relativeLine;
+    const raw = lines[relativeLine];
     if (raw.trim() === "") { drop("_blank"); continue; }
     let entry;
     try { entry = JSON.parse(raw); } catch {
-      rowFactory({ path, fileVersion, runId: "", rows, line, turn: Math.max(turn, 0), sourceKind: "malformed-json", timestamp: 0 })("error", { error: `malformed JSON at line ${line}` }, { depth: agentMeta?.spawnDepth ?? 0 });
+      rowFactory({ path, fileVersion, runId: "", rows, line, turn: Math.max(turn, 0), sourceKind: "malformed-json", timestamp: 0 })("error", { error: `malformed JSON at line ${line}` }, { depth: child.depth });
       continue;
     }
     first ??= entry;
     sessionId ??= entry.sessionId;
     const timestamp = millis(entry.timestamp); startedAt ||= timestamp; lastLineAt = timestamp || lastLineAt;
     runtimeVersion ??= entry.version;
-    const depth = agentMeta?.spawnDepth ?? 0;
-    const runId = agentMeta ? `claude:${host}:${parentSessionId}/${entry.agentId ?? agentMeta.agentId ?? "unknown"}` : `claude:${host}:${sessionId ?? "unknown"}`;
+    const depth = child.depth;
+    const rootId = `claude:${host}:${parentSessionId ?? sessionId ?? "unknown"}`;
+    const runId = child.isSubagent ? `${rootId}/${entry.agentId ?? agentMeta?.agentId ?? "unknown"}` : rootId;
     const sourceKind = entry.type === "system" ? `system/${entry.subtype ?? "unknown"}` : entry.type === "attachment" ? `attachment/${entry.attachment?.type ?? "unknown"}` : String(entry.type ?? "unknown");
     const emit = rowFactory({ path, fileVersion, runId, rows, line, turn: Math.max(turn, 0), sourceKind, timestamp });
     const rowsBefore = rows.length;
@@ -216,7 +307,14 @@ export function parseClaudeFile({ path, text, host, fileVersion, fromLine = 0, a
               const childRunId = `claude:${host}:${sessionId}/${child.agentId}`;
               const task = tasks.get(block.tool_use_id) ?? {};
               actualEmit("child-run", { childRunId, agentId: child.agentId, agentType: child.agentType ?? task.agentType, description: child.description ?? task.description, model: child.resolvedModel, status: child.status === "completed" ? "completed" : "launched", ...(child.status === "completed" ? { totalTokens: child.totalTokens, totalDurationMs: child.totalDurationMs, totalToolUseCount: child.totalToolUseCount } : {}) }, { depth, parentToolUseId: block.tool_use_id });
-              children.push({ runId: childRunId, parentRunId: runId, rootRunId: agentMeta ? `claude:${host}:${parentSessionId}` : runId, depth: depth + 1, spawnedByToolUseId: block.tool_use_id, linkKnown: true });
+              children.push({
+                runId: childRunId, parentRunId: runId,
+                rootRunId: child.isSubagent ? `claude:${host}:${parentSessionId ?? sessionId}` : runId,
+                depth: depth + 1,
+                ...(typeof block.tool_use_id === "string" && block.tool_use_id ? { spawnedByToolUseId: block.tool_use_id } : {}),
+                // A child id alone proves parentage, not which parent tool did it.
+                linkKnown: typeof block.tool_use_id === "string" && block.tool_use_id !== "",
+              });
             }
           }
         }
@@ -232,7 +330,12 @@ export function parseClaudeFile({ path, text, host, fileVersion, fromLine = 0, a
       for (const block of message.content ?? []) {
         if (block?.type === "thinking") emit("thinking", { text: block.thinking ?? "" }, { depth });
         else if (block?.type === "text") { const row = emit("assistant-text", { text: block.text ?? "" }, { depth }); finalTextSeq = row?.seq ?? finalTextSeq; }
-        else if (block?.type === "tool_use") { emit("tool-call", { id: block.id, name: block.name, input: block.input }, { depth }); toolCalls += 1; if (block.name === "Task") tasks.set(block.id, block.input); }
+        else if (block?.type === "tool_use") {
+          emit("tool-call", { id: block.id, name: block.name, input: block.input }, { depth });
+          if (block.name) state.tools.push(block.name);
+          toolCalls += 1;
+          if (block.name === "Task") tasks.set(block.id, block.input);
+        }
         else emit("system", { unknownAssistantBlock: block }, { depth });
       }
     } else if (entry.type === "system") {
@@ -265,27 +368,39 @@ export function parseClaudeFile({ path, text, host, fileVersion, fromLine = 0, a
     if (rows.length === rowsBefore && Object.values(dropped).reduce((sum, count) => sum + count, 0) === dropsBefore) drop(sourceKind);
   }
 
-  const rootRunId = agentMeta ? `claude:${host}:${parentSessionId}` : `claude:${host}:${sessionId ?? "unknown"}`;
+  const rootRunId = `claude:${host}:${parentSessionId ?? sessionId ?? "unknown"}`;
   const agentId = first?.agentId ?? agentMeta?.agentId ?? "unknown";
-  const runId = agentMeta ? `claude:${host}:${parentSessionId}/${agentId}` : rootRunId;
+  const runId = child.isSubagent ? `${rootRunId}/${agentId}` : rootRunId;
   const prompt = [state.instructions, ...state.promptParts, state.firstUserPrompt].filter((part) => typeof part === "string" && part !== "").join("\n");
   const context = claudeContext(prompt, first, state);
-  if (fromLine === 0) {
-    rows.unshift({ seq: 0, turn: 0, kind: "context", content: { ...context, prompt }, depth: agentMeta?.spawnDepth ?? 0, provenance: provenance({ path, fileVersion, line: 0, block: 0, sourceKind: "context" }), createdAt: startedAt });
+  if (baseLine === 0) {
+    rows.unshift({ seq: 0, turn: 0, kind: "context", content: { ...context, prompt }, depth: child.depth, provenance: provenance({ path, fileVersion, line: 0, block: 0, sourceKind: "context" }), createdAt: startedAt });
   }
   const usageValues = [...usages.values(), ...unkeyedUsage].map(totalsOf);
-  const totals = usageValues.reduce((sum, item) => Object.fromEntries(Object.keys(sum).map((key) => [key, sum[key] + item[key]])), { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, thinkingTokens: 0, totalTokens: 0 });
+  const totals = usageValues.reduce((sum, item) => ({
+    inputTokens: sum.inputTokens + item.inputTokens,
+    cacheReadTokens: sum.cacheReadTokens + item.cacheReadTokens,
+    cacheWriteTokens: sum.cacheWriteTokens + item.cacheWriteTokens,
+    cacheWrite5mTokens: sum.cacheWrite5mTokens + item.cacheWrite5mTokens,
+    cacheWrite1hTokens: sum.cacheWrite1hTokens + item.cacheWrite1hTokens,
+    cacheWriteBreakdownKnown: sum.cacheWriteBreakdownKnown && item.cacheWriteBreakdownKnown,
+    outputTokens: sum.outputTokens + item.outputTokens,
+    thinkingTokens: sum.thinkingTokens + item.thinkingTokens,
+  }), { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0, cacheWriteBreakdownKnown: true, outputTokens: 0, thinkingTokens: 0 });
   totals.totalTokens = totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens + totals.outputTokens;
+  totals.longContextRequests = 0;
   const price = costOf({ model: model ?? agentMeta?.model, totals });
   const run = {
-    runId, ...(agentMeta ? { parentRunId: agentMeta.parentAgentId ? `claude:${host}:${parentSessionId}/${agentMeta.parentAgentId}` : rootRunId, spawnedByToolUseId: agentMeta.toolUseId } : {}), rootRunId,
-    depth: agentMeta?.spawnDepth ?? 0, linkKnown: true, origin: "unknown", host, runner: "claude", ...(model ?? agentMeta?.model ? { model: model ?? agentMeta.model } : {}), ...(runtimeVersion ? { runtimeVersion } : {}), parserVersion: PARSER_VERSION,
-    ...(sessionModelOf(model ?? agentMeta?.model) ? { sessionModel: sessionModelOf(model ?? agentMeta?.model) } : {}), kind: agentMeta ? "subagent" : human ? "session" : "unknown", status: "unknown", startedAt, lastLineAt, context,
+    runId,
+    ...(child.isSubagent ? { parentRunId: child.parentAgentId ? `${rootRunId}/${child.parentAgentId}` : rootRunId } : {}),
+    ...(child.isSubagent && child.toolUseId ? { spawnedByToolUseId: child.toolUseId } : {}),
+    rootRunId, depth: child.depth, linkKnown: child.isSubagent ? Boolean(child.toolUseId) : true, origin: "unknown", host, runner: "claude", ...(model ?? agentMeta?.model ? { model: model ?? agentMeta.model } : {}), ...(runtimeVersion ? { runtimeVersion } : {}), parserVersion: PARSER_VERSION,
+    ...(sessionModelOf(model ?? agentMeta?.model) ? { sessionModel: sessionModelOf(model ?? agentMeta?.model) } : {}), kind: child.isSubagent ? "subagent" : human ? "session" : "unknown", status: "unknown", startedAt, lastLineAt, context, attachments,
     outcome: { ...(finalTextSeq !== undefined ? { finalTextSeq } : {}), totals, ...(price === null ? {} : { costUsd: price, priceTableVersion: priceTableVersion() }), turns: Math.max(1, turn + 1), toolCalls },
-    file: { path, sourceHash: sha256(Buffer.from(text)), storedHash: fileVersion, bytes: Buffer.byteLength(text), storedBytes: 0, committedLine: lines.length, committedPrefixSha256: prefixHash(lines, lines.length), incompleteTail },
+    file: { path, sourceHash: sha256(Buffer.from(text)), storedHash: fileVersion, bytes: Buffer.byteLength(text), storedBytes: 0, committedLine: baseLine + lines.length, committedPrefixSha256: prefixHash(lines, lines.length), ...(child.isSubagent && sidecarStoredHash(agentMeta, sidecar) ? { sidecarStoredHash: sidecarStoredHash(agentMeta, sidecar) } : {}), incompleteTail },
   };
-  if (agentMeta && (run.depth < 1 || (!agentMeta.parentAgentId && run.depth !== 1))) rows.push({ seq: Math.max(lines.length, 1) * 1000 + 999, turn: Math.max(turn, 0), kind: "error", content: { error: "subagent depth disagrees with parentAgentId" }, depth: run.depth, provenance: provenance({ path, fileVersion, line: Math.max(lines.length - 1, 0), block: 999, sourceKind: "agent-meta" }), createdAt: lastLineAt });
-  return finishResult({ run, rows, children, attachments, lastLine: lines.length, incompleteTail, dropped });
+  if (child.errors.length) rows.push({ seq: sourceSeq(baseLine + Math.max(lines.length - 1, 0), 999), turn: Math.max(turn, 0), kind: "error", content: { error: child.errors.join("; ") }, depth: run.depth, provenance: provenance({ path, fileVersion, line: baseLine + Math.max(lines.length - 1, 0), block: 999, sourceKind: "agent-meta" }), createdAt: lastLineAt });
+  return finishResult({ run, rows, children, attachments, lastLine: baseLine + lines.length, incompleteTail, dropped });
 }
 
 function codexParent(meta) {
@@ -295,21 +410,20 @@ function codexParent(meta) {
   return null;
 }
 
-export function parseCodexFile({ path, text, host, fileVersion, fromLine = 0 }) {
-  // See the Claude branch above: row emission is incremental, run facts are
-  // file-wide facts and therefore never become tail-only on an append.
-  if (fromLine > 0) {
-    const full = parseCodexFile({ path, text, host, fileVersion });
-    full.rows = full.rows.filter((row) => row.kind !== "context" && row.provenance.lineStart >= fromLine);
-    return full;
-  }
+export function parseCodexFile({ path, text, host, fileVersion, fromLine = 0, baseLine: suppliedBaseLine = fromLine }) {
+  // `baseLine` is the absolute source-line ordinal of text's first supplied
+  // line. `fromLine` remains its older spelling for callers that already use
+  // it; an explicit baseLine wins when both are present.
+  const baseLine = suppliedBaseLine ?? fromLine;
+  if (!Number.isInteger(baseLine) || baseLine < 0) throw new RangeError("baseLine must be a non-negative integer");
   const { lines, incompleteTail } = fileLines(text); const rows = [], children = [], attachments = [], dropped = {};
   const firstFileTimestamp = lines.map((raw) => { try { return millis(JSON.parse(raw).timestamp); } catch { return 0; } }).find(Boolean) ?? 0;
   const drop = (kind) => { dropped[kind] = (dropped[kind] ?? 0) + 1; };
   let meta = {}, runId, parentId, model, effort, startedAt = firstFileTimestamp, lastLineAt = 0, runtimeVersion, finalTextSeq, toolCalls = 0, approvalPolicy, sandboxPolicy, modelChangeReported = false;
   let currentTurn = 0; const turns = new Map(); let lastTokenCount = null; const usageRecords = []; let taskComplete = null; let lastAssistantText = null;
-  for (let line = 0; line < lines.length; line += 1) {
-    if (line < fromLine) continue; const raw = lines[line]; if (!raw.trim()) { drop("_blank"); continue; }
+  const longContextRequestKeys = new Set();
+  for (let relativeLine = 0; relativeLine < lines.length; relativeLine += 1) {
+    const line = baseLine + relativeLine; const raw = lines[relativeLine]; if (!raw.trim()) { drop("_blank"); continue; }
     let entry; try { entry = JSON.parse(raw); } catch { rowFactory({ path, fileVersion, runId: runId ?? `codex:${host}:unknown`, rows, line, turn: currentTurn, sourceKind: "malformed-json", timestamp: 0 })("error", { error: `malformed JSON at line ${line}` }); continue; }
     const payload = entry.payload ?? {}; const timestamp = millis(entry.timestamp); startedAt ||= timestamp; lastLineAt = timestamp || lastLineAt;
     if (entry.type === "session_meta") { meta = payload; const id = payload.id ?? payload.session_id ?? "unknown"; runId = `codex:${host}:${id}`; parentId = codexParent(payload); runtimeVersion = payload.cli_version; }
@@ -335,7 +449,16 @@ export function parseCodexFile({ path, text, host, fileVersion, fromLine = 0 }) 
       else if (payload.type === "function_call_output" || payload.type === "custom_tool_call_output") emit("tool-result", { toolUseId: payload.call_id, content: payload.output });
       else emit("system", { unknownResponseItem: payload });
     } else if (entry.type === "event_msg") {
-      if (payload.type === "token_count") lastTokenCount = payload.info?.total_token_usage ?? null;
+      if (payload.type === "token_count") {
+        lastTokenCount = payload.info?.total_token_usage ?? null;
+        const lastUsage = payload.info?.last_token_usage;
+        if (number(lastUsage?.input_tokens) > 272_000) {
+          // Rollouts normally emit one token_count per response. Prefer a
+          // response identifier when a future CLI supplies one, otherwise the
+          // source ordinal is the only honest per-request evidence.
+          longContextRequestKeys.add(String(payload.response_id ?? payload.info?.response_id ?? entry.ordinal ?? line));
+        }
+      }
       else if (payload.type === "task_complete") {
         // Only the last completion can supply the synthetic final-text row;
         // earlier completions are folded state and account as dropped.
@@ -349,8 +472,8 @@ export function parseCodexFile({ path, text, host, fileVersion, fromLine = 0 }) 
     // whether it duplicates the final assistant message.
     if (rows.length === rowsBefore && Object.values(dropped).reduce((sum, count) => sum + count, 0) === dropsBefore && !(entry.type === "event_msg" && payload.type === "task_complete")) drop(sourceKind);
   }
-  // Context is assembled from the full file because its metadata often sits
-  // before an incremental cursor; re-reading it changes no emitted rows.
+  // A full ingest assembles context from the metadata in the file. A tail has
+  // no synthetic context row, and its run facts are intentionally tail-local.
   for (const raw of lines) { try { const entry = JSON.parse(raw); const p = entry.payload ?? {}; if (entry.type === "session_meta") meta = p; if (entry.type === "turn_context") { model ??= p.model; effort ??= p.effort; approvalPolicy ??= p.approval_policy; sandboxPolicy ??= p.sandbox_policy?.type; } } catch {} }
   const id = meta.id ?? meta.session_id ?? "unknown"; runId = `codex:${host}:${id}`; parentId = codexParent(meta);
   const developer = lines.map((raw) => { try { return JSON.parse(raw); } catch { return null; } }).find((entry) => entry?.type === "response_item" && entry.payload?.type === "message" && entry.payload?.role === "developer");
@@ -360,14 +483,25 @@ export function parseCodexFile({ path, text, host, fileVersion, fromLine = 0 }) 
   for (const raw of lines) { try { const p = JSON.parse(raw).payload ?? {}; if (["custom_tool_call", "function_call"].includes(p.type) && p.name) tools.push(p.name); } catch {} }
   const permissionMode = sandboxPolicy ? `approval=${approvalPolicy ?? "unknown"}; sandbox=${sandboxPolicy}` : approvalPolicy;
   const context = { ...mot, skillsOffered: [], skillsUsed: [], tools: sorted(tools), hooks: [], ...(meta.cwd ? { cwd: meta.cwd } : {}), ...(meta.git?.branch ? { gitBranch: meta.git.branch } : {}), ...(meta.git?.commit_hash ? { gitCommit: meta.git.commit_hash } : {}), ...(meta.base_instructions?.text ? { baseInstructionsHash: sha256(meta.base_instructions.text) } : {}), ...(meta.originator ? { originator: meta.originator } : {}), ...(meta.context_window ? { contextWindow: meta.context_window } : {}), ...(permissionMode ? { permissionMode } : {}) };
-  if (fromLine === 0) rows.unshift({ seq: 0, turn: 0, kind: "context", content: { ...context, prompt }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: 0, block: 0, sourceKind: "context" }), createdAt: startedAt });
-  if (taskComplete?.message && taskComplete.message !== lastAssistantText) { const row = { seq: taskComplete.line * 1000 + 998, turn: taskComplete.turn, kind: "assistant-text", content: { text: taskComplete.message }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: taskComplete.line, block: 998, sourceKind: "event_msg/task_complete" }), createdAt: taskComplete.timestamp }; rows.push(row); finalTextSeq = row.seq; }
+  if (baseLine === 0) rows.unshift({ seq: 0, turn: 0, kind: "context", content: { ...context, prompt }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: 0, block: 0, sourceKind: "context" }), createdAt: startedAt });
+  if (taskComplete?.message && taskComplete.message !== lastAssistantText) { const row = { seq: sourceSeq(taskComplete.line, 998), turn: taskComplete.turn, kind: "assistant-text", content: { text: taskComplete.message }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: taskComplete.line, block: 998, sourceKind: "event_msg/task_complete" }), createdAt: taskComplete.timestamp }; rows.push(row); finalTextSeq = row.seq; }
   else if (taskComplete) drop("event_msg/task_complete");
-  const totals = lastTokenCount ? totalsOf(lastTokenCount) : usageRecords.map(totalsOf).reduce((sum, item) => Object.fromEntries(Object.keys(sum).map((key) => [key, sum[key] + item[key]])), { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, thinkingTokens: 0, totalTokens: 0 });
+  const totals = lastTokenCount ? totalsOf(lastTokenCount) : usageRecords.map(totalsOf).reduce((sum, item) => ({
+    inputTokens: sum.inputTokens + item.inputTokens,
+    cacheReadTokens: sum.cacheReadTokens + item.cacheReadTokens,
+    cacheWriteTokens: sum.cacheWriteTokens + item.cacheWriteTokens,
+    cacheWrite5mTokens: sum.cacheWrite5mTokens + item.cacheWrite5mTokens,
+    cacheWrite1hTokens: sum.cacheWrite1hTokens + item.cacheWrite1hTokens,
+    cacheWriteBreakdownKnown: sum.cacheWriteBreakdownKnown && item.cacheWriteBreakdownKnown,
+    outputTokens: sum.outputTokens + item.outputTokens,
+    thinkingTokens: sum.thinkingTokens + item.thinkingTokens,
+    totalTokens: sum.totalTokens + item.totalTokens,
+  }), { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0, cacheWriteBreakdownKnown: true, outputTokens: 0, thinkingTokens: 0, totalTokens: 0 });
+  totals.longContextRequests = longContextRequestKeys.size;
   const price = costOf({ model, totals });
   const rootRunId = parentId ? `codex:${host}:${parentId}` : runId;
-  const run = { runId, ...(parentId ? { parentRunId: rootRunId } : {}), rootRunId, depth: parentId ? 1 : 0, linkKnown: !parentId, origin: "unknown", host, runner: "codex", ...(model ? { model } : {}), ...(sessionModelOf(model) ? { sessionModel: sessionModelOf(model) } : {}), ...(effort ? { effort } : {}), ...(runtimeVersion ?? meta.cli_version ? { runtimeVersion: runtimeVersion ?? meta.cli_version } : {}), parserVersion: PARSER_VERSION, kind: parentId ? "codex-child" : "unknown", status: "unknown", startedAt, lastLineAt, context, outcome: { ...(finalTextSeq !== undefined ? { finalTextSeq } : {}), totals, ...(price === null ? {} : { costUsd: price, priceTableVersion: priceTableVersion() }), turns: Math.max(1, turns.size), toolCalls }, file: { path, sourceHash: sha256(Buffer.from(text)), storedHash: fileVersion, bytes: Buffer.byteLength(text), storedBytes: 0, committedLine: lines.length, committedPrefixSha256: prefixHash(lines, lines.length), incompleteTail } };
-  return finishResult({ run, rows, children, attachments, lastLine: lines.length, incompleteTail, dropped });
+  const run = { runId, ...(parentId ? { parentRunId: rootRunId } : {}), rootRunId, depth: parentId ? 1 : 0, linkKnown: !parentId, origin: "unknown", host, runner: "codex", ...(model ? { model } : {}), ...(sessionModelOf(model) ? { sessionModel: sessionModelOf(model) } : {}), ...(effort ? { effort } : {}), ...(runtimeVersion ?? meta.cli_version ? { runtimeVersion: runtimeVersion ?? meta.cli_version } : {}), parserVersion: PARSER_VERSION, kind: parentId ? "codex-child" : "unknown", status: "unknown", startedAt, lastLineAt, context, attachments, outcome: { ...(finalTextSeq !== undefined ? { finalTextSeq } : {}), totals, ...(price === null ? {} : { costUsd: price, priceTableVersion: priceTableVersion() }), turns: Math.max(1, turns.size), toolCalls }, file: { path, sourceHash: sha256(Buffer.from(text)), storedHash: fileVersion, bytes: Buffer.byteLength(text), storedBytes: 0, committedLine: baseLine + lines.length, committedPrefixSha256: prefixHash(lines, lines.length), incompleteTail } };
+  return finishResult({ run, rows, children, attachments, lastLine: baseLine + lines.length, incompleteTail, dropped });
 }
 
 export function discoverChildren(sessionFilePath, { fs = fsDefault } = {}) {

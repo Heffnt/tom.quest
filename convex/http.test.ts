@@ -104,8 +104,12 @@ describe("POST /tts/needs-tom: the needs-you room, or nothing", () => {
 
 // ── POST /runs/ingest: the immutable record's one door ───────────────────────
 const body = {
-  run: { runId: "claude:laptop:http", rootRunId: "claude:laptop:http", depth: 0, linkKnown: true, origin: "unknown", host: "laptop", runner: "claude", parserVersion: "runs-parser-1", kind: "session", status: "unknown", startedAt: 1, lastLineAt: 1, file: { path: "C:/http.jsonl", sourceHash: "source", storedHash: "stored", bytes: 1, storedBytes: 1, committedLine: 1, committedPrefixSha256: "prefix" } },
-  rows: [], children: [],
+  run: {
+    runId: "claude:laptop:http-run", rootRunId: "claude:laptop:http-run", depth: 0, linkKnown: true,
+    origin: "unknown", host: "laptop", runner: "claude", parserVersion: "runs-parser-1", kind: "session", status: "unknown", startedAt: 1, lastLineAt: 1, attachments: [],
+    file: { path: "C:/http.jsonl", sourceHash: "a".repeat(64), storedHash: "b".repeat(64), bytes: 1, storedBytes: 1, committedLine: 1, committedPrefixSha256: "c".repeat(64) },
+  },
+  rows: [], children: [], previousCommittedLine: 0, previousPrefixSha256: "d".repeat(64),
 };
 function post(t: ReturnType<typeof convexTest>, value: unknown, key?: string) {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -137,6 +141,54 @@ describe("POST /runs/ingest", () => {
     const t = convexTest({ schema, modules });
     const response = await post(t, body, "right");
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ ok: true, runId: "claude:laptop:http" });
+    expect(await response.json()).toMatchObject({ ok: true, runId: "claude:laptop:http-run" });
+  });
+
+  it("rejects over-limit bytes before attempting JSON parsing", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest({ schema, modules });
+    const response = await t.fetch("/runs/ingest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Sessions-Key": "right" },
+      body: "{".repeat(1024 * 1024 + 1),
+    });
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({ error: "request body too large" });
+  });
+
+  it("allows the exact ingest byte boundary through the bounded reader", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest({ schema, modules });
+    const nearBoundary = JSON.parse(JSON.stringify(body));
+    nearBoundary.run.file.path = "";
+    const baseBytes = new TextEncoder().encode(JSON.stringify(nearBoundary)).length;
+    nearBoundary.run.file.path = "x".repeat(1024 * 1024 - baseBytes);
+    expect(new TextEncoder().encode(JSON.stringify(nearBoundary)).length).toBe(1024 * 1024);
+    expect((await post(t, nearBoundary, "right")).status).not.toBe(413);
+  });
+});
+
+describe("POST /runs/overflow: bounded chunks", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  function overflowBodyAt(byteLength: number) {
+    const value: Record<string, unknown> = { runId: "claude:laptop:http-run", seq: 0, index: 0, chunkCount: 1, text: "" };
+    const base = new TextEncoder().encode(JSON.stringify(value)).length;
+    value.text = "x".repeat(byteLength - base);
+    return value;
+  }
+  async function postOverflow(t: ReturnType<typeof convexTest>, path: string, payload: string) {
+    return await t.fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-Sessions-Key": "right" }, body: payload });
+  }
+
+  it("accepts the 256 KiB plus envelope boundary and rejects one byte more", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest({ schema, modules });
+    const maxBody = 256 * 1024 + 4 * 1024;
+    const exact = JSON.stringify(overflowBodyAt(maxBody));
+    expect(new TextEncoder().encode(exact).length).toBe(maxBody);
+    expect((await postOverflow(t, "/runs/overflow", exact)).status).not.toBe(413);
+    const over = "{".repeat(maxBody + 1);
+    expect((await postOverflow(t, "/runs/overflow", over)).status).toBe(413);
+    expect((await postOverflow(t, "/runs/overflow/stamp", over)).status).toBe(413);
   });
 });

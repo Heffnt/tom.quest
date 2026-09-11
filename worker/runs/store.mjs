@@ -25,6 +25,22 @@ const safeThreadParts = (threadId) => {
   if (parts.length < 1 || parts.length > 2 || parts.some((part) => !part || part === "." || part === ".." || part.includes("\\"))) throw new Error("invalid run store thread id");
   return parts;
 };
+const KIND_EXTENSIONS = Object.freeze({ transcript: ".jsonl.gz", sidecar: ".sidecar.json.gz" });
+const kindOf = (kind) => {
+  if (!Object.hasOwn(KIND_EXTENSIONS, kind)) throw new Error("invalid run store object kind");
+  return kind;
+};
+const sourceDescriptorPath = (file, sourceHash) => `${file}.${sourceHash}.source.json`;
+const metadataPath = (file) => `${file}.meta.json`;
+const writeImmutableJson = (file, value, mismatch) => {
+  const bytes = Buffer.from(JSON.stringify(value));
+  try {
+    fs.writeFileSync(file, bytes, { flag: "wx" });
+  } catch (err) {
+    if (err?.code !== "EEXIST") throw err;
+    if (!fs.readFileSync(file).equals(bytes)) throw new Error(mismatch);
+  }
+};
 
 export function gzipDeterministic(bytes) {
   // gzipSync defaults mtime to zero; level is explicit so the object identity
@@ -37,37 +53,47 @@ export function openStore({ backend = "local", dir } = {}) {
   if (!dir) throw new Error("run store dir is required");
   const root = path.resolve(dir);
 
-  function objectPath({ runtime, threadId, host, fileVersion }) {
+  function objectPath({ runtime, threadId, host, fileVersion, kind = "transcript" }) {
     return path.join(
       root,
       "runs",
       safePart(runtime, "runtime"),
       safePart(host, "host"),
       ...safeThreadParts(threadId),
-      `${safePart(fileVersion, "file version")}.jsonl.gz`,
+      `${safePart(fileVersion, "file version")}${KIND_EXTENSIONS[kindOf(kind)]}`,
     );
   }
-  const metadataPath = (file) => `${file}.meta.json`;
 
   return {
-    put({ runtime, threadId, host, sourceBytes }) {
+    put({ runtime, threadId, host, sourceBytes, kind = "transcript" }) {
+      const objectKind = kindOf(kind);
       const source = Buffer.isBuffer(sourceBytes) ? sourceBytes : Buffer.from(sourceBytes);
       const sourceHash = sha256(source);
       const redacted = Buffer.from(redactSecrets(source.toString("utf8")), "utf8");
       const compressed = gzipDeterministic(redacted);
       const storedHash = sha256(compressed);
       const fileVersion = storedHash;
-      const file = objectPath({ runtime, threadId, host, fileVersion });
+      const file = objectPath({ runtime, threadId, host, fileVersion, kind: objectKind });
       const key = path.relative(root, file).split(path.sep).join("/");
+      const sourceKey = path.relative(root, sourceDescriptorPath(file, sourceHash)).split(path.sep).join("/");
       let created = false;
-      const descriptor = {
+      // Object facts are determined by the redacted bytes. Source facts are
+      // not: two originals can intentionally become one redacted object.
+      // Keeping the latter in a source-hash-suffixed immutable descriptor
+      // lets both valid sources coexist without weakening object integrity.
+      const intrinsic = {
         fileVersion,
-        sourceHash,
         storedHash,
-        bytes: source.length,
         storedBytes: compressed.length,
         key,
+        kind: objectKind,
       };
+      const sourceDescriptor = {
+        sourceHash,
+        bytes: source.length,
+        sourceKey,
+      };
+      const descriptor = { ...intrinsic, ...sourceDescriptor };
       if (fs.existsSync(file)) {
         const existing = fs.readFileSync(file);
         if (!existing.equals(compressed)) throw new Error("run store hash collision or corrupt object");
@@ -83,36 +109,28 @@ export function openStore({ backend = "local", dir } = {}) {
           if (!existing.equals(compressed)) throw new Error("run store hash collision or corrupt object");
         }
       }
-      // The source hash cannot be recovered from redacted bytes, yet it is
-      // the append-vs-rewrite fence. Keep the descriptor beside the immutable
-      // object, also write-once; it is metadata, not a second run object.
-      const meta = metadataPath(file);
-      if (fs.existsSync(meta)) {
-        const existing = JSON.parse(fs.readFileSync(meta, "utf8"));
-        if (JSON.stringify(existing) !== JSON.stringify(descriptor)) throw new Error("run store descriptor mismatch");
-      } else {
-        try { fs.writeFileSync(meta, JSON.stringify(descriptor), { flag: "wx" }); }
-        catch (err) {
-          if (err?.code !== "EEXIST") throw err;
-          const existing = JSON.parse(fs.readFileSync(meta, "utf8"));
-          if (JSON.stringify(existing) !== JSON.stringify(descriptor)) throw new Error("run store descriptor mismatch");
-        }
-      }
+      writeImmutableJson(metadataPath(file), intrinsic, "run store object metadata mismatch");
+      writeImmutableJson(sourceDescriptorPath(file, sourceHash), sourceDescriptor, "run store source descriptor mismatch");
       return { ...descriptor, created };
     },
 
-    head({ runtime, threadId, host, fileVersion }) {
-      const file = objectPath({ runtime, threadId, host, fileVersion });
+    head({ runtime, threadId, host, fileVersion, sourceHash, kind = "transcript" }) {
+      const objectKind = kindOf(kind);
+      const file = objectPath({ runtime, threadId, host, fileVersion, kind: objectKind });
       if (!fs.existsSync(file)) return null;
       const compressed = fs.readFileSync(file);
       if (sha256(compressed) !== fileVersion) throw new Error("run store object hash mismatch");
       const meta = metadataPath(file);
       if (!fs.existsSync(meta)) throw new Error("run store descriptor missing");
-      return JSON.parse(fs.readFileSync(meta, "utf8"));
+      const intrinsic = JSON.parse(fs.readFileSync(meta, "utf8"));
+      if (sourceHash === undefined) return intrinsic;
+      const sourceMeta = sourceDescriptorPath(file, safePart(sourceHash, "source hash"));
+      if (!fs.existsSync(sourceMeta)) return null;
+      return { ...intrinsic, ...JSON.parse(fs.readFileSync(sourceMeta, "utf8")) };
     },
 
-    get({ runtime, threadId, host, fileVersion }) {
-      const file = objectPath({ runtime, threadId, host, fileVersion });
+    get({ runtime, threadId, host, fileVersion, kind = "transcript" }) {
+      const file = objectPath({ runtime, threadId, host, fileVersion, kind: kindOf(kind) });
       if (!fs.existsSync(file)) throw new Error("run store object not found");
       const compressed = fs.readFileSync(file);
       if (sha256(compressed) !== fileVersion) throw new Error("run store object hash mismatch");
