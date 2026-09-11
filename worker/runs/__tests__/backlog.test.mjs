@@ -204,9 +204,21 @@ function archiveTree(dir, { session = "session", date = "2026-08-30", host = "bo
     const dest = `${base}/${segment}attachments/tool-results/${tool.name}`;
     lines.push(manifestLine({ ...common, kind: "attachment", source: tool.source, dest, ...write(dest, tool.bytes) }));
   }
+  // A Workflow's agents are filed one folder deeper, and the workflow's own
+  // journal and scripts sit beside them.
   for (const extra of files.nested ?? []) {
-    const dest = `${base}/${segment}children/subagents/workflows/${extra.workflow}/agent-${extra.agentId}.jsonl.gz`;
+    const folder = `${base}/${segment}children/subagents/workflows/${extra.workflow}`;
+    const dest = `${folder}/agent-${extra.agentId}.jsonl.gz`;
     lines.push(manifestLine({ ...common, kind: "child", source: extra.source, dest, ...write(dest, extra.bytes) }));
+    if (extra.sidecar) {
+      const metaDest = `${base}/${segment}attachments/subagents/workflows/${extra.workflow}/agent-${extra.agentId}.meta.json.gz`;
+      lines.push(manifestLine({ ...common, kind: "attachment", source: extra.sidecar.source, dest: metaDest, ...write(metaDest, extra.sidecar.bytes) }));
+    }
+  }
+  // Anything else the session carried, filed exactly where the archive put it.
+  for (const extra of files.extras ?? []) {
+    const dest = `${base}/${segment}${extra.tail}`;
+    lines.push(manifestLine({ ...common, kind: "attachment", source: extra.source, dest, ...write(dest, extra.bytes) }));
   }
   const file = path.join(sessionsDir, `manifest-${manifest}-2026-09-05.jsonl`);
   fs.appendFileSync(file, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
@@ -239,18 +251,50 @@ describe("backlog work lists", () => {
     expect(ordered.map((entry) => entry.threadId)).toEqual(["aaa", "ccc", "bbb"]);
   });
 
-  it("counts a nested workflow child as skipped rather than inventing a run id for it", () => {
+  // The archive files a Workflow's agents one folder deeper and parks the
+  // workflow's own journal beside them. The FILE NAME says which is a
+  // transcript; the `.jsonl` extension says nothing, and the folder says only
+  // which workflow the agent belonged to.
+  it("names a workflow's agent a run and the journal beside it an attachment", () => {
     const dir = temp();
     archiveTree(dir, {
       files: {
         parent: { source: "/root/session.jsonl", bytes: Buffer.from(jsonl(PARENT_ROWS)) },
         nested: [{ workflow: "wf_1", agentId: "deep", source: "/root/deep.jsonl", bytes: Buffer.from(jsonl(CHILD_ROWS)) }],
+        extras: [
+          { tail: "children/subagents/workflows/wf_1/journal.jsonl.gz", source: "/root/journal.jsonl", bytes: Buffer.from(JSON.stringify({ phase: 1 })) },
+          { tail: "attachments/workflows/wf_1.json", source: "/root/wf_1.json", bytes: Buffer.from(JSON.stringify({})) },
+        ],
       },
     });
     const built = archiveEntries({ sessionsDir: path.join(dir, "sessions") });
-    expect(built.skippedNestedChild).toBe(1);
+    expect(built.workflowAgents).toBe(1);
     expect(built.entries).toHaveLength(1);
-    expect(built.entries[0].children).toHaveLength(0);
+    expect(built.entries[0].children.map((child) => [child.threadId, child.workflowId])).toEqual([["session/deep", "wf_1"]]);
+    // Neither the journal nor the workflow's own script is a run, and the root
+    // is the nearest run left to hold them.
+    expect(built.entries[0].attachments.map((item) => path.basename(item.file)).sort()).toEqual(["journal.jsonl", "wf_1.json"]);
+    expect(built.skippedUnknownDest).toBe(0);
+  });
+
+  it("carries an agent's sidecar as that agent's pointer, however deep it was filed", () => {
+    const dir = temp();
+    archiveTree(dir, {
+      files: {
+        parent: { source: "/root/session.jsonl", bytes: Buffer.from(jsonl(PARENT_ROWS)) },
+        nested: [{
+          workflow: "wf_2", agentId: "deep", source: "/root/deep.jsonl", bytes: Buffer.from(jsonl(CHILD_ROWS)),
+          sidecar: { source: "/root/deep.meta.json", bytes: Buffer.from(JSON.stringify({ agentType: "workflow-subagent", spawnDepth: 2 })) },
+        }],
+      },
+    });
+    const built = archiveEntries({ sessionsDir: path.join(dir, "sessions") });
+    const [child] = built.entries[0].children;
+    expect(child.sidecarKey).toContain("attachments/subagents/workflows/wf_2/agent-deep.meta.json.gz");
+    expect(child.attachments.map((item) => path.basename(item.file))).toEqual(["deep.meta.json"]);
+    // The root keeps none of it: the sidecar names an agent, so it is the
+    // agent's.
+    expect(built.entries[0].attachments).toEqual([]);
   });
 
   it("takes a dest apart the way the manifests wrote it", () => {
@@ -677,6 +721,76 @@ describe("the archive reader", () => {
     const [unit] = unitsOf(JSON.parse(fs.readFileSync(listFileFor(cfg.stateDir, "archive"), "utf8").trim()), { sessionsDir: cfg.backlog.sessionsDir });
     const parsed = parseUnit(unit, { text: storeText(bytes), fileVersion: sha256(bytes) });
     expect(parsed.rows.some((row) => row.kind === "error" && String(row.content.error).includes("sidecar"))).toBe(true);
+  });
+
+  // The sweep and the import must agree about a Workflow's agent, or the same
+  // run would land twice under two different ids. Both name it by its file and
+  // take the workflow off the folder.
+  it("imports a workflow's agent as a run of its own, workflow id and all", async () => {
+    const dir = temp();
+    const cfg = config(dir);
+    const bytes = Buffer.from(jsonl(withSession(CHILD_ROWS, "wfs")));
+    const thin = Buffer.from(JSON.stringify({ agentType: "workflow-subagent", spawnDepth: 2, model: "opus" }));
+    archiveTree(dir, {
+      session: "wfs", date: "2026-08-29", host: "box",
+      files: {
+        parent: { source: "/root/wfs.jsonl", bytes: Buffer.from(jsonl(withSession(PARENT_ROWS, "wfs"))) },
+        nested: [
+          { workflow: "wf_a", agentId: "one", source: "/root/one.jsonl", bytes, sidecar: { source: "/root/one.meta.json", bytes: thin } },
+          { workflow: "wf_a", agentId: "two", source: "/root/two.jsonl", bytes },
+        ],
+        extras: [{ tail: "children/subagents/workflows/wf_a/journal.jsonl.gz", source: "/root/journal.jsonl", bytes: Buffer.from(JSON.stringify({ phase: 1 })) }],
+      },
+    });
+    buildLists({ config: cfg, fs: bigDiskFs(), now: () => NOW, sources: ["archive"] });
+    const store = fakeStore(); const sink = recorder();
+    const result = await pass(dir, { config: cfg, store, post: sink.post, source: "archive" });
+    expect(result.sources[0].imported).toBe(3);
+    const runs = Object.fromEntries(sink.ingests().map((body) => [body.run.runId, body.run]));
+    expect(Object.keys(runs).sort()).toEqual(["claude:box:wfs", "claude:box:wfs/one", "claude:box:wfs/two"]);
+
+    // A thin sidecar is the whole of what a workflow agent's meta.json holds:
+    // its depth is believed, its parent is the session root, and the tool call
+    // that spawned it stays unknown rather than synthesized.
+    const withSidecar = runs["claude:box:wfs/one"];
+    expect(withSidecar).toMatchObject({
+      parentRunId: "claude:box:wfs", rootRunId: "claude:box:wfs",
+      depth: 2, kind: "subagent", origin: "workflow", linkKnown: false,
+    });
+    expect(withSidecar.context.workflowId).toBe("wf_a");
+    expect(withSidecar.spawnedByToolUseId).toBeUndefined();
+    expect(withSidecar.attachments.map((item) => path.basename(item.file))).toEqual(["one.meta.json"]);
+
+    // No sidecar at all: depth 1, the same default the sweep writes, and the
+    // workflow id still comes off the folder.
+    const noSidecar = runs["claude:box:wfs/two"];
+    expect(noSidecar).toMatchObject({ depth: 1, origin: "workflow", linkKnown: false });
+    expect(noSidecar.context.workflowId).toBe("wf_a");
+
+    // The journal is not a transcript of anything, so it is a pointer on the
+    // root and never a run.
+    expect(runs["claude:box:wfs"].attachments.map((item) => path.basename(item.file))).toEqual(["journal.jsonl"]);
+  });
+
+  it("finds a live workflow agent in its nested folder and names it the same way", async () => {
+    const dir = temp();
+    const cfg = config(dir);
+    const tree = claudeTree(dir, { session: "live", project: "proj", mtime: NOW - 3_600_000 });
+    const folder = path.join(path.dirname(tree.child), "workflows", "wf_live");
+    fs.mkdirSync(folder, { recursive: true });
+    const nested = path.join(folder, "agent-deep.jsonl");
+    fs.writeFileSync(nested, jsonl(withSession(CHILD_ROWS, "live")));
+    fs.writeFileSync(path.join(folder, "journal.jsonl"), JSON.stringify({ phase: 1 }));
+    fs.utimesSync(nested, new Date(NOW - 3_600_000), new Date(NOW - 3_600_000));
+    buildLists({ config: cfg, fs: bigDiskFs(), now: () => NOW, sources: ["claude-live"] });
+    const store = fakeStore(); const sink = recorder();
+    await pass(dir, { config: cfg, store, post: sink.post, source: "claude-live" });
+    const runs = Object.fromEntries(sink.ingests().map((body) => [body.run.runId, body.run]));
+    const deep = runs["claude:laptop:live/deep"];
+    expect(deep).toMatchObject({ parentRunId: "claude:laptop:live", depth: 1, origin: "workflow", linkKnown: false });
+    expect(deep.context.workflowId).toBe("wf_live");
+    // The journal is the root's pointer here too, and no run of its own.
+    expect(runs["claude:laptop:live"].attachments.map((item) => path.basename(item.file)).sort()).toEqual(["journal.jsonl", "output.txt"]);
   });
 });
 

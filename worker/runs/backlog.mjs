@@ -34,7 +34,7 @@ import { pathToFileURL } from "node:url";
 
 import { readManifests, indexManifests } from "../jobs/session-archive.mjs";
 import { runConfig, BACKLOG_DEFAULTS } from "./config.mjs";
-import { discoverRunFiles } from "./discover.mjs";
+import { AGENT_FILE, AGENT_SIDECAR, discoverRunFiles, workflowIdOf } from "./discover.mjs";
 import { discoverChildren, parseClaudeFile, parseCodexFile } from "./ingest.mjs";
 import { openStore } from "./store.mjs";
 import {
@@ -257,38 +257,57 @@ export function archiveDest(dest) {
   return { runtime, id, account, tail: rest.join("/") };
 }
 
-const CHILD_AGENT = /^children\/subagents\/agent-(.+)\.jsonl\.gz$/;
-const SIDECAR_AGENT = /^attachments\/subagents\/agent-(.+)\.meta\.json\.gz$/;
 const CODEX_CHILD = /^children\/(.+)\.jsonl\.gz$/;
-const TOOL_RESULT = /^attachments\/tool-results\/(.+)$/;
-const NESTED = /^(children|attachments)\/subagents\/workflows\//;
-// A workflow's own artifacts — its scripts and outputs — are filed beside the
-// subagents but are not a transcript of anything, so they are neither a run nor
-// a tool-result pointer. Counted rather than called unknown.
-const WORKFLOW_ARTIFACT = /^attachments\/workflows\//;
+
+/**
+ * What one archived file under a Claude session folder IS — the same question
+ * `describeClaude` answers for a live directory, asked of a manifest `dest`.
+ *
+ * A child transcript is `agent-<agentId>.jsonl` ANYWHERE under a `subagents/`
+ * segment, and it is the FILE NAME that says so, never the `.jsonl` extension:
+ * the archive files a Workflow's agents one folder deeper at
+ * `children/subagents/workflows/wf_<id>/` and parks the workflow's own
+ * `journal.jsonl.gz` beside them, and that journal is not a transcript of
+ * anything. Everything that is not an agent transcript is an attachment
+ * pointer on the nearest run: the agent its name gives for
+ * `agent-<id>.meta.json`, and the root for all the rest.
+ */
+export function archiveClaudeFile(tail) {
+  const parts = String(tail ?? "").split("/");
+  const name = parts.at(-1) ?? "";
+  // The archive gzips every file it keeps, so the name to match is the source
+  // name — one `.gz` off, and nothing else assumed about it.
+  const sourceName = name.endsWith(".gz") ? name.slice(0, -3) : name;
+  const underSubagents = parts.includes("subagents");
+  const workflowId = workflowIdOf(parts);
+  const agent = underSubagents ? AGENT_FILE.exec(sourceName) : null;
+  if (agent) return { kind: "child", agentId: agent[1], workflowId, sourceName };
+  const sidecar = underSubagents ? AGENT_SIDECAR.exec(sourceName) : null;
+  if (sidecar) return { kind: "sidecar", agentId: sidecar[1], workflowId, sourceName };
+  return { kind: "attachment", agentId: null, workflowId, sourceName };
+}
 
 /**
  * The work list for `--source archive`, built from the manifests through
  * session-archive.mjs's own readers and nothing else.
  *
- * A run id is `claude:<host>:<session>[/<agentId>]` and the store takes at most
- * one `/` in a thread id, so a workflow subagent written at
- * `children/subagents/workflows/wf_<id>/agent-<id>.jsonl.gz` CANNOT be a run of
- * its own. Those lines are counted and skipped — the same rule the live
- * sweeper's describeClaude already applies to the directory they came from.
+ * A workflow's agent is a run like any other. Its thread id is
+ * `<session>/<agentId>` — one slash, which is all the store takes — and the
+ * `wf_<id>` folder it was filed under is where the file lived, not who the run
+ * is; that folder name becomes `context.workflowId` and `origin: "workflow"`
+ * instead. Everything under the session that is not an agent transcript is an
+ * attachment pointer on the nearest run rather than a line nobody kept.
  */
 export function archiveEntries({ sessionsDir, entries = readManifests(sessionsDir) } = {}) {
   const { accountsBySession } = indexManifests(entries);
   const groups = new Map();
-  let skippedNestedChild = 0;
-  let skippedWorkflowArtifact = 0;
+  let workflowAgents = 0;
+  let attachmentPointers = 0;
   let skippedUnknownDest = 0;
 
   for (const line of entries) {
     const dest = archiveDest(line.dest);
     if (!dest) { skippedUnknownDest += 1; continue; }
-    if (NESTED.test(dest.tail)) { skippedNestedChild += 1; continue; }
-    if (WORKFLOW_ARTIFACT.test(dest.tail)) { skippedWorkflowArtifact += 1; continue; }
     // The laptop manifest predates the host, runtime, account and parent
     // columns. Its own filename, its 19,297 uniform lines and the archive's
     // README all say the same thing, and a host is never guessed from a path.
@@ -297,37 +316,63 @@ export function archiveEntries({ sessionsDir, entries = readManifests(sessionsDi
     const key = `${runtime}|${dest.id}|${dest.account ?? ""}`;
     const group = groups.get(key) ?? {
       runtime, host, id: dest.id, account: dest.account,
-      parent: null, children: new Map(), sidecars: new Map(), attachments: [], codexChildren: [],
+      parent: null, children: new Map(), sidecars: new Map(), workflows: new Map(),
+      attachments: [], agentAttachments: new Map(), codexChildren: [],
     };
     groups.set(key, group);
+
+    // The pointer names the file where it actually was, which is what the live
+    // path records too, and takes bytes and sha256 from the manifest — both
+    // over the original source — rather than gunzipping twelve thousand
+    // attachments to recompute what is already written down.
+    const pointer = () => (/^[0-9a-f]{64}$/.test(String(line.sha256)) && Number.isInteger(line.raw_bytes) && typeof line.source === "string"
+      ? { file: line.source, bytes: line.raw_bytes, sha256: line.sha256 }
+      : null);
+    const attach = (agentId) => {
+      const item = pointer();
+      if (!item) return;
+      attachmentPointers += 1;
+      if (agentId === null) { group.attachments.push(item); return; }
+      const own = group.agentAttachments.get(agentId) ?? [];
+      own.push(item);
+      group.agentAttachments.set(agentId, own);
+    };
 
     if (dest.tail === "session.jsonl.gz" || dest.tail === "rollout.jsonl.gz") {
       group.parent = line;
       continue;
     }
-    const child = CHILD_AGENT.exec(dest.tail);
-    if (runtime === "claude" && child) { group.children.set(child[1], line); continue; }
-    const sidecar = SIDECAR_AGENT.exec(dest.tail);
-    if (runtime === "claude" && sidecar) { group.sidecars.set(sidecar[1], line); continue; }
-    const tool = TOOL_RESULT.exec(dest.tail);
-    if (tool) {
-      // The pointer names the file where it actually was, which is what the
-      // live path records too, and takes bytes and sha256 from the manifest —
-      // both over the original source — rather than gunzipping twelve thousand
-      // attachments to recompute what is already written down.
-      if (/^[0-9a-f]{64}$/.test(String(line.sha256)) && Number.isInteger(line.raw_bytes) && typeof line.source === "string") {
-        group.attachments.push({ file: line.source, bytes: line.raw_bytes, sha256: line.sha256 });
-      }
+    if (runtime === "codex") {
+      const codexChild = CODEX_CHILD.exec(dest.tail);
+      if (codexChild) { group.codexChildren.push({ threadId: codexChild[1], line }); continue; }
+      attach(null);
       continue;
     }
-    const codexChild = CODEX_CHILD.exec(dest.tail);
-    if (runtime === "codex" && codexChild) { group.codexChildren.push({ threadId: codexChild[1], line }); continue; }
-    skippedUnknownDest += 1;
+    const file = archiveClaudeFile(dest.tail);
+    if (file.kind === "child") {
+      group.children.set(file.agentId, line);
+      if (file.workflowId) { group.workflows.set(file.agentId, file.workflowId); workflowAgents += 1; }
+      continue;
+    }
+    if (file.kind === "sidecar") {
+      group.sidecars.set(file.agentId, line);
+      if (file.workflowId) group.workflows.set(file.agentId, file.workflowId);
+      // The sidecar is the one file under the session that names an agent, so
+      // it is that agent's attachment as well as its own stored object — the
+      // sweep records it in both places for the same reason.
+      attach(file.agentId);
+      continue;
+    }
+    // Whatever else the session carried: a tool result, a workflow's journal
+    // or its own script. None of them is a transcript, all of them belong to
+    // the run they were written under.
+    attach(null);
   }
 
   const list = [];
   const childEntry = (group, agentId, line) => {
     const sidecar = group.sidecars.get(agentId);
+    const workflowId = group.workflows.get(agentId);
     return {
       key: line.dest,
       threadId: `${group.id}/${agentId}`,
@@ -335,11 +380,18 @@ export function archiveEntries({ sessionsDir, entries = readManifests(sessionsDi
       path: line.source,
       bytes: Number(line.raw_bytes) || 0,
       at: archiveAt(line.date),
+      ...(workflowId ? { workflowId } : {}),
       ...(sidecar ? { sidecarKey: sidecar.dest, sidecarPath: sidecar.source } : {}),
+      attachments: group.agentAttachments.get(agentId) ?? [],
     };
   };
 
   for (const group of groups.values()) {
+    // A sidecar whose transcript never reached the archive still belongs to the
+    // record, and the root is the nearest run left to hold it.
+    for (const [agentId, own] of group.agentAttachments) {
+      if (!group.children.has(agentId)) { group.attachments.push(...own); group.agentAttachments.delete(agentId); }
+    }
     const split = group.runtime === "claude" && (accountsBySession.get(group.id)?.size ?? 0) > 1;
     const common = {
       source: "archive",
@@ -387,7 +439,7 @@ export function archiveEntries({ sessionsDir, entries = readManifests(sessionsDi
       });
     }
   }
-  return { entries: list, skippedNestedChild, skippedWorkflowArtifact, skippedUnknownDest, manifestLines: entries.length };
+  return { entries: list, workflowAgents, attachmentPointers, skippedUnknownDest, manifestLines: entries.length };
 }
 
 // ── The work lists ───────────────────────────────────────────────────────────
@@ -407,6 +459,7 @@ function liveEntries({ source, config, fs }) {
       path: item.path,
       bytes: item.bytes,
       at: item.mtimeMs,
+      ...(item.workflowId ? { workflowId: item.workflowId } : {}),
       ...(item.kind === "subagent"
         ? { sidecarPath: item.path.replace(/\.jsonl$/i, ".meta.json"), parentSessionId: item.threadId.split("/")[0] }
         : {}),
@@ -483,8 +536,8 @@ export function buildLists({
       const built = archiveEntries({ sessionsDir: settings.sessionsDir });
       entries = built.entries;
       extra = {
-        skippedNestedChild: built.skippedNestedChild,
-        skippedWorkflowArtifact: built.skippedWorkflowArtifact,
+        workflowAgents: built.workflowAgents,
+        attachmentPointers: built.attachmentPointers,
         skippedUnknownDest: built.skippedUnknownDest,
         manifestLines: built.manifestLines,
       };
@@ -564,6 +617,7 @@ export function unitsOf(entry, { sessionsDir } = {}) {
       bytes: Number(entry.bytes ?? 0),
       gz: archiveGz(entry.key),
       ...(entry.sidecarKey ? { sidecarGz: archiveGz(entry.sidecarKey) } : {}),
+      ...(entry.workflowId ? { workflowId: entry.workflowId } : {}),
       ...(entry.orphan ? { parentSessionId: entry.parentSessionId } : {}),
       attachments: entry.attachments ?? [],
     });
@@ -576,8 +630,9 @@ export function unitsOf(entry, { sessionsDir } = {}) {
         bytes: Number(child.bytes ?? 0),
         gz: archiveGz(child.key),
         ...(child.sidecarKey ? { sidecarGz: archiveGz(child.sidecarKey) } : {}),
+        ...(child.workflowId ? { workflowId: child.workflowId } : {}),
         parentSessionId: entry.threadId,
-        attachments: [],
+        attachments: child.attachments ?? [],
       });
     }
     return units;
@@ -590,6 +645,7 @@ export function unitsOf(entry, { sessionsDir } = {}) {
     bytes: Number(entry.bytes ?? 0),
     file: entry.path,
     ...(entry.sidecarPath ? { sidecarFile: entry.sidecarPath } : {}),
+    ...(entry.workflowId ? { workflowId: entry.workflowId } : {}),
     ...(entry.parentSessionId ? { parentSessionId: entry.parentSessionId } : {}),
     attachments: null,
   }];
@@ -783,6 +839,12 @@ export function parseUnit(unit, { text, fileVersion, sidecarBytes = null, sideca
     if (sidecarBytes) {
       try { meta = JSON.parse(sidecarBytes.toString("utf8")); } catch {}
     }
+    // A workflow's sidecar never names its workflow — the folder does, and a
+    // workflow agent's sidecar is thin anyway (an agentType and a spawnDepth,
+    // sometimes a model). Depth 1 is the default the sweep uses for the same
+    // file, and the spawning tool call stays unknown rather than invented:
+    // `linkKnown: false` is the parser's own word for that.
+    const base = { agentId, ...(unit.workflowId ? { workflowId: unit.workflowId } : {}) };
     return parseClaudeFile({
       path: unit.path,
       text,
@@ -793,9 +855,16 @@ export function parseUnit(unit, { text, fileVersion, sidecarBytes = null, sideca
       // left to it, though — the file's own name proves that, and two
       // sidecar-less children of one session would otherwise collide on the
       // run id `.../unknown`.
-      agentMeta: meta === null ? { agentId } : { ...meta, agentId },
+      agentMeta: meta === null ? (unit.workflowId ? { ...base, spawnDepth: 1 } : base) : { ...meta, ...base },
       parentSessionId: unit.parentSessionId ?? String(unit.threadId).split("/")[0],
       sidecar: sidecarStored ? { storedHash: sidecarStored.storedHash, fileVersion: sidecarStored.fileVersion } : null,
+      // The sidecar travels with the agent it names, as a pointer as well as a
+      // stored object — the sweep records it in both places too. An archive
+      // entry already carries it from the manifest; a live one is measured
+      // here off the bytes just read, so the two agree pointer for pointer.
+      attachments: unit.attachments ?? (sidecarBytes && unit.sidecarFile
+        ? [{ file: unit.sidecarFile, bytes: sidecarBytes.length, sha256: crypto.createHash("sha256").update(sidecarBytes).digest("hex") }]
+        : []),
     });
   }
   // Attachments stay pointers. An archive entry takes bytes and sha256 from the
@@ -1127,7 +1196,8 @@ export function backlogStatus({ config = runConfig(), fs = fsDefault, now = Date
       remainingBytes: remaining.reduce((sum, entry) => sum + entryBytes(entry), 0),
       builtAt: meta[source]?.at ?? null,
       builtMs: meta[source]?.builtMs ?? null,
-      skippedNestedChild: meta[source]?.skippedNestedChild ?? 0,
+      workflowAgents: meta[source]?.workflowAgents ?? 0,
+      attachmentPointers: meta[source]?.attachmentPointers ?? 0,
     };
   });
   const budget = readJson(path.join(dir, "budget.json"), fs) ?? { windowStart: 0, bytesUsed: 0 };
@@ -1171,7 +1241,7 @@ export async function backlogMain(argv, { config = runConfig(), fs = fsDefault, 
   if (options.buildList) {
     const built = buildLists({ config, fs, now, ...(options.source ? { sources: [options.source] } : {}), log: say });
     for (const record of built.built) {
-      say(`list ${record.source} entries=${record.entries} runs=${record.runs} bytes=${record.bytes} builtMs=${record.builtMs} nested-skipped=${record.skippedNestedChild ?? 0} cursor=${record.cursorPreserved ? "kept" : "reset"}`);
+      say(`list ${record.source} entries=${record.entries} runs=${record.runs} bytes=${record.bytes} builtMs=${record.builtMs} workflow-agents=${record.workflowAgents ?? 0} attachments=${record.attachmentPointers ?? 0} cursor=${record.cursorPreserved ? "kept" : "reset"}`);
     }
     return 0;
   }
@@ -1180,7 +1250,7 @@ export async function backlogMain(argv, { config = runConfig(), fs = fsDefault, 
     say(`host=${status.host} budget=${status.budget.bytesUsed}/${status.budget.bytesPerHour} windowRemainingMs=${status.budget.windowRemainingMs} passMs=${status.passMs} failed=${status.failed} deletableFiles=${status.deletable.files} deletableBytes=${status.deletable.bytes}`);
     say(`pause disk=${status.pause.disk} storeLocal=${status.pause.storeLocal} queueBlocked=${status.pause.queueBlocked} sweeperLock=${status.pause.sweeperLock} freeBytes=${status.pause.freeBytes ?? "-"} queued=${status.pause.queued}`);
     for (const record of status.sources) {
-      say(`${record.source} list=${record.list} entries=${record.entries} runs=${record.runs} cursor=${record.cursor} remaining=${record.remaining} remainingBytes=${record.remainingBytes} builtAt=${record.builtAt ?? "-"} builtMs=${record.builtMs ?? "-"} nested-skipped=${record.skippedNestedChild}`);
+      say(`${record.source} list=${record.list} entries=${record.entries} runs=${record.runs} cursor=${record.cursor} remaining=${record.remaining} remainingBytes=${record.remainingBytes} builtAt=${record.builtAt ?? "-"} builtMs=${record.builtMs ?? "-"} workflow-agents=${record.workflowAgents} attachments=${record.attachmentPointers}`);
     }
     return 0;
   }
