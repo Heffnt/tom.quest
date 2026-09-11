@@ -226,21 +226,26 @@ describe("POST /runs/overflow: bounded chunks", () => {
 describe("phase 3 run routes", () => {
   afterEach(() => vi.unstubAllEnvs());
 
+  // The run-id grammar wants at least eight characters in the thread segment,
+  // so the suffix names the session rather than abbreviating it.
+  const runIdFor = (suffix: string) => `claude:laptop:${suffix}-session`;
+
   async function linkedSession(t: ReturnType<typeof convexTest>, suffix: string) {
     const sessionId = await t.run((ctx) => ctx.db.insert("claudeSessions", {
       title: suffix, kind: "adhoc", repo: "none", status: "ended",
       statusChangedAt: Date.now(), nextSeq: 0, createdAt: Date.now(),
     }));
-    await t.mutation(internal.runs.internalIngest, {
+    const result = await t.mutation(internal.runs.internalIngest, {
+      ...body,
       run: {
         ...body.run,
-        runId: `claude:laptop:${suffix}`,
-        rootRunId: `claude:laptop:${suffix}`,
+        runId: runIdFor(suffix),
+        rootRunId: runIdFor(suffix),
         sessionId,
         status: "ended",
       },
-      rows: [], children: [],
     } as never);
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
     return sessionId;
   }
 
@@ -263,7 +268,7 @@ describe("phase 3 run routes", () => {
       body: JSON.stringify({ sessionId: direct }),
     });
     expect(directResponse.status).toBe(200);
-    expect(await directResponse.json()).toMatchObject({ runId: "claude:laptop:direct", clean: true });
+    expect(await directResponse.json()).toMatchObject({ runId: runIdFor("direct"), clean: true });
 
     await linkedSession(t, "batch");
     const batchResponse = await t.fetch("/runs/compare", {
@@ -272,7 +277,7 @@ describe("phase 3 run routes", () => {
       body: "{}",
     });
     expect(batchResponse.status).toBe(200);
-    expect(await batchResponse.json()).toMatchObject({ comparisons: [expect.objectContaining({ runId: "claude:laptop:batch", clean: true })] });
+    expect(await batchResponse.json()).toMatchObject({ comparisons: [expect.objectContaining({ runId: runIdFor("batch"), clean: true })] });
   });
 
   it("finishes every bounded comparison page before returning a verdict", async () => {
@@ -284,15 +289,20 @@ describe("phase 3 run routes", () => {
         sessionId, seq, turn: 0, kind: "user", content: { text: `row-${seq}` }, createdAt: seq + 1,
       });
     });
-    await t.mutation(internal.runs.internalIngest, {
-      run: { ...body.run, runId: "claude:laptop:paged", rootRunId: "claude:laptop:paged", sessionId, status: "ended" },
+    // The second page lands on the run linkedSession already recorded, so the
+    // fence tuple is that run's committed cursor, not a fresh one.
+    const paged = await t.mutation(internal.runs.internalIngest, {
+      run: { ...body.run, runId: runIdFor("paged"), rootRunId: runIdFor("paged"), sessionId, status: "ended" },
       rows: Array.from({ length: 101 }, (_, seq) => ({
         seq, turn: 0, kind: "user", content: { text: seq === 100 ? "late-mismatch" : `row-${seq}` },
-        provenance: { fileVersion: "stored", file: "C:/http.jsonl", lineStart: seq, lineEnd: seq, block: 0, parserVersion: "runs-parser-1", sourceKind: "user" },
+        provenance: { fileVersion: body.run.file.storedHash, file: "C:/http.jsonl", lineStart: seq, lineEnd: seq, block: 0, parserVersion: "runs-parser-1", sourceKind: "user" },
         digest: seq.toString(16).padStart(16, "0"), depth: 0, createdAt: seq + 1,
       })),
       children: [],
+      previousCommittedLine: body.run.file.committedLine,
+      previousPrefixSha256: body.run.file.committedPrefixSha256,
     } as never);
+    expect(paged, JSON.stringify(paged)).toMatchObject({ ok: true, inserted: 101 });
     const response = await t.fetch("/runs/compare", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Sessions-Key": "right" },
@@ -305,19 +315,20 @@ describe("phase 3 run routes", () => {
   it("serves verified store versions as manifest entries", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
     const t = convexTest({ schema, modules });
-    await t.mutation(internal.runs.internalIngest, {
+    const stored = await t.mutation(internal.runs.internalIngest, {
+      ...body,
       run: {
         ...body.run,
-        file: { ...body.run.file, storeKey: "runs/claude/laptop/http/stored.jsonl.gz" },
+        file: { ...body.run.file, storeKey: "runs/claude/laptop/http-run/stored.jsonl.gz" },
       },
-      rows: [], children: [],
     } as never);
+    expect(stored, JSON.stringify(stored)).toMatchObject({ ok: true });
     const response = await t.fetch("/runs/manifest?since=0", {
       headers: { "X-Sessions-Key": "right" },
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
-      entries: [expect.objectContaining({ run_id: "claude:laptop:http", thread_id: "http", store_key: "runs/claude/laptop/http/stored.jsonl.gz" })],
+      entries: [expect.objectContaining({ run_id: "claude:laptop:http-run", thread_id: "http-run", store_key: "runs/claude/laptop/http-run/stored.jsonl.gz" })],
       nextCursor: null,
     });
     const entry = (await t.query(internal.runs.internalManifest, { since: 0 })).entries[0];

@@ -224,7 +224,7 @@ describe("run manifests have one archival path", () => {
     const nightlySource = fs.readFileSync(path.join(here, "..", "..", "jobs", "nightly.mjs"), "utf8");
     const runs = between(nightlySource, "export async function runsStep", "// ── 4. repo-learning");
     expect(runs).toMatch(/\/runs\/manifest/);
-    expect(runs).toMatch(/appendRunManifest\(run\.dir, entries\)/);
+    expect(runs).toMatch(/appendRunManifest\(run\.dir, page\.entries\)/);
     expect(nightlySource).not.toMatch(/archiveSessionFiles\(/);
   });
 });

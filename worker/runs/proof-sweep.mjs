@@ -59,16 +59,21 @@ function inMemoryAdapters() {
       if (route === "/runs/overflow/stamp") return { ok: true };
       if (route !== "/runs/ingest") return { ok: true };
       const existing = runs.get(body.run.runId);
-      if (existing?.file?.path) {
+      // A run named as somebody's child before it was swept holds a stub file.
+      // runs.internalIngest treats that stub as "no file yet" — no fence, and
+      // the first real page replaces it — so this adapter has to as well, or a
+      // subagent ingested after its parent would keep the stub forever.
+      const stub = !existing?.file?.path;
+      if (!stub) {
         if (body.previousCommittedLine !== existing.file.committedLine
           || body.previousPrefixSha256 !== existing.file.committedPrefixSha256) {
           return { ok: false, reason: "file rewritten" };
         }
       }
-      const advances = !existing || body.run.file.committedLine >= existing.file.committedLine;
+      const advances = !existing || stub || body.run.file.committedLine >= existing.file.committedLine;
       runs.set(body.run.runId, advances ? structuredClone(body.run) : existing);
       for (const child of body.children) {
-        if (!runs.has(child.runId)) runs.set(child.runId, { ...structuredClone(child), outcome: { totals: {} }, file: { path: "" } });
+        if (!runs.has(child.runId)) runs.set(child.runId, { ...structuredClone(child), outcome: { totals: {} }, file: { path: "", committedLine: 0, committedPrefixSha256: "" } });
       }
       let inserted = 0; let skipped = 0;
       for (const row of body.rows) {
