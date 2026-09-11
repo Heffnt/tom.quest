@@ -88,6 +88,10 @@ type DraftRow = {
   complaints?: string[];
   mode?: "fable" | "template";
   text?: string;
+  // The token of the run that wrote `text`. Absent on the template path and on
+  // every draft settled before runs carried one, and absent is the value: a
+  // reaction on such a morning writes no label rather than a guessed edge.
+  runToken?: string;
   settledAt?: number;
   deliveryClaimedAt?: number;
   deliveredAt?: number;
@@ -193,10 +197,13 @@ export const internalSubmitSlackDraft = internalMutation({
   args: {
     requestId: v.string(),
     draft: v.any(),
+    // The token of the run that wrote this draft, from the writer's own
+    // receipt. It is the edge a reaction on the morning follows back.
+    runToken: v.optional(v.string()),
   },
   handler: async (
     ctx,
-    { requestId, draft },
+    { requestId, draft, runToken },
   ): Promise<
     { accepted: true } | { accepted: false; final: boolean; complaints: string[] }
   > => {
@@ -226,7 +233,7 @@ export const internalSubmitSlackDraft = internalMutation({
       },
       { canReply: data.canReply },
     );
-    await settle(ctx, row._id, data, "fable", renderSlack(fit(message).message), attempts);
+    await settle(ctx, row._id, data, "fable", renderSlack(fit(message).message), attempts, runToken);
     return { accepted: true };
   },
 });
@@ -260,9 +267,18 @@ async function settle(
   mode: "fable" | "template",
   text: string,
   attempts: number,
+  // The registration token of the run that WROTE this text, carried from the
+  // writer's own submission. It travels to the "digest-sent" row and is the
+  // edge an emoji on the morning follows back to the run that earned it
+  // (convex/runLabels.ts).
+  //
+  // THE TEMPLATE PATH PASSES NONE, and that is the fact rather than a gap: the
+  // plain template is not a run's output, so a reaction on a template morning
+  // writes no label instead of scoring a model for words no model wrote.
+  runToken?: string,
 ): Promise<void> {
   await ctx.db.patch(id, {
-    data: { ...data, mode, text, attempts, settledAt: Date.now() },
+    data: { ...data, mode, text, attempts, settledAt: Date.now(), ...(runToken === undefined ? {} : { runToken }) },
   });
   await ctx.scheduler.runAfter(0, internal.ttsSync.sendSlackDraft, {
     requestId: data.requestId,
@@ -290,6 +306,10 @@ export const internalTakeSlackDraftDelivery = internalMutation({
       kind: data.kind,
       facts: data.facts,
       marks: data.marks ?? null,
+      // Absent on a template morning and on every draft written before runs
+      // carried a token. Absent is a value: the sender writes no token rather
+      // than inventing one, and a reaction on that morning writes no label.
+      runToken: data.runToken ?? null,
     };
   },
 });
