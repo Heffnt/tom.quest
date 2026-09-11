@@ -12,6 +12,7 @@ import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 import { isPermanentStatus } from "../session-host/overflow.mjs";
+import { redactSecrets } from "../session-host/redact.mjs";
 import { discoverChildren, parseClaudeFile, parseCodexFile } from "./ingest.mjs";
 import { runConfig } from "./config.mjs";
 import { describeRunFile, discoverRunFiles } from "./discover.mjs";
@@ -90,8 +91,18 @@ export function textFromLine(text, fromLine) {
   return text.slice(offset);
 }
 
+// The bytes a parser may read are the STORE's bytes, and the store holds the
+// redacted text. Everything downstream — the cursor proof, the parse, the row
+// digests — is defined over this one text, so a run rebuilt from its store
+// object presents the same prefix and the same digests as the sweep that first
+// recorded it. Redaction is idempotent and never changes a newline, so calling
+// it on bytes that are already redacted is free and the line numbering holds.
+export function storeText(bytes) {
+  return redactSecrets(Buffer.isBuffer(bytes) ? bytes.toString("utf8") : String(bytes));
+}
+
 export function prefixSha256(bytes, committedLine) {
-  const lines = completeLines(bytes);
+  const lines = completeLines(Buffer.from(storeText(bytes), "utf8"));
   const prefix = committedLine === 0 ? "" : `${lines.slice(0, committedLine).join("\n")}\n`;
   return sha256(Buffer.from(prefix));
 }
@@ -374,7 +385,7 @@ async function parseAndStore(item, { stateDir, store, fs, post, now, markAbandon
   // The parsers read an increment, not a file: `text` is the bytes from the
   // committed cursor on and `baseLine` is that cursor, so provenance keeps
   // naming absolute source lines and the unfinished last line stays unread.
-  const common = { path: item.path, text: textFromLine(sourceBytes.toString("utf8"), fromLine), host: item.host, fileVersion: stored.fileVersion, baseLine: fromLine };
+  const common = { path: item.path, text: textFromLine(storeText(sourceBytes), fromLine), host: item.host, fileVersion: stored.fileVersion, baseLine: fromLine };
   let parsed;
   if (item.runtime !== "claude") parsed = parseCodexFile(common);
   else if (item.kind === "subagent") {
