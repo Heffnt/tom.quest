@@ -346,7 +346,10 @@ describe("POST /tts/audit — the second check's own door", () => {
   it("redacts the retained audit text and caps it at 8 KiB of UTF-8", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convex();
-    const secret = "not-a-real-secret";
+    // Credential-SHAPED (digits, no spaces, long enough) and not a credential:
+    // the filter only takes a named value that could actually be one, so a
+    // fixture reading "not-a-real-secret" would prove nothing about the door.
+    const secret = "n0t-a-real-secret-9f3c1d8b";
     await post(t, "/tts/audit", {
       repo: REPO,
       sha: SHA,

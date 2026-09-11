@@ -111,7 +111,12 @@ describe("redactSecrets keeps named secret keys while removing their values", ()
     ["JSON key and value", "client_secret", `{"client_secret":"${value}"}`, "[redacted:secret]"],
     ["upper-case environment name", "AWS_SECRET_ACCESS_KEY", `AWS_SECRET_ACCESS_KEY=${value}`, "[redacted:aws]"],
     ["authorization assignment", "AUTHORIZATION", `AUTHORIZATION=${value}`, "[redacted:secret]"],
-    ["named high-entropy value", "token", `token ${value}`, "[redacted:secret]"],
+    // `auth_token`, not the bare word: see "the name list is narrow" below.
+    ["named high-entropy value", "auth_token", `auth_token ${value}`, "[redacted:secret]"],
+    ["escaped JSON key and value", "api_key", `{\\"api_key\\":\\"${value}\\"}`, "[redacted:secret]"],
+    ["escaped quoted value", "GITHUB_TOKEN", `GITHUB_TOKEN=\\"${value}\\"`, "[redacted:secret]"],
+    ["single-quoted value", "password", `password='${value}'`, "[redacted:secret]"],
+    ["upper-case environment name with no vendor rule", "TTS_WORKER_KEY", `TTS_WORKER_KEY=${value}`, "[redacted:secret]"],
   ];
 
   for (const [name, key, input, marker] of CASES) {
@@ -138,6 +143,75 @@ describe("redactSecrets keeps named secret keys while removing their values", ()
     expect(out).toBe("before\n[redacted:pem]\nafter");
     expect(out).not.toContain("FakePrivateKeyMaterial");
   });
+});
+
+// The 2026-09-11 fix, in two halves. The first is a CORRECTNESS fence, not a
+// secrecy one: the daemon redacts `JSON.stringify(body)` (lib.mjs), so a
+// replacement that eats a closing quote makes the ingest POST malformed, Convex
+// answers 400, and session.mjs — which treats 400 as permanent — drops the row.
+describe("a replacement inside a serialized body never breaks the JSON", () => {
+  const value = t("r4Nd0m", "-Secret_Value.1234567890-abcdefghijklmnop");
+  const CASES = [
+    ["a value mid-string", `export GITHUB_TOKEN=${value} && gh pr list`],
+    ["a value at the very end of the string", `export GITHUB_TOKEN=${value}`],
+    ["a value followed by an escaped quote", `GITHUB_TOKEN=${value}" is the token`],
+    ["a quoted value, whose quotes are escapes", `password="${value}"`],
+    ["a JSON blob a tool printed", JSON.stringify({ api_key: value, ordinary: "kept" })],
+    ["a value carrying an escape of its own", `GITHUB_TOKEN=${value}\\n next`],
+  ];
+
+  for (const [name, content] of CASES) {
+    it(`stays parseable with ${name}`, () => {
+      const out = redactSecrets(JSON.stringify({ command: content }));
+      expect(() => JSON.parse(out)).not.toThrow();
+      expect(JSON.parse(out).command).toContain("[redacted:secret]");
+      expect(out).not.toContain(value);
+    });
+  }
+});
+
+// The second half: the name list is narrow enough that the filter does not
+// redact ordinary content. It cost an eval regression and a broken ingest to
+// learn that `token` and `key` are words this system uses for its own data.
+describe("the name list is narrow: a name alone does not make a value a secret", () => {
+  const UNTOUCHED = [
+    'key: "learning:abc"',
+    '{"key":"learning:abc"}',
+    '{"key":"ground.md#Knows"}',
+    '{"token":"j57turn1"}',
+    "tokens=5000",
+    "token = the smallest unit",
+    "a token is the smallest unit a model bills in",
+    "PWD=/root/x",
+    "pwd=/root/tom.quest",
+    "secret: not-configured",
+    "monkey=banana",
+    "password: short",
+    "api_key: /etc/tts/worker.env",
+  ];
+  for (const text of UNTOUCHED) {
+    it(`leaves alone: ${text}`, () => {
+      expect(redactSecrets(text)).toBe(text);
+    });
+  }
+
+  const REDACTED = [
+    ["a GitHub token in an export", `export GITHUB_TOKEN=${t("gh", "p_", "K".repeat(36))}`, "[redacted:github]"],
+    ["a short but credential-shaped password", "password: hunter2secret1", "[redacted:secret]"],
+    ["an API key under its JSON name", `{"api_key":"${t("sk-", "proj-", "Zx9wQ7v".repeat(6))}"}`, "[redacted:openai]"],
+    ["an AWS secret after its access ID", `${t("AK", "IA", "1122334455667788")}: ${t("Ab1dE2fG3hI4jK5l", "Mn6oP7qR8sT9uV0w", "XyZ1+/aB")}`, "[redacted:aws]"],
+    ["an AWS environment name", `AWS_SECRET_ACCESS_KEY=${t("Ab1dE2fG3hI4jK5l", "Mn6oP7qR8sT9uV0w", "XyZ1+/aB")}`, "[redacted:aws]"],
+    ["a Convex deploy key", t("prod", ":fictional-armadillo-000|", "ey", "J2MiI6ImEtZmFrZS1kZXBsb3kta2V5In0="), "[redacted:convex]"],
+    ["a PEM block", [t("-----BEGIN", " PRIVATE KEY-----"), "MIIEvFake0123456789", t("-----END", " PRIVATE KEY-----")].join("\n"), "[redacted:pem]"],
+  ];
+  for (const [name, text, marker] of REDACTED) {
+    it(`still redacts ${name}`, () => {
+      const out = redactSecrets(text);
+      expect(out).toContain(marker);
+      // Nothing 12 characters or longer of the input survives beside the marker.
+      expect(out).not.toBe(text);
+    });
+  }
 });
 
 describe("redactSecrets leaves ordinary text alone", () => {
