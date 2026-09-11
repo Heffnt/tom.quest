@@ -16,6 +16,12 @@ export const RUN_ENV_NAMES = Object.freeze([
   "RUN_SWEEP_CLAUDE_ROOTS",
   "RUN_SWEEP_CODEX_ROOTS",
   "RUN_SWEEP_BACKLOG",
+  "RUN_BACKLOG_BYTES_PER_HOUR",
+  "RUN_BACKLOG_PASS_MS",
+  "RUN_BACKLOG_MAX_FILE_BYTES",
+  "RUN_BACKLOG_ALLOW_LOCAL_STORE",
+  "WIKITOM_DIR",
+  "WIKITOM_SESSIONS_DIR",
   "RUN_FILES_DELETE_AFTER_UPLOAD",
   "RUN_STORE_BACKEND",
   "RUN_STORE_ENDPOINT",
@@ -33,6 +39,19 @@ export const RUN_ENV_NAMES = Object.freeze([
 
 const enabled = (value) => /^(1|true|yes|on)$/i.test(String(value ?? ""));
 const explicit = (env, key) => typeof env[key] === "string" && env[key] !== "";
+// A backlog limit is a positive count of bytes or milliseconds. Anything else
+// in the env file is a typo, and a typo must not become an unlimited import.
+const positive = (raw, fallback) => {
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+};
+
+export const BACKLOG_DEFAULTS = Object.freeze({
+  bytesPerHour: 1024 ** 3,
+  passMs: 600_000,
+  maxFileBytes: 128 * 1024 * 1024,
+  allowLocalStore: false,
+});
 
 function firstReadable(paths, fs) {
   for (const file of paths) {
@@ -115,6 +134,22 @@ export function runConfig({
     flags: {
       backlog: enabled(value("RUN_SWEEP_BACKLOG")),
       deleteAfterUpload: enabled(value("RUN_FILES_DELETE_AFTER_UPLOAD")),
+    },
+    // The backlog importer's own limits, resolved here so that program reads
+    // no environment of its own and the env file stays loadEnv's one body.
+    // The archive is a WikiTom checkout, which sits beside the vault on the
+    // box and on Tom's desktop on the laptop; neither location is guessed from
+    // a path inside it.
+    backlog: {
+      ...BACKLOG_DEFAULTS,
+      bytesPerHour: positive(value("RUN_BACKLOG_BYTES_PER_HOUR"), BACKLOG_DEFAULTS.bytesPerHour),
+      passMs: positive(value("RUN_BACKLOG_PASS_MS"), BACKLOG_DEFAULTS.passMs),
+      maxFileBytes: positive(value("RUN_BACKLOG_MAX_FILE_BYTES"), BACKLOG_DEFAULTS.maxFileBytes),
+      allowLocalStore: enabled(value("RUN_BACKLOG_ALLOW_LOCAL_STORE")),
+      sessionsDir: value("WIKITOM_SESSIONS_DIR")
+        || (host === "box"
+          ? `${value("WIKITOM_DIR") || "/root/wikitom"}/sessions`
+          : path.join(home, "Desktop", "WikiTom", "sessions")),
     },
     envFile,
   };
