@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { MODEL_OF_TOM_HEADER } from "./ttsShared";
@@ -414,5 +414,299 @@ describe("runs", () => {
     } finally {
       now.mockRestore();
     }
+  });
+});
+
+// ── Opening an old run from the store, and the window that makes it needed ───
+const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const STORE_KEY = "runs/claude/laptop/root-run/stored.jsonl.gz";
+const DAY_MS = 24 * 60 * 60 * 1000;
+const WINDOW_MS = 30 * DAY_MS;
+// 04:30 America/New_York in January (EST, UTC-5): the one hour the eviction
+// handler's guard lets through.
+const EVICTION_HOUR_UTC = Date.UTC(2026, 0, 15, 9, 30);
+
+// The schema-aware handle, so a helper may read a real index by name.
+const schemaTest = () => convexTest(schema, modules);
+type SchemaTest = ReturnType<typeof schemaTest>;
+
+function storedRun(overrides: Record<string, unknown> = {}) {
+  return run({ file: { ...run().file, storeKey: STORE_KEY }, ...overrides });
+}
+/** The shape the backlog importer posts: one index row, no transcript rows. */
+function backlogIngest(overrides: Record<string, unknown> = {}) {
+  const value = storedRun({ ...overrides, file: { ...run().file, committedLine: 0, committedPrefixSha256: EMPTY_SHA256, storeKey: STORE_KEY, totalLines: 4000 } });
+  return ingest(value, [], [], 0, EMPTY_SHA256);
+}
+async function runRow(t: SchemaTest, runId: string) {
+  return await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique());
+}
+async function requests(t: SchemaTest, runId?: string) {
+  const all = await t.run((ctx) => ctx.db.query("runMaterializeRequests").collect());
+  return runId ? all.filter((request) => request.runId === runId) : all;
+}
+async function evictedEvents(t: SchemaTest) {
+  return await t.run((ctx) => ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", "runs-evicted")).collect());
+}
+
+describe("runs: materialize requests", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("refuses a run with no store key, and every caller who is not Tom", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.runs.internalIngest, ingest() as never);
+    const tom = await withTom(t);
+    await expect(tom.mutation(api.runs.requestMaterialize, { runId: "claude:laptop:root-run" })).rejects.toThrow("run has no store key");
+    await expect(tom.mutation(api.runs.requestMaterialize, { runId: "claude:laptop:absent-run" })).rejects.toThrow("run not found");
+    await expect(tom.mutation(api.runs.requestMaterialize, { runId: "not-a-run" })).rejects.toThrow("invalid runId");
+    expect(await requests(t)).toEqual([]);
+    const stranger = t.withIdentity({ subject: "someone-else" });
+    await expect(stranger.mutation(api.runs.requestMaterialize, { runId: "claude:laptop:root-run" })).rejects.toThrow();
+    await expect(stranger.query(api.runs.materializeStatus, { runId: "claude:laptop:root-run" })).rejects.toThrow();
+    await expect(stranger.mutation(api.runs.markOpened, { runId: "claude:laptop:root-run" })).rejects.toThrow();
+  });
+
+  it("queues one request while it is pending and a fresh one once it is answered", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.runs.internalIngest, backlogIngest() as never);
+    const tom = await withTom(t);
+    const first = await tom.mutation(api.runs.requestMaterialize, { runId: "claude:laptop:root-run" });
+    const second = await tom.mutation(api.runs.requestMaterialize, { runId: "claude:laptop:root-run" });
+    expect(second?._id).toBe(first?._id);
+    expect(await requests(t)).toHaveLength(1);
+    expect(first).toMatchObject({ status: "pending", requestedBy: "tom", slice: 1 });
+    expect(await tom.query(api.runs.materializeStatus, { runId: "claude:laptop:root-run" })).toMatchObject({ _id: first?._id });
+
+    await t.mutation(internal.runs.internalAnswerMaterialize, { requestId: first!._id, status: "failed", reason: "store unreachable" });
+    const third = await tom.mutation(api.runs.requestMaterialize, { runId: "claude:laptop:root-run" });
+    expect(third?._id).not.toBe(first?._id);
+    expect(await requests(t)).toHaveLength(2);
+    // The status query reads the newest, which is the one the page waits on.
+    expect(await tom.query(api.runs.materializeStatus, { runId: "claude:laptop:root-run" })).toMatchObject({ _id: third?._id, status: "pending" });
+    expect(await tom.query(api.runs.materializeStatus, { runId: "claude:laptop:other-run" })).toBeNull();
+  });
+
+  it("hands the box the oldest pending request, answerable even when its run is gone", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.runs.internalIngest, backlogIngest() as never);
+    const orphan = await t.run((ctx) => ctx.db.insert("runMaterializeRequests", { runId: "codex:box:vanished-thread", requestedBy: "worker", requestedAt: 1, status: "pending", slice: 1 }));
+    const tom = await withTom(t);
+    await tom.mutation(api.runs.requestMaterialize, { runId: "claude:laptop:root-run" });
+
+    const oldest = await t.query(internal.runs.internalNextMaterialize, {});
+    expect(oldest.request).toMatchObject({
+      requestId: orphan, runId: "codex:box:vanished-thread", runner: "codex", host: "box",
+      threadId: "vanished-thread", depth: 0, parentRunId: null, hasRows: false, fromLine: 0,
+      file: { storeKey: null, sidecarStoredHash: null, totalLines: null },
+    });
+    await t.mutation(internal.runs.internalAnswerMaterialize, { requestId: orphan, status: "failed", reason: "run is gone" });
+
+    // A backlog run has no rows, so the parse starts at line 0.
+    const backlog = await t.query(internal.runs.internalNextMaterialize, {});
+    expect(backlog.request).toMatchObject({
+      runId: "claude:laptop:root-run", runner: "claude", host: "laptop", threadId: "root-run",
+      hasRows: false, fromLine: 0, file: { storeKey: STORE_KEY, totalLines: 4000, committedLine: 0 },
+    });
+
+    // A continuation resumes from the lines already in the record.
+    await t.run(async (ctx) => {
+      const stored = await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique();
+      if (stored) await ctx.db.patch(stored._id, { file: { ...stored.file, committedLine: 2000, committedPrefixSha256: PREFIX_HASH } });
+      await ctx.db.insert("claudeMessages", { runId: "claude:laptop:root-run", seq: 0, turn: 0, kind: "user", content: { text: "x" }, digest: "0123456789abcdef", depth: 0, createdAt: 1 });
+    });
+    const continued = await t.query(internal.runs.internalNextMaterialize, {});
+    expect(continued.request).toMatchObject({ hasRows: true, fromLine: 2000 });
+  });
+
+  it("records what the box answered and continues the run itself, once", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.runs.internalIngest, backlogIngest() as never);
+    const tom = await withTom(t);
+    const first = await tom.mutation(api.runs.requestMaterialize, { runId: "claude:laptop:root-run" });
+    const rowsSource = { from: "store" as const, at: 10, parserVersion: "runs-parser-1", storeKey: STORE_KEY, rowsFromLine: 0, rowsToLine: 2000, slices: 1, droppedLines: 3, partial: ["unknown-line-types"] };
+
+    expect(await t.mutation(internal.runs.internalAnswerMaterialize, { requestId: first!._id, status: "served", reason: "a".repeat(201) })).toEqual({ ok: false, reason: "reason too long" });
+    expect(await t.mutation(internal.runs.internalAnswerMaterialize, { requestId: first!._id, status: "failed", reason: "the bucket said no" })).toEqual({ ok: false, reason: "reason outside the closed vocabulary" });
+    expect(await t.mutation(internal.runs.internalAnswerMaterialize, { requestId: first!._id, status: "served", rowsSource: { ...rowsSource, partial: ["everything-is-fine"] } })).toEqual({ ok: false, reason: "partial outside the closed vocabulary" });
+    expect((await requests(t))[0].status).toBe("pending");
+
+    expect(await t.mutation(internal.runs.internalAnswerMaterialize, { requestId: first!._id, status: "served", rowsIngested: 2000, fromLine: 0, toLine: 2000, totalLines: 4000, rowsSource })).toEqual({ ok: true, alreadyAnswered: false, continuation: true });
+    const stored = await runRow(t, "claude:laptop:root-run");
+    expect(stored?.rowsSource).toMatchObject({ from: "store", rowsFromLine: 0, rowsToLine: 2000, droppedLines: 3, partial: ["unknown-line-types"] });
+    expect(stored?.file.totalLines).toBe(4000);
+    const queued = await requests(t, "claude:laptop:root-run");
+    expect(queued.filter((request) => request.status === "pending")).toHaveLength(1);
+    expect(queued.find((request) => request.status === "pending")).toMatchObject({ slice: 2, requestedBy: "tom" });
+    expect(queued.find((request) => request.status === "served")).toMatchObject({ rowsIngested: 2000, fromLine: 0, toLine: 2000 });
+
+    // The same answer again queues nothing further.
+    expect(await t.mutation(internal.runs.internalAnswerMaterialize, { requestId: first!._id, status: "served", toLine: 2000, totalLines: 4000 })).toEqual({ ok: true, alreadyAnswered: true, continuation: false });
+    expect(await requests(t, "claude:laptop:root-run")).toHaveLength(2);
+  });
+
+  it("stops at the fifth slice and says the cap was reached", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.runs.internalIngest, backlogIngest() as never);
+    const last = await t.run((ctx) => ctx.db.insert("runMaterializeRequests", { runId: "claude:laptop:root-run", requestedBy: "tom", requestedAt: 5, status: "pending", slice: 5 }));
+    const answer = await t.mutation(internal.runs.internalAnswerMaterialize, {
+      requestId: last, status: "served", rowsIngested: 100, fromLine: 3000, toLine: 3900, totalLines: 4000,
+      rowsSource: { from: "store", at: 20, parserVersion: "runs-parser-1", storeKey: STORE_KEY, rowsFromLine: 3000, rowsToLine: 3900, slices: 5, droppedLines: 0, partial: [] },
+    });
+    expect(answer).toEqual({ ok: true, alreadyAnswered: false, continuation: false });
+    expect((await runRow(t, "claude:laptop:root-run"))?.rowsSource?.partial).toEqual(["row-cap-reached"]);
+    expect((await requests(t, "claude:laptop:root-run")).filter((request) => request.status === "pending")).toEqual([]);
+  });
+});
+
+describe("runs: the row window", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("gives an index-only backlog row no window at all, and a row-bearing ingest one", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.runs.internalIngest, backlogIngest() as never);
+    expect((await runRow(t, "claude:laptop:root-run"))?.rowsUntil).toBeUndefined();
+
+    const grown = convexTest(schema, modules);
+    await grown.mutation(internal.runs.internalIngest, ingest() as never);
+    expect((await runRow(grown, "claude:laptop:root-run"))?.rowsUntil).toBe(2 + WINDOW_MS);
+    // A no-op ingest of the same file writes nothing; a later line moves it.
+    await grown.mutation(internal.runs.internalIngest, retry(run(), []) as never);
+    expect((await runRow(grown, "claude:laptop:root-run"))?.rowsUntil).toBe(2 + WINDOW_MS);
+    await grown.mutation(internal.runs.internalIngest, retry(run({ lastLineAt: 5000 }), []) as never);
+    expect((await runRow(grown, "claude:laptop:root-run"))?.rowsUntil).toBe(5000 + WINDOW_MS);
+  });
+
+  it("moves the window on an opened run only past the one-day threshold", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.runs.internalIngest, ingest() as never);
+    await t.mutation(internal.runs.internalIngest, backlogIngest({ runId: "claude:laptop:index-only", rootRunId: "claude:laptop:index-only" }) as never);
+    const tom = await withTom(t);
+
+    expect(await tom.mutation(api.runs.markOpened, { runId: "claude:laptop:root-run" })).toEqual({ ok: true, moved: true });
+    const moved = (await runRow(t, "claude:laptop:root-run"))?.rowsUntil;
+    expect(moved).toBeGreaterThan(2 + WINDOW_MS);
+    // Reading the same run again inside the day is not a second write.
+    expect(await tom.mutation(api.runs.markOpened, { runId: "claude:laptop:root-run" })).toEqual({ ok: true, moved: false });
+    expect((await runRow(t, "claude:laptop:root-run"))?.rowsUntil).toBe(moved);
+    // Looking at an index-only run does not make it evictable.
+    expect(await tom.mutation(api.runs.markOpened, { runId: "claude:laptop:index-only" })).toEqual({ ok: true, moved: false });
+    expect((await runRow(t, "claude:laptop:index-only"))?.rowsUntil).toBeUndefined();
+    expect(await tom.mutation(api.runs.markOpened, { runId: "claude:laptop:absent-run" })).toEqual({ ok: true, moved: false });
+  });
+});
+
+describe("runs: eviction", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.useRealTimers();
+  });
+
+  async function seedEvictable(t: SchemaTest, now: number, rows = 450) {
+    const runId = "claude:laptop:root-run";
+    await t.run(async (ctx) => {
+      const existing = await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique();
+      if (existing) await ctx.db.patch(existing._id, { rowsUntil: now - DAY_MS });
+      else await ctx.db.insert("runs", { ...storedRun({ status: "ended", startedAt: now - 61 * DAY_MS, lastLineAt: now - 60 * DAY_MS }), ingestedAt: now, rowsUntil: now - DAY_MS } as never);
+      for (let seq = 0; seq < rows; seq += 1) {
+        const overflow = seq < 2 ? { sha256: "a".repeat(64), byteLength: 6, chunkCount: 2 } : undefined;
+        await ctx.db.insert("claudeMessages", { runId, seq, turn: 0, kind: "user", content: { text: "x" }, digest: "0123456789abcdef", depth: 0, createdAt: seq + 1, overflow } as never);
+        if (overflow) for (let index = 0; index < 2; index += 1) await ctx.db.insert("claudeMessageOverflow", { runId, seq, index, chunkCount: 2, text: "abc", createdAt: 1 } as never);
+      }
+    });
+    return runId;
+  }
+  async function transcript(t: SchemaTest, runId: string) {
+    return await t.run(async (ctx) => ({
+      rows: (await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", runId)).collect()).length,
+      chunks: (await ctx.db.query("claudeMessageOverflow").withIndex("by_run_seq_index", (q) => q.eq("runId", runId)).collect()).length,
+      labels: (await ctx.db.query("runLabels").withIndex("by_run_at", (q) => q.eq("runId", runId)).collect()).length,
+    }));
+  }
+  async function tick(t: SchemaTest) {
+    await t.mutation(internal.runs.internalEvictTick, {});
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+  }
+
+  it("evicts rows and their chunks exactly once, and leaves the index row standing", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(EVICTION_HOUR_UTC);
+    vi.stubEnv("RUNS_EVICTION_ENABLED", "1");
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    const runId = await seedEvictable(t, now);
+    await t.run((ctx) => ctx.db.insert("runLabels", { runId, source: "ruling", actor: "tom", polarity: "good", meaning: "kept the record", judgment: true, at: now }));
+    expect(await transcript(t, runId)).toEqual({ rows: 450, chunks: 4, labels: 1 });
+
+    await tick(t);
+    expect(await transcript(t, runId)).toEqual({ rows: 0, chunks: 0, labels: 1 });
+    const evicted = await runRow(t, runId);
+    expect(evicted).toMatchObject({ runId, rowsEvictedAt: now, file: { storeKey: STORE_KEY } });
+    expect(evicted?.rowsUntil).toBeUndefined();
+    expect((await evictedEvents(t)).map((entry) => entry.data)).toEqual([
+      { at: now, runs: 1, rowsDeleted: 450, overflowChunksDeleted: 4, deferred: 0, truncated: false, oldestRowsUntil: null },
+    ]);
+
+    // A second tick over the same record touches nothing: the last act of
+    // evicting a run is to take it out of the scan index.
+    await tick(t);
+    expect((await evictedEvents(t))[1].data).toMatchObject({ runs: 0, rowsDeleted: 0, overflowChunksDeleted: 0, deferred: 0 });
+
+    // A third tick, after the rows came back from the store, evicts them again.
+    await t.mutation(internal.runs.internalIngest, retry(run({ status: "ended", lastLineAt: now - 60 * DAY_MS, file: { ...run().file, storeKey: STORE_KEY } }), [row(0)]) as never);
+    expect((await transcript(t, runId)).rows).toBe(1);
+    expect((await runRow(t, runId))?.rowsUntil).toBe(now - 60 * DAY_MS + WINDOW_MS);
+    await tick(t);
+    expect(await transcript(t, runId)).toEqual({ rows: 0, chunks: 0, labels: 1 });
+    expect((await evictedEvents(t))[2].data).toMatchObject({ runs: 1, rowsDeleted: 1, overflowChunksDeleted: 0 });
+  });
+
+  it("refuses a running run, a live session's run, and a run inside the window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(EVICTION_HOUR_UTC);
+    vi.stubEnv("RUNS_EVICTION_ENABLED", "1");
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    const sessionId = await session(t, { status: "running" });
+    const kept = [
+      { runId: "claude:laptop:still-running", status: "running", lastLineAt: now - 60 * DAY_MS },
+      { runId: "claude:laptop:live-session", status: "ended", lastLineAt: now - 60 * DAY_MS, sessionId },
+      { runId: "claude:laptop:recent-lines", status: "ended", lastLineAt: now - 60 * 60 * 1000 },
+    ];
+    await t.run(async (ctx) => {
+      for (const record of kept) {
+        await ctx.db.insert("runs", { ...storedRun({ ...record, rootRunId: record.runId, startedAt: 1 }), ingestedAt: now, rowsUntil: now - DAY_MS } as never);
+        await ctx.db.insert("claudeMessages", { runId: record.runId, seq: 0, turn: 0, kind: "user", content: { text: "x" }, digest: "0123456789abcdef", depth: 0, createdAt: 1 } as never);
+      }
+    });
+
+    await tick(t);
+    for (const record of kept) {
+      expect((await transcript(t, record.runId)).rows, record.runId).toBe(1);
+      expect((await runRow(t, record.runId))?.rowsUntil, record.runId).toBe(now + DAY_MS);
+    }
+    expect((await evictedEvents(t))[0].data).toMatchObject({ runs: 0, rowsDeleted: 0, deferred: 3, truncated: false, oldestRowsUntil: now + DAY_MS });
+  });
+
+  it("deletes nothing while RUNS_EVICTION_ENABLED is unset, and says so", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(EVICTION_HOUR_UTC);
+    const t = convexTest(schema, modules);
+    const runId = await seedEvictable(t, Date.now(), 3);
+    expect(await t.mutation(internal.runs.internalEvictTick, {})).toEqual({ ok: true, disabled: true });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect((await transcript(t, runId)).rows).toBe(3);
+    expect((await evictedEvents(t))[0].data).toMatchObject({ runs: 0, rowsDeleted: 0, deferred: 0, disabled: true });
+    expect((await runRow(t, runId))?.rowsUntil).toBe(Date.now() - DAY_MS);
+  });
+
+  it("leaves the record alone outside the eviction hour", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.UTC(2026, 0, 15, 20, 0));
+    vi.stubEnv("RUNS_EVICTION_ENABLED", "1");
+    const t = convexTest(schema, modules);
+    const runId = await seedEvictable(t, Date.now(), 3);
+    expect(await t.mutation(internal.runs.internalEvictTick, {})).toEqual({ ok: true, skipped: "not the eviction hour" });
+    expect((await transcript(t, runId)).rows).toBe(3);
+    expect(await evictedEvents(t)).toEqual([]);
   });
 });

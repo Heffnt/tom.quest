@@ -340,3 +340,81 @@ describe("phase 3 run routes", () => {
     expect((await t.fetch("/runs/manifest", { headers: { "X-Sessions-Key": "right" } })).status).toBe(400);
   });
 });
+
+// ── The materialize queue's three doors ─────────────────────────────────────
+// The box asks for the oldest pending request, serves it, and ANSWERS — a
+// request it cannot serve is written failed with a phrase from the closed
+// vocabulary, so one unreachable object never parks the queue.
+describe("/runs/materialize*: the queue the box drains", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  const KEY = { "Content-Type": "application/json", "X-Sessions-Key": "right" };
+  const stored = { ...body, run: { ...body.run, file: { ...body.run.file, storeKey: "runs/claude/laptop/http-run/stored.jsonl.gz", totalLines: 4000 } } };
+
+  it("keeps all three doors behind the session worker key", async () => {
+    const t = convexTest({ schema, modules });
+    expect((await t.fetch("/runs/materialize-request")).status).toBe(503);
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    expect((await t.fetch("/runs/materialize-request", { headers: { "X-Sessions-Key": "wrong" } })).status).toBe(401);
+    expect((await t.fetch("/runs/materialize", { method: "POST", headers: { "Content-Type": "application/json", "X-Sessions-Key": "wrong" }, body: "{}" })).status).toBe(401);
+    expect((await t.fetch("/runs/materialize-answer", { method: "POST", headers: { "Content-Type": "application/json", "X-Sessions-Key": "wrong" }, body: "{}" })).status).toBe(401);
+  });
+
+  it("queues, hands over and answers one request", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest({ schema, modules });
+    expect(await (await t.fetch("/runs/materialize-request", { headers: { "X-Sessions-Key": "right" } })).json()).toEqual({ request: null });
+    expect(await t.mutation(internal.runs.internalIngest, stored as never)).toMatchObject({ ok: true });
+
+    const queued = await t.fetch("/runs/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ runId: "claude:laptop:http-run" }) });
+    expect(queued.status).toBe(200);
+    expect(await queued.json()).toMatchObject({ ok: true, slice: 1, queued: true });
+    // Idempotent while it is pending.
+    expect(await (await t.fetch("/runs/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ runId: "claude:laptop:http-run" }) })).json()).toMatchObject({ queued: false });
+
+    const handed = await t.fetch("/runs/materialize-request", { headers: { "X-Sessions-Key": "right" } });
+    expect(handed.status).toBe(200);
+    const { request } = await handed.json();
+    expect(request).toMatchObject({ runId: "claude:laptop:http-run", runner: "claude", host: "laptop", threadId: "http-run", slice: 1, requestedBy: "worker", hasRows: false, fromLine: 0, file: { storeKey: "runs/claude/laptop/http-run/stored.jsonl.gz", totalLines: 4000 } });
+
+    const answer = await t.fetch("/runs/materialize-answer", {
+      method: "POST", headers: KEY,
+      body: JSON.stringify({
+        requestId: request.requestId, status: "served", rowsIngested: 0, fromLine: 0, toLine: 4000, totalLines: 4000,
+        rowsSource: { from: "store", at: 1, parserVersion: "runs-parser-1", storeKey: request.file.storeKey, rowsFromLine: 0, rowsToLine: 4000, slices: 1, droppedLines: 0, partial: ["no-envelope"] },
+      }),
+    });
+    expect(answer.status).toBe(200);
+    expect(await answer.json()).toMatchObject({ ok: true, continuation: false });
+    expect(await (await t.fetch("/runs/materialize-request", { headers: { "X-Sessions-Key": "right" } })).json()).toEqual({ request: null });
+  });
+
+  it("refuses a run with no store key and never reflects a payload", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest({ schema, modules });
+    expect(await t.mutation(internal.runs.internalIngest, body as never)).toMatchObject({ ok: true });
+    const refused = await t.fetch("/runs/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ runId: "claude:laptop:http-run" }) });
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: "run has no store key" });
+    expect((await t.fetch("/runs/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ runId: "nope" }) })).status).toBe(400);
+  });
+
+  it("narrows every answer field before the record sees it", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest({ schema, modules });
+    expect(await t.mutation(internal.runs.internalIngest, stored as never)).toMatchObject({ ok: true });
+    await t.fetch("/runs/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ runId: "claude:laptop:http-run" }) });
+    const { request } = await (await t.fetch("/runs/materialize-request", { headers: { "X-Sessions-Key": "right" } })).json();
+    const answer = (payload: Record<string, unknown>) => t.fetch("/runs/materialize-answer", { method: "POST", headers: KEY, body: JSON.stringify({ requestId: request.requestId, status: "failed", ...payload }) });
+
+    expect((await answer({ reason: "a".repeat(201) })).status).toBe(400);
+    expect((await answer({ status: "maybe" })).status).toBe(400);
+    expect((await answer({ toLine: -1 })).status).toBe(400);
+    expect((await answer({ rowsSource: { from: "elsewhere" } })).status).toBe(400);
+    expect((await answer({ rowsSource: { from: "store", at: 1, parserVersion: "runs-parser-1", storeKey: "k", rowsFromLine: 0, rowsToLine: 1, slices: 1, droppedLines: 0, partial: [7] } })).status).toBe(400);
+    // Well-formed but outside the closed vocabulary: a refusal, not a record.
+    const outside = await answer({ reason: "the bucket said no" });
+    expect(outside.status).toBe(409);
+    expect(await outside.json()).toEqual({ error: "reason outside the closed vocabulary" });
+    expect((await answer({ reason: "store unreachable" })).status).toBe(200);
+  });
+});

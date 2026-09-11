@@ -2976,6 +2976,94 @@ const runsManifest = httpAction(async (ctx, request) => {
 });
 http.route({ path: "/runs/manifest", method: "GET", handler: runsManifest });
 
+// ── Opening an old run: the box serves what Convex cannot read ───────────────
+// Convex holds no S3 reader credential and no second request signer, so the
+// oldest pending request is handed to the box job, which fetches the stored
+// version, parses it and ingests the rows through /runs/ingest. The queue is
+// drained by ANSWERS: a request the box cannot serve is answered `failed` with
+// a fixed phrase, never left pending.
+const runsMaterializeRequest = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  try {
+    const result = await ctx.runQuery(internal.runs.internalNextMaterialize, {});
+    return jsonResponse(200, result);
+  } catch {
+    return jsonResponse(400, { error: "materialize request rejected" });
+  }
+});
+http.route({ path: "/runs/materialize-request", method: "GET", handler: runsMaterializeRequest });
+
+// Every field is narrowed here and every failure uses fixed words: a store
+// error, a path or a transcript line must never reach the record through
+// `reason`, and a payload must never be reflected in a route error.
+const runsMaterializeAnswer = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  const parsed = await boundedJson(request, RUNS_OVERFLOW_MAX_BODY_BYTES);
+  if ("tooLarge" in parsed) return jsonResponse(413, { error: "request body too large" });
+  if ("invalid" in parsed) return jsonResponse(400, { error: "invalid JSON body" });
+  const b = (parsed.body ?? {}) as Record<string, unknown>;
+  if (typeof b.requestId !== "string" || b.requestId === "") return jsonResponse(400, { error: "requestId (non-empty string) required" });
+  if (b.status !== "served" && b.status !== "failed") return jsonResponse(400, { error: "status must be served or failed" });
+  if (b.reason !== undefined && (typeof b.reason !== "string" || b.reason.length > 200)) return jsonResponse(400, { error: "reason must be a string of at most 200 characters" });
+  for (const field of ["rowsIngested", "fromLine", "toLine", "totalLines"] as const) {
+    if (b[field] !== undefined && !nonNegativeInteger(b[field])) return jsonResponse(400, { error: `${field} (non-negative integer) required` });
+  }
+  let rowsSource: Record<string, unknown> | undefined;
+  if (b.rowsSource !== undefined) {
+    if (typeof b.rowsSource !== "object" || b.rowsSource === null || Array.isArray(b.rowsSource)) return jsonResponse(400, { error: "rowsSource must be an object" });
+    const source = b.rowsSource as Record<string, unknown>;
+    if (source.from !== "store") return jsonResponse(400, { error: "rowsSource.from must be store" });
+    if (typeof source.parserVersion !== "string" || source.parserVersion === "") return jsonResponse(400, { error: "rowsSource.parserVersion (non-empty string) required" });
+    if (typeof source.storeKey !== "string" || source.storeKey === "") return jsonResponse(400, { error: "rowsSource.storeKey (non-empty string) required" });
+    for (const field of ["at", "rowsFromLine", "rowsToLine", "slices", "droppedLines"] as const) {
+      if (!nonNegativeInteger(source[field])) return jsonResponse(400, { error: `rowsSource.${field} (non-negative integer) required` });
+    }
+    if (!Array.isArray(source.partial) || !source.partial.every((value) => typeof value === "string")) return jsonResponse(400, { error: "rowsSource.partial must be an array of strings" });
+    rowsSource = {
+      from: "store", at: source.at, parserVersion: source.parserVersion, storeKey: source.storeKey,
+      rowsFromLine: source.rowsFromLine, rowsToLine: source.rowsToLine, slices: source.slices,
+      droppedLines: source.droppedLines, partial: source.partial,
+    };
+  }
+  try {
+    const result = await ctx.runMutation(internal.runs.internalAnswerMaterialize, {
+      requestId: b.requestId as Id<"runMaterializeRequests">,
+      status: b.status,
+      reason: b.reason as string | undefined,
+      rowsIngested: b.rowsIngested as number | undefined,
+      fromLine: b.fromLine as number | undefined,
+      toLine: b.toLine as number | undefined,
+      totalLines: b.totalLines as number | undefined,
+      rowsSource: rowsSource as never,
+    });
+    return result.ok ? jsonResponse(200, result) : jsonResponse(409, { error: result.reason });
+  } catch {
+    return jsonResponse(400, { error: "materialize answer rejected" });
+  }
+});
+http.route({ path: "/runs/materialize-answer", method: "POST", handler: runsMaterializeAnswer });
+
+// The worker-key twin of runs.requestMaterialize, for a job that needs an old
+// run's rows. Same refusals, same idempotence, `requestedBy: "worker"`.
+const runsMaterialize = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  const parsed = await boundedJson(request, RUNS_OVERFLOW_MAX_BODY_BYTES);
+  if ("tooLarge" in parsed) return jsonResponse(413, { error: "request body too large" });
+  if ("invalid" in parsed) return jsonResponse(400, { error: "invalid JSON body" });
+  const b = (parsed.body ?? {}) as Record<string, unknown>;
+  if (!validRunId(b.runId)) return jsonResponse(400, { error: "runId invalid" });
+  try {
+    const result = await ctx.runMutation(internal.runs.internalRequestMaterialize, { runId: b.runId, requestedBy: "worker" });
+    return result.ok ? jsonResponse(200, result) : jsonResponse(409, { error: result.reason });
+  } catch {
+    return jsonResponse(400, { error: "materialize request rejected" });
+  }
+});
+http.route({ path: "/runs/materialize", method: "POST", handler: runsMaterialize });
+
 // GET /sessions/transcript?sessionId=<id>&cursor=<opaque> — one page of a
 // session's finalized transcript, oldest first. The daemon walks it to write
 // .tts-transcript.md into a forked session's workspace before that session's
