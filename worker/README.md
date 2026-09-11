@@ -15,6 +15,8 @@ each; `setup.sh` writes exactly this list into `/etc/cron.d/tts`:
 9. **weekly** (4:00 a.m. New York, Fridays) — gathers the week's facts from Convex, makes one model call, commits the agenda file to the WikiTom checkout, and opens the one `weekly` session (`worker/jobs/weekly.mjs`).
 10. **runs-sweep** (every 2 min, plus a daily full walk) — incrementally parses Claude and Codex run files, stores their bytes and ingests their rows into Convex.
 11. **runs-compare** (every 10 min) — asks Convex to compare eligible daemon rows with their file-derived shadows and maintains one standing failure when they differ.
+12. **runs-backlog** (hourly at :07) — imports the run files that predate the sweep, newest first, at a rate nobody notices: one index row per old run and no transcript rows. Inert until the bucket exists; deletes nothing.
+13. **runs-materialize** (every minute) — serves one request to open an old run: fetches its version out of the store, parses it with the current parser, and ingests the rows. Exits at once when the queue is empty.
 
 ## Run files
 
@@ -28,6 +30,28 @@ CLI transcript. `RUN_HOST` is required and never guessed.
 `worker/jobs/runs-compare.mjs` sends no transcript text over the comparison
 door. Convex already holds both row sets, returns counts and digests, and flips
 only clean ended sessions to file-derived rows.
+
+Convex is a cache of the store, and the store is a cache of nothing. Three
+programs hold that true. `worker/runs/backlog.mjs` walks the run files that
+predate the sweep — both CLI trees on either host, and the gzipped archive
+WikiTom holds under `sessions/` — and gives each old run one index row and no
+transcript rows: what it is, what it cost, and where its bytes are. A run the
+sweeper marked `deferred` is the importer's; anything else is the sweeper's;
+nothing is both, which is why the two never collide and why a killed pass
+resumes exactly where it stopped. `worker/runs/materialize.mjs` does the
+opposite: it takes a run whose rows are not in Convex — evicted, or never
+ingested — fetches its version back out of the store, parses it with the
+CURRENT parser and ingests the rows. A file that predates a field, or whose
+sidecar is gone, opens with what it has and the record says which parts are
+missing; that partial state is a supported state, not an error. Convex's own
+nightly eviction removes the rows of runs outside the 30-day window that Tom
+has not opened, and never the index row, never a label, never a byte in the
+store.
+
+Neither program deletes a local file, and `RUN_FILES_DELETE_AFTER_UPLOAD` stays
+off: a backlog file is the only copy of a run that predates the store and has
+no rows in the record by design, so `deletable()` refuses it outright whatever
+the flag says.
 
 Beside them runs the **session daemon** (`worker/session-host/`, a systemd
 service): every interactive session Tom opens and every autonomous mission
@@ -578,6 +602,11 @@ node /opt/tts/plan-graphs.mjs --force     # also re-prepare and re-brief EVERYTH
 node /opt/tts/nightly.mjs --force         # the nightly job, every step, now
 node /opt/tts/runs/sweep.mjs --full       # recover every changed run file
 node /opt/tts/runs-compare.mjs            # compare eligible shadow sessions
+node /opt/tts/runs/backlog.mjs --build-list    # the one expensive walk; writes the work list
+node /opt/tts/runs/backlog.mjs --status       # counts, remaining bytes, budget; writes nothing
+node /opt/tts/runs/backlog.mjs --run          # one import pass, now
+node /opt/tts/runs/materialize.mjs --serve    # serve one open-from-store request now
+node /opt/tts/runs/materialize.mjs --run <id> # rebuild one run's rows from the store
 node /opt/tts/weekly.mjs --force          # the weekly job, now (refuses a rerun)
 node /opt/tts/weekly.mjs --force --overwrite   # rerun the same day on purpose
 ```
@@ -590,5 +619,5 @@ it at both 08:00 and 09:00 UTC and the guard keeps exactly the slot that is
 
 Cron output: one `/var/log/tts/<job>.log` per job (poll-dump, poll-gmail,
 poll-canvas, apply-time-notes, plan-graphs, nightly, weekly,
-reingest-overflow, runs-sweep, runs-compare),
+reingest-overflow, runs-sweep, runs-compare, runs-backlog, runs-materialize),
 truncated monthly by cron — they are convenience, not state.
