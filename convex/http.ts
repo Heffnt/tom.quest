@@ -558,10 +558,17 @@ const ttsSlackDraftSubmit = httpAction(async (ctx, request) => {
   if (b.draft === null || typeof b.draft !== "object") {
     return jsonResponse(400, { error: "draft (object) required" });
   }
+  // The token of the run that wrote this draft — the edge an emoji on the
+  // morning follows back to the run that earned it. The template path sends
+  // none and none is invented.
+  if (b.runToken !== undefined && (typeof b.runToken !== "string" || b.runToken === "")) {
+    return jsonResponse(400, { error: "runToken, when given, is a non-empty string" });
+  }
   try {
     const result = await ctx.runMutation(internal.ttsSlackDrafts.internalSubmitSlackDraft, {
       requestId: b.requestId,
       draft: b.draft,
+      runToken: typeof b.runToken === "string" ? b.runToken : undefined,
     });
     return jsonResponse(200, { ok: true, ...result });
   } catch (e) {
@@ -1362,7 +1369,18 @@ const ttsCodeBriefs = httpAction(async (ctx, request) => {
     if ("error" in parsed) return jsonResponse(400, parsed);
     briefs.push(parsed);
   }
-  await ctx.runMutation(internal.ttsCode.internalStoreBriefs, { briefs });
+  // The registration token of the run that WROTE these briefs — one brief pass
+  // is one run, so one token covers the batch. It becomes producedByRunToken on
+  // each row, which is the edge a ruling on a code subject follows back to the
+  // run whose text Tom judged (convex/runLabels.ts). A caller that sends none
+  // stores none, and the field stays absent.
+  if (b.runToken !== undefined && (typeof b.runToken !== "string" || b.runToken === "")) {
+    return jsonResponse(400, { error: "runToken, when given, is a non-empty string" });
+  }
+  await ctx.runMutation(internal.ttsCode.internalStoreBriefs, {
+    briefs,
+    runToken: typeof b.runToken === "string" ? b.runToken : undefined,
+  });
   return jsonResponse(200, { ok: true, count: briefs.length });
 });
 
@@ -2588,6 +2606,12 @@ const ttsPlanGraph = httpAction(async (ctx, request) => {
         ? b.goalIds.filter((x): x is string => typeof x === "string")
         : undefined,
       archive: b.archive === true ? true : undefined,
+      // The registration token of the planner run that wrote this graph. It
+      // becomes producedByRunToken on the batch, which is the edge a ruling on
+      // a batch follows back to the run whose explanation Tom judged. Absent
+      // stores nothing and never erases what is there — the same rule every
+      // other field on this pen follows.
+      runToken: typeof b.runToken === "string" && b.runToken !== "" ? b.runToken : undefined,
     });
     return jsonResponse(200, {
       ...result,
