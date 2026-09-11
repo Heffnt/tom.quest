@@ -2,7 +2,7 @@ import { httpRouter } from "convex/server";
 import type { FunctionArgs } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { auth } from "./auth";
 import { nowContext } from "./tts";
 import { isRulingVerdict } from "./ttsRulings";
@@ -30,6 +30,9 @@ import { auditVerdictOf } from "./ttsMerge";
 import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { isRepoRulesPath } from "./ttsContext";
 import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES, isExportTable } from "./ttsNightly";
+import { INTEGRATIONS, isCredentialKey } from "./ttsIntegrations";
+import { JOB_FAILED, JOB_RECOVERED } from "./ttsJobs";
+import { WEEKLY_INPUT_PARTS } from "./ttsWeekly";
 
 const http = httpRouter();
 
@@ -1927,10 +1930,88 @@ const ttsWeeklyInput = httpAction(async (ctx, request) => {
   let facts;
   let writingStandard: string;
   try {
-    [facts, writingStandard] = await Promise.all([
-      ctx.runQuery(internal.ttsWeekly.internalWeeklyInput, { until }),
+    const [parts, standard, declined, credentialFailures] = await Promise.all([
+      Promise.all(WEEKLY_INPUT_PARTS.map(async (part) =>
+        await ctx.runQuery(internal.ttsWeekly.internalWeeklyInputPart, { until, part }),
+      )),
       ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "weekly-input" }),
+      ctx.runQuery(internal.ttsIntegrations.internalDeclinedIntegrations, {}),
+      Promise.all(INTEGRATIONS.map(async ({ job }) => {
+        const pages = async (kind: typeof JOB_FAILED | typeof JOB_RECOVERED) => {
+          const rows: Doc<"dtsEvents">[] = [];
+          let cursor: string | null = null;
+          do {
+            const page: { page: Doc<"dtsEvents">[]; isDone: boolean; continueCursor: string } = await ctx.runQuery(internal.ttsWeekly.internalWeeklyCredentialEventsPage, {
+              job,
+              kind,
+              cursor,
+            });
+            rows.push(...page.page);
+            cursor = page.isDone ? null : page.continueCursor;
+          } while (cursor !== null);
+          return rows;
+        };
+        const [failures, recoveries] = await Promise.all([
+          pages(JOB_FAILED),
+          pages(JOB_RECOVERED),
+        ]);
+        const newestFailure = new Map<string, (typeof failures)[number]>();
+        const newestRecovery = new Map<string, (typeof recoveries)[number]>();
+        for (const row of failures) {
+          if (row.key !== undefined && !newestFailure.has(row.key)) newestFailure.set(row.key, row);
+        }
+        for (const row of recoveries) {
+          if (row.key !== undefined && !newestRecovery.has(row.key)) newestRecovery.set(row.key, row);
+        }
+        for (const row of newestFailure.values()) {
+          if (row.key === undefined || !isCredentialKey(row.key)) continue;
+          const recovery = newestRecovery.get(row.key);
+          if (recovery !== undefined && recovery.at >= row.at) continue;
+          const data = (row.data ?? {}) as Record<string, unknown>;
+          return {
+            job,
+            failure: {
+              key: row.key,
+              at: row.at,
+              error: typeof data.error === "string" ? data.error : "",
+            },
+          };
+        }
+        return { job, failure: null };
+      })),
     ]);
+    // Each part is independently inside Convex's per-query operation limit;
+    // their object fields are disjoint and reconstruct the established facts
+    // block exactly. The HTTP contract remains one GET response.
+    const failureByJob = new Map(credentialFailures.map(({ job, failure }) => [job, failure]));
+    const named = new Set<string>();
+    const integrations = [];
+    for (const integration of INTEGRATIONS) {
+      named.add(integration.name);
+      const ruling = declined.find((row) => row.name === integration.name);
+      if (ruling !== undefined) {
+        integrations.push({ name: integration.name, state: "declined", since: ruling.ruledAt, detail: ruling.sentence });
+        continue;
+      }
+      const waiting = failureByJob.get(integration.job);
+      if (waiting !== null && waiting !== undefined) {
+        integrations.push({
+          name: integration.name,
+          state: "waiting-on-credential",
+          since: waiting.at,
+          detail: waiting.error || waiting.key,
+        });
+        continue;
+      }
+      integrations.push({ name: integration.name, state: "running", since: null, detail: null });
+    }
+    for (const ruling of declined) {
+      if (!named.has(ruling.name)) {
+        integrations.push({ name: ruling.name, state: "declined", since: ruling.ruledAt, detail: ruling.sentence });
+      }
+    }
+    facts = Object.assign({ since: until - 7 * DAY_MS, until, integrations }, ...parts);
+    writingStandard = standard;
   } catch (error) {
     return modelOfTomErrorResponse(error);
   }
