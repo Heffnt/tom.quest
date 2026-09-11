@@ -22,7 +22,7 @@ const hash = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
 
 function store() {
   return {
-    put: vi.fn(({ sourceBytes, kind = "run" }) => {
+    put: vi.fn(({ sourceBytes, kind = "transcript" }) => {
       const bytes = Buffer.from(sourceBytes);
       const digest = hash(bytes);
       return {
@@ -99,9 +99,9 @@ describe("run sweep", () => {
     expect(ingest).toHaveLength(2);
     expect(ingest[0].rows).toHaveLength(200);
     expect(ingest[0].run.file.committedLine).toBeLessThan(201);
-    expect(ingest[0]).toMatchObject({ previousCommittedLine: 0, previousCommittedPrefixSha256: hash(Buffer.alloc(0)) });
+    expect(ingest[0]).toMatchObject({ previousCommittedLine: 0, previousPrefixSha256: hash(Buffer.alloc(0)) });
     expect(ingest[1].previousCommittedLine).toBe(ingest[0].run.file.committedLine);
-    expect(ingest[1].previousCommittedPrefixSha256).toBe(ingest[0].run.file.committedPrefixSha256);
+    expect(ingest[1].previousPrefixSha256).toBe(ingest[0].run.file.committedPrefixSha256);
     expect(first).toMatchObject({ queued: 1 });
     expect(fs.existsSync(stateFileFor(path.join(dir, "state"), "claude:laptop:session"))).toBe(false);
 
@@ -194,15 +194,20 @@ describe("run sweep", () => {
     expect(fs.readdirSync(path.join(stateDir, "queue")).filter((name) => name.endsWith(".json"))).toHaveLength(0);
   });
 
-  it("sends overflow chunks, then the stamp, then ingest", async () => {
-    const dir = temp(); const item = runFile(dir, [claudeToolResult({ content: "x".repeat(40_000) })]); const routes = [];
+  // Convex refuses a chunk before its run and a stamp before its message row,
+  // so the page has to land first and the row has to arrive unstamped.
+  it("sends the ingest page, then its chunks, then the stamp", async () => {
+    const dir = temp(); const item = runFile(dir, [claudeToolResult({ content: "x".repeat(40_000) })]); const routes = []; let page = null;
     await sweepRunFile(item, { stateDir: path.join(dir, "state"), store: store(), post: async (route, body) => {
       routes.push(route);
-      return route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true };
+      if (route !== "/runs/ingest") return { ok: true };
+      page = body;
+      return { ok: true, committedLine: body.run.file.committedLine };
     }, now: () => NOW });
-    expect(routes.at(-2)).toBe("/runs/overflow/stamp");
-    expect(routes.at(-1)).toBe("/runs/ingest");
-    expect(routes.slice(0, -2).every((route) => route === "/runs/overflow")).toBe(true);
+    expect(routes[0]).toBe("/runs/ingest");
+    expect(routes.at(-1)).toBe("/runs/overflow/stamp");
+    expect(routes.slice(1, -1).every((route) => route === "/runs/overflow")).toBe(true);
+    expect(page.rows.some((row) => row.overflow !== undefined)).toBe(false);
   });
 
   it("defers pre-watermark files without reading, parsing, or storing them", async () => {

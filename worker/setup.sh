@@ -496,9 +496,12 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Run files are swept incrementally every two minutes, with one idle-hour full
 # recovery walk. Convex compares the shadow daemon/file rows every ten minutes.
-*/2 * * * * root /usr/bin/flock -n /var/lock/tts-runs-sweep.lock /usr/bin/node /opt/tts/runs/sweep.mjs >> /var/log/tts/runs-sweep.log 2>&1
+# The sweep takes the odd minutes: apply-time-notes and write-slack already own
+# the even ones, and a sweep that reads two CLI trees should not share a tick
+# with them. The comparison is offset off poll-gmail's ten-minute mark.
+1-59/2 * * * * root /usr/bin/flock -n /var/lock/tts-runs-sweep.lock /usr/bin/node /opt/tts/runs/sweep.mjs >> /var/log/tts/runs-sweep.log 2>&1
 37 3 * * * root /usr/bin/flock -n /var/lock/tts-runs-sweep-full.lock /usr/bin/node /opt/tts/runs/sweep.mjs --full >> /var/log/tts/runs-sweep.log 2>&1
-*/10 * * * * root /usr/bin/flock -n /var/lock/tts-runs-compare.lock /usr/bin/node /opt/tts/runs-compare.mjs >> /var/log/tts/runs-compare.log 2>&1
+5-59/10 * * * * root /usr/bin/flock -n /var/lock/tts-runs-compare.lock /usr/bin/node /opt/tts/runs-compare.mjs >> /var/log/tts/runs-compare.log 2>&1
 
 # Log hygiene: truncate the TTS logs on the 1st of each month. Deliberately
 # crude — these logs are debugging convenience, not state, and the Jarvis Box keeps

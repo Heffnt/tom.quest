@@ -59,10 +59,10 @@ function inMemoryAdapters() {
       if (route === "/runs/overflow/stamp") return { ok: true };
       if (route !== "/runs/ingest") return { ok: true };
       const existing = runs.get(body.run.runId);
-      if (existing?.file?.path && body.run.file.committedLine > existing.file.committedLine) {
+      if (existing?.file?.path) {
         if (body.previousCommittedLine !== existing.file.committedLine
-          || body.previousCommittedPrefixSha256 !== existing.file.committedPrefixSha256) {
-          return { ok: false, reason: "previous cursor mismatch" };
+          || body.previousPrefixSha256 !== existing.file.committedPrefixSha256) {
+          return { ok: false, reason: "file rewritten" };
         }
       }
       const advances = !existing || body.run.file.committedLine >= existing.file.committedLine;
@@ -132,9 +132,12 @@ export async function runSweepProof({
       host,
       origin: "laptop",
       kind: "session",
+      // What scripts/session-start-hook.mjs gives a laptop session: the stable
+      // prefix is operate and write, and the know layer is expanded per subject
+      // rather than given or denied whole.
       layersKnown: true,
       layersGiven: ["operate", "write"],
-      layersDenied: ["know"],
+      layersDenied: [],
     },
     claim: { by: "proof:manual-envelope", threadId: path.basename(runFile, ".jsonl"), hookPayloadKeys: [] },
     fs,

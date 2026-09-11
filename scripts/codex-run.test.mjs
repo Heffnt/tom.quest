@@ -47,11 +47,20 @@ function fakeCodex() {
 
 function run(args, env) {
   const state = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-state-"));
-  return spawnSync(process.execPath, [RUNNER, ...args], {
+  const result = spawnSync(process.execPath, [RUNNER, ...args], {
     encoding: "utf8",
     input: "answer this\n",
     env: { ...process.env, RUN_SWEEP_STATE_DIR: state, ...env },
   });
+  result.state = state;
+  return result;
+}
+
+function spooledEnvelope(state) {
+  const dir = path.join(state, "registration");
+  const names = fs.readdirSync(dir).filter((name) => name.endsWith(".json"));
+  if (names.length !== 1) throw new Error(`expected one spool file, found ${names.length}`);
+  return { token: path.basename(names[0], ".json"), envelope: JSON.parse(fs.readFileSync(path.join(dir, names[0]), "utf8")) };
 }
 
 describe("codex-run operate instructions", () => {
@@ -100,5 +109,64 @@ describe("codex-run operate instructions", () => {
     const developer = JSON.parse(fs.readFileSync(argsFile, "utf8"))
       .find((arg) => arg.startsWith("developer_instructions="));
     expect(JSON.parse(developer.slice("developer_instructions=".length))).toMatch(/^TTS-RUN-TOKEN: [0-9a-f-]{36}$/);
+    // An unreadable operate file is an absence, not a refusal.
+    expect(spooledEnvelope(result.state).envelope.registration.layersDenied).toEqual([]);
+  });
+});
+
+describe("codex-run registration", () => {
+  it("spools the launcher's envelope under the token the run carries", () => {
+    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-spool.json`);
+    const result = run([], {
+      CODEX_BIN: fakeCodex(),
+      WIKITOM_DIR: wikitomFixture(),
+      FAKE_CODEX_ARGS: argsFile,
+      TTS_RUN_ORIGIN: "cron:audit",
+      TTS_RUN_PARENT_RUN_ID: "claude:box:parent-session",
+      RUN_HOST: "box",
+    });
+    expect(result.status).toBe(0);
+    const { token, envelope } = spooledEnvelope(result.state);
+    const developer = JSON.parse(fs.readFileSync(argsFile, "utf8"))
+      .find((arg) => arg.startsWith("developer_instructions="));
+    // The rollout names its own token, so the sweeper can bind the envelope
+    // exactly even where `codex exec` fires no hooks.
+    expect(JSON.parse(developer.slice("developer_instructions=".length))).toContain(`TTS-RUN-TOKEN: ${token}`);
+    expect(envelope).toMatchObject({
+      envelopeVersion: 1,
+      token,
+      writer: { file: "scripts/codex-run.mjs", job: "audit" },
+      registration: {
+        host: "box",
+        runner: "codex",
+        origin: "cron:audit",
+        kind: "codex-child",
+        parentRunId: "claude:box:parent-session",
+        layersKnown: true,
+        layersGiven: ["operate"],
+        layersDenied: [],
+      },
+    });
+    expect(envelope.registration.wikitomCommit).toMatch(/^[0-9a-f]{7,40}$/);
+    expect(envelope.registration.promptSha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("records a job with no parent, and --no-operate as a denial", () => {
+    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-denied.json`);
+    const result = run(["--no-operate"], {
+      CODEX_BIN: fakeCodex(),
+      WIKITOM_DIR: wikitomFixture(),
+      FAKE_CODEX_ARGS: argsFile,
+    });
+    expect(result.status).toBe(0);
+    const { envelope } = spooledEnvelope(result.state);
+    expect(envelope.registration).toMatchObject({
+      origin: "job",
+      kind: "job",
+      layersKnown: true,
+      layersGiven: [],
+      layersDenied: ["operate"],
+    });
+    expect(envelope.registration.parentRunId).toBe(null);
   });
 });

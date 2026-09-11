@@ -107,12 +107,27 @@ describe("run lifecycle hook", () => {
     const result = run(payload, { ...f, env: { RUN_HOST: "" } });
     expect(result.status).toBe(0);
     const envelope = JSON.parse(fs.readFileSync(registrationSidecarPath(payload.transcript_path), "utf8"));
+    // The stable prefix session-start-hook.mjs loads is operate and write. The
+    // know layer is expanded per subject, so it is in neither list.
     expect(envelope.registration).toMatchObject({
       host: null,
       origin: "laptop",
       layersKnown: true,
       layersGiven: ["operate", "write"],
-      layersDenied: ["know"],
+      layersDenied: [],
+    });
+  });
+
+  it("leaves a subagent's layers unknown rather than inheriting its parent's", () => {
+    const f = fixture();
+    const payload = payloadFor(f.root, "claude", "SubagentStart");
+    expect(run(payload, { ...f, env: { RUN_HOST: "laptop" } }).status).toBe(0);
+    const envelope = JSON.parse(fs.readFileSync(registrationSidecarPath(payload.agent_transcript_path), "utf8"));
+    expect(envelope.registration).toMatchObject({
+      kind: "subagent",
+      layersKnown: false,
+      layersGiven: [],
+      layersDenied: [],
     });
   });
 
