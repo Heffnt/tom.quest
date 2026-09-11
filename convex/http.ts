@@ -2079,6 +2079,45 @@ const ttsWeeklyInput = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/weekly-input", method: "GET", handler: ttsWeeklyInput });
 
+// POST /tts/weekly-decisions — the two findings the Friday evals run makes
+// WITHOUT Tom: a capability case that passed every trial and so graduated into
+// the set gating every future merge, and a layer or skill whose cases pass as
+// often without it as with it. Each becomes one #tts-decisions thread through
+// the existing sendDecision, so "revert" in that thread is already wired and
+// the morning's objection list already picks it up — no new channel, no new
+// poster, no new Slack subject kind.
+//
+// The job posts this BEFORE its one model call (worker/jobs/weekly.mjs), so a
+// model that fails to write an agenda cannot swallow facts of the run.
+const ttsWeeklyDecisions = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.isoWeek !== "string" || b.isoWeek.trim() === "") {
+    return jsonResponse(400, { error: "isoWeek (non-empty string) required" });
+  }
+  try {
+    const result = await ctx.runMutation(internal.ttsWeekly.internalRecordWeeklyEvalsDecisions, {
+      isoWeek: b.isoWeek,
+      graduated: Array.isArray(b.graduated) ? (b.graduated as { id: string; sentence: string }[]) : undefined,
+      ablation: Array.isArray(b.ablation)
+        ? (b.ablation as { name: string; cases: number; withPass: number; withoutPass: number; earned: boolean }[])
+        : undefined,
+    });
+    return jsonResponse(200, { ok: true, ...result });
+  } catch (e) {
+    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+http.route({ path: "/tts/weekly-decisions", method: "POST", handler: ttsWeeklyDecisions });
+
 // GET /tts/prelude-delivery?since=<epoch ms>&until=<epoch ms> — the nightly
 // delivery check reads sessions against the commit that was published when
 // they began. It is worker-only: it exposes session titles and commit stamps.

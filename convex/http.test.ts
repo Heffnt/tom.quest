@@ -556,4 +556,47 @@ describe("POST /slack/events: a reaction on the morning digest", () => {
       expect((await t.fetch("/tts/run-by-token", { headers: key })).status).toBe(400);
     });
   });
+  // The two findings the Friday evals run makes without Tom reach
+  // #tts-decisions through the door the job already posts to, so "revert" in
+  // the thread is wired and the morning's objection list picks it up.
+  describe("POST /tts/weekly-decisions", () => {
+    const key = { "X-TTS-Key": "s3cret" };
+    const post = async (t: ReturnType<typeof convexTest>, body: unknown) =>
+      await t.fetch("/tts/weekly-decisions", {
+        method: "POST",
+        headers: { ...key, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    it("records a graduation and an unearned name, and refuses a body with no week", async () => {
+      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+      const t = convexTest(schema, modules);
+      const ok = await post(t, {
+        isoWeek: "2026-W37",
+        graduated: [{ id: "run-ruling-8fb2d10a4c3e", sentence: "say what the batch is for before you list its tasks" }],
+        ablation: [{ name: "know", cases: 7, withPass: 5, withoutPass: 6, earned: false }],
+      });
+      expect(ok.status).toBe(200);
+      expect(await ok.json()).toMatchObject({ ok: true });
+
+      // isoWeek is half the ablation askId — it is what makes one week's
+      // finding a different thread from the next week's — so a body without
+      // one is refused rather than defaulted.
+      const blank = await post(t, { isoWeek: "  ", ablation: [] });
+      expect(blank.status).toBe(400);
+      const absent = await post(t, { ablation: [] });
+      expect(absent.status).toBe(400);
+    });
+
+    it("is behind the worker key like every other pen", async () => {
+      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+      const t = convexTest(schema, modules);
+      const res = await t.fetch("/tts/weekly-decisions", {
+        method: "POST",
+        headers: { "X-TTS-Key": "wrong", "Content-Type": "application/json" },
+        body: JSON.stringify({ isoWeek: "2026-W37" }),
+      });
+      expect(res.status).toBe(401);
+    });
+  });
 });
