@@ -5,14 +5,19 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   aggregate,
   goldenHash,
+  HEAD_TRIALS,
+  isFlaky,
   JOBS,
   judgePrompt,
   loadGolden,
   loadTasks,
   parseArgs,
   parseJudge,
+  passedIds,
+  runEvals,
   runItem,
   runTask,
+  runTrials,
   scoreLearning,
   selectItems,
   stampAgainstBase,
@@ -377,6 +382,120 @@ describe("stampAgainstBase", () => {
     const stamped = await stampAgainstBase(head, base);
     expect(stamped.regressions).toBe(1);
     expect(stamped.failures[0].regression).toBe(true);
+  });
+});
+
+// Every item is a live model call, so one trial is a sample and not a
+// measurement. The rule under test is the same for every item: an item the
+// BASE PASSED that fails at head is tried again, and it is a regression only
+// if every head trial fails.
+describe("the head trials", () => {
+  const fakeRunner = (...verdicts) => {
+    const answers = [...verdicts];
+    const calls = { count: 0 };
+    const once = async () => {
+      calls.count += 1;
+      const judged = answers.shift() ?? "fail";
+      return { id: "a", partition: "prepare/chores", verdict: "revise", confirmed: true, judged, reason: `trial ${calls.count}` };
+    };
+    return { once, calls };
+  };
+  const rowFor = (result) => ({ goldenHash: "h", scoredIds: ["a"], ...aggregate([result]), tasks: aggregate([]) });
+  const basePassing = { goldenHash: "h", scoredIds: ["a"], failures: [], tasks: { failures: [] } };
+  const baseFailing = {
+    goldenHash: "h", scoredIds: ["a"], tasks: { failures: [] },
+    failures: [{ id: "a", partition: "prepare/chores", verdict: "revise", reason: "was already bad", confirmed: true }],
+  };
+
+  it("calls a regression only when every head trial fails", async () => {
+    const { once, calls } = fakeRunner("fail", "fail", "fail");
+    const result = await runTrials("a", new Set(["a"]), once);
+    expect(calls.count).toBe(HEAD_TRIALS);
+    expect(result.judged).toBe("fail");
+    expect(result.trials).toEqual({ head: 3, headPassed: 0 });
+    expect(isFlaky(result)).toBe(false);
+    const stamped = await stampAgainstBase(rowFor(result), basePassing);
+    expect(stamped.regressions).toBe(1);
+    expect(stamped.flaky).toBe(0);
+    expect(stamped.failures[0].trials).toEqual({ head: 3, headPassed: 0 });
+  });
+
+  it("calls an item that failed then passed flaky, counts it as a pass, and never as a regression", async () => {
+    const { once, calls } = fakeRunner("fail", "pass", "fail");
+    const result = await runTrials("a", new Set(["a"]), once);
+    // It stops on the pass: the third trial is never paid for.
+    expect(calls.count).toBe(2);
+    expect(result.judged).toBe("pass");
+    expect(result.trials).toEqual({ head: 2, headPassed: 1 });
+    expect(isFlaky(result)).toBe(true);
+    const stamped = await stampAgainstBase(rowFor(result), basePassing);
+    expect(stamped).toMatchObject({ pass: 1, fail: 0, flaky: 1, regressions: 0 });
+    expect(stamped.failures).toEqual([]);
+  });
+
+  it("leaves an item that failed at base alone: one trial, still failing, no retry", async () => {
+    const { once, calls } = fakeRunner("fail", "pass", "pass");
+    const result = await runTrials("a", passedIds(baseFailing), once);
+    expect(calls.count).toBe(1);
+    expect(result.judged).toBe("fail");
+    expect(result.trials).toEqual({ head: 1, headPassed: 0 });
+    const stamped = await stampAgainstBase(rowFor(result), baseFailing);
+    expect(stamped).toMatchObject({ regressions: 0, stillFailing: 1, flaky: 0 });
+  });
+
+  it("pays one call for an item that passes first time, base or no base", async () => {
+    const first = await runTrials("a", new Set(["a"]), fakeRunner("pass").once);
+    expect(first.trials).toEqual({ head: 1, headPassed: 1 });
+    expect(isFlaky(first)).toBe(false);
+    const { once, calls } = fakeRunner("fail");
+    expect((await runTrials("a", new Set(), once)).trials).toEqual({ head: 1, headPassed: 0 });
+    expect(calls.count).toBe(1);
+  });
+
+  it("reads the base's passing ids off the row, tasks and golden items alike", () => {
+    const base = {
+      scoredIds: ["a", "b", "task-1"],
+      failures: [{ id: "b" }],
+      tasks: { failures: [{ id: "task-1" }] },
+    };
+    expect([...passedIds(base)]).toEqual(["a"]);
+    expect(passedIds(null).size).toBe(0);
+  });
+});
+
+describe("runEvals carries the trial rule end to end", () => {
+  const golden = item({ id: "a", sentence: LABEL });
+  const io = (answers, dir) => ({
+    now: () => 1,
+    runClaude: async () => answers.shift() ?? '{"verdict":"fail","reason":"out of answers"}',
+    layers: () => layers,
+    loadModules: async () => ({ prepare: { preparePrompt: () => "PROMPT WITH NO LABEL IN IT" } }),
+    taskRepos: () => [],
+    worktree: (repo) => ({ dir, commit: repo === "WikiTom" ? "wiki1" : "tq1", remove: () => {} }),
+  });
+  const regen = '{"brief":"b","entryAction":"e","workDescription":"w","groundUpExplanation":"g"}';
+  const goldenDir = () => {
+    const dir = tree();
+    writeJson(dir, path.join("evals", "golden", "a.json"), golden);
+    return dir;
+  };
+
+  it("retries an item the base passed and records the flake", async () => {
+    const dir = goldenDir();
+    const answers = [regen, '{"verdict":"fail","reason":"no"}', regen, '{"verdict":"pass","reason":"yes"}'];
+    const run = await runEvals({ repo: "tom.quest", sha: "head", basePassed: new Set(["a"]) }, io(answers, dir));
+    expect(run).toMatchObject({ items: 1, pass: 1, fail: 0, flaky: 1 });
+    expect(answers).toEqual([]);
+    // Trials, not items: the retried item cost its two calls twice.
+    expect(run.calls).toBe(4);
+  });
+
+  it("pays for one trial when the base did not pass the item", async () => {
+    const dir = goldenDir();
+    const answers = [regen, '{"verdict":"fail","reason":"no"}', regen, '{"verdict":"pass","reason":"yes"}'];
+    const run = await runEvals({ repo: "tom.quest", sha: "head" }, io(answers, dir));
+    expect(run).toMatchObject({ items: 1, pass: 0, fail: 1, flaky: 0, calls: 2 });
+    expect(answers.length).toBe(2);
   });
 });
 

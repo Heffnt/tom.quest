@@ -42,6 +42,28 @@ export const JUDGE_TIMEOUT_MS = 3 * 60 * 1000;
 /** The on-commit set: the newest 20 approve and 20 revise across the whole
  *  golden set, by ruledAt. The weekly run uses everything. */
 export const PR_ITEMS = 40;
+
+/**
+ * How many times an item is tried at the head commit before one failure of it
+ * is called a regression.
+ *
+ * EVERY ITEM IS A LIVE MODEL CALL, so one pass or one fail is a sample, not a
+ * measurement: the same commit scored twice an hour apart has come back 8/29
+ * with no regression and 6/29 with one, with nothing in the diff touching the
+ * item that moved. A one-trial gate fails a merge on the regeneration's noise
+ * as readily as on the change under test.
+ *
+ * The rule is the same for every item, and it is not a re-roll of a chosen
+ * one: an item that PASSED AT BASE and fails at head is tried again, up to
+ * this many head trials in all, and it is a regression only if EVERY head
+ * trial fails. Passing once and failing once is a fact about the item, kept as
+ * `flaky` and reported — never counted as a regression, never hidden.
+ *
+ * The extra work is bounded by the same condition. An item that failed at base
+ * too, or that base never scored, is tried exactly once, as before.
+ */
+export const HEAD_TRIALS = 3;
+
 /** Worktrees and cache clones; free to delete, by the box's no-state rule. */
 export const WORK_DIR = "/var/cache/tts/evals";
 export const GOLDEN_DIR = "evals/golden";
@@ -528,6 +550,17 @@ export async function runItem(item, context, io) {
 }
 
 /**
+ * An item that passed at least one head trial and failed at least one other.
+ * It is a PASS — it passed — and it is counted apart, because a set with
+ * flaky items in it is a set whose single-trial numbers move on their own.
+ */
+export function isFlaky(result) {
+  const trials = result?.trials;
+  if (trials === undefined || trials === null) return false;
+  return trials.headPassed > 0 && trials.headPassed < trials.head;
+}
+
+/**
  * Counts and a list. Nothing is averaged, weighted or scored out of ten — an
  * item passes or it does not, and the aggregate is descriptive, like every
  * other fact in this system.
@@ -536,7 +569,9 @@ export function aggregate(results) {
   const byPartition = new Map();
   const byVerdict = { approve: { items: 0, pass: 0 }, revise: { items: 0, pass: 0 } };
   let pass = 0;
+  let flaky = 0;
   for (const result of results) {
+    if (isFlaky(result)) flaky += 1;
     const row = byPartition.get(result.partition) ?? { partition: result.partition, items: 0, pass: 0, fail: 0 };
     row.items += 1;
     row[result.judged === "pass" ? "pass" : "fail"] += 1;
@@ -552,11 +587,19 @@ export function aggregate(results) {
     items: results.length,
     pass,
     fail: results.length - pass,
+    // Passed once, failed once. NEVER a regression and never folded into the
+    // fail count: it is the noise in the measurement, said out loud.
+    flaky,
     byPartition: [...byPartition.values()].sort((a, b) => a.partition.localeCompare(b.partition)),
     byVerdict,
     failures: results
       .filter((result) => result.judged !== "pass")
-      .map(({ id, partition, verdict, reason, confirmed }) => ({ id, partition, verdict, reason, confirmed }))
+      .map(({ id, partition, verdict, reason, confirmed, trials }) => ({
+        id, partition, verdict, reason, confirmed,
+        // The failure carries its own trial count, so a row read later says
+        // whether this id failed once or failed every time it was tried.
+        ...(trials === undefined ? {} : { trials }),
+      }))
       .sort((a, b) => a.id.localeCompare(b.id)),
   };
 }
@@ -719,12 +762,56 @@ export async function loadModules(tomquestTree, items) {
 }
 
 /**
+ * The ids a run PASSED: every id it scored, less every id it recorded a
+ * failure for, golden items and repo tasks alike. This is the only thing the
+ * head run needs from the base run — the retry rule tries again exactly the
+ * items the base passed, which is exactly the set gate() could call a
+ * regression.
+ */
+export function passedIds(run) {
+  if (run === null || run === undefined) return new Set();
+  const failed = new Set([...(run.failures ?? []), ...(run.tasks?.failures ?? [])].map((failure) => failure.id));
+  return new Set((run.scoredIds ?? []).filter((id) => !failed.has(id)));
+}
+
+/**
+ * One item, scored as many times as HEAD_TRIALS allows.
+ *
+ * `once` is the whole scoring of one item — runItem or runTask — and it is
+ * called a second and third time only when the first call FAILED an item the
+ * BASE PASSED, and it stops the moment one of them passes. Everything else
+ * costs exactly one call, as before.
+ *
+ * The result kept is the first passing trial if there was one, else the first
+ * trial: a run in which nothing was retried is the old run's result with
+ * `trials` added and nothing else moved.
+ */
+export async function runTrials(id, basePassed, once) {
+  const first = await once();
+  if (first.judged === "skip") return first;
+  if (first.judged === "pass" || !basePassed.has(id)) {
+    return { ...first, trials: { head: 1, headPassed: first.judged === "pass" ? 1 : 0 } };
+  }
+  const results = [first];
+  while (results.length < HEAD_TRIALS) {
+    const next = await once();
+    results.push(next);
+    if (next.judged === "pass") break;
+  }
+  const passing = results.find((result) => result.judged === "pass");
+  return {
+    ...(passing ?? first),
+    trials: { head: results.length, headPassed: results.filter((result) => result.judged === "pass").length },
+  };
+}
+
+/**
  * One run: the golden items of the pinned tom.quest tree, regenerated against
  * the pinned WikiTom tree, judged, aggregated, and posted as one evals-run row.
  * `io` carries every side effect so the test can drive this with no network
  * and no model.
  */
-export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekly = false }, io) {
+export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekly = false, basePassed = new Set() }, io) {
   const startedAt = io.now();
   const trees = treesFor(repo, sha);
   const tomquest = io.worktree("tom.quest", trees.tomquest);
@@ -745,10 +832,12 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       },
     };
     const results = [];
-    for (const item of items) results.push(await runItem(item, context, io));
+    for (const item of items) results.push(await runTrials(item.id, basePassed, () => runItem(item, context, io)));
     const tasks = [];
     for (const taskRepo of io.taskRepos?.(tomquest.dir) ?? []) {
-      for (const task of loadTasks(tomquest.dir, taskRepo)) tasks.push(await runTask(task, trees, io));
+      for (const task of loadTasks(tomquest.dir, taskRepo)) {
+        tasks.push(await runTrials(task.id, basePassed, () => runTask(task, trees, io)));
+      }
     }
     const scored = results.filter((result) => result.judged !== "skip");
     const summary = aggregate(scored);
@@ -764,7 +853,9 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       judgeModel: JUDGE_MODEL,
       startedAt,
       finishedAt: io.now(),
-      calls: scored.length * 2,
+      // Trials, not items: a retried item costs its calls again and the row
+      // says so.
+      calls: scored.reduce((total, result) => total + (result.trials?.head ?? 1), 0) * 2,
       // The ids actually scored, so the gate can tell a newly added item apart
       // from one that regressed without re-deriving the selection.
       scoredIds: [...scored, ...tasks.filter((task) => task.judged !== "skip")].map((result) => result.id).sort(),
@@ -876,6 +967,7 @@ export function failedRun({ repo, sha, error, at }) {
     items: 0,
     pass: 0,
     fail: 0,
+    flaky: 0,
     regressions: null,
     stillFailing: 0,
     byPartition: [],
@@ -955,11 +1047,17 @@ async function runAndPost(env, io, { repo, sha, base, limit, jobs, weekly, force
       console.log(`[evals] base ${repo}@${base}: ${baseData.pass}/${baseData.items} pass`);
     }
   }
-  const data = await stampAgainstBase(await runEvals({ repo, sha, limit, jobs, weekly }, io), baseData);
+  // The base's passing ids are the head run's retry list: exactly those items
+  // can become a regression, so exactly those are tried again when they fail.
+  const data = await stampAgainstBase(
+    await runEvals({ repo, sha, limit, jobs, weekly, basePassed: passedIds(baseData) }, io),
+    baseData,
+  );
   await postRun(env, data);
   console.log(
     `[evals] ${repo}@${sha}: ${data.pass}/${data.items} pass, ` +
       `${data.regressions === null ? "compared to no base" : `${data.regressions} regression(s)`}, ` +
+      `${(data.flaky ?? 0) + (data.tasks?.flaky ?? 0)} flaky, ` +
       `${data.stillFailing} still failing (golden ${data.goldenHash})`,
   );
   return data;
