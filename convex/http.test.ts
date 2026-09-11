@@ -122,25 +122,25 @@ function post(t: ReturnType<typeof convexTest>, value: unknown, key?: string) {
 describe("POST /runs/ingest", () => {
   afterEach(() => vi.unstubAllEnvs());
   it("returns 503 until the existing worker credential is configured", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest(schema, modules);
     const response = await post(t, body, "key");
     expect(response.status).toBe(503);
   });
   it("returns 401 for a wrong worker credential", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    const t = convexTest({ schema, modules });
+    const t = convexTest(schema, modules);
     expect((await post(t, body, "wrong")).status).toBe(401);
   });
   it("returns 400 for invalid JSON", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    const t = convexTest({ schema, modules });
+    const t = convexTest(schema, modules);
     const response = await t.fetch("/runs/ingest", { method: "POST", headers: { "Content-Type": "application/json", "X-Sessions-Key": "right" }, body: "{ bad" });
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "invalid JSON body" });
   });
   it("accepts a well-typed page", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    const t = convexTest({ schema, modules });
+    const t = convexTest(schema, modules);
     const response = await post(t, body, "right");
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true, runId: "claude:laptop:http-run" });
@@ -148,7 +148,7 @@ describe("POST /runs/ingest", () => {
 
   it("rejects over-limit bytes before attempting JSON parsing", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    const t = convexTest({ schema, modules });
+    const t = convexTest(schema, modules);
     const maxBody = 6 * 200 * 32 * 1024 + 1024 * 1024;
     const response = await t.fetch("/runs/ingest", {
       method: "POST",
@@ -165,7 +165,7 @@ describe("POST /runs/ingest", () => {
 
   it("allows the exact declared ingest boundary to reach JSON parsing", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    const t = convexTest({ schema, modules });
+    const t = convexTest(schema, modules);
     const maxBody = 6 * 200 * 32 * 1024 + 1024 * 1024;
     const response = await t.fetch("/runs/ingest", {
       method: "POST",
@@ -202,7 +202,7 @@ describe("POST /runs/overflow: bounded chunks", () => {
 
   it("accepts worst-case 256 KiB chunks at the body boundary and rejects one byte more", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    const t = convexTest({ schema, modules });
+    const t = convexTest(schema, modules);
     expect((await post(t, body, "right")).status).toBe(200);
 
     const maxBody = 6 * 256 * 1024 + 4 * 1024;
@@ -251,7 +251,7 @@ describe("phase 3 run routes", () => {
   }
 
   it("keeps comparison and manifest reads behind the existing session worker key", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest(schema, modules);
     expect((await t.fetch("/runs/compare", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status).toBe(503);
     expect((await t.fetch("/runs/manifest?since=0")).status).toBe(503);
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
@@ -261,7 +261,7 @@ describe("phase 3 run routes", () => {
 
   it("compares one session directly and discovers eligible sessions from an empty object", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    const t = convexTest({ schema, modules });
+    const t = convexTest(schema, modules);
     const direct = await linkedSession(t, "direct");
     const directResponse = await t.fetch("/runs/compare", {
       method: "POST",
@@ -283,7 +283,7 @@ describe("phase 3 run routes", () => {
 
   it("finishes every bounded comparison page before returning a verdict", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    const t = convexTest({ schema, modules });
+    const t = convexTest(schema, modules);
     const sessionId = await linkedSession(t, "paged");
     await t.run(async (ctx) => {
       for (let seq = 0; seq < 101; seq += 1) await ctx.db.insert("claudeMessages", {
@@ -315,7 +315,7 @@ describe("phase 3 run routes", () => {
 
   it("serves verified store versions as manifest entries", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    const t = convexTest({ schema, modules });
+    const t = convexTest(schema, modules);
     const stored = await t.mutation(internal.runs.internalIngest, {
       ...body,
       run: {
@@ -352,7 +352,7 @@ describe("/runs/materialize*: the queue the box drains", () => {
   const stored = { ...body, run: { ...body.run, file: { ...body.run.file, storeKey: "runs/claude/laptop/http-run/stored.jsonl.gz", totalLines: 4000 } } };
 
   it("keeps all three doors behind the session worker key", async () => {
-    const t = convexTest({ schema, modules });
+    const t = convexTest(schema, modules);
     expect((await t.fetch("/runs/materialize-request")).status).toBe(503);
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
     expect((await t.fetch("/runs/materialize-request", { headers: { "X-Sessions-Key": "wrong" } })).status).toBe(401);
@@ -362,7 +362,7 @@ describe("/runs/materialize*: the queue the box drains", () => {
 
   it("queues, hands over and answers one request", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    const t = convexTest({ schema, modules });
+    const t = convexTest(schema, modules);
     expect(await (await t.fetch("/runs/materialize-request", { headers: { "X-Sessions-Key": "right" } })).json()).toEqual({ request: null });
     expect(await t.mutation(internal.runs.internalIngest, stored as never)).toMatchObject({ ok: true });
 
@@ -391,7 +391,7 @@ describe("/runs/materialize*: the queue the box drains", () => {
 
   it("refuses a run with no store key and never reflects a payload", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    const t = convexTest({ schema, modules });
+    const t = convexTest(schema, modules);
     expect(await t.mutation(internal.runs.internalIngest, body as never)).toMatchObject({ ok: true });
     const refused = await t.fetch("/runs/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ runId: "claude:laptop:http-run" }) });
     expect(refused.status).toBe(409);
@@ -401,7 +401,7 @@ describe("/runs/materialize*: the queue the box drains", () => {
 
   it("narrows every answer field before the record sees it", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
-    const t = convexTest({ schema, modules });
+    const t = convexTest(schema, modules);
     expect(await t.mutation(internal.runs.internalIngest, stored as never)).toMatchObject({ ok: true });
     await t.fetch("/runs/materialize", { method: "POST", headers: KEY, body: JSON.stringify({ runId: "claude:laptop:http-run" }) });
     const { request } = await (await t.fetch("/runs/materialize-request", { headers: { "X-Sessions-Key": "right" } })).json();
