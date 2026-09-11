@@ -97,6 +97,36 @@ describe("runs", () => {
     expect((await t.run((ctx) => ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", "claude:laptop:root-run")).collect())).map((entry) => entry.seq)).toEqual([0, 1000]);
   });
 
+  // witness: the sweep walks a session's subagent files in name order, so a
+  // grandchild is routinely ingested before its own parent has been seen. The
+  // run's depth was forced to 1 in that case and every row was then refused as
+  // "invalid run row", which dead-lettered each depth-2-and-deeper run on a
+  // permanent 400 — one real session lost fifty runs that way.
+  it("lands a grandchild swept before its parent, and repairs the tree when the parent arrives", async () => {
+    const t = convexTest(schema, modules);
+    const grandchild = run({
+      runId: "claude:laptop:root-run/grandchild-agent", rootRunId: "claude:laptop:root-run",
+      parentRunId: "claude:laptop:root-run/middle-agent", depth: 2, kind: "subagent",
+      spawnedByToolUseId: "exact-tool-use",
+      file: { ...run().file, path: "C:/grandchild.jsonl" },
+    });
+    expect(await t.mutation(internal.runs.internalIngest, ingest(grandchild, [row(0, { depth: 2 })]) as never))
+      .toMatchObject({ ok: true, inserted: 1 });
+
+    const middle = run({
+      runId: "claude:laptop:root-run/middle-agent", rootRunId: "claude:laptop:root-run",
+      parentRunId: "claude:laptop:root-run", depth: 1, kind: "subagent",
+      spawnedByToolUseId: "exact-tool-use",
+      file: { ...run().file, path: "C:/middle.jsonl" },
+    });
+    expect(await t.mutation(internal.runs.internalIngest, ingest(middle, [row(0, { depth: 1 })]) as never))
+      .toMatchObject({ ok: true, inserted: 1 });
+
+    const landed = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run/grandchild-agent")).unique());
+    expect(landed).toMatchObject({ depth: 2, rootRunId: "claude:laptop:root-run", parentRunId: "claude:laptop:root-run/middle-agent" });
+    expect(landed?.file.path).toBe("C:/grandchild.jsonl");
+  });
+
   it("refuses malformed identifiers, numeric facts, and child edges before writes", async () => {
     const t = convexTest(schema, modules);
     expect(await t.mutation(internal.runs.internalIngest, ingest(run({ runId: "not-a-run" })) as never)).toEqual({ ok: false, reason: "invalid run record" });

@@ -204,9 +204,12 @@ export const internalIngest = internalMutation({
       depth = knownParent.depth + 1;
     } else {
       // A missing parent is a root stub until its own file names its parent.
-      // Filling that stub repairs this run and its descendants below.
+      // Filling that stub repairs this run and its descendants below. The depth
+      // stays the one the CLI sidecar gave this run: the sweep reaches a
+      // grandchild before its parent whenever the file names sort that way, and
+      // inventing depth 1 here made every row of a deeper run fail the row-depth
+      // check below and dead-letter the whole run on a permanent 400.
       rootRunId = args.run.parentRunId;
-      depth = 1;
     }
     let run = { ...args.run, rootRunId, depth };
     // A box Claude root has the same CLI id as its live session. Resolve that
