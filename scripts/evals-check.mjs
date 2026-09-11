@@ -20,7 +20,18 @@
 // /tts/* route including /tts/event, and CI needs exactly two things.
 
 export const POLL_INTERVAL_MS = 30_000;
-export const POLL_TIMEOUT_MS = 40 * 60 * 1000;
+/**
+ * How long the check waits for the box's answer.
+ *
+ * MEASURED, not guessed: on PR #170 (2026-09-11) the box took about fifty
+ * minutes for one run — 29 golden items, and a fresh clone plus two worktrees
+ * (head and base) before any of them were scored. The wait was 40 minutes, so
+ * the check failed on silence while the run was still going, and a re-run paid
+ * the whole cost again. 75 leaves a real margin over that measurement without
+ * letting a box that is genuinely dead hold a pull request all afternoon —
+ * .github/workflows/evals.yml's job timeout is set above it.
+ */
+export const POLL_TIMEOUT_MS = 75 * 60 * 1000;
 
 /** The paths that make an evals run worth asking for, in either repo. */
 export const WATCHED_PATHS = [
@@ -108,8 +119,15 @@ export function report(head, base, verdict) {
   const unconfirmedNote = verdict.unconfirmed.length > 0
     ? ` ${verdict.unconfirmed.length} unconfirmed failure${verdict.unconfirmed.length === 1 ? "" : "s"} reported, not gated.`
     : "";
+  // Flaky is REPORTED, never gated, and it is printed even when it is zero:
+  // the number is how Tom reads whether the set moved on its own. An item is
+  // flaky when it passed one head trial and failed another (worker/jobs/
+  // evals.mjs, HEAD_TRIALS) — it passed, so it is in the pass count and in no
+  // failure list, and it can never be a regression.
+  const flaky = (head.flaky ?? 0) + (head.tasks?.flaky ?? 0);
   const notes = [
     verdict.regressions.length === 0 ? "0 regressions" : null,
+    `${flaky} flaky`,
     verdict.stillFailing.length > 0 ? `${verdict.stillFailing.length} still failing` : null,
     verdict.unconfirmed.length > 0 ? `${verdict.unconfirmed.length} failing but not confirmed by Tom` : null,
   ].filter((note) => note !== null);
@@ -119,7 +137,7 @@ export function report(head, base, verdict) {
     return [`${setLine}: ${head.pass} pass, ${head.fail} fail, ${notes.join(", ")}.`];
   }
   lines.push(setLine);
-  lines.push(`  head: ${head.pass} pass, ${head.fail} fail` + (base ? `      base: ${base.pass} pass, ${base.fail} fail` : ""));
+  lines.push(`  head: ${head.pass} pass, ${head.fail} fail, ${flaky} flaky` + (base ? `      base: ${base.pass} pass, ${base.fail} fail` : ""));
   if (verdict.noBaseline) lines.push(`  no baseline for the base commit; reporting only`);
   if (verdict.mismatch) {
     lines.push(`  GOLDEN SET MISMATCH  head ${head.goldenHash} vs base ${base.goldenHash} — re-run the base:`);
@@ -182,7 +200,7 @@ async function main() {
   // A check that passes on silence proves nothing.
   if (!answer?.run) {
     console.error(
-      `evals: the Jarvis Box did not answer within 40 minutes. Re-run this check, or run it by hand: ` +
+      `evals: the Jarvis Box did not answer within ${POLL_TIMEOUT_MS / 60_000} minutes. Re-run this check, or run it by hand: ` +
         `node /opt/tts/evals.mjs --repo ${repo} --sha ${sha}`,
     );
     process.exit(1);

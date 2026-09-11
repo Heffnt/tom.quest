@@ -1561,7 +1561,8 @@ const ttsTests = httpAction(async (ctx, request) => {
 http.route({ path: "/tts/tests", method: "POST", handler: ttsTests });
 
 // POST /tts/audit — the Codex/Opus audit of one head. Body:
-// { repo, sha, text, model?, url? }, where `text` is the audit's own answer.
+// { repo, sha, text, model?, fallback?, url? }, where `text` is the audit's
+// own answer and `fallback` says why a stand-in model wrote it.
 // The VERDICT LINE IS READ HERE, from that text, so the parse has one home
 // (ttsMerge.auditVerdictOf) and the record keeps the words the auditor wrote.
 // An answer with no `VERDICT: <WORD>` line of its own is refused rather than
@@ -1596,6 +1597,10 @@ const ttsAudit = httpAction(async (ctx, request) => {
     verdict,
     text: b.text as string,
     ...(nonempty(b.model) ? { model: (b.model as string).trim() } : {}),
+    // Why a stand-in auditor answered ("codex-cap"): the row declares a
+    // same-family audit rather than passing it off as the second opinion the
+    // check is for (convex/ttsMerge.ts auditFallbackNote).
+    ...(nonempty(b.fallback) ? { fallback: (b.fallback as string).trim() } : {}),
     ...(nonempty(b.url) ? { url: (b.url as string).trim() } : {}),
   });
   return jsonResponse(200, { ok: true, ...result });

@@ -19,7 +19,12 @@
 // The character classes are deliberately JSON-escape-free (no backslash, no
 // quote, no control characters), which is what makes it safe to run this over
 // an ALREADY-SERIALIZED body: a replacement inside a JSON string can never
-// break the JSON.
+// break the JSON. Every value class below obeys that rule and the tests
+// JSON.parse the output to keep it obeyed — on 2026-09-11 a named-assignment
+// value class that had not excluded the quote ate the closing `"` of a
+// serialized string, the daemon's ingest POST became malformed JSON, Convex
+// answered 400, and session.mjs — which treats 400 as permanent — DROPPED the
+// row. A filter that loses transcript rows is worse than the leak it stops.
 //
 // Its own dependency-free file for the same reason env-scrub.mjs is one:
 // lib.mjs (which re-exports this) imports the worker-env symlink, which is a
@@ -61,32 +66,58 @@ const BEARER = /(Authorization[ \t]*[:=][ \t]*Bearer[ \t]+)[A-Za-z0-9._~+/=-]{8,
 const AWS_ACCESS_KEY_PAIR = /\b(AKIA[0-9A-Z]{16})([ \t]*(?:[,;:=][ \t]*|\r?\n[ \t]*|[ \t]+))(["']?)([A-Za-z0-9/+=]{40})\3(?![A-Za-z0-9/+=])/g;
 
 // A name alone is not a secret, but it makes the value on the other side of
-// an assignment one.  The upper-case alternative covers the environment
-// names CLIs commonly print (for example, a vendor-specific TOKEN suffix)
-// without requiring every vendor to grow a bespoke redaction rule.
-const SECRET_WORD = "(?:password|passwd|pwd|secret|token|api[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret|authorization)";
-const SECRET_ENV_NAME = "[A-Z][A-Z0-9_-]*(?:PASSWORD|PASSWD|PWD|SECRET|TOKEN|API_KEY|PRIVATE_KEY|ACCESS_KEY|CLIENT_SECRET|AUTHORIZATION)";
-const NAMED_SECRET_KEY = `(?:${SECRET_WORD}|${SECRET_ENV_NAME})`;
+// an assignment one — if the value also LOOKS like a credential.  The list is
+// two flavors, deliberately built as two regexes because their case rules
+// differ:
+//
+//  - the WORDS are matched case-insensitively ("api_key", "Api-Key",
+//    "API-KEY").  Every one of them means a credential on its own.  Bare
+//    `key`, bare `token` and bare `pwd` are NOT here and must not be added: a
+//    field named `key` holds a row's identifier far more often than a
+//    credential, `token` is the unit a model bills in, and `PWD` is the
+//    working directory.  The wider list redacted `token = the smallest unit`
+//    and `PWD=/root/x`.
+//  - the ENVIRONMENT names are matched CASE-SENSITIVELY, upper case only,
+//    which is what lets their suffix list be four words: GITHUB_TOKEN,
+//    TTS_WORKER_KEY and AWS_SECRET_ACCESS_KEY are all caught without a rule
+//    each, while "tokens", "monkey" and "turkey" are not names at all.
+const SECRET_WORD = "(?:api[_-]?key|apikey|secret|password|passwd|private[_-]?key|access[_-]?key|client[_-]?secret|auth[_-]?token|access[_-]?token|bearer|authorization)";
+const SECRET_ENV_NAME = "[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|KEY)";
+const NAME_FLAVORS = Object.freeze([
+  { name: SECRET_WORD, flags: "gi" },
+  { name: SECRET_ENV_NAME, flags: "g" },
+]);
+
+// The value forms, in the order they are tried.  EVERY ONE OF THEM ENDS WHERE
+// A JSON STRING WOULD END and none can swallow half of a backslash escape,
+// which is the property that makes the whole filter safe to run over an
+// already-serialized body.  The escaped forms are not decoration: the daemon
+// redacts `JSON.stringify(body)` and the ingest parser redacts raw JSONL, so a
+// JSON blob a tool printed reaches this filter as `\"api_key\": \"…\"` far more
+// often than as `"api_key": "…"`.
+const ESCAPED_DOUBLE = String.raw`\\"((?:[^"\\]|\\\\[^"])*)\\"`;
+const DOUBLE = String.raw`"((?:\\.|[^"\\])*)"`;
+const SINGLE = String.raw`'((?:\\.|[^'\\])*)'`;
+const BARE = String.raw`[^\s,;\]}"\\]+`;
+const NAMED_VALUE = `(?:${ESCAPED_DOUBLE}|${DOUBLE}|${SINGLE}|(${BARE}))`;
 
 // These forms deliberately retain the key and its punctuation.  A transcript
 // remains useful when it says which configuration was present, but its value
-// must never cross the machine boundary.  JSON is separate so replacing a
-// quoted value cannot make an otherwise valid JSONL source invalid.
-const NAMED_JSON_SECRET = new RegExp(
-  `("(${NAMED_SECRET_KEY})"\\s*:\\s*)"((?:\\\\.|[^"\\\\])*)"`,
-  "gi",
-);
-const NAMED_ASSIGNMENT = new RegExp(
-  `(\\b(${NAMED_SECRET_KEY})\\b\\s*(?:=|:)\\s*)(?:"((?:\\\\.|[^"\\\\])*)"|'((?:\\\\.|[^'\\\\])*)'|([^\\s,;\\]}]+))`,
-  "gi",
-);
-// Some tools print "token <value>" rather than an assignment.  Restrict this
-// fallback to a plausibly high-entropy value: ordinary prose about a token is
-// not a credential merely because it follows that word.
-const NAMED_HIGH_ENTROPY_VALUE = new RegExp(
-  `(\\b(${NAMED_SECRET_KEY})\\b(?:\\s+(?:is|was)\\s+|\\s+))([A-Za-z0-9._~+/=-]{32,})`,
-  "gi",
-);
+// must never cross the machine boundary.  JSON is separate (in both its plain
+// and its escaped spelling) so replacing a quoted value cannot make an
+// otherwise valid JSONL source invalid.
+const namedRules = NAME_FLAVORS.map(({ name, flags }) => ({
+  json: new RegExp(String.raw`("(${name})"\s*:\s*)${DOUBLE}`, flags),
+  escapedJson: new RegExp(String.raw`(\\"(${name})\\"\s*:\s*)${ESCAPED_DOUBLE}`, flags),
+  assignment: new RegExp(String.raw`(\b(${name})\b\s*(?:=|:)\s*)${NAMED_VALUE}`, flags),
+  // Some tools print "auth_token <value>" rather than an assignment.  Restrict
+  // this fallback to a plausibly high-entropy value: ordinary prose about a
+  // token is not a credential merely because it follows that word.
+  spaced: new RegExp(
+    String.raw`(\b(${name})\b(?:\s+(?:is|was)\s+|\s+))([A-Za-z0-9._~+/=-]{32,})`,
+    flags,
+  ),
+}));
 const PEM_PRIVATE_KEY = /-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----[\s\S]*?-----END(?: [A-Z0-9]+)* PRIVATE KEY-----/g;
 
 const markerFor = (key) => (/^AWS(?:[_-]|$)/i.test(String(key)) ? "[redacted:aws]" : "[redacted:secret]");
@@ -98,20 +129,63 @@ const isHighEntropy = (value) => {
     && /[A-Za-z]/.test(text)
     && (/[0-9]/.test(text) || /[._~+/=-]/.test(text));
 };
+/**
+ * Whether a named value is shaped like a credential rather than like the
+ * ordinary content that shares these names.  A secret is long, unbroken, and
+ * not a word: `hunter2secret1` and a 40-character AWS secret pass; `the`,
+ * `/root/x`, `not-configured` and `learning:abc` do not.  This is the second
+ * half of the 2026-09-11 narrowing — the name list says which values are
+ * CANDIDATES, this says which candidates are credentials.
+ *
+ * The structural characters are the JSON fence, and they are why a quoted
+ * value form cannot eat a document: `["password:",1757600000000,"ok"]` lets
+ * the double-quoted form open on the quote that CLOSES one string and shut on
+ * the one that OPENS the next, whose span (`,1757600000000,`) is long, has
+ * digits and no whitespace.  No credential has ever contained a quote, a comma
+ * or a brace; a span that does is JSON structure, not a value.
+ */
+const looksLikeCredential = (value) => {
+  const text = String(value);
+  if (text.length < 12) return false;                                   // too short to be one
+  if (/\s/.test(text)) return false;                                    // prose, not a value
+  if (/["'`,[\]{}\\]/.test(text)) return false;                         // JSON structure, not a value
+  if (/^(?:~|\.{1,2})?[\\/]/.test(text) || /^[A-Za-z]:[\\/]/.test(text)) return false; // a path
+  if (/^[A-Za-z]+(?:[-_][A-Za-z]+)*$/.test(text)) return false;         // words, not a value
+  return /[0-9]/.test(text)
+    || (/[a-z]/.test(text) && /[A-Z]/.test(text))
+    || /[.~+/=]/.test(text);
+};
+
+/** The marker for `key`, or `match` unchanged when the value is not one. */
+const replaceValue = (match, key, value, quote, prefix) => {
+  if (value === undefined || isMarker(value)) return match;
+  if (/^Bearer$/i.test(value) || !looksLikeCredential(value)) return match;
+  return `${prefix}${quote}${markerFor(key)}${quote}`;
+};
 
 function redactNamedSecrets(text) {
-  let out = text.replace(NAMED_JSON_SECRET, (match, prefix, key, value) => (
-    isMarker(value) ? match : `${prefix}"${markerFor(key)}"`
-  ));
-  out = out.replace(NAMED_ASSIGNMENT, (match, prefix, key, doubleQuoted, singleQuoted, bare) => {
-    const value = doubleQuoted ?? singleQuoted ?? bare;
-    if (isMarker(value) || /^Bearer$/i.test(value)) return match;
-    const quote = doubleQuoted !== undefined ? '"' : singleQuoted !== undefined ? "'" : "";
-    return `${prefix}${quote}${markerFor(key)}${quote}`;
-  });
-  return out.replace(NAMED_HIGH_ENTROPY_VALUE, (match, prefix, key, value) => (
-    isMarker(value) || !isHighEntropy(value) ? match : `${prefix}${markerFor(key)}`
-  ));
+  let out = text;
+  for (const rule of namedRules) {
+    out = out.replace(rule.json, (match, prefix, key, value) => (
+      replaceValue(match, key, value, '"', prefix)
+    ));
+    out = out.replace(rule.escapedJson, (match, prefix, key, value) => (
+      replaceValue(match, key, value, '\\"', prefix)
+    ));
+    out = out.replace(rule.assignment, (match, prefix, key, escaped, doubleQuoted, singleQuoted, bare) => {
+      const value = escaped ?? doubleQuoted ?? singleQuoted ?? bare;
+      const quote = escaped !== undefined
+        ? '\\"'
+        : doubleQuoted !== undefined ? '"' : singleQuoted !== undefined ? "'" : "";
+      return replaceValue(match, key, value, quote, prefix);
+    });
+    out = out.replace(rule.spaced, (match, prefix, key, value) => (
+      isMarker(value) || !isHighEntropy(value) || !looksLikeCredential(value)
+        ? match
+        : `${prefix}${markerFor(key)}`
+    ));
+  }
+  return out;
 }
 
 /** `text` with every credential-shaped span replaced by `[redacted:<kind>]`. */
