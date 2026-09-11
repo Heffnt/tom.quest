@@ -61,3 +61,8 @@ next-env.d.ts
 # Sentry Config File
 .env.sentry-build-plugin
 test-results/
+
+# A scaffolded negative is a DRAFT until Tom confirms it by renaming the file.
+# A committed draft would enter the golden set unconfirmed, which is the one
+# thing the evals layer exists to prevent.
+evals/triggers/*.draft.json
