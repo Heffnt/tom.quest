@@ -119,8 +119,15 @@ export function report(head, base, verdict) {
   const unconfirmedNote = verdict.unconfirmed.length > 0
     ? ` ${verdict.unconfirmed.length} unconfirmed failure${verdict.unconfirmed.length === 1 ? "" : "s"} reported, not gated.`
     : "";
+  // Flaky is REPORTED, never gated, and it is printed even when it is zero:
+  // the number is how Tom reads whether the set moved on its own. An item is
+  // flaky when it passed one head trial and failed another (worker/jobs/
+  // evals.mjs, HEAD_TRIALS) — it passed, so it is in the pass count and in no
+  // failure list, and it can never be a regression.
+  const flaky = (head.flaky ?? 0) + (head.tasks?.flaky ?? 0);
   const notes = [
     verdict.regressions.length === 0 ? "0 regressions" : null,
+    `${flaky} flaky`,
     verdict.stillFailing.length > 0 ? `${verdict.stillFailing.length} still failing` : null,
     verdict.unconfirmed.length > 0 ? `${verdict.unconfirmed.length} failing but not confirmed by Tom` : null,
   ].filter((note) => note !== null);
@@ -130,7 +137,7 @@ export function report(head, base, verdict) {
     return [`${setLine}: ${head.pass} pass, ${head.fail} fail, ${notes.join(", ")}.`];
   }
   lines.push(setLine);
-  lines.push(`  head: ${head.pass} pass, ${head.fail} fail` + (base ? `      base: ${base.pass} pass, ${base.fail} fail` : ""));
+  lines.push(`  head: ${head.pass} pass, ${head.fail} fail, ${flaky} flaky` + (base ? `      base: ${base.pass} pass, ${base.fail} fail` : ""));
   if (verdict.noBaseline) lines.push(`  no baseline for the base commit; reporting only`);
   if (verdict.mismatch) {
     lines.push(`  GOLDEN SET MISMATCH  head ${head.goldenHash} vs base ${base.goldenHash} — re-run the base:`);
