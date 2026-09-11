@@ -263,6 +263,32 @@ describe("run sweep", () => {
     expect(deletable({ host: "box", kind: "session" }, { verified: true, endSeen: true, gitTracked: false }, { now: NOW })).toMatchObject({ ok: false, reason: expect.stringContaining("cutover") });
   });
 
+  it("sweeps a Workflow's agent out of its nested folder as an ordinary child", async () => {
+    const dir = temp(); const item = runFile(dir);
+    const folder = path.join(dir, "claude", "project", "session", "subagents", "workflows", "wf_abc");
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, "agent-W.jsonl"), jsonl([claudeUserTurn({ text: "phase one" })]));
+    fs.writeFileSync(path.join(folder, "agent-W.meta.json"), JSON.stringify({ agentType: "workflow-subagent", spawnDepth: 1 }));
+    fs.writeFileSync(path.join(folder, "journal.jsonl"), jsonl([{ phase: 1 }]));
+    const cfg = config(dir, item); cfg.flags.backlog = true;
+    const ingest = [];
+    const post = async (route, body) => {
+      if (route !== "/runs/ingest") return { ok: true };
+      ingest.push(body);
+      return { ok: true, committedLine: body.run.file.committedLine };
+    };
+    const result = await sweepRuns({ config: cfg, store: store(), post, fs: largeDiskFs(), now: () => NOW, log: () => {} });
+    expect(result.ingested).toBe(2);
+    const workflow = ingest.find((body) => body.run.runId === "claude:laptop:session/W");
+    expect(workflow.run).toMatchObject({ parentRunId: "claude:laptop:session", rootRunId: "claude:laptop:session", depth: 1, kind: "subagent", origin: "workflow", linkKnown: false });
+    expect(workflow.run.context.workflowId).toBe("wf_abc");
+    expect(workflow.run.attachments.map((a) => path.basename(a.file))).toEqual(["agent-W.meta.json"]);
+    // The journal beside it is not a run, and the root keeps it as a pointer.
+    expect(ingest.some((body) => body.run.runId.endsWith("/journal"))).toBe(false);
+    const root = ingest.find((body) => body.run.runId === "claude:laptop:session");
+    expect(root.run.attachments.map((a) => path.basename(a.file))).toContain("journal.jsonl");
+  });
+
   it("allows one lock holder and replaces only a stale lock", () => {
     const dir = temp(); const stateDir = path.join(dir, "state");
     const first = acquireSweepLock(stateDir, { now: () => NOW });

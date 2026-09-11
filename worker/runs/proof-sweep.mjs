@@ -232,6 +232,14 @@ export async function runSweepProof({
     const cost = Number.isFinite(run.outcome?.costUsd) ? run.outcome.costUsd.toFixed(8) : "unpriced";
     emit(`run id=${runId} depth=${run.depth} parent=${parent} rows=${rowsByRun.get(runId).length} tokens=${Number(run.outcome?.totals?.totalTokens ?? 0)} cost=${cost}`);
   }
+  // The shape of the tree, not just its size: one line per depth, and how
+  // many of its children came out of a Workflow's nested folder.
+  const byDepth = new Map();
+  for (const runId of runIds) byDepth.set(byId.get(runId).depth, (byDepth.get(byId.get(runId).depth) ?? 0) + 1);
+  const workflowRuns = runIds.filter((runId) => byId.get(runId).origin === "workflow");
+  const workflowIds = new Set(workflowRuns.map((runId) => byId.get(runId).context?.workflowId).filter(Boolean));
+  emit(`depth ${[...byDepth.keys()].sort((a, b) => a - b).map((depth) => `${depth}=${byDepth.get(depth)}`).join(" ")}`);
+  emit(`workflow children=${workflowRuns.length} workflows=${workflowIds.size} named=${workflowRuns.filter((runId) => byId.get(runId).context?.workflowId).length}`);
   emit(`tree runs=${runIds.length} rows=${proofRows.length} tokens=${totalTokens} priced=${priced.length} cost=${totalCost.toFixed(8)}`);
   emit(`store objects=${objectFiles.length} storedBytes=${storedBytes}`);
   emit(`raw file=${path.basename(sampleRun.file.path)} line=${sample.provenance.lineStart} matched=true`);

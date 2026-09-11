@@ -149,6 +149,23 @@ describe("runs", () => {
     expect(await t.run((ctx) => ctx.db.query("runs").collect())).toEqual([]);
   });
 
+  it("takes a Workflow's agent as an ordinary child with no spawning tool-use id", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.runs.internalIngest, ingest(run()) as never);
+    // The Workflow sidecar carries no toolUseId, so the link is honestly
+    // unknown; the workflow it belongs to is on the run's context instead.
+    const agent = run({
+      runId: "claude:laptop:root-run/a27aa4b9a7caecc56", parentRunId: "claude:laptop:root-run", depth: 1, linkKnown: false,
+      kind: "subagent", origin: "workflow",
+      context: { layersKnown: false, layersGiven: [], layersDenied: [], skillsOffered: [], skillsUsed: [], tools: [], hooks: [], workflowId: "wf_abc" },
+    });
+    expect(await t.mutation(internal.runs.internalIngest, ingest(agent, [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
+    const stored = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run/a27aa4b9a7caecc56")).unique());
+    expect(stored).toMatchObject({ depth: 1, parentRunId: "claude:laptop:root-run", origin: "workflow", linkKnown: false });
+    expect(stored?.spawnedByToolUseId).toBeUndefined();
+    expect(stored?.context?.workflowId).toBe("wf_abc");
+  });
+
   it("stores mode only for session runs", async () => {
     const t = convexTest(schema, modules);
     expect(await t.mutation(internal.runs.internalIngest, ingest(run({ mode: "interactive" })) as never)).toMatchObject({ ok: true });

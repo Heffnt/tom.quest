@@ -1307,7 +1307,7 @@ export default defineSchema({
     lastLineAt: v.number(),
     context: v.optional(v.object({
       wikitomCommit: v.optional(v.string()), layersKnown: v.boolean(), layersGiven: v.array(v.string()), layersDenied: v.array(v.string()), skillsOffered: v.array(v.string()), skillsUsed: v.array(v.string()), tools: v.array(v.string()), hooks: v.array(v.string()), cwd: v.optional(v.string()), gitBranch: v.optional(v.string()), gitCommit: v.optional(v.string()), baseInstructionsHash: v.optional(v.string()), entrypoint: v.optional(v.string()), originator: v.optional(v.string()), permissionMode: v.optional(v.string()), contextWindow: v.optional(v.number()),
-      registered: v.optional(v.boolean()), launcher: v.optional(v.string()), modelRequested: v.optional(v.string()), skillsGranted: v.optional(v.array(v.string())), skillsRefused: v.optional(v.array(v.string())), promptSha256: v.optional(v.string()), writingStandardSource: v.optional(v.string()),
+      registered: v.optional(v.boolean()), launcher: v.optional(v.string()), modelRequested: v.optional(v.string()), skillsGranted: v.optional(v.array(v.string())), skillsRefused: v.optional(v.array(v.string())), promptSha256: v.optional(v.string()), writingStandardSource: v.optional(v.string()), workflowId: v.optional(v.string()),
     })),
     outcome: v.optional(v.object({
       endedReason: v.optional(v.string()), finalTextSeq: v.optional(v.number()),
