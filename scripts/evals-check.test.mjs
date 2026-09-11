@@ -1,5 +1,6 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { gate, report, WATCHED_PATHS } from "./evals-check.mjs";
+import { gate, report, POLL_TIMEOUT_MS, WATCHED_PATHS } from "./evals-check.mjs";
 
 const failure = (id, over = {}) => ({ id, partition: "prepare/chores", verdict: "revise", reason: `${id} reason`, confirmed: true, ...over });
 
@@ -110,15 +111,40 @@ describe("gate, continued", () => {
     expect(gate(head, base).regressions.map((one) => one.id)).toEqual(["slack-01-morning"]);
   });
 
-  it("prints one line for a clean check", () => {
+  it("prints one line for a clean check, and says the flaky count even at zero", () => {
     const head = run();
     const lines = report(head, run({ sha: "9f8e7d6c" }), gate(head, run({ sha: "9f8e7d6c" })));
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain("3 pass, 0 fail, 0 regressions.");
+    expect(lines[0]).toContain("3 pass, 0 fail, 0 regressions, 0 flaky.");
+  });
+
+  // Flaky is reported and never gated: an item that passed one head trial and
+  // failed another is a pass, in no failure list, and the count is how the
+  // check says the set moved on its own.
+  it("prints the flaky count from the golden items and the repo tasks together", () => {
+    const head = run({ flaky: 1, tasks: { failures: [], flaky: 2 } });
+    const verdict = gate(head, run({ sha: "9f8e7d6c" }));
+    expect(verdict.ok).toBe(true);
+    expect(report(head, run({ sha: "9f8e7d6c" }), verdict)[0]).toContain("0 regressions, 3 flaky.");
   });
 
   it("watches the paths the two workflows fire on", () => {
     expect(WATCHED_PATHS).toContain("model-of-tom/**");
     expect(WATCHED_PATHS).toContain("evals/golden/**");
+  });
+
+  // MEASURED on PR #170 (2026-09-11): ~50 minutes for 29 items plus a clone
+  // and two worktrees. A wait shorter than that fails the check on silence
+  // while the run is still going, and the re-run pays the cost again.
+  it("waits longer than the slowest run the box has actually taken", () => {
+    expect(POLL_TIMEOUT_MS).toBeGreaterThanOrEqual(75 * 60 * 1000);
+    // Repo-root-relative, the spelling convex/claudeSessions.test.ts uses:
+    // vitest runs from the root and import.meta.url is rewritten by the
+    // transform.
+    const workflow = readFileSync(".github/workflows/evals.yml", "utf8");
+    const jobTimeout = Number(/timeout-minutes:\s*(\d+)/.exec(workflow)?.[1]);
+    // A job timeout below the wait kills the check before its own deadline and
+    // reports a job failure instead of the box's silence.
+    expect(jobTimeout).toBeGreaterThan(POLL_TIMEOUT_MS / 60_000);
   });
 });
