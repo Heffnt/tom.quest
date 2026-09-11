@@ -8,6 +8,10 @@
 // write the code is the point — and posts the answer to POST /tts/audit, where
 // convex/ttsMerge.ts reads the one `VERDICT:` line out of it.
 //
+// At Codex's weekly cap the SAME prompt goes to Claude Opus instead, Tom's
+// standing fallback for a capped box run, and the row says it did: see THE
+// CODEX CAP below.
+//
 // THE VERDICT IS ONE LINE, ALONE ON ITS LINE, and everything else in the answer
 // is prose for whoever reads the row later. `VERDICT: APPROVED` opens the gate;
 // any other word does not, and is recorded as what it said — an audit that
@@ -19,7 +23,7 @@
 // worker/bin/tts-audit.
 import { execFileSync } from "node:child_process";
 
-import { convexFetch, loadEnv } from "./tts-lib.mjs";
+import { MODELS, convexFetch, loadEnv, runClaude } from "./tts-lib.mjs";
 
 /** The wrapper every Codex door on the box goes through (AGENTS.md: one home
  *  for the flags and the stdout contract). */
@@ -42,6 +46,59 @@ export const AUDIT_VERDICT_LINE = "VERDICT: APPROVED";
  *  failed audit is NOT an approval and not silence either: it is posted as
  *  UNAVAILABLE, so the row says the audit ran and could not finish. */
 export const AUDIT_UNAVAILABLE = "UNAVAILABLE";
+
+/** What the row calls the auditor when Codex answered. */
+export const AUDIT_MODEL = "codex";
+
+// ── THE CODEX CAP, AND THE SAME-FAMILY FALLBACK ─────────────────────────────
+//
+// Tom's standing model rule (WikiTom model-of-tom/agent-rules.md, Codex): "a
+// box session defaults to gpt-5.6-sol, Opus at the Codex weekly cap". The
+// audit is a box job like any other, so it takes the same fallback — but the
+// audit's WHOLE POINT is a second opinion from the family that did not write
+// the code, and an Opus audit of Claude's own branch is same-family. So the
+// fallback is taken AND DECLARED: the row carries `fallback: "codex-cap"` and
+// the merge gate's `why` and the #tts-decisions merge line both say the audit
+// was Opus at Codex's cap, which is a thing Tom can object to.
+//
+// Without this a capped week could never merge at all: the audit row is
+// write-once for a real verdict, and an UNAVAILABLE at a head used to shut
+// that head's gate forever (convex/ttsMerge.ts now lets a real verdict replace
+// an UNAVAILABLE, which is the other half of this change).
+
+/** The Codex CLI's own cap vocabulary — the wording a capped run exits with
+ *  (`codex-run.mjs` puts the tail of the CLI's stderr on its own stderr, and
+ *  execFileSync carries that in the thrown error).
+ *
+ *  DELIBERATELY NARROWER than session.mjs's USAGE_LIMIT_RE, which also stands
+ *  a Claude account down on "session limit"/"limit reached": here a false
+ *  positive silently downgrades an audit to same-family, so only the literal
+ *  cap wordings count. Any other failure is still UNAVAILABLE. */
+export const CODEX_CAP_RE = /usage[ _-]?limit|rate_limit_reached|hit your usage limit/i;
+
+/** The model the fallback audit RUNS on: the MODELS table's Opus entry, named
+ *  explicitly like every other spawn in the fleet (tts-lib.mjs MODELS). */
+export const AUDIT_FALLBACK_RUN_MODEL = MODELS.planner;
+
+/** What the row calls the auditor when Opus stood in. */
+export const AUDIT_FALLBACK_MODEL = "claude-opus-5";
+
+/** The one word the row carries to say WHY a fallback auditor answered. */
+export const AUDIT_FALLBACK_REASON = "codex-cap";
+
+/** The fallback's own wall clock. Longer than runClaude's 10-minute default:
+ *  the prompt carries up to AUDIT_DIFF_MAX_CHARS of diff. */
+export const AUDIT_FALLBACK_TIMEOUT_MS = 15 * 60 * 1000;
+
+/** Whether a failed Codex run failed BECAUSE OF THE CAP. execFileSync puts the
+ *  child's stderr on the thrown error's `stderr` and folds it into `message`;
+ *  read both, plus stdout, rather than trusting one. */
+export function isCodexCap(error) {
+  const text = [error?.message, error?.stderr, error?.stdout]
+    .map((part) => (typeof part === "string" ? part : ""))
+    .join("\n");
+  return CODEX_CAP_RE.test(text);
+}
 
 /**
  * What the auditor is asked. It judges ONE QUESTION — is this change safe to
@@ -111,8 +168,9 @@ function defaultRun(command, args) {
 
 /**
  * Audit one commit and record the verdict. Answers
- * `{ verdict, text, recorded }`; the caller decides what to do with a refusal,
- * because the gate does — this never merges anything itself.
+ * `{ verdict, text, model, fallback, recorded }`; the caller decides what to
+ * do with a refusal, because the gate does — this never merges anything
+ * itself.
  *
  * `io` carries every side effect so the test drives it with no model, no git
  * and no network.
@@ -137,26 +195,63 @@ export async function auditCommit(
           maxBuffer: 64 * 1024 * 1024,
         }),
       ),
+    // THE SAME PROMPT, one family over, when Codex is capped. Non-agentic:
+    // runClaude's default permission mode lets the model read under `cwd` and
+    // edit nothing and run nothing — an auditor that can edit the tree it is
+    // judging is not an auditor, in either family.
+    auditFallback: (prompt) =>
+      runClaude(prompt, {
+        cwd: dir,
+        model: AUDIT_FALLBACK_RUN_MODEL,
+        timeoutMs: AUDIT_FALLBACK_TIMEOUT_MS,
+      }),
     post: (env, body) => convexFetch(env, "/tts/audit", body),
     ...suppliedIo,
   };
   let text;
+  let model = AUDIT_MODEL;
+  let fallback = null;
   try {
     const { diff, truncated } = diffOf(dir, sha, base, io.run);
     if (diff.trim() === "") {
       text = `VERDICT: REFUSED\n\nThere is no diff between ${base ?? `${sha}~1`} and ${sha}: there is nothing to audit, and an audit of nothing is not an approval.`;
     } else {
-      text = String(
-        io.audit(auditPrompt({ repo, sha, base, subject, diff, truncated })) ?? "",
-      );
+      const prompt = auditPrompt({ repo, sha, base, subject, diff, truncated });
+      try {
+        text = String(io.audit(prompt) ?? "");
+      } catch (error) {
+        // ONLY the cap falls back. Every other Codex failure is UNAVAILABLE,
+        // because a second family that merely broke is not a reason to drop
+        // to the family that wrote the code.
+        if (!isCodexCap(error)) throw error;
+        try {
+          text = String(io.auditFallback(prompt) ?? "");
+          model = AUDIT_FALLBACK_MODEL;
+          fallback = AUDIT_FALLBACK_REASON;
+        } catch (fallbackError) {
+          // Both families failed: that is UNAVAILABLE, and the row names both
+          // failures rather than only the second.
+          throw new Error(
+            `${String(error?.message ?? error).slice(0, 200)} — and the ${AUDIT_FALLBACK_MODEL} fallback also failed: ${String(fallbackError?.message ?? fallbackError).slice(0, 200)}`,
+          );
+        }
+      }
     }
   } catch (error) {
     // An auditor that could not run is recorded as one, never skipped: a
     // missing row and a refusal are different facts to the gate, and this is
     // neither an approval nor a silence.
-    text = `VERDICT: ${AUDIT_UNAVAILABLE}\n\nThe audit could not run: ${String(error?.message ?? error).slice(0, 300)}`;
+    model = AUDIT_MODEL;
+    fallback = null;
+    text = `VERDICT: ${AUDIT_UNAVAILABLE}\n\nThe audit could not run: ${String(error?.message ?? error).slice(0, 500)}`;
   }
   const env = io.env();
-  const recorded = await io.post(env, { repo, sha, text, model: "codex" });
-  return { verdict: recorded?.verdict ?? null, text, recorded };
+  const recorded = await io.post(env, {
+    repo,
+    sha,
+    text,
+    model,
+    ...(fallback === null ? {} : { fallback }),
+  });
+  return { verdict: recorded?.verdict ?? null, text, model, fallback, recorded };
 }
