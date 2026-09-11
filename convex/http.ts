@@ -53,12 +53,19 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
-const RUNS_INGEST_MAX_BODY_BYTES = 1024 * 1024;
-// A chunk itself may be 256 KiB. The fixed JSON fields and escaped UTF-8 leave
-// a small, explicit envelope rather than making the route's allocation bound
-// depend on whichever run id a caller supplied.
+// JSON may encode every character as a six-byte `\uXXXX` escape. An ingest
+// carries at most 200 rows whose display payloads are each cut to 32 KiB, so
+// reserve that worst case plus the former 1 MiB body limit as the envelope for
+// the run, children, row metadata, and JSON punctuation.
+const RUNS_INGEST_ENVELOPE_BYTES = 1024 * 1024;
+const RUNS_INGEST_MAX_BODY_BYTES =
+  6 * 200 * 32 * 1024 + RUNS_INGEST_ENVELOPE_BYTES;
+// A chunk itself may be 256 KiB. In the worst valid JSON string encoding every
+// content byte is a six-byte `\uXXXX` escape (quotes and backslashes use two),
+// with 4 KiB left for the fixed fields and JSON punctuation.
 const RUNS_OVERFLOW_ENVELOPE_BYTES = 4 * 1024;
-const RUNS_OVERFLOW_MAX_BODY_BYTES = 256 * 1024 + RUNS_OVERFLOW_ENVELOPE_BYTES;
+const RUNS_OVERFLOW_MAX_BODY_BYTES =
+  6 * 256 * 1024 + RUNS_OVERFLOW_ENVELOPE_BYTES;
 const RUN_ID = /^(claude|codex):(laptop|box):[A-Za-z0-9._-]{8,128}(\/[A-Za-z0-9._-]{8,128})?$/;
 
 /** Read no more than `limit` bytes before JSON parsing or allocating its tree. */
@@ -1587,6 +1594,7 @@ const ttsAudit = httpAction(async (ctx, request) => {
     repo: (b.repo as string).trim(),
     sha: (b.sha as string).trim(),
     verdict,
+    text: b.text as string,
     ...(nonempty(b.model) ? { model: (b.model as string).trim() } : {}),
     ...(nonempty(b.url) ? { url: (b.url as string).trim() } : {}),
   });

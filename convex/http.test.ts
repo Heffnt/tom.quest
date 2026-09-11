@@ -147,46 +147,75 @@ describe("POST /runs/ingest", () => {
   it("rejects over-limit bytes before attempting JSON parsing", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
     const t = convexTest({ schema, modules });
+    const maxBody = 6 * 200 * 32 * 1024 + 1024 * 1024;
     const response = await t.fetch("/runs/ingest", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Sessions-Key": "right" },
-      body: "{".repeat(1024 * 1024 + 1),
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": String(maxBody + 1),
+        "X-Sessions-Key": "right",
+      },
+      body: "{",
     });
     expect(response.status).toBe(413);
     expect(await response.json()).toEqual({ error: "request body too large" });
   });
 
-  it("allows the exact ingest byte boundary through the bounded reader", async () => {
+  it("allows the exact declared ingest boundary to reach JSON parsing", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
     const t = convexTest({ schema, modules });
-    const nearBoundary = JSON.parse(JSON.stringify(body));
-    nearBoundary.run.file.path = "";
-    const baseBytes = new TextEncoder().encode(JSON.stringify(nearBoundary)).length;
-    nearBoundary.run.file.path = "x".repeat(1024 * 1024 - baseBytes);
-    expect(new TextEncoder().encode(JSON.stringify(nearBoundary)).length).toBe(1024 * 1024);
-    expect((await post(t, nearBoundary, "right")).status).not.toBe(413);
+    const maxBody = 6 * 200 * 32 * 1024 + 1024 * 1024;
+    const response = await t.fetch("/runs/ingest", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": String(maxBody),
+        "X-Sessions-Key": "right",
+      },
+      body: "{",
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "invalid JSON body" });
   });
 });
 
 describe("POST /runs/overflow: bounded chunks", () => {
   afterEach(() => vi.unstubAllEnvs());
-  function overflowBodyAt(byteLength: number) {
-    const value: Record<string, unknown> = { runId: "claude:laptop:http-run", seq: 0, index: 0, chunkCount: 1, text: "" };
+  function overflowBodyAt(byteLength: number, text: string, seq: number) {
+    const value: Record<string, unknown> = {
+      runId: "claude:laptop:http-run",
+      seq,
+      index: 0,
+      chunkCount: 1,
+      text,
+      padding: "",
+    };
     const base = new TextEncoder().encode(JSON.stringify(value)).length;
-    value.text = "x".repeat(byteLength - base);
-    return value;
+    value.padding = "x".repeat(byteLength - base);
+    return JSON.stringify(value);
   }
   async function postOverflow(t: ReturnType<typeof convexTest>, path: string, payload: string) {
     return await t.fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-Sessions-Key": "right" }, body: payload });
   }
 
-  it("accepts the 256 KiB plus envelope boundary and rejects one byte more", async () => {
+  it("accepts worst-case 256 KiB chunks at the body boundary and rejects one byte more", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
     const t = convexTest({ schema, modules });
-    const maxBody = 256 * 1024 + 4 * 1024;
-    const exact = JSON.stringify(overflowBodyAt(maxBody));
-    expect(new TextEncoder().encode(exact).length).toBe(maxBody);
-    expect((await postOverflow(t, "/runs/overflow", exact)).status).not.toBe(413);
+    expect((await post(t, body, "right")).status).toBe(200);
+
+    const maxBody = 6 * 256 * 1024 + 4 * 1024;
+    const quoteAndSlash = '"\\'.repeat(128 * 1024);
+    const controls = "\u0000".repeat(256 * 1024);
+    expect(new TextEncoder().encode(quoteAndSlash)).toHaveLength(256 * 1024);
+    expect(new TextEncoder().encode(controls)).toHaveLength(256 * 1024);
+
+    const commonCase = overflowBodyAt(maxBody, quoteAndSlash, 0);
+    const worstCase = overflowBodyAt(maxBody, controls, 1);
+    expect(new TextEncoder().encode(commonCase)).toHaveLength(maxBody);
+    expect(new TextEncoder().encode(worstCase)).toHaveLength(maxBody);
+    expect((await postOverflow(t, "/runs/overflow", commonCase)).status).toBe(200);
+    expect((await postOverflow(t, "/runs/overflow", worstCase)).status).toBe(200);
+
     const over = "{".repeat(maxBody + 1);
     expect((await postOverflow(t, "/runs/overflow", over)).status).toBe(413);
     expect((await postOverflow(t, "/runs/overflow/stamp", over)).status).toBe(413);
