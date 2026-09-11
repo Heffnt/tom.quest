@@ -125,7 +125,10 @@ describe.skipIf(!source || !codexSource)("runs proof", () => {
     expect(pointer?.provenance?.fileVersion).toBe(parentVersion.storedHash);
     const raw = parentStored.split("\n")[pointer!.provenance!.lineStart];
     expect(() => JSON.parse(raw)).not.toThrow();
-  });
+    // Gated on Tom's real files, never on CI: a session's own tree is a
+    // hundred-odd files and tens of thousands of rows, far past vitest's
+    // five-second default. The env gate keeps it out of pnpm test.
+  }, 30 * 60_000);
 });
 
 describe.skipIf(!source)("runs sweep proof", () => {
@@ -184,5 +187,8 @@ describe.skipIf(!source)("runs sweep proof", () => {
     expect(result.secondInserted).toBe(0);
     expect(result.objects).toBeGreaterThanOrEqual(result.runIds.length + 1);
     expect(result.storedBytes).toBeGreaterThan(0);
-  });
+    // Gated on Tom's real files, never on CI: a session's own tree is a
+    // hundred-odd files and tens of thousands of rows, far past vitest's
+    // five-second default. The env gate keeps it out of pnpm test.
+  }, 30 * 60_000);
 });
