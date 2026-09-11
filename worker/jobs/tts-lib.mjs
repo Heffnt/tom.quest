@@ -486,6 +486,19 @@ export const CLAUDE_CONFIG_DIR = "/root/.claude-accounts/active";
 //              classify-shaped, high volume, cheap tier.
 //   timeNotes  reading one of Tom's time sentences into concrete actions —
 //              mechanical parsing; the tier here is flagged for Tom's ruling.
+//   simplify   the weekly simplification pass (worker/jobs/simplify.mjs, spec
+//              §23.9): one run a week that reads a deterministic facts block
+//              and may answer only with deletions. Fable, because judging what
+//              a system can lose is the hardest judgment the fleet makes, and
+//              because it is one call a week over a bounded prompt.
+//
+// `simplify` SPELLS THE ID IN FULL rather than using the `fable` alias the
+// session model list takes, so the model recorded on the run matches the row
+// in worker/runs/prices.mjs and this job's weekly cost is readable. It
+// duplicates one string with delegate.mjs's DELEGATE_MODEL deliberately:
+// MODELS is where "every spawn names its model" is enforced for jobs, and
+// reaching into the delegate's constant would tier two unrelated jobs
+// together.
 //
 // Model literals still live in nightly.mjs (LEARNING_MODEL), weekly.mjs
 // (WEEKLY_MODEL), delegate.mjs (DELEGATE_MODEL), write-slack.mjs (MODEL) and
@@ -496,6 +509,7 @@ export const MODELS = {
   codeBrief: "opus",
   triage: "claude-haiku-4-5-20251001",
   timeNotes: "claude-sonnet-5",
+  simplify: "claude-fable-5-1",
 };
 
 // Run headless Claude Code (`claude -p`) and return the model's ANSWER TEXT

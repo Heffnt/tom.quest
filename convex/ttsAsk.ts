@@ -4,6 +4,7 @@ import type { Doc } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { DAY_MS } from "./ttsShared";
 import { MERGE } from "./ttsMerge";
+import { SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { logEvent } from "./tts";
 
 export const DELEGATE_DECISION = "delegate-decision";
@@ -223,7 +224,10 @@ export const internalRecordDelegateObjection = internalMutation({
     // The thing objected to is a delegate decision, OR a merge: both are
     // reported in the objection list and both carry a #tts-decisions thread,
     // so both accept a "revert" (convex/ttsMerge.ts). A merge's askId is its
-    // own `<repo>:<sha>` key.
+    // own `<repo>:<sha>` key. A simplification proposal is the third for the
+    // same reason — the weekly pass reports each line it means to remove in
+    // that channel and gives it a thread — and its askId is its own
+    // `simplify:<id>` key (convex/ttsNightly.ts).
     const subject =
       (await ctx.db
         .query("dtsEvents")
@@ -232,6 +236,10 @@ export const internalRecordDelegateObjection = internalMutation({
       (await ctx.db
         .query("dtsEvents")
         .withIndex("by_kind_key", (q) => q.eq("kind", MERGE).eq("key", args.askId))
+        .first()) ??
+      (await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", SIMPLIFY_PROPOSAL).eq("key", args.askId))
         .first());
     if (!subject) throw new Error(`Delegate decision not found: ${args.askId}`);
     return await logEvent(ctx, DELEGATE_OBJECTION, subject.todoId, args, args.askId);
