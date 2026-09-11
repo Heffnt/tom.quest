@@ -48,6 +48,7 @@ const RUN = v.object({
   model: v.optional(v.string()), sessionModel: v.optional(SESSION_MODEL), effort: v.optional(v.string()), runtimeVersion: v.optional(v.string()), parserVersion: v.string(), kind: RUN_KIND, status: RUN_STATUS,
   mode: v.optional(RUN_MODE), startedAt: v.number(), lastLineAt: v.number(), context: v.optional(CONTEXT), outcome: v.optional(OUTCOME), attachments: v.array(ATTACHMENT),
   todoId: v.optional(v.id("dtsTodos")), batchId: v.optional(v.id("batches")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
+  regToken: v.optional(v.string()),
   envelopeKey: v.optional(v.string()), cutoverAt: v.optional(v.number()), abandonedAt: v.optional(v.number()), file: FILE,
 });
 const PROVENANCE = v.object({ fileVersion: v.string(), file: v.string(), lineStart: v.number(), lineEnd: v.number(), block: v.number(), parserVersion: v.string(), sourceKind: v.string() });
@@ -304,7 +305,12 @@ export const internalIngest = internalMutation({
       // The envelope's fields arrive with a later page as readily as the first,
       // so registration repairs a run that was ingested before its launcher's
       // sidecar was claimed.
-      for (const key of ["status", "outcome", "mode", "lastLineAt", "model", "sessionModel", "effort", "context", "runtimeVersion", "parserVersion", "continuesRunId", "todoId", "batchId", "mergeKey", "envelopeKey", "abandonedAt"] as const) if (run[key] !== undefined) patch[key] = run[key];
+      // regToken rides this list for the same reason as envelopeKey: a run
+      // ingested before its launcher's sidecar was claimed has no token, and
+      // the repair page is the only thing that can give it one. Without that
+      // every label about a run whose first page beat its envelope would be
+      // unlinked forever.
+      for (const key of ["status", "outcome", "mode", "lastLineAt", "model", "sessionModel", "effort", "context", "runtimeVersion", "parserVersion", "continuesRunId", "todoId", "batchId", "mergeKey", "regToken", "envelopeKey", "abandonedAt"] as const) if (run[key] !== undefined) patch[key] = run[key];
       if (run.sessionId !== undefined && existing.sessionId === undefined) patch.sessionId = run.sessionId;
       if (existing.kind === "unknown") patch.kind = run.kind;
       if (existing.origin === "unknown") patch.origin = run.origin;
@@ -731,6 +737,31 @@ export const children = query({
 });
 export const rows = query({ args: { runId: v.string(), paginationOpts: paginationOptsValidator }, handler: async (ctx, args) => { await requireTomForRuns(ctx); assertRunId(args.runId); const page = await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", args.runId)).order("asc").paginate(args.paginationOpts); return { ...page, page: page.page.map((row) => ({ ...row, hasOverflow: row.overflow !== undefined, fullByteLength: row.overflow?.byteLength })) }; } });
 export const entry = query({ args: { runId: v.string(), seq: v.number() }, handler: async (ctx, args) => { await requireTomForRuns(ctx); assertRunId(args.runId); if (!nonNegativeInteger(args.seq)) throw new Error("invalid seq"); const row = await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", args.runId).eq("seq", args.seq)).first(); return row ? { provenance: row.provenance, content: row.content, overflow: row.overflow, digest: row.digest } : null; } });
+
+/**
+ * Everything Tom did about this run, oldest first — a ruling on the row it
+ * wrote, an objection in #tts-decisions, a reply he typed at it, an emoji on
+ * the morning it wrote. The run page draws one strip from this under the
+ * outcome, and DRAWS NO BAND AT ALL when the answer is empty: an empty strip
+ * on every run is clutter that displays nothing, which is why the strip was
+ * deferred until there were rows to put in it.
+ *
+ * Unpaginated on purpose. A run collects a handful of labels at human pace —
+ * the table's whole write path is four doors Tom himself goes through — so a
+ * page boundary here would be a mechanism with nothing to do.
+ */
+export const labels = query({
+  args: { runId: v.string() },
+  handler: async (ctx, args) => {
+    await requireTomForRuns(ctx);
+    assertRunId(args.runId);
+    return await ctx.db
+      .query("runLabels")
+      .withIndex("by_run_at", (q) => q.eq("runId", args.runId))
+      .order("asc")
+      .take(200);
+  },
+});
 
 export const internalBackfillRunIds = internalMutation({
   args: { cursor: v.optional(v.string()), limit: v.optional(v.number()) },
