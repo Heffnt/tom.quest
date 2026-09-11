@@ -8,6 +8,7 @@ import {
   aggregate,
   efficiencyOf,
   efficiencyVerdict,
+  failedRun,
   goldenHash,
   HEAD_TRIALS,
   isFlaky,
@@ -855,15 +856,63 @@ describe("efficiency", () => {
   it("stamps the rises onto the row where the base is in hand", async () => {
     const head = {
       goldenHash: "h", scoredIds: ["a"], failures: [], tasks: { failures: [] },
-      perCase: [{ id: "a", tokensMedian: 9000, judged: "pass" }, { id: "b", tokensMedian: null, judged: "pass" }],
+      results: [{ id: "a", tokensMedian: 9000, judged: "pass", passK: true }, { id: "b", tokensMedian: null, judged: "pass", passK: true }],
     };
     const base = {
       goldenHash: "h", scoredIds: ["a"], failures: [], tasks: { failures: [] },
-      perCase: [{ id: "a", tokensMedian: 1000, judged: "pass" }, { id: "b", tokensMedian: 100, judged: "pass" }],
+      results: [{ id: "a", tokensMedian: 1000, judged: "pass", passK: true }, { id: "b", tokensMedian: 100, judged: "pass", passK: true }],
     };
     const stamped = await stampAgainstBase(head, base);
     expect(stamped.efficiency).toEqual({ cases: 2, unknown: 1, rises: [{ id: "a", headTokens: 9000, baseTokens: 1000 }] });
     expect((await stampAgainstBase(head, null)).efficiency.rises).toEqual([]);
+  });
+
+  it("counts only the cases that were asked what they cost", () => {
+    // A case with no tokensMedian KEY was never measured — every non-`run` job
+    // is one — and counting it as an unknown would report a run that measured
+    // everything it could as having measured nothing.
+    const mixed = [{ id: "a", judged: "pass", passK: true }, { id: "b", judged: "pass", passK: true, tokensMedian: 500 }];
+    expect(efficiencyOf(mixed, null)).toEqual({ cases: 1, unknown: 0, rises: [] });
+  });
+});
+
+// The coverage verdict travels with the request, is decided by the gate's own
+// body, and lands on the row the merge arm reads. THE SAME LIST REACHES BOTH
+// SIDES so the CI log and the row cannot disagree about what was judged.
+describe("golden coverage on the row", () => {
+  const row = () => ({ goldenHash: "h", scoredIds: [], failures: [], tasks: { failures: [] }, results: [] });
+
+  it("is false when a watched file changed and no item shipped", async () => {
+    const stamped = await stampAgainstBase(row(), row(), { changed: ["scripts/prelude.mjs"] });
+    expect(stamped.goldenCoverage).toBe(false);
+  });
+
+  it("is true when an item shipped, and true when the trailer excuses it", async () => {
+    expect((await stampAgainstBase(row(), row(), { changed: ["scripts/prelude.mjs", "evals/golden/runs/a.json"] })).goldenCoverage).toBe(true);
+    expect((await stampAgainstBase(row(), row(), {
+      changed: ["scripts/prelude.mjs"],
+      prBody: "a body\nevals: no-item the change is a comment\n",
+    })).goldenCoverage).toBe(true);
+  });
+
+  it("is null when nobody asked about a diff, base or no base", async () => {
+    // A --weekly run and a run by hand are not merge candidates. The merge gate
+    // denies on null, which is the right answer for a run that was never asked.
+    expect((await stampAgainstBase(row(), row())).goldenCoverage).toBe(null);
+    expect((await stampAgainstBase(row(), null)).goldenCoverage).toBe(null);
+  });
+
+  it("is answered with no base at all, because coverage is a fact about the diff", async () => {
+    // A branch that changed a watched file and shipped no item owes one
+    // whether or not anything ever scored its base.
+    expect((await stampAgainstBase(row(), null, { changed: ["AGENTS.md"] })).goldenCoverage).toBe(false);
+  });
+
+  it("says null on a run that could not be made", () => {
+    const failed = failedRun({ repo: "tom.quest", sha: "deadbee", error: "no such commit", at: 1 });
+    expect(failed.goldenCoverage).toBe(null);
+    expect(failed.regressions).toBe(null);
+    expect(failed.weekly).toBe(false);
   });
 });
 
@@ -927,7 +976,7 @@ describe("runEvals over a run case", () => {
     const run = await runEvals({ repo: "tom.quest", sha: "head" }, io);
     expect(run).toMatchObject({ items: 1, pass: 1, fail: 0 });
     expect(io.calls.regen).toBe(1);
-    expect(run.perCase).toEqual([{ id: "a", tokensMedian: null, judged: "pass" }]);
+    expect(run.results).toEqual([{ id: "a", judged: "pass", passK: true, tokensMedian: null }]);
     expect(run.ablation).toEqual([]);
   });
 
