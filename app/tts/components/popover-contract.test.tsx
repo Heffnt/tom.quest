@@ -93,9 +93,10 @@ import Composer from "@/app/sessions/components/composer";
 import ForkDialog from "@/app/sessions/components/fork-dialog";
 import ModelSelect from "@/app/sessions/components/model-select";
 import OverflowExpand from "@/app/sessions/components/overflow-expand";
-import SessionList from "@/app/sessions/components/session-list";
-import SessionView from "@/app/sessions/components/session-view";
-import Transcript from "@/app/sessions/components/transcript";
+import Run from "@/app/sessions/components/run";
+import RunList from "@/app/sessions/components/run-list";
+import RunRow from "@/app/sessions/components/run-row";
+import RunRows from "@/app/sessions/components/run-rows";
 
 const APP = join(__dirname, "..", "..");
 const TTS = join(APP, "tts");
@@ -305,6 +306,24 @@ const SESSION = {
   statusChangedAt: NOW,
 };
 
+// One row for the rows region and the row itself. A `tool-call`, because that
+// is the kind whose compact line IS a control: it opens to full and then to
+// raw, and a kind that is full already (user, assistant-text) would put no
+// expand control on screen at all.
+const ROW = {
+  _id: "m1",
+  _creationTime: 0,
+  sessionId: "s1",
+  seq: 1,
+  kind: "tool-call",
+  content: {
+    toolName: "Read",
+    toolUseId: "tu1",
+    input: { file_path: "app/sessions/components/run.tsx" },
+  },
+  createdAt: NOW,
+};
+
 const AUTO_CONFIG = {
   enabled: false,
   defaultModel: "gpt-5.6-sol",
@@ -483,30 +502,62 @@ const CASES: { file: string; render: () => void }[] = [
       ),
   },
   {
-    file: "app/sessions/components/session-list.tsx",
+    file: "app/sessions/components/run-list.tsx",
     render: () =>
       void render(
-        <SessionList sessions={[SESSION as never]} now={NOW} onOpen={noop} />,
-      ),
-  },
-  {
-    file: "app/sessions/components/session-view.tsx",
-    render: () =>
-      void render(
-        <SessionView
-          sessionId={"s1" as never}
+        <RunList
+          sessions={[SESSION as never]}
           now={NOW}
-          daemonStale={false}
-          daemonLastSeenAt={NOW}
-          onBack={noop}
-          onOpen={noop}
+          onOpenSession={noop}
+          onOpenRun={noop}
         />,
       ),
   },
   {
-    file: "app/sessions/components/transcript.tsx",
+    file: "app/sessions/components/run-row.tsx",
+    // source="run", so the raw level names runs.rows rather than the session
+    // reader. The compact line is the control; pressing it is what proves the
+    // three levels fire nothing on the backend.
+    render: () => void render(<RunRow row={ROW as never} source="run" />),
+  },
+  {
+    file: "app/sessions/components/run-rows.tsx",
+    // CanLoadMore, so its one control — "load earlier rows" — is on screen.
+    // source="session" is the branch that has one: a run pages the other way
+    // and the same button reads "load later rows".
     render: () =>
-      void render(<Transcript sessionId={"s1" as never} sessionStatus="running" />),
+      void render(
+        <RunRows
+          rows={[ROW as never]}
+          pageStatus="CanLoadMore"
+          loadMore={noop}
+          source="session"
+          depth={0}
+          runKey="s1"
+        />,
+      ),
+  },
+  {
+    file: "app/sessions/components/run.tsx",
+    // depth 0 and a session id, because that is the only posture that draws
+    // controls at all: the header's rename ⓘ and model select, the rows, and
+    // the composer. daemonStale, so the composer's "Force close" comes with
+    // them. The run row itself is left undefined (runs.get answers nothing) —
+    // a session whose runs row has not landed is the common case, and the
+    // header reads off the session either way.
+    render: () =>
+      void render(
+        <Run
+          sessionId={"s1" as never}
+          depth={0}
+          now={NOW}
+          daemonStale
+          daemonLastSeenAt={NOW}
+          onBack={noop}
+          onOpenRun={noop}
+          onOpenSession={noop}
+        />,
+      ),
   },
 ];
 

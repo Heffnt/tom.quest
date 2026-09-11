@@ -477,3 +477,69 @@ describe("runs", () => {
     }
   });
 });
+
+describe("runs.roots", () => {
+  async function root(t: ReturnType<typeof convexTest>, runId: string, host: "laptop" | "box", startedAt: number) {
+    expect(await t.mutation(internal.runs.internalIngest, ingest(run({ runId, rootRunId: runId, host, startedAt }), [], []) as never)).toMatchObject({ ok: true });
+  }
+
+  it("lists roots and never their children", async () => {
+    const t = convexTest(schema, modules);
+    const parent = "claude:laptop:root-run";
+    await t.mutation(internal.runs.internalIngest, ingest(run(), [], [child("claude:laptop:child-run", parent, parent, 1)]) as never);
+    const viewer = await withTom(t);
+    expect((await viewer.query(api.runs.roots, {})).map((entry) => entry.runId)).toEqual([parent]);
+  });
+
+  it("merges both hosts newest first", async () => {
+    const t = convexTest(schema, modules);
+    await root(t, "claude:laptop:laptop-old", "laptop", 10);
+    await root(t, "claude:box:box-newer", "box", 20);
+    await root(t, "claude:laptop:laptop-new", "laptop", 30);
+    await root(t, "claude:box:box-oldest", "box", 5);
+    const viewer = await withTom(t);
+    expect((await viewer.query(api.runs.roots, {})).map((entry) => entry.runId)).toEqual([
+      "claude:laptop:laptop-new", "claude:box:box-newer", "claude:laptop:laptop-old", "claude:box:box-oldest",
+    ]);
+  });
+
+  it("breaks a same-millisecond tie on runId", async () => {
+    const t = convexTest(schema, modules);
+    await root(t, "claude:laptop:tie-bravo", "laptop", 7);
+    await root(t, "claude:box:tie-alpha", "box", 7);
+    await root(t, "claude:laptop:tie-later", "laptop", 8);
+    const viewer = await withTom(t);
+    expect((await viewer.query(api.runs.roots, {})).map((entry) => entry.runId)).toEqual([
+      "claude:laptop:tie-later", "claude:box:tie-alpha", "claude:laptop:tie-bravo",
+    ]);
+  });
+
+  it("narrows to one host", async () => {
+    const t = convexTest(schema, modules);
+    await root(t, "claude:laptop:laptop-one", "laptop", 10);
+    await root(t, "claude:box:box-run-one", "box", 20);
+    const viewer = await withTom(t);
+    expect((await viewer.query(api.runs.roots, { host: "box" })).map((entry) => entry.runId)).toEqual(["claude:box:box-run-one"]);
+    expect((await viewer.query(api.runs.roots, { host: "laptop" })).map((entry) => entry.runId)).toEqual(["claude:laptop:laptop-one"]);
+  });
+
+  it("caps the merged result and refuses a limit outside 1..500", async () => {
+    const t = convexTest(schema, modules);
+    await root(t, "claude:laptop:laptop-old", "laptop", 10);
+    await root(t, "claude:box:box-newest", "box", 30);
+    await root(t, "claude:laptop:laptop-mid", "laptop", 20);
+    const viewer = await withTom(t);
+    expect((await viewer.query(api.runs.roots, { limit: 2 })).map((entry) => entry.runId)).toEqual([
+      "claude:box:box-newest", "claude:laptop:laptop-mid",
+    ]);
+    await expect(viewer.query(api.runs.roots, { limit: 0 })).rejects.toThrow();
+    await expect(viewer.query(api.runs.roots, { limit: 501 })).rejects.toThrow();
+  });
+
+  it("denies the reader without Tom identity", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.runs.internalIngest, ingest() as never);
+    const stranger = t.withIdentity({ subject: "someone-else" });
+    await expect(stranger.query(api.runs.roots, {})).rejects.toThrow();
+  });
+});
