@@ -101,3 +101,42 @@ describe("POST /tts/needs-tom: the needs-you room, or nothing", () => {
     expect(await events(t, "job-failed")).toHaveLength(1);
   });
 });
+
+// ── POST /runs/ingest: the immutable record's one door ───────────────────────
+const body = {
+  run: { runId: "claude:laptop:http", rootRunId: "claude:laptop:http", depth: 0, linkKnown: true, origin: "unknown", host: "laptop", runner: "claude", parserVersion: "runs-parser-1", kind: "session", status: "unknown", startedAt: 1, lastLineAt: 1, file: { path: "C:/http.jsonl", sourceHash: "source", storedHash: "stored", bytes: 1, storedBytes: 1, committedLine: 1, committedPrefixSha256: "prefix" } },
+  rows: [], children: [],
+};
+function post(t: ReturnType<typeof convexTest>, value: unknown, key?: string) {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (key) headers["X-Sessions-Key"] = key;
+  return t.fetch("/runs/ingest", { method: "POST", headers, body: JSON.stringify(value) });
+}
+
+describe("POST /runs/ingest", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  it("returns 503 until the existing worker credential is configured", async () => {
+    const t = convexTest({ schema, modules });
+    const response = await post(t, body, "key");
+    expect(response.status).toBe(503);
+  });
+  it("returns 401 for a wrong worker credential", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest({ schema, modules });
+    expect((await post(t, body, "wrong")).status).toBe(401);
+  });
+  it("returns 400 for invalid JSON", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest({ schema, modules });
+    const response = await t.fetch("/runs/ingest", { method: "POST", headers: { "Content-Type": "application/json", "X-Sessions-Key": "right" }, body: "{ bad" });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "invalid JSON body" });
+  });
+  it("accepts a well-typed page", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest({ schema, modules });
+    const response = await post(t, body, "right");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, runId: "claude:laptop:http" });
+  });
+});
