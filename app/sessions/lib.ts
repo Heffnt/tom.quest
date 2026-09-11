@@ -246,13 +246,21 @@ export function isErrorOf(content: unknown): boolean {
 }
 
 /**
- * The daemon's verbatim note when it cut a payload down to the size cap —
+ * The writer's verbatim note when it cut a payload down to the size cap —
  * carried on any kind, rendered as a footer so the cut is never silent.
+ *
+ * THREE FIELD NAMES, one fact. The daemon writes `truncationNote`. The run-file
+ * ingest writes `truncation`, and on a `context` row `promptTruncation`, because
+ * there it cuts the prompt alone and leaves the other context fields standing
+ * (worker/runs/ingest.mjs finishResult). Reading only the first would make a
+ * file-derived cut silent, which is the one thing this footer exists to stop.
  */
 export function truncationNoteOf(content: unknown): string | undefined {
   if (typeof content === "object" && content !== null) {
-    const note = (content as Record<string, unknown>).truncationNote;
-    if (typeof note === "string") return note;
+    const c = content as Record<string, unknown>;
+    for (const key of ["truncationNote", "truncation", "promptTruncation"]) {
+      if (typeof c[key] === "string" && c[key] !== "") return c[key] as string;
+    }
   }
   return undefined;
 }
@@ -366,6 +374,251 @@ export function describeOverflow(p: OverflowProgress): string {
 
 export { modelOfTomHeadOf } from "@/convex/ttsShared";
 export type { ModelOfTomHead } from "@/convex/ttsShared";
+
+// ── The three writers of a row's content ────────────────────────────────────
+// A claudeMessages row is v.any() and now has THREE authors: the session
+// daemon (worker/session-host/session.mjs), the Claude run-file parser and the
+// Codex run-file parser (both worker/runs/ingest.mjs). The same `kind` carries
+// a different object from each, and a run file is read long after it was
+// written — so every reader below takes the shapes it can meet and returns a
+// value for all of them rather than throwing on the one it did not expect.
+
+/**
+ * The thinking text, complete. Claude and the daemon write `{ text }`; Codex
+ * writes `{ summary: [...] }`, whose parts are either strings or the CLI's
+ * `{ type: "summary_text", text }` blocks. Never cut here — thinking is the
+ * agent's reasoning, and the row is the only place it is shown.
+ */
+export function thinkingTextOf(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (typeof content === "object" && content !== null) {
+    const c = content as Record<string, unknown>;
+    if (typeof c.text === "string") return c.text;
+    if (Array.isArray(c.summary)) {
+      return c.summary
+        .map((part) => {
+          if (typeof part === "string") return part;
+          const text = (part as Record<string, unknown> | null)?.text;
+          return typeof text === "string" ? text : safeJson(part);
+        })
+        .join("\n\n");
+    }
+  }
+  return contentToText(content);
+}
+
+/**
+ * The tool input as an object where it is one. Claude and the daemon store the
+ * input object itself; Codex stores the model's `arguments`, which is a JSON
+ * STRING — and the 32 KB cut can leave EITHER of them a half-written one. So
+ * parse only when the parse succeeds AND yields an object; otherwise the
+ * string is the input, and a malformed one renders as itself rather than
+ * raising on a row the reader can do nothing about.
+ */
+export function toolInputObjectOf(content: unknown): unknown {
+  const input = toolInputOf(content);
+  if (typeof input !== "string") return input;
+  try {
+    const parsed: unknown = JSON.parse(input);
+    if (typeof parsed === "object" && parsed !== null) return parsed;
+  } catch {
+    // Not JSON, or cut mid-object: the string itself is the honest answer.
+  }
+  return input;
+}
+
+export type ChildRunFacts = {
+  childRunId: string;
+  agentId?: string;
+  agentType?: string;
+  description?: string;
+  model?: string;
+  status?: string;
+  totalTokens?: number;
+  totalDurationMs?: number;
+  totalToolUseCount?: number;
+};
+
+/**
+ * A child-run row's facts, or null when the row does not name a child run.
+ * The Claude parser writes this row beside the Task tool-result that launched
+ * or finished the subagent; the totals are present only once it completed.
+ * Every field but childRunId is optional, and absent means UNKNOWN — the
+ * CALLER decides what stands in its place, because a fallback invented here
+ * would be indistinguishable from a fact the file actually carried.
+ */
+export function childRunOf(content: unknown): ChildRunFacts | null {
+  if (typeof content !== "object" || content === null) return null;
+  const c = content as Record<string, unknown>;
+  if (typeof c.childRunId !== "string" || c.childRunId === "") return null;
+  const str = (key: string) =>
+    typeof c[key] === "string" && c[key] !== "" ? (c[key] as string) : undefined;
+  const num = (key: string) =>
+    typeof c[key] === "number" && Number.isFinite(c[key]) ? (c[key] as number) : undefined;
+  return {
+    childRunId: c.childRunId,
+    agentId: str("agentId"),
+    agentType: str("agentType"),
+    description: str("description"),
+    model: str("model"),
+    status: str("status"),
+    totalTokens: num("totalTokens"),
+    totalDurationMs: num("totalDurationMs"),
+    totalToolUseCount: num("totalToolUseCount"),
+  };
+}
+
+export type ContextFacts = {
+  model?: string;
+  host?: string;
+  cwd?: string;
+  layersKnown: boolean;
+  layersGiven: string[];
+  skillsUsed: string[];
+  tools: string[];
+  hooks: string[];
+  prompt: string;
+};
+
+/**
+ * A context row's facts. The row is the run's own `context` object plus the
+ * opening prompt, so the page can say what a run was given without reading the
+ * run row beside it. layersKnown is false when the row does not say — which is
+ * not the same as a run that was given no layers, and a reader must be able to
+ * tell those apart. The arrays filter to strings: a parser that learns a new
+ * shape must not be able to put an object where a name goes.
+ */
+export function contextFactsOf(content: unknown): ContextFacts {
+  const c =
+    typeof content === "object" && content !== null
+      ? (content as Record<string, unknown>)
+      : {};
+  const str = (key: string) =>
+    typeof c[key] === "string" && c[key] !== "" ? (c[key] as string) : undefined;
+  const list = (key: string) =>
+    Array.isArray(c[key])
+      ? (c[key] as unknown[]).filter((x): x is string => typeof x === "string")
+      : [];
+  return {
+    model: str("model") ?? str("modelRequested"),
+    host: str("host"),
+    cwd: str("cwd"),
+    layersKnown: typeof c.layersKnown === "boolean" ? c.layersKnown : false,
+    layersGiven: list("layersGiven"),
+    skillsUsed: list("skillsUsed"),
+    tools: list("tools"),
+    hooks: list("hooks"),
+    prompt: typeof c.prompt === "string" ? c.prompt : "",
+  };
+}
+
+/**
+ * A Claude tool result too large for the transcript points at a file on the
+ * host — the CLI's `<persisted-output>` marker, which worker/runs/ingest.mjs
+ * reads off the result and stores as `persistedOutput`. Nothing serves that
+ * file: the page has the path and not the bytes, so this is a fact line, never
+ * a link.
+ *
+ * THE SIZE ARRIVES AS THE CLI'S OWN STRING. The parser stores what the marker
+ * said, verbatim (`{ path, sizeText }` — worker/runs/ingest.mjs persistedOutput),
+ * so "1.2MB" is quoted rather than reinterpreted as a byte count nobody
+ * measured. `bytes` is kept beside it for a writer that reports a number.
+ */
+export function persistedOutputOf(
+  content: unknown,
+): { path?: string; sizeText?: string; bytes?: number } | null {
+  if (typeof content !== "object" || content === null) return null;
+  const saved = (content as Record<string, unknown>).persistedOutput;
+  if (typeof saved !== "object" || saved === null) return null;
+  const s = saved as Record<string, unknown>;
+  const path = typeof s.path === "string" && s.path !== "" ? s.path : undefined;
+  const sizeText =
+    typeof s.sizeText === "string" && s.sizeText !== "" ? s.sizeText : undefined;
+  const bytes =
+    typeof s.bytes === "number" && Number.isFinite(s.bytes) ? s.bytes : undefined;
+  if (path === undefined && sizeText === undefined && bytes === undefined) return null;
+  return {
+    ...(path === undefined ? {} : { path }),
+    ...(sizeText === undefined ? {} : { sizeText }),
+    ...(bytes === undefined ? {} : { bytes }),
+  };
+}
+
+/**
+ * "340ms" / "1.2s" / "2m 04s". A duration is a fact off the file, so a
+ * negative or non-finite one is not rendered as zero: it returns "" and the
+ * caller shows nothing rather than a number nobody measured.
+ */
+export function durationText(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.floor((ms % 60_000) / 1000);
+  return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+}
+
+/**
+ * Token classes for a run status chip — the same vocabulary as
+ * statusChipClass above, so a run and a session read as one surface.
+ * "abandoned" and "unknown" are the muted pair: neither is a failure, both are
+ * the absence of an ending, and accent stays reserved for what is live.
+ */
+export function runStatusChipClass(status: string): string {
+  switch (status) {
+    case "running":
+      return "border-accent/60 text-accent";
+    case "ended":
+      return "border-border text-text";
+    case "failed":
+      return "border-error/60 text-error";
+    default:
+      return "border-border text-text-muted";
+  }
+}
+
+/**
+ * "$0.42". ABSENT MUST RETURN "": costUsd is written only when the price table
+ * prices the model (worker/runs/prices.mjs returns null otherwise), so an
+ * absent cost means nobody knows what the run cost — and "$0.00" would be the
+ * page claiming the run was free.
+ */
+export function costText(costUsd?: number): string {
+  if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return "";
+  return `$${costUsd.toFixed(2)}`;
+}
+
+// The list is a triage surface — needs-you outranks recency. Bands, top to
+// bottom: running, spinning up, idle, over. The retired "waiting on Tom" band
+// was the permission band; nothing has produced it since 2026-08-29, and an
+// idle session is exactly "waiting for Tom's next turn" — so the coded order
+// already is the ruling as it stands.
+export const TRIAGE_BAND: Record<SessionStatus, number> = {
+  running: 1,
+  starting: 2,
+  requested: 2,
+  idle: 3,
+  ended: 4,
+  failed: 4,
+};
+
+/**
+ * The list's triage order, as a pure sort. Within a band: the longest-waiting
+ * permission sits at the very top, the terminal band reads newest-first, and
+ * everything else keeps listSessions' own newest-first order (sort is stable).
+ * A copy is sorted, never the caller's array.
+ */
+export function orderSessions<
+  T extends { status: SessionStatus; statusChangedAt: number; createdAt: number },
+>(sessions: T[]): T[] {
+  return [...sessions].sort((a, b) => {
+    const band = TRIAGE_BAND[a.status] - TRIAGE_BAND[b.status];
+    if (band !== 0) return band;
+    if (TRIAGE_BAND[a.status] === 0) return a.statusChangedAt - b.statusChangedAt;
+    if (TRIAGE_BAND[a.status] === 4) return b.createdAt - a.createdAt;
+    return 0;
+  });
+}
 
 /**
  * Compact rendering of a permission/tool input: for Bash show the command
