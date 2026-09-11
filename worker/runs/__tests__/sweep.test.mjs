@@ -11,7 +11,9 @@ import {
   acquireSweepLock,
   deletable,
   drainQueue,
+  prefixSha256,
   stateFileFor,
+  storeText,
   sweepRunFile,
   sweepRuns,
 } from "../sweep.mjs";
@@ -261,6 +263,46 @@ describe("run sweep", () => {
     expect(result.deletable).toBe(1);
     expect(fs.existsSync(item.path)).toBe(true);
     expect(deletable({ host: "box", kind: "session" }, { verified: true, endSeen: true, gitTracked: false }, { now: NOW })).toMatchObject({ ok: false, reason: expect.stringContaining("cutover") });
+  });
+
+  // The store is the only durable copy of a run and it holds redacted text, so
+  // a run rebuilt from its store object has to present the same cursor proof
+  // the sweep recorded. That is only true if both sides hash the same bytes.
+  it("computes the committed prefix over the store's redacted bytes, not the disk's", async () => {
+    const token = `ghp_${"a".repeat(36)}`;
+    const rows = [claudeUserTurn({ text: `run this: gh auth login --with-token ${token}` }), claudeUserTurn({ text: "done" })];
+    const raw = Buffer.from(jsonl(rows));
+    const redacted = Buffer.from(storeText(raw), "utf8");
+    expect(redacted.includes(token)).toBe(false);
+    // The proof: the local bytes and the store's bytes name one hash, and it
+    // is not the hash of the unredacted prefix.
+    for (const line of [0, 1, 2]) expect(prefixSha256(raw, line)).toBe(prefixSha256(redacted, line));
+    const rawPrefix = `${raw.toString("utf8").split("\n").slice(0, 1).join("\n")}\n`;
+    expect(prefixSha256(raw, 1)).not.toBe(hash(Buffer.from(rawPrefix)));
+
+    // And end to end: what the sweep posts is what a later reader of the store
+    // object would compute for the same line.
+    const dir = temp();
+    const project = path.join(dir, "claude", "project");
+    fs.mkdirSync(project, { recursive: true });
+    const file = path.join(project, "session.jsonl");
+    fs.writeFileSync(file, raw);
+    const stat = fs.statSync(file);
+    const item = { runtime: "claude", host: "laptop", root: path.dirname(project), project: "project", threadId: "session", kind: "root", path: file, mtimeMs: stat.mtimeMs, bytes: stat.size };
+    const posts = [];
+    await sweepRuns({
+      config: config(dir, item),
+      file: item.path,
+      store: store(),
+      post: async (route, body) => { posts.push([route, body]); return route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true }; },
+      fs: largeDiskFs(),
+      now: () => NOW,
+      log: () => {},
+    });
+    const ingest = posts.filter(([route]) => route === "/runs/ingest").map(([, body]) => body);
+    expect(ingest).toHaveLength(1);
+    expect(ingest[0].run.file.committedPrefixSha256).toBe(prefixSha256(redacted, ingest[0].run.file.committedLine));
+    expect(JSON.stringify(ingest[0].rows)).not.toContain(token);
   });
 
   it("allows one lock holder and replaces only a stale lock", () => {
