@@ -1108,6 +1108,9 @@ export default defineSchema({
     // to where its transcript came from.
     forkedFrom: v.optional(v.id("claudeSessions")),
     sdkSessionId: v.optional(v.string()), // set once the SDK reports it; resume key
+    // The run this session's CLI file is recorded as (§23). One session is one
+    // run; absent until the sweep or backfill writes the derivable CLI id.
+    runId: v.optional(v.string()),
     cwd: v.optional(v.string()), // daemon-reported working dir on the Jarvis Box
     lastSdkEventAt: v.optional(v.number()), // "last output Xm ago" fact
     // Daemon-owned idempotency floor: an ingest carrying seqs below this is a
@@ -1159,14 +1162,21 @@ export default defineSchema({
     // repo half of the same rule still has none, because `repos` is an array
     // and Convex does not index array membership (that half is a capped
     // descending scan, SESSION_SCAN_MAX).
-    .index("by_batch", ["batchId", "statusChangedAt"]),
+    .index("by_batch", ["batchId", "statusChangedAt"])
+    // Joins a live session row to its immutable `runs` record (§23). The
+    // record round also wants `by_createdAt`, already declared above.
+    .index("by_run_id", ["runId"]),
 
   // Finalized transcript — written exactly once per row by the daemon.
   // `turn` has no UI reader yet; it is kept because transcript structure is
   // knowledge the (planned) session sweep and analysis layers read, and it
   // is cheap to record now and unreconstructible later.
   claudeMessages: defineTable({
-    sessionId: v.id("claudeSessions"),
+    // Legacy daemon rows carry sessionId. Run ingest writes runId instead;
+    // every transcript row carries one of the two identities.
+    sessionId: v.optional(v.id("claudeSessions")),
+    runId: v.optional(v.string()),
+    depth: v.optional(v.number()),
     seq: v.number(),
     turn: v.number(),
     kind: v.union(
@@ -1178,6 +1188,8 @@ export default defineSchema({
       v.literal("permission"),
       v.literal("system"),
       v.literal("error"),
+      v.literal("child-run"),
+      v.literal("context"),
     ),
     content: v.any(), // typed payload per kind; tool results truncated at 32KB by the daemon
     // Subagent parentage (P2): on a tool-call row emitted INSIDE a running
@@ -1198,12 +1210,25 @@ export default defineSchema({
         chunkCount: v.number(),
       }),
     ),
+    provenance: v.optional(v.object({
+      fileVersion: v.string(),
+      file: v.string(),
+      lineStart: v.number(),
+      lineEnd: v.number(),
+      block: v.number(),
+      parserVersion: v.string(),
+      sourceKind: v.string(),
+    })),
+    digest: v.optional(v.string()),
     createdAt: v.number(),
   })
     .index("by_session_seq", ["sessionId", "seq"])
     // Kind-scoped reads (getOpenToolWork): tool-call/tool-result rows only,
     // without paging the whole transcript.
-    .index("by_session_kind", ["sessionId", "kind", "seq"]),
+    .index("by_session_kind", ["sessionId", "kind", "seq"])
+    // A run is ordered by its source cursor (file version, line, block); in
+    // phase 2 seq is that cursor's sortable projection.
+    .index("by_run_seq", ["runId", "seq"]),
 
   // The complete payload behind a cut message row, in ordered chunks of ≤256KB
   // (OVERFLOW_CHUNK_BYTES in worker/session-host/overflow.mjs). Keyed by
@@ -1218,13 +1243,74 @@ export default defineSchema({
   // here removes chunks with a row — claudeSessions.sweepMessageOverflow is
   // the one call that does.
   claudeMessageOverflow: defineTable({
-    sessionId: v.id("claudeSessions"),
+    sessionId: v.optional(v.id("claudeSessions")),
+    runId: v.optional(v.string()),
     seq: v.number(),
     index: v.number(), // 0-based position; concatenating in order is the payload
     chunkCount: v.number(), // so an incomplete set is visible without the row
     text: v.string(),
     createdAt: v.number(),
-  }).index("by_session_seq_index", ["sessionId", "seq", "index"]),
+  })
+    .index("by_session_seq_index", ["sessionId", "seq", "index"])
+    .index("by_run_seq_index", ["runId", "seq", "index"]),
+
+  // Immutable CLI-file records. The store is the recovery source; these rows
+  // make runs searchable without making the live session state machine apply
+  // to every Codex or child thread.
+  runs: defineTable({
+    runId: v.string(),
+    parentRunId: v.optional(v.string()),
+    rootRunId: v.string(),
+    depth: v.number(),
+    spawnedByToolUseId: v.optional(v.string()),
+    linkKnown: v.boolean(),
+    origin: v.string(),
+    continuesRunId: v.optional(v.string()),
+    host: v.union(v.literal("laptop"), v.literal("box")),
+    runner: v.union(v.literal("claude"), v.literal("codex")),
+    model: v.optional(v.string()),
+    sessionModel: v.optional(SESSION_MODEL),
+    effort: v.optional(v.string()),
+    runtimeVersion: v.optional(v.string()),
+    parserVersion: v.string(),
+    kind: v.union(v.literal("session"), v.literal("worker"), v.literal("code"), v.literal("prospect"), v.literal("job"), v.literal("delegate"), v.literal("subagent"), v.literal("codex-child"), v.literal("unknown")),
+    status: v.union(v.literal("running"), v.literal("ended"), v.literal("failed"), v.literal("unknown")),
+    startedAt: v.number(),
+    lastLineAt: v.number(),
+    context: v.optional(v.object({
+      wikitomCommit: v.optional(v.string()), layersKnown: v.boolean(), layersGiven: v.array(v.string()), layersDenied: v.array(v.string()), skillsOffered: v.array(v.string()), skillsUsed: v.array(v.string()), tools: v.array(v.string()), hooks: v.array(v.string()), cwd: v.optional(v.string()), gitBranch: v.optional(v.string()), gitCommit: v.optional(v.string()), baseInstructionsHash: v.optional(v.string()), entrypoint: v.optional(v.string()), originator: v.optional(v.string()), permissionMode: v.optional(v.string()), contextWindow: v.optional(v.number()),
+    })),
+    outcome: v.optional(v.object({
+      endedReason: v.optional(v.string()), finalTextSeq: v.optional(v.number()),
+      totals: v.object({ inputTokens: v.number(), cacheReadTokens: v.number(), cacheWriteTokens: v.number(), outputTokens: v.number(), thinkingTokens: v.number(), totalTokens: v.number() }),
+      costUsd: v.optional(v.number()), priceTableVersion: v.optional(v.string()), turns: v.number(), toolCalls: v.number(),
+    })),
+    todoId: v.optional(v.id("dtsTodos")), batchId: v.optional(v.id("batches")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
+    file: v.object({ path: v.string(), sourceHash: v.string(), storedHash: v.string(), bytes: v.number(), storedBytes: v.number(), committedLine: v.number(), committedPrefixSha256: v.string(), storeKey: v.optional(v.string()), incompleteTail: v.optional(v.boolean()) }),
+    ingestedAt: v.number(),
+  })
+    // Point lookup on each ingest.
+    .index("by_run_id", ["runId"])
+    // runs.children reads one parent's direct children.
+    .index("by_parent", ["parentRunId"])
+    // A tree reader scans a root at every depth.
+    .index("by_root_depth", ["rootRunId", "depth"])
+    // The list filters root runs by host and starts in source order.
+    .index("by_host_depth_started", ["host", "depth", "startedAt"])
+    // Joins a run to the legacy session state row.
+    .index("by_session", ["sessionId"]),
+
+  // Labels are events: a run can receive several judgments from distinct
+  // channels, so this is deliberately not a mutable field on runs.
+  runLabels: defineTable({
+    runId: v.string(), rowSpan: v.optional(v.object({ seqStart: v.number(), seqEnd: v.number() })),
+    source: v.union(v.literal("ruling"), v.literal("objection"), v.literal("session-reply"), v.literal("digest-reaction")),
+    actor: v.string(), polarity: v.union(v.literal("good"), v.literal("bad"), v.literal("mixed"), v.literal("neutral")), meaning: v.string(), judgment: v.boolean(), ref: v.optional(v.string()), at: v.number(),
+  })
+    // The run page reads Tom's words oldest first.
+    .index("by_run_at", ["runId", "at"])
+    // Eval extraction reads a source's labels over time.
+    .index("by_source_at", ["source", "at"]),
 
   // The live tail: ONE row per session, ≤ ~16KB text by construction.
   claudeStreamBuf: defineTable({

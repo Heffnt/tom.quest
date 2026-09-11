@@ -2792,6 +2792,65 @@ http.route({
   handler: sessionsOverflowStamp,
 });
 
+// Run-file ingestion deliberately shares the daemon worker credential while
+// migration still has one box-side installation surface. New routes use the
+// run vocabulary; only this legacy auth helper retains the old name.
+const runsIngest = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.run !== "object" || b.run === null || !Array.isArray(b.rows) || !Array.isArray(b.children)) {
+    return jsonResponse(400, { error: "run, rows, and children required" });
+  }
+  try {
+    const result = await ctx.runMutation(internal.runs.internalIngest, b as never);
+    return jsonResponse(200, result);
+  } catch {
+    return jsonResponse(400, { error: "run ingest rejected" });
+  }
+});
+http.route({ path: "/runs/ingest", method: "POST", handler: runsIngest });
+
+// Payload text never reaches a validator error: every field is narrowed here
+// and failures use fixed words so the caller cannot reflect a transcript.
+const runsOverflow = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try { body = await request.json(); } catch { return jsonResponse(400, { error: "invalid JSON body" }); }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.runId !== "string" || b.runId === "") return jsonResponse(400, { error: "runId required" });
+  for (const field of ["seq", "index", "chunkCount"] as const) if (!nonNegativeInteger(b[field])) return jsonResponse(400, { error: `${field} (non-negative integer) required` });
+  if (typeof b.text !== "string") return jsonResponse(400, { error: "text (string) required" });
+  try {
+    const result = await ctx.runMutation(internal.runs.internalIngestOverflow, { runId: b.runId, seq: b.seq as number, index: b.index as number, chunkCount: b.chunkCount as number, text: b.text });
+    return result.ok ? jsonResponse(200, result) : jsonResponse(409, { error: result.reason });
+  } catch { return jsonResponse(400, { error: "overflow chunk rejected" }); }
+});
+http.route({ path: "/runs/overflow", method: "POST", handler: runsOverflow });
+
+const runsOverflowStamp = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try { body = await request.json(); } catch { return jsonResponse(400, { error: "invalid JSON body" }); }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.runId !== "string" || b.runId === "") return jsonResponse(400, { error: "runId required" });
+  for (const field of ["seq", "byteLength", "chunkCount"] as const) if (!nonNegativeInteger(b[field])) return jsonResponse(400, { error: `${field} (non-negative integer) required` });
+  if (typeof b.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(b.sha256)) return jsonResponse(400, { error: "sha256 (64 hex chars) required" });
+  try {
+    const result = await ctx.runMutation(internal.runs.internalStampOverflow, { runId: b.runId, seq: b.seq as number, sha256: b.sha256, byteLength: b.byteLength as number, chunkCount: b.chunkCount as number });
+    return result.ok ? jsonResponse(200, result) : jsonResponse(409, { error: result.reason });
+  } catch { return jsonResponse(400, { error: "overflow stamp rejected" }); }
+});
+http.route({ path: "/runs/overflow/stamp", method: "POST", handler: runsOverflowStamp });
+
 // GET /sessions/transcript?sessionId=<id>&cursor=<opaque> — one page of a
 // session's finalized transcript, oldest first. The daemon walks it to write
 // .tts-transcript.md into a forked session's workspace before that session's
