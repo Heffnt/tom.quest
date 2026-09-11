@@ -125,6 +125,15 @@ export const CONTEXT_CALLERS = Object.freeze({
   "time-notes": Object.freeze({ reachesTom: true, judges: false, captures: false }),
   "batch-context": Object.freeze({ reachesTom: true, judges: true, captures: false }),
   "weekly-input": Object.freeze({ reachesTom: true, judges: true, captures: false }),
+  // The weekly simplification pass (worker/jobs/simplify.mjs, through GET
+  // /tts/simplify-input). Its OWN row rather than borrowing weekly-input's:
+  // the two want the same three booleans today, and a caller that reads
+  // another caller's row is a caller that changes silently when that one does.
+  // `reachesTom` because the proposal sentences are written for him and post
+  // to #tts-decisions; `judges` because judging what the fleet can lose is the
+  // whole job; `captures` false because the pass files no todo — a LATER run
+  // does, once the objection window has closed.
+  "simplify-input": Object.freeze({ reachesTom: true, judges: true, captures: false }),
   prepare: Object.freeze({ reachesTom: true, judges: true, captures: false }),
   triage: Object.freeze({ reachesTom: true, judges: false, captures: true }),
   laptop: Object.freeze({ reachesTom: true, judges: false, captures: false }),

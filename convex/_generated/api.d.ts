@@ -43,6 +43,7 @@ import type * as ttsRepeats from "../ttsRepeats.js";
 import type * as ttsRulings from "../ttsRulings.js";
 import type * as ttsSearch from "../ttsSearch.js";
 import type * as ttsShared from "../ttsShared.js";
+import type * as ttsSimplify from "../ttsSimplify.js";
 import type * as ttsSkills from "../ttsSkills.js";
 import type * as ttsSlack from "../ttsSlack.js";
 import type * as ttsSlackDrafts from "../ttsSlackDrafts.js";
@@ -93,6 +94,7 @@ declare const fullApi: ApiFromModules<{
   ttsRulings: typeof ttsRulings;
   ttsSearch: typeof ttsSearch;
   ttsShared: typeof ttsShared;
+  ttsSimplify: typeof ttsSimplify;
   ttsSkills: typeof ttsSkills;
   ttsSlack: typeof ttsSlack;
   ttsSlackDrafts: typeof ttsSlackDrafts;

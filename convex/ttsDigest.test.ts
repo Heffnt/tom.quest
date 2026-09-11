@@ -4,6 +4,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { DELEGATE_DECISION } from "./ttsAsk";
 import { MERGE } from "./ttsMerge";
+import { SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import {
   DIGEST_SENT,
@@ -18,7 +19,7 @@ import {
   stripNarrowListId,
   todaySubject,
 } from "./ttsDigest";
-import { MESSAGE_MAX_CHARS } from "./ttsCompose";
+import { MESSAGE_MAX_CHARS, TAB_BATCHES } from "./ttsCompose";
 import { nyCalendarDayBoundsUtc, ttsDayKey, ttsItemLink } from "./ttsShared";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -591,6 +592,48 @@ describe("internalComposeToday", () => {
     // Its number names no askId: a merge is not a delegate decision, so a
     // reply that types its number falls through to the ordinary paths.
     expect(objectionAskIds).toEqual([""]);
+  });
+
+  // THE WEEKLY SIMPLIFICATION PASS reports each line it means to remove in
+  // #tts-decisions as it records it; this list is the last call on the same
+  // row. Unlike a merge its number DOES name an askId — the proposal's key is
+  // the askId of its own thread — so "revert 1" in the morning resolves the
+  // same row a reply in that thread would.
+  it("lists a simplification proposal, names its key, and leaves a dry run out", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: FIVE_AM - 1800_000,
+        kind: SIMPLIFY_PROPOSAL,
+        key: "simplify:s1",
+        data: {
+          id: "s1",
+          sentence: "removed the three roll-out shims from convex/http.ts",
+          evidence: "nothing has posted to them in six weeks",
+        },
+      });
+      // A dry run proves the path and removes nothing, so there is nothing to
+      // object to and it is not a morning line.
+      await ctx.db.insert("dtsEvents", {
+        at: FIVE_AM - 1200_000,
+        kind: SIMPLIFY_PROPOSAL,
+        key: "simplify:s2",
+        data: { id: "s2", sentence: "removed a line nobody proposed for real", dryRun: true },
+      });
+    });
+    const { text, objectionAskIds } = await t.query(internal.ttsDigest.internalComposeToday, {
+      day: DAY_KEY,
+      now: FIVE_AM,
+      canReply: true,
+    });
+    expect(text).toContain(
+      "1. Removed the three roll-out shims from convex/http.ts, because nothing has posted to them in six weeks.",
+    );
+    expect(text).not.toContain("nobody proposed for real");
+    expect(objectionAskIds).toEqual(["simplify:s1"]);
   });
 
   // THE CAP AND THE NUMBERING ARE ONE INVARIANT: a number Tom types must name
@@ -1498,6 +1541,72 @@ describe("sendDecision", () => {
     // Same reason as the line above: the thread is the subject, so no id is
     // printed for him to type back.
     expect(args.decision).not.toContain("[b71c]");
+  });
+
+  // THE WEEKLY SIMPLIFICATION PASS is the fourth producer at this door, and it
+  // uses BOTH of the composer's branches. An ordinary proposal is a decision:
+  // it stands unless he objects in the thread. A proposal whose removal
+  // changes a line of the spec or of an intent.md he has reviewed is marked
+  // needsHisWords and takes the REFUSED branch, which posts it as a question —
+  // that removal is his to make, not his silence's.
+  it("posts a simplification proposal as a decision, and a needs-his-words one as a question", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    const posts = stub();
+    await t.mutation(internal.ttsNightly.internalRecordWorkerEvent, {
+      kind: "simplify-proposal",
+      key: "simplify:s1",
+      data: {
+        id: "s1",
+        sentence: "removed the three roll-out shims from convex/http.ts",
+        evidence: "nothing has posted to them in six weeks",
+      },
+    });
+    await t.mutation(internal.ttsNightly.internalRecordWorkerEvent, {
+      kind: "simplify-proposal",
+      key: "simplify:s2",
+      data: {
+        id: "s2",
+        sentence: "removed the batch members line from tts/spec.md",
+        evidence: "the field came out in phase 7",
+        needsHisWords: true,
+      },
+    });
+    const scheduled = await t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
+        job.name.includes("sendDecision"),
+      ),
+    );
+    expect(scheduled).toHaveLength(2);
+    const args = scheduled
+      .map(
+        (job) =>
+          job.args[0] as {
+            askId: string;
+            decision: string;
+            reason?: string;
+            refused?: boolean;
+            refusedBecause?: string;
+          },
+      )
+      .sort((a, b) => a.askId.localeCompare(b.askId));
+    // The askId is the row's whole key, so the thread and the row are the same
+    // string (convex/ttsAsk.ts resolves the reply with one lookup).
+    expect(args.map((a) => a.askId)).toEqual(["simplify:s1", "simplify:s2"]);
+    for (const arg of args) await t.action(internal.ttsSync.sendDecision, arg);
+    expect(posts).toHaveLength(2);
+    expect(posts[0].text).toBe(
+      [
+        "Object if this is wrong; silence means it stands.",
+        `- <${TAB_BATCHES}|Removed the three roll-out shims from convex/http.ts, because nothing has posted to them in six weeks.>`,
+      ].join("\n"),
+    );
+    expect(posts[1].text).toBe(
+      [
+        "Parked for you: needs-his-words — removed the batch members line from tts/spec.md. Nothing was done in your name.",
+        `- <${TAB_BATCHES}|It would have removed the batch members line from tts/spec.md.>`,
+      ].join("\n"),
+    );
   });
 
   // A night that undid its own write is NOT a decision — nothing stands to

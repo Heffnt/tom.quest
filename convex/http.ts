@@ -1992,6 +1992,57 @@ const ttsWeeklyInput = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/weekly-input", method: "GET", handler: ttsWeeklyInput });
 
+// GET /tts/simplify-input?until=<epoch ms> — the weekly simplification pass's
+// one deterministic gather (convex/ttsSimplify.ts): the four weeks ending at
+// `until` (default: now) of runs, layers, skills, tools, hooks, working
+// directories, a token bag off the newest transcripts, the gate's whole
+// failure history and what the pass already proposed. Read on indexes, no
+// model in the loop; the job adds the rule files from the WikiTom checkout and
+// makes the one model call.
+//
+// The prelude rides along for the same reason it does on /tts/weekly-input:
+// the model's proposal sentences are written FOR TOM, so the run that writes
+// them needs the write layer. It asks as its OWN caller, "simplify-input"
+// (worker/jobs/context-relevance.mjs CONTEXT_CALLERS): the row happens to hold
+// the same three booleans weekly-input holds, and borrowing that row would
+// make this door change silently on the day the weekly job's does.
+const ttsSimplifyInput = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const params = new URL(request.url).searchParams;
+  const until = params.has("until") ? Number(params.get("until")) : Date.now();
+  if (!Number.isFinite(until) || until <= 0) {
+    return jsonResponse(400, { error: "until must be an epoch ms instant" });
+  }
+  let facts;
+  let writingStandard: string;
+  try {
+    [facts, writingStandard] = await Promise.all([
+      ctx.runQuery(internal.ttsSimplify.internalSimplifyInput, { until }),
+      ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "simplify-input" }),
+    ]);
+  } catch (error) {
+    return modelOfTomErrorResponse(error);
+  }
+  return jsonResponse(200, { ...facts, writingStandard });
+});
+
+http.route({ path: "/tts/simplify-input", method: "GET", handler: ttsSimplifyInput });
+
+// GET /tts/simplify-open — the proposals whose objection window has closed: a
+// morning message carried each one at least a day ago and Tom did not answer
+// (convex/ttsSimplify.ts internalOpenProposals). The nightly job asks, and
+// turns each into a todo. A read only: nothing is admitted by asking.
+const ttsSimplifyOpen = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  return jsonResponse(200, {
+    open: await ctx.runQuery(internal.ttsSimplify.internalOpenProposals, {}),
+  });
+});
+
+http.route({ path: "/tts/simplify-open", method: "GET", handler: ttsSimplifyOpen });
+
 // GET /tts/prelude-delivery?since=<epoch ms>&until=<epoch ms> — the nightly
 // delivery check reads sessions against the commit that was published when
 // they began. It is worker-only: it exposes session titles and commit stamps.

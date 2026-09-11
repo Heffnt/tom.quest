@@ -1347,7 +1347,14 @@ export default defineSchema({
     // Joins a run to the legacy session state row.
     .index("by_session", ["sessionId"])
     // The nightly manifest walks changed store versions in a stable order.
-    .index("by_ingested_at_and_run_id", ["ingestedAt", "runId"]),
+    .index("by_ingested_at_and_run_id", ["ingestedAt", "runId"])
+    // The weekly simplification pass's gather (convex/ttsSimplify.ts), which
+    // needs a time range over EVERY run in the window regardless of host and
+    // depth. by_host_depth_started will not do it: it wants equality on host
+    // and on depth before it can range on time, so the same read there is a
+    // loop over hosts times depths — and depth has no bound, so the loop's
+    // bound would be a guess.
+    .index("by_started", ["startedAt"]),
 
   // One immutable row per verified store version. A growing run can produce
   // several versions between nightly writes, so the mutable runs.file field

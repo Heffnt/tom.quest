@@ -42,6 +42,12 @@ export const AUDIT_DIFF_MAX_CHARS = 200_000;
  *  apart: the prompt below asks for exactly this shape. */
 export const AUDIT_VERDICT_LINE = "VERDICT: APPROVED";
 
+/** The heading the removal check's findings go under, for the same reason the
+ *  verdict line is a constant: convex/ttsMerge.ts removalNotesOf() reads this
+ *  exact word, anchored at the start of a line, and a prompt that asked for
+ *  another spelling would file every finding nowhere. */
+export const AUDIT_REMOVAL_HEADING = "REMOVAL CHECK:";
+
 /** The audit's own answer, unparsed, when the runner could not be reached. A
  *  failed audit is NOT an approval and not silence either: it is posted as
  *  UNAVAILABLE, so the row says the audit ran and could not finish. */
@@ -150,6 +156,36 @@ export function auditPrompt({ repo, sha, base, subject, diff, truncated }) {
     "A gate that refuses on taste never opens, and this gate is the whole",
     "difference between a branch that lands and a branch that waits for a human.",
     "",
+    // THE REMOVAL CHECK IS A FINDING, AND NEVER A REFUSAL ON ITS OWN. A gate
+    // that refused on an unanswered removal check would refuse on every branch
+    // that adds a test helper or an early return, and a gate that refuses on
+    // taste never opens — this prompt's own words, two paragraphs up. Tom's
+    // rule is that the change SAYS WHY, not that nothing is ever added, so the
+    // unanswered ones are carried out under their own heading instead: they
+    // land on the audit row, in front of whoever reads it and in front of the
+    // weekly simplification pass, which is where a pattern of additions nobody
+    // argued against is what actually shows.
+    //
+    // NO LINT CHECKS THIS, and scripts/check-removal-note.mjs was considered
+    // and not written. A mechanical check can only test for the PRESENCE OF A
+    // PHRASE in a commit message or a diff comment, and what that produces is
+    // the phrase: every addition grows a sentence saying it could not be
+    // deleted, written to satisfy the check, and the check then reports a
+    // healthy rate of compliance while nothing is ever deleted. That is
+    // Goedecke's wicked feature exactly — a new check every future change has
+    // to account for, which makes the thing it measures worse. The two checks
+    // that are real are a model reading the actual diff, which can tell an
+    // answer from a ritual, and the operate rule the agent reads before it
+    // writes ("Adding a case, flag or check: say why what it patches cannot be
+    // deleted instead", model-of-tom/agent-rules.md).
+    "THE REMOVAL CHECK. For every case, flag, branch or check this diff ADDS: does",
+    "the change say why the thing it patches cannot be deleted instead? Name each",
+    "addition that does not say.",
+    "",
+    "This is a FINDING, not a refusal. An unanswered one does not by itself change",
+    "the verdict: say it under the heading below and judge the change on the one",
+    "question above.",
+    "",
     truncated
       ? "THE DIFF BELOW IS CUT: it was larger than this audit takes. Judge what you can see and say in your answer that you saw only part of the change."
       : "",
@@ -165,6 +201,17 @@ export function auditPrompt({ repo, sha, base, subject, diff, truncated }) {
     "…followed by a short paragraph. When you refuse, the paragraph names the",
     "concrete problem and where it is. Write the verdict line NOWHERE ELSE in",
     "your answer, not even quoted.",
+    "",
+    "Then the removal check, its heading ALONE ON ITS LINE, exactly:",
+    "",
+    `${AUDIT_REMOVAL_HEADING} none`,
+    "",
+    "or",
+    "",
+    AUDIT_REMOVAL_HEADING,
+    "- <file>:<what was added> — the change does not say why <the thing> cannot be deleted",
+    "",
+    "one bullet per unanswered addition, the list ending at a blank line.",
     "",
     "The diff, verbatim between the markers:",
     "<<<DIFF",
