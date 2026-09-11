@@ -1,7 +1,14 @@
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import schema from "./schema";
-import { AUDIT_VERDICT, MERGE, TESTS_RUN, auditVerdictOf, commitKey } from "./ttsMerge";
+import {
+  AUDIT_TEXT_MAX_BYTES,
+  AUDIT_VERDICT,
+  MERGE,
+  TESTS_RUN,
+  auditVerdictOf,
+  commitKey,
+} from "./ttsMerge";
 import { EVALS_RUN } from "./ttsEvals";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -62,6 +69,14 @@ const mergeReport = (t: TestConvex<typeof schema>, over: Record<string, unknown>
 const mergeRows = (t: TestConvex<typeof schema>) =>
   t.run(async (ctx) =>
     ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", MERGE)).collect(),
+  );
+
+const auditRow = (t: TestConvex<typeof schema>) =>
+  t.run(async (ctx) =>
+    ctx.db
+      .query("dtsEvents")
+      .withIndex("by_kind_key", (q) => q.eq("kind", AUDIT_VERDICT).eq("key", commitKey(REPO, SHA)))
+      .unique(),
   );
 
 describe("auditVerdictOf", () => {
@@ -306,16 +321,39 @@ describe("POST /tts/audit — the second check's own door", () => {
   it("reads the verdict out of the audit's own text and records it", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convex();
+    const text = "VERDICT: APPROVED\n\nIt does what it says and touches nothing else.";
     const response = await post(t, "/tts/audit", {
       repo: REPO,
       sha: SHA,
-      text: "VERDICT: APPROVED\n\nIt does what it says and touches nothing else.",
+      text,
       model: "codex",
     });
     expect(response.status).toBe(200);
     expect((await response.json()).verdict).toBe("APPROVED");
+    expect((await auditRow(t))?.data).toMatchObject({ verdict: "APPROVED", text });
     const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
     expect(gate.missing).not.toContain("audit");
+    expect(gate.checks.find((c: { name: string }) => c.name === "audit").why).toContain(
+      "It does what it says and touches nothing else.",
+    );
+  });
+
+  it("redacts the retained audit text and caps it at 8 KiB of UTF-8", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    const secret = "not-a-real-secret";
+    await post(t, "/tts/audit", {
+      repo: REPO,
+      sha: SHA,
+      text: `VERDICT: REFUSED\n\npassword=${secret}\n${"😀".repeat(5_000)}`,
+    });
+    const stored = ((await auditRow(t))?.data as { text?: unknown } | undefined)?.text;
+    expect(typeof stored).toBe("string");
+    expect(stored).toContain("password=[redacted:secret]");
+    expect(stored).not.toContain(secret);
+    expect(new TextEncoder().encode(stored as string).length).toBeLessThanOrEqual(
+      AUDIT_TEXT_MAX_BYTES,
+    );
   });
 
   it("refuses an answer with no verdict line — an audit that did not say did not finish", async () => {
@@ -344,6 +382,11 @@ describe("POST /tts/audit — the second check's own door", () => {
       sha: SHA,
       text: "VERDICT: REFUSED\n\nIt deletes the only caller of a live route.",
     });
-    expect((await mergeReport(t)).status).toBe(409);
+    const response = await mergeReport(t);
+    expect(response.status).toBe(409);
+    const gate = (await response.json()).gate;
+    expect(gate.checks.find((c: { name: string }) => c.name === "audit").why).toContain(
+      "It deletes the only caller of a live route.",
+    );
   });
 });

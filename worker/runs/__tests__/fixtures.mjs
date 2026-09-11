@@ -14,12 +14,15 @@ export const claudeToolUseBlock = ({ id = "tool", name = "Bash", input = {} } = 
 export const claudeSystem = ({ subtype = "compact_boundary", ...fields } = {}) => claudeLine({ type: "system", subtype, ...fields });
 export const claudeAttachment = (type, payload = {}, { hookName } = {}) => claudeLine({ type: "attachment", attachment: { type, ...payload }, ...(hookName ? { hookName } : {}) });
 export const claudeUnknown = (type = "future", fields = {}) => claudeLine({ type, ...fields });
-export const subagentMeta = ({ agentType = "worker", description = "work", toolUseId = "task", spawnDepth = 1, parentAgentId, model = "model" } = {}) => ({ agentType, description, toolUseId, spawnDepth, ...(parentAgentId ? { parentAgentId } : {}), model });
+export const subagentMeta = (options = {}) => {
+  const { agentType = "worker", description = "work", toolUseId = "task", parentAgentId, model = "model" } = options;
+  return { agentType, description, toolUseId, ...(Object.hasOwn(options, "spawnDepth") ? { spawnDepth: options.spawnDepth } : { spawnDepth: 1 }), ...(parentAgentId ? { parentAgentId } : {}), model };
+};
 export const persistedOutput = ({ sizeText = "1KB", path = "/tmp/output.txt", preview = "preview" } = {}) => `<persisted-output>\nOutput too large (${sizeText}). Full output saved to: ${path}\n\nPreview (first 2KB):\n${preview}`;
 export const codexLine = (type, payload = {}, ordinalValue = ordinal++, timestamp = "2026-01-01T00:00:00.000Z") => ({ type, payload, ordinal: ordinalValue, timestamp });
 export const codexMeta = ({ id = "thread", parent, cwd = "/work", cliVersion = "0", git = {}, baseInstructions = "base", contextWindow = 1 } = {}) => codexLine("session_meta", { id, cwd, cli_version: cliVersion, git, base_instructions: { text: baseInstructions }, context_window: contextWindow, ...(parent ? { parent_thread_id: parent } : {}) });
 export const codexTurnContext = ({ turnId = "turn", model = "gpt-test", effort = "high" } = {}) => codexLine("turn_context", { turn_id: turnId, model, effort });
 export const codexResponseItem = (type, payload = {}) => codexLine("response_item", { type, ...payload });
-export const codexTokenCount = ({ input = 1, cachedInput = 2, cacheWrite = 3, output = 4, reasoning = 1, total = 10 } = {}) => codexLine("event_msg", { type: "token_count", info: { total_token_usage: { input_tokens: input, cached_input_tokens: cachedInput, cache_write_input_tokens: cacheWrite, output_tokens: output, reasoning_output_tokens: reasoning, total_tokens: total } } });
+export const codexTokenCount = ({ input = 1, cachedInput = 2, cacheWrite = 3, output = 4, reasoning = 1, total = 10, lastInput, responseId } = {}) => codexLine("event_msg", { type: "token_count", ...(responseId ? { response_id: responseId } : {}), info: { total_token_usage: { input_tokens: input, cached_input_tokens: cachedInput, cache_write_input_tokens: cacheWrite, output_tokens: output, reasoning_output_tokens: reasoning, total_tokens: total }, ...(lastInput === undefined ? {} : { last_token_usage: { input_tokens: lastInput } }) } });
 export const codexUsageRecord = ({ turnId = "turn", usage = {} } = {}) => codexLine("token_usage_record", { turn_id: turnId, usage });
 export const codexTaskComplete = ({ turnId = "turn", lastAgentMessage = "done" } = {}) => codexLine("event_msg", { type: "task_complete", turn_id: turnId, last_agent_message: lastAgentMessage });

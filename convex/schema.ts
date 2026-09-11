@@ -1037,6 +1037,26 @@ export default defineSchema({
     // with repo = repos[0] ?? "none"; readers prefer `repos ?? [repo]`.
     repos: v.optional(v.array(v.string())),
     repo: v.string(), // "tom.quest" | "ComplexMultiTrigger" | "WikiTom" | "none"
+    // Mode, status and outcome belong to the run; the session row's copies are
+    // aliases. The run row is where a lifecycle fact lives, because every
+    // runtime has runs and only some have sessions. These session-shaped copies
+    // stay exactly as they are because the daemon writes them on every flush;
+    // where the two disagree, the run row is the truth, and phase 9 deletes the
+    // copies. Write neither side from the other: the only new link is runId.
+    //
+    // Alias map (the run side is authoritative):
+    // session.mode ↔ run.mode
+    // session.status ↔ run.status — legacy intermediate states requested,
+    // starting, idle, running, ended, failed, awaiting-permission remain on
+    // the session row until phase 9 removes the copies.
+    // session.endedReason ↔ run.outcome.endedReason
+    // session.outcome/outcomeSummary ↔ run.outcome
+    // session.model ↔ run.sessionModel
+    //
+    // Aliases on this row also include statusChangedAt, reopenedAt,
+    // reopenEpoch, and reopenedFromAutonomous. This legacy row has no
+    // token-total fields.
+    //
     // Session posture (P3, ratified 2026-08-28): absent = "interactive" (a
     // Tom-driven chat). "autonomous" = fleet-scheduled groundwork with no one
     // watching — the daemon auto-ends it after its final turn and a wall-clock
@@ -1282,6 +1302,7 @@ export default defineSchema({
     parserVersion: v.string(),
     kind: v.union(v.literal("session"), v.literal("worker"), v.literal("code"), v.literal("prospect"), v.literal("job"), v.literal("delegate"), v.literal("subagent"), v.literal("codex-child"), v.literal("unknown")),
     status: v.union(v.literal("running"), v.literal("ended"), v.literal("failed"), v.literal("abandoned"), v.literal("unknown")),
+    mode: v.optional(v.union(v.literal("interactive"), v.literal("autonomous"))),
     startedAt: v.number(),
     lastLineAt: v.number(),
     context: v.optional(v.object({
@@ -1290,12 +1311,26 @@ export default defineSchema({
     })),
     outcome: v.optional(v.object({
       endedReason: v.optional(v.string()), finalTextSeq: v.optional(v.number()),
-      totals: v.object({ inputTokens: v.number(), cacheReadTokens: v.number(), cacheWriteTokens: v.number(), outputTokens: v.number(), thinkingTokens: v.number(), totalTokens: v.number() }),
+      totals: v.object({
+        inputTokens: v.number(),
+        cacheReadTokens: v.number(),
+        cacheWriteTokens: v.number(),
+        cacheWrite5mTokens: v.number(),
+        cacheWrite1hTokens: v.number(),
+        cacheWriteBreakdownKnown: v.boolean(),
+        outputTokens: v.number(),
+        thinkingTokens: v.number(),
+        totalTokens: v.number(),
+        longContextRequests: v.optional(v.number()),
+      }),
       costUsd: v.optional(v.number()), priceTableVersion: v.optional(v.string()), turns: v.number(), toolCalls: v.number(),
     })),
+    // Tool-result sidecars are pointers only in phase 2: their bytes stay on
+    // the host until the phase-3 sweeper assigns them their own store objects.
+    attachments: v.array(v.object({ file: v.string(), bytes: v.number(), sha256: v.string() })),
     todoId: v.optional(v.id("dtsTodos")), batchId: v.optional(v.id("batches")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
     envelopeKey: v.optional(v.string()), cutoverAt: v.optional(v.number()), abandonedAt: v.optional(v.number()),
-    file: v.object({ path: v.string(), sourceHash: v.string(), storedHash: v.string(), bytes: v.number(), storedBytes: v.number(), committedLine: v.number(), committedPrefixSha256: v.string(), storeKey: v.optional(v.string()), incompleteTail: v.optional(v.boolean()) }),
+    file: v.object({ path: v.string(), sourceHash: v.string(), storedHash: v.string(), bytes: v.number(), storedBytes: v.number(), committedLine: v.number(), committedPrefixSha256: v.string(), sidecarStoredHash: v.optional(v.string()), storeKey: v.optional(v.string()), incompleteTail: v.optional(v.boolean()) }),
     ingestedAt: v.number(),
   })
     // Point lookup on each ingest.
