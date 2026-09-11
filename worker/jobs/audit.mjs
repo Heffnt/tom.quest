@@ -71,9 +71,9 @@ export const AUDIT_MODEL = "codex";
  *  execFileSync carries that in the thrown error).
  *
  *  DELIBERATELY NARROWER than session.mjs's USAGE_LIMIT_RE, which also stands
- *  a Claude account down on "session limit"/"limit reached": here a false
- *  positive silently downgrades an audit to same-family, so only the literal
- *  cap wordings count. Any other failure is still UNAVAILABLE. */
+ *  a Claude account down on "session limit"/"limit reached": a false positive
+ *  here downgrades the audit to same-family, so only the literal cap wordings
+ *  count. Any other failure is still UNAVAILABLE. */
 export const CODEX_CAP_RE = /usage[ _-]?limit|rate_limit_reached|hit your usage limit/i;
 
 /** The model the fallback audit RUNS on: the MODELS table's Opus entry, named
@@ -90,12 +90,37 @@ export const AUDIT_FALLBACK_REASON = "codex-cap";
  *  the prompt carries up to AUDIT_DIFF_MAX_CHARS of diff. */
 export const AUDIT_FALLBACK_TIMEOUT_MS = 15 * 60 * 1000;
 
+/** The tools the fallback auditor may use: READING ONES ONLY. The prompt
+ *  carries the whole diff, so it needs none of them — but a model that decides
+ *  to open a file the diff touches must be able to, and must not be able to do
+ *  anything else. This is the Claude-side spelling of AUDIT_SANDBOX. */
+export const AUDIT_FALLBACK_TOOLS = ["Read", "Grep", "Glob"];
+
+/** How many turns the fallback gets. runClaude's non-agentic default is 8 and
+ *  THE FIRST REAL FALLBACK RUN DIED ON IT (2026-09-11, this commit's own
+ *  parent): the model read a few of the files the diff touched, hit
+ *  `max_turns_reached` at turn 9, and the CLI exited non-zero — recorded as
+ *  UNAVAILABLE with the cap error, which reads as "the fallback is broken"
+ *  rather than "the fallback ran out of turns". A read-only auditor cannot do
+ *  damage with more turns; it can only fail to finish with fewer. */
+export const AUDIT_FALLBACK_MAX_TURNS = 40;
+
+/** Lines of an error that are CONTENT, not a diagnosis: codex-run prints the
+ *  tail of the CLI's log, and the log echoes the prompt — which is the diff.
+ *  A diff that happens to add the words "hit your usage limit" (this file
+ *  does) must not read as a cap. Diff body lines all carry one of these
+ *  prefixes, so dropping them leaves the CLI's own words. */
+const DIFF_LINE_RE = /^([-+ @]|diff --git |index |\\ No newline)/;
+
 /** Whether a failed Codex run failed BECAUSE OF THE CAP. execFileSync puts the
  *  child's stderr on the thrown error's `stderr` and folds it into `message`;
  *  read both, plus stdout, rather than trusting one. */
 export function isCodexCap(error) {
   const text = [error?.message, error?.stderr, error?.stdout]
     .map((part) => (typeof part === "string" ? part : ""))
+    .join("\n")
+    .split(/\r?\n/)
+    .filter((line) => !DIFF_LINE_RE.test(line))
     .join("\n");
   return CODEX_CAP_RE.test(text);
 }
@@ -195,14 +220,16 @@ export async function auditCommit(
           maxBuffer: 64 * 1024 * 1024,
         }),
       ),
-    // THE SAME PROMPT, one family over, when Codex is capped. Non-agentic:
-    // runClaude's default permission mode lets the model read under `cwd` and
-    // edit nothing and run nothing — an auditor that can edit the tree it is
-    // judging is not an auditor, in either family.
+    // THE SAME PROMPT, one family over, when Codex is capped. Non-agentic and
+    // allow-listed to the three reading tools: the model may open a file the
+    // diff touches and can edit nothing and run nothing — an auditor that can
+    // edit the tree it is judging is not an auditor, in either family.
     auditFallback: (prompt) =>
       runClaude(prompt, {
         cwd: dir,
         model: AUDIT_FALLBACK_RUN_MODEL,
+        maxTurns: AUDIT_FALLBACK_MAX_TURNS,
+        allowedTools: AUDIT_FALLBACK_TOOLS,
         timeoutMs: AUDIT_FALLBACK_TIMEOUT_MS,
       }),
     post: (env, body) => convexFetch(env, "/tts/audit", body),

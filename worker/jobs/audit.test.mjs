@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   AUDIT_DIFF_MAX_CHARS,
+  AUDIT_FALLBACK_MAX_TURNS,
   AUDIT_FALLBACK_MODEL,
+  AUDIT_FALLBACK_TOOLS,
   AUDIT_FALLBACK_REASON,
   AUDIT_MODEL,
   AUDIT_SANDBOX,
@@ -140,13 +142,33 @@ describe("isCodexCap", () => {
     expect(isCodexCap(error)).toBe(true);
   });
 
-  // A false positive here silently downgrades the audit to the family that
-  // wrote the code, so anything but the cap stays UNAVAILABLE.
+  // A false positive downgrades the audit to the family that wrote the code,
+  // so anything but the cap stays UNAVAILABLE.
   it("does not read an ordinary failure, or transient API weather, as the cap", () => {
     expect(isCodexCap(new Error("codex is over its weekly cap"))).toBe(false);
     expect(isCodexCap(new Error("spawn tts-codex ENOENT"))).toBe(false);
     expect(isCodexCap(new Error("overloaded_error"))).toBe(false);
     expect(isCodexCap(new Error("API rate limit exceeded (429)"))).toBe(false);
+  });
+
+  // codex-run prints the tail of the CLI's log, and the log echoes the prompt,
+  // which is THE DIFF. A change that adds the cap's own words — this file is
+  // one — must not read as a cap.
+  it("does not read the echoed diff as a diagnosis", () => {
+    const error = new Error("Command failed: tts-codex");
+    error.stderr = [
+      "codex-run: codex exited 1 after 3s",
+      "+export const CODEX_CAP_RE = /hit your usage limit/i;",
+      "-  \"You've hit your usage limit. Try again later.\",",
+      " context line about a usage limit",
+      "diff --git a/worker/jobs/audit.mjs b/worker/jobs/audit.mjs",
+      "DIFF>>>",
+    ].join("\n");
+    expect(isCodexCap(error)).toBe(false);
+
+    // …and still reads the CLI's own line, which sits beside those.
+    error.stderr += "\nERROR: You've hit your usage limit. Visit ... or try again at Sep 17th.";
+    expect(isCodexCap(error)).toBe(true);
   });
 });
 
@@ -213,6 +235,14 @@ describe("the Codex cap's same-family fallback", () => {
     expect(posted[0].text).toContain("not logged in");
     expect(posted[0].model).toBe(AUDIT_MODEL);
     expect(posted[0].fallback).toBeUndefined();
+  });
+
+  // The first real fallback run died at runClaude's 8-turn default: the model
+  // opened a few of the files the diff touched and hit max_turns_reached at
+  // turn 9, so the row said UNAVAILABLE with the CAP's error on it.
+  it("reads only, and gets enough turns to finish reading", () => {
+    expect(AUDIT_FALLBACK_TOOLS).toEqual(["Read", "Grep", "Glob"]);
+    expect(AUDIT_FALLBACK_MAX_TURNS).toBeGreaterThan(8);
   });
 
   it("records an ordinary Codex audit as Codex, with no fallback field", async () => {
