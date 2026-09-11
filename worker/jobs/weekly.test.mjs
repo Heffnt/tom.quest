@@ -32,9 +32,11 @@ import {
   duration,
   isAreaPagePath,
   isDay,
+  isoWeekOf,
   outcomeTimingOf,
   parseAgendaAnswer,
   priorAgendaLines,
+  readGoldenSet,
   readPriorAgenda,
   renderAgenda,
   renderFactLines,
@@ -45,6 +47,9 @@ import {
 const DAY = 86_400_000;
 const UNTIL = Date.UTC(2026, 8, 11, 8); // 2026-09-11 08:00 UTC, 4 a.m. EDT
 const SINCE = UNTIL - 7 * DAY;
+// A tom.quest checkout that is not there, so the golden read is null and no
+// run test reads the machine it happens to be running on (readGoldenSet).
+const NO_GOLDEN = path.join(os.tmpdir(), "weekly-test-no-tom-quest-checkout");
 
 const tmpDirs = [];
 function tmp() {
@@ -224,11 +229,140 @@ describe("renderFactLines", () => {
     expect(lines).toContain("Completed: 150.");
   });
 
+  // ── The three evals blocks (phase 7) ───────────────────────────────────────
+  // ABSENT RENDERS NOTHING. A week gathered before phase 7 carries none of
+  // these three, and the agenda it produces must be the agenda it produced
+  // then — the empty-week test above is that assertion in full, and this one
+  // says it about a full week too, so a "0 graduated" line can never creep in
+  // to mean "nothing was asked".
+  it("prints none of the three evals blocks when the facts carry none of them", () => {
+    const text = renderFactLines(fullFacts()).join("\n");
+    expect(text).not.toContain("Golden set:");
+    expect(text).not.toContain("Ablation:");
+    expect(text).not.toContain("Token cost:");
+  });
+
+  it("prints the golden set, the ablation finding and the token rises when the facts carry them", () => {
+    const text = renderFactLines({
+      ...fullFacts(),
+      golden: {
+        items: 214,
+        capability: 38,
+        graduated: [{ id: "run-ruling-8fb2d10a4c3e", sentence: "say what the batch is for before you list its tasks" }],
+        preludeUnknown: 12,
+      },
+      ablation: [
+        { name: "know", cases: 7, withPass: 5, withoutPass: 6, earned: false },
+        { name: "write", cases: 9, withPass: 8, withoutPass: 2, earned: true },
+      ],
+      efficiency: { rises: [{ id: "run-ruling-k97x2m4bq1zp", headTokens: 1400, baseTokens: 900 }] },
+    }).join("\n");
+    expect(text).toContain("Golden set: 214 items, 38 capability, 1 graduated this week, 12 blind to a layer change.");
+    expect(text).toContain(
+      '- run-ruling-8fb2d10a4c3e graduated: "say what the batch is for before you list its tasks"',
+    );
+    expect(text).toContain("Ablation: know did not earn its tokens — 7 cases, 5/7 pass with it, 6/7 without.");
+    // The name whose cases need it is not a finding and gets no line of its own.
+    expect(text).not.toContain("write did not earn");
+    // The standing caveat rides in the facts, because the model reads these
+    // lines and would otherwise write a fork that treats it as a verdict.
+    expect(text).toContain("Ablation is reported and never gated");
+    expect(text).toContain("Token cost: 1 case cost more at head than at base.");
+    expect(text).toContain("- run-ruling-k97x2m4bq1zp: 1400 tokens, 900 at base");
+  });
+
+  it("says so when every name with enough cases behind it earned its tokens", () => {
+    const text = renderFactLines({
+      ...emptyFacts(),
+      ablation: [{ name: "know", cases: 7, withPass: 6, withoutPass: 1, earned: true }],
+    }).join("\n");
+    expect(text).toContain("Ablation: 1 name with enough cases behind them, and every one earned its tokens.");
+    expect(text).not.toContain("reported and never gated");
+  });
+
+  it("says a golden set with no graduation and no blind case as the numbers it is", () => {
+    const text = renderFactLines({
+      ...emptyFacts(),
+      golden: { items: 3, capability: 0, graduated: [], preludeUnknown: 0 },
+    }).join("\n");
+    expect(text).toContain("Golden set: 3 items, 0 capability, 0 graduated this week, 0 blind to a layer change.");
+  });
+
   it("grades nothing", () => {
     const text = renderFactLines(fullFacts()).join("\n").toLowerCase();
     for (const word of ["score", "grade", "good week", "bad week", "well done", "behind"]) {
       expect(text).not.toContain(word);
     }
+  });
+});
+
+describe("readGoldenSet", () => {
+  function goldenAt(dir, rel, item) {
+    write(dir, `evals/golden/${rel}`, `${JSON.stringify(item, null, 2)}\n`);
+  }
+
+  it("counts the set, its capability half, and the cases blind to a layer change", () => {
+    const dir = tmp();
+    goldenAt(dir, "a.json", { id: "a", kind: "regression", input: { preludeKnown: true } });
+    goldenAt(dir, "b.json", { id: "b", kind: "capability", input: { preludeKnown: false } });
+    // One level below, the way worker/jobs/evals.mjs loadGolden walks it.
+    goldenAt(dir, "runs/c.json", { id: "c", kind: "capability", input: { preludeKnown: false } });
+    expect(readGoldenSet(dir, { since: SINCE, until: UNTIL })).toEqual({
+      items: 3,
+      capability: 2,
+      graduated: [],
+      preludeUnknown: 2,
+    });
+  });
+
+  it("names what graduated inside the window, with Tom's own sentence, and nothing outside it", () => {
+    const dir = tmp();
+    goldenAt(dir, "runs/in.json", {
+      id: "run-ruling-8fb2d10a4c3e",
+      kind: "regression",
+      graduatedAt: UNTIL - 2 * DAY,
+      expected: { rubric: "say what the batch is for before you list its tasks" },
+    });
+    goldenAt(dir, "runs/before.json", {
+      id: "run-ruling-old",
+      kind: "regression",
+      graduatedAt: SINCE - DAY,
+      expected: { rubric: "an older graduation" },
+    });
+    // `until` is exclusive, the way every other window in this job is.
+    goldenAt(dir, "runs/after.json", {
+      id: "run-ruling-later",
+      kind: "regression",
+      graduatedAt: UNTIL,
+      expected: { rubric: "not this week" },
+    });
+    const golden = readGoldenSet(dir, { since: SINCE, until: UNTIL });
+    expect(golden.graduated).toEqual([
+      { id: "run-ruling-8fb2d10a4c3e", sentence: "say what the batch is for before you list its tasks" },
+    ]);
+    expect(golden.items).toBe(3);
+  });
+
+  // ABSENT, NOT ZERO: a checkout with no set is not a set with no items, and
+  // the renderer prints nothing rather than "0 items".
+  it("is null when the checkout has no golden set at all", () => {
+    expect(readGoldenSet(tmp(), { since: SINCE, until: UNTIL })).toBeNull();
+  });
+
+  it("reads a half-written item as no item rather than throwing the week away", () => {
+    const dir = tmp();
+    goldenAt(dir, "good.json", { id: "a", kind: "capability" });
+    write(dir, "evals/golden/broken.json", "{ not json");
+    expect(readGoldenSet(dir, { since: SINCE, until: UNTIL })).toMatchObject({ items: 1, capability: 1 });
+  });
+});
+
+describe("isoWeekOf", () => {
+  it("is the week the Thursday falls in, so a year boundary lands where ISO puts it", () => {
+    expect(isoWeekOf(UNTIL)).toBe("2026-W37");
+    // 2027-01-01 is a Friday: its week is 2026's 53rd, not 2027's first.
+    expect(isoWeekOf(Date.UTC(2027, 0, 1))).toBe("2026-W53");
+    expect(isoWeekOf(Date.UTC(2026, 0, 1))).toBe("2026-W01");
   });
 });
 
@@ -351,7 +485,7 @@ function checkout() {
   return dir;
 }
 
-function fakeIo({ facts = emptyFacts(), answer = { lines: ["Completed: 0."], forks: [] }, modelError = null, gatherError = null, runRow = null, sessionError = null } = {}) {
+function fakeIo({ facts = emptyFacts(), answer = { lines: ["Completed: 0."], forks: [] }, modelError = null, gatherError = null, runRow = null, sessionError = null, decisionsError = null } = {}) {
   const calls = { fetch: [], model: [], abort: 0, commits: [] };
   const io = {
     now: () => UNTIL,
@@ -367,6 +501,10 @@ function fakeIo({ facts = emptyFacts(), answer = { lines: ["Completed: 0."], for
         return { ok: true, sessionId: "sess-new" };
       }
       if (p === "/tts/event") return { ok: true, id: `ev${calls.fetch.length}` };
+      if (p === "/tts/weekly-decisions") {
+        if (decisionsError !== null) throw new Error(decisionsError);
+        return { sent: (body.graduated?.length ?? 0) + (body.ablation?.filter((a) => !a.earned).length ?? 0) };
+      }
       throw new Error(`unexpected ${p}`);
     },
     model: (prompt, opts) => {
@@ -396,7 +534,7 @@ describe("the run — one per day", () => {
     const dir = checkout();
     write(dir, `${WEEKLY_DIR}/2026-09-11.md`, "# earlier today\n\n## Outcome\n\ntiming: on time\n");
     const { io, calls } = fakeIo();
-    const result = await runWeekly({ force: true, env: ENV, dir, io });
+    const result = await runWeekly({ force: true, env: ENV, dir, tomquestDir: NO_GOLDEN, io });
     expect(result.refused).toContain("2026-09-11 was already run: the agenda file tts/weekly/2026-09-11.md is in the checkout");
     expect(fs.readFileSync(path.join(dir, WEEKLY_DIR, "2026-09-11.md"), "utf8")).toContain("timing: on time");
     expect(calls.model).toHaveLength(0);
@@ -409,7 +547,7 @@ describe("the run — one per day", () => {
   it("refuses a day whose weekly-run row exists, even with no file", async () => {
     const dir = checkout();
     const { io, calls } = fakeIo({ runRow: { at: UNTIL - 3_600_000, file: null, sessionId: "sess-earlier", failures: 1 } });
-    const result = await runWeekly({ force: true, env: ENV, dir, io });
+    const result = await runWeekly({ force: true, env: ENV, dir, tomquestDir: NO_GOLDEN, io });
     expect(result.refused).toContain("a weekly-run row for 2026-09-11 names session sess-earlier");
     expect(result.sessionId).toBe("sess-earlier");
     expect(fs.existsSync(path.join(dir, WEEKLY_DIR, "2026-09-11.md"))).toBe(false);
@@ -422,7 +560,7 @@ describe("the run — one per day", () => {
     write(dir, `${WEEKLY_DIR}/2026-08-28.md`, "# two weeks ago\n\n## Outcome\n\ntiming: skipped\n");
     write(dir, `${WEEKLY_DIR}/2026-09-04.md`, "# last week\n\n## Outcome\n\ntiming: late\nsustainable: no\n");
     const { io } = fakeIo();
-    const result = await runWeekly({ force: true, env: ENV, dir, io });
+    const result = await runWeekly({ force: true, env: ENV, dir, tomquestDir: NO_GOLDEN, io });
     expect(result.refused).toBeNull();
     const text = fs.readFileSync(path.join(dir, WEEKLY_DIR, "2026-09-11.md"), "utf8");
     expect(text.startsWith(`# Weekly agenda — 2026-09-11\n\n**${CADENCE_LINE} — the last two weekly sessions: 2026-09-04 late, 2026-08-28 skipped.**`)).toBe(true);
@@ -440,7 +578,7 @@ describe("the run — one per day", () => {
       recommendation: "archive",
     };
     const { io, calls } = fakeIo({ facts: fullFacts(), answer: { lines: ["Completed: 1.", "Captured: 2."], forks: [fork, { ...fork, subject: null }] } });
-    const result = await runWeekly({ force: true, env: ENV, dir, io });
+    const result = await runWeekly({ force: true, env: ENV, dir, tomquestDir: NO_GOLDEN, io });
     expect(result).toEqual({ day: "2026-09-11", file: "tts/weekly/2026-09-11.md", sessionId: "sess-new", failures: [], refused: null });
     // the model, once, on the rendered facts
     expect(calls.model).toHaveLength(1);
@@ -475,7 +613,7 @@ describe("the run — one per day", () => {
   it("on a failed model call still writes the agenda (the facts, no forks) and opens the one session", async () => {
     const dir = checkout();
     const { io, calls } = fakeIo({ facts: fullFacts(), modelError: "claude returned an error envelope (subtype: error_max_turns)" });
-    const result = await runWeekly({ force: true, env: ENV, dir, io });
+    const result = await runWeekly({ force: true, env: ENV, dir, tomquestDir: NO_GOLDEN, io });
     expect(result.failures).toEqual([{ step: "model", error: "claude returned an error envelope (subtype: error_max_turns)" }]);
     expect(result.file).toBe("tts/weekly/2026-09-11.md");
     expect(result.sessionId).toBe("sess-new");
@@ -495,7 +633,7 @@ describe("the run — one per day", () => {
   it("on a failed gather makes no model call, writes the agenda saying so, and opens the one session", async () => {
     const dir = checkout();
     const { io, calls } = fakeIo({ gatherError: "/tts/weekly-input -> HTTP 500: boom" });
-    const result = await runWeekly({ force: true, env: ENV, dir, io });
+    const result = await runWeekly({ force: true, env: ENV, dir, tomquestDir: NO_GOLDEN, io });
     expect(result.failures.map((f) => f.step)).toEqual(["gather"]);
     expect(calls.model).toHaveLength(0);
     const text = fs.readFileSync(path.join(dir, WEEKLY_DIR, "2026-09-11.md"), "utf8");
@@ -513,7 +651,7 @@ describe("the run — one per day", () => {
   it("with the checkout absent records the failure, commits nothing, and opens the session on the prompt alone", async () => {
     const dir = tmp();
     const { io, calls } = fakeIo();
-    const result = await runWeekly({ force: true, env: ENV, dir, io });
+    const result = await runWeekly({ force: true, env: ENV, dir, tomquestDir: NO_GOLDEN, io });
     expect(result.failures.map((f) => f.step)).toEqual(["checkout"]);
     expect(result.file).toBeNull();
     expect(calls.commits).toHaveLength(0);
@@ -529,7 +667,7 @@ describe("the run — one per day", () => {
     write(dir, `${WEEKLY_DIR}/2026-09-04.md`, "# last week\n\n## Outcome\n\ntiming: late\n");
     write(dir, `${WEEKLY_DIR}/2026-09-11.md`, "# earlier today\n\n## Outcome\n\ntiming: on time\n");
     const { io, calls } = fakeIo({ runRow: { at: UNTIL - 3_600_000, file: "tts/weekly/2026-09-11.md", sessionId: "sess-earlier", failures: 0 } });
-    const result = await runWeekly({ force: true, overwrite: true, env: ENV, dir, io });
+    const result = await runWeekly({ force: true, overwrite: true, env: ENV, dir, tomquestDir: NO_GOLDEN, io });
     expect(result).toMatchObject({ day: "2026-09-11", file: "tts/weekly/2026-09-11.md", sessionId: "sess-earlier", failures: [], refused: null });
     const text = fs.readFileSync(path.join(dir, WEEKLY_DIR, "2026-09-11.md"), "utf8");
     expect(text).toContain("# Weekly agenda — 2026-09-11");
@@ -541,6 +679,91 @@ describe("the run — one per day", () => {
     expect(run).toHaveLength(1);
     expect(run[0].body.key).toBe("2026-09-11");
     expect(run[0].body.data).toMatchObject({ day: "2026-09-11", sessionId: "sess-earlier", file: "tts/weekly/2026-09-11.md" });
+  });
+});
+
+describe("the week's evals decisions", () => {
+  function goldenCheckout({ graduatedAt = UNTIL - 2 * DAY } = {}) {
+    const dir = tmp();
+    write(
+      dir,
+      "evals/golden/runs/run-ruling-8fb2d10a4c3e.json",
+      `${JSON.stringify({
+        id: "run-ruling-8fb2d10a4c3e",
+        kind: "regression",
+        graduatedAt,
+        expected: { rubric: "say what the batch is for before you list its tasks" },
+      })}\n`,
+    );
+    return dir;
+  }
+  const decisions = (calls) => calls.fetch.filter((c) => c.path === "/tts/weekly-decisions");
+
+  it("puts the golden set on the agenda's facts and sends the week's graduation and unearned name", async () => {
+    const dir = checkout();
+    const { io, calls } = fakeIo({
+      facts: {
+        ...emptyFacts(),
+        ablation: [
+          { name: "know", cases: 7, withPass: 5, withoutPass: 6, earned: false },
+          { name: "write", cases: 9, withPass: 8, withoutPass: 2, earned: true },
+        ],
+        efficiency: { rises: [] },
+      },
+    });
+    const result = await runWeekly({ force: true, env: ENV, dir, tomquestDir: goldenCheckout(), io });
+    expect(result.failures).toEqual([]);
+    // The golden read reached the model's facts, not just the record.
+    expect(calls.model[0].prompt).toContain("Golden set: 1 item, 0 capability, 1 graduated this week, 0 blind to a layer change.");
+    expect(calls.model[0].prompt).toContain("Ablation: know did not earn its tokens — 7 cases, 5/7 pass with it, 6/7 without.");
+    // ONE call to the one door, carrying both, with the week on it.
+    expect(decisions(calls)).toHaveLength(1);
+    expect(decisions(calls)[0].body).toEqual({
+      isoWeek: "2026-W37",
+      graduated: [
+        { id: "run-ruling-8fb2d10a4c3e", sentence: "say what the batch is for before you list its tasks" },
+      ],
+      ablation: [
+        { name: "know", cases: 7, withPass: 5, withoutPass: 6, earned: false },
+        { name: "write", cases: 9, withPass: 8, withoutPass: 2, earned: true },
+      ],
+    });
+  });
+
+  // Silence is the answer when there is nothing to object to: no graduation
+  // this week and every name earning its tokens is not a decision taken
+  // without him, and #tts-decisions hears nothing.
+  it("sends nothing when the week graduated nothing and every name earned its tokens", async () => {
+    const dir = checkout();
+    const { io, calls } = fakeIo({
+      facts: { ...emptyFacts(), ablation: [{ name: "know", cases: 7, withPass: 6, withoutPass: 1, earned: true }] },
+    });
+    await runWeekly({ force: true, env: ENV, dir, tomquestDir: goldenCheckout({ graduatedAt: SINCE - DAY }), io });
+    expect(decisions(calls)).toHaveLength(0);
+  });
+
+  // The door's refusal is a recorded failure and the agenda is written all the
+  // same: a decision that could not be posted must not cost Tom his Friday.
+  it("records a refused post as a failure and still writes the agenda and opens the session", async () => {
+    const dir = checkout();
+    const { io, calls } = fakeIo({ decisionsError: "/tts/weekly-decisions -> HTTP 404: no such route" });
+    const result = await runWeekly({ force: true, env: ENV, dir, tomquestDir: goldenCheckout(), io });
+    expect(result.failures).toEqual([
+      { step: "decisions", error: "/tts/weekly-decisions -> HTTP 404: no such route" },
+    ]);
+    expect(result.file).toBe("tts/weekly/2026-09-11.md");
+    expect(sessions(calls)).toHaveLength(1);
+    expect(posted(calls, "weekly-failure").map((c) => c.body.data.step)).toEqual(["decisions"]);
+  });
+
+  // An unreadable checkout is absent, not empty: the agenda says nothing about
+  // the golden set rather than saying it holds nothing.
+  it("writes no golden line when the tom.quest checkout is not there", async () => {
+    const dir = checkout();
+    const { io, calls } = fakeIo();
+    await runWeekly({ force: true, env: ENV, dir, tomquestDir: NO_GOLDEN, io });
+    expect(calls.model[0].prompt).not.toContain("Golden set:");
+    expect(decisions(calls)).toHaveLength(0);
   });
 });
 

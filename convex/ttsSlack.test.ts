@@ -6,6 +6,7 @@ import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { SLACK_THREAD_CLAIMED, parseObjectionReply, replyShape } from "./ttsSlack";
 import { DELEGATE_DECISION, DELEGATE_OBJECTION } from "./ttsAsk";
+import { SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { slackHourKey, slackThreadKey, ttsDayKey } from "./ttsShared";
 import { composeCaptured, renderSlack } from "./ttsCompose";
 
@@ -1429,6 +1430,40 @@ describe("a reply in one of the new rooms", () => {
       revert: false,
       sentence: "leave it Wednesday",
     });
+  });
+
+  // A SIMPLIFICATION PROPOSAL is the third subject a decisions thread can
+  // carry (convex/ttsAsk.ts internalRecordDelegateObjection). Its row key IS
+  // its askId — `simplify:<id>` at both ends — so a reply resolves the
+  // proposal with one lookup and the objection lands on its own row, which is
+  // what the weekly pass reads before it makes the removal permanent.
+  it("writes one delegate-objection row for a revert in a simplification proposal's thread", async () => {
+    slackEnv();
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: SIMPLIFY_PROPOSAL,
+        key: "simplify:s1",
+        data: {
+          id: "s1",
+          sentence: "removed the three roll-out shims from convex/http.ts",
+          evidence: "nothing has posted to them in six weeks",
+        },
+      });
+    });
+    await posted(t, "205.1", { kind: "ask", id: "simplify:s1" }, "Object if this is wrong.");
+    const outcome = await postEvent(t, {
+      channel: DECISIONS,
+      ts: "205.2",
+      thread_ts: "205.1",
+      text: "revert",
+    });
+    expect(outcome).toMatchObject({ outcome: "delegate-objection", id: "simplify:s1" });
+    const rows = await events(t, DELEGATE_OBJECTION);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].key).toBe("simplify:s1");
+    expect(rows[0].data).toMatchObject({ askId: "simplify:s1", revert: true });
   });
 
   it("takes a reply about a failure as a fact", async () => {

@@ -24,9 +24,10 @@ import { internal } from "./_generated/api";
 import type { TableNames } from "./_generated/dataModel";
 import schema from "./schema";
 import { clip } from "../worker/jobs/clip.mjs";
-// The two kinds this pen routes onward besides LEARNING_CHANGE. Their rows,
+// The kinds this pen routes onward besides LEARNING_CHANGE. Their rows,
 // their fields and the reasoning are documented where they are declared.
 import { LEARNING_CHECK_FAILED, REPO_PROPOSAL } from "./ttsDigest";
+import { SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 
 // ── The export ───────────────────────────────────────────────────────────────
 // Every table in the schema except the auth ones (the six @convex-dev/auth
@@ -616,6 +617,41 @@ export const internalRecordWorkerEvent = internalMutation({
         askId: typeof d.id === "string" ? `repo-proposal:${d.id}` : `repo-proposal:${id}`,
         decision: `${repo} ${file} is to say ${line}`,
         ...(read === undefined ? {} : { reason: `last night's sessions ${read}` }),
+      });
+    }
+    // A SIMPLIFICATION PROPOSAL is the weekly pass's one output: a line it
+    // means to take out of a spec, a rule or a page. It reaches him through
+    // the door every producer of a decision shares — convex/ttsSync.ts
+    // sendDecision, composed by ttsCompose.composeDecision, claimed once a day
+    // per item — and a reply in its thread is an objection through the path
+    // that already exists. #tts-needs-you was the alternative and lost: that
+    // room wants a todo row per thread, and this job files no todo until the
+    // objection window has passed. One channel, one composer, no new door.
+    //
+    // A `needsHisWords` proposal takes the composer's REFUSED branch, which
+    // renders "Parked for you: … Nothing was done in your name". That is how
+    // it posts as a QUESTION rather than a decision: a removal that changes a
+    // line of the spec, or of an intent.md he has reviewed, is his to make and
+    // not his silence's.
+    //
+    // THE askId IS THE WHOLE `simplify:<id>` STRING and is also the event
+    // row's `key`, so the two ends are the same string and the objection door
+    // resolves a reply with one lookup. LEARNING_CHANGE and REPO_PROPOSAL
+    // write the bare id as the key and a prefixed id as the askId, so a reply
+    // in one of THOSE threads cannot resolve — a real bug, filed separately,
+    // deliberately not fixed here.
+    if (kind === SIMPLIFY_PROPOSAL) {
+      const d = (data ?? {}) as Record<string, unknown>;
+      await ctx.scheduler.runAfter(0, internal.ttsSync.sendDecision, {
+        askId: key ?? `simplify:${id}`,
+        decision: typeof d.sentence === "string" ? d.sentence : "a simplification",
+        ...(typeof d.evidence === "string" ? { reason: d.evidence } : {}),
+        ...(d.needsHisWords === true
+          ? {
+              refused: true,
+              refusedBecause: `needs-his-words — ${typeof d.sentence === "string" ? d.sentence : ""}`,
+            }
+          : {}),
       });
     }
     // THE NIGHT THAT UNDID ITSELF. Not a decision — nothing stands to object

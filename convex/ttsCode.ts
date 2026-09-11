@@ -43,8 +43,15 @@ export const internalStoreBriefs = internalMutation({
         evidence: v.optional(v.string()),
       }),
     ),
+    // THE RUN THAT WROTE THESE BRIEFS. A code ruling of Tom's is a judgment
+    // about the brief he read, and this is the edge back to the run that wrote
+    // it (convex/runLabels.ts tokenForRulingSubject reads it off the brief
+    // row). One token per call rather than per brief: one brief pass is one
+    // run, and the pen takes the pass's output as a batch. Absent is a
+    // supported value and is never inferred.
+    runToken: v.optional(v.string()),
   },
-  handler: async (ctx, { briefs }) => {
+  handler: async (ctx, { briefs, runToken }) => {
     const now = Date.now();
     for (const brief of briefs) {
       const existing = await ctx.db
@@ -56,7 +63,15 @@ export const internalStoreBriefs = internalMutation({
       // No normalizing left to do: the pen's validator holds the four verdict
       // words, so what arrives is already what is stored (the lifeos update,
       // phase 7).
-      const row = { ...brief, preparedAt: now };
+      // Spread conditionally, never as `producedByRunToken: runToken`: a patch
+      // written with undefined DELETES the field, so a re-brief from an
+      // unregistered caller would silently strip the edge the last registered
+      // run left behind.
+      const row = {
+        ...brief,
+        ...(runToken === undefined ? {} : { producedByRunToken: runToken }),
+        preparedAt: now,
+      };
       if (existing) {
         await ctx.db.patch(existing._id, row);
       } else {

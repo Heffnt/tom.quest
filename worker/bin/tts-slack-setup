@@ -35,6 +35,15 @@
 //   3. conversations.invite — Tom is a member of every outbound channel. Needs
 //      channels:manage; "already_in_channel" counts as done.
 //
+// WHAT IT DOES NOT DO: the app's own configuration. Event subscriptions and
+// OAuth scopes live behind api.slack.com/apps and have no bot-token API, so
+// this script CREATES NOTHING THERE — it prints, on standard error, the list
+// Tom sets by hand once. The reaction door (the evals layer, phase 7) is a new
+// EVENT SUBSCRIPTION on the existing app and not a new channel: an emoji on
+// the morning message in #tts-today becomes a label on the run that wrote it,
+// and Slack sends nothing until reaction_added / reaction_removed are
+// subscribed and reactions:read is granted.
+//
 // It prints exactly six lines to standard output, nothing else:
 //
 //   SLACK_TTS_TODAY_CHANNEL_ID=C…
@@ -68,6 +77,24 @@ const CHANNELS = [
   ["SLACK_TTS_NEEDS_YOU_CHANNEL_ID", "tts-needs-you"],
   ["SLACK_TTS_HOURLY_CHANNEL_ID", "tts-hourly"],
   ["SLACK_TTS_BROKEN_CHANNEL_ID", "tts-broken"],
+];
+// What Tom sets by hand at api.slack.com/apps, printed by every run that gets
+// as far as the six lines. These are NOT channels and this script does not
+// create them: Slack
+// exposes no bot-token door onto an app's own event subscriptions or scopes,
+// so the one action is his either way and the script's job is to say exactly
+// what it is. `message.channels` and `chat:write` are listed too — they are
+// what the capture and reply doors already run on, so a re-run of this script
+// after a re-install shows the whole set rather than only the newest half.
+const EVENT_SUBSCRIPTIONS = [
+  ["message.channels", "a #dump message is a capture; a threaded reply is Tom answering"],
+  ["reaction_added", "an emoji on the morning message is a label on the run that wrote it"],
+  ["reaction_removed", "an emoji tapped by accident must not stay an eval case forever"],
+];
+const OAUTH_SCOPES = [
+  ["chat:write", "every outbound post"],
+  ["channels:history", "the message events above"],
+  ["reactions:read", "the reaction events above"],
 ];
 const WORKER_ENV_PATH = "/etc/tts/worker.env";
 const PAGE_LIMIT = 200;
@@ -266,6 +293,18 @@ async function inviteTom(token, channel, userId) {
   }
 }
 
+// The by-hand half, named in full every run. An event Slack does not send is
+// silent on this side — no error, no row, nothing at all — so the list is
+// printed unconditionally rather than only when something looks wrong.
+function printAppConfiguration() {
+  log("set by hand at api.slack.com/apps → this app:");
+  log("  Event Subscriptions → Subscribe to bot events");
+  for (const [name, why] of EVENT_SUBSCRIPTIONS) log(`    ${name}  — ${why}`);
+  log("  OAuth & Permissions → Bot Token Scopes");
+  for (const [name, why] of OAUTH_SCOPES) log(`    ${name}  — ${why}`);
+  log("  a new scope needs the app reinstalled to the workspace before it counts");
+}
+
 async function main() {
   const selection = parseArgs(process.argv.slice(2));
   const token = botToken();
@@ -286,6 +325,10 @@ async function main() {
       process.stdout.write(`${envName}=${channel}\n`);
     }
     process.stdout.write(`TOM_SLACK_USER_ID=${tomId}\n`);
+    // Standard error, not standard output: the six lines above are parsed into
+    // the Convex env and a seventh kind of line there would break whatever
+    // reads them. This is an instruction to a person.
+    printAppConfiguration();
   } catch (err) {
     log(`Slack refused: ${err.message}`);
     process.exit(4);

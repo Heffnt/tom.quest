@@ -35,6 +35,7 @@ import {
   expectedEvidenceBlobs,
   exportTableRows,
   gitBlobId,
+  goldenExportStep,
   indexManifests,
   isLearningFile,
   isTableFile,
@@ -114,6 +115,95 @@ function write(dir, rel, content) {
   fs.writeFileSync(abs, content);
   return abs;
 }
+
+describe("the golden export step", () => {
+  it("is a step of its own, and one that runs before learning", () => {
+    expect(parseArgs(["--only=golden-export"])).toEqual({ force: false, only: ["golden-export"] });
+    const { only } = parseArgs([]);
+    expect(only.indexOf("golden-export")).toBeLessThan(only.indexOf("learning"));
+    // Outside the lock, the way delivery is: it writes a tom.quest cache
+    // clone and touches nothing the WikiTom writers hold.
+    expect(only.indexOf("golden-export")).toBeGreaterThan(only.indexOf("delivery"));
+  });
+
+  it("runs the exporter against the labels source and reports what it wrote", async () => {
+    const dir = tmp();
+    write(dir, "evals/golden/runs/a.json", "{}");
+    write(dir, "evals/golden/runs/b.json", "{}");
+    const ran = [];
+    const result = await goldenExportStep(
+      { env: {}, day: "2026-09-11" },
+      {
+        checkout: () => dir,
+        exec: (where, args) => {
+          ran.push({ where, args });
+          return "reading labels\ngolden set: 2 items in 1 partitions (1 approve, 1 revise); 0 rulings unbuildable (no snapshot), 0 dropped (credential-shaped text).\n";
+        },
+      },
+    );
+    expect(ran).toEqual([{ where: dir, args: ["scripts/export-golden.mjs", "--source", "labels"] }]);
+    expect(result).toEqual({
+      dir,
+      items: 2,
+      summary: "golden set: 2 items in 1 partitions (1 approve, 1 revise); 0 rulings unbuildable (no snapshot), 0 dropped (credential-shaped text).",
+      landed: false,
+    });
+  });
+
+  // NOTHING IS PUSHED, AND MAIN LEAST OF ALL. This job has no tom.quest
+  // branch-and-commit helper — every repository write it makes goes to the
+  // WikiTom checkout under the WikiTom writer lock — so the export is made and
+  // left, and the landing is one injected call the caller supplies.
+  it("commits and pushes nothing on its own, and says the result did not land", async () => {
+    const dir = tmp();
+    const result = await goldenExportStep(
+      { env: {}, day: "2026-09-11" },
+      { checkout: () => dir, exec: () => "golden set: 0 items in 0 partitions" },
+    );
+    expect(result.landed).toBe(false);
+    // The clone is untouched by this step: no branch, no commit, no remote.
+    expect(fs.existsSync(path.join(dir, ".git"))).toBe(false);
+  });
+
+  it("lands through the injected lander when a caller supplies one", async () => {
+    const dir = tmp();
+    const landed = [];
+    const result = await goldenExportStep(
+      { env: {}, day: "2026-09-11" },
+      {
+        checkout: () => dir,
+        exec: () => "golden set: 0 items in 0 partitions",
+        land: (what) => {
+          landed.push(what);
+          return true;
+        },
+      },
+    );
+    expect(landed).toEqual([{ dir, paths: ["evals/golden/runs"], day: "2026-09-11" }]);
+    expect(result.landed).toBe(true);
+  });
+
+  it("says nothing about a summary the exporter did not print", async () => {
+    const dir = tmp();
+    const result = await goldenExportStep(
+      { env: {}, day: "2026-09-11" },
+      { checkout: () => dir, exec: () => "" },
+    );
+    expect(result).toMatchObject({ items: 0, summary: "" });
+  });
+
+  // A FAILURE IS A RECORDED FAILURE. The step throws; main's own try/catch
+  // writes the nightly-failure row and the night carries on — the same
+  // contract every other step here has.
+  it("throws rather than swallowing an exporter that refused, so the night records it and continues", async () => {
+    await expect(
+      goldenExportStep(
+        { env: {}, day: "2026-09-11" },
+        { checkout: () => tmp(), exec: () => { throw new Error("export-golden: /tts/label-input -> HTTP 500"); } },
+      ),
+    ).rejects.toThrow("HTTP 500");
+  });
+});
 
 describe("runs step", () => {
   it("sends the full last-manifest tuple when timestamps are equal", async () => {

@@ -97,12 +97,73 @@ describe("runs", () => {
     expect((await t.run((ctx) => ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", "claude:laptop:root-run")).collect())).map((entry) => entry.seq)).toEqual([0, 1000]);
   });
 
+  // witness: the sweep walks a session's subagent files in name order, so a
+  // grandchild is routinely ingested before its own parent has been seen. The
+  // run's depth was forced to 1 in that case and every row was then refused as
+  // "invalid run row", which dead-lettered each depth-2-and-deeper run on a
+  // permanent 400 — one real session lost fifty runs that way.
+  it("lands a grandchild swept before its parent, and repairs the tree when the parent arrives", async () => {
+    const t = convexTest(schema, modules);
+    const grandchild = run({
+      runId: "claude:laptop:root-run/grandchild-agent", rootRunId: "claude:laptop:root-run",
+      parentRunId: "claude:laptop:root-run/middle-agent", depth: 2, kind: "subagent",
+      spawnedByToolUseId: "exact-tool-use",
+      file: { ...run().file, path: "C:/grandchild.jsonl" },
+    });
+    expect(await t.mutation(internal.runs.internalIngest, ingest(grandchild, [row(0, { depth: 2 })]) as never))
+      .toMatchObject({ ok: true, inserted: 1 });
+
+    // The second grandchild reads the placeholder its sibling created; before
+    // that placeholder carried a true position it derived depth 1 from it and
+    // was refused in turn.
+    const sibling = run({
+      runId: "claude:laptop:root-run/sibling-agent", rootRunId: "claude:laptop:root-run",
+      parentRunId: "claude:laptop:root-run/middle-agent", depth: 2, kind: "subagent",
+      spawnedByToolUseId: "exact-tool-use",
+      file: { ...run().file, path: "C:/sibling.jsonl" },
+    });
+    expect(await t.mutation(internal.runs.internalIngest, ingest(sibling, [row(0, { depth: 2 })]) as never))
+      .toMatchObject({ ok: true, inserted: 1 });
+
+    const middle = run({
+      runId: "claude:laptop:root-run/middle-agent", rootRunId: "claude:laptop:root-run",
+      parentRunId: "claude:laptop:root-run", depth: 1, kind: "subagent",
+      spawnedByToolUseId: "exact-tool-use",
+      file: { ...run().file, path: "C:/middle.jsonl" },
+    });
+    expect(await t.mutation(internal.runs.internalIngest, ingest(middle, [row(0, { depth: 1 })]) as never))
+      .toMatchObject({ ok: true, inserted: 1 });
+
+    for (const [runId, path] of [["claude:laptop:root-run/grandchild-agent", "C:/grandchild.jsonl"], ["claude:laptop:root-run/sibling-agent", "C:/sibling.jsonl"]] as const) {
+      const landed = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique());
+      expect(landed, runId).toMatchObject({ depth: 2, rootRunId: "claude:laptop:root-run", parentRunId: "claude:laptop:root-run/middle-agent" });
+      expect(landed?.file.path).toBe(path);
+    }
+  });
+
   it("refuses malformed identifiers, numeric facts, and child edges before writes", async () => {
     const t = convexTest(schema, modules);
     expect(await t.mutation(internal.runs.internalIngest, ingest(run({ runId: "not-a-run" })) as never)).toEqual({ ok: false, reason: "invalid run record" });
     expect(await t.mutation(internal.runs.internalIngest, ingest(run({ startedAt: -1 })) as never)).toEqual({ ok: false, reason: "invalid run record" });
     expect(await t.mutation(internal.runs.internalIngest, ingest(run(), [], [child("claude:laptop:child-run", "claude:laptop:not-root", "claude:laptop:root-run", 1)]) as never)).toEqual({ ok: false, reason: "invalid child edge" });
     expect(await t.run((ctx) => ctx.db.query("runs").collect())).toEqual([]);
+  });
+
+  it("takes a Workflow's agent as an ordinary child with no spawning tool-use id", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.runs.internalIngest, ingest(run()) as never);
+    // The Workflow sidecar carries no toolUseId, so the link is honestly
+    // unknown; the workflow it belongs to is on the run's context instead.
+    const agent = run({
+      runId: "claude:laptop:root-run/a27aa4b9a7caecc56", parentRunId: "claude:laptop:root-run", depth: 1, linkKnown: false,
+      kind: "subagent", origin: "workflow",
+      context: { layersKnown: false, layersGiven: [], layersDenied: [], skillsOffered: [], skillsUsed: [], tools: [], hooks: [], workflowId: "wf_abc" },
+    });
+    expect(await t.mutation(internal.runs.internalIngest, ingest(agent, [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
+    const stored = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run/a27aa4b9a7caecc56")).unique());
+    expect(stored).toMatchObject({ depth: 1, parentRunId: "claude:laptop:root-run", origin: "workflow", linkKnown: false });
+    expect(stored?.spawnedByToolUseId).toBeUndefined();
+    expect(stored?.context?.workflowId).toBe("wf_abc");
   });
 
   it("stores mode only for session runs", async () => {
@@ -634,7 +695,7 @@ describe("runs: eviction", () => {
     const t = convexTest(schema, modules);
     const now = Date.now();
     const runId = await seedEvictable(t, now);
-    await t.run((ctx) => ctx.db.insert("runLabels", { runId, source: "ruling", actor: "tom", polarity: "good", meaning: "kept the record", judgment: true, at: now }));
+    await t.run((ctx) => ctx.db.insert("runLabels", { runId, source: "ruling", actor: "tom", polarity: "good", meaning: "kept the record", judgment: true, ref: "ruling:evict-test", at: now }));
     expect(await transcript(t, runId)).toEqual({ rows: 450, chunks: 4, labels: 1 });
 
     await tick(t);
@@ -708,5 +769,71 @@ describe("runs: eviction", () => {
     expect(await t.mutation(internal.runs.internalEvictTick, {})).toEqual({ ok: true, skipped: "not the eviction hour" });
     expect((await transcript(t, runId)).rows).toBe(3);
     expect(await evictedEvents(t)).toEqual([]);
+  });
+});
+
+describe("runs.roots", () => {
+  async function root(t: ReturnType<typeof convexTest>, runId: string, host: "laptop" | "box", startedAt: number) {
+    expect(await t.mutation(internal.runs.internalIngest, ingest(run({ runId, rootRunId: runId, host, startedAt }), [], []) as never)).toMatchObject({ ok: true });
+  }
+
+  it("lists roots and never their children", async () => {
+    const t = convexTest(schema, modules);
+    const parent = "claude:laptop:root-run";
+    await t.mutation(internal.runs.internalIngest, ingest(run(), [], [child("claude:laptop:child-run", parent, parent, 1)]) as never);
+    const viewer = await withTom(t);
+    expect((await viewer.query(api.runs.roots, {})).map((entry) => entry.runId)).toEqual([parent]);
+  });
+
+  it("merges both hosts newest first", async () => {
+    const t = convexTest(schema, modules);
+    await root(t, "claude:laptop:laptop-old", "laptop", 10);
+    await root(t, "claude:box:box-newer", "box", 20);
+    await root(t, "claude:laptop:laptop-new", "laptop", 30);
+    await root(t, "claude:box:box-oldest", "box", 5);
+    const viewer = await withTom(t);
+    expect((await viewer.query(api.runs.roots, {})).map((entry) => entry.runId)).toEqual([
+      "claude:laptop:laptop-new", "claude:box:box-newer", "claude:laptop:laptop-old", "claude:box:box-oldest",
+    ]);
+  });
+
+  it("breaks a same-millisecond tie on runId", async () => {
+    const t = convexTest(schema, modules);
+    await root(t, "claude:laptop:tie-bravo", "laptop", 7);
+    await root(t, "claude:box:tie-alpha", "box", 7);
+    await root(t, "claude:laptop:tie-later", "laptop", 8);
+    const viewer = await withTom(t);
+    expect((await viewer.query(api.runs.roots, {})).map((entry) => entry.runId)).toEqual([
+      "claude:laptop:tie-later", "claude:box:tie-alpha", "claude:laptop:tie-bravo",
+    ]);
+  });
+
+  it("narrows to one host", async () => {
+    const t = convexTest(schema, modules);
+    await root(t, "claude:laptop:laptop-one", "laptop", 10);
+    await root(t, "claude:box:box-run-one", "box", 20);
+    const viewer = await withTom(t);
+    expect((await viewer.query(api.runs.roots, { host: "box" })).map((entry) => entry.runId)).toEqual(["claude:box:box-run-one"]);
+    expect((await viewer.query(api.runs.roots, { host: "laptop" })).map((entry) => entry.runId)).toEqual(["claude:laptop:laptop-one"]);
+  });
+
+  it("caps the merged result and refuses a limit outside 1..500", async () => {
+    const t = convexTest(schema, modules);
+    await root(t, "claude:laptop:laptop-old", "laptop", 10);
+    await root(t, "claude:box:box-newest", "box", 30);
+    await root(t, "claude:laptop:laptop-mid", "laptop", 20);
+    const viewer = await withTom(t);
+    expect((await viewer.query(api.runs.roots, { limit: 2 })).map((entry) => entry.runId)).toEqual([
+      "claude:box:box-newest", "claude:laptop:laptop-mid",
+    ]);
+    await expect(viewer.query(api.runs.roots, { limit: 0 })).rejects.toThrow();
+    await expect(viewer.query(api.runs.roots, { limit: 501 })).rejects.toThrow();
+  });
+
+  it("denies the reader without Tom identity", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.runs.internalIngest, ingest() as never);
+    const stranger = t.withIdentity({ subject: "someone-else" });
+    await expect(stranger.query(api.runs.roots, {})).rejects.toThrow();
   });
 });

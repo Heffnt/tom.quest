@@ -4,6 +4,7 @@ import type { Doc } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { DAY_MS } from "./ttsShared";
 import { MERGE } from "./ttsMerge";
+import { SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { logEvent } from "./tts";
 
 export const DELEGATE_DECISION = "delegate-decision";
@@ -67,6 +68,14 @@ const ASK_ARGS = {
   model: v.string(),
   ms: v.number(),
   promptSha: v.string(),
+  // THE RUN THAT TOOK THIS DECISION — the delegate run itself, so an objection
+  // of Tom's in #tts-decisions can be scored against the output he objected to
+  // (convex/runLabels.ts internalLabelFromObjection reads it back off this
+  // row's data). `data` is v.any(), so this is not a schema change, exactly as
+  // the objectionAskIds note on tts.internalMarkDigestSent says of its own
+  // field. A caller that passes no token stores none: an unregistered
+  // delegate call carries no run, and the absence is never inferred into one.
+  runToken: v.optional(v.string()),
 };
 
 type AskData = {
@@ -85,6 +94,7 @@ type AskData = {
   model: string;
   ms: number;
   promptSha: string;
+  runToken?: string;
 };
 
 /** Record the completed box-side delegate call. This does not call a model:
@@ -223,7 +233,10 @@ export const internalRecordDelegateObjection = internalMutation({
     // The thing objected to is a delegate decision, OR a merge: both are
     // reported in the objection list and both carry a #tts-decisions thread,
     // so both accept a "revert" (convex/ttsMerge.ts). A merge's askId is its
-    // own `<repo>:<sha>` key.
+    // own `<repo>:<sha>` key. A simplification proposal is the third for the
+    // same reason — the weekly pass reports each line it means to remove in
+    // that channel and gives it a thread — and its askId is its own
+    // `simplify:<id>` key (convex/ttsNightly.ts).
     const subject =
       (await ctx.db
         .query("dtsEvents")
@@ -232,8 +245,26 @@ export const internalRecordDelegateObjection = internalMutation({
       (await ctx.db
         .query("dtsEvents")
         .withIndex("by_kind_key", (q) => q.eq("kind", MERGE).eq("key", args.askId))
+        .first()) ??
+      (await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", SIMPLIFY_PROPOSAL).eq("key", args.askId))
         .first());
     if (!subject) throw new Error(`Delegate decision not found: ${args.askId}`);
-    return await logEvent(ctx, DELEGATE_OBJECTION, subject.todoId, args, args.askId);
+    const eventId = await logEvent(ctx, DELEGATE_OBJECTION, subject.todoId, args, args.askId);
+    // AN OBJECTION IS A JUDGMENT ABOUT THE RUN THAT TOOK THE DECISION, and the
+    // label writer resolves it the same way this handler just resolved the
+    // subject: the decision row (or the merge row) carries the run's token.
+    //
+    // Scheduled rather than awaited, for the reason insertRuling gives: the
+    // objection is the fact. A decision from before runs were registered
+    // carries no token, and an unlinkable label must not roll back an
+    // objection Tom typed into Slack — Slack has already been answered 200 and
+    // will not deliver the reply again.
+    await ctx.scheduler.runAfter(0, internal.runLabels.internalLabelFromObjection, {
+      eventId,
+      askId: args.askId,
+    });
+    return eventId;
   },
 });

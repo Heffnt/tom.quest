@@ -1,5 +1,5 @@
 // nightly.mjs — the nightly job (the lifeos update, phase 4). Runs at 4:00
-// a.m. New York, before the 5 a.m. digest, and does eight things in order,
+// a.m. New York, before the 5 a.m. digest, and does nine things in order,
 // each one recording a "nightly-failure" dtsEvents row if it fails and then
 // letting the next one run:
 //
@@ -8,7 +8,15 @@
 //      prelude at all, and records the counts. FIRST, and OUTSIDE the lock:
 //      it reads no checkout, and it must compare the timeline as tonight's
 //      post found it, not as tonight's post left it.
-//   2. snapshot — copies every Convex table (the six auth tables excepted)
+//   2. golden-export — runs scripts/export-golden.mjs --source labels against
+//      a tom.quest cache clone, turning every judgment Tom wrote about a
+//      registered run into an eval case under evals/golden/runs/. NIGHTLY and
+//      not weekly: Convex evicts a run's output after thirty days and a label
+//      whose run is gone is unbuildable, so a weekly pass would lose cases to a
+//      window nothing can reopen. It writes no WikiTom file and takes no lock,
+//      and it NEVER pushes main from this box — see goldenExportStep for the
+//      landing seam.
+//   3. snapshot — copies every Convex table (the six auth tables excepted)
 //      into the WikiTom checkout at tts/snapshot/, one JSON-lines file per
 //      table, deterministic, written only where the bytes changed, every
 //      string value through the credential filter first (redactRow). A
@@ -16,27 +24,27 @@
 //      fixes which rows are in it (those created before the job started),
 //      not their state — a row updated between two pages is exported in its
 //      later state, and two tables read minutes apart can disagree.
-//   3. learning — applies Tom's objections from the digest thread (the
+//   4. learning — applies Tom's objections from the digest thread (the
 //      inverse of each named change, or a row saying why not), then reads
 //      what he did since the last learning run (his session turns with the
 //      agent's replies around them, his Slack replies, his rulings), makes
 //      one model call over the model-of-tom pages, and applies the lines it
 //      proposes that the rules allow — one "learning-change" row each, with
 //      the commit, once the push has made it. See learningStep.
-//   4. runs — pages the verified run manifest from Convex and appends its
+//   5. runs — pages the verified run manifest from Convex and appends its
 //      already-normalized entries to WikiTom's monthly manifests. Transcript
 //      bytes stay in the configured object store rather than entering git.
-//   5. repo-learning — reads the legacy WikiTom session transcripts still
+//   6. repo-learning — reads the legacy WikiTom session transcripts still
 //      available to this established synthesis step for what those sessions
 //      learned about the REPOSITORIES they worked in,
 //      and writes the evidence entries under model-of-tom/evidence/repos/.
 //      The synthesis lines themselves live in each repo's own AGENTS.md, so
 //      what lands here is proposals and evidence, never the rule files.
-//   6. push — one commit per step that changed something, plus whatever an
+//   7. push — one commit per step that changed something, plus whatever an
 //      earlier run left modified, `git pull --rebase`, `git push` over the
 //      github.com-wikitom SSH alias. A refused pull or push is a failure row
 //      and the commits stay local for the next night; nothing is retried.
-//   7. post — reads the model-of-tom files from the git object at HEAD (the
+//   8. post — reads the model-of-tom files from the git object at HEAD (the
 //      stable operate, write, and know layers; each area page whole except
 //      for YAML frontmatter) and posts them with the commit hash and time to
 //      POST /tts/model-of-tom — whether or not the push succeeded, so every
@@ -44,16 +52,16 @@
 //      commit is on GitHub yet. A named file missing or empty is a failure
 //      row and NO post: the store is replaced whole, so a partial post would
 //      drop that file from every prompt.
-//   8. repo-rules — reads a DIFFERENT checkout (tom.quest, not WikiTom) for
+//   9. repo-rules — reads a DIFFERENT checkout (tom.quest, not WikiTom) for
 //      its nested AGENTS.md bodies and posts them to POST /tts/repo-rules, so
 //      the context assembler — which runs inside Convex and has no filesystem
 //      — can expand them for a session's own directories. LAST, and outside
 //      the lock, for the mirror of delivery's reason: it touches nothing the
 //      WikiTom writers wrote, so a night that lost the lock still runs it.
 //
-// Steps 2 to 6 write the WikiTom checkout and run under
+// Steps 3 to 7 write the WikiTom checkout and run under
 // /var/lock/tts-wikitom.lock, taken once around them; the post reads the HEAD
-// they left, so it is inside the same lock. Steps 1 and 8 are outside it
+// they left, so it is inside the same lock. Steps 1, 2 and 9 are outside it
 // (CHECKOUTLESS_STEPS), and a box with no WikiTom clone at all still runs
 // them.
 //
@@ -113,6 +121,7 @@ import {
   writeArchived,
 } from "./session-archive.mjs";
 import { loadEnv, convexFetch, nyHour, runClaude, extractJsonObject, clip } from "./tts-lib.mjs";
+import { cacheRepoDir } from "./tts-code-lib.mjs";
 import {
   enclosingHeadings,
   isIsoDay,
@@ -258,6 +267,10 @@ function git(dir, ...args) {
 //                      each session got. The [before-snapshot] slot — anything
 //                      else of that shape goes here too, AHEAD of snapshot and
 //                      OUTSIDE the lock.
+//   golden-export      that slot's other occupant: writes a tom.quest cache
+//                      clone, not this checkout, and runs before learning so
+//                      the night's labels are eval cases before the night's
+//                      learning reads the same record.
 //   snapshot           writes tts/snapshot/
 //   learning           writes model-of-tom/ and model-of-tom/evidence/
 //   sessions           writes sessions/ — the archived transcripts
@@ -272,7 +285,7 @@ function git(dir, ...args) {
 // repo-learning runs AFTER sessions because it reads the transcripts that
 // step archives, and BEFORE push so its writes ride the night's commit.
 // NOTHING here is reordered without moving the comment with it.
-const STEPS = ["delivery", "snapshot", "learning", "runs", "repo-learning", "push", "post", "repo-rules"];
+const STEPS = ["delivery", "golden-export", "snapshot", "learning", "runs", "repo-learning", "push", "post", "repo-rules"];
 // The repo checkouts whose AGENTS.md files ride into Convex beside the
 // model-of-tom layers (the dynamic-context round). Convex has no filesystem, so
 // the assembler cannot read a checkout at all — a run with no checkout of its
@@ -282,20 +295,16 @@ const STEPS = ["delivery", "snapshot", "learning", "runs", "repo-learning", "pus
 // The box clones tom.quest to /root (worker/setup.sh runs from there); the
 // laptop's copy is where scripts/laptop-setup.mjs puts it. WikiTom is the vault
 // and carries no AGENTS.md, so it is not listed.
-const REPO_CHECKOUTS = [
-  {
-    repo: "tom.quest",
-    dir: process.env.TOM_QUEST_DIR
-      || (process.platform === "win32" ? "C:/Users/heffn/Desktop/tom.quest" : "/root/tom.quest"),
-  },
-];
+export const TOM_QUEST_DIR = process.env.TOM_QUEST_DIR
+  || (process.platform === "win32" ? "C:/Users/heffn/Desktop/tom.quest" : "/root/tom.quest");
+const REPO_CHECKOUTS = [{ repo: "tom.quest", dir: TOM_QUEST_DIR }];
 // The five that write the WikiTom checkout. The post runs under the same
 // lock after them (see main), reading what they left.
 const LOCKED_STEPS = ["snapshot", "learning", "runs", "repo-learning", "push"];
 // The steps that never read the WikiTom checkout: delivery asks Convex what it
-// delivered, repo-rules reads a different repo entirely. A night with no
-// WikiTom checkout still runs these two — see main.
-const CHECKOUTLESS_STEPS = ["delivery", "repo-rules"];
+// delivered, golden-export and repo-rules read a different repo entirely. A
+// night with no WikiTom checkout still runs these three — see main.
+const CHECKOUTLESS_STEPS = ["delivery", "golden-export", "repo-rules"];
 // ── Small pure helpers (tested in nightly.test.mjs) ──────────────────────────
 
 /**
@@ -2259,6 +2268,73 @@ export async function postStep(run, deps = {}) {
   return { commit: prelude.commit, pushed: prelude.pushed, files: files.map((f) => f.path) };
 }
 
+// ── the golden export ────────────────────────────────────────────────────────
+// One run of scripts/export-golden.mjs --source labels, turning every judgment
+// Tom wrote about a registered run into an eval case under evals/golden/runs/.
+//
+// IT RUNS NIGHTLY AND NOT WEEKLY, and that is the whole reason it is a step in
+// this job rather than in Friday's. A label names a run, and Convex evicts a
+// run's stored output after thirty days; a label whose run has been evicted is
+// UNBUILDABLE, and phase 7 deliberately does not reach back into the object
+// store to refetch one. A weekly pass would therefore lose cases to a window
+// nothing can reopen — a nightly one never sees the window at all.
+//
+// IT NEVER PUSHES MAIN FROM THIS BOX. evals/golden/** is a watched path, so the
+// export lands on a branch and goes through the evals gate like every other
+// change — which is exactly the property wanted: a case the exporter invented
+// wrongly is caught by the same check it would gate.
+//
+// THE LANDING IS A SEAM AND IS NAMED AS ONE. Every other repository write in
+// this job goes to the WikiTom checkout, under the WikiTom writer lock, through
+// commitTree and syncRemote — helpers that stage WikiTom's own directories and
+// push the branch already checked out. None of that is a branch-and-open-a-PR
+// mechanism, and none of it points at tom.quest. So the export is made, its
+// counts are reported, and `deps.land` is the one call a caller supplies to put
+// it on a branch; with no lander the files sit in the disposable cache clone,
+// the result says `landed: false`, and NOTHING is committed or pushed anywhere.
+//
+// The clone is the box's established tom.quest checkout mechanism — the shallow
+// cache clone evals.mjs takes its worktrees from (tts-code-lib.mjs
+// cacheRepoDir), rebuilt from origin on every use — NOT /root/tom.quest, which
+// is the checkout this box runs from and must not be left dirty by a cron job.
+export const GOLDEN_EXPORT_SCRIPT = "scripts/export-golden.mjs";
+/** Where `--source labels` writes, one level below the rulings set so
+ * worker/jobs/evals.mjs loadGolden discovers it with no edit (the exporter's
+ * own RUNS_SUBDIR). */
+export const GOLDEN_RUNS_DIR = "evals/golden/runs";
+
+export async function goldenExportStep(run, deps = {}) {
+  const checkout = deps.checkout ?? (() => cacheRepoDir(run.env, { name: "tom.quest", owner: "Heffnt", branch: "main" }));
+  const exec = deps.exec ?? ((dir, args) =>
+    execFileSync(process.execPath, args, {
+      cwd: dir,
+      encoding: "utf8",
+      // stdin closed (cron has no terminal); stderr to the cron log, where the
+      // exporter's own refusals are diagnosable. The credentials ride in the
+      // child's environment and are never an argument, so nothing secret can
+      // reach a process listing or this log.
+      stdio: ["ignore", "pipe", "inherit"],
+      env: { ...process.env, ...run.env },
+    }));
+  const land = deps.land ?? null;
+  const dir = checkout();
+  const output = String(exec(dir, [GOLDEN_EXPORT_SCRIPT, "--source", "labels"]) ?? "");
+  // The exporter's own last line, kept verbatim rather than re-derived: it
+  // already counts what it built, what it could not build and what it dropped,
+  // and a second count here would be a second definition of "an item".
+  const summary = output.split("\n").map((l) => l.trim()).filter((l) => l !== "").at(-1) ?? "";
+  const outDir = path.join(dir, GOLDEN_RUNS_DIR);
+  const items = fs.existsSync(outDir) ? fs.readdirSync(outDir).filter((n) => n.endsWith(".json")).length : 0;
+  const landed = land === null ? false : land({ dir, paths: [GOLDEN_RUNS_DIR], day: run.day }) === true;
+  console.log(
+    `[nightly] golden-export: ${items} case(s) in ${GOLDEN_RUNS_DIR} — ${summary || "the exporter said nothing"}; ` +
+      (landed
+        ? "landed on a branch"
+        : "NOT landed: this job has no tom.quest branch-and-commit helper, so the files stay in the cache clone"),
+  );
+  return { dir, items, summary, landed };
+}
+
 // This check never touches the checkout, so it runs outside the WikiTom
 // writer lock and before tonight's post can enter the commit timeline.
 export async function deliveryStep(run, deps = {}) {
@@ -2373,6 +2449,17 @@ async function main() {
       await recordFailure(run, "delivery", err);
     }
   }
+  // Here, for delivery's reason and one of its own: it writes a tom.quest cache
+  // clone, not the WikiTom checkout, so it neither needs the lock nor should
+  // hold it — and it comes before learning, which is the ordering the night's
+  // labels-to-cases path asks for.
+  if (only.includes("golden-export")) {
+    try {
+      run.results["golden-export"] = await goldenExportStep(run);
+    } catch (err) {
+      await recordFailure(run, "golden-export", err);
+    }
+  }
   // No checkout is a bad night, not a silent one: the digest reads these two
   // rows, and a run that threw here wrote neither — the one morning Tom would
   // see nothing at all is the morning the checkout is gone.
@@ -2400,6 +2487,7 @@ async function main() {
   }
   const steps = {
     delivery: deliveryStep,
+    "golden-export": goldenExportStep,
     snapshot: snapshotStep,
     learning: learningStep,
     runs: runsStep,
@@ -2466,6 +2554,16 @@ async function recordSummary(run, only) {
       : null,
     runs: run.results.runs ?? null,
     delivery: run.results.delivery ?? null,
+    // The clone path is not carried: it is a cache directory on this box and
+    // means nothing to a reader of the record. `landed: false` is the fact the
+    // digest and the weekly gather can act on.
+    goldenExport: run.results["golden-export"]
+      ? {
+          items: run.results["golden-export"].items,
+          summary: run.results["golden-export"].summary,
+          landed: run.results["golden-export"].landed,
+        }
+      : null,
     learning: run.results.learning
       ? {
           changes: run.results.learning.changes,

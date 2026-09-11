@@ -4,6 +4,13 @@
 # picks it up on a cron tick and posts the run back. The box has no inbound
 # door, and this needs no access to it.
 name: Evals
+#
+# THIS `paths:` LIST AND scripts/evals-check.mjs's WATCHED_PATHS ARE ONE FACT
+# SPELLED TWICE, and they had drifted apart in both directions. They are now
+# the union of what either list thought was watched, in the same order, and
+# scripts/evals-check.test.mjs fails when they stop being identical. Union is
+# the safe direction: one unnecessary run costs a run, while an unwatched path
+# that changes the context silently is the failure the gate exists to prevent.
 on:
   pull_request:
     paths:
@@ -11,6 +18,7 @@ on:
       - "**/AGENTS.md"
       - "CLAUDE.md"
       - "**/CLAUDE.md"
+      - "model-of-tom/**"
       - "scripts/prelude.mjs"
       - "convex/ttsShared.ts"
       - "convex/claudeSessions.ts"
@@ -26,9 +34,20 @@ on:
 jobs:
   evals:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Above scripts/evals-check.mjs's own 75-minute wait (measured on PR #170:
+    # the box needed ~50 minutes for 29 items plus a clone and two worktrees).
+    # A job timeout below that would kill the check before its own deadline and
+    # report a job failure instead of the box's silence.
+    timeout-minutes: 85
     steps:
+      # FULL HISTORY, not the default depth of one. The check reads its own
+      # diff (`git diff BASE...HEAD`) to decide whether this branch owes a
+      # golden item, and a shallow clone has no merge base to diff from. That
+      # failure is answered with "unjudged", which denies the merge gate's
+      # evals arm — so a missing fetch-depth here reads as a branch that can
+      # never merge, with nothing on the log saying why.
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - run: node scripts/evals-check.mjs
@@ -39,3 +58,9 @@ jobs:
           SHA: ${{ github.event.pull_request.head.sha }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR: ${{ github.event.pull_request.number }}
+          # The body carries the `evals: no-item <reason>` escape hatch. It
+          # reaches the check as an ENVIRONMENT VALUE, never interpolated into
+          # the `run:` line: a pull-request body is text anybody can write, and
+          # expanded into a shell command it is a shell command anybody can
+          # write.
+          PR_BODY: ${{ github.event.pull_request.body }}

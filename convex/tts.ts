@@ -1372,10 +1372,18 @@ export const internalPrepareTodo = internalMutation({
     // when the todo has no dueAt yet, never an overwrite.
     dueAt: v.optional(v.number()),
     dateKind: v.optional(DATE_KIND),
+    // THE RUN THAT WROTE THE WRITE-UP. A ruling of Tom's on this todo is a
+    // judgment about the text he read on the page, and this token is the only
+    // honest edge back to the run that produced it (convex/runLabels.ts; the
+    // schema note on runs.regToken says why a time-window search over `runs`
+    // by todoId is wrong on the ordinary case). Absent is a supported value:
+    // an unregistered caller stamps nothing and a ruling on the row writes no
+    // label rather than a guessed one.
+    runToken: v.optional(v.string()),
   },
   handler: async (
     ctx,
-    { id, brief, entryAction, workDescription, readiness, dueAt, dateKind, evidence, groundUpExplanation, status },
+    { id, brief, entryAction, workDescription, readiness, dueAt, dateKind, evidence, groundUpExplanation, status, runToken },
   ) => {
     const normalized = ctx.db.normalizeId("dtsTodos", id);
     if (!normalized) throw new Error(`Unknown todo id: ${id}`);
@@ -1412,17 +1420,29 @@ export const internalPrepareTodo = internalMutation({
         patch.timingClass = "dated";
       }
     }
+    const written = [
+      patch.brief !== undefined && "brief",
+      patch.entryAction !== undefined && "entryAction",
+      patch.workDescription !== undefined && "workDescription",
+      patch.dueAt !== undefined && "dueAt",
+      patch.evidence !== undefined && "evidence",
+      patch.groundUpExplanation !== undefined && "groundUpExplanation",
+    ].filter(Boolean);
+    // THE STAMP FOLLOWS THE TEXT, and only the text. A call that wrote one of
+    // the prepared fields above produced what Tom reads on the page, and its
+    // run owns that text. A call that wrote NONE of them — the graph worker's
+    // bare `status: "done"`, which closes a row and says nothing — wrote no
+    // Tom-facing words, and stamping it would hand that run the credit (and
+    // the blame) for a write-up another run made: a ruling on the row would
+    // then be scored against the wrong output, which is the one failure the
+    // whole token mechanism exists to prevent.
+    if (runToken !== undefined && written.length > 0) {
+      patch.producedByRunToken = runToken;
+    }
     await ctx.db.patch(normalized, patch);
     await logEvent(ctx, "prepared", normalized, {
       readiness: patch.readiness,
-      fields: [
-        patch.brief !== undefined && "brief",
-        patch.entryAction !== undefined && "entryAction",
-        patch.workDescription !== undefined && "workDescription",
-        patch.dueAt !== undefined && "dueAt",
-        patch.evidence !== undefined && "evidence",
-        patch.groundUpExplanation !== undefined && "groundUpExplanation",
-      ].filter(Boolean),
+      fields: written,
     });
     // Completion runs LAST and through the ONE transition implementation
     // (applyStatusChange): a raw status patch would skip the kept-dates
@@ -1579,6 +1599,11 @@ export const internalStorePlanGraph = internalMutation({
     tasks: v.array(GRAPH_TASK),
     goalIds: v.optional(v.array(v.string())), // existing todos to bind as goals
     archive: v.optional(v.boolean()),
+    // THE PLANNER RUN THAT WROTE THIS GRAPH. Tom rules on the BATCH, so the
+    // batch row is where the edge back to the run belongs (convex/runLabels.ts
+    // tokenForRulingSubject reads it there). Absent is a supported value and
+    // is never inferred.
+    runToken: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const now = Date.now();
@@ -1941,12 +1966,23 @@ export const internalStorePlanGraph = internalMutation({
         needs: batch.needs,
         repos: batch.repos,
       };
+      // THE TOKEN IS DELIBERATELY OUT OF THE COMPARISON above and rides the
+      // patch instead: the run that REWROTE the graph owns the text Tom will
+      // read next, but an unchanged re-post must still write nothing. Compared
+      // as a field, every run of the planner would differ from the stored row
+      // by its token alone, bump updatedAt, and re-push every open client for
+      // a graph nobody changed.
       if (JSON.stringify(projected) !== JSON.stringify(stored)) {
-        await ctx.db.patch(batch._id, { ...projected, updatedAt: now });
+        await ctx.db.patch(batch._id, {
+          ...projected,
+          ...(args.runToken === undefined ? {} : { producedByRunToken: args.runToken }),
+          updatedAt: now,
+        });
       }
     } else {
       result.batchId = await ctx.db.insert("batches", {
         statement,
+        ...(args.runToken === undefined ? {} : { producedByRunToken: args.runToken }),
         groundUpExplanation: args.groundUpExplanation,
         needs: batchNeeds,
         repos:
@@ -2505,10 +2541,27 @@ export const internalMarkDigestSent = internalMutation({
     // The deterministic inputs the message was written from — stored so the
     // transcript shows what the writer was given, not only what it wrote.
     facts: v.optional(v.any()),
+    // THE RUN THAT WROTE THE MORNING — the Fable run of
+    // worker/jobs/write-slack.mjs — and the ts of the message it was posted
+    // as. `data` is v.any(), so neither is a schema change, exactly as the
+    // objectionAskIds note above says of its own field.
+    //
+    // The pair is what makes a reaction on the morning scorable: `slackTs` is
+    // what a reaction event is resolved against (convex/runLabels.ts
+    // internalLabelFromReaction), and `runToken` is the edge from this row to
+    // the run whose output the reaction judged.
+    //
+    // A MORNING THE MODEL PATH TIMED OUT has writtenBy "template" and NO
+    // token, and a reaction on it writes no label. That is right, not a gap:
+    // the plain template is not a run's output, and scoring the model on a
+    // message it did not write would be a lie in the corpus every future merge
+    // is measured against.
+    runToken: v.optional(v.string()),
+    slackTs: v.optional(v.string()),
   },
   handler: async (
     ctx,
-    { day, surfacedTodoIds, windowEnd, truncated, objectionAskIds, writtenBy, facts },
+    { day, surfacedTodoIds, windowEnd, truncated, objectionAskIds, writtenBy, facts, runToken, slackTs },
   ) => {
     for (const todoId of surfacedTodoIds) {
       await logEvent(ctx, "surfaced", todoId, { via: "digest", day });
@@ -2525,6 +2578,8 @@ export const internalMarkDigestSent = internalMutation({
       objectionAskIds,
       writtenBy,
       facts,
+      runToken,
+      slackTs,
     });
   },
 });
