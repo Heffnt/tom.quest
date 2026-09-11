@@ -10,9 +10,24 @@ each; `setup.sh` writes exactly this list into `/etc/cron.d/tts`:
 4. **poll-outlook** (no cron line yet) — the Outlook counterpart of poll-gmail, a skeleton until the `OUTLOOK_*` credential exists; see "The pollers".
 5. **apply-time-notes** (every 2 min) — turns each time note Tom wrote into concrete date and block changes.
 6. **plan-graphs** (every 30 min) — the planner: prepares every unprepared life todo, briefs every changed or revise-ruled code todo, then plans the graph inside every batch; see "The planner".
-7. **nightly** (4:00 a.m. New York) — copies the Convex record and this box's session files into WikiTom, runs the learning step, pushes, and posts the model-of-tom files back to Convex; see "The nightly job".
+7. **nightly** (4:00 a.m. New York) — copies the Convex record and the verified run manifest into WikiTom, runs the learning step, pushes, and posts the model-of-tom files back to Convex; see "The nightly job".
 8. **reingest-overflow** (hourly) — the session daemon's helper: finishes storing the transcript payloads the daemon could not (`worker/session-host/`).
 9. **weekly** (4:00 a.m. New York, Fridays) — gathers the week's facts from Convex, makes one model call, commits the agenda file to the WikiTom checkout, and opens the one `weekly` session (`worker/jobs/weekly.mjs`).
+10. **runs-sweep** (every 2 min, plus a daily full walk) — incrementally parses Claude and Codex run files, stores their bytes and ingests their rows into Convex.
+11. **runs-compare** (every 10 min) — asks Convex to compare eligible daemon rows with their file-derived shadows and maintains one standing failure when they differ.
+
+## Run files
+
+`worker/runs/sweep.mjs` is the one run-file ingestion path. Hooks hand it an
+exact file after each turn or ending; cron provides recovery. Cursor and queue
+state live under `/var/cache/tts/runs`, while verified compressed bytes live
+behind the configured `RUN_STORE_BACKEND`. Registration sidecars preserve the
+launcher-only origin, requested model and supplied context without changing a
+CLI transcript. `RUN_HOST` is required and never guessed.
+
+`worker/jobs/runs-compare.mjs` sends no transcript text over the comparison
+door. Convex already holds both row sets, returns counts and digests, and flips
+only clean ended sessions to file-derived rows.
 
 Beside them runs the **session daemon** (`worker/session-host/`, a systemd
 service): every interactive session Tom opens and every autonomous mission
@@ -167,32 +182,14 @@ the `HEAD` the four left:
    the step in the job says what the full step will do (proposed lines with
    evidence, one `learning-change` row each, the digest listing them, the
    inverse applied on an objection).
-3. **sessions** — every Codex rollout (`/root/.codex/sessions/YYYY/MM/DD/`)
-   and Claude SDK session file (`/root/.claude-accounts/<account>/projects/`;
-   the `active` symlink is skipped) whose content the manifests under
-   `sessions/` do not already hold, archived in phase 1's layout:
-   `sessions/YYYY/MM/DD/claude-<id>/session.jsonl.gz` with `children/` and
-   `attachments/` beside it, `codex-<thread>/rollout.jsonl.gz` with its
-   subagent threads under `children/<thread>.jsonl.gz`, a per-account subdir
-   when both Max accounts hold one session id. Dates come from the files'
-   own timestamps (mtime when there is none); one line per file is appended
-   to `sessions/manifest-box-<day>.jsonl`, phase 1's columns. A file that
-   grew since it was archived is archived again. This is the sweep behind
-   the session-end archive: the session-host daemon archives a session's
-   own files the moment it ends, through the same function
-   (`worker/jobs/session-archive.mjs`), under the same lock — so the
-   transcript is in the checkout hours before the sweep, which then only
-   picks up what grew after. Each file is written atomically: staged under
-   `sessions/.staging/<id>/`, renamed into place, and its manifest line
-   appended last, so a crash never leaves a manifest line for bytes that
-   are not there. Every `.jsonl` goes through the same credential filter the
-   snapshot's rows do (`worker/session-host/redact.mjs`) before it is
-   gzipped — a session transcript is where a printed token actually appears
-   — while the manifest's `sha256` and `raw_bytes` stay the source file's,
-   so "has this file grown since?" keeps comparing the box's bytes to the
-   box's bytes.
+3. **runs** — pages `GET /runs/manifest` from the latest recorded ingest and
+   appends one immutable line per verified file version to
+   `runs/manifest-<YYYY-MM>.jsonl`. No transcript bytes enter WikiTom: the
+   object store holds them. Existing `sessions/` archives and manifests remain
+   readable legacy data; `session-archive.mjs` retains their reader for the
+   later backlog import, but neither nightly nor the daemon writes them now.
 4. **push** — one commit per step that changed something, and then, always,
-   one more for anything still modified under `tts/snapshot/` and `sessions/`
+   one more for anything still modified under `tts/snapshot/`, `runs/`, and legacy `sessions/`
    — what a run that died part-way left behind, which `git pull --rebase`
    would otherwise refuse every night after. A rebase an earlier run left in
    progress is aborted before the run's first write (aborting resets the tree
@@ -377,9 +374,10 @@ full-key-only.
 
 ## The no-state rule
 
-**The Jarvis Box owns no durable state.** Everything that matters lives in Convex
-(and, for code todos, in the CMT repo itself). The local files with memory
-are all harmless to lose:
+**The Jarvis Box owns no durable state.** Convex holds the run index and the
+configured object store holds verified compressed run bytes (and, for code
+todos, CMT holds the code record). The local files with memory are all
+harmless to lose:
 
 - `/var/lib/tts/dump-cursor` — Slack poll cursor; losing it re-offers up to
   24 hours of `#dump` messages, each deduped server-side on its ts, so the
@@ -397,9 +395,12 @@ are all harmless to lose:
   losing it re-briefs everything once (the Convex POST upserts).
 - `/var/cache/tts/` — rebuildable caches: the shallow CMT clone the brief
   pass reads, the session daemon's per-session workdirs, the nightly job's
-  snapshot staging directory.
+  snapshot staging directory, and run sweep cursors/queues. Any still-present
+  CLI run files are rediscovered by the full sweep; already-uploaded bytes are
+  recovered through the object store and their Convex index.
 - `/root/wikitom` — the WikiTom checkout the nightly job writes. Everything
-  in it is pushed, or reproducible from Convex and the session files, except
+  in it is pushed, or reproducible from Convex and the object-backed run
+  manifest, except
   commits a refused push left local — those are lost with the box, and the
   next night's run makes them again from the same sources.
 
@@ -575,6 +576,8 @@ node /opt/tts/apply-time-notes.mjs        # apply pending time notes now
 node /opt/tts/plan-graphs.mjs             # prepare, brief, plan — now
 node /opt/tts/plan-graphs.mjs --force     # also re-prepare and re-brief EVERYTHING
 node /opt/tts/nightly.mjs --force         # the nightly job, every step, now
+node /opt/tts/runs/sweep.mjs --full       # recover every changed run file
+node /opt/tts/runs-compare.mjs            # compare eligible shadow sessions
 node /opt/tts/weekly.mjs --force          # the weekly job, now (refuses a rerun)
 node /opt/tts/weekly.mjs --force --overwrite   # rerun the same day on purpose
 ```
@@ -587,5 +590,5 @@ it at both 08:00 and 09:00 UTC and the guard keeps exactly the slot that is
 
 Cron output: one `/var/log/tts/<job>.log` per job (poll-dump, poll-gmail,
 poll-canvas, apply-time-notes, plan-graphs, nightly, weekly,
-reingest-overflow),
+reingest-overflow, runs-sweep, runs-compare),
 truncated monthly by cron — they are convenience, not state.

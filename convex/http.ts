@@ -2851,6 +2851,83 @@ const runsOverflowStamp = httpAction(async (ctx, request) => {
 });
 http.route({ path: "/runs/overflow/stamp", method: "POST", handler: runsOverflowStamp });
 
+// The comparison reads both row sets inside Convex and returns counts and
+// digests only. Transcript text never crosses this route.
+const runsCompare = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try { body = await request.json(); } catch { return jsonResponse(400, { error: "invalid JSON body" }); }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (b.sessionId !== undefined && (typeof b.sessionId !== "string" || b.sessionId === "")) return jsonResponse(400, { error: "sessionId must be a non-empty string" });
+  try {
+    const compareAllPages = async (sessionId: Id<"claudeSessions">) => {
+      let state: Record<string, unknown> | undefined;
+      for (;;) {
+        const result = await ctx.runMutation(internal.runs.internalShadowCompare, {
+          sessionId,
+          ...(state === undefined ? {} : { state }),
+        } as never);
+        if (result.complete) return result;
+        state = result.state;
+      }
+    };
+    if (typeof b.sessionId === "string") {
+      const result = await compareAllPages(b.sessionId as Id<"claudeSessions">);
+      return jsonResponse(200, result);
+    }
+    const comparisons = [];
+    for (const status of ["ended", "failed"] as const) {
+      let cursor: string | null = null;
+      for (;;) {
+        const page: {
+          eligible: Array<{ sessionId: Id<"claudeSessions">; runId: string }>;
+          isDone: boolean;
+          continueCursor: string | null;
+        } = await ctx.runQuery(internal.runs.internalEligibleComparisons, {
+          status,
+          paginationOpts: { cursor, numItems: 100 },
+        });
+        for (const session of page.eligible) comparisons.push(await compareAllPages(session.sessionId));
+        if (page.isDone) break;
+        cursor = page.continueCursor;
+      }
+    }
+    return jsonResponse(200, { comparisons });
+  } catch {
+    return jsonResponse(400, { error: "run comparison rejected" });
+  }
+});
+http.route({ path: "/runs/compare", method: "POST", handler: runsCompare });
+
+// The WikiTom writer receives already-shaped manifest entries and an opaque
+// cursor. The full `(at, runId, fileVersion)` checkpoint makes equal-ms
+// versions retry-safe without dropping later lines at the same timestamp.
+const runsManifest = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  const url = new URL(request.url);
+  const sinceText = url.searchParams.get("since");
+  if (sinceText === null || sinceText === "") return jsonResponse(400, { error: "since required" });
+  const since = Number(sinceText);
+  if (!Number.isFinite(since) || since < 0) return jsonResponse(400, { error: "since (non-negative number) required" });
+  const afterRunId = url.searchParams.get("afterRunId") ?? undefined;
+  const afterFileVersion = url.searchParams.get("afterFileVersion") ?? undefined;
+  if ((afterRunId === undefined) !== (afterFileVersion === undefined)) return jsonResponse(400, { error: "manifest checkpoint requires runId and fileVersion together" });
+  try {
+    const result = await ctx.runQuery(internal.runs.internalManifest, {
+      since,
+      afterRunId,
+      afterFileVersion,
+      cursor: url.searchParams.get("cursor") ?? undefined,
+    });
+    return jsonResponse(200, result);
+  } catch {
+    return jsonResponse(400, { error: "manifest page rejected" });
+  }
+});
+http.route({ path: "/runs/manifest", method: "GET", handler: runsManifest });
+
 // GET /sessions/transcript?sessionId=<id>&cursor=<opaque> — one page of a
 // session's finalized transcript, oldest first. The daemon walks it to write
 // .tts-transcript.md into a forked session's workspace before that session's

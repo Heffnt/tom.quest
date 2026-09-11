@@ -14,8 +14,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   STAGING_DIR,
+  appendRunManifest,
   archiveSessionFiles,
   firstLine,
+  latestRunManifestCursor,
+  readRunManifests,
   readManifests,
   sha256,
   writeArchived,
@@ -32,6 +35,42 @@ function tmp() {
 afterEach(() => {
   vi.restoreAllMocks();
   for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+});
+
+describe("run manifests", () => {
+  it("deduplicates file versions and checkpoints the complete equal-ms tuple", () => {
+    const checkout = tmp();
+    const entries = [
+      { at: 100, run_id: "claude:laptop:a", file_version: "version-a" },
+      { at: 100, run_id: "claude:laptop:a", file_version: "version-b" },
+      { at: 100, run_id: "claude:laptop:b", file_version: "version-a" },
+    ];
+    expect(appendRunManifest(checkout, entries)).toHaveLength(3);
+    expect(appendRunManifest(checkout, [entries[1], entries[2]])).toEqual([]);
+    expect(readRunManifests(path.join(checkout, "runs"))).toHaveLength(3);
+    expect(latestRunManifestCursor(checkout)).toEqual({ at: 100, runId: "claude:laptop:b", fileVersion: "version-a" });
+  });
+
+  it("preserves and seals a torn tail before appending the next complete page", () => {
+    const checkout = tmp();
+    const file = write(
+      checkout,
+      "runs/manifest-1970-01.jsonl",
+      `${JSON.stringify({ at: 100, run_id: "claude:laptop:good", file_version: "version-a" })}\n{"at":101,"run_id":"torn`,
+    );
+    const torn = fs.readFileSync(file, "utf8");
+    const next = { at: 102, run_id: "claude:laptop:next", file_version: "version-b" };
+
+    expect(appendRunManifest(checkout, [next, next])).toHaveLength(1);
+    const after = fs.readFileSync(file, "utf8");
+    expect(after.startsWith(`${torn}\n`)).toBe(true);
+    expect(after.endsWith(`${JSON.stringify(next)}\n`)).toBe(true);
+    expect(readRunManifests(path.join(checkout, "runs"))).toEqual([
+      { at: 100, run_id: "claude:laptop:good", file_version: "version-a" },
+      next,
+    ]);
+    expect(latestRunManifestCursor(checkout)).toEqual({ at: 102, runId: next.run_id, fileVersion: next.file_version });
+  });
 });
 
 function write(dir, rel, content) {

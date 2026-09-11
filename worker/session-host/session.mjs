@@ -42,17 +42,7 @@ import {
 } from "./merge-gate.mjs";
 import { codexQuery } from "./codex-query.mjs";
 import { FORK_TRANSCRIPT_FILE, renderTranscript } from "./fork-transcript.mjs";
-// The session-end archive into WikiTom (design section 4, "Sessions"). Its
-// body is worker/jobs/session-archive.mjs, the nightly sweep's too; it is
-// reached through ./session-archive.mjs, a symlink, for the reason lib.mjs
-// gives for worker-env.mjs (the two directories install at different depths).
-import {
-  CLAUDE_ACCOUNTS_DIR,
-  CODEX_SESSIONS_DIR,
-  WIKITOM_DIR,
-  archiveSessionUnderLock,
-  utcDay,
-} from "./session-archive.mjs";
+import { claimRegistration, writeRegistration } from "../runs/registration.mjs";
 
 const execFile = promisify(execFileCb);
 
@@ -315,11 +305,6 @@ function classifierPrompt({ command, workdir, branch }) {
 // — the push of local-only commits to session/<id> — is time-boxed: a session
 // must reach "ended" even when the remote is unreachable.
 const PRESERVE_PUSH_TIMEOUT_MS = 60_000;
-// How long a session end waits for the WikiTom writer lock before leaving
-// its transcript to the nightly sweep (#archiveTranscript). The nightly job
-// holds the lock for minutes; a daemon has other sessions to serve.
-const ARCHIVE_LOCK_WAIT_SECONDS = 120;
-
 // Autonomous sessions: SDK turn budget (matches the executor's agentic
 // budget) and the wall-clock cap per delivered turn — past it the turn is
 // interrupted and the session ends errored ("autonomous time cap").
@@ -632,6 +617,7 @@ export class Session {
   // its chunks. A payload that cannot be stored releases the row without a
   // stamp and reports the loss (#overflowUnstored).
   finalizeRow(kind, content, parentToolUseId, overflow) {
+    if (this.env.ROWS_FROM_FILES === "1" || process.env.ROWS_FROM_FILES === "1") return undefined;
     const seq = this.nextSeq++;
     const row = {
       seq,
@@ -1056,6 +1042,32 @@ export class Session {
     this.modelSwitchPending = false;
     const spec = modelSpec(this.model);
     this.family = spec.family;
+    if (!resume && !this.runRegistration) {
+      const stateDir = this.env.RUN_SWEEP_STATE_DIR || process.env.RUN_SWEEP_STATE_DIR || "/var/cache/tts/runs";
+      const host = this.env.RUN_HOST === "box" || this.env.RUN_HOST === "laptop"
+        ? this.env.RUN_HOST
+        : (process.env.RUN_HOST === "box" || process.env.RUN_HOST === "laptop" ? process.env.RUN_HOST : null);
+      this.runRegistration = writeRegistration({
+        spoolDir: path.join(stateDir, "registration"),
+        writer: { file: "worker/session-host/session.mjs", job: "session-host" },
+        registration: {
+          host,
+          runner: spec.family,
+          origin: this.mode === "autonomous" ? "daemon" : "session",
+          kind: this.mode === "autonomous" ? "job" : "session",
+          modelRequested: this.model,
+          effortRequested: spec.effort ?? null,
+          cwd: this.workdir,
+          layersKnown: false,
+          layersGiven: [],
+          layersDenied: [],
+          skillsGranted: [],
+          skillsRefused: [],
+          tools: { allowed: null, denied: spec.family === "claude" ? [...BANNED_TOOLS] : null },
+          hooksConfigured: ["SessionStart", "SessionEnd", "Stop", "SubagentStart", "SubagentStop"],
+        },
+      });
+    }
     if (!knownModel(this.model) && !this.modelFallbackNoted) {
       // The transcript's copy of the constructor's log line, once.
       this.modelFallbackNoted = true;
@@ -1069,7 +1081,17 @@ export class Session {
       ...(this.env.TTS_WORKER_KEY
         ? { TTS_WORKER_KEY: this.env.TTS_WORKER_KEY }
         : {}),
+      ...(this.runRegistration
+        ? {
+            TTS_RUN_REG_TOKEN: this.runRegistration.token,
+            TTS_RUN_REG_SPOOL: path.dirname(this.runRegistration.file),
+          }
+        : {}),
     };
+    const host = this.env.RUN_HOST || process.env.RUN_HOST;
+    if (resume && (host === "box" || host === "laptop")) {
+      sessionEnv.TTS_RUN_PARENT_RUN_ID = `${spec.family}:${host}:${resume}`;
+    }
     if (spec.family === "codex") {
       // The Codex runner speaks the SDK's message vocabulary (codex-query.mjs
       // header), so everything below this branch — #readLoop, #handleMessage,
@@ -1261,7 +1283,6 @@ export class Session {
       // A failed turn is exactly where work is most likely to be stranded —
       // the commits made before the error die with the dir otherwise.
       await this.#preserveWork();
-      await this.#archiveTranscript();
       this.setStatus("ended");
       this.endedReasonToSend = "autonomous turn failed";
       this.requestFlush(true);
@@ -1283,6 +1304,26 @@ export class Session {
           this.sdkSessionId = m.session_id;
           this.sdkSessionIdToSend = m.session_id;
           this.cwdToSend = this.workdir;
+          const host = this.env.RUN_HOST || process.env.RUN_HOST;
+          if ((host === "box" || host === "laptop") && typeof m.session_id === "string") {
+            this.runIdToSend = `${this.family}:${host}:${m.session_id}`;
+            if (this.env.ROWS_FROM_FILES === "1" || process.env.ROWS_FROM_FILES === "1") {
+              this.rowsFromFilesToSend = true;
+            }
+          }
+          if (this.family === "claude" && this.runRegistration && typeof m.session_id === "string") {
+            const configDir = this.env.CLAUDE_CONFIG_DIR
+              || process.env.CLAUDE_CONFIG_DIR
+              || path.join(process.env.HOME || "/root", ".claude");
+            const project = path.resolve(this.workdir).replaceAll("\\", "-").replaceAll("/", "-").replaceAll(":", "-");
+            const runFile = path.join(configDir, "projects", project, `${m.session_id}.jsonl`);
+            claimRegistration({
+              spoolDir: path.dirname(this.runRegistration.file),
+              token: this.runRegistration.token,
+              runFile,
+              claim: { by: "daemon:init", threadId: m.session_id, runFile, hookPayloadKeys: [] },
+            });
+          }
           if (this.status === "starting") this.setStatus("idle");
           this.requestFlush(true);
           this.processCommands();
@@ -2020,33 +2061,6 @@ export class Session {
   // system row in the transcript and one log line, and the sweep is the
   // fallback. The wait is short — a daemon has other sessions to serve, and
   // the nightly job holds the lock for minutes.
-  async #archiveTranscript() {
-    const id = this.sdkSessionId;
-    if (!id) return; // no turn ever ran: the SDK wrote no file
-    try {
-      const { archived } = await archiveSessionUnderLock({
-        checkoutDir: WIKITOM_DIR,
-        sessionId: id,
-        day: utcDay(Date.now()),
-        codexDir: CODEX_SESSIONS_DIR,
-        accountsDir: CLAUDE_ACCOUNTS_DIR,
-        waitSeconds: ARCHIVE_LOCK_WAIT_SECONDS,
-        log: (line) => log(`session ${this.id}: ${line}`),
-      });
-      if (archived.length > 0) {
-        this.finalizeRow("system", {
-          text: `transcript archived to WikiTom: ${archived.map((a) => a.dest).join(", ")} (committed and pushed by the nightly job)`,
-        });
-      }
-    } catch (err) {
-      const msg = String(err?.message ?? err).slice(0, 300);
-      log(`session ${this.id}: transcript not archived at session end (the nightly sweep will): ${msg}`);
-      this.finalizeRow("system", {
-        text: `transcript not archived at session end — ${msg}; the nightly sweep archives it`,
-      });
-    }
-  }
-
   async #endAutonomous(endedReason, outcome) {
     if (this.dead || this.status === "ended" || this.status === "failed") return;
     this.#clearAutoTimer();
@@ -2068,7 +2082,6 @@ export class Session {
     // An autonomous mission has no Tom watching to push for it — the commits
     // it made exist ONLY here until this call (rows land in the flush below).
     await this.#preserveWork();
-    await this.#archiveTranscript();
     this.setStatus("ended");
     this.endedReasonToSend = endedReason;
     this.requestFlush(true);
@@ -2145,7 +2158,6 @@ export class Session {
     // Before the terminal flush, not after: preservation ADDS rows, and they
     // belong in the same ingest that carries the ending.
     await this.#preserveWork();
-    await this.#archiveTranscript();
     this.setStatus("ended");
     this.endedReasonToSend = "stopped by Tom";
     this.requestFlush(true);
@@ -2341,6 +2353,16 @@ export class Session {
       this.cwdToSend = undefined;
       any = true;
     }
+    if (this.runIdToSend !== undefined) {
+      snap.runId = payload.runId = this.runIdToSend;
+      this.runIdToSend = undefined;
+      any = true;
+    }
+    if (this.rowsFromFilesToSend !== undefined) {
+      snap.rowsFromFiles = payload.rowsFromFiles = this.rowsFromFilesToSend;
+      this.rowsFromFilesToSend = undefined;
+      any = true;
+    }
     // Only the rows not waiting on an overflow upload go, and nothing past
     // the first one that is: a row must not reach Convex before its chunks,
     // and the server's seq floor would drop a row that arrived after a later
@@ -2405,6 +2427,12 @@ export class Session {
     }
     if (snap.cwd !== undefined && this.cwdToSend === undefined) {
       this.cwdToSend = snap.cwd;
+    }
+    if (snap.runId !== undefined && this.runIdToSend === undefined) {
+      this.runIdToSend = snap.runId;
+    }
+    if (snap.rowsFromFiles !== undefined && this.rowsFromFilesToSend === undefined) {
+      this.rowsFromFilesToSend = snap.rowsFromFiles;
     }
     if (snap.finalize) {
       this.outbox.finalize = snap.finalize.concat(this.outbox.finalize);

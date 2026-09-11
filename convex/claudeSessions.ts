@@ -173,11 +173,24 @@ export const getMessages = query({
   },
   handler: async (ctx, { sessionId, paginationOpts }) => {
     await requireTomId(ctx);
-    const page = await ctx.db
-      .query("claudeMessages")
-      .withIndex("by_session_seq", (q) => q.eq("sessionId", sessionId))
-      .order("desc") // newest page first; client reverses within a page
-      .paginate(paginationOpts);
+    const session = await ctx.db.get(sessionId);
+    if (session?.rowsFrom === "runs" && session.runId === undefined) {
+      throw new Error("run-backed session has no runId");
+    }
+    // The cutover is one row-level switch. Both indexes return the same
+    // transcript shape and newest-first order, so every page consumer keeps
+    // working while the finalized-row authority changes underneath it.
+    const page = session?.rowsFrom === "runs"
+      ? await ctx.db
+          .query("claudeMessages")
+          .withIndex("by_run_seq", (q) => q.eq("runId", session.runId!))
+          .order("desc")
+          .paginate(paginationOpts)
+      : await ctx.db
+          .query("claudeMessages")
+          .withIndex("by_session_seq", (q) => q.eq("sessionId", sessionId))
+          .order("desc") // newest page first; client reverses within a page
+          .paginate(paginationOpts);
     return {
       ...page,
       page: page.page.map((m) => ({
@@ -1616,6 +1629,11 @@ export const internalIngest = internalMutation({
     ),
     endedReason: v.optional(v.string()),
     sdkSessionId: v.optional(v.string()),
+    // Set once the daemon knows the CLI id; never replace an existing join.
+    runId: v.optional(v.string()),
+    // The daemon sends true only under ROWS_FROM_FILES. False and absent keep
+    // the legacy finalized-row writer authoritative.
+    rowsFromFiles: v.optional(v.boolean()),
     cwd: v.optional(v.string()),
     lastSdkEventAt: v.optional(v.number()),
     // Finalized rows, seq-ascending. Rows with seq < nextSeq are dropped
@@ -1798,6 +1816,10 @@ export const internalIngest = internalMutation({
       if (args.endedReason !== undefined) patch.endedReason = args.endedReason;
       if (args.sdkSessionId !== undefined)
         patch.sdkSessionId = args.sdkSessionId;
+      if (args.runId !== undefined && session.runId === undefined)
+        patch.runId = args.runId;
+      if (args.rowsFromFiles === true && session.rowsFrom !== "runs")
+        patch.rowsFrom = "runs";
       if (args.cwd !== undefined) patch.cwd = args.cwd;
       if (args.lastSdkEventAt !== undefined)
         patch.lastSdkEventAt = args.lastSdkEventAt;

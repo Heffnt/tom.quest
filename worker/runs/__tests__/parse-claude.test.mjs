@@ -43,6 +43,7 @@ describe("Claude parser", () => {
   it("reports a model switch and persisted-output pointer", () => {
     const result = parse([claudeAssistant({ model: "a" }), claudeAssistant({ model: "b" }), claudeAssistant({ model: "b" }), claudeToolResult({ content: persistedOutput({ path: "/saved" }) })]);
     expect(result.run.model).toBe("a");
+    expect(result.rows.find((row) => row.kind === "context").content.model).toBe("a");
     expect(result.rows.filter((row) => row.kind === "error" && /model changed/.test(row.content.error))).toHaveLength(1);
     expect(result.rows.find((row) => row.kind === "tool-result").content.persistedOutput.path).toBe("/saved");
   });

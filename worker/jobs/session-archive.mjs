@@ -1,28 +1,15 @@
-// session-archive.mjs — THE ONE HOME for putting a session file into
-// WikiTom's sessions/ archive (the lifeos update, phase 1's layout; design
-// section 4, "Sessions": "archived at session end plus nightly sweep").
+// session-archive.mjs — WikiTom run-manifest helpers plus the retained legacy
+// session-archive reader used by repo-learning and its regression tests.
+// New daemon and nightly paths do not write transcript bytes to this archive:
+// the sweeper stores verified compressed bytes externally, and nightly appends
+// only the Convex-provided manifest lines under runs/.
 //
-// Two callers, at two moments, through one function:
+// The old archive functions remain exported because later migration work and
+// repo-learning still read that backlog. Nothing here migrates or deletes it.
+// Dependency-free built-ins keep that retained reader usable from its repo and
+// installed depths.
 //
-//   worker/jobs/nightly.mjs (the sweep, step 3) — every Codex rollout and
-//     Claude SDK session file on the box that the manifests do not already
-//     hold at that content, once a night, under the checkout's writer lock.
-//   worker/session-host/session.mjs (session end) — the one session that
-//     just ended, the moment it does, under the same lock, so the transcript
-//     is in the vault hours before the sweep. The sweep still runs and
-//     re-archives a file that grew after that (the SDK can flush after the
-//     query ends): the manifest records the content hash, and a source whose
-//     hash moved is archived again.
-//
-// The daemon reaches this file through worker/session-host/session-archive
-// .mjs, a symlink to it, for the reason lib.mjs gives for its worker-env
-// symlink: setup.sh copies the two directories to different depths, and cp
-// dereferences the link, so the box holds a real copy at each depth while
-// the repo holds one body. Dependency-free (node built-ins only) for the
-// same reason: nothing the symlinked copy imports would resolve from the
-// other depth.
-//
-// THE WRITE IS ATOMIC PER SESSION FILE. The bytes are written under
+// THE RETAINED LEGACY WRITE IS ATOMIC PER SESSION FILE. The bytes are written under
 // sessions/.staging/<id>/ first (a .gitignore there keeps git's eyes off it),
 // renamed into place, and the manifest line is appended LAST — because the
 // manifest is the index the sweep trusts: a line for bytes that are not
@@ -30,7 +17,7 @@
 // sweep would skip it forever), while bytes with no line are archived again
 // tomorrow at no cost. A crash leaves at worst a staged file nobody reads.
 //
-// AND THE TRANSCRIPT IS REDACTED ON ITS WAY IN (archivedBody). A session file
+// AND A LEGACY TRANSCRIPT IS REDACTED ON ITS WAY IN (archivedBody). A session file
 // is where the tokens actually appeared — the 2026-08-30 GitHub token was
 // read out of a clone's .git/config and typed into gh commands, and every one
 // of those turns is a line of a .jsonl on this box — so archiving one
@@ -45,6 +32,7 @@ import crypto from "node:crypto";
 import zlib from "node:zlib";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { StringDecoder } from "node:string_decoder";
 
 // The credential filter is worker/session-host/redact.mjs — THE ONE HOME; the
 // daemon's ingest choke point reads it there and a test fences it there. It is
@@ -67,10 +55,161 @@ export const WIKITOM_DIR = process.env.WIKITOM_DIR || "/root/wikitom";
 export const WIKITOM_LOCK = "/var/lock/tts-wikitom.lock";
 export const LOCK_WAIT_SECONDS = 600;
 export const SESSIONS_DIR = "sessions";
+export const RUNS_DIR = "runs";
 // Under sessions/, so a rename into place never crosses a filesystem.
 export const STAGING_DIR = `${SESSIONS_DIR}/.staging`;
 export const CODEX_SESSIONS_DIR = "/root/.codex/sessions";
 export const CLAUDE_ACCOUNTS_DIR = "/root/.claude-accounts";
+
+const MANIFEST_READ_BYTES = 64 * 1024;
+const MANIFEST_LINE_BYTES = 64 * 1024;
+
+export function isRunManifestEntry(entry) {
+  return entry !== null
+    && typeof entry === "object"
+    && !Array.isArray(entry)
+    && typeof entry.run_id === "string"
+    && entry.run_id !== ""
+    && typeof entry.file_version === "string"
+    && entry.file_version !== ""
+    && Number.isFinite(entry.at);
+}
+
+/**
+ * Visit valid manifest entries without retaining the corpus. A damaged line
+ * is bounded and skipped until its newline; the next complete line remains a
+ * usable checkpoint even after an interrupted append.
+ */
+function forEachRunManifestEntry(runsDir, visit) {
+  if (!fs.existsSync(runsDir)) return;
+  const names = fs.readdirSync(runsDir).filter((name) => /^manifest-\d{4}-\d{2}\.jsonl$/.test(name)).sort();
+  for (const name of names) {
+    const handle = fs.openSync(path.join(runsDir, name), "r");
+    const decoder = new StringDecoder("utf8");
+    const bytes = Buffer.allocUnsafe(MANIFEST_READ_BYTES);
+    let partial = "";
+    let discarding = false;
+    const consume = (text, final = false) => {
+      let start = 0;
+      for (;;) {
+        const newline = text.indexOf("\n", start);
+        if (newline < 0) break;
+        if (!discarding) {
+          const line = partial + text.slice(start, newline);
+          if (line.trim() !== "") {
+            try {
+              const entry = JSON.parse(line);
+              if (isRunManifestEntry(entry)) visit(entry);
+            } catch {
+              // A torn line is not an entry; its successor still is.
+            }
+          }
+        }
+        partial = "";
+        discarding = false;
+        start = newline + 1;
+      }
+      if (!discarding) {
+        partial += text.slice(start);
+        if (Buffer.byteLength(partial, "utf8") > MANIFEST_LINE_BYTES) {
+          partial = "";
+          discarding = true;
+        }
+      }
+      if (final && !discarding && partial.trim() !== "") {
+        try {
+          const entry = JSON.parse(partial);
+          if (isRunManifestEntry(entry)) visit(entry);
+        } catch {
+          // The next append seals this fragment before writing complete lines.
+        }
+      }
+    };
+    try {
+      for (;;) {
+        const count = fs.readSync(handle, bytes, 0, bytes.length, null);
+        if (count === 0) break;
+        consume(decoder.write(bytes.subarray(0, count)));
+      }
+      consume(decoder.end(), true);
+    } finally {
+      fs.closeSync(handle);
+    }
+  }
+}
+
+/** Read all valid entries for retained legacy callers and tests. */
+export function readRunManifests(runsDir) {
+  const entries = [];
+  forEachRunManifestEntry(runsDir, (entry) => entries.push(entry));
+  return entries;
+}
+
+export function latestRunManifestCursor(checkoutDir) {
+  let latest = { at: 0 };
+  forEachRunManifestEntry(path.join(checkoutDir, RUNS_DIR), (entry) => {
+    const candidate = typeof entry.run_id === "string" && typeof entry.file_version === "string"
+      ? { at: entry.at, runId: entry.run_id, fileVersion: entry.file_version }
+      : { at: entry.at };
+    if (
+      candidate.at > latest.at
+      || (candidate.at === latest.at && "runId" in candidate && (!("runId" in latest) || candidate.runId > latest.runId || (candidate.runId === latest.runId && candidate.fileVersion > latest.fileVersion)))
+    ) latest = candidate;
+  });
+  return latest;
+}
+
+export function latestRunManifestAt(checkoutDir) {
+  return latestRunManifestCursor(checkoutDir).at;
+}
+
+/**
+ * Append one canonical Convex-provided manifest line per unseen file version.
+ * Each bounded page is serialized into one append per month. If an earlier
+ * append tore, a newline preserves and isolates that fragment before any new
+ * complete entry is made visible; a retry then deduplicates the entries whose
+ * append completed.
+ */
+export function appendRunManifest(checkoutDir, incoming) {
+  const runsDir = path.join(checkoutDir, RUNS_DIR);
+  const candidates = new Map();
+  for (const entry of incoming) {
+    if (!isRunManifestEntry(entry)) continue;
+    const key = `${entry.run_id}\0${entry.file_version}`;
+    if (!candidates.has(key)) candidates.set(key, entry);
+  }
+  forEachRunManifestEntry(runsDir, (entry) => {
+    candidates.delete(`${entry.run_id}\0${entry.file_version}`);
+  });
+
+  const byFile = new Map();
+  for (const [key, entry] of candidates) {
+    const month = new Date(entry.at).toISOString().slice(0, 7);
+    const file = path.join(runsDir, `manifest-${month}.jsonl`);
+    const page = byFile.get(file) ?? [];
+    page.push({ key, entry });
+    byFile.set(file, page);
+  }
+
+  const appended = [];
+  for (const [file, page] of byFile) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    let separator = "";
+    if (fs.existsSync(file)) {
+      const size = fs.statSync(file).size;
+      if (size > 0) {
+        const handle = fs.openSync(file, "r");
+        const tail = Buffer.allocUnsafe(1);
+        try { fs.readSync(handle, tail, 0, 1, size - 1); }
+        finally { fs.closeSync(handle); }
+        if (tail[0] !== 0x0a) separator = "\n";
+      }
+    }
+    fs.appendFileSync(file, separator + page.map(({ entry }) => JSON.stringify(entry)).join("\n") + "\n");
+    for (const { entry } of page) appended.push({ entry, file });
+  }
+  return appended;
+}
 
 // A file over 90 MB is split into gzipped parts (phase 1's rule; GitHub
 // refuses a blob over 100 MB, and the same threshold applies forever).
