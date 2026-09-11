@@ -438,6 +438,14 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # (worker/jobs/weekly.mjs).
 0 8,9 * * 5 root /usr/bin/flock -n /var/lock/tts-weekly.lock /usr/bin/node /opt/tts/weekly.mjs >> /var/log/tts/weekly.log 2>&1
 
+# THE WEEKLY SIMPLIFICATION PASS (uae phase 8; spec §23.9) at 4:30 a.m. New
+# York on Fridays, half an hour after the weekly agenda job: the blast radius
+# of every rule, skill, schema field and gate check over four weeks of
+# recorded runs, one Fable run that may only propose removals, one
+# #tts-decisions message per proposal. Both UTC slots on one line; the job's
+# own NY-hour guard keeps one (worker/jobs/simplify.mjs).
+30 8,9 * * 5 root /usr/bin/flock -n /var/lock/tts-simplify.lock /usr/bin/node /opt/tts/simplify.mjs >> /var/log/tts/simplify.log 2>&1
+
 # Evals. The box POLLS: it has no inbound door, so a GitHub Action posts a
 # request to Convex and this tick picks up the oldest unanswered one and runs
 # it. One request per pass, so a tick is bounded.
