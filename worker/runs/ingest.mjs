@@ -11,7 +11,11 @@ import pathModule from "node:path";
 import { redactSecrets } from "../session-host/redact.mjs";
 import { overflowFor } from "../session-host/overflow.mjs";
 import { cutWithOverflow } from "../session-host/cut.mjs";
+import { AGENT_FILE, AGENT_SIDECAR, workflowIdOf } from "./discover.mjs";
 import { costOf, priceTableVersion } from "./prices.mjs";
+
+/** The workflow folder a transcript sits in, when it sits in one. */
+export const workflowIdOfPath = (file) => workflowIdOf(String(file).split(/[\\/]/));
 
 export const PARSER_VERSION = "runs-parser-1";
 // Kept as a literal because this dependency-free worker file cannot import the
@@ -231,10 +235,15 @@ function sidecarStoredHash(agentMeta, sidecar) {
 
 function claudeChildFacts(agentMeta, parentSessionId) {
   const isSubagent = agentMeta !== null || parentSessionId !== null;
-  if (!isSubagent) return { isSubagent: false, depth: 0, errors: [], parentAgentId: undefined, toolUseId: undefined };
+  if (!isSubagent) return { isSubagent: false, depth: 0, errors: [], parentAgentId: undefined, toolUseId: undefined, workflowId: undefined };
   const meta = agentMeta && typeof agentMeta === "object" ? agentMeta : {};
   const errors = [];
   if (!agentMeta || typeof agentMeta !== "object") errors.push("subagent sidecar is missing or malformed");
+  // A Workflow's agents get a thinner sidecar than a Task's: agentType and
+  // spawnDepth, sometimes model, and never the description, parentAgentId or
+  // toolUseId a Task writes. The workflow id comes off the folder instead, and
+  // the missing tool-use id is what `linkKnown: false` already says.
+  const workflowId = typeof meta.workflowId === "string" && meta.workflowId ? meta.workflowId : undefined;
   const rawDepth = meta.spawnDepth;
   const depthKnown = Number.isInteger(rawDepth) && rawDepth >= 1;
   const depth = depthKnown ? rawDepth : 1;
@@ -242,7 +251,7 @@ function claudeChildFacts(agentMeta, parentSessionId) {
   const parentAgentId = typeof meta.parentAgentId === "string" && meta.parentAgentId ? meta.parentAgentId : undefined;
   if ((!parentAgentId && depth !== 1) || (parentAgentId && depth < 2)) errors.push("subagent depth disagrees with parentAgentId");
   const toolUseId = typeof meta.toolUseId === "string" && meta.toolUseId ? meta.toolUseId : undefined;
-  return { isSubagent: true, depth, errors, parentAgentId, toolUseId };
+  return { isSubagent: true, depth, errors, parentAgentId, toolUseId, workflowId };
 }
 
 export function parseClaudeFile({ path, text, host, fileVersion, fromLine = 0, baseLine: suppliedBaseLine = fromLine, agentMeta = null, parentSessionId = null, sidecar = null, attachments: suppliedAttachments = /** @type {Array<{file: string, bytes: number, sha256: string}>} */ ([]) }) {
@@ -255,6 +264,9 @@ export function parseClaudeFile({ path, text, host, fileVersion, fromLine = 0, b
   const { lines, incompleteTail } = fileLines(text);
   const firstFileTimestamp = lines.map((raw) => { try { return millis(JSON.parse(raw).timestamp); } catch { return 0; } }).find(Boolean) ?? 0;
   const rows = [], children = [], attachments = attachmentPointers(suppliedAttachments ?? agentMeta?.attachments), dropped = {};
+  // Where each child's one edge sits in the array, so a parent that speaks to
+  // the same subagent twice still names that parentage once.
+  const childEdgeAt = new Map();
   const drop = (kind) => { dropped[kind] = (dropped[kind] ?? 0) + 1; };
   let sessionId = parentSessionId;
   let first = null, startedAt = firstFileTimestamp, lastLineAt = 0, model, runtimeVersion, modelChangeReported = false;
@@ -307,14 +319,21 @@ export function parseClaudeFile({ path, text, host, fileVersion, fromLine = 0, b
               const childRunId = `claude:${host}:${sessionId}/${child.agentId}`;
               const task = tasks.get(block.tool_use_id) ?? {};
               actualEmit("child-run", { childRunId, agentId: child.agentId, agentType: child.agentType ?? task.agentType, description: child.description ?? task.description, model: child.resolvedModel, status: child.status === "completed" ? "completed" : "launched", ...(child.status === "completed" ? { totalTokens: child.totalTokens, totalDurationMs: child.totalDurationMs, totalToolUseCount: child.totalToolUseCount } : {}) }, { depth, parentToolUseId: block.tool_use_id });
-              children.push({
+              const edge = {
                 runId: childRunId, parentRunId: runId,
                 rootRunId: child.isSubagent ? `claude:${host}:${parentSessionId ?? sessionId}` : runId,
                 depth: depth + 1,
                 ...(typeof block.tool_use_id === "string" && block.tool_use_id ? { spawnedByToolUseId: block.tool_use_id } : {}),
                 // A child id alone proves parentage, not which parent tool did it.
                 linkKnown: typeof block.tool_use_id === "string" && block.tool_use_id !== "",
-              });
+              };
+              // Every tool result naming an agent is a real event and keeps its
+              // own child-run row, but a second message to a running subagent is
+              // not a second child. The spawn is the first tool use, so a later
+              // one never takes its place — it only fills a link nobody knew.
+              const at = childEdgeAt.get(childRunId);
+              if (at === undefined) { childEdgeAt.set(childRunId, children.length); children.push(edge); }
+              else if (!children[at].linkKnown && edge.linkKnown) children[at] = edge;
             }
           }
         }
@@ -372,9 +391,12 @@ export function parseClaudeFile({ path, text, host, fileVersion, fromLine = 0, b
   const agentId = first?.agentId ?? agentMeta?.agentId ?? "unknown";
   const runId = child.isSubagent ? `${rootRunId}/${agentId}` : rootRunId;
   const prompt = [state.instructions, ...state.promptParts, state.firstUserPrompt].filter((part) => typeof part === "string" && part !== "").join("\n");
-  const context = claudeContext(prompt, first, state);
+  const context = { ...claudeContext(prompt, first, state), ...(child.workflowId ? { workflowId: child.workflowId } : {}) };
+  // The context row names the model the file says ran, so the transcript page
+  // can show it without reading the run row beside it.
+  const actualModel = model ?? agentMeta?.model;
   if (baseLine === 0) {
-    rows.unshift({ seq: 0, turn: 0, kind: "context", content: { ...context, prompt }, depth: child.depth, provenance: provenance({ path, fileVersion, line: 0, block: 0, sourceKind: "context" }), createdAt: startedAt });
+    rows.unshift({ seq: 0, turn: 0, kind: "context", content: { ...(actualModel ? { model: actualModel } : {}), ...context, prompt }, depth: child.depth, provenance: provenance({ path, fileVersion, line: 0, block: 0, sourceKind: "context" }), createdAt: startedAt });
   }
   const usageValues = [...usages.values(), ...unkeyedUsage].map(totalsOf);
   const totals = usageValues.reduce((sum, item) => ({
@@ -389,13 +411,13 @@ export function parseClaudeFile({ path, text, host, fileVersion, fromLine = 0, b
   }), { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0, cacheWriteBreakdownKnown: true, outputTokens: 0, thinkingTokens: 0 });
   totals.totalTokens = totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens + totals.outputTokens;
   totals.longContextRequests = 0;
-  const price = costOf({ model: model ?? agentMeta?.model, totals });
+  const price = costOf({ model: actualModel, totals });
   const run = {
     runId,
     ...(child.isSubagent ? { parentRunId: child.parentAgentId ? `${rootRunId}/${child.parentAgentId}` : rootRunId } : {}),
     ...(child.isSubagent && child.toolUseId ? { spawnedByToolUseId: child.toolUseId } : {}),
-    rootRunId, depth: child.depth, linkKnown: child.isSubagent ? Boolean(child.toolUseId) : true, origin: "unknown", host, runner: "claude", ...(model ?? agentMeta?.model ? { model: model ?? agentMeta.model } : {}), ...(runtimeVersion ? { runtimeVersion } : {}), parserVersion: PARSER_VERSION,
-    ...(sessionModelOf(model ?? agentMeta?.model) ? { sessionModel: sessionModelOf(model ?? agentMeta?.model) } : {}), kind: child.isSubagent ? "subagent" : human ? "session" : "unknown", status: "unknown", startedAt, lastLineAt, context, attachments,
+    rootRunId, depth: child.depth, linkKnown: child.isSubagent ? Boolean(child.toolUseId) : true, origin: child.workflowId ? "workflow" : "unknown", host, runner: "claude", ...(actualModel ? { model: actualModel } : {}), ...(runtimeVersion ? { runtimeVersion } : {}), parserVersion: PARSER_VERSION,
+    ...(sessionModelOf(actualModel) ? { sessionModel: sessionModelOf(actualModel) } : {}), kind: child.isSubagent ? "subagent" : human ? "session" : "unknown", status: "unknown", startedAt, lastLineAt, context, attachments,
     outcome: { ...(finalTextSeq !== undefined ? { finalTextSeq } : {}), totals, ...(price === null ? {} : { costUsd: price, priceTableVersion: priceTableVersion() }), turns: Math.max(1, turn + 1), toolCalls },
     file: { path, sourceHash: sha256(Buffer.from(text)), storedHash: fileVersion, bytes: Buffer.byteLength(text), storedBytes: 0, committedLine: baseLine + lines.length, committedPrefixSha256: prefixHash(lines, lines.length), ...(child.isSubagent && sidecarStoredHash(agentMeta, sidecar) ? { sidecarStoredHash: sidecarStoredHash(agentMeta, sidecar) } : {}), incompleteTail },
   };
@@ -483,7 +505,7 @@ export function parseCodexFile({ path, text, host, fileVersion, fromLine = 0, ba
   for (const raw of lines) { try { const p = JSON.parse(raw).payload ?? {}; if (["custom_tool_call", "function_call"].includes(p.type) && p.name) tools.push(p.name); } catch {} }
   const permissionMode = sandboxPolicy ? `approval=${approvalPolicy ?? "unknown"}; sandbox=${sandboxPolicy}` : approvalPolicy;
   const context = { ...mot, skillsOffered: [], skillsUsed: [], tools: sorted(tools), hooks: [], ...(meta.cwd ? { cwd: meta.cwd } : {}), ...(meta.git?.branch ? { gitBranch: meta.git.branch } : {}), ...(meta.git?.commit_hash ? { gitCommit: meta.git.commit_hash } : {}), ...(meta.base_instructions?.text ? { baseInstructionsHash: sha256(meta.base_instructions.text) } : {}), ...(meta.originator ? { originator: meta.originator } : {}), ...(meta.context_window ? { contextWindow: meta.context_window } : {}), ...(permissionMode ? { permissionMode } : {}) };
-  if (baseLine === 0) rows.unshift({ seq: 0, turn: 0, kind: "context", content: { ...context, prompt }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: 0, block: 0, sourceKind: "context" }), createdAt: startedAt });
+  if (baseLine === 0) rows.unshift({ seq: 0, turn: 0, kind: "context", content: { ...(model ? { model } : {}), ...context, prompt }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: 0, block: 0, sourceKind: "context" }), createdAt: startedAt });
   if (taskComplete?.message && taskComplete.message !== lastAssistantText) { const row = { seq: sourceSeq(taskComplete.line, 998), turn: taskComplete.turn, kind: "assistant-text", content: { text: taskComplete.message }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: taskComplete.line, block: 998, sourceKind: "event_msg/task_complete" }), createdAt: taskComplete.timestamp }; rows.push(row); finalTextSeq = row.seq; }
   else if (taskComplete) drop("event_msg/task_complete");
   const totals = lastTokenCount ? totalsOf(lastTokenCount) : usageRecords.map(totalsOf).reduce((sum, item) => ({
@@ -504,17 +526,63 @@ export function parseCodexFile({ path, text, host, fileVersion, fromLine = 0, ba
   return finishResult({ run, rows, children, attachments, lastLine: baseLine + lines.length, incompleteTail, dropped });
 }
 
+function filesUnder(directory, fs, found = []) {
+  let entries; try { entries = fs.readdirSync(directory, { withFileTypes: true }); } catch { return found; }
+  for (const entry of entries) {
+    if (entry.isSymbolicLink?.()) continue;
+    const file = pathModule.join(directory, entry.name);
+    if (entry.isDirectory()) filesUnder(file, fs, found);
+    else if (entry.isFile()) found.push(file);
+  }
+  return found;
+}
+
+/**
+ * A session's children and its attachment pointers, read from the session
+ * directory alone.
+ *
+ * A child transcript is `agent-<agentId>.jsonl` at ANY depth under
+ * `subagents/` — the CLI parks a Workflow's agents at
+ * `subagents/workflows/wf_<id>/`, and the folder is where the file lives, not
+ * who the run is. Every other file under the session directory is recorded as
+ * an attachment pointer instead of vanishing: its sidecar travels with the
+ * agent it names, and everything else (`tool-results/`, `attachments/`, the
+ * workflow's own `workflows/wf_<id>.json` and `journal.jsonl`) with the root.
+ */
 export function discoverChildren(sessionFilePath, { fs = fsDefault } = {}) {
   const directory = pathModule.join(pathModule.dirname(sessionFilePath), pathModule.basename(sessionFilePath, ".jsonl"));
   const subagents = []; const toolResults = [];
   const subDir = pathModule.join(directory, "subagents");
-  if (fs.existsSync(subDir)) for (const name of fs.readdirSync(subDir)) {
-    const match = /^agent-(.+)\.jsonl$/.exec(name); if (!match) continue;
-    const file = pathModule.join(subDir, name); const metaFile = pathModule.join(subDir, `agent-${match[1]}.meta.json`); let meta = null;
-    if (fs.existsSync(metaFile)) { try { meta = JSON.parse(fs.readFileSync(metaFile, "utf8")); } catch {} }
-    subagents.push({ file, metaFile, agentId: match[1], meta });
+  const attachmentsByAgent = new Map();
+  const pointer = (file) => { try { const bytes = fs.readFileSync(file); return { file, bytes: bytes.length, sha256: sha256(bytes) }; } catch { return null; } };
+  for (const file of filesUnder(directory, fs)) {
+    const name = pathModule.basename(file);
+    const inSubagents = file.startsWith(`${subDir}${pathModule.sep}`);
+    const child = inSubagents && AGENT_FILE.exec(name);
+    if (child) {
+      const metaFile = pathModule.join(pathModule.dirname(file), `agent-${child[1]}.meta.json`);
+      let meta = null;
+      if (fs.existsSync(metaFile)) { try { meta = JSON.parse(fs.readFileSync(metaFile, "utf8")); } catch {} }
+      const workflowId = workflowIdOfPath(file);
+      subagents.push({ file, metaFile, agentId: child[1], meta, ...(workflowId ? { workflowId } : {}) });
+      continue;
+    }
+    const sidecar = inSubagents && AGENT_SIDECAR.exec(name);
+    const item = pointer(file);
+    if (!item) continue;
+    if (sidecar) {
+      const list = attachmentsByAgent.get(sidecar[1]) ?? [];
+      list.push(item); attachmentsByAgent.set(sidecar[1], list);
+    } else toolResults.push(item);
   }
-  const toolDir = pathModule.join(directory, "tool-results");
-  if (fs.existsSync(toolDir)) for (const name of fs.readdirSync(toolDir)) { const file = pathModule.join(toolDir, name); try { const bytes = fs.readFileSync(file); toolResults.push({ file, bytes: bytes.length, sha256: sha256(bytes) }); } catch {} }
+  subagents.sort((a, b) => a.file.localeCompare(b.file));
+  toolResults.sort((a, b) => a.file.localeCompare(b.file));
+  for (const child of subagents) {
+    const own = attachmentsByAgent.get(child.agentId);
+    if (own) { child.attachments = own; attachmentsByAgent.delete(child.agentId); }
+  }
+  // A sidecar whose transcript is gone still belongs to the record; the root
+  // is the nearest run left to hold it.
+  for (const orphaned of attachmentsByAgent.values()) toolResults.push(...orphaned);
   return { subagents, toolResults };
 }

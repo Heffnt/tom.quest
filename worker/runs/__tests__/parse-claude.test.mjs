@@ -70,6 +70,19 @@ describe("Claude parser", () => {
     expect(result.rows.map((row) => row.kind)).toEqual(["context", "tool-call", "tool-result", "child-run"]);
     expect(result.children).toMatchObject([{ spawnedByToolUseId: "task", linkKnown: true }]);
   });
+  // witness: a parent that messaged a running subagent again declared that
+  // child twice, and runs.internalIngest refuses the whole page for a repeated
+  // child edge — so one SendMessage kept a real session out of the record.
+  it("names a child once however many tool results the parent gets from it", () => {
+    const result = parse([
+      claudeAssistant({ blocks: [claudeToolUseBlock({ id: "spawn", name: "Task", input: { description: "work" } })] }),
+      claudeTaskResultLaunched({ toolUseId: "spawn", agentId: "agent" }),
+      claudeAssistant({ blocks: [claudeToolUseBlock({ id: "again", name: "SendMessage", input: { agent_id: "agent" } })] }),
+      claudeTaskResultLaunched({ toolUseId: "again", agentId: "agent" }),
+    ]);
+    expect(result.rows.filter((row) => row.kind === "child-run")).toHaveLength(2);
+    expect(result.children).toMatchObject([{ spawnedByToolUseId: "spawn", linkKnown: true }]);
+  });
   it("keeps unrecognised assistant blocks visible", () => {
     const result = parse([claudeAssistant({ blocks: [{ type: "future-block", value: "future" }] })]);
     expect(result.rows.some((row) => row.kind === "system" && row.content.unknownAssistantBlock.type === "future-block")).toBe(true);
@@ -94,6 +107,7 @@ describe("Claude parser", () => {
   it("reports a model switch and persisted-output pointer", () => {
     const result = parse([claudeAssistant({ model: "a" }), claudeAssistant({ model: "b" }), claudeAssistant({ model: "b" }), claudeToolResult({ content: persistedOutput({ path: "/saved" }) })]);
     expect(result.run.model).toBe("a");
+    expect(result.rows.find((row) => row.kind === "context").content.model).toBe("a");
     expect(result.rows.filter((row) => row.kind === "error" && /model changed/.test(row.content.error))).toHaveLength(1);
     expect(result.rows.find((row) => row.kind === "tool-result").content.persistedOutput.path).toBe("/saved");
   });

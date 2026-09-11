@@ -58,6 +58,7 @@ import {
   revertLearningRecords,
   reviewedRefusal,
   runEvidenceCheck,
+  runsStep,
   serializeRow,
   sessionCitation,
   sessionDateOf,
@@ -113,6 +114,25 @@ function write(dir, rel, content) {
   fs.writeFileSync(abs, content);
   return abs;
 }
+
+describe("runs step", () => {
+  it("sends the full last-manifest tuple when timestamps are equal", async () => {
+    const dir = tmp();
+    write(dir, "runs/manifest-2026-09.jsonl", `${JSON.stringify({ at: 100, run_id: "claude:laptop:root", file_version: "version-a" })}\n`);
+    let requested;
+    const result = await runsStep(
+      { dir, day: "2026-09-11", env: { CONVEX_SITE_URL: "http://localhost" }, commits: [] },
+      { fetch: async (url) => {
+        requested = new URL(url);
+        return { ok: true, json: async () => ({ entries: [], nextCursor: null }) };
+      } },
+    );
+    expect(requested.searchParams.get("since")).toBe("100");
+    expect(requested.searchParams.get("afterRunId")).toBe("claude:laptop:root");
+    expect(requested.searchParams.get("afterFileVersion")).toBe("version-a");
+    expect(result).toEqual({ manifested: 0, received: 0, since: 100 });
+  });
+});
 
 // ── The learning step ────────────────────────────────────────────────────────
 // The step runs here end to end against a WikiTom-SHAPED checkout in a temp

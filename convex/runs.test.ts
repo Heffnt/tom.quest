@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { MODEL_OF_TOM_HEADER } from "./ttsShared";
@@ -10,6 +10,8 @@ const STORED_HASH = "b".repeat(64);
 const PREFIX_HASH = "c".repeat(64);
 const PREVIOUS_HASH = "d".repeat(64);
 const GROWN_PREFIX_HASH = "e".repeat(64);
+const VERSION_A_HASH = "1".repeat(64);
+const VERSION_B_HASH = "2".repeat(64);
 const HELLO_WORLD_SHA256 = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
 
 // Session creation fails closed when the model-of-tom publication singleton is
@@ -55,6 +57,19 @@ function child(runId: string, parentRunId: string, rootRunId: string, depth: num
   return { runId, parentRunId, rootRunId, depth, linkKnown, ...(linkKnown ? { spawnedByToolUseId: "exact-tool-use" } : {}) };
 }
 
+async function session(t: ReturnType<typeof convexTest>, overrides: Record<string, unknown> = {}) {
+  return await t.run((ctx) => ctx.db.insert("claudeSessions", {
+    title: "run comparison", kind: "adhoc", repo: "none", status: "ended",
+    statusChangedAt: Date.now(), nextSeq: 0, createdAt: Date.now(), ...overrides,
+  } as never));
+}
+
+async function daemonRow(t: ReturnType<typeof convexTest>, sessionId: string, seq: number, kind: string, content: unknown, overflow?: { sha256: string; byteLength: number; chunkCount: number }) {
+  await t.run((ctx) => ctx.db.insert("claudeMessages", {
+    sessionId, seq, turn: 0, kind, content, overflow, createdAt: seq + 1,
+  } as never));
+}
+
 describe("runs", () => {
   it("ingests immutable rows and returns them in source order", async () => {
     const t = convexTest(schema, modules);
@@ -82,12 +97,73 @@ describe("runs", () => {
     expect((await t.run((ctx) => ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", "claude:laptop:root-run")).collect())).map((entry) => entry.seq)).toEqual([0, 1000]);
   });
 
+  // witness: the sweep walks a session's subagent files in name order, so a
+  // grandchild is routinely ingested before its own parent has been seen. The
+  // run's depth was forced to 1 in that case and every row was then refused as
+  // "invalid run row", which dead-lettered each depth-2-and-deeper run on a
+  // permanent 400 — one real session lost fifty runs that way.
+  it("lands a grandchild swept before its parent, and repairs the tree when the parent arrives", async () => {
+    const t = convexTest(schema, modules);
+    const grandchild = run({
+      runId: "claude:laptop:root-run/grandchild-agent", rootRunId: "claude:laptop:root-run",
+      parentRunId: "claude:laptop:root-run/middle-agent", depth: 2, kind: "subagent",
+      spawnedByToolUseId: "exact-tool-use",
+      file: { ...run().file, path: "C:/grandchild.jsonl" },
+    });
+    expect(await t.mutation(internal.runs.internalIngest, ingest(grandchild, [row(0, { depth: 2 })]) as never))
+      .toMatchObject({ ok: true, inserted: 1 });
+
+    // The second grandchild reads the placeholder its sibling created; before
+    // that placeholder carried a true position it derived depth 1 from it and
+    // was refused in turn.
+    const sibling = run({
+      runId: "claude:laptop:root-run/sibling-agent", rootRunId: "claude:laptop:root-run",
+      parentRunId: "claude:laptop:root-run/middle-agent", depth: 2, kind: "subagent",
+      spawnedByToolUseId: "exact-tool-use",
+      file: { ...run().file, path: "C:/sibling.jsonl" },
+    });
+    expect(await t.mutation(internal.runs.internalIngest, ingest(sibling, [row(0, { depth: 2 })]) as never))
+      .toMatchObject({ ok: true, inserted: 1 });
+
+    const middle = run({
+      runId: "claude:laptop:root-run/middle-agent", rootRunId: "claude:laptop:root-run",
+      parentRunId: "claude:laptop:root-run", depth: 1, kind: "subagent",
+      spawnedByToolUseId: "exact-tool-use",
+      file: { ...run().file, path: "C:/middle.jsonl" },
+    });
+    expect(await t.mutation(internal.runs.internalIngest, ingest(middle, [row(0, { depth: 1 })]) as never))
+      .toMatchObject({ ok: true, inserted: 1 });
+
+    for (const [runId, path] of [["claude:laptop:root-run/grandchild-agent", "C:/grandchild.jsonl"], ["claude:laptop:root-run/sibling-agent", "C:/sibling.jsonl"]] as const) {
+      const landed = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique());
+      expect(landed, runId).toMatchObject({ depth: 2, rootRunId: "claude:laptop:root-run", parentRunId: "claude:laptop:root-run/middle-agent" });
+      expect(landed?.file.path).toBe(path);
+    }
+  });
+
   it("refuses malformed identifiers, numeric facts, and child edges before writes", async () => {
     const t = convexTest(schema, modules);
     expect(await t.mutation(internal.runs.internalIngest, ingest(run({ runId: "not-a-run" })) as never)).toEqual({ ok: false, reason: "invalid run record" });
     expect(await t.mutation(internal.runs.internalIngest, ingest(run({ startedAt: -1 })) as never)).toEqual({ ok: false, reason: "invalid run record" });
     expect(await t.mutation(internal.runs.internalIngest, ingest(run(), [], [child("claude:laptop:child-run", "claude:laptop:not-root", "claude:laptop:root-run", 1)]) as never)).toEqual({ ok: false, reason: "invalid child edge" });
     expect(await t.run((ctx) => ctx.db.query("runs").collect())).toEqual([]);
+  });
+
+  it("takes a Workflow's agent as an ordinary child with no spawning tool-use id", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.runs.internalIngest, ingest(run()) as never);
+    // The Workflow sidecar carries no toolUseId, so the link is honestly
+    // unknown; the workflow it belongs to is on the run's context instead.
+    const agent = run({
+      runId: "claude:laptop:root-run/a27aa4b9a7caecc56", parentRunId: "claude:laptop:root-run", depth: 1, linkKnown: false,
+      kind: "subagent", origin: "workflow",
+      context: { layersKnown: false, layersGiven: [], layersDenied: [], skillsOffered: [], skillsUsed: [], tools: [], hooks: [], workflowId: "wf_abc" },
+    });
+    expect(await t.mutation(internal.runs.internalIngest, ingest(agent, [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
+    const stored = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run/a27aa4b9a7caecc56")).unique());
+    expect(stored).toMatchObject({ depth: 1, parentRunId: "claude:laptop:root-run", origin: "workflow", linkKnown: false });
+    expect(stored?.spawnedByToolUseId).toBeUndefined();
+    expect(stored?.context?.workflowId).toBe("wf_abc");
   });
 
   it("stores mode only for session runs", async () => {
@@ -185,5 +261,219 @@ describe("runs", () => {
     expect((await t.run(async (ctx) => ctx.db.get(second)))?.runId).toBeUndefined();
     await expect(t.mutation(internal.runs.internalBackfillRunIds, { limit: 0 })).rejects.toThrow();
     await expect(t.mutation(internal.runs.internalBackfillRunIds, { limit: 501 })).rejects.toThrow();
+  });
+
+  it("switches getMessages from daemon rows to the same run-row page shape", async () => {
+    const t = convexTest(schema, modules);
+    const sessionId = await session(t, { status: "running" });
+    const stamp = { sha256: "a".repeat(64), byteLength: 20, chunkCount: 1 };
+    await daemonRow(t, sessionId, 0, "user", { text: "hello" });
+    await daemonRow(t, sessionId, 1, "assistant-text", { text: "answer" }, stamp);
+    const value = run({ sessionId });
+    await t.mutation(internal.runs.internalIngest, ingest(value, [
+      row(0, { kind: "user", content: { text: "hello" } }),
+      row(1, { kind: "assistant-text", content: { text: "answer" }, digest: "1111111111111111" }),
+    ], []) as never);
+    // The overflow stamp itself is verified elsewhere (chunk reassembly); here
+    // it only needs to exist so the two page shapes can be compared.
+    await t.run(async (ctx) => {
+      const inserted = await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", value.runId).eq("seq", 1)).unique();
+      if (inserted) await ctx.db.patch(inserted._id, { overflow: stamp });
+    });
+    const tom = await withTom(t);
+    const pick = (page: Array<Record<string, unknown>>) => page.map(({ seq, kind, content, hasOverflow, fullByteLength }) => ({ seq, kind, content, hasOverflow, fullByteLength }));
+    const before = await tom.query(api.claudeSessions.getMessages, { sessionId, paginationOpts: { cursor: null, numItems: 10 } });
+    await t.mutation(internal.claudeSessions.internalIngest, { sessionId, runId: "different-run-must-not-replace-the-link", rowsFromFiles: true });
+    const after = await tom.query(api.claudeSessions.getMessages, { sessionId, paginationOpts: { cursor: null, numItems: 10 } });
+    expect(pick(after.page as never)).toEqual(pick(before.page as never));
+    expect(after.page.map((entry) => entry.seq)).toEqual([1, 0]);
+    expect(await t.run((ctx) => ctx.db.get(sessionId))).toMatchObject({ runId: value.runId, rowsFrom: "runs" });
+  });
+
+  it("fails closed when a run-backed session has no run id", async () => {
+    const t = convexTest(schema, modules);
+    const sessionId = await session(t, { rowsFrom: "runs" });
+    await daemonRow(t, sessionId, 0, "user", { text: "must not leak through fallback" });
+    const tom = await withTom(t);
+    await expect(tom.query(api.claudeSessions.getMessages, {
+      sessionId,
+      paginationOpts: { cursor: null, numItems: 10 },
+    })).rejects.toThrow("run-backed session has no runId");
+  });
+
+  it("repairs a box session link from the Claude root id", async () => {
+    const t = convexTest(schema, modules);
+    const sessionId = await session(t, { sdkSessionId: "sdk-root", status: "running" });
+    const result = await t.mutation(internal.runs.internalIngest, ingest(
+      run({ runId: "claude:box:sdk-root", rootRunId: "claude:box:sdk-root", host: "box" }), [], [],
+    ) as never);
+    expect(result).toMatchObject({ ok: true, runId: "claude:box:sdk-root" });
+    const [storedRun, storedSession] = await t.run(async (ctx) => [
+      await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:box:sdk-root")).unique(),
+      await ctx.db.get(sessionId),
+    ]);
+    expect(storedRun?.sessionId).toBe(sessionId);
+    expect(storedSession?.runId).toBe("claude:box:sdk-root");
+  });
+
+  it("compares row sets without recording text and cuts over a clean terminal run", async () => {
+    const t = convexTest(schema, modules);
+    const sessionId = await session(t);
+    const text = "comparison-text-sentinel";
+    await daemonRow(t, sessionId, 0, "user", { text: `${text}   ` });
+    await daemonRow(t, sessionId, 1, "assistant-text", { text: "answer" });
+    await daemonRow(t, sessionId, 2, "thinking", { text: "reasoning" });
+    await daemonRow(t, sessionId, 3, "tool-call", { toolName: "Read" });
+    await t.mutation(internal.runs.internalIngest, ingest(run({
+        sessionId, status: "ended", envelopeKey: "runs/registration.json.gz",
+        context: {
+          layersKnown: true, layersGiven: ["write"], layersDenied: [], skillsOffered: [], skillsUsed: [], tools: [], hooks: [],
+          registered: true, launcher: "worker/jobs/evals.mjs", modelRequested: "claude-fable-5", skillsGranted: [], skillsRefused: [], promptSha256: "prompt", writingStandardSource: "/tts/capture-context",
+        },
+      }), [
+        row(0, { kind: "context", content: { modelRequested: "claude-fable-5" } }),
+        row(1000, { kind: "user", content: { text }, digest: "1111111111111111" }),
+        row(1500, { kind: "child-run", content: { childRunId: "claude:laptop:root-run/child" }, digest: "2222222222222222" }),
+        row(2000, { kind: "assistant-text", content: { text: "answer" }, digest: "3333333333333333" }),
+        row(3000, { kind: "thinking", content: { text: "reasoning" }, digest: "4444444444444444" }),
+        row(4000, { kind: "tool-call", content: { name: "Read" }, digest: "5555555555555555" }),
+      ], []) as never);
+
+    const eligible = await t.query(internal.runs.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
+    expect(eligible.eligible).toContainEqual({ sessionId, runId: "claude:laptop:root-run" });
+    const comparison = await t.mutation(internal.runs.internalShadowCompare, { sessionId });
+    expect(comparison).toMatchObject({
+      runId: "claude:laptop:root-run", daemonRows: 4, fileRows: 4,
+      byKind: { user: { daemon: 1, file: 1 }, "assistant-text": { daemon: 1, file: 1 }, thinking: { daemon: 1, file: 1 }, "tool-call": { daemon: 1, file: 1 } },
+      textRows: 3, textMatches: 3, clean: true,
+    });
+    expect(comparison).not.toHaveProperty("firstDiffSeq");
+    const [storedRun, storedSession, comparisonEvent] = await t.run(async (ctx) => [
+      await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique(),
+      await ctx.db.get(sessionId),
+      await ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", "runs-shadow-compare")).first(),
+    ]);
+    expect(storedRun?.cutoverAt).toEqual(expect.any(Number));
+    expect(storedSession?.rowsFrom).toBe("runs");
+    expect(JSON.stringify(comparisonEvent?.data)).not.toContain(text);
+    const after = await t.query(internal.runs.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
+    expect(after.eligible).not.toContainEqual(expect.objectContaining({ sessionId }));
+  });
+
+  it("reports row-count and text differences at the file row without cutting over", async () => {
+    const t = convexTest(schema, modules);
+    const sessionId = await session(t);
+    await daemonRow(t, sessionId, 0, "user", { text: "daemon text" });
+    await daemonRow(t, sessionId, 1, "system", { text: "extra" });
+    await t.mutation(internal.runs.internalIngest, ingest(
+      run({ sessionId, status: "failed" }),
+      [row(1000, { kind: "user", content: { text: "file text" }, digest: "1111111111111111" })],
+      [],
+    ) as never);
+    const comparison = await t.mutation(internal.runs.internalShadowCompare, { sessionId });
+    expect(comparison).toMatchObject({
+      daemonRows: 2, fileRows: 1, textRows: 1, textMatches: 0,
+      firstDiffSeq: 1000, clean: false,
+      byKind: { system: { daemon: 1, file: 0 }, user: { daemon: 1, file: 1 } },
+    });
+    expect((await t.run((ctx) => ctx.db.get(sessionId)))?.rowsFrom).toBeUndefined();
+  });
+
+  it("continues past 100 rows and never truncates a late mismatch to clean", async () => {
+    const t = convexTest(schema, modules);
+    const sessionId = await session(t);
+    for (let seq = 0; seq < 101; seq += 1) await daemonRow(t, sessionId, seq, "user", { text: `row-${seq}` });
+    await t.mutation(internal.runs.internalIngest, ingest(
+      run({ sessionId, status: "ended" }),
+      Array.from({ length: 101 }, (_, seq) => row(seq, {
+        kind: "user",
+        content: { text: seq === 100 ? "late-mismatch" : `row-${seq}` },
+        digest: seq.toString(16).padStart(16, "0"),
+      })),
+      [],
+    ) as never);
+    const first = await t.mutation(internal.runs.internalShadowCompare, { sessionId });
+    expect(first).toMatchObject({ complete: false, daemonRows: 100, fileRows: 100 });
+    if (first.complete) throw new Error("comparison unexpectedly completed on its first page");
+    expect(await t.run((ctx) => ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", "runs-shadow-compare")).collect())).toEqual([]);
+    const final = await t.mutation(internal.runs.internalShadowCompare, { sessionId, state: first.state } as never);
+    expect(final).toMatchObject({ complete: true, daemonRows: 101, fileRows: 101, textRows: 101, textMatches: 100, firstDiffSeq: 100, clean: false });
+    expect((await t.run((ctx) => ctx.db.get(sessionId)))?.rowsFrom).toBeUndefined();
+  });
+
+  it("admits only terminal run rows and does not suppress their later transition", async () => {
+    const t = convexTest(schema, modules);
+    const sessionId = await session(t);
+    await t.mutation(internal.runs.internalIngest, ingest(run({ sessionId }), [], []) as never);
+    const unknown = await t.query(internal.runs.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
+    expect(unknown.eligible).toEqual([]);
+    await expect(t.mutation(internal.runs.internalShadowCompare, { sessionId })).rejects.toThrow("run is not terminal");
+    await t.mutation(internal.runs.internalIngest, retry(run({ sessionId, status: "ended" }), [], []) as never);
+    const terminal = await t.query(internal.runs.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
+    expect(terminal.eligible).toEqual([{ sessionId, runId: "claude:laptop:root-run" }]);
+  });
+
+  it("paginates terminal candidates beyond the first 100 sessions", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      for (let index = 0; index < 101; index += 1) {
+        const runId = `claude:laptop:candidate-${index.toString().padStart(3, "0")}`;
+        const sessionId = await ctx.db.insert("claudeSessions", {
+          title: runId, kind: "adhoc", repo: "none", status: "ended",
+          statusChangedAt: Date.now(), nextSeq: 0, createdAt: Date.now(), runId,
+        } as never);
+        await ctx.db.insert("runs", { ...run({ runId, rootRunId: runId, sessionId, status: "ended" }), ingestedAt: Date.now() } as never);
+      }
+    });
+    const first = await t.query(internal.runs.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
+    expect(first).toMatchObject({ isDone: false });
+    expect(first.eligible).toHaveLength(100);
+    const second = await t.query(internal.runs.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: first.continueCursor, numItems: 100 } });
+    expect(second).toMatchObject({ isDone: true });
+    expect(second.eligible).toHaveLength(1);
+  });
+
+  it("accepts abandoned lifecycle state and emits paged manifest entries", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.runs.internalIngest, ingest(run({
+        origin: "job", status: "abandoned", abandonedAt: 123,
+        envelopeKey: "runs/claude/laptop/root/registration-hash.json.gz",
+        file: { ...run().file, storeKey: "runs/claude/laptop/root/stored.jsonl.gz" },
+      }), [], []) as never);
+    const stored = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique());
+    expect(stored).toMatchObject({ status: "abandoned", abandonedAt: 123, origin: "job" });
+    const manifest = await t.query(internal.runs.internalManifest, { since: 0 });
+    expect(manifest.entries).toEqual([expect.objectContaining({
+      run_id: "claude:laptop:root-run", thread_id: "root-run", file_version: STORED_HASH,
+      store_key: "runs/claude/laptop/root/stored.jsonl.gz", parent_run_id: null,
+    })]);
+    expect((await t.query(internal.runs.internalManifest, { since: manifest.entries[0].at, afterRunId: manifest.entries[0].run_id, afterFileVersion: manifest.entries[0].file_version })).entries).toEqual([]);
+    await t.mutation(internal.runs.internalIngest, retry(run({ status: "ended" }), [], []) as never);
+    expect((await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique()))?.status).toBe("ended");
+  });
+
+  it("manifests each file version once across retries and equal timestamps", async () => {
+    const t = convexTest(schema, modules);
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+    try {
+      const firstRun = run({ file: { ...run().file, storedHash: VERSION_A_HASH, storeKey: "runs/a.jsonl.gz" } });
+      await t.mutation(internal.runs.internalIngest, ingest(firstRun, [], []) as never);
+      const secondRun = run({ file: { ...run().file, storedHash: VERSION_B_HASH, storeKey: "runs/b.jsonl.gz", bytes: 20, committedLine: 2, committedPrefixSha256: GROWN_PREFIX_HASH } });
+      const secondInput = retry(secondRun, [], []);
+      await t.mutation(internal.runs.internalIngest, secondInput as never);
+      await t.mutation(internal.runs.internalIngest, secondInput as never);
+      const versions = await t.run((ctx) => ctx.db.query("runFileVersions").collect());
+      expect(versions.map((version) => version.fileVersion).sort()).toEqual([VERSION_A_HASH, VERSION_B_HASH]);
+      const manifest = await t.query(internal.runs.internalManifest, { since: 0 });
+      expect(manifest.entries.map((entry) => entry.file_version)).toEqual([VERSION_A_HASH, VERSION_B_HASH]);
+      const resumed = await t.query(internal.runs.internalManifest, {
+        since: manifest.entries[0].at,
+        afterRunId: manifest.entries[0].run_id,
+        afterFileVersion: manifest.entries[0].file_version,
+      });
+      expect(resumed.entries.map((entry) => entry.file_version)).toEqual([VERSION_B_HASH]);
+    } finally {
+      now.mockRestore();
+    }
   });
 });

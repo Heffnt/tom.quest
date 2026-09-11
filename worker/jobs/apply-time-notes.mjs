@@ -327,6 +327,15 @@ async function main() {
       const answer = runClaude(timeNotePrompt(note, state, state.writingStandard), {
         timeoutMs: CLAUDE_TIMEOUT_MS,
         model: MODEL,
+        registration: {
+          origin: "cron:apply-time-notes",
+          kind: "job",
+          ...(typeof note._id === "string" ? { todoId: note._id } : {}),
+          layersKnown: false,
+          layersGiven: [],
+          layersDenied: [],
+          writingStandardSource: "/tts/time-notes",
+        },
       });
       const parsed = extractJsonObject(answer);
       if (

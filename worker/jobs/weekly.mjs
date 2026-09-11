@@ -644,6 +644,14 @@ export async function runWeekly({ force = false, overwrite = false, env = null, 
         model: WEEKLY_MODEL,
         timeoutMs: MODEL_TIMEOUT_MS,
         cwd: os.tmpdir(),
+        registration: {
+          origin: "cron:weekly",
+          kind: "job",
+          layersKnown: false,
+          layersGiven: [],
+          layersDenied: [],
+          writingStandardSource: "/tts/weekly-input",
+        },
       });
       ({ lines, forks } = parseAgendaAnswer(answer));
     } catch (err) {

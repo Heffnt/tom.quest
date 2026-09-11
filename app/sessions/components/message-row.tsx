@@ -122,6 +122,18 @@ function CollapsedRow({
   );
 }
 
+function stringField(content: unknown, key: string): string | undefined {
+  if (typeof content !== "object" || content === null) return undefined;
+  const value = (content as Record<string, unknown>)[key];
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+function stringListField(content: unknown, key: string): string[] {
+  if (typeof content !== "object" || content === null) return [];
+  const value = (content as Record<string, unknown>)[key];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
 export default function MessageRow({
   message,
   toolNames,
@@ -255,6 +267,52 @@ export default function MessageRow({
           </pre>
           {cut}
         </div>
+      );
+    }
+    case "context": {
+      const model = stringField(content, "model") ?? stringField(content, "modelRequested");
+      const layers = stringListField(content, "layersGiven");
+      const cwd = stringField(content, "cwd");
+      const preview = [
+        model && `model ${model}`,
+        layers.length > 0 && `layers ${layers.join(", ")}`,
+        cwd && `cwd ${cwd}`,
+      ].filter((part): part is string => typeof part === "string").join(" · ");
+      const body = contentToText(content);
+      return (
+        <CollapsedRow
+          label="context"
+          preview={preview || previewLine(body)}
+          body={body}
+          cut={cut}
+        />
+      );
+    }
+    case "child-run": {
+      const agentType = stringField(content, "agentType") ?? stringField(content, "agentId") ?? "child run";
+      const model = stringField(content, "model");
+      const status = stringField(content, "status");
+      const childRunId = stringField(content, "childRunId");
+      const body = contentToText(content);
+      return (
+        <CollapsedRow
+          label={agentType}
+          suffix={model}
+          preview={[status, childRunId].filter((part): part is string => part !== undefined).join(" · ") || previewLine(body)}
+          body={body}
+          cut={cut}
+        />
+      );
+    }
+    default: {
+      const body = contentToText(content);
+      return (
+        <CollapsedRow
+          label={String(kind)}
+          preview={previewLine(body)}
+          body={body}
+          cut={cut}
+        />
       );
     }
   }

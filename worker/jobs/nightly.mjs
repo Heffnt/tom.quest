@@ -23,13 +23,12 @@
 //      one model call over the model-of-tom pages, and applies the lines it
 //      proposes that the rules allow — one "learning-change" row each, with
 //      the commit, once the push has made it. See learningStep.
-//   4. sessions — archives every Codex rollout and Claude SDK session file on
-//      this box that WikiTom's sessions/ does not already hold at that
-//      content, in phase 1's layout, and appends the manifest — the sweep
-//      behind the session-end archive the daemon makes through the same
-//      function (session-archive.mjs).
-//   5. repo-learning — reads the transcripts step 4 just archived for what
-//      the night's sessions learned about the REPOSITORIES they worked in,
+//   4. runs — pages the verified run manifest from Convex and appends its
+//      already-normalized entries to WikiTom's monthly manifests. Transcript
+//      bytes stay in the configured object store rather than entering git.
+//   5. repo-learning — reads the legacy WikiTom session transcripts still
+//      available to this established synthesis step for what those sessions
+//      learned about the REPOSITORIES they worked in,
 //      and writes the evidence entries under model-of-tom/evidence/repos/.
 //      The synthesis lines themselves live in each repo's own AGENTS.md, so
 //      what lands here is proposals and evidence, never the rule files.
@@ -68,7 +67,7 @@
 // THE WIKITOM CHECKOUT is /root/wikitom (setup.sh clones it over the alias
 // when absent). It is the one durable-looking thing on this box that is not
 // state: everything in it is either pushed or reproducible from Convex and
-// the session files, and a lost checkout is one clone away. The deploy key
+// the object-backed run manifest, and a lost checkout is one clone away. The deploy key
 // at /root/.ssh/wikitom is readable by root only; this job never prints it,
 // and never prints TTS_WORKER_KEY.
 //
@@ -89,11 +88,12 @@ import {
   CLAUDE_ACCOUNTS_DIR,
   CODEX_SESSIONS_DIR,
   LOCK_WAIT_SECONDS,
+  RUNS_DIR,
   SESSIONS_DIR,
   SPLIT_BYTES,
   WIKITOM_DIR,
   WIKITOM_LOCK,
-  archiveSessionFiles,
+  appendRunManifest,
   bufferLines,
   claudeEntry,
   codexMetaOf,
@@ -101,6 +101,8 @@ import {
   discoverSessionFiles,
   gzip,
   indexManifests,
+  isRunManifestEntry,
+  latestRunManifestCursor,
   readManifests,
   redactSecrets,
   sessionDateOf,
@@ -190,6 +192,7 @@ export {
   CLAUDE_ACCOUNTS_DIR,
   CODEX_SESSIONS_DIR,
   LOCK_WAIT_SECONDS,
+  RUNS_DIR,
   SESSIONS_DIR,
   SPLIT_BYTES,
   WIKITOM_DIR,
@@ -269,7 +272,7 @@ function git(dir, ...args) {
 // repo-learning runs AFTER sessions because it reads the transcripts that
 // step archives, and BEFORE push so its writes ride the night's commit.
 // NOTHING here is reordered without moving the comment with it.
-const STEPS = ["delivery", "snapshot", "learning", "sessions", "repo-learning", "push", "post", "repo-rules"];
+const STEPS = ["delivery", "snapshot", "learning", "runs", "repo-learning", "push", "post", "repo-rules"];
 // The repo checkouts whose AGENTS.md files ride into Convex beside the
 // model-of-tom layers (the dynamic-context round). Convex has no filesystem, so
 // the assembler cannot read a checkout at all — a run with no checkout of its
@@ -288,7 +291,7 @@ const REPO_CHECKOUTS = [
 ];
 // The five that write the WikiTom checkout. The post runs under the same
 // lock after them (see main), reading what they left.
-const LOCKED_STEPS = ["snapshot", "learning", "sessions", "repo-learning", "push"];
+const LOCKED_STEPS = ["snapshot", "learning", "runs", "repo-learning", "push"];
 // The steps that never read the WikiTom checkout: delivery asks Convex what it
 // delivered, repo-rules reads a different repo entirely. A night with no
 // WikiTom checkout still runs these two — see main.
@@ -1611,6 +1614,13 @@ export async function learningStep(run, deps = {}) {
       model: LEARNING_MODEL,
       timeoutMs: LEARNING_TIMEOUT_MS,
       maxTurns: 4,
+      registration: {
+        origin: "cron:nightly",
+        kind: "job",
+        layersKnown: false,
+        layersGiven: [],
+        layersDenied: [],
+      },
     });
     const result = applyLearningChanges(pages, parseLearningAnswer(answer), {
       day: run.day,
@@ -1730,33 +1740,58 @@ export async function recordLearningRows(run, deps = {}) {
   }
 }
 
-// ── 3. sessions ──────────────────────────────────────────────────────────────
-async function sessionsStep(run) {
-  // The sweep: every session file on the box the manifests do not hold at
-  // its content (session-archive.mjs, the one home the daemon's session-end
-  // archive shares). The lock is main()'s.
-  const { archived } = archiveSessionFiles({
-    checkoutDir: run.dir,
-    day: run.day,
-    codexDir: CODEX_SESSIONS_DIR,
-    accountsDir: CLAUDE_ACCOUNTS_DIR,
-    log: (line) => console.error(`[nightly] sessions: ${line}`),
-  });
-  console.log(`[nightly] sessions: ${archived.length} file(s) archived`);
-  if (archived.length > 0) {
+// ── 3. runs ──────────────────────────────────────────────────────────────────
+export async function runsStep(run, deps = {}) {
+  const fetchImpl = deps.fetch ?? globalThis.fetch;
+  const checkpoint = latestRunManifestCursor(run.dir);
+  let cursor = null;
+  let manifested = 0;
+  let received = 0;
+  do {
+    const params = new URLSearchParams({ since: String(checkpoint.at) });
+    if (checkpoint.runId !== undefined && checkpoint.fileVersion !== undefined) {
+      params.set("afterRunId", checkpoint.runId);
+      params.set("afterFileVersion", checkpoint.fileVersion);
+    }
+    if (cursor !== null) params.set("cursor", cursor);
+    const response = await fetchImpl(
+      `${run.env.CONVEX_SITE_URL.replace(/\/+$/, "")}/runs/manifest?${params}`,
+      { headers: { "X-Sessions-Key": run.env.SESSIONS_WORKER_KEY } },
+    );
+    if (!response.ok) throw new Error(`/runs/manifest -> HTTP ${response.status}`);
+    const page = await response.json();
+    if (
+      !Array.isArray(page?.entries)
+      || page.entries.length > 200
+      || !page.entries.every(isRunManifestEntry)
+      || !(page.nextCursor === null || typeof page.nextCursor === "string")
+    ) {
+      throw new Error("/runs/manifest returned an invalid page");
+    }
+    // main() holds the WikiTom lock around this whole step. Land each source
+    // page before fetching the next so neither response rows nor dedup state
+    // grow with the history being manifested.
+    received += page.entries.length;
+    manifested += appendRunManifest(run.dir, page.entries).length;
+    cursor = page.nextCursor;
+  } while (cursor !== null);
+
+  console.log(`[nightly] runs: ${manifested} file version(s) manifested`);
+  if (manifested > 0) {
     run.commits.push({
-      paths: [SESSIONS_DIR],
-      message: `sessions: ${run.day} — ${archived.length} file${archived.length === 1 ? "" : "s"} archived from the box`,
+      paths: [RUNS_DIR],
+      message: `runs: ${run.day} — ${manifested} file version${manifested === 1 ? "" : "s"} manifested`,
     });
   }
-  return { archived: archived.length };
+  return { manifested, received, since: checkpoint.at };
 }
 
 // ── 4. repo-learning ─────────────────────────────────────────────────────────
 // The nightly learning step maintains what the agents know about TOM. This one
 // maintains what they know about his REPOSITORIES: the nested AGENTS.md files.
-// It runs AFTER the sessions step because it reads the transcripts that step
-// archives, and BEFORE the push so its evidence writes ride the night's commit.
+// It runs after the manifest step, but still reads only the legacy transcripts
+// already present in WikiTom; teaching it the object store is later work. It
+// runs before push so its evidence writes ride the night's commit.
 //
 // IT NEVER EDITS A RULE FILE. Those live in other repositories and merge
 // through their own checks, so what lands tonight is the evidence entry alone,
@@ -1894,7 +1929,19 @@ export async function repoLearningStep(run, deps = {}) {
       [...onRecord, ...prior].map((l) => `- ${l}`).join("\n"),
       run.day,
     ),
-    { cwd: run.dir, model: LEARNING_MODEL, timeoutMs: LEARNING_TIMEOUT_MS, maxTurns: 4 },
+    {
+      cwd: run.dir,
+      model: LEARNING_MODEL,
+      timeoutMs: LEARNING_TIMEOUT_MS,
+      maxTurns: 4,
+      registration: {
+        origin: "cron:nightly",
+        kind: "job",
+        layersKnown: false,
+        layersGiven: [],
+        layersDenied: [],
+      },
+    },
   );
   const proposals = parseRepoAnswer(answer, extractJsonObject).filter(
     (p) => p !== null && typeof p === "object" && seenRepos.has(p.repo) && typeof p.file === "string",
@@ -2065,7 +2112,7 @@ export function commitTree(dir, commits, day, { guardRebase = true } = {}) {
     git(dir, ...GIT_IDENTITY, "commit", "-q", "-m", c.message);
     made.push(c.message);
   }
-  addPaths(dir, [SNAPSHOT_DIR, SESSIONS_DIR, MODEL_OF_TOM_DIR]);
+  addPaths(dir, [SNAPSHOT_DIR, SESSIONS_DIR, RUNS_DIR, MODEL_OF_TOM_DIR]);
   if (stagedChanges(dir)) {
     const message = `nightly: ${day} — changes an earlier run left uncommitted`;
     git(dir, ...GIT_IDENTITY, "commit", "-q", "-m", message);
@@ -2304,7 +2351,7 @@ async function main() {
     );
     return;
   }
-  const env = loadEnv();
+  const env = loadEnv({ require: ["SESSIONS_WORKER_KEY"] });
   const run = {
     env,
     now,
@@ -2355,7 +2402,7 @@ async function main() {
     delivery: deliveryStep,
     snapshot: snapshotStep,
     learning: learningStep,
-    sessions: sessionsStep,
+    runs: runsStep,
     "repo-learning": repoLearningStep,
     push: pushStep,
     post: postStep,
@@ -2417,7 +2464,7 @@ async function recordSummary(run, only) {
           changed: run.results.snapshot.changed,
         }
       : null,
-    sessions: run.results.sessions ?? null,
+    runs: run.results.runs ?? null,
     delivery: run.results.delivery ?? null,
     learning: run.results.learning
       ? {
