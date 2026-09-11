@@ -113,6 +113,18 @@ describe("runs", () => {
     expect(await t.mutation(internal.runs.internalIngest, ingest(grandchild, [row(0, { depth: 2 })]) as never))
       .toMatchObject({ ok: true, inserted: 1 });
 
+    // The second grandchild reads the placeholder its sibling created; before
+    // that placeholder carried a true position it derived depth 1 from it and
+    // was refused in turn.
+    const sibling = run({
+      runId: "claude:laptop:root-run/sibling-agent", rootRunId: "claude:laptop:root-run",
+      parentRunId: "claude:laptop:root-run/middle-agent", depth: 2, kind: "subagent",
+      spawnedByToolUseId: "exact-tool-use",
+      file: { ...run().file, path: "C:/sibling.jsonl" },
+    });
+    expect(await t.mutation(internal.runs.internalIngest, ingest(sibling, [row(0, { depth: 2 })]) as never))
+      .toMatchObject({ ok: true, inserted: 1 });
+
     const middle = run({
       runId: "claude:laptop:root-run/middle-agent", rootRunId: "claude:laptop:root-run",
       parentRunId: "claude:laptop:root-run", depth: 1, kind: "subagent",
@@ -122,9 +134,11 @@ describe("runs", () => {
     expect(await t.mutation(internal.runs.internalIngest, ingest(middle, [row(0, { depth: 1 })]) as never))
       .toMatchObject({ ok: true, inserted: 1 });
 
-    const landed = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run/grandchild-agent")).unique());
-    expect(landed).toMatchObject({ depth: 2, rootRunId: "claude:laptop:root-run", parentRunId: "claude:laptop:root-run/middle-agent" });
-    expect(landed?.file.path).toBe("C:/grandchild.jsonl");
+    for (const [runId, path] of [["claude:laptop:root-run/grandchild-agent", "C:/grandchild.jsonl"], ["claude:laptop:root-run/sibling-agent", "C:/sibling.jsonl"]] as const) {
+      const landed = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique());
+      expect(landed, runId).toMatchObject({ depth: 2, rootRunId: "claude:laptop:root-run", parentRunId: "claude:laptop:root-run/middle-agent" });
+      expect(landed?.file.path).toBe(path);
+    }
   });
 
   it("refuses malformed identifiers, numeric facts, and child edges before writes", async () => {

@@ -199,18 +199,16 @@ export const internalIngest = internalMutation({
       depth = existing.depth;
     } else if (!args.run.parentRunId) {
       if (args.run.rootRunId !== args.run.runId || args.run.depth !== 0 || !args.run.linkKnown) return { ok: false as const, reason: "invalid root run" };
-    } else if (knownParent) {
+    } else if (knownParent && !isStubFile(knownParent.file)) {
       rootRunId = knownParent.rootRunId;
       depth = knownParent.depth + 1;
-    } else {
-      // A missing parent is a root stub until its own file names its parent.
-      // Filling that stub repairs this run and its descendants below. The depth
-      // stays the one the CLI sidecar gave this run: the sweep reaches a
-      // grandchild before its parent whenever the file names sort that way, and
-      // inventing depth 1 here made every row of a deeper run fail the row-depth
-      // check below and dead-letter the whole run on a permanent 400.
-      rootRunId = args.run.parentRunId;
     }
+    // Anything else — a parent nobody has swept yet — keeps the depth and the
+    // root the CLI's own sidecar gave this run. The sweep reaches a grandchild
+    // before its parent whenever the file names sort that way, and deriving a
+    // position from a parent that is not there yet made every row of a deeper
+    // run fail the row-depth check below, which dead-lettered the whole run on
+    // a permanent 400.
     let run = { ...args.run, rootRunId, depth };
     // A box Claude root has the same CLI id as its live session. Resolve that
     // exact join in the ingest transaction so a missed daemon stamp repairs
@@ -290,7 +288,11 @@ export const internalIngest = internalMutation({
 
     const ingestedAt = Date.now();
     if (run.parentRunId && !knownParent) {
-      await ctx.db.insert("runs", stub({ runId: run.parentRunId, rootRunId: run.parentRunId, depth: 0, linkKnown: true }, run, "unknown"));
+      // The placeholder takes its position from the child's own file rather
+      // than calling itself a root: a run that knows it sits at depth 3 knows
+      // its parent sits at depth 2, and the next sibling to arrive then reads
+      // a true position instead of a self-root at depth 0.
+      await ctx.db.insert("runs", stub({ runId: run.parentRunId, rootRunId: run.rootRunId, depth: Math.max(run.depth - 1, 0), linkKnown: true }, run, "unknown"));
     }
     if (!existing) {
       await ctx.db.insert("runs", { ...run, ingestedAt });
