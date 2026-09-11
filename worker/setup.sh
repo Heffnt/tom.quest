@@ -503,6 +503,20 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 37 3 * * * root /usr/bin/flock -n /var/lock/tts-runs-sweep-full.lock /usr/bin/node /opt/tts/runs/sweep.mjs --full >> /var/log/tts/runs-sweep.log 2>&1
 5-59/10 * * * * root /usr/bin/flock -n /var/lock/tts-runs-compare.lock /usr/bin/node /opt/tts/runs-compare.mjs >> /var/log/tts/runs-compare.log 2>&1
 
+# The backlog import is a one-time chore with nobody waiting on it: hourly at
+# :07, not every two minutes, so a ten-minute pass can never overlap itself and
+# the box is left alone in between. It has its own lock and never shares the
+# sweeper's — a live sweep must never wait behind an old one. It is inert until
+# the bucket exists (it refuses a local store) and it deletes nothing.
+# Build the work list once by hand first: node /opt/tts/runs/backlog.mjs --build-list
+7 * * * * root /usr/bin/flock -n /var/lock/tts-runs-backlog.lock /usr/bin/node /opt/tts/runs/backlog.mjs --run >> /var/log/tts/runs-backlog.log 2>&1
+
+# Opening an old run has a PERSON waiting at the other end, so this one runs
+# every minute and exits immediately when the queue is empty. One request per
+# tick keeps a tick bounded; a request the box cannot serve is answered failed,
+# because a queue is drained by answers, not by attempts.
+* * * * * root /usr/bin/flock -n /var/lock/tts-runs-materialize.lock /usr/bin/node /opt/tts/runs/materialize.mjs --serve >> /var/log/tts/runs-materialize.log 2>&1
+
 # Log hygiene: truncate the TTS logs on the 1st of each month. Deliberately
 # crude — these logs are debugging convenience, not state, and the Jarvis Box keeps
 # nothing it can't lose.
