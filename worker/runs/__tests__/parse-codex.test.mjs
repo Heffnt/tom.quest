@@ -31,6 +31,15 @@ describe("Codex parser", () => {
     expect(parse([codexMeta(), codexTokenCount({ total: 20 }), codexTokenCount({ total: 30 })]).run.outcome.totals.totalTokens).toBe(30);
     expect(parse([codexMeta(), codexUsageRecord({ usage: { input_tokens: 2, output_tokens: 3 } })]).run.outcome.totals.totalTokens).toBe(5);
   });
+  it("records per-request long-context evidence without adding duplicate totals", () => {
+    const result = parse([
+      codexMeta(), codexTurnContext({ model: "gpt-5.6-sol" }),
+      codexTokenCount({ input: 10, cachedInput: 0, cacheWrite: 0, output: 2, total: 12, lastInput: 300_000, responseId: "request-1" }),
+      codexTokenCount({ input: 10, cachedInput: 0, cacheWrite: 0, output: 2, total: 12, lastInput: 300_000, responseId: "request-1" }),
+    ]);
+    expect(result.run.outcome.totals).toMatchObject({ inputTokens: 10, totalTokens: 12, longContextRequests: 1 });
+    expect(result.run.outcome.costUsd).toBeUndefined();
+  });
   it("does not duplicate a completed last assistant message", () => {
     const result = parse([codexMeta(), codexResponseItem("message", { role: "assistant", content: [{ output_text: "done" }] }), codexTaskComplete({ lastAgentMessage: "done" })]);
     expect(result.rows.filter((row) => row.kind === "assistant-text")).toHaveLength(1);
@@ -38,6 +47,21 @@ describe("Codex parser", () => {
   it("reports a repeated model switch only once", () => {
     const result = parse([codexMeta(), codexTurnContext({ model: "first" }), codexTurnContext({ model: "second" }), codexTurnContext({ model: "second" })]);
     expect(result.rows.filter((row) => row.kind === "error" && /model changed/.test(row.content.error))).toHaveLength(1);
+  });
+  it("uses an absolute base line when parsing an incremental tail", () => {
+    const sourceRows = Array.from({ length: 16 }, (_, index) => codexResponseItem("message", { role: "assistant", content: [{ output_text: `turn-${index}` }] }));
+    const first = parseCodexFile({ path: "/rollout.jsonl", host: "laptop", fileVersion: "v", text: jsonl(sourceRows.slice(0, 10)) });
+    const result = parseCodexFile({
+      path: "/rollout.jsonl", host: "laptop", fileVersion: "v2", fromLine: first.lastLine, baseLine: 10,
+      text: jsonl(sourceRows.slice(10)),
+    });
+    expect(first.lastLine).toBe(10);
+    expect(result.rows).toHaveLength(6);
+    expect(result.rows.map((row) => row.seq)).toEqual([11_000, 12_000, 13_000, 14_000, 15_000, 16_000]);
+    expect(result.rows.map((row) => row.provenance.lineStart)).toEqual([10, 11, 12, 13, 14, 15]);
+    expect(result.rows.map((row) => row.content.text)).toEqual(["turn-10", "turn-11", "turn-12", "turn-13", "turn-14", "turn-15"]);
+    expect(result.rows.some((row) => row.kind === "context")).toBe(false);
+    expect(result.lastLine).toBe(16);
   });
   it("accounts for every zero-row state line while task_complete stays emitted", () => {
     const result = parse([

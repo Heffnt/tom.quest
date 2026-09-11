@@ -81,6 +81,63 @@ describe("redactSecrets replaces every credential shape", () => {
       "export GH_TOKEN=[redacted:github]\nexport SLACK=[redacted:slack]",
     );
   });
+
+  it("redacts an AWS secret access key when its access ID precedes it", () => {
+    const accessId = t("AK", "IA", "1234567890ABCDEF");
+    const secret = t("Ab1dE2fG3hI4jK5l", "Mn6oP7qR8sT9uV0w", "XyZ1+/aB");
+    const out = redactSecrets(`${accessId}: ${secret}`);
+
+    expect(out).toBe("[redacted:aws]: [redacted:aws]");
+    expect(out).not.toContain(accessId);
+    expect(out).not.toContain(secret);
+  });
+
+  it("redacts an AWS secret access key across the access-ID line boundary", () => {
+    const accessId = t("AK", "IA", "FEDCBA0987654321");
+    const secret = t("Qw1eR2tY3uI4oP5a", "Sd6fG7hJ8kL9zX0c", "Vb2nM3qW");
+    const out = redactSecrets(`${accessId}\n${secret}`);
+
+    expect(out).toBe("[redacted:aws]\n[redacted:aws]");
+    expect(out).not.toContain(accessId);
+    expect(out).not.toContain(secret);
+  });
+});
+
+describe("redactSecrets keeps named secret keys while removing their values", () => {
+  const value = t("r4Nd0m", "-Secret_Value.1234567890-abcdefghijklmnopqrstuvwxyz");
+  const CASES = [
+    ["equals assignment", "password", `password=${value}`, "[redacted:secret]"],
+    ["colon assignment", "passwd", `passwd: ${value}`, "[redacted:secret]"],
+    ["JSON key and value", "client_secret", `{"client_secret":"${value}"}`, "[redacted:secret]"],
+    ["upper-case environment name", "AWS_SECRET_ACCESS_KEY", `AWS_SECRET_ACCESS_KEY=${value}`, "[redacted:aws]"],
+    ["authorization assignment", "AUTHORIZATION", `AUTHORIZATION=${value}`, "[redacted:secret]"],
+    ["named high-entropy value", "token", `token ${value}`, "[redacted:secret]"],
+  ];
+
+  for (const [name, key, input, marker] of CASES) {
+    it(`redacts a ${name}`, () => {
+      const out = redactSecrets(input);
+      expect(out).toContain(key);
+      expect(out).toContain(marker);
+      expect(out).not.toContain(value);
+    });
+  }
+
+  it("keeps quoted JSON valid after replacing its value", () => {
+    const out = redactSecrets(`{"api_key":"${value}","ordinary":"kept"}`);
+    expect(JSON.parse(out)).toEqual({ api_key: "[redacted:secret]", ordinary: "kept" });
+  });
+
+  it("redacts an entire PEM private-key block", () => {
+    const body = [
+      t("-----BEGIN", " PRIVATE KEY-----"),
+      t("MIIE", "vFakePrivateKeyMaterial0123456789"),
+      t("-----END", " PRIVATE KEY-----"),
+    ].join("\n");
+    const out = redactSecrets(`before\n${body}\nafter`);
+    expect(out).toBe("before\n[redacted:pem]\nafter");
+    expect(out).not.toContain("FakePrivateKeyMaterial");
+  });
 });
 
 describe("redactSecrets leaves ordinary text alone", () => {
@@ -94,6 +151,7 @@ describe("redactSecrets leaves ordinary text alone", () => {
     "AIza on its own says nothing",
     "xoxb- with nothing after it",
     "Authorization: Bearer <token>",
+    `token ${"a".repeat(40)}`,
     "we discussed sk- prefixes and gh_ prefixes at length",
   ];
   for (const text of INNOCENT) {
