@@ -1,0 +1,97 @@
+{
+  "name": "write",
+  "kind": "layer",
+  "note": null,
+  "cases": [
+    {
+      "id": "layer-write-pos-merge-gate-answer",
+      "negative": false,
+      "prompt": "Tom asks why the merge gate refused his branch. Write him the answer.",
+      "why": "prose he reads states the mechanism directly, so a simile standing in for the explanation is the write layer failing where it must apply",
+      "expect": {
+        "mustNotName": ["think of it like", "think of it as", "is like a", "as if it were a"]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "layer-write-pos-run-report",
+      "negative": false,
+      "prompt": "The nightly evals run scored 27 of 29 items with no regression. Tell Tom.",
+      "why": "a report to him carries the facts and stops, so an opening compliment or a closing offer of further help is the write layer failing where it must apply",
+      "expect": {
+        "mustNotName": ["great question", "i'd be happy to", "hope this helps", "let me know if"]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "layer-write-pos-shortfall",
+      "negative": false,
+      "prompt": "Four of the eight todos Tom marked for yesterday were never touched. Tell him where the day stands.",
+      "why": "a shortfall reaches him as a fact about what happened, never as a judgment of him and never as generic productivity advice",
+      "expect": {
+        "mustNotName": ["you should have", "you failed to", "try to be more", "next time, make sure"]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "layer-write-pos-change-account",
+      "negative": false,
+      "prompt": "Tom asks what changed in the redaction fix that landed overnight. Write him the answer.",
+      "why": "he never reads code or diffs, so an account of a change that sends him to the source is the write layer failing where it must apply",
+      "expect": {
+        "mustNotName": ["skim the diff", "look at the code", "read the diff", "see the patch"]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "layer-write-neg-commit-message",
+      "negative": true,
+      "prompt": "Write the commit message for this diff.",
+      "why": "a commit message is for the repository, not for Tom — the write layer's address-to-Tom rules must not fire on it",
+      "expect": {
+        "mustNotName": ["ground-up", "Tom,", "as we discussed"]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "layer-write-neg-module-comment",
+      "negative": true,
+      "prompt": "Write the header comment for a new module that assembles one run's prompt out of the stable layers.",
+      "why": "a source comment is read by the next agent working in the file, so the register rules for text he reads do not govern it",
+      "expect": {
+        "mustNotName": ["ground-up", "Tom,", "you already know", "as we discussed"]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "layer-write-neg-test-name",
+      "negative": true,
+      "prompt": "Name the vitest case that checks the retry rule stops at the first passing trial.",
+      "why": "a test name is read off a terminal by whoever ran the suite, so nothing shaped for his reading belongs in it",
+      "expect": {
+        "mustNotName": ["ground-up", "Tom,", " Tom "]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "layer-write-neg-cli-error",
+      "negative": true,
+      "prompt": "Write the error line the prelude assembler prints when --wikitom names no directory.",
+      "why": "a command-line error is read by whatever ran the command, so it stays one factual line rather than prose shaped for him",
+      "expect": {
+        "mustNotName": ["ground-up", "Tom,", " Tom ", "as we discussed"]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "layer-write-neg-mechanical-brief",
+      "negative": true,
+      "prompt": "Write the brief for a Codex child that renames one helper across the worker directory. Nothing it produces reaches Tom.",
+      "why": "a brief names the write layer only when its child's output reaches him, so a purely mechanical child's brief must not carry it",
+      "expect": {
+        "mustNotName": ["writing.md", "ground.md", "ground-up"]
+      },
+      "confirmedByTom": false
+    }
+  ]
+}

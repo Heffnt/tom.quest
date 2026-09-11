@@ -176,6 +176,15 @@ cp "$WORKER_DIR"/jobs/context-relevance.mjs /opt/tts/worker/jobs/context-relevan
 # evals.mjs imports gate() from it so the box stamps a run with the SAME rule
 # the check applies, and there is one body of what a regression is.
 cp "$WORKER_DIR"/../scripts/evals-check.mjs /opt/tts/evals-check.mjs
+# The mechanical half of the writing standard, beside it for the same reason.
+# evals.mjs runs failuresFor() as a deterministic check BEFORE calling the
+# judge: a text that broke a rule Tom wrote down is not a matter of reading,
+# and the judge is the expensive half. Without this copy the box silently ran
+# no rules at all and the run still said "pass" — the runner treats an absent
+# file as "no rules ran" so a checkout without it is not a failure, which is
+# exactly why the copy has to be here rather than assumed. Its only imports
+# are node builtins, so one file is the whole of it.
+cp "$WORKER_DIR"/../scripts/check-writing-standard.mjs /opt/tts/check-writing-standard.mjs
 cp "$WORKER_DIR"/jobs/markdown-sections.mjs /opt/tts/worker/jobs/markdown-sections.mjs
 # The Codex wrapper is a repo script, not a job, but sessions need it from ANY
 # repo — including checkouts that predate it, and repos that are not tom.quest

@@ -1,5 +1,6 @@
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createHmac } from "node:crypto";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 
@@ -338,5 +339,264 @@ describe("phase 3 run routes", () => {
     expect((await retry.json()).entries).toEqual([]);
     expect((await t.fetch("/runs/manifest?since=0&afterRunId=only-half", { headers: { "X-Sessions-Key": "right" } })).status).toBe(400);
     expect((await t.fetch("/runs/manifest", { headers: { "X-Sessions-Key": "right" } })).status).toBe(400);
+  });
+});
+
+// ── The reaction door: an emoji on the morning becomes a label ────────────────
+// The cheapest act Tom can perform — the other three label doors each cost him
+// a sentence — so the gate has to be exact about whose emoji it is and which
+// room it landed in. Everything it turns away answers 200: anything else makes
+// Slack retry an event we have already decided we do not want.
+describe("POST /slack/events: a reaction on the morning digest", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  const SECRET = "slack-signing-secret";
+  const TOM = "U0TOM";
+  const OTHER = "U0SOMEONEELSE";
+  const DIGEST_TS = "1757000000.001200";
+  const REACTED_AT = "1757000100.000200";
+  const TOKEN = "8f14e45f-ceea-467a-9a36-dedd4bea2543";
+  const RUN_ID = "claude:box:write-slack-run";
+
+  function reactionEnv() {
+    vi.stubEnv("SLACK_SIGNING_SECRET", SECRET);
+    vi.stubEnv("TOM_SLACK_USER_ID", TOM);
+    vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", TTS_TODAY);
+  }
+
+  function signed(value: unknown) {
+    const raw = JSON.stringify(value);
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const mac = createHmac("sha256", SECRET).update(`v0:${timestamp}:${raw}`).digest("hex");
+    return {
+      headers: {
+        "Content-Type": "application/json",
+        "X-Slack-Request-Timestamp": timestamp,
+        "X-Slack-Signature": `v0=${mac}`,
+      },
+      body: raw,
+    };
+  }
+
+  async function react(
+    t: ReturnType<typeof convexTest>,
+    {
+      type = "reaction_added",
+      user = TOM,
+      channel = TTS_TODAY,
+      ts = DIGEST_TS,
+      reaction = "+1",
+    }: Partial<{ type: string; user: string; channel: string; ts: string; reaction: string }> = {},
+  ) {
+    const res = await t.fetch("/slack/events", {
+      method: "POST",
+      ...signed({
+        type: "event_callback",
+        event_id: `Ev${ts}${reaction}${type}`,
+        event: {
+          type,
+          user,
+          reaction,
+          item: { type: "message", channel, ts },
+          event_ts: REACTED_AT,
+        },
+      }),
+    });
+    expect(res.status).toBe(200);
+    return (await res.json()) as Record<string, unknown>;
+  }
+
+  /** A morning the model wrote: the digest-sent row carries the Slack ts Tom
+   *  reacts to and the token of the run that wrote it, and that run exists. */
+  async function aMorning(t: ReturnType<typeof convexTest>) {
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: 1_757_000_000_000,
+        kind: "digest-sent",
+        data: { day: "2026-09-11", slackTs: DIGEST_TS, writtenBy: "fable", runToken: TOKEN },
+      });
+      await ctx.db.insert("runs", {
+        runId: RUN_ID, rootRunId: RUN_ID, depth: 0, linkKnown: true, origin: "cron:write-slack",
+        host: "box", runner: "claude", parserVersion: "runs-parser-1", kind: "job", status: "ended",
+        startedAt: 1_756_999_000_000, lastLineAt: 1_757_000_000_000, attachments: [],
+        model: "claude-fable", regToken: TOKEN,
+        outcome: {
+          finalTextSeq: 4, turns: 1, toolCalls: 0,
+          totals: {
+            inputTokens: 10, cacheReadTokens: 20, cacheWriteTokens: 30, cacheWrite5mTokens: 30,
+            cacheWrite1hTokens: 0, cacheWriteBreakdownKnown: true, outputTokens: 40,
+            thinkingTokens: 5, totalTokens: 100,
+          },
+        },
+        file: {
+          path: "/var/log/run.jsonl", sourceHash: "a".repeat(64), storedHash: "b".repeat(64),
+          bytes: 1, storedBytes: 1, committedLine: 1, committedPrefixSha256: "c".repeat(64),
+        },
+        ingestedAt: 1_757_000_000_000,
+      });
+      const rows = [
+        { seq: 0, kind: "context" as const, text: "the prelude" },
+        { seq: 4, kind: "assistant-text" as const, text: "the morning" },
+      ];
+      for (const row of rows) {
+        await ctx.db.insert("claudeMessages", {
+          runId: RUN_ID, seq: row.seq, turn: 0, kind: row.kind,
+          content: { text: row.text }, createdAt: 1_757_000_000_000 + row.seq,
+        });
+      }
+    });
+  }
+
+  const labels = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => await ctx.db.query("runLabels").collect());
+
+  it("writes one label for Tom's emoji on the morning message", async () => {
+    reactionEnv();
+    const t = convexTest(schema, modules);
+    await aMorning(t);
+    expect(await react(t)).toMatchObject({ ok: true, wrote: true, runId: RUN_ID });
+    expect(await labels(t)).toMatchObject([{
+      runId: RUN_ID, source: "digest-reaction", actor: "tom", polarity: "good", judgment: true,
+      ref: `reaction:${TTS_TODAY}:${DIGEST_TS}:+1`,
+      // A Slack ts is seconds with a fraction, never a millisecond number.
+      at: 1_757_000_100_000,
+    }]);
+  });
+
+  it("ignores an emoji from anyone but Tom, and one in another room", async () => {
+    reactionEnv();
+    const t = convexTest(schema, modules);
+    await aMorning(t);
+    expect(await react(t, { user: OTHER })).toMatchObject({ ignored: true });
+    expect(await react(t, { channel: NEEDS_YOU })).toMatchObject({ ignored: true });
+    expect(await labels(t)).toEqual([]);
+  });
+
+  it("admits nothing while TOM_SLACK_USER_ID or the room's id is unset", async () => {
+    vi.stubEnv("SLACK_SIGNING_SECRET", SECRET);
+    vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", TTS_TODAY);
+    const t = convexTest(schema, modules);
+    await aMorning(t);
+    expect(await react(t)).toMatchObject({ ignored: true });
+    vi.stubEnv("TOM_SLACK_USER_ID", TOM);
+    vi.stubEnv("SLACK_TTS_TODAY_CHANNEL_ID", "");
+    expect(await react(t)).toMatchObject({ ignored: true });
+    expect(await labels(t)).toEqual([]);
+  });
+
+  it("deletes the label when the emoji is taken back", async () => {
+    reactionEnv();
+    const t = convexTest(schema, modules);
+    await aMorning(t);
+    await react(t);
+    expect(await labels(t)).toHaveLength(1);
+    expect(await react(t, { type: "reaction_removed" })).toMatchObject({ removed: true });
+    expect(await labels(t)).toEqual([]);
+  });
+
+  // ── The two reads the exporter and the harness run on ──────────────────────
+  describe("GET /tts/label-input and /tts/run-by-token", () => {
+    const key = { "X-TTS-Key": "s3cret" };
+
+    it("builds an item from the label, the run and the rows the judgment covers", async () => {
+      reactionEnv();
+      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+      const t = convexTest(schema, modules);
+      await aMorning(t);
+      await react(t);
+      const res = await t.fetch("/tts/label-input", { headers: key });
+      expect(res.status).toBe(200);
+      const { items } = (await res.json()) as { items: Record<string, any>[] };
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({
+        source: "digest-reaction",
+        polarity: "good",
+        run: { runId: RUN_ID, kind: "job", model: "claude-fable" },
+        link: { subjectKey: "digest:2026-09-11" },
+      });
+      expect(items[0].rows.contextRow).toMatchObject({ seq: 0, kind: "context" });
+      expect(items[0].rows.spanRows).toMatchObject([{ seq: 4, kind: "assistant-text" }]);
+    });
+
+    // The 30-day window is the store's, not the corpus's: a label outlives the
+    // run it names, and the exporter counts what it cannot build rather than
+    // fetching an evicted run back through a second reader.
+    it("returns a null run for a label whose run has been evicted", async () => {
+      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+      const t = convexTest(schema, modules);
+      await t.run(async (ctx) => {
+        await ctx.db.insert("runLabels", {
+          runId: "claude:box:evicted-run", source: "digest-reaction", actor: "tom",
+          polarity: "good", meaning: "Tom reacted with +1 to the morning digest", judgment: true,
+          ref: `reaction:${TTS_TODAY}:${DIGEST_TS}:+1`, at: 1_757_000_100_000,
+        });
+      });
+      const { items } = (await (await t.fetch("/tts/label-input", { headers: key })).json()) as
+        { items: Record<string, any>[] };
+      expect(items).toMatchObject([{ run: null, rows: { contextRow: null, spanRows: [] } }]);
+    });
+
+    it("answers a run by its token, null for one not swept yet, 400 for a non-token", async () => {
+      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+      const t = convexTest(schema, modules);
+      await aMorning(t);
+      const found = await t.fetch(`/tts/run-by-token?token=${TOKEN}`, { headers: key });
+      expect(found.status).toBe(200);
+      expect(await found.json()).toMatchObject({
+        runId: RUN_ID,
+        outcome: { turns: 1, totals: { totalTokens: 100 } },
+      });
+      const missing = await t.fetch(
+        "/tts/run-by-token?token=00000000-0000-4000-8000-000000000000",
+        { headers: key },
+      );
+      expect(missing.status).toBe(200);
+      expect(await missing.json()).toBeNull();
+      expect((await t.fetch("/tts/run-by-token?token=not-a-uuid", { headers: key })).status).toBe(400);
+      expect((await t.fetch("/tts/run-by-token", { headers: key })).status).toBe(400);
+    });
+  });
+  // The two findings the Friday evals run makes without Tom reach
+  // #tts-decisions through the door the job already posts to, so "revert" in
+  // the thread is wired and the morning's objection list picks it up.
+  describe("POST /tts/weekly-decisions", () => {
+    const key = { "X-TTS-Key": "s3cret" };
+    const post = async (t: ReturnType<typeof convexTest>, body: unknown) =>
+      await t.fetch("/tts/weekly-decisions", {
+        method: "POST",
+        headers: { ...key, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    it("records a graduation and an unearned name, and refuses a body with no week", async () => {
+      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+      const t = convexTest(schema, modules);
+      const ok = await post(t, {
+        isoWeek: "2026-W37",
+        graduated: [{ id: "run-ruling-8fb2d10a4c3e", sentence: "say what the batch is for before you list its tasks" }],
+        ablation: [{ name: "know", cases: 7, withPass: 5, withoutPass: 6, earned: false }],
+      });
+      expect(ok.status).toBe(200);
+      expect(await ok.json()).toMatchObject({ ok: true });
+
+      // isoWeek is half the ablation askId — it is what makes one week's
+      // finding a different thread from the next week's — so a body without
+      // one is refused rather than defaulted.
+      const blank = await post(t, { isoWeek: "  ", ablation: [] });
+      expect(blank.status).toBe(400);
+      const absent = await post(t, { ablation: [] });
+      expect(absent.status).toBe(400);
+    });
+
+    it("is behind the worker key like every other pen", async () => {
+      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+      const t = convexTest(schema, modules);
+      const res = await t.fetch("/tts/weekly-decisions", {
+        method: "POST",
+        headers: { "X-TTS-Key": "wrong", "Content-Type": "application/json" },
+        body: JSON.stringify({ isoWeek: "2026-W37" }),
+      });
+      expect(res.status).toBe(401);
+    });
   });
 });
