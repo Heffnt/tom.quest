@@ -53,6 +53,53 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
+// JSON may encode every character as a six-byte `\uXXXX` escape. An ingest
+// carries at most 200 rows whose display payloads are each cut to 32 KiB, so
+// reserve that worst case plus the former 1 MiB body limit as the envelope for
+// the run, children, row metadata, and JSON punctuation.
+const RUNS_INGEST_ENVELOPE_BYTES = 1024 * 1024;
+const RUNS_INGEST_MAX_BODY_BYTES =
+  6 * 200 * 32 * 1024 + RUNS_INGEST_ENVELOPE_BYTES;
+// A chunk itself may be 256 KiB. In the worst valid JSON string encoding every
+// content byte is a six-byte `\uXXXX` escape (quotes and backslashes use two),
+// with 4 KiB left for the fixed fields and JSON punctuation.
+const RUNS_OVERFLOW_ENVELOPE_BYTES = 4 * 1024;
+const RUNS_OVERFLOW_MAX_BODY_BYTES =
+  6 * 256 * 1024 + RUNS_OVERFLOW_ENVELOPE_BYTES;
+const RUN_ID = /^(claude|codex):(laptop|box):[A-Za-z0-9._-]{8,128}(\/[A-Za-z0-9._-]{8,128})?$/;
+
+/** Read no more than `limit` bytes before JSON parsing or allocating its tree. */
+async function boundedJson(request: Request, limit: number): Promise<{ body: unknown } | { tooLarge: true } | { invalid: true }> {
+  const declared = request.headers.get("Content-Length");
+  if (declared !== null && /^\d+$/.test(declared) && Number(declared) > limit) return { tooLarge: true };
+  const reader = request.body?.getReader();
+  if (!reader) return { invalid: true };
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  while (true) {
+    const next = await reader.read();
+    if (next.done) break;
+    byteLength += next.value.byteLength;
+    if (byteLength > limit) {
+      await reader.cancel();
+      return { tooLarge: true };
+    }
+    chunks.push(next.value);
+  }
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  try {
+    return { body: JSON.parse(new TextDecoder().decode(bytes)) };
+  } catch {
+    return { invalid: true };
+  }
+}
+
+function validRunId(runId: unknown): runId is string {
+  return typeof runId === "string" && RUN_ID.test(runId);
+}
+
 /** Worker jobs need the original missing-layer sentence, not a framework
  * exception, so their nonzero exit names the deployment state to repair. */
 function modelOfTomErrorResponse(error: unknown): Response {
@@ -1547,6 +1594,7 @@ const ttsAudit = httpAction(async (ctx, request) => {
     repo: (b.repo as string).trim(),
     sha: (b.sha as string).trim(),
     verdict,
+    text: b.text as string,
     ...(nonempty(b.model) ? { model: (b.model as string).trim() } : {}),
     ...(nonempty(b.url) ? { url: (b.url as string).trim() } : {}),
   });
@@ -2798,16 +2846,14 @@ http.route({
 const runsIngest = httpAction(async (ctx, request) => {
   const denied = sessionsAuth(request);
   if (denied) return denied;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse(400, { error: "invalid JSON body" });
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
+  const parsed = await boundedJson(request, RUNS_INGEST_MAX_BODY_BYTES);
+  if ("tooLarge" in parsed) return jsonResponse(413, { error: "request body too large" });
+  if ("invalid" in parsed) return jsonResponse(400, { error: "invalid JSON body" });
+  const b = (parsed.body ?? {}) as Record<string, unknown>;
   if (typeof b.run !== "object" || b.run === null || !Array.isArray(b.rows) || !Array.isArray(b.children)) {
     return jsonResponse(400, { error: "run, rows, and children required" });
   }
+  if (!validRunId((b.run as Record<string, unknown>).runId)) return jsonResponse(400, { error: "runId invalid" });
   try {
     const result = await ctx.runMutation(internal.runs.internalIngest, b as never);
     return jsonResponse(200, result);
@@ -2822,10 +2868,11 @@ http.route({ path: "/runs/ingest", method: "POST", handler: runsIngest });
 const runsOverflow = httpAction(async (ctx, request) => {
   const denied = sessionsAuth(request);
   if (denied) return denied;
-  let body: unknown;
-  try { body = await request.json(); } catch { return jsonResponse(400, { error: "invalid JSON body" }); }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.runId !== "string" || b.runId === "") return jsonResponse(400, { error: "runId required" });
+  const parsed = await boundedJson(request, RUNS_OVERFLOW_MAX_BODY_BYTES);
+  if ("tooLarge" in parsed) return jsonResponse(413, { error: "request body too large" });
+  if ("invalid" in parsed) return jsonResponse(400, { error: "invalid JSON body" });
+  const b = (parsed.body ?? {}) as Record<string, unknown>;
+  if (!validRunId(b.runId)) return jsonResponse(400, { error: "runId invalid" });
   for (const field of ["seq", "index", "chunkCount"] as const) if (!nonNegativeInteger(b[field])) return jsonResponse(400, { error: `${field} (non-negative integer) required` });
   if (typeof b.text !== "string") return jsonResponse(400, { error: "text (string) required" });
   try {
@@ -2838,10 +2885,11 @@ http.route({ path: "/runs/overflow", method: "POST", handler: runsOverflow });
 const runsOverflowStamp = httpAction(async (ctx, request) => {
   const denied = sessionsAuth(request);
   if (denied) return denied;
-  let body: unknown;
-  try { body = await request.json(); } catch { return jsonResponse(400, { error: "invalid JSON body" }); }
-  const b = (body ?? {}) as Record<string, unknown>;
-  if (typeof b.runId !== "string" || b.runId === "") return jsonResponse(400, { error: "runId required" });
+  const parsed = await boundedJson(request, RUNS_OVERFLOW_MAX_BODY_BYTES);
+  if ("tooLarge" in parsed) return jsonResponse(413, { error: "request body too large" });
+  if ("invalid" in parsed) return jsonResponse(400, { error: "invalid JSON body" });
+  const b = (parsed.body ?? {}) as Record<string, unknown>;
+  if (!validRunId(b.runId)) return jsonResponse(400, { error: "runId invalid" });
   for (const field of ["seq", "byteLength", "chunkCount"] as const) if (!nonNegativeInteger(b[field])) return jsonResponse(400, { error: `${field} (non-negative integer) required` });
   if (typeof b.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(b.sha256)) return jsonResponse(400, { error: "sha256 (64 hex chars) required" });
   try {

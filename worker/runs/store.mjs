@@ -1,9 +1,11 @@
-// store.mjs — immutable, local content-addressed versions of run files.
+// store.mjs — immutable, content-addressed versions of run files.
 //
 // Redaction happens before compression and hashing: a version is the exact
 // redacted bytes a parser may turn into rows, never a second private copy of a
-// CLI transcript. The deliberately small put/get/head surface is also the
-// seam where the phase-three bucket backend can replace this directory.
+// CLI transcript. The deliberately small put/get/head surface is the seam
+// between the local directory and the bucket: both backends answer the same
+// three calls with the same descriptor, so nothing above this file knows which
+// one is configured.
 
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -26,36 +28,41 @@ const safeThreadParts = (threadId) => {
   if (parts.length < 1 || parts.length > 2 || parts.some((part) => !part || part === "." || part === ".." || part.includes("\\"))) throw new Error("invalid run store thread id");
   return parts;
 };
-const objectName = (fileVersion, kind) => {
-  if (kind === "run") return `${safePart(fileVersion, "file version")}.jsonl.gz`;
-  if (kind === "registration") return `registration-${safePart(fileVersion, "file version")}.json.gz`;
-  throw new Error("invalid run store object kind");
+// The kind selects the object's extension inside the thread's folder and
+// nothing else, so a registration envelope is addressed exactly like the run
+// it belongs to.
+const KIND_EXTENSIONS = Object.freeze({ transcript: ".jsonl.gz", sidecar: ".sidecar.json.gz", registration: ".registration.json.gz" });
+const kindOf = (kind) => {
+  if (!Object.hasOwn(KIND_EXTENSIONS, kind)) throw new Error("invalid run store object kind");
+  return kind;
 };
-const objectKey = ({ runtime, threadId, host, fileVersion, kind = "run" }) => [
+const objectKey = ({ runtime, threadId, host, fileVersion, kind = "transcript" }) => [
   "runs",
   safePart(runtime, "runtime"),
   safePart(host, "host"),
   ...safeThreadParts(threadId),
-  objectName(fileVersion, kind),
+  `${safePart(fileVersion, "file version")}${KIND_EXTENSIONS[kindOf(kind)]}`,
 ].join("/");
+const sourceDescriptorPath = (file, sourceHash) => `${file}.${sourceHash}.source.json`;
+const metadataPath = (file) => `${file}.meta.json`;
+const writeImmutableJson = (file, value, mismatch) => {
+  const bytes = Buffer.from(JSON.stringify(value));
+  try {
+    fs.writeFileSync(file, bytes, { flag: "wx" });
+  } catch (err) {
+    if (err?.code !== "EEXIST") throw err;
+    if (!fs.readFileSync(file).equals(bytes)) throw new Error(mismatch);
+  }
+};
 
+// Both backends hash the same way, so a version computed against the local
+// directory names the same object in the bucket.
 function prepared(sourceBytes) {
   const source = Buffer.isBuffer(sourceBytes) ? sourceBytes : Buffer.from(sourceBytes);
   const sourceHash = sha256(source);
   const redacted = Buffer.from(redactSecrets(source.toString("utf8")), "utf8");
   const compressed = gzipDeterministic(redacted);
-  const storedHash = sha256(compressed);
-  return {
-    source,
-    compressed,
-    descriptor: {
-      fileVersion: storedHash,
-      sourceHash,
-      storedHash,
-      bytes: source.length,
-      storedBytes: compressed.length,
-    },
-  };
+  return { source, sourceHash, compressed, storedHash: sha256(compressed) };
 }
 
 export function gzipDeterministic(bytes) {
@@ -71,22 +78,34 @@ export function openStore({ backend = "local", dir, s3 } = {}) {
   if (!dir) throw new Error("run store dir is required");
   const root = path.resolve(dir);
 
-  function objectPath({ runtime, threadId, host, fileVersion, kind = "run" }) {
+  function objectPath({ runtime, threadId, host, fileVersion, kind = "transcript" }) {
     return path.join(root, ...objectKey({ runtime, threadId, host, fileVersion, kind }).split("/"));
   }
-  const metadataPath = (file) => `${file}.meta.json`;
 
   return {
-    put({ runtime, threadId, host, sourceBytes, kind = "run" }) {
-      const { compressed, descriptor: base } = prepared(sourceBytes);
-      const fileVersion = base.fileVersion;
-      const file = objectPath({ runtime, threadId, host, fileVersion, kind });
-      const key = path.relative(root, file).split(path.sep).join("/");
+    put({ runtime, threadId, host, sourceBytes, kind = "transcript" }) {
+      const objectKind = kindOf(kind);
+      const { source, sourceHash, compressed, storedHash } = prepared(sourceBytes);
+      const fileVersion = storedHash;
+      const file = objectPath({ runtime, threadId, host, fileVersion, kind: objectKind });
+      const key = objectKey({ runtime, threadId, host, fileVersion, kind: objectKind });
+      const sourceKey = path.relative(root, sourceDescriptorPath(file, sourceHash)).split(path.sep).join("/");
       let created = false;
-      const descriptor = {
-        ...base,
+      // Object facts are determined by the redacted bytes. Source facts are
+      // not: two originals can intentionally become one redacted object.
+      // Keeping the latter in a source-hash-suffixed immutable descriptor
+      // lets both valid sources coexist without weakening object integrity.
+      const intrinsic = {
+        fileVersion,
+        storedHash,
+        storedBytes: compressed.length,
         key,
-        verified: true,
+        kind: objectKind,
+      };
+      const sourceDescriptor = {
+        sourceHash,
+        bytes: source.length,
+        sourceKey,
       };
       if (fs.existsSync(file)) {
         const existing = fs.readFileSync(file);
@@ -103,36 +122,31 @@ export function openStore({ backend = "local", dir, s3 } = {}) {
           if (!existing.equals(compressed)) throw new Error("run store hash collision or corrupt object");
         }
       }
-      // The source hash cannot be recovered from redacted bytes, yet it is
-      // the append-vs-rewrite fence. Keep the descriptor beside the immutable
-      // object, also write-once; it is metadata, not a second run object.
-      const meta = metadataPath(file);
-      if (fs.existsSync(meta)) {
-        const existing = JSON.parse(fs.readFileSync(meta, "utf8"));
-        if (JSON.stringify(existing) !== JSON.stringify(descriptor)) throw new Error("run store descriptor mismatch");
-      } else {
-        try { fs.writeFileSync(meta, JSON.stringify(descriptor), { flag: "wx" }); }
-        catch (err) {
-          if (err?.code !== "EEXIST") throw err;
-          const existing = JSON.parse(fs.readFileSync(meta, "utf8"));
-          if (JSON.stringify(existing) !== JSON.stringify(descriptor)) throw new Error("run store descriptor mismatch");
-        }
-      }
-      return { ...descriptor, created };
+      writeImmutableJson(metadataPath(file), intrinsic, "run store object metadata mismatch");
+      writeImmutableJson(sourceDescriptorPath(file, sourceHash), sourceDescriptor, "run store source descriptor mismatch");
+      // The local backend re-reads what it wrote, so the bytes at the key are
+      // proven to be these bytes — the same claim the bucket's checksum echo
+      // makes, and what the sweeper requires before it writes a store key.
+      return { ...intrinsic, ...sourceDescriptor, verified: true, created };
     },
 
-    head({ runtime, threadId, host, fileVersion, kind = "run" }) {
-      const file = objectPath({ runtime, threadId, host, fileVersion, kind });
+    head({ runtime, threadId, host, fileVersion, sourceHash, kind = "transcript" }) {
+      const objectKind = kindOf(kind);
+      const file = objectPath({ runtime, threadId, host, fileVersion, kind: objectKind });
       if (!fs.existsSync(file)) return null;
       const compressed = fs.readFileSync(file);
       if (sha256(compressed) !== fileVersion) throw new Error("run store object hash mismatch");
       const meta = metadataPath(file);
       if (!fs.existsSync(meta)) throw new Error("run store descriptor missing");
-      return JSON.parse(fs.readFileSync(meta, "utf8"));
+      const intrinsic = JSON.parse(fs.readFileSync(meta, "utf8"));
+      if (sourceHash === undefined) return { ...intrinsic, verified: true };
+      const sourceMeta = sourceDescriptorPath(file, safePart(sourceHash, "source hash"));
+      if (!fs.existsSync(sourceMeta)) return null;
+      return { ...intrinsic, ...JSON.parse(fs.readFileSync(sourceMeta, "utf8")), verified: true };
     },
 
-    get({ runtime, threadId, host, fileVersion, kind = "run" }) {
-      const file = objectPath({ runtime, threadId, host, fileVersion, kind });
+    get({ runtime, threadId, host, fileVersion, kind = "transcript" }) {
+      const file = objectPath({ runtime, threadId, host, fileVersion, kind: kindOf(kind) });
       if (!fs.existsSync(file)) throw new Error("run store object not found");
       const compressed = fs.readFileSync(file);
       if (sha256(compressed) !== fileVersion) throw new Error("run store object hash mismatch");
@@ -145,32 +159,44 @@ function openS3Store(config = {}) {
   const client = createS3Client(config);
 
   return {
-    async put({ runtime, threadId, host, sourceBytes, kind = "run" }) {
-      const { compressed, descriptor: base } = prepared(sourceBytes);
-      const key = objectKey({ runtime, threadId, host, fileVersion: base.fileVersion, kind });
-      const checksum = Buffer.from(base.storedHash, "hex").toString("base64");
+    async put({ runtime, threadId, host, sourceBytes, kind = "transcript" }) {
+      const objectKind = kindOf(kind);
+      const { source, sourceHash, compressed, storedHash } = prepared(sourceBytes);
+      const key = objectKey({ runtime, threadId, host, fileVersion: storedHash, kind: objectKind });
+      const checksum = Buffer.from(storedHash, "hex").toString("base64");
       const response = await client.putObject({ key, body: compressed, checksumSha256: checksum });
       const echoed = response.headers.get("x-amz-checksum-sha256");
       if (echoed && echoed !== checksum) throw new Error(`S3 checksum verification failed for ${key}`);
       let verified = echoed === checksum;
+      // The uploader credential cannot read, so a service that echoes the
+      // checksum has already verified the bytes for us. Only where it does not
+      // do we spend the reader credential on a HEAD.
       if (!echoed && client.hasReader) {
         const head = await client.headObject({ key });
         const length = Number(head.headers.get("content-length"));
-        const etag = String(head.headers.get("etag") ?? "").replace(/^\"|\"$/g, "").toLowerCase();
+        const etag = String(head.headers.get("etag") ?? "").replace(/^"|"$/g, "").toLowerCase();
         const md5 = crypto.createHash("md5").update(compressed).digest("hex");
         if (!head.ok || length !== compressed.length || etag !== md5) throw new Error(`S3 read-back verification failed for ${key}`);
         verified = true;
       }
       return {
-        ...base,
+        fileVersion: storedHash,
+        storedHash,
+        storedBytes: compressed.length,
+        kind: objectKind,
+        sourceHash,
+        bytes: source.length,
+        // An unverified upload gets no key, so nothing downstream can claim
+        // bytes nobody checked.
         ...(verified ? { key } : {}),
         verified,
         created: true,
       };
     },
 
-    async head({ runtime, threadId, host, fileVersion, kind = "run" }) {
-      const key = objectKey({ runtime, threadId, host, fileVersion, kind });
+    async head({ runtime, threadId, host, fileVersion, kind = "transcript" }) {
+      const objectKind = kindOf(kind);
+      const key = objectKey({ runtime, threadId, host, fileVersion, kind: objectKind });
       const response = await client.headObject({ key });
       if (response.status === 404) return null;
       const checksum = response.headers.get("x-amz-checksum-sha256");
@@ -179,12 +205,13 @@ function openS3Store(config = {}) {
         storedHash: fileVersion,
         storedBytes: Number(response.headers.get("content-length")) || 0,
         key,
+        kind: objectKind,
         verified: checksum === Buffer.from(fileVersion, "hex").toString("base64"),
       };
     },
 
-    async get({ runtime, threadId, host, fileVersion, kind = "run" }) {
-      const key = objectKey({ runtime, threadId, host, fileVersion, kind });
+    async get({ runtime, threadId, host, fileVersion, kind = "transcript" }) {
+      const key = objectKey({ runtime, threadId, host, fileVersion, kind: kindOf(kind) });
       const response = await client.getObject({ key });
       const compressed = Buffer.from(await response.arrayBuffer());
       if (sha256Hex(compressed) !== fileVersion) throw new Error(`S3 object hash mismatch for ${key}`);

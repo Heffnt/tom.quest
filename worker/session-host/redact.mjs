@@ -52,13 +52,75 @@ export const REDACTED_SHAPES = Object.freeze([
 // that a request carried an Authorization header stays readable, its value
 // does not. The value class excludes backslash and quote for the JSON reason
 // above, which also stops it swallowing a serialized \n.
-const BEARER = /(Authorization:[ \t]*Bearer[ \t]+)[A-Za-z0-9._~+/=-]{8,}/gi;
+const BEARER = /(Authorization[ \t]*[:=][ \t]*Bearer[ \t]+)[A-Za-z0-9._~+/=-]{8,}/gi;
+
+// AWS secret access keys have no safe standalone prefix.  Their access-key ID
+// does, so recognise the pair before the ID's normal shape is replaced below.
+// The separator (and optional matching quotes) survives to keep a CLI table or
+// assignment readable, while the 40-character secret cannot reach storage.
+const AWS_ACCESS_KEY_PAIR = /\b(AKIA[0-9A-Z]{16})([ \t]*(?:[,;:=][ \t]*|\r?\n[ \t]*|[ \t]+))(["']?)([A-Za-z0-9/+=]{40})\3(?![A-Za-z0-9/+=])/g;
+
+// A name alone is not a secret, but it makes the value on the other side of
+// an assignment one.  The upper-case alternative covers the environment
+// names CLIs commonly print (for example, a vendor-specific TOKEN suffix)
+// without requiring every vendor to grow a bespoke redaction rule.
+const SECRET_WORD = "(?:password|passwd|pwd|secret|token|api[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret|authorization)";
+const SECRET_ENV_NAME = "[A-Z][A-Z0-9_-]*(?:PASSWORD|PASSWD|PWD|SECRET|TOKEN|API_KEY|PRIVATE_KEY|ACCESS_KEY|CLIENT_SECRET|AUTHORIZATION)";
+const NAMED_SECRET_KEY = `(?:${SECRET_WORD}|${SECRET_ENV_NAME})`;
+
+// These forms deliberately retain the key and its punctuation.  A transcript
+// remains useful when it says which configuration was present, but its value
+// must never cross the machine boundary.  JSON is separate so replacing a
+// quoted value cannot make an otherwise valid JSONL source invalid.
+const NAMED_JSON_SECRET = new RegExp(
+  `("(${NAMED_SECRET_KEY})"\\s*:\\s*)"((?:\\\\.|[^"\\\\])*)"`,
+  "gi",
+);
+const NAMED_ASSIGNMENT = new RegExp(
+  `(\\b(${NAMED_SECRET_KEY})\\b\\s*(?:=|:)\\s*)(?:"((?:\\\\.|[^"\\\\])*)"|'((?:\\\\.|[^'\\\\])*)'|([^\\s,;\\]}]+))`,
+  "gi",
+);
+// Some tools print "token <value>" rather than an assignment.  Restrict this
+// fallback to a plausibly high-entropy value: ordinary prose about a token is
+// not a credential merely because it follows that word.
+const NAMED_HIGH_ENTROPY_VALUE = new RegExp(
+  `(\\b(${NAMED_SECRET_KEY})\\b(?:\\s+(?:is|was)\\s+|\\s+))([A-Za-z0-9._~+/=-]{32,})`,
+  "gi",
+);
+const PEM_PRIVATE_KEY = /-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----[\s\S]*?-----END(?: [A-Z0-9]+)* PRIVATE KEY-----/g;
+
+const markerFor = (key) => (/^AWS(?:[_-]|$)/i.test(String(key)) ? "[redacted:aws]" : "[redacted:secret]");
+const isMarker = (value) => String(value).includes("[redacted:");
+const isHighEntropy = (value) => {
+  const text = String(value);
+  return text.length >= 32
+    && new Set(text).size >= 8
+    && /[A-Za-z]/.test(text)
+    && (/[0-9]/.test(text) || /[._~+/=-]/.test(text));
+};
+
+function redactNamedSecrets(text) {
+  let out = text.replace(NAMED_JSON_SECRET, (match, prefix, key, value) => (
+    isMarker(value) ? match : `${prefix}"${markerFor(key)}"`
+  ));
+  out = out.replace(NAMED_ASSIGNMENT, (match, prefix, key, doubleQuoted, singleQuoted, bare) => {
+    const value = doubleQuoted ?? singleQuoted ?? bare;
+    if (isMarker(value) || /^Bearer$/i.test(value)) return match;
+    const quote = doubleQuoted !== undefined ? '"' : singleQuoted !== undefined ? "'" : "";
+    return `${prefix}${quote}${markerFor(key)}${quote}`;
+  });
+  return out.replace(NAMED_HIGH_ENTROPY_VALUE, (match, prefix, key, value) => (
+    isMarker(value) || !isHighEntropy(value) ? match : `${prefix}${markerFor(key)}`
+  ));
+}
 
 /** `text` with every credential-shaped span replaced by `[redacted:<kind>]`. */
 export function redactSecrets(text) {
-  let out = text;
+  let out = String(text).replace(PEM_PRIVATE_KEY, "[redacted:pem]");
+  out = out.replace(AWS_ACCESS_KEY_PAIR, "$1$2$3[redacted:aws]$3");
   for (const { kind, pattern } of REDACTED_SHAPES) {
     out = out.replace(pattern, `[redacted:${kind}]`);
   }
-  return out.replace(BEARER, `$1[redacted:bearer]`);
+  out = out.replace(BEARER, `$1[redacted:bearer]`);
+  return redactNamedSecrets(out);
 }

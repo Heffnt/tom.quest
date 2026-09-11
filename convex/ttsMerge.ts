@@ -4,6 +4,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { logEvent } from "./tts";
 import { EVALS_RUN } from "./ttsEvals";
+import { redactSecrets } from "../worker/session-host/redact.mjs";
 
 // ── THE MECHANICAL MERGE GATE (Tom, 2026-09-09) ─────────────────────────────
 // Merging used to be Tom's gate: the box classifier denied `git merge` and
@@ -22,7 +23,7 @@ import { EVALS_RUN } from "./ttsEvals";
 //                     data { repo, sha, ok, detail?, url? }
 //   "audit-verdict" — the Codex/Opus audit step posts its answer, and the
 //                     `VERDICT: <WORD>` line in it is the verdict
-//                     (POST /tts/audit). data { repo, sha, verdict, model? }
+//                     (POST /tts/audit). data { repo, sha, verdict, text, model? }
 //   "evals-run"     — already written by worker/jobs/evals.mjs for every
 //                     scored head (convex/ttsEvals.ts). `data.regressions` is
 //                     the runner's own comparison against the base run, so
@@ -40,6 +41,8 @@ export const AUDIT_VERDICT = "audit-verdict";
 export const MERGE = "merge";
 /** The one word the audit line must carry for the gate to open. */
 export const AUDIT_APPROVED = "APPROVED";
+/** The most audit prose retained on its event, measured after redaction. */
+export const AUDIT_TEXT_MAX_BYTES = 8 * 1024;
 
 /** The key every fact ABOUT ONE COMMIT is filed under — the spelling
  *  convex/ttsEvals.ts already uses for an evals run, so all three checks are
@@ -65,6 +68,25 @@ export function mergeKey(repo: string, sha: string): string {
 export function auditVerdictOf(text: string): string | null {
   const hit = /^[ \t]*VERDICT:[ \t]*([A-Za-z][A-Za-z_-]*)[ \t]*$/im.exec(text);
   return hit === null ? null : hit[1].toUpperCase();
+}
+
+function capUtf8(text: string, maxBytes: number): string {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length <= maxBytes) return text;
+  let end = maxBytes;
+  // Do not retain a partial multi-byte code point at the boundary.
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+  return new TextDecoder().decode(bytes.slice(0, end));
+}
+
+function auditReason(text: unknown): string | null {
+  if (typeof text !== "string") return null;
+  const lines = text.split(/\r?\n/);
+  const verdictLine = lines.findIndex((line) =>
+    /^[ \t]*VERDICT:[ \t]*[A-Za-z][A-Za-z_-]*[ \t]*$/i.test(line),
+  );
+  if (verdictLine < 0) return null;
+  return lines.slice(verdictLine + 1).map((line) => line.trim()).find(Boolean) ?? null;
 }
 
 export type MergeCheck = {
@@ -121,17 +143,19 @@ export async function mergeGateFor(
           };
 
   const audit = await rowFor(ctx, AUDIT_VERDICT, key);
-  const auditData = (audit?.data ?? {}) as { verdict?: unknown };
+  const auditData = (audit?.data ?? {}) as { verdict?: unknown; text?: unknown };
   const verdict = typeof auditData.verdict === "string" ? auditData.verdict.toUpperCase() : null;
+  const auditWhy = auditReason(auditData.text);
+  const auditDetail = auditWhy === null ? "" : ` — ${auditWhy}`;
   const auditCheck: MergeCheck =
     audit === null
       ? { name: "audit", passed: false, why: `no audit verdict is recorded for ${short}` }
       : verdict === AUDIT_APPROVED
-        ? { name: "audit", passed: true, why: `the audit approved ${short}` }
+        ? { name: "audit", passed: true, why: `the audit approved ${short}${auditDetail}` }
         : {
             name: "audit",
             passed: false,
-            why: `the audit answered ${verdict ?? "nothing readable"} at ${short}, not ${AUDIT_APPROVED}`,
+            why: `the audit answered ${verdict ?? "nothing readable"} at ${short}, not ${AUDIT_APPROVED}${auditDetail}`,
           };
 
   const evals = await rowFor(ctx, EVALS_RUN, key);
@@ -198,12 +222,14 @@ export const internalRecordTests = internalMutation({
   },
 });
 
-/** The audit step's verdict, recorded once per commit for the same reason. */
+/** The audit step's verdict and bounded, redacted answer, recorded once per
+ * commit for the same reason. */
 export const internalRecordAudit = internalMutation({
   args: {
     repo: v.string(),
     sha: v.string(),
     verdict: v.string(),
+    text: v.string(),
     model: v.optional(v.string()),
     url: v.optional(v.string()),
   },
@@ -215,7 +241,8 @@ export const internalRecordAudit = internalMutation({
       return { existing: true, verdict: typeof recorded === "string" ? recorded : null };
     }
     const verdict = args.verdict.toUpperCase();
-    await logEvent(ctx, AUDIT_VERDICT, undefined, { ...args, verdict }, key);
+    const text = capUtf8(redactSecrets(args.text), AUDIT_TEXT_MAX_BYTES);
+    await logEvent(ctx, AUDIT_VERDICT, undefined, { ...args, verdict, text }, key);
     return { existing: false, verdict };
   },
 });
