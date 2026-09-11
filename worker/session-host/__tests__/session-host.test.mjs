@@ -218,7 +218,9 @@ describe("a turn Tom typed carries its inbound row id to the model", () => {
 describe("a session's transcript is archived to WikiTom when it ends", () => {
   it("reaches the one home through the symlink, like worker-env", () => {
     expect(sessionSource).toMatch(/from "\.\/session-archive\.mjs";/);
-    expect(read("session-archive.mjs").trim()).toBe("../jobs/session-archive.mjs");
+    expect(fs.readlinkSync(path.join(here, "..", "session-archive.mjs"), "utf8").trim()).toBe(
+      "../jobs/session-archive.mjs",
+    );
     expect(fs.existsSync(path.join(here, "..", "..", "jobs", "session-archive.mjs"))).toBe(true);
   });
 
