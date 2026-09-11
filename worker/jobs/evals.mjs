@@ -1214,9 +1214,13 @@ export function efficiencyVerdict(headCase, baseCase) {
 /** The efficiency block of a row: how many cases carried a cost, how many did
  *  not, and every rise. The rises need the base run's per-case medians, so
  *  they are computed where the base row is in hand (stampAgainstBase). */
-export function efficiencyOf(perCase, basePerCase) {
-  const cases = perCase ?? [];
-  const byId = new Map((basePerCase ?? []).map((one) => [one.id, one]));
+export function efficiencyOf(results, baseResults) {
+  // ONLY THE CASES THAT WERE MEASURED. A case with no `tokensMedian` key was
+  // never asked what it cost — every non-`run` job is one — and counting it as
+  // an unknown would report the whole set as unmeasured on a run that measured
+  // everything it could.
+  const cases = (results ?? []).filter((one) => one !== null && one !== undefined && "tokensMedian" in one);
+  const byId = new Map((baseResults ?? []).map((one) => [one.id, one]));
   const rises = [];
   for (const headCase of cases) {
     const verdict = efficiencyVerdict(headCase, byId.get(headCase.id));
@@ -1461,12 +1465,34 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       // from one that regressed without re-deriving the selection.
       scoredIds: [...scored, ...tasks.filter((task) => task.judged !== "skip")].map((result) => result.id).sort(),
       skipped: results.filter((result) => result.judged === "skip").map(({ id, reason }) => ({ id, reason })),
-      // What each case cost and how it scored. The efficiency comparison needs
-      // the BASE run's per-case medians, and a row that carries its own is a
-      // row the next run can compare itself to without re-running anything.
-      perCase: scored
-        .filter((result) => result.perTrial !== undefined)
-        .map(({ id, tokensMedian, judged }) => ({ id, tokensMedian: tokensMedian ?? null, judged })),
+      // A --weekly run SAYS SO ON THE ROW. The weekly graduation pass
+      // (scripts/graduate-golden.mjs) promotes a capability case on this
+      // evidence and no other: a pull-request run scores a 40-item subset
+      // against one branch's tree, and a case promoted on that would let one
+      // branch raise the bar for main permanently. That pass refuses a row
+      // which does not say, rather than inferring it from the item count.
+      weekly,
+      // ONE LIST about the cases, never two. Every scored case, how it scored,
+      // whether it passed EVERY trial, and what its median trial cost.
+      //
+      // `passK` means one thing across both scoring paths: on a `run` case it
+      // is the case's own, and on everything going through the landed
+      // runTrials path it is derived from the same trial counts — otherwise
+      // the graduation pass would be reading a field that exists on only half
+      // the rows and silently graduating nothing from the other half.
+      //
+      // `tokensMedian` is ABSENT on a case that was never measured and null on
+      // a measured case whose record did not come back: the difference between
+      // "not asked" and "asked, no answer". The efficiency block counts only
+      // the cases that were asked.
+      results: scored.map((result) => ({
+        id: result.id,
+        judged: result.judged,
+        passK: result.passK ?? (result.trials === undefined
+          ? result.judged === "pass"
+          : result.trials.headPassed === result.trials.head),
+        ...(result.perTrial === undefined ? {} : { tokensMedian: result.tokensMedian ?? null }),
+      })),
       ablation: ablationRows,
       ablationSkipped,
       ...summary,
@@ -1600,12 +1626,17 @@ export function failedRun({ repo, sha, error, at }) {
     flaky: 0,
     regressions: null,
     stillFailing: 0,
+    // A run that could not be made checked no diff either, so the coverage
+    // field says so rather than saying "satisfied". The merge gate denies on
+    // null, which is what a row carrying `error` must do on every arm.
+    goldenCoverage: null,
+    weekly: false,
     byPartition: [],
     byVerdict: { approve: { items: 0, pass: 0 }, revise: { items: 0, pass: 0 } },
     failures: [],
     scoredIds: [],
     skipped: [],
-    perCase: [],
+    results: [],
     efficiency: { cases: 0, unknown: 0, rises: [] },
     ablation: [],
     ablationSkipped: [],
@@ -1633,12 +1664,28 @@ export async function loadGate() {
 }
 
 /**
- * Stamp regressions and stillFailing onto a run, and mark each failure with
- * whether it is one — the digest prints regression lines and must not have to
- * compare two runs to know which they are.
+ * Stamp regressions, stillFailing and goldenCoverage onto a run, and mark each
+ * failure with whether it is one — the digest prints regression lines and must
+ * not have to compare two runs to know which they are.
+ *
+ * `diff` is the changed-path list the pull-request check computed and sent on
+ * its request, and the pull-request body it read the escape-hatch trailer from.
+ * THE SAME LIST REACHES BOTH SIDES: the check judges coverage in its own log
+ * from the list it computed, and the box stamps the verdict onto the row from
+ * the list that travelled with the request, so the log and the row cannot
+ * disagree about what was judged.
  */
-export async function stampAgainstBase(data, base) {
+export async function stampAgainstBase(data, base, diff = {}) {
   const gateModule = await loadGate();
+  // THREE-VALUED, and the third value is not a failure. `null` says nobody
+  // asked this run about a diff — a --weekly run, a run by hand — and the
+  // merge gate denies on it, which is right: a merge always has a diff, so a
+  // run that was never asked has not answered. A gate that opened on "we did
+  // not check" is the failure the `regressions: null` rule below prevents, and
+  // this field takes the same posture on purpose.
+  const goldenCoverage = gateModule === null
+    ? null
+    : gateModule.goldenItemRule(diff.changed, diff.prBody);
   if (gateModule === null || base === null || base === undefined) {
     // NULL, NOT ZERO. A run compared to nothing has no number of regressions,
     // and the merge gate opens its evals arm on exactly `regressions === 0`
@@ -1649,25 +1696,32 @@ export async function stampAgainstBase(data, base) {
       ...data,
       regressions: null,
       stillFailing: 0,
+      // Coverage is a fact about the DIFF, not about the comparison, so a run
+      // with no base still answers it. A branch that changed a watched file
+      // and shipped no item owes one whether or not anything scored its base.
+      goldenCoverage,
       // No base, no rise: a cost is a comparison, and there is nothing to
       // compare to. The cases and the unknowns are still stated, because they
       // are facts about this run alone.
-      efficiency: efficiencyOf(data.perCase, null),
+      efficiency: efficiencyOf(data.results, null),
       failures: data.failures.map((failure) => ({ ...failure, regression: false })),
     };
   }
-  const verdict = gateModule.gate(data, base);
+  const verdict = gateModule.gate(data, base, { changed: diff.changed, prBody: diff.prBody });
   const regressed = new Set(verdict.regressions.map((failure) => failure.id));
   return {
     ...data,
     regressions: verdict.regressions.length,
     stillFailing: verdict.stillFailing.length,
-    efficiency: efficiencyOf(data.perCase, base.perCase),
+    // From the gate's own verdict rather than from the rule called twice: one
+    // body decides what coverage is, here and in the check's log alike.
+    goldenCoverage: verdict.goldenCoverage,
+    efficiency: efficiencyOf(data.results, base.results),
     failures: data.failures.map((failure) => ({ ...failure, regression: regressed.has(failure.id) })),
   };
 }
 
-async function runAndPost(env, io, { repo, sha, base, limit, jobs, weekly, ablation = false, force }) {
+async function runAndPost(env, io, { repo, sha, base, limit, jobs, weekly, ablation = false, force, changed, prBody }) {
   const existing = force ? null : await convexFetch(env, `/tts/evals-run?repo=${repo}&sha=${sha}`);
   if (existing?.run) {
     console.log(`[evals] ${repo}@${sha} already scored (${existing.run.pass}/${existing.run.items}); --force to rerun`);
@@ -1693,13 +1747,16 @@ async function runAndPost(env, io, { repo, sha, base, limit, jobs, weekly, ablat
   const data = await stampAgainstBase(
     await runEvals({ repo, sha, limit, jobs, weekly, ablation, basePassed: passedIds(baseData) }, io),
     baseData,
+    { changed, prBody },
   );
   await postRun(env, data);
   console.log(
     `[evals] ${repo}@${sha}: ${data.pass}/${data.items} pass, ` +
       `${data.regressions === null ? "compared to no base" : `${data.regressions} regression(s)`}, ` +
       `${(data.flaky ?? 0) + (data.tasks?.flaky ?? 0)} flaky, ` +
-      `${data.stillFailing} still failing (golden ${data.goldenHash})`,
+      `${data.stillFailing} still failing, ` +
+      `golden coverage ${data.goldenCoverage === null ? "not asked" : data.goldenCoverage} ` +
+      `(golden ${data.goldenHash})`,
   );
   return data;
 }
@@ -1745,6 +1802,14 @@ async function main() {
         // A served request IS the pull-request run. The ablation arm never
         // runs here, whatever the command line said.
         ablation: false,
+        // THE CHECK'S OWN DIFF, carried on the request. The box cannot compute
+        // it — it has a shallow cache clone with no merge base — and a second
+        // list computed here would be a second answer to the same question.
+        // An older request carries neither, and neither is inferred: the
+        // coverage verdict is then null and the merge gate denies, which is
+        // the right answer for a run nobody asked about a diff.
+        changed: request.changed,
+        prBody: request.prBody,
         force: options.force,
       });
     } catch (error) {
