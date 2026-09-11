@@ -24,6 +24,7 @@ describe("Codex parser", () => {
   it("takes model/effort from turn context and hashes base instructions", () => {
     const result = parse([codexMeta({ baseInstructions: "private base" }), codexTurnContext({ model: "model", effort: "xhigh" })]);
     expect(result.run).toMatchObject({ model: "model", effort: "xhigh" });
+    expect(result.rows.find((row) => row.kind === "context").content.model).toBe("model");
     expect(result.run.context.baseInstructionsHash).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(result)).not.toContain("private base");
   });

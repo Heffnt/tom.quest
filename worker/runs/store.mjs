@@ -11,6 +11,7 @@ import path from "node:path";
 import zlib from "node:zlib";
 
 import { redactSecrets } from "../session-host/redact.mjs";
+import { createS3Client, sha256Hex } from "./s3.mjs";
 
 const sha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
 const safePart = (value, name) => {
@@ -25,6 +26,37 @@ const safeThreadParts = (threadId) => {
   if (parts.length < 1 || parts.length > 2 || parts.some((part) => !part || part === "." || part === ".." || part.includes("\\"))) throw new Error("invalid run store thread id");
   return parts;
 };
+const objectName = (fileVersion, kind) => {
+  if (kind === "run") return `${safePart(fileVersion, "file version")}.jsonl.gz`;
+  if (kind === "registration") return `registration-${safePart(fileVersion, "file version")}.json.gz`;
+  throw new Error("invalid run store object kind");
+};
+const objectKey = ({ runtime, threadId, host, fileVersion, kind = "run" }) => [
+  "runs",
+  safePart(runtime, "runtime"),
+  safePart(host, "host"),
+  ...safeThreadParts(threadId),
+  objectName(fileVersion, kind),
+].join("/");
+
+function prepared(sourceBytes) {
+  const source = Buffer.isBuffer(sourceBytes) ? sourceBytes : Buffer.from(sourceBytes);
+  const sourceHash = sha256(source);
+  const redacted = Buffer.from(redactSecrets(source.toString("utf8")), "utf8");
+  const compressed = gzipDeterministic(redacted);
+  const storedHash = sha256(compressed);
+  return {
+    source,
+    compressed,
+    descriptor: {
+      fileVersion: storedHash,
+      sourceHash,
+      storedHash,
+      bytes: source.length,
+      storedBytes: compressed.length,
+    },
+  };
+}
 
 export function gzipDeterministic(bytes) {
   // gzipSync defaults mtime to zero; level is explicit so the object identity
@@ -32,41 +64,29 @@ export function gzipDeterministic(bytes) {
   return zlib.gzipSync(bytes, { level: 9 });
 }
 
-export function openStore({ backend = "local", dir } = {}) {
+/** @returns {any} Local calls stay synchronous; only the configured S3 backend returns promises. */
+export function openStore({ backend = "local", dir, s3 } = {}) {
+  if (backend === "s3") return openS3Store(s3);
   if (backend !== "local") throw new Error(`unsupported run store backend: ${backend}`);
   if (!dir) throw new Error("run store dir is required");
   const root = path.resolve(dir);
 
-  function objectPath({ runtime, threadId, host, fileVersion }) {
-    return path.join(
-      root,
-      "runs",
-      safePart(runtime, "runtime"),
-      safePart(host, "host"),
-      ...safeThreadParts(threadId),
-      `${safePart(fileVersion, "file version")}.jsonl.gz`,
-    );
+  function objectPath({ runtime, threadId, host, fileVersion, kind = "run" }) {
+    return path.join(root, ...objectKey({ runtime, threadId, host, fileVersion, kind }).split("/"));
   }
   const metadataPath = (file) => `${file}.meta.json`;
 
   return {
-    put({ runtime, threadId, host, sourceBytes }) {
-      const source = Buffer.isBuffer(sourceBytes) ? sourceBytes : Buffer.from(sourceBytes);
-      const sourceHash = sha256(source);
-      const redacted = Buffer.from(redactSecrets(source.toString("utf8")), "utf8");
-      const compressed = gzipDeterministic(redacted);
-      const storedHash = sha256(compressed);
-      const fileVersion = storedHash;
-      const file = objectPath({ runtime, threadId, host, fileVersion });
+    put({ runtime, threadId, host, sourceBytes, kind = "run" }) {
+      const { compressed, descriptor: base } = prepared(sourceBytes);
+      const fileVersion = base.fileVersion;
+      const file = objectPath({ runtime, threadId, host, fileVersion, kind });
       const key = path.relative(root, file).split(path.sep).join("/");
       let created = false;
       const descriptor = {
-        fileVersion,
-        sourceHash,
-        storedHash,
-        bytes: source.length,
-        storedBytes: compressed.length,
+        ...base,
         key,
+        verified: true,
       };
       if (fs.existsSync(file)) {
         const existing = fs.readFileSync(file);
@@ -101,8 +121,8 @@ export function openStore({ backend = "local", dir } = {}) {
       return { ...descriptor, created };
     },
 
-    head({ runtime, threadId, host, fileVersion }) {
-      const file = objectPath({ runtime, threadId, host, fileVersion });
+    head({ runtime, threadId, host, fileVersion, kind = "run" }) {
+      const file = objectPath({ runtime, threadId, host, fileVersion, kind });
       if (!fs.existsSync(file)) return null;
       const compressed = fs.readFileSync(file);
       if (sha256(compressed) !== fileVersion) throw new Error("run store object hash mismatch");
@@ -111,11 +131,63 @@ export function openStore({ backend = "local", dir } = {}) {
       return JSON.parse(fs.readFileSync(meta, "utf8"));
     },
 
-    get({ runtime, threadId, host, fileVersion }) {
-      const file = objectPath({ runtime, threadId, host, fileVersion });
+    get({ runtime, threadId, host, fileVersion, kind = "run" }) {
+      const file = objectPath({ runtime, threadId, host, fileVersion, kind });
       if (!fs.existsSync(file)) throw new Error("run store object not found");
       const compressed = fs.readFileSync(file);
       if (sha256(compressed) !== fileVersion) throw new Error("run store object hash mismatch");
+      return zlib.gunzipSync(compressed);
+    },
+  };
+}
+
+function openS3Store(config = {}) {
+  const client = createS3Client(config);
+
+  return {
+    async put({ runtime, threadId, host, sourceBytes, kind = "run" }) {
+      const { compressed, descriptor: base } = prepared(sourceBytes);
+      const key = objectKey({ runtime, threadId, host, fileVersion: base.fileVersion, kind });
+      const checksum = Buffer.from(base.storedHash, "hex").toString("base64");
+      const response = await client.putObject({ key, body: compressed, checksumSha256: checksum });
+      const echoed = response.headers.get("x-amz-checksum-sha256");
+      if (echoed && echoed !== checksum) throw new Error(`S3 checksum verification failed for ${key}`);
+      let verified = echoed === checksum;
+      if (!echoed && client.hasReader) {
+        const head = await client.headObject({ key });
+        const length = Number(head.headers.get("content-length"));
+        const etag = String(head.headers.get("etag") ?? "").replace(/^\"|\"$/g, "").toLowerCase();
+        const md5 = crypto.createHash("md5").update(compressed).digest("hex");
+        if (!head.ok || length !== compressed.length || etag !== md5) throw new Error(`S3 read-back verification failed for ${key}`);
+        verified = true;
+      }
+      return {
+        ...base,
+        ...(verified ? { key } : {}),
+        verified,
+        created: true,
+      };
+    },
+
+    async head({ runtime, threadId, host, fileVersion, kind = "run" }) {
+      const key = objectKey({ runtime, threadId, host, fileVersion, kind });
+      const response = await client.headObject({ key });
+      if (response.status === 404) return null;
+      const checksum = response.headers.get("x-amz-checksum-sha256");
+      return {
+        fileVersion,
+        storedHash: fileVersion,
+        storedBytes: Number(response.headers.get("content-length")) || 0,
+        key,
+        verified: checksum === Buffer.from(fileVersion, "hex").toString("base64"),
+      };
+    },
+
+    async get({ runtime, threadId, host, fileVersion, kind = "run" }) {
+      const key = objectKey({ runtime, threadId, host, fileVersion, kind });
+      const response = await client.getObject({ key });
+      const compressed = Buffer.from(await response.arrayBuffer());
+      if (sha256Hex(compressed) !== fileVersion) throw new Error(`S3 object hash mismatch for ${key}`);
       return zlib.gunzipSync(compressed);
     },
   };

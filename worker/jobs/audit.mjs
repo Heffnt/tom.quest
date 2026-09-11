@@ -135,6 +135,7 @@ export async function auditCommit(
           input: prompt,
           encoding: "utf8",
           maxBuffer: 64 * 1024 * 1024,
+          env: { ...process.env, TTS_RUN_ORIGIN: "cron:audit" },
         }),
       ),
     post: (env, body) => convexFetch(env, "/tts/audit", body),

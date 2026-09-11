@@ -53,8 +53,19 @@
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, createWriteStream } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import crypto from "node:crypto";
+
+// This file runs here in a checkout and flat at /opt/tts/codex-run.mjs on the
+// box. Both layouts share the one installed registration body in runs/.
+const registrationUrl = [
+  new URL("../worker/runs/registration.mjs", import.meta.url),
+  new URL("./runs/registration.mjs", import.meta.url),
+].find((candidate) => existsSync(fileURLToPath(candidate)));
+if (!registrationUrl) throw new Error("run registration module is not installed");
+const { writeRegistration } = await import(registrationUrl.href);
 
 const SANDBOXES = new Set(["read-only", "workspace-write"]);
 const EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
@@ -141,11 +152,17 @@ function operateInstructions() {
   try {
     if (!existsSync(wikitom)) throw new Error("checkout absent");
     const resolved = realpathSync.native(wikitom);
-    return execFileSync(
+    const commit = execFileSync(
       "git",
-      ["-c", `safe.directory=${resolved}`, "-C", wikitom, "show", "HEAD:model-of-tom/agent-rules.md"],
+      ["-c", `safe.directory=${resolved}`, "-C", wikitom, "rev-parse", "HEAD"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    ).trim();
+    const text = execFileSync(
+      "git",
+      ["-c", `safe.directory=${resolved}`, "-C", wikitom, "show", `${commit}:model-of-tom/agent-rules.md`],
       { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
     );
+    return { text, commit };
   } catch {
     // One stable line makes the missing personal checkout visible without
     // making the launcher unusable on machines that do not have one.
@@ -168,6 +185,45 @@ if (!prompt.trim()) fail("no prompt on stdin");
 
 const operate = opts.operate ? operateInstructions() : null;
 
+const stateDir = process.env.RUN_SWEEP_STATE_DIR
+  || (process.platform === "win32"
+    ? join(process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local"), "tts", "runs")
+    : "/var/cache/tts/runs");
+const layersGiven = operate ? ["operate"] : [];
+const spooled = writeRegistration({
+  spoolDir: process.env.TTS_RUN_REG_SPOOL || join(stateDir, "registration"),
+  writer: {
+    file: "scripts/codex-run.mjs",
+    job: String(process.env.TTS_RUN_ORIGIN ?? "codex-run").replace(/^cron:/, ""),
+  },
+  registration: {
+    host: process.env.RUN_HOST === "box" || process.env.RUN_HOST === "laptop" ? process.env.RUN_HOST : null,
+    runner: "codex",
+    origin: process.env.TTS_RUN_ORIGIN || "job",
+    kind: process.env.TTS_RUN_PARENT_RUN_ID ? "codex-child" : "job",
+    modelRequested: opts.model,
+    effortRequested: opts.effort,
+    cwd: opts.cwd,
+    parentRunId: process.env.TTS_RUN_PARENT_RUN_ID || null,
+    spawnedByToolUseId: null,
+    continuesRunId: null,
+    layersKnown: true,
+    layersGiven,
+    layersDenied: layersGiven.length === 0 ? ["operate"] : [],
+    skillsGranted: [],
+    skillsRefused: [],
+    tools: { allowed: null, denied: null },
+    hooksConfigured: ["SessionStart", "SessionEnd", "Stop", "SubagentStart", "SubagentStop"],
+    ...(operate ? { wikitomCommit: operate.commit } : {}),
+    promptSha256: crypto.createHash("sha256").update(prompt).digest("hex"),
+  },
+});
+const childEnv = {
+  ...process.env,
+  TTS_RUN_REG_TOKEN: spooled.token,
+  TTS_RUN_REG_SPOOL: process.env.TTS_RUN_REG_SPOOL || join(stateDir, "registration"),
+};
+
 const bin = resolveBinary();
 const workDir = mkdtempSync(join(tmpdir(), "codex-run-"));
 const lastMessage = join(workDir, "last.txt");
@@ -176,7 +232,6 @@ const errLog = join(workDir, "stderr.log");
 const args = [
   "exec",
   "--sandbox", opts.sandbox,
-  "--ephemeral",
   // On the Jarvis Box `tts-codex` runs from repo-"none" scratch workdirs and
   // from /root; without this Codex refuses ("Not inside a trusted directory")
   // before reading the prompt. The daemon's runner passes it for the same
@@ -188,10 +243,10 @@ const args = [
   "-c", "notify=[]",
   "-c", `model_reasoning_effort=${opts.effort}`,
 ];
-if (operate !== null) {
-  // JSON strings are valid TOML basic strings and preserve quotes/newlines.
-  args.push("-c", `developer_instructions=${JSON.stringify(operate)}`);
-}
+// JSON strings are valid TOML basic strings and preserve quotes/newlines. The
+// non-secret token also lets the sweeper bind a rollout when exec fires no hook.
+const developerInstructions = `${operate?.text ?? ""}${operate?.text ? "\n" : ""}TTS-RUN-TOKEN: ${spooled.token}`;
+args.push("-c", `developer_instructions=${JSON.stringify(developerInstructions)}`);
 // Under workspace-write, a sandboxed Codex has no network by default, which
 // turns "run the tests" into a dependency-install failure. Harmless under
 // read-only, but say it only where it applies so the read-only path stays
@@ -214,6 +269,7 @@ const child = spawn(useShell ? quote(bin) : bin, args.map(quote), {
   stdio: ["pipe", "pipe", "pipe"],
   detached: process.platform !== "win32",
   windowsHide: true,
+  env: childEnv,
 });
 child.stdout.pipe(errStream, { end: false }); // stray sandbox lines land here, not on our stdout
 child.stderr.pipe(errStream, { end: false });

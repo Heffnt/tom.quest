@@ -1111,6 +1111,11 @@ export default defineSchema({
     // The run this session's CLI file is recorded as (§23). One session is one
     // run; absent until the sweep or backfill writes the derivable CLI id.
     runId: v.optional(v.string()),
+    // The finalized-row source is switched per session only after its shadow
+    // comparison is clean. Absent is the legacy daemon path.
+    rowsFrom: v.optional(
+      v.union(v.literal("daemon"), v.literal("runs")),
+    ),
     cwd: v.optional(v.string()), // daemon-reported working dir on the Jarvis Box
     lastSdkEventAt: v.optional(v.number()), // "last output Xm ago" fact
     // Daemon-owned idempotency floor: an ingest carrying seqs below this is a
@@ -1165,7 +1170,9 @@ export default defineSchema({
     .index("by_batch", ["batchId", "statusChangedAt"])
     // Joins a live session row to its immutable `runs` record (§23). The
     // record round also wants `by_createdAt`, already declared above.
-    .index("by_run_id", ["runId"]),
+    .index("by_run_id", ["runId"])
+    // The run-file ingest repairs the session link from the CLI's own id.
+    .index("by_sdk_session_id", ["sdkSessionId"]),
 
   // Finalized transcript — written exactly once per row by the daemon.
   // `turn` has no UI reader yet; it is kept because transcript structure is
@@ -1274,11 +1281,12 @@ export default defineSchema({
     runtimeVersion: v.optional(v.string()),
     parserVersion: v.string(),
     kind: v.union(v.literal("session"), v.literal("worker"), v.literal("code"), v.literal("prospect"), v.literal("job"), v.literal("delegate"), v.literal("subagent"), v.literal("codex-child"), v.literal("unknown")),
-    status: v.union(v.literal("running"), v.literal("ended"), v.literal("failed"), v.literal("unknown")),
+    status: v.union(v.literal("running"), v.literal("ended"), v.literal("failed"), v.literal("abandoned"), v.literal("unknown")),
     startedAt: v.number(),
     lastLineAt: v.number(),
     context: v.optional(v.object({
       wikitomCommit: v.optional(v.string()), layersKnown: v.boolean(), layersGiven: v.array(v.string()), layersDenied: v.array(v.string()), skillsOffered: v.array(v.string()), skillsUsed: v.array(v.string()), tools: v.array(v.string()), hooks: v.array(v.string()), cwd: v.optional(v.string()), gitBranch: v.optional(v.string()), gitCommit: v.optional(v.string()), baseInstructionsHash: v.optional(v.string()), entrypoint: v.optional(v.string()), originator: v.optional(v.string()), permissionMode: v.optional(v.string()), contextWindow: v.optional(v.number()),
+      registered: v.optional(v.boolean()), launcher: v.optional(v.string()), modelRequested: v.optional(v.string()), skillsGranted: v.optional(v.array(v.string())), skillsRefused: v.optional(v.array(v.string())), promptSha256: v.optional(v.string()), writingStandardSource: v.optional(v.string()),
     })),
     outcome: v.optional(v.object({
       endedReason: v.optional(v.string()), finalTextSeq: v.optional(v.number()),
@@ -1286,6 +1294,7 @@ export default defineSchema({
       costUsd: v.optional(v.number()), priceTableVersion: v.optional(v.string()), turns: v.number(), toolCalls: v.number(),
     })),
     todoId: v.optional(v.id("dtsTodos")), batchId: v.optional(v.id("batches")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
+    envelopeKey: v.optional(v.string()), cutoverAt: v.optional(v.number()), abandonedAt: v.optional(v.number()),
     file: v.object({ path: v.string(), sourceHash: v.string(), storedHash: v.string(), bytes: v.number(), storedBytes: v.number(), committedLine: v.number(), committedPrefixSha256: v.string(), storeKey: v.optional(v.string()), incompleteTail: v.optional(v.boolean()) }),
     ingestedAt: v.number(),
   })
@@ -1293,12 +1302,35 @@ export default defineSchema({
     .index("by_run_id", ["runId"])
     // runs.children reads one parent's direct children.
     .index("by_parent", ["parentRunId"])
+    // runs.children takes the earliest direct children without first taking
+    // an arbitrary creation-time subset.
+    .index("by_parent_and_started_at_and_run_id", ["parentRunId", "startedAt", "runId"])
     // A tree reader scans a root at every depth.
     .index("by_root_depth", ["rootRunId", "depth"])
     // The list filters root runs by host and starts in source order.
     .index("by_host_depth_started", ["host", "depth", "startedAt"])
     // Joins a run to the legacy session state row.
-    .index("by_session", ["sessionId"]),
+    .index("by_session", ["sessionId"])
+    // The nightly manifest walks changed store versions in a stable order.
+    .index("by_ingested_at_and_run_id", ["ingestedAt", "runId"]),
+
+  // One immutable row per verified store version. A growing run can produce
+  // several versions between nightly writes, so the mutable runs.file field
+  // cannot be the manifest's source without losing those intermediate facts.
+  runFileVersions: defineTable({
+    runId: v.string(), runner: v.union(v.literal("claude"), v.literal("codex")),
+    host: v.union(v.literal("laptop"), v.literal("box")), threadId: v.string(),
+    depth: v.number(), parentRunId: v.optional(v.string()),
+    fileVersion: v.string(), storeKey: v.string(), sourceHash: v.string(),
+    rawBytes: v.number(), storedBytes: v.number(), parserVersion: v.string(),
+    runtimeVersion: v.optional(v.string()), startedAt: v.number(), lastLineAt: v.number(),
+    at: v.number(),
+  })
+    // Ingest retries identify the already-recorded immutable version.
+    .index("by_run_id_and_file_version", ["runId", "fileVersion"])
+    // The manifest checkpoint is the full ordered tuple, so equal-millisecond
+    // versions resume after the exact last line already appended.
+    .index("by_at_and_run_id_and_file_version", ["at", "runId", "fileVersion"]),
 
   // Labels are events: a run can receive several judgments from distinct
   // channels, so this is deliberately not a mutable field on runs.

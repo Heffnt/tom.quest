@@ -304,7 +304,19 @@ export async function prepareLifeTodos(
     try {
       const answer = io.runClaude(
         preparePrompt(todo, revise?.sentence ?? null, today, writingStandard),
-        { timeoutMs: PREPARE_TIMEOUT_MS, model: MODELS.planner },
+        {
+          timeoutMs: PREPARE_TIMEOUT_MS,
+          model: MODELS.planner,
+          registration: {
+            origin: "cron:plan-graphs",
+            kind: "job",
+            todoId: todo._id,
+            layersKnown: false,
+            layersGiven: [],
+            layersDenied: [],
+            writingStandardSource: "/tts/batch-context",
+          },
+        },
       );
       const parsed = extractJsonObject(answer);
       if (
@@ -509,6 +521,14 @@ export async function briefCodeTodos({ repo, pending, writingStandard, force = f
         timeoutMs: BRIEF_TIMEOUT_MS,
         maxTurns: BRIEF_MAX_TURNS,
         model: MODELS.codeBrief,
+        registration: {
+          origin: "cron:plan-graphs",
+          kind: "job",
+          layersKnown: false,
+          layersGiven: [],
+          layersDenied: [],
+          writingStandardSource: "/tts/batch-context",
+        },
       });
       const parsed = extractJsonObject(answer);
 
@@ -1017,7 +1037,19 @@ export async function planGraphs(context, pending, io) {
         ruledAt: r.ruledAt,
       })),
     }),
-    { timeoutMs: CLAUDE_TIMEOUT_MS, model: MODELS.planner },
+    {
+      timeoutMs: CLAUDE_TIMEOUT_MS,
+      model: MODELS.planner,
+      registration: {
+        origin: "cron:plan-graphs",
+        kind: "job",
+        ...(graphs.length === 1 ? { batchId: graphs[0]._id ?? graphs[0].id } : {}),
+        layersKnown: false,
+        layersGiven: [],
+        layersDenied: [],
+        writingStandardSource: "/tts/batch-context",
+      },
+    },
   );
   const parsed = extractJsonObject(answer);
   if (!Array.isArray(parsed.batches)) {

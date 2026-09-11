@@ -270,17 +270,18 @@ export function parseClaudeFile({ path, text, host, fileVersion, fromLine = 0, a
   const runId = agentMeta ? `claude:${host}:${parentSessionId}/${agentId}` : rootRunId;
   const prompt = [state.instructions, ...state.promptParts, state.firstUserPrompt].filter((part) => typeof part === "string" && part !== "").join("\n");
   const context = claudeContext(prompt, first, state);
+  const actualModel = model ?? agentMeta?.model;
   if (fromLine === 0) {
-    rows.unshift({ seq: 0, turn: 0, kind: "context", content: { ...context, prompt }, depth: agentMeta?.spawnDepth ?? 0, provenance: provenance({ path, fileVersion, line: 0, block: 0, sourceKind: "context" }), createdAt: startedAt });
+    rows.unshift({ seq: 0, turn: 0, kind: "context", content: { ...(actualModel ? { model: actualModel } : {}), ...context, prompt }, depth: agentMeta?.spawnDepth ?? 0, provenance: provenance({ path, fileVersion, line: 0, block: 0, sourceKind: "context" }), createdAt: startedAt });
   }
   const usageValues = [...usages.values(), ...unkeyedUsage].map(totalsOf);
   const totals = usageValues.reduce((sum, item) => Object.fromEntries(Object.keys(sum).map((key) => [key, sum[key] + item[key]])), { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, thinkingTokens: 0, totalTokens: 0 });
   totals.totalTokens = totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens + totals.outputTokens;
-  const price = costOf({ model: model ?? agentMeta?.model, totals });
+  const price = costOf({ model: actualModel, totals });
   const run = {
     runId, ...(agentMeta ? { parentRunId: agentMeta.parentAgentId ? `claude:${host}:${parentSessionId}/${agentMeta.parentAgentId}` : rootRunId, spawnedByToolUseId: agentMeta.toolUseId } : {}), rootRunId,
-    depth: agentMeta?.spawnDepth ?? 0, linkKnown: true, origin: "unknown", host, runner: "claude", ...(model ?? agentMeta?.model ? { model: model ?? agentMeta.model } : {}), ...(runtimeVersion ? { runtimeVersion } : {}), parserVersion: PARSER_VERSION,
-    ...(sessionModelOf(model ?? agentMeta?.model) ? { sessionModel: sessionModelOf(model ?? agentMeta?.model) } : {}), kind: agentMeta ? "subagent" : human ? "session" : "unknown", status: "unknown", startedAt, lastLineAt, context,
+    depth: agentMeta?.spawnDepth ?? 0, linkKnown: true, origin: "unknown", host, runner: "claude", ...(actualModel ? { model: actualModel } : {}), ...(runtimeVersion ? { runtimeVersion } : {}), parserVersion: PARSER_VERSION,
+    ...(sessionModelOf(actualModel) ? { sessionModel: sessionModelOf(actualModel) } : {}), kind: agentMeta ? "subagent" : human ? "session" : "unknown", status: "unknown", startedAt, lastLineAt, context,
     outcome: { ...(finalTextSeq !== undefined ? { finalTextSeq } : {}), totals, ...(price === null ? {} : { costUsd: price, priceTableVersion: priceTableVersion() }), turns: Math.max(1, turn + 1), toolCalls },
     file: { path, sourceHash: sha256(Buffer.from(text)), storedHash: fileVersion, bytes: Buffer.byteLength(text), storedBytes: 0, committedLine: lines.length, committedPrefixSha256: prefixHash(lines, lines.length), incompleteTail },
   };
@@ -360,7 +361,7 @@ export function parseCodexFile({ path, text, host, fileVersion, fromLine = 0 }) 
   for (const raw of lines) { try { const p = JSON.parse(raw).payload ?? {}; if (["custom_tool_call", "function_call"].includes(p.type) && p.name) tools.push(p.name); } catch {} }
   const permissionMode = sandboxPolicy ? `approval=${approvalPolicy ?? "unknown"}; sandbox=${sandboxPolicy}` : approvalPolicy;
   const context = { ...mot, skillsOffered: [], skillsUsed: [], tools: sorted(tools), hooks: [], ...(meta.cwd ? { cwd: meta.cwd } : {}), ...(meta.git?.branch ? { gitBranch: meta.git.branch } : {}), ...(meta.git?.commit_hash ? { gitCommit: meta.git.commit_hash } : {}), ...(meta.base_instructions?.text ? { baseInstructionsHash: sha256(meta.base_instructions.text) } : {}), ...(meta.originator ? { originator: meta.originator } : {}), ...(meta.context_window ? { contextWindow: meta.context_window } : {}), ...(permissionMode ? { permissionMode } : {}) };
-  if (fromLine === 0) rows.unshift({ seq: 0, turn: 0, kind: "context", content: { ...context, prompt }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: 0, block: 0, sourceKind: "context" }), createdAt: startedAt });
+  if (fromLine === 0) rows.unshift({ seq: 0, turn: 0, kind: "context", content: { ...(model ? { model } : {}), ...context, prompt }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: 0, block: 0, sourceKind: "context" }), createdAt: startedAt });
   if (taskComplete?.message && taskComplete.message !== lastAssistantText) { const row = { seq: taskComplete.line * 1000 + 998, turn: taskComplete.turn, kind: "assistant-text", content: { text: taskComplete.message }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: taskComplete.line, block: 998, sourceKind: "event_msg/task_complete" }), createdAt: taskComplete.timestamp }; rows.push(row); finalTextSeq = row.seq; }
   else if (taskComplete) drop("event_msg/task_complete");
   const totals = lastTokenCount ? totalsOf(lastTokenCount) : usageRecords.map(totalsOf).reduce((sum, item) => Object.fromEntries(Object.keys(sum).map((key) => [key, sum[key] + item[key]])), { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, thinkingTokens: 0, totalTokens: 0 });

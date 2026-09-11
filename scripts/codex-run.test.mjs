@@ -46,10 +46,11 @@ function fakeCodex() {
 }
 
 function run(args, env) {
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-state-"));
   return spawnSync(process.execPath, [RUNNER, ...args], {
     encoding: "utf8",
     input: "answer this\n",
-    env: { ...process.env, ...env },
+    env: { ...process.env, RUN_SWEEP_STATE_DIR: state, ...env },
   });
 }
 
@@ -65,7 +66,11 @@ describe("codex-run operate instructions", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("fake answer\n");
     const codexArgs = JSON.parse(fs.readFileSync(argsFile, "utf8"));
-    expect(codexArgs).toContain(`developer_instructions=${JSON.stringify(rules)}`);
+    const developer = codexArgs.find((arg) => arg.startsWith("developer_instructions="));
+    expect(JSON.parse(developer.slice("developer_instructions=".length))).toMatch(
+      new RegExp(`^${rules.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\nTTS-RUN-TOKEN: [0-9a-f-]{36}$`),
+    );
+    expect(codexArgs).not.toContain("--ephemeral");
   });
 
   it("skips the read entirely with --no-operate", () => {
@@ -77,7 +82,9 @@ describe("codex-run operate instructions", () => {
     });
     expect(result.status).toBe(0);
     expect(result.stderr).not.toContain("operate instructions unavailable");
-    expect(JSON.parse(fs.readFileSync(argsFile, "utf8")).some((arg) => arg.startsWith("developer_instructions="))).toBe(false);
+    const developer = JSON.parse(fs.readFileSync(argsFile, "utf8"))
+      .find((arg) => arg.startsWith("developer_instructions="));
+    expect(JSON.parse(developer.slice("developer_instructions=".length))).toMatch(/^TTS-RUN-TOKEN: [0-9a-f-]{36}$/);
   });
 
   it("continues after one unavailable-instructions warning", () => {
@@ -90,6 +97,8 @@ describe("codex-run operate instructions", () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toContain("codex-run: operate instructions unavailable; continuing without them\n");
     expect(result.stderr.match(/operate instructions unavailable/g)).toHaveLength(1);
-    expect(JSON.parse(fs.readFileSync(argsFile, "utf8")).some((arg) => arg.startsWith("developer_instructions="))).toBe(false);
+    const developer = JSON.parse(fs.readFileSync(argsFile, "utf8"))
+      .find((arg) => arg.startsWith("developer_instructions="));
+    expect(JSON.parse(developer.slice("developer_instructions=".length))).toMatch(/^TTS-RUN-TOKEN: [0-9a-f-]{36}$/);
   });
 });

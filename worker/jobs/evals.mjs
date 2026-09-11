@@ -488,7 +488,8 @@ export async function runItem(item, context, io) {
   }
   let fresh;
   try {
-    const prompt = job.build(item, context.layers(job.layers), context.modules[item.job]);
+    const layers = context.layers(job.layers);
+    const prompt = job.build(item, layers, context.modules[item.job]);
     if (typeof item.sentence === "string" && item.sentence !== "" && prompt.includes(item.sentence)) {
       // The honesty check, enforced at run time as well as in the test: a
       // regeneration that was handed the label sentence proves nothing.
@@ -499,6 +500,14 @@ export async function runItem(item, context, io) {
       timeoutMs: REGEN_TIMEOUT_MS,
       ...job.opts,
       cwd: job.opts?.cwd === "@cmt" ? context.cmtDir : job.opts?.cwd,
+      registration: {
+        origin: "cron:evals",
+        kind: "job",
+        layersKnown: true,
+        layersGiven: layers.names,
+        layersDenied: ["operate", "write", "know"].filter((name) => !layers.names.includes(name)),
+        wikitomCommit: layers.commit,
+      },
     });
     fresh = job.parse(answer, context.modules[item.job]);
   } catch (err) {
@@ -520,6 +529,13 @@ export async function runItem(item, context, io) {
       model: JUDGE_MODEL,
       timeoutMs: JUDGE_TIMEOUT_MS,
       maxTurns: 1,
+      registration: {
+        origin: "cron:evals",
+        kind: "job",
+        layersKnown: false,
+        layersGiven: [],
+        layersDenied: [],
+      },
     });
   } catch (err) {
     return { ...base, judged: "fail", reason: `judge answer unreadable: ${serverErrorMessage(err)}` };
