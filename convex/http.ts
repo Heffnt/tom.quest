@@ -1997,10 +1997,10 @@ http.route({ path: "/tts/weekly-input", method: "GET", handler: ttsWeeklyInput }
 //
 // The prelude rides along for the same reason it does on /tts/weekly-input:
 // the model's proposal sentences are written FOR TOM, so the run that writes
-// them needs the write layer. It asks as the "weekly-input" caller — the two
-// are the same weekly job shape (reaches Tom, judges, does not capture), and
-// the caller table lives in worker/jobs/context-relevance.mjs, which this
-// phase does not open.
+// them needs the write layer. It asks as its OWN caller, "simplify-input"
+// (worker/jobs/context-relevance.mjs CONTEXT_CALLERS): the row happens to hold
+// the same three booleans weekly-input holds, and borrowing that row would
+// make this door change silently on the day the weekly job's does.
 const ttsSimplifyInput = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -2014,7 +2014,7 @@ const ttsSimplifyInput = httpAction(async (ctx, request) => {
   try {
     [facts, writingStandard] = await Promise.all([
       ctx.runQuery(internal.ttsSimplify.internalSimplifyInput, { until }),
-      ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "weekly-input" }),
+      ctx.runQuery(internal.ttsContext.internalContextPrelude, { caller: "simplify-input" }),
     ]);
   } catch (error) {
     return modelOfTomErrorResponse(error);

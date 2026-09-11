@@ -100,11 +100,14 @@ const SCHEMA_FIXTURE = [
   "});",
 ].join("\n");
 
-/** Ten sampled runs. Two carry the orchestrator rule's words; none carries the
- *  commit rule's pair, so that rule scores zero against a generous proxy. */
+/** Twenty-four sampled runs, all with a readable transcript — above MIN_LOADED,
+ *  which is the floor on the proxy's DENOMINATOR as well as on `loaded`, so
+ *  these rules are measurable at all. Two carry the orchestrator rule's words;
+ *  none carries the commit rule's pair, so that rule scores zero against a
+ *  generous proxy. */
 function sample() {
   const runs = [];
-  for (let i = 0; i < 10; i += 1) {
+  for (let i = 0; i < 24; i += 1) {
     runs.push({
       runId: `run-${i}`,
       startedAt: NOW - i * 3_600_000,
@@ -175,18 +178,30 @@ function fakeGit(calls = []) {
 /** gh absent. Every Guardrails row is then `known: false` and forced to keep. */
 const ghAbsent = () => ({ ok: false, status: 127, stdout: "", error: "gh: command not found" });
 
-function harness({ answer = '{"proposals":[]}', open = [], simplifyInput = input(), marker = null, modelThrows = false } = {}) {
+function harness({
+  answer = '{"proposals":[]}',
+  open = [],
+  simplifyInput = input(),
+  marker = null,
+  modelThrows = false,
+  repoDirThrows = false,
+} = {}) {
   const { repoDir, wiki } = checkouts();
   const posted = [];
   const captured = [];
   const paths = [];
   const out = [];
+  const fetchedRepo = [];
   const reports = { failed: [], ok: [] };
   const markers = new Map(marker === null ? [] : [[DAY, marker]]);
   const io = {
     fetch: async (env, route, body) => {
       paths.push(route);
-      if (route === "/tts/simplify-open") return { proposals: open };
+      // The door's own field name and its own row shape (convex/http.ts
+      // ttsSimplifyOpen over ttsSimplify.internalOpenProposals). A fixture
+      // that invented either would prove the job against a door that does not
+      // exist, which is the one thing a fake must not do.
+      if (route === "/tts/simplify-open") return { open };
       if (route.startsWith("/tts/simplify-input")) return simplifyInput;
       if (route === "/tts/capture") {
         captured.push(body);
@@ -208,6 +223,11 @@ function harness({ answer = '{"proposals":[]}', open = [], simplifyInput = input
     readDir: (dir) => fs.readdirSync(dir, { withFileTypes: true }),
     git: fakeGit(),
     gh: ghAbsent,
+    repoDir: (env) => {
+      fetchedRepo.push(env);
+      if (repoDirThrows) throw new Error("missing GH_TOKEN in /etc/tts/worker.env — the cache clones need it");
+      return repoDir;
+    },
     markerRead: (day) => markers.get(day) ?? null,
     markerWrite: (day, record) => markers.set(day, record),
     reportFailed: async (env, body) => reports.failed.push(body),
@@ -224,7 +244,7 @@ function harness({ answer = '{"proposals":[]}', open = [], simplifyInput = input
       io,
       ...extra,
     });
-  return { run, posted, captured, paths, out, reports, markers, repoDir, wiki, io };
+  return { run, posted, captured, paths, out, reports, markers, repoDir, wiki, io, fetchedRepo };
 }
 
 const byId = (rows) => new Map(rows.map((row) => [row.id, row]));
@@ -565,7 +585,10 @@ describe("a failed model call", () => {
 
 function openProposal(n, extra = {}) {
   return {
-    id: `p${n}`,
+    // askId is the row's key AND the thread's id; proposalId is the pass's own
+    // 8-hex id, which only the provenance sentence names.
+    askId: `simplify:p${n}`,
+    proposalId: `p${n}`,
     rowId: `r000000${n}`,
     sentence: `after this, thing ${n} is gone`,
     evidence: `Loaded on 40 runs.`,
@@ -587,7 +610,11 @@ describe("the objection window", () => {
     expect(captured[0].provenance).toContain("the weekly simplification pass, 2026-09-04");
     const admits = posted.filter((event) => event.kind === SIMPLIFY_ADMITTED);
     expect(admits).toHaveLength(2);
+    // THE KEY IS THE askId THE DOOR RETURNED, verbatim — the join that makes
+    // internalOpenProposals stop returning this proposal next week.
     expect(admits[0].key).toBe("simplify:p1");
+    expect(admits[0].data.askId).toBe("simplify:p1");
+    expect(admits[0].data.proposalId).toBe("p1");
     expect(admits[0].data.todoId).toBe("todo-1");
   });
 
@@ -598,6 +625,36 @@ describe("the objection window", () => {
     expect(result.admitted).toBe(ADMIT_PER_RUN);
     expect(captured).toHaveLength(ADMIT_PER_RUN);
     expect(result.waiting).toBe(1);
+  });
+});
+
+// ── 8b. the checkout the measurement reads ───────────────────────────────────
+
+describe("the tom.quest cache clone", () => {
+  it("is fetched when no directory was named, and taken as given when one was", async () => {
+    const named = harness();
+    await named.run();
+    expect(named.fetchedRepo).toHaveLength(0);
+
+    const unnamed = harness();
+    const result = await unnamed.run({ repoDir: null });
+    expect(unnamed.fetchedRepo).toHaveLength(1);
+    // The fetch happened and the schema was read out of what came back, which
+    // is the whole point: a week-old clone would propose deleting a field
+    // added on Tuesday.
+    expect(result.facts.repoReadable).toBe(true);
+    expect(result.failures).toEqual([]);
+  });
+
+  it("states the failure and measures the rules anyway when the fetch fails", async () => {
+    const { run } = harness({ repoDirThrows: true });
+    const result = await run({ repoDir: null });
+    expect(result.failures.some((line) => line.includes("cache clone could not be refreshed"))).toBe(true);
+    // No credential is in the stated failure beyond the name of the variable
+    // the fetch said was missing, which is what the operator has to know.
+    expect(result.failures.join("\n")).not.toContain("x-access-token");
+    // The operate layer is in the table regardless: it comes from WikiTom.
+    expect(result.facts.rows.some((row) => row.class === "rule")).toBe(true);
   });
 });
 
@@ -631,9 +688,37 @@ describe("the facts text", () => {
     expect(head).toContain("Window:");
     expect(head).toContain("4 weeks");
     expect(head).toContain("Runs in the window: 100");
-    expect(head).toContain("Sampled for the proxy: 10");
+    expect(head).toContain("Sampled for the proxy: 24");
+    // The denominator every proxy below is out of, named where the model
+    // cannot miss it: a sample that was not read is not a sample of nothing.
+    expect(head).toContain("24 of them came back with any words at all");
     expect(head).toContain('deliberately biased toward "it mattered"');
     expect(head).toContain("UPPER BOUND");
+  });
+
+  // THE ONE FAILURE THIS PASS MUST NOT HAVE. Runs get registered before their
+  // transcript rows are ingested, so a week can hand the measurement a sample
+  // of runs whose token bags are all empty. Every rule then matches nothing —
+  // which, without this floor, reads as "no rule mattered to any run" and makes
+  // the whole operate layer removable in one morning.
+  it("proposes no removal at all when too few sampled runs had a readable transcript", async () => {
+    const unread = input({
+      sample: Array.from({ length: 30 }, (_, i) => ({
+        runId: `run-${i}`,
+        startedAt: NOW,
+        depth: 0,
+        tokens: [],
+      })),
+    });
+    const { run } = harness({ simplifyInput: unread });
+    const result = await run({ printFacts: true });
+    const rules = result.facts.rows.filter((row) => row.class === "rule");
+    expect(rules.length).toBeGreaterThan(0);
+    expect(rules.every((row) => row.candidate !== "remove")).toBe(true);
+    expect(result.facts.sampleReadable).toBe(0);
+    // And the block says why, rather than printing a table of zeroes that
+    // reads like a measurement.
+    expect(result.facts.rows.every((row) => row.proxy.sample !== 30 || row.class !== "rule")).toBe(true);
   });
 
   it("drops keep rows from the bottom when the table is over the cap, and says how many", () => {
