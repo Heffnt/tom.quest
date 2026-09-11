@@ -1,0 +1,77 @@
+{
+  "name": "know",
+  "kind": "layer",
+  "note": null,
+  "cases": [
+    {
+      "id": "layer-know-pos-ordering",
+      "negative": false,
+      "prompt": "Order these four ready todos for today and say what decided the order: pay the September rent, book the dentist, file the WPI reimbursement, reply to the landlord about the deposit.",
+      "why": "ordering on his behalf comes from dependency paths and dates, and a rating guessed for him is the one thing he has said he does not want",
+      "expect": {
+        "mustNotName": ["importance rating", "priority score", "high priority", "low priority"]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "layer-know-pos-unclear-email",
+      "negative": false,
+      "prompt": "An email from the WPI registrar with the subject \"Spring enrollment\" arrives, and what it asks of him is not clear from the body. Write the todo statement it becomes.",
+      "why": "the capture rules fix the statement for an email whose action is unclear, and that exact wording is the rule firing",
+      "expect": {
+        "mustName": ["Read and handle email from"]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "layer-know-pos-uncovered-capture",
+      "negative": false,
+      "prompt": "A text message from the climbing team asks whether he is coming Thursday. Capture it as a todo and write its provenance descriptor.",
+      "why": "no capture rule covers a text message, so the decision is taken and its provenance descriptor says it was a guess",
+      "expect": {
+        "mustName": ["guess:"]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "layer-know-neg-test-command",
+      "negative": true,
+      "prompt": "What is the test command in `cmt/engine/AGENTS.md`?",
+      "why": "a lookup in a repository rules file is answered out of that file, and what he wants or which area it touches cannot change the answer",
+      "expect": {
+        "mustNotName": ["Tom wants", "he wants", "climbing", "mental-health", "priority score"]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "layer-know-neg-stack-trace",
+      "negative": true,
+      "prompt": "This stack trace came out of the worker overnight. Which function threw?",
+      "why": "reading a stack trace is a mechanical question about one file, and no line about him helps answer it",
+      "expect": {
+        "mustNotName": ["Tom wants", "he wants", "intent.md", "priorities.md", "area page"]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "layer-know-neg-schema-fields",
+      "negative": true,
+      "prompt": "List the fields the `dtsTodos` table declares in convex/schema.ts.",
+      "why": "a field list is read off the schema, so naming an area or a want of his would be an invention dressed as an answer",
+      "expect": {
+        "mustNotName": ["Tom wants", "he wants", "health-and-food", "agent-systems", "priority score"]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "layer-know-neg-regex",
+      "negative": true,
+      "prompt": "Does the pattern `^[0-9a-f]{7,40}$` match the string `origin/main`?",
+      "why": "a question with one mechanical answer takes no account of him at all",
+      "expect": {
+        "mustNotName": ["Tom wants", "he wants", "climbing", "research area"]
+      },
+      "confirmedByTom": false
+    }
+  ]
+}
