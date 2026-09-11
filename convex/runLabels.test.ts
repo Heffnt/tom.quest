@@ -103,11 +103,8 @@ async function labels(t: ReturnType<typeof convexTest>) {
 }
 
 async function events(t: ReturnType<typeof convexTest>, kind: string) {
-  return await t.run((ctx) =>
-    ctx.db
-      .query("dtsEvents")
-      .withIndex("by_kind_at", (q) => q.eq("kind", kind))
-      .collect(),
+  return await t.run(async (ctx) =>
+    (await ctx.db.query("dtsEvents").collect()).filter((row) => row.kind === kind),
   );
 }
 
