@@ -324,6 +324,41 @@ const ROW = {
   createdAt: NOW,
 };
 
+// An old run: an index row with a stored version and no rows, which is the
+// one posture that draws the store control. It carries no sessionId, so the
+// same fixture session above does not make it live — a live run's outcome
+// block, and the line inside it, render for nothing.
+const RUN = {
+  _id: "runs|old",
+  _creationTime: 0,
+  runId: "claude:box:old-thread",
+  rootRunId: "claude:box:old-thread",
+  depth: 0,
+  linkKnown: true,
+  origin: "nightly-learning",
+  host: "box",
+  runner: "claude",
+  parserVersion: "runs-parser-1",
+  kind: "worker",
+  status: "ended",
+  model: "opus",
+  startedAt: NOW,
+  lastLineAt: NOW,
+  attachments: [],
+  file: {
+    path: "/srv/runs/old.jsonl",
+    sourceHash: "a".repeat(64),
+    storedHash: "d".repeat(64),
+    bytes: 8192,
+    storedBytes: 2048,
+    committedLine: 0,
+    committedPrefixSha256: "e".repeat(64),
+    storeKey: "runs/claude/box/old-thread/dddd",
+    totalLines: 412,
+  },
+  ingestedAt: NOW,
+};
+
 const AUTO_CONFIG = {
   enabled: false,
   defaultModel: "gpt-5.6-sol",
@@ -341,6 +376,8 @@ function load() {
     [getFunctionName(api.claudeSessions.getMessages)]: [],
     [getFunctionName(api.claudeSessions.getStreamBuf)]: null,
     [getFunctionName(api.claudeSessions.getPendingInbound)]: [],
+    [getFunctionName(api.runs.get)]: RUN,
+    [getFunctionName(api.runs.materializeStatus)]: null,
     [getFunctionName(api.tts.listTodos)]: [TODO],
     [getFunctionName(api.tts.listBatches)]: [BATCH],
     [getFunctionName(api.tts.listMirror)]: [MIRROR],
@@ -545,8 +582,8 @@ const CASES: { file: string; render: () => void }[] = [
     // them. The run row itself is left undefined (runs.get answers nothing) —
     // a session whose runs row has not landed is the common case, and the
     // header reads off the session either way.
-    render: () =>
-      void render(
+    render: () => {
+      render(
         <Run
           sessionId={"s1" as never}
           depth={0}
@@ -557,7 +594,21 @@ const CASES: { file: string; render: () => void }[] = [
           onOpenRun={noop}
           onOpenSession={noop}
         />,
-      ),
+      );
+      // The same component at the other posture, because the control that
+      // opens an old run from the store appears in neither of the live
+      // session's states: it needs a run that is not live, whose rows are
+      // outside the window, and whose file has a stored version.
+      render(
+        <Run
+          runId={RUN.runId}
+          depth={0}
+          now={NOW}
+          onOpenRun={noop}
+          onOpenSession={noop}
+        />,
+      );
+    },
   },
 ];
 
@@ -679,7 +730,28 @@ describe("every mutation the screens fire is named by a popover", () => {
     expect(real.size).toBeGreaterThan(5);
   });
 
+  /**
+   * Mutations no control fires, and the reason each one is not a control's
+   * effect. Nothing can name a call nothing is attached to, so these are
+   * exempt from THIS direction and from nothing else — direction 1 still
+   * presses every control on both screens, so the day one of these grows a
+   * button, that button fails there for having no popover.
+   */
+  const NO_CONTROL = new Map([
+    [
+      "runs.markOpened",
+      "the page marking the run it drew as read, on arrival, so the 30-day row window moves forward",
+    ],
+  ]);
+
+  it("exempts only calls the screens still fire", () => {
+    // A stale exemption would quietly excuse a control added later under the
+    // same name.
+    expect([...NO_CONTROL.keys()].filter((c) => !firedInSource.has(c))).toEqual([]);
+  });
+
   for (const [call, where] of [...firedInSource].sort()) {
+    if (NO_CONTROL.has(call)) continue;
     it(`${call} (fired by ${where.join(", ")}) has a popover naming it`, () => {
       expect(named.has(call)).toBe(true);
     });

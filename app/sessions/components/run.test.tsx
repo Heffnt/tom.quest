@@ -34,7 +34,11 @@ const convex = vi.hoisted(() => ({
   rows: {} as Record<string, unknown[]>,
   children: {} as Record<string, unknown[]>,
   sessions: {} as Record<string, unknown>,
+  /** The newest runs.materializeStatus answer, per run. */
+  requests: {} as Record<string, unknown>,
   seen: [] as string[],
+  /** Every mutation the page fired, as "<fn>:<args json>". */
+  mutations: [] as string[],
 }));
 
 vi.mock("convex/react", async () => {
@@ -72,6 +76,8 @@ vi.mock("convex/react", async () => {
             items: convex.children[a.runId ?? ""] ?? EMPTY,
             nextCursor: null,
           };
+        case "runs:materializeStatus":
+          return convex.requests[a.runId ?? ""] ?? null;
         case "claudeSessions:getSession":
           return convex.sessions[a.id ?? ""] ?? null;
         case "claudeSessions:getStreamBuf":
@@ -99,7 +105,14 @@ vi.mock("convex/react", async () => {
         loadMore: () => {},
       };
     },
-    useMutation: () => async () => {},
+    // Recorded, not stubbed: two of the cases below are about a mutation
+    // the page fires with nothing on screen to fire it.
+    useMutation: (ref: unknown) => {
+      const fn = name(ref as never);
+      return async (args: unknown) => {
+        convex.mutations.push(`${fn}:${JSON.stringify(args)}`);
+      };
+    },
   };
 });
 
@@ -340,7 +353,9 @@ beforeEach(() => {
   convex.rows = {};
   convex.children = {};
   convex.sessions = {};
+  convex.requests = {};
   convex.seen = [];
+  convex.mutations = [];
   onOpenRun.mockReset();
   onOpenSession.mockReset();
   cleanup();
@@ -596,6 +611,143 @@ describe("the edges of the recursion", () => {
     expect(within(header).getByText("opus").tagName).toBe("SPAN");
     expect(header.querySelector("select")).toBeNull();
     expect(document.querySelector("select")).toBeNull();
+  });
+});
+
+// ── ROWS THAT ARE NOT IN THE RECORD ─────────────────────────────────────────
+// Convex holds the run index and a bounded window of rows; the store holds
+// every version. So a run outside that window is a header, an outcome and no
+// transcript, and the line under the header is the only place the reader can
+// be told about it. It has four states, each of them a different thing being
+// true on the server — nothing asked for, a request the box has not reached
+// yet, a request the box refused, and the rows back — and the failure mode of
+// every one of them is a page that renders and says something false: a
+// control offered while a request is already queued, a refusal shown as a
+// spinner, a reason swallowed, or the line still standing over the rows it
+// says are absent.
+
+const OLD_RUN = "run-old";
+
+/** An old run: an index row, a stored version, and no rows of its own. */
+function oldRun(over: Record<string, unknown> = {}) {
+  return runDoc({
+    _id: "runs|old",
+    runId: OLD_RUN,
+    status: "ended",
+    file: {
+      path: "/srv/runs/old.jsonl",
+      sourceHash: "a".repeat(64),
+      storedHash: "d".repeat(64),
+      bytes: 8192,
+      storedBytes: 2048,
+      // committedLine 0 with a totalLines is exactly "the record holds none of
+      // this file" — what the backlog import writes for every old run.
+      committedLine: 0,
+      committedPrefixSha256: "e".repeat(64),
+      storeKey: "runs/claude/box/old-thread/dddd",
+      totalLines: 412,
+    },
+    ...over,
+  });
+}
+
+const openOld = () =>
+  render(
+    <Run
+      runId={OLD_RUN}
+      depth={0}
+      now={NOW}
+      onOpenRun={onOpenRun}
+      onOpenSession={onOpenSession}
+    />,
+  );
+
+/** Every call to one mutation, with its arguments. */
+const fired = (fn: string) =>
+  convex.mutations.filter((call) => call.startsWith(`${fn}:`));
+
+describe("a run whose rows are not in the record", () => {
+  it("offers the one control that asks the box for them", () => {
+    convex.runs = { [OLD_RUN]: oldRun() };
+    openOld();
+
+    expect(body()).toContain("rows not in the record");
+    expect(body()).toContain("old.jsonl");
+    expect(body()).toContain("version dddddddddddd");
+
+    fireEvent.click(screen.getByText("open this run from the store"));
+    expect(fired("runs:requestMaterialize")).toEqual([
+      `runs:requestMaterialize:{"runId":"${OLD_RUN}"}`,
+    ]);
+    // An index-only run is not made evictable by being looked at: there is
+    // nothing to keep, so nothing marks it read.
+    expect(fired("runs:markOpened")).toEqual([]);
+  });
+
+  it("says the box is serving it while a request is pending, and offers nothing", () => {
+    convex.runs = { [OLD_RUN]: oldRun() };
+    convex.requests = {
+      [OLD_RUN]: {
+        _id: "mr1",
+        _creationTime: 0,
+        runId: OLD_RUN,
+        requestedBy: "tom",
+        requestedAt: NOW,
+        status: "pending",
+        slice: 2,
+      },
+    };
+    openOld();
+
+    // A plain sentence and no spinner: nothing is streaming, and a second
+    // press would queue nothing, so there is nothing to press.
+    expect(body()).toContain("opening from the store · slice 2");
+    expect(screen.queryByText("open this run from the store")).toBeNull();
+  });
+
+  it("names the reason a request failed and brings the control back", () => {
+    convex.runs = { [OLD_RUN]: oldRun() };
+    convex.requests = {
+      [OLD_RUN]: {
+        _id: "mr2",
+        _creationTime: 0,
+        runId: OLD_RUN,
+        requestedBy: "tom",
+        requestedAt: NOW,
+        status: "failed",
+        reason: "object missing from store",
+        slice: 1,
+      },
+    };
+    openOld();
+
+    expect(body()).toContain("could not open · object missing from store");
+    // A transient store failure is one more press, never a dead end.
+    expect(screen.getByText("open this run from the store")).toBeTruthy();
+  });
+
+  it("shows the rows and drops the line once they are back, and marks the run read", () => {
+    convex.runs = { [OLD_RUN]: oldRun() };
+    convex.rows = {
+      [OLD_RUN]: [
+        fileRow({
+          _id: "m-old",
+          runId: OLD_RUN,
+          seq: 1000,
+          kind: "assistant-text",
+          content: { text: "the old run, back from the store" },
+        }),
+      ],
+    };
+    openOld();
+
+    expect(screen.getByText("the old run, back from the store")).toBeTruthy();
+    expect(body()).not.toContain("rows not in the record");
+    expect(screen.queryByText("open this run from the store")).toBeNull();
+    // Reading a run keeps it: once per page load, fire and forget, no UI.
+    expect(fired("runs:markOpened")).toEqual([
+      `runs:markOpened:{"runId":"${OLD_RUN}"}`,
+    ]);
   });
 });
 

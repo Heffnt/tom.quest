@@ -20,7 +20,7 @@
 // is no second component for a subagent and no single-level fold.
 
 import Link from "next/link";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
@@ -203,6 +203,60 @@ export default function Run({
   const rowsEmpty =
     rows.length === 0 &&
     (pageStatus === "Exhausted" || pageStatus === "CanLoadMore");
+  const hasRows = rows.length > 0;
+
+  // ── OPENING AN OLD RUN FROM THE STORE ──────────────────────────────────
+  // Convex holds the run index and a bounded window of rows; the store holds
+  // every version (§23.4). So a run outside the window has a header, an
+  // outcome and no transcript, and the way back is to ask for it: the press
+  // queues a request, worker/runs/materialize.mjs reads the stored version,
+  // parses it with the CURRENT parser and ingests the rows through the same
+  // /runs/ingest door the sweep uses. Nothing here fetches anything — the
+  // rows arrive on the subscription this page already holds, and this line
+  // goes away when they do.
+  const requestMaterialize = useMutation(api.runs.requestMaterialize);
+  const markOpened = useMutation(api.runs.markOpened);
+  const [storeError, setStoreError] = useState<string | null>(null);
+  // Subscribed only while there is something for it to say: this run is the
+  // page, its rows are missing, and there is a stored version to fetch them
+  // from. When the rows land the query is skipped again with the line.
+  const materializeStatus = useQuery(
+    api.runs.materializeStatus,
+    depth === 0 &&
+      resolvedRunId !== undefined &&
+      rowsEmpty &&
+      run?.file.storeKey !== undefined
+      ? { runId: resolvedRunId }
+      : "skip",
+  );
+  const openFromStore = useCallback(() => {
+    if (resolvedRunId === undefined) return;
+    setStoreError(null);
+    void requestMaterialize({ runId: resolvedRunId }).catch((e: unknown) => {
+      // The mutation's refusals are fixed phrases ("run has no store key"),
+      // so this is bounded text, not a payload echoed back.
+      setStoreError(
+        e instanceof Error ? previewLine(e.message, 80) : "the request was refused",
+      );
+    });
+  }, [requestMaterialize, resolvedRunId]);
+
+  // READING A RUN IS WHAT KEEPS IT. runs.markOpened moves the row window
+  // forward 30 days, clamped so six reads in an afternoon are one write, and
+  // it does nothing at all for a run whose rows are not in the record — an
+  // index-only backlog run is not made evictable by being looked at. Fire and
+  // forget, once per page load: there is nothing for the reader to see.
+  //
+  // It is a write that fires on arrival, which app/AGENTS.md gates on Tom.
+  // TomGate mounts this component for nobody else and the mutation requires
+  // Tom itself, so the gate holds on both sides.
+  const marked = useRef<string | null>(null);
+  useEffect(() => {
+    if (depth !== 0 || resolvedRunId === undefined || !hasRows) return;
+    if (marked.current === resolvedRunId) return;
+    marked.current = resolvedRunId;
+    void markOpened({ runId: resolvedRunId }).catch(() => {});
+  }, [depth, resolvedRunId, hasRows, markOpened]);
 
   const lead = useMemo(
     () => (
@@ -211,11 +265,24 @@ export default function Run({
         session={session ?? null}
         live={live}
         rowsEmpty={rowsEmpty}
+        request={materializeStatus}
+        storeError={storeError}
+        onOpenFromStore={openFromStore}
         onOpenRun={onOpenRun}
         onOpenSession={onOpenSession}
       />
     ),
-    [run, session, live, rowsEmpty, onOpenRun, onOpenSession],
+    [
+      run,
+      session,
+      live,
+      rowsEmpty,
+      materializeStatus,
+      storeError,
+      openFromStore,
+      onOpenRun,
+      onOpenSession,
+    ],
   );
   const tail = useMemo(
     () =>
@@ -533,6 +600,9 @@ function Lead({
   session,
   live,
   rowsEmpty,
+  request,
+  storeError,
+  onOpenFromStore,
   onOpenRun,
   onOpenSession,
 }: {
@@ -540,6 +610,11 @@ function Lead({
   session: Doc<"claudeSessions"> | null;
   live: boolean;
   rowsEmpty: boolean;
+  /** The newest materialize request for this run: runs.materializeStatus. */
+  request?: Doc<"runMaterializeRequests"> | null;
+  /** A refusal from the press itself, as opposed to one from the box. */
+  storeError?: string | null;
+  onOpenFromStore?: () => void;
   onOpenRun: (runId: string) => void;
   onOpenSession: (sessionId: Id<"claudeSessions">) => void;
 }) {
@@ -625,12 +700,48 @@ function Lead({
         )}
       </div>
       {rowsEmpty && run !== null && (
-        // The 30-day row window has passed this run by (§23.4). The state is
-        // rendered and nothing is offered: phase 5 owns the re-ingest, and a
-        // button it has not wired would claim an effect the code does not have.
-        <div className="font-mono text-[10px] text-text-faint break-words">
-          rows not in the record · {run.file.path.split(/[\\/]/).pop() || "no file"} ·
-          version {run.file.storedHash.slice(0, 12)}
+        // The 30-day row window has passed this run by, or it was never
+        // ingested at all (§23.4). The store still holds the version, so the
+        // line carries the one control that brings it back.
+        <div className="font-mono text-[10px] text-text-faint break-words flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <span>
+            rows not in the record · {run.file.path.split(/[\\/]/).pop() || "no file"} ·
+            version {run.file.storedHash.slice(0, 12)}
+          </span>
+          {request?.status === "pending" ? (
+            // One true sentence and no spinner: nothing is streaming here.
+            // The box takes the oldest request on its next minute.
+            <span>opening from the store · slice {request.slice}</span>
+          ) : (
+            run.file.storeKey !== undefined &&
+            onOpenFromStore !== undefined && (
+              <>
+                {request?.status === "failed" && (
+                  // A fixed phrase from the job's closed vocabulary, so a
+                  // transient store failure is one more press, not a dead end.
+                  <span className="text-error">
+                    could not open · {request.reason ?? "no reason given"}
+                  </span>
+                )}
+                {storeError !== null && storeError !== undefined && (
+                  <span className="text-error">could not open · {storeError}</span>
+                )}
+                <button
+                  type="button"
+                  onClick={onOpenFromStore}
+                  className="text-accent underline underline-offset-2 hover:text-text"
+                >
+                  open this run from the store
+                </button>
+                <Info call="runs.requestMaterialize({ runId })">
+                  Queues this run for the box. It reads the stored version of
+                  the file back, parses it with the current parser and writes
+                  the rows into the record — within a minute, and the rows
+                  appear here on their own. Nothing on the host is touched.
+                </Info>
+              </>
+            )
+          )}
         </div>
       )}
     </div>
