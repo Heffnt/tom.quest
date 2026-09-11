@@ -727,6 +727,36 @@ export const children = query({
 export const rows = query({ args: { runId: v.string(), paginationOpts: paginationOptsValidator }, handler: async (ctx, args) => { await requireTomForRuns(ctx); assertRunId(args.runId); const page = await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", args.runId)).order("asc").paginate(args.paginationOpts); return { ...page, page: page.page.map((row) => ({ ...row, hasOverflow: row.overflow !== undefined, fullByteLength: row.overflow?.byteLength })) }; } });
 export const entry = query({ args: { runId: v.string(), seq: v.number() }, handler: async (ctx, args) => { await requireTomForRuns(ctx); assertRunId(args.runId); if (!nonNegativeInteger(args.seq)) throw new Error("invalid seq"); const row = await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", args.runId).eq("seq", args.seq)).first(); return row ? { provenance: row.provenance, content: row.content, overflow: row.overflow, digest: row.digest } : null; } });
 
+// The list wants the newest roots, and a root is the only run with no parent
+// above it, so depth is pinned to 0 inside the index rather than filtered out
+// after the read. Because that index leads with the host, "both hosts" is two
+// bounded reads merged here, never a scan of every child run ever ingested.
+// The cap is the page's, not the table's: this phase has no cursor, so the
+// merged array itself is the answer.
+export const roots = query({
+  args: {
+    host: v.optional(v.union(v.literal("laptop"), v.literal("box"))),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    await requireTomForRuns(ctx);
+    const limit = args.limit ?? 50;
+    if (!positiveInteger(limit) || limit > 500) throw new Error("roots limit must be an integer from 1 to 500");
+    const hosts: Array<"laptop" | "box"> = args.host ? [args.host] : ["laptop", "box"];
+    const perHost = await Promise.all(hosts.map((host) => ctx.db
+      .query("runs")
+      .withIndex("by_host_depth_started", (q) => q.eq("host", host).eq("depth", 0))
+      .order("desc")
+      .take(limit)));
+    // Two runs can start in the same millisecond, so startedAt alone is not a
+    // total order across the merge; runId settles those pairs the same way on
+    // every read.
+    return perHost.flat()
+      .sort((left, right) => right.startedAt - left.startedAt || (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0))
+      .slice(0, limit);
+  },
+});
+
 export const internalBackfillRunIds = internalMutation({
   args: { cursor: v.optional(v.string()), limit: v.optional(v.number()) },
   handler: async (ctx, args) => {
