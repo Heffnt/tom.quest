@@ -620,6 +620,36 @@ The tests pass. I opened worker/jobs/ghost.mjs to check.`;
     expect(found.some((one) => one.startsWith("claimed-read-not-in-the-record:"))).toBe(false);
   });
 
+  // A cut tool-call list makes finding 2 fire on a path that WAS opened and
+  // fell past the door's 400-row cap — a false accusation against an honest
+  // audit, which is the one failure this round cannot afford.
+  it("keeps the trace available but silences the read-claim check when the door cut the list", async () => {
+    const text = `${AUDIT_VERDICT_LINE}
+
+I opened convex/ttsMerge.ts and it is fine.`;
+    const { io: fake, posted } = io({
+      audit: (prompt, receipt) => {
+        receipt.runToken = "token-1";
+        return text;
+      },
+      runTrace: async () => ({ runId: "run_1", turns: 9, tokens: 900, toolCalls: [], truncated: true }),
+      mergeGate: async () => ({ checks: [{ name: "tests", passed: true }] }),
+    });
+    await auditCommit({ repo: "tom.quest", sha: "a1b2c3d", dir: "/w" }, fake);
+    expect(posted[0].trace.available).toBe(true);
+    expect(posted[0].trace.reason).toContain("the row cap cut the list");
+    expect(posted[0].traceFindings.some((one) => one.startsWith("claimed-read-not-in-the-record:"))).toBe(false);
+  });
+
+  // "0 of 0 chunks, 0 of 0 characters" is not a coverage record, and it would
+  // read in the gate's sentence as though the audit had answered.
+  it("posts no chunks record at all when there was nothing to chunk", async () => {
+    const { io: fake, posted } = io({ run: () => "" });
+    await auditCommit({ repo: "tom.quest", sha: "a1b2c3d", dir: "/w" }, fake);
+    expect("chunks" in posted[0]).toBe(false);
+    expect(posted[0].text).toContain("VERDICT: REFUSED");
+  });
+
   it("records the findings when the trace did arrive", async () => {
     const { io: fake, posted } = io({
       run: () => fileBlock("worker/jobs/audit.mjs", 60) + fileBlock("worker/jobs/audit.test.mjs", 60),

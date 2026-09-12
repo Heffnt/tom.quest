@@ -1735,6 +1735,74 @@ const ttsAudit = httpAction(async (ctx, request) => {
       error: "the audit answer carries no VERDICT: <WORD> line of its own",
     });
   }
+  // ── What the audit saw, and whether its own claims are true ────────────────
+  // THE SHAPES ARE THE DOOR'S BUSINESS; THE CAPS AND THE REDACTION ARE THE
+  // MUTATION'S. internalRecordAudit's object validators would refuse a
+  // malformed field with an exception the caller reads as a 500 naming nothing;
+  // checking here answers a 400 that names the member. The capping and the
+  // redaction stay THERE and are not repeated here, because two homes for one
+  // rule is how one of them comes to be forgotten.
+  //
+  // ALL THREE ARE OPTIONAL AND AN ABSENT ONE SENDS NO KEY: a post with none of
+  // them is an audit recorded before any of this existed, which is a different
+  // fact from one that read nothing and traced nothing.
+  let chunks:
+    | { count: number; read: number; charsRead: number; charsTotal: number; truncatedChunks: number; files: number }
+    | undefined;
+  if (b.chunks !== undefined) {
+    if (typeof b.chunks !== "object" || b.chunks === null || Array.isArray(b.chunks)) {
+      return jsonResponse(400, { error: "chunks, when given, must be an object" });
+    }
+    const given = b.chunks as Record<string, unknown>;
+    const counts: Record<string, number> = {};
+    for (const member of ["count", "read", "charsRead", "charsTotal", "truncatedChunks", "files"]) {
+      const value = given[member];
+      if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+        return jsonResponse(400, { error: `chunks.${member} must be a finite number of 0 or more` });
+      }
+      counts[member] = value;
+    }
+    // A COVERAGE RECORD THAT CLAIMS MORE THAN THERE WAS IS WORSE THAN NONE: it
+    // reads as a fuller audit than the one that ran, and once it is on the row
+    // nothing downstream can tell it from the truth. This door is the only
+    // place that can say so before it is on the row forever.
+    if (counts.read > counts.count) {
+      return jsonResponse(400, { error: "chunks.read cannot exceed chunks.count" });
+    }
+    if (counts.charsRead > counts.charsTotal) {
+      return jsonResponse(400, { error: "chunks.charsRead cannot exceed chunks.charsTotal" });
+    }
+    chunks = {
+      count: counts.count, read: counts.read, charsRead: counts.charsRead,
+      charsTotal: counts.charsTotal, truncatedChunks: counts.truncatedChunks, files: counts.files,
+    };
+  }
+  // FORWARDED AS WRITTEN. internalRecordAudit caps the list and redacts each
+  // finding, and doing either here as well would be that second home.
+  let traceFindings: string[] | undefined;
+  if (b.traceFindings !== undefined) {
+    if (!Array.isArray(b.traceFindings) || !b.traceFindings.every((finding) => typeof finding === "string")) {
+      return jsonResponse(400, { error: "traceFindings, when given, must be an array of strings" });
+    }
+    traceFindings = b.traceFindings as string[];
+  }
+  let trace: { available: boolean; reason?: string } | undefined;
+  if (b.trace !== undefined) {
+    if (typeof b.trace !== "object" || b.trace === null || Array.isArray(b.trace)) {
+      return jsonResponse(400, { error: "trace, when given, must be an object" });
+    }
+    const given = b.trace as Record<string, unknown>;
+    if (typeof given.available !== "boolean") {
+      return jsonResponse(400, { error: "trace.available (boolean) required" });
+    }
+    if (given.reason !== undefined && typeof given.reason !== "string") {
+      return jsonResponse(400, { error: "trace.reason, when given, must be a string" });
+    }
+    trace = {
+      available: given.available,
+      ...(given.reason === undefined ? {} : { reason: given.reason as string }),
+    };
+  }
   const result = await ctx.runMutation(internal.ttsMerge.internalRecordAudit, {
     repo: (b.repo as string).trim(),
     sha: (b.sha as string).trim(),
@@ -1746,6 +1814,9 @@ const ttsAudit = httpAction(async (ctx, request) => {
     // check is for (convex/ttsMerge.ts auditFallbackNote).
     ...(nonempty(b.fallback) ? { fallback: (b.fallback as string).trim() } : {}),
     ...(nonempty(b.url) ? { url: (b.url as string).trim() } : {}),
+    ...(chunks === undefined ? {} : { chunks }),
+    ...(traceFindings === undefined ? {} : { traceFindings }),
+    ...(trace === undefined ? {} : { trace }),
   });
   return jsonResponse(200, { ok: true, ...result });
 });
@@ -2301,6 +2372,35 @@ const ttsRunByToken = httpAction(async (ctx, request) => {
 });
 
 http.route({ path: "/tts/run-by-token", method: "GET", handler: ttsRunByToken });
+
+// GET /tts/run-trace?token=… — the same token, the same run, ITS TOOL CALLS.
+//
+// WHY IT EXISTS: the audit checks its own claims against its own run. It says
+// it opened `convex/foo.ts`, and this says whether any Read, Grep or Glob call
+// in that run ever named that path (worker/jobs/audit.mjs, finding 2). Without
+// it the audit's "I read the whole change" is unverifiable, which is the exact
+// fault this round closes.
+//
+// A SECOND DOOR AND NOT A WIDER FIRST ONE: /tts/run-by-token is deliberately
+// the run's identity and totals and never its transcript, and this is a
+// deliberately different answer — tool NAMES and PATHS, redacted and bounded,
+// still no text and no results. Widening the existing route would have made
+// every caller of it a caller of this.
+//
+// Read-only, worker-keyed, and SHAPE-CHECKED BEFORE THE LOOKUP for the reason
+// stated at RUN_TOKEN_SHAPE. `null` for an unknown token is a normal answer,
+// exactly as it is next door: the sweeper needs a moment to see the run's file.
+const ttsRunTrace = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  const token = new URL(request.url).searchParams.get("token") ?? "";
+  if (!RUN_TOKEN_SHAPE.test(token)) {
+    return jsonResponse(400, { error: "token (a registration UUID) required" });
+  }
+  return jsonResponse(200, await ctx.runQuery(internal.runs.internalRunTrace, { token }));
+});
+
+http.route({ path: "/tts/run-trace", method: "GET", handler: ttsRunTrace });
 
 // CI has a distinct, narrow key: it can request and read evals, never use the
 // broader worker key that can write every TTS event.

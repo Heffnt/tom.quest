@@ -784,6 +784,13 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *
  * Answers `null` when nothing came back, which upstream is A COUNTED ABSENCE
  * and never silence.
+ *
+ * `truncated` rides up from the door, and it MATTERS: GET /tts/run-trace caps
+ * at 400 transcript ROWS, not 400 tool calls, so a long run's calls are cut
+ * well before four hundred of them. Finding 2 fires when a claimed path is in
+ * NO call of the list — a cut list therefore makes it fire on a path that WAS
+ * opened and fell past the cut, which is a false accusation against an honest
+ * audit. One truncated record makes the whole list unusable for that finding.
  */
 export async function runTracesFor(io, tokens) {
   if (typeof io.runTrace !== "function" || tokens.length === 0) return null;
@@ -811,6 +818,7 @@ export async function runTracesFor(io, tokens) {
     runId: records[0]?.runId ?? null,
     turns: records.reduce((total, one) => total + (Number(one.turns) || 0), 0),
     toolCalls: records.flatMap((one) => one.toolCalls),
+    truncated: records.some((one) => one.truncated === true),
   };
 }
 
@@ -1054,11 +1062,20 @@ export async function auditCommit(
       // `reason` rides the available arm too, because "3 of 12 runs answered"
       // is the difference between a trace that saw the whole audit and one that
       // saw a quarter of it, and finding 2 was computed from the quarter.
-      traced = true;
+      // A CUT LIST IS NOT A LIST. The door caps at 400 transcript rows, so a
+      // long audit run loses tool calls off the end; finding 2 reads absence
+      // as a false claim, and the one thing this round cannot afford is an
+      // accusation against an audit that did open the file. So a truncated
+      // record leaves the trace AVAILABLE — the read happened and the reason
+      // says what it found — and silences finding 2 exactly as an absent
+      // record does.
+      traced = record.truncated !== true;
       toolCalls = record.toolCalls;
       trace = {
         available: true,
-        reason: `${record.runs} of ${record.of} audit run${record.of === 1 ? "" : "s"} read, ${record.turns} turns, ${record.toolCalls.length} tool calls`,
+        reason:
+          `${record.runs} of ${record.of} audit run${record.of === 1 ? "" : "s"} read, ${record.turns} turns, ${record.toolCalls.length} tool calls` +
+          (record.truncated === true ? " (the row cap cut the list, so the read-claim check is not run)" : ""),
       };
     }
   }
@@ -1090,7 +1107,14 @@ export async function auditCommit(
     ...(fallback === null ? {} : { fallback }),
     // A RECORD, NOT A CONDITION. The gate does not read `chunks`; it is how the
     // next reader tells an audit of a whole change from an audit of its fifth.
-    chunks: chunksRecord,
+    //
+    // SENT ONLY WHEN THERE WERE CHUNKS. An audit that could not run at all, or
+    // one over an empty diff, has no coverage to report, and posting
+    // `{count: 0, read: 0, …}` would put "0 of 0 chunks, 0 of 0 characters"
+    // into the sentence Tom reads and make an UNAVAILABLE row indistinguishable
+    // from a pre-chunking one. Absent is the honest answer to a question the
+    // audit never got far enough to answer.
+    ...(chunksRecord.count === 0 ? {} : { chunks: chunksRecord }),
     traceFindings,
     trace,
   });

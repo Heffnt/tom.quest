@@ -104,6 +104,225 @@ describe("POST /tts/needs-tom: the needs-you room, or nothing", () => {
   });
 });
 
+// ── GET /tts/run-trace: the audit's own run, read back ───────────────────────
+// The door the trace checker asks: it claims it opened a path, and this says
+// whether any Read, Grep or Glob call of that run ever named it.
+describe("GET /tts/run-trace", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  const KEY = { "X-TTS-Key": "s3cret" };
+  const TOKEN = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+  const RUN_ID = "claude:box:audit-trace-run";
+
+  async function anAudit(t: ReturnType<typeof convexTest>) {
+    await t.run(async (ctx) => {
+      await ctx.db.insert("runs", {
+        runId: RUN_ID, rootRunId: RUN_ID, depth: 0, linkKnown: true, origin: "job:audit",
+        host: "box", runner: "codex", parserVersion: "runs-parser-1", kind: "job", status: "ended",
+        startedAt: 1, lastLineAt: 2, attachments: [], regToken: TOKEN,
+        outcome: {
+          turns: 12, toolCalls: 3,
+          totals: {
+            inputTokens: 10, cacheReadTokens: 20, cacheWriteTokens: 30, cacheWrite5mTokens: 30,
+            cacheWrite1hTokens: 0, cacheWriteBreakdownKnown: true, outputTokens: 40,
+            thinkingTokens: 5, totalTokens: 999,
+          },
+        },
+        file: {
+          path: "/var/log/audit.jsonl", sourceHash: "a".repeat(64), storedHash: "b".repeat(64),
+          bytes: 1, storedBytes: 1, committedLine: 1, committedPrefixSha256: "c".repeat(64),
+        },
+        ingestedAt: 1,
+      });
+      const rows = [
+        { kind: "user", content: { text: "audit this head" } },
+        { kind: "tool-call", content: { name: "Read", input: { file_path: "convex/http.ts" } } },
+        { kind: "tool-result", content: { text: "the whole file" } },
+        { kind: "tool-call", content: { name: "Grep", input: { pattern: "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345" } } },
+        { kind: "assistant-text", content: { text: "VERDICT: APPROVED" } },
+      ];
+      for (const [seq, row] of rows.entries()) {
+        await ctx.db.insert("claudeMessages", {
+          runId: RUN_ID, seq, turn: 0, kind: row.kind as never, content: row.content, createdAt: seq + 1,
+        });
+      }
+    });
+  }
+
+  it("answers the tool calls of one run, redacted, and null for a token nobody swept", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    await anAudit(t);
+    const res = await t.fetch(`/tts/run-trace?token=${TOKEN}`, { headers: KEY });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      runId: RUN_ID,
+      turns: 12,
+      // tokensOf: input + cache-read + cache-write + output. NOT totalTokens,
+      // which is 999 on this row precisely so the sum is the thing under test.
+      tokens: 100,
+      toolCalls: [
+        { name: "Read", path: "convex/http.ts" },
+        // A tool call's argument is user text, and this door hands it to a job
+        // that posts it onto an event.
+        { name: "Grep", path: "[redacted:github]" },
+      ],
+      truncated: false,
+    });
+
+    const missing = await t.fetch(
+      "/tts/run-trace?token=00000000-0000-4000-8000-000000000000",
+      { headers: KEY },
+    );
+    expect(missing.status).toBe(200);
+    expect(await missing.json()).toBeNull();
+  });
+
+  it("refuses a token that is not one, before the indexed read", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest(schema, modules);
+    expect((await t.fetch("/tts/run-trace?token=not-a-uuid", { headers: KEY })).status).toBe(400);
+    expect((await t.fetch("/tts/run-trace", { headers: KEY })).status).toBe(400);
+    expect((await t.fetch("/tts/run-trace?token=", { headers: KEY })).status).toBe(400);
+  });
+
+  it("is behind the worker key like every other pen", async () => {
+    const t = convexTest(schema, modules);
+    expect((await t.fetch(`/tts/run-trace?token=${TOKEN}`)).status).toBe(503);
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    expect((await t.fetch(`/tts/run-trace?token=${TOKEN}`, { headers: { "X-TTS-Key": "wrong" } })).status).toBe(401);
+  });
+});
+
+// ── POST /tts/audit: the coverage, the claims, and the counted absence ───────
+// The row gained `chunks`, `traceFindings` and `trace`; the door is where their
+// shapes are checked, and the only place that can refuse a coverage record
+// claiming more than there was before it is on the row forever.
+describe("POST /tts/audit: what the audit saw", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  const HEADERS = { "X-TTS-Key": "s3cret", "Content-Type": "application/json" };
+  const TEXT = "I read convex/http.ts in full.\nVERDICT: APPROVED";
+  const CHUNKS = { count: 3, read: 3, charsRead: 900, charsTotal: 900, truncatedChunks: 0, files: 4 };
+  const FINDINGS = ["diff-not-fully-read: 1 of 3 chunks answered, 300 of 900 characters read"];
+
+  function fresh() {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    return convexTest(schema, modules);
+  }
+  const post = (t: ReturnType<typeof convexTest>, extra: Record<string, unknown> = {}) =>
+    t.fetch("/tts/audit", {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({ repo: "tom.quest", sha: "abc1234", text: TEXT, ...extra }),
+    });
+  async function auditData(t: ReturnType<typeof convexTest>) {
+    const rows = await events(t, "audit-verdict");
+    expect(rows).toHaveLength(1);
+    return rows[0].data as Record<string, unknown>;
+  }
+
+  it("forwards a well-formed chunks, traceFindings and trace onto the row", async () => {
+    const t = fresh();
+    const res = await post(t, {
+      chunks: CHUNKS,
+      traceFindings: FINDINGS,
+      trace: { available: true, reason: "3 of 3 audit runs read, 12 turns, 40 tool calls" },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, verdict: "APPROVED" });
+    expect(await auditData(t)).toMatchObject({
+      verdict: "APPROVED",
+      chunks: CHUNKS,
+      traceFindings: FINDINGS,
+      trace: { available: true, reason: "3 of 3 audit runs read, 12 turns, 40 tool calls" },
+    });
+  });
+
+  // `trace: { available: false, reason }` with an empty findings list is the
+  // COUNTED ABSENCE: nothing was checked, which must not print as a clean bill.
+  it("carries a counted absence through with its reason", async () => {
+    const t = fresh();
+    expect((await post(t, { traceFindings: [], trace: { available: false, reason: "no run record" } })).status).toBe(200);
+    expect(await auditData(t)).toMatchObject({
+      traceFindings: [],
+      trace: { available: false, reason: "no run record" },
+    });
+  });
+
+  // BYTE-FOR-BYTE AS BEFORE: an old caller sends none of the three, and no key
+  // is written for them — a pre-chunking audit is not one that read 0 of 0.
+  it("still records a post carrying none of the three, and writes no key for them", async () => {
+    const t = fresh();
+    const res = await post(t);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, existing: false, verdict: "APPROVED" });
+    const data = await auditData(t);
+    expect(data).toMatchObject({ verdict: "APPROVED", removalNotes: [] });
+    expect("chunks" in data).toBe(false);
+    expect("traceFindings" in data).toBe(false);
+    expect("trace" in data).toBe(false);
+  });
+
+  // The VERDICT line is still read here, and an answer carrying none is still
+  // refused — the new fields changed nothing about that.
+  it("still refuses an answer with no VERDICT line of its own", async () => {
+    const t = fresh();
+    const res = await post(t, { text: "it all looks fine to me", chunks: CHUNKS });
+    expect(res.status).toBe(400);
+    expect(String((await res.json()).error)).toContain("VERDICT");
+    expect(await events(t, "audit-verdict")).toHaveLength(0);
+  });
+
+  it("names the malformed member of chunks in a 400", async () => {
+    const t = fresh();
+    const refused = async (chunks: unknown, member: string) => {
+      const res = await post(t, { chunks });
+      expect(res.status).toBe(400);
+      expect(String((await res.json()).error)).toContain(member);
+    };
+    await refused("three", "chunks");
+    await refused([1, 2, 3], "chunks");
+    await refused(null, "chunks");
+    await refused({ ...CHUNKS, count: "3" }, "chunks.count");
+    await refused({ ...CHUNKS, charsTotal: undefined }, "chunks.charsTotal");
+    await refused({ ...CHUNKS, files: -1 }, "chunks.files");
+    await refused({ ...CHUNKS, truncatedChunks: Number.POSITIVE_INFINITY }, "chunks.truncatedChunks");
+    await refused({ ...CHUNKS, read: Number.NaN }, "chunks.read");
+    expect(await events(t, "audit-verdict")).toHaveLength(0);
+  });
+
+  it("refuses a coverage record claiming more than there was", async () => {
+    const t = fresh();
+    const over = await post(t, { chunks: { ...CHUNKS, count: 3, read: 4 } });
+    expect(over.status).toBe(400);
+    expect(await over.json()).toEqual({ error: "chunks.read cannot exceed chunks.count" });
+    const wider = await post(t, { chunks: { ...CHUNKS, charsRead: 901, charsTotal: 900 } });
+    expect(wider.status).toBe(400);
+    expect(await wider.json()).toEqual({ error: "chunks.charsRead cannot exceed chunks.charsTotal" });
+    expect(await events(t, "audit-verdict")).toHaveLength(0);
+  });
+
+  it("names traceFindings and trace in a 400 on a malformed shape", async () => {
+    const t = fresh();
+    const refused = async (extra: Record<string, unknown>, field: string) => {
+      const res = await post(t, extra);
+      expect(res.status).toBe(400);
+      expect(String((await res.json()).error)).toContain(field);
+    };
+    await refused({ traceFindings: "one finding" }, "traceFindings");
+    await refused({ traceFindings: ["fine", 7] }, "traceFindings");
+    await refused({ traceFindings: { 0: "fine" } }, "traceFindings");
+    await refused({ trace: "available" }, "trace");
+    await refused({ trace: null }, "trace");
+    await refused({ trace: [] }, "trace");
+    await refused({ trace: {} }, "trace.available");
+    await refused({ trace: { available: "yes" } }, "trace.available");
+    await refused({ trace: { available: true, reason: 7 } }, "trace.reason");
+    expect(await events(t, "audit-verdict")).toHaveLength(0);
+  });
+});
+
 // ── POST /runs/ingest: the immutable record's one door ───────────────────────
 const body = {
   run: {
