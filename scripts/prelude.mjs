@@ -9,8 +9,8 @@ import {
   parseSubject,
   subjectNeedsRecord,
 } from "../worker/jobs/context-relevance.mjs";
-export { PRELUDE_LAYERS } from "./prelude-layers.mjs";
-import { PRELUDE_LAYERS, PRELUDE_LAYER_NAMES as LAYER_NAMES } from "./prelude-layers.mjs";
+export { PRELUDE_LAYERS } from "./skills.mjs";
+import { PRELUDE_LAYERS, PRELUDE_LAYER_NAMES as LAYER_NAMES } from "./skills.mjs";
 
 class PreludeError extends Error {}
 
