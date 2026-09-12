@@ -751,6 +751,136 @@ describe("a run whose rows are not in the record", () => {
   });
 });
 
+// ── ROWS THAT CAME BACK FROM THE STORE ──────────────────────────────────────
+// runs.rowsSource records that a run's rows did not arrive as the transcript
+// file grew: a reader told by the audit's trace findings that an auditor did
+// not open a path should be able to see that the run itself did not open
+// whole. The fixture carries an outcome so Lead has something to draw even
+// when rowsSource is the only new fact under test.
+
+const SOURCE_RUN = "run-source";
+
+/** An ended run whose rows were materialized from the store. */
+function sourceRun(
+  rowsSourceOver: Record<string, unknown> = {},
+  fileOver: Record<string, unknown> = {},
+) {
+  return runDoc({
+    _id: "runs|source",
+    runId: SOURCE_RUN,
+    status: "ended",
+    outcome: {
+      totals: {
+        inputTokens: 10,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        cacheWrite5mTokens: 0,
+        cacheWrite1hTokens: 0,
+        cacheWriteBreakdownKnown: true,
+        outputTokens: 20,
+        thinkingTokens: 0,
+        totalTokens: 30,
+      },
+      turns: 3,
+      toolCalls: 2,
+    },
+    file: {
+      path: "/srv/runs/source.jsonl",
+      sourceHash: "a".repeat(64),
+      storedHash: "b".repeat(64),
+      bytes: 4096,
+      storedBytes: 4096,
+      committedLine: 120,
+      committedPrefixSha256: "c".repeat(64),
+      ...fileOver,
+    },
+    rowsSource: {
+      from: "store",
+      at: NOW,
+      parserVersion: "claude/2",
+      storeKey: "runs/claude/box/x/y",
+      rowsFromLine: 10,
+      rowsToLine: 120,
+      slices: 3,
+      droppedLines: 0,
+      partial: [],
+      ...rowsSourceOver,
+    },
+  });
+}
+
+const openSource = () =>
+  render(
+    <Run
+      runId={SOURCE_RUN}
+      depth={0}
+      now={NOW}
+      onOpenRun={onOpenRun}
+      onOpenSession={onOpenSession}
+    />,
+  );
+
+describe("a run whose rows came back from the store", () => {
+  it("shows the total when the file records its whole length", () => {
+    convex.runs = { [SOURCE_RUN]: sourceRun({}, { totalLines: 500 }) };
+    convex.rows = {
+      [SOURCE_RUN]: [fileRow({ _id: "m-source-1", runId: SOURCE_RUN })],
+    };
+    openSource();
+
+    expect(body()).toContain("lines 10–120 of 500");
+  });
+
+  it("omits the total when nobody measured the file's whole length", () => {
+    convex.runs = { [SOURCE_RUN]: sourceRun() };
+    convex.rows = {
+      [SOURCE_RUN]: [fileRow({ _id: "m-source-1", runId: SOURCE_RUN })],
+    };
+    openSource();
+
+    expect(body()).toContain("lines 10–120");
+    expect(body()).not.toContain("10–120 of");
+  });
+
+  it("omits the dropped clause at zero and includes it otherwise", () => {
+    convex.runs = { [SOURCE_RUN]: sourceRun({ droppedLines: 0 }) };
+    convex.rows = {
+      [SOURCE_RUN]: [fileRow({ _id: "m-source-1", runId: SOURCE_RUN })],
+    };
+    openSource();
+    expect(body()).not.toContain("dropped");
+    cleanup();
+
+    convex.runs = { [SOURCE_RUN]: sourceRun({ droppedLines: 7 }) };
+    openSource();
+    expect(body()).toContain("7 dropped");
+  });
+
+  it("omits the partial clause when empty and prints the closed vocabulary verbatim otherwise", () => {
+    convex.runs = { [SOURCE_RUN]: sourceRun({ partial: [] }) };
+    convex.rows = {
+      [SOURCE_RUN]: [fileRow({ _id: "m-source-1", runId: SOURCE_RUN })],
+    };
+    openSource();
+    expect(body()).not.toContain("partial");
+    cleanup();
+
+    convex.runs = {
+      [SOURCE_RUN]: sourceRun({
+        partial: ["sidecar-missing", "row-cap-reached"],
+      }),
+    };
+    openSource();
+    expect(body()).toContain("partial: sidecar-missing, row-cap-reached");
+  });
+
+  it("draws no such line for a run with no rowsSource", () => {
+    loadTree();
+    root();
+    expect(body()).not.toContain("rows from the store");
+  });
+});
+
 // ── The proof ───────────────────────────────────────────────────────────────
 // The claim this phase makes is about a SHAPE — one component, every depth,
 // each level's rows under its own fold — and a shape is proved by looking at
