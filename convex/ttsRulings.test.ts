@@ -1,11 +1,58 @@
 import { convexTest } from "convex-test";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { matchQuotedUnit, turnSpans, turnUnits } from "./ttsRulings";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
+
+// EVERY TEST HERE MAKES ITS DATABASE THROUGH THIS, and nothing calls
+// convexTest directly, because recording a ruling schedules work that outlives
+// the mutation: the label writer (convex/ttsRulings.ts, runAfter(0) into
+// internal.runLabels.internalLabelFromRuling) and, on the words door, the
+// decisions line. convex-test runs a scheduled function on a transaction of
+// its own, opened after the scheduling mutation returned; a test that ends
+// without draining leaves that transaction to open against a database Vitest
+// has already torn down, and the "Transaction already committed or rolled
+// back" it throws belongs to no test, so it fails the whole FILE as an
+// unhandled rejection. Draining in afterEach puts the scheduled work back
+// inside the test that caused it.
+const live: ReturnType<typeof convexTest>[] = [];
+
+function testDb() {
+  const t = convexTest({ schema, modules });
+  live.push(t);
+  return t;
+}
+
+/**
+ * Run every function the test scheduled, and return once none is left.
+ *
+ * finishInProgressScheduledFunctions on its own is not enough: convex-test
+ * puts a runAfter(0) job in the `pending` state and starts it from a
+ * setTimeout, and that helper waits only for jobs already RUNNING — called
+ * the instant the mutation returns it can find nothing to wait for and come
+ * back while the job is still pending. Yielding a macrotask first lets the
+ * timer fire, and the loop re-checks the queue until it is empty.
+ */
+async function drain(t: ReturnType<typeof convexTest>) {
+  for (let pass = 0; pass < 50; pass++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await t.finishInProgressScheduledFunctions();
+    const left = await t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter(
+        (job) => job.state.kind === "pending" || job.state.kind === "inProgress",
+      ).length,
+    );
+    if (left === 0) return;
+  }
+  throw new Error("scheduled functions never drained");
+}
+
+afterEach(async () => {
+  for (const t of live.splice(0)) await drain(t);
+});
 
 async function publishSessionPrelude(t: ReturnType<typeof convexTest>) {
   await t.run(async (ctx) => {
@@ -81,7 +128,7 @@ describe("TTS unified rulings", () => {
   // witness: remove the requireTom call from listRulings or recordRuling in
   // convex/ttsRulings.ts
   it("gates every Tom-facing function on the tom role", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     await expect(t.query(api.ttsRulings.listRulings, {})).rejects.toThrow();
     await expect(
       t.mutation(api.ttsRulings.recordRuling, {
@@ -107,7 +154,7 @@ describe("TTS unified rulings", () => {
   // witness: drop the `isLife === isCode` throw from recordRuling in
   // convex/ttsRulings.ts
   it("a ruling has exactly one subject", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, { statement: "x" });
     // Zero subjects.
@@ -135,7 +182,7 @@ describe("TTS unified rulings", () => {
   // witness: drop the `verdict === "revise" && !trimmed` throw in
   // convex/ttsRulings.ts
   it("revise requires the sentence", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const tom = await withTom(t);
     await expect(
       tom.mutation(api.ttsRulings.recordRuling, {
@@ -158,7 +205,7 @@ describe("TTS unified rulings", () => {
   // witness: drop the readiness patch from recordRuling's revise branch in
   // convex/ttsRulings.ts
   it("revise on a life todo drops readiness to unprepared", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, {
       statement: "email Ana Maria",
@@ -187,7 +234,7 @@ describe("TTS unified rulings", () => {
   // witness: drop the applyStatusChange call from recordRuling's archive
   // branch in convex/ttsRulings.ts
   it("archive on a life todo archives it immediately", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, {
       statement: "renew the thing",
@@ -207,7 +254,7 @@ describe("TTS unified rulings", () => {
   });
 
   it("session (life) and approve (code) leave appliedAt unset", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, { statement: "talk" });
     await tom.mutation(api.ttsRulings.recordRuling, {
@@ -229,7 +276,7 @@ describe("TTS unified rulings", () => {
   // is no apply job on the box) ────────────────────────────────────────────
   // witness: drop any one of the four life branches in insertRuling.
   it("life: approve ratifies, archive archives, revise hands back, session waits for Tom's session", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const tom = await withTom(t);
     const ids: Record<string, Id<"dtsTodos">> = {};
     for (const verdict of ["approve", "archive", "revise", "session"] as const) {
@@ -268,7 +315,7 @@ describe("TTS unified rulings", () => {
   // witness: drop the code-session block from claudeSessions.insertSession, or the
   // call to it in claudeSessions.insertSession.
   it("code: revise waits for the planner's brief pass; session applies when the code block session opens; approve and archive wait for the scheduler", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const tom = await withTom(t);
     const code = (externalId: string) => ({ repo: "ComplexMultiTrigger", externalId });
     await tom.mutation(api.ttsRulings.recordRuling, { ...code("c-revise"), verdict: "revise", sentence: "again" });
@@ -314,7 +361,7 @@ describe("TTS unified rulings", () => {
   // a verdict would be consumed without the conversation Tom asked for ever
   // reaching the session.
   it("the code block session names every code session verdict it consumes, with Tom's sentence, and consumes only those", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const tom = await withTom(t);
     const code = (externalId: string) => ({ repo: "ComplexMultiTrigger", externalId });
     await t.mutation(internal.tts.internalReplaceMirror, {
@@ -375,7 +422,7 @@ describe("TTS unified rulings", () => {
   // convex/ttsRulings.ts — the ruling would ride the pending feed forever
   // (no worker consumes life approvals; Tom is the executor).
   it("approve on a LIFE todo applies instantly as ratification", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, { statement: "go" });
     await tom.mutation(api.ttsRulings.recordRuling, {
@@ -393,7 +440,7 @@ describe("TTS unified rulings", () => {
   // witness: drop the tomTouchedAt patch from insertRuling's life path in
   // convex/ttsRulings.ts — the planner could rewrite a row Tom just ruled on.
   it("approve, session, and archive each stamp tomTouchedAt (row frozen)", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const tom = await withTom(t);
     for (const verdict of ["approve", "session", "archive"] as const) {
       const todoId = await tom.mutation(api.tts.createTodo, {
@@ -412,7 +459,7 @@ describe("TTS unified rulings", () => {
   // to the preparing agent, so freezing the row would strand every todo Tom
   // ever asked the planner to prepare again.
   it("revise does NOT stamp tomTouchedAt — the row goes back to the agent", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, { statement: "redo" });
     await tom.mutation(api.ttsRulings.recordRuling, {
@@ -436,7 +483,7 @@ describe("TTS unified rulings", () => {
   // tree. Same-millisecond ordering is now its own case below, asserted rather
   // than occasionally sampled.
   it("a re-brief NEWER than the live ruling puts the item back on the pile", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const tom = await withTom(t);
     await t.mutation(internal.ttsCode.internalStoreBriefs, {
       briefs: [brief({ externalId: "cycle" })],
@@ -468,7 +515,7 @@ describe("TTS unified rulings", () => {
   // production a re-briefed item silently leaves Tom's pile with nothing able
   // to put it back.
   it("a ruling and a re-brief in the SAME millisecond keep the item on the pile", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const tom = await withTom(t);
     await t.mutation(internal.ttsCode.internalStoreBriefs, {
       briefs: [brief({ externalId: "tie" })],
@@ -494,7 +541,7 @@ describe("TTS unified rulings", () => {
   // witness: delete internalRecordRuling from convex/ttsRulings.ts — the
   // block-session pen (npx convex run under deploy credentials) breaks.
   it("internalRecordRuling is the session pen: same semantics, no identity", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, { statement: "pen" });
     await t.mutation(internal.ttsRulings.internalRecordRuling, {
@@ -520,7 +567,7 @@ describe("TTS unified rulings", () => {
   // witness: drop the `newest.get(...)?._id === row._id` clause from
   // internalPendingRulings in convex/ttsRulings.ts
   it("pending rulings exclude applied AND superseded rows, per subject key", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const tom = await withTom(t);
     const todoId = await tom.mutation(api.tts.createTodo, { statement: "life" });
     const base = Date.now();
@@ -577,7 +624,7 @@ describe("TTS unified rulings", () => {
   // witness: replace `normalized` with the raw string id in
   // internalMarkRulingApplied's patch call in convex/ttsRulings.ts
   it("marks a ruling applied and rejects a bad id by name", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const tom = await withTom(t);
     const id = await tom.mutation(api.ttsRulings.recordRuling, {
       repo: "tom.quest",
@@ -604,7 +651,7 @@ describe("TTS unified rulings", () => {
   // witness: count ALL briefs (drop the `!ruled.has` filter) in
   // internalAwaitingRulingCount in convex/ttsRulings.ts
   it("awaiting-ruling count covers briefed code items with no ruling at all", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const tom = await withTom(t);
     await t.mutation(internal.ttsCode.internalStoreBriefs, {
       briefs: [
@@ -652,7 +699,7 @@ describe("TTS unified rulings", () => {
   // witness: reject `sentence` on any verdict but revise in insertRuling
   // (convex/dtsRulings.ts) and the approve/session assertions below go red.
   it("accepts a sentence on every verdict; revise still requires one", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const tom = await withTom(t);
     const a = await tom.mutation(api.tts.createTodo, { statement: "approve me" });
     const s = await tom.mutation(api.tts.createTodo, { statement: "talk to me" });
@@ -695,7 +742,7 @@ describe("TTS unified rulings", () => {
   // witness: drop the `unarchiveCondition ?? trimmed` fallback in insertRuling
   // — the archive note would stop meaning "propose it back when…".
   it("an archive sentence IS the unarchive condition", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const tom = await withTom(t);
     const id = await tom.mutation(api.tts.createTodo, { statement: "shelve it" });
     await tom.mutation(api.ttsRulings.recordRuling, {
@@ -775,7 +822,7 @@ describe("a ruling from Tom's words", () => {
     });
 
   it("writes the ruling with provenance and applies it, from a turn Tom typed", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const { tom, todoId, tomRow } = await sessionWithTurns(t);
     const res = await post(t, {
       inboundId: tomRow._id,
@@ -813,7 +860,7 @@ describe("a ruling from Tom's words", () => {
   // one verdict that cannot exist without the ruling's own sentence (the
   // worker's redirect), so it is required there and refused everywhere else.
   it("sentence is required on revise and refused on every other verdict", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const { tom, todoId, tomRow } = await sessionWithTurns(t);
     const body = {
       inboundId: tomRow._id,
@@ -852,7 +899,7 @@ describe("a ruling from Tom's words", () => {
   // it is held to the same check as the quote — a whole sentence of the same
   // turn, stored as the turn's own text.
   it("refuses a revise redirect the agent composed; accepts one that is Tom's own sentence", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const { tom, todoId, tomRow, sessionId } = await sessionWithTurns(t);
     const composed = await post(t, {
       inboundId: tomRow._id,
@@ -900,7 +947,7 @@ describe("a ruling from Tom's words", () => {
   });
 
   it("refuses a turn the agent wrote (the pen, or the opener)", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const { tom, todoId, agentRow } = await sessionWithTurns(t);
     const res = await post(t, {
       inboundId: agentRow._id,
@@ -918,7 +965,7 @@ describe("a ruling from Tom's words", () => {
   // in convex/ttsRulings.ts. A fragment that IS in the turn ("the dentist one")
   // is refused: the quote must be one whole sentence or line of the turn.
   it("refuses a sentence that is not a whole sentence or line of the turn", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const { tom, todoId, tomRow } = await sessionWithTurns(t);
     for (const sentence of [
       "Archive the dentist one",
@@ -966,7 +1013,7 @@ describe("a ruling from Tom's words", () => {
   });
 
   it("writes the quote as it appears in the turn when the agent retyped its punctuation", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const { tom, todoId, tomRow } = await sessionWithTurns(t);
     const res = await post(t, {
       inboundId: tomRow._id,
@@ -985,7 +1032,7 @@ describe("a ruling from Tom's words", () => {
   // brief is what Tom was shown, and approve here is what the scheduler's code
   // lane admits as a worker mission.
   it("accepts a code subject that is open in the mirror and briefed, refuses one without a brief", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const { tom, tomRow } = await sessionWithTurns(t, "code-block");
     await t.mutation(internal.tts.internalReplaceMirror, {
       repo: "ComplexMultiTrigger",
@@ -1018,7 +1065,7 @@ describe("a ruling from Tom's words", () => {
   });
 
   it("refuses the same turn ruling twice on the same subject", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const { tom, todoId, tomRow } = await sessionWithTurns(t);
     const body = {
       inboundId: tomRow._id,
@@ -1035,7 +1082,7 @@ describe("a ruling from Tom's words", () => {
   });
 
   it("refuses an unknown row, a bad verdict, and the wrong key", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const { todoId, tomRow } = await sessionWithTurns(t);
     const body = {
       inboundId: tomRow._id,
@@ -1058,7 +1105,7 @@ describe("a ruling from Tom's words", () => {
   // convex/ttsRulings.ts. A row from before the author field has no author,
   // and no author is not Tom.
   it("refuses a row whose author is unset", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const { tom, todoId, tomRow } = await sessionWithTurns(t);
     const unsetId = await t.run(async (ctx) =>
       ctx.db.insert("claudeInbound", {
@@ -1084,7 +1131,7 @@ describe("a ruling from Tom's words", () => {
   // witness: drop the ctx.db.get after normalizeId in resolveSubject. A
   // well-formed id that names a row in another table is not a subject.
   it("refuses a well-formed id from another table as a subject", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const { tom, todoId, tomRow } = await sessionWithTurns(t);
     const body = {
       inboundId: tomRow._id,
@@ -1112,7 +1159,7 @@ describe("a ruling from Tom's words", () => {
   // an externalId the mirror does not hold are both refused before any brief
   // is consulted — so no approve can name a code todo Tom never saw.
   it("refuses a code subject with an unknown repo, and one the mirror does not hold", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const { tom, tomRow } = await sessionWithTurns(t, "code-block");
     await t.mutation(internal.tts.internalReplaceMirror, {
       repo: "ComplexMultiTrigger",
@@ -1146,7 +1193,7 @@ describe("a ruling from Tom's words", () => {
   // whole unit of the turn ("ok. archive the dentist one, …") and is still
   // refused.
   it("refuses a single-word quote", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const { tom, todoId, tomRow } = await sessionWithTurns(t);
     const res = await post(t, {
       inboundId: tomRow._id,
@@ -1167,7 +1214,7 @@ describe("a ruling from Tom's words", () => {
   // record. The refusal is its own reason: the subject exists, the session
   // was just not about it.
   it("refuses a subject the turn's session was not about", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const { tom, todoId, tomRow } = await sessionWithTurns(t);
     const otherId = await tom.mutation(api.tts.createTodo, {
       statement: "renew the passport",
@@ -1191,7 +1238,7 @@ describe("a ruling from Tom's words", () => {
   // may rule on several of those (the dedupe stays per subject) — and about
   // nothing outside it.
   it("binds a batch session's turns to the batch and its member todos", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const { tom, todoId, tomRow } = await sessionWithTurns(t, "adhoc");
     const memberId = await tom.mutation(api.tts.createTodo, {
       statement: "find the insurance card",
@@ -1262,7 +1309,7 @@ describe("a ruling from Tom's words", () => {
   // batch ids the Friday job stored on the row (the lifeos update, phase 8) —
   // and on nothing else: not a todo the agenda did not name, never code.
   it("binds a weekly session's turns to the subjects its agenda names", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const { tom, todoId } = await sessionWithTurns(t, "adhoc");
     const { batchId, otherId } = await t.run(async (ctx) => {
       const now = Date.now();
@@ -1339,7 +1386,7 @@ describe("a ruling from Tom's words", () => {
   // A weekly session opened from the page carries no agenda, so its turns
   // rule on nothing — the kind alone opens no subject.
   it("refuses every subject from a weekly session with no agenda", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     const { tom, todoId } = await sessionWithTurns(t, "adhoc");
     const sessionId = await tom.mutation(api.claudeSessions.createSession, {
       title: "Weekly by hand",
@@ -1368,7 +1415,7 @@ describe("a ruling from Tom's words", () => {
   // A block session is about the todos of its category — those its opening
   // prompt listed — and nothing else.
   it("binds a block session's turns to the todos of its category", async () => {
-    const t = convexTest({ schema, modules });
+    const t = testDb();
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const tom = await withTom(t);
     const choreId = await tom.mutation(api.tts.createTodo, {
@@ -1403,6 +1450,132 @@ describe("a ruling from Tom's words", () => {
     expect(other.status).toBe(400);
     expect((await other.json()).error).toMatch(/session about the "chores" block/);
     expect((await post(t, { ...body, subjectId: choreId })).status).toBe(200);
+    expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(1);
+  });
+});
+
+// ── The label a ruling schedules (phase 7) ───────────────────────────────────
+// convex/ttsRulings.ts:304 schedules internal.runLabels.internalLabelFromRuling
+// on every ruling this file's doors write. convex/runLabels.test.ts proves what
+// that writer DOES when it is called; these two prove that recording a ruling
+// CALLS IT — the edge between the two files, which neither file's other tests
+// touch, and the edge whose scheduled transaction is the reason every test here
+// drains (see testDb above).
+
+/** A `runs` row the token resolver can find: `regToken` is the exact edge from
+ *  the row an agent wrote to the run that wrote it (convex/runLabels.ts
+ *  runForToken), and `finalTextSeq` is the row a judgment about the run's final
+ *  output covers. */
+async function seedRunWithToken(
+  t: ReturnType<typeof convexTest>,
+  regToken: string,
+) {
+  const runId = "claude:box:prepare-pass";
+  await t.run((ctx) =>
+    ctx.db.insert("runs", {
+      runId,
+      rootRunId: runId,
+      depth: 0,
+      linkKnown: true,
+      origin: "cron:planner",
+      host: "box",
+      runner: "claude",
+      parserVersion: "runs-parser-1",
+      kind: "job",
+      status: "ended",
+      startedAt: 1_000,
+      lastLineAt: 2_000,
+      attachments: [],
+      regToken,
+      file: {
+        path: "/var/log/run.jsonl",
+        sourceHash: "a".repeat(64),
+        storedHash: "b".repeat(64),
+        bytes: 10,
+        storedBytes: 8,
+        committedLine: 1,
+        committedPrefixSha256: "c".repeat(64),
+      },
+      outcome: {
+        finalTextSeq: 7,
+        totals: {
+          inputTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          cacheWrite5mTokens: 0,
+          cacheWrite1hTokens: 0,
+          cacheWriteBreakdownKnown: true,
+          outputTokens: 0,
+          thinkingTokens: 0,
+          totalTokens: 0,
+        },
+        turns: 1,
+        toolCalls: 0,
+      },
+      ingestedAt: 3_000,
+    }),
+  );
+  return runId;
+}
+
+describe("a ruling schedules the label writer", () => {
+  // witness: delete the ctx.scheduler.runAfter call at convex/ttsRulings.ts:304
+  it("writes a label naming the run that produced the row Tom ruled on", async () => {
+    const t = testDb();
+    const tom = await withTom(t);
+    const runId = await seedRunWithToken(t, "tok-ruling");
+    const todoId = await tom.mutation(api.tts.createTodo, {
+      statement: "renew the visa",
+    });
+    await t.run((ctx) =>
+      ctx.db.patch(todoId, { producedByRunToken: "tok-ruling" }),
+    );
+    const rulingId = await tom.mutation(api.ttsRulings.recordRuling, {
+      todoId,
+      verdict: "approve",
+    });
+    // The writer runs on a transaction of its own, after the mutation
+    // returned; nothing it wrote exists until the schedule is drained.
+    await drain(t);
+    const labels = await t.run((ctx) => ctx.db.query("runLabels").collect());
+    expect(labels).toHaveLength(1);
+    expect(labels[0]).toMatchObject({
+      runId,
+      source: "ruling",
+      actor: "tom",
+      polarity: "good",
+      judgment: true,
+      ref: `ruling:${rulingId}`,
+      rowSpan: { seqStart: 7, seqEnd: 7 },
+    });
+  });
+
+  // witness: replace the unlinked() call in internalLabelFromRuling with a
+  // bare return. An unlinkable ruling must leave a counted row and must NOT
+  // roll the ruling back — an uncounted absence makes an old corpus look like
+  // a clean one, and a throw here would undo what Tom said.
+  it("counts the act and keeps the ruling when no run claimed the subject", async () => {
+    const t = testDb();
+    const tom = await withTom(t);
+    const todoId = await tom.mutation(api.tts.createTodo, {
+      statement: "renew the visa",
+    });
+    const rulingId = await tom.mutation(api.ttsRulings.recordRuling, {
+      todoId,
+      verdict: "approve",
+    });
+    await drain(t);
+    expect(await t.run((ctx) => ctx.db.query("runLabels").collect())).toHaveLength(0);
+    const unlinked = (await tom.query(api.tts.listRecentEvents, {})).filter(
+      (e) => e.kind === "run-label-unlinked",
+    );
+    expect(unlinked).toHaveLength(1);
+    expect(unlinked[0].data).toMatchObject({
+      source: "ruling",
+      ref: `ruling:${rulingId}`,
+      subjectKey: `life ${todoId}`,
+    });
+    // The ruling itself stands.
     expect(await tom.query(api.ttsRulings.listRulings, {})).toHaveLength(1);
   });
 });
