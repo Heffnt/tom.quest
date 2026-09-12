@@ -2,12 +2,17 @@ import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import schema from "./schema";
 import {
+  AUDIT_REMOVAL_HEADING,
+  AUDIT_REMOVAL_NOTES_MAX,
+  AUDIT_REMOVAL_NOTE_MAX_CHARS,
   AUDIT_TEXT_MAX_BYTES,
   AUDIT_VERDICT,
   MERGE,
   TESTS_RUN,
   auditVerdictOf,
+  checkRowPassed,
   commitKey,
+  removalNotesOf,
 } from "./ttsMerge";
 import { EVALS_RUN } from "./ttsEvals";
 
@@ -55,8 +60,11 @@ const greenTests = (t: TestConvex<typeof schema>, sha = SHA) =>
   seedFact(t, TESTS_RUN, { ok: true }, sha);
 const approvedAudit = (t: TestConvex<typeof schema>, sha = SHA) =>
   seedFact(t, AUDIT_VERDICT, { verdict: "APPROVED" }, sha);
+/** A run that opens the evals arm: no regression AND golden coverage answered
+ *  true. Both are needed — a run that did not check coverage is a run that did
+ *  not answer, and the arm treats that as a no. */
 const cleanEvals = (t: TestConvex<typeof schema>, sha = SHA) =>
-  seedFact(t, EVALS_RUN, { regressions: 0, pass: 40, items: 40 }, sha);
+  seedFact(t, EVALS_RUN, { regressions: 0, goldenCoverage: true, pass: 40, items: 40 }, sha);
 
 const mergeReport = (t: TestConvex<typeof schema>, over: Record<string, unknown> = {}) =>
   post(t, "/tts/merge", {
@@ -94,6 +102,74 @@ describe("auditVerdictOf", () => {
   it("does not read a verdict quoted inside a sentence", () => {
     expect(auditVerdictOf("Do not write VERDICT: APPROVED unless you mean it.")).toBe(null);
     expect(auditVerdictOf("I looked at the diff and it is fine.")).toBe(null);
+  });
+});
+
+describe("removalNotesOf", () => {
+  const APPROVED = "VERDICT: APPROVED\n\n";
+
+  it("reads nothing out of an answered check with nothing to report", () => {
+    expect(removalNotesOf(`${APPROVED}${AUDIT_REMOVAL_HEADING} none\n\nIt deletes more than it adds.`)).toEqual([]);
+    expect(removalNotesOf(`${APPROVED}${AUDIT_REMOVAL_HEADING}   NONE  `)).toEqual([]);
+  });
+
+  it("reads the bullets, and stops at the paragraph after them", () => {
+    expect(
+      removalNotesOf(
+        `${APPROVED}${AUDIT_REMOVAL_HEADING}\n` +
+          "- convex/http.ts:a second key header — the change does not say why the first cannot be deleted\n" +
+          "-  worker/jobs/evals.mjs:a retry branch — the change does not say why the timeout cannot be deleted \n" +
+          "\nThe rest of it is narrow and does what it says.",
+      ),
+    ).toEqual([
+      "convex/http.ts:a second key header — the change does not say why the first cannot be deleted",
+      "worker/jobs/evals.mjs:a retry branch — the change does not say why the timeout cannot be deleted",
+    ]);
+  });
+
+  it("reads nothing when the audit never answered the question", () => {
+    expect(removalNotesOf(`${APPROVED}It does what it says and touches nothing else.`)).toEqual([]);
+  });
+
+  // The same anchoring auditVerdictOf has: without it, the quoted heading below
+  // would pull the sentence after it in as a finding.
+  it("does not read a heading quoted inside a sentence", () => {
+    expect(
+      removalNotesOf(
+        `${APPROVED}I would write ${AUDIT_REMOVAL_HEADING} none here if there were none.\n` +
+          "- convex/http.ts:a flag — the change does not say why\n",
+      ),
+    ).toEqual([]);
+  });
+
+  it("caps the list and each finding in it", () => {
+    const many = `${AUDIT_REMOVAL_HEADING}\n${Array.from(
+      { length: AUDIT_REMOVAL_NOTES_MAX + 5 },
+      (_, i) => `- convex/x.ts:addition ${i}`,
+    ).join("\n")}\n`;
+    expect(removalNotesOf(many)).toHaveLength(AUDIT_REMOVAL_NOTES_MAX);
+
+    const long = removalNotesOf(`${AUDIT_REMOVAL_HEADING}\n- ${"x".repeat(500)}\n`);
+    expect(long[0]).toHaveLength(AUDIT_REMOVAL_NOTE_MAX_CHARS);
+  });
+});
+
+describe("checkRowPassed", () => {
+  it("answers for each of the three kinds, and false for a kind it was never taught", () => {
+    expect(checkRowPassed(TESTS_RUN, { ok: true })).toBe(true);
+    expect(checkRowPassed(TESTS_RUN, { ok: false })).toBe(false);
+    expect(checkRowPassed(TESTS_RUN, {})).toBe(false);
+
+    expect(checkRowPassed(AUDIT_VERDICT, { verdict: "approved" })).toBe(true);
+    expect(checkRowPassed(AUDIT_VERDICT, { verdict: "REFUSED" })).toBe(false);
+    expect(checkRowPassed(AUDIT_VERDICT, {})).toBe(false);
+
+    expect(checkRowPassed(EVALS_RUN, { regressions: 0 })).toBe(true);
+    expect(checkRowPassed(EVALS_RUN, { regressions: 2 })).toBe(false);
+    expect(checkRowPassed(EVALS_RUN, {})).toBe(false);
+
+    expect(checkRowPassed("merge", { ok: true })).toBe(false);
+    expect(checkRowPassed(TESTS_RUN, undefined)).toBe(false);
   });
 });
 
@@ -173,6 +249,23 @@ describe("the merge gate's three checks", () => {
     );
   });
 
+  // NULL IS NOT ZERO, and this is the pin. worker/jobs/evals.mjs failedRun and
+  // its uncompared-head path both stamp `regressions: null`: a head compared
+  // to nothing has no number of regressions. A gate that read that as "no
+  // regressions found" would open on a run that never compared anything.
+  it("denies a head whose regressions are null, with no base to compare against", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await greenTests(t);
+    await approvedAudit(t);
+    await seedFact(t, EVALS_RUN, { regressions: null, goldenCoverage: true, pass: 40, items: 40 });
+    const answer = await (await mergeReport(t)).json();
+    expect(answer.gate.missing).toEqual(["evals"]);
+    expect(answer.gate.checks.find((c: { name: string }) => c.name === "evals").why).toContain(
+      "an unreadable number of regressions",
+    );
+  });
+
   it("checks the head it was given, not another commit", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convex();
@@ -186,6 +279,67 @@ describe("the merge gate's three checks", () => {
       "evals",
     ]);
     expect((await mergeReport(t, { sha: other })).status).toBe(200);
+  });
+});
+
+// Golden coverage is not a fourth check. It is a second question asked of the
+// evals row: a change to a watched context file that shipped no golden item
+// changed Tom's outputs with nothing scoring the change.
+describe("the evals arm's golden-coverage clause", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  async function gateWith(coverage: Record<string, unknown>) {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await greenTests(t);
+    await approvedAudit(t);
+    await seedFact(t, EVALS_RUN, { regressions: 0, pass: 40, items: 40, ...coverage });
+    const answer = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+    return {
+      allowed: answer.allowed as boolean,
+      missing: answer.missing as string[],
+      why: (answer.checks as { name: string; why: string }[]).find((c) => c.name === "evals")!.why,
+    };
+  }
+
+  it("opens on no regression AND coverage true", async () => {
+    const gate = await gateWith({ goldenCoverage: true });
+    expect(gate.allowed).toBe(true);
+    expect(gate.why).toContain("no regression");
+  });
+
+  it("denies on coverage false, and says a watched file changed with no item", async () => {
+    const gate = await gateWith({ goldenCoverage: false });
+    expect(gate.missing).toEqual(["evals"]);
+    expect(gate.why).toBe(
+      `the evals run at ${SHA.slice(0, 7)} changed a watched context file and shipped no golden item`,
+    );
+  });
+
+  // BOTH of these are "we did not check", not "there was nothing to check": a
+  // merge always has a diff. null is a run that was asked nothing; undefined is
+  // a run recorded before the field existed. The deny message names the one
+  // command that fixes either.
+  it("denies on coverage null — the run was never asked about a diff", async () => {
+    const gate = await gateWith({ goldenCoverage: null });
+    expect(gate.missing).toEqual(["evals"]);
+    expect(gate.why).toBe(
+      `the evals run did not check golden coverage — re-run it: ` +
+        `node /opt/tts/evals.mjs --repo ${REPO} --sha ${SHA} --force`,
+    );
+  });
+
+  it("denies a run that predates the field, with the same message", async () => {
+    const gate = await gateWith({});
+    expect(gate.missing).toEqual(["evals"]);
+    expect(gate.why).toContain("did not check golden coverage");
+    expect(gate.why).toContain("--force");
+  });
+
+  it("names the regression first when a run both regressed and shipped no item", async () => {
+    const gate = await gateWith({ regressions: 3, goldenCoverage: false });
+    expect(gate.missing).toEqual(["evals"]);
+    expect(gate.why).toContain("3 regressions");
   });
 });
 
@@ -275,6 +429,37 @@ describe("GET /tts/merge-gate — what the box asks before it merges", () => {
     expect(open.missing).toEqual([]);
   });
 
+  // THE REMOVAL CHECK IS NOT A FOURTH HEAD ROW (§23.8). The findings ride on
+  // the audit row; the gate's answer has to be the same object with and
+  // without them, which is what a deep equality over the whole result proves
+  // and a spot check on `allowed` would not.
+  it("answers identically whether or not the audit row carries removal notes", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const notes = ["convex/http.ts:a second key header — the change does not say why"];
+    const text = "VERDICT: APPROVED\n\nIt does what it says.";
+
+    async function gateWith(auditData: Record<string, unknown>, evalsRegressions: number) {
+      const t = convex();
+      await greenTests(t);
+      await seedFact(t, AUDIT_VERDICT, auditData);
+      // goldenCoverage rides along because the evals arm now asks two questions
+      // of the one row (§ the golden-coverage gate); this test is about the audit
+      // row's removal notes, so its evals row has to be one that passes.
+      await seedFact(t, EVALS_RUN, { regressions: evalsRegressions, goldenCoverage: true, pass: 40, items: 40 });
+      return await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+    }
+
+    const open = await gateWith({ verdict: "APPROVED", text }, 0);
+    const openWithNotes = await gateWith({ verdict: "APPROVED", text, removalNotes: notes }, 0);
+    expect(openWithNotes).toEqual(open);
+    expect(open.allowed).toBe(true);
+
+    const shut = await gateWith({ verdict: "REFUSED", text }, 1);
+    const shutWithNotes = await gateWith({ verdict: "REFUSED", text, removalNotes: notes }, 1);
+    expect(shutWithNotes).toEqual(shut);
+    expect(shut.allowed).toBe(false);
+  });
+
   it("400s without a repo and a sha, and 401s without the key", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convex();
@@ -362,6 +547,39 @@ describe("POST /tts/audit — the second check's own door", () => {
     expect(new TextEncoder().encode(stored as string).length).toBeLessThanOrEqual(
       AUDIT_TEXT_MAX_BYTES,
     );
+  });
+
+  it("files the removal check's findings on the row, beside the text they came out of", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await post(t, "/tts/audit", {
+      repo: REPO,
+      sha: SHA,
+      text:
+        "VERDICT: APPROVED\n\nIt lands safely.\n\n" +
+        `${AUDIT_REMOVAL_HEADING}\n` +
+        "- convex/http.ts:a second key header — the change does not say why the first cannot be deleted\n",
+    });
+    expect((await auditRow(t))?.data).toMatchObject({
+      verdict: "APPROVED",
+      removalNotes: [
+        "convex/http.ts:a second key header — the change does not say why the first cannot be deleted",
+      ],
+    });
+  });
+
+  it("files an empty list for an audit that answered the removal check with none", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await post(t, "/tts/audit", {
+      repo: REPO,
+      sha: SHA,
+      text: `VERDICT: APPROVED\n\n${AUDIT_REMOVAL_HEADING} none\n\nIt deletes more than it adds.`,
+    });
+    expect((await auditRow(t))?.data).toMatchObject({ removalNotes: [] });
+    // The gate is unmoved by either answer: the three head rows are still three.
+    const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+    expect(gate.missing).toEqual(["tests", "evals"]);
   });
 
   it("refuses an answer with no verdict line — an audit that did not say did not finish", async () => {

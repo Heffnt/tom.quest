@@ -1,16 +1,18 @@
 import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
-import { internalMutation, query } from "./_generated/server";
+import { internal } from "./_generated/api";
+import type { Doc, Id } from "./_generated/dataModel";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { requireTom } from "./authRoles";
-import { SESSION_MODEL } from "./ttsShared";
+import { LIVE_STATUSES, SESSION_MODEL, nyLocalHour } from "./ttsShared";
 
 const RUN_KIND = v.union(
   v.literal("session"), v.literal("worker"), v.literal("code"),
   v.literal("prospect"), v.literal("job"), v.literal("delegate"),
   v.literal("subagent"), v.literal("codex-child"), v.literal("unknown"),
 );
-const RUN_STATUS = v.union(v.literal("running"), v.literal("ended"), v.literal("failed"), v.literal("unknown"));
+const RUN_STATUS = v.union(v.literal("running"), v.literal("ended"), v.literal("failed"), v.literal("abandoned"), v.literal("unknown"));
 const RUN_MODE = v.union(v.literal("interactive"), v.literal("autonomous"));
 const ROW_KIND = v.union(
   v.literal("user"), v.literal("assistant-text"), v.literal("thinking"),
@@ -21,6 +23,16 @@ const FILE = v.object({
   path: v.string(), sourceHash: v.string(), storedHash: v.string(), bytes: v.number(), storedBytes: v.number(),
   committedLine: v.number(), committedPrefixSha256: v.string(), sidecarStoredHash: v.optional(v.string()),
   storeKey: v.optional(v.string()), incompleteTail: v.optional(v.boolean()),
+  // The whole file's length, written only by a reader that saw the whole file:
+  // the backlog importer (which keeps no rows) and the materialize job. This
+  // validator is strict, so without the field here every such ingest is refused.
+  totalLines: v.optional(v.number()),
+});
+// The run's answer to "where did these rows come from, and what is missing".
+const ROWS_SOURCE = v.object({
+  from: v.literal("store"), at: v.number(), parserVersion: v.string(), storeKey: v.string(),
+  rowsFromLine: v.number(), rowsToLine: v.number(), slices: v.number(), droppedLines: v.number(),
+  partial: v.array(v.string()),
 });
 const ATTACHMENT = v.object({ file: v.string(), bytes: v.number(), sha256: v.string() });
 const CONTEXT = v.object({
@@ -28,6 +40,9 @@ const CONTEXT = v.object({
   skillsOffered: v.array(v.string()), skillsUsed: v.array(v.string()), tools: v.array(v.string()), hooks: v.array(v.string()),
   cwd: v.optional(v.string()), gitBranch: v.optional(v.string()), gitCommit: v.optional(v.string()), baseInstructionsHash: v.optional(v.string()),
   entrypoint: v.optional(v.string()), originator: v.optional(v.string()), permissionMode: v.optional(v.string()), contextWindow: v.optional(v.number()),
+  registered: v.optional(v.boolean()), launcher: v.optional(v.string()), modelRequested: v.optional(v.string()),
+  skillsGranted: v.optional(v.array(v.string())), skillsRefused: v.optional(v.array(v.string())),
+  promptSha256: v.optional(v.string()), writingStandardSource: v.optional(v.string()), workflowId: v.optional(v.string()),
 });
 const OUTCOME = v.object({
   endedReason: v.optional(v.string()), finalTextSeq: v.optional(v.number()),
@@ -43,7 +58,9 @@ const RUN = v.object({
   origin: v.string(), continuesRunId: v.optional(v.string()), host: v.union(v.literal("laptop"), v.literal("box")), runner: v.union(v.literal("claude"), v.literal("codex")),
   model: v.optional(v.string()), sessionModel: v.optional(SESSION_MODEL), effort: v.optional(v.string()), runtimeVersion: v.optional(v.string()), parserVersion: v.string(), kind: RUN_KIND, status: RUN_STATUS,
   mode: v.optional(RUN_MODE), startedAt: v.number(), lastLineAt: v.number(), context: v.optional(CONTEXT), outcome: v.optional(OUTCOME), attachments: v.array(ATTACHMENT),
-  todoId: v.optional(v.id("dtsTodos")), batchId: v.optional(v.id("batches")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")), file: FILE,
+  todoId: v.optional(v.id("dtsTodos")), batchId: v.optional(v.id("batches")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
+  regToken: v.optional(v.string()),
+  envelopeKey: v.optional(v.string()), cutoverAt: v.optional(v.number()), abandonedAt: v.optional(v.number()), file: FILE,
 });
 const PROVENANCE = v.object({ fileVersion: v.string(), file: v.string(), lineStart: v.number(), lineEnd: v.number(), block: v.number(), parserVersion: v.string(), sourceKind: v.string() });
 const ROW = v.object({
@@ -56,6 +73,41 @@ const RUN_ID = /^(claude|codex):(laptop|box):[A-Za-z0-9._-]{8,128}(\/[A-Za-z0-9.
 const SHA256 = /^[0-9a-f]{64}$/;
 const MAX_DESCENDANT_REPAIR = 500;
 const MAX_OVERFLOW_CHUNKS = 500;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/**
+ * How long a run's rows stay in the record after its last line — or after Tom
+ * last opened it. Read at CALL time, not at import time: a deployment variable
+ * changed between deploys must take effect without a module reload, and a test
+ * that stubs it must not depend on import order.
+ */
+function rowWindowMs(): number {
+  const days = Number(process.env.RUNS_ROW_WINDOW_DAYS ?? 30);
+  return (Number.isFinite(days) && days > 0 ? days : 30) * DAY_MS;
+}
+/** Eviction is OFF unless the deployment says otherwise — also read at call time. */
+function evictionEnabled(): boolean {
+  return /^(1|true|yes|on)$/i.test(String(process.env.RUNS_EVICTION_ENABLED ?? ""));
+}
+
+// One click must not become an hour of mutations: a request ingests at most one
+// slice, and a run stops after five of them and says so.
+const MAX_SLICES = 5;
+const EVICT_RUNS_PER_TICK = 20;
+const EVICT_ROWS_PER_STEP = 200;
+const EVICT_MAX_STEPS = 200;
+const MAX_REASON_LENGTH = 200;
+
+// Both vocabularies are closed. The box answers with a fixed phrase so a
+// transcript, a path or a bucket error can never be reflected into the record.
+const MATERIALIZE_REASONS = new Set([
+  "object missing from store", "object hash mismatch", "store unreachable",
+  "no store key", "file too large", "parse produced no rows", "run is gone",
+]);
+const MATERIALIZE_PARTIAL = new Set([
+  "sidecar-missing", "no-envelope", "pre-parser-fields",
+  "unknown-line-types", "row-cap-reached", "incomplete-tail",
+]);
 
 function nonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
@@ -82,11 +134,11 @@ function validFile(file: {
   return file.path !== "" && validHash(file.sourceHash) && validHash(file.storedHash) && nonNegativeInteger(file.bytes) && nonNegativeInteger(file.storedBytes) && nonNegativeInteger(file.committedLine) && validHash(file.committedPrefixSha256) && (file.sidecarStoredHash === undefined || validHash(file.sidecarStoredHash));
 }
 
-async function requireTomForRuns(ctx: QueryCtx) {
+async function requireTomForRuns(ctx: QueryCtx | MutationCtx) {
   await requireTom(ctx, "Runs");
 }
 
-async function runAt(ctx: MutationCtx, runId: string) {
+async function runAt(ctx: QueryCtx | MutationCtx, runId: string) {
   return await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).first();
 }
 async function rowAt(ctx: MutationCtx, runId: string, seq: number) {
@@ -109,7 +161,13 @@ function stub(run: { runId: string; parentRunId?: string; rootRunId: string; dep
 }
 
 function validOrigin(origin: string) {
-  return ["session", "daemon", "hook", "laptop", "unknown"].includes(origin) || /^cron:[\w.-]{1,64}$/.test(origin);
+  return ["session", "planner", "worker", "nightly", "weekly", "delegate", "job", "daemon", "hook", "laptop", "workflow", "unknown"].includes(origin) || /^cron:[\w.-]{1,64}$/.test(origin);
+}
+async function fileVersionAt(ctx: MutationCtx, runId: string, fileVersion: string) {
+  return await ctx.db
+    .query("runFileVersions")
+    .withIndex("by_run_id_and_file_version", (q) => q.eq("runId", runId).eq("fileVersion", fileVersion))
+    .unique();
 }
 
 function validOutcome(outcome: {
@@ -188,16 +246,30 @@ export const internalIngest = internalMutation({
       depth = existing.depth;
     } else if (!args.run.parentRunId) {
       if (args.run.rootRunId !== args.run.runId || args.run.depth !== 0 || !args.run.linkKnown) return { ok: false as const, reason: "invalid root run" };
-    } else if (knownParent) {
+    } else if (knownParent && !isStubFile(knownParent.file)) {
       rootRunId = knownParent.rootRunId;
       depth = knownParent.depth + 1;
-    } else {
-      // A missing parent is a root stub until its own file names its parent.
-      // Filling that stub repairs this run and its descendants below.
-      rootRunId = args.run.parentRunId;
-      depth = 1;
     }
-    const run = { ...args.run, rootRunId, depth };
+    // Anything else — a parent nobody has swept yet — keeps the depth and the
+    // root the CLI's own sidecar gave this run. The sweep reaches a grandchild
+    // before its parent whenever the file names sort that way, and deriving a
+    // position from a parent that is not there yet made every row of a deeper
+    // run fail the row-depth check below, which dead-lettered the whole run on
+    // a permanent 400.
+    let run = { ...args.run, rootRunId, depth };
+    // A box Claude root has the same CLI id as its live session. Resolve that
+    // exact join in the ingest transaction so a missed daemon stamp repairs
+    // itself without a second worker round trip.
+    if (run.sessionId === undefined && run.runner === "claude" && run.host === "box" && run.depth === 0) {
+      const sdkSessionId = run.runId.slice("claude:box:".length);
+      if (run.runId.startsWith("claude:box:") && sdkSessionId !== "" && !sdkSessionId.includes("/")) {
+        const session = await ctx.db
+          .query("claudeSessions")
+          .withIndex("by_sdk_session_id", (q) => q.eq("sdkSessionId", sdkSessionId))
+          .unique();
+        if (session) run = { ...run, sessionId: session._id };
+      }
+    }
 
     let previous = -1;
     for (const row of args.rows) {
@@ -261,22 +333,61 @@ export const internalIngest = internalMutation({
     const descendantRepairs = repairNeeded ? await descendantsForRepair(ctx, run.runId, run.rootRunId, run.depth) : [];
     if (descendantRepairs === null) return { ok: false as const, reason: "descendant repair too large" };
 
+    const ingestedAt = Date.now();
     if (run.parentRunId && !knownParent) {
-      await ctx.db.insert("runs", stub({ runId: run.parentRunId, rootRunId: run.parentRunId, depth: 0, linkKnown: true }, run, "unknown"));
+      // The placeholder takes its position from the child's own file rather
+      // than calling itself a root: a run that knows it sits at depth 3 knows
+      // its parent sits at depth 2, and the next sibling to arrive then reads
+      // a true position instead of a self-root at depth 0.
+      await ctx.db.insert("runs", stub({ runId: run.parentRunId, rootRunId: run.rootRunId, depth: Math.max(run.depth - 1, 0), linkKnown: true }, run, "unknown"));
     }
     if (!existing) {
-      await ctx.db.insert("runs", { ...run, ingestedAt: Date.now() });
+      await ctx.db.insert("runs", { ...run, ingestedAt });
     } else {
       const advances = run.file.committedLine > existing.file.committedLine;
-      const patch: Record<string, unknown> = { ingestedAt: Date.now() };
+      const patch: Record<string, unknown> = { ingestedAt };
       if (advances || isStubFile(existing.file)) patch.file = run.file;
       if (advances || isStubFile(existing.file)) patch.attachments = run.attachments;
-      for (const key of ["status", "outcome", "mode", "lastLineAt", "model", "sessionModel", "effort", "context", "runtimeVersion", "parserVersion", "continuesRunId"] as const) if (run[key] !== undefined) patch[key] = run[key];
+      // The envelope's fields arrive with a later page as readily as the first,
+      // so registration repairs a run that was ingested before its launcher's
+      // sidecar was claimed.
+      // regToken rides this list for the same reason as envelopeKey: a run
+      // ingested before its launcher's sidecar was claimed has no token, and
+      // the repair page is the only thing that can give it one. Without that
+      // every label about a run whose first page beat its envelope would be
+      // unlinked forever.
+      for (const key of ["status", "outcome", "mode", "lastLineAt", "model", "sessionModel", "effort", "context", "runtimeVersion", "parserVersion", "continuesRunId", "todoId", "batchId", "mergeKey", "regToken", "envelopeKey", "abandonedAt"] as const) if (run[key] !== undefined) patch[key] = run[key];
+      if (run.sessionId !== undefined && existing.sessionId === undefined) patch.sessionId = run.sessionId;
       if (existing.kind === "unknown") patch.kind = run.kind;
       if (existing.origin === "unknown") patch.origin = run.origin;
       if (!existing.linkKnown && run.linkKnown && run.spawnedByToolUseId) { patch.linkKnown = true; patch.spawnedByToolUseId = run.spawnedByToolUseId; }
       if (isStubFile(existing.file)) Object.assign(patch, { parentRunId: run.parentRunId, rootRunId: run.rootRunId, depth: run.depth, host: run.host, runner: run.runner, startedAt: run.startedAt });
       await ctx.db.patch(existing._id, patch);
+    }
+
+    // The mutable run keeps the latest file pointer; this append-only table
+    // keeps every verified version the nightly manifest must write exactly
+    // once, including versions created in the same millisecond.
+    if (!isStubFile(run.file) && run.file.storeKey !== undefined && !(await fileVersionAt(ctx, run.runId, run.file.storedHash))) {
+      const prefix = `${run.runner}:${run.host}:`;
+      await ctx.db.insert("runFileVersions", {
+        runId: run.runId,
+        runner: run.runner,
+        host: run.host,
+        threadId: run.runId.startsWith(prefix) ? run.runId.slice(prefix.length) : run.runId,
+        depth: run.depth,
+        parentRunId: run.parentRunId,
+        fileVersion: run.file.storedHash,
+        storeKey: run.file.storeKey,
+        sourceHash: run.file.sourceHash,
+        rawBytes: run.file.bytes,
+        storedBytes: run.file.storedBytes,
+        parserVersion: run.parserVersion,
+        runtimeVersion: run.runtimeVersion,
+        startedAt: run.startedAt,
+        lastLineAt: run.lastLineAt,
+        at: ingestedAt,
+      });
     }
 
     for (const child of args.children) {
@@ -290,8 +401,23 @@ export const internalIngest = internalMutation({
       await ctx.db.insert("claudeMessages", { runId: run.runId, seq: row.seq, turn: row.turn, kind: row.kind, content: row.content, provenance: row.provenance, digest: row.digest, depth: row.depth, parentToolUseId: row.parentToolUseId, createdAt: row.createdAt });
       inserted += 1;
     }
-    if (run.sessionId) await ctx.db.patch(run.sessionId, { runId: run.runId });
+    // Three writers converge on this field; whoever is first wins, so a later
+    // one never renames a session's run.
+    if (run.sessionId) {
+      const session = await ctx.db.get(run.sessionId);
+      if (session && session.runId === undefined) await ctx.db.patch(run.sessionId, { runId: run.runId });
+    }
     const landed = await runAt(ctx, run.runId);
+    // `rowsUntil` is present IF AND ONLY IF this run's rows are in the record.
+    // That invariant is what bounds the eviction scan and what makes eviction
+    // idempotent, so it is maintained here, in the one place every writer of
+    // rows passes through: the live sweep, a cut-over session, a materialize.
+    // An index-only backlog row (rows: [], no prior window) gets no field at
+    // all, and a no-op ingest writes nothing.
+    if (landed && (inserted > 0 || existing?.rowsUntil !== undefined)) {
+      const rowsUntil = Math.max(landed.rowsUntil ?? 0, run.lastLineAt + rowWindowMs());
+      if (rowsUntil > (landed.rowsUntil ?? 0)) await ctx.db.patch(landed._id, { rowsUntil });
+    }
     return { ok: true as const, runId: run.runId, inserted, skipped, committedLine: landed?.file.committedLine ?? run.file.committedLine };
   },
 });
@@ -354,6 +480,301 @@ export const internalStampOverflow = internalMutation({
   },
 });
 
+const SHADOW_IGNORED_KINDS = new Set(["context", "child-run"]);
+const SHADOW_TEXT_KINDS = new Set(["user", "assistant-text", "thinking"]);
+
+function textContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (content && typeof content === "object" && "text" in content && typeof (content as { text?: unknown }).text === "string") {
+    return (content as { text: string }).text;
+  }
+  try { return JSON.stringify(content); } catch { return ""; }
+}
+
+function normalizeTrailingWhitespace(text: string): string {
+  return text.replace(/[ \t]+$/gm, "").replace(/\s+$/u, "");
+}
+
+type ShadowDigestRow = { seq: number; kind: string; digest: string };
+type ShadowCount = { kind: string; daemon: number; file: number };
+type ShadowState = {
+  sessionId: Id<"claudeSessions">;
+  runLastLineAt: number;
+  daemonCursor: string | null;
+  fileCursor: string | null;
+  daemonDone: boolean;
+  fileDone: boolean;
+  daemonPending: ShadowDigestRow[];
+  filePending: ShadowDigestRow[];
+  counts: ShadowCount[];
+  daemonRows: number;
+  fileRows: number;
+  daemonTextRows: number;
+  fileTextRows: number;
+  textMatches: number;
+  firstDiffSeq?: number;
+  daemonTextSha256: string;
+  fileTextSha256: string;
+};
+
+const SHADOW_STATE = v.object({
+  sessionId: v.id("claudeSessions"),
+  runLastLineAt: v.number(),
+  daemonCursor: v.union(v.string(), v.null()),
+  fileCursor: v.union(v.string(), v.null()),
+  daemonDone: v.boolean(),
+  fileDone: v.boolean(),
+  daemonPending: v.array(v.object({ seq: v.number(), kind: v.string(), digest: v.string() })),
+  filePending: v.array(v.object({ seq: v.number(), kind: v.string(), digest: v.string() })),
+  counts: v.array(v.object({ kind: v.string(), daemon: v.number(), file: v.number() })),
+  daemonRows: v.number(),
+  fileRows: v.number(),
+  daemonTextRows: v.number(),
+  fileTextRows: v.number(),
+  textMatches: v.number(),
+  firstDiffSeq: v.optional(v.number()),
+  daemonTextSha256: v.string(),
+  fileTextSha256: v.string(),
+});
+
+function addKindCount(state: ShadowState, side: "daemon" | "file", kind: string) {
+  let count = state.counts.find((entry) => entry.kind === kind);
+  if (!count) {
+    count = { kind, daemon: 0, file: 0 };
+    state.counts.push(count);
+  }
+  count[side] += 1;
+}
+
+async function addShadowPage(
+  state: ShadowState,
+  side: "daemon" | "file",
+  rows: Array<{ seq: number; kind: string; content: unknown }>,
+) {
+  for (const row of rows) {
+    if (SHADOW_IGNORED_KINDS.has(row.kind)) continue;
+    addKindCount(state, side, row.kind);
+    if (side === "daemon") state.daemonRows += 1;
+    else state.fileRows += 1;
+    if (!SHADOW_TEXT_KINDS.has(row.kind)) continue;
+    const digest = await sha256(normalizeTrailingWhitespace(textContent(row.content)));
+    const pending = side === "daemon" ? state.daemonPending : state.filePending;
+    pending.push({ seq: row.seq, kind: row.kind, digest });
+    if (side === "daemon") {
+      state.daemonTextRows += 1;
+      state.daemonTextSha256 = await sha256(`${state.daemonTextSha256}\n${row.kind}\n${digest}`);
+    } else {
+      state.fileTextRows += 1;
+      state.fileTextSha256 = await sha256(`${state.fileTextSha256}\n${row.kind}\n${digest}`);
+    }
+  }
+}
+
+export const internalEligibleComparisons = internalQuery({
+  args: {
+    status: v.union(v.literal("ended"), v.literal("failed")),
+    paginationOpts: paginationOptsValidator,
+  },
+  handler: async (ctx, args) => {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    const comparisons = await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_kind_at", (q) => q.eq("kind", "runs-shadow-compare").gte("at", cutoff))
+      .order("desc")
+      .take(1000);
+    const comparedAt = new Map<string, number>();
+    for (const comparison of comparisons) {
+      const data = comparison.data;
+      if (!data || typeof data !== "object") continue;
+      const result = data as { runId?: unknown; runStatus?: unknown };
+      if (typeof result.runId !== "string" || (result.runStatus !== "ended" && result.runStatus !== "failed")) continue;
+      if (!comparedAt.has(result.runId)) comparedAt.set(result.runId, comparison.at);
+    }
+    const page = await ctx.db
+      .query("claudeSessions")
+      .withIndex("by_status", (q) => q.eq("status", args.status).gte("statusChangedAt", cutoff))
+      .order("asc")
+      .paginate(args.paginationOpts);
+    const eligible: Array<{ sessionId: Id<"claudeSessions">; runId: string }> = [];
+    for (const session of page.page) {
+      const runId = session.runId;
+      if (!runId || session.rowsFrom === "runs") continue;
+      const run = await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique();
+      // A clean comparison while the run was still unknown cannot authorize a
+      // later cutover. Only terminal run rows enter the comparison pipeline.
+      if (!run || (run.status !== "ended" && run.status !== "failed") || (comparedAt.get(run.runId) ?? -Infinity) >= run.lastLineAt) continue;
+      eligible.push({ sessionId: session._id, runId: run.runId });
+    }
+    return {
+      eligible,
+      isDone: page.isDone,
+      continueCursor: page.isDone ? null : page.continueCursor,
+    };
+  },
+});
+
+// The comparison stays beside both row sets. Only counts and digests leave
+// this transaction; transcript text is neither returned nor written to the
+// event that the digest reads.
+export const internalShadowCompare = internalMutation({
+  args: { sessionId: v.id("claudeSessions"), state: v.optional(SHADOW_STATE) },
+  handler: async (ctx, { sessionId, state: priorState }) => {
+    const session = await ctx.db.get(sessionId);
+    if (!session) throw new Error("session not found");
+    if (!session.runId) throw new Error("session has no run");
+    const run = await runAt(ctx, session.runId);
+    if (!run) throw new Error("run not found");
+    if (run.status !== "ended" && run.status !== "failed") throw new Error("run is not terminal");
+
+    const emptyDigest = await sha256("");
+    const state: ShadowState = priorState && priorState.sessionId === sessionId && priorState.runLastLineAt === run.lastLineAt
+      ? {
+          ...priorState,
+          daemonPending: priorState.daemonPending.map((row) => ({ ...row })),
+          filePending: priorState.filePending.map((row) => ({ ...row })),
+          counts: priorState.counts.map((count) => ({ ...count })),
+        }
+      : {
+          sessionId,
+          runLastLineAt: run.lastLineAt,
+          daemonCursor: null,
+          fileCursor: null,
+          daemonDone: false,
+          fileDone: false,
+          daemonPending: [],
+          filePending: [],
+          counts: [],
+          daemonRows: 0,
+          fileRows: 0,
+          daemonTextRows: 0,
+          fileTextRows: 0,
+          textMatches: 0,
+          daemonTextSha256: emptyDigest,
+          fileTextSha256: emptyDigest,
+        };
+
+    // Each invocation reads at most one 100-row page from each source. The
+    // unmatched boundary rows are hashes only and stay bounded by one page.
+    if (state.daemonPending.length === 0 && !state.daemonDone) {
+      const page = await ctx.db
+        .query("claudeMessages")
+        .withIndex("by_session_seq", (q) => q.eq("sessionId", sessionId))
+        .order("asc")
+        .paginate({ cursor: state.daemonCursor, numItems: 100 });
+      await addShadowPage(state, "daemon", page.page);
+      state.daemonDone = page.isDone;
+      state.daemonCursor = page.isDone ? null : page.continueCursor;
+    }
+    if (state.filePending.length === 0 && !state.fileDone) {
+      const page = await ctx.db
+        .query("claudeMessages")
+        .withIndex("by_run_seq", (q) => q.eq("runId", session.runId))
+        .order("asc")
+        .paginate({ cursor: state.fileCursor, numItems: 100 });
+      await addShadowPage(state, "file", page.page);
+      state.fileDone = page.isDone;
+      state.fileCursor = page.isDone ? null : page.continueCursor;
+    }
+
+    while (state.daemonPending.length > 0 && state.filePending.length > 0) {
+      const daemonRow = state.daemonPending.shift()!;
+      const fileRow = state.filePending.shift()!;
+      if (daemonRow.kind === fileRow.kind && daemonRow.digest === fileRow.digest) state.textMatches += 1;
+      else if (state.firstDiffSeq === undefined) state.firstDiffSeq = fileRow.seq;
+    }
+    if (state.daemonDone && state.daemonPending.length === 0 && state.filePending.length > 0) {
+      if (state.firstDiffSeq === undefined) state.firstDiffSeq = state.filePending[0].seq;
+      state.filePending = [];
+    }
+    if (state.fileDone && state.filePending.length === 0 && state.daemonPending.length > 0) {
+      if (state.firstDiffSeq === undefined) state.firstDiffSeq = state.daemonPending[0].seq;
+      state.daemonPending = [];
+    }
+
+    if (!state.daemonDone || !state.fileDone || state.daemonPending.length > 0 || state.filePending.length > 0) {
+      return { complete: false as const, runId: run.runId, daemonRows: state.daemonRows, fileRows: state.fileRows, state };
+    }
+
+    const byKind: Record<string, { daemon: number; file: number }> = Object.fromEntries(
+      [...state.counts]
+        .sort((left, right) => left.kind.localeCompare(right.kind))
+        .map(({ kind, daemon, file }) => [kind, { daemon, file }]),
+    );
+    const textRows = Math.max(state.daemonTextRows, state.fileTextRows);
+    const clean = Object.values(byKind).every((count) => count.daemon === count.file) && state.firstDiffSeq === undefined;
+    const result = {
+      complete: true as const,
+      runId: run.runId,
+      runStatus: run.status,
+      daemonRows: state.daemonRows,
+      fileRows: state.fileRows,
+      byKind,
+      textRows,
+      textMatches: state.textMatches,
+      ...(state.firstDiffSeq === undefined ? {} : { firstDiffSeq: state.firstDiffSeq }),
+      daemonTextSha256: state.daemonTextSha256,
+      fileTextSha256: state.fileTextSha256,
+      clean,
+    };
+
+    await event(ctx, "runs-shadow-compare", result);
+    const runPatch: Record<string, unknown> = {};
+    if (clean) {
+      const cutoverAt = run.cutoverAt ?? Date.now();
+      if (session.rowsFrom !== "runs") await ctx.db.patch(sessionId, { rowsFrom: "runs" });
+      if (run.cutoverAt === undefined) runPatch.cutoverAt = cutoverAt;
+    }
+    if (Object.keys(runPatch).length > 0) await ctx.db.patch(run._id, runPatch);
+    return result;
+  },
+});
+
+// The nightly writer consumes immutable manifest lines, not database rows.
+// Pagination remains over the source index even when a page contains stubs
+// with no verified store key, so its cursor always advances.
+export const internalManifest = internalQuery({
+  args: {
+    since: v.number(),
+    afterRunId: v.optional(v.string()),
+    afterFileVersion: v.optional(v.string()),
+    cursor: v.optional(v.string()),
+  },
+  handler: async (ctx, { since, afterRunId, afterFileVersion, cursor }) => {
+    if ((afterRunId === undefined) !== (afterFileVersion === undefined)) {
+      throw new Error("manifest checkpoint requires runId and fileVersion together");
+    }
+    const hasCompositeCheckpoint = afterRunId !== undefined && afterFileVersion !== undefined;
+    const page = await ctx.db
+      .query("runFileVersions")
+      .withIndex("by_at_and_run_id_and_file_version", (q) => hasCompositeCheckpoint ? q.gte("at", since) : q.gt("at", since))
+      .order("asc")
+      .paginate({ numItems: 200, cursor: cursor ?? null });
+    return {
+      entries: page.page
+        .filter((version) => !hasCompositeCheckpoint || version.at > since || version.runId > afterRunId || (version.runId === afterRunId && version.fileVersion > afterFileVersion))
+        .map((version) => ({
+          run_id: version.runId,
+          runner: version.runner,
+          host: version.host,
+          thread_id: version.threadId,
+          depth: version.depth,
+          parent_run_id: version.parentRunId ?? null,
+          file_version: version.fileVersion,
+          store_key: version.storeKey,
+          source_sha256: version.sourceHash,
+          raw_bytes: version.rawBytes,
+          stored_bytes: version.storedBytes,
+          parser_version: version.parserVersion,
+          runtime_version: version.runtimeVersion ?? null,
+          started_at: version.startedAt,
+          last_line_at: version.lastLineAt,
+          at: version.at,
+        })),
+      nextCursor: page.isDone ? null : page.continueCursor,
+    };
+  },
+});
+
 function assertRunId(runId: string) {
   if (!validRunId(runId)) throw new Error("invalid runId");
 }
@@ -372,6 +793,434 @@ export const children = query({
 });
 export const rows = query({ args: { runId: v.string(), paginationOpts: paginationOptsValidator }, handler: async (ctx, args) => { await requireTomForRuns(ctx); assertRunId(args.runId); const page = await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", args.runId)).order("asc").paginate(args.paginationOpts); return { ...page, page: page.page.map((row) => ({ ...row, hasOverflow: row.overflow !== undefined, fullByteLength: row.overflow?.byteLength })) }; } });
 export const entry = query({ args: { runId: v.string(), seq: v.number() }, handler: async (ctx, args) => { await requireTomForRuns(ctx); assertRunId(args.runId); if (!nonNegativeInteger(args.seq)) throw new Error("invalid seq"); const row = await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", args.runId).eq("seq", args.seq)).first(); return row ? { provenance: row.provenance, content: row.content, overflow: row.overflow, digest: row.digest } : null; } });
+
+// ── Opening an old run from the store ────────────────────────────────────────
+// Convex holds no S3 reader credential and no second request signer, so a run
+// whose rows are not in the record opens by asking the box for them. Tom (or a
+// job) queues a request here; `worker/runs/materialize.mjs` serves it and
+// ingests the rows through the existing /runs/ingest door. There is no second
+// ingest path.
+
+async function newestRequest(ctx: QueryCtx | MutationCtx, runId: string) {
+  return await ctx.db
+    .query("runMaterializeRequests")
+    .withIndex("by_run_requestedAt", (q) => q.eq("runId", runId))
+    .order("desc")
+    .first();
+}
+
+/**
+ * The one place a request is queued, shared by Tom's mutation and the worker
+ * route so the refusals and the idempotence cannot drift apart. Idempotent
+ * while a request is pending: a second press returns the first request rather
+ * than queueing work the box would do twice.
+ */
+async function enqueueMaterialize(ctx: MutationCtx, runId: string, requestedBy: "tom" | "worker") {
+  if (!validRunId(runId)) return { ok: false as const, reason: "invalid runId" };
+  const run = await runAt(ctx, runId);
+  if (!run) return { ok: false as const, reason: "run not found" };
+  if (!run.file.storeKey) return { ok: false as const, reason: "run has no store key" };
+  const newest = await newestRequest(ctx, runId);
+  if (newest && newest.status === "pending") {
+    return { ok: true as const, requestId: newest._id, slice: newest.slice, queued: false };
+  }
+  const requestId = await ctx.db.insert("runMaterializeRequests", {
+    runId, requestedBy, requestedAt: Date.now(), status: "pending" as const, slice: 1,
+  });
+  return { ok: true as const, requestId, slice: 1, queued: true };
+}
+
+export const requestMaterialize = mutation({
+  args: { runId: v.string() },
+  handler: async (ctx, args) => {
+    await requireTomForRuns(ctx);
+    const queued = await enqueueMaterialize(ctx, args.runId, "tom");
+    // Fixed phrases: the page renders the refusal and nothing here echoes a payload.
+    if (!queued.ok) throw new Error(queued.reason);
+    return await ctx.db.get(queued.requestId);
+  },
+});
+
+export const materializeStatus = query({
+  args: { runId: v.string() },
+  handler: async (ctx, args) => {
+    await requireTomForRuns(ctx);
+    assertRunId(args.runId);
+    return await newestRequest(ctx, args.runId);
+  },
+});
+
+// Reading a run is what keeps it in the record — but only a run that HAS rows,
+// so looking at an index-only backlog run never makes it evictable, and reading
+// the same run six times in an afternoon is one write, not six.
+export const markOpened = mutation({
+  args: { runId: v.string() },
+  handler: async (ctx, args) => {
+    await requireTomForRuns(ctx);
+    assertRunId(args.runId);
+    const run = await runAt(ctx, args.runId);
+    if (!run || run.rowsUntil === undefined) return { ok: true as const, moved: false };
+    const next = Date.now() + rowWindowMs();
+    if (next <= run.rowsUntil + DAY_MS) return { ok: true as const, moved: false };
+    await ctx.db.patch(run._id, { rowsUntil: next });
+    return { ok: true as const, moved: true };
+  },
+});
+
+// The worker-key twin of requestMaterialize (phase 7's evals will need an old
+// run's rows). It answers rather than throws, because an HTTP route turns the
+// answer into a status code.
+export const internalRequestMaterialize = internalMutation({
+  args: { runId: v.string(), requestedBy: v.union(v.literal("tom"), v.literal("worker")) },
+  handler: async (ctx, args) => {
+    const queued = await enqueueMaterialize(ctx, args.runId, args.requestedBy);
+    if (!queued.ok) return queued;
+    return { ok: true as const, requestId: queued.requestId, slice: queued.slice, queued: queued.queued };
+  },
+});
+
+export const internalNextMaterialize = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const request = await ctx.db
+      .query("runMaterializeRequests")
+      .withIndex("by_status_requestedAt", (q) => q.eq("status", "pending"))
+      .order("asc")
+      .first();
+    if (!request) return { request: null };
+    const run = await runAt(ctx, request.runId);
+    // A request whose run vanished, or whose run never had a store key, is
+    // still answerable: it comes back with `storeKey: null` so the job writes
+    // `failed` and the queue drains. Skipping it would park it at the head of
+    // the queue forever — the queue is drained by answers, not by attempts.
+    const prefix = run ? `${run.runner}:${run.host}:` : `${request.runId.split(":").slice(0, 2).join(":")}:`;
+    const file = run
+      ? {
+          path: run.file.path, sourceHash: run.file.sourceHash, storedHash: run.file.storedHash,
+          bytes: run.file.bytes, storedBytes: run.file.storedBytes,
+          committedLine: run.file.committedLine, committedPrefixSha256: run.file.committedPrefixSha256,
+          storeKey: run.file.storeKey ?? null, sidecarStoredHash: run.file.sidecarStoredHash ?? null,
+          totalLines: run.file.totalLines ?? null, incompleteTail: run.file.incompleteTail ?? false,
+        }
+      : {
+          path: "", sourceHash: "", storedHash: "", bytes: 0, storedBytes: 0,
+          committedLine: 0, committedPrefixSha256: "", storeKey: null,
+          sidecarStoredHash: null, totalLines: null, incompleteTail: false,
+        };
+    const hasRows = Boolean(
+      await ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", request.runId)).first(),
+    );
+    return {
+      request: {
+        requestId: request._id, runId: request.runId, slice: request.slice,
+        requestedBy: request.requestedBy, requestedAt: request.requestedAt,
+        runner: run?.runner ?? request.runId.split(":")[0],
+        host: run?.host ?? request.runId.split(":")[1],
+        threadId: request.runId.startsWith(prefix) ? request.runId.slice(prefix.length) : request.runId,
+        depth: run?.depth ?? 0,
+        parentRunId: run?.parentRunId ?? null,
+        file,
+        hasRows,
+        // Where the parse resumes: a backlog run has no rows and starts at 0, a
+        // continuation starts at the lines already in the record.
+        fromLine: hasRows ? file.committedLine : 0,
+      },
+    };
+  },
+});
+
+export const internalAnswerMaterialize = internalMutation({
+  args: {
+    requestId: v.id("runMaterializeRequests"),
+    status: v.union(v.literal("served"), v.literal("failed")),
+    reason: v.optional(v.string()),
+    rowsIngested: v.optional(v.number()),
+    fromLine: v.optional(v.number()),
+    toLine: v.optional(v.number()),
+    totalLines: v.optional(v.number()),
+    rowsSource: v.optional(ROWS_SOURCE),
+  },
+  handler: async (ctx, args) => {
+    if (args.reason !== undefined && args.reason.length > MAX_REASON_LENGTH) return { ok: false as const, reason: "reason too long" };
+    if (args.reason !== undefined && !MATERIALIZE_REASONS.has(args.reason)) return { ok: false as const, reason: "reason outside the closed vocabulary" };
+    if (args.rowsSource && !args.rowsSource.partial.every((value) => MATERIALIZE_PARTIAL.has(value))) return { ok: false as const, reason: "partial outside the closed vocabulary" };
+    for (const count of [args.rowsIngested, args.fromLine, args.toLine, args.totalLines]) {
+      if (count !== undefined && !nonNegativeInteger(count)) return { ok: false as const, reason: "invalid line counts" };
+    }
+    const request = await ctx.db.get(args.requestId);
+    if (!request) return { ok: false as const, reason: "request not found" };
+    // A second answer to the same request changes nothing: a retried POST must
+    // not queue a second continuation.
+    if (request.status !== "pending") return { ok: true as const, alreadyAnswered: true, continuation: false };
+
+    await ctx.db.patch(request._id, {
+      status: args.status, servedAt: Date.now(),
+      ...(args.reason === undefined ? {} : { reason: args.reason }),
+      ...(args.rowsIngested === undefined ? {} : { rowsIngested: args.rowsIngested }),
+      ...(args.fromLine === undefined ? {} : { fromLine: args.fromLine }),
+      ...(args.toLine === undefined ? {} : { toLine: args.toLine }),
+    });
+    if (args.status !== "served") return { ok: true as const, alreadyAnswered: false, continuation: false };
+
+    const run = await runAt(ctx, request.runId);
+    const totalLines = args.totalLines ?? run?.file.totalLines;
+    const linesRemain = args.toLine !== undefined && totalLines !== undefined && args.toLine < totalLines;
+    // After the last slice the run keeps `committedLine < totalLines` and the
+    // page must say why, so the cap names itself even if the job did not.
+    let rowsSource = args.rowsSource;
+    if (rowsSource && linesRemain && request.slice >= MAX_SLICES && !rowsSource.partial.includes("row-cap-reached")) {
+      rowsSource = { ...rowsSource, partial: [...rowsSource.partial, "row-cap-reached"] };
+    }
+    if (run) {
+      const patch: Record<string, unknown> = {};
+      if (rowsSource) patch.rowsSource = rowsSource;
+      if (args.totalLines !== undefined) patch.file = { ...run.file, totalLines: args.totalLines };
+      if (Object.keys(patch).length > 0) await ctx.db.patch(run._id, patch);
+    }
+
+    // A reader who opened a run wants the run: the continuation is queued here
+    // rather than asked of Tom again. Never a second pending request for one
+    // run, however this route is retried.
+    let continuation = false;
+    if (linesRemain && request.slice < MAX_SLICES) {
+      const newest = await newestRequest(ctx, request.runId);
+      if (!newest || newest.status !== "pending") {
+        await ctx.db.insert("runMaterializeRequests", {
+          runId: request.runId, requestedBy: request.requestedBy, requestedAt: Date.now(),
+          status: "pending" as const, slice: request.slice + 1,
+        });
+        continuation = true;
+      }
+    }
+    return { ok: true as const, alreadyAnswered: false, continuation };
+  },
+});
+
+// ── Eviction: what makes the window a window ─────────────────────────────────
+// Rows for runs outside the window and not opened inside it are removed nightly.
+// The run index is never removed, a label is never removed, and the store is
+// never touched — nothing here destroys a byte the store does not already hold.
+
+/** Why this run keeps its rows tonight, or null when it may lose them. */
+async function evictRefusal(ctx: MutationCtx, run: Doc<"runs">, now: number) {
+  if (run.status === "running") return "running";
+  if (run.lastLineAt > now - rowWindowMs()) return "inside the window";
+  if (run.sessionId) {
+    const session = await ctx.db.get(run.sessionId);
+    if (session && (LIVE_STATUSES as readonly string[]).includes(session.status)) return "live session";
+  }
+  return null;
+}
+
+/**
+ * Delete up to `budget` documents of one run's transcript. CHUNKS BEFORE THEIR
+ * ROW, so a crash can never leave overflow nobody can find — the same discipline
+ * as claudeSessions.internalSweepOverflow, applied to the run key.
+ */
+async function evictRunStep(ctx: MutationCtx, runId: string, budget: number) {
+  let rowsDeleted = 0;
+  let overflowChunksDeleted = 0;
+  while (budget > 0) {
+    const batch = await ctx.db
+      .query("claudeMessages")
+      .withIndex("by_run_seq", (q) => q.eq("runId", runId))
+      .take(Math.min(budget, EVICT_ROWS_PER_STEP));
+    if (batch.length === 0) return { rowsDeleted, overflowChunksDeleted, done: true, budget };
+    for (const row of batch) {
+      if (budget <= 0) break;
+      if (row.overflow) {
+        while (budget > 0) {
+          const chunks = await ctx.db
+            .query("claudeMessageOverflow")
+            .withIndex("by_run_seq_index", (q) => q.eq("runId", runId).eq("seq", row.seq))
+            .take(budget);
+          if (chunks.length === 0) break;
+          for (const chunk of chunks) {
+            await ctx.db.delete(chunk._id);
+            overflowChunksDeleted += 1;
+            budget -= 1;
+          }
+        }
+        // Out of budget with chunks still to find: leave the row, and the next
+        // step meets it again with its overflow stamp intact.
+        if (budget <= 0) return { rowsDeleted, overflowChunksDeleted, done: false, budget };
+      }
+      await ctx.db.delete(row._id);
+      rowsDeleted += 1;
+      budget -= 1;
+    }
+  }
+  return { rowsDeleted, overflowChunksDeleted, done: false, budget };
+}
+
+export const internalEvictTick = internalMutation({
+  args: {
+    // `cursor` is accepted because a caller may carry one, and deliberately
+    // unused: every run a step touches LEAVES the scan window (evicted → the
+    // field is cleared, deferred → it moves a day forward), so the next step's
+    // scan resumes where this one stopped without one.
+    cursor: v.optional(v.string()),
+    runs: v.optional(v.number()),
+    rowsDeleted: v.optional(v.number()),
+    overflowChunksDeleted: v.optional(v.number()),
+    deferred: v.optional(v.number()),
+    steps: v.optional(v.number()),
+    pendingRunId: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    // OFF by default. Turning it on is the caller's action, after the S3
+    // backend is live on that deployment and a materialize has round-tripped
+    // there: evicting rows whose store objects sit in a local directory on a
+    // machine that may be reinstalled is deleting what nothing can restore.
+    if (!evictionEnabled()) {
+      await event(ctx, "runs-evicted", {
+        at: Date.now(), runs: 0, rowsDeleted: 0, overflowChunksDeleted: 0,
+        deferred: 0, truncated: false, disabled: true,
+      });
+      return { ok: true as const, disabled: true };
+    }
+
+    const steps = args.steps ?? 0;
+    const now = Date.now();
+    // The house DST pattern: a cron pair fires at both possible UTC times and
+    // this guard lets exactly one through. A CONTINUATION does not re-check, so
+    // a long eviction is not cut in half at the hour boundary.
+    if (steps === 0 && args.pendingRunId === undefined && nyLocalHour(now) !== 4) {
+      return { ok: true as const, skipped: "not the eviction hour" };
+    }
+
+    let runsEvicted = args.runs ?? 0;
+    let rowsDeleted = args.rowsDeleted ?? 0;
+    let overflowChunksDeleted = args.overflowChunksDeleted ?? 0;
+    let deferred = args.deferred ?? 0;
+    let budget = EVICT_ROWS_PER_STEP;
+    let pendingRunId: string | undefined;
+    let worked = false;
+
+    const finish = async (runId: string) => {
+      const run = await runAt(ctx, runId);
+      // Clearing `rowsUntil` takes the run out of the scan index — that, and
+      // not a cursor, is what makes the tick idempotent. The runs row, its
+      // labels, its file, outcome, context, rowsSource and edges all stay.
+      if (run) await ctx.db.patch(run._id, { rowsEvictedAt: now, rowsUntil: undefined });
+      runsEvicted += 1;
+    };
+
+    if (args.pendingRunId !== undefined) {
+      const step = await evictRunStep(ctx, args.pendingRunId, budget);
+      rowsDeleted += step.rowsDeleted;
+      overflowChunksDeleted += step.overflowChunksDeleted;
+      budget = step.budget;
+      worked = true;
+      if (step.done) await finish(args.pendingRunId);
+      else pendingRunId = args.pendingRunId;
+    } else {
+      // BOTH bounds: a document missing an optional indexed field sorts before
+      // every value, so a bare `.lt()` would sweep every run that has no rows.
+      const candidates = await ctx.db
+        .query("runs")
+        .withIndex("by_rows_until", (q) => q.gt("rowsUntil", 0).lt("rowsUntil", now))
+        .take(EVICT_RUNS_PER_TICK);
+      for (const run of candidates) {
+        const refusal = await evictRefusal(ctx, run, now);
+        if (refusal) {
+          // A live run whose clock says otherwise is a bug to see, not rows to
+          // lose: push the window a day past NOW — a day past a week-stale
+          // value would still be in the past, and the run would be re-deferred
+          // on every step of every tick.
+          await ctx.db.patch(run._id, { rowsUntil: Math.max(run.rowsUntil ?? now, now) + DAY_MS });
+          deferred += 1;
+          worked = true;
+          continue;
+        }
+        const step = await evictRunStep(ctx, run.runId, budget);
+        rowsDeleted += step.rowsDeleted;
+        overflowChunksDeleted += step.overflowChunksDeleted;
+        budget = step.budget;
+        worked = true;
+        if (step.done) await finish(run.runId);
+        else pendingRunId = run.runId;
+        break;
+      }
+    }
+
+    const truncated = steps + 1 >= EVICT_MAX_STEPS;
+    if (worked && !truncated) {
+      await ctx.scheduler.runAfter(0, internal.runs.internalEvictTick, {
+        runs: runsEvicted, rowsDeleted, overflowChunksDeleted, deferred,
+        steps: steps + 1, ...(pendingRunId === undefined ? {} : { pendingRunId }),
+      });
+      return { ok: true as const, scheduled: true };
+    }
+
+    const oldest = await ctx.db
+      .query("runs")
+      .withIndex("by_rows_until", (q) => q.gt("rowsUntil", 0))
+      .order("asc")
+      .first();
+    // One row, counts only: no run id, no row content.
+    await event(ctx, "runs-evicted", {
+      at: now, runs: runsEvicted, rowsDeleted, overflowChunksDeleted, deferred,
+      truncated: worked && truncated, oldestRowsUntil: oldest?.rowsUntil ?? null,
+    });
+    return { ok: true as const, runs: runsEvicted, rowsDeleted, overflowChunksDeleted, deferred, truncated: worked && truncated };
+  },
+});
+
+// The list wants the newest roots, and a root is the only run with no parent
+// above it, so depth is pinned to 0 inside the index rather than filtered out
+// after the read. Because that index leads with the host, "both hosts" is two
+// bounded reads merged here, never a scan of every child run ever ingested.
+// The cap is the page's, not the table's: this phase has no cursor, so the
+// merged array itself is the answer.
+export const roots = query({
+  args: {
+    host: v.optional(v.union(v.literal("laptop"), v.literal("box"))),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    await requireTomForRuns(ctx);
+    const limit = args.limit ?? 50;
+    if (!positiveInteger(limit) || limit > 500) throw new Error("roots limit must be an integer from 1 to 500");
+    const hosts: Array<"laptop" | "box"> = args.host ? [args.host] : ["laptop", "box"];
+    const perHost = await Promise.all(hosts.map((host) => ctx.db
+      .query("runs")
+      .withIndex("by_host_depth_started", (q) => q.eq("host", host).eq("depth", 0))
+      .order("desc")
+      .take(limit)));
+    // Two runs can start in the same millisecond, so startedAt alone is not a
+    // total order across the merge; runId settles those pairs the same way on
+    // every read.
+    return perHost.flat()
+      .sort((left, right) => right.startedAt - left.startedAt || (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0))
+      .slice(0, limit);
+  },
+});
+
+/**
+ * Everything Tom did about this run, oldest first — a ruling on the row it
+ * wrote, an objection in #tts-decisions, a reply he typed at it, an emoji on
+ * the morning it wrote. The run page draws one strip from this under the
+ * outcome, and DRAWS NO BAND AT ALL when the answer is empty: an empty strip
+ * on every run is clutter that displays nothing, which is why the strip was
+ * deferred until there were rows to put in it.
+ *
+ * Unpaginated on purpose. A run collects a handful of labels at human pace —
+ * the table's whole write path is four doors Tom himself goes through — so a
+ * page boundary here would be a mechanism with nothing to do.
+ */
+export const labels = query({
+  args: { runId: v.string() },
+  handler: async (ctx, args) => {
+    await requireTomForRuns(ctx);
+    assertRunId(args.runId);
+    return await ctx.db
+      .query("runLabels")
+      .withIndex("by_run_at", (q) => q.eq("runId", args.runId))
+      .order("asc")
+      .take(200);
+  },
+});
 
 export const internalBackfillRunIds = internalMutation({
   args: { cursor: v.optional(v.string()), limit: v.optional(v.number()) },

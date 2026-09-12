@@ -1,7 +1,7 @@
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
 import { internal } from "./_generated/api";
-import { GOLDEN_MAX_ITEMS, partitionOf } from "./ttsEvals";
+import { GOLDEN_MAX_ITEMS, GOLDEN_PER_VERDICT_MAX, partitionOf } from "./ttsEvals";
 import schema from "./schema";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -158,6 +158,68 @@ describe("internalGoldenInput", () => {
 
   it("uses uncategorised for a life todo without a category", () => {
     expect(partitionOf({ job: "prepare" })).toBe("prepare/uncategorised");
+  });
+});
+
+describe("internalLabelInput", () => {
+  // A label is one act of Tom's; only a JUDGMENT becomes an eval case. The two
+  // exclusions below are the whole gate, and they are separate facts: a
+  // session or archive verdict says nothing about whether the text landed, and
+  // every session-reply label is judgment: false by construction because phase
+  // 7 builds no classifier of his tone.
+  it("reads judgments only, and never the session-reply door", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    const todoId = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("dtsTodos", {
+        statement: "a todo", readiness: "unprepared", status: "active",
+        timingClass: "whenever", source: "test", createdAt: now, updatedAt: now,
+      });
+      const rulingId = await ctx.db.insert("dtsRulings", {
+        subjectType: "life", todoId: id, verdict: "approve", ruledAt: now,
+      });
+      await ctx.db.insert("runLabels", {
+        runId: "claude:box:ruled-run", source: "ruling", actor: "tom", polarity: "good",
+        meaning: "Tom approved this output", judgment: true, ref: `ruling:${rulingId}`, at: now,
+      });
+      // A session verdict: recorded on the run page, not a judgment.
+      await ctx.db.insert("runLabels", {
+        runId: "claude:box:ruled-run", source: "ruling", actor: "tom", polarity: "neutral",
+        meaning: "Tom wants to talk about this before it goes further", judgment: false,
+        ref: "ruling:talk", at: now,
+      });
+      await ctx.db.insert("runLabels", {
+        runId: "claude:box:session-run", source: "session-reply", actor: "tom", polarity: "neutral",
+        meaning: "no, the other one", judgment: false, ref: "reply:abc:7", at: now,
+      });
+      return id;
+    });
+    const { items } = await t.query(internal.ttsEvals.internalLabelInput, {});
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      source: "ruling",
+      run: null,
+      link: { todoId, subjectKey: `life ${todoId}` },
+    });
+  });
+
+  it("takes at most the per-verdict maximum from each door, newest first", async () => {
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      for (let ordinal = 0; ordinal < GOLDEN_PER_VERDICT_MAX + 5; ordinal += 1) {
+        await ctx.db.insert("runLabels", {
+          runId: "claude:box:objected-run", source: "objection", actor: "tom", polarity: "bad",
+          meaning: "Tom reverted this decision", judgment: true,
+          ref: `objection:${ordinal}`, at: now - ordinal,
+        });
+      }
+    });
+    const { items } = await t.query(internal.ttsEvals.internalLabelInput, {});
+    expect(items).toHaveLength(GOLDEN_PER_VERDICT_MAX);
+    const times = items.map((item) => item.at);
+    expect(times).toEqual([...times].sort((a, b) => b - a));
+    expect(times[0]).toBe(now);
   });
 });
 

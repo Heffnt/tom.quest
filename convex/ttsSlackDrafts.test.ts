@@ -183,6 +183,48 @@ describe("the morning message's writer", () => {
     expect(await openRequests(t)).toHaveLength(0);
   });
 
+  // The chain a reaction on the morning is resolved through: the writing run's
+  // token and the posted message's ts both land on the "digest-sent" row, and
+  // that row is the only place either survives once the sending action returns.
+  it("lands the writing run's token and the posted ts on the day it marks sent", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    await openMorning(t);
+    stubSlack();
+    await t.action(internal.ttsSync.sendToday, {});
+    const [request] = await openRequests(t);
+    const todoFact = request.facts.facts.find((f: { id: string }) => f.id.startsWith("todo:")) as {
+      id: string;
+      urls: string[];
+    };
+    await t.mutation(internal.ttsSlackDrafts.internalSubmitSlackDraft, {
+      requestId: request.requestId,
+      draft: {
+        firstLine: "One thing carries a date you have passed; the rent is the one to start with.",
+        firstLineSources: ["today:count"],
+        lines: [
+          {
+            role: "item",
+            text: "Pay the rent: open the bank app. One day late.",
+            url: todoFact.urls[0],
+            sources: [todoFact.id],
+          },
+        ],
+      },
+      runToken: "11111111-2222-4333-8444-555555555555",
+    });
+    await t.action(internal.ttsSync.sendSlackDraft, { requestId: request.requestId });
+    const marked = (await t.run(async (ctx) => ctx.db.query("dtsEvents").collect()))
+      .filter((e) => e.kind === DIGEST_SENT);
+    expect(marked).toHaveLength(1);
+    expect(marked[0].data).toMatchObject({
+      writtenBy: "fable",
+      runToken: "11111111-2222-4333-8444-555555555555",
+    });
+    expect(typeof (marked[0].data as { slackTs?: unknown }).slackTs).toBe("string");
+  });
+
   it("refuses an invented number and hands back the complaint for one repair turn", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(FIVE_AM);

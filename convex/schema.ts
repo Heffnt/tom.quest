@@ -427,6 +427,14 @@ export default defineSchema({
     // semantics as dtsTodos.tomTouchedAt: a batch with this set is FROZEN —
     // the planner (tts.internalStorePlanGraph) may never rewrite it.
     tomTouchedAt: v.optional(v.number()),
+    // The registration token of the run that last wrote this row's Tom-facing
+    // text (the planner's graph writer). ONE FIELD NAME on every table a run
+    // writes for Tom — dtsTodos and dtsCodeBriefs carry the same field with
+    // the same meaning, because three names for one fact would be three places
+    // to keep true. A door that receives no token stores none and the field
+    // stays absent; absent is a value and is never inferred.
+    // runs.regToken is the other end of the edge.
+    producedByRunToken: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
   }).index("by_status", ["status", "updatedAt"]),
@@ -532,6 +540,10 @@ export default defineSchema({
     workDescription: v.optional(v.string()), // qualitative, never a numeric estimate (spec §5.3)
     entryAction: v.optional(v.string()), // the one-click smallest next action (spec §13)
     brief: v.optional(v.string()), // ground-up brief, markdown
+    // The registration token of the run that wrote the four prepared fields
+    // above. Same field name and same meaning as on batches and
+    // dtsCodeBriefs; see the note on batches.producedByRunToken.
+    producedByRunToken: v.optional(v.string()),
     // ── Schema v2 graph fields (ratified 2026-08-29) ─────────────────────────
     // ALL OPTIONAL, ALL ADDITIVE: prod is one deployment and nothing is ever
     // destructive, so every v1 row stays legal exactly as written. A row with
@@ -919,6 +931,9 @@ export default defineSchema({
     // classifies it on every brief and the brief line on the page prints it.
     execClass: v.union(v.literal("box"), v.literal("needs-turing")),
     evidence: v.optional(v.string()),
+    // The registration token of the run that wrote this brief. Same field name
+    // and same meaning as on dtsTodos and batches; see the note there.
+    producedByRunToken: v.optional(v.string()),
     preparedAt: v.number(),
   }).index("by_repo_external", ["repo", "externalId"]),
 
@@ -1131,6 +1146,11 @@ export default defineSchema({
     // The run this session's CLI file is recorded as (§23). One session is one
     // run; absent until the sweep or backfill writes the derivable CLI id.
     runId: v.optional(v.string()),
+    // The finalized-row source is switched per session only after its shadow
+    // comparison is clean. Absent is the legacy daemon path.
+    rowsFrom: v.optional(
+      v.union(v.literal("daemon"), v.literal("runs")),
+    ),
     cwd: v.optional(v.string()), // daemon-reported working dir on the Jarvis Box
     lastSdkEventAt: v.optional(v.number()), // "last output Xm ago" fact
     // Daemon-owned idempotency floor: an ingest carrying seqs below this is a
@@ -1185,7 +1205,9 @@ export default defineSchema({
     .index("by_batch", ["batchId", "statusChangedAt"])
     // Joins a live session row to its immutable `runs` record (§23). The
     // record round also wants `by_createdAt`, already declared above.
-    .index("by_run_id", ["runId"]),
+    .index("by_run_id", ["runId"])
+    // The run-file ingest repairs the session link from the CLI's own id.
+    .index("by_sdk_session_id", ["sdkSessionId"]),
 
   // Finalized transcript — written exactly once per row by the daemon.
   // `turn` has no UI reader yet; it is kept because transcript structure is
@@ -1294,12 +1316,13 @@ export default defineSchema({
     runtimeVersion: v.optional(v.string()),
     parserVersion: v.string(),
     kind: v.union(v.literal("session"), v.literal("worker"), v.literal("code"), v.literal("prospect"), v.literal("job"), v.literal("delegate"), v.literal("subagent"), v.literal("codex-child"), v.literal("unknown")),
-    status: v.union(v.literal("running"), v.literal("ended"), v.literal("failed"), v.literal("unknown")),
+    status: v.union(v.literal("running"), v.literal("ended"), v.literal("failed"), v.literal("abandoned"), v.literal("unknown")),
     mode: v.optional(v.union(v.literal("interactive"), v.literal("autonomous"))),
     startedAt: v.number(),
     lastLineAt: v.number(),
     context: v.optional(v.object({
       wikitomCommit: v.optional(v.string()), layersKnown: v.boolean(), layersGiven: v.array(v.string()), layersDenied: v.array(v.string()), skillsOffered: v.array(v.string()), skillsUsed: v.array(v.string()), tools: v.array(v.string()), hooks: v.array(v.string()), cwd: v.optional(v.string()), gitBranch: v.optional(v.string()), gitCommit: v.optional(v.string()), baseInstructionsHash: v.optional(v.string()), entrypoint: v.optional(v.string()), originator: v.optional(v.string()), permissionMode: v.optional(v.string()), contextWindow: v.optional(v.number()),
+      registered: v.optional(v.boolean()), launcher: v.optional(v.string()), modelRequested: v.optional(v.string()), skillsGranted: v.optional(v.array(v.string())), skillsRefused: v.optional(v.array(v.string())), promptSha256: v.optional(v.string()), writingStandardSource: v.optional(v.string()), workflowId: v.optional(v.string()),
     })),
     outcome: v.optional(v.object({
       endedReason: v.optional(v.string()), finalTextSeq: v.optional(v.number()),
@@ -1321,31 +1344,162 @@ export default defineSchema({
     // the host until the phase-3 sweeper assigns them their own store objects.
     attachments: v.array(v.object({ file: v.string(), bytes: v.number(), sha256: v.string() })),
     todoId: v.optional(v.id("dtsTodos")), batchId: v.optional(v.id("batches")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
-    file: v.object({ path: v.string(), sourceHash: v.string(), storedHash: v.string(), bytes: v.number(), storedBytes: v.number(), committedLine: v.number(), committedPrefixSha256: v.string(), sidecarStoredHash: v.optional(v.string()), storeKey: v.optional(v.string()), incompleteTail: v.optional(v.boolean()) }),
+    // The registration token from this run's envelope — the exact edge from a
+    // row an agent wrote for Tom back to the run that wrote it.
+    //
+    // A LABEL NAMES A RUN, and finding which run produced the text Tom judged
+    // is the whole risk of the evals layer: a wrong edge poisons the corpus
+    // silently, and a wrong edge is worse than a missing one. It is therefore
+    // an EXACT TOKEN the producing run stamps on the row it wrote, never a
+    // time-window search over this table by subject. "The newest run with this
+    // todo before the ruling" is wrong on the ORDINARY case, not the exotic
+    // one — a prepare pass, a repair pass and a planner pass can all touch one
+    // todo in an hour with the same todoId, and only one of them wrote the
+    // text Tom read.
+    //
+    // ABSENT IS A SUPPORTED VALUE and is never inferred: an unregistered run —
+    // every laptop terminal, and everything written before runs were
+    // registered — carries no token, and a judgment about its output writes no
+    // label at all (convex/runLabels.ts records the unlinked act instead).
+    regToken: v.optional(v.string()),
+    envelopeKey: v.optional(v.string()), cutoverAt: v.optional(v.number()), abandonedAt: v.optional(v.number()),
+    // `totalLines` is the file's whole length, which only a reader that saw the
+    // WHOLE file can honestly write: the backlog importer, which parses a
+    // stored version and keeps none of its rows, and the materialize job.
+    // `committedLine` stays "lines that are rows in the record", so the pair
+    // `committedLine < totalLines` is exactly "this run's rows are partial".
+    file: v.object({ path: v.string(), sourceHash: v.string(), storedHash: v.string(), bytes: v.number(), storedBytes: v.number(), committedLine: v.number(), committedPrefixSha256: v.string(), sidecarStoredHash: v.optional(v.string()), storeKey: v.optional(v.string()), incompleteTail: v.optional(v.boolean()), totalLines: v.optional(v.number()) }),
     ingestedAt: v.number(),
+    // Where this run's rows came from, when they were not written as the file
+    // grew. It lives on the RUN and not in the context row because a row's
+    // whole content is folded into its digest (worker/runs/ingest.mjs), so a
+    // materialize timestamp inside a row would change that row's digest on
+    // every open and collide with the landed twin. The fact belongs to the
+    // run, not to a line of its file.
+    rowsSource: v.optional(v.object({
+      from: v.literal("store"),
+      at: v.number(),
+      parserVersion: v.string(),
+      storeKey: v.string(),
+      rowsFromLine: v.number(),
+      rowsToLine: v.number(),
+      slices: v.number(),
+      droppedLines: v.number(),
+      // A closed vocabulary (convex/runs.ts MATERIALIZE_PARTIAL): what the
+      // stored version could not say, so the page names it instead of
+      // pretending the run opened whole.
+      partial: v.array(v.string()),
+    })),
+    // The instant this run's rows become evictable. PRESENT IF AND ONLY IF the
+    // rows are in the record: ingest sets it, eviction clears it. That one
+    // invariant keeps the nightly scan a bounded read of runs that actually
+    // have something to remove, and makes eviction idempotent for free — the
+    // last act of evicting a run is to take it out of this index.
+    rowsUntil: v.optional(v.number()),
+    // When eviction last removed this run's rows. The index row, the store key
+    // and every edge survive; only the transcript goes.
+    rowsEvictedAt: v.optional(v.number()),
   })
     // Point lookup on each ingest.
     .index("by_run_id", ["runId"])
     // runs.children reads one parent's direct children.
     .index("by_parent", ["parentRunId"])
+    // runs.children takes the earliest direct children without first taking
+    // an arbitrary creation-time subset.
+    .index("by_parent_and_started_at_and_run_id", ["parentRunId", "startedAt", "runId"])
     // A tree reader scans a root at every depth.
     .index("by_root_depth", ["rootRunId", "depth"])
     // The list filters root runs by host and starts in source order.
     .index("by_host_depth_started", ["host", "depth", "startedAt"])
     // Joins a run to the legacy session state row.
-    .index("by_session", ["sessionId"]),
+    .index("by_session", ["sessionId"])
+    // runLabels.runForToken turns a row's producedByRunToken into the run that
+    // wrote it, on one point lookup inside a mutation's budget.
+    .index("by_reg_token", ["regToken"])
+    // The nightly manifest walks changed store versions in a stable order.
+    .index("by_ingested_at_and_run_id", ["ingestedAt", "runId"])
+    // The eviction scan. Because `rowsUntil` is absent on every index-only run,
+    // this index holds only runs with rows — which is what bounds the scan.
+    .index("by_rows_until", ["rowsUntil"])
+    // The weekly simplification pass's gather (convex/ttsSimplify.ts), which
+    // needs a time range over EVERY run in the window regardless of host and
+    // depth. by_host_depth_started will not do it: it wants equality on host
+    // and on depth before it can range on time, so the same read there is a
+    // loop over hosts times depths — and depth has no bound, so the loop's
+    // bound would be a guess.
+    .index("by_started", ["startedAt"]),
+
+  // Tom presses one control and a box job serves it: Convex holds no S3 reader
+  // credential and no second request signer, so opening an old run is a
+  // request the box picks up, not an action reading the bucket. THE QUEUE IS
+  // DRAINED BY ANSWERS, NOT BY ATTEMPTS — a request the box cannot serve is
+  // written `failed` with a fixed reason, or one unreachable object takes the
+  // head of the queue forever and nothing behind it is ever served.
+  runMaterializeRequests: defineTable({
+    runId: v.string(),
+    requestedBy: v.union(v.literal("tom"), v.literal("worker")),
+    requestedAt: v.number(),
+    status: v.union(v.literal("pending"), v.literal("served"), v.literal("failed")),
+    servedAt: v.optional(v.number()),
+    // What the box answered. `reason` is a fixed phrase, never a transcript excerpt.
+    reason: v.optional(v.string()),
+    rowsIngested: v.optional(v.number()),
+    fromLine: v.optional(v.number()),
+    toLine: v.optional(v.number()),
+    slice: v.number(), // 1-based; a continuation of the same run carries the next number
+  })
+    // The server takes the oldest pending request; the page reads one run's latest.
+    .index("by_status_requestedAt", ["status", "requestedAt"])
+    .index("by_run_requestedAt", ["runId", "requestedAt"]),
+
+  // One immutable row per verified store version. A growing run can produce
+  // several versions between nightly writes, so the mutable runs.file field
+  // cannot be the manifest's source without losing those intermediate facts.
+  runFileVersions: defineTable({
+    runId: v.string(), runner: v.union(v.literal("claude"), v.literal("codex")),
+    host: v.union(v.literal("laptop"), v.literal("box")), threadId: v.string(),
+    depth: v.number(), parentRunId: v.optional(v.string()),
+    fileVersion: v.string(), storeKey: v.string(), sourceHash: v.string(),
+    rawBytes: v.number(), storedBytes: v.number(), parserVersion: v.string(),
+    runtimeVersion: v.optional(v.string()), startedAt: v.number(), lastLineAt: v.number(),
+    at: v.number(),
+  })
+    // Ingest retries identify the already-recorded immutable version.
+    .index("by_run_id_and_file_version", ["runId", "fileVersion"])
+    // The manifest checkpoint is the full ordered tuple, so equal-millisecond
+    // versions resume after the exact last line already appended.
+    .index("by_at_and_run_id_and_file_version", ["at", "runId", "fileVersion"]),
 
   // Labels are events: a run can receive several judgments from distinct
   // channels, so this is deliberately not a mutable field on runs.
   runLabels: defineTable({
     runId: v.string(), rowSpan: v.optional(v.object({ seqStart: v.number(), seqEnd: v.number() })),
     source: v.union(v.literal("ruling"), v.literal("objection"), v.literal("session-reply"), v.literal("digest-reaction")),
-    actor: v.string(), polarity: v.union(v.literal("good"), v.literal("bad"), v.literal("mixed"), v.literal("neutral")), meaning: v.string(), judgment: v.boolean(), ref: v.optional(v.string()), at: v.number(),
+    // Always "tom". The writer refuses any other value: a label is what TOM
+    // did about a run's output, and an agent writing a label about another
+    // agent's output would put an unreviewed verdict into the corpus the
+    // golden set is mined from — the one thing the evals layer exists to
+    // avoid. A non-Tom actor, if it is ever wanted, is a ruling of his.
+    actor: v.string(), polarity: v.union(v.literal("good"), v.literal("bad"), v.literal("mixed"), v.literal("neutral")),
+    // Plain present-tense text with no id, date, quote mark or citation in it —
+    // the two-records rule, applied here because `meaning` is read on the run
+    // page and becomes an eval case's rubric. The ids live in `ref` and in the
+    // row's own fields.
+    meaning: v.string(), judgment: v.boolean(),
+    // REQUIRED, and narrowed from optional deliberately. Every label has one
+    // act behind it and idempotency needs that act's key: Slack delivers at
+    // least once, and a ruling written twice by two doors must make ONE label.
+    // Narrowing a field is normally refused while a writer exists — this table
+    // had no writer and no row when the narrowing was made, so it was free.
+    ref: v.string(), at: v.number(),
   })
     // The run page reads Tom's words oldest first.
     .index("by_run_at", ["runId", "at"])
     // Eval extraction reads a source's labels over time.
-    .index("by_source_at", ["source", "at"]),
+    .index("by_source_at", ["source", "at"])
+    // Idempotency on the act, and the point lookup a removed reaction deletes
+    // through.
+    .index("by_ref", ["ref"]),
 
   // The live tail: ONE row per session, ≤ ~16KB text by construction.
   claudeStreamBuf: defineTable({

@@ -177,14 +177,34 @@ async function writeLayerOf(dir) {
   // and Convex's timeout posts the template.
   const { assemblePrelude } = await loadPrelude();
   const prelude = assemblePrelude({ wikitom: dir, commit: "HEAD", layers: ["write"] });
-  return `MODEL-OF-TOM FILES (WikiTom commit ${prelude.commit}) — HOW TO WRITE TO TOM\n\n${prelude.layers.write}`;
+  return {
+    text: `MODEL-OF-TOM FILES (WikiTom commit ${prelude.commit}) — HOW TO WRITE TO TOM\n\n${prelude.layers.write}`,
+    commit: prelude.commit,
+  };
 }
 
 async function writeOne(env, request, writeLayer, { dryRun }) {
   let complaints = [];
   for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const prompt = draftPrompt(writeLayer, request, complaints);
-    const answer = runClaude(prompt, { model: MODEL, timeoutMs: TIMEOUT_MS, maxTurns: 2 });
+    const prompt = draftPrompt(writeLayer.text, request, complaints);
+    // A FRESH RECEIPT PER ATTEMPT. The second attempt is a second run, and the
+    // token that matters is the one whose text was accepted — a receipt shared
+    // across the loop would name the first run for words the second wrote.
+    const receipt = {};
+    const answer = runClaude(prompt, {
+      model: MODEL,
+      timeoutMs: TIMEOUT_MS,
+      maxTurns: 2,
+      registration: {
+        origin: "cron:write-slack",
+        kind: "job",
+        layersKnown: true,
+        layersGiven: ["write"],
+        layersDenied: ["operate", "know"],
+        wikitomCommit: writeLayer.commit,
+      },
+      receipt,
+    });
     const draft = extractJsonObject(answer);
     if (dryRun) {
       console.log(JSON.stringify(draft, null, 2));
@@ -193,6 +213,9 @@ async function writeOne(env, request, writeLayer, { dryRun }) {
     const result = await convexFetch(env, "/tts/slack-draft", {
       requestId: request.requestId,
       draft,
+      // Sent only when there is one. It rides to the "digest-sent" row and is
+      // the edge an emoji on the morning follows back to this run.
+      ...(receipt.runToken ? { runToken: receipt.runToken } : {}),
     });
     if (result.accepted) {
       console.log(`[write-slack] ${request.requestId}: accepted on attempt ${attempt}`);

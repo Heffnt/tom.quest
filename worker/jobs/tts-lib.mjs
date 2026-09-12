@@ -9,7 +9,30 @@
 // into /opt/tts/ and cron runs them.
 
 import { execFileSync } from "node:child_process";
+import crypto from "node:crypto";
+import { existsSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { ENV_PATH, loadEnv as loadWorkerEnv } from "./worker-env.mjs";
+
+// Jobs run from worker/jobs in a checkout and are copied flat into /opt/tts on
+// the box. Keep one installed registration body at /opt/tts/runs while making
+// both import graphs explicit and deterministic.
+const registrationUrls = [
+  new URL("../runs/registration.mjs", import.meta.url),
+  new URL("./runs/registration.mjs", import.meta.url),
+];
+// Vitest's ESM transform can give a dependency a non-file import.meta URL.
+// The cwd candidates cover that test runner; ordinary Node always resolves
+// through the module-relative URLs above, independent of its cwd.
+const registrationFile = [
+  ...registrationUrls.flatMap((candidate) => candidate.protocol === "file:" ? [fileURLToPath(candidate)] : []),
+  path.resolve("worker/runs/registration.mjs"),
+  path.resolve("runs/registration.mjs"),
+].find((candidate) => existsSync(candidate));
+if (!registrationFile) throw new Error("run registration module is not installed");
+const { claimRegistration, writeRegistration } = await import(pathToFileURL(registrationFile).href);
 
 export { ENV_PATH };
 
@@ -463,6 +486,19 @@ export const CLAUDE_CONFIG_DIR = "/root/.claude-accounts/active";
 //              classify-shaped, high volume, cheap tier.
 //   timeNotes  reading one of Tom's time sentences into concrete actions —
 //              mechanical parsing; the tier here is flagged for Tom's ruling.
+//   simplify   the weekly simplification pass (worker/jobs/simplify.mjs, spec
+//              §23.9): one run a week that reads a deterministic facts block
+//              and may answer only with deletions. Fable, because judging what
+//              a system can lose is the hardest judgment the fleet makes, and
+//              because it is one call a week over a bounded prompt.
+//
+// `simplify` SPELLS THE ID IN FULL rather than using the `fable` alias the
+// session model list takes, so the model recorded on the run matches the row
+// in worker/runs/prices.mjs and this job's weekly cost is readable. It
+// duplicates one string with delegate.mjs's DELEGATE_MODEL deliberately:
+// MODELS is where "every spawn names its model" is enforced for jobs, and
+// reaching into the delegate's constant would tier two unrelated jobs
+// together.
 //
 // Model literals still live in nightly.mjs (LEARNING_MODEL), weekly.mjs
 // (WEEKLY_MODEL), delegate.mjs (DELEGATE_MODEL), write-slack.mjs (MODEL) and
@@ -473,6 +509,7 @@ export const MODELS = {
   codeBrief: "opus",
   triage: "claude-haiku-4-5-20251001",
   timeNotes: "claude-sonnet-5",
+  simplify: "claude-fable-5-1",
 };
 
 // Run headless Claude Code (`claude -p`) and return the model's ANSWER TEXT
@@ -496,9 +533,25 @@ export const MODELS = {
 // `model` maps to --model. EVERY CALLER PASSES ONE, from the MODELS table
 // above — omit it and the run silently takes the active account's default,
 // which is a fleet-wide setting no job should be tiered by.
+// `receipt` is an OUT-PARAMETER, and the one thing this function tells a
+// caller besides the answer text: pass `receipt: {}` alongside a registration
+// and the token this call spooled is written into it as `receipt.runToken`.
+//
+// WHY NOT A RICHER RETURN VALUE. Seven callers pass a registration today and
+// use the answer as a string (apply-time-notes, delegate, plan-graphs in three
+// places, poll-canvas, poll-gmail, write-slack); returning an object would
+// break every one of them at a line that still type-checks in plain JS.
+//
+// AND WHY NOT process.env.TTS_RUN_REG_TOKEN, which the job also has. That
+// variable is the token of the JOB'S OWN run, set by whatever launched the
+// cron. The text a door then posts for Tom was written by the CHILD run this
+// call spawns, which has its own token — so the job's variable names the wrong
+// run, and stamping it on the row would make exactly the wrong edge
+// convex/runLabels.ts is built to avoid. This is the token that names the run
+// that wrote the text.
 export function runClaude(
   prompt,
-  { cwd, timeoutMs, agentic = false, maxTurns, model, allowedTools } = {},
+  { cwd, timeoutMs, agentic = false, maxTurns, model, allowedTools, registration, receipt } = {},
 ) {
   const turns = maxTurns ?? (agentic ? 200 : 8);
   const args = ["-p", "--output-format", "json", "--max-turns", String(turns)];
@@ -515,10 +568,55 @@ export function runClaude(
     }
     args.push("--allowedTools", allowedTools.join(","));
   }
+  const childEnv = { ...process.env, CLAUDE_CONFIG_DIR };
+  let spooled = null;
+  if (registration !== undefined) {
+    const script = path.basename(process.argv[1] ?? "unknown.mjs");
+    const job = script.replace(/\.mjs$/i, "");
+    const stateDir = process.env.RUN_SWEEP_STATE_DIR
+      || (process.platform === "win32"
+        ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "tts", "runs")
+        : "/var/cache/tts/runs");
+    const layersKnown = registration.layersKnown === true;
+    spooled = writeRegistration({
+      spoolDir: process.env.TTS_RUN_REG_SPOOL || path.join(stateDir, "registration"),
+      writer: { file: `worker/jobs/${script}`, job },
+      registration: {
+        ...registration,
+        host: process.env.RUN_HOST === "box" || process.env.RUN_HOST === "laptop" ? process.env.RUN_HOST : null,
+        runner: "claude",
+        origin: registration.origin ?? `cron:${job}`,
+        kind: registration.kind ?? "job",
+        modelRequested: model ?? null,
+        effortRequested: null,
+        cwd: path.resolve(cwd ?? process.cwd()),
+        todoId: registration.todoId ?? null,
+        batchId: registration.batchId ?? null,
+        mergeKey: registration.mergeKey ?? null,
+        parentRunId: registration.parentRunId ?? process.env.TTS_RUN_PARENT_RUN_ID ?? null,
+        spawnedByToolUseId: registration.spawnedByToolUseId ?? null,
+        continuesRunId: registration.continuesRunId ?? null,
+        layersKnown,
+        layersGiven: layersKnown && Array.isArray(registration.layersGiven) ? registration.layersGiven : [],
+        layersDenied: layersKnown && Array.isArray(registration.layersDenied) ? registration.layersDenied : [],
+        skillsGranted: Array.isArray(registration.skillsGranted) ? registration.skillsGranted : [],
+        skillsRefused: Array.isArray(registration.skillsRefused) ? registration.skillsRefused : [],
+        tools: { allowed: allowedTools ?? null, denied: null },
+        hooksConfigured: ["SessionStart", "SessionEnd", "Stop", "SubagentStart", "SubagentStop"],
+        promptSha256: crypto.createHash("sha256").update(String(prompt)).digest("hex"),
+      },
+    });
+    childEnv.TTS_RUN_REG_TOKEN = spooled.token;
+    childEnv.TTS_RUN_REG_SPOOL = path.dirname(spooled.file);
+    // Filled BEFORE the child runs, not after it returns: a call that times out
+    // or throws still produced a registered run, and a caller that wants to
+    // report which run failed needs its token.
+    if (receipt !== undefined && receipt !== null) receipt.runToken = spooled.token;
+  }
   const stdout = execFileSync("claude", args, {
     input: prompt,
     cwd,
-    env: { ...process.env, CLAUDE_CONFIG_DIR },
+    env: childEnv,
     encoding: "utf8",
     maxBuffer: 32 * 1024 * 1024,
     timeout: timeoutMs ?? 10 * 60 * 1000,
@@ -530,15 +628,12 @@ export function runClaude(
   // that is a hard failure, not something to brace-extract garbage from
   // (review-caught). If stdout isn't JSON at all, treat it as the raw answer.
   let answerText = stdout;
+  let resultEnvelope = null;
   try {
     const envelope = JSON.parse(stdout);
     if (envelope && typeof envelope === "object" && envelope.type === "result") {
-      if (typeof envelope.result !== "string") {
-        throw new Error(
-          `claude returned an error envelope (subtype: ${envelope.subtype ?? "?"})`,
-        );
-      }
-      answerText = envelope.result;
+      resultEnvelope = envelope;
+      if (typeof envelope.result === "string") answerText = envelope.result;
     }
   } catch (err) {
     if (err instanceof SyntaxError) {
@@ -546,6 +641,21 @@ export function runClaude(
     } else {
       throw err;
     }
+  }
+  if (spooled && typeof resultEnvelope?.session_id === "string" && resultEnvelope.session_id) {
+    const project = path.resolve(cwd ?? process.cwd()).replaceAll("\\", "-").replaceAll("/", "-").replaceAll(":", "-");
+    const runFile = path.join(CLAUDE_CONFIG_DIR, "projects", project, `${resultEnvelope.session_id}.jsonl`);
+    claimRegistration({
+      spoolDir: path.dirname(spooled.file),
+      token: spooled.token,
+      runFile,
+      claim: { by: "launcher:runClaude", threadId: resultEnvelope.session_id, runFile, hookPayloadKeys: [] },
+    });
+  }
+  if (resultEnvelope && typeof resultEnvelope.result !== "string") {
+    throw new Error(
+      `claude returned an error envelope (subtype: ${resultEnvelope.subtype ?? "?"})`,
+    );
   }
   return answerText;
 }

@@ -224,6 +224,14 @@ async function main() {
   const answer = runClaude(prompt, {
     timeoutMs: 5 * 60 * 1000,
     model: MODELS.triage,
+    registration: {
+      origin: "cron:poll-gmail",
+      kind: "job",
+      layersKnown: false,
+      layersGiven: [],
+      layersDenied: [],
+      writingStandardSource: "/tts/capture-context",
+    },
   });
   const { verdicts } = extractJsonObject(answer);
   if (!Array.isArray(verdicts)) throw new Error("triage answer has no verdicts array");

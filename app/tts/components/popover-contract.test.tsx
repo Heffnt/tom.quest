@@ -93,9 +93,10 @@ import Composer from "@/app/sessions/components/composer";
 import ForkDialog from "@/app/sessions/components/fork-dialog";
 import ModelSelect from "@/app/sessions/components/model-select";
 import OverflowExpand from "@/app/sessions/components/overflow-expand";
-import SessionList from "@/app/sessions/components/session-list";
-import SessionView from "@/app/sessions/components/session-view";
-import Transcript from "@/app/sessions/components/transcript";
+import Run from "@/app/sessions/components/run";
+import RunList from "@/app/sessions/components/run-list";
+import RunRow from "@/app/sessions/components/run-row";
+import RunRows from "@/app/sessions/components/run-rows";
 
 const APP = join(__dirname, "..", "..");
 const TTS = join(APP, "tts");
@@ -305,6 +306,59 @@ const SESSION = {
   statusChangedAt: NOW,
 };
 
+// One row for the rows region and the row itself. A `tool-call`, because that
+// is the kind whose compact line IS a control: it opens to full and then to
+// raw, and a kind that is full already (user, assistant-text) would put no
+// expand control on screen at all.
+const ROW = {
+  _id: "m1",
+  _creationTime: 0,
+  sessionId: "s1",
+  seq: 1,
+  kind: "tool-call",
+  content: {
+    toolName: "Read",
+    toolUseId: "tu1",
+    input: { file_path: "app/sessions/components/run.tsx" },
+  },
+  createdAt: NOW,
+};
+
+// An old run: an index row with a stored version and no rows, which is the
+// one posture that draws the store control. It carries no sessionId, so the
+// same fixture session above does not make it live — a live run's outcome
+// block, and the line inside it, render for nothing.
+const RUN = {
+  _id: "runs|old",
+  _creationTime: 0,
+  runId: "claude:box:old-thread",
+  rootRunId: "claude:box:old-thread",
+  depth: 0,
+  linkKnown: true,
+  origin: "nightly-learning",
+  host: "box",
+  runner: "claude",
+  parserVersion: "runs-parser-1",
+  kind: "worker",
+  status: "ended",
+  model: "opus",
+  startedAt: NOW,
+  lastLineAt: NOW,
+  attachments: [],
+  file: {
+    path: "/srv/runs/old.jsonl",
+    sourceHash: "a".repeat(64),
+    storedHash: "d".repeat(64),
+    bytes: 8192,
+    storedBytes: 2048,
+    committedLine: 0,
+    committedPrefixSha256: "e".repeat(64),
+    storeKey: "runs/claude/box/old-thread/dddd",
+    totalLines: 412,
+  },
+  ingestedAt: NOW,
+};
+
 const AUTO_CONFIG = {
   enabled: false,
   defaultModel: "gpt-5.6-sol",
@@ -322,6 +376,8 @@ function load() {
     [getFunctionName(api.claudeSessions.getMessages)]: [],
     [getFunctionName(api.claudeSessions.getStreamBuf)]: null,
     [getFunctionName(api.claudeSessions.getPendingInbound)]: [],
+    [getFunctionName(api.runs.get)]: RUN,
+    [getFunctionName(api.runs.materializeStatus)]: null,
     [getFunctionName(api.tts.listTodos)]: [TODO],
     [getFunctionName(api.tts.listBatches)]: [BATCH],
     [getFunctionName(api.tts.listMirror)]: [MIRROR],
@@ -483,30 +539,76 @@ const CASES: { file: string; render: () => void }[] = [
       ),
   },
   {
-    file: "app/sessions/components/session-list.tsx",
+    file: "app/sessions/components/run-list.tsx",
     render: () =>
       void render(
-        <SessionList sessions={[SESSION as never]} now={NOW} onOpen={noop} />,
-      ),
-  },
-  {
-    file: "app/sessions/components/session-view.tsx",
-    render: () =>
-      void render(
-        <SessionView
-          sessionId={"s1" as never}
+        <RunList
+          sessions={[SESSION as never]}
           now={NOW}
-          daemonStale={false}
-          daemonLastSeenAt={NOW}
-          onBack={noop}
-          onOpen={noop}
+          onOpenSession={noop}
+          onOpenRun={noop}
         />,
       ),
   },
   {
-    file: "app/sessions/components/transcript.tsx",
+    file: "app/sessions/components/run-row.tsx",
+    // source="run", so the raw level names runs.rows rather than the session
+    // reader. The compact line is the control; pressing it is what proves the
+    // three levels fire nothing on the backend.
+    render: () => void render(<RunRow row={ROW as never} source="run" />),
+  },
+  {
+    file: "app/sessions/components/run-rows.tsx",
+    // CanLoadMore, so its one control — "load earlier rows" — is on screen.
+    // source="session" is the branch that has one: a run pages the other way
+    // and the same button reads "load later rows".
     render: () =>
-      void render(<Transcript sessionId={"s1" as never} sessionStatus="running" />),
+      void render(
+        <RunRows
+          rows={[ROW as never]}
+          pageStatus="CanLoadMore"
+          loadMore={noop}
+          source="session"
+          depth={0}
+          runKey="s1"
+        />,
+      ),
+  },
+  {
+    file: "app/sessions/components/run.tsx",
+    // depth 0 and a session id, because that is the only posture that draws
+    // controls at all: the header's rename ⓘ and model select, the rows, and
+    // the composer. daemonStale, so the composer's "Force close" comes with
+    // them. The run row itself is left undefined (runs.get answers nothing) —
+    // a session whose runs row has not landed is the common case, and the
+    // header reads off the session either way.
+    render: () => {
+      render(
+        <Run
+          sessionId={"s1" as never}
+          depth={0}
+          now={NOW}
+          daemonStale
+          daemonLastSeenAt={NOW}
+          onBack={noop}
+          onOpenRun={noop}
+          onOpenSession={noop}
+        />,
+      );
+      // The same component at the other posture, because the control that
+      // opens an old run from the store appears in neither of the live
+      // session's states: it needs a run that is not live, whose rows are
+      // outside the window, and whose file has a stored version.
+      render(
+        <Run
+          runId={RUN.runId}
+          depth={0}
+          now={NOW}
+          onOpenRun={noop}
+          onOpenSession={noop}
+        />,
+      );
+    },
   },
 ];
 
@@ -628,7 +730,28 @@ describe("every mutation the screens fire is named by a popover", () => {
     expect(real.size).toBeGreaterThan(5);
   });
 
+  /**
+   * Mutations no control fires, and the reason each one is not a control's
+   * effect. Nothing can name a call nothing is attached to, so these are
+   * exempt from THIS direction and from nothing else — direction 1 still
+   * presses every control on both screens, so the day one of these grows a
+   * button, that button fails there for having no popover.
+   */
+  const NO_CONTROL = new Map([
+    [
+      "runs.markOpened",
+      "the page marking the run it drew as read, on arrival, so the 30-day row window moves forward",
+    ],
+  ]);
+
+  it("exempts only calls the screens still fire", () => {
+    // A stale exemption would quietly excuse a control added later under the
+    // same name.
+    expect([...NO_CONTROL.keys()].filter((c) => !firedInSource.has(c))).toEqual([]);
+  });
+
   for (const [call, where] of [...firedInSource].sort()) {
+    if (NO_CONTROL.has(call)) continue;
     it(`${call} (fired by ${where.join(", ")}) has a popover naming it`, () => {
       expect(named.has(call)).toBe(true);
     });

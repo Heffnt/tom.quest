@@ -7,6 +7,10 @@
 // ones the two old spellings disagreed about, so they are what a re-split
 // would break first.
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -359,4 +363,49 @@ describe("runClaude allowedTools", () => {
     expect(() => runClaude("p", { allowedTools: ["Read", ""] })).toThrow(/allowedTools/);
     expect(() => runClaude("p", { allowedTools: [1] })).toThrow(/allowedTools/);
   });
+});
+
+// The token of the CHILD run a call spawns, handed back to the caller. It is
+// what a door stamps on the row it stores as producedByRunToken, and it is the
+// one edge convex/runLabels.ts turns into a label's runId. The job's own
+// process.env.TTS_RUN_REG_TOKEN is a DIFFERENT run and would be the wrong edge.
+// BOTH OF THESE SPAWN, and both expect the spawn to fail — that IS the case
+// being made: the receipt is filled before the child is reached. Neither
+// assertion waits on the child, but execFileSync does, and the spawn's own cost
+// is unbounded under a full-suite run; the five-second default made the first
+// of them flaky. The one-millisecond child budget kills it as soon as it
+// exists, and the generous test timeout covers the spawn itself.
+const SPAWN_TIMEOUT_MS = 30_000;
+
+describe("runClaude receipt", () => {
+  it("fills the token before the child runs, so a failed call still names its run", () => {
+    const spool = fs.mkdtempSync(path.join(os.tmpdir(), "tts-lib-receipt-"));
+    const previous = process.env.TTS_RUN_REG_SPOOL;
+    process.env.TTS_RUN_REG_SPOOL = spool;
+    const receipt = {};
+    try {
+      // The token is already written by the time the child is reached, which is
+      // why a caller can report WHICH run timed out rather than only that one
+      // did.
+      runClaude("p", { model: "haiku", timeoutMs: 1, registration: { layersKnown: false }, receipt });
+    } catch {
+      // Expected: no `claude` on the test machine's PATH, or the 1 ms budget.
+    } finally {
+      if (previous === undefined) delete process.env.TTS_RUN_REG_SPOOL;
+      else process.env.TTS_RUN_REG_SPOOL = previous;
+      fs.rmSync(spool, { recursive: true, force: true });
+    }
+    expect(typeof receipt.runToken).toBe("string");
+    expect(receipt.runToken.length).toBeGreaterThan(0);
+  }, SPAWN_TIMEOUT_MS);
+
+  it("writes nothing into a receipt when no registration was asked for", () => {
+    const receipt = {};
+    try {
+      runClaude("p", { model: "haiku", timeoutMs: 1, receipt });
+    } catch {
+      // Same spawn failure; the assertion is about the receipt.
+    }
+    expect(receipt.runToken).toBeUndefined();
+  }, SPAWN_TIMEOUT_MS);
 });

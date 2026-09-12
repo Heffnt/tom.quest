@@ -6,10 +6,9 @@
 #   git clone https://github.com/<owner>/tom.quest && cd tom.quest
 #   bash worker/setup.sh
 #
-# THE NO-STATE RULE: the Jarvis Box owns no durable state. Everything that matters
-# lives in Convex; the only local file with any memory at all is the Slack
-# poll cursor under /var/lib/tts/ (losing it merely re-captures up to 24h of
-# #dump messages as duplicates Tom can archive). Therefore this ONE script,
+# THE NO-STATE RULE: the Jarvis Box owns no durable state. Convex holds the run
+# index and an external object store holds verified run bytes; local cursors,
+# queues and run-file caches are recoverable. Therefore this ONE script,
 # plus filling the env file and logging in the two Claude accounts, is the
 # complete rebuild procedure. It is idempotent — safe to re-run any time,
 # including to roll out updated job scripts after a git pull.
@@ -152,14 +151,29 @@ echo "== [6/10] directories =="
 # /root/.claude-accounts/{gmail,wpi} — one Claude Code config dir per Max
 #     account; an "active" symlink (managed by tts-account) picks which one
 #     the jobs use.
-mkdir -p /opt/tts /var/lib/tts /var/cache/tts /etc/tts /var/log/tts \
-  /root/.claude-accounts/gmail /root/.claude-accounts/wpi
+mkdir -p /opt/tts /opt/tts/runs /opt/tts/jobs /var/lib/tts /var/cache/tts/runs /etc/tts /var/log/tts \
+  /root/.claude-accounts/gmail /root/.claude-accounts/wpi /root/.codex
 
 echo "== [7/10] install worker files =="
 # Job scripts (plain Node ESM, zero npm deps — a copy is a deploy).
 cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
+# Registration-aware jobs are copied flat, while the shared run machinery is
+# installed once below. tts-lib.mjs explicitly resolves both the checkout and
+# flat install layouts.
+cp "$WORKER_DIR"/runs/*.mjs /opt/tts/runs/
+# EVERY `../jobs/<file>` A runs/ MODULE IMPORTS NEEDS A LINE HERE. The runs
+# modules land at /opt/tts/runs/, so that specifier resolves to
+# /opt/tts/jobs/<file> — a directory the flat `cp .../jobs/*.mjs /opt/tts/`
+# above never fills. Node ESM resolves a static import at module load, so a
+# missing one is not a degraded feature: the file cannot be imported at all,
+# and the cron entry that runs it fails with ERR_MODULE_NOT_FOUND every tick.
+# Two imports today: config.mjs → worker-env.mjs, backlog.mjs →
+# session-archive.mjs.
+cp "$WORKER_DIR"/jobs/worker-env.mjs /opt/tts/jobs/worker-env.mjs
+cp "$WORKER_DIR"/jobs/session-archive.mjs /opt/tts/jobs/session-archive.mjs
 mkdir -p /opt/tts/scripts /opt/tts/worker/jobs
 cp "$WORKER_DIR"/../scripts/session-start-hook.mjs /opt/tts/scripts/session-start-hook.mjs
+cp "$WORKER_DIR"/../scripts/run-hook.mjs /opt/tts/scripts/run-hook.mjs
 cp "$WORKER_DIR"/../scripts/prelude.mjs /opt/tts/scripts/prelude.mjs
 # prelude.mjs's own import graph has to land in the same shape it has in the
 # repo: the layer table beside it, and the relevance body one directory over
@@ -171,6 +185,15 @@ cp "$WORKER_DIR"/jobs/context-relevance.mjs /opt/tts/worker/jobs/context-relevan
 # evals.mjs imports gate() from it so the box stamps a run with the SAME rule
 # the check applies, and there is one body of what a regression is.
 cp "$WORKER_DIR"/../scripts/evals-check.mjs /opt/tts/evals-check.mjs
+# The mechanical half of the writing standard, beside it for the same reason.
+# evals.mjs runs failuresFor() as a deterministic check BEFORE calling the
+# judge: a text that broke a rule Tom wrote down is not a matter of reading,
+# and the judge is the expensive half. Without this copy the box silently ran
+# no rules at all and the run still said "pass" — the runner treats an absent
+# file as "no rules ran" so a checkout without it is not a failure, which is
+# exactly why the copy has to be here rather than assumed. Its only imports
+# are node builtins, so one file is the whole of it.
+cp "$WORKER_DIR"/../scripts/check-writing-standard.mjs /opt/tts/check-writing-standard.mjs
 cp "$WORKER_DIR"/jobs/markdown-sections.mjs /opt/tts/worker/jobs/markdown-sections.mjs
 # The Codex wrapper is a repo script, not a job, but sessions need it from ANY
 # repo — including checkouts that predate it, and repos that are not tom.quest
@@ -180,15 +203,21 @@ cp "$WORKER_DIR"/jobs/markdown-sections.mjs /opt/tts/worker/jobs/markdown-sectio
 cp "$WORKER_DIR"/../scripts/codex-run.mjs /opt/tts/codex-run.mjs
 # The box session opener already carries all three layers; this covers Claude
 # subagents, which read CLAUDE.md but not opener.
-for CLAUDE_ACCOUNT_DIR in /root/.claude-accounts/gmail /root/.claude-accounts/wpi; do
-  printf '%s\n' '@/root/wikitom/model-of-tom/agent-rules.md' > "$CLAUDE_ACCOUNT_DIR/CLAUDE.md"
-  CLAUDE_ACCOUNT_DIR="$CLAUDE_ACCOUNT_DIR" node - <<'NODE'
+for HOOK_CONFIG_DIR in /root/.claude-accounts/gmail /root/.claude-accounts/wpi /root/.codex; do
+  INCLUDE_CONTEXT_HOOK=0
+  if [ "$HOOK_CONFIG_DIR" != /root/.codex ]; then
+    printf '%s\n' '@/root/wikitom/model-of-tom/agent-rules.md' > "$HOOK_CONFIG_DIR/CLAUDE.md"
+    INCLUDE_CONTEXT_HOOK=1
+  fi
+  HOOK_CONFIG_DIR="$HOOK_CONFIG_DIR" INCLUDE_CONTEXT_HOOK="$INCLUDE_CONTEXT_HOOK" node - <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 
-const directory = process.env.CLAUDE_ACCOUNT_DIR;
-const settingsPath = path.join(directory, "settings.json");
-const command = "node /opt/tts/scripts/session-start-hook.mjs";
+const directory = process.env.HOOK_CONFIG_DIR;
+const settingsPath = path.join(directory, directory.endsWith(".codex") ? "hooks.json" : "settings.json");
+const contextCommand = "node /opt/tts/scripts/session-start-hook.mjs";
+const runCommand = "node /opt/tts/scripts/run-hook.mjs";
+const events = ["SessionStart", "SubagentStart", "Stop", "SessionEnd", "SubagentStop"];
 let settings = {};
 if (fs.existsSync(settingsPath)) settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
 if (!settings || Array.isArray(settings) || typeof settings !== "object") settings = {};
@@ -196,16 +225,27 @@ if (!settings.hooks || Array.isArray(settings.hooks) || typeof settings.hooks !=
 
 const legacy = (hook) =>
   typeof hook?.command === "string" && /\bcat\s+.*[\\/]WikiTom[\\/]AGENTS\.md\b/i.test(hook.command);
-const managed = (hook) => typeof hook?.command === "string" && hook.command === command;
-const sessionStart = Array.isArray(settings.hooks.SessionStart) ? settings.hooks.SessionStart.flatMap((entry) => {
+const without = (entries, command) => Array.isArray(entries) ? entries.flatMap((entry) => {
+  const managed = (hook) => typeof hook?.command === "string" && hook.command === command;
   if (!entry || typeof entry !== "object") return [entry];
   if (legacy(entry) || managed(entry)) return [];
   if (!Array.isArray(entry.hooks)) return [entry];
   const hooks = entry.hooks.filter((hook) => !legacy(hook) && !managed(hook));
   return hooks.length === 0 ? [] : [{ ...entry, hooks }];
 }) : [];
-sessionStart.push({ matcher: "startup|resume|compact", hooks: [{ type: "command", command }] });
-settings.hooks.SessionStart = sessionStart;
+if (process.env.INCLUDE_CONTEXT_HOOK === "1") {
+  const sessionStart = without(settings.hooks.SessionStart, contextCommand);
+  sessionStart.push({ matcher: "startup|resume|compact", hooks: [{ type: "command", command: contextCommand }] });
+  settings.hooks.SessionStart = sessionStart;
+}
+for (const event of events) {
+  const entries = without(settings.hooks[event], runCommand);
+  entries.push({
+    ...(event === "SessionStart" ? { matcher: "startup|resume|compact" } : {}),
+    hooks: [{ type: "command", command: runCommand, timeout: 5 }],
+  });
+  settings.hooks[event] = entries;
+}
 fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
 NODE
 done
@@ -416,6 +456,14 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # (worker/jobs/weekly.mjs).
 0 8,9 * * 5 root /usr/bin/flock -n /var/lock/tts-weekly.lock /usr/bin/node /opt/tts/weekly.mjs >> /var/log/tts/weekly.log 2>&1
 
+# THE WEEKLY SIMPLIFICATION PASS (uae phase 8; spec §23.9) at 4:30 a.m. New
+# York on Fridays, half an hour after the weekly agenda job: the blast radius
+# of every rule, skill, schema field and gate check over four weeks of
+# recorded runs, one Fable run that may only propose removals, one
+# #tts-decisions message per proposal. Both UTC slots on one line; the job's
+# own NY-hour guard keeps one (worker/jobs/simplify.mjs).
+30 8,9 * * 5 root /usr/bin/flock -n /var/lock/tts-simplify.lock /usr/bin/node /opt/tts/simplify.mjs >> /var/log/tts/simplify.log 2>&1
+
 # Evals. The box POLLS: it has no inbound door, so a GitHub Action posts a
 # request to Convex and this tick picks up the oldest unanswered one and runs
 # it. One request per pass, so a tick is bounded.
@@ -471,6 +519,29 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # flock because one upload can outlast a tick. Its log is the runbook — a
 # file named there run after run needs a hand.
 23 * * * * root /usr/bin/flock -n /var/lock/tts-reingest-overflow.lock /usr/bin/node /opt/tts/session-host/reingest-overflow.mjs >> /var/log/tts/reingest-overflow.log 2>&1
+
+# Run files are swept incrementally every two minutes, with one idle-hour full
+# recovery walk. Convex compares the shadow daemon/file rows every ten minutes.
+# The sweep takes the odd minutes: apply-time-notes and write-slack already own
+# the even ones, and a sweep that reads two CLI trees should not share a tick
+# with them. The comparison is offset off poll-gmail's ten-minute mark.
+1-59/2 * * * * root /usr/bin/flock -n /var/lock/tts-runs-sweep.lock /usr/bin/node /opt/tts/runs/sweep.mjs >> /var/log/tts/runs-sweep.log 2>&1
+37 3 * * * root /usr/bin/flock -n /var/lock/tts-runs-sweep-full.lock /usr/bin/node /opt/tts/runs/sweep.mjs --full >> /var/log/tts/runs-sweep.log 2>&1
+5-59/10 * * * * root /usr/bin/flock -n /var/lock/tts-runs-compare.lock /usr/bin/node /opt/tts/runs-compare.mjs >> /var/log/tts/runs-compare.log 2>&1
+
+# The backlog import is a one-time chore with nobody waiting on it: hourly at
+# :07, not every two minutes, so a ten-minute pass can never overlap itself and
+# the box is left alone in between. It has its own lock and never shares the
+# sweeper's — a live sweep must never wait behind an old one. It is inert until
+# the bucket exists (it refuses a local store) and it deletes nothing.
+# Build the work list once by hand first: node /opt/tts/runs/backlog.mjs --build-list
+7 * * * * root /usr/bin/flock -n /var/lock/tts-runs-backlog.lock /usr/bin/node /opt/tts/runs/backlog.mjs --run >> /var/log/tts/runs-backlog.log 2>&1
+
+# Opening an old run has a PERSON waiting at the other end, so this one runs
+# every minute and exits immediately when the queue is empty. One request per
+# tick keeps a tick bounded; a request the box cannot serve is answered failed,
+# because a queue is drained by answers, not by attempts.
+* * * * * root /usr/bin/flock -n /var/lock/tts-runs-materialize.lock /usr/bin/node /opt/tts/runs/materialize.mjs --serve >> /var/log/tts/runs-materialize.log 2>&1
 
 # Log hygiene: truncate the TTS logs on the 1st of each month. Deliberately
 # crude — these logs are debugging convenience, not state, and the Jarvis Box keeps

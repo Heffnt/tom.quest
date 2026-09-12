@@ -212,18 +212,19 @@ function writeLocalCount(io, ask, count) {
  *  assembler that is PRESENT and refuses a layer is evidence the delegate is
  *  missing its rules, not permission to decide from the writing layer alone. */
 function promptLayers(io, worktree) {
-  if (!io.existsSync(io.preludeScript)) return { layers: null, missing: true, error: null };
+  if (!io.existsSync(io.preludeScript)) return { layers: null, commit: null, missing: true, error: null };
   try {
     const text = io.execFileSync(process.execPath, [
       io.preludeScript, "--wikitom", worktree, "--layers", DELEGATE_LAYERS.join(","), "--json",
     ], { encoding: "utf8" });
-    const layers = JSON.parse(text).layers;
+    const assembled = JSON.parse(text);
+    const layers = assembled.layers;
     if (!DELEGATE_LAYERS.every((name) => typeof layers?.[name] === "string" && layers[name].trim())) {
       throw new Error("prelude output omitted a delegate layer");
     }
-    return { layers, missing: false, error: null };
+    return { layers, commit: assembled.commit ?? null, missing: false, error: null };
   } catch (error) {
-    return { layers: null, missing: false, error };
+    return { layers: null, commit: null, missing: false, error };
   }
 }
 
@@ -329,6 +330,7 @@ export async function askDelegate(ask, suppliedIo = {}) {
             { ...ask, subject: ask.subject, priorObjections: context.priorObjections ?? [] },
             { layers, narrowList: state.narrowList },
           );
+          const promptSha256 = crypto.createHash("sha256").update(prompt).digest("hex");
           const started = io.now();
           try {
             answer = parseAnswer(
@@ -342,6 +344,16 @@ export async function askDelegate(ask, suppliedIo = {}) {
                 maxTurns: state.delegate?.maxTurns ?? DELEGATE_MAX_TURNS,
                 timeoutMs: state.delegate?.timeoutMs ?? DELEGATE_TIMEOUT_MS,
                 allowedTools: ["Read", "Glob", "Grep"],
+                registration: {
+                  origin: "cron:delegate",
+                  kind: "delegate",
+                  ...(typeof ask.todoId === "string" ? { todoId: ask.todoId } : {}),
+                  layersKnown: !fallback,
+                  layersGiven: fallback ? [] : [...DELEGATE_LAYERS],
+                  layersDenied: [],
+                  promptSha256,
+                  ...(fallback ? { writingStandardSource: "/tts/batch-context" } : { wikitomCommit: assembled.commit }),
+                },
               }),
             );
           } catch (error) {
@@ -350,7 +362,7 @@ export async function askDelegate(ask, suppliedIo = {}) {
           ms = Math.max(0, io.now() - started);
           promptSha = fallback
             ? "prelude-fallback"
-            : crypto.createHash("sha256").update(prompt).digest("hex").slice(0, 8);
+            : promptSha256.slice(0, 8);
         }
       }
     } catch (error) {

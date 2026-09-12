@@ -39,6 +39,9 @@ describe("scrubbedEnv", () => {
     ["PATH", "/usr/bin"],
     ["HOME", "/root"],
     ["CLAUDE_CONFIG_DIR", "/root/.claude-accounts/active"],
+    ["TTS_RUN_REG_TOKEN", "registration-token"],
+    ["TTS_RUN_REG_SPOOL", "/var/cache/tts/runs/registration"],
+    ["TTS_RUN_PARENT_RUN_ID", "claude:box:parent"],
   ]);
 
   for (const name of SECRETS) {
@@ -60,6 +63,13 @@ describe("scrubbedEnv", () => {
     expect(out.PATH).toBe("/usr/bin");
     expect(out.HOME).toBe("/root");
     expect(out.CLAUDE_CONFIG_DIR).toBe("/root/.claude-accounts/active");
+    expect(out.TTS_RUN_REG_TOKEN).toBe("registration-token");
+    expect(out.TTS_RUN_REG_SPOOL).toBe("/var/cache/tts/runs/registration");
+    expect(out.TTS_RUN_PARENT_RUN_ID).toBe("claude:box:parent");
+    const shell = scrubbedEnv({ source, keepTtsKey: true });
+    expect(shell.TTS_RUN_REG_TOKEN).toBe("registration-token");
+    expect(shell.TTS_RUN_REG_SPOOL).toBe("/var/cache/tts/runs/registration");
+    expect(shell.TTS_RUN_PARENT_RUN_ID).toBe("claude:box:parent");
   });
 
   it("returns a copy — the daemon's own env is untouched", () => {
@@ -87,6 +97,22 @@ describe("wiring: every spawn goes through scrubbedEnv", () => {
   it("the session shell keeps ONLY the TTS worker key", () => {
     const startQuery = sessionSource.slice(sessionSource.indexOf("startQuery({ resume } = {})"));
     expect(startQuery.slice(0, 2000)).toMatch(/const inheritedEnv = scrubbedEnv\(\{ keepTtsKey: true \}\)/);
+  });
+
+  it("the daemon registration records only context it actually receives", () => {
+    const start = sessionSource.indexOf("this.runRegistration = writeRegistration({");
+    const registration = sessionSource.slice(start, sessionSource.indexOf("if (!knownModel", start));
+    expect(registration).toContain('kind: this.mode === "autonomous" ? "job" : "session"');
+    expect(registration).toContain("layersKnown: false");
+    expect(registration).not.toMatch(/\b(?:todoId|batchId|mergeKey|parentRunId|spawnedByToolUseId|continuesRunId)\s*:/);
+  });
+
+  it("enables file-owned rows only when it can send a valid run id", () => {
+    const init = sessionSource.slice(sessionSource.indexOf('if (m.subtype === "init")'));
+    const boundary = init.slice(0, init.indexOf('if (this.family === "claude"'));
+    expect(boundary).toMatch(
+      /if \(\(host === "box" \|\| host === "laptop"\)[\s\S]*?this\.runIdToSend[\s\S]*?ROWS_FROM_FILES[\s\S]*?this\.rowsFromFilesToSend = true;/,
+    );
   });
 
   it("the Bash classifier spawn is scrubbed, TTS key included", () => {
