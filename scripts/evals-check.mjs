@@ -36,19 +36,18 @@ export const POLL_TIMEOUT_MS = 75 * 60 * 1000;
 /**
  * The paths that make an evals run worth asking for, in either repo.
  *
- * THIS LIST AND .github/workflows/evals.yml's `paths:` ARE ONE FACT SPELLED
- * TWICE, and they had already drifted: the workflow fired on the `**` forms of
- * AGENTS.md and CLAUDE.md, convex/ttsCompose.ts, convex/ttsDigest.ts,
- * worker/jobs/delegate.mjs and worker/bin/tts-ask, which this list had never
- * heard of, while this list watched model-of-tom/**, which the workflow did
- * not fire on. They are reconciled here to the UNION of the two, in one order,
- * and scripts/evals-check.test.mjs pins them equal — so the next divergence is
- * a red test naming the path, not a run nobody noticed was missing.
+ * THE ONLY SPELLING OF THAT LIST. It used to be spelled twice — here and in
+ * .github/workflows/evals.yml's `paths:` — and the two drifted apart in both
+ * directions before they were reconciled to their union. The workflow's copy
+ * is now GONE: it fires on every pull request, and this list is what decides,
+ * inside the check, whether a branch is affected at all. A list that exists
+ * once cannot drift, and the answer is recorded on a row instead of being a
+ * workflow that silently did not run.
  *
- * UNION IS THE SAFE DIRECTION. A watched path that fires an unnecessary run
- * costs one run. An unwatched path that changes the context Tom's jobs read
- * changes his outputs with nothing scoring them, which is the exact failure
- * the whole gate exists to prevent.
+ * UNION IS THE SAFE DIRECTION, and the reconciliation stands. A watched path
+ * that fires an unnecessary run costs one run. An unwatched path that changes
+ * the context Tom's jobs read changes his outputs with nothing scoring them,
+ * which is the exact failure the whole gate exists to prevent.
  *
  * NOTHING NEW IS WATCHED BEYOND THAT RECONCILIATION. evals/golden/runs/** is
  * already inside evals/golden/**, and the harness's own files (this one,
@@ -102,6 +101,40 @@ export function matchesWatched(path) {
   if (typeof path !== "string" || path === "") return false;
   const normalised = path.replace(/\\/g, "/").replace(/^\.\//, "");
   return WATCHED_PATHS.some((pattern) => matchesPattern(normalised, pattern));
+}
+
+/**
+ * What an UNAFFECTED run answers the coverage question with.
+ *
+ * A STRING, NOT `true`, because it is a different fact and the merge gate's
+ * sentence about it is a different sentence: `true` means a watched file
+ * changed and this branch paid for it, while this means the question never
+ * arose. Both open the gate; only one of them was earned by a run.
+ *
+ * THREE HOMES, one fact, the same three homes gate() has: this file, the box
+ * runner (worker/jobs/evals.mjs unaffectedRun) and the Convex door
+ * (convex/ttsEvals.ts COVERAGE_NOT_REQUIRED, which convex/ttsMerge.ts reads).
+ * Neither of those can import this one — the box loads it by path at runtime,
+ * and Convex runs it nowhere — so the word is written out in each and the
+ * tests on both sides pin it.
+ */
+export const COVERAGE_NOT_REQUIRED = "not-required";
+
+/**
+ * Does this branch need an evals run at all?
+ *
+ * TRUE ONLY ON A DIFF THAT WAS ACTUALLY READ. `null` — no checkout, a shallow
+ * clone, a sha git could not find — is NOT an unaffected branch: it is a
+ * branch nobody looked at, and answering "nothing watched changed" from a list
+ * that was never computed would skip the evals on exactly the runs that lost
+ * their diff. Those pay for a full run instead, which is the safe direction.
+ *
+ * An EMPTY diff is unaffected: a branch that changed no file changed no
+ * watched file.
+ */
+export function unaffectedBy(changed) {
+  if (!Array.isArray(changed)) return false;
+  return !changed.some((path) => matchesWatched(path));
 }
 
 /**
@@ -194,6 +227,15 @@ export function gate(head, base, { changed, prBody } = {}) {
   if (!head) {
     return { ok: false, reason: "no head run", regressions: [], stillFailing: [], newFailing: [], fixed: [], unconfirmed: [], mismatch: false, goldenCoverage, goldenExcuse };
   }
+  // AN UNAFFECTED ROW IS AN ANSWER, not a run: no watched path changed, so
+  // nothing was scored and nothing could have regressed. It passes, and its
+  // coverage is `not-required` rather than `true` — the question never arose,
+  // and convex/ttsMerge.ts says so in its own words. Read off the ROW, not
+  // re-derived from the diff here, so what the gate opens on and what the log
+  // prints are the one fact the door recorded.
+  if (head.unaffected === true) {
+    return { ok: true, regressions: [], stillFailing: [], newFailing: [], fixed: [], unconfirmed: [], mismatch: false, noBaseline: !base, goldenCoverage: COVERAGE_NOT_REQUIRED, goldenExcuse: null };
+  }
   // A run the box could not make at all (a sha it could not fetch or check
   // out) is posted as a row carrying `error`, so the request queue advances.
   // A row like that scored nothing, and a gate that reads "no failures" off it
@@ -235,6 +277,18 @@ export function gate(head, base, { changed, prBody } = {}) {
 
 /** What Tom sees in the check's log. A clean check is one line. */
 export function report(head, base, verdict) {
+  // ONE LINE, and it names the sha and the count, because the whole content of
+  // an unaffected check is "we looked at the diff and it touched nothing the
+  // evals watch". THE SAME WORDS the merge gate's `why` uses (convex/
+  // ttsMerge.ts), so the CI log and the #tts-decisions merge line say the same
+  // thing about the same commit.
+  if (head.unaffected === true) {
+    const changed = Array.isArray(head.changed) ? head.changed.length : null;
+    return [
+      `evals — ${head.repo} ${String(head.sha).slice(0, 7)}: the evals are unaffected — no watched path changed` +
+        (changed === null ? "." : ` in the ${changed} path${changed === 1 ? "" : "s"} this branch touched.`),
+    ];
+  }
   const setLine = `evals — ${head.repo} ${String(head.sha).slice(0, 7)} vs base ` +
     `${base ? String(base.sha).slice(0, 7) : "none"} (golden set ${head.goldenHash}, ${head.items} items)`;
   const lines = [];
@@ -364,6 +418,18 @@ async function main() {
   const pr = process.env.PR ? Number(process.env.PR) : undefined;
   const prBody = process.env.PR_BODY || undefined;
   const changed = await changedPaths(baseSha, sha);
+  // THE FILTER THAT USED TO BE THE WORKFLOW'S. It lives here now because a
+  // workflow that does not run records nothing, and the merge gate needs a row
+  // (convex/ttsMerge.ts denies without one). An unaffected request is answered
+  // by the door itself, in the same breath it is filed, so the poll below ends
+  // on its first pass and no model is spent.
+  const unaffected = unaffectedBy(changed);
+  if (unaffected) {
+    console.log(
+      `evals: no watched path changed in the ${changed.length} path${changed.length === 1 ? "" : "s"} ` +
+        `this branch touched — asking for an unaffected row, not a run.`,
+    );
+  }
 
   // `changed` rides the request so the box's row and this log read the same
   // list. It is OMITTED rather than sent as null when git could not answer: an
@@ -378,6 +444,7 @@ async function main() {
     paths: WATCHED_PATHS,
     ...(changed === null ? {} : { changed }),
     ...(prBody === undefined ? {} : { prBody }),
+    ...(unaffected ? { unaffected: true } : {}),
   });
   const deadline = Date.now() + POLL_TIMEOUT_MS;
   let answer = null;

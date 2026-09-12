@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ablationFindings,
   ablationFor,
@@ -31,6 +31,7 @@ import {
   runItem,
   runTask,
   runTrials,
+  serveRequest,
   scoreLearning,
   selectItems,
   SKILL_SEAM_REASON,
@@ -42,6 +43,7 @@ import {
   treesFor,
   trialsFor,
   triggerCounts,
+  unaffectedRun,
   TRIALS_CAPABILITY,
   TRIALS_REGRESSION,
   verdictOf,
@@ -1019,5 +1021,76 @@ describe("the trigger set", () => {
     expect(loadTriggers(dir).map((one) => one.file)).toEqual(["hourly.json"]);
     expect(triggerCounts(loadTriggers(dir)[0])).toEqual({ positives: 1, negatives: 2 });
     expect(loadTriggers(tree())).toEqual([]);
+  });
+});
+
+// A request the Convex door could not answer still reaches the queue, and the
+// box must answer it in seconds rather than clone the repo and spend an hour
+// scoring a set the branch cannot have moved.
+describe("an unaffected request", () => {
+  const request = (over = {}) => ({
+    repo: "tom.quest",
+    sha: "2e08b28",
+    baseSha: "f5c1fb9",
+    changed: ["convex/ttsMerge.ts", "worker/jobs/evals.mjs"],
+    prBody: null,
+    unaffected: true,
+    ...over,
+  });
+
+  const env = { CONVEX_SITE_URL: "https://example.convex.site", TTS_WORKER_KEY: "k" };
+
+  /** An io that fails the test if the runner so much as looks at it: the whole
+   *  claim is that no clone, no worktree and no model happen here. */
+  const noIo = new Proxy({}, {
+    get(_target, name) {
+      throw new Error(`the runner touched io.${String(name)} on an unaffected request`);
+    },
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("posts the row and never reaches the runner", async () => {
+    const posted = [];
+    vi.stubGlobal("fetch", vi.fn(async (url, init) => {
+      if (String(url).includes("/tts/evals-run")) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ run: { items: 40, pass: 38 }, base: null }) };
+      }
+      posted.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+    const data = await serveRequest(env, noIo, request());
+    expect(data).toMatchObject({
+      unaffected: true,
+      regressions: 0,
+      goldenCoverage: "not-required",
+      flaky: 0,
+      items: 40,
+      pass: 38,
+      goldenHash: null,
+    });
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({ kind: "evals-run", key: "tom.quest@2e08b28" });
+  });
+
+  it("answers with zeroes when nothing scored the base", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url) =>
+      String(url).includes("/tts/evals-run")
+        ? { ok: true, status: 200, text: async () => JSON.stringify({ run: null, base: null }) }
+        : { ok: true, status: 200, text: async () => "{}" }));
+    expect(await serveRequest(env, noIo, request())).toMatchObject({ items: 0, pass: 0, regressions: 0 });
+  });
+
+  it("opens nothing on a row that is not unaffected", () => {
+    // The shape is the pin: `regressions: 0` and `not-required` together are
+    // what convex/ttsMerge.ts opens the evals arm on, and only this row says
+    // both while having scored nothing.
+    const row = unaffectedRun({ repo: "tom.quest", sha: "abc1234", changed: [], base: null, at: 1 });
+    expect(row.failures).toEqual([]);
+    expect(row.scoredIds).toEqual([]);
+    expect(row.error).toBe(undefined);
+    expect(row.weekly).toBe(false);
+    expect(failedRun({ repo: "tom.quest", sha: "abc1234", error: "no such commit", at: 1 }).unaffected)
+      .toBe(undefined);
   });
 });

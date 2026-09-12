@@ -1,12 +1,27 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
-import type { QueryCtx } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { DAY_MS, modelOfTomHeadOf } from "./ttsShared";
 
 export const PRELUDE_DELIVERY = "prelude-delivery";
 export const EVALS_REQUEST = "evals-request";
 export const EVALS_RUN = "evals-run";
+
+/**
+ * The coverage answer an UNAFFECTED run carries.
+ *
+ * `true` says a watched context file changed and this branch shipped what it
+ * owed. This says the question never arose — no watched path changed at all —
+ * and convex/ttsMerge.ts opens the evals arm on either, in different words.
+ * The distinction is kept because a gate that wrote `true` on an unscored row
+ * would be a row saying something it did not check.
+ *
+ * ONE WORD, THREE HOMES: here, scripts/evals-check.mjs COVERAGE_NOT_REQUIRED
+ * and worker/jobs/evals.mjs unaffectedRun. Neither of the others can import
+ * this file, so each spells it and each side's tests pin it.
+ */
+export const COVERAGE_NOT_REQUIRED = "not-required";
 
 /** A week of refused posts must not make an otherwise placeable session look
  * unplaced. The nightly check is deliberately before tonight's post. */
@@ -605,6 +620,13 @@ type EvalsRequest = {
   // always has a diff, so a run nobody asked has not answered.
   changed: string[] | null;
   prBody: string | null;
+  // NOTHING THIS BRANCH TOUCHED IS WATCHED, as the check decided from its own
+  // diff and scripts/evals-check.mjs's WATCHED_PATHS. The request is filed for
+  // the record and answered in the same mutation, so the box never sees it —
+  // but worker/jobs/evals.mjs reads this field too, because a request written
+  // by a door that could not answer it is a request the box must still answer
+  // without spending fifty minutes on it.
+  unaffected: boolean;
   requestedAt: number;
 };
 
@@ -624,9 +646,83 @@ function requestData(data: unknown): EvalsRequest | null {
         ? (value.changed as string[])
         : null,
       prBody: typeof value.prBody === "string" ? value.prBody : null,
+      unaffected: value.unaffected === true,
       requestedAt: value.requestedAt,
     }
     : null;
+}
+
+/**
+ * The evals-run row an unaffected request is answered with, written by the
+ * door in the same mutation that files the request.
+ *
+ * NOT A RUN, AND IT NEVER PRETENDS TO BE ONE. It scored nothing, so `items`
+ * and `pass` are the BASE COMMIT'S numbers when a base run exists — the
+ * standing state of the set, restated for whoever reads the row, because this
+ * head changed nothing that could move them — and `goldenHash` stays null,
+ * since this row hashed no set of its own. `regressions: 0` is honest for the
+ * same reason: nothing was scored, so nothing regressed, and the one thing
+ * that could have made a regression possible (a change to a watched path) did
+ * not happen.
+ *
+ * ITS TWIN IS worker/jobs/evals.mjs unaffectedRun, which the box posts when it
+ * is handed an unaffected request an older door did not answer. The fields the
+ * merge gate and the digest read are pinned on both sides.
+ */
+export function unaffectedRunData(args: {
+  repo: string;
+  sha: string;
+  changed: string[] | null;
+  base: Record<string, unknown> | null;
+  at: number;
+}) {
+  const base = args.base ?? {};
+  const items = typeof base.items === "number" ? base.items : 0;
+  const pass = typeof base.pass === "number" ? base.pass : 0;
+  return {
+    repo: args.repo,
+    sha: args.sha,
+    // THE FLAG EVERY READER BRANCHES ON: scripts/evals-check.mjs gate() and
+    // report(), and convex/ttsMerge.ts through the coverage field below.
+    unaffected: true,
+    changed: args.changed,
+    tomquest: null,
+    wikitom: null,
+    goldenHash: null,
+    startedAt: args.at,
+    finishedAt: args.at,
+    calls: 0,
+    items,
+    pass,
+    fail: 0,
+    flaky: 0,
+    regressions: 0,
+    stillFailing: 0,
+    goldenCoverage: COVERAGE_NOT_REQUIRED,
+    weekly: false,
+    byPartition: [],
+    byVerdict: { approve: { items: 0, pass: 0 }, revise: { items: 0, pass: 0 } },
+    failures: [],
+    scoredIds: [],
+    skipped: [],
+    results: [],
+    efficiency: { cases: 0, unknown: 0, rises: [] },
+    ablation: [],
+    ablationSkipped: [],
+    // The shape worker/jobs/evals.mjs aggregate([]) returns, spelled out: an
+    // empty repo-task run, so every reader of `tasks` finds the fields it
+    // expects rather than an object missing half of them.
+    tasks: {
+      items: 0,
+      pass: 0,
+      fail: 0,
+      flaky: 0,
+      byPartition: [],
+      byVerdict: { approve: { items: 0, pass: 0 }, revise: { items: 0, pass: 0 } },
+      failures: [],
+    },
+    tasksSkipped: [],
+  };
 }
 
 export const internalRequestEvals = internalMutation({
@@ -638,6 +734,7 @@ export const internalRequestEvals = internalMutation({
     paths: v.array(v.string()),
     changed: v.optional(v.array(v.string())),
     prBody: v.optional(v.string()),
+    unaffected: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const key = `${args.repo}@${args.sha}`;
@@ -645,31 +742,68 @@ export const internalRequestEvals = internalMutation({
       .query("dtsEvents")
       .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_REQUEST).eq("key", key))
       .first();
-    if (existing !== null) return { existing: true };
     const requestedAt = Date.now();
-    await ctx.db.insert("dtsEvents", {
-      at: requestedAt,
-      kind: EVALS_REQUEST,
-      key,
-      data: {
-        repo: args.repo,
-        sha: args.sha,
-        baseSha: args.baseSha ?? null,
-        pr: args.pr ?? null,
-        paths: args.paths,
-        changed: args.changed ?? null,
-        // A pull-request body is text somebody else wrote, so it is stored and
-        // read as DATA — the only thing anything does with it is look for one
-        // anchored `evals: no-item` line.
-        prBody: args.prBody ?? null,
-        requestedAt,
-      },
-    });
-    return { existing: false };
+    if (existing === null) {
+      await ctx.db.insert("dtsEvents", {
+        at: requestedAt,
+        kind: EVALS_REQUEST,
+        key,
+        data: {
+          repo: args.repo,
+          sha: args.sha,
+          baseSha: args.baseSha ?? null,
+          pr: args.pr ?? null,
+          paths: args.paths,
+          changed: args.changed ?? null,
+          // A pull-request body is text somebody else wrote, so it is stored and
+          // read as DATA — the only thing anything does with it is look for one
+          // anchored `evals: no-item` line.
+          prBody: args.prBody ?? null,
+          unaffected: args.unaffected === true,
+          requestedAt,
+        },
+      });
+    }
+    // ANSWERED HERE, IN THE SAME MUTATION THAT ASKED. A branch that touched no
+    // watched path has nothing to score, and the round trip to the box would
+    // produce a row saying exactly this — but only after the box's next cron
+    // tick, a clone and two worktrees. The gate still gets its third row, the
+    // check's first poll finds it, and no model runs.
+    //
+    // The queue is untouched by this: internalOldestEvalsRequest hands out
+    // only requests with no evals-run row at their key, so a request answered
+    // as it is filed is never picked up.
+    //
+    // OUTSIDE THE `existing === null` BRANCH, and that matters: a check re-run
+    // at the same sha finds its request already filed, and returning early
+    // there would leave a head with a request and no row — the exact shape
+    // that waits seventy-five minutes and then denies. Guarded on the RUN
+    // instead, so it is idempotent and it also answers an older unanswered
+    // request that nobody had a shortcut for.
+    if (args.unaffected === true && (await runForKey(ctx, key)) === null) {
+      const base =
+        args.baseSha === undefined ? null : await runForKey(ctx, `${args.repo}@${args.baseSha}`);
+      await ctx.db.insert("dtsEvents", {
+        at: requestedAt,
+        kind: EVALS_RUN,
+        key,
+        data: unaffectedRunData({
+          repo: args.repo,
+          sha: args.sha,
+          changed: args.changed ?? null,
+          base: (base?.data ?? null) as Record<string, unknown> | null,
+          at: requestedAt,
+        }),
+      });
+      return { existing: existing !== null, unaffected: true };
+    }
+    return { existing: existing !== null };
   },
 });
 
-async function runForKey(ctx: QueryCtx, key: string) {
+// Either ctx: the door's request mutation reads this too, to answer an
+// unaffected request without writing a second row over one that exists.
+async function runForKey(ctx: QueryCtx | MutationCtx, key: string) {
   return await ctx.db
     .query("dtsEvents")
     .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_RUN).eq("key", key))

@@ -1,12 +1,14 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  COVERAGE_NOT_REQUIRED,
   gate,
   goldenItemRule,
   matchesWatched,
   noItemTrailer,
   report,
   POLL_TIMEOUT_MS,
+  unaffectedBy,
   WATCHED_PATHS,
 } from "./evals-check.mjs";
 
@@ -200,19 +202,74 @@ describe("matchesWatched", () => {
     expect(matchesWatched(12)).toBe(false);
   });
 
-  // The two lists are one fact spelled twice, and they had already drifted:
-  // the workflow fired on paths WATCHED_PATHS had never heard of and missed
-  // one it watched. This is the pin. A generated workflow file would be a file
-  // nobody can read in a pull request; a failing test names the drift in a
-  // line.
-  it("is the same list as the workflow's paths:, in the same order", () => {
+  // The list used to be spelled twice — here and as the workflow's `paths:` —
+  // and the two drifted in both directions before a test pinned them equal.
+  // The copy is GONE now: the workflow fires on every pull request and this
+  // list decides inside the check, where the answer lands on a row. This is
+  // the pin that keeps the second spelling from coming back, because a
+  // workflow that does not run records nothing, and no row denies the merge.
+  it("is the only spelling: the workflow filters no paths of its own", () => {
     // \r? throughout: a Windows checkout hands this file back with CRLF, and a
     // test that only reads LF passes on the box and fails on Tom's laptop.
     const workflow = readFileSync(".github/workflows/evals.yml", "utf8");
-    const block = /\r?\n {4}paths:\r?\n((?:[ \t]+- ".*"\r?\n)+)/.exec(workflow);
-    expect(block).not.toBe(null);
-    const paths = [...block[1].matchAll(/- "([^"]+)"/g)].map((hit) => hit[1]);
-    expect(paths).toEqual(WATCHED_PATHS);
+    expect(/\r?\n {4}paths(-ignore)?:/.test(workflow)).toBe(false);
+    expect(/\r?\non:\r?\n {2}pull_request:\r?\n/.test(workflow)).toBe(true);
+  });
+});
+
+// THE FILTER THAT USED TO BE THE WORKFLOW'S. A pull request touching nothing
+// watched gets a row saying so instead of no row at all — which is what a
+// skipped workflow left behind, and what the merge gate denies on.
+describe("unaffectedBy", () => {
+  it("is true when no changed path is watched", () => {
+    expect(unaffectedBy(["convex/ttsMerge.ts", "worker/jobs/evals.mjs"])).toBe(true);
+    expect(unaffectedBy([])).toBe(true);
+  });
+
+  it("is false when any one of them is", () => {
+    expect(unaffectedBy(["convex/ttsMerge.ts", "model-of-tom/intent.md"])).toBe(false);
+    expect(unaffectedBy(["worker/AGENTS.md"])).toBe(false);
+  });
+
+  // A diff that could not be read is NOT an unaffected branch. Answering
+  // "nothing watched changed" off a list nobody computed would skip the evals
+  // on exactly the runs that lost their diff; those pay for a full run.
+  it("is false when there is no diff at all", () => {
+    expect(unaffectedBy(null)).toBe(false);
+    expect(unaffectedBy(undefined)).toBe(false);
+  });
+});
+
+describe("an unaffected row", () => {
+  const row = (over = {}) => ({
+    repo: "tom.quest",
+    sha: "2e08b28e9df",
+    unaffected: true,
+    changed: ["convex/ttsMerge.ts", "worker/jobs/evals.mjs"],
+    items: 40,
+    pass: 40,
+    fail: 0,
+    regressions: 0,
+    failures: [],
+    scoredIds: [],
+    tasks: { items: 0, pass: 0, fail: 0, failures: [] },
+    ...over,
+  });
+
+  it("passes the gate and answers coverage not-required", () => {
+    const verdict = gate(row(), null, { changed: ["convex/ttsMerge.ts"], prBody: "" });
+    expect(verdict.ok).toBe(true);
+    expect(verdict.goldenCoverage).toBe(COVERAGE_NOT_REQUIRED);
+    expect(verdict.regressions).toEqual([]);
+  });
+
+  // The same words convex/ttsMerge.ts puts on the gate's `why` and the
+  // #tts-decisions merge line, so all three say one thing about the commit.
+  it("reports one line naming what was looked at", () => {
+    const lines = report(row(), null, gate(row(), null));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("the evals are unaffected — no watched path changed");
+    expect(lines[0]).toContain("2 paths");
   });
 });
 

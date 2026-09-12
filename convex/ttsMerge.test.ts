@@ -308,6 +308,26 @@ describe("the evals arm's golden-coverage clause", () => {
     expect(gate.why).toContain("no regression");
   });
 
+  // The row an UNAFFECTED branch gets: the check read its own diff, nothing in
+  // it was a watched path, and the door recorded that in seconds instead of
+  // asking for a run of a set this change cannot move. Before it existed, the
+  // workflow simply did not fire on such a branch, no evals row was ever
+  // written, and a pure-code pull request could never merge.
+  it("opens on coverage not-required, and says the evals are unaffected", async () => {
+    const gate = await gateWith({ goldenCoverage: "not-required", unaffected: true });
+    expect(gate.allowed).toBe(true);
+    expect(gate.missing).toEqual([]);
+    expect(gate.why).toBe(`the evals are unaffected at ${SHA.slice(0, 7)}: no watched path changed`);
+  });
+
+  // "not-required" is the ONE word that opens this way. Anything else on the
+  // field is a run that did not answer, and the gate denies it.
+  it("denies any other string on the field", async () => {
+    const gate = await gateWith({ goldenCoverage: "not required" });
+    expect(gate.missing).toEqual(["evals"]);
+    expect(gate.why).toContain("did not check golden coverage");
+  });
+
   it("denies on coverage false, and says a watched file changed with no item", async () => {
     const gate = await gateWith({ goldenCoverage: false });
     expect(gate.missing).toEqual(["evals"]);

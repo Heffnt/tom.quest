@@ -1596,6 +1596,41 @@ async function postRun(env, data) {
   await convexFetch(env, "/tts/event", { kind: EVALS_RUN, key: `${data.repo}@${data.sha}`, data });
 }
 
+/** The fields of a row that scored nothing — shared by the two rows the box
+ *  posts without running anything, so the pair cannot drift in the fields
+ *  every reader of an evals run expects to find. */
+function unscoredRun({ repo, sha, at }) {
+  return {
+    repo,
+    sha,
+    tomquest: null,
+    wikitom: null,
+    goldenHash: null,
+    regenModel: REGEN_MODEL,
+    judgeModel: JUDGE_MODEL,
+    startedAt: at,
+    finishedAt: at,
+    calls: 0,
+    items: 0,
+    pass: 0,
+    fail: 0,
+    flaky: 0,
+    stillFailing: 0,
+    weekly: false,
+    byPartition: [],
+    byVerdict: { approve: { items: 0, pass: 0 }, revise: { items: 0, pass: 0 } },
+    failures: [],
+    scoredIds: [],
+    skipped: [],
+    results: [],
+    efficiency: { cases: 0, unknown: 0, rises: [] },
+    ablation: [],
+    ablationSkipped: [],
+    tasks: aggregate([]),
+    tasksSkipped: [],
+  };
+}
+
 /**
  * The row a run that could not be made posts anyway.
  *
@@ -1609,39 +1644,46 @@ async function postRun(env, data) {
  */
 export function failedRun({ repo, sha, error, at }) {
   return {
-    repo,
-    sha,
-    tomquest: null,
-    wikitom: null,
-    goldenHash: null,
-    regenModel: REGEN_MODEL,
-    judgeModel: JUDGE_MODEL,
-    startedAt: at,
-    finishedAt: at,
-    calls: 0,
+    ...unscoredRun({ repo, sha, at }),
     error,
-    items: 0,
-    pass: 0,
-    fail: 0,
-    flaky: 0,
     regressions: null,
-    stillFailing: 0,
     // A run that could not be made checked no diff either, so the coverage
     // field says so rather than saying "satisfied". The merge gate denies on
     // null, which is what a row carrying `error` must do on every arm.
     goldenCoverage: null,
-    weekly: false,
-    byPartition: [],
-    byVerdict: { approve: { items: 0, pass: 0 }, revise: { items: 0, pass: 0 } },
-    failures: [],
-    scoredIds: [],
-    skipped: [],
-    results: [],
-    efficiency: { cases: 0, unknown: 0, rises: [] },
-    ablation: [],
-    ablationSkipped: [],
-    tasks: aggregate([]),
-    tasksSkipped: [],
+  };
+}
+
+/** The word an unaffected row answers golden coverage with. One fact, three
+ *  homes — scripts/evals-check.mjs COVERAGE_NOT_REQUIRED and convex/
+ *  ttsEvals.ts's constant of the same name are the other two, and neither can
+ *  be imported here (the gate module is loaded by path, Convex not at all). */
+export const COVERAGE_NOT_REQUIRED = "not-required";
+
+/**
+ * The row a branch that touched NOTHING WATCHED gets, with no model run.
+ *
+ * The Convex door normally writes this itself, in the mutation that files the
+ * request (convex/ttsEvals.ts unaffectedRunData), so the check's first poll
+ * finds it and the box never sees the request at all. THIS IS THE OTHER HALF:
+ * a request filed by a door that did not answer it still reaches `--serve`,
+ * and the box must answer it in seconds rather than spend an hour scoring a
+ * set this branch cannot have moved.
+ *
+ * `regressions: 0` is honest here in a way it would not be on a failed run:
+ * nothing was scored because nothing could have regressed. `items` and `pass`
+ * restate the base commit's numbers when a base run exists; `goldenHash` stays
+ * null, because this row hashed no set of its own.
+ */
+export function unaffectedRun({ repo, sha, changed, base, at }) {
+  return {
+    ...unscoredRun({ repo, sha, at }),
+    unaffected: true,
+    changed: changed ?? null,
+    items: typeof base?.items === "number" ? base.items : 0,
+    pass: typeof base?.pass === "number" ? base.pass : 0,
+    regressions: 0,
+    goldenCoverage: COVERAGE_NOT_REQUIRED,
   };
 }
 
@@ -1761,6 +1803,70 @@ async function runAndPost(env, io, { repo, sha, base, limit, jobs, weekly, ablat
   return data;
 }
 
+/**
+ * One queued request, answered.
+ *
+ * Exported so the two paths out of it can be tested without a command line:
+ * an UNAFFECTED request is answered from the request alone, with `io` never
+ * touched — no clone, no worktree, no model — and every other request goes to
+ * the runner as before.
+ */
+export async function serveRequest(env, io, request, options = {}) {
+  // NOTHING WATCHED CHANGED. The Convex door usually answers a request like
+  // this as it files it (convex/ttsEvals.ts), so one reaching the queue came
+  // from a door that could not — and the answer is still the same row, written
+  // in seconds. A branch this list does not watch cannot have moved the set,
+  // and an hour spent proving that is an hour of models the gate gets nothing
+  // extra from.
+  if (request.unaffected === true) {
+    const base = request.baseSha
+      ? (await convexFetch(env, `/tts/evals-run?repo=${request.repo}&sha=${request.baseSha}`))?.run ?? null
+      : null;
+    const data = unaffectedRun({
+      repo: request.repo,
+      sha: request.sha,
+      changed: request.changed,
+      base,
+      at: Date.now(),
+    });
+    await postRun(env, data);
+    console.log(
+      `[evals] ${request.repo}@${request.sha}: unaffected — no watched path changed, nothing scored`,
+    );
+    return data;
+  }
+  try {
+    return await runAndPost(env, io, {
+      repo: request.repo,
+      sha: request.sha,
+      base: request.baseSha,
+      limit: options.limit,
+      jobs: options.jobs,
+      weekly: false,
+      // A served request IS the pull-request run. The ablation arm never
+      // runs here, whatever the command line said.
+      ablation: false,
+      // THE CHECK'S OWN DIFF, carried on the request. The box cannot compute
+      // it — it has a shallow cache clone with no merge base — and a second
+      // list computed here would be a second answer to the same question.
+      // An older request carries neither, and neither is inferred: the
+      // coverage verdict is then null and the merge gate denies, which is
+      // the right answer for a run nobody asked about a diff.
+      changed: request.changed,
+      prBody: request.prBody,
+      force: options.force,
+    });
+  } catch (error) {
+    // A run that threw still has to be ANSWERED, or this request is taken
+    // again on every tick and nothing behind it is ever served.
+    const reason = serverErrorMessage(error);
+    console.error(`[evals] ${request.repo}@${request.sha} could not be run: ${reason}`);
+    const data = failedRun({ repo: request.repo, sha: request.sha, error: reason, at: Date.now() });
+    await postRun(env, data);
+    return data;
+  }
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const env = loadEnv({ require: ["CONVEX_SITE_URL", "TTS_WORKER_KEY"] });
@@ -1791,34 +1897,7 @@ async function main() {
       console.log("[evals] no unanswered request");
       return;
     }
-    try {
-      await runAndPost(env, io, {
-        repo: request.repo,
-        sha: request.sha,
-        base: request.baseSha,
-        limit: options.limit,
-        jobs: options.jobs,
-        weekly: false,
-        // A served request IS the pull-request run. The ablation arm never
-        // runs here, whatever the command line said.
-        ablation: false,
-        // THE CHECK'S OWN DIFF, carried on the request. The box cannot compute
-        // it — it has a shallow cache clone with no merge base — and a second
-        // list computed here would be a second answer to the same question.
-        // An older request carries neither, and neither is inferred: the
-        // coverage verdict is then null and the merge gate denies, which is
-        // the right answer for a run nobody asked about a diff.
-        changed: request.changed,
-        prBody: request.prBody,
-        force: options.force,
-      });
-    } catch (error) {
-      // A run that threw still has to be ANSWERED, or this request is taken
-      // again on every tick and nothing behind it is ever served.
-      const reason = serverErrorMessage(error);
-      console.error(`[evals] ${request.repo}@${request.sha} could not be run: ${reason}`);
-      await postRun(env, failedRun({ repo: request.repo, sha: request.sha, error: reason, at: Date.now() }));
-    }
+    await serveRequest(env, io, request, options);
     return;
   }
 

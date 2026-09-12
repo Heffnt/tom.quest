@@ -3,17 +3,26 @@
 # WikiTom as .github/workflows/evals.yml; it fetches the checker from this
 # repo's main at run time, so there is one body of gate() and no vendored
 # second copy to drift.
+#
+# NO `paths:` FILTER, for the reason .github/workflows/evals.yml gives at
+# length: a workflow that does not run records nothing, and the merge gate
+# denies a head with no evals row. The checker it fetches holds WATCHED_PATHS
+# and decides there, answering an unaffected branch in seconds.
 name: Evals
 on:
   pull_request:
-    paths:
-      - "model-of-tom/**"
 jobs:
   evals:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Above the checker's own 75-minute wait, so a silent box is reported as
+    # silence rather than as a killed job.
+    timeout-minutes: 85
     steps:
+      # FULL HISTORY: the checker reads `git diff BASE...HEAD` to decide
+      # whether this branch touched anything watched. A shallow clone has no
+      # merge base, so every pull request would pay for a full run.
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - run: curl -fsSL https://raw.githubusercontent.com/Heffnt/tom.quest/main/scripts/evals-check.mjs -o evals-check.mjs
@@ -25,3 +34,4 @@ jobs:
           SHA: ${{ github.event.pull_request.head.sha }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR: ${{ github.event.pull_request.number }}
+          PR_BODY: ${{ github.event.pull_request.body }}

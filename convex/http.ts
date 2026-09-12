@@ -2280,6 +2280,14 @@ const evalsRequest = httpAction(async (ctx, request) => {
   if (b.prBody !== undefined && typeof b.prBody !== "string") {
     return jsonResponse(400, { error: "prBody, when given, is a string" });
   }
+  // NOTHING WATCHED CHANGED, as the check decided from its own diff against
+  // scripts/evals-check.mjs's WATCHED_PATHS. The mutation answers a request
+  // like this as it files it — an evals-run row saying so, with no run behind
+  // it — because the merge gate needs a row and a branch with nothing to score
+  // must not wait an hour for one.
+  if (b.unaffected !== undefined && typeof b.unaffected !== "boolean") {
+    return jsonResponse(400, { error: "unaffected, when given, is a boolean" });
+  }
   const result = await ctx.runMutation(internal.ttsEvals.internalRequestEvals, {
     repo: b.repo,
     sha: b.sha,
@@ -2288,6 +2296,7 @@ const evalsRequest = httpAction(async (ctx, request) => {
     paths: b.paths,
     changed: Array.isArray(b.changed) ? (b.changed as string[]) : undefined,
     prBody: typeof b.prBody === "string" ? b.prBody : undefined,
+    unaffected: b.unaffected === true ? true : undefined,
   });
   return jsonResponse(200, { ok: true, ...result });
 });
