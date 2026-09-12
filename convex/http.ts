@@ -29,6 +29,7 @@ import { isNarrowListId } from "./ttsShared";
 import { auditVerdictOf } from "./ttsMerge";
 import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { isRepoRulesPath } from "./ttsContext";
+import { byteLength, DESCRIPTION_MAX_BYTES, SKILL_GROUPS } from "../scripts/skills.mjs";
 import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES, isExportTable } from "./ttsNightly";
 
 const http = httpRouter();
@@ -1842,25 +1843,29 @@ const ttsModelOfTom = httpAction(async (ctx, request) => {
   if (b.force !== undefined && (typeof b.force !== "string" || b.force.trim() === "")) {
     return jsonResponse(400, { error: "force, when given, is the reason (a non-empty string)" });
   }
+  // `operate` IS THE ONLY LAYER STORED from phase 6 on (convex/ttsSkills.ts):
+  // `write` and `know` became skills and go to POST /tts/skills. They are still
+  // ACCEPTED here, and dropped in the mutation, because the publisher renders
+  // all three at this commit and narrows on its own schedule — refusing a
+  // night's base over text nothing reads would cost the prefix for nothing.
   if (typeof b.layers !== "object" || b.layers === null) {
-    return jsonResponse(400, { error: "layers ({ operate, write, know }) required" });
+    return jsonResponse(400, { error: "layers ({ operate }) required" });
   }
   const rawLayers = b.layers as Record<string, unknown>;
-  if (Object.keys(rawLayers).length !== MODEL_OF_TOM_LAYER_NAMES.length ||
-    !Object.keys(rawLayers).every((name) => (MODEL_OF_TOM_LAYER_NAMES as readonly string[]).includes(name))) {
-    return jsonResponse(400, { error: "layers must contain exactly operate, write, and know" });
+  if (!Object.keys(rawLayers).every((name) => (MODEL_OF_TOM_LAYER_NAMES as readonly string[]).includes(name))) {
+    return jsonResponse(400, { error: "layers may name only operate, write, and know" });
   }
-  const layers: Record<(typeof MODEL_OF_TOM_LAYER_NAMES)[number], string> = {
-    operate: "", write: "", know: "",
-  };
+  const layers: { operate: string; write?: string; know?: string } = { operate: "" };
   for (const name of MODEL_OF_TOM_LAYER_NAMES) {
-    if (typeof rawLayers[name] !== "string" || rawLayers[name].trim() === "") {
+    const value = rawLayers[name];
+    if (value === undefined && name !== "operate") continue;
+    if (typeof value !== "string" || value.trim() === "") {
       return jsonResponse(400, { error: `layers.${name} (non-empty string) required` });
     }
-    layers[name] = rawLayers[name];
+    layers[name] = value;
   }
-  if (!Array.isArray(b.headers) || b.headers.length !== 7) {
-    return jsonResponse(400, { error: "headers (the 7 canonical nonempty selections) required" });
+  if (!Array.isArray(b.headers) || b.headers.length === 0 || b.headers.length > 7) {
+    return jsonResponse(400, { error: "headers (1 to 7 canonical selections, including operate) required" });
   }
   const headers: { layers: (typeof MODEL_OF_TOM_LAYER_NAMES)[number][]; header: string }[] = [];
   for (let i = 0; i < b.headers.length; i++) {
@@ -1913,6 +1918,128 @@ const ttsModelOfTom = httpAction(async (ctx, request) => {
 });
 
 http.route({ path: "/tts/model-of-tom", method: "POST", handler: ttsModelOfTom });
+
+// ── POST /tts/skills — the published skill catalog (the unified agent
+// ecosystem, phase 6) ────────────────────────────────────────────────────────
+// Body: { commit, syncedAt, pushed, skills: [{ name, group, description, body,
+// references, sourcePaths, bytes }], refused: [{ name, why }] }.
+//
+// A SECOND DOOR, NOT A WIDENED ONE. The base (POST /tts/model-of-tom above) and
+// the catalog are published by two posts so THEY FAIL SEPARATELY: a night whose
+// skills post fails must still deliver a base, and every run that night carries
+// the operate rules with an empty grant line rather than no prompt at all. One
+// door taking both would make the two failures one.
+//
+// `refused` is the publisher's own list of skills it could not build (a page
+// Tom emptied). It is READ AND NOT STORED: the assembler refuses a wanted name
+// the catalog does not carry, in the run's own words, at the moment it is
+// wanted — a stored copy of last night's reason would be a second answer to the
+// same question. It is accepted so the publisher can post one shape and the
+// digest can read the count off the response.
+const SKILLS_POST_MAX = 64;
+
+const ttsSkillsPost = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.commit !== "string" || !/^[0-9a-f]{40}$/.test(b.commit)) {
+    return jsonResponse(400, { error: "commit (40 hex characters) required" });
+  }
+  if (typeof b.syncedAt !== "number" || !Number.isFinite(b.syncedAt)) {
+    return jsonResponse(400, { error: "syncedAt (epoch ms) required" });
+  }
+  if (typeof b.pushed !== "boolean") {
+    return jsonResponse(400, { error: "pushed (boolean) required" });
+  }
+  if (!Array.isArray(b.skills) || b.skills.length === 0) {
+    return jsonResponse(400, { error: "skills (non-empty array) required — an empty post leaves the store as it was" });
+  }
+  if (b.skills.length > SKILLS_POST_MAX) {
+    return jsonResponse(400, { error: `at most ${SKILLS_POST_MAX} skills per post — got ${b.skills.length}` });
+  }
+  if (b.refused !== undefined && !Array.isArray(b.refused)) {
+    return jsonResponse(400, { error: "refused, when given, is an array of { name, why }" });
+  }
+  const names = new Set<string>();
+  const skills: {
+    name: string; group: string; description: string; body: string;
+    references: { name: string; path: string; body: string }[];
+    sourcePaths: string[]; bytes: number;
+  }[] = [];
+  for (let i = 0; i < b.skills.length; i++) {
+    const s = b.skills[i] as Record<string, unknown> | null;
+    if (typeof s !== "object" || s === null || typeof s.name !== "string" || s.name.trim() === "") {
+      return jsonResponse(400, { error: `skills[${i}].name (non-empty string) required` });
+    }
+    if (names.has(s.name)) {
+      return jsonResponse(400, { error: `skills[${i}]: ${s.name} is posted twice` });
+    }
+    if (typeof s.group !== "string" || !(SKILL_GROUPS as readonly string[]).includes(s.group)) {
+      return jsonResponse(400, { error: `skills[${i}].group must be one of ${SKILL_GROUPS.join(", ")}` });
+    }
+    if (typeof s.description !== "string" || s.description.trim() === "") {
+      return jsonResponse(400, { error: `skills[${i}].description (non-empty string) required` });
+    }
+    if (byteLength(s.description) > DESCRIPTION_MAX_BYTES) {
+      return jsonResponse(400, {
+        error: `skills[${i}].description is ${byteLength(s.description)} bytes, over the ${DESCRIPTION_MAX_BYTES}-byte cap`,
+      });
+    }
+    if (typeof s.body !== "string" || s.body.trim() === "") {
+      return jsonResponse(400, { error: `skills[${i}].body (non-empty string) required` });
+    }
+    if (typeof s.bytes !== "number" || !Number.isSafeInteger(s.bytes) || s.bytes < 0) {
+      return jsonResponse(400, { error: `skills[${i}].bytes (nonnegative integer) required` });
+    }
+    if (!Array.isArray(s.sourcePaths) || s.sourcePaths.some((path) => typeof path !== "string" || path.trim() === "")) {
+      return jsonResponse(400, { error: `skills[${i}].sourcePaths (array of paths) required` });
+    }
+    const rawReferences = s.references === undefined ? [] : s.references;
+    if (!Array.isArray(rawReferences)) {
+      return jsonResponse(400, { error: `skills[${i}].references, when given, is an array` });
+    }
+    const references: { name: string; path: string; body: string }[] = [];
+    for (let j = 0; j < rawReferences.length; j++) {
+      const r = rawReferences[j] as Record<string, unknown> | null;
+      if (typeof r !== "object" || r === null ||
+        typeof r.name !== "string" || r.name.trim() === "" ||
+        typeof r.path !== "string" || r.path.trim() === "" ||
+        typeof r.body !== "string" || r.body.trim() === "") {
+        return jsonResponse(400, { error: `skills[${i}].references[${j}] needs a name, a path and a non-empty body` });
+      }
+      references.push({ name: r.name, path: r.path, body: r.body });
+    }
+    names.add(s.name);
+    skills.push({
+      name: s.name,
+      group: s.group,
+      description: s.description,
+      body: s.body,
+      references,
+      sourcePaths: s.sourcePaths as string[],
+      bytes: s.bytes,
+    });
+  }
+  try {
+    const result = await ctx.runMutation(internal.ttsSkills.internalReplaceSkills, {
+      commit: b.commit,
+      syncedAt: b.syncedAt,
+      pushed: b.pushed,
+      skills,
+    });
+    return jsonResponse(200, { ok: true, ...result, refused: Array.isArray(b.refused) ? b.refused.length : 0 });
+  } catch (e) {
+    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+http.route({ path: "/tts/skills", method: "POST", handler: ttsSkillsPost });
 
 // POST /tts/repo-rules — one repo's AGENTS.md bodies, replaced whole.
 //
@@ -2089,10 +2216,11 @@ http.route({ path: "/tts/weekly-input", method: "GET", handler: ttsWeeklyInput }
 //
 // The prelude rides along for the same reason it does on /tts/weekly-input:
 // the model's proposal sentences are written FOR TOM, so the run that writes
-// them needs the write layer. It asks as its OWN caller, "simplify-input"
-// (worker/jobs/context-relevance.mjs CONTEXT_CALLERS): the row happens to hold
-// the same three booleans weekly-input holds, and borrowing that row would
-// make this door change silently on the day the weekly job's does.
+// them is granted the `write` skill. It asks as its OWN caller,
+// "simplify-input" (worker/jobs/skill-router.mjs CONTEXT_CALLERS): the row
+// happens to hold the same three booleans weekly-input holds, and borrowing
+// that row would make this door change silently on the day the weekly job's
+// does.
 const ttsSimplifyInput = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;

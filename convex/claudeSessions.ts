@@ -645,23 +645,22 @@ async function insertSession(
   // missions, the CLI pen, a fork — one home, here, rather than each builder
   // pasting its own copy.
   //
-  // Four parts in prompt order, and the order is the point:
-  //   prefix     header line 1 + the map + the operate rules + the write layer.
-  //              Identical for every run at one WikiTom commit — the cache
-  //              boundary, and the transcript's first line, so the row records
-  //              what the session began with.
-  //   expanded   header line 2 + only what this session's subject picks out of
-  //              the know layer. "" when nothing did.
-  //   body       the mission the builder wrote, plus the code-session lines and
-  //              the outcome pen. The task layer the map promises is last.
-  //   fetchable  header line 3 + one line per thing NOT in the prompt, each
-  //              naming the command or path that gets it. An index, not
-  //              content, and the most volatile part, so it sits after the task.
+  // Three parts in prompt order, and the order is the point:
+  //   prefix   header line 1 + the map + the operate rules. Identical for every
+  //            run at one WikiTom commit — the cache boundary, and the
+  //            transcript's first line, so the row records what the session
+  //            began with.
+  //   grants   the skills this session may load, by name, about two hundred
+  //            bytes. The session loads a body itself, once, if it needs it.
+  //   body     the mission the builder wrote, plus the code-session lines and
+  //            the outcome pen. The task layer the map promises is last, and it
+  //            is now the last thing in the prompt: the fetchable index went
+  //            when the skill catalog replaced it.
   //
   // The subject is already in hand: the seed's todo, else its batch, else its
   // first repo, else nothing. `reachesTom` is TRUE for every opener — the
-  // outcome, the digest and the transcript all reach him — which is what puts
-  // the write layer in the prefix.
+  // outcome, the digest and the transcript all reach him — which is what grants
+  // it the `write` skill.
   //
   // Publication fails closed: with no complete posted layer set, assembleContext
   // throws and this mutation publishes neither the session nor its opener.
@@ -674,7 +673,7 @@ async function insertSession(
   // two commits is what nothing reading the row could make sense of, and one
   // paste is a normal thing for Tom to do. WHAT IS STRIPPED IS THE STABLE
   // PREFIX, which is all a paste can carry that is not rebuilt anyway: the
-  // expanded and fetchable parts come from the live record either way.
+  // grant block comes from the live record and the live catalog either way.
   //
   // A prefix read at some OTHER commit is still refused, because there is
   // nothing in the text that says where it stops and the prompt starts (see
@@ -700,19 +699,25 @@ async function insertSession(
   }
   const text =
     context.prefix +
-    (context.expanded === "" ? "" : "\n\n" + context.expanded) +
+    "\n\n" +
+    context.grants +
     "\n\n" +
     body +
     (codeSessionLines.length > 0 ? "\n\n" + codeSessionLines.join("\n") : "") +
-    (seed.outcomePen === false ? "" : outcomePenFooter(sessionId, repos)) +
-    "\n\n" +
-    context.fetchable;
+    (seed.outcomePen === false ? "" : outcomePenFooter(sessionId, repos));
   // What this opener was given, for the delivery check to read beside what the
-  // session then did (schema: contextExpanded / contextBytes). Written on the
-  // row inserted above, in the same transaction as the opener it describes.
+  // session then did (schema: contextExpanded / contextBytes).
+  //
+  // THE TWO FIELDS KEEP THEIR PHASE-4 NAMES until phase 9 renames them, and
+  // what they hold is what replaced what they were named for: the GRANTED SKILL
+  // NAMES where the expanded manifest was, and the grant block's bytes in the
+  // `expanded` slot. `fetchable` is 0 because there is no fetchable block any
+  // more — the catalog is the index. A reader of an old row and a reader of a
+  // new one are reading the same question ("what did this opener carry"), which
+  // is why the rename waits rather than splitting the field in two.
   await ctx.db.patch(sessionId, {
-    contextExpanded: context.manifest,
-    contextBytes: context.bytes,
+    contextExpanded: context.granted,
+    contextBytes: { prefix: context.bytes.prefix, expanded: context.bytes.grants, fetchable: 0 },
   });
   await ctx.db.insert("claudeInbound", {
     sessionId,

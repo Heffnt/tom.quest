@@ -66,13 +66,11 @@ async function publishSessionPrelude(t: ReturnType<typeof convexTest>) {
       committedAt: 1,
       pushed: true,
         operate: "operate layer",
-        write: "write layer",
-        know: "know layer",
-      // The opener takes the stable prefix (the dynamic-context round): the
-      // map, the operate rules and the write layer.
+      // The opener takes the stable prefix: the map and the operate rules. The
+      // write layer left it in phase 6, when `write` became a skill.
       headers: [{
-        layers: ["operate", "write"],
-        header: "MODEL-OF-TOM FILES (WikiTom commit rulings-session-test): operate,write",
+        layers: ["operate"],
+        header: "MODEL-OF-TOM FILES (WikiTom commit rulings-session-test): operate",
       }],
     });
   });

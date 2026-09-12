@@ -43,6 +43,11 @@ const CONTEXT = v.object({
   registered: v.optional(v.boolean()), launcher: v.optional(v.string()), modelRequested: v.optional(v.string()),
   skillsGranted: v.optional(v.array(v.string())), skillsRefused: v.optional(v.array(v.string())),
   promptSha256: v.optional(v.string()), writingStandardSource: v.optional(v.string()), workflowId: v.optional(v.string()),
+  // What the run ASKED FOR, as "<name> (<result>)" — the Skill tool calls its
+  // transcript holds, beside skillsGranted, which is what the prompt offered
+  // it. Same field as convex/schema.ts runs.context; a run carrying it is
+  // refused at store time without it here.
+  skillsAsked: v.optional(v.array(v.string())),
 });
 const OUTCOME = v.object({
   endedReason: v.optional(v.string()), finalTextSeq: v.optional(v.number()),

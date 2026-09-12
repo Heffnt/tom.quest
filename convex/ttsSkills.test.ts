@@ -22,6 +22,8 @@ import { learningPrompt } from "../worker/jobs/nightly.mjs";
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 const COMMIT = "0123abcd0123abcd0123abcd0123abcd0123abcd";
 const COMMITTED_AT = Date.UTC(2026, 8, 6, 8, 5, 0);
+// `write` and `know` are still POSTED at this commit and no longer STORED: the
+// publisher renders all three and the door drops the two that became skills.
 const LAYERS = {
   operate: "operate layer\n\nkeeps its blank lines\n",
   write: " write layer is verbatim \n",
@@ -46,20 +48,6 @@ const FILES = [
   { path: "model-of-tom/agent-rules.md", body: "source operate", bytes: 14 },
   { path: "model-of-tom/writing.md", body: "source write", bytes: 12 },
   { path: "model-of-tom/priorities.md", body: "source know", bytes: 11 },
-];
-const BACKFILL_FILES = [
-  { path: "model-of-tom/agent-rules.md", body: "source operate" },
-  { path: "model-of-tom/writing.md", body: "source write" },
-  { path: "model-of-tom/intent.md", body: "source intent" },
-  { path: "model-of-tom/priorities.md", body: "source priorities" },
-  { path: "model-of-tom/schedule.md", body: "source schedule" },
-  ...[
-    "admin", "agent-systems", "climbing", "health-and-food", "mental-health",
-    "money", "research", "social",
-  ].map((name) => ({
-    path: `model-of-tom/areas/${name}.md`,
-    body: name === "admin" ? "---\nupdated: 2026-09-09\n---\nsource admin" : `source ${name}`,
-  })),
 ];
 
 function payload(overrides: Record<string, unknown> = {}) {
@@ -110,13 +98,17 @@ async function insertSessionPrompt() {
   return inbound[0]?.text ?? "";
 }
 
+/** The per-file source facts. They moved out of `ttsSkills` in phase 6, when
+ * that table became the published skill catalog. */
 const facts = (t: ReturnType<typeof convexTest>) =>
+  t.run(async (ctx) => ctx.db.query("modelOfTomFiles").collect());
+const catalog = (t: ReturnType<typeof convexTest>) =>
   t.run(async (ctx) => ctx.db.query("ttsSkills").collect());
 const publication = (t: ReturnType<typeof convexTest>) =>
   t.run(async (ctx) => ctx.db.query("modelOfTomPublication").first());
 
 describe("model-of-tom publication", () => {
-  it("stores rendered layers separately from source file facts", async () => {
+  it("stores the operate layer separately from the source file facts", async () => {
     const t = convexTest({ schema, modules });
     expect(await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload())).toEqual({ files: 3, deleted: 0, forced: false });
     const rows = await facts(t);
@@ -124,51 +116,56 @@ describe("model-of-tom publication", () => {
       expect.objectContaining({ name: "agent-rules", sourcePath: FILES[0].path, body: FILES[0].body, bytes: 14, commit: COMMIT, pushed: false }),
     ]));
     expect(await t.run((ctx) => modelOfTomPrelude(ctx, ["operate"]))).not.toContain(FILES[0].body);
-    expect(await publication(t)).toMatchObject({ key: "current", commit: COMMIT, committedAt: COMMITTED_AT, pushed: false, ...LAYERS, headers: HEADERS });
+    expect(await publication(t)).toMatchObject({
+      key: "current", commit: COMMIT, committedAt: COMMITTED_AT, pushed: false, operate: LAYERS.operate, headers: HEADERS,
+    });
   });
 
-  it("serves the exact header and layers in canonical order, without trimming", async () => {
+  it("drops the two layers that became skills, and their selections with them", async () => {
     const t = convexTest({ schema, modules });
     await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload());
-    const text = await t.run((ctx) => modelOfTomPrelude(ctx, ["know", "operate"]));
-    expect(text).toBe(`${HEADERS[4].header}\n\n${LAYERS.operate}\n\n${LAYERS.know}`);
+    const stored = await publication(t);
+    expect(stored?.write).toBeUndefined();
+    expect(stored?.know).toBeUndefined();
+    // One selection remains, so one header is stored however many were posted.
+    expect(stored?.headers.map((header: { layers: string[] }) => header.layers.join(","))).toEqual(["operate"]);
+    const text = await t.run((ctx) => modelOfTomPrelude(ctx, ["operate"]));
+    expect(text).toBe(`${HEADERS[0].header}\n\n${LAYERS.operate}`);
     expect(text).not.toContain("write layer");
+    expect(text).not.toContain("know layer");
+  });
+
+  it("accepts a post that still carries the retired layers and headers", async () => {
+    const t = convexTest({ schema, modules });
+    // The publisher narrows on its own schedule; a base refused over text
+    // nothing reads would be a night with no prefix at all.
+    const retired = [
+      ...HEADERS,
+      { layers: ["write"], header: `${MODEL_OF_TOM_HEADER} (WikiTom commit ${COMMIT}): model-of-tom/writing.md` },
+      { layers: ["operate", "write"], header: `${MODEL_OF_TOM_HEADER} (WikiTom commit ${COMMIT}): model-of-tom/agent-rules.md, model-of-tom/writing.md` },
+    ];
+    await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ headers: retired }));
+    expect((await publication(t))?.headers).toEqual(HEADERS);
+  });
+
+  it("leaves the skill catalog alone — two stores, two posts, two failures", async () => {
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("ttsSkills", {
+        name: "know-research", group: "know", description: "Tom's research.",
+        body: "the research body", references: [], sourcePaths: ["model-of-tom/areas/research.md"],
+        bytes: 17, commit: COMMIT, syncedAt: COMMITTED_AT, pushed: true,
+      });
+    });
+    await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload());
+    expect((await catalog(t)).map((row) => row.name)).toEqual(["know-research"]);
   });
 
   it("fails with the exact missing-layer error rather than a fallback", async () => {
     const t = convexTest({ schema, modules });
+    await expect(t.run((ctx) => modelOfTomPrelude(ctx, ["operate"]))).rejects.toThrow("model-of-tom layer operate is not stored");
+    await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload());
     await expect(t.run((ctx) => modelOfTomPrelude(ctx, ["write"]))).rejects.toThrow("model-of-tom layer write is not stored");
-  });
-
-  it("backfills the singleton once from the existing facts with the shared layer order", async () => {
-    const t = convexTest({ schema, modules });
-    await t.run(async (ctx) => {
-      for (const file of BACKFILL_FILES) {
-        await ctx.db.insert("ttsSkills", {
-          name: file.path.slice("model-of-tom/".length, -3),
-          body: file.body,
-          sourcePath: file.path,
-          bytes: file.body.length,
-          commit: COMMIT,
-          syncedAt: COMMITTED_AT,
-          pushed: false,
-        });
-      }
-    });
-    expect(await t.action(internal.ttsSkills.backfillLayers, {})).toEqual({
-      files: BACKFILL_FILES.length,
-      commit: COMMIT,
-    });
-    expect(await facts(t)).toHaveLength(BACKFILL_FILES.length);
-    expect(await t.run((ctx) => modelOfTomPrelude(ctx, ["write", "operate"]))).toBe(
-      `${MODEL_OF_TOM_HEADER} (WikiTom commit ${COMMIT}): model-of-tom/agent-rules.md, model-of-tom/writing.md\n\n── model-of-tom/agent-rules.md ──\nsource operate\n\n── model-of-tom/writing.md ──\nsource write`,
-    );
-    const know = await t.run((ctx) => modelOfTomPrelude(ctx, ["know"]));
-    expect(know).toContain("── model-of-tom/areas/admin.md ──\nsource admin");
-    expect(know).not.toContain("updated: 2026-09-09");
-    await expect(t.action(internal.ttsSkills.backfillLayers, {})).rejects.toThrow(
-      "model-of-tom publication is already stored",
-    );
   });
 
   it("refuses a stale publication unless a named force permits the rollback", async () => {
@@ -181,19 +178,19 @@ describe("model-of-tom publication", () => {
     expect((await publication(t))?.commit).toBe(rollback);
   });
 
-  it("requires every layer, every canonical header, nonempty unique source files, and integer bytes", async () => {
+  it("requires the operate layer, its canonical header, nonempty unique source files, and integer bytes", async () => {
     const t = convexTest({ schema, modules });
-    await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ layers: { ...LAYERS, know: "  " } }))).rejects.toThrow("model-of-tom layer know is blank");
-    await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ headers: HEADERS.slice(0, 6) }))).rejects.toThrow(/canonical selection/);
-    await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ headers: [{ ...HEADERS[0], header: HEADERS[0].header.replace(COMMIT, "deadbeef".repeat(5)) }, ...HEADERS.slice(1) ] }))).rejects.toThrow(/posted commit/);
-    await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ headers: [{ ...HEADERS[0], header: HEADERS[0].header.replace("agent-rules.md", "../agent-rules.md") }, ...HEADERS.slice(1) ] }))).rejects.toThrow(/parseable file list/);
+    await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ layers: { ...LAYERS, operate: "  " } }))).rejects.toThrow("model-of-tom layer operate is blank");
+    await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ headers: [] }))).rejects.toThrow(/canonical selection/);
+    await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ headers: [{ ...HEADERS[0], header: HEADERS[0].header.replace(COMMIT, "deadbeef".repeat(5)) }] }))).rejects.toThrow(/posted commit/);
+    await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ headers: [{ ...HEADERS[0], header: HEADERS[0].header.replace("agent-rules.md", "../agent-rules.md") }] }))).rejects.toThrow(/parseable file list/);
     await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ files: [] }))).rejects.toThrow(/no files posted/);
     await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ files: [{ ...FILES[0], body: "  " }] }))).rejects.toThrow(/body .* non-empty/);
     await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ files: [FILES[0], FILES[0]] }))).rejects.toThrow(/path posted twice/);
     await expect(t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload({ files: [{ ...FILES[0], bytes: 1.5 }] }))).rejects.toThrow(/nonnegative integer/);
   });
 
-  it("only strips the byte-exact current all-layer prelude and refuses a stale header", () => {
+  it("only strips the byte-exact current prelude and refuses a stale header", () => {
     const current = modelOfTomText({ commit: COMMIT, syncedAt: COMMITTED_AT, pushed: false, ...LAYERS, headers: HEADERS });
     expect(withoutModelOfTomPrelude(`  ${current}\n\ncontinue`, current)).toBe("continue");
     const stale = current.replace(COMMIT, "feedface1");
@@ -202,11 +199,11 @@ describe("model-of-tom publication", () => {
 });
 
 describe("model-of-tom caller contract", () => {
-  // THE KNOW LAYER IS NO LONGER A UNIT ANY CALLER RECEIVES (the dynamic-context
-  // round): every selection below is the STABLE PREFIX — the map, the operate
-  // rules, and the write layer when the run's output reaches Tom — and what the
-  // run needs out of the know layer is expanded for its own subject, with the
-  // rest one line each in the fetchable block (convex/ttsContext.ts).
+  // NO CALLER RECEIVES A LAYER BUT `operate` (the unified agent ecosystem,
+  // phase 6). The know layer stopped being a unit any caller received in the
+  // dynamic-context round; the write layer followed it when `write` became a
+  // skill. What a run needs beyond the operate rules it LOADS BY NAME from the
+  // grant block (convex/ttsContext.ts).
   it("gives every caller exactly its selected layers", async () => {
     const callers: {
       name: string;
@@ -220,22 +217,22 @@ describe("model-of-tom caller contract", () => {
       },
       {
         name: "worker/jobs/plan-graphs.mjs",
-        layers: ["operate", "write"],
+        layers: ["operate"],
         prompt: (prelude) => preparePrompt({ statement: "Plan the contract", source: "test", createdAt: 0 }, null, "2026-09-09", prelude),
       },
       {
         name: "worker/jobs/poll-gmail.mjs",
-        layers: ["operate", "write"],
+        layers: ["operate"],
         prompt: (prelude) => gmailTriagePrompt(prelude, [{ id: "mail-1", from: "test@example.com", subject: "Contract", snippet: "body" }]),
       },
       {
         name: "worker/jobs/poll-canvas.mjs",
-        layers: ["operate", "write"],
+        layers: ["operate"],
         prompt: (prelude) => canvasTriagePrompt(prelude, [{ id: "canvas-1", courseCode: "CS", title: "Contract", body: "body" }]),
       },
       {
         name: "worker/jobs/apply-time-notes.mjs",
-        layers: ["operate", "write"],
+        layers: ["operate"],
         prompt: (prelude) => timeNotePrompt(
           { text: "Move it to Friday", context: { kind: "todo", todo: null } },
           { nyCalendarDay: "2026-09-09", now: Date.UTC(2026, 8, 9, 12), timezone: "America/New_York" },
@@ -244,12 +241,12 @@ describe("model-of-tom caller contract", () => {
       },
       {
         name: "worker/jobs/weekly.mjs",
-        layers: ["operate", "write"],
+        layers: ["operate"],
         prompt: (prelude) => buildAgendaPrompt({ writingStandard: prelude, factLines: [], priorLines: [] }),
       },
       {
         name: "insertSession",
-        layers: ["operate", "write"],
+        layers: ["operate"],
         prompt: () => insertSessionPrompt(),
       },
       {
@@ -290,12 +287,20 @@ describe("POST /tts/model-of-tom", () => {
     expect((await publication(t))?.operate).toBe(LAYERS.operate);
   });
 
+  it("accepts a post that names operate alone", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    expect((await send(t, payload({ layers: { operate: LAYERS.operate } }))).status).toBe(200);
+    expect((await publication(t))?.operate).toBe(LAYERS.operate);
+  });
+
   it("rejects malformed layers, headers, and file metadata before mutation", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
     expect((await send(t, payload({ pushed: undefined }))).status).toBe(400);
     expect((await send(t, payload({ commit: "0123abcd" }))).status).toBe(400);
-    expect((await send(t, payload({ layers: { operate: "x" } }))).status).toBe(400);
+    expect((await send(t, payload({ layers: {} }))).status).toBe(400);
+    expect((await send(t, payload({ layers: { operate: LAYERS.operate, nope: "x" } }))).status).toBe(400);
     expect((await send(t, payload({ headers: [] }))).status).toBe(400);
     expect((await send(t, payload({ files: [{ path: "tts/spec.md", body: "x", bytes: 2 }] }))).status).toBe(400);
     expect((await send(t, payload({ files: [{ path: FILES[0].path, bytes: FILES[0].bytes }] }))).status).toBe(400);
@@ -318,8 +323,8 @@ describe("worker context routes", () => {
     ] as const) {
       const response = await t.fetch(path, { method, headers: { "X-TTS-Key": "s3cret" } });
       expect(response.status).toBe(503);
-      // The map goes to every run now, so `operate` is the first layer the
-      // assembler misses when nothing is published.
+      // The map goes to every run now, so `operate` is the first — and only —
+      // layer the assembler misses when nothing is published.
       await expect(response.json()).resolves.toEqual({ error: "model-of-tom layer operate is not stored" });
     }
   });
