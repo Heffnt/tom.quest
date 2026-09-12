@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { BRIEF_RULES, RULES, failuresFor } from "./check-writing-standard.mjs";
+import {
+  BRIEF_RULES,
+  MAX_BRIEF_CHARS,
+  RULES,
+  countSentences,
+  failuresFor,
+} from "./check-writing-standard.mjs";
 
 /** A minimal document that satisfies every mechanical rule, so a test can add
  *  exactly one thing and see exactly one rule react. */
@@ -101,16 +107,120 @@ describe("the structural rules", () => {
 
 describe("stored briefs", () => {
   // Briefs are markdown by construction (convex/schema.ts), and every rule in
-  // RULES is a rule of the HTML-document form. BRIEF_RULES is empty on
-  // purpose; this pins that the checker walks briefs against a rule set that
-  // does not demand HTML of them.
+  // RULES is a rule of the HTML-document form — none of that shape is
+  // demanded of a brief. BRIEF_RULES instead holds the prepare prompt's own
+  // mechanical demands (below), so a plain-prose brief that meets them passes
+  // even though it is not HTML at all.
   it("applies no HTML-form rule to a markdown brief", () => {
-    expect(BRIEF_RULES).toEqual([]);
-    expect(failuresFor("# A brief\n\nPlain markdown prose.", BRIEF_RULES)).toEqual([]);
+    const brief = "Plain prose in three short sentences. It never opens a tag. It ends here.";
+    expect(failuresFor(brief, BRIEF_RULES)).toEqual([]);
   });
 
   it("would fail every HTML-form rule if RULES were applied to one", () => {
     expect(failuresFor("# A brief\n\nPlain markdown prose.", RULES).length).toBeGreaterThan(0);
+  });
+});
+
+describe("BRIEF_RULES — the prepare prompt's own demands, made mechanical", () => {
+  const CLEAN_BRIEF =
+    "Fix the flaky retry loop in the poller. It drops events under load. " +
+    "Ship the patch behind a feature flag.";
+
+  it("is exactly the four rules named in the brief, in that order", () => {
+    expect(BRIEF_RULES.length).toBe(4);
+    expect(BRIEF_RULES.map((r) => r.id)).toEqual([
+      "brief-sentences",
+      "brief-ellipsis",
+      "brief-markup",
+      "brief-length",
+    ]);
+  });
+
+  it("every rule reads the document view", () => {
+    for (const rule of BRIEF_RULES) {
+      expect(rule.on).toBe("document");
+    }
+  });
+
+  it("a clean brief passes all four", () => {
+    expect(CLEAN_BRIEF.length).toBeLessThan(MAX_BRIEF_CHARS);
+    expect(failuresFor(CLEAN_BRIEF, BRIEF_RULES)).toEqual([]);
+  });
+
+  describe("brief-sentences", () => {
+    it("fails a brief with too few sentences (one, no terminator)", () => {
+      expect(failuresFor("Fix the poller", BRIEF_RULES)).toEqual(["brief-sentences"]);
+    });
+
+    it("fails a brief with too many sentences (six)", () => {
+      expect(failuresFor("One. Two. Three. Four. Five. Six.", BRIEF_RULES)).toEqual([
+        "brief-sentences",
+      ]);
+    });
+
+    it("fails an empty or whitespace-only brief (zero sentences counted)", () => {
+      expect(countSentences("   ")).toBe(0);
+      expect(failuresFor("   ", BRIEF_RULES)).toContain("brief-sentences");
+    });
+  });
+
+  describe("brief-ellipsis", () => {
+    it("fails a brief with a literal ... ", () => {
+      expect(
+        failuresFor(
+          "Fix the poller now. It might work eventually... we will see.",
+          BRIEF_RULES,
+        ),
+      ).toEqual(["brief-ellipsis"]);
+    });
+
+    it("fails a brief with a unicode … ", () => {
+      expect(
+        failuresFor("Fix the poller now. It might work eventually… we will see.", BRIEF_RULES),
+      ).toEqual(["brief-ellipsis"]);
+    });
+  });
+
+  describe("brief-markup", () => {
+    it("fails a brief opening with a markdown heading", () => {
+      expect(
+        failuresFor("# Fix the poller\n\nIt drops events. Ship it now.", BRIEF_RULES),
+      ).toEqual(["brief-markup"]);
+    });
+
+    it("fails a brief carrying a list bullet", () => {
+      expect(
+        failuresFor("Fix the poller. It drops events under load.\n- ship the patch", BRIEF_RULES),
+      ).toEqual(["brief-markup"]);
+    });
+
+    it("fails a brief carrying a numbered list item", () => {
+      expect(
+        failuresFor("Fix the poller. It drops events under load.\n1. ship the patch", BRIEF_RULES),
+      ).toEqual(["brief-markup"]);
+    });
+
+    it("fails a brief carrying a code fence", () => {
+      expect(
+        failuresFor("Fix the poller. It drops events under load.\n```\nretry()\n```", BRIEF_RULES),
+      ).toEqual(["brief-markup"]);
+    });
+  });
+
+  describe("brief-length", () => {
+    it("fails a brief over MAX_BRIEF_CHARS", () => {
+      const long = `Fix the poller. ${"x".repeat(410)} Ship it now.`;
+      expect(long.length).toBeGreaterThan(MAX_BRIEF_CHARS);
+      expect(failuresFor(long, BRIEF_RULES)).toEqual(["brief-length"]);
+    });
+
+    it("passes a brief exactly at MAX_BRIEF_CHARS", () => {
+      const prefix = "Fix the poller. ";
+      const suffix = " Ship it now.";
+      const atLimit = prefix + "x".repeat(MAX_BRIEF_CHARS - prefix.length - suffix.length) + suffix;
+      expect(atLimit.length).toBe(MAX_BRIEF_CHARS);
+      expect(failuresFor(atLimit, BRIEF_RULES)).toEqual([]);
+    });
   });
 });
 
