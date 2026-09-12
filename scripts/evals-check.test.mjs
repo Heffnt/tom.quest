@@ -141,6 +141,23 @@ describe("gate, continued", () => {
     expect(WATCHED_PATHS).toContain("evals/golden/**");
   });
 
+  // The skill table, its generator, the router that grants them, and the set
+  // the triggers are part of. Each decides what a run's prompt carries, which
+  // is what this list means by a context file — while the harness's own files
+  // stay out, because watching them fires a fifty-minute run on every change to
+  // the evals code itself.
+  it("watches the skill table and its generator, and still not the harness", () => {
+    expect(WATCHED_PATHS).toContain("scripts/skills.mjs");
+    expect(WATCHED_PATHS).toContain("scripts/publish-skills.mjs");
+    expect(WATCHED_PATHS).toContain("worker/jobs/skill-router.mjs");
+    expect(WATCHED_PATHS).toContain("evals/triggers/**");
+    expect(WATCHED_PATHS).not.toContain("worker/jobs/evals.mjs");
+    expect(WATCHED_PATHS).not.toContain("scripts/evals-check.mjs");
+    expect(matchesWatched("scripts/skills.mjs")).toBe(true);
+    expect(matchesWatched("evals/triggers/skill-know-research.json")).toBe(true);
+    expect(matchesWatched("worker/jobs/evals.mjs")).toBe(false);
+  });
+
   // A capability item is one that asks whether the system can now do a thing
   // it could not do before. gate() partitions on WHAT THE BASE RUN DID, never
   // on what the item calls itself, and this pins that: a capability the base
@@ -255,6 +272,26 @@ describe("the golden-item rule", () => {
   it("is satisfied by an item under evals/golden or evals/triggers", () => {
     expect(goldenItemRule([...WATCHED, "evals/golden/runs/x.json"], "")).toBe(true);
     expect(goldenItemRule([...WATCHED, "evals/triggers/delegate-refusal.md"], "")).toBe(true);
+  });
+
+  // The skill table is now a watched context file, so a change to it owes an
+  // item like any other. A trigger file IS that item — ITEM_PREFIXES has held
+  // evals/triggers/ since the partition landed — and the hatch still opens.
+  // Checked rather than assumed: the rule and the prefix list were written on
+  // different branches and neither one names the other.
+  it("makes a change to the skill table owe a trigger item, and still opens to the hatch", () => {
+    const changed = ["scripts/skills.mjs"];
+    expect(goldenItemRule(changed, "Split one description shape in two.")).toBe(false);
+    expect(goldenItemRule([...changed, "evals/triggers/skill-know-research.json"], "")).toBe(true);
+    expect(goldenItemRule(changed, "Split one description shape in two.\n\nevals: no-item no rule changed, only a comment\n")).toBe(true);
+    const head = run();
+    const verdict = gate(head, run({ sha: "9f8e7d6c" }), {
+      changed,
+      prBody: "evals: no-item no rule changed, only a comment",
+    });
+    expect(verdict).toMatchObject({ ok: true, goldenCoverage: true });
+    expect(report(head, run({ sha: "9f8e7d6c" }), verdict).join("\n"))
+      .toContain("golden item excused: no rule changed, only a comment");
   });
 
   it("is excused by the trailer, and the check prints the reason it gave", () => {

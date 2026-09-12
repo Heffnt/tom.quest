@@ -50,10 +50,22 @@ export const POLL_TIMEOUT_MS = 75 * 60 * 1000;
  * changes his outputs with nothing scoring them, which is the exact failure
  * the whole gate exists to prevent.
  *
- * NOTHING NEW IS WATCHED BEYOND THAT RECONCILIATION. evals/golden/runs/** is
- * already inside evals/golden/**, and the harness's own files (this one,
- * worker/jobs/evals.mjs) are not context files: watching them would fire a
- * fifty-minute run on every change to the evals code itself.
+ * FOUR PATHS WERE ADDED WHEN THE SKILLS LANDED, and each is a context file in
+ * exactly the sense this list means — a file whose content reaches a run's
+ * prompt. scripts/skills.mjs is the table that decides what the skill set IS
+ * and writes every description a run reads before it loads one;
+ * scripts/publish-skills.mjs is the generator that turns that table into the
+ * directories; worker/jobs/skill-router.mjs is what decides which of them a run
+ * is granted. A change to any of the three changes what Tom's jobs are given
+ * with nothing else scoring it. evals/triggers/** is watched for the reason
+ * evals/golden/** is: it is the set, and a change to the set changes what a
+ * comparison means.
+ *
+ * THE HARNESS'S OWN FILES ARE STILL NOT WATCHED. This one and
+ * worker/jobs/evals.mjs are the machinery that runs the measurement, not the
+ * context being measured, and watching them would fire a fifty-minute run on
+ * every change to the evals code itself. evals/golden/runs/** needs no entry
+ * either: it is already inside evals/golden/**.
  */
 export const WATCHED_PATHS = [
   "AGENTS.md",
@@ -62,6 +74,8 @@ export const WATCHED_PATHS = [
   "**/CLAUDE.md",
   "model-of-tom/**",
   "scripts/prelude.mjs",
+  "scripts/skills.mjs",
+  "scripts/publish-skills.mjs",
   "convex/ttsShared.ts",
   "convex/claudeSessions.ts",
   "convex/ttsSkills.ts",
@@ -70,9 +84,11 @@ export const WATCHED_PATHS = [
   "worker/jobs/plan-graphs.mjs",
   "worker/jobs/weekly.mjs",
   "worker/jobs/delegate.mjs",
+  "worker/jobs/skill-router.mjs",
   "worker/bin/tts-ask",
   "evals/golden/**",
   "evals/tasks/**",
+  "evals/triggers/**",
 ];
 
 /** Where a golden item lives. A change that ships one of these is the thing

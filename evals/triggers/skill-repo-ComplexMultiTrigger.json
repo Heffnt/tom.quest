@@ -1,0 +1,84 @@
+{
+  "name": "repo-ComplexMultiTrigger",
+  "kind": "skill",
+  "note": "Whether a run with no CMT checkout open reaches for its rules, and whether a run standing inside CMT leaves the skill alone because the CLI has already loaded AGENTS.md.",
+  "cases": [
+    {
+      "id": "skill-repo-ComplexMultiTrigger-pos-canonical-home",
+      "negative": false,
+      "prompt": "From a session with no CMT checkout, say what has to happen before shared code is written there.",
+      "why": "routing through a canonical home is a standing order of that repository, and a run that has not read it re-spells a registry nobody wanted a second copy of",
+      "expect": {
+        "mustName": [
+          "canonical home"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-repo-ComplexMultiTrigger-pos-where-the-law-is",
+      "negative": false,
+      "prompt": "From a session with no CMT checkout, say where that repository's law lives.",
+      "why": "the rules file routes to the authority rather than restating it, and a run that does not load it answers out of the code instead",
+      "expect": {
+        "mustName": [
+          "constitution"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-repo-ComplexMultiTrigger-pos-new-test",
+      "negative": false,
+      "prompt": "From a session with no CMT checkout, say what a new test there ships with.",
+      "why": "the witness-fault rule is a standing order of that repository, and a test written without it is red at its own gate",
+      "expect": {
+        "mustName": [
+          "witness"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-repo-ComplexMultiTrigger-neg-standing-inside",
+      "negative": true,
+      "prompt": "You are in the ComplexMultiTrigger checkout, adding a sweep method. Say what to change.",
+      "why": "a run standing inside CMT has already been given AGENTS.md by the CLI, so the skill must stay silent rather than carry a second copy of it into the prompt",
+      "expect": {
+        "mustNotName": [
+          "repo-ComplexMultiTrigger",
+          "tom-repo-ComplexMultiTrigger"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-repo-ComplexMultiTrigger-neg-guardrails",
+      "negative": true,
+      "prompt": "Name the three Guardrails jobs tom.Quest's merge bar needs green.",
+      "why": "a merge bar belongs to another repository, and CMT's standing orders have no reach over it",
+      "expect": {
+        "mustNotName": [
+          "canonical home",
+          "constitution",
+          "witness fault"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-repo-ComplexMultiTrigger-neg-evidence-home",
+      "negative": true,
+      "prompt": "Say where the evidence entry for a bullet in the vault's model-of-tom/ goes.",
+      "why": "the vault's two-record rule is answered out of the vault, and CMT's doctrines are not part of the answer",
+      "expect": {
+        "mustNotName": [
+          "canonical home",
+          "constitution",
+          "witness fault"
+        ]
+      },
+      "confirmedByTom": false
+    }
+  ]
+}

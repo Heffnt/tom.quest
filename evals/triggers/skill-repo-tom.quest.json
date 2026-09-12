@@ -1,0 +1,86 @@
+{
+  "name": "repo-tom.quest",
+  "kind": "skill",
+  "note": "Whether a run with no tom.quest checkout open reaches for its rules, and whether a run standing inside tom.quest leaves the skill alone because the CLI has already loaded AGENTS.md.",
+  "cases": [
+    {
+      "id": "skill-repo-tom.quest-pos-deploy",
+      "negative": false,
+      "prompt": "You are working in ComplexMultiTrigger. Tom asks how a change reaches tom.Quest's production site. Answer him.",
+      "why": "the deploy is one line of another repository's rules, and a run with no checkout of it open has nowhere else to read that line",
+      "expect": {
+        "mustName": [
+          "push",
+          "main"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-repo-tom.quest-pos-merge-bar",
+      "negative": false,
+      "prompt": "From a session with no tom.quest checkout, say which checks have to be green before one of its branches may merge.",
+      "why": "the merge bar is named in that repository's rules and nowhere else, so an answer assembled from the workflow names would list the wrong set",
+      "expect": {
+        "mustName": [
+          "Guardrails"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-repo-tom.quest-pos-roles",
+      "negative": false,
+      "prompt": "A session in the vault is writing about tom.Quest's account model. Name the roles above `user`.",
+      "why": "the roles are a fact of that repository, and a run outside it either loads them or invents them",
+      "expect": {
+        "mustName": [
+          "admin",
+          "agent"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-repo-tom.quest-neg-standing-inside",
+      "negative": true,
+      "prompt": "You are in the tom.quest checkout, adding a quest route. Say what to change.",
+      "why": "a run standing inside tom.quest has already been given AGENTS.md by the CLI, so the skill must stay silent rather than carry a second copy of it into the prompt",
+      "expect": {
+        "mustNotName": [
+          "repo-tom.quest",
+          "tom-repo-tom.quest"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-repo-tom.quest-neg-cmt-question",
+      "negative": true,
+      "prompt": "Say what `cmt/methods/AGENTS.md` is the operating knowledge for.",
+      "why": "a question about another repository's rules is answered out of that repository, and tom.Quest's stack is not part of the answer",
+      "expect": {
+        "mustNotName": [
+          "Vercel",
+          "Convex Auth",
+          "Guardrails"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-repo-tom.quest-neg-wikitom-commit",
+      "negative": true,
+      "prompt": "Write the commit message for a change under the vault's model-of-tom/.",
+      "why": "a commit in another repository takes none of tom.Quest's deployment or verification rules",
+      "expect": {
+        "mustNotName": [
+          "Vercel",
+          "Guardrails",
+          "pnpm"
+        ]
+      },
+      "confirmedByTom": false
+    }
+  ]
+}
