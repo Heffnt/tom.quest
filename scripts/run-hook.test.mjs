@@ -107,14 +107,17 @@ describe("run lifecycle hook", () => {
     const result = run(payload, { ...f, env: { RUN_HOST: "" } });
     expect(result.status).toBe(0);
     const envelope = JSON.parse(fs.readFileSync(registrationSidecarPath(payload.transcript_path), "utf8"));
-    // The stable prefix session-start-hook.mjs loads is operate and write. The
-    // know layer is expanded per subject, so it is in neither list.
+    // session-start-hook.mjs loads the operate layer and nothing else, and
+    // grants write as a skill. The know layer is in neither list: its pages are
+    // ten skills the launcher grants by subject, and a session has no subject.
     expect(envelope.registration).toMatchObject({
       host: null,
       origin: "laptop",
       layersKnown: true,
-      layersGiven: ["operate", "write"],
+      layersGiven: ["operate"],
       layersDenied: [],
+      skillsGranted: ["write"],
+      skillsRefused: [],
     });
   });
 
