@@ -8,6 +8,34 @@ import { parseConfirmReply } from "./ttsSlack";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
+/**
+ * Run every function the test scheduled, and return once none is left.
+ *
+ * `finishAllScheduledFunctions` on its own is not enough, and the same race is
+ * written out in convex/ttsRulings.test.ts: convex-test puts a runAfter(0) job
+ * in the `pending` state and starts it from a real setTimeout, while that
+ * helper waits only for jobs already RUNNING. Called the instant the mutation
+ * returns, it can find nothing to wait for and come back before the scheduled
+ * function has written anything. On this machine the timer wins; on a loaded
+ * CI runner it does not, which is a flake the merge gate cannot absorb — the
+ * tests row is written ONCE per commit, so one red run bars that head forever.
+ * Yielding a macrotask first lets the timer fire, and the loop re-checks the
+ * queue until it is empty.
+ */
+async function drain(t: ReturnType<typeof convexTest>) {
+  for (let pass = 0; pass < 50; pass++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await t.finishInProgressScheduledFunctions();
+    const left = await t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter(
+        (job) => job.state.kind === "pending" || job.state.kind === "inProgress",
+      ).length,
+    );
+    if (left === 0) return;
+  }
+  throw new Error("scheduled functions never drained");
+}
+
 const SOURCE_HASH = "a".repeat(64);
 const STORED_HASH = "b".repeat(64);
 const PREFIX_HASH = "c".repeat(64);
@@ -476,7 +504,7 @@ describe("a reply in a session becomes a label", () => {
       finalize: [{ seq: 3, turn: 2, kind: "user", content: { text: "no, do the visa one first" } }],
       inboundUpdates: [{ id: tomTurn, status: "delivered" }],
     });
-    await t.finishAllScheduledFunctions(() => {});
+    await drain(t);
     const rows = await labels(t);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
