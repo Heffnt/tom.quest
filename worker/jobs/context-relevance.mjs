@@ -31,7 +31,7 @@
 // worker/ is deployed to the Jarvis Box, where Node loads no TypeScript, and
 // Convex bundles this file into a runtime with no filesystem. The only imports
 // are two files both sides already load — markdown-sections.mjs for section
-// slicing and frontmatter, prelude-layers.mjs for the one layer table (a second
+// slicing and frontmatter, skills.mjs for the one layer table (a second
 // copy of "which file is in which layer" is exactly the drift this module
 // exists to prevent).
 
@@ -41,7 +41,7 @@ import {
   parseFrontmatter,
   sectionSpan,
 } from "./markdown-sections.mjs";
-import { PRELUDE_LAYERS, PRELUDE_LAYER_NAMES } from "../../scripts/prelude-layers.mjs";
+import { PRELUDE_LAYERS, PRELUDE_LAYER_NAMES } from "../../scripts/skills.mjs";
 
 export class ContextError extends Error {}
 

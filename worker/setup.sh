@@ -167,10 +167,16 @@ cp "$WORKER_DIR"/../scripts/session-start-hook.mjs /opt/tts/scripts/session-star
 cp "$WORKER_DIR"/../scripts/run-hook.mjs /opt/tts/scripts/run-hook.mjs
 cp "$WORKER_DIR"/../scripts/prelude.mjs /opt/tts/scripts/prelude.mjs
 # prelude.mjs's own import graph has to land in the same shape it has in the
-# repo: the layer table beside it, and the relevance body one directory over
-# (prelude.mjs reaches for ../worker/jobs/context-relevance.mjs). Without both
-# copies the assembler cannot load on the box at all.
-cp "$WORKER_DIR"/../scripts/prelude-layers.mjs /opt/tts/scripts/prelude-layers.mjs
+# repo: scripts/skills.mjs beside it — one file holding both the layer table and
+# the skill set — and the relevance body one directory over (prelude.mjs reaches
+# for ../worker/jobs/context-relevance.mjs). Without both copies the assembler
+# cannot load on the box at all.
+cp "$WORKER_DIR"/../scripts/skills.mjs /opt/tts/scripts/skills.mjs
+# The skill generator goes beside it, not because prelude.mjs wants it, but
+# because the nightly runs it against /root/wikitom to rebuild the box's own
+# skill directories. It imports ./skills.mjs by that relative path, so scripts/
+# is the one place it can live and still load.
+cp "$WORKER_DIR"/../scripts/publish-skills.mjs /opt/tts/scripts/publish-skills.mjs
 cp "$WORKER_DIR"/jobs/context-relevance.mjs /opt/tts/worker/jobs/context-relevance.mjs
 # The pull-request check's body, beside the jobs rather than under scripts/:
 # evals.mjs imports gate() from it so the box stamps a run with the SAME rule

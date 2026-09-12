@@ -103,7 +103,7 @@ export function headingsOf(text) {
 /**
  * The assembler's own metadata for a set of layers. Run, never re-implemented:
  * the layer selection, the area expansion and the file order are settled in
- * scripts/prelude-layers.mjs and read by two assemblers already, and a third
+ * scripts/skills.mjs and read by two assemblers already, and a third
  * spelling of them here would drift the day WikiTom gains a file.
  */
 export function readLayers(wikitom, names, run = execFileSync) {

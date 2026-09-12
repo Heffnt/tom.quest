@@ -126,7 +126,7 @@ export function delegatePrompt(ask, { layers, narrowList }) {
       : "";
   return [
     // No separate intent section: the know layer already carries
-    // model-of-tom/intent.md (scripts/prelude-layers.mjs), and a second copy
+    // model-of-tom/intent.md (scripts/skills.mjs), and a second copy
     // would both repeat it and put a fetched value in front of fixed text.
     layers.operate, "", layers.write, "", layers.know, "",
     "--- YOU ARE THE DELEGATE ---", "",

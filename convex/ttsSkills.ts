@@ -3,7 +3,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalAction, internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { MODEL_OF_TOM_HEADER } from "./ttsShared";
-import { PRELUDE_LAYERS } from "../scripts/prelude-layers.mjs";
+import { PRELUDE_LAYERS } from "../scripts/skills.mjs";
 import { parseFrontmatter } from "../worker/jobs/markdown-sections.mjs";
 
 export const MODEL_OF_TOM_LAYER_NAMES = ["operate", "write", "know"] as const;
