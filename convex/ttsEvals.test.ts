@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { internal } from "./_generated/api";
 import {
   COVERAGE_NOT_REQUIRED,
+  EVALS_REQUEST,
   EVALS_RUN,
   GOLDEN_MAX_ITEMS,
   GOLDEN_PER_VERDICT_MAX,
@@ -347,6 +348,105 @@ describe("an unaffected evals request", () => {
     expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
       sha: SHA,
       unaffected: false,
+    });
+  });
+});
+
+
+// Four pushes to one branch in a morning file four requests, and the box
+// serves one per pass at about thirty-five minutes: the check on the fourth
+// waits out three runs of shas nobody will merge and then fails on its own
+// seventy-five-minute deadline, which is what happened to #172 and #173 on
+// 2026-09-12. The queue names each pull request's head, and every older sha of
+// that pull request is handed out marked for a one-POST answer.
+describe("a superseded request", () => {
+  const REPO = "tom.quest";
+
+  // The rows are written DIRECTLY, with the `at` each one is ordered by. The
+  // door stamps Date.now(), so three requests filed inside one millisecond
+  // would leave the order this query depends on to the tie-break rather than
+  // to the test.
+  const file = (
+    t: TestConvex<typeof schema>,
+    at: number,
+    sha: string,
+    over: Record<string, unknown> = {},
+  ) =>
+    t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at,
+        kind: EVALS_REQUEST,
+        key: `${REPO}@${sha}`,
+        data: {
+          repo: REPO,
+          sha,
+          baseSha: "f5c1fb9",
+          pr: 173,
+          paths: ["model-of-tom/**"],
+          changed: ["model-of-tom/intent.md"],
+          prBody: null,
+          unaffected: false,
+          requestedAt: at,
+          ...over,
+        },
+      });
+    });
+
+  const answer = (t: TestConvex<typeof schema>, sha: string) =>
+    t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: 99,
+        kind: EVALS_RUN,
+        key: `${REPO}@${sha}`,
+        data: { repo: REPO, sha, superseded: true },
+      });
+    });
+
+  it("marks every older sha of the pull request with the newest one", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa");
+    await file(t, 2, "bbbbbbb");
+    await file(t, 3, "ccccccc");
+    // THE OLDEST IS STILL THE ONE HANDED OUT. The order does not change; what
+    // changes is what it costs to answer.
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      supersededBy: "ccccccc",
+    });
+    await answer(t, "aaaaaaa");
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "bbbbbbb",
+      supersededBy: "ccccccc",
+    });
+    await answer(t, "bbbbbbb");
+    // And the head itself is run, with nothing superseding it.
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "ccccccc",
+      supersededBy: null,
+    });
+  });
+
+  // A supersession is a fact about ONE branch. Two pull requests queued
+  // together are two live heads, and neither may answer the other away.
+  it("never supersedes across pull requests", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa", { pr: 172 });
+    await file(t, 2, "bbbbbbb", { pr: 173 });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      supersededBy: null,
+    });
+  });
+
+  // A check that sent no pull-request number is in the map for nothing: two
+  // shas that only look related are not a supersession.
+  it("never supersedes a request with no pull-request number", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa", { pr: null });
+    await file(t, 2, "bbbbbbb", { pr: null });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      supersededBy: null,
     });
   });
 });

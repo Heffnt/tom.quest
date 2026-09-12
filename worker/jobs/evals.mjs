@@ -43,6 +43,12 @@ export const JUDGE_TIMEOUT_MS = 3 * 60 * 1000;
  *  golden set, by ruledAt. The weekly run uses everything. */
 export const PR_ITEMS = 40;
 
+/** How many superseded requests one `--serve` pass will answer before leaving
+ *  the rest to the next tick. Each costs one POST and no model, so this is a
+ *  stop against a door that kept handing back the same request, not a budget
+ *  against cost. */
+export const SERVE_SUPERSEDED_LIMIT = 25;
+
 /**
  * How many times an item is tried at the head commit before one failure of it
  * is called a regression.
@@ -1654,6 +1660,34 @@ export function failedRun({ repo, sha, error, at }) {
   };
 }
 
+/**
+ * The row a head A LATER PUSH REPLACED is answered with, with no model run.
+ *
+ * Four pushes to one branch in a morning file four requests. The box serves
+ * the oldest unanswered one per pass and a pass is about thirty-five minutes,
+ * so the check on the fourth sha waits out three runs of shas nobody will ever
+ * merge and then fails on its own seventy-five-minute deadline — which is what
+ * happened to #172 and #173 on 2026-09-12. The queue names the head of each
+ * pull request (convex/ttsEvals.ts internalOldestEvalsRequest), and every sha
+ * that is not it is answered here in one POST.
+ *
+ * IT DENIES, and it must: `regressions: null` and `goldenCoverage: null` are
+ * what convex/ttsMerge.ts refuses on, so a stale sha can never carry a gate
+ * open. `error` carries the same sentence for readers older than this field —
+ * a copy of scripts/evals-check.mjs that predates the superseded branch still
+ * fails the check, and says why.
+ */
+export function supersededRun({ repo, sha, by, at }) {
+  return {
+    ...unscoredRun({ repo, sha, at }),
+    superseded: true,
+    supersededBy: by,
+    error: `superseded by ${String(by).slice(0, 7)}; re-run this check at the head of the branch`,
+    regressions: null,
+    goldenCoverage: null,
+  };
+}
+
 /** The word an unaffected row answers golden coverage with. One fact, three
  *  homes — scripts/evals-check.mjs COVERAGE_NOT_REQUIRED and convex/
  *  ttsEvals.ts's constant of the same name are the other two, and neither can
@@ -1812,6 +1846,27 @@ async function runAndPost(env, io, { repo, sha, base, limit, jobs, weekly, ablat
  * the runner as before.
  */
 export async function serveRequest(env, io, request, options = {}) {
+  // A LATER PUSH ALREADY REPLACED THIS HEAD, as the queue read it (convex/
+  // ttsEvals.ts internalOldestEvalsRequest). FIRST, before every other branch:
+  // it is the cheapest answer there is, and nothing else about a sha nobody
+  // will merge is worth learning.
+  if (
+    typeof request.supersededBy === "string" && request.supersededBy !== "" &&
+    request.supersededBy !== request.sha
+  ) {
+    const data = supersededRun({
+      repo: request.repo,
+      sha: request.sha,
+      by: request.supersededBy,
+      at: Date.now(),
+    });
+    await postRun(env, data);
+    console.log(
+      `[evals] ${request.repo}@${request.sha}: superseded by ` +
+        `${request.supersededBy.slice(0, 7)} — answered without a run`,
+    );
+    return data;
+  }
   // NOTHING WATCHED CHANGED. The Convex door usually answers a request like
   // this as it files it (convex/ttsEvals.ts), so one reaching the queue came
   // from a door that could not — and the answer is still the same row, written
@@ -1891,13 +1946,26 @@ async function main() {
   }
 
   if (options.serve) {
-    // One request per pass, so a cron tick is bounded.
-    const { request } = await convexFetch(env, "/tts/evals-request");
-    if (request === null || request === undefined) {
-      console.log("[evals] no unanswered request");
-      return;
+    // ONE SCORED REQUEST PER PASS, so a cron tick is bounded — and that is the
+    // only thing bounded, because it is the only thing that costs anything. A
+    // superseded request is one POST and no model, so the pass keeps taking
+    // them: a queue four dead pushes deep drains on THIS tick and the live
+    // head is served on it too, rather than one dead sha every five minutes.
+    // The count is a stop, not a budget: a door that kept handing back the
+    // same request would otherwise spin here forever.
+    for (let answered = 0; answered < SERVE_SUPERSEDED_LIMIT; answered += 1) {
+      const { request } = await convexFetch(env, "/tts/evals-request");
+      if (request === null || request === undefined) {
+        console.log("[evals] no unanswered request");
+        return;
+      }
+      const data = await serveRequest(env, io, request, options);
+      if (data?.superseded !== true) return;
     }
-    await serveRequest(env, io, request, options);
+    console.log(
+      `[evals] ${SERVE_SUPERSEDED_LIMIT} superseded requests answered this pass; ` +
+        `the rest wait for the next tick`,
+    );
     return;
   }
 

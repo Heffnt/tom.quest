@@ -273,6 +273,50 @@ describe("an unaffected row", () => {
   });
 });
 
+// The row the box posts for a head a later push replaced. It is never a run:
+// nothing was cloned and nothing was scored, and the only sentence worth
+// printing is which sha to look at instead.
+describe("a superseded row", () => {
+  const row = (over = {}) => ({
+    repo: "tom.quest",
+    sha: "2e08b28e9df",
+    superseded: true,
+    supersededBy: "0b1ca1fdeadbeef",
+    error: "superseded by 0b1ca1f; re-run this check at the head of the branch",
+    items: 0,
+    pass: 0,
+    fail: 0,
+    regressions: null,
+    goldenCoverage: null,
+    failures: [],
+    scoredIds: [],
+    tasks: { items: 0, pass: 0, fail: 0, failures: [] },
+    ...over,
+  });
+
+  it("fails, and names the sha to re-run at", () => {
+    const verdict = gate(row(), null, { changed: ["model-of-tom/intent.md"], prBody: "" });
+    expect(verdict).toMatchObject({ ok: false, reason: "superseded by 0b1ca1f, re-run at head" });
+    expect(verdict.regressions).toEqual([]);
+  });
+
+  it("reports two lines and no numbers", () => {
+    const lines = report(row(), null, gate(row(), null));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain("superseded by 0b1ca1f");
+    expect(lines[1]).toContain("Re-run this check at the head of the branch");
+    // No set line: there was no set, no base and nothing compared.
+    expect(lines.join(" ")).not.toContain("golden set");
+  });
+
+  // A row carrying BOTH fields — and every superseded row does — reads as the
+  // supersession, not as a run the box could not make.
+  it("is read before the error a run that failed would carry", () => {
+    expect(report(row(), null, gate(row(), null)).join(" "))
+      .not.toContain("the run could not be made");
+  });
+});
+
 describe("noItemTrailer", () => {
   it("reads the reason off its own line, anywhere in the body", () => {
     expect(noItemTrailer("Lands the narrow.\n\nevals: no-item pure deletion, no new behaviour\n")).toBe(

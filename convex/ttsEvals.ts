@@ -628,6 +628,19 @@ type EvalsRequest = {
   // without spending fifty minutes on it.
   unaffected: boolean;
   requestedAt: number;
+  // A LATER PUSH TO THE SAME PULL REQUEST already filed its own request, so
+  // this sha is not the head of anything any more. The box answers a request
+  // carrying this in one POST — no clone, no worktree, no model (worker/jobs/
+  // evals.mjs supersededRun) — so a morning of four pushes costs one run
+  // rather than four, and the check on the live head stops waiting out its
+  // seventy-five minutes behind three dead ones.
+  //
+  // DERIVED ON EVERY READ, NEVER STORED. It is a fact about the queue as it
+  // stands, not about the request as it was filed: the head of a branch moves
+  // with every push, and a field written at file time would say what was true
+  // then. A request that is the newest of its pull request carries null, and
+  // so does one whose check sent no pull-request number.
+  supersededBy: string | null;
 };
 
 function requestData(data: unknown): EvalsRequest | null {
@@ -648,6 +661,9 @@ function requestData(data: unknown): EvalsRequest | null {
       prBody: typeof value.prBody === "string" ? value.prBody : null,
       unaffected: value.unaffected === true,
       requestedAt: value.requestedAt,
+      // The queue decides this, not the row; internalOldestEvalsRequest fills
+      // it in on the one request it hands out.
+      supersededBy: null,
     }
     : null;
 }
@@ -820,9 +836,48 @@ export const internalEvalsRun = internalQuery({
   },
 });
 
+/**
+ * The newest requested sha of each pull request, read NEWEST FIRST.
+ *
+ * The key is the repo and the pull-request number, because that is what "the
+ * same branch" means to everything downstream: the check sends the number, a
+ * branch has one open pull request, and a sha belongs to one head. A request
+ * whose check sent NO number is not in the map at all and can supersede
+ * nothing — two shas that only look related are not a supersession.
+ *
+ * The rows come from a descending read, so the FIRST sha seen for a key is its
+ * newest and the rest are older. That direction matters: a window read from
+ * the newest end can only MISS a supersession (a pull request whose whole
+ * history fell off the end is simply served as before), while one read from
+ * the oldest end could name a stale sha as the head and answer the live one
+ * with a superseded row — a queue that silently refuses to run anything.
+ */
+function newestShaByPullRequest(rows: Doc<"dtsEvents">[]): Map<string, string> {
+  const newest = new Map<string, string>();
+  for (const row of rows) {
+    const request = requestData(row.data);
+    if (request === null || request.pr === null) continue;
+    const key = `${request.repo}#${request.pr}`;
+    if (!newest.has(key)) newest.set(key, request.sha);
+  }
+  return newest;
+}
+
 export const internalOldestEvalsRequest = internalQuery({
   args: {},
   handler: async (ctx): Promise<EvalsRequest | null> => {
+    // WHAT EACH PULL REQUEST'S HEAD IS NOW, read before the queue itself. A
+    // morning of four pushes to one branch files four requests, and the box
+    // serves one per pass at about thirty-five minutes: the check on the
+    // fourth waits out three runs of shas nobody will merge and then times
+    // out. Three of those four are answered here instead, in a POST each.
+    const newest = newestShaByPullRequest(
+      await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_at", (q) => q.eq("kind", EVALS_REQUEST))
+        .order("desc")
+        .take(EVALS_REQUEST_SCAN_LIMIT),
+    );
     const rows = await ctx.db
       .query("dtsEvents")
       .withIndex("by_kind_at", (q) => q.eq("kind", EVALS_REQUEST))
@@ -833,7 +888,16 @@ export const internalOldestEvalsRequest = internalQuery({
       const run = await runForKey(ctx, row.key);
       if (run === null) {
         const request = requestData(row.data);
-        if (request !== null) return request;
+        if (request === null) continue;
+        // THE OLDEST UNANSWERED REQUEST IS STILL THE ONE HANDED OUT, superseded
+        // or not. The order does not change; what changes is that a superseded
+        // one is answered without a run, so the queue behind it advances on the
+        // same pass rather than on the next cron tick (worker/jobs/evals.mjs
+        // --serve keeps going while the answer cost no model).
+        const head = request.pr === null ? undefined : newest.get(`${request.repo}#${request.pr}`);
+        return head === undefined || head === request.sha
+          ? request
+          : { ...request, supersededBy: head };
       }
     }
     return null;

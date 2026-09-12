@@ -236,6 +236,14 @@ export function gate(head, base, { changed, prBody } = {}) {
   if (head.unaffected === true) {
     return { ok: true, regressions: [], stillFailing: [], newFailing: [], fixed: [], unconfirmed: [], mismatch: false, noBaseline: !base, goldenCoverage: COVERAGE_NOT_REQUIRED, goldenExcuse: null };
   }
+  // A LATER PUSH REPLACED THIS HEAD, and the box answered the request without
+  // running anything (worker/jobs/evals.mjs supersededRun). Before the `error`
+  // branch, which the same row also carries for readers that predate this one:
+  // both fail, and this one says the thing that can be acted on.
+  if (head.superseded === true) {
+    const by = typeof head.supersededBy === "string" ? head.supersededBy.slice(0, 7) : "a later push";
+    return { ok: false, reason: `superseded by ${by}, re-run at head`, regressions: [], stillFailing: [], newFailing: [], fixed: [], unconfirmed: [], mismatch: false, goldenCoverage, goldenExcuse };
+  }
   // A run the box could not make at all (a sha it could not fetch or check
   // out) is posted as a row carrying `error`, so the request queue advances.
   // A row like that scored nothing, and a gate that reads "no failures" off it
@@ -287,6 +295,17 @@ export function report(head, base, verdict) {
     return [
       `evals — ${head.repo} ${String(head.sha).slice(0, 7)}: the evals are unaffected — no watched path changed` +
         (changed === null ? "." : ` in the ${changed} path${changed === 1 ? "" : "s"} this branch touched.`),
+    ];
+  }
+  // A STALE SHA'S CHECK, in two lines and no numbers. This run never happened
+  // — the branch moved on before the box reached it — so there is no set, no
+  // base and nothing to compare, and the only useful sentence is which sha to
+  // look at instead.
+  if (head.superseded === true) {
+    const by = typeof head.supersededBy === "string" ? head.supersededBy.slice(0, 7) : "a later push";
+    return [
+      `evals — ${head.repo} ${String(head.sha).slice(0, 7)}: superseded by ${by}.`,
+      `FAILED: a later push replaced this head before the box reached it — nothing was run. Re-run this check at the head of the branch.`,
     ];
   }
   const setLine = `evals — ${head.repo} ${String(head.sha).slice(0, 7)} vs base ` +

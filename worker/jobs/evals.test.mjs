@@ -38,6 +38,7 @@ import {
   SkillsNotAssembledError,
   stampAgainstBase,
   standardRulesFor,
+  supersededRun,
   TASK_BRANCHES,
   tokensOf,
   treesFor,
@@ -1092,5 +1093,82 @@ describe("an unaffected request", () => {
     expect(row.weekly).toBe(false);
     expect(failedRun({ repo: "tom.quest", sha: "abc1234", error: "no such commit", at: 1 }).unaffected)
       .toBe(undefined);
+  });
+});
+
+// A morning of four pushes to one branch queued four requests behind each
+// other on 2026-09-12, and the check on the live head of #173 timed out after
+// seventy-five minutes waiting for three runs of shas nobody would merge. The
+// queue now names the head (convex/ttsEvals.ts), and the three dead ones cost
+// one POST each.
+describe("a superseded request", () => {
+  const env = { CONVEX_SITE_URL: "https://example.convex.site", TTS_WORKER_KEY: "k" };
+
+  /** The same proxy the unaffected suite uses: the whole claim is that no
+   *  clone, no worktree and no model happen here. */
+  const noIo = new Proxy({}, {
+    get(_target, name) {
+      throw new Error(`the runner touched io.${String(name)} on a superseded request`);
+    },
+  });
+
+  const request = (over = {}) => ({
+    repo: "tom.quest",
+    sha: "2e08b28",
+    baseSha: "f5c1fb9",
+    changed: ["model-of-tom/intent.md"],
+    prBody: null,
+    unaffected: false,
+    supersededBy: "0b1ca1f",
+    ...over,
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("posts the row and never reaches the runner", async () => {
+    const posted = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url, init) => {
+      posted.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+    const data = await serveRequest(env, noIo, request());
+    expect(data).toMatchObject({ superseded: true, supersededBy: "0b1ca1f" });
+    // ONE POST, and no read of the base run either.
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({ kind: "evals-run", key: "tom.quest@2e08b28" });
+  });
+
+  // The supersession wins over every other shortcut: a sha nobody will merge
+  // is not worth an unaffected row's round trip to the base run.
+  it("is answered before the unaffected shortcut", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, text: async () => "{}" })));
+    expect(await serveRequest(env, noIo, request({ unaffected: true })))
+      .toMatchObject({ superseded: true });
+  });
+
+  // A request the queue did not mark, and one marked with its own sha, are
+  // ordinary requests — the branch must not swallow a live head.
+  it("does not fire on a request that is the head", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url) =>
+      String(url).includes("/tts/evals-run")
+        ? { ok: true, status: 200, text: async () => JSON.stringify({ run: null, base: null }) }
+        : { ok: true, status: 200, text: async () => "{}" }));
+    expect(await serveRequest(env, noIo, request({ supersededBy: null, unaffected: true })).then((d) => d.superseded))
+      .toBe(undefined);
+    expect(await serveRequest(env, noIo, request({ supersededBy: "2e08b28", unaffected: true })).then((d) => d.superseded))
+      .toBe(undefined);
+  });
+
+  it("opens nothing", () => {
+    // `regressions: null` and `goldenCoverage: null` are what convex/
+    // ttsMerge.ts denies on: a stale sha can never carry a gate open.
+    const row = supersededRun({ repo: "tom.quest", sha: "2e08b28", by: "0b1ca1fdeadbeef", at: 1 });
+    expect(row.regressions).toBe(null);
+    expect(row.goldenCoverage).toBe(null);
+    expect(row.unaffected).toBe(undefined);
+    expect(row.failures).toEqual([]);
+    // And it carries `error` too, so a copy of scripts/evals-check.mjs older
+    // than the superseded branch still fails the check and still says why.
+    expect(row.error).toContain("superseded by 0b1ca1f");
   });
 });
