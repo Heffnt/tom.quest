@@ -82,5 +82,8 @@ jobs:
           EVALS_KEY: ${{ secrets.EVALS_KEY }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           OK: ${{ job.status == 'success' && needs.static-boundaries.result == 'success' && needs.secret-scan.result == 'success' }}
-          DETAIL: guardrails: tests ${{ job.status }}, static-boundaries ${{ needs.static-boundaries.result }}, secret-scan ${{ needs.secret-scan.result }}
+          # QUOTED, and the colon after "guardrails" is gone: an unquoted YAML
+          # scalar may not contain ": ", and one here made the whole workflow
+          # file unparseable — every job in it, not just this step.
+          DETAIL: "guardrails — tests ${{ job.status }}, static-boundaries ${{ needs.static-boundaries.result }}, secret-scan ${{ needs.secret-scan.result }}"
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
