@@ -837,28 +837,33 @@ export const internalEvalsRun = internalQuery({
 });
 
 /**
- * The newest requested sha of each pull request, read NEWEST FIRST.
+ * The newest requested sha of each pull request, off the rows already read.
  *
  * The key is the repo and the pull-request number, because that is what "the
  * same branch" means to everything downstream: the check sends the number, a
  * branch has one open pull request, and a sha belongs to one head. A request
- * whose check sent NO number is not in the map at all and can supersede
+ * whose check sent NO number is in the map for nothing and can supersede
  * nothing — two shas that only look related are not a supersession.
  *
- * The rows come from a descending read, so the FIRST sha seen for a key is its
- * newest and the rest are older. That direction matters: a window read from
- * the newest end can only MISS a supersession (a pull request whose whole
- * history fell off the end is simply served as before), while one read from
- * the oldest end could name a stale sha as the head and answer the live one
- * with a superseded row — a queue that silently refuses to run anything.
+ * NO SECOND READ. The rows are the queue scan's own ascending window, so the
+ * LAST sha seen for a key is its newest; a read of its own would double what
+ * this query costs on every five-minute poll, and these rows carry a
+ * pull-request body each.
+ *
+ * The window cannot answer the live head away, which is the only answer that
+ * would be dangerous. A request is marked superseded only when the same window
+ * holds a LATER request for the same pull request, and later in an ascending
+ * read means newer — so the newest request of a pull request has nothing after
+ * it to be superseded by. A pull request whose newer requests fall outside the
+ * window simply names an older sha as the head: the request being answered is
+ * superseded either way, and only the sha the log points at is less useful.
  */
 function newestShaByPullRequest(rows: Doc<"dtsEvents">[]): Map<string, string> {
   const newest = new Map<string, string>();
   for (const row of rows) {
     const request = requestData(row.data);
     if (request === null || request.pr === null) continue;
-    const key = `${request.repo}#${request.pr}`;
-    if (!newest.has(key)) newest.set(key, request.sha);
+    newest.set(`${request.repo}#${request.pr}`, request.sha);
   }
   return newest;
 }
@@ -866,23 +871,17 @@ function newestShaByPullRequest(rows: Doc<"dtsEvents">[]): Map<string, string> {
 export const internalOldestEvalsRequest = internalQuery({
   args: {},
   handler: async (ctx): Promise<EvalsRequest | null> => {
-    // WHAT EACH PULL REQUEST'S HEAD IS NOW, read before the queue itself. A
-    // morning of four pushes to one branch files four requests, and the box
-    // serves one per pass at about thirty-five minutes: the check on the
-    // fourth waits out three runs of shas nobody will merge and then times
-    // out. Three of those four are answered here instead, in a POST each.
-    const newest = newestShaByPullRequest(
-      await ctx.db
-        .query("dtsEvents")
-        .withIndex("by_kind_at", (q) => q.eq("kind", EVALS_REQUEST))
-        .order("desc")
-        .take(EVALS_REQUEST_SCAN_LIMIT),
-    );
     const rows = await ctx.db
       .query("dtsEvents")
       .withIndex("by_kind_at", (q) => q.eq("kind", EVALS_REQUEST))
       .order("asc")
       .take(EVALS_REQUEST_SCAN_LIMIT);
+    // WHAT EACH PULL REQUEST'S HEAD IS, off the same window. A morning of four
+    // pushes to one branch files four requests, and the box serves one per
+    // pass at about thirty-five minutes: the check on the fourth waits out
+    // three runs of shas nobody will merge and then fails on its own deadline.
+    // Three of those four are answered in a POST each instead.
+    const newest = newestShaByPullRequest(rows);
     for (const row of rows) {
       if (row.key === undefined) continue;
       const run = await runForKey(ctx, row.key);
