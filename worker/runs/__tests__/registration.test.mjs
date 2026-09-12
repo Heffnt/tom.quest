@@ -4,12 +4,15 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  appendSkillAsk,
   claimRegistration,
   findCodexRegistration,
   mergeRegistration,
   readRegistration,
   registrationSidecarPath,
+  SKILL_ASK_CAP,
   writeRegistration,
+  writeRegistrationClaim,
   writeRegistrationEnd,
 } from "../registration.mjs";
 import { codexResponseItem, jsonl } from "./fixtures.mjs";
@@ -145,5 +148,111 @@ describe("run registration", () => {
     expect(result).toMatchObject({ ok: false, reason: "run registration token absent" });
     expect(fs.existsSync(path.join(spoolDir, `${token}.json`))).toBe(true);
     expect(fs.existsSync(registrationSidecarPath(runFile))).toBe(false);
+  });
+
+  // ── the fourth group ──────────────────────────────────────────────────────
+  // `skills` arrived with envelopeVersion 2, written by `tts search skills`
+  // and by nothing else.
+
+  it("keeps four writers, four keys, and no lost update", () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
+    const token = "88888888-8888-4888-8888-888888888888";
+    writeRegistration({ spoolDir, token, writer: { file: "launcher.mjs" }, registration: { host: "laptop", origin: "job" }, now: () => 1 });
+    // The wrapper runs inside the child, BEFORE any claim: the sidecar does not
+    // exist yet, so the spool is what it appends to.
+    expect(appendSkillAsk({ spoolDir, token, ask: { name: "know-money", result: "ok" }, now: () => 2 })).toMatchObject({ ok: true });
+    claimRegistration({ spoolDir, token, runFile, claim: { by: "hook:SessionStart" }, now: () => 3 });
+    // And after the claim the spool is gone, so the sidecar is.
+    expect(appendSkillAsk({ runFile, spoolDir, token, ask: { name: "know-nothing", result: "refused", why: "not in the catalog" }, now: () => 4 })).toMatchObject({ ok: true });
+    writeRegistrationEnd({ runFile, end: { reason: "done" }, now: () => 5 });
+
+    expect(readRegistration(runFile)).toMatchObject({
+      envelopeVersion: 2,
+      token,
+      writer: { file: "launcher.mjs" },
+      registration: { origin: "job" },
+      claim: { by: "hook:SessionStart" },
+      end: { reason: "done", status: "ended" },
+      skills: { asked: [
+        { at: 2, name: "know-money", result: "ok" },
+        { at: 4, name: "know-nothing", result: "refused", why: "not in the catalog" },
+      ] },
+    });
+  });
+
+  it("writes a brand-new envelope at version 2, from either author", () => {
+    const dir = temp();
+    const { envelope } = writeRegistration({
+      spoolDir: path.join(dir, "spool"), token: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      writer: { file: "launcher.mjs" }, registration: { host: "laptop" }, now: () => 1,
+    });
+    expect(envelope.envelopeVersion).toBe(2);
+    const claimed = writeRegistrationClaim({ runFile: path.join(dir, "fresh.jsonl"), claim: { by: "hook:SessionStart" }, now: () => 2 });
+    expect(claimed.envelope.envelopeVersion).toBe(2);
+  });
+
+  it("leaves a version-1 envelope at 1 through a claim and an end, with skills absent", () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
+    const token = "99999999-9999-4999-8999-999999999999";
+    fs.mkdirSync(spoolDir, { recursive: true });
+    fs.writeFileSync(path.join(spoolDir, `${token}.json`), JSON.stringify({
+      envelopeVersion: 1, token, writer: { file: "old-launcher.mjs", at: 1 }, registration: { host: "laptop", origin: "job" },
+    }));
+    claimRegistration({ spoolDir, token, runFile, claim: { by: "hook:SessionStart" }, now: () => 2 });
+    writeRegistrationEnd({ runFile, end: { reason: "done" }, now: () => 3 });
+
+    const envelope = readRegistration(runFile);
+    expect(envelope.envelopeVersion).toBe(1);
+    expect("skills" in envelope).toBe(false);
+    // Reading one is not an error: it simply describes a run that asked for no
+    // skill, because nothing could yet write that it had.
+    const merged = mergeRegistration({ parsed: parsed(), host: "laptop", envelope });
+    expect(merged.envelopeApplied).toBe(true);
+    expect("skillsAsked" in merged.run.context).toBe(false);
+  });
+
+  it("appends only, keeps the newest fifty asks, and creates no envelope of its own", () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool");
+    const token = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    writeRegistration({ spoolDir, token, writer: { file: "launcher.mjs" }, registration: { host: "laptop" }, now: () => 0 });
+    for (let index = 1; index <= SKILL_ASK_CAP + 10; index += 1) {
+      appendSkillAsk({ spoolDir, token, ask: { name: `know-${index}`, result: "ok" }, now: () => index });
+    }
+    const envelope = JSON.parse(fs.readFileSync(path.join(spoolDir, `${token}.json`), "utf8"));
+    expect(envelope.skills.asked).toHaveLength(SKILL_ASK_CAP);
+    // The OLDEST go: an envelope is a record of a run, not a log of it.
+    expect(envelope.skills.asked[0]).toMatchObject({ name: "know-11" });
+    expect(envelope.skills.asked.at(-1)).toMatchObject({ name: `know-${SKILL_ASK_CAP + 10}` });
+    // Append-only: the launcher's own groups are byte-for-byte what it wrote.
+    expect(envelope).toMatchObject({ envelopeVersion: 2, token, writer: { file: "launcher.mjs", at: 0 }, registration: { host: "laptop" } });
+
+    // Nothing to append to is a refusal, NOT a new envelope: a skills-only file
+    // at a spool path would collide with the launcher's own later write.
+    const orphan = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    expect(appendSkillAsk({ spoolDir, token: orphan, ask: { name: "know-money" } })).toMatchObject({ ok: false });
+    expect(fs.existsSync(path.join(spoolDir, `${orphan}.json`))).toBe(false);
+  });
+
+  it("carries the asks onto the run as plain strings, and only on the applied path", () => {
+    const envelope = {
+      envelopeVersion: 2,
+      token: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      writer: { file: "scripts/codex-run.mjs" },
+      registration: { host: "laptop", layersKnown: false },
+      skills: { asked: [
+        { at: 1, name: "know-money", result: "ok" },
+        { at: 2, name: "know-nothing", result: "refused", why: "not in the catalog" },
+      ] },
+    };
+    // PLAIN STRINGS: convex/schema.ts types every runs.context list as
+    // v.array(v.string()), so a string array is the only additive shape.
+    expect(mergeRegistration({ parsed: parsed(), host: "laptop", envelope }).run.context.skillsAsked)
+      .toEqual(["know-money (ok)", "know-nothing (refused)"]);
+
+    const refused = mergeRegistration({
+      parsed: parsed(), host: "laptop", report: () => {},
+      envelope: { ...envelope, registration: { host: "box", layersKnown: false } },
+    });
+    expect(refused.run.context.skillsAsked).toBeUndefined();
   });
 });
