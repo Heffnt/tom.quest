@@ -26,3 +26,18 @@ export const codexResponseItem = (type, payload = {}) => codexLine("response_ite
 export const codexTokenCount = ({ input = 1, cachedInput = 2, cacheWrite = 3, output = 4, reasoning = 1, total = 10, lastInput, responseId } = {}) => codexLine("event_msg", { type: "token_count", ...(responseId ? { response_id: responseId } : {}), info: { total_token_usage: { input_tokens: input, cached_input_tokens: cachedInput, cache_write_input_tokens: cacheWrite, output_tokens: output, reasoning_output_tokens: reasoning, total_tokens: total }, ...(lastInput === undefined ? {} : { last_token_usage: { input_tokens: lastInput } }) } });
 export const codexUsageRecord = ({ turnId = "turn", usage = {} } = {}) => codexLine("token_usage_record", { turn_id: turnId, usage });
 export const codexTaskComplete = ({ turnId = "turn", lastAgentMessage = "done" } = {}) => codexLine("event_msg", { type: "task_complete", turn_id: turnId, last_agent_message: lastAgentMessage });
+// The catalog `codex exec` writes into the first developer message whenever
+// $CODEX_HOME/skills holds anything. Root keys are DYNAMIC — a root with no
+// skills under it is never listed — so the builder takes them as data.
+export const codexSkillsInstructions = ({ roots = {}, skills = [] } = {}) => [
+  "<skills_instructions>",
+  "## Skills",
+  "A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used.",
+  "### Skill roots",
+  ...Object.entries(roots).map(([key, directory]) => `- \`${key}\` = \`${directory}\``),
+  "### Available skills",
+  ...skills.map(({ name, description = "does a thing", file }) => `- ${name}: ${description} (file: ${file})`),
+  "</skills_instructions>",
+].join("\n");
+export const codexDeveloper = (text) => codexResponseItem("message", { role: "developer", content: [{ input_text: text }] });
+export const codexToolCall = ({ callId = "call", name = "shell", args = {} } = {}) => codexResponseItem("function_call", { call_id: callId, name, arguments: typeof args === "string" ? args : JSON.stringify(args) });

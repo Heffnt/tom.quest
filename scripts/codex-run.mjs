@@ -29,6 +29,17 @@
 //   --schema FILE      JSON Schema the answer must match
 //   --keep-logs        print the stderr log path instead of deleting it
 //   --no-operate       do not inject WikiTom's operate instructions
+//   --grant NAME       a skill this run is given         (repeatable)
+//   --refuse NAME=WHY  a skill withheld, and why         (repeatable)
+//
+// A MECHANICAL CODEX CHILD GETS THE BASE AND NOTHING ELSE. Both skill options
+// default to empty, and with neither the prompt carries no grant block at all.
+// That is the map's own division of labour — "Mechanical work runs on Codex:
+// reading, searching, edits, tests, audits" (agent-rules.md, How you work). A
+// run doing mechanical work needs the operate layer and its prompt, not the
+// write or know layers, so nothing is granted until its spawner names one. The
+// grant block then records exactly what was named, and the registration says
+// the same thing to the run record.
 //
 // THERE IS NO TIME LIMIT BY DEFAULT (Tom's ruling, 2026-09-09). A Codex run at
 // `xhigh` on real work routinely outlasts any number worth guessing, and a kill
@@ -67,6 +78,20 @@ const registrationUrl = [
 if (!registrationUrl) throw new Error("run registration module is not installed");
 const { writeRegistration } = await import(registrationUrl.href);
 
+// The grant renderer, resolved the same way and for the same reason. In a
+// checkout this file IS scripts/codex-run.mjs, so skills.mjs sits beside it;
+// setup.sh installs this file flat at /opt/tts/codex-run.mjs while skills.mjs
+// lands at /opt/tts/scripts/skills.mjs, one directory down. Neither candidate
+// can resolve in the other layout, so the pair is unambiguous.
+//
+// The URL is resolved here but IMPORTED ONLY WHEN A SKILL IS NAMED. tts-codex
+// runs from any repo, including checkouts that predate skills.mjs, and a run
+// that asked for no skill must not be broken by a module it never needed.
+const skillsUrl = [
+  new URL("./skills.mjs", import.meta.url),
+  new URL("./scripts/skills.mjs", import.meta.url),
+].find((candidate) => existsSync(fileURLToPath(candidate)));
+
 const SANDBOXES = new Set(["read-only", "workspace-write"]);
 const EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
 const DEFAULT_TIMEOUT_MS = 0; // 0 = no timeout; a cap is opt-in via --timeout
@@ -89,6 +114,9 @@ function parseArgs(argv) {
     schema: null,
     keepLogs: false,
     operate: true,
+    // Empty by default: a mechanical Codex child gets the base and nothing else.
+    granted: [],
+    refused: [],
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -105,6 +133,23 @@ function parseArgs(argv) {
       case "--schema": opts.schema = next(); break;
       case "--keep-logs": opts.keepLogs = true; break;
       case "--no-operate": opts.operate = false; break;
+      case "--grant": {
+        const name = next().trim();
+        if (!name) fail("--grant needs a skill name");
+        if (!opts.granted.includes(name)) opts.granted.push(name);
+        break;
+      }
+      case "--refuse": {
+        // NAME=WHY, split at the first "=" so a reason may contain one.
+        const value = next();
+        const at = value.indexOf("=");
+        if (at <= 0) fail("--refuse takes NAME=WHY");
+        const name = value.slice(0, at).trim();
+        const why = value.slice(at + 1).trim();
+        if (!name || !why) fail("--refuse takes NAME=WHY");
+        if (!opts.refused.some((entry) => entry.name === name)) opts.refused.push({ name, why });
+        break;
+      }
       default: fail(`unknown option ${arg}`);
     }
   }
@@ -185,6 +230,33 @@ if (!prompt.trim()) fail("no prompt on stdin");
 
 const operate = opts.operate ? operateInstructions() : null;
 
+// THE GRANT BLOCK CITES A COMMIT OR IT IS NOT WRITTEN. renderGrants' first line
+// is "SKILLS (WikiTom commit <sha>)", and that commit is the provenance of the
+// skill bodies the run is being told to load. Without an operate read there is
+// no commit this process actually saw, and a caller-supplied one would be an
+// assertion about a tree nobody here read. So the block is omitted and one line
+// says why — the same shape as the missing-operate warning above it.
+//
+// Omitted means NOT GRANTED, and the registration says so too: skillsGranted
+// stays empty, exactly as layersGiven stays empty when the operate file could
+// not be read. An absence is not a refusal, so the names do not move into
+// skillsRefused either.
+let grantBlock = "";
+let granted = opts.granted;
+let refused = opts.refused;
+if (granted.length > 0 || refused.length > 0) {
+  if (!operate?.commit) {
+    process.stderr.write("codex-run: skills named but no WikiTom commit to cite; grant block omitted\n");
+    granted = []; refused = [];
+  } else if (!skillsUrl) {
+    process.stderr.write("codex-run: skills named but scripts/skills.mjs is not installed; grant block omitted\n");
+    granted = []; refused = [];
+  } else {
+    const { renderGrants } = await import(skillsUrl.href);
+    grantBlock = renderGrants({ commit: operate.commit, granted, refused });
+  }
+}
+
 const stateDir = process.env.RUN_SWEEP_STATE_DIR
   || (process.platform === "win32"
     ? join(process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local"), "tts", "runs")
@@ -213,8 +285,10 @@ const spooled = writeRegistration({
     // not read was not denied to it — it was absent, and layersGiven already
     // says so without inventing an intent nobody had.
     layersDenied: opts.operate ? [] : ["operate"],
-    skillsGranted: [],
-    skillsRefused: [],
+    skillsGranted: [...granted],
+    // The run record takes strings; renderGrants takes the pair. One reason,
+    // written once, reaches both.
+    skillsRefused: refused.map(({ name, why }) => `${name} — ${why}`),
     tools: { allowed: null, denied: null },
     hooksConfigured: ["SessionStart", "SessionEnd", "Stop", "SubagentStart", "SubagentStop"],
     ...(operate ? { wikitomCommit: operate.commit } : {}),
@@ -248,7 +322,13 @@ const args = [
 ];
 // JSON strings are valid TOML basic strings and preserve quotes/newlines. The
 // non-secret token also lets the sweeper bind a rollout when exec fires no hook.
-const developerInstructions = `${operate?.text ?? ""}${operate?.text ? "\n" : ""}TTS-RUN-TOKEN: ${spooled.token}`;
+//
+// Order is operate, then grants, then the token. THE TOKEN LINE IS LAST and
+// alone on its line, because findCodexRegistration anchors its regex to a line
+// start and a line end; nothing may be appended after it.
+const developerInstructions = [operate?.text ?? "", grantBlock, `TTS-RUN-TOKEN: ${spooled.token}`]
+  .filter(Boolean)
+  .join("\n");
 args.push("-c", `developer_instructions=${JSON.stringify(developerInstructions)}`);
 // Under workspace-write, a sandboxed Codex has no network by default, which
 // turns "run the tests" into a dependency-install failure. Harmless under

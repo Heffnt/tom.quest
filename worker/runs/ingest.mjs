@@ -425,6 +425,122 @@ export function parseClaudeFile({ path, text, host, fileVersion, fromLine = 0, b
   return finishResult({ run, rows, children, attachments, lastLine: baseLine + lines.length, incompleteTail, dropped });
 }
 
+// ── The Codex skill catalog ─────────────────────────────────────────────────
+//
+// CODEX HAS NO SKILL TOOL. `codex exec` reads $CODEX_HOME/skills and writes the
+// whole catalog into the FIRST developer message of the rollout, then tells the
+// model to expand a short path and read the SKILL.md file itself. So "offered"
+// is a parse of that message, and "used" is a parse of which of those files a
+// tool call went and read. Nothing else in the rollout names a skill.
+//
+// (The phase-6 brief assumed a skill tool call the way Claude Code has one.
+// There is none; this is the honest parse of what a Codex rollout records.)
+//
+// The block the CLI writes, measured against codex-cli 0.153.3:
+//
+//   <skills_instructions>
+//   ## Skills
+//   A skill is a set of local instructions ...
+//   ### Skill roots
+//   - `r0` = `C:/Users/heffn/.codex/skills`
+//   - `r1` = `C:/Users/heffn/.codex/skills/.system`
+//   ### Available skills
+//   - imagegen: Generate or edit raster images ... (file: r1/imagegen/SKILL.md)
+//   - sites:sites-building: Use Sites ... (file: r2/sites-building/SKILL.md)
+//   </skills_instructions>
+//
+// THE ROOT INDICES ARE DYNAMIC. A root with no skills under it is not listed,
+// so r0 is whichever directory happened to come first in that run. The map is
+// therefore rebuilt from the "Skill roots" block on every parse and never
+// assumed.
+const CODEX_SKILLS_BLOCK = /<skills_instructions>([\s\S]*?)<\/skills_instructions>/;
+
+/** One path, in the one spelling both sides of a comparison can share. */
+const pathNeedle = (value) => String(value ?? "").replace(/[\\/]+/g, "/").toLowerCase();
+
+/**
+ * The catalog a Codex rollout's developer message offered.
+ *
+ * A rollout with no block is a run that was offered nothing, not an error: the
+ * CLI writes the block only when $CODEX_HOME/skills holds something.
+ *
+ * @param {string} developerText the first developer message's text
+ * @returns {{ names: string[], paths: Record<string, string>, shortPaths: Record<string, string> }}
+ *   `paths` is the expanded absolute path of each name's SKILL.md; `shortPaths`
+ *   is the `rN/...` form the rollout actually wrote, kept because a tool call
+ *   may quote either one.
+ */
+export function codexSkillsOffered(developerText) {
+  const block = CODEX_SKILLS_BLOCK.exec(String(developerText ?? ""))?.[1];
+  if (!block) return { names: [], paths: {}, shortPaths: {} };
+  const roots = new Map();
+  const names = [], paths = {}, shortPaths = {};
+  let section = "";
+  for (const line of block.split("\n")) {
+    const text = line.trim();
+    if (text.startsWith("#")) { section = text.replace(/^#+\s*/, "").toLowerCase(); continue; }
+    if (!text.startsWith("- ")) continue;
+    const body = text.slice(2).trim();
+    if (section === "skill roots") {
+      // - `r0` = `C:/Users/heffn/.codex/skills`
+      const root = /^`([^`]+)`\s*=\s*`([^`]+)`$/.exec(body);
+      if (root) roots.set(root[1], root[2].replace(/[\\/]+$/, ""));
+      continue;
+    }
+    if (section !== "available skills") continue;
+    // THE NAME ENDS AT THE FIRST COLON-SPACE. A namespaced name spells its
+    // namespace with a bare colon and no space ("sites:sites-building"), while
+    // the separator before the description always has the space — so this one
+    // rule keeps the namespace and still stops before a description that
+    // contains colons of its own.
+    const at = body.indexOf(": ");
+    if (at <= 0) continue;
+    const name = body.slice(0, at).trim();
+    if (!name) continue;
+    names.push(name);
+    // The trailing "(file: ...)" is the last parenthesis on the line; a
+    // description may hold parentheses of its own, so anchor at the end.
+    const short = /\(file:\s*([^)]+)\)\s*$/.exec(body)?.[1]?.trim();
+    if (!short) continue;
+    shortPaths[name] = short;
+    const segments = short.split(/[\\/]/);
+    const root = roots.get(segments[0]);
+    // A short path whose root was never declared stays as written rather than
+    // becoming a fabricated absolute path.
+    paths[name] = root ? [root, ...segments.slice(1)].join("/") : short;
+  }
+  return { names: sorted(names), paths, shortPaths };
+}
+
+/**
+ * The catalog entries whose SKILL.md a run actually read.
+ *
+ * Evidence is a tool call's arguments naming the file. Both spellings count —
+ * the short `rN/...` form the catalog gave and the absolute form the model
+ * expands it to — and both slash directions, because a Windows path reaches
+ * the arguments as JSON with its separators doubled. The comparison is
+ * lowercased whole, which covers the drive letter and costs only the ability
+ * to tell apart two skills whose paths differ by case alone.
+ *
+ * @param {{ names: string[], paths: Record<string, string>, shortPaths?: Record<string, string> }} offered
+ * @param {string[]} toolCallTexts every tool call's argument text
+ * @returns {string[]}
+ */
+export function codexSkillsUsed(offered, toolCallTexts) {
+  const names = offered?.names ?? [];
+  if (names.length === 0) return [];
+  const haystack = pathNeedle((toolCallTexts ?? []).filter((text) => typeof text === "string").join("\n"));
+  if (!haystack) return [];
+  const used = [];
+  for (const name of names) {
+    const candidates = [offered.paths?.[name], offered.shortPaths?.[name]]
+      .map(pathNeedle)
+      .filter((candidate) => candidate.length > 0);
+    if (candidates.some((candidate) => haystack.includes(candidate))) used.push(name);
+  }
+  return sorted(used);
+}
+
 function codexParent(meta) {
   if (typeof meta.parent_thread_id === "string") return meta.parent_thread_id;
   if (typeof meta.parent === "string") return meta.parent;
@@ -502,9 +618,23 @@ export function parseCodexFile({ path, text, host, fileVersion, fromLine = 0, ba
   const prompt = (developer?.payload?.content ?? []).map((part) => part.text ?? part.input_text ?? "").join("\n");
   const mot = modelOfTomFromPrompt(prompt);
   const tools = [];
-  for (const raw of lines) { try { const p = JSON.parse(raw).payload ?? {}; if (["custom_tool_call", "function_call"].includes(p.type) && p.name) tools.push(p.name); } catch {} }
+  // The same pass collects what each tool call was ASKED to do, because that
+  // text is the only evidence a rollout leaves that a SKILL.md was read.
+  const toolCallTexts = [];
+  for (const raw of lines) {
+    try {
+      const p = JSON.parse(raw).payload ?? {};
+      if (!["custom_tool_call", "function_call"].includes(p.type)) continue;
+      if (p.name) tools.push(p.name);
+      // A call with no name still carries arguments worth reading.
+      const args = p.arguments ?? p.input;
+      if (typeof args === "string") toolCallTexts.push(args);
+      else if (args !== undefined && args !== null) toolCallTexts.push(JSON.stringify(args));
+    } catch {}
+  }
+  const offered = codexSkillsOffered(prompt);
   const permissionMode = sandboxPolicy ? `approval=${approvalPolicy ?? "unknown"}; sandbox=${sandboxPolicy}` : approvalPolicy;
-  const context = { ...mot, skillsOffered: [], skillsUsed: [], tools: sorted(tools), hooks: [], ...(meta.cwd ? { cwd: meta.cwd } : {}), ...(meta.git?.branch ? { gitBranch: meta.git.branch } : {}), ...(meta.git?.commit_hash ? { gitCommit: meta.git.commit_hash } : {}), ...(meta.base_instructions?.text ? { baseInstructionsHash: sha256(meta.base_instructions.text) } : {}), ...(meta.originator ? { originator: meta.originator } : {}), ...(meta.context_window ? { contextWindow: meta.context_window } : {}), ...(permissionMode ? { permissionMode } : {}) };
+  const context = { ...mot, skillsOffered: sorted(offered.names), skillsUsed: sorted(codexSkillsUsed(offered, toolCallTexts)), tools: sorted(tools), hooks: [], ...(meta.cwd ? { cwd: meta.cwd } : {}), ...(meta.git?.branch ? { gitBranch: meta.git.branch } : {}), ...(meta.git?.commit_hash ? { gitCommit: meta.git.commit_hash } : {}), ...(meta.base_instructions?.text ? { baseInstructionsHash: sha256(meta.base_instructions.text) } : {}), ...(meta.originator ? { originator: meta.originator } : {}), ...(meta.context_window ? { contextWindow: meta.context_window } : {}), ...(permissionMode ? { permissionMode } : {}) };
   if (baseLine === 0) rows.unshift({ seq: 0, turn: 0, kind: "context", content: { ...(model ? { model } : {}), ...context, prompt }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: 0, block: 0, sourceKind: "context" }), createdAt: startedAt });
   if (taskComplete?.message && taskComplete.message !== lastAssistantText) { const row = { seq: sourceSeq(taskComplete.line, 998), turn: taskComplete.turn, kind: "assistant-text", content: { text: taskComplete.message }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: taskComplete.line, block: 998, sourceKind: "event_msg/task_complete" }), createdAt: taskComplete.timestamp }; rows.push(row); finalTextSeq = row.seq; }
   else if (taskComplete) drop("event_msg/task_complete");
