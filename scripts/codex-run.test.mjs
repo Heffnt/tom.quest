@@ -4,6 +4,8 @@ import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
+import { renderGrants } from "./skills.mjs";
+
 const RUNNER = path.resolve("scripts/codex-run.mjs");
 const IDENTITY = ["-c", "user.name=test", "-c", "user.email=test@example.com"];
 
@@ -54,6 +56,11 @@ function run(args, env) {
   });
   result.state = state;
   return result;
+}
+
+function developerInstructions(argsFile) {
+  const arg = JSON.parse(fs.readFileSync(argsFile, "utf8")).find((entry) => entry.startsWith("developer_instructions="));
+  return JSON.parse(arg.slice("developer_instructions=".length));
 }
 
 function spooledEnvelope(state) {
@@ -132,8 +139,9 @@ describe("codex-run registration", () => {
     // The rollout names its own token, so the sweeper can bind the envelope
     // exactly even where `codex exec` fires no hooks.
     expect(JSON.parse(developer.slice("developer_instructions=".length))).toContain(`TTS-RUN-TOKEN: ${token}`);
+    // The envelope version is registration.mjs's to state and its own tests'
+    // to assert; this case is about what the LAUNCHER wrote into it.
     expect(envelope).toMatchObject({
-      envelopeVersion: 1,
       token,
       writer: { file: "scripts/codex-run.mjs", job: "audit" },
       registration: {
@@ -149,6 +157,15 @@ describe("codex-run registration", () => {
     });
     expect(envelope.registration.wikitomCommit).toMatch(/^[0-9a-f]{7,40}$/);
     expect(envelope.registration.promptSha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("records no skills when the spawner named none", () => {
+    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-noskills.json`);
+    const result = run([], { CODEX_BIN: fakeCodex(), WIKITOM_DIR: wikitomFixture(), FAKE_CODEX_ARGS: argsFile });
+    expect(result.status).toBe(0);
+    // A mechanical Codex child gets the base and nothing else: no block at all.
+    expect(developerInstructions(argsFile)).not.toContain("SKILLS (WikiTom commit");
+    expect(spooledEnvelope(result.state).envelope.registration).toMatchObject({ skillsGranted: [], skillsRefused: [] });
   });
 
   it("records a job with no parent, and --no-operate as a denial", () => {
@@ -168,5 +185,65 @@ describe("codex-run registration", () => {
       layersDenied: ["operate"],
     });
     expect(envelope.registration.parentRunId).toBe(null);
+  });
+});
+
+describe("codex-run skill grants", () => {
+  it("puts the grant block between the operate text and the token line", () => {
+    const rules = "# Rules\n\nKeep the promise.\n";
+    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-grants.json`);
+    const result = run(["--grant", "write", "--grant", "know-research"], {
+      CODEX_BIN: fakeCodex(),
+      WIKITOM_DIR: wikitomFixture({ rules }),
+      FAKE_CODEX_ARGS: argsFile,
+    });
+    expect(result.status).toBe(0);
+    const developer = developerInstructions(argsFile);
+    const { envelope } = spooledEnvelope(result.state);
+    // The renderer is the one authority on the block's bytes; the wrapper's
+    // job is only to put them in the right place.
+    const block = renderGrants({ commit: envelope.registration.wikitomCommit, granted: ["write", "know-research"] });
+    expect(developer).toContain(block);
+    expect(developer.indexOf(rules)).toBeLessThan(developer.indexOf(block));
+    expect(developer.indexOf(block)).toBeLessThan(developer.indexOf("TTS-RUN-TOKEN:"));
+    // findCodexRegistration anchors on a whole line, so the token keeps one.
+    expect(developer).toMatch(/\nTTS-RUN-TOKEN: [0-9a-f-]{36}$/);
+    expect(envelope.registration.skillsGranted).toEqual(["write", "know-research"]);
+    expect(envelope.registration.skillsRefused).toEqual([]);
+  });
+
+  it("carries a refusal and its reason into both the block and the record", () => {
+    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-refuse.json`);
+    const result = run(["--refuse", "know-research=mechanical run, no planning"], {
+      CODEX_BIN: fakeCodex(),
+      WIKITOM_DIR: wikitomFixture(),
+      FAKE_CODEX_ARGS: argsFile,
+    });
+    expect(result.status).toBe(0);
+    expect(developerInstructions(argsFile)).toContain("refused: know-research — mechanical run, no planning");
+    expect(spooledEnvelope(result.state).envelope.registration).toMatchObject({
+      skillsGranted: [],
+      skillsRefused: ["know-research — mechanical run, no planning"],
+    });
+  });
+
+  it("omits the block, and grants nothing, when no commit can be cited", () => {
+    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-nocommit.json`);
+    const result = run(["--grant", "write"], {
+      CODEX_BIN: fakeCodex(),
+      WIKITOM_DIR: path.join(os.tmpdir(), "no-wikitom-here"),
+      FAKE_CODEX_ARGS: argsFile,
+    });
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("codex-run: skills named but no WikiTom commit to cite; grant block omitted\n");
+    expect(developerInstructions(argsFile)).toMatch(/^TTS-RUN-TOKEN: [0-9a-f-]{36}$/);
+    // A grant the run never received is not a grant, and is not a refusal either.
+    expect(spooledEnvelope(result.state).envelope.registration).toMatchObject({ skillsGranted: [], skillsRefused: [] });
+  });
+
+  it("rejects a refusal with no reason", () => {
+    const result = run(["--refuse", "write"], { CODEX_BIN: fakeCodex(), WIKITOM_DIR: wikitomFixture() });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("--refuse takes NAME=WHY");
   });
 });
