@@ -31,7 +31,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # static-boundaries, secret-scan and tests are ONE verifier: every
+  # deterministic check either runs in CI and reports through the
+  # `tests-run` head row, or it fails the write it guards. Folding the other
+  # two in here makes the merge gate strictly stricter, so a branch that
+  # merged yesterday might not today.
   tests:
+    needs: [static-boundaries, secret-scan]
+    # Without this, a failed dependency SKIPS this job entirely: nothing
+    # posts to /tts/tests, and the merge gate sees no row at all for the
+    # commit — a different and worse failure than a red row.
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -66,10 +76,11 @@ jobs:
           curl -fsS -X POST "$CONVEX_SITE_URL/tts/tests" \
             -H "X-Evals-Key: $EVALS_KEY" \
             -H "Content-Type: application/json" \
-            -d "{\"repo\":\"tom.quest\",\"sha\":\"$SHA\",\"ok\":$OK,\"detail\":\"guardrails tests job\",\"url\":\"$RUN_URL\"}"
+            -d "{\"repo\":\"tom.quest\",\"sha\":\"$SHA\",\"ok\":$OK,\"detail\":\"$DETAIL\",\"url\":\"$RUN_URL\"}"
         env:
           CONVEX_SITE_URL: ${{ vars.CONVEX_SITE_URL }}
           EVALS_KEY: ${{ secrets.EVALS_KEY }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          OK: ${{ job.status == 'success' }}
+          OK: ${{ job.status == 'success' && needs.static-boundaries.result == 'success' && needs.secret-scan.result == 'success' }}
+          DETAIL: guardrails: tests ${{ job.status }}, static-boundaries ${{ needs.static-boundaries.result }}, secret-scan ${{ needs.secret-scan.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
