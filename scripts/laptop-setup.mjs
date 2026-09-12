@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { refreshSkills } from "./session-start-hook.mjs";
 
 const home = path.resolve(process.env.HOME || process.env.USERPROFILE || os.homedir());
 const wikiTom = path.resolve(
@@ -138,6 +139,42 @@ function installRunsSweepTask() {
   console.log(`${found ? "updated" : "created"} ${taskName} Scheduled Task`);
 }
 
+/**
+ * THE ONE-TIME INSTALL of the two skills directories, beside the hooks above.
+ *
+ * The SessionStart hook refreshes them on EVERY session; this is what puts them
+ * there before the first one runs. It is the hook's own call, imported rather
+ * than restated, so where they go and what goes in them has ONE definition and
+ * the install cannot drift from the refresh.
+ *
+ * NOTHING HERE DELETES ANYTHING OF TOM'S OR THE LAPTOP'S. publish-skills.mjs
+ * owns the deletion rule and it is narrow — only a `tom-` directory this build
+ * did not produce — so a checkout's own skills sitting beside them are left
+ * exactly alone.
+ *
+ * A directory that cannot be published costs ONE LINE and the rest of setup
+ * still runs: the catalog is refreshed again at every session start, while the
+ * hooks and the rules import below are what a laptop cannot work without.
+ */
+function installSkills() {
+  let results;
+  try {
+    results = refreshSkills({ wikitom: wikiTom });
+  } catch (error) {
+    console.log(`could not publish skills: ${String(error?.message ?? error).replace(/\s+/g, " ").trim()}`);
+    return;
+  }
+  for (const result of results) {
+    if (!result.ok) {
+      console.log(`could not publish skills to ${result.dir}: ${result.why}`);
+      continue;
+    }
+    console.log(
+      `${result.changed ? "changed" : "unchanged"} ${result.dir} (${result.skills} skills at ${result.commit.slice(0, 12)})`,
+    );
+  }
+}
+
 function reportMissingLaptopEnv() {
   const file = path.join(home, ".tts", "env");
   if (!fs.existsSync(file)) {
@@ -152,5 +189,6 @@ updateInstructionsLoadedConfig(path.join(claudeDir, "settings.json"), instructio
 updateHookConfig(path.join(home, ".codex", "hooks.json"), hookCommand);
 updateRunHookConfig(path.join(claudeDir, "settings.json"), runHookCommand);
 updateRunHookConfig(path.join(home, ".codex", "hooks.json"), runHookCommand);
+installSkills();
 installRunsSweepTask();
 reportMissingLaptopEnv();

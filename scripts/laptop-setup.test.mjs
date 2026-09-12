@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 const SCRIPT = path.resolve("scripts/laptop-setup.mjs");
@@ -17,11 +17,43 @@ function run({ home, wikiTom, tomQuest }) {
     env: {
       ...process.env,
       HOME: home,
+      USERPROFILE: home,
       WIKITOM_DIR: wikiTom,
       TOM_QUEST_DIR: tomQuest,
       TTS_SKIP_RUNS_TASK: "1",
+      // The skills half of setup writes to `$CLAUDE_CONFIG_DIR/skills` when
+      // that is set and to `$TTS_SKILLS_DIRS` when THAT is. Both are cleared
+      // here, and HOME is the fake one above, so a test cannot reach the real
+      // laptop's skills directory however this machine happens to be set up.
+      CLAUDE_CONFIG_DIR: "",
+      TTS_SKILLS_DIRS: "",
+      CMT_DIR: "",
     },
   });
+}
+
+const IDENTITY = ["-c", "user.name=test", "-c", "user.email=test@example.com"];
+
+/** A WikiTom the catalog can be published out of. The `### Repos` block is
+ * where a `repo-` skill's description comes from, and AGENTS.md is its body. */
+function wikiTomFixture(dir) {
+  execFileSync("git", ["init", "-q", "-b", "main", dir]);
+  write(path.join(dir, "AGENTS.md"), "# WikiTom\n\nThe vault.\n");
+  write(
+    path.join(dir, "model-of-tom", "agent-rules.md"),
+    "# Agent rules\n\n## Map\n\n### Repos\n- WikiTom: the vault.\n\n## How you work\n\n- Read this.\n",
+  );
+  write(path.join(dir, "model-of-tom", "writing.md"), "# Writing\n\n## Sentences\n\nUse short sentences.\n");
+  write(path.join(dir, "model-of-tom", "intent.md"), "# Intent\n\n## Directions\n\n- Ship.\n");
+  write(path.join(dir, "model-of-tom", "priorities.md"), "# Priorities\n\n## What becomes a todo\n\n- Dated things.\n");
+  write(path.join(dir, "model-of-tom", "schedule.md"), "# Schedule\n\n## Week\n\n- Monday — practice.\n");
+  write(
+    path.join(dir, "model-of-tom", "areas", "admin.md"),
+    "---\ncategories: [admin, email]\nupdated: 2026-09-09\n---\n\n## Current state\n\n- Present.\n",
+  );
+  execFileSync("git", ["-C", dir, ...IDENTITY, "add", "-A"]);
+  execFileSync("git", ["-C", dir, ...IDENTITY, "commit", "-q", "-m", "fixture"]);
+  return dir;
 }
 
 function claudeRulesImport(wikiTom) {
@@ -179,6 +211,55 @@ describe("laptop setup", () => {
     expect(run({ home, wikiTom, tomQuest }).status).toBe(0);
     expect(fs.readFileSync(path.join(home, ".claude", "CLAUDE.md"), "utf8")).toBe(
       `${claudeRulesImport(wikiTom)}\n\n@C:/laptop/private-rules.md\n# Laptop notes\n`,
+    );
+  });
+
+  // The skills half of setup: the same publish the SessionStart hook runs on
+  // every session, done once so the directories are there before the first one.
+  it("installs both skills directories and leaves other skills alone", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "laptop-setup-skills-"));
+    const home = path.join(root, "home");
+    const wikiTom = wikiTomFixture(path.join(root, "WikiTom"));
+    // Not a checkout, so no repo but WikiTom's is published: A REPO DIRECTORY
+    // THAT IS NOT A CHECKOUT IS SKIPPED, NOT AN ERROR.
+    const tomQuest = path.join(root, "tom.quest");
+    const claudeSkills = path.join(home, ".claude", "skills");
+    const codexSkills = path.join(home, ".codex", "skills");
+    // A skill of the laptop's own, sitting where Tom's are about to land.
+    write(path.join(claudeSkills, "graphify", "SKILL.md"), "---\nname: graphify\n---\n\nNot Tom's.\n");
+
+    const first = run({ home, wikiTom, tomQuest });
+    expect(first.status).toBe(0);
+    for (const dir of [claudeSkills, codexSkills]) {
+      expect(fs.existsSync(path.join(dir, "tom-write", "SKILL.md"))).toBe(true);
+      expect(fs.existsSync(path.join(dir, "tom-know-admin", "SKILL.md"))).toBe(true);
+      expect(fs.existsSync(path.join(dir, "tom-repo-WikiTom", "SKILL.md"))).toBe(true);
+      expect(first.stdout).toContain(`changed ${dir}`);
+    }
+    expect(fs.readFileSync(path.join(claudeSkills, "tom-write", "SKILL.md"), "utf8")).toContain("Use short sentences.");
+
+    const second = run({ home, wikiTom, tomQuest });
+    expect(second.status).toBe(0);
+    for (const dir of [claudeSkills, codexSkills]) expect(second.stdout).toContain(`unchanged ${dir}`);
+    // Nothing this build did not produce is touched, on either run.
+    expect(fs.readFileSync(path.join(claudeSkills, "graphify", "SKILL.md"), "utf8")).toContain("Not Tom's.");
+  });
+
+  it("says so in one line when the skills cannot be published, and finishes setup", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "laptop-setup-no-skills-"));
+    const home = path.join(root, "home");
+    // No WikiTom checkout at all — the case every other test above runs in.
+    const wikiTom = path.join(root, "WikiTom");
+    const tomQuest = path.join(root, "tom.quest");
+
+    const result = run({ home, wikiTom, tomQuest });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("could not publish skills to");
+    // And the hooks and the import — the part a laptop cannot work without —
+    // are installed anyway.
+    expect(fs.existsSync(path.join(home, ".claude", "settings.json"))).toBe(true);
+    expect(fs.readFileSync(path.join(home, ".claude", "CLAUDE.md"), "utf8")).toBe(
+      `${claudeRulesImport(wikiTom)}\n\n`,
     );
   });
 

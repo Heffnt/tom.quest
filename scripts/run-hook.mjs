@@ -116,13 +116,20 @@ function claimFields(payload, event, runFile) {
   };
 }
 
-// scripts/session-start-hook.mjs is the laptop's layer launcher: it calls
-// assemblePrelude for the "laptop" subject, whose stable prefix is operate and
-// write. Naming those two is reading that hook's code, not guessing. The know
-// layer is neither given whole nor denied — it is expanded per subject — so it
-// appears in neither list. A subagent gets no prelude of its own, so its layers
-// stay unknown rather than inheriting a claim nobody made for it.
-export const LAPTOP_SESSION_LAYERS = Object.freeze(["operate", "write"]);
+// scripts/session-start-hook.mjs is the laptop's launcher: it assembles the
+// operate layer and nothing else, and names the skills it granted in a block
+// after it. Naming operate is reading that hook's code, not guessing.
+//
+// WRITE MOVED FROM A LAYER TO A SKILL. It used to ride every laptop session as
+// 10.5 KB of prefix; now the hook grants the name and the CLI loads the body
+// when the agent acts on it, which is why it belongs in skillsGranted and not
+// in layersGiven. The know layer is in neither list — its pages became ten
+// skills the launcher grants by subject, and a laptop session has no subject.
+//
+// A subagent gets no prelude of its own, so its layers stay unknown rather than
+// inheriting a claim nobody made for it.
+export const LAPTOP_SESSION_LAYERS = Object.freeze(["operate"]);
+export const LAPTOP_SESSION_SKILLS = Object.freeze(["write"]);
 
 function hookRegistration(payload, event, runFile, env) {
   const host = env.RUN_HOST === "box" || env.RUN_HOST === "laptop" ? env.RUN_HOST : null;
@@ -154,6 +161,8 @@ function hookRegistration(payload, event, runFile, env) {
     layersKnown,
     layersGiven: layersKnown ? [...LAPTOP_SESSION_LAYERS] : [],
     layersDenied: [],
+    skillsGranted: layersKnown ? [...LAPTOP_SESSION_SKILLS] : [],
+    skillsRefused: [],
     hooksConfigured: [...HOOKS_CONFIGURED],
   };
 }
