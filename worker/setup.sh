@@ -173,7 +173,16 @@ cp "$WORKER_DIR"/jobs/*.mjs /opt/tts/
 # installed once below. tts-lib.mjs explicitly resolves both the checkout and
 # flat install layouts.
 cp "$WORKER_DIR"/runs/*.mjs /opt/tts/runs/
+# EVERY `../jobs/<file>` A runs/ MODULE IMPORTS NEEDS A LINE HERE. The runs
+# modules land at /opt/tts/runs/, so that specifier resolves to
+# /opt/tts/jobs/<file> — a directory the flat `cp .../jobs/*.mjs /opt/tts/`
+# above never fills. Node ESM resolves a static import at module load, so a
+# missing one is not a degraded feature: the file cannot be imported at all,
+# and the cron entry that runs it fails with ERR_MODULE_NOT_FOUND every tick.
+# Two imports today: config.mjs → worker-env.mjs, backlog.mjs →
+# session-archive.mjs.
 cp "$WORKER_DIR"/jobs/worker-env.mjs /opt/tts/jobs/worker-env.mjs
+cp "$WORKER_DIR"/jobs/session-archive.mjs /opt/tts/jobs/session-archive.mjs
 mkdir -p /opt/tts/scripts /opt/tts/worker/jobs
 cp "$WORKER_DIR"/../scripts/session-start-hook.mjs /opt/tts/scripts/session-start-hook.mjs
 cp "$WORKER_DIR"/../scripts/run-hook.mjs /opt/tts/scripts/run-hook.mjs
