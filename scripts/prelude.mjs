@@ -1,14 +1,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
-import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseFrontmatter } from "../worker/jobs/markdown-sections.mjs";
-import {
-  assembleContextParts,
-  callerRules,
-  parseSubject,
-  subjectNeedsRecord,
-} from "../worker/jobs/context-relevance.mjs";
 export { PRELUDE_LAYERS } from "./skills.mjs";
 import { PRELUDE_LAYERS, PRELUDE_LAYER_NAMES as LAYER_NAMES } from "./skills.mjs";
 
@@ -153,93 +146,27 @@ function preludeResult(wikitom, commit, collected) {
  * Reads the requested WikiTom prompt layers from one immutable git commit.
  * Its result is reusable by the nightly job; the command line below is only
  * a thin renderer around this function.
+ *
+ * A WHOLE LAYER SELECTION IS THE ONE QUESTION THIS ASSEMBLER ANSWERS. It used
+ * to answer a second — `--for <subject>`, which cut the know layer down to the
+ * bytes that bore on one run — and that is gone with the expansion itself: the
+ * know layer is a published skill catalog, a run is granted skill NAMES by
+ * worker/jobs/skill-router.mjs, and it loads a body itself, once, if it needs
+ * one. `--layers operate` is how the base is assembled on both hosts, and
+ * worker/jobs/evals.mjs layersFor runs `--layers` against a pinned tree.
  */
-export function assemblePrelude({ wikitom, commit: requestedCommit = "HEAD", layers, for: subject, caller, record } = {}) {
+export function assemblePrelude({ wikitom, commit: requestedCommit = "HEAD", layers } = {}) {
   if (typeof wikitom !== "string" || wikitom === "") throw new PreludeError("--wikitom DIR is required");
-  // `for` and `layers` are the two questions this assembler answers, and they
-  // are exclusive: one whole layer selection, or one run's own subject.
-  if (subject !== undefined) {
-    if (layers !== undefined) throw new PreludeError("--for and --layers are mutually exclusive");
-    return assembleContextPrelude({ wikitom, commit: requestedCommit, for: subject, caller, record });
-  }
   const commit = resolveCommit(wikitom, requestedCommit);
   const requestedLayers = selectedLayerNames(layers);
   return preludeResult(wikitom, commit, collectLayers(wikitom, commit, requestedLayers));
 }
 
 /**
- * ONE RUN'S PROMPT, assembled for its own subject rather than for a caller's
- * fixed layer selection (the dynamic-context round, Tom's ruling 2026-09-09).
- *
- * Six parts, in this order:
- *
- *   ┌ STABLE PREFIX ─ the cache boundary ─────────────────────────────────┐
- *   │ header line 1  MODEL-OF-TOM FILES (WikiTom commit …): <stable paths>│
- *   │ part 1  map      model-of-tom/agent-rules.md § Map                  │
- *   │ part 2  operate  the rest of that file (one block, not two)         │
- *   │ part 3  write    writing.md + ground.md, when the run reaches Tom   │
- *   └─────────────────────────────────────────────────────────────────────┘
- *     header line 2  MODEL-OF-TOM EXPANDED (for <subject>): …
- *     part 4  expand     what the subject picks out of the know layer
- *     part 5  task       the caller's own mission body and supplemental —
- *                        NOT this function's; the CLI has no task
- *     header line 3  MODEL-OF-TOM FETCHABLE (<n> items):
- *     part 6  fetchable  one line per item NOT included
- *
- * Parts 1 and 2 are one file rendered once: `agent-rules.md` opens with
- * `## Map`, and they are named apart only because a fetchable line points back
- * at the map and because a future run may take the map without the rest.
- *
- * Header line 1 names THE STABLE PREFIX ONLY. That is what keeps it identical
- * across runs at one commit — the whole point of the boundary — and it stays
- * inside the regex `convex/ttsSkills.ts` validates a posted header with.
- */
-export function assembleContextPrelude({
-  wikitom,
-  commit: requestedCommit = "HEAD",
-  for: subjectSpec,
-  caller = "cli",
-  record = {},
-} = {}) {
-  if (typeof wikitom !== "string" || wikitom === "") throw new PreludeError("--wikitom DIR is required");
-  const subject = parseSubject(subjectSpec);
-  const rules = callerRules(caller);
-  const commit = resolveCommit(wikitom, requestedCommit);
-  const collected = collectLayers(wikitom, commit, LAYER_NAMES);
-  const stableLayers = rules.reachesTom ? ["operate", "write"] : ["operate"];
-  const stableFiles = stableLayers.flatMap((name) => collected.filesByLayer[name]);
-  const prefix = `${renderHeader(commit, stableFiles)}\n\n${renderFiles(stableFiles)}`;
-  const parts = assembleContextParts({
-    subject,
-    caller,
-    // The SOURCE bodies, frontmatter included — the same bytes `ttsSkills.body`
-    // stores, so the CLI and the Convex assembler index one text.
-    pages: collected.files.map((file) => ({ path: file.path, body: file.sourceBody })),
-    repoRules: record.repoRules ?? [],
-    record,
-    stableLayers,
-    supplemental: record.supplemental ?? [],
-  });
-  const text = [prefix, parts.expanded, parts.fetchable].filter((part) => part !== "").join("\n\n");
-  return {
-    commit,
-    subject,
-    caller,
-    prefix,
-    expanded: parts.expanded,
-    fetchable: parts.fetchable,
-    manifest: parts.manifest,
-    notes: parts.notes,
-    shrink: parts.shrink,
-    bytes: { prefix: Buffer.byteLength(prefix), ...parts.bytes, total: Buffer.byteLength(text) },
-    text,
-  };
-}
-
-/**
  * Every published `AGENTS.md` of one repo checkout, for the nightly post that
- * carries them into Convex (rule 9 needs their bodies, and Convex has no
- * filesystem). Read out of the immutable commit, like every other body here.
+ * carries them into Convex — the `repo-<name>` skills are written from these
+ * bodies, and Convex has no filesystem. Read out of the immutable commit, like
+ * every other body here.
  */
 export function collectRepoRules({ dir, repo, commit: requestedCommit = "HEAD" }) {
   if (typeof dir !== "string" || dir === "") throw new PreludeError("--repo-rules needs a directory");
@@ -286,7 +213,7 @@ export function assemblePreludePublication({ wikitom, commit: requestedCommit = 
   return { ...result, headers };
 }
 
-const VALUE_ARGS = ["--wikitom", "--commit", "--layers", "--for", "--record", "--caller"];
+const VALUE_ARGS = ["--wikitom", "--commit", "--layers"];
 
 function parseArgs(argv) {
   const values = {};
@@ -306,72 +233,14 @@ function parseArgs(argv) {
     }
     throw new PreludeError(`unknown argument ${argument}`);
   }
-  const { wikitom, commit, layers, for: subject, record, caller } = values;
+  const { wikitom, commit, layers } = values;
   if (wikitom === undefined) throw new PreludeError("--wikitom DIR is required");
-  // The two modes are exclusive on purpose. `--layers` builds the nightly
-  // publication's whole layers; `--for` builds ONE RUN's prompt, whose know
-  // layer is never whole. A command asking for both is asking two questions.
-  if (layers !== undefined && subject !== undefined) {
-    throw new PreludeError("--for and --layers are mutually exclusive");
-  }
-  if (layers === undefined && subject === undefined) {
-    throw new PreludeError("--layers operate,write,know or --for <subject> is required");
-  }
-  if (record !== undefined && subject === undefined) throw new PreludeError("--record needs --for");
-  if (caller !== undefined && subject === undefined) throw new PreludeError("--caller needs --for");
-  return { wikitom, commit, layers, subject, record, caller, json };
-}
-
-/**
- * `--record FILE` holds exactly the fields the Convex side passes in memory
- * (todos, batches, rulings, session outcomes, repo rules, and the New-York
- * calendar day). It exists so the CLI is testable against a fixture with no
- * deployment, and so the box can assemble without a Convex round trip.
- *
- * NEVER GUESS A RECORD: a `todo:` or `batch:` subject with no record is
- * refused, because a run that thinks it saw its subject's rulings and saw an
- * empty list is worse than a run that stops.
- */
-function readRecord(file) {
-  let text;
-  try {
-    text = fs.readFileSync(path.resolve(file), "utf8");
-  } catch (error) {
-    throw new PreludeError(`cannot read --record ${file}: ${error.message}`);
-  }
-  try {
-    return JSON.parse(text);
-  } catch (error) {
-    throw new PreludeError(`--record ${file} is not JSON: ${error.message}`);
-  }
+  if (layers === undefined) throw new PreludeError("--layers operate,write,know is required");
+  return { wikitom, commit, layers, json };
 }
 
 function main(argv) {
-  const { json, subject, record, caller, layers, ...options } = parseArgs(argv);
-  if (subject !== undefined) {
-    if (record === undefined && subjectNeedsRecord(parseSubject(subject))) {
-      throw new PreludeError(`--for ${subject} needs --record`);
-    }
-    const prelude = assembleContextPrelude({
-      ...options,
-      for: subject,
-      caller: caller ?? "cli",
-      record: record === undefined ? {} : readRecord(record),
-    });
-    if (json) {
-      process.stdout.write(`${JSON.stringify({
-        commit: prelude.commit,
-        caller: prelude.caller,
-        manifest: prelude.manifest,
-        notes: prelude.notes,
-        shrink: prelude.shrink,
-        bytes: prelude.bytes,
-      })}\n`);
-    } else {
-      process.stdout.write(`${prelude.text}\n`);
-    }
-    return;
-  }
+  const { json, layers, ...options } = parseArgs(argv);
   const prelude = assemblePrelude({ ...options, layers });
   if (json) {
     process.stdout.write(`${JSON.stringify({

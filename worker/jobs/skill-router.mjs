@@ -97,7 +97,15 @@ export const WEEK_CALLERS = Object.freeze(["time-notes", "planner"]);
 // ── Subjects ─────────────────────────────────────────────────────────────────
 
 /**
- * MOVED VERBATIM. `--for <subject>` parsed. A repo name may contain dots
+ * MOVED VERBATIM. One subject SPEC — `todo:<id>`, `batch:<id>`,
+ * `repo:<name>[:<paths>]`, `area:<name>`, `laptop`, `none` — parsed into the
+ * object routeSkills takes. Nothing in this tree calls it today: every launcher
+ * here already holds the subject as an object, and prelude.mjs's `--for`, which
+ * took a spec, retired with the expansion. It stays because a launcher handed a
+ * subject as text has nowhere else to turn it into one, and writing that parse
+ * a second time is the drift this move exists to stop.
+ *
+ * A repo name may contain dots
  * (`tom.quest`), so the paths are split off at the SECOND colon, not by
  * splitting on every one.
  */
@@ -106,10 +114,10 @@ export function parseSubject(spec) {
   if (text === "" || text === "none") return { kind: "none" };
   if (text === "laptop") return { kind: "laptop" };
   const colon = text.indexOf(":");
-  if (colon === -1) throw new ContextError(`--for ${text} is not a subject (todo:, batch:, repo:, area:, laptop)`);
+  if (colon === -1) throw new ContextError(`${text} is not a subject (todo:, batch:, repo:, area:, laptop)`);
   const kind = text.slice(0, colon);
   const rest = text.slice(colon + 1);
-  if (rest.trim() === "") throw new ContextError(`--for ${kind}: needs a value`);
+  if (rest.trim() === "") throw new ContextError(`subject ${kind}: needs a value`);
   if (kind === "todo") return { kind: "todo", todoId: rest.trim() };
   if (kind === "batch") return { kind: "batch", batchId: rest.trim() };
   if (kind === "area") return { kind: "area", area: rest.trim() };
@@ -119,7 +127,7 @@ export function parseSubject(spec) {
     const paths = rest.slice(second + 1).split(",").map((p) => p.trim()).filter(Boolean);
     return { kind: "repo", repo: rest.slice(0, second).trim(), paths };
   }
-  throw new ContextError(`--for ${kind}: is not a subject kind (todo, batch, repo, area, laptop)`);
+  throw new ContextError(`${kind}: is not a subject kind (todo, batch, repo, area, laptop)`);
 }
 
 /** MOVED VERBATIM. The subjects that cannot be resolved without a record row. */
