@@ -1048,9 +1048,24 @@ export function hash16(value) {
 const CARRIAGE_RETURN = new RegExp(String.fromCharCode(13), "g");
 
 /** The serialization the version is taken over: the same JSON, with every
- * carriage return removed from the carried text. */
+ * carriage return removed from the carried text and every node's `version`
+ * field removed entirely.
+ *
+ * A NODE'S `version` IS THE COMMIT ITS TEXT CAME FROM, and the graph's own
+ * version must not follow it. A page node and a skill node each carry the
+ * commit of the checkout they were read from, so every commit to either
+ * repository moves two dozen node fields — and if those counted, the whole
+ * graph's version would move with them. Then `graphVersion` on a run row would
+ * name the commit rather than the rules the run ran under, two runs over
+ * identical text would disagree about which definitions they had, and the
+ * guardrail's `--check --no-record` would go red on every commit to tom.quest
+ * until somebody regenerated a file nothing in which had changed. A version
+ * that moves when nothing moved is a version nobody reads. */
 export function canonical(value) {
-  const strip = (row) => (typeof row.text === "string" ? { ...row, text: row.text.replace(/\r/g, "") } : row);
+  const strip = (row) => {
+    const { version, ...rest } = row;
+    return typeof rest.text === "string" ? { ...rest, text: rest.text.replace(CARRIAGE_RETURN, "") } : rest;
+  };
   return JSON.stringify(
     {
       nodeKinds: value.nodeKinds,

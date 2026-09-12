@@ -521,9 +521,11 @@ const ENTITY_SPECS = Object.freeze([
     id: "mergeKey",
     shape: "<repo>:<sha>",
     regex: null,
-    mintedIn: "convex/ttsMerge.ts",
+    // Moved out of convex/ttsMerge.ts so convex/ttsEvals.ts could read it
+    // without the two modules becoming a cycle; ttsMerge.ts re-exports it.
+    mintedIn: "convex/ttsShared.ts",
     mintedPattern: /export function mergeKey\(/,
-    validatedIn: "convex/ttsMerge.ts:mergeKey",
+    validatedIn: "convex/ttsShared.ts:mergeKey",
     example: "tom.quest:d07e0e3ac1f0b4a9d3e5c7b118f2a6d4e9c0b3a7",
     term: null,
   },
@@ -531,9 +533,11 @@ const ENTITY_SPECS = Object.freeze([
     id: "commitKey",
     shape: "<repo>@<sha>",
     regex: null,
-    mintedIn: "convex/ttsMerge.ts",
+    // Moved out of convex/ttsMerge.ts so convex/ttsEvals.ts could read it
+    // without the two modules becoming a cycle; ttsMerge.ts re-exports it.
+    mintedIn: "convex/ttsShared.ts",
     mintedPattern: /export function commitKey\(/,
-    validatedIn: "convex/ttsMerge.ts:commitKey",
+    validatedIn: "convex/ttsShared.ts:commitKey",
     example: "tom.quest@d07e0e3ac1f0b4a9d3e5c7b118f2a6d4e9c0b3a7",
     term: null,
   },

@@ -484,10 +484,25 @@ if (resolved) {
   //     `--no-record` is what makes this runnable anywhere: the record half is
   //     built from the night's table copy, which a laptop checkout may not have,
   //     and the static half is the half a pull request can change.
-  runGenerator(
-    `node scripts/graph.mjs --check --wikitom ${wikitom} --no-record`,
-    ["scripts/graph.mjs", "--check", "--wikitom", wikitom, "--no-record"],
-  );
+  //
+  //     A CHECKOUT WITH NO tts/graph.json AT ALL IS A NOTE, NOT A FAILURE. The
+  //     file arrives in a vault when the nightly first writes it, and a vault
+  //     that has never run one has nothing for a pull request to have changed.
+  //     A vault that HAS the file and disagrees with the render is still a
+  //     failure, which is the case this check exists for; the difference is
+  //     read off the file's existence rather than off the generator's message,
+  //     so a rename cannot turn one into the other.
+  if (!existsSync(join(wikitom, "tts", "graph.json"))) {
+    reports.push(
+      `check-vocabulary: ${wikitom} has no tts/graph.json — nothing to check the render against; `
+        + "the nightly writes it, and `node scripts/graph.mjs --wikitom <dir> --write` writes it now",
+    );
+  } else {
+    runGenerator(
+      `node scripts/graph.mjs --check --wikitom ${wikitom} --no-record`,
+      ["scripts/graph.mjs", "--check", "--wikitom", wikitom, "--no-record"],
+    );
+  }
   // 11. THE SAME QUESTION OF THE VOCABULARY, PRINTED AND NOT FAILED, YET.
   //
   //     The vocabulary generator's first run against the real repositories

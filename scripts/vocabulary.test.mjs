@@ -147,6 +147,9 @@ function sharedTs(vocabularyBody = AGREEING_VOCABULARY) {
 
 export const NARROW_LIST = [] as const;
 
+export function commitKey(repo, sha) { return \`\${repo}@\${sha}\`; }
+export function mergeKey(repo, sha) { return \`\${repo}:\${sha}\`; }
+
 /** The closed TTS vocabulary. */
 export const TTS_CLOSED_VOCABULARY = \`${vocabularyBody}\`;
 
@@ -244,7 +247,9 @@ CRON
 const FILES = Object.freeze({
   "convex/runs.ts": 'const RUN_ID = /^(claude|codex):(laptop|box):[A-Za-z0-9._-]{8,128}(\\/[A-Za-z0-9._-]{8,128})?$/;\n',
   "convex/http.ts": 'if (!/^[0-9a-f]{8}$/.test(b.askId)) return bad();\n',
-  "convex/ttsMerge.ts": "export function commitKey(repo, sha) { return `${repo}@${sha}`; }\nexport function mergeKey(repo, sha) { return `${repo}:${sha}`; }\n",
+  // Both keys live in ttsShared.ts, which convex/ttsEvals.ts already imports;
+  // ttsMerge.ts re-exports them, so it is not where they are minted.
+  "convex/ttsMerge.ts": 'export { commitKey, mergeKey } from "./ttsShared";\n',
   "convex/ttsEvals.ts": 'export const EVALS_RUN = "evals-run";\n',
   "worker/runs/ingest.mjs": "const rootId = `claude:${host}:${sessionId}`;\n",
   "worker/runs/registration.mjs":

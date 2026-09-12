@@ -730,6 +730,13 @@ export function generateGraph(options) {
     wikitomCommit: headCommit(wikitom),
     tomQuestCommit: headCommit(tomQuest),
     vocabularyVersion: vocabulary?.version ?? null,
+    // THE REPOSITORIES THIS BUILD READ, so a later `--check` can say whether it
+    // is looking at the same file. The static half's content depends on the
+    // set: a run given `--repo ComplexMultiTrigger=<dir>` mints that
+    // repository's rule and page nodes and a run without it does not, and a
+    // checker that compared the two would report a hand edit that never
+    // happened.
+    repos: [...new Set(repoRules.map((file) => file.repo))].sort((a, b) => a.localeCompare(b)),
     recordSource: recordDir === null || !fs.existsSync(recordDir) ? "none" : path.basename(recordDir),
     generator: "scripts/graph.mjs",
     generatorVersion: GENERATOR_VERSION,
@@ -759,7 +766,28 @@ export function generateGraph(options) {
     const comparable = recordDir === null ? (text) => endings(staticOnly(text)) : endings;
     const left = onDisk === null ? null : comparable(onDisk);
     const right = comparable(rendered);
-    if (left !== right) {
+    // A DIFFERENT REPOSITORY SET IS A SKIP, NOT A DIFFERENCE. The file names
+    // the repositories it was built from; an invocation that cannot reach the
+    // same ones cannot render the same bytes, and reporting that as a hand edit
+    // would be the checker blaming the file for the caller's arguments. The
+    // skip is printed so it is visible rather than silent.
+    let skipped = null;
+    if (onDisk !== null) {
+      let theirs = null;
+      try {
+        theirs = JSON.parse(onDisk)?.generatedFrom?.repos ?? null;
+      } catch {
+        theirs = null;
+      }
+      const ours = graph.generatedFrom.repos;
+      if (Array.isArray(theirs) && theirs.join(",") !== ours.join(",")) {
+        skipped = `the file was built from [${theirs.join(", ")}] and this run reads [${ours.join(", ")}]`;
+        graph.notes.push(
+          `--check skipped: ${skipped} — pass the same --repo NAME=DIR arguments to compare them`,
+        );
+      }
+    }
+    if (skipped === null && left !== right) {
       disagreements.push(
         block("G8", recordDir === null ? `${GRAPH_PATH} (static half)` : GRAPH_PATH, [
           ["disk", onDisk === null ? "the file is absent" : `${Buffer.byteLength(onDisk, "utf8").toLocaleString("en-US")} bytes`],
