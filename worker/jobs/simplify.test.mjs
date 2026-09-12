@@ -14,6 +14,7 @@
 // Importing the job module is safe: it only calls main() when node was pointed
 // at the file (the `invokedDirectly` guard at the bottom of it).
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -32,14 +33,18 @@ import {
   blastRows,
   candidateFor,
   decisionPreview,
+  evidenceFor,
   factsBlock,
   factsText,
   grepCounts,
+  hash8,
   jaccard,
+  nodeIdFor,
   nounsOf,
   parseProposals,
   proposalId,
   proxyMattered,
+  rowNumbers,
   ruleId,
   ruleLines,
   runSimplify,
@@ -899,5 +904,182 @@ describe("blastRows", () => {
     expect(longer.candidate).toBe("collapse");
     expect(longer.collapseInto).toBe(shorter.id);
     expect(map.get(shorter.id).candidate).not.toBe("collapse");
+  });
+});
+
+// ── 14. `loaded` is a count of the prompts that carried the rule ─────────────
+//
+// The measurement's one exact number about a rule. A run's context entry names
+// the node ids its prompt carried, and a rule's row counts the runs whose list
+// holds its node id. The working-directory proxy stays as the fallback, and the
+// row says which of the two it used.
+
+const OPERATE_RULE = "- Commit with a full message before every stop.";
+const WORKER_RULE = "- The worker jobs never import a npm dependency.";
+
+/** Twenty sampled runs with known node lists: twelve carried the worker rule,
+ *  five carried the operate line, three recorded no list at all. Every run has
+ *  words in its bag, so the proxy's own floor is not what decides anything
+ *  below. */
+function nodeSample({ withNodes = true } = {}) {
+  const worker = `rule:${ruleId(WORKER_RULE)}`;
+  const operate = `line:${ruleId(OPERATE_RULE)}`;
+  const runs = [];
+  for (let i = 0; i < 20; i += 1) {
+    const nodes = i < 12 ? [worker, "page:worker/AGENTS.md"] : i < 17 ? [operate] : null;
+    runs.push({
+      runId: `node-run-${i}`,
+      startedAt: NOW - i * 1_000,
+      depth: 0,
+      tokens: ["convex", "planner"],
+      ...(withNodes && nodes !== null ? { graphNodes: nodes } : {}),
+    });
+  }
+  return runs;
+}
+
+/** The two rule files the rows below come from, with the cwd proxy's own
+ *  answers on them — 100 and 40 — so a row reading either of those numbers is
+ *  visibly the fallback. */
+const ruleFilesFixture = () => [
+  { where: OPERATE_FILE, loaded: 100, loadedUnknown: 0, lines: [{ line: 1, text: OPERATE_RULE }] },
+  { where: "worker/AGENTS.md", loaded: 40, loadedUnknown: 25, lines: [{ line: 1, text: WORKER_RULE }] },
+];
+
+const nodeTable = (sample) =>
+  blastRows({
+    input: { runs: { total: 100 }, sample, skills: [], cwds: [] },
+    fields: [],
+    checks: [],
+    hisWordsLines: [],
+    repoName: "tomquest",
+    ruleFiles: ruleFilesFixture(),
+  });
+
+describe("loaded, counted off the node ids the prompts carried", () => {
+  it("counts the runs given each node and says the count is the given one", () => {
+    const rows = nodeTable(nodeSample()).rows;
+    const worker = rowFor(rows, WORKER_RULE);
+    const operate = rowFor(rows, OPERATE_RULE);
+    expect(worker.loaded).toBe(12);
+    expect(worker.loadedSource).toBe("given");
+    expect(operate.loaded).toBe(5);
+    expect(operate.loadedSource).toBe("given");
+    // Neither row reads the proxy's number for its file.
+    expect(worker.loaded).not.toBe(40);
+    expect(operate.loaded).not.toBe(100);
+  });
+
+  it("counts the runs with no node list at all, and never folds them in", () => {
+    const rows = nodeTable(nodeSample()).rows;
+    expect(rowFor(rows, WORKER_RULE).loadedUnknown).toBe(3);
+    expect(rowFor(rows, OPERATE_RULE).loadedUnknown).toBe(3);
+    // 12 + 5 + 3 is the whole sample: an absent list is a value, not a zero.
+    expect(12 + 5 + 3).toBe(20);
+  });
+
+  // A rules file's lines are `rule:` nodes and a synthesis page's are `line:`
+  // nodes, which is what worker/jobs/graph.mjs mints. A row that looked its
+  // node up under the other prefix would count zero runs for every rule.
+  it("names a repository rule and a synthesis line by their own node kinds", () => {
+    expect(nodeIdFor("worker/AGENTS.md", "1a2b3c4d")).toBe("rule:1a2b3c4d");
+    expect(nodeIdFor("AGENTS.md", "1a2b3c4d")).toBe("rule:1a2b3c4d");
+    expect(nodeIdFor(OPERATE_FILE, "1a2b3c4d")).toBe("line:1a2b3c4d");
+  });
+
+  // THE FALLBACK, AND WHY IT IS ONE. On the day this ships no run has ever
+  // written a node list, so an exact count would read zero for every rule and
+  // the pass would propose nothing for weeks. The proxy answers instead, and
+  // the row says so rather than printing a zero that reads like a measurement.
+  it("falls back to the working-directory proxy when not one run carried a list", () => {
+    const rows = nodeTable(nodeSample({ withNodes: false })).rows;
+    const worker = rowFor(rows, WORKER_RULE);
+    const operate = rowFor(rows, OPERATE_RULE);
+    expect(worker.loadedSource).toBe("cwd-proxy");
+    expect(worker.loaded).toBe(40);
+    expect(worker.loadedUnknown).toBe(25);
+    expect(operate.loadedSource).toBe("cwd-proxy");
+    expect(operate.loaded).toBe(100);
+    expect(operate.loadedUnknown).toBe(0);
+  });
+
+  // One run with a list is enough: the exact answer is available for every
+  // rule the moment any prompt writes one down, and the rules no run carried
+  // read zero, which is what they are.
+  it("takes the given count as soon as one sampled run carries a list", () => {
+    const sample = nodeSample({ withNodes: false });
+    sample[0] = { ...sample[0], graphNodes: [`rule:${ruleId(WORKER_RULE)}`] };
+    const rows = nodeTable(sample).rows;
+    expect(rowFor(rows, WORKER_RULE)).toMatchObject({ loaded: 1, loadedUnknown: 19, loadedSource: "given" });
+    expect(rowFor(rows, OPERATE_RULE)).toMatchObject({ loaded: 0, loadedUnknown: 19, loadedSource: "given" });
+  });
+
+  it("prints the source and what was absent in the evidence sentence", () => {
+    const rows = nodeTable(nodeSample()).rows;
+    const worker = rowFor(rows, WORKER_RULE);
+    expect(worker.evidence).toBe(
+      `Loaded on 12 run(s) (given); 3 run(s) recorded no node list; ${worker.proxy.mattered} of ${worker.proxy.sample} sampled runs carry its words.`,
+    );
+    expect(evidenceFor(worker)).toBe(worker.evidence);
+
+    const proxied = rowFor(nodeTable(nodeSample({ withNodes: false })).rows, WORKER_RULE);
+    expect(proxied.evidence).toContain("(cwd-proxy)");
+    expect(proxied.evidence).toContain("recorded no working directory");
+
+    // A line with too few subject words has no proxy and still says where its
+    // `loaded` came from.
+    const thin = { ...worker, loaded: 12, loadedUnknown: 3, proxy: { ...worker.proxy, mattered: null } };
+    expect(evidenceFor(thin)).toBe(
+      "Loaded on 12 run(s) (given); 3 run(s) recorded no node list; it yields too few subject words to measure against a transcript.",
+    );
+  });
+
+  // THE PARSER'S ONE MECHANICAL TEST is that every integer in the model's
+  // evidence is one of the row's own. `loadedUnknown` is now a number the row's
+  // own sentence prints, so it has to be in that set — otherwise a model
+  // quoting the row verbatim would be refused for inventing a number.
+  it("keeps every integer of the row's own sentence inside rowNumbers", () => {
+    for (const row of nodeTable(nodeSample()).rows) {
+      const mine = rowNumbers(row);
+      for (const n of row.evidence.match(/\d+/g) ?? []) {
+        expect(mine.has(Number.parseInt(n, 10))).toBe(true);
+      }
+      expect(mine.has(row.loadedUnknown)).toBe(true);
+      expect(mine.has(row.loaded)).toBe(true);
+    }
+  });
+
+  it("says the source on the table line the model reads", () => {
+    const table = nodeTable(nodeSample());
+    const facts = factsBlock({ day: DAY, input: input(), table, repoReadable: true, failures: [] });
+    const text = factsText(facts);
+    expect(text).toContain(`#${rowFor(table.rows, WORKER_RULE).id} rule worker/AGENTS.md`);
+    expect(text).toContain("| loaded 12 (given) |");
+  });
+});
+
+// ── 15. the hash the graph and this file share ───────────────────────────────
+
+describe("hash8 after the move to graph-hash.mjs", () => {
+  // The one thing the move could break silently: a rule's row and its node in
+  // the graph are the same eight characters only while the two spellings of
+  // SHA-256 agree, and one of them is plain JavaScript.
+  it("is byte-for-byte node:crypto's answer", () => {
+    const sha8 = (text) => crypto.createHash("sha256").update(String(text)).digest("hex").slice(0, 8);
+    expect(hash8("abc")).toBe(sha8("abc"));
+    expect(hash8("abc")).toBe("ba7816bf");
+    expect(hash8("")).toBe(sha8(""));
+    for (const text of [
+      OPERATE_RULE,
+      WORKER_RULE,
+      "a line with a — dash and an é",
+      "x".repeat(1000),
+      "check|merge-gate|tests",
+    ]) {
+      expect(hash8(text)).toBe(sha8(text));
+    }
+    // And the id the graph names a line by is that hash over the same
+    // normalization, which is what makes `rule:<id>` and this row one thing.
+    expect(ruleId(WORKER_RULE)).toBe(sha8("the worker jobs never import a npm dependency."));
   });
 });

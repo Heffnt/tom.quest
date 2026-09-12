@@ -21,6 +21,8 @@ import crypto from "node:crypto";
 import fsDefault from "node:fs";
 import path from "node:path";
 
+import { GRAPH_NODES_CAP } from "../jobs/graph.mjs";
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const LOCK_STALE_MS = 30_000;
 
@@ -356,6 +358,20 @@ export function mergeRegistration({ parsed, envelope, host, report = () => {} })
     if (Array.isArray(registration[key])) run.context[key] = [...registration[key]];
     else delete run.context[key];
   }
+  // THE `given` EDGES: the exact node ids this run's prompt carried, beside
+  // graphVersion below, which says which graph those ids name. Like
+  // skillsGranted they are set only on the applied path — an envelope refused
+  // for a host mismatch describes another machine's prompt.
+  //
+  // THE CAP IS GRAPH_NODES_CAP AND THE TRUNCATION IS VISIBLE. A 12,288-byte
+  // prelude admits on the order of forty to eighty nodes, so 256 is three times
+  // the worst case and exists to bound a run row against a caller that hands
+  // the walk an enormous budget. Over it the list is cut and the entry records
+  // that by carrying exactly 256 — a reader counting the cap knows to distrust
+  // the count, which a silent truncation would hide.
+  if (Array.isArray(registration.graphNodes)) {
+    run.context.graphNodes = registration.graphNodes.slice(0, GRAPH_NODES_CAP).map((id) => String(id));
+  } else delete run.context.graphNodes;
   // The fourth group, written by `tts search skills` rather than by a
   // launcher. It is FLATTENED TO PLAIN STRINGS because convex/schema.ts types
   // every runs.context list as v.array(v.string()): a string array is the only
@@ -367,7 +383,7 @@ export function mergeRegistration({ parsed, envelope, host, report = () => {} })
   } else {
     delete run.context.skillsAsked;
   }
-  for (const key of ["modelRequested", "promptSha256", "writingStandardSource"]) setOptional(run.context, key, registration[key]);
+  for (const key of ["modelRequested", "promptSha256", "writingStandardSource", "graphVersion"]) setOptional(run.context, key, registration[key]);
   if (!run.context.wikitomCommit && typeof registration.wikitomCommit === "string") run.context.wikitomCommit = registration.wikitomCommit;
 
   const launcher = String(envelope.writer?.file ?? "").replaceAll("\\", "/");

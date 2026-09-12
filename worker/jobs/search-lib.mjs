@@ -20,7 +20,17 @@ export const LAPTOP_WIKITOM_DIR = "C:/Users/heffn/Desktop/WikiTom";
 export const BOX_WIKITOM_DIR = process.env.WIKITOM_DIR || "/root/wikitom";
 
 const DATABASE_COMMANDS = new Set(["rulings", "sessions", "events", "todos", "evals", "proposals"]);
-const LOCAL_COMMANDS = new Set(["areas", "sources", "archive", "evidence", "skills"]);
+const LOCAL_COMMANDS = new Set([
+  "areas",
+  "sources",
+  "archive",
+  "evidence",
+  "skills",
+  "node",
+  "near",
+  "define",
+  "vocabulary",
+]);
 /** EVERY CORPUS the grammar accepts, in one list. The help is checked against
  * it, so a corpus added to the grammar and left out of HELP fails a test rather
  * than being discovered by a run that cannot find it. */
@@ -70,6 +80,22 @@ Returns path:heading, the line: text, and the first said/paraphrase/read/rests o
 skills [<name>] [--group GROUP] [--skills-dir DIR] [--limit N] [--json]
 List the skills installed for this run, or print one skill's body.
 Reads the installed skills directory, so it names only what can actually load.
+
+node <id> [--wikitom DIR] [--json]
+Print one node of tts/graph.json and every edge that touches it.
+A bare id resolves when it is unique across kinds; anything else returns did you mean rows.
+
+near <id> [--hops K] [--bytes N] [--wikitom DIR] [--json]
+Walk outward from one node under a byte budget and print the nodes that fit.
+The frontier names, for each node the budget left out, the command that reaches it.
+
+define <term> [--wikitom DIR] [--json]
+Print one term of tts/vocabulary.json: its kind, definition, spec section and code symbol.
+A word the spec refuses prints kind=refused and the word it is a second name for.
+
+vocabulary [--kind K] [--limit N] [--wikitom DIR] [--json]
+List every term tts/vocabulary.json fixes, under a header naming its version and counts.
+Narrow to one kind with --kind.
 
 proposals [--repo NAME] [--limit N] [--json]
 List the open repository-rule proposals the nightly repo-learning step made.
@@ -134,6 +160,15 @@ export function parseSearchArgs(argv) {
     } else if (item === "--skills-dir") {
       options.skillsDir = optionValue(argv, i++, item);
       options.seen.add("skills-dir");
+    } else if (item === "--hops") {
+      options.hops = Number(optionValue(argv, i++, item));
+      options.seen.add("hops");
+    } else if (item === "--bytes") {
+      options.bytes = Number(optionValue(argv, i++, item));
+      options.seen.add("bytes");
+    } else if (item === "--kind") {
+      options.kind = optionValue(argv, i++, item);
+      options.seen.add("kind");
     } else if (item.startsWith("--")) fail(`unknown option ${item}`);
     else options.positional.push(item);
   }
@@ -142,9 +177,20 @@ export function parseSearchArgs(argv) {
   }
   if (options.since && !isDay(options.since)) fail("--since must be a real YYYY-MM-DD date");
   const needsQuery = new Set(["rulings", "events", "todos", "sources", "archive", "evidence"]);
+  // `node` and `near` take a NODE ID and `define` takes a TERM, not a query:
+  // both are looked up exactly first and only fall back to a substring search
+  // when nothing carries that id or that word. Naming the positional for what
+  // it is keeps the refusal ("needs exactly one node id") true.
+  const needsNodeId = new Set(["node", "near"]);
   if (needsQuery.has(command)) {
     if (options.positional.length !== 1) fail(`${command} needs exactly one query`);
     options.query = options.positional[0];
+  } else if (needsNodeId.has(command)) {
+    if (options.positional.length !== 1) fail(`${command} needs exactly one node id`);
+    options.node = options.positional[0];
+  } else if (command === "define") {
+    if (options.positional.length !== 1) fail("define needs exactly one term");
+    options.term = options.positional[0];
   } else if (command === "areas") {
     if (options.positional.length !== 1) fail("areas needs an area name or all");
     options.area = options.positional[0];
@@ -169,9 +215,27 @@ export function parseSearchArgs(argv) {
     evidence: new Set(["json", "limit", "wikitom"]),
     proposals: new Set(["json", "repo", "limit"]),
     skills: new Set(["json", "limit", "group", "skills-dir"]),
+    // No --limit on these three: each answers about ONE node or ONE word, and
+    // a limit on a single answer would be a number with nothing to cut.
+    node: new Set(["json", "wikitom"]),
+    near: new Set(["json", "wikitom", "hops", "bytes"]),
+    define: new Set(["json", "wikitom"]),
+    vocabulary: new Set(["json", "limit", "wikitom", "kind"]),
   };
   for (const name of options.seen) {
     if (!allowed[command].has(name)) fail(`--${name} does not apply to ${command}`);
+  }
+  if (command === "near") {
+    // The defaults are the walk a reader wants without arguing: two hops out,
+    // and a budget of the same order as the block a prompt would carry.
+    if (options.hops === undefined) options.hops = DEFAULT_HOPS;
+    if (options.bytes === undefined) options.bytes = DEFAULT_WALK_BYTES;
+    if (!Number.isInteger(options.hops) || options.hops < 1 || options.hops > MAX_HOPS) {
+      fail(`--hops must be a whole number from 1 to ${MAX_HOPS}`);
+    }
+    if (!Number.isInteger(options.bytes) || options.bytes < 1 || options.bytes > MAX_WALK_BYTES) {
+      fail(`--bytes must be a whole number from 1 to ${MAX_WALK_BYTES}`);
+    }
   }
   delete options.seen;
   return options;
@@ -864,7 +928,426 @@ export function formatProposalResult(row, fallback = "proposal") {
   ].join(" ");
 }
 
+// ── graph and vocabulary ─────────────────────────────────────────────────────
+//
+// Four commands over the two GENERATED files in the WikiTom checkout:
+// `tts/graph.json`, which scripts/graph.mjs writes, and `tts/vocabulary.json`,
+// which scripts/vocabulary.mjs writes. Neither is hand-edited and neither is
+// ever loaded into a prompt; these commands are how a run reads one node, one
+// neighbourhood or one word out of them on demand.
+//
+// THE FILE IS READ AND PARSED ONCE PER INVOCATION and never held in a
+// module-level cache. `tts search` is one process per question, so a cache
+// saves nothing between questions, and inside one process — a test, or the
+// box's session host — a cached graph is a graph that outlives the file it was
+// read from and answers from bytes that are no longer on disk.
+
+/**
+ * Where each generated file sits in the WikiTom checkout.
+ *
+ * The two writers spell the same paths (scripts/graph.mjs GRAPH_PATH,
+ * scripts/vocabulary.mjs VOCABULARY_PATH). They are repeated here rather than
+ * imported because either import would pull a generator's whole I/O half —
+ * node:child_process, the record reader, the disagreement machinery — into a
+ * command that only reads the output.
+ */
+const GRAPH_PATH = "tts/graph.json";
+const VOCABULARY_PATH = "tts/vocabulary.json";
+
+/** `near`'s defaults and its bounds. The bounds exist so a typo asks for a
+ * walk that finishes: the graph is a few thousand nodes across, so six hops
+ * reaches all of it, and a budget of a mebibyte admits every node there is. */
+export const DEFAULT_HOPS = 2;
+export const DEFAULT_WALK_BYTES = 4_096;
+export const MAX_HOPS = 6;
+export const MAX_WALK_BYTES = 1_048_576;
+
+/** The most `did you mean` rows a refusal prints. */
+const NEAR_MISSES = 5;
+
+// worker/jobs/graph.mjs is the pure half — the kinds, the index and the walk.
+// The import is LAZY for the same reason the skills module's is: a search for a
+// ruling must not depend on the graph machinery being installed beside it, and
+// graph.mjs reaches scripts/skills.mjs, which on the box is a separate copy.
+const GRAPH_MODULE_URLS = [new URL("./graph.mjs", import.meta.url)];
+
+let graphModule = null;
+async function loadGraphModule() {
+  if (graphModule === null) {
+    const file = installedModule(GRAPH_MODULE_URLS, ["worker/jobs/graph.mjs", "graph.mjs"]);
+    if (!file) fail("the graph module (worker/jobs/graph.mjs) is not installed");
+    graphModule = await import(pathToFileURL(file).href);
+  }
+  return graphModule;
+}
+
+/** One generated file, parsed. A missing file returns its path the way
+ * `evidence` and `archive` do — the caller prints it and exits 3 — and a file
+ * that is present but not JSON is an error, because something wrote it wrong. */
+function readGenerated(root, relativePath, regenerate) {
+  const file = path.join(root, relativePath);
+  if (!fs.existsSync(file)) return { missing: file, value: null };
+  let value;
+  try {
+    value = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    fail(`${file} is not JSON — regenerate it with \`${regenerate}\``);
+  }
+  return { missing: null, value };
+}
+
+async function loadGraph(root) {
+  const { missing, value } = readGenerated(root, GRAPH_PATH, "node scripts/graph.mjs --write");
+  if (missing) return { missing, graph: null, module: null };
+  if (!Array.isArray(value?.nodes) || !Array.isArray(value?.edges)) {
+    fail(`${path.join(root, GRAPH_PATH)} carries no nodes and edges arrays`);
+  }
+  return { missing: null, graph: value, module: await loadGraphModule() };
+}
+
+/**
+ * The id a `node` or `near` argument names, or the rows saying why it names
+ * nothing.
+ *
+ * Three steps, in order. An id with its kind on it (`term:batch`) is looked up
+ * whole. A BARE id (`9f2a71c4`) matches every node whose id carries that half,
+ * and resolves only when exactly one does — two is a refusal naming both,
+ * because guessing between two kinds would answer a question nobody asked.
+ * Anything still unmatched falls to a case-insensitive substring over `text`
+ * and `title`, which is what turns a half-remembered sentence into an id.
+ */
+function resolveNode(module, graph, wanted) {
+  const asked = String(wanted ?? "");
+  const exact = graph.nodes.find((row) => row.id === asked);
+  if (exact !== undefined) return { node: exact };
+
+  if (!asked.includes(":")) {
+    const bare = graph.nodes.filter((row) => row.id.slice(row.id.indexOf(":") + 1) === asked);
+    if (bare.length === 1) return { node: bare[0] };
+    if (bare.length > 1) {
+      const candidates = [...bare].sort((a, b) => a.id.localeCompare(b.id));
+      return {
+        node: null,
+        row: { form: "ambiguous", id: asked, candidates },
+        json: { refused: "ambiguous", id: asked, candidates: candidates.map((row) => row.id) },
+      };
+    }
+  }
+
+  // A kind prefix that named no node is dropped before the substring search:
+  // `node term:batch` on a graph with no such term is asking about the WORD
+  // batch, and searching for the literal "term:batch" would find nothing by
+  // construction.
+  const kinds = Array.isArray(graph.nodeKinds) ? graph.nodeKinds : [];
+  const kind = module.kindOf(asked);
+  const needle = (kinds.includes(kind) ? asked.slice(kind.length + 1) : asked).toLocaleLowerCase();
+  const candidates = needle === "" ? [] : graph.nodes
+    .filter((row) => `${row.text ?? ""}\n${row.title ?? ""}`.toLocaleLowerCase().includes(needle))
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .slice(0, NEAR_MISSES);
+  return {
+    node: null,
+    row: { form: "unknown", id: asked, needle, candidates },
+    json: { refused: "unknown", id: asked, candidates: candidates.map((row) => row.id) },
+  };
+}
+
+/**
+ * `node <id>` — one node and every edge touching it.
+ *
+ * The edges come from the module's own index rather than a filter written
+ * here, so what this prints is exactly what a walk would traverse.
+ */
+export async function graphNodeResults(root, wanted) {
+  const { missing, graph, module } = await loadGraph(root);
+  if (missing) return { missing, rows: [] };
+  const found = resolveNode(module, graph, wanted);
+  if (found.node === null) return { missing: null, refused: true, rows: [found.row], json: found.json };
+  const edges = module.edgesOf(graph, found.node.id);
+  return {
+    missing: null,
+    rows: [{ form: "node", node: found.node, out: edges.out, in: edges.in }],
+    json: { node: found.node, edges: { out: edges.out, in: edges.in } },
+  };
+}
+
+/**
+ * The command that reaches a node the budget left out.
+ *
+ * An area and a page have a cheaper door than another walk — `areas` reads the
+ * page's own protected sections, and a page IS a file in a checkout — so the
+ * frontier names those doors. Everything else is another `near`.
+ */
+function frontierCommand(row) {
+  if (row.kind === "area") return `tts-search areas ${row.title ?? row.id.slice(row.id.indexOf(":") + 1)}`;
+  if (row.kind === "page" && typeof row.path === "string" && row.path !== "") return row.path;
+  return `tts-search near ${row.id}`;
+}
+
+/**
+ * `near <id> [--hops k] [--bytes n]` — the walk, rendered.
+ *
+ * The admitted nodes are sorted by the module's own RENDER ORDER, which is the
+ * order a prompt would carry them in; the frontier is left in the order the
+ * walk produced, which is cost order, so the nodes that only just missed the
+ * budget are at the top of the block where a reader looking for the next
+ * command will find them.
+ */
+export async function graphNearResults(root, wanted, hops, bytes) {
+  const { missing, graph, module } = await loadGraph(root);
+  if (missing) return { missing, rows: [] };
+  const found = resolveNode(module, graph, wanted);
+  if (found.node === null) return { missing: null, refused: true, rows: [found.row], json: found.json };
+  const result = module.walk(graph, [found.node.id], bytes, null, { maxHops: hops });
+  const admitted = [...result.nodes].sort(module.byRenderOrder);
+  const frontier = result.frontier.map((row) => ({ node: row, command: frontierCommand(row) }));
+  const row = {
+    form: "walk",
+    seed: found.node.id,
+    hops,
+    budget: bytes,
+    bytes: result.bytes,
+    admitted,
+    frontier,
+  };
+  return {
+    missing: null,
+    rows: [row],
+    json: {
+      seed: row.seed,
+      hops,
+      bytes: result.bytes,
+      budget: bytes,
+      admitted,
+      frontier: frontier.map((entry) => ({ id: entry.node.id, command: entry.command })),
+    },
+  };
+}
+
+/** The fields `define` prints and searches, in that order. A term matches a
+ * miss's substring search on any of them, because a reader who remembers a
+ * definition and not its word is exactly who is asking. */
+function termHaystack(term) {
+  return [
+    term?.term,
+    term?.kind,
+    term?.definition,
+    term?.specSection,
+    term?.codeSymbol,
+    ...(Array.isArray(term?.related) ? term.related : []),
+  ]
+    .map((value) => String(value ?? ""))
+    .join("\n")
+    .toLocaleLowerCase();
+}
+
+function vocabularyTerms(value) {
+  return Array.isArray(value?.terms) ? value.terms : [];
+}
+
+/**
+ * The spec section the vocabulary itself is fixed in, carried onto every
+ * printed row. It is the file's own `generatedFrom.specSection` rather than a
+ * literal here, so a vocabulary moved to another section says so.
+ */
+function vocabularySection(value) {
+  const section = value?.generatedFrom?.specSection;
+  return typeof section === "string" && section !== "" ? section : "unknown";
+}
+
+/** `define <term>` — one term's entry, or the words it could have meant. */
+export function defineResults(root, wanted) {
+  const { missing, value } = readGenerated(root, VOCABULARY_PATH, "node scripts/vocabulary.mjs --write");
+  if (missing) return { missing, rows: [] };
+  const section = vocabularySection(value);
+  const terms = vocabularyTerms(value);
+  const asked = String(wanted ?? "").toLocaleLowerCase();
+  const found = terms.find((term) => String(term?.term ?? "").toLocaleLowerCase() === asked);
+  if (found !== undefined) {
+    return { missing: null, rows: [{ form: "term", section, term: found }], json: { term: found } };
+  }
+  const candidates = asked === "" ? [] : terms
+    .filter((term) => termHaystack(term).includes(asked))
+    .sort((a, b) => String(a?.term ?? "").localeCompare(String(b?.term ?? "")))
+    .slice(0, NEAR_MISSES);
+  return {
+    missing: null,
+    refused: true,
+    rows: [{ form: "no-term", section, term: String(wanted ?? ""), candidates }],
+    json: { refused: "unknown", term: String(wanted ?? ""), candidates: candidates.map((term) => term.term) },
+  };
+}
+
+/**
+ * `vocabulary [--kind K]` — the whole vocabulary, under one header row.
+ *
+ * The header is a row like any other rather than a note, so `--json` and the
+ * text form carry the same thing: the version a run would record, the counts of
+ * each section, and the two commits the file was generated from.
+ */
+export function vocabularyResults(root, options) {
+  const { missing, value } = readGenerated(root, VOCABULARY_PATH, "node scripts/vocabulary.mjs --write");
+  if (missing) return { missing, rows: [] };
+  const section = vocabularySection(value);
+  const terms = vocabularyTerms(value);
+  if (options.kind !== undefined) {
+    const kinds = [...new Set(terms.map((term) => String(term?.kind ?? "")))].filter(Boolean).sort();
+    // The kinds are the file's, not a list written here: a kind the generator
+    // stops minting must stop being offered on the same day it stops existing.
+    if (!kinds.includes(options.kind)) fail(`--kind must be one of ${kinds.join(", ")}`);
+  }
+  const selected = terms
+    .filter((term) => options.kind === undefined || String(term?.kind ?? "") === options.kind)
+    .slice(0, options.limit);
+  const header = {
+    form: "version",
+    version: String(value?.version ?? ""),
+    counts: {
+      terms: terms.length,
+      entities: Array.isArray(value?.entities) ? value.entities.length : 0,
+      jobs: Array.isArray(value?.jobs) ? value.jobs.length : 0,
+      search: Array.isArray(value?.searchQuestions) ? value.searchQuestions.length : 0,
+      skills: Array.isArray(value?.skills) ? value.skills.length : 0,
+      repos: Array.isArray(value?.repos) ? value.repos.length : 0,
+      channels: Array.isArray(value?.channels) ? value.channels.length : 0,
+    },
+    wikitom: String(value?.generatedFrom?.wikitomCommit ?? "unknown"),
+    tomQuest: String(value?.generatedFrom?.tomQuestCommit ?? "unknown"),
+  };
+  return {
+    missing: null,
+    rows: [header, ...selected.map((term) => ({ form: "term", section, term }))],
+    json: { version: header.version, generatedFrom: value?.generatedFrom ?? null, terms: selected },
+  };
+}
+
+// ── rendering the four ───────────────────────────────────────────────────────
+
+/** One node's own text, with the file's line terminator taken off. A line node
+ * of a CRLF file carries a trailing carriage return by design (graph.mjs does
+ * not normalize them), and printing it would put a stray escape at the end of
+ * every rule of tom.quest's AGENTS.md. */
+function nodeText(value) {
+  return singleLine(String(value ?? "").trim());
+}
+
+/** A node's fields, in one fixed order, each present only when the node carries
+ * it. graph.json drops null fields, so absence here and absence there agree. */
+function nodeFields(row) {
+  const parts = [`kind=${singleLine(row.kind)}`];
+  if (row.title) parts.push(`title=${quoted(row.title)}`);
+  if (row.path) parts.push(`path=${singleLine(row.path)}`);
+  if (row.heading) parts.push(`heading=${quoted(row.heading)}`);
+  if (Number.isInteger(row.order)) parts.push(`order=${row.order}`);
+  if (row.ref) parts.push(`ref=${singleLine(row.ref)}`);
+  if (row.version) parts.push(`version=${singleLine(row.version)}`);
+  return parts.join(" ");
+}
+
+/** A node on one line: its id, its fields, and its text. This is the shape the
+ * `near` block and every `did you mean` row use, so a node reads the same
+ * wherever it is named. */
+function nodeLine(row) {
+  const text = nodeText(row.text);
+  return `${row.id} ${nodeFields(row)}${text === "" ? "" : ` text=${quoted(text)}`}`;
+}
+
+/** `  <label><content>`, the label padded to the width of the longest of the
+ * three (`text`, `out`, `in`) plus one space. */
+function labelled(label, content) {
+  return `  ${label.padEnd(6)}${content}`;
+}
+
+function edgeLine(label, edge, arrow, other) {
+  const evidence = singleLine(edge?.evidence ?? "");
+  return labelled(label, `${singleLine(edge.kind)} ${arrow} ${other} (w${edge.weight})${evidence === "" ? "" : ` · ${evidence}`}`);
+}
+
+function suggestionLines(candidates, lines) {
+  for (const candidate of candidates) lines.push(`  did you mean  ${nodeLine(candidate)}`);
+  return lines;
+}
+
+function formatTermRow(row) {
+  const term = row.term ?? {};
+  const related = Array.isArray(term.related) ? term.related.join(",") : "";
+  const parts = [
+    `vocabulary/${singleLine(term.term)}`,
+    singleLine(row.section),
+    `kind=${singleLine(term.kind)}`,
+    `definition=${quoted(term.definition)}`,
+  ];
+  if (term.specSection) parts.push(`spec=§${singleLine(term.specSection)}`);
+  if (term.codeSymbol) parts.push(`code=${singleLine(term.codeSymbol)}`);
+  if (related !== "") parts.push(`related=${related}`);
+  // A refused word is a word the spec names as a second name for one it does
+  // keep. The word it points at is the whole answer, so it is the last field
+  // rather than one buried in the definition.
+  if (term.kind === "refused") parts.push(`refused-for=${singleLine(term.refusedFor ?? "nothing")}`);
+  return parts.join(" ");
+}
+
+function formatGraphRow(row) {
+  if (row.form === "node") {
+    const lines = [`graph/${row.node.id} ${nodeFields(row.node)}`];
+    const text = nodeText(row.node.text);
+    if (text !== "") lines.push(labelled("text", text));
+    for (const edge of row.out) lines.push(edgeLine("out", edge, "→", edge.to));
+    for (const edge of row.in) lines.push(edgeLine("in", edge, "←", edge.from));
+    return lines.join("\n");
+  }
+  if (row.form === "ambiguous") {
+    const kinds = [...new Set(row.candidates.map((candidate) => candidate.kind))].sort();
+    return suggestionLines(row.candidates, [`graph/${row.id} ambiguous across ${kinds.length} kinds`]).join("\n");
+  }
+  if (row.form === "unknown") {
+    const lines = [`graph/${row.id} unknown`];
+    if (row.candidates.length === 0) return `${lines[0]}\n  no node's text or title carries ${quoted(row.needle)}`;
+    return suggestionLines(row.candidates, lines).join("\n");
+  }
+  if (row.form === "no-term") {
+    const lines = [`vocabulary/${singleLine(row.term)} unknown`];
+    if (row.candidates.length === 0) return `${lines[0]}\n  no term's definition carries ${quoted(row.term)}`;
+    for (const candidate of row.candidates) {
+      lines.push(`  did you mean  ${formatTermRow({ section: row.section, term: candidate })}`);
+    }
+    return lines.join("\n");
+  }
+  if (row.form === "version") {
+    const counts = row.counts;
+    return [
+      `vocabulary/@version ${singleLine(row.version)}`,
+      `terms=${counts.terms}`,
+      `entities=${counts.entities}`,
+      `jobs=${counts.jobs}`,
+      `search=${counts.search}`,
+      `skills=${counts.skills}`,
+      `repos=${counts.repos}`,
+      `channels=${counts.channels}`,
+      `wikitom=${singleLine(row.wikitom)}`,
+      `tom.quest=${singleLine(row.tomQuest)}`,
+    ].join(" ");
+  }
+  if (row.form === "term") return formatTermRow(row);
+  // form === "walk"
+  const lines = row.admitted.map(nodeLine);
+  lines.push("frontier:");
+  if (row.frontier.length === 0) lines.push("  none");
+  for (const entry of row.frontier) lines.push(`  ${entry.node.id} · ${entry.command}`);
+  // The one summary line comes last, so a truncated terminal still shows the
+  // counts the reader is deciding on. The byte counts carry thousands
+  // separators under a named locale, never the machine's own.
+  lines.push(
+    `near/${row.seed} hops=${row.hops} admitted=${row.admitted.length} frontier=${row.frontier.length} `
+      + `bytes=${row.bytes.toLocaleString("en-US")}/${row.budget.toLocaleString("en-US")}`,
+  );
+  return lines.join("\n");
+}
+
 function formatLocal(command, row) {
+  if (command === "node" || command === "near" || command === "define" || command === "vocabulary") {
+    return formatGraphRow(row);
+  }
   if (command === "skills") {
     const head = `${row.name} [${row.group}] ${row.bytes}B ${row.path}`;
     // The name form carries the body; the list form does not. Same idiom as
@@ -890,6 +1373,17 @@ function formatLocal(command, row) {
   return `${row.id} ${row.date} ${singleLine(row.text)}`;
 }
 
+/** What a command calls the corpus it could not find, for the one line a
+ * missing one prints. A command absent from the table names itself. */
+const MISSING_CORPUS = Object.freeze({
+  archive: "session archive",
+  evidence: "evidence directory",
+  node: "graph",
+  near: "graph",
+  define: "vocabulary",
+  vocabulary: "vocabulary",
+});
+
 /** Execute a search command. Injectable IO makes formatting testable without live state. */
 export async function runSearchCli(
   argv,
@@ -911,6 +1405,10 @@ export async function runSearchCli(
     let metadata = null;
     let jsonEnvelope = null;
     let note = null;
+    // A REFUSAL PRINTS ITS ROWS AND EXITS 3. `missing` already means "this
+    // corpus is not here"; this means "the corpus is here and carries no such
+    // thing", which a caller must be able to tell apart from an empty answer.
+    let refused = false;
     if (OWN_DOOR_COMMANDS.has(options.command)) {
       rows = await proposalResults(options, env, fetchFn);
     } else if (DATABASE_COMMANDS.has(options.command)) {
@@ -924,11 +1422,16 @@ export async function runSearchCli(
       if (options.command === "areas") rows = areaResults(root, options.area).slice(0, options.limit);
       else if (options.command === "sources") rows = linesMatching(root, ["sources", "tom-text"], options.query, options.limit);
       else if (options.command === "evidence") ({ missing, rows } = evidenceResults(root, options.query, options.limit));
+      else if (options.command === "node") ({ missing, rows, json: jsonEnvelope, refused = false } = await graphNodeResults(root, options.node));
+      else if (options.command === "near") {
+        ({ missing, rows, json: jsonEnvelope, refused = false } = await graphNearResults(root, options.node, options.hops, options.bytes));
+      } else if (options.command === "define") ({ missing, rows, json: jsonEnvelope, refused = false } = defineResults(root, options.term));
+      else if (options.command === "vocabulary") ({ missing, rows, json: jsonEnvelope } = vocabularyResults(root, options));
       else ({ missing, rows } = await archiveResults(root, options.query, options.since, options.limit));
     }
     if (missing) {
       if (options.json) safeWrite(JSON.stringify({ missing }));
-      else safeWrite(`tts-search: no ${options.command === "evidence" ? "evidence directory" : "session archive"} at ${missing}`);
+      else safeWrite(`tts-search: no ${MISSING_CORPUS[options.command] ?? options.command} at ${missing}`);
       return 3;
     }
     const redacted = redactValue(rows);
@@ -942,7 +1445,7 @@ export async function runSearchCli(
       const coverage = formatSearchCoverage(metadata);
       if (coverage) safeWrite(coverage);
     }
-    return 0;
+    return refused ? 3 : 0;
   } catch (err) {
     safeError(String(err?.message ?? err));
     return 2;

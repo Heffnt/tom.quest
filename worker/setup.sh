@@ -224,6 +224,40 @@ cp "$WORKER_DIR"/../scripts/evals-check.mjs /opt/tts/evals-check.mjs
 # are node builtins, so one file is the whole of it.
 cp "$WORKER_DIR"/../scripts/check-writing-standard.mjs /opt/tts/check-writing-standard.mjs
 cp "$WORKER_DIR"/jobs/markdown-sections.mjs /opt/tts/worker/jobs/markdown-sections.mjs
+# THE GRAPH, in all three homes it is reached from.
+#
+# worker/jobs/graph.mjs imports NOTHING outside its own directory — only
+# ./graph-hash.mjs and ./markdown-sections.mjs — and that is exactly so it can
+# be copied to more than one place. Three callers reach it by three different
+# relative paths and every one of them has to resolve:
+#
+#   /opt/tts/graph.mjs             the flat wildcard copy, for a job beside it
+#   /opt/tts/worker/jobs/graph.mjs scripts/skills.mjs, by ../worker/jobs/
+#   /opt/tts/jobs/graph.mjs        worker/runs/registration.mjs, by ../jobs/
+#
+# The last one is the rule stated at the top of this block: EVERY ../jobs/<file>
+# a runs/ module imports needs a line here, because runs modules land in
+# /opt/tts/runs/ while jobs land flat. registration.mjs imports GRAPH_NODES_CAP,
+# so graph.mjs and the two modules it imports need that home too.
+cp "$WORKER_DIR"/jobs/graph.mjs             /opt/tts/worker/jobs/graph.mjs
+cp "$WORKER_DIR"/jobs/graph-hash.mjs        /opt/tts/worker/jobs/graph-hash.mjs
+cp "$WORKER_DIR"/jobs/graph.mjs             /opt/tts/jobs/graph.mjs
+cp "$WORKER_DIR"/jobs/graph-hash.mjs        /opt/tts/jobs/graph-hash.mjs
+cp "$WORKER_DIR"/jobs/markdown-sections.mjs /opt/tts/jobs/markdown-sections.mjs
+# NEITHER GENERATOR NEEDS A NESTED search-lib.mjs, and that is why there is no
+# cp line for one here. They used to import it for the two WikiTom directory
+# constants; search-lib.mjs imports ./session-archive.mjs, which imports
+# ../session-host/redact.mjs, so a nested copy of it needs a nested copy of
+# everything beneath it, and each of those needs its own line in this file
+# forever. Both generators spell the two constants themselves instead, naming
+# search-lib.mjs as the canonical spelling in a comment — the same call
+# worker/jobs/worker-env.mjs makes, for the same install-layout reason.
+# The disk halves, beside prelude.mjs and skills.mjs: the nightly's graph step
+# runs them against /root/wikitom to rebuild tts/vocabulary.json and
+# tts/graph.json, and each reaches ./skills.mjs by that relative path, so
+# scripts/ is the one place they can live and still load.
+cp "$WORKER_DIR"/../scripts/graph.mjs      /opt/tts/scripts/graph.mjs
+cp "$WORKER_DIR"/../scripts/vocabulary.mjs /opt/tts/scripts/vocabulary.mjs
 # The Codex wrapper is a repo script, not a job, but sessions need it from ANY
 # repo — including checkouts that predate it, and repos that are not tom.quest
 # at all. One copy here is what `tts-codex` executes, so the flags and the

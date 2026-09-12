@@ -1,5 +1,5 @@
 // nightly.mjs — the nightly job (the lifeos update, phase 4). Runs at 4:00
-// a.m. New York, before the 5 a.m. digest, and does nine things in order,
+// a.m. New York, before the 5 a.m. digest, and does ten things in order,
 // each one recording a "nightly-failure" dtsEvents row if it fails and then
 // letting the next one run:
 //
@@ -24,27 +24,34 @@
 //      fixes which rows are in it (those created before the job started),
 //      not their state — a row updated between two pages is exported in its
 //      later state, and two tables read minutes apart can disagree.
-//   4. learning — applies Tom's objections from the digest thread (the
+//   4. graph — runs the vocabulary generator (scripts/vocabulary.mjs) and
+//      then the graph generator (scripts/graph.mjs) against the two
+//      checkouts and the copy step 3 has just written, and makes ONE commit
+//      for tts/vocabulary.json and tts/graph.json. A disagreement in either
+//      is a failed step and nothing is written. See graphStep for why it sits
+//      here and why the tom.quest half of the vocabulary's write is never
+//      committed by this job.
+//   5. learning — applies Tom's objections from the digest thread (the
 //      inverse of each named change, or a row saying why not), then reads
 //      what he did since the last learning run (his session turns with the
 //      agent's replies around them, his Slack replies, his rulings), makes
 //      one model call over the model-of-tom pages, and applies the lines it
 //      proposes that the rules allow — one "learning-change" row each, with
 //      the commit, once the push has made it. See learningStep.
-//   5. runs — pages the verified run manifest from Convex and appends its
+//   6. runs — pages the verified run manifest from Convex and appends its
 //      already-normalized entries to WikiTom's monthly manifests. Transcript
 //      bytes stay in the configured object store rather than entering git.
-//   6. repo-learning — reads the legacy WikiTom session transcripts still
+//   7. repo-learning — reads the legacy WikiTom session transcripts still
 //      available to this established synthesis step for what those sessions
 //      learned about the REPOSITORIES they worked in,
 //      and writes the evidence entries under model-of-tom/evidence/repos/.
 //      The synthesis lines themselves live in each repo's own AGENTS.md, so
 //      what lands here is proposals and evidence, never the rule files.
-//   7. push — one commit per step that changed something, plus whatever an
+//   8. push — one commit per step that changed something, plus whatever an
 //      earlier run left modified, `git pull --rebase`, `git push` over the
 //      github.com-wikitom SSH alias. A refused pull or push is a failure row
 //      and the commits stay local for the next night; nothing is retried.
-//   8. post — TWO HALVES off the one HEAD, in order. First the base: the
+//   9. post — TWO HALVES off the one HEAD, in order. First the base: the
 //      model-of-tom files read from the git object at HEAD (the stable
 //      operate, write, and know layers; each area page whole except for YAML
 //      frontmatter), posted with the commit hash and time to
@@ -57,7 +64,7 @@
 //      (scripts/publish-skills.mjs, BOX_SKILLS_DIRS), and the catalog to
 //      POST /tts/skills. The skills half is its own failure row and never
 //      throws, so a night that cannot publish them still delivered the base.
-//   9. repo-rules — reads DIFFERENT checkouts (tom.quest, WikiTom and
+//  10. repo-rules — reads DIFFERENT checkouts (tom.quest, WikiTom and
 //      ComplexMultiTrigger) for their nested AGENTS.md bodies and posts them
 //      to POST /tts/repo-rules, one post per repo, so the context assembler —
 //      which runs inside Convex and has no filesystem — can expand them for a
@@ -66,9 +73,9 @@
 //      a night that lost the lock still runs it. Each repo is isolated: a
 //      missing clone is one failure row and the others still post.
 //
-// Steps 3 to 7 write the WikiTom checkout and run under
+// Steps 3 to 8 write the WikiTom checkout and run under
 // /var/lock/tts-wikitom.lock, taken once around them; the post reads the HEAD
-// they left, so it is inside the same lock. Steps 1, 2 and 9 are outside it
+// they left, so it is inside the same lock. Steps 1, 2 and 10 are outside it
 // (CHECKOUTLESS_STEPS), and a box with no WikiTom clone at all still runs
 // them.
 //
@@ -302,6 +309,11 @@ function git(dir, ...args) {
 //                      the night's labels are eval cases before the night's
 //                      learning reads the same record.
 //   snapshot           writes tts/snapshot/
+//   graph              writes tts/vocabulary.json and tts/graph.json. AFTER
+//                      snapshot because its record half is built from the
+//                      table copy that step has just written, and BEFORE
+//                      learning because the map candidate is a diff against
+//                      model-of-tom/agent-rules.md
 //   learning           writes model-of-tom/ and model-of-tom/evidence/
 //   sessions           writes sessions/ — the archived transcripts
 //   repo-learning      reads those transcripts, writes evidence/repos/
@@ -315,7 +327,7 @@ function git(dir, ...args) {
 // repo-learning runs AFTER sessions because it reads the transcripts that
 // step archives, and BEFORE push so its writes ride the night's commit.
 // NOTHING here is reordered without moving the comment with it.
-const STEPS = ["delivery", "golden-export", "snapshot", "learning", "runs", "repo-learning", "push", "post", "repo-rules"];
+const STEPS = ["delivery", "golden-export", "snapshot", "graph", "learning", "runs", "repo-learning", "push", "post", "repo-rules"];
 // The repo checkouts whose AGENTS.md files ride into Convex beside the
 // model-of-tom layers (the dynamic-context round). Convex has no filesystem, so
 // the assembler cannot read a checkout at all — a run with no checkout of its
@@ -366,9 +378,9 @@ export function boxSkillsDirs() {
   if (override === undefined || override.trim() === "") return [...BOX_SKILLS_DIRS];
   return override.split(path.delimiter).map((entry) => entry.trim()).filter((entry) => entry !== "");
 }
-// The five that write the WikiTom checkout. The post runs under the same
+// The six that write the WikiTom checkout. The post runs under the same
 // lock after them (see main), reading what they left.
-const LOCKED_STEPS = ["snapshot", "learning", "runs", "repo-learning", "push"];
+const LOCKED_STEPS = ["snapshot", "graph", "learning", "runs", "repo-learning", "push"];
 // The steps that never read the WikiTom checkout: delivery asks Convex what it
 // delivered, golden-export and repo-rules read a different repo entirely. A
 // night with no WikiTom checkout still runs these three — see main.
@@ -559,6 +571,171 @@ export function syncSnapshot(snapshotDir, stagingDir, tables) {
     changed.push(name);
   }
   return changed.sort();
+}
+
+// ── the graph ────────────────────────────────────────────────────────────────
+/**
+ * The vocabulary and the graph, regenerated from the two checkouts and the
+ * night's table copy and written into the WikiTom checkout as ONE commit.
+ *
+ * WHY THE STEP SITS HERE — after snapshot, under the lock — in three parts:
+ *
+ *   1. it writes WikiTom files (tts/vocabulary.json and tts/graph.json), so it
+ *      belongs under /var/lock/tts-wikitom.lock with the other writers;
+ *   2. the map candidate is a diff against model-of-tom/agent-rules.md, and a
+ *      diff computed after the learning step's rewrites would describe a map
+ *      that had just moved under it;
+ *   3. the record half is built from tts/snapshot/*.jsonl, which the snapshot
+ *      step has just written — so the graph's record half is exactly
+ *      reproducible from the commit, and the generator opens no Convex
+ *      connection and needs no credential of its own.
+ *
+ * THE VOCABULARY RUNS FIRST because it is the graph's schema: scripts/graph.mjs
+ * reads tts/vocabulary.json for the term, job, question and repository nodes,
+ * and checks every node and edge kind it minted against the closed lists the
+ * vocabulary declares.
+ *
+ * ONE COMMIT FOR BOTH FILES. They are generated from one run of one step out of
+ * one pair of commits, and neither can be regenerated without the other; two
+ * commits would make the pair's versions look independently authored.
+ *
+ * A DISAGREEMENT IN EITHER IS A FAILED STEP AND NOTHING IS WRITTEN: both
+ * generators refuse to write past one, and the throw here carries the report so
+ * the "nightly-failure" row says which disagreement it was.
+ *
+ * THE TOM.QUEST SIDE IS NEVER COMMITTED BY THIS JOB. The generated block in
+ * convex/ttsShared.ts is tom.quest's file; this job holds the WikiTom lock and
+ * pushes WikiTom. The vocabulary generator rewrites that block in the tom.quest
+ * checkout on disk, which leaves that checkout modified, and a block that
+ * differed from the render is recorded as a failure — it reaches #tts-broken
+ * through recordFailure, where a person lands it through tom.quest's own gate.
+ * Recorded rather than thrown for the reason skillsHalf is: the WikiTom half of
+ * the night is written and committed by then, and the summary must still carry
+ * the two versions it produced.
+ */
+async function graphStep(run) {
+  // Both generators live in scripts/, which is a directory in a checkout and a
+  // flat sibling on the box; loadScript tries both spellings and names them in
+  // its failure, so a box missing one of these files fails THIS STEP with a
+  // readable message rather than killing the whole job at module load.
+  const vocabularyModule = await loadScript("vocabulary.mjs");
+  const graphModule = await loadScript("graph.mjs");
+  const { generateVocabulary } = vocabularyModule;
+  const { generateGraph } = graphModule;
+  if (typeof generateVocabulary !== "function") {
+    throw new Error("scripts/vocabulary.mjs exports no generateVocabulary — the graph's schema has no generator");
+  }
+  if (typeof generateGraph !== "function") {
+    throw new Error("scripts/graph.mjs exports no generateGraph");
+  }
+
+  // The repositories this job already names, LESS tom.quest, which the
+  // generator reads through its own `tomQuest` argument — a second entry for it
+  // would read the same AGENTS.md files twice. Only the clones that are really
+  // here, the same forgiving filter skillsHalf uses: a missing checkout is
+  // already the repo-rules step's own failure row.
+  const repos = REPO_CHECKOUTS
+    .filter(({ repo, dir }) => repo !== "tom.quest" && fs.existsSync(path.join(dir, ".git")))
+    .map(({ repo, dir }) => ({ repo, dir }));
+
+  // THE VOCABULARY REPORTS AND DOES NOT WRITE, YET, and the yet is the point.
+  //
+  // Its first run against the real repositories found seven D1 disagreements —
+  // the seven prompt terms are worded one way in spec §12.1 and another way in
+  // convex/ttsShared.ts's TTS_CLOSED_VOCABULARY — plus a terms section over the
+  // 40 KiB cap and a map candidate over the 7,000-byte bound. Every one of
+  // those is a real fact about the system and none of them is this round's to
+  // settle: the first is Tom's wording, and the other two are numbers to
+  // re-argue against what was measured rather than estimated.
+  //
+  // A step that failed on them would fail every night from the night it shipped,
+  // which is a red job nobody can act on. A step that wrote over them would put
+  // a file on disk that states something the spec and the code do not both say,
+  // which is the one thing the file exists to prevent. So it runs, its
+  // disagreements ride the step's result into the `nightly-run` row and the
+  // digest, and it writes nothing. When those three are settled this becomes
+  // `write: true` and a throw, in one edit, and the graph's own half already
+  // works that way.
+  const vocabulary = generateVocabulary({ wikitom: run.dir, tomQuest: TOM_QUEST_DIR, write: false });
+  if (vocabulary.disagreements.length > 0) {
+    console.log(
+      `[nightly] graph: the vocabulary reports ${vocabulary.disagreements.length} disagreement(s) `
+        + "and writes nothing; they are Tom's to settle, see graphStep",
+    );
+  }
+  const graph = generateGraph({
+    wikitom: run.dir,
+    tomQuest: TOM_QUEST_DIR,
+    record: path.join(run.dir, SNAPSHOT_DIR),
+    repos,
+    write: true,
+  });
+  if (graph.disagreements.length > 0) {
+    throw new Error(`graph: ${graph.disagreements.length} disagreement(s) — nothing written\n${graph.report}`);
+  }
+
+  const changed = [...vocabulary.changed, ...graph.changed];
+  const paths = changed.filter((entry) => entry.startsWith("tts/"));
+  if (paths.length > 0) {
+    run.commits.push({
+      paths,
+      message:
+        `graph: ${run.day} — vocabulary ${vocabulary.version}, graph ${graph.version}, `
+          + `${graph.counts.nodes} nodes, ${graph.counts.edges} edges`,
+    });
+  }
+  console.log(
+    `[nightly] graph: vocabulary ${vocabulary.version}, graph ${graph.version} (record ${graph.recordVersion}), `
+      + `${graph.counts.nodes} nodes, ${graph.counts.edges} edges, ${graph.bytes}/${graph.cap} bytes; `
+      + `${paths.length === 0 ? "nothing changed" : paths.join(", ")}`
+      + `; map candidate ${vocabulary.mapCandidateChanged ? "changed" : "unchanged"}`,
+  );
+
+  const result = {
+    vocabulary: {
+      version: vocabulary.version,
+      counts: vocabulary.counts,
+      bytes: vocabulary.bytes,
+      changed: vocabulary.changed,
+      // The row says what the vocabulary found and that it wrote nothing, so
+      // the digest can carry the count and the morning reader can act on it.
+      wrote: false,
+      disagreements: vocabulary.disagreements.length,
+      report: String(vocabulary.report ?? "").slice(0, 2_000),
+    },
+    graph: {
+      version: graph.version,
+      recordVersion: graph.recordVersion,
+      counts: { nodes: graph.counts.nodes, edges: graph.counts.edges },
+      bytes: graph.bytes,
+      cap: graph.cap,
+      changed: graph.changed,
+      wrote: graph.wrote,
+    },
+    changed: paths,
+    mapCandidateChanged: vocabulary.mapCandidateChanged === true,
+    // Enough of the diff to read in a failure row or a digest line, and no
+    // more: the whole diff is the candidate file, which is in the commit.
+    mapCandidateDiff: String(vocabulary.mapCandidateDiff ?? "").slice(0, 2_000),
+  };
+
+  // Anything the generators changed OUTSIDE tts/ is tom.quest's — today that is
+  // only convex/ttsShared.ts — and this job cannot land it. Named, not summed:
+  // the row has to say which file drifted.
+  const outside = changed.filter((entry) => !entry.startsWith("tts/"));
+  if (outside.length > 0) {
+    result.outsideWikitom = outside;
+    await recordFailure(
+      run,
+      "graph",
+      new Error(
+        `${outside.join(", ")} on disk differed from the render at vocabulary ${vocabulary.version} — `
+          + "the generator rewrote it in the tom.quest checkout, which this job never commits or pushes; "
+          + "land it through tom.quest's own gate",
+      ),
+    );
+  }
+  return result;
 }
 
 // ── 2. learning ──────────────────────────────────────────────────────────────
@@ -2356,6 +2533,10 @@ export async function postStep(run, deps = {}) {
       layers: prelude.layers,
       files,
       headers: prelude.headers,
+      // The version of the graph the same night generated from the same
+      // checkout, so a reader of a run row and a reader of the publication
+      // name the same object. Null on a night the graph step did not run.
+      graphVersion: run.results.graph?.graph?.version ?? null,
     });
     console.log(
       `[nightly] post: ${res.files} file(s) at WikiTom ${prelude.commit.slice(0, 12)}${prelude.pushed ? "" : " (not yet pushed)"} — ${files.map((f) => f.path).join(", ")}`,
@@ -2805,6 +2986,7 @@ async function main() {
     delivery: deliveryStep,
     "golden-export": goldenExportStep,
     snapshot: snapshotStep,
+    graph: graphStep,
     learning: learningStep,
     runs: runsStep,
     "repo-learning": repoLearningStep,
@@ -2870,6 +3052,10 @@ async function recordSummary(run, only) {
       : null,
     runs: run.results.runs ?? null,
     delivery: run.results.delivery ?? null,
+    // Both versions, the counts, the bytes against the cap, which of the two
+    // files changed, and whether the map candidate moved — the whole of what
+    // the 5 a.m. digest can say about tonight's graph without reading it.
+    graph: run.results.graph ?? null,
     // The clone path is not carried: it is a cache directory on this box and
     // means nothing to a reader of the record. `landed: false` is the fact the
     // digest and the weekly gather can act on.

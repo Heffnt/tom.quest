@@ -1022,6 +1022,10 @@ export default defineSchema({
     operate: v.optional(v.string()),
     write: v.optional(v.string()),
     know: v.optional(v.string()),
+    // The nightly posts the version of the graph it generated from the same
+    // commit, so a reader of a run row and a reader of the publication name
+    // the same object.
+    graphVersion: v.optional(v.string()),
     headers: v.array(v.object({
       layers: v.array(v.union(v.literal("operate"), v.literal("write"), v.literal("know"))),
       header: v.string(),
@@ -1373,6 +1377,13 @@ export default defineSchema({
       // offered it. Written by worker/runs/registration.mjs; absent on every
       // run before phase 6.
       skillsAsked: v.optional(v.array(v.string())),
+      // The graph version a run ran under, and the exact node ids its prompt
+      // carried — the `given` edges. They live on the run row because they are
+      // per-run and unbounded, which the capped nightly-committed graph file
+      // cannot hold. Same pair as convex/runs.ts CONTEXT; absent is a supported
+      // value, exactly as it is for wikitomCommit.
+      graphVersion: v.optional(v.string()),
+      graphNodes: v.optional(v.array(v.string())),
     })),
     outcome: v.optional(v.object({
       endedReason: v.optional(v.string()), finalTextSeq: v.optional(v.number()),

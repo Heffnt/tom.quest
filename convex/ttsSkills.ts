@@ -51,6 +51,9 @@ export type ModelOfTomState = {
   operate?: string;
   write?: string;
   know?: string;
+  /** The graph the same nightly generated from `commit`, so a reader of a run
+   * row and a reader of the publication name the same object. */
+  graphVersion?: string;
   headers?: StoredHeader[];
   files?: { path: string; body: string }[];
 };
@@ -114,6 +117,7 @@ export async function modelOfTomState(ctx: QueryCtx | MutationCtx): Promise<Mode
     operate: current.operate,
     write: current.write,
     know: current.know,
+    graphVersion: current.graphVersion,
     headers: current.headers,
   };
 }

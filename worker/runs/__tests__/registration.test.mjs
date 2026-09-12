@@ -15,6 +15,7 @@ import {
   writeRegistrationClaim,
   writeRegistrationEnd,
 } from "../registration.mjs";
+import { GRAPH_NODES_CAP } from "../../jobs/graph.mjs";
 import { codexResponseItem, jsonl } from "./fixtures.mjs";
 
 const temp = () => fs.mkdtempSync(path.join(os.tmpdir(), "runs-registration-"));
@@ -254,5 +255,49 @@ describe("run registration", () => {
       envelope: { ...envelope, registration: { host: "box", layersKnown: false } },
     });
     expect(refused.run.context.skillsAsked).toBeUndefined();
+  });
+
+  it("rides the graph version and the given node ids onto an applied run, and nothing onto a refused one", () => {
+    const envelope = {
+      writer: { file: "scripts/codex-run.mjs" },
+      registration: {
+        host: "laptop", layersKnown: false,
+        graphVersion: "0123456789abcdef",
+        graphNodes: ["page:model-of-tom/agent-rules.md", "line:aaaaaaaa", "skill:write"],
+      },
+    };
+    const applied = mergeRegistration({ parsed: parsed(), host: "laptop", envelope });
+    expect(applied.run.context.graphVersion).toBe("0123456789abcdef");
+    expect(applied.run.context.graphNodes)
+      .toEqual(["page:model-of-tom/agent-rules.md", "line:aaaaaaaa", "skill:write"]);
+
+    // Absent is a supported value, exactly as it is for wikitomCommit: an
+    // unregistered run, and a run whose launcher could not build a graph, carry
+    // nothing and nothing is inferred from that.
+    const absent = mergeRegistration({ parsed: parsed(), host: "laptop", envelope: null });
+    expect(absent.run.context.graphVersion).toBeUndefined();
+    expect(absent.run.context.graphNodes).toBeUndefined();
+
+    // A refused envelope describes another machine's prompt, so neither field
+    // is stamped — the same rule skillsGranted and regToken follow.
+    const mismatched = mergeRegistration({
+      parsed: parsed(), host: "laptop", report: () => {},
+      envelope: { ...envelope, registration: { ...envelope.registration, host: "box" } },
+    });
+    expect(mismatched.run.context.graphVersion).toBeUndefined();
+    expect(mismatched.run.context.graphNodes).toBeUndefined();
+  });
+
+  it("truncates an over-cap node list to exactly the cap, so the count says it was cut", () => {
+    const over = Array.from({ length: GRAPH_NODES_CAP + 40 }, (_, index) => `line:${index}`);
+    const merged = mergeRegistration({
+      parsed: parsed(), host: "laptop",
+      envelope: { writer: { file: "scripts/codex-run.mjs" }, registration: { host: "laptop", layersKnown: false, graphNodes: over } },
+    });
+    // Exactly the cap is the truncation's own record: a reader counting 256
+    // knows to distrust the count, which a silent cut would hide.
+    expect(merged.run.context.graphNodes).toHaveLength(GRAPH_NODES_CAP);
+    expect(merged.run.context.graphNodes[0]).toBe("line:0");
+    expect(merged.run.context.graphNodes.at(-1)).toBe(`line:${GRAPH_NODES_CAP - 1}`);
   });
 });

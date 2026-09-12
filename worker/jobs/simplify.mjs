@@ -64,7 +64,6 @@
 // no model, no git, no gh and no network. Never prints TTS_WORKER_KEY.
 
 import { execFileSync } from "node:child_process";
-import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -82,6 +81,7 @@ import {
   runClaude,
 } from "./tts-lib.mjs";
 import { cacheRepoDir } from "./tts-code-lib.mjs";
+import { hash8, ruleId } from "./graph-hash.mjs";
 import { WIKITOM_DIR, utcDay } from "./session-archive.mjs";
 
 // ── The numbers, and the one reason each is that number ──────────────────────
@@ -253,24 +253,23 @@ export const PROXY_CAVEAT =
 
 // ── Small pure helpers ───────────────────────────────────────────────────────
 
-/** Eight hex characters of sha256. Short enough to say aloud in Slack, long
- *  enough that two rows of a few hundred do not collide. */
-export function hash8(text) {
-  return crypto.createHash("sha256").update(String(text)).digest("hex").slice(0, 8);
-}
-
-/** One rule line's identity: the hash of its normalized text, NOT its line
- *  number. Line numbers move when a line above them is deleted, which is
- *  precisely what this job proposes; a hash names the same rule across weeks
- *  and across a re-ordering of the file. */
-export function ruleId(line) {
-  const normalized = String(line)
-    .toLowerCase()
-    .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  return hash8(normalized);
-}
+/**
+ * `hash8` — eight hex characters of SHA-256 — and `ruleId` — the hash of a
+ * line's normalized text — MOVED TO worker/jobs/graph-hash.mjs AND IMPORTED
+ * BACK, so that every caller here reads exactly as it did.
+ *
+ * WHY THEY MOVED. The graph names a rule line by exactly this hash:
+ * `rule:<hash8 of the normalized line>` for a repository rule and
+ * `line:<the same>` for a synthesis line, and `loaded` below now counts the
+ * runs whose prompt carried that node id. The graph is built on the box, on the
+ * laptop and inside the Convex runtime, and the Convex runtime has no
+ * node:crypto and cannot await a Web Crypto digest from the synchronous places
+ * that mint these ids. Two spellings of one identity would put a rule's row and
+ * its node one hash apart, so the one spelling moved to a pure module and this
+ * file imports it; graph-hash.mjs's own test asserts it equal to node:crypto's
+ * answer, and so does this file's.
+ */
+export { hash8, ruleId };
 
 /** Every line of a rules file that is a rule: not a heading, not blank. */
 export function ruleLines(text) {
@@ -427,7 +426,12 @@ export function findAgentsFiles(root, io) {
 }
 
 /**
- * The runs that loaded one AGENTS.md.
+ * The runs that loaded one AGENTS.md, BY THE WORKING-DIRECTORY PROXY.
+ *
+ * THIS IS THE FALLBACK NOW, not the answer. `blastRows` counts a rule's runs off
+ * the node ids their prompts actually carried, and falls back to this only when
+ * not one sampled run recorded a node list — the row then reads
+ * `loadedSource: "cwd-proxy"` and says so in its evidence sentence.
  *
  * A recorded cwd is a path on the machine that ran (`/root/tomquest/worker`)
  * and this checkout is somewhere else entirely, so the two cannot be compared
@@ -464,6 +468,47 @@ export function loadedForAgentsFile(relDir, cwds, { repoName }) {
     if (cwd === needle || cwd.endsWith(`/${needle}`) || cwd.includes(`/${needle}/`)) loaded += runs;
   }
   return { loaded, loadedUnknown };
+}
+
+/**
+ * THE NODE ID of a rule row, which is what a run's `context.graphNodes` names.
+ *
+ * worker/jobs/graph.mjs mints a repository rules file's lines as `rule:` nodes
+ * and a synthesis page's lines as `line:` nodes (its `addPage`, `lineKind`), and
+ * the eight characters after the colon are `ruleId(text)` in both — the same
+ * function this file's rows are keyed by, which is why it moved to
+ * graph-hash.mjs. A rules file is one named AGENTS.md, in this repository and in
+ * any other; everything else here is a synthesis page.
+ */
+export function nodeIdFor(where, id) {
+  const rules = String(where ?? "") === "AGENTS.md" || String(where ?? "").endsWith("/AGENTS.md");
+  return `${rules ? "rule" : "line"}:${id}`;
+}
+
+/**
+ * How many sampled runs were GIVEN each node, and how many recorded no node
+ * list at all.
+ *
+ * `context.graphNodes` is the exact set of node ids a run's prompt carried — the
+ * `given` edges, written by the launcher that assembled the prompt. A run that
+ * carries the list is counted for every id in it; a run with no list is counted
+ * once in `unknown` and never folded into a count, for the same reason a run
+ * with no working directory is not.
+ *
+ * `known` is false when NOT ONE sampled run carried a list, which is the
+ * condition the rule rows fall back to the working-directory proxy on.
+ */
+export function givenCounts(sample) {
+  const counts = new Map();
+  let withList = 0;
+  for (const run of sample ?? []) {
+    if (!Array.isArray(run?.graphNodes)) continue;
+    withList += 1;
+    for (const id of new Set(run.graphNodes.map((one) => String(one)))) {
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+  }
+  return { counts, known: withList > 0, unknown: (sample ?? []).length - withList };
 }
 
 // ── (d) Checks ───────────────────────────────────────────────────────────────
@@ -678,9 +723,18 @@ export function evidenceFor(row) {
   if (row.class === "skill") {
     return `Offered on ${row.loaded} run(s), used on ${row.proxy.mattered} of ${row.proxy.sample}.`;
   }
+  // A RULE ROW SAYS WHERE ITS `loaded` CAME FROM, in the sentence itself.
+  // "given" is a count of the runs whose prompt carried this rule's node id;
+  // "cwd-proxy" is the working-directory suffix match, which is a lower bound.
+  // The two are different claims and a reader months from now has nothing else
+  // to tell them apart by, so the word rides in the evidence rather than only in
+  // the row. What is absent differs with the source for the same reason: a run
+  // with no node list and a run with no working directory are not the same run.
+  const source = row.loadedSource ?? "cwd-proxy";
+  const absent = source === "given" ? "recorded no node list" : "recorded no working directory";
   return row.proxy.mattered === null
-    ? `Loaded on ${row.loaded} run(s); ${row.loadedUnknown} run(s) recorded no working directory; it yields too few subject words to measure against a transcript.`
-    : `Loaded on ${row.loaded} run(s); ${row.loadedUnknown} run(s) recorded no working directory; ${row.proxy.mattered} of ${row.proxy.sample} sampled runs carry its words.`;
+    ? `Loaded on ${row.loaded} run(s) (${source}); ${row.loadedUnknown} run(s) ${absent}; it yields too few subject words to measure against a transcript.`
+    : `Loaded on ${row.loaded} run(s) (${source}); ${row.loadedUnknown} run(s) ${absent}; ${row.proxy.mattered} of ${row.proxy.sample} sampled runs carry its words.`;
 }
 
 /** Every integer a row's own numbers contain. The parser checks the model's
@@ -720,6 +774,21 @@ export function blastRows({ input, fields, ruleFiles, checks, hisWordsLines, rep
   // This is the denominator every rule row reports and the floor candidateFor
   // applies, so a week that read nothing proposes nothing.
   const readable = sample.filter((run) => (run?.tokens ?? []).length > 0).length;
+  // THE EXACT ANSWER, AND THE PROXY BEHIND IT. `given` is the number of sampled
+  // runs whose prompt carried this rule's node id, which is the question
+  // `loaded` has always been asking and never been able to answer: the
+  // working-directory match below it is a path suffix, documented as a lower
+  // bound, that cannot see a rule a run was handed from another directory.
+  //
+  // THE PROXY STAYS AS THE FALLBACK, AND EVERY ROW SAYS WHICH IT USED. On the
+  // day this ships no run has ever written `graphNodes`, so an exact count would
+  // read zero for every rule, every candidate would be `keep` by MIN_LOADED, and
+  // the pass would propose nothing for weeks. That is the safe direction and
+  // would be acceptable — but a row that silently reads zero and a row that
+  // honestly says "this is the old estimate" are different facts, and only the
+  // second is readable months later. So the fallback is taken only when NOT ONE
+  // sampled run carried a list, and `loadedSource` names the answer's origin.
+  const given = givenCounts(sample);
   const rows = [];
   const seen = new Set();
   let duplicateRuleLines = 0;
@@ -741,13 +810,15 @@ export function blastRows({ input, fields, ruleFiles, checks, hisWordsLines, rep
     for (const line of file.lines) {
       const nouns = nounsOf(line.text);
       const mattered = proxyMattered(nouns, sample);
+      const id = ruleId(line.text);
       push({
-        id: ruleId(line.text),
+        id,
         class: "rule",
         where: file.where,
         text: line.text,
-        loaded: file.loaded,
-        loadedUnknown: file.loadedUnknown,
+        loaded: given.known ? (given.counts.get(nodeIdFor(file.where, id)) ?? 0) : file.loaded,
+        loadedUnknown: given.known ? given.unknown : file.loadedUnknown,
+        loadedSource: given.known ? "given" : "cwd-proxy",
         proxy: {
           nouns: mattered === null ? [] : nouns,
           mattered,
@@ -864,7 +935,12 @@ export function factsRowLine(row) {
   const grep = row.grep === null ? "" : ` | grep ${row.grep.count} (upper bound)`;
   const into = row.collapseInto === null ? "" : ` into ${row.collapseInto}`;
   const his = row.needsHisWords ? " | NEEDS HIS WORDS" : "";
-  return `#${row.id} ${row.class} ${row.where} — ${row.text} | loaded ${row.loaded} | ${proxy} | ${failures}${grep} | candidate ${row.candidate}${into}${his}`;
+  // The source rides beside the number for the reason blastRows states: a rule
+  // whose `loaded` is the working-directory estimate and one whose `loaded` is a
+  // count of the prompts that carried it are two different facts, and the model
+  // writes its evidence from this line.
+  const source = row.loadedSource === undefined ? "" : ` (${row.loadedSource})`;
+  return `#${row.id} ${row.class} ${row.where} — ${row.text} | loaded ${row.loaded}${source} | ${proxy} | ${failures}${grep} | candidate ${row.candidate}${into}${his}`;
 }
 
 /**
