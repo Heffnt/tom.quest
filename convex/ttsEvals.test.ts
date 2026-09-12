@@ -382,6 +382,7 @@ describe("a superseded request", () => {
           sha,
           baseSha: "f5c1fb9",
           pr: 173,
+          runId: at * 100,
           paths: ["model-of-tom/**"],
           changed: ["model-of-tom/intent.md"],
           prBody: null,
@@ -445,6 +446,50 @@ describe("a superseded request", () => {
     await file(t, 1, "aaaaaaa", { pr: null });
     await file(t, 2, "bbbbbbb", { pr: null });
     expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      supersededBy: null,
+    });
+  });
+
+  // THE ORDER IS THE PUSH'S, NOT THE REQUEST'S. Two pushes a minute apart
+  // start two jobs that each spend twenty to forty seconds on checkout before
+  // filing anything, so the NEWER push's request can reach Convex first. Read
+  // by arrival, the queue would mark the live head superseded — and that
+  // mistake does not heal, because the row it writes is what stops the box
+  // picking that sha up again.
+  it("reads the push order off the run id, not off when the request arrived", async () => {
+    const t = convexTest({ schema, modules });
+    // The newer push (run id 900) filed FIRST; the older push (run id 100)
+    // arrived second.
+    await file(t, 1, "bbbbbbb", { runId: 900 });
+    await file(t, 2, "aaaaaaa", { runId: 100 });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "bbbbbbb",
+      // The head, and it is run.
+      supersededBy: null,
+    });
+    await answer(t, "bbbbbbb");
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      supersededBy: "bbbbbbb",
+    });
+  });
+
+  // A request filed before the field existed has no place in the push order.
+  // It supersedes nothing and nothing supersedes it, in both directions.
+  it("never supersedes with or against a request carrying no run id", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa", { runId: null });
+    await file(t, 2, "bbbbbbb", { runId: 200 });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      supersededBy: null,
+    });
+    await answer(t, "aaaaaaa");
+    const t2 = convexTest({ schema, modules });
+    await file(t2, 1, "aaaaaaa", { runId: 100 });
+    await file(t2, 2, "bbbbbbb", { runId: null });
+    expect(await t2.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
       sha: "aaaaaaa",
       supersededBy: null,
     });

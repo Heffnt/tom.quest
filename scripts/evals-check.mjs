@@ -417,7 +417,14 @@ async function changedPaths(baseSha, sha) {
   if (!baseSha || !sha) return null;
   try {
     const { execFileSync } = await import("node:child_process");
-    const out = execFileSync("git", ["diff", "--name-only", `${baseSha}...${sha}`], {
+    // `--no-renames` IS LOAD-BEARING, not tidiness. With rename detection on,
+    // `--name-only` prints a rename as its DESTINATION alone: move
+    // `model-of-tom/intent.md` to `docs/intent.md` and the only path this list
+    // carries is the unwatched one, so `unaffectedBy` answers true and a watched
+    // context file leaves the tree with no run scoring it — the exact failure the
+    // watch list exists to prevent. Off, a rename is a delete and an add, and the
+    // delete is watched.
+    const out = execFileSync("git", ["diff", "--no-renames", "--name-only", `${baseSha}...${sha}`], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -436,6 +443,23 @@ async function main() {
   const baseSha = process.env.BASE_SHA || null;
   const pr = process.env.PR ? Number(process.env.PR) : undefined;
   const prBody = process.env.PR_BODY || undefined;
+  // WHICH PUSH CAME FIRST, and the only fact on hand that answers it.
+  //
+  // GitHub creates one workflow run per push event, in the order the events
+  // arrive, and stamps each with an increasing id. The queue needs that order
+  // to tell a pull request's live head from the shas behind it (convex/
+  // ttsEvals.ts), and it cannot use the order the REQUESTS arrive in: two
+  // pushes a minute apart start two jobs that each spend twenty to forty
+  // seconds on checkout and node before reaching this line, so the newer
+  // push's request can be filed first — and a queue that read arrival order
+  // would then answer the LIVE head away as superseded, permanently, since
+  // the row it writes is what stops the box picking that sha up again.
+  //
+  // A re-run keeps its run's id, so re-running an old sha's check never makes
+  // that sha look like the newest. A force-push back to an earlier commit gets
+  // a NEW run with a HIGHER id, which is right: that commit is the head now.
+  const runIdRaw = Number(process.env.RUN_ID);
+  const runId = Number.isSafeInteger(runIdRaw) && runIdRaw > 0 ? runIdRaw : undefined;
   const changed = await changedPaths(baseSha, sha);
   // THE FILTER THAT USED TO BE THE WORKFLOW'S. It lives here now because a
   // workflow that does not run records nothing, and the merge gate needs a row
@@ -460,6 +484,7 @@ async function main() {
     sha,
     baseSha: baseSha ?? undefined,
     pr,
+    ...(runId === undefined ? {} : { runId }),
     paths: WATCHED_PATHS,
     ...(changed === null ? {} : { changed }),
     ...(prBody === undefined ? {} : { prBody }),

@@ -1,4 +1,7 @@
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   COVERAGE_NOT_REQUIRED,
@@ -237,6 +240,58 @@ describe("unaffectedBy", () => {
   it("is false when there is no diff at all", () => {
     expect(unaffectedBy(null)).toBe(false);
     expect(unaffectedBy(undefined)).toBe(false);
+  });
+});
+
+// THE DIFF THE SHORTCUT IS READ FROM. `git diff --name-only` prints a detected
+// rename as its DESTINATION alone, so moving a watched context file out of a
+// watched directory would reach unaffectedBy() as one unwatched path — and the
+// branch would get a passing row with nothing scored. `--no-renames` makes the
+// move a delete and an add, and the delete is watched.
+describe("the changed-path diff", () => {
+  it("sees a watched file moved out of a watched directory", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "evals-rename-"));
+    const git = (...args) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    try {
+      git("init", "-q", "-b", "main");
+      git("config", "user.email", "t@example.com");
+      git("config", "user.name", "t");
+      mkdirSync(path.join(dir, "model-of-tom"), { recursive: true });
+      writeFileSync(path.join(dir, "model-of-tom", "intent.md"), ["a line", "and another", ""].join("\n"));
+      git("add", "-A");
+      git("commit", "-qm", "base");
+      const base = git("rev-parse", "HEAD").trim();
+      mkdirSync(path.join(dir, "docs"), { recursive: true });
+      git("mv", "model-of-tom/intent.md", "docs/intent.md");
+      git("commit", "-qm", "move it out");
+      const head = git("rev-parse", "HEAD").trim();
+      const paths = (...flags) => git("diff", ...flags, "--name-only", `${base}...${head}`)
+        .split(new RegExp("\\r?\\n"))
+        .filter((line) => line !== "");
+      // The hole, stated: rename detection hides the watched path entirely.
+      expect(paths()).toEqual(["docs/intent.md"]);
+      expect(unaffectedBy(paths())).toBe(true);
+      // And the flag the check passes closes it.
+      expect(paths("--no-renames").sort()).toEqual(["docs/intent.md", "model-of-tom/intent.md"]);
+      expect(unaffectedBy(paths("--no-renames"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The check reads its own diff inside main(), which no test can call, so the
+  // flag is pinned on the source the way the workflow's own facts are.
+  it("is the flag the check actually passes", () => {
+    const source = readFileSync("scripts/evals-check.mjs", "utf8");
+    expect(source).toContain('execFileSync("git", ["diff", "--no-renames", "--name-only"');
+  });
+
+  // The queue tells a pull request's live head from the shas behind it by the
+  // workflow run's id, and it can only do that if the workflow hands it over.
+  it("is given the push order the queue reads", () => {
+    const workflow = readFileSync(".github/workflows/evals.yml", "utf8");
+    expect(workflow).toMatch(/RUN_ID:\s*\$\{\{\s*github\.run_id\s*\}\}/);
+    expect(readFileSync("scripts/evals-check.mjs", "utf8")).toContain("process.env.RUN_ID");
   });
 });
 

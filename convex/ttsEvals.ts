@@ -602,6 +602,21 @@ type EvalsRequest = {
   sha: string;
   baseSha: string | null;
   pr: number | null;
+  // THE WORKFLOW RUN'S ID, which is GitHub's own push order: it makes one run
+  // per push event, in the order the events arrive, with an increasing id.
+  //
+  // The queue needs that order and CANNOT take it from when the requests
+  // arrived. Two pushes a minute apart start two jobs that each spend twenty
+  // to forty seconds on checkout and node before filing anything, so the newer
+  // push's request can reach Convex first — and a queue reading arrival order
+  // would then mark the LIVE head superseded, permanently: the row it writes
+  // is exactly what stops the box picking that sha up again.
+  //
+  // NULL IS A VALUE. A check that sends no id supersedes nothing and is
+  // superseded by nothing, which is the safe answer for a request whose place
+  // in the push order is unknown — an older check, or WikiTom's Action, which
+  // fetches this file's sibling and runs it with its own environment.
+  runId: number | null;
   paths: string[];
   // WHAT THIS BRANCH ACTUALLY CHANGED, and the body an escape-hatch trailer
   // would be on.
@@ -654,6 +669,7 @@ function requestData(data: unknown): EvalsRequest | null {
       sha: value.sha,
       baseSha: typeof value.baseSha === "string" ? value.baseSha : null,
       pr: typeof value.pr === "number" ? value.pr : null,
+      runId: typeof value.runId === "number" ? value.runId : null,
       paths: value.paths,
       changed: Array.isArray(value.changed) && value.changed.every((path) => typeof path === "string")
         ? (value.changed as string[])
@@ -747,6 +763,7 @@ export const internalRequestEvals = internalMutation({
     sha: v.string(),
     baseSha: v.optional(v.string()),
     pr: v.optional(v.number()),
+    runId: v.optional(v.number()),
     paths: v.array(v.string()),
     changed: v.optional(v.array(v.string())),
     prBody: v.optional(v.string()),
@@ -769,6 +786,7 @@ export const internalRequestEvals = internalMutation({
           sha: args.sha,
           baseSha: args.baseSha ?? null,
           pr: args.pr ?? null,
+          runId: args.runId ?? null,
           paths: args.paths,
           changed: args.changed ?? null,
           // A pull-request body is text somebody else wrote, so it is stored and
@@ -837,35 +855,45 @@ export const internalEvalsRun = internalQuery({
 });
 
 /**
- * The newest requested sha of each pull request, off the rows already read.
+ * The head of each pull request, off the rows already read.
  *
  * The key is the repo and the pull-request number, because that is what "the
  * same branch" means to everything downstream: the check sends the number, a
- * branch has one open pull request, and a sha belongs to one head. A request
- * whose check sent NO number is in the map for nothing and can supersede
- * nothing — two shas that only look related are not a supersession.
+ * branch has one open pull request, and a sha belongs to one head.
  *
- * NO SECOND READ. The rows are the queue scan's own ascending window, so the
- * LAST sha seen for a key is its newest; a read of its own would double what
- * this query costs on every five-minute poll, and these rows carry a
- * pull-request body each.
+ * ORDERED BY `runId`, NEVER BY ARRIVAL. The workflow run's id is GitHub's own
+ * push order (see the field's comment above); the order the requests reached
+ * Convex is the order two CI jobs happened to finish their checkout in, and
+ * two pushes a minute apart can arrive the wrong way round. Reading arrival
+ * order would let the LIVE head be marked superseded, and that mistake does
+ * not heal: the row written for it is exactly what stops the box picking that
+ * sha up again, so the pull request's check fails at every re-run with nothing
+ * able to score it.
  *
- * The window cannot answer the live head away, which is the only answer that
- * would be dangerous. A request is marked superseded only when the same window
- * holds a LATER request for the same pull request, and later in an ascending
- * read means newer — so the newest request of a pull request has nothing after
- * it to be superseded by. A pull request whose newer requests fall outside the
- * window simply names an older sha as the head: the request being answered is
- * superseded either way, and only the sha the log points at is less useful.
+ * A request with NO id is in the map for nothing — it supersedes nothing and
+ * nothing supersedes it. That is the safe answer for a request whose place in
+ * the push order is unknown, and it is what every request filed before this
+ * field existed carries.
+ *
+ * NO SECOND READ. The rows are the queue scan's own window; a read of its own
+ * would double what this query costs on every five-minute poll, and these rows
+ * carry a pull-request body each. A pull request whose newest request falls
+ * outside the window names an older sha as its head, which only makes the
+ * sha the log points at less useful — the request being answered is superseded
+ * either way.
  */
-function newestShaByPullRequest(rows: Doc<"dtsEvents">[]): Map<string, string> {
-  const newest = new Map<string, string>();
+function headShaByPullRequest(rows: Doc<"dtsEvents">[]): Map<string, { sha: string; runId: number }> {
+  const head = new Map<string, { sha: string; runId: number }>();
   for (const row of rows) {
     const request = requestData(row.data);
-    if (request === null || request.pr === null) continue;
-    newest.set(`${request.repo}#${request.pr}`, request.sha);
+    if (request === null || request.pr === null || request.runId === null) continue;
+    const key = `${request.repo}#${request.pr}`;
+    const seen = head.get(key);
+    if (seen === undefined || request.runId > seen.runId) {
+      head.set(key, { sha: request.sha, runId: request.runId });
+    }
   }
-  return newest;
+  return head;
 }
 
 export const internalOldestEvalsRequest = internalQuery({
@@ -881,7 +909,7 @@ export const internalOldestEvalsRequest = internalQuery({
     // pass at about thirty-five minutes: the check on the fourth waits out
     // three runs of shas nobody will merge and then fails on its own deadline.
     // Three of those four are answered in a POST each instead.
-    const newest = newestShaByPullRequest(rows);
+    const heads = headShaByPullRequest(rows);
     for (const row of rows) {
       if (row.key === undefined) continue;
       const run = await runForKey(ctx, row.key);
@@ -893,10 +921,16 @@ export const internalOldestEvalsRequest = internalQuery({
         // one is answered without a run, so the queue behind it advances on the
         // same pass rather than on the next cron tick (worker/jobs/evals.mjs
         // --serve keeps going while the answer cost no model).
-        const head = request.pr === null ? undefined : newest.get(`${request.repo}#${request.pr}`);
-        return head === undefined || head === request.sha
+        //
+        // A request with no `runId` has no place in the push order, so it is
+        // never superseded: `head` is undefined for it, and the strict `>` on
+        // the run ids is what decides every other case.
+        const head = request.pr === null || request.runId === null
+          ? undefined
+          : heads.get(`${request.repo}#${request.pr}`);
+        return head === undefined || head.runId <= request.runId!
           ? request
-          : { ...request, supersededBy: head };
+          : { ...request, supersededBy: head.sha };
       }
     }
     return null;

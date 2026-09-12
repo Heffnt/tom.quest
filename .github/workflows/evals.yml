@@ -49,6 +49,12 @@ jobs:
           SHA: ${{ github.event.pull_request.head.sha }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR: ${{ github.event.pull_request.number }}
+          # WHICH PUSH CAME FIRST. GitHub makes one run per push event, in the
+          # order the events arrive, with an increasing id — the queue reads it
+          # to tell a pull request's live head from the shas behind it, because
+          # the order the requests REACH Convex is the order two jobs happened
+          # to finish their checkout in, not the order the pushes happened.
+          RUN_ID: ${{ github.run_id }}
           # The body carries the `evals: no-item <reason>` escape hatch. It
           # reaches the check as an ENVIRONMENT VALUE, never interpolated into
           # the `run:` line: a pull-request body is text anybody can write, and

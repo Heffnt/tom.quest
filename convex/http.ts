@@ -2266,6 +2266,14 @@ const evalsRequest = httpAction(async (ctx, request) => {
   if (b.pr !== undefined && (!Number.isInteger(b.pr) || (b.pr as number) <= 0)) {
     return jsonResponse(400, { error: "pr, when given, is a positive integer" });
   }
+  // The workflow run's id — GitHub's own push order, which the queue reads to
+  // tell a pull request's live head from the shas behind it. OPTIONAL AND
+  // NEVER INFERRED: a check that does not send it supersedes nothing and is
+  // superseded by nothing, which is the safe answer for a request whose place
+  // in the push order is unknown.
+  if (b.runId !== undefined && (!Number.isInteger(b.runId) || (b.runId as number) <= 0)) {
+    return jsonResponse(400, { error: "runId, when given, is a positive integer" });
+  }
   if (!Array.isArray(b.paths) || !b.paths.every((path) => typeof path === "string" && path !== "")) {
     return jsonResponse(400, { error: "paths (array of non-empty strings) required" });
   }
@@ -2293,6 +2301,7 @@ const evalsRequest = httpAction(async (ctx, request) => {
     sha: b.sha,
     baseSha: typeof b.baseSha === "string" ? b.baseSha : undefined,
     pr: typeof b.pr === "number" ? b.pr : undefined,
+    runId: typeof b.runId === "number" ? b.runId : undefined,
     paths: b.paths,
     changed: Array.isArray(b.changed) ? (b.changed as string[]) : undefined,
     prBody: typeof b.prBody === "string" ? b.prBody : undefined,
