@@ -6,49 +6,55 @@
 // eight area pages plus intent, priorities and schedule, to find the two or
 // three hundred bytes that bore on the run's own subject.
 //
-// After this, selection is a per-run computation (Tom's ruling, 2026-09-09:
-// "pre-expanding info about relevant info and providing additional supplemental
-// files and making important and comprehensive yet likely irrelevant info
-// fetchable"). Two rules stand in for the five selections:
+// And what replaced the round after that: the dynamic-context round pre-EXPANDED
+// the bytes a subject picked out and indexed the rest in a fetchable block. That
+// was still the prompt carrying the content. Phase 6 carries NAMES instead. Two
+// parts, and nothing else:
 //
-//   THE STABLE PREFIX — header line 1, the map, the operate rules, and the
-//   write layer when the run's output reaches Tom. Identical for every run at
-//   one WikiTom commit, which is what makes it the cache boundary.
+//   THE PREFIX — header line 1, the map, the operate rules. IDENTICAL FOR EVERY
+//     RUN at one WikiTom commit, whoever the caller is and whatever it is about,
+//     which is what makes it the cache boundary.
 //
-//   EVERYTHING ELSE COMES FROM THE SUBJECT — the pages, sections and lines the
-//   run's own todo, batch, repo or area picks out are EXPANDED, and every layer,
-//   page, section, repo rules file and search question NOT included is one line
-//   in the FETCHABLE block with the exact command or path that gets it.
+//   THE GRANTS — about two hundred bytes naming the skills this run may load
+//     (`write`, `know-research`, `repo-tom.quest`, …), and the ones the router
+//     wanted that the catalog does not carry. The run loads a body itself, once,
+//     only if it needs it.
 //
-// Nothing that exists becomes invisible; only the bytes shrink.
+// Nothing that exists becomes invisible; the prompt stops carrying it.
 //
-// NOT IN THE NIGHTLY POST. The nightly job keeps publishing the three layers
-// whole plus one ttsSkills row per file, exactly as it does now — no schema
-// change to modelOfTomPublication, no per-todo pre-computation. Expansion is
-// computed HERE, at session creation, from the stored layers plus the record.
-//
-// WHAT DECIDES vs WHAT FETCHES: worker/jobs/context-relevance.mjs holds the
-// relevance table, the caps, the two shrink orders and the rendering of parts 4
-// and 6 — it is plain ESM so this file and scripts/prelude.mjs share ONE
-// implementation, the same arrangement markdown-sections.mjs uses and for the
-// same reason. This file only reads the record and hands it over.
+// WHAT DECIDES vs WHAT RENDERS: worker/jobs/skill-router.mjs holds the routing
+// table (which skills a subject and a caller are granted) and scripts/skills.mjs
+// renders the grant block — both plain ESM, so this file, scripts/prelude.mjs
+// and the publisher share ONE implementation, the same arrangement
+// markdown-sections.mjs uses and for the same reason. This file only reads the
+// record and hands it over.
 //
 // NO MODEL CALL, anywhere on this path.
 
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
-import { modelOfTomState, modelOfTomText, type ModelOfTomLayerName } from "./ttsSkills";
+import { modelOfTomState, modelOfTomText } from "./ttsSkills";
 import { nyCalendarDayKey, SESSION_REPO_NAMES } from "./ttsShared";
+import { renderGrants } from "../scripts/skills.mjs";
 import {
-  assembleContextParts,
   callerRules,
   CONTEXT_CALLER_NAMES,
-} from "../worker/jobs/context-relevance.mjs";
+  routeSkills,
+} from "../worker/jobs/skill-router.mjs";
+
+/** scripts/skills.mjs is plain ESM: `renderGrants`s `granted = []` and
+ * `refused = []` defaults infer as `never[]`, so the shape it actually takes
+ * is stated here rather than cast at the one call site. */
+const renderGrantBlock = renderGrants as (input: {
+  commit: string | null;
+  granted: string[];
+  refused: { name: string; why: string }[];
+}) => string;
 
 /** What the run is about. `none` is the laptop hook and every caller with no
- * subject (the planner, the weekly gather, time notes): nothing expands, and
- * the fetchable block is the whole of what they get out of the know layer. */
+ * subject (the planner, the weekly gather, time notes): nothing routes off a
+ * subject, and the caller's own row is the whole of what it is granted. */
 export type ContextSubject =
   | { kind: "todo"; todoId: Id<"dtsTodos"> }
   | { kind: "batch"; batchId: Id<"batches"> }
@@ -59,36 +65,42 @@ export type ContextSubject =
 export type CallerName = string;
 
 export type AssembledContext = {
-  /** Header line 1 + map + operate + (write). The cache boundary. */
+  /** Header line 1 + the map + the operate rules. The cache boundary. */
   prefix: string;
-  /** Header line 2 + part 4. "" when the subject expands nothing. */
-  expanded: string;
-  /** Header line 3 + part 6. */
-  fetchable: string;
-  /** e.g. ["areas/agent-systems", "intent#What to push toward", "rulings:2"] */
-  manifest: string[];
-  bytes: { prefix: number; expanded: number; fetchable: number };
+  /** The grant block — about 200 bytes, whatever the subject. */
+  grants: string;
+  /** e.g. ["write", "know-climbing", "know-intent"] */
+  granted: string[];
+  /** What the router wanted and the catalog does not carry. Never fatal. */
+  refused: { name: string; why: string }[];
+  /** "native" when the run stands in a checkout of a repo it works in, so the
+   * rules are on disk at the commit it is working on. Always null in Convex —
+   * see the cwd note at assembleContext. */
+  repoRulesSource: "native" | null;
+  bytes: { prefix: number; grants: number };
 };
 
 // ── Read bounds ──────────────────────────────────────────────────────────────
 // Every read below is indexed and capped. The one exception is the per-repo
 // session scan: `repos` is an ARRAY and Convex does not index array
-// membership, so that half of rule 11 is a bounded descending walk of the two
-// terminal statuses, filtered in memory. Cap it and move on.
+// membership, so that half stays a bounded descending walk of the two terminal
+// statuses, filtered in memory. Cap it and move on.
 
-/** The ceiling on the unindexed half of rule 11. */
+/** The ceiling on the unindexed session scan. */
 export const SESSION_SCAN_MAX = 60;
 const SESSION_SCAN_PER_STATUS = SESSION_SCAN_MAX / 2;
-/** Every model-of-tom file, so each area page's `categories:` frontmatter is
- * readable. The publication's own backfill uses the same ceiling. */
-const TTS_SKILLS_MAX = 64;
+/** Every model-of-tom source file, so each area page's `categories:` line is
+ * readable — that line is what routes a todo's category to an area's skill.
+ * The model-of-tom door caps its post at the same number. */
+const MODEL_OF_TOM_FILES_MAX = 64;
 const BATCH_TODOS_MAX = 40;
-const REPO_RULES_MAX = 24;
+/** The catalog is fourteen rows; the ceiling is the door's. */
+const SKILLS_MAX = 64;
 const RULINGS_PER_SUBJECT = 5;
 const OUTCOMES_PER_BATCH = 3;
 
 // ── The record ───────────────────────────────────────────────────────────────
-// Exactly the fields worker/jobs/context-relevance.mjs reads, and no more. The
+// Exactly the fields worker/jobs/skill-router.mjs reads, and no more. The
 // `--record FILE` a CLI run passes holds this same shape, which is what lets
 // scripts/prelude.mjs assemble a run's prompt with no deployment at all.
 
@@ -130,9 +142,8 @@ function todoRow(todo: Doc<"dtsTodos">): ContextRecord["todos"][number] {
     id: todo._id,
     category: todo.category,
     timingClass: todo.timingClass,
-    // THE DAY KEY, not the instant: rule 8 asks which New-York weekday a date
-    // falls on, and the New-York offset is a DST question that lives in
-    // ttsShared and must not be answered a second time in worker/.
+    // THE DAY KEY, not the instant: the New-York offset is a DST question that
+    // lives in ttsShared and must not be answered a second time in worker/.
     dueDay: todo.dueAt === undefined ? undefined : nyCalendarDayKey(todo.dueAt),
     dateOutcomes: (todo.dateOutcomes ?? []).map((outcome) => ({ dueDay: nyCalendarDayKey(outcome.dueAt) })),
     brief: todo.brief,
@@ -203,7 +214,7 @@ async function readRecord(
     ? [subject.repo]
     : [...new Set(batch?.repos ?? [])].sort();
 
-  // Rule 10: his rulings on this todo and on its batch.
+  // His rulings on this todo and on its batch.
   if (todoId !== null) {
     const own = await ctx.db
       .query("dtsRulings")
@@ -219,9 +230,9 @@ async function readRecord(
     for (const ruling of onBatch) record.rulings.push(rulingRow(ruling));
   }
 
-  // Rule 11 reads a session two ways — by its batch and by its repos — and one
+  // A session is read two ways — by its batch and by its repos — and one
   // session is very often both. Deduplicated by id HERE rather than by rendered
-  // text, so a batch's own last session cannot appear twice in one prompt.
+  // text, so a batch's own last session cannot appear twice in one record.
   const seenSessions = new Set<string>();
   const addSession = (session: Doc<"claudeSessions">) => {
     if (seenSessions.has(session._id)) return;
@@ -231,7 +242,6 @@ async function readRecord(
     record.sessions.push(row);
   };
 
-  // Rule 11, indexed half: the batch's own last sessions.
   if (batch !== null) {
     const onBatch = await ctx.db
       .query("claudeSessions")
@@ -241,9 +251,9 @@ async function readRecord(
     for (const session of onBatch) addSession(session);
   }
 
-  // Rule 11, unindexed half: the two terminal statuses, newest first, filtered
-  // in memory on `repos`. SESSION_SCAN_MAX documents to a reader exactly how
-  // deep this walk can go — nothing here is a table scan.
+  // The unindexed half: the two terminal statuses, newest first, filtered in
+  // memory on `repos`. SESSION_SCAN_MAX documents to a reader exactly how deep
+  // this walk can go — nothing here is a table scan.
   if (repos.length > 0) {
     for (const status of ["ended", "failed"] as const) {
       const recent = await ctx.db
@@ -261,49 +271,46 @@ async function readRecord(
 }
 
 /**
- * The rules of the repos this run works in — and of EVERY repo when it works in
- * none. A run with no checkout (prepare, triage, the planner) gets none of these
- * expanded, but its fetchable block still says the files exist and where: that
- * is the unknown-unknown the whole arrangement is for, and dropping the lines
- * because the run has no repo would put it back.
- */
-async function readRepoRules(ctx: QueryCtx | MutationCtx, repos: string[]) {
-  const out: { repo: string; path: string; body: string }[] = [];
-  if (repos.length === 0) {
-    const rules = await ctx.db.query("repoRules").withIndex("by_repo").take(REPO_RULES_MAX * 3);
-    for (const rule of rules) out.push({ repo: rule.repo, path: rule.path, body: rule.body });
-    return out;
-  }
-  for (const repo of repos) {
-    const rules = await ctx.db
-      .query("repoRules")
-      .withIndex("by_repo", (q) => q.eq("repo", repo))
-      .take(REPO_RULES_MAX);
-    for (const rule of rules) out.push({ repo: rule.repo, path: rule.path, body: rule.body });
-  }
-  return out;
-}
-
-/**
- * The three parts of a run's model-of-tom context.
+ * A run's model-of-tom context: the stable prefix and the grant block.
  *
  * Reads, per call, inside the caller's existing transaction and with no model
  * call — bounded, indexed except where it says so, and well inside one Convex
  * transaction:
  *
  *   modelOfTomPublication by_key                     1  (already read today)
- *   ttsSkills by_name                              ≤ 64 (every page, so each
+ *   modelOfTomFiles by_name                        ≤ 64 (every page, so each
  *                                                       area's categories: line
  *                                                       is readable)
+ *   ttsSkills by_name                              ≤ 64 (the catalog's names)
  *   dtsTodos get / by_batch                        ≤ 40
  *   batches get                                    ≤  1
  *   dtsRulings by_todo + by_batch                  ≤ 10
  *   claudeSessions by_batch                        ≤  3
  *   claudeSessions by_status ×2, filtered in memory ≤ 60 (SESSION_SCAN_MAX)
- *   repoRules by_repo                              ≤ 24
+ *
+ * THE REPO RULES TABLE IS NO LONGER READ HERE. It was read to pre-expand the
+ * `AGENTS.md` bodies a brief's paths named; a `repo-<name>` skill carries those
+ * bodies now, published by the same nightly job. POST /tts/repo-rules and the
+ * table stay — the publisher still posts them and a later step decides their
+ * fate — but nothing in Convex reads them at this commit, and saying so is
+ * better than a dead call that looks alive.
+ *
+ * THE cwd GAP, and it is real. The router's last rule asks whether the run
+ * stands INSIDE a checkout of a repo it works in; a run that does already has
+ * that repo's rules on disk at the commit it is working on, so granting it last
+ * night's published copy is a second answer to a question that has one.
+ * CONVEX CANNOT ANSWER IT: there is no filesystem and no cwd inside a Convex
+ * transaction, and the session row does not carry the workdir the daemon will
+ * check the branch out into. So this call passes `cwd: null` and
+ * `repoDirs: {}`, which makes the rule inert: `repoRulesSource` is always null
+ * here and every repo the subject names is granted as a skill, even to a run
+ * standing in that checkout. What would close it is the session's own working
+ * directory ON THE ROW at insert time, passed through to this call; until that
+ * exists, a box session in tom.quest carries a `repo-tom.quest` grant it does
+ * not need, which costs one line of the grant block and no bytes of body.
  *
  * FAILS CLOSED, like every other reader of the publication: a deployment with
- * no complete posted layer set throws here, and the caller publishes nothing.
+ * no posted base throws here, and the caller publishes nothing.
  */
 export async function assembleContext(
   ctx: QueryCtx | MutationCtx,
@@ -312,37 +319,60 @@ export async function assembleContext(
 ): Promise<AssembledContext> {
   callerRules(options.caller); // an undeclared caller is a hard error, not a silent minimum
   const state = await modelOfTomState(ctx);
-  const stableLayers: ModelOfTomLayerName[] = options.reachesTom ? ["operate", "write"] : ["operate"];
-  const prefix = modelOfTomText(state, stableLayers);
+  // ONE SELECTION FOR EVERY CALLER. `reachesTom` used to add the write layer
+  // here; it grants the `write` SKILL now, which is why two runs at one commit
+  // hold byte-identical prefixes whoever they are.
+  const prefix = modelOfTomText(state, ["operate"]);
 
-  const facts = await ctx.db.query("ttsSkills").withIndex("by_name").take(TTS_SKILLS_MAX + 1);
-  if (facts.length > TTS_SKILLS_MAX) throw new Error("too many model-of-tom facts to assemble context from");
-  const pages = facts.map((fact) => ({ path: fact.sourcePath, body: fact.body }));
+  const files = await ctx.db.query("modelOfTomFiles").withIndex("by_name").take(MODEL_OF_TOM_FILES_MAX + 1);
+  if (files.length > MODEL_OF_TOM_FILES_MAX) throw new Error("too many model-of-tom files to assemble context from");
+  const pages = files.map((file) => ({ path: file.sourcePath, body: file.body }));
+
+  const catalog = await ctx.db.query("ttsSkills").withIndex("by_name").take(SKILLS_MAX + 1);
+  if (catalog.length > SKILLS_MAX) throw new Error("too many published skills to assemble context from");
 
   const now = options.now ?? Date.now();
-  const { record, repos } = subject.kind === "none"
-    ? { record: { today: nyCalendarDayKey(now), todos: [], batches: [], rulings: [], sessions: [] }, repos: [] }
+  const { record } = subject.kind === "none"
+    ? { record: { today: nyCalendarDayKey(now), todos: [], batches: [], rulings: [], sessions: [] } }
     : await readRecord(ctx, subject, now);
-  const repoRules = await readRepoRules(ctx, repos);
 
-  const parts = assembleContextParts({
+  const routed = routeSkills({
     subject,
     caller: options.caller,
     pages,
-    repoRules,
     record,
-    stableLayers,
+    // See THE cwd GAP above: inert, deliberately, and not by omission.
+    cwd: null,
+    repoDirs: {},
+    published: catalog.map((row) => row.name),
   });
+  // The caller table says whether a caller's output reaches Tom; an explicit
+  // `reachesTom: false` at a call site narrows its own row, and the narrower
+  // answer wins — a run saying its output does not reach him is telling the
+  // truth about itself, and the `write` skill is the only grant that turns on
+  // that question.
+  const granted: string[] = options.reachesTom
+    ? routed.granted
+    : routed.granted.filter((name: string) => name !== "write");
+  const refused: { name: string; why: string }[] = options.reachesTom
+    ? routed.refused
+    : routed.refused.filter((entry: { name: string }) => entry.name !== "write");
+
+  // THE CATALOG'S COMMIT, not the base's, whenever a catalog is stored. The
+  // block is about the skills: a night whose base post landed and whose skills
+  // post did not leaves two commits in the store, and the line must name the
+  // one the BODIES a run is about to load actually came from. With no catalog
+  // at all there are no bodies, and the base's commit is the only one there is.
+  const commit = catalog[0]?.commit ?? state.commit;
+  const grants = renderGrantBlock({ commit, granted, refused });
+
   return {
     prefix,
-    expanded: parts.expanded,
-    fetchable: parts.fetchable,
-    manifest: parts.manifest,
-    bytes: {
-      prefix: byteLength(prefix),
-      expanded: parts.bytes.expanded,
-      fetchable: parts.bytes.fetchable,
-    },
+    grants,
+    granted,
+    refused,
+    repoRulesSource: routed.repoRulesSource,
+    bytes: { prefix: byteLength(prefix), grants: byteLength(grants) },
   };
 }
 
@@ -352,25 +382,17 @@ function byteLength(text: string): number {
 }
 
 /**
- * The three parts as one string, in prompt order, for a caller whose payload
+ * The two parts as one string, in prompt order, for a caller whose payload
  * carries one field rather than a composed prompt (the four HTTP doors'
  * `writingStandard`). The field's MEANING does not change — it is still "the
  * model-of-tom text this run works from"; its bytes shrink.
- *
- * THE FOUR DOORS PUT THIS FIRST IN THEIR PROMPT, index and all
- * (worker/jobs/plan-graphs.mjs, worker/jobs/apply-time-notes.mjs), which would
- * normally break the cache boundary the stable prefix exists to hold: an index
- * that varies per run cannot sit ahead of text that does not. It is safe here
- * because every one of those callers is `{kind:"none"}` — nothing expands, and
- * the fetchable block is the whole know-layer index, identical for every run
- * at one WikiTom commit. A caller with a real subject must not join this way.
  */
 export function joinContext(context: AssembledContext): string {
-  return [context.prefix, context.expanded, context.fetchable].filter((part) => part !== "").join("\n\n");
+  return [context.prefix, context.grants].filter((part) => part !== "").join("\n\n");
 }
 
-/** The four HTTP doors read here. They have no subject of their own, so rule 12
- * expands nothing and the fetchable block carries the whole know layer's index. */
+/** The four HTTP doors read here. They have no subject of their own, so they
+ * are granted what their caller row alone grants. */
 export const internalContextPrelude = internalQuery({
   args: { caller: v.string() },
   handler: async (ctx, args): Promise<string> => {

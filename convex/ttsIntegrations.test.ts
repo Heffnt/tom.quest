@@ -20,8 +20,9 @@ async function publishWritingStandard(t: ReturnType<typeof convexTest>) {
   await t.run(async (ctx) => {
     await ctx.db.insert("modelOfTomPublication", {
       key: "current", commit: "capture-context-test", committedAt: 1, pushed: true,
-      operate: "operate layer", write: "write layer", know: "know layer",
-      headers: [{ layers: ["operate", "write"], header: "published map + operate + write" }],
+      // `operate` alone: the write and know layers became skills in phase 6.
+      operate: "operate layer",
+      headers: [{ layers: ["operate"], header: "published map + operate" }],
     });
   });
 }
@@ -241,13 +242,13 @@ describe("GET /tts/capture-context declined integrations", () => {
         sentence: "not worth the credential",
       },
     ]);
-    // The door serves the ASSEMBLED CONTEXT now, not two whole layers (the
-    // dynamic-context round): the stable prefix, then — a poller having no
-    // subject of its own — no expansion and the fetchable index. The
-    // assembler's exact output is pinned in convex/ttsContext.test.ts.
-    const [prefix, index] = body.writingStandard.split("\n\nMODEL-OF-TOM FETCHABLE (");
-    expect(prefix).toBe("published map + operate + write\n\noperate layer\n\nwrite layer");
-    expect(index).toContain("--layers know");
+    // The door serves the ASSEMBLED CONTEXT now, not two whole layers: the
+    // stable prefix and the grant block. The assembler's exact output is
+    // pinned in convex/ttsContext.test.ts.
+    const [prefix, grants] = body.writingStandard.split("\n\nSKILLS (WikiTom commit ");
+    expect(prefix).toBe("published map + operate\n\noperate layer");
+    expect(grants).toContain("granted:");
+    expect(body.writingStandard).not.toContain("write layer");
     expect(body.captureTriage).toBeUndefined();
     expect(body.source).toBeUndefined();
   });

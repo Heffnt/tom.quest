@@ -1,18 +1,47 @@
-// Published prompt layers and their source-file facts.
+// THE BASE PUBLICATION AND THE SKILL CATALOG — two stores, two doors, one file.
+//
+// What a prompt begins with is now TWO THINGS, published by two independent
+// posts, and the split is the point:
+//
+//   THE BASE — modelOfTomPublication, one `key: "current"` row, holding the
+//     verbatim `operate` layer (header line 1, the map, the operate rules) and
+//     the header for every canonical selection that remains. Posted to
+//     POST /tts/model-of-tom, with one modelOfTomFiles row per source file.
+//   THE CATALOG — one ttsSkills row per published skill: `write`,
+//     `know-intent`, `know-week`, one `know-<area>` per area page, one
+//     `repo-<name>` per repository. Posted to POST /tts/skills.
+//
+// TWO DOORS SO THEY FAIL SEPARATELY. A night that could render the base and not
+// the catalog still delivers a base, and every run that night carries the
+// operate rules with an empty grant line rather than no prompt at all.
+//
+// WHAT THE LAYERS BECAME. `write` and `know` were whole layers a caller
+// selected; they are skills now, and nothing selects them. The two fields stay
+// declared on the publication (a row written before this commit still carries
+// them) and go unwritten from here on, so `operate` is the only layer any
+// selection can name.
 import { v } from "convex/values";
-import { internal } from "./_generated/api";
-import { internalAction, internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
+import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { MODEL_OF_TOM_HEADER } from "./ttsShared";
-import { PRELUDE_LAYERS } from "../scripts/skills.mjs";
-import { parseFrontmatter } from "../worker/jobs/markdown-sections.mjs";
+import { byteLength, DESCRIPTION_MAX_BYTES, SKILL_GROUPS } from "../scripts/skills.mjs";
 
+/** The layer names a POST may still name. `write` and `know` stay in the
+ * vocabulary because the nightly publisher spells them until it is narrowed;
+ * only `operate` is stored, and only `operate` can be selected. */
 export const MODEL_OF_TOM_LAYER_NAMES = ["operate", "write", "know"] as const;
 export type ModelOfTomLayerName = (typeof MODEL_OF_TOM_LAYER_NAMES)[number];
 const layerValidator = v.union(v.literal("operate"), v.literal("write"), v.literal("know"));
-export const MODEL_OF_TOM_SELECTIONS = [
-  ["operate"], ["write"], ["know"], ["operate", "write"],
-  ["operate", "know"], ["write", "know"], ["operate", "write", "know"],
-] as const satisfies readonly (readonly ModelOfTomLayerName[])[];
+
+/** The layers the publication KEEPS. */
+export const STORED_LAYER_NAMES = ["operate"] as const satisfies readonly ModelOfTomLayerName[];
+
+/**
+ * Every selection a reader may ask for — one, now that `write` and `know` are
+ * skills. It was seven while three layers could be combined; six of those seven
+ * named a layer nothing stores, so a header for them would be a header for text
+ * no prompt can carry.
+ */
+export const MODEL_OF_TOM_SELECTIONS = [["operate"]] as const satisfies readonly (readonly ModelOfTomLayerName[])[];
 
 type StoredHeader = { layers: ModelOfTomLayerName[]; header: string };
 export type ModelOfTomState = {
@@ -28,7 +57,7 @@ export type ModelOfTomState = {
 export { MODEL_OF_TOM_HEADER };
 
 export function canonicalModelOfTomNames(
-  names: readonly ModelOfTomLayerName[] = MODEL_OF_TOM_LAYER_NAMES,
+  names: readonly ModelOfTomLayerName[] = STORED_LAYER_NAMES,
 ): ModelOfTomLayerName[] {
   if (names.length === 0) throw new Error("model-of-tom needs at least one layer");
   for (const name of names) {
@@ -51,17 +80,27 @@ function isPublicationHeader(header: string, commit: string): boolean {
   return new Set(paths).size === paths.length && paths.every(isModelOfTomPath);
 }
 
-function validHeaders(headers: StoredHeader[], commit: string): boolean {
-  if (headers.length !== MODEL_OF_TOM_SELECTIONS.length) return false;
+/**
+ * The posted headers NARROWED to the selections that remain, or null when the
+ * post does not carry every one of them exactly once.
+ *
+ * A header for a retired selection is DROPPED, not refused. The publisher lives
+ * in another file that narrows on its own schedule; a base that refused because
+ * it still carried the three-layer header would be a night with no prefix at
+ * all, which is the one failure this store exists to prevent.
+ */
+function canonicalHeaders(headers: readonly StoredHeader[], commit: string): StoredHeader[] | null {
   const expected = new Set(MODEL_OF_TOM_SELECTIONS.map(selectionKey));
-  const seen = new Set<string>();
+  const kept = new Map<string, StoredHeader>();
   for (const { layers, header } of headers) {
     const canonical = canonicalModelOfTomNames(layers);
     const key = selectionKey(canonical);
-    if (key !== selectionKey(layers) || seen.has(key) || !expected.has(key) || !isPublicationHeader(header, commit)) return false;
-    seen.add(key);
+    if (key !== selectionKey(layers) || !expected.has(key)) continue;
+    if (kept.has(key) || !isPublicationHeader(header, commit)) return null;
+    kept.set(key, { layers: [...canonical], header });
   }
-  return seen.size === expected.size;
+  if (kept.size !== expected.size) return null;
+  return MODEL_OF_TOM_SELECTIONS.map((names) => kept.get(selectionKey(names))!);
 }
 
 export async function modelOfTomState(ctx: QueryCtx | MutationCtx): Promise<ModelOfTomState> {
@@ -81,7 +120,7 @@ export async function modelOfTomState(ctx: QueryCtx | MutationCtx): Promise<Mode
 
 export function modelOfTomText(
   state: ModelOfTomState,
-  names: readonly ModelOfTomLayerName[] = MODEL_OF_TOM_LAYER_NAMES,
+  names: readonly ModelOfTomLayerName[] = STORED_LAYER_NAMES,
 ): string {
   const canonical = canonicalModelOfTomNames(names);
   for (const name of canonical) {
@@ -97,7 +136,7 @@ export function modelOfTomText(
 
 export async function modelOfTomPrelude(
   ctx: QueryCtx | MutationCtx,
-  names: readonly ModelOfTomLayerName[] = MODEL_OF_TOM_LAYER_NAMES,
+  names: readonly ModelOfTomLayerName[] = STORED_LAYER_NAMES,
 ): Promise<string> {
   return modelOfTomText(await modelOfTomState(ctx), names);
 }
@@ -122,140 +161,17 @@ export function isModelOfTomPath(path: unknown): path is string {
   return typeof path === "string" && /^model-of-tom\/[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*\.md$/.test(path) && !path.split("/").some((segment) => segment === "." || segment === "..");
 }
 
-type ModelOfTomFact = {
-  sourcePath: string;
-  body: string;
-  commit?: string;
-  syncedAt: number;
-  pushed?: boolean;
-};
-
-type ModelOfTomPublication = {
-  commit: string;
-  committedAt: number;
-  pushed: boolean;
-  layers: Record<ModelOfTomLayerName, string>;
-  headers: StoredHeader[];
-};
-
-function renderFiles(files: readonly Pick<ModelOfTomFact, "sourcePath" | "body">[]): string {
-  return files.map(({ sourcePath, body }) => `── ${sourcePath} ──\n${body}`).join("\n\n");
-}
-
-function renderHeader(commit: string, files: readonly Pick<ModelOfTomFact, "sourcePath">[]): string {
-  return `${MODEL_OF_TOM_HEADER} (WikiTom commit ${commit}): ${files.map((file) => file.sourcePath).join(", ")}`;
-}
-
-/**
- * Reconstruct the publication exactly as the nightly assembler would from its
- * current per-file facts. The optional ground file is omitted when the old
- * facts do not contain it: historical presence is a git question the facts
- * cannot answer, and the next nightly post is the authoritative replacement.
- */
-export function publicationFromFacts(facts: readonly ModelOfTomFact[]): ModelOfTomPublication {
-  if (facts.length === 0) throw new Error("no model-of-tom facts are stored");
-  const byPath = new Map<string, ModelOfTomFact>();
-  for (const fact of facts) {
-    if (!isModelOfTomPath(fact.sourcePath)) throw new Error(`not a model-of-tom path: ${fact.sourcePath}`);
-    if (fact.body.trim() === "") throw new Error(`body for ${fact.sourcePath} must be non-empty`);
-    if (byPath.has(fact.sourcePath)) throw new Error(`model-of-tom fact is stored twice: ${fact.sourcePath}`);
-    byPath.set(fact.sourcePath, fact);
-  }
-
-  const selected: Record<ModelOfTomLayerName, ModelOfTomFact[]> = {
-    operate: [], write: [], know: [],
-  };
-  for (const name of MODEL_OF_TOM_LAYER_NAMES) {
-    const definition = PRELUDE_LAYERS[name];
-    for (const entry of definition.files) {
-      const fact = byPath.get(entry.path);
-      if (fact === undefined) {
-        if (entry.optionalUntilPresent) continue;
-        throw new Error(`model-of-tom fact ${entry.path} is not stored`);
-      }
-      selected[name].push(fact);
-    }
-    if (definition.areas !== undefined) {
-      const prefix = `${definition.areas.directory}/`;
-      const areas = facts
-        .filter((fact) => fact.sourcePath.startsWith(prefix) && /^([^/]+)\.md$/.test(fact.sourcePath.slice(prefix.length)))
-        .map((fact) => ({ ...fact, body: parseFrontmatter(fact.body).body.trim() }))
-        .sort((a, b) => a.sourcePath.localeCompare(b.sourcePath));
-      for (const path of definition.areas.required) {
-        if (!areas.some((fact) => fact.sourcePath === path)) {
-          throw new Error(`model-of-tom fact ${path} is not stored`);
-        }
-      }
-      if (areas.some((fact) => fact.body === "")) {
-        throw new Error("model-of-tom area fact is blank after frontmatter");
-      }
-      selected[name].push(...areas);
-    }
-  }
-
-  const selectedFacts = MODEL_OF_TOM_LAYER_NAMES.flatMap((name) => selected[name]);
-  const commit = selectedFacts[0]?.commit;
-  const committedAt = selectedFacts[0]?.syncedAt;
-  const pushed = selectedFacts[0]?.pushed;
-  if (typeof commit !== "string" || !/^[0-9a-f]{40}$/.test(commit)) {
-    throw new Error("model-of-tom facts need one 40-character commit");
-  }
-  if (!Number.isFinite(committedAt)) throw new Error("model-of-tom facts need one finite committedAt");
-  if (typeof pushed !== "boolean") throw new Error("model-of-tom facts need one pushed value");
-  for (const fact of selectedFacts) {
-    if (fact.commit !== commit || fact.syncedAt !== committedAt || fact.pushed !== pushed) {
-      throw new Error("model-of-tom facts must name one commit, committedAt, and pushed value");
-    }
-  }
-
-  const layers = Object.fromEntries(MODEL_OF_TOM_LAYER_NAMES.map((name) => [name, renderFiles(selected[name])])) as Record<ModelOfTomLayerName, string>;
-  for (const name of MODEL_OF_TOM_LAYER_NAMES) {
-    if (layers[name].trim() === "") throw new Error(`model-of-tom layer ${name} is blank`);
-  }
-  const headers: StoredHeader[] = MODEL_OF_TOM_SELECTIONS.map((names) => ({
-    layers: [...names],
-    header: renderHeader(commit, names.flatMap((name) => selected[name])),
-  }));
-  // The same gate a posted publication passes, so a backfilled one reads to
-  // every consumer exactly as a nightly one does.
-  if (!validHeaders(headers, commit)) {
-    throw new Error("the backfilled headers are not one parseable file list per canonical selection");
-  }
-  return { commit, committedAt, pushed, layers, headers };
-}
-
-export const internalBackfillModelOfTom = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    const current = await ctx.db.query("modelOfTomPublication")
-      .withIndex("by_key", (q) => q.eq("key", "current")).unique();
-    if (current !== null) throw new Error("model-of-tom publication is already stored");
-    const facts = await ctx.db.query("ttsSkills").withIndex("by_name").take(65);
-    if (facts.length > 64) throw new Error("too many model-of-tom facts to backfill");
-    const publication = publicationFromFacts(facts);
-    await ctx.db.insert("modelOfTomPublication", {
-      key: "current",
-      ...publication.layers,
-      commit: publication.commit,
-      committedAt: publication.committedAt,
-      pushed: publication.pushed,
-      headers: publication.headers,
-    });
-    return { files: facts.length, commit: publication.commit };
-  },
-});
-
-/**
- * One deployment-time repair, run by hand exactly once between deploying this
- * code and the first nightly post. The return type is written out because the
- * handler names its own module's `internal` API, which TypeScript cannot infer
- * through the cycle.
- */
-export const backfillLayers = internalAction({
-  args: {},
-  handler: async (ctx): Promise<{ files: number; commit: string }> =>
-    await ctx.runMutation(internal.ttsSkills.internalBackfillModelOfTom, {}),
-});
+// ── The base ─────────────────────────────────────────────────────────────────
+//
+// THE ONE-SHOT BACKFILL IS GONE with this commit, and could not have been kept.
+// `internalBackfillModelOfTom`, `backfillLayers` and `publicationFromFacts`
+// existed to seed the singleton ONCE out of the per-file rows the retired
+// six-hourly sync had left in `ttsSkills`, and they refused to run at all once
+// a publication was stored — so they have been spent since the first nightly
+// post after phase 4. The door they repaired cannot be reached from the new
+// table shape either: `ttsSkills` no longer carries a `sourcePath` or a
+// per-file body, so there is nothing left for `publicationFromFacts` to read.
+// Their tests went with them.
 
 export const internalReplaceModelOfTom = internalMutation({
   args: {
@@ -263,20 +179,24 @@ export const internalReplaceModelOfTom = internalMutation({
     committedAt: v.number(),
     pushed: v.boolean(),
     force: v.optional(v.string()),
-    layers: v.object({ operate: v.string(), write: v.string(), know: v.string() }),
+    // `write` and `know` are accepted and DROPPED: the publisher still renders
+    // them at this commit, and refusing its post over text nothing reads would
+    // cost a night's base for nothing.
+    layers: v.object({ operate: v.string(), write: v.optional(v.string()), know: v.optional(v.string()) }),
     headers: v.array(v.object({ layers: v.array(layerValidator), header: v.string() })),
     files: v.array(v.object({ path: v.string(), body: v.string(), bytes: v.number() })),
   },
   handler: async (ctx, { commit, committedAt, pushed, force, layers, headers, files }) => {
     if (commit.trim() === "") throw new Error("commit is required");
     if (!Number.isFinite(committedAt)) throw new Error("committedAt must be finite");
-    for (const name of MODEL_OF_TOM_LAYER_NAMES) {
+    for (const name of STORED_LAYER_NAMES) {
       if (layers[name].trim() === "") throw new Error(`model-of-tom layer ${name} is blank`);
     }
-    if (!validHeaders(headers, commit)) {
+    const stored = canonicalHeaders(headers, commit);
+    if (stored === null) {
       throw new Error("headers must contain each canonical selection exactly once, with the posted commit and a parseable file list");
     }
-    if (files.length === 0) throw new Error("no files posted \u2014 store left as it was");
+    if (files.length === 0) throw new Error("no files posted — store left as it was");
     const paths = new Set<string>();
     for (const file of files) {
       if (!isModelOfTomPath(file.path)) throw new Error(`not a model-of-tom path: ${file.path}`);
@@ -289,12 +209,16 @@ export const internalReplaceModelOfTom = internalMutation({
       .withIndex("by_key", (q) => q.eq("key", "current")).unique();
     const forced = force !== undefined && force.trim() !== "";
     if (current !== null && committedAt < current.committedAt && !forced) {
-      throw new Error(`the post's commit ${commit.slice(0, 12)} (${new Date(committedAt).toISOString()}) is older than the stored one (${new Date(current.committedAt).toISOString()}) \u2014 store left as it was; post with force naming why to replace it`);
+      throw new Error(`the post's commit ${commit.slice(0, 12)} (${new Date(committedAt).toISOString()}) is older than the stored one (${new Date(current.committedAt).toISOString()}) — store left as it was; post with force naming why to replace it`);
     }
     if (force !== undefined && !forced) throw new Error("force, when given, is the reason (a non-empty string)");
-    const existingFacts = await ctx.db.query("ttsSkills").collect();
+    // THE SOURCE FACTS, not the catalog. This door stopped touching `ttsSkills`
+    // in phase 6: the base and the skill catalog are two stores with two posts,
+    // and a base post that emptied the catalog would take every grant down on a
+    // night the skills post never ran.
+    const existingFacts = await ctx.db.query("modelOfTomFiles").collect();
     for (const fact of existingFacts) await ctx.db.delete(fact._id);
-    for (const file of files) await ctx.db.insert("ttsSkills", {
+    for (const file of files) await ctx.db.insert("modelOfTomFiles", {
       name: modelOfTomRowName(file.path),
       body: file.body,
       sourcePath: file.path,
@@ -303,9 +227,83 @@ export const internalReplaceModelOfTom = internalMutation({
       syncedAt: committedAt,
       pushed,
     });
-    const publication = { key: "current" as const, commit, committedAt, pushed, ...layers, headers };
+    // `operate` alone: the two retired layers go unwritten, so a replace takes
+    // whatever an older row still carried off with it.
+    const publication = {
+      key: "current" as const,
+      commit,
+      committedAt,
+      pushed,
+      operate: layers.operate,
+      headers: stored,
+    };
     if (current === null) await ctx.db.insert("modelOfTomPublication", publication);
     else await ctx.db.replace("modelOfTomPublication", current._id, publication);
     return { files: files.length, deleted: existingFacts.length, forced };
+  },
+});
+
+// ── The catalog ──────────────────────────────────────────────────────────────
+
+/** The ceiling on one post — the same 64 the model-of-tom door caps its files
+ * at, and named here rather than shared so the two doors stay independent:
+ * fourteen skills today against sixty-four source files, and a post past either
+ * is a publisher bug rather than a bigger WikiTom. */
+export const SKILLS_MAX = 64;
+
+const skillReference = v.object({ name: v.string(), path: v.string(), body: v.string() });
+
+/**
+ * The catalog, replaced whole. Same shape of refusal as
+ * `internalReplaceModelOfTom` and `internalReplaceRepoRules`: an empty post
+ * leaves the store as it was, a duplicate name is a bug in the publisher, and a
+ * blank body is not a skill.
+ *
+ * WHOLE, NOT PER SKILL: the publisher builds the set from one immutable commit,
+ * and a skill that has left the set (an area page Tom deleted) must leave the
+ * catalog with it, or the router would grant a name no page stands behind.
+ */
+export const internalReplaceSkills = internalMutation({
+  args: {
+    commit: v.string(),
+    syncedAt: v.number(),
+    pushed: v.boolean(),
+    skills: v.array(v.object({
+      name: v.string(),
+      group: v.string(),
+      description: v.string(),
+      body: v.string(),
+      references: v.array(skillReference),
+      sourcePaths: v.array(v.string()),
+      bytes: v.number(),
+    })),
+  },
+  handler: async (ctx, { commit, syncedAt, pushed, skills }) => {
+    if (commit.trim() === "") throw new Error("commit is required");
+    if (!Number.isFinite(syncedAt)) throw new Error("syncedAt must be finite");
+    if (skills.length === 0) throw new Error("no skills posted — store left as it was");
+    if (skills.length > SKILLS_MAX) throw new Error(`at most ${SKILLS_MAX} skills per post — got ${skills.length}`);
+    const names = new Set<string>();
+    for (const skill of skills) {
+      if (skill.name.trim() === "") throw new Error("a skill needs a name");
+      if (names.has(skill.name)) throw new Error(`skill posted twice: ${skill.name}`);
+      if (!(SKILL_GROUPS as readonly string[]).includes(skill.group)) {
+        throw new Error(`not a skill group: ${skill.group} (one of ${SKILL_GROUPS.join(", ")})`);
+      }
+      if (skill.body.trim() === "") throw new Error(`body for ${skill.name} must be non-empty`);
+      if (skill.description.trim() === "") throw new Error(`description for ${skill.name} must be non-empty`);
+      const described = byteLength(skill.description);
+      if (described > DESCRIPTION_MAX_BYTES) {
+        throw new Error(`description for ${skill.name} is ${described} bytes, over the ${DESCRIPTION_MAX_BYTES}-byte cap`);
+      }
+      if (!Number.isSafeInteger(skill.bytes) || skill.bytes < 0) {
+        throw new Error(`bytes for ${skill.name} must be a nonnegative integer`);
+      }
+      names.add(skill.name);
+    }
+    const existing = await ctx.db.query("ttsSkills").collect();
+    for (const row of existing) await ctx.db.delete(row._id);
+    for (const skill of skills) await ctx.db.insert("ttsSkills", { ...skill, commit, syncedAt, pushed });
+    return { skills: skills.length, deleted: existing.length, commit };
   },
 });

@@ -29,7 +29,7 @@
 ## schema
 
 - Dropping a table from `convex/schema.ts` deletes nothing: `convex deploy` validates only declared tables and the rows persist undeclared. Purging data takes the dashboard or the CLI with credentials.
-- The model-of-tom publication table rolls out in one order: deploy, run `ttsSkills.backfillLayers` once, then readers work. They fail closed until the singleton exists.
+- The model-of-tom publication table fails closed until the nightly post has written its singleton; there is no backfill door any more. The skill catalog rolls out in one order: delete the old `ttsSkills` rows, push the schema, then the first nightly post fills it. Between the delete and that post the catalog is empty, which is not an outage — a run still gets its base and a grant block whose names are each refused one line.
 
 <!-- convex-ai-start -->
 

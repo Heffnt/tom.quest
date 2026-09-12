@@ -555,7 +555,11 @@ export async function gatherWeeklyFacts(
 
   // 8, 9. The area pages and the size of the model-of-tom files, from the
   // rows the nightly job posted (a small table: one row per file).
-  const skills = await ctx.db.query("ttsSkills").collect();
+  //
+  // modelOfTomFiles, NOT ttsSkills: the per-file source facts moved to their
+  // own table in phase 6 when ttsSkills became the published skill catalog.
+  // Same rows, same fields, same post — only the table name changed.
+  const skills = await ctx.db.query("modelOfTomFiles").collect();
   const files: WeeklyFacts["modelOfTom"]["files"] = [];
   const areaPages: WeeklyFacts["areaPages"] = [];
   const publication = await ctx.db.query("modelOfTomPublication")
