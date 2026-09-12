@@ -811,7 +811,9 @@ describe("TTS annotations and the preparer", () => {
         body: JSON.stringify({ id, brief: "It expires. Renew it.", readiness: "prepared", doorFaults }),
       });
     const long = `brief: ${"x".repeat(500)}`;
-    const secret = "brief: the token ghp_0123456789abcdefghijklmnopqrstuvwxyz leaked into the complaint";
+    // `gitleaks:allow` — a real-SHAPED personal access token is the test: the
+    // assertion below is that the door redacted it out of the stored fault.
+    const secret = "brief: the token ghp_0123456789abcdefghijklmnopqrstuvwxyz leaked into the complaint"; // gitleaks:allow
     const many = [long, secret, ...Array.from({ length: 9 }, (_, i) => `fault ${i}`)];
     expect((await post(many)).status).toBe(200);
     const [event] = await preparedEvents(t);

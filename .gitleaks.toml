@@ -35,6 +35,10 @@ regexes = [
   # convex/ttsMerge.test.ts — the shape IS the test: a trace finding that
   # quotes a credential-shaped line is exactly what that door must redact.
   '''ghp_0123456789abcdefghijABCD''',
+  # convex/tts.test.ts — the same test one door over, for a prepare-door fault.
+  # Long enough to match the real `github-pat` rule rather than generic-api-key,
+  # and it has to be: the assertion is that the door redacted it back out.
+  '''ghp_0123456789abcdefghijklmnopqrstuvwxyz''',
   # app/sessions/components/run.test.tsx — a content-addressed store path, not
   # a key. generic-api-key matched it on the field NAME ending in "Key".
   '''storeKey: "runs/claude/box/x/y"''',
