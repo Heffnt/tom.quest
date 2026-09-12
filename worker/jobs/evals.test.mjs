@@ -7,6 +7,7 @@ import {
   ablationFor,
   aggregate,
   AUDIT_FAULTS_DIR,
+  deterministicFailure,
   efficiencyOf,
   efficiencyVerdict,
   failedRun,
@@ -773,13 +774,59 @@ describe("the deterministic checks", () => {
   it("applies the HTML rules only to the explanation fields", async () => {
     const standard = await loadWritingStandard();
     expect(standard).not.toBe(null);
-    expect(standardRulesFor("groundUpExplanation", standard)).toBe(standard.RULES);
-    expect(standardRulesFor("explanation", standard)).toBe(standard.RULES);
-    expect(standardRulesFor("brief", standard)).toBe(standard.BRIEF_RULES);
-    expect(standardRulesFor("text", standard)).toBe(null);
-    expect(standardRulesFor("entryAction", standard)).toBe(null);
+    expect(standardRulesFor("groundUpExplanation", standard, JOBS.prepare)).toBe(standard.RULES);
+    expect(standardRulesFor("explanation", standard, JOBS.explanation)).toBe(standard.RULES);
+    expect(standardRulesFor("text", standard, JOBS.run)).toBe(null);
+    expect(standardRulesFor("entryAction", standard, JOBS.prepare)).toBe(null);
     // An absent file is "no rules ran", never a failure.
-    expect(standardRulesFor("groundUpExplanation", null)).toBe(null);
+    expect(standardRulesFor("groundUpExplanation", null, JOBS.prepare)).toBe(null);
+  });
+
+  // WHICH `brief` IS WHICH IS THE JOB'S ANSWER. Two jobs write a field called
+  // `brief`: the prepare job's IS the life todo's brief (2-5 sentences, at
+  // most 400 characters), and the code-brief job's is 250-400 WORDS. Handing
+  // the code brief the size rules fails it deterministically on every run,
+  // which is a regression on the evals-run row and a shut merge gate.
+  it("gives the size rules to the prepare job's brief and to nothing else", async () => {
+    const standard = await loadWritingStandard();
+    const ids = (rules) => rules.map((r) => r.id);
+    const FORM = ["brief-ellipsis", "brief-markup"];
+
+    expect(standardRulesFor("brief", standard, JOBS.prepare)).toBe(standard.BRIEF_RULES);
+    expect(ids(standardRulesFor("brief", standard, JOBS.prepare))).toEqual([
+      "brief-sentences", "brief-ellipsis", "brief-markup", "brief-length",
+    ]);
+
+    expect(ids(standardRulesFor("brief", standard, JOBS["code-brief"]))).toEqual(FORM);
+    expect(ids(standardRulesFor("recommendation", standard, JOBS["code-brief"]))).toEqual(FORM);
+    expect(ids(standardRulesFor("workDescription", standard, JOBS.prepare))).toEqual(FORM);
+
+    // The old two-argument shape still answers, with nothing size-bound.
+    expect(ids(standardRulesFor("brief", standard))).toEqual(FORM);
+
+    expect(standardRulesFor("nosuchfield", standard, JOBS.prepare)).toBe(null);
+    expect(standardRulesFor("brief", null, JOBS.prepare)).toBe(null);
+  });
+
+  // END TO END, through the check that runs before the judge. This is the
+  // output the merge gate would have died on.
+  it("lets a real 1,500-character code brief and a one-word recommendation through", async () => {
+    const standard = await loadWritingStandard();
+    const sentence =
+      "The retry loop in the poller drops an event whenever the socket closes " +
+      "between the acknowledgement and the commit. ";
+    const brief = sentence.repeat(Math.ceil(1500 / sentence.length)).trim();
+    expect(brief.length).toBeGreaterThan(1500);
+    const fresh = { brief, recommendation: "approve", execClass: "box", evidence: "a1b2c3d" };
+    const codeItem = { id: "code-brief-1", job: "code-brief", partition: "code-brief/x", verdict: "approve" };
+
+    expect(deterministicFailure(codeItem, JOBS["code-brief"], fresh, standard)).toBe(null);
+
+    // The FORM rules still bite: a bullet in a code brief is a breach at any
+    // length, and the reason names the rule rather than the field's size.
+    const withBullet = { ...fresh, brief: `${brief}\n- ship the patch behind a flag.` };
+    expect(deterministicFailure(codeItem, JOBS["code-brief"], withBullet, standard))
+      .toMatch(/^brief fails the writing standard: .*brief-markup/);
   });
 
   it("fails a writing-standard breach before any judge sees it", async () => {

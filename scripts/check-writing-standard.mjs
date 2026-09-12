@@ -23,8 +23,8 @@
 // on groundUpExplanation alone and reported only explanations, so the ratchet
 // could have graduated the rung on evidence that never looked at a brief. It
 // now walks both fields and prints a line per field, and the number the
-// ratchet gates on is the sum. The brief line reports 0 rules applied, and
-// that zero is the finding rather than an omission: see BRIEF_RULES.
+// ratchet gates on is the sum. The brief line reports how many rules were
+// applied to a brief, and which rules those are is BRIEF_RULES' business.
 //
 // THE RATCHET. The script exits non-zero when the live count EXCEEDS BASELINE
 // — so new prose written to no standard fails loudly — and prints a nudge when
@@ -220,14 +220,11 @@ export function countSentences(s) {
 // This script does not claim a brief that passes these four is well written,
 // only that it is not shaped in the four ways the prompt already forbids.
 //
-// ONE HOME, THREE READERS. This array is declared once, here, and read by:
-//   - gradeField() in this file, the prod ratchet rung (via BASELINE below);
-//   - worker/jobs/evals.mjs's standardRulesFor() -> BRIEF_STANDARD_FIELDS,
-//     the evals' deterministic half, which already names `brief`,
-//     `recommendation` and `workDescription`;
-//   - worker/jobs/plan-graphs.mjs's prepare-door check (this same round).
-// No reader keeps its own copy of these rules. Add a fifth demand here, or
-// change one of the four, and every reader sees it on the next run.
+// ONE HOME. This array is declared once, here, and no reader keeps its own
+// copy of it: add a fifth demand here, or change one of the four, and every
+// reader sees it on the next run. WHICH of the four binds WHICH FIELD is a
+// second question, and it has its own one home immediately below —
+// BRIEF_SIZE_RULE_IDS and briefFormRules(), which name the three readers.
 const BRIEF_RULES = [
   {
     id: "brief-sentences",
@@ -261,6 +258,64 @@ const BRIEF_RULES = [
     fails: (s) => s.length > MAX_BRIEF_CHARS,
   },
 ];
+
+// ── WHICH OF THE FOUR BIND WHICH FIELD ───────────────────────────────────────
+// THE SPLIT'S ONE HOME. This is a fact about what the four rules ARE, not a
+// convenience any one reader arranged for itself.
+//
+// All four are the PREPARE PROMPT'S OWN DEMANDS ON THE LIFE TODO'S BRIEF (see
+// the comment above BRIEF_RULES). Two of them are demands about that field's
+// SIZE — brief-sentences (2 to 5) and brief-length (at most MAX_BRIEF_CHARS) —
+// and those two bind THAT FIELD AND NOTHING ELSE IN THE SYSTEM, because
+// nothing else in the system is that field:
+//   recommendation   ONE WORD, one of four verdicts (approve | revise |
+//                    session | archive). Zero sentence terminators, so
+//                    brief-sentences refuses it.
+//   workDescription  "a few words" by the prepare prompt's own instruction
+//                    ("a two-minute errand"). The same.
+//   a CODE brief     250 to 400 WORDS by briefPrompt (worker/jobs/
+//                    plan-graphs.mjs) — twenty-odd sentences and some two
+//                    thousand characters, so brief-length refuses it.
+// A size rule pointed at one of those refuses EVERY item on EVERY run,
+// forever. That is not a strict check, it is a broken one: a door or a check
+// that fires on everything is one nobody reads — Tom learns to read past the
+// mark, and on the evals side every affected golden item fails
+// deterministically, so `regressions` never returns to zero and the merge
+// gate's evals arm stays shut on every branch.
+//
+// The other two are FORM rules — brief-ellipsis (no unfinished sentence) and
+// brief-markup (no heading, list or code fence). Those are demands the writing
+// standard makes of ANY SHORT PROSE FIELD, not of one prompt's length, so they
+// bind all of the fields above.
+//
+// THREE READERS, and each takes its cut from here rather than from a copy:
+//   - gradeField() below, the prod ratchet rung: the full BRIEF_RULES over the
+//     stored `brief` field, which IS the life todo's brief.
+//   - worker/jobs/evals.mjs standardRulesFor(), the evals' deterministic half:
+//     the full set for a field its JOBS entry names in `briefSizeFields` (the
+//     prepare job's `brief`, and only that), briefFormRules() for every other
+//     brief field — `recommendation`, `workDescription`, and the code-brief
+//     job's `brief`.
+//   - worker/jobs/plan-graphs.mjs, the prepare door and the brief door: the
+//     full set on the life todo's brief, briefFormRules() on workDescription,
+//     on recommendation and on the code brief.
+//
+// A FIFTH RULE ADDED TO BRIEF_RULES JOINS THE FORM SET BY DEFAULT, and every
+// reader above starts applying it to every brief-shaped field on the next run.
+// It joins the size set only by being NAMED in BRIEF_SIZE_RULE_IDS — name it
+// there if and only if it binds the life todo's brief alone.
+export const BRIEF_SIZE_RULE_IDS = Object.freeze(["brief-sentences", "brief-length"]);
+
+/** The rules of `rules` that are not size rules — the ones that bind any short
+ *  prose field. Takes the set to filter, defaulting to the four, so a caller
+ *  holding its own array (a test, a reader that already has BRIEF_RULES in
+ *  hand) gets the same answer from the same code. Anything but an array is no
+ *  rules, never a throw: an absent or stale standard module checks nothing. */
+export function briefFormRules(rules = BRIEF_RULES) {
+  return (Array.isArray(rules) ? rules : []).filter(
+    (r) => !BRIEF_SIZE_RULE_IDS.includes(r.id),
+  );
+}
 
 /** The rule ids `html` breaks, given a rule set. */
 export function failuresFor(html, rules = RULES) {

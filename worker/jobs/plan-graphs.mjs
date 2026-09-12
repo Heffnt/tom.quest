@@ -234,9 +234,11 @@ function explanationPreview(value, max) {
  * value is the published model-of-tom prelude, assembled by Convex and served
  * on /tts/batch-context (main() below refuses to run without it); it is PROSE
  * FOR THE MODEL and has no rule objects in it. This is the executable half:
- * RULES (the HTML-document form) and BRIEF_RULES (the four mechanical demands
- * on a stored brief), plus failuresFor, which is the one implementation of
- * what a rule means — the door never reimplements a rule.
+ * RULES (the HTML-document form), BRIEF_RULES (the four mechanical demands on
+ * a stored brief) and briefFormRules() (the two of those four that bind any
+ * short prose field), plus failuresFor, which is the one implementation of
+ * what a rule means — the door never reimplements a rule, and never
+ * reimplements the split between them either.
  *
  * THE FILE HAS TWO HOMES — /opt/tts beside the jobs (worker/setup.sh copies it
  * flat) and scripts/ in a checkout — so both are tried, in that order, exactly
@@ -257,29 +259,17 @@ export async function loadStandardRules() {
 }
 
 // WHICH RULES BIND WHICH FIELD, and it is not "all of them on everything".
-//
-// BRIEF_RULES were written for the LIFE TODO'S brief and say so: "Four rules
-// bind a STORED BRIEF, and each one is the prepare prompt's OWN demand made
-// mechanical" (scripts/check-writing-standard.mjs). Two of the four are that
-// one prompt's demands and nobody else's — brief-sentences (2 to 5) and
-// brief-length (at most 400 characters) — and the other fields this door reads
-// are not that field:
-//   workDescription  "a few words" by the prepare prompt above ("a two-minute
-//                    errand"), which is zero sentences;
-//   recommendation   one of four words;
-//   a CODE brief     "~250-400 WORDS" by briefPrompt below, which is twenty
-//                    sentences and some two thousand characters.
-// Running the two SIZE rules on those three fields would refuse every item on
-// every run. A door that fires on 100% of what passes through it tells Tom
-// nothing — he learns to read past the mark — and it doubles the model calls
-// for the privilege. So the size rules bind the life brief alone, and the two
-// FORM rules — no ellipsis, no heading/list/code fence — bind every prose
-// field, because those are demands of the writing standard rather than of one
-// prompt's length. Nothing here is a new rule: this is a selection from the
-// one home, and a fifth rule added there lands on the field sets below by id.
-const SIZE_RULE_IDS = new Set(["brief-sentences", "brief-length"]);
-const formRulesOf = (rules) =>
-  (Array.isArray(rules) ? rules : []).filter((r) => !SIZE_RULE_IDS.has(r.id));
+// The two SIZE rules in BRIEF_RULES — brief-sentences and brief-length — bind
+// the LIFE TODO'S brief and nothing else; the two FORM rules bind every short
+// prose field this door reads (workDescription, recommendation, a code brief).
+// That split has ONE HOME and this file does not keep a copy of it: it is
+// BRIEF_SIZE_RULE_IDS and briefFormRules() in scripts/check-writing-standard.mjs,
+// where the argument is written out at length — a size rule pointed at a
+// one-word recommendation or a 400-WORD code brief refuses every item on every
+// run, and a door that fires on everything is one nobody reads. This door
+// reaches briefFormRules() through the loaded module, exactly as it reaches
+// RULES and BRIEF_RULES; a module that is absent (or too old to export it)
+// answers nothing, which checks nothing and fails nothing.
 
 /**
  * One complaint per broken rule, in THE RULE'S OWN WORDS: `<field>: <rule id>
@@ -410,7 +400,9 @@ export function prepareShapeFaults(parsed) {
  * Shape first and alone: with a field missing there is no prose to read, and a
  * complaint about the writing of a string that is not there would send the
  * retry after the wrong thing. Otherwise the writing standard, over the fields
- * it binds (see SIZE_RULE_IDS above for which rules bind which field).
+ * it binds — the full BRIEF_RULES on the life todo's brief, the FORM rules on
+ * workDescription (WHICH RULES BIND WHICH FIELD above says where that split
+ * lives).
  */
 export function prepareDoorFaults(parsed, standard) {
   const shape = prepareShapeFaults(parsed);
@@ -426,7 +418,7 @@ export function prepareDoorFaults(parsed, standard) {
     ...standardComplaints(
       "workDescription",
       parsed.workDescription,
-      formRulesOf(standard?.BRIEF_RULES),
+      standard?.briefFormRules?.(),
       standard,
     ),
   ];
@@ -736,12 +728,13 @@ export function briefShapeFaults(parsed) {
  * first and alone, for prepareDoorFaults's reason. Then the writing standard
  * over `brief` and `recommendation`, in the FORM rules only — a code brief is
  * 250-400 words by the prompt above and a recommendation is one word, so the
- * two size rules cannot bind either (SIZE_RULE_IDS says why at length).
+ * two size rules cannot bind either (WHICH RULES BIND WHICH FIELD above names
+ * the one home, which says why at length).
  */
 export function briefDoorFaults(parsed, standard) {
   const shape = briefShapeFaults(parsed);
   if (shape.length > 0) return shape;
-  const rules = formRulesOf(standard?.BRIEF_RULES);
+  const rules = standard?.briefFormRules?.();
   return [
     ...standardComplaints("brief", parsed.brief, rules, standard),
     ...standardComplaints("recommendation", parsed.recommendation, rules, standard),

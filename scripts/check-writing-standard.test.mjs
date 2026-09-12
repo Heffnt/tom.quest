@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   BRIEF_RULES,
+  BRIEF_SIZE_RULE_IDS,
   MAX_BRIEF_CHARS,
   RULES,
+  briefFormRules,
   countSentences,
   failuresFor,
 } from "./check-writing-standard.mjs";
@@ -221,6 +223,65 @@ describe("BRIEF_RULES — the prepare prompt's own demands, made mechanical", ()
       expect(atLimit.length).toBe(MAX_BRIEF_CHARS);
       expect(failuresFor(atLimit, BRIEF_RULES)).toEqual([]);
     });
+  });
+});
+
+describe("the size rules bind the life todo's brief and nothing else", () => {
+  it("names exactly the two rules that are about the field's size", () => {
+    expect([...BRIEF_SIZE_RULE_IDS]).toEqual(["brief-sentences", "brief-length"]);
+  });
+
+  it("briefFormRules() is the other two, and neither size rule is in it", () => {
+    expect(briefFormRules().map((r) => r.id)).toEqual(["brief-ellipsis", "brief-markup"]);
+    for (const id of BRIEF_SIZE_RULE_IDS) {
+      expect(briefFormRules().map((r) => r.id)).not.toContain(id);
+    }
+    // Every form rule is one of the four, never a new rule invented here.
+    for (const rule of briefFormRules()) expect(BRIEF_RULES).toContain(rule);
+  });
+
+  it("filters whatever set it is handed, and answers nothing for a non-array", () => {
+    expect(briefFormRules([{ id: "brief-length" }, { id: "brief-ellipsis" }])).toEqual([
+      { id: "brief-ellipsis" },
+    ]);
+    expect(briefFormRules(undefined ?? BRIEF_RULES).length).toBe(2);
+    expect(briefFormRules(null)).toEqual([]);
+    expect(briefFormRules("not an array")).toEqual([]);
+  });
+
+  // THE FIRST OF THE TWO CASES THAT WOULD HAVE DENIED EVERY MERGE. A
+  // recommendation is one of four verdict words and a workDescription is a few
+  // words; brief-sentences counts zero terminators in either, so the full set
+  // fails them on every run, forever — and every such deterministic failure is
+  // a regression on the evals-run row, which shuts the merge gate.
+  it("a one-word recommendation passes every form rule and fails brief-sentences", () => {
+    expect(failuresFor("approve", briefFormRules())).toEqual([]);
+    expect(failuresFor("approve", BRIEF_RULES)).toEqual(["brief-sentences"]);
+    expect(failuresFor("a two-minute errand", briefFormRules())).toEqual([]);
+    expect(failuresFor("a two-minute errand", BRIEF_RULES)).toEqual(["brief-sentences"]);
+  });
+
+  // THE SECOND. A CODE brief is 250-400 WORDS by briefPrompt
+  // (worker/jobs/plan-graphs.mjs) — some 1,500 to 2,500 characters — so
+  // brief-length (400) and brief-sentences (at most 5) fail every one of them.
+  it("a 1,500-character code brief passes every form rule and fails brief-length", () => {
+    const sentence =
+      "The retry loop in the poller drops an event whenever the socket closes " +
+      "between the acknowledgement and the commit. ";
+    const codeBrief = sentence.repeat(Math.ceil(1500 / sentence.length)).trim();
+    expect(codeBrief.length).toBeGreaterThan(1500);
+    expect(failuresFor(codeBrief, briefFormRules())).toEqual([]);
+    expect(failuresFor(codeBrief, BRIEF_RULES)).toEqual(["brief-sentences", "brief-length"]);
+  });
+
+  // The form rules still bite, on a field of any length: they are demands of
+  // the writing standard, not of one prompt's size bound.
+  it("still fails a long code brief that carries a bullet or an ellipsis", () => {
+    const withBullet = "It drops events under load.\n- ship the patch behind a flag.";
+    expect(failuresFor(withBullet, briefFormRules())).toEqual(["brief-markup"]);
+    expect(failuresFor("It might work eventually…", briefFormRules())).toEqual([
+      "brief-ellipsis",
+    ]);
   });
 });
 

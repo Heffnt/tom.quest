@@ -289,6 +289,14 @@ export const JOBS = {
     ),
     parse: (answer) => extractJsonObject(answer),
     fields: ["brief", "entryAction", "workDescription", "groundUpExplanation"],
+    // THE ONE JOB WHOSE `brief` IS THE LIFE TODO'S BRIEF, so the one job whose
+    // `brief` the SIZE rules (2-5 sentences, at most 400 characters) bind. The
+    // field name alone cannot say this — the code-brief job below also writes
+    // a field called `brief`, and that one is 250 to 400 WORDS — so the job
+    // declares it and standardRulesFor reads the declaration. A job that names
+    // nothing here gets the form rules on its brief fields, which is the right
+    // default for everything but this.
+    briefSizeFields: ["brief"],
     opts: { maxTurns: 4 },
   },
   "code-brief": {
@@ -655,32 +663,56 @@ export function mechanicalChecks(expect, text) {
 }
 
 /**
- * WHICH FIELDS THE WRITING STANDARD BINDS, and it is not all of them.
+ * WHICH FIELDS THE WRITING STANDARD BINDS, and it is not all of them, and it
+ * is not the same rules for each.
  *
- * scripts/check-writing-standard.mjs exports two rule sets, and the difference
- * is the whole finding here. `RULES` are rules of the HTML-DOCUMENT FORM —
- * no-doctype, no-close-html, no-h1, no-style — which the writing standard
- * attaches to a GROUND-UP EXPLANATION and to nothing else. `BRIEF_RULES` is
- * empty, deliberately: a brief is markdown by construction, so no mechanical
- * rule binds it, and that emptiness is a measurement rather than a gap (read
- * its comment there).
+ * scripts/check-writing-standard.mjs exports two rule sets. `RULES` are rules
+ * of the HTML-DOCUMENT FORM — no-doctype, no-close-html, no-h1, no-style —
+ * which the writing standard attaches to a GROUND-UP EXPLANATION and to
+ * nothing else. `BRIEF_RULES` are the four mechanical demands the prepare
+ * prompt makes of the LIFE TODO'S BRIEF.
  *
- * So the rules are not applied field-blind. Running `RULES` over a free-form
- * field would fail every case on no-doctype — a `run` case's `text` is not an
- * HTML document and the standard fixes no form for it, so no rules run on it
- * at all. That is what makes this check safe to run on every job: a field the
- * standard says nothing about is checked against nothing.
+ * The rules are not applied field-blind, for two separate reasons.
  *
- * A rule added to BRIEF_RULES over there lands here with no edit.
+ * FIRST, `RULES` over a free-form field would fail every case on no-doctype —
+ * a `run` case's `text` is not an HTML document and the standard fixes no form
+ * for it — so no rules run on it at all. A field the standard says nothing
+ * about is checked against nothing, which is what makes this check safe to run
+ * on every job.
+ *
+ * SECOND, only TWO of the four BRIEF_RULES bind the three brief-shaped fields
+ * below. brief-sentences (2 to 5) and brief-length (at most 400 characters)
+ * are demands on the SIZE of the life todo's brief, and nothing else here is
+ * that field: a `recommendation` is one word, a `workDescription` is a few,
+ * and the code-brief job's `brief` is 250 to 400 WORDS. Handing those three
+ * the size rules fails every affected golden item DETERMINISTICALLY — the
+ * check below runs before the judge — so `regressions` on the evals-run row
+ * never returns to zero and the merge gate's evals arm denies every merge.
+ * The split's one home is BRIEF_SIZE_RULE_IDS / briefFormRules() over there,
+ * and this file selects from it rather than restating it.
+ *
+ * WHICH `brief` IS WHICH IS THE JOB'S ANSWER, NOT THE FIELD NAME'S. Two jobs
+ * write a field called `brief` and they are different fields, so the job says
+ * which of its brief fields the size rules bind (`briefSizeFields` in JOBS
+ * above) and this function reads that. `job` defaults to nothing size-bound:
+ * a two-argument call — an older caller, a test — gets the form rules, which
+ * is the answer for every brief field but the prepare job's.
+ *
+ * A rule added to BRIEF_RULES over there lands here with no edit, in the form
+ * set unless it is also named in BRIEF_SIZE_RULE_IDS.
  */
 export const HTML_STANDARD_FIELDS = Object.freeze(["groundUpExplanation", "explanation"]);
 export const BRIEF_STANDARD_FIELDS = Object.freeze(["brief", "recommendation", "workDescription"]);
 
-export function standardRulesFor(field, standard) {
+export function standardRulesFor(field, standard, job = null) {
   if (standard === null || standard === undefined) return null;
   if (HTML_STANDARD_FIELDS.includes(field)) return standard.RULES ?? null;
-  if (BRIEF_STANDARD_FIELDS.includes(field)) return standard.BRIEF_RULES ?? null;
-  return null;
+  if (!BRIEF_STANDARD_FIELDS.includes(field)) return null;
+  if ((job?.briefSizeFields ?? []).includes(field)) return standard.BRIEF_RULES ?? null;
+  // A standard module too old to export briefFormRules checks nothing here,
+  // the same answer an absent module gives — never the full set by fallback,
+  // which is the failure this whole comment is about.
+  return standard.briefFormRules?.() ?? null;
 }
 
 /**
@@ -722,7 +754,7 @@ export function deterministicFailure(item, job, fresh, standard) {
   const mechanical = mechanicalChecks(item.expect, outputText(fresh, fields));
   if (mechanical !== null) return mechanical;
   for (const field of fields) {
-    const rules = standardRulesFor(field, standard);
+    const rules = standardRulesFor(field, standard, job);
     if (rules === null || rules.length === 0) continue;
     const value = fresh?.[field];
     // An absent field is the judge's business — it is a loss, not a broken
