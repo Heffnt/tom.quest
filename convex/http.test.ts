@@ -101,3 +101,123 @@ describe("POST /tts/needs-tom: the needs-you room, or nothing", () => {
     expect(await events(t, "job-failed")).toHaveLength(1);
   });
 });
+
+// ── POST /runs/ingest: the immutable record's one door ───────────────────────
+const body = {
+  run: {
+    runId: "claude:laptop:http-run", rootRunId: "claude:laptop:http-run", depth: 0, linkKnown: true,
+    origin: "unknown", host: "laptop", runner: "claude", parserVersion: "runs-parser-1", kind: "session", status: "unknown", startedAt: 1, lastLineAt: 1, attachments: [],
+    file: { path: "C:/http.jsonl", sourceHash: "a".repeat(64), storedHash: "b".repeat(64), bytes: 1, storedBytes: 1, committedLine: 1, committedPrefixSha256: "c".repeat(64) },
+  },
+  rows: [], children: [], previousCommittedLine: 0, previousPrefixSha256: "d".repeat(64),
+};
+function post(t: ReturnType<typeof convexTest>, value: unknown, key?: string) {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (key) headers["X-Sessions-Key"] = key;
+  return t.fetch("/runs/ingest", { method: "POST", headers, body: JSON.stringify(value) });
+}
+
+describe("POST /runs/ingest", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  it("returns 503 until the existing worker credential is configured", async () => {
+    const t = convexTest({ schema, modules });
+    const response = await post(t, body, "key");
+    expect(response.status).toBe(503);
+  });
+  it("returns 401 for a wrong worker credential", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest({ schema, modules });
+    expect((await post(t, body, "wrong")).status).toBe(401);
+  });
+  it("returns 400 for invalid JSON", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest({ schema, modules });
+    const response = await t.fetch("/runs/ingest", { method: "POST", headers: { "Content-Type": "application/json", "X-Sessions-Key": "right" }, body: "{ bad" });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "invalid JSON body" });
+  });
+  it("accepts a well-typed page", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest({ schema, modules });
+    const response = await post(t, body, "right");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, runId: "claude:laptop:http-run" });
+  });
+
+  it("rejects over-limit bytes before attempting JSON parsing", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest({ schema, modules });
+    const maxBody = 6 * 200 * 32 * 1024 + 1024 * 1024;
+    const response = await t.fetch("/runs/ingest", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": String(maxBody + 1),
+        "X-Sessions-Key": "right",
+      },
+      body: "{",
+    });
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({ error: "request body too large" });
+  });
+
+  it("allows the exact declared ingest boundary to reach JSON parsing", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest({ schema, modules });
+    const maxBody = 6 * 200 * 32 * 1024 + 1024 * 1024;
+    const response = await t.fetch("/runs/ingest", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": String(maxBody),
+        "X-Sessions-Key": "right",
+      },
+      body: "{",
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "invalid JSON body" });
+  });
+});
+
+describe("POST /runs/overflow: bounded chunks", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  function overflowBodyAt(byteLength: number, text: string, seq: number) {
+    const value: Record<string, unknown> = {
+      runId: "claude:laptop:http-run",
+      seq,
+      index: 0,
+      chunkCount: 1,
+      text,
+      padding: "",
+    };
+    const base = new TextEncoder().encode(JSON.stringify(value)).length;
+    value.padding = "x".repeat(byteLength - base);
+    return JSON.stringify(value);
+  }
+  async function postOverflow(t: ReturnType<typeof convexTest>, path: string, payload: string) {
+    return await t.fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-Sessions-Key": "right" }, body: payload });
+  }
+
+  it("accepts worst-case 256 KiB chunks at the body boundary and rejects one byte more", async () => {
+    vi.stubEnv("SESSIONS_WORKER_KEY", "right");
+    const t = convexTest({ schema, modules });
+    expect((await post(t, body, "right")).status).toBe(200);
+
+    const maxBody = 6 * 256 * 1024 + 4 * 1024;
+    const quoteAndSlash = '"\\'.repeat(128 * 1024);
+    const controls = "\u0000".repeat(256 * 1024);
+    expect(new TextEncoder().encode(quoteAndSlash)).toHaveLength(256 * 1024);
+    expect(new TextEncoder().encode(controls)).toHaveLength(256 * 1024);
+
+    const commonCase = overflowBodyAt(maxBody, quoteAndSlash, 0);
+    const worstCase = overflowBodyAt(maxBody, controls, 1);
+    expect(new TextEncoder().encode(commonCase)).toHaveLength(maxBody);
+    expect(new TextEncoder().encode(worstCase)).toHaveLength(maxBody);
+    expect((await postOverflow(t, "/runs/overflow", commonCase)).status).toBe(200);
+    expect((await postOverflow(t, "/runs/overflow", worstCase)).status).toBe(200);
+
+    const over = "{".repeat(maxBody + 1);
+    expect((await postOverflow(t, "/runs/overflow", over)).status).toBe(413);
+    expect((await postOverflow(t, "/runs/overflow/stamp", over)).status).toBe(413);
+  });
+});

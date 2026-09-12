@@ -50,6 +50,9 @@ try {
     });
     process.stdout.write("AUDIT " + args.repo + "@" + args.sha.slice(0, 7) + "\n");
     process.stdout.write("verdict: " + (result.verdict ?? "unrecorded") + "\n");
+    process.stdout.write(
+      "auditor: " + result.model + (result.fallback ? " (" + result.fallback + ")" : "") + "\n",
+    );
     process.stdout.write(result.text.trim() + "\n");
     if (result.verdict !== "APPROVED") process.exitCode = 4;
   }

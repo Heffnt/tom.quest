@@ -81,6 +81,157 @@ describe("redactSecrets replaces every credential shape", () => {
       "export GH_TOKEN=[redacted:github]\nexport SLACK=[redacted:slack]",
     );
   });
+
+  it("redacts an AWS secret access key when its access ID precedes it", () => {
+    const accessId = t("AK", "IA", "1234567890ABCDEF");
+    const secret = t("Ab1dE2fG3hI4jK5l", "Mn6oP7qR8sT9uV0w", "XyZ1+/aB");
+    const out = redactSecrets(`${accessId}: ${secret}`);
+
+    expect(out).toBe("[redacted:aws]: [redacted:aws]");
+    expect(out).not.toContain(accessId);
+    expect(out).not.toContain(secret);
+  });
+
+  it("redacts an AWS secret access key across the access-ID line boundary", () => {
+    const accessId = t("AK", "IA", "FEDCBA0987654321");
+    const secret = t("Qw1eR2tY3uI4oP5a", "Sd6fG7hJ8kL9zX0c", "Vb2nM3qW");
+    const out = redactSecrets(`${accessId}\n${secret}`);
+
+    expect(out).toBe("[redacted:aws]\n[redacted:aws]");
+    expect(out).not.toContain(accessId);
+    expect(out).not.toContain(secret);
+  });
+});
+
+describe("redactSecrets keeps named secret keys while removing their values", () => {
+  const value = t("r4Nd0m", "-Secret_Value.1234567890-abcdefghijklmnopqrstuvwxyz");
+  const CASES = [
+    ["equals assignment", "password", `password=${value}`, "[redacted:secret]"],
+    ["colon assignment", "passwd", `passwd: ${value}`, "[redacted:secret]"],
+    ["JSON key and value", "client_secret", `{"client_secret":"${value}"}`, "[redacted:secret]"],
+    ["upper-case environment name", "AWS_SECRET_ACCESS_KEY", `AWS_SECRET_ACCESS_KEY=${value}`, "[redacted:aws]"],
+    ["authorization assignment", "AUTHORIZATION", `AUTHORIZATION=${value}`, "[redacted:secret]"],
+    // `auth_token`, not the bare word: see "the name list is narrow" below.
+    ["named high-entropy value", "auth_token", `auth_token ${value}`, "[redacted:secret]"],
+    ["escaped JSON key and value", "api_key", `{\\"api_key\\":\\"${value}\\"}`, "[redacted:secret]"],
+    ["escaped quoted value", "GITHUB_TOKEN", `GITHUB_TOKEN=\\"${value}\\"`, "[redacted:secret]"],
+    ["single-quoted value", "password", `password='${value}'`, "[redacted:secret]"],
+    ["upper-case environment name with no vendor rule", "TTS_WORKER_KEY", `TTS_WORKER_KEY=${value}`, "[redacted:secret]"],
+  ];
+
+  for (const [name, key, input, marker] of CASES) {
+    it(`redacts a ${name}`, () => {
+      const out = redactSecrets(input);
+      expect(out).toContain(key);
+      expect(out).toContain(marker);
+      expect(out).not.toContain(value);
+    });
+  }
+
+  it("keeps quoted JSON valid after replacing its value", () => {
+    const out = redactSecrets(`{"api_key":"${value}","ordinary":"kept"}`);
+    expect(JSON.parse(out)).toEqual({ api_key: "[redacted:secret]", ordinary: "kept" });
+  });
+
+  it("redacts an entire PEM private-key block", () => {
+    const body = [
+      t("-----BEGIN", " PRIVATE KEY-----"),
+      t("MIIE", "vFakePrivateKeyMaterial0123456789"),
+      t("-----END", " PRIVATE KEY-----"),
+    ].join("\n");
+    const out = redactSecrets(`before\n${body}\nafter`);
+    expect(out).toBe("before\n[redacted:pem]\nafter");
+    expect(out).not.toContain("FakePrivateKeyMaterial");
+  });
+});
+
+// The 2026-09-11 fix, in two halves. The first is a CORRECTNESS fence, not a
+// secrecy one: the daemon redacts `JSON.stringify(body)` (lib.mjs), so a
+// replacement that eats a closing quote makes the ingest POST malformed, Convex
+// answers 400, and session.mjs — which treats 400 as permanent — drops the row.
+describe("a replacement inside a serialized body never breaks the JSON", () => {
+  const value = t("r4Nd0m", "-Secret_Value.1234567890-abcdefghijklmnop");
+  const CASES = [
+    ["a value mid-string", `export GITHUB_TOKEN=${value} && gh pr list`],
+    ["a value at the very end of the string", `export GITHUB_TOKEN=${value}`],
+    ["a value followed by an escaped quote", `GITHUB_TOKEN=${value}" is the token`],
+    ["a quoted value, whose quotes are escapes", `password="${value}"`],
+    ["a JSON blob a tool printed", JSON.stringify({ api_key: value, ordinary: "kept" })],
+    ["a value carrying an escape of its own", `GITHUB_TOKEN=${value}\\n next`],
+  ];
+
+  for (const [name, content] of CASES) {
+    it(`stays parseable with ${name}`, () => {
+      const out = redactSecrets(JSON.stringify({ command: content }));
+      expect(() => JSON.parse(out)).not.toThrow();
+      expect(JSON.parse(out).command).toContain("[redacted:secret]");
+      expect(out).not.toContain(value);
+    });
+  }
+
+  // The audit's counterexample, 2026-09-11. A name at the END of a string
+  // leaves the quoted value form free to open on the quote that CLOSES that
+  // string and shut on the one that OPENS the next — swallowing the structure
+  // between them, which in a mixed array is long and digit-heavy enough to
+  // read as a credential. The values these forms take must be fenced by the
+  // characters JSON structure is made of, not only by the name in front.
+  const STRUCTURE = [
+    ["a mixed array whose element ends in a name", '["password:",1757600000000,"ok"]'],
+    ["an object whose value ends in a name", '{"note":"the password:","timeout":120000}'],
+    ["an apostrophe that is not a quoted value", `{"note":"password='abc123\\",\\"timeout\\":120000,x'"}`],
+    ["a name at the end of an array element", '["export GITHUB_TOKEN=",1757600000000,"ok"]'],
+  ];
+  for (const [name, text] of STRUCTURE) {
+    it(`leaves the structure alone: ${name}`, () => {
+      const out = redactSecrets(text);
+      expect(() => JSON.parse(out)).not.toThrow();
+      expect(out).toBe(text);
+    });
+  }
+});
+
+// The second half: the name list is narrow enough that the filter does not
+// redact ordinary content. It cost an eval regression and a broken ingest to
+// learn that `token` and `key` are words this system uses for its own data.
+describe("the name list is narrow: a name alone does not make a value a secret", () => {
+  const UNTOUCHED = [
+    'key: "learning:abc"',
+    '{"key":"learning:abc"}',
+    '{"key":"ground.md#Knows"}',
+    '{"token":"j57turn1"}',
+    "tokens=5000",
+    "token = the smallest unit",
+    "a token is the smallest unit a model bills in",
+    "PWD=/root/x",
+    "pwd=/root/tom.quest",
+    "secret: not-configured",
+    "monkey=banana",
+    "password: short",
+    "api_key: /etc/tts/worker.env",
+  ];
+  for (const text of UNTOUCHED) {
+    it(`leaves alone: ${text}`, () => {
+      expect(redactSecrets(text)).toBe(text);
+    });
+  }
+
+  const REDACTED = [
+    ["a GitHub token in an export", `export GITHUB_TOKEN=${t("gh", "p_", "K".repeat(36))}`, "[redacted:github]"],
+    ["a short but credential-shaped password", "password: hunter2secret1", "[redacted:secret]"],
+    ["an API key under its JSON name", `{"api_key":"${t("sk-", "proj-", "Zx9wQ7v".repeat(6))}"}`, "[redacted:openai]"],
+    ["an AWS secret after its access ID", `${t("AK", "IA", "1122334455667788")}: ${t("Ab1dE2fG3hI4jK5l", "Mn6oP7qR8sT9uV0w", "XyZ1+/aB")}`, "[redacted:aws]"],
+    ["an AWS environment name", `AWS_SECRET_ACCESS_KEY=${t("Ab1dE2fG3hI4jK5l", "Mn6oP7qR8sT9uV0w", "XyZ1+/aB")}`, "[redacted:aws]"],
+    ["a Convex deploy key", t("prod", ":fictional-armadillo-000|", "ey", "J2MiI6ImEtZmFrZS1kZXBsb3kta2V5In0="), "[redacted:convex]"],
+    ["a PEM block", [t("-----BEGIN", " PRIVATE KEY-----"), "MIIEvFake0123456789", t("-----END", " PRIVATE KEY-----")].join("\n"), "[redacted:pem]"],
+  ];
+  for (const [name, text, marker] of REDACTED) {
+    it(`still redacts ${name}`, () => {
+      const out = redactSecrets(text);
+      expect(out).toContain(marker);
+      // Nothing 12 characters or longer of the input survives beside the marker.
+      expect(out).not.toBe(text);
+    });
+  }
 });
 
 describe("redactSecrets leaves ordinary text alone", () => {
@@ -94,6 +245,7 @@ describe("redactSecrets leaves ordinary text alone", () => {
     "AIza on its own says nothing",
     "xoxb- with nothing after it",
     "Authorization: Bearer <token>",
+    `token ${"a".repeat(40)}`,
     "we discussed sk- prefixes and gh_ prefixes at length",
   ];
   for (const text of INNOCENT) {

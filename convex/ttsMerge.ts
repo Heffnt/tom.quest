@@ -4,6 +4,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { logEvent } from "./tts";
 import { EVALS_RUN } from "./ttsEvals";
+import { redactSecrets } from "../worker/session-host/redact.mjs";
 
 // ── THE MECHANICAL MERGE GATE (Tom, 2026-09-09) ─────────────────────────────
 // Merging used to be Tom's gate: the box classifier denied `git merge` and
@@ -22,7 +23,8 @@ import { EVALS_RUN } from "./ttsEvals";
 //                     data { repo, sha, ok, detail?, url? }
 //   "audit-verdict" — the Codex/Opus audit step posts its answer, and the
 //                     `VERDICT: <WORD>` line in it is the verdict
-//                     (POST /tts/audit). data { repo, sha, verdict, model? }
+//                     (POST /tts/audit).
+//                     data { repo, sha, verdict, text, model?, fallback? }
 //   "evals-run"     — already written by worker/jobs/evals.mjs for every
 //                     scored head (convex/ttsEvals.ts). `data.regressions` is
 //                     the runner's own comparison against the base run, so
@@ -40,6 +42,12 @@ export const AUDIT_VERDICT = "audit-verdict";
 export const MERGE = "merge";
 /** The one word the audit line must carry for the gate to open. */
 export const AUDIT_APPROVED = "APPROVED";
+/** The word the audit step posts when it could not run at all
+ *  (worker/jobs/audit.mjs AUDIT_UNAVAILABLE). NOT A VERDICT: it is the
+ *  ABSENCE of one, which is why a later real verdict replaces it below. */
+export const AUDIT_UNAVAILABLE = "UNAVAILABLE";
+/** The most audit prose retained on its event, measured after redaction. */
+export const AUDIT_TEXT_MAX_BYTES = 8 * 1024;
 
 /** The key every fact ABOUT ONE COMMIT is filed under — the spelling
  *  convex/ttsEvals.ts already uses for an evals run, so all three checks are
@@ -65,6 +73,46 @@ export function mergeKey(repo: string, sha: string): string {
 export function auditVerdictOf(text: string): string | null {
   const hit = /^[ \t]*VERDICT:[ \t]*([A-Za-z][A-Za-z_-]*)[ \t]*$/im.exec(text);
   return hit === null ? null : hit[1].toUpperCase();
+}
+
+function capUtf8(text: string, maxBytes: number): string {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length <= maxBytes) return text;
+  let end = maxBytes;
+  // Do not retain a partial multi-byte code point at the boundary.
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+  return new TextDecoder().decode(bytes.slice(0, end));
+}
+
+function auditReason(text: unknown): string | null {
+  if (typeof text !== "string") return null;
+  const lines = text.split(/\r?\n/);
+  const verdictLine = lines.findIndex((line) =>
+    /^[ \t]*VERDICT:[ \t]*[A-Za-z][A-Za-z_-]*[ \t]*$/i.test(line),
+  );
+  if (verdictLine < 0) return null;
+  return lines.slice(verdictLine + 1).map((line) => line.trim()).find(Boolean) ?? null;
+}
+
+/**
+ * The parenthetical the audit's `why` carries when a fallback auditor answered
+ * — "(audit by claude-opus-5, Codex at its cap)" — and the empty string when
+ * Codex itself answered, which is the ordinary case and needs no note.
+ *
+ * `fallback` is the worker's one word for WHY the stand-in ran
+ * (worker/jobs/audit.mjs AUDIT_FALLBACK_REASON); "codex-cap" is the only one
+ * so far and gets the sentence Tom reads. An unknown reason is still declared
+ * rather than hidden.
+ */
+export function auditFallbackNote(data: { model?: unknown; fallback?: unknown }): string {
+  const fallback = typeof data.fallback === "string" ? data.fallback.trim() : "";
+  if (fallback === "") return "";
+  const model = typeof data.model === "string" && data.model.trim() !== ""
+    ? data.model.trim()
+    : "a stand-in model";
+  return fallback === "codex-cap"
+    ? ` (audit by ${model}, Codex at its cap)`
+    : ` (audit by ${model}, fallback: ${fallback})`;
 }
 
 export type MergeCheck = {
@@ -121,17 +169,30 @@ export async function mergeGateFor(
           };
 
   const audit = await rowFor(ctx, AUDIT_VERDICT, key);
-  const auditData = (audit?.data ?? {}) as { verdict?: unknown };
+  const auditData = (audit?.data ?? {}) as {
+    verdict?: unknown;
+    text?: unknown;
+    model?: unknown;
+    fallback?: unknown;
+  };
   const verdict = typeof auditData.verdict === "string" ? auditData.verdict.toUpperCase() : null;
+  const auditWhy = auditReason(auditData.text);
+  const auditDetail = auditWhy === null ? "" : ` — ${auditWhy}`;
+  // A fallback audit is a WEAKER audit and says so wherever it is read: the
+  // point of the check is a family that did not write the code, and at Codex's
+  // weekly cap it was Opus that answered. The note rides the `why`, so the
+  // gate's answer and the #tts-decisions merge line (which joins these whys)
+  // both carry it and Tom can object to a same-family audit.
+  const byWhom = auditFallbackNote(auditData);
   const auditCheck: MergeCheck =
     audit === null
       ? { name: "audit", passed: false, why: `no audit verdict is recorded for ${short}` }
       : verdict === AUDIT_APPROVED
-        ? { name: "audit", passed: true, why: `the audit approved ${short}` }
+        ? { name: "audit", passed: true, why: `the audit approved ${short}${byWhom}${auditDetail}` }
         : {
             name: "audit",
             passed: false,
-            why: `the audit answered ${verdict ?? "nothing readable"} at ${short}, not ${AUDIT_APPROVED}`,
+            why: `the audit answered ${verdict ?? "nothing readable"} at ${short}${byWhom}, not ${AUDIT_APPROVED}${auditDetail}`,
           };
 
   const evals = await rowFor(ctx, EVALS_RUN, key);
@@ -198,25 +259,49 @@ export const internalRecordTests = internalMutation({
   },
 });
 
-/** The audit step's verdict, recorded once per commit for the same reason. */
+/**
+ * The audit step's verdict and bounded, redacted answer, recorded once per
+ * commit for the same reason: a refusal cannot be re-run until it approves.
+ *
+ * ONE EXCEPTION, and it is not a loophole: an UNAVAILABLE row is the ABSENCE
+ * of an audit, not an audit — it says the auditor could not be reached at all
+ * (Codex over its weekly cap, the CLI missing, the box offline). Write-once
+ * over that absence meant a head audited during a capped hour could NEVER
+ * pass, because the only row it would ever have said "could not run". A later
+ * REAL verdict therefore replaces it, in either direction: an Opus fallback
+ * that approves opens the gate, and one that refuses shuts it just as firmly.
+ * Any other existing verdict — APPROVED or REFUSED — still stands forever.
+ */
 export const internalRecordAudit = internalMutation({
   args: {
     repo: v.string(),
     sha: v.string(),
     verdict: v.string(),
+    text: v.string(),
     model: v.optional(v.string()),
+    /** Why a stand-in auditor answered ("codex-cap"), when one did. */
+    fallback: v.optional(v.string()),
     url: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const key = commitKey(args.repo, args.sha);
     const existing = await rowFor(ctx, AUDIT_VERDICT, key);
-    if (existing) {
-      const recorded = (existing.data as { verdict?: unknown } | undefined)?.verdict;
+    const recorded = (existing?.data as { verdict?: unknown } | undefined)?.verdict;
+    const recordedVerdict = typeof recorded === "string" ? recorded.toUpperCase() : null;
+    if (existing && recordedVerdict !== AUDIT_UNAVAILABLE) {
       return { existing: true, verdict: typeof recorded === "string" ? recorded : null };
     }
+    // The row that replaces an UNAVAILABLE is a NEW row, not an edit: the
+    // failed attempt stays in the event log (mergeGateFor reads the newest row
+    // for the key), so the record still says the audit was unreachable first.
     const verdict = args.verdict.toUpperCase();
-    await logEvent(ctx, AUDIT_VERDICT, undefined, { ...args, verdict }, key);
-    return { existing: false, verdict };
+    if (existing && verdict === AUDIT_UNAVAILABLE) {
+      // A second "could not run" adds nothing but a row.
+      return { existing: true, verdict: typeof recorded === "string" ? recorded : null };
+    }
+    const text = capUtf8(redactSecrets(args.text), AUDIT_TEXT_MAX_BYTES);
+    await logEvent(ctx, AUDIT_VERDICT, undefined, { ...args, verdict, text }, key);
+    return { existing: false, verdict, replaced: existing !== null };
   },
 });
 

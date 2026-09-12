@@ -1,7 +1,14 @@
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import schema from "./schema";
-import { AUDIT_VERDICT, MERGE, TESTS_RUN, auditVerdictOf, commitKey } from "./ttsMerge";
+import {
+  AUDIT_TEXT_MAX_BYTES,
+  AUDIT_VERDICT,
+  MERGE,
+  TESTS_RUN,
+  auditVerdictOf,
+  commitKey,
+} from "./ttsMerge";
 import { EVALS_RUN } from "./ttsEvals";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -63,6 +70,19 @@ const mergeRows = (t: TestConvex<typeof schema>) =>
   t.run(async (ctx) =>
     ctx.db.query("dtsEvents").withIndex("by_kind_at", (q) => q.eq("kind", MERGE)).collect(),
   );
+
+const auditRows = (t: TestConvex<typeof schema>) =>
+  t.run(async (ctx) =>
+    ctx.db
+      .query("dtsEvents")
+      .withIndex("by_kind_key", (q) => q.eq("kind", AUDIT_VERDICT).eq("key", commitKey(REPO, SHA)))
+      .order("desc")
+      .collect(),
+  );
+
+/** The row the gate reads: the NEWEST audit row for the commit. There is one
+ *  of them per head unless a real verdict replaced an UNAVAILABLE. */
+const auditRow = async (t: TestConvex<typeof schema>) => (await auditRows(t))[0] ?? null;
 
 describe("auditVerdictOf", () => {
   it("reads the verdict line, alone on its line, in any case", () => {
@@ -306,16 +326,42 @@ describe("POST /tts/audit — the second check's own door", () => {
   it("reads the verdict out of the audit's own text and records it", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convex();
+    const text = "VERDICT: APPROVED\n\nIt does what it says and touches nothing else.";
     const response = await post(t, "/tts/audit", {
       repo: REPO,
       sha: SHA,
-      text: "VERDICT: APPROVED\n\nIt does what it says and touches nothing else.",
+      text,
       model: "codex",
     });
     expect(response.status).toBe(200);
     expect((await response.json()).verdict).toBe("APPROVED");
+    expect((await auditRow(t))?.data).toMatchObject({ verdict: "APPROVED", text });
     const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
     expect(gate.missing).not.toContain("audit");
+    expect(gate.checks.find((c: { name: string }) => c.name === "audit").why).toContain(
+      "It does what it says and touches nothing else.",
+    );
+  });
+
+  it("redacts the retained audit text and caps it at 8 KiB of UTF-8", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    // Credential-SHAPED (digits, no spaces, long enough) and not a credential:
+    // the filter only takes a named value that could actually be one, so a
+    // fixture reading "not-a-real-secret" would prove nothing about the door.
+    const secret = "n0t-a-real-secret-9f3c1d8b";
+    await post(t, "/tts/audit", {
+      repo: REPO,
+      sha: SHA,
+      text: `VERDICT: REFUSED\n\npassword=${secret}\n${"😀".repeat(5_000)}`,
+    });
+    const stored = ((await auditRow(t))?.data as { text?: unknown } | undefined)?.text;
+    expect(typeof stored).toBe("string");
+    expect(stored).toContain("password=[redacted:secret]");
+    expect(stored).not.toContain(secret);
+    expect(new TextEncoder().encode(stored as string).length).toBeLessThanOrEqual(
+      AUDIT_TEXT_MAX_BYTES,
+    );
   });
 
   it("refuses an answer with no verdict line — an audit that did not say did not finish", async () => {
@@ -334,6 +380,113 @@ describe("POST /tts/audit — the second check's own door", () => {
     );
   });
 
+  // UNAVAILABLE is the ABSENCE of an audit, not an audit: the auditor could
+  // not be reached (Codex over its weekly cap). Write-once over that meant a
+  // head audited during a capped hour could never merge at all.
+  it("lets a real verdict replace an UNAVAILABLE, and the gate reads the new one", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await post(t, "/tts/audit", {
+      repo: REPO,
+      sha: SHA,
+      text: "VERDICT: UNAVAILABLE\n\nThe audit could not run: you've hit your usage limit.",
+      model: "codex",
+    });
+    const shut = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+    expect(shut.missing).toContain("audit");
+
+    const replaced = await post(t, "/tts/audit", {
+      repo: REPO,
+      sha: SHA,
+      text: "VERDICT: APPROVED\n\nIt lands what it claims and nothing else.",
+      model: "claude-opus-5",
+      fallback: "codex-cap",
+    });
+    expect((await replaced.json()).verdict).toBe("APPROVED");
+    const open = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+    expect(open.missing).not.toContain("audit");
+    // The failed attempt is still on the record — the newest row is what the
+    // gate reads, not the only row there is.
+    expect(await auditRows(t)).toHaveLength(2);
+  });
+
+  it("keeps an APPROVED and a REFUSED write-once, and does not stack UNAVAILABLEs", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const approved = convex();
+    await post(approved, "/tts/audit", { repo: REPO, sha: SHA, text: "VERDICT: APPROVED\n\nfine" });
+    const again = await (
+      await post(approved, "/tts/audit", { repo: REPO, sha: SHA, text: "VERDICT: REFUSED\n\nno" })
+    ).json();
+    expect(again.existing).toBe(true);
+    expect(again.verdict).toBe("APPROVED");
+    expect(((await auditRow(approved))?.data as { verdict?: string })?.verdict).toBe("APPROVED");
+
+    const refused = convex();
+    await post(refused, "/tts/audit", { repo: REPO, sha: SHA, text: "VERDICT: REFUSED\n\nno" });
+    const retried = await (
+      await post(refused, "/tts/audit", {
+        repo: REPO,
+        sha: SHA,
+        text: "VERDICT: APPROVED\n\nfine now",
+        model: "claude-opus-5",
+        fallback: "codex-cap",
+      })
+    ).json();
+    expect(retried.existing).toBe(true);
+    expect(retried.verdict).toBe("REFUSED");
+
+    const unavailable = convex();
+    const text = "VERDICT: UNAVAILABLE\n\nThe audit could not run.";
+    await post(unavailable, "/tts/audit", { repo: REPO, sha: SHA, text });
+    expect((await (await post(unavailable, "/tts/audit", { repo: REPO, sha: SHA, text })).json()).existing).toBe(true);
+    expect(await auditRows(unavailable)).toHaveLength(1);
+  });
+
+  it("says WHO audited when Codex was capped, in the gate and in the merge line", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await greenTests(t);
+    await cleanEvals(t);
+    await post(t, "/tts/audit", {
+      repo: REPO,
+      sha: SHA,
+      text: "VERDICT: APPROVED\n\nIt lands what it claims and nothing else.",
+      model: "claude-opus-5",
+      fallback: "codex-cap",
+    });
+    const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+    const audit = gate.checks.find((c: { name: string }) => c.name === "audit");
+    expect(audit.passed).toBe(true);
+    expect(audit.why).toContain("(audit by claude-opus-5, Codex at its cap)");
+
+    expect((await mergeReport(t)).status).toBe(200);
+    const scheduled = await t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
+        job.name.includes("sendDecision"),
+      ),
+    );
+    // Tom reads the merge line in #tts-decisions; a same-family audit is a
+    // thing he can object to, so the line has to say it happened.
+    expect((scheduled[0].args[0] as { reason: string }).reason).toContain(
+      "(audit by claude-opus-5, Codex at its cap)",
+    );
+  });
+
+  it("says nothing extra when Codex itself audited", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await post(t, "/tts/audit", {
+      repo: REPO,
+      sha: SHA,
+      text: "VERDICT: APPROVED\n\nfine",
+      model: "codex",
+    });
+    const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+    expect(gate.checks.find((c: { name: string }) => c.name === "audit").why).not.toContain(
+      "audit by",
+    );
+  });
+
   it("records a refusal as a refusal, and keeps the gate shut", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convex();
@@ -344,6 +497,11 @@ describe("POST /tts/audit — the second check's own door", () => {
       sha: SHA,
       text: "VERDICT: REFUSED\n\nIt deletes the only caller of a live route.",
     });
-    expect((await mergeReport(t)).status).toBe(409);
+    const response = await mergeReport(t);
+    expect(response.status).toBe(409);
+    const gate = (await response.json()).gate;
+    expect(gate.checks.find((c: { name: string }) => c.name === "audit").why).toContain(
+      "It deletes the only caller of a live route.",
+    );
   });
 });

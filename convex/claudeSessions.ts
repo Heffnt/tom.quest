@@ -288,7 +288,9 @@ async function messageOverflow(
   fromIndex: number,
 ): Promise<MessageOverflowRead | null> {
   const message = await ctx.db.get(messageId);
-  if (!message) return null;
+  // Run rows share this table but deliberately have no legacy session link;
+  // this reader serves only the session surface.
+  if (!message?.sessionId) return null;
   if (!message.overflow) {
     return {
       hasOverflow: false,
