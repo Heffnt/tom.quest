@@ -2764,8 +2764,9 @@ function buildAutoMissionPrompt(
     promptFact("work description", todo.workDescription),
     promptFact("entry action", todo.entryAction),
     promptFact("body", todo.body),
-    // Cut at the same cap the interactive twin uses, and named in the
-    // fetchable block when it was cut (worker/jobs/context-relevance.mjs).
+    // Cut at the same cap the interactive twin uses, through the same
+    // function, which appends the line saying where the rest is
+    // (worker/jobs/context-relevance.mjs).
     promptFact("brief", todo.brief === undefined ? undefined : briefForPrompt(todo.brief).text),
   ];
   const lines: (string | null)[] = [

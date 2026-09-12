@@ -214,8 +214,8 @@ export function referenceName(path) {
  * so `categories: [admin, email, chores]` arrives as the literal string
  * `[admin, email, chores]` — split on commas alone and the first and last terms
  * are `[admin` and `chores]`, which match nothing and read as junk in a
- * description. (worker/jobs/context-relevance.mjs still has that bug; a later
- * step carves its term list out and points it here.)
+ * description. The layer assembler's own term list carried both of them for as
+ * long as it existed; this is the one place that reads the line now.
  */
 export function areaCategories(path, source) {
   const { fields } = parseFrontmatter(source);
