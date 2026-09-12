@@ -1023,8 +1023,29 @@ function blockRange(lines, heading) {
   return { start, end };
 }
 
+/**
+ * ONE BULLET PER LINE, NOT PER REPOSITORY, and the map's own order.
+ *
+ * A `### Repos` bullet may name several repositories at once — the map's
+ * `- Overleaf (the paper), Byobu, THMM, BioEng: AGENTS.md where it exists.`
+ * names four — and `repos[]` carries one row per repository, each holding the
+ * whole bullet it came from. Mapping rows to bullets therefore printed that
+ * line four times and lost the block's order, which made the candidate diff
+ * unreadable exactly where Tom would be reading it to rule switch (a).
+ *
+ * `parseRepoBullets` is the other half of this: it reads one bullet into
+ * several names, and this writes several names back into one bullet.
+ */
 function renderRepoBullets(repos) {
-  return repos.map((repo) => `- ${repo.line}`);
+  const seen = new Set();
+  const bullets = [];
+  for (const repo of repos) {
+    const line = String(repo.line ?? "").trim();
+    if (line === "" || seen.has(line)) continue;
+    seen.add(line);
+    bullets.push({ line, order: Number.isInteger(repo.lineOrder) ? repo.lineOrder : bullets.length });
+  }
+  return bullets.sort((a, b) => a.order - b.order || a.line.localeCompare(b.line)).map((row) => `- ${row.line}`);
 }
 
 function renderSearchBullet(searchQuestions) {
@@ -1557,7 +1578,7 @@ export function generateVocabulary({ wikitom, tomQuest, record = null, write = f
   const bullets = parseRepoBullets(agentRulesText);
   const repos = [];
   const named = new Set();
-  for (const bullet of bullets) {
+  for (const [order, bullet] of bullets.entries()) {
     for (const name of bullet.names) {
       named.add(name);
       repos.push({
@@ -1565,6 +1586,11 @@ export function generateVocabulary({ wikitom, tomQuest, record = null, write = f
         aliases: bullet.aliases[name] === undefined ? [] : [bullet.aliases[name]],
         github: sessionRepos.get(name) ?? null,
         line: bullet.line,
+        // WHERE THE BULLET SAT IN THE BLOCK, so a render of these rows can
+        // put the map's bullets back in the map's order. Several rows share
+        // one bullet, and without this the only order available is the
+        // repository name, which is not the order he wrote.
+        lineOrder: order,
         lineFrom: `${AGENT_RULES_PATH} § Repos`,
       });
     }
