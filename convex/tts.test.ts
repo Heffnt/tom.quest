@@ -756,6 +756,81 @@ describe("TTS annotations and the preparer", () => {
     expect(events.some((e) => e.kind === "due-skipped")).toBe(true);
   });
 
+  // ── The door check's mark ─────────────────────────────────────────────────
+  // The planner reads its own write-up against the writing standard and
+  // retries once; a write-up that fails both attempts is posted anyway and
+  // carries the complaints (Tom, 2026-09-12). They ride the "prepared" event
+  // this pen already logs, so no field was added to any row.
+
+  const preparedEvents = async (t: ReturnType<typeof convexTest>) =>
+    (await t.run(async (ctx) => ctx.db.query("dtsEvents").collect())).filter(
+      (e) => e.kind === "prepared",
+    );
+
+  // witness: drop the doorFaults spread from internalPrepareTodo's logEvent in
+  // convex/tts.ts — the mark would never reach the page, which is the silent
+  // hole the check exists to close.
+  it("the door mark rides the prepared event, and a clean prepare writes no key at all", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const id = await tom.mutation(api.tts.createTodo, { statement: "renew the visa" });
+    const fault = "brief: brief-markup — a brief is prose — no heading, list, or code fence";
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id,
+      brief: "# Renewal\nIt expires. Renew it.",
+      readiness: "prepared",
+      doorFaults: [fault],
+    });
+    const refused = await preparedEvents(t);
+    expect(refused).toHaveLength(1);
+    expect((refused[0].data as { doorFaults?: string[] }).doorFaults).toEqual([fault]);
+    // The re-prep that passed sends no key, so the newest "prepared" row says
+    // "clean" by itself and there is nothing to clear on the old one.
+    await t.mutation(internal.tts.internalPrepareTodo, {
+      id,
+      brief: "It expires in October. Renewing it needs a photo.",
+      readiness: "prepared",
+    });
+    const both = await preparedEvents(t);
+    expect(both).toHaveLength(2);
+    expect(Object.keys(both[1].data as object)).not.toContain("doorFaults");
+  });
+
+  // witness: delete the parseDoorFaults call from ttsPrepareTodo in
+  // convex/http.ts — a run's forty complaints, a credential pasted into one of
+  // them, and a 10 KB fault would all land verbatim on the page.
+  it("the prepare door bounds the mark: ten faults, 300 characters each, redacted", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const id = await tom.mutation(api.tts.createTodo, { statement: "renew the visa" });
+    const post = async (doorFaults: unknown) =>
+      await t.fetch("/tts/prepare-todo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-TTS-Key": "s3cret" },
+        body: JSON.stringify({ id, brief: "It expires. Renew it.", readiness: "prepared", doorFaults }),
+      });
+    const long = `brief: ${"x".repeat(500)}`;
+    const secret = "brief: the token ghp_0123456789abcdefghijklmnopqrstuvwxyz leaked into the complaint";
+    const many = [long, secret, ...Array.from({ length: 9 }, (_, i) => `fault ${i}`)];
+    expect((await post(many)).status).toBe(200);
+    const [event] = await preparedEvents(t);
+    const faults = (event.data as { doorFaults: string[] }).doorFaults;
+    expect(faults).toHaveLength(10); // eleven sent, ten stored
+    expect(faults[0]).toHaveLength(300);
+    expect(faults[1]).toContain("[redacted:github]");
+    expect(faults[1]).not.toContain("ghp_0123456789");
+
+    // A shape the worker got wrong is a 400 naming the field, never a
+    // silently dropped mark.
+    const notArray = await post("brief: brief-markup");
+    expect(notArray.status).toBe(400);
+    expect((await notArray.json()).error).toContain("doorFaults");
+    const notStrings = await post(["fine", 7]);
+    expect(notStrings.status).toBe(400);
+    expect((await notStrings.json()).error).toContain("doorFaults");
+    vi.unstubAllEnvs();
+  });
 });
 
 // The one time input on the /dts page: Tom writes a sentence, the worker job

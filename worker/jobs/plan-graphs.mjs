@@ -1,5 +1,13 @@
-#!/usr/bin/env node
 // plan-graphs.mjs — THE PLANNER. One run, three passes, in this order:
+//
+// NO SHEBANG LINE, for nightly.mjs's reason (write-slack.mjs and
+// scripts/check-writing-standard.mjs say it too): since the door check landed
+// this file reaches check-writing-standard.mjs by a DYNAMIC IMPORT, and the
+// test bundler rewrites such a module by prepending an import — which lands in
+// front of a shebang and fails to parse, so the whole test file refuses to
+// load. Every caller already names the interpreter: the cron line
+// (worker/setup.sh) is `/usr/bin/node /opt/tts/plan-graphs.mjs`, and so is
+// every manual run in worker/README.md.
 //
 //   1. PREPARE — every unprepared life todo (a #dump capture, an email
 //      capture, a Canvas announcement, a todo Tom ruled "revise" on) gets its
@@ -77,6 +85,12 @@
 // (/tts/plan-repairs-consumed): an instruction re-asserted every half hour
 // after it has been carried out is an instruction to change something else.
 //
+// THE DOOR CHECK (phase 9). Passes 1 and 2 both READ WHAT THEY WROTE before
+// posting it, against the writing standard's own rules — see THE DOOR CHECK
+// below for the loop, the two-attempt bound and what a fault costs. Pass 3 has
+// no such check: its output is a graph, and the explanations inside it are
+// written by the same pen the prepare pass writes through.
+//
 // NO-STATE RULE: Convex is read and written each run. The only local file is
 // the input-hash cursor in /var/lib/tts/ — losing it merely costs one extra
 // Claude invocation on inputs that had not changed.
@@ -90,7 +104,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   loadEnv,
   convexFetch,
@@ -183,11 +197,130 @@ function explanationPreview(value, max) {
   return clip(explanationText(value), max);
 }
 
+// ── THE DOOR CHECK ───────────────────────────────────────────────────────────
+// Both writing passes below read what the model wrote before posting it. Until
+// this round they read only the JSON's SHAPE — the field types — and the
+// writing standard reached them as text inside the prompt and nothing more:
+// this was the one generation door in TTS with no mechanical check behind it.
+//
+// WHAT A FAULT COSTS. Tom ruled on 2026-09-12 ("Agreed.") that a write-up that
+// fails this check on both attempts is STILL POSTED and reaches him CARRYING
+// THE MARK. It is never withheld, never retried forever and never silently
+// downgraded: a silent hole — a todo with no brief, a code brief left standing
+// under a subject that changed — costs him more than a brief he can see is
+// faulty. The mark rides the "prepared" event (pass 1) and the brief row (pass
+// 2), and both surfaces on /tts print it under the brief.
+//
+// TWO ATTEMPTS, ONE RETRY, and the number is the digest writer's
+// (worker/jobs/write-slack.mjs writeOne) for the digest writer's reason: a
+// second retry buys a THIRD live model call per item on a cron that already
+// runs one per item, and that job's record shows the first retry is where the
+// fault is fixed — a draft that fails the same check twice fails it because
+// the model reads the rule differently, not because it was unlucky.
+//
+// DETERMINISTIC ONLY. There is no model judge here and no flag for one. First,
+// a judge whose agreement with Tom has never been measured must not stand in
+// front of the prose he reads, and the replay that would measure it is landing
+// in this same round with no history to measure against yet. Second, a judge
+// at this door is one more live model call per todo on the planner's cadence.
+// THE SEAM IS doorFaults: a judge's complaints would join the list the two
+// functions below return, and nothing else in either pass would change.
+
+/**
+ * The writing standard's RULE BODIES — scripts/check-writing-standard.mjs,
+ * loaded as a module.
+ *
+ * NOT the same thing as the `writingStandard` string the passes take. That
+ * value is the published model-of-tom prelude, assembled by Convex and served
+ * on /tts/batch-context (main() below refuses to run without it); it is PROSE
+ * FOR THE MODEL and has no rule objects in it. This is the executable half:
+ * RULES (the HTML-document form) and BRIEF_RULES (the four mechanical demands
+ * on a stored brief), plus failuresFor, which is the one implementation of
+ * what a rule means — the door never reimplements a rule.
+ *
+ * THE FILE HAS TWO HOMES — /opt/tts beside the jobs (worker/setup.sh copies it
+ * flat) and scripts/ in a checkout — so both are tried, in that order, exactly
+ * as worker/jobs/evals.mjs loadWritingStandard() does. AN ABSENT FILE IS "NO
+ * RULES RAN", NEVER A FAILURE, for that function's stated reason: a box whose
+ * setup.sh has not copied it must not start refusing every item on a check it
+ * cannot perform.
+ */
+export async function loadStandardRules() {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  for (const candidate of [
+    path.join(here, "check-writing-standard.mjs"),
+    path.join(here, "..", "..", "scripts", "check-writing-standard.mjs"),
+  ]) {
+    if (fs.existsSync(candidate)) return await import(pathToFileURL(candidate).href);
+  }
+  return null;
+}
+
+// WHICH RULES BIND WHICH FIELD, and it is not "all of them on everything".
+//
+// BRIEF_RULES were written for the LIFE TODO'S brief and say so: "Four rules
+// bind a STORED BRIEF, and each one is the prepare prompt's OWN demand made
+// mechanical" (scripts/check-writing-standard.mjs). Two of the four are that
+// one prompt's demands and nobody else's — brief-sentences (2 to 5) and
+// brief-length (at most 400 characters) — and the other fields this door reads
+// are not that field:
+//   workDescription  "a few words" by the prepare prompt above ("a two-minute
+//                    errand"), which is zero sentences;
+//   recommendation   one of four words;
+//   a CODE brief     "~250-400 WORDS" by briefPrompt below, which is twenty
+//                    sentences and some two thousand characters.
+// Running the two SIZE rules on those three fields would refuse every item on
+// every run. A door that fires on 100% of what passes through it tells Tom
+// nothing — he learns to read past the mark — and it doubles the model calls
+// for the privilege. So the size rules bind the life brief alone, and the two
+// FORM rules — no ellipsis, no heading/list/code fence — bind every prose
+// field, because those are demands of the writing standard rather than of one
+// prompt's length. Nothing here is a new rule: this is a selection from the
+// one home, and a fifth rule added there lands on the field sets below by id.
+const SIZE_RULE_IDS = new Set(["brief-sentences", "brief-length"]);
+const formRulesOf = (rules) =>
+  (Array.isArray(rules) ? rules : []).filter((r) => !SIZE_RULE_IDS.has(r.id));
+
+/**
+ * One complaint per broken rule, in THE RULE'S OWN WORDS: `<field>: <rule id>
+ * — <the rule's why>`. The complaint the model is given to fix and the mark
+ * Tom reads are then the same sentence, which is the point of reading `why`
+ * off the rule rather than writing a second description of it here.
+ *
+ * No standard module, no rules, or an empty value: no complaints. An empty
+ * value is the shape check's business (below), not this one's.
+ */
+function standardComplaints(field, value, rules, standard) {
+  if (standard === null || standard === undefined) return [];
+  if (!Array.isArray(rules) || rules.length === 0) return [];
+  if (typeof value !== "string" || value.trim() === "") return [];
+  const why = new Map(rules.map((r) => [r.id, r.why]));
+  return standard
+    .failuresFor(value, rules)
+    .map((id) => `${field}: ${id} — ${why.get(id) ?? "fails the writing standard"}`);
+}
+
+/** The refusal block, appended to the next attempt's prompt verbatim — the
+ *  same words draftPrompt() in write-slack.mjs uses, because it is the same
+ *  instruction: fix these, change nothing else. */
+function refusalBlock(complaints) {
+  return [
+    ``,
+    `YOUR LAST DRAFT WAS REFUSED. Fix exactly these and change nothing else:`,
+    ...complaints.map((c) => `- ${c}`),
+  ];
+}
 
 // ── PASS 1: prepare ──────────────────────────────────────────────────────────
 
-/** The prompt that prepares ONE life todo. */
-export function preparePrompt(todo, reviseSentence, today, writingStandard) {
+/**
+ * The prompt that prepares ONE life todo.
+ *
+ * `complaints` is the door check's fault list from the PREVIOUS attempt, empty
+ * on the first. It is appended last, after every fixed instruction and after
+ * the item itself, exactly as draftPrompt() appends it in write-slack.mjs.
+ */
+export function preparePrompt(todo, reviseSentence, today, writingStandard, complaints = []) {
   return [
     writingStandard,
     ``,
@@ -240,7 +373,63 @@ export function preparePrompt(todo, reviseSentence, today, writingStandard) {
     ] : []),
     `Today is ${today} in New York, which is how you resolve a bare month+day`,
     `or weekday to a year.`,
+    ...(complaints.length > 0 ? refusalBlock(complaints) : []),
   ].join("\n");
+}
+
+/**
+ * What is missing or unusable in a prepare answer — the checks this pass has
+ * always made, moved in here so there is ONE fault list.
+ *
+ * A SHAPE FAULT IS NOT A WRITING FAULT, and the difference decides what
+ * happens on the second attempt: a missing field is NOTHING TO POST — there is
+ * no write-up to mark — so the item fails as it always has, is logged, and the
+ * next run retries it. A badly-written field is SOMETHING TO POST, marked.
+ */
+export function prepareShapeFaults(parsed) {
+  const faults = [];
+  for (const field of ["brief", "entryAction", "workDescription", "groundUpExplanation"]) {
+    if (typeof parsed?.[field] !== "string") {
+      faults.push(`${field}: missing — the answer must carry ${field} as a string`);
+    }
+  }
+  if (
+    typeof parsed?.groundUpExplanation === "string" &&
+    parsed.groundUpExplanation.trim() === ""
+  ) {
+    faults.push(
+      `groundUpExplanation: empty — the explanation is a complete HTML document, not an empty string`,
+    );
+  }
+  return faults;
+}
+
+/**
+ * Everything wrong with one prepare answer, as one list of short sentences.
+ *
+ * Shape first and alone: with a field missing there is no prose to read, and a
+ * complaint about the writing of a string that is not there would send the
+ * retry after the wrong thing. Otherwise the writing standard, over the fields
+ * it binds (see SIZE_RULE_IDS above for which rules bind which field).
+ */
+export function prepareDoorFaults(parsed, standard) {
+  const shape = prepareShapeFaults(parsed);
+  if (shape.length > 0) return shape;
+  return [
+    ...standardComplaints(
+      "groundUpExplanation",
+      parsed.groundUpExplanation,
+      standard?.RULES,
+      standard,
+    ),
+    ...standardComplaints("brief", parsed.brief, standard?.BRIEF_RULES, standard),
+    ...standardComplaints(
+      "workDescription",
+      parsed.workDescription,
+      formRulesOf(standard?.BRIEF_RULES),
+      standard,
+    ),
+  ];
 }
 
 /** A row inside a batch that is not a goal: a step of a graph, never prepared
@@ -282,12 +471,15 @@ export function selectPrepareTargets(todos, pending, { force = false } = {}) {
 /**
  * The prepare pass. `io.runClaude(prompt, opts)` answers the model call and
  * `io.post(path, body)` is the Convex write; both are the real functions in
- * main() and stubs in the tests. Returns the counts and the ids prepared, and
+ * main() and stubs in the tests. `standard` is the writing standard's rule
+ * MODULE (loadStandardRules above), null when the file is not reachable —
+ * which checks nothing and fails nothing. Returns the counts and the ids
+ * prepared, and
  * MUTATES the todo objects it prepared (brief, readiness) so the plan pass in
  * the same run sees the write-up it just made without a second read.
  */
 export async function prepareLifeTodos(
-  { todos, pending, today, writingStandard, force = false },
+  { todos, pending, today, writingStandard, standard = null, force = false },
   io,
 ) {
   const { targets, reviseByTodo } = selectPrepareTargets(todos, pending, { force });
@@ -302,41 +494,63 @@ export async function prepareLifeTodos(
   for (const todo of batch) {
     const revise = reviseByTodo.get(todo._id) ?? null;
     try {
-      // A FRESH RECEIPT PER CALL, never one object hoisted out of the loop:
-      // runClaude fills it with the token of the CHILD run this call spawns,
-      // and a shared receipt would report the last pass's token for every todo
-      // in the batch — every ruling after the first scored against the wrong
-      // run's output.
-      //
-      // NOT process.env.TTS_RUN_REG_TOKEN, which is this job's own run: the
-      // write-up Tom reads was written by the child, and the job only carried
-      // it.
-      const receipt = {};
-      const answer = io.runClaude(
-        preparePrompt(todo, revise?.sentence ?? null, today, writingStandard),
-        {
-          timeoutMs: PREPARE_TIMEOUT_MS,
-          model: MODELS.planner,
-          registration: {
-            origin: "cron:plan-graphs",
-            kind: "job",
-            todoId: todo._id,
-            layersKnown: false,
-            layersGiven: [],
-            layersDenied: [],
-            writingStandardSource: "/tts/batch-context",
+      // TWO ATTEMPTS, ONE RETRY (see THE DOOR CHECK above for the number).
+      // `receipt` and `parsed` are the LAST attempt's when the loop ends,
+      // whichever way it ended, because the last attempt is the one whose text
+      // is posted.
+      let receipt;
+      let parsed;
+      let faults = [];
+      let complaints = [];
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        // A FRESH RECEIPT PER CALL, never one object hoisted out of the loop:
+        // runClaude fills it with the token of the CHILD run this call spawns,
+        // and a shared receipt would report the last pass's token for every
+        // todo in the batch — every ruling after the first scored against the
+        // wrong run's output. PER ATTEMPT for the same reason the digest
+        // writer takes a fresh one per attempt: the second attempt is a second
+        // run, and the token that matters is the one whose text was accepted.
+        //
+        // NOT process.env.TTS_RUN_REG_TOKEN, which is this job's own run: the
+        // write-up Tom reads was written by the child, and the job only carried
+        // it.
+        receipt = {};
+        const answer = io.runClaude(
+          preparePrompt(todo, revise?.sentence ?? null, today, writingStandard, complaints),
+          {
+            timeoutMs: PREPARE_TIMEOUT_MS,
+            model: MODELS.planner,
+            registration: {
+              origin: "cron:plan-graphs",
+              kind: "job",
+              todoId: todo._id,
+              layersKnown: false,
+              layersGiven: [],
+              layersDenied: [],
+              writingStandardSource: "/tts/batch-context",
+            },
+            receipt,
           },
-          receipt,
-        },
-      );
-      const parsed = extractJsonObject(answer);
-      if (
-        typeof parsed.brief !== "string" ||
-        typeof parsed.entryAction !== "string" ||
-        typeof parsed.workDescription !== "string" ||
-        typeof parsed.groundUpExplanation !== "string" ||
-        parsed.groundUpExplanation.trim() === ""
-      ) {
+        );
+        // An answer that is not JSON at all throws here and the item fails as
+        // it always has: a broken envelope is not a door fault, and there is
+        // nothing to put in a complaint but "this was not JSON", which the
+        // answer shape in the prompt already says.
+        parsed = extractJsonObject(answer);
+        faults = prepareDoorFaults(parsed, standard);
+        if (faults.length === 0) break;
+        complaints = faults;
+        console.error(
+          `[plan-graphs] prepare ${todo._id}: the door check refused attempt ${attempt} — ` +
+            faults.join("; "),
+        );
+      }
+      // A SHAPE FAULT ON THE LAST ATTEMPT IS NOTHING TO POST. A missing field
+      // means there is no write-up at all, so this item fails exactly as it
+      // did before the door existed and the next run retries it. A STANDARD
+      // fault is a different thing entirely: the write-up exists and Tom's
+      // ruling is that it reaches him carrying the mark.
+      if (prepareShapeFaults(parsed).length > 0) {
         throw new Error(`bad shape: ${JSON.stringify(parsed).slice(0, 120)}`);
       }
       // A date the STATEMENT states, in Tom's own words. Sent only when the
@@ -367,6 +581,12 @@ export async function prepareLifeTodos(
         groundUpExplanation: parsed.groundUpExplanation,
         readiness: PREPARED,
         ...(dueAt !== undefined ? { dueAt, dateKind } : {}),
+        // THE MARK, and only when there is one. A pass that got through the
+        // door sends NO doorFaults KEY AT ALL, so the newest "prepared" event
+        // for this todo answers "was the last write-up refused" by itself,
+        // with nothing to clear: the next clean preparation writes a fresh
+        // event that simply does not carry the key.
+        ...(faults.length > 0 ? { doorFaults: faults } : {}),
         // The edge from the row Tom reads back to the run that wrote it. Sent
         // only when there is one: an unregistered call fills no receipt, and
         // the row then carries no token rather than a false one.
@@ -387,7 +607,8 @@ export async function prepareLifeTodos(
       console.log(
         `[plan-graphs] prepared ${todo._id}` +
           `${revise ? " (revise ruling applied)" : ""} ` +
-          `"${todo.statement.slice(0, 50).replace(/\s+/g, " ")}"`,
+          `"${todo.statement.slice(0, 50).replace(/\s+/g, " ")}"` +
+          `${faults.length > 0 ? " — posted CARRYING THE DOOR MARK" : ""}`,
       );
     } catch (err) {
       // Per-item failure: log and continue — the item stays unprepared (or
@@ -436,8 +657,9 @@ export const EXEC_CLASSES = new Set(["needs-turing", "box"]);
 // Build the per-entry prompt. `entryYaml` is the entry's RAW block from
 // todos.yaml (real YAML beats re-serialized JSON: Tom's comments and block
 // scalars survive), `replanNote` is Tom's revise sentence when he ruled
-// revise, else null.
-export function briefPrompt(entryYaml, replanNote, writingStandard) {
+// revise, else null, and `complaints` is the door check's fault list from the
+// previous attempt (empty on the first), appended last.
+export function briefPrompt(entryYaml, replanNote, writingStandard, complaints = []) {
   return [
     writingStandard,
     ``,
@@ -477,7 +699,53 @@ export function briefPrompt(entryYaml, replanNote, writingStandard) {
       `FRESH plan inside the brief, grounded in the current tree.`,
       ``,
     ] : []),
+    ...(complaints.length > 0 ? refusalBlock(complaints) : []),
   ].join("\n");
+}
+
+/**
+ * What is missing or unusable in a brief answer — the three checks this pass
+ * has always made, moved in here so there is ONE fault list and ONE refusal
+ * path. Same distinction as the prepare pass's: a brief with a garbage
+ * recommendation is NOTHING TO POST (it would render as a broken ruling card),
+ * so the entry fails and the next run retries it; a badly-WRITTEN brief is
+ * something to post, marked.
+ */
+export function briefShapeFaults(parsed) {
+  const faults = [];
+  if (typeof parsed?.brief !== "string" || parsed.brief.trim() === "") {
+    faults.push(`brief: missing — the answer must carry brief as non-empty text`);
+  }
+  if (!RECOMMENDATIONS.has(parsed?.recommendation)) {
+    faults.push(
+      `recommendation: not one of the four verdict words — ` +
+        `${[...RECOMMENDATIONS].join(" | ")}, not ${JSON.stringify(parsed?.recommendation)}`,
+    );
+  }
+  if (!EXEC_CLASSES.has(parsed?.execClass)) {
+    faults.push(
+      `execClass: not one of ${[...EXEC_CLASSES].join(" | ")}, ` +
+        `but ${JSON.stringify(parsed?.execClass)}`,
+    );
+  }
+  return faults;
+}
+
+/**
+ * Everything wrong with one code brief, as one list of short sentences. Shape
+ * first and alone, for prepareDoorFaults's reason. Then the writing standard
+ * over `brief` and `recommendation`, in the FORM rules only — a code brief is
+ * 250-400 words by the prompt above and a recommendation is one word, so the
+ * two size rules cannot bind either (SIZE_RULE_IDS says why at length).
+ */
+export function briefDoorFaults(parsed, standard) {
+  const shape = briefShapeFaults(parsed);
+  if (shape.length > 0) return shape;
+  const rules = formRulesOf(standard?.BRIEF_RULES);
+  return [
+    ...standardComplaints("brief", parsed.brief, rules, standard),
+    ...standardComplaints("recommendation", parsed.recommendation, rules, standard),
+  ];
 }
 
 /**
@@ -512,7 +780,10 @@ export function selectBriefTargets(entries, hashes, pending, { force = false } =
  * contract — `readHashes()` and `writeHashes(map)` — so the tests keep the
  * cursor in memory.
  */
-export async function briefCodeTodos({ repo, pending, writingStandard, force = false }, io) {
+export async function briefCodeTodos(
+  { repo, pending, writingStandard, standard = null, force = false },
+  io,
+) {
   const hashes = io.readHashes();
   const targets = selectBriefTargets(repo.entries, hashes, pending, { force });
   if (targets.length === 0) return { briefed: 0, failed: 0 }; // quiet when idle
@@ -531,37 +802,56 @@ export async function briefCodeTodos({ repo, pending, writingStandard, force = f
       const entryYaml = found ? found.block : JSON.stringify(entry, null, 2);
       const replanNote = revise ? (revise.sentence ?? "") : null;
 
-      // A fresh receipt per entry, for the reason the prepare pass gives: one
-      // shared object would report the last entry's run for every brief.
-      const receipt = {};
-      const answer = io.runClaude(briefPrompt(entryYaml, replanNote, writingStandard), {
-        cwd: repo.dir, // non-agentic: read-only tools over the repo, no edits
-        timeoutMs: BRIEF_TIMEOUT_MS,
-        maxTurns: BRIEF_MAX_TURNS,
-        model: MODELS.codeBrief,
-        registration: {
-          origin: "cron:plan-graphs",
-          kind: "job",
-          layersKnown: false,
-          layersGiven: [],
-          layersDenied: [],
-          writingStandardSource: "/tts/batch-context",
-        },
-        receipt,
-      });
-      const parsed = extractJsonObject(answer);
+      // TWO ATTEMPTS, ONE RETRY (see THE DOOR CHECK above for the number).
+      let receipt;
+      let parsed;
+      let faults = [];
+      let complaints = [];
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        // A fresh receipt per entry AND per attempt, for the reason the
+        // prepare pass gives: one shared object would report the last run for
+        // words another run wrote, and the token that matters is the one whose
+        // text was accepted.
+        receipt = {};
+        const answer = io.runClaude(
+          briefPrompt(entryYaml, replanNote, writingStandard, complaints),
+          {
+            cwd: repo.dir, // non-agentic: read-only tools over the repo, no edits
+            timeoutMs: BRIEF_TIMEOUT_MS,
+            maxTurns: BRIEF_MAX_TURNS,
+            model: MODELS.codeBrief,
+            registration: {
+              origin: "cron:plan-graphs",
+              kind: "job",
+              layersKnown: false,
+              layersGiven: [],
+              layersDenied: [],
+              writingStandardSource: "/tts/batch-context",
+            },
+            receipt,
+          },
+        );
+        // Not JSON at all throws here and the entry fails, as before: a broken
+        // envelope is not a door fault.
+        parsed = extractJsonObject(answer);
+        faults = briefDoorFaults(parsed, standard);
+        if (faults.length === 0) break;
+        complaints = faults;
+        console.error(
+          `[plan-graphs] brief ${entry.id}: the door check refused attempt ${attempt} — ` +
+            faults.join("; "),
+        );
+      }
 
-      // Validate hard — a brief with a garbage recommendation would render
-      // as a broken ruling card in the UI, so fail THIS entry loudly instead.
-      if (typeof parsed.brief !== "string" || parsed.brief.trim() === "") {
-        throw new Error("answer has no brief text");
-      }
-      if (!RECOMMENDATIONS.has(parsed.recommendation)) {
-        throw new Error(`invalid recommendation: ${JSON.stringify(parsed.recommendation)}`);
-      }
-      if (!EXEC_CLASSES.has(parsed.execClass)) {
-        throw new Error(`invalid execClass: ${JSON.stringify(parsed.execClass)}`);
-      }
+      // A SHAPE FAULT ON THE LAST ATTEMPT IS NOTHING TO POST: a brief with a
+      // garbage recommendation would render as a broken ruling card, so fail
+      // THIS entry loudly and leave the cursor where it is. A STANDARD fault
+      // posts, marked — withholding the brief would leave the PREVIOUS brief
+      // standing under an entry that has since changed, which is the silent
+      // hole Tom's ruling refuses, and a code brief sits on /tts in front of
+      // him exactly as a life todo's brief does.
+      const shape = briefShapeFaults(parsed);
+      if (shape.length > 0) throw new Error(shape.join("; "));
       const evidence =
         typeof parsed.evidence === "string" && parsed.evidence.trim() !== ""
           ? parsed.evidence
@@ -580,6 +870,13 @@ export async function briefCodeTodos({ repo, pending, writingStandard, force = f
             recommendation: parsed.recommendation,
             execClass: parsed.execClass,
             ...(evidence ? { evidence } : {}),
+            // THE MARK, sent only when there is one. Unlike the prepare pass's
+            // event, this one is a FIELD ON AN UPSERTED ROW, so the absence of
+            // the key is what CLEARS a previous refused brief's mark: the pen
+            // always writes the field, and a re-brief that passed leaves no
+            // stale mark under text it does not describe (convex/ttsCode.ts
+            // says why at the patch).
+            ...(faults.length > 0 ? { doorFaults: faults } : {}),
           },
         ],
         // One brief per call here, so the pass's one token is this brief's.
@@ -598,7 +895,8 @@ export async function briefCodeTodos({ repo, pending, writingStandard, force = f
       briefed++;
       console.log(
         `[plan-graphs] briefed ${entry.id}: ${parsed.recommendation} ` +
-          `(${parsed.execClass}${revise ? ", fresh plan after revise" : ""})`,
+          `(${parsed.execClass}${revise ? ", fresh plan after revise" : ""})` +
+          `${faults.length > 0 ? " — posted CARRYING THE DOOR MARK" : ""}`,
       );
     } catch (err) {
       // Per-entry failure: the entry keeps its old cursor (or its revise
@@ -1284,6 +1582,18 @@ async function main() {
 
   let failures = 0;
 
+  // The DOOR CHECK's rules, loaded once for both writing passes. A different
+  // thing from context.writingStandard above, which is the prose the model is
+  // given: this is the executable half, and an unreachable file is "no rules
+  // ran" rather than a failure (loadStandardRules says why).
+  const standard = await loadStandardRules();
+  if (standard === null) {
+    console.log(
+      "[plan-graphs] check-writing-standard.mjs is not reachable — the door " +
+        "check runs its shape checks only this run",
+    );
+  }
+
   // --- Pass 1: prepare ------------------------------------------------------
   // A failure inside the pass is per-item and counted; a failure of the pass
   // itself (the feed unreadable, say) is logged and the plan pass still runs —
@@ -1295,6 +1605,7 @@ async function main() {
         pending,
         today: context.nyCalendarDay,
         writingStandard: context.writingStandard,
+        standard,
         force,
       },
       io,
@@ -1328,6 +1639,7 @@ async function main() {
           repo: { dir, todosText: fs.readFileSync(todosFile, "utf8"), entries },
           pending,
           writingStandard: context.writingStandard,
+          standard,
           force,
         },
         { ...io, readHashes: readBriefHashes, writeHashes: writeBriefHashes },

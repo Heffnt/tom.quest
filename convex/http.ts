@@ -30,6 +30,10 @@ import { auditVerdictOf } from "./ttsMerge";
 import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { isRepoRulesPath } from "./ttsContext";
 import { EXPORT_PAGE_DEFAULT, EXPORT_TABLES, isExportTable } from "./ttsNightly";
+// The door check's complaints are model-written text that lands where Tom
+// reads it, so it goes through the one redaction on the way in — the same
+// import convex/ttsMerge.ts makes for the same reason.
+import { redactSecrets } from "../worker/session-host/redact.mjs";
 
 const http = httpRouter();
 
@@ -1031,11 +1035,43 @@ const slackEvents = httpAction(async (ctx, request) => {
 
 http.route({ path: "/slack/events", method: "POST", handler: slackEvents });
 
+// ── The door check's mark, at both doors that receive one ────────────────────
+// The planner's two writing passes read what they wrote against the writing
+// standard and retry once; a write-up that fails both attempts is still posted
+// and reaches Tom carrying the complaints (Tom, 2026-09-12). The complaints are
+// model-written text, so this door bounds them before they are stored:
+//   - each one redacted, then cut to 300 characters. Redaction runs FIRST, as
+//     in convex/ttsMerge.ts: cutting first could split a credential-shaped
+//     span so the pattern no longer matches it;
+//   - at most ten of them, because a mark is one line on a page and a list of
+//     forty complaints is not a line.
+// A non-array, or a member that is not a string, is a 400 naming the field:
+// the worker can fix its payload, and a silently-dropped mark is the hole the
+// whole check exists to close.
+const DOOR_FAULT_MAX_CHARS = 300;
+const DOOR_FAULTS_MAX = 10;
+
+function parseDoorFaults(
+  value: unknown,
+  field: string,
+): { faults: string[] } | { error: string } {
+  if (!Array.isArray(value)) return { error: `${field} must be an array of strings` };
+  const faults: string[] = [];
+  for (const item of value.slice(0, DOOR_FAULTS_MAX)) {
+    if (typeof item !== "string") {
+      return { error: `${field} must be an array of strings` };
+    }
+    faults.push(redactSecrets(item).slice(0, DOOR_FAULT_MAX_CHARS));
+  }
+  return { faults };
+}
+
 // POST /tts/prepare-todo — the worker's preparer job attaches brief /
 // entry action / work description to a life todo and advances its readiness,
 // plus the date the statement itself states, if any.
 // Body: { id, brief?, entryAction?, workDescription?, readiness?, dueAt?,
-// dateKind?, evidence?, groundUpExplanation?, status?, runToken? }.
+// dateKind?, evidence?, groundUpExplanation?, status?, runToken?,
+// doorFaults? }.
 const ttsPrepareTodo = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
@@ -1085,6 +1121,15 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
   if (b.runToken !== undefined && (typeof b.runToken !== "string" || b.runToken === "")) {
     return jsonResponse(400, { error: "runToken, when given, is a non-empty string" });
   }
+  // The door check's complaints, when the write-up was refused twice. A pass
+  // that got through sends no key at all and the event carries none — absence
+  // is the clean answer, so there is nothing to clear.
+  let doorFaults: string[] | undefined;
+  if (b.doorFaults !== undefined) {
+    const parsed = parseDoorFaults(b.doorFaults, "doorFaults");
+    if ("error" in parsed) return jsonResponse(400, parsed);
+    doorFaults = parsed.faults;
+  }
   const str = (x: unknown) => (typeof x === "string" ? x : undefined);
   try {
     await ctx.runMutation(internal.tts.internalPrepareTodo, {
@@ -1103,6 +1148,7 @@ const ttsPrepareTodo = httpAction(async (ctx, request) => {
       groundUpExplanation: str(b.groundUpExplanation),
       status: b.status as "done" | undefined,
       runToken: str(b.runToken),
+      doorFaults,
     });
     return jsonResponse(200, { ok: true });
   } catch (e) {
@@ -1306,6 +1352,7 @@ type CodeBrief = {
   recommendation: Recommendation;
   execClass: (typeof CODE_EXEC_CLASSES)[number];
   evidence?: string;
+  doorFaults?: string[];
 };
 
 // Validate one posted brief. Every field the schema requires must arrive as a
@@ -1336,6 +1383,15 @@ function parseCodeBrief(item: unknown, i: number): CodeBrief | { error: string }
   if (b.evidence !== undefined && typeof b.evidence !== "string") {
     return { error: `briefs[${i}].evidence must be a string when present` };
   }
+  // The door check's complaints, bounded and redacted the same way as at the
+  // prepare door. Absent is the clean answer and clears any mark the previous
+  // brief left (convex/ttsCode.ts writes the field on every upsert).
+  let doorFaults: string[] | undefined;
+  if (b.doorFaults !== undefined) {
+    const faults = parseDoorFaults(b.doorFaults, `briefs[${i}].doorFaults`);
+    if ("error" in faults) return faults;
+    doorFaults = faults.faults;
+  }
   return {
     repo: b.repo as string,
     externalId: b.externalId as string,
@@ -1344,12 +1400,13 @@ function parseCodeBrief(item: unknown, i: number): CodeBrief | { error: string }
     recommendation: b.recommendation,
     execClass: b.execClass as (typeof CODE_EXEC_CLASSES)[number],
     evidence: b.evidence as string | undefined,
+    doorFaults,
   };
 }
 
 // POST /tts/code-briefs — the worker's prepared briefs, upserted by
 // (repo, externalId). Body: { briefs: [{ repo, externalId, sourceHash, brief,
-// recommendation, execClass, evidence? }] }.
+// recommendation, execClass, evidence?, doorFaults? }] }.
 const ttsCodeBriefs = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;

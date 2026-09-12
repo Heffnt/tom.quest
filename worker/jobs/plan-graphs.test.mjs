@@ -15,8 +15,11 @@ import {
   PREPARE_MAX,
   PREPARED,
   briefCodeTodos,
+  briefDoorFaults,
   briefPrompt,
   graphPrompt,
+  loadStandardRules,
+  prepareDoorFaults,
   preparePrompt,
   prepareLifeTodos,
   selectBriefTargets,
@@ -27,13 +30,29 @@ import { CMT_REPO, sourceHash } from "./tts-code-lib.mjs";
 const WRITING_GUIDANCE = "WRITING STANDARD — test copy.";
 const TODAY = "2026-09-06";
 
-// A complete answer for one todo, as the model is asked to give it.
+// The refusal heading, verbatim — the same words write-slack.mjs's draftPrompt
+// uses. Asserting the string rather than a paraphrase is the point: the retry
+// only works if the model is told what to do with the list.
+const REFUSAL_HEADING =
+  "YOUR LAST DRAFT WAS REFUSED. Fix exactly these and change nothing else:";
+
+// THE REAL RULE MODULE, not a hand-written stand-in: the door's whole contract
+// is that it runs the rules the ratchet and the evals run, so the cases below
+// judge prose against scripts/check-writing-standard.mjs itself.
+const STANDARD = await loadStandardRules();
+
+// A complete answer for one todo, as the model is asked to give it. The brief
+// is two sentences and the explanation a whole HTML document, because those
+// are what BRIEF_RULES and RULES demand — a fixture that fails the standard
+// would make every case below a refusal case.
 const answer = (over = {}) =>
   JSON.stringify({
-    brief: "A short brief.",
+    brief: "The visa expires in October. Renewing it needs the old one and a photo.",
     entryAction: "Open the page",
     workDescription: "a two-minute errand",
-    groundUpExplanation: "<!DOCTYPE html><html><body>why</body></html>",
+    groundUpExplanation:
+      "<!DOCTYPE html><html><head><style>p{color:#111}</style></head>" +
+      "<body><h1>the visa</h1><p>why</p></body></html>",
     dueDate: null,
     dateKind: null,
     ...over,
@@ -112,14 +131,14 @@ describe("prepareLifeTodos", () => {
     expect(io.post).toHaveBeenCalledTimes(1);
     expect(io.post).toHaveBeenCalledWith("/tts/prepare-todo", {
       id: "t1",
-      brief: "A short brief.",
+      brief: JSON.parse(answer()).brief,
       entryAction: "Open the page",
       workDescription: "a two-minute errand",
-      groundUpExplanation: "<!DOCTYPE html><html><body>why</body></html>",
+      groundUpExplanation: JSON.parse(answer()).groundUpExplanation,
       readiness: PREPARED,
     });
     // The plan pass in the same run reads the write-up off the object.
-    expect(t.brief).toBe("A short brief.");
+    expect(t.brief).toBe(JSON.parse(answer()).brief);
     expect(t.readiness).toBe("prepared");
   });
 
@@ -185,8 +204,14 @@ describe("prepareLifeTodos", () => {
     const pending = [
       { _id: "r1", subjectType: "life", verdict: "revise", todoId: "b", sentence: "again" },
     ];
-    // "a" gets a good answer; "b" gets one with no explanation (bad shape).
-    const io = stubIo([answer(), answer({ groundUpExplanation: "" })]);
+    // "a" gets a good answer; "b" gets one with no explanation (bad shape) on
+    // BOTH of its attempts — a shape fault that survives the retry is nothing
+    // to post, so "b" fails as it always has.
+    const io = stubIo([
+      answer(),
+      answer({ groundUpExplanation: "" }),
+      answer({ groundUpExplanation: "" }),
+    ]);
     const result = await prepareLifeTodos(
       { todos: [a, b], pending, today: TODAY, writingStandard: WRITING_GUIDANCE },
       io,
@@ -359,7 +384,10 @@ describe("briefCodeTodos", () => {
   });
 
   it("refuses a recommendation outside the four words and advances no cursor", async () => {
-    const io = briefIo(briefAnswer({ recommendation: "stale-replan" }));
+    // Both attempts: a shape fault gets the same one retry every fault gets,
+    // and only a fault that survives it decides the entry.
+    const bad = briefAnswer({ recommendation: "stale-replan" });
+    const io = briefIo([bad, bad]);
     const result = await briefCodeTodos({ repo: repo([ENTRY_A]), pending: [], writingStandard: WRITING_GUIDANCE }, io);
     expect(result).toEqual({ briefed: 0, failed: 1 });
     expect(io.post).not.toHaveBeenCalled();
@@ -421,5 +449,175 @@ describe("briefCodeTodos", () => {
     expect(text.indexOf("- id: x")).toBeGreaterThan(
       text.indexOf(' "execClass": "needs-turing|box", "evidence": "..." (optional)}'),
     );
+  });
+});
+
+// ── THE DOOR CHECK ──────────────────────────────────────────────────────────
+// Both writing passes read what the model wrote before posting it, retry once
+// with the complaints, and — Tom's ruling of 2026-09-12 — POST ANYWAY when the
+// second attempt fails too, carrying the mark. What is pinned here is the
+// whole of that: the retry happens, the complaints reach the second prompt
+// under the exact heading, a second failure still posts and still marks, a
+// pass on the retry marks nothing, an absent rule module checks nothing, and a
+// SHAPE fault (nothing to post at all) is the one case that posts nothing.
+
+// A brief that breaks one rule of the standard and nothing else: a markdown
+// heading, which brief-markup refuses. Two sentences, so brief-sentences is
+// satisfied and the fault list is exactly one line long.
+const MARKED_UP_BRIEF = "# Renewal\nThe visa expires in October. Renewing it needs a photo.";
+
+describe("the door check — the prepare pass", () => {
+  it("names the field and the rule in the rule's own words", () => {
+    const faults = prepareDoorFaults(JSON.parse(answer({ brief: MARKED_UP_BRIEF })), STANDARD);
+    expect(faults).toEqual(["brief: brief-markup — a brief is prose — no heading, list, or code fence"]);
+    // A clean answer is no faults at all, which is what makes the mark mean
+    // something when it is there.
+    expect(prepareDoorFaults(JSON.parse(answer()), STANDARD)).toEqual([]);
+  });
+
+  it("retries once with the complaints under the refusal heading, and a pass on the retry marks nothing", async () => {
+    const io = stubIo([answer({ brief: MARKED_UP_BRIEF }), answer()]);
+    const result = await prepareLifeTodos(
+      { todos: [todo()], pending: [], today: TODAY, writingStandard: WRITING_GUIDANCE, standard: STANDARD },
+      io,
+    );
+    expect(result).toEqual({ prepared: 1, failed: 0, preparedIds: ["t1"] });
+    expect(io.runClaude).toHaveBeenCalledTimes(2);
+    // Attempt 1 is asked for nothing but the item; attempt 2 carries the list.
+    expect(io.runClaude.mock.calls[0][0]).not.toContain(REFUSAL_HEADING);
+    expect(io.runClaude.mock.calls[1][0]).toContain(REFUSAL_HEADING);
+    expect(io.runClaude.mock.calls[1][0]).toContain("- brief: brief-markup — ");
+    // The retry passed, so nothing is marked: the pen is sent no doorFaults
+    // key at all, and the newest "prepared" event says "clean" by omission.
+    expect(io.post).toHaveBeenCalledTimes(1);
+    expect(io.post.mock.calls[0][1]).not.toHaveProperty("doorFaults");
+  });
+
+  it("posts the second failure anyway, carrying the mark", async () => {
+    const bad = answer({ brief: MARKED_UP_BRIEF });
+    const io = stubIo([bad, bad]);
+    const result = await prepareLifeTodos(
+      { todos: [todo()], pending: [], today: TODAY, writingStandard: WRITING_GUIDANCE, standard: STANDARD },
+      io,
+    );
+    // NOT a failure: the write-up reaches Tom, and it says what is wrong with
+    // it. Withholding it is the silent hole his ruling refuses.
+    expect(result).toEqual({ prepared: 1, failed: 0, preparedIds: ["t1"] });
+    expect(io.runClaude).toHaveBeenCalledTimes(2); // one retry, never a third
+    expect(io.post).toHaveBeenCalledTimes(1);
+    expect(io.post.mock.calls[0][1]).toMatchObject({
+      id: "t1",
+      brief: MARKED_UP_BRIEF,
+      doorFaults: ["brief: brief-markup — a brief is prose — no heading, list, or code fence"],
+    });
+  });
+
+  it("checks nothing and fails nothing when the standard is not reachable", async () => {
+    const io = stubIo([answer({ brief: MARKED_UP_BRIEF })]);
+    const result = await prepareLifeTodos(
+      // standard: null is what loadStandardRules() answers on a box whose
+      // setup.sh has not copied the file — "no rules ran", never a refusal.
+      { todos: [todo()], pending: [], today: TODAY, writingStandard: WRITING_GUIDANCE, standard: null },
+      io,
+    );
+    expect(result.prepared).toBe(1);
+    expect(io.runClaude).toHaveBeenCalledTimes(1); // no fault, so no retry
+    expect(io.post.mock.calls[0][1]).not.toHaveProperty("doorFaults");
+  });
+
+  it("posts nothing when the SHAPE is still wrong on the second attempt, and says so", async () => {
+    const errors = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((m) => errors.push(m));
+    try {
+      const bad = answer({ groundUpExplanation: "" });
+      const io = stubIo([bad, bad]);
+      const result = await prepareLifeTodos(
+        { todos: [todo()], pending: [], today: TODAY, writingStandard: WRITING_GUIDANCE, standard: STANDARD },
+        io,
+      );
+      // A missing field is nothing to post — no row, no mark, and the next
+      // run retries the item.
+      expect(result).toEqual({ prepared: 0, failed: 1, preparedIds: [] });
+      expect(io.post).not.toHaveBeenCalled();
+      expect(errors.join("\n")).toContain("prepare t1 FAILED");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe("the door check — the brief pass", () => {
+  // The code brief is 250-400 WORDS by its own prompt, so the two SIZE rules
+  // (2-5 sentences, at most 400 characters) cannot bind it — only the form
+  // rules do. A twelve-sentence brief is a normal code brief, not a fault.
+  const LONG_BRIEF = Array.from({ length: 12 }, (_, i) => `Sentence ${i} about the tree.`).join(" ");
+
+  it("reads the form rules over a code brief and lets its length alone", () => {
+    expect(briefDoorFaults(JSON.parse(briefAnswer({ brief: LONG_BRIEF })), STANDARD)).toEqual([]);
+    expect(briefDoorFaults(JSON.parse(briefAnswer({ brief: "# Plan\nIt is stale. Rewrite it." })), STANDARD))
+      .toEqual(["brief: brief-markup — a brief is prose — no heading, list, or code fence"]);
+  });
+
+  it("retries once with the complaints under the refusal heading, and a pass on the retry marks nothing", async () => {
+    const io = briefIo([briefAnswer({ brief: "- a bullet is not prose. Nor is this." }), briefAnswer()]);
+    const result = await briefCodeTodos(
+      { repo: repo([ENTRY_A]), pending: [], writingStandard: WRITING_GUIDANCE, standard: STANDARD },
+      io,
+    );
+    expect(result).toEqual({ briefed: 1, failed: 0 });
+    expect(io.runClaude).toHaveBeenCalledTimes(2);
+    expect(io.runClaude.mock.calls[0][0]).not.toContain(REFUSAL_HEADING);
+    expect(io.runClaude.mock.calls[1][0]).toContain(REFUSAL_HEADING);
+    expect(io.runClaude.mock.calls[1][0]).toContain("- brief: brief-markup — ");
+    expect(io.post.mock.calls[0][1].briefs[0]).not.toHaveProperty("doorFaults");
+  });
+
+  it("posts the second failure anyway, carrying the mark, and advances the cursor", async () => {
+    const bad = briefAnswer({ brief: "# Plan\nIt is stale. Rewrite it." });
+    const io = briefIo([bad, bad]);
+    const result = await briefCodeTodos(
+      { repo: repo([ENTRY_A]), pending: [], writingStandard: WRITING_GUIDANCE, standard: STANDARD },
+      io,
+    );
+    expect(result).toEqual({ briefed: 1, failed: 0 });
+    expect(io.runClaude).toHaveBeenCalledTimes(2);
+    expect(io.post.mock.calls[0][1].briefs[0]).toMatchObject({
+      externalId: "cmt-001",
+      doorFaults: ["brief: brief-markup — a brief is prose — no heading, list, or code fence"],
+    });
+    // The brief that reached Tom is the one the cursor now records: leaving
+    // the entry to be re-briefed next run would re-spend two model calls on
+    // text that is already on the page.
+    expect(io.writeHashes).toHaveBeenCalled();
+  });
+
+  it("checks nothing and fails nothing when the standard is not reachable", async () => {
+    const io = briefIo([briefAnswer({ brief: "# Plan\nIt is stale. Rewrite it." })]);
+    const result = await briefCodeTodos(
+      { repo: repo([ENTRY_A]), pending: [], writingStandard: WRITING_GUIDANCE, standard: null },
+      io,
+    );
+    expect(result).toEqual({ briefed: 1, failed: 0 });
+    expect(io.runClaude).toHaveBeenCalledTimes(1);
+    expect(io.post.mock.calls[0][1].briefs[0]).not.toHaveProperty("doorFaults");
+  });
+
+  it("posts nothing when the SHAPE is still wrong on the second attempt, and says so", async () => {
+    const errors = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((m) => errors.push(m));
+    try {
+      const bad = briefAnswer({ recommendation: "stale-replan" });
+      const io = briefIo([bad, bad]);
+      const result = await briefCodeTodos(
+        { repo: repo([ENTRY_A]), pending: [], writingStandard: WRITING_GUIDANCE, standard: STANDARD },
+        io,
+      );
+      expect(result).toEqual({ briefed: 0, failed: 1 });
+      expect(io.post).not.toHaveBeenCalled();
+      expect(io.writeHashes).not.toHaveBeenCalled();
+      expect(errors.join("\n")).toContain("brief cmt-001 FAILED");
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
