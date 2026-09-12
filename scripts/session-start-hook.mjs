@@ -104,8 +104,13 @@ export function skillRepoDirs() {
     "tom.quest": process.env.TOM_QUEST_DIR
       || (process.platform === "win32" ? "C:/Users/heffn/Desktop/tom.quest" : "/root/tom.quest"),
     WikiTom: wikitom,
+    // THE SAME DEFAULT worker/jobs/nightly.mjs CMT_DIR carries, so the laptop
+    // and the box publish the same fourteen rather than thirteen and fourteen.
+    // A directory that is not a checkout is skipped below, so naming one that
+    // may be absent costs nothing.
+    ComplexMultiTrigger: process.env.CMT_DIR
+      || (process.platform === "win32" ? "C:/Users/heffn/Desktop/booleanbackdoor/ComplexMultiTrigger" : "/root/ComplexMultiTrigger"),
   };
-  if (process.env.CMT_DIR) dirs.ComplexMultiTrigger = process.env.CMT_DIR;
   return dirs;
 }
 
