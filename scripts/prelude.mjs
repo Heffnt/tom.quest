@@ -19,6 +19,12 @@ function git(dir, ...args) {
   return execFileSync("git", ["-c", `safe.directory=${resolved}`, "-C", dir, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    // `ls-tree -r` over WikiTom is 3.5 MB of archived sessions, well past
+    // execFileSync's 1 MB default, and the overflow surfaces as the same
+    // "cannot list" message an absent directory gives. collectRepoRules now
+    // reads WikiTom as a repository, so this is load-bearing rather than
+    // defensive. scripts/publish-skills.mjs carries the same line.
+    maxBuffer: 256 * 1024 * 1024,
   });
 }
 

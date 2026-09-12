@@ -242,9 +242,13 @@ the `HEAD` the four left:
    out of every prompt until a night that reads it again. Convex refuses a
    post without `writing.md` on its own account. **Rollout of the publication
    singleton, in this order:** deploy Convex (readers refuse to open a session
-   until it is populated), run `ttsSkills.backfillLayers` once to build it from
-   the per-file rows already stored, and readers work; the next nightly post
-   overwrites it.
+   until it is populated), then run the post step once — `--only post` — and
+   readers work. The backfill door that used to seed it from the per-file rows
+   is gone: `ttsSkills` now holds one row per skill, not one per file, so there
+   are no per-file rows to seed from. The same post writes the box's three
+   skill directories and the catalog behind `POST /tts/skills`; those two halves
+   fail separately, so a night that cannot publish the catalog still delivers
+   the base.
 
 Then one `nightly-run` row with the summary (commit, pushed or not, table
 and row counts, files archived, the failures). By hand:

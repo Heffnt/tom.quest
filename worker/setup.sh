@@ -151,8 +151,20 @@ echo "== [6/10] directories =="
 # /root/.claude-accounts/{gmail,wpi} — one Claude Code config dir per Max
 #     account; an "active" symlink (managed by tts-account) picks which one
 #     the jobs use.
+# .../skills and /root/.codex/skills — the three skill directories. Claude Code
+#     reads its personal skills out of $CLAUDE_CONFIG_DIR/skills, which is what
+#     separates the two accounts; Codex reads its own out of $CODEX_HOME/skills,
+#     and CODEX_HOME here is /root/.codex.
 mkdir -p /opt/tts /opt/tts/runs /opt/tts/jobs /var/lib/tts /var/cache/tts/runs /etc/tts /var/log/tts \
   /root/.claude-accounts/gmail /root/.claude-accounts/wpi /root/.codex
+# THE DIRECTORIES AND NOTHING IN THEM. The nightly's post step is the one
+# publisher of skill bodies (worker/jobs/nightly.mjs, BOX_SKILLS_DIRS): it has
+# WikiTom at a commit and it writes all three from it. Setup writing bodies too
+# would make two publishers of the same files, and the one that ran last would
+# win — so this makes the empty directories and stops. The base is unchanged and
+# stays where it is: each account's CLAUDE.md is the one line importing
+# agent-rules.md, written below.
+mkdir -p /root/.claude-accounts/gmail/skills /root/.claude-accounts/wpi/skills /root/.codex/skills
 
 echo "== [7/10] install worker files =="
 # Job scripts (plain Node ESM, zero npm deps — a copy is a deploy).
@@ -178,6 +190,13 @@ cp "$WORKER_DIR"/../scripts/skills.mjs /opt/tts/scripts/skills.mjs
 # is the one place it can live and still load.
 cp "$WORKER_DIR"/../scripts/publish-skills.mjs /opt/tts/scripts/publish-skills.mjs
 cp "$WORKER_DIR"/jobs/context-relevance.mjs /opt/tts/worker/jobs/context-relevance.mjs
+# The router, for the same reason and one directory further along the same
+# graph: scripts/session-start-hook.mjs imports ../worker/jobs/skill-router.mjs
+# to work out what this run is granted. Without this copy the hook throws at
+# module load on the box, exits non-zero with empty stdout, and the session
+# starts with NO context at all — worse than any failure the hook's own three
+# fallbacks are written to survive.
+cp "$WORKER_DIR"/jobs/skill-router.mjs /opt/tts/worker/jobs/skill-router.mjs
 # The pull-request check's body, beside the jobs rather than under scripts/:
 # evals.mjs imports gate() from it so the box stamps a run with the SAME rule
 # the check applies, and there is one body of what a regression is.

@@ -17,8 +17,13 @@ import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  BOX_SKILLS_DIRS,
+  CMT_DIR,
   FORBIDDEN_SECTIONS,
+  REPO_CHECKOUTS,
   SPLIT_BYTES,
+  TOM_QUEST_DIR,
+  WIKITOM_DIR,
   abortStaleRebase,
   applyLearningChanges,
   bumpUpdated,
@@ -51,6 +56,10 @@ import {
   planTableFiles,
   postStep,
   parseArgs,
+  boxSkillsDirs,
+  readSkillCatalog,
+  referencePathResolver,
+  repoRulesStep,
   readManifests,
   rebaseInProgress,
   recordLearningRows,
@@ -2663,9 +2672,13 @@ describe("the git half", { timeout: 60_000 }, () => {
     expect(rebaseInProgress(dir)).toBe(true);
 
     const r = learningRun(dir);
+    const outs = skillsDirs(1);
     const convex = fakeConvex();
-    const result = await postStep(r, { fetch: convex.fetch });
-    expect(result).toMatchObject({ commit: null, pushed: false, files: null });
+    const result = await postStep(r, { fetch: convex.fetch, checkouts: [] });
+    // Neither half: it is the same HEAD, and a skill body read off a
+    // half-replayed commit is the same bad post one table over.
+    expect(result).toMatchObject({ commit: null, pushed: false, files: null, skills: null });
+    expect(fs.readdirSync(outs[0])).toEqual([]);
     expect(r.failures).toHaveLength(1);
     expect(r.failures[0].step).toBe("post");
     expect(r.failures[0].error).toContain("a rebase is in progress");
@@ -2680,7 +2693,7 @@ describe("the git half", { timeout: 60_000 }, () => {
     // guard is what stopped it and not the state of the checkout's files.
     abortStaleRebase(dir);
     const after = learningRun(dir);
-    await postStep(after, { fetch: fakeConvex().fetch });
+    await postStep(after, { fetch: fakeConvex().fetch, checkouts: [] });
     // The repository now carries agent-rules.md (learningCheckout writes it),
     // so the first required file the assembler misses is an area page.
     expect(after.failures[0].error).toContain("is absent");
@@ -2738,7 +2751,10 @@ describe("the git half", { timeout: 60_000 }, () => {
   // witness: the post read the work tree while naming HEAD, outside the
   // lock — a page changed under it went out under a commit that never held
   // those bytes; and it reported local HEAD as if it were on GitHub.
-  it("posts the shared immutable prelude, including every canonical selection header", async () => {
+  const AREA_BODY = "---\nupdated: 2026-09-09\n---\n\n# Area\n\n## Current state\n\n- Present.\n";
+  /** A checkout whose model-of-tom pages are COMMITTED: what the post reads,
+   * and what the skills half builds its catalog out of. */
+  function preludeRepo() {
     const dir = repo();
     write(dir, "model-of-tom/agent-rules.md", "# Rules\n\nOperate safely.\n");
     write(dir, "model-of-tom/writing.md", "# Writing\n\nBe plain.\n");
@@ -2746,25 +2762,37 @@ describe("the git half", { timeout: 60_000 }, () => {
     write(dir, "model-of-tom/intent.md", "# Intent\n\nKeep moving.\n");
     write(dir, "model-of-tom/priorities.md", "# Priorities\n\nResearch.\n");
     write(dir, "model-of-tom/schedule.md", "# Schedule\n\nTuesday.\n");
-    const areaBodies = Object.fromEntries(REQUIRED_AREA_PATHS.map((area) => [
-      area,
-      "---\nupdated: 2026-09-09\n---\n\n# Area\n\n## Current state\n\n- Present.\n",
-    ]));
-    for (const [area, body] of Object.entries(areaBodies)) write(dir, area, body);
+    for (const area of REQUIRED_AREA_PATHS) write(dir, area, AREA_BODY);
     run(dir, "add", "-A");
     run(dir, "commit", "-q", "-m", "prelude");
+    return dir;
+  }
+  /** Somewhere other than /root for the skills half to write. */
+  function skillsDirs(count = 3) {
+    const dirs = Array.from({ length: count }, () => tmp());
+    vi.stubEnv("TTS_SKILLS_DIRS", dirs.join(path.delimiter));
+    return dirs;
+  }
+  /** A fetch that keeps every post, and throws for the routes named. */
+  function recording(posts, refuse = {}) {
+    return async (_env, route, body) => {
+      posts.push({ route, body });
+      if (refuse[route] !== undefined) throw new Error(refuse[route]);
+      return { files: body.files?.length ?? 0 };
+    };
+  }
+
+  it("posts the shared immutable prelude, including every canonical selection header", async () => {
+    const dir = preludeRepo();
+    const areaBodies = Object.fromEntries(REQUIRED_AREA_PATHS.map((area) => [area, AREA_BODY]));
+    const outs = skillsDirs(1);
     const commit = run(dir, "rev-parse", "HEAD").trim();
     const committedAt = Number(run(dir, "log", "-1", "--format=%ct", "HEAD").trim()) * 1000;
     // These work-tree changes must not influence the commit-named post.
     write(dir, "model-of-tom/writing.md", "# Writing\n\nUncommitted.\n");
 
     const posts = [];
-    const result = await postStep(learningRun(dir), {
-      fetch: async (_env, route, body) => {
-        posts.push({ route, body });
-        return { files: body.files.length };
-      },
-    });
+    const result = await postStep(learningRun(dir), { fetch: recording(posts), checkouts: [] });
 
     const layers = {
       operate: "── model-of-tom/agent-rules.md ──\n# Rules\n\nOperate safely.\n",
@@ -2797,7 +2825,10 @@ describe("the git half", { timeout: 60_000 }, () => {
       body: bodies[filePath],
       bytes: Buffer.byteLength(bodies[filePath]),
     })));
-    expect(posts).toEqual([{
+    // The base first, the skills second — and the base's body is unchanged by
+    // the half that follows it.
+    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/skills"]);
+    expect(posts[0]).toEqual({
       route: "/tts/model-of-tom",
       body: {
         commit,
@@ -2807,7 +2838,217 @@ describe("the git half", { timeout: 60_000 }, () => {
         files,
         headers: selections.map((selection) => ({ layers: selection, header: header(selection) })),
       },
-    }]);
-    expect(result).toEqual({ commit, pushed: false, files: files.map((file) => file.path) });
+    });
+    expect(result).toMatchObject({ commit, pushed: false, files: files.map((file) => file.path) });
+    expect(result.skills.commit).toBe(commit);
+    expect(result.skills.dirs).toEqual(outs);
+  });
+
+  // ── the skills half ──────────────────────────────────────────────────────
+  // witness: one widened door. A night whose skill bodies would not build took
+  // the model-of-tom post down with them, and every prompt the next day began
+  // with nothing about Tom at all.
+  it("names the two Claude accounts' skill directories and Codex's, and lets a test move them", () => {
+    // The two accounts are separated by CLAUDE_CONFIG_DIR; the third is
+    // $CODEX_HOME/skills, and CODEX_HOME on the box is /root/.codex.
+    expect([...BOX_SKILLS_DIRS]).toEqual([
+      "/root/.claude-accounts/gmail/skills",
+      "/root/.claude-accounts/wpi/skills",
+      "/root/.codex/skills",
+    ]);
+    expect(boxSkillsDirs()).toEqual([...BOX_SKILLS_DIRS]);
+    vi.stubEnv("TTS_SKILLS_DIRS", ["/tmp/one", "/tmp/two"].join(path.delimiter));
+    expect(boxSkillsDirs()).toEqual(["/tmp/one", "/tmp/two"]);
+  });
+
+  it("writes every skills directory and then posts the catalog", async () => {
+    const dir = preludeRepo();
+    const outs = skillsDirs();
+    const posts = [];
+    const result = await postStep(learningRun(dir), { fetch: recording(posts), checkouts: [] });
+
+    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/skills"]);
+    const catalog = posts[1].body;
+    expect(catalog.commit).toBe(result.commit);
+    expect(catalog.pushed).toBe(false);
+    expect(typeof catalog.syncedAt).toBe("number");
+    expect(catalog.refused).toEqual([]);
+    const names = catalog.skills.map((skill) => skill.name);
+    expect(names).toEqual(expect.arrayContaining(["write", "know-intent", "know-week"]));
+    // No repository was handed to this run, so the catalog has no repo skill —
+    // which is what keeps a box with no clones from publishing an empty one.
+    expect(names.filter((name) => name.startsWith("repo-"))).toEqual([]);
+
+    // The catalog carries the bodies, not a report about them.
+    const writeSkill = catalog.skills.find((skill) => skill.name === "write");
+    expect(writeSkill.group).toBe("write");
+    expect(writeSkill.sourcePaths).toEqual(["model-of-tom/writing.md"]);
+    expect(writeSkill.body).toContain("Be plain.");
+    expect(writeSkill.bytes).toBe(Buffer.byteLength(writeSkill.body));
+    expect(writeSkill.description.length).toBeGreaterThan(0);
+    expect(writeSkill.references).toHaveLength(1);
+    expect(writeSkill.references[0]).toMatchObject({ name: "ground.md", path: "model-of-tom/ground.md" });
+    expect(writeSkill.references[0].body).toContain("Start here.");
+
+    // All three directories hold the same set, in the layout a CLI loads.
+    for (const out of outs) {
+      expect(fs.readdirSync(out).sort()).toEqual(names.map((name) => `tom-${name}`).sort());
+      expect(fs.readFileSync(path.join(out, "tom-write", "SKILL.md"), "utf8")).toContain("name: tom-write");
+      expect(fs.existsSync(path.join(out, "tom-write", "ground.md"))).toBe(true);
+    }
+    expect(result.skills).toEqual({ commit: result.commit, count: names.length, dirs: outs, refused: [] });
+  });
+
+  it("records a skills-publication failure of its own, and the base still went out", async () => {
+    const dir = preludeRepo();
+    const outs = skillsDirs(1);
+    const r = learningRun(dir);
+    const posts = [];
+    const result = await postStep(r, {
+      fetch: recording(posts),
+      checkouts: [],
+      publishSkills: () => {
+        throw new Error("the skill generator fell over");
+      },
+    });
+
+    // The base went out; the catalog did not; the failure row says which half.
+    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/event"]);
+    expect(posts[1].body.kind).toBe("nightly-failure");
+    expect(posts[1].body.data.step).toBe("skills");
+    expect(r.failures).toEqual([{ step: "skills", error: "the skill generator fell over" }]);
+    expect(result.commit).toBe(run(dir, "rev-parse", "HEAD").trim());
+    expect(result.files).toContain("model-of-tom/agent-rules.md");
+    expect(result.skills).toBeNull();
+    expect(fs.readdirSync(outs[0])).toEqual([]);
+  });
+
+  it("records a refused base post and still publishes the skills, saying the store has no commit", async () => {
+    const dir = preludeRepo();
+    const outs = skillsDirs(1);
+    const r = learningRun(dir);
+    const posts = [];
+    const result = await postStep(r, {
+      fetch: recording(posts, { "/tts/model-of-tom": "Convex refused the base (503)" }),
+      checkouts: [],
+    });
+
+    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/event", "/tts/skills"]);
+    expect(r.failures.map((failure) => failure.step)).toEqual(["post"]);
+    // Convex does not hold this commit, so the summary must not say it does.
+    expect(result.commit).toBeNull();
+    expect(result.files).toBeNull();
+    expect(result.skills.count).toBeGreaterThan(0);
+    expect(fs.readdirSync(outs[0]).length).toBeGreaterThan(0);
+  });
+
+  it("records a refused /tts/skills post without throwing, and leaves the directories written", async () => {
+    const dir = preludeRepo();
+    const outs = skillsDirs(1);
+    const r = learningRun(dir);
+    const posts = [];
+    const result = await postStep(r, {
+      fetch: recording(posts, { "/tts/skills": "Convex refused the catalog (503)" }),
+      checkouts: [],
+    });
+
+    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/skills", "/tts/event"]);
+    expect(r.failures.map((failure) => failure.step)).toEqual(["skills"]);
+    expect(r.failures[0].error).toContain("503");
+    expect(result.commit).not.toBeNull();
+    expect(result.skills).toBeNull();
+    // The bodies are on the disk and tonight's agents will load them; what is
+    // stale is the catalog Convex serves, and that is what the row says.
+    expect(fs.readdirSync(outs[0]).length).toBeGreaterThan(0);
+  });
+
+  it("reads a published skill back as the catalog entry, and throws when SKILL.md is not what it wrote", async () => {
+    const dir = preludeRepo();
+    const outs = skillsDirs(1);
+    await postStep(learningRun(dir), { fetch: recording([]), checkouts: [] });
+    const { publishSkills } = await import("../../scripts/publish-skills.mjs");
+    const { skillDirName, referenceName } = await import("../../scripts/skills.mjs");
+    const published = publishSkills({ wikitom: dir, commit: "HEAD", repos: [], out: outs[0] });
+    const readers = { skillDirName, referencePath: referencePathResolver(new Map(), referenceName) };
+    expect(readSkillCatalog(outs[0], published, readers).map((skill) => skill.name).sort())
+      .toEqual(published.skills.map((skill) => skill.name).sort());
+    // A body edited under the reader is a loud failure, not a quiet wrong post.
+    const target = path.join(outs[0], skillDirName(published.skills[0].name), "SKILL.md");
+    fs.writeFileSync(target, `${fs.readFileSync(target, "utf8")}tampered\n`);
+    expect(() => readSkillCatalog(outs[0], published, readers)).toThrow(/did not read back/);
+  });
+
+  // witness: `convex/AGENTS.md` flattens to `convex-AGENTS.md`, and tom.quest
+  // has a `turing-api/` — so unflattening a reference name on its hyphens
+  // invents `turing/api/AGENTS.md`. The path is looked up, never inverted.
+  it("resolves a reference's source path by lookup, and refuses to guess one", () => {
+    const referenceName = (file) => file.replace(/\//g, "-");
+    const resolve = referencePathResolver(
+      new Map([["tom.quest", ["AGENTS.md", "turing-api/AGENTS.md", "convex/AGENTS.md"]]]),
+      referenceName,
+    );
+    const repo = (name, origin) => ({ name, group: "repo", origin, sourcePaths: ["AGENTS.md"], file: "f" });
+    expect(resolve(repo("turing-api-AGENTS.md", "tom.quest"))).toBe("turing-api/AGENTS.md");
+    // And the group decides, not the origin: WikiTom is both the vault every
+    // write and know skill is built from and a repository with rules of its
+    // own, so ground.md must not take the repo lookup.
+    expect(resolve({
+      name: "ground.md",
+      group: "write",
+      origin: "WikiTom",
+      sourcePaths: ["model-of-tom/writing.md"],
+      file: "f",
+    })).toBe("model-of-tom/ground.md");
+    expect(() => resolve(repo("app-AGENTS.md", "tom.quest"))).toThrow(/no rules file named/);
+    expect(() => resolve(repo("AGENTS.md", "WikiTom"))).toThrow(/no rules file named/);
+  });
+
+  // ── the repo rules, three checkouts ──────────────────────────────────────
+  /** A one-commit repository whose root AGENTS.md is the given body. */
+  function rulesRepo(body) {
+    const dir = tmp();
+    execFileSync("git", ["init", "-q", "-b", "main", dir], { stdio: "ignore" });
+    write(dir, "AGENTS.md", body);
+    run(dir, "add", "-A");
+    run(dir, "commit", "-q", "-m", "rules");
+    return dir;
+  }
+
+  it("names the three checkouts whose AGENTS.md ride into Convex", () => {
+    expect(REPO_CHECKOUTS.map((entry) => entry.repo)).toEqual(["tom.quest", "WikiTom", "ComplexMultiTrigger"]);
+    expect(REPO_CHECKOUTS.map((entry) => entry.dir)).toEqual([TOM_QUEST_DIR, WIKITOM_DIR, CMT_DIR]);
+  });
+
+  it("posts every repo in the list", async () => {
+    const checkouts = [
+      { repo: "tom.quest", dir: rulesRepo("# tom.quest\n\nThe site.\n") },
+      { repo: "WikiTom", dir: rulesRepo("# WikiTom\n\nThe vault.\n") },
+      { repo: "ComplexMultiTrigger", dir: rulesRepo("# CMT\n\nThe research code.\n") },
+    ];
+    const r = learningRun(tmp());
+    const convex = fakeConvex();
+    const result = await repoRulesStep(r, { fetch: convex.fetch, checkouts });
+    expect(result.repos.map((entry) => entry.repo)).toEqual(["tom.quest", "WikiTom", "ComplexMultiTrigger"]);
+    expect(convex.posts.map((post) => post.route)).toEqual(["/tts/repo-rules", "/tts/repo-rules", "/tts/repo-rules"]);
+    expect(convex.posts.map((post) => post.body.repo)).toEqual(["tom.quest", "WikiTom", "ComplexMultiTrigger"]);
+    expect(r.failures).toEqual([]);
+  });
+
+  // witness: one loop, one throw. A box rebuilt with two of the three clones
+  // present posted nothing at all, because the first missing one ended the loop.
+  it("loses only the checkout that is missing, and the other two still post", async () => {
+    const checkouts = [
+      { repo: "tom.quest", dir: path.join(tmp(), "never-cloned") },
+      { repo: "WikiTom", dir: rulesRepo("# WikiTom\n\nThe vault.\n") },
+      { repo: "ComplexMultiTrigger", dir: path.join(tmp(), "also-never-cloned") },
+    ];
+    const r = learningRun(tmp());
+    const convex = fakeConvex();
+    const result = await repoRulesStep(r, { fetch: convex.fetch, checkouts });
+    expect(result.repos.map((entry) => entry.repo)).toEqual(["WikiTom"]);
+    expect(convex.posts.filter((post) => post.route === "/tts/repo-rules").map((post) => post.body.repo)).toEqual(["WikiTom"]);
+    expect(r.failures.map((failure) => failure.step)).toEqual(["repo-rules", "repo-rules"]);
+    expect(r.failures[0].error).toContain("is not a git checkout");
+    expect(r.failures[1].error).toContain("also-never-cloned");
   });
 });
