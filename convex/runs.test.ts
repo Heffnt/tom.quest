@@ -401,6 +401,47 @@ describe("runs", () => {
     expect((await t.run((ctx) => ctx.db.get(sessionId)))?.rowsFrom).toBeUndefined();
   });
 
+  // The defect this covers: the comparison used to call `.paginate()` on both
+  // indexes inside one mutation, which the Convex backend refuses (one
+  // paginated query per function), so /runs/compare answered 400 for every
+  // session. convex-test does not enforce that limit, so what this asserts is
+  // the shape that replaced it: bounded `.take()` reads over a seq floor that
+  // still walk three pages a side to a complete, clean verdict.
+  it("walks a 250-row session to completion over bounded reads", async () => {
+    const t = convexTest(schema, modules);
+    const sessionId = await session(t);
+    for (let seq = 0; seq < 250; seq += 1) await daemonRow(t, sessionId, seq, "user", { text: `row-${seq}` });
+    // The run row comes through the ingest door; its 250 file rows are written
+    // directly because one ingest call accepts at most 200 (`too many rows`),
+    // and what is under test is the read side, not the append fence.
+    expect(await t.mutation(internal.runs.internalIngest, ingest(
+      run({ sessionId, status: "ended" }), [], [],
+    ) as never)).toMatchObject({ ok: true });
+    await t.run(async (ctx) => {
+      for (let seq = 0; seq < 250; seq += 1) await ctx.db.insert("claudeMessages", {
+        runId: "claude:laptop:root-run", seq, turn: 0, kind: "user", content: { text: `row-${seq}` },
+        digest: seq.toString(16).padStart(16, "0"), depth: 0, createdAt: seq + 1,
+      } as never);
+    });
+
+    let state: unknown;
+    let result: Awaited<ReturnType<typeof t.mutation>> | undefined;
+    for (let call = 0; call < 20; call += 1) {
+      result = await t.mutation(internal.runs.internalShadowCompare, {
+        sessionId,
+        ...(state === undefined ? {} : { state }),
+      } as never);
+      if (result.complete) break;
+      state = result.state;
+    }
+    expect(result).toMatchObject({
+      complete: true, daemonRows: 250, fileRows: 250, textRows: 250, textMatches: 250, clean: true,
+      byKind: { user: { daemon: 250, file: 250 } },
+    });
+    expect(result).not.toHaveProperty("firstDiffSeq");
+    expect((await t.run((ctx) => ctx.db.get(sessionId)))?.rowsFrom).toBe("runs");
+  });
+
   it("admits only terminal run rows and does not suppress their later transition", async () => {
     const t = convexTest(schema, modules);
     const sessionId = await session(t);

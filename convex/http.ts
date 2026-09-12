@@ -3185,8 +3185,10 @@ const runsCompare = httpAction(async (ctx, request) => {
       }
     }
     return jsonResponse(200, { comparisons });
-  } catch {
-    return jsonResponse(400, { error: "run comparison rejected" });
+  } catch (error) {
+    // The reason, not a phrase. An opaque "run comparison rejected" is what
+    // hid a thrown Convex limit behind an hourly HTTP 400 in the cron log.
+    return jsonResponse(400, { error: error instanceof Error ? error.message : String(error) });
   }
 });
 http.route({ path: "/runs/compare", method: "POST", handler: runsCompare });
