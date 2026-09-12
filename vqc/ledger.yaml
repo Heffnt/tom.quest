@@ -28,6 +28,11 @@
     nothing verifies that each detector actually goes red under the planted
     bug it exists to catch. Interim discipline: new guard tests carry a
     "witness:" comment naming the one-line edit that makes them fail.
+    2026-09-12: the AUDIT now has its three planted-fault fixtures under
+    evals/audit-faults/, each carrying a "witness:" comment naming the
+    one-line edit that makes the audit's correct answer wrong; the
+    graduation condition below — a runner over the vqc guards themselves —
+    is untouched by that and still open.
   graduates_when: >-
     A fault registry + runner exists (temp-copy the tree, apply each fault,
     assert the named vitest nodes go red with it and the sampled suite stays
