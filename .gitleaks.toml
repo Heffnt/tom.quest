@@ -1,0 +1,45 @@
+# gitleaks configuration for tom.quest.
+#
+# Since uae phase 9 the secret scan feeds the `tests-run` head row the merge
+# gate reads, so a gitleaks false positive is now a blocked merge rather than
+# one red check nobody reads. This file exists to hold the exact false
+# positives, BY VALUE, and nothing else: the default ruleset is extended and
+# never replaced, and no path, rule, directory or file extension is exempted.
+# Widening it to "test files are exempt" would hand every future secret a
+# hiding place named `*.test.ts`.
+#
+# Why the values and not the inline directive: gitleaks scans every COMMIT in
+# a branch's history, not the working tree. An inline `// gitleaks:allow` fixes
+# the line from the commit that adds it onward — the commit that first
+# introduced the fixture keeps failing forever, and the only ways out are
+# rewriting history or this. The four lines carry the inline directive as well,
+# for whoever reads them; these three regexes are what lets the history pass.
+#
+# Each entry names the file it is for and why the value has to look like a
+# credential. An entry whose fixture is deleted should be deleted with it.
+
+title = "tom.quest"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures that are credential-SHAPED on purpose and are not credentials."
+regexTarget = "line"
+regexes = [
+  # convex/runs.test.ts, convex/http.test.ts — the canonical example UUID,
+  # standing in for a run registration token. GET /tts/run-trace checks the
+  # token's SHAPE before the indexed lookup, so a shapeless placeholder would
+  # not exercise the path those suites exist for.
+  '''3f2504e0-4f89-41d3-9a0c-0305e82c3301''',
+  # convex/ttsMerge.test.ts — the shape IS the test: a trace finding that
+  # quotes a credential-shaped line is exactly what that door must redact.
+  '''ghp_0123456789abcdefghijABCD''',
+  # convex/tts.test.ts — the same test one door over, for a prepare-door fault.
+  # Long enough to match the real `github-pat` rule rather than generic-api-key,
+  # and it has to be: the assertion is that the door redacted it back out.
+  '''ghp_0123456789abcdefghijklmnopqrstuvwxyz''',
+  # app/sessions/components/run.test.tsx — a content-addressed store path, not
+  # a key. generic-api-key matched it on the field NAME ending in "Key".
+  '''storeKey: "runs/claude/box/x/y"''',
+]

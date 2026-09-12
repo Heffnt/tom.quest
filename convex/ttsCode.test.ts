@@ -20,6 +20,7 @@ const brief = (over: Partial<{
   recommendation: "approve" | "revise" | "session" | "archive";
   execClass: "box" | "needs-turing";
   evidence: string;
+  doorFaults: string[];
 }> = {}) => ({
   repo: "ComplexMultiTrigger",
   externalId: "cmt-001",
@@ -85,6 +86,49 @@ describe("TTS code-todo briefs", () => {
     const rows = await tom.query(api.ttsCode.listCodeBriefs, {});
     expect(rows).toHaveLength(1);
     expect(rows[0].sourceHash).toBe("hash-b"); // the re-brief itself landed
+  });
+
+  // ── The door check's mark ─────────────────────────────────────────────────
+  // The planner reads its own brief against the writing standard and retries
+  // once; a brief that fails both attempts is posted anyway and carries the
+  // complaints (Tom, 2026-09-12) — withholding it would leave the PREVIOUS
+  // brief standing under an entry that has since changed.
+
+  // witness: drop `doorFaults` from the row in internalStoreBriefs and the
+  // first assertion goes red; spread it conditionally, the way
+  // producedByRunToken is spread, and the LAST one does — a clean re-brief
+  // would keep the refused brief's mark under text the door passed.
+  it("the door mark round-trips through the upsert, and a passing re-brief clears it", async () => {
+    const t = convexTest({ schema, modules });
+    const tom = await withTom(t);
+    const fault = "brief: brief-markup — a brief is prose — no heading, list, or code fence";
+    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+      briefs: [brief({ brief: "# Plan\nIt is stale. Rewrite it.", doorFaults: [fault] })],
+    });
+    let [row] = await tom.query(api.ttsCode.listCodeBriefs, {});
+    expect(row.doorFaults).toEqual([fault]);
+
+    // A brief that never failed stores no mark at all.
+    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+      briefs: [brief({ externalId: "cmt-002" })],
+    });
+    const clean = (await tom.query(api.ttsCode.listCodeBriefs, {})).find(
+      (r) => r.externalId === "cmt-002",
+    );
+    expect(clean?.doorFaults).toBeUndefined();
+
+    // THE STALE-MARK CASE. The upsert replaces the brief TEXT, so the mark
+    // must go with it: this re-brief passed the door, so the row must carry
+    // no mark — the page would otherwise print "refused twice" under a brief
+    // the door accepted.
+    await t.mutation(internal.ttsCode.internalStoreBriefs, {
+      briefs: [brief({ sourceHash: "hash-b", brief: "It is current. Nothing to change." })],
+    });
+    [row] = (await tom.query(api.ttsCode.listCodeBriefs, {})).filter(
+      (r) => r.externalId === "cmt-001",
+    );
+    expect(row.brief).toBe("It is current. Nothing to change.");
+    expect(row.doorFaults).toBeUndefined();
   });
 
   it("internalListBriefs returns every stored brief for the worker", async () => {

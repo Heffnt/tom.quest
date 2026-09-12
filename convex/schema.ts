@@ -934,6 +934,15 @@ export default defineSchema({
     // The registration token of the run that wrote this brief. Same field name
     // and same meaning as on dtsTodos and batches; see the note there.
     producedByRunToken: v.optional(v.string()),
+    // THE DOOR CHECK'S MARK (phase 9): the complaints this brief failed on
+    // when the planner's brief pass read it back against the writing standard
+    // twice. Tom, 2026-09-12: a brief that fails both attempts is still
+    // posted, carrying the mark — /tts prints one faint line under the brief.
+    // ADDITIVE and optional, so every stored row stays legal as written.
+    // ABSENT MEANS CLEAN, not unknown: the pen writes this field on every
+    // upsert (convex/ttsCode.ts says why it differs from producedByRunToken
+    // there), so a re-brief that passed leaves no stale mark behind.
+    doorFaults: v.optional(v.array(v.string())),
     preparedAt: v.number(),
   }).index("by_repo_external", ["repo", "externalId"]),
 

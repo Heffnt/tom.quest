@@ -153,6 +153,15 @@ function count(n, singular, plural = `${singular}s`) {
   return `${n} ${n === 1 ? singular : plural}`;
 }
 
+/**
+ * The sentence the verifier blocks carry when the run wrote none of its own.
+ * IN THE FACTS AND NOT ONLY IN A COMMENT, for the reason the ablation caveat is:
+ * the model reads these lines, and without it would write a fork that treats a
+ * judge's agreement as a verdict on the outputs it scored.
+ */
+export const VERIFIER_CAVEAT =
+  "These measures report and never gate: a judge's agreement with twenty of his labels is evidence about the judge, not a verdict on any output it scored.";
+
 /** Where the golden items live inside a tom.quest checkout, and the one level
  * below it the loader walks (worker/jobs/evals.mjs loadGolden, whose layout
  * this follows rather than re-decides). */
@@ -396,6 +405,57 @@ export function renderFactLines(facts) {
     for (const rise of efficiency.rises) {
       lines.push(`- ${rise.id}: ${rise.headTokens} tokens, ${rise.baseTokens} at base`);
     }
+  }
+
+  // ── The three verifiers (phase 9) ──────────────────────────────────────────
+  // THE SAME RULE AS THE THREE BLOCKS ABOVE: printed only when the facts carry
+  // them. `facts.verifiers` is absent entirely from a week gathered before this
+  // phase, and each of its three members is null when its own measurement was
+  // not made — so an older week renders exactly as it rendered, with no line
+  // saying zero.
+  //
+  // NOTHING HERE GATES. These say what the three verifiers were worth this
+  // week; the merge gate keeps its three head rows and reads none of it.
+  const verifiers = facts.verifiers;
+  if (verifiers) {
+    let printed = false;
+    const judge = verifiers.judge;
+    if (judge) {
+      printed = true;
+      lines.push(`Evals judge: ${judge.agreed} of ${judge.items} replayed labels matched (${judge.skipped} skipped).`);
+      for (const d of judge.disagreements) {
+        lines.push(`- ${d.runId}: he said ${d.tom}, the judge said ${d.judge} — ${d.reason}`);
+      }
+      for (const s of judge.skips) {
+        // The skip the arm writes when the label door itself could not be read
+        // names no run (convex/ttsWeekly.ts readJudgeScorecard), and an empty
+        // id printed anyway would read as a run called nothing.
+        lines.push(s.runId ? `- ${s.runId}: skipped — ${s.reason}` : `- skipped — ${s.reason}`);
+      }
+    }
+    const audit = verifiers.audit;
+    if (audit) {
+      printed = true;
+      lines.push(`Audit: ${audit.objected} of ${audit.merges} audited merges drew an objection.`);
+      for (const o of audit.objections) {
+        lines.push(`- ${o.sha}: approved ${utcDay(o.approvedAt)}, objected ${utcDay(o.objectedAt)} — ${o.sentence}`);
+      }
+      for (const l of audit.landedAnyway) {
+        lines.push(`- ${l.sha}: the audit refused it on ${utcDay(l.refusedAt)} and it merged on ${utcDay(l.mergedAt)}`);
+      }
+    }
+    const faults = verifiers.faults;
+    if (faults) {
+      printed = true;
+      lines.push(
+        `Planted-fault audits: ${faults.refused} of ${faults.items} refused (run ${faults.ran ? "this month" : "not this month"}).`,
+      );
+      for (const r of faults.results) {
+        lines.push(`- ${r.id}: the audit answered ${r.verdict}`);
+      }
+    }
+    // One caveat under whichever blocks printed, and none when none did.
+    if (printed) lines.push(verifiers.caveat ? verifiers.caveat : VERIFIER_CAVEAT);
   }
 
   const l = facts.learning;

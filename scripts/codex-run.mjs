@@ -205,6 +205,11 @@ const spooled = writeRegistration({
     effortRequested: opts.effort,
     cwd: opts.cwd,
     parentRunId: process.env.TTS_RUN_PARENT_RUN_ID || null,
+    // The commit this run is ABOUT, when its launcher knows one — the audit
+    // sets it (worker/jobs/audit.mjs) so its own tool calls can be found from
+    // the commit afterwards. Spread conditionally: an absent env writes no key
+    // rather than a null one, and mergeRegistration only copies what is there.
+    ...(process.env.TTS_RUN_MERGE_KEY ? { mergeKey: process.env.TTS_RUN_MERGE_KEY } : {}),
     spawnedByToolUseId: null,
     continuesRunId: null,
     layersKnown: true,

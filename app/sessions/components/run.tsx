@@ -634,8 +634,45 @@ function Lead({
       : `${session.outcome}${session.outcomeSummary ? ` — ${session.outcomeSummary}` : ""}`
     : outcome?.endedReason;
 
+  // The run itself did not open whole (§7): a fact independent of whether an
+  // auditor later found a path it did not walk, so it must stand even when
+  // the outcome block above has nothing else to say.
+  const rowsSource = run?.rowsSource;
+  const rowsSourceLine =
+    rowsSource === undefined
+      ? undefined
+      : [
+          "rows from the store",
+          `parser ${rowsSource.parserVersion}`,
+          // `file.totalLines` is written only by a reader that saw the WHOLE
+          // file (schema.ts note above `file`); a total nobody measured must
+          // not be printed as though it were known.
+          `lines ${rowsSource.rowsFromLine}–${rowsSource.rowsToLine}${
+            run?.file.totalLines === undefined
+              ? ""
+              : ` of ${run.file.totalLines}`
+          }`,
+          `${rowsSource.slices} slices`,
+          // Zero dropped lines is not a fact worth a reader's attention.
+          rowsSource.droppedLines === 0
+            ? undefined
+            : `${rowsSource.droppedLines} dropped`,
+          // Verbatim, not prose: `partial` is a closed vocabulary the record
+          // writes and the tests assert on (MATERIALIZE_PARTIAL) — the page's
+          // job is to say the run did not open whole, not to explain each way.
+          rowsSource.partial.length === 0
+            ? undefined
+            : `partial: ${rowsSource.partial.join(", ")}`,
+        ]
+          .filter((part): part is string => part !== undefined)
+          .join(" · ");
+
   const nothing =
-    live || (summary === undefined && facts.length === 0 && !rowsEmpty);
+    live ||
+    (summary === undefined &&
+      facts.length === 0 &&
+      !rowsEmpty &&
+      rowsSourceLine === undefined);
   if (nothing) return null;
 
   const continues = run?.continuesRunId ?? undefined;
@@ -742,6 +779,13 @@ function Lead({
               </>
             )
           )}
+        </div>
+      )}
+      {rowsSourceLine !== undefined && (
+        // It is a fact, not a control: no popover, no click target, no link —
+        // the run did not open whole, and that is all this line says.
+        <div className="font-mono text-[10px] text-text-faint break-words">
+          {rowsSourceLine}
         </div>
       )}
     </div>

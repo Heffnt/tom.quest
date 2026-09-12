@@ -1,6 +1,7 @@
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import schema from "./schema";
+import { internal } from "./_generated/api";
 import {
   AUDIT_REMOVAL_HEADING,
   AUDIT_REMOVAL_NOTES_MAX,
@@ -9,9 +10,11 @@ import {
   AUDIT_VERDICT,
   MERGE,
   TESTS_RUN,
+  auditChunkNote,
   auditVerdictOf,
   checkRowPassed,
   commitKey,
+  compactCount,
   removalNotesOf,
 } from "./ttsMerge";
 import { EVALS_RUN } from "./ttsEvals";
@@ -91,6 +94,50 @@ const auditRows = (t: TestConvex<typeof schema>) =>
 /** The row the gate reads: the NEWEST audit row for the commit. There is one
  *  of them per head unless a real verdict replaced an UNAVAILABLE. */
 const auditRow = async (t: TestConvex<typeof schema>) => (await auditRows(t))[0] ?? null;
+
+const auditData = async (t: TestConvex<typeof schema>) =>
+  ((await auditRow(t))?.data ?? {}) as Record<string, unknown>;
+
+/** A whole-diff read: twelve chunks of a 1,437,221-character diff, all twelve
+ *  answered. The shape worker/jobs/audit.mjs posts once it has stopped cutting
+ *  the diff at 200,000 characters. */
+const WHOLE_DIFF = {
+  count: 12,
+  read: 12,
+  charsRead: 1_437_221,
+  charsTotal: 1_437_221,
+  truncatedChunks: 0,
+  files: 41,
+};
+
+type AuditOver = Partial<{
+  sha: string;
+  verdict: string;
+  text: string;
+  model: string;
+  fallback: string;
+  url: string;
+  chunks: typeof WHOLE_DIFF;
+  traceFindings: string[];
+  trace: { available: boolean; reason?: string };
+}>;
+
+/** The audit door itself, called straight rather than over HTTP: these tests
+ *  are about what the MUTATION stores and caps, and convex/http.ts is another
+ *  agent's file. */
+const recordAudit = (t: TestConvex<typeof schema>, over: AuditOver = {}) =>
+  t.mutation(internal.ttsMerge.internalRecordAudit, {
+    repo: REPO,
+    sha: SHA,
+    verdict: "APPROVED",
+    text: "VERDICT: APPROVED\n\nIt lands what it claims and nothing else.",
+    ...over,
+  });
+
+const auditWhy = async (t: TestConvex<typeof schema>) => {
+  const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+  return (gate.checks as { name: string; why: string }[]).find((c) => c.name === "audit")!.why;
+};
 
 describe("auditVerdictOf", () => {
   it("reads the verdict line, alone on its line, in any case", () => {
@@ -721,5 +768,319 @@ describe("POST /tts/audit — the second check's own door", () => {
     expect(gate.checks.find((c: { name: string }) => c.name === "audit").why).toContain(
       "It deletes the only caller of a live route.",
     );
+  });
+});
+
+describe("compactCount", () => {
+  it("groups below ten thousand and scales above it", () => {
+    expect(compactCount(0)).toBe("0");
+    expect(compactCount(812)).toBe("812");
+    expect(compactCount(4_120)).toBe("4,120");
+    expect(compactCount(9_999)).toBe("9,999");
+    expect(compactCount(10_000)).toBe("10 K");
+    expect(compactCount(12_345)).toBe("12.3 K");
+    expect(compactCount(200_000)).toBe("200 K");
+    expect(compactCount(812_000)).toBe("812 K");
+    expect(compactCount(1_000_000)).toBe("1 M");
+    expect(compactCount(1_437_221)).toBe("1.4 M");
+    expect(compactCount(25_000_000)).toBe("25 M");
+    expect(compactCount(150_000_000)).toBe("150 M");
+  });
+
+  it("answers a question mark rather than a number it does not have", () => {
+    expect(compactCount(Number.NaN)).toBe("?");
+    expect(compactCount(Number.POSITIVE_INFINITY)).toBe("?");
+    expect(compactCount("1437221" as unknown as number)).toBe("?");
+    expect(compactCount(undefined as unknown as number)).toBe("?");
+  });
+});
+
+describe("auditChunkNote", () => {
+  it("says how much of the diff was read, at a magnitude a person reads", () => {
+    expect(auditChunkNote({ chunks: WHOLE_DIFF })).toBe(
+      "12 of 12 chunks, 1.4 M of 1.4 M characters",
+    );
+    expect(
+      auditChunkNote({ chunks: { ...WHOLE_DIFF, read: 3, charsRead: 200_000 } }),
+    ).toBe("3 of 12 chunks, 200 K of 1.4 M characters");
+    expect(
+      auditChunkNote({
+        chunks: { count: 1, read: 1, charsRead: 4_120, charsTotal: 4_120, truncatedChunks: 0, files: 2 },
+      }),
+    ).toBe("1 of 1 chunk, 4,120 of 4,120 characters");
+  });
+
+  // `data` is v.any() coming back out. A half-written sentence in the line Tom
+  // reads is worse than no clause: the clause is a claim about coverage, and a
+  // claim assembled out of a missing number is not one.
+  it("renders nothing at all for a row with no chunks, or a malformed one", () => {
+    expect(auditChunkNote({})).toBe("");
+    expect(auditChunkNote({ chunks: null })).toBe("");
+    expect(auditChunkNote({ chunks: "12 of 12" })).toBe("");
+    expect(auditChunkNote({ chunks: { count: 12 } })).toBe("");
+    expect(auditChunkNote({ chunks: { ...WHOLE_DIFF, charsTotal: "1.4 M" } })).toBe("");
+    expect(auditChunkNote({ chunks: { ...WHOLE_DIFF, read: -1 } })).toBe("");
+    expect(auditChunkNote({ chunks: { ...WHOLE_DIFF, count: Number.NaN } })).toBe("");
+  });
+});
+
+// THE 2026-09-11 FAULT. The auditor approved a ~30,000-line diff having read
+// the first 200,000 characters of it, and the row recorded nothing about how
+// much it saw. These are the fields that make the difference legible — and
+// none of them is a condition.
+describe("what the audit row records about its own reading", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("lands the coverage and the trace findings on the row", async () => {
+    const t = convex();
+    await recordAudit(t, {
+      chunks: WHOLE_DIFF,
+      traceFindings: [
+        "it claimed the tests pass and no tests-run row exists for this head",
+        "it claimed it opened worker/jobs/audit.mjs and its run never opened that path",
+      ],
+    });
+    expect(await auditData(t)).toMatchObject({
+      verdict: "APPROVED",
+      chunks: WHOLE_DIFF,
+      traceFindings: [
+        "it claimed the tests pass and no tests-run row exists for this head",
+        "it claimed it opened worker/jobs/audit.mjs and its run never opened that path",
+      ],
+    });
+  });
+
+  it("caps the trace findings and each of them, and redacts what they quote", async () => {
+    const t = convex();
+    // Credential-SHAPED and not a credential, like the audit-text fixture
+    // above: a finding quotes the line it found, and a line a model printed can
+    // carry a token. The findings arrive as an ARGUMENT, so this door is the
+    // only place they can be filtered at all.
+    // `gitleaks:allow` — the shape IS the test: a finding that quotes a
+    // credential-shaped line is the thing this door must redact.
+    const token = "ghp_0123456789abcdefghijABCD"; // gitleaks:allow
+    await recordAudit(t, {
+      traceFindings: [
+        `it claimed the deploy ran with ${token} in the environment`,
+        "x".repeat(500),
+        ...Array.from({ length: AUDIT_REMOVAL_NOTES_MAX + 5 }, (_, i) => `finding ${i}`),
+      ],
+    });
+    const findings = (await auditData(t)).traceFindings as string[];
+    expect(findings).toHaveLength(AUDIT_REMOVAL_NOTES_MAX);
+    expect(findings[0]).toContain("[redacted:github]");
+    expect(findings[0]).not.toContain(token);
+    expect(findings[1]).toHaveLength(AUDIT_REMOVAL_NOTE_MAX_CHARS);
+  });
+
+  // NOT ASKED is not ASKED AND CLEAN. A row with no key is an audit recorded
+  // before any of this existed; `traceFindings: []` is an audit that was traced
+  // and came back clean. Defaulting the absent one to `[]` erases that.
+  it("writes NO KEY for a field it was not given", async () => {
+    const t = convex();
+    await recordAudit(t);
+    const keys = Object.keys(await auditData(t));
+    expect(keys).not.toContain("chunks");
+    expect(keys).not.toContain("traceFindings");
+    expect(keys).not.toContain("trace");
+    // And the row it did always write is still there.
+    expect(keys).toContain("removalNotes");
+  });
+
+  it("records the counted absence, so an unread run record does not read as clean", async () => {
+    const t = convex();
+    await recordAudit(t, {
+      traceFindings: [],
+      trace: { available: false, reason: `the session file was never written: ${"y".repeat(500)}` },
+    });
+    const data = await auditData(t);
+    expect(data.traceFindings).toEqual([]);
+    const trace = data.trace as { available: boolean; reason: string };
+    expect(trace.available).toBe(false);
+    expect(trace.reason).toHaveLength(AUDIT_REMOVAL_NOTE_MAX_CHARS);
+    expect(trace.reason.startsWith("the session file was never written")).toBe(true);
+  });
+
+  it("keeps an available trace with no reason, and writes no reason key", async () => {
+    const t = convex();
+    await recordAudit(t, { trace: { available: true }, traceFindings: [] });
+    const trace = (await auditData(t)).trace as Record<string, unknown>;
+    expect(trace).toEqual({ available: true });
+  });
+
+  // Write-once is the point of this door and none of the new fields is an
+  // opening in it: a thin read cannot be re-posted as a fat one over an
+  // APPROVED, any more than a REFUSED can be re-posted as an APPROVED.
+  it("keeps write-once with the new fields present", async () => {
+    const t = convex();
+    await recordAudit(t, { chunks: WHOLE_DIFF, traceFindings: [] });
+    const again = await recordAudit(t, {
+      verdict: "REFUSED",
+      text: "VERDICT: REFUSED\n\nOn second thought.",
+      chunks: { ...WHOLE_DIFF, read: 3, charsRead: 200_000 },
+      traceFindings: ["it did not read the whole diff"],
+    });
+    expect(again.existing).toBe(true);
+    expect(again.verdict).toBe("APPROVED");
+    expect(await auditRows(t)).toHaveLength(1);
+    expect((await auditData(t)).chunks).toEqual(WHOLE_DIFF);
+  });
+
+  it("lets a real verdict still replace an UNAVAILABLE, carrying its own chunks", async () => {
+    const t = convex();
+    await recordAudit(t, {
+      verdict: "UNAVAILABLE",
+      text: "VERDICT: UNAVAILABLE\n\nThe audit could not run: you've hit your usage limit.",
+    });
+    const replaced = await recordAudit(t, {
+      model: "claude-opus-5",
+      fallback: "codex-cap",
+      chunks: WHOLE_DIFF,
+      traceFindings: [],
+    });
+    expect(replaced.existing).toBe(false);
+    expect(replaced.verdict).toBe("APPROVED");
+    expect(await auditRows(t)).toHaveLength(2);
+    // The newest row is the one the gate reads, and it carries its own coverage
+    // — the UNAVAILABLE row before it still carries none, because it read none.
+    expect((await auditData(t)).chunks).toEqual(WHOLE_DIFF);
+    expect(Object.keys((await auditRows(t))[1].data as Record<string, unknown>)).not.toContain(
+      "chunks",
+    );
+  });
+});
+
+describe("the chunk clause in the sentence Tom reads", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("rides the APPROVED why, after the audit's own reason", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await recordAudit(t, { model: "codex", chunks: WHOLE_DIFF });
+    expect(await auditWhy(t)).toBe(
+      `the audit approved ${SHA.slice(0, 7)}` +
+        " — It lands what it claims and nothing else." +
+        " — 12 of 12 chunks, 1.4 M of 1.4 M characters",
+    );
+  });
+
+  // An audit that REFUSED after reading a quarter of the diff is exactly as
+  // interesting as one that approved after reading all of it, so the clause is
+  // on the detail both arms carry rather than on the approval.
+  it("rides the REFUSED why too, and says how little was read", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await recordAudit(t, {
+      verdict: "REFUSED",
+      text: "VERDICT: REFUSED\n\nIt deletes the only caller of a live route.",
+      chunks: { ...WHOLE_DIFF, read: 3, charsRead: 200_000 },
+    });
+    const why = await auditWhy(t);
+    expect(why).toContain(`the audit answered REFUSED at ${SHA.slice(0, 7)}`);
+    expect(why).toContain("3 of 12 chunks, 200 K of 1.4 M characters");
+  });
+
+  it("says nothing at all for a row recorded before the diff was chunked", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await recordAudit(t, { model: "codex" });
+    expect(await auditWhy(t)).toBe(
+      `the audit approved ${SHA.slice(0, 7)} — It lands what it claims and nothing else.`,
+    );
+  });
+
+  it("drops a malformed chunks object rather than printing half a sentence", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    // Written straight into the row: the mutation's validator would refuse this
+    // shape, and the point is the READ side, where data is v.any().
+    await seedFact(t, AUDIT_VERDICT, {
+      verdict: "APPROVED",
+      text: "VERDICT: APPROVED\n\nIt lands what it claims and nothing else.",
+      chunks: { count: 12, read: "twelve" },
+    });
+    expect(await auditWhy(t)).toBe(
+      `the audit approved ${SHA.slice(0, 7)} — It lands what it claims and nothing else.`,
+    );
+  });
+
+  it("carries the clause into the #tts-decisions merge line for free", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await greenTests(t);
+    await cleanEvals(t);
+    await recordAudit(t, { chunks: WHOLE_DIFF });
+    expect((await mergeReport(t)).status).toBe(200);
+    const scheduled = await t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
+        job.name.includes("sendDecision"),
+      ),
+    );
+    // internalRecordMerge joins the three `why` strings into the decision's
+    // reason, so the coverage reaches Tom wherever the gate's answer does.
+    expect((scheduled[0].args[0] as { reason: string }).reason).toContain(
+      "12 of 12 chunks, 1.4 M of 1.4 M characters",
+    );
+  });
+});
+
+// THERE IS NO FOURTH VERIFIER. The gate is three head rows — tests, audit,
+// evals — and everything this round added to the audit row is a RECORD on the
+// row the audit already wrote. This is the test that catches the day someone
+// makes a thin read, an unavailable trace or a pile of trace findings deny a
+// merge: none of them may move a single `passed` boolean.
+describe("the new audit fields add no fourth gate", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  async function gateChecks(over: AuditOver) {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await greenTests(t);
+    await cleanEvals(t);
+    await recordAudit(t, over);
+    const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+    return {
+      allowed: gate.allowed as boolean,
+      passed: (gate.checks as { name: string; passed: boolean }[]).map((c) => ({
+        name: c.name,
+        passed: c.passed,
+      })),
+    };
+  }
+
+  it("answers exactly three checks, and the same three booleans, loaded or bare", async () => {
+    const bare = await gateChecks({});
+    const loaded = await gateChecks({
+      // A THIN READ: one chunk of twelve, and the audit approved anyway.
+      chunks: { ...WHOLE_DIFF, read: 1, charsRead: 120_000, truncatedChunks: 4 },
+      traceFindings: Array.from({ length: AUDIT_REMOVAL_NOTES_MAX }, (_, i) => `finding ${i}`),
+      trace: { available: false, reason: "the run record could not be read" },
+    });
+
+    expect(bare.passed).toEqual([
+      { name: "tests", passed: true },
+      { name: "audit", passed: true },
+      { name: "evals", passed: true },
+    ]);
+    expect(loaded.passed).toEqual(bare.passed);
+    expect(bare.allowed).toBe(true);
+    expect(loaded.allowed).toBe(true);
+  });
+
+  it("still denies on the verdict, and only on the verdict", async () => {
+    const refused = await gateChecks({
+      verdict: "REFUSED",
+      text: "VERDICT: REFUSED\n\nIt deletes the only caller of a live route.",
+      // A PERFECT read that refused: coverage is not what opens the gate either.
+      chunks: WHOLE_DIFF,
+      traceFindings: [],
+      trace: { available: true },
+    });
+    expect(refused.passed).toEqual([
+      { name: "tests", passed: true },
+      { name: "audit", passed: false },
+      { name: "evals", passed: true },
+    ]);
+    expect(refused.allowed).toBe(false);
   });
 });
