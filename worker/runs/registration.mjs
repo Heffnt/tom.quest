@@ -12,6 +12,11 @@
 //   end                   — SessionEnd, through writeRegistrationEnd.
 //   skills                — `tts search skills`, through appendSkillAsk.
 //
+// Beside the envelope, a claim leaves ONE POINTER FILE at the token it claimed
+// (claimPointerPath). It is not a group and carries no fact about the run; it
+// exists so a child process holding only the token can still find the envelope
+// after the claim removed the spool. See claimPointerPath.
+//
 // `skills` arrived with envelopeVersion 2. A VERSION-1 ENVELOPE READS WITH
 // `skills` ABSENT AND THAT IS NOT AN ERROR: one already on disk when the
 // version changed describes a real run, and stamping 2 on it at a later claim
@@ -141,6 +146,26 @@ export function spoolPath(spoolDir, token) {
   return path.join(path.resolve(String(spoolDir)), `${token}.json`);
 }
 
+/**
+ * Where a claim leaves the run file it claimed the token into.
+ *
+ * THE TOKEN IS ALL A CHILD PROCESS HAS. The session-host puts exactly
+ * TTS_RUN_REG_TOKEN and TTS_RUN_REG_SPOOL in its child env — the transcript
+ * path is the CLI's and nobody knows it at spawn time — so `tts search skills`
+ * can name the spool and nothing else. The claim removes the spool, and without
+ * this pointer every ask made after SessionStart, which is every ask there is,
+ * would have no envelope to land on.
+ *
+ * A SEPARATE NAME rather than leaving a stub at the spool path: writeRegistration
+ * refuses a token whose file holds different content, and the spool path is its
+ * to own. The sweep's spool cleanup ages this file out with everything else in
+ * the directory.
+ */
+export function claimPointerPath(spoolDir, token) {
+  if (!UUID.test(String(token))) throw new Error("invalid run registration token");
+  return path.join(path.resolve(String(spoolDir)), `${token}.claimed.json`);
+}
+
 /** Write the launcher-owned groups before the child can start. */
 export function writeRegistration({
   spoolDir,
@@ -247,6 +272,11 @@ export function claimRegistration({
     try { fs.unlinkSync(source); } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
+    // The forwarding address the spool leaves behind. A later ask holding only
+    // the token follows it to this sidecar; see claimPointerPath. It is written
+    // after the sidecar, so a reader that finds it finds an envelope there, and
+    // a failure to write it costs asks, never the claim.
+    try { atomicJson(claimPointerPath(spoolDir, token), { token, runFile: path.resolve(runFile) }, fs); } catch {}
     return { ok: true, claimed: true, file, envelope };
   });
 }
@@ -284,8 +314,15 @@ export function writeRegistrationEnd({ runFile, end = {}, fs = fsDefault, now = 
 export function appendSkillAsk({ runFile, spoolDir, token, ask = {}, fs = fsDefault, now = Date.now } = {}) {
   const sidecar = runFile === undefined || runFile === null || runFile === "" ? null : registrationSidecarPath(runFile);
   const spool = spoolDir === undefined || spoolDir === null || spoolDir === "" ? null : spoolPath(spoolDir, token);
-  const file = sidecar !== null && fs.existsSync(sidecar) ? sidecar : (spool ?? sidecar);
+  let file = sidecar !== null && fs.existsSync(sidecar) ? sidecar : (spool ?? sidecar);
   if (file === null) return { ok: false, reason: "no run registration envelope named" };
+  // A caller holding only the token, after the claim took the spool away:
+  // follow the forwarding address to the sidecar. This is the ORDINARY case on
+  // the box, where every ask is made inside a claimed session.
+  if (spool !== null && !fs.existsSync(file)) {
+    const pointed = jsonAt(claimPointerPath(spoolDir, token), fs);
+    if (typeof pointed?.runFile === "string" && pointed.runFile !== "") file = registrationSidecarPath(pointed.runFile);
+  }
   return withEnvelopeLock(file, fs, now, () => {
     const existing = jsonAt(file, fs);
     if (existing === null) return { ok: false, reason: "run registration envelope missing", file };

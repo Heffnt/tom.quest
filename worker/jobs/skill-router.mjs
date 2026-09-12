@@ -272,13 +272,47 @@ export function areasForBatch(areaTerms, categories) {
 /**
  * MOVED. The areas whose terms name this repository.
  *
- * NOT WIRED INTO routeSkills at this commit: the routing table has no row that
- * turns a `repo:` subject into a `know-<area>` grant, and the router implements
- * the table and nothing past it. It moved with its siblings so the matching
- * half lives in one file, and so that row is one call if it is ever wanted.
+ * WIRED INTO routeSkills as of the area-repo row — see the table below and the
+ * measurement it rests on (scratchpad/uae/area-routing.md). It was unwired when
+ * it moved: the table had no row that turned a repository into an area, and the
+ * router implements the table and nothing past it. The row exists now because
+ * the category door beside it fires on nothing — `category` is set on 3 of
+ * 1,332 active todos and on no batch at all — while `repos` and `codeRepo`
+ * stand on 724 of them, and A REPOSITORY NAME ALREADY IS AN AREA CATEGORY:
+ * `tom.quest` and `wikitom` are terms of agent-systems, `complexmultitrigger`
+ * of research. No new field, no new vocabulary, no model call.
  */
 export function areasForRepo(areaTerms, repo) {
   return areasForCategory(areaTerms, repo).sort(byAreaRank);
+}
+
+/**
+ * The areas EVERY repository of one subject names, ranked as one list.
+ *
+ * An area two of the subject's repositories name outranks one a single
+ * repository names; ties fall to the ordinary area rank, which is itself a
+ * total order. So the cap the router applies to this list is deterministic —
+ * the same input cannot order it two ways, and the grant block sits inside a
+ * cached prefix. The shape is areasForBatch's, counting repositories where that
+ * one counts member todos.
+ */
+export function areasForRepos(areaTerms, repos) {
+  const byName = new Map();
+  for (const repo of repos) {
+    for (const hit of areasForRepo(areaTerms, repo)) {
+      const seen = byName.get(hit.name);
+      if (seen === undefined) byName.set(hit.name, { ...hit, repoCount: 1 });
+      else {
+        seen.repoCount += 1;
+        seen.exact = seen.exact || hit.exact;
+        seen.hitCount = Math.max(seen.hitCount, hit.hitCount);
+      }
+    }
+  }
+  return [...byName.values()].sort((a, b) => {
+    if (a.repoCount !== b.repoCount) return b.repoCount - a.repoCount;
+    return byAreaRank(a, b);
+  });
 }
 
 // ── Path tokens ──────────────────────────────────────────────────────────────
@@ -375,6 +409,9 @@ export const NO_BODY = "no published body at this commit";
 //   area:<name>                                 know-<name>
 //   todo whose category matches an area         know-<area>
 //   batch, by its members' categories           know-<area>  ×≤2
+//   the subject's repos or codeRepo name an
+//     area (batch repos, a goal's codeRepo,
+//     or the `repo:` subject itself)            know-<area>  ×≤1
 //   judges, or an INTENT_CALLERS caller         know-intent
 //   a WEEK_CALLERS caller                       know-week
 //   the subject names paths in repo X and
@@ -400,6 +437,24 @@ export const NO_BODY = "no published body at this commit";
  * areas is a real answer for one; the moved code's CAPS.areaPages, at its value.
  */
 export const AREA_CAPS = Object.freeze({ todo: 1, batch: 2, area: 1 });
+
+/**
+ * How many `know-<area>` skills the REPOSITORY row may take, whatever the
+ * subject kind is.
+ *
+ * ONE, and one for every kind. A repository names the part of his life its work
+ * belongs to, and it names one; a second area would be there only because two
+ * pages share a term, and the rank areasForRepos applies is a total order, so
+ * the one taken is the one that fits best.
+ *
+ * IT IS ADDED TO THE CATEGORY ROW'S CAP, NOT SHARED WITH IT. A todo whose
+ * category and whose repository name different areas would otherwise have to
+ * lose one of the two silently, and which one it lost would turn on the order
+ * the rows happen to sit in. In the record as it stands this is nearly always
+ * moot — 1,329 of 1,332 active todos carry no category at all, so the category
+ * row contributes nothing and this row is the only area a run gets.
+ */
+export const REPO_AREA_CAP = 1;
 
 /**
  * WHICH SKILLS THIS RUN IS GRANTED.
@@ -432,6 +487,14 @@ export function routeSkills(input) {
   let areaHits = [];
   const areaCap = AREA_CAPS[subject.kind] ?? 0;
   let repos = [];
+  // The repositories the AREA row reads. It is `repos` plus every `codeRepo`
+  // the subject reaches, and it is a SECOND list rather than a wider `repos`
+  // because the two rows ask different questions. `repos` decides which
+  // repository RULES ride the prompt, and that row is gated on the brief naming
+  // a path in the repository; a goal's `codeRepo` is a subject binding —
+  // "that upstream code todo is closed" — and is no claim that any path was
+  // named. Whose LIFE the work belongs to is answerable from the binding alone.
+  let areaRepos = [];
   let tokens = [];
 
   if (subject.kind === "area") {
@@ -446,21 +509,36 @@ export function routeSkills(input) {
     const batch =
       todo.batchId === undefined ? null : (record.batches ?? []).find((row) => row.id === todo.batchId) ?? null;
     repos = batch?.repos ?? todo.repos ?? [];
+    areaRepos = [...repos, todo.codeRepo];
     tokens = pathTokens(`${todo.brief ?? ""}\n${todo.workDescription ?? ""}\n${todo.entryAction ?? ""}`);
   } else if (subject.kind === "batch") {
     const batch = batchOf(record, subject.batchId);
     const members = (record.todos ?? []).filter((row) => row.batchId === batch.id);
     areaHits = areasForBatch(areaTerms, members.map((row) => row.category ?? ""));
     repos = batch.repos ?? [];
+    areaRepos = [...repos, ...members.map((row) => row.codeRepo)];
     tokens = pathTokens(
       members.map((row) => `${row.brief ?? ""}\n${row.workDescription ?? ""}\n${row.entryAction ?? ""}`).join("\n"),
     );
   } else if (subject.kind === "repo") {
     repos = [subject.repo];
+    areaRepos = [subject.repo];
     tokens = subject.paths ?? [];
   }
 
   for (const hit of areaHits.slice(0, areaCap)) wanted.push(`know-${hit.name}`);
+
+  // know-<area>, BY REPOSITORY ───────────────────────────────────────────────
+  // NOT GATED ON THE cwd, and that is the point of the row. A run standing in
+  // the checkout still gets no `repo-<name>` skill below — its rules are on
+  // disk at the commit it is working on — but the area page is the page of HIS
+  // LIFE that bears on the work, and no checkout carries that.
+  //
+  // Nor is it gated on the brief naming a path: the repository row below wants
+  // evidence the run will touch files, and this one wants none. A todo that
+  // only thinks about tom.quest is still agent-systems work.
+  const areaRepoNames = [...new Set(areaRepos.filter((repo) => typeof repo === "string" && repo !== ""))].sort();
+  for (const hit of areasForRepos(areaTerms, areaRepoNames).slice(0, REPO_AREA_CAP)) wanted.push(`know-${hit.name}`);
 
   // know-intent ──────────────────────────────────────────────────────────────
   if (rules.judges || INTENT_CALLERS.includes(caller)) wanted.push("know-intent");
