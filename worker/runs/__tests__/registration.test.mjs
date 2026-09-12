@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   appendSkillAsk,
+  claimPointerPath,
   claimRegistration,
   findCodexRegistration,
   mergeRegistration,
@@ -178,6 +179,30 @@ describe("run registration", () => {
         { at: 4, name: "know-nothing", result: "refused", why: "not in the catalog" },
       ] },
     });
+  });
+
+  it("finds the claimed envelope from the token alone, which is all the box gives a child", () => {
+    // THE BOX PATH, and it is the only path there is for an ask: the
+    // session-host puts TTS_RUN_REG_TOKEN and TTS_RUN_REG_SPOOL in its child
+    // env and nothing else — the transcript path is the CLI's, and nobody knows
+    // it at spawn time — while every `tts search skills` a session makes comes
+    // AFTER its SessionStart claim, which takes the spool away. Without the
+    // claim's forwarding address this ask would land nowhere and be swallowed.
+    const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
+    const token = "77777777-7777-4777-8777-777777777777";
+    writeRegistration({ spoolDir, token, writer: { file: "worker/session-host/session.mjs" }, registration: { host: "box" }, now: () => 1 });
+    claimRegistration({ spoolDir, token, runFile, claim: { by: "hook:SessionStart" }, now: () => 2 });
+    expect(fs.existsSync(path.join(spoolDir, `${token}.json`))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(claimPointerPath(spoolDir, token), "utf8")))
+      .toEqual({ token, runFile: path.resolve(runFile) });
+
+    expect(appendSkillAsk({ spoolDir, token, ask: { name: "know-research", result: "ok" }, now: () => 3 }))
+      .toMatchObject({ ok: true, file: registrationSidecarPath(runFile) });
+    expect(readRegistration(runFile).skills.asked).toEqual([{ at: 3, name: "know-research", result: "ok" }]);
+    // And it reaches the run row, which is what makes the catalog asks
+    // measurable at all.
+    expect(mergeRegistration({ parsed: parsed(), host: "box", envelope: readRegistration(runFile) }).run.context.skillsAsked)
+      .toEqual(["know-research (ok)"]);
   });
 
   it("writes a brand-new envelope at version 2, from either author", () => {

@@ -22,6 +22,7 @@ import {
   callerRules,
   INTENT_CALLERS,
   NO_BODY,
+  REPO_AREA_CAP,
   routeSkills,
   WEEK_CALLERS,
 } from "./skill-router.mjs";
@@ -206,6 +207,123 @@ describe("a batch takes two area skills", () => {
   });
 });
 
+// ── know-<area>, by repository ───────────────────────────────────────────────
+//
+// THE ROW THE MOVE LEFT UNWIRED. The category row above fires on almost
+// nothing — 3 of 1,332 active todos carry a category and no batch carries one —
+// while repos and codeRepo stand on 724 of them. These pin the mapping the area
+// pages' own `categories:` lines already encode: tom.quest and wikitom are
+// terms of agent-systems, complexmultitrigger a term of research.
+
+describe("a subject's repository routes to one area skill", () => {
+  const batchRecord = (batch, todos = []) => ({
+    today: "2026-09-12",
+    batches: [{ id: "b1", ...batch }],
+    todos: todos.map((todo, index) => ({ id: `t${index + 1}`, batchId: "b1", ...todo })),
+    rulings: [],
+    sessions: [],
+  });
+
+  const routeBatch = (batch, todos = []) =>
+    routeSkills({ subject: { kind: "batch", batchId: "b1" }, caller: "cli", pages: PAGES, record: batchRecord(batch, todos) });
+
+  it("routes a batch whose repos are [tom.quest] to know-agent-systems", () => {
+    expect(areaSkills(routeBatch({ repos: [REPO] }).granted)).toEqual(["know-agent-systems"]);
+  });
+
+  it("routes a todo's codeRepo ComplexMultiTrigger to know-research", () => {
+    const { granted } = routeSkills({
+      subject: { kind: "todo", todoId: "t1" },
+      caller: "cli",
+      pages: PAGES,
+      record: todoRecord({ codeRepo: "ComplexMultiTrigger" }),
+    });
+    expect(areaSkills(granted)).toEqual(["know-research"]);
+  });
+
+  it("routes a batch member's codeRepo too, when the batch declares no repos", () => {
+    expect(areaSkills(routeBatch({}, [{ codeRepo: "ComplexMultiTrigger" }]).granted)).toEqual(["know-research"]);
+  });
+
+  it("routes WikiTom to know-agent-systems, case and all", () => {
+    expect(areaSkills(routeBatch({ repos: ["WikiTom"] }).granted)).toEqual(["know-agent-systems"]);
+  });
+
+  it("routes a repo: subject by its own name", () => {
+    const { granted } = routeSkills({
+      subject: { kind: "repo", repo: "ComplexMultiTrigger", paths: ["cmt/engine/x.py"] },
+      caller: "cli",
+      pages: PAGES,
+    });
+    expect(areaSkills(granted)).toEqual(["know-research"]);
+  });
+
+  it("gives a repository no area when no page's categories name it", () => {
+    expect(areaSkills(routeBatch({ repos: ["Byobu"] }).granted)).toEqual([]);
+    expect(areaSkills(routeBatch({ repos: [] }).granted)).toEqual([]);
+    const { granted } = routeSkills({
+      subject: { kind: "repo", repo: "Byobu", paths: ["x.py"] },
+      caller: "cli",
+      pages: PAGES,
+    });
+    expect(areaSkills(granted)).toEqual([]);
+    expect(granted).toContain("repo-Byobu");
+  });
+
+  it("takes ONE area from the repositories however many they name", () => {
+    expect(REPO_AREA_CAP).toBe(1);
+    // tom.quest and WikiTom both name agent-systems; ComplexMultiTrigger and
+    // Overleaf both name research. Two repositories for research, one for
+    // agent-systems, so research wins and it is the only one taken.
+    const three = routeBatch({ repos: [REPO, "ComplexMultiTrigger", "Overleaf"] });
+    expect(areaSkills(three.granted)).toEqual(["know-research"]);
+    // And the same list in another order is the same answer.
+    const shuffled = routeBatch({ repos: ["Overleaf", REPO, "ComplexMultiTrigger"] });
+    expect(shuffled.granted).toEqual(three.granted);
+  });
+
+  it("adds the repository's area to the category's, rather than replacing it", () => {
+    // The two rows disagree — the category says climbing, the repository says
+    // agent-systems — and a todo takes one of each rather than losing one to
+    // the order the rows sit in.
+    const { granted } = routeSkills({
+      subject: { kind: "todo", todoId: "t1" },
+      caller: "cli",
+      pages: PAGES,
+      record: todoRecord({ category: "climbing", repos: [REPO] }),
+    });
+    expect(areaSkills(granted)).toEqual(["know-agent-systems", "know-climbing"]);
+  });
+
+  it("still grants the area to a run standing INSIDE the checkout", () => {
+    // The phase-6 rule holds: no repo-<name> skill, because the rules are on
+    // disk at the commit the run is working on. The area page is not.
+    const { granted, repoRulesSource } = routeSkills({
+      subject: { kind: "repo", repo: REPO, paths: ["convex/x.ts"] },
+      caller: "cli",
+      pages: PAGES,
+      cwd: `${REPO_DIR}/convex`,
+      repoDirs: { [REPO]: REPO_DIR },
+    });
+    expect(repoRulesSource).toBe("native");
+    expect(granted).not.toContain(`repo-${REPO}`);
+    expect(areaSkills(granted)).toEqual(["know-agent-systems"]);
+  });
+
+  it("grants the area to a todo whose brief names no path at all", () => {
+    // The repository row below wants evidence the run will touch files; this
+    // row wants none.
+    const { granted } = routeSkills({
+      subject: { kind: "todo", todoId: "t1" },
+      caller: "cli",
+      pages: PAGES,
+      record: todoRecord({ repos: [REPO], brief: "Think about it." }),
+    });
+    expect(granted.filter((name) => name.startsWith("repo-"))).toEqual([]);
+    expect(areaSkills(granted)).toEqual(["know-agent-systems"]);
+  });
+});
+
 // ── know-intent and know-week ────────────────────────────────────────────────
 
 describe("the fixed know skills", () => {
@@ -323,7 +441,10 @@ describe("a name the publication does not carry is refused, not fatal", () => {
     expect(withCatalog.refused).toEqual([{ name: `repo-${REPO}`, why: NO_BODY }]);
     expect(withCatalog.refused[0].why).toBe("no published body at this commit");
     expect(withCatalog.granted).not.toContain(`repo-${REPO}`);
-    expect(withCatalog.granted).toEqual(["write"]);
+    // know-agent-systems is the repository's own area, and the catalog carries
+    // it: the missing body costs this run the repository's rules, not the page
+    // of his life the work belongs to.
+    expect(withCatalog.granted).toEqual(["write", "know-agent-systems"]);
   });
 
   it("grants everything the router wants when published is null", () => {
@@ -420,6 +541,9 @@ describe("the grant list is stable", () => {
     expect(granted).toEqual([
       "write",
       "know-admin",
+      // The repository row's own area, sorted into the know group like any
+      // other rather than appended where its row sits in the table.
+      "know-agent-systems",
       "know-intent",
       "know-research",
       "know-week",

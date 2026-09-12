@@ -117,6 +117,7 @@ type ContextRecord = {
     entryAction?: string;
     batchId?: string;
     repos?: string[];
+    codeRepo?: string;
   }[];
   batches: { id: string; repos?: string[] }[];
   rulings: {
@@ -150,6 +151,13 @@ function todoRow(todo: Doc<"dtsTodos">): ContextRecord["todos"][number] {
     workDescription: todo.workDescription,
     entryAction: todo.entryAction,
     batchId: todo.batchId,
+    // The goal's CODE SUBJECT repository, carried for the router's area row
+    // alone: a goal bound to an upstream code todo names the repository that
+    // work lives in even when its batch declares no repos, and 60 active rows
+    // carry it. The paired `codeExternalId` is NOT carried — nothing in the
+    // routing table reads it, and this record holds exactly what the router
+    // reads.
+    codeRepo: todo.codeRepo,
   };
 }
 
