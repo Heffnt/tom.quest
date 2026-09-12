@@ -1,7 +1,14 @@
-import { convexTest } from "convex-test";
+import { convexTest, type TestConvex } from "convex-test";
 import { describe, expect, it } from "vitest";
 import { internal } from "./_generated/api";
-import { GOLDEN_MAX_ITEMS, GOLDEN_PER_VERDICT_MAX, partitionOf } from "./ttsEvals";
+import {
+  COVERAGE_NOT_REQUIRED,
+  EVALS_REQUEST,
+  EVALS_RUN,
+  GOLDEN_MAX_ITEMS,
+  GOLDEN_PER_VERDICT_MAX,
+  partitionOf,
+} from "./ttsEvals";
 import schema from "./schema";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -241,5 +248,250 @@ describe("internalSearchEvals", () => {
       { data: { sha: "new" } },
       { data: { sha: "new" } },
     ]);
+  });
+});
+
+// A pull request that touches nothing the evals watch used to get NO evals
+// row at all — the workflow's `paths:` filter skipped the whole job — and the
+// merge gate denies without one, so a pure-code branch could never merge. The
+// filter now lives in the check, and a request marked `unaffected` is answered
+// by this door in the same mutation that files it: no queue entry for the box
+// to pick up, no model, and a row the gate can read.
+describe("an unaffected evals request", () => {
+  const REPO = "tom.quest";
+  const SHA = "2e08b28e9df5f65bb374151bdcfab7ee0a3d360a";
+  const BASE = "f5c1fb9aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+  const runs = (t: TestConvex<typeof schema>) =>
+    t.run(async (ctx) =>
+      ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_RUN).eq("key", `${REPO}@${SHA}`))
+        .collect(),
+    );
+
+  const request = (t: TestConvex<typeof schema>, over: Record<string, unknown> = {}) =>
+    t.mutation(internal.ttsEvals.internalRequestEvals, {
+      repo: REPO,
+      sha: SHA,
+      baseSha: BASE,
+      paths: ["model-of-tom/**"],
+      changed: ["convex/ttsMerge.ts", "worker/jobs/evals.mjs"],
+      unaffected: true,
+      ...over,
+    });
+
+  it("stamps the run row itself, with the base run's standing numbers", async () => {
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: 1,
+        kind: EVALS_RUN,
+        key: `${REPO}@${BASE}`,
+        data: { repo: REPO, sha: BASE, items: 40, pass: 38, goldenHash: "h" },
+      });
+    });
+    expect(await request(t)).toMatchObject({ existing: false, unaffected: true });
+    const rows = await runs(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].data).toMatchObject({
+      unaffected: true,
+      regressions: 0,
+      goldenCoverage: COVERAGE_NOT_REQUIRED,
+      flaky: 0,
+      items: 40,
+      pass: 38,
+      // It scored no set of its own, and never says it did.
+      goldenHash: null,
+      changed: ["convex/ttsMerge.ts", "worker/jobs/evals.mjs"],
+    });
+  });
+
+  it("answers with zeroes when nothing ever scored the base", async () => {
+    const t = convexTest({ schema, modules });
+    await request(t);
+    expect((await runs(t))[0].data).toMatchObject({ items: 0, pass: 0, regressions: 0 });
+  });
+
+  // The box's queue takes the oldest request with NO run at its key, so a
+  // request answered as it is filed is never handed out and no model runs.
+  it("leaves the box nothing to pick up", async () => {
+    const t = convexTest({ schema, modules });
+    await request(t);
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
+  });
+
+  // A check RE-RUN at the same sha finds its request already filed. Returning
+  // early there would leave a head with a request and no row — the shape that
+  // waits seventy-five minutes and then denies.
+  it("answers a re-run whose request was already filed, and only once", async () => {
+    const t = convexTest({ schema, modules });
+    await t.mutation(internal.ttsEvals.internalRequestEvals, {
+      repo: REPO,
+      sha: SHA,
+      baseSha: BASE,
+      paths: ["model-of-tom/**"],
+      changed: ["convex/ttsMerge.ts"],
+    });
+    expect(await runs(t)).toHaveLength(0);
+    expect(await request(t)).toMatchObject({ existing: true, unaffected: true });
+    expect(await runs(t)).toHaveLength(1);
+    await request(t);
+    expect(await runs(t)).toHaveLength(1);
+  });
+
+  // A branch that DID touch a watched path still queues for the box.
+  it("does not touch a request that is not unaffected", async () => {
+    const t = convexTest({ schema, modules });
+    await request(t, { unaffected: undefined, changed: ["model-of-tom/intent.md"] });
+    expect(await runs(t)).toHaveLength(0);
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: SHA,
+      unaffected: false,
+    });
+  });
+});
+
+
+// Four pushes to one branch in a morning file four requests, and the box
+// serves one per pass at about thirty-five minutes: the check on the fourth
+// waits out three runs of shas nobody will merge and then fails on its own
+// seventy-five-minute deadline, which is what happened to #172 and #173 on
+// 2026-09-12. The queue names each pull request's head, and every older sha of
+// that pull request is handed out marked for a one-POST answer.
+describe("a superseded request", () => {
+  const REPO = "tom.quest";
+
+  // The rows are written DIRECTLY, with the `at` each one is ordered by. The
+  // door stamps Date.now(), so three requests filed inside one millisecond
+  // would leave the order this query depends on to the tie-break rather than
+  // to the test.
+  const file = (
+    t: TestConvex<typeof schema>,
+    at: number,
+    sha: string,
+    over: Record<string, unknown> = {},
+  ) =>
+    t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at,
+        kind: EVALS_REQUEST,
+        key: `${REPO}@${sha}`,
+        data: {
+          repo: REPO,
+          sha,
+          baseSha: "f5c1fb9",
+          pr: 173,
+          runId: at * 100,
+          paths: ["model-of-tom/**"],
+          changed: ["model-of-tom/intent.md"],
+          prBody: null,
+          unaffected: false,
+          requestedAt: at,
+          ...over,
+        },
+      });
+    });
+
+  const answer = (t: TestConvex<typeof schema>, sha: string) =>
+    t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: 99,
+        kind: EVALS_RUN,
+        key: `${REPO}@${sha}`,
+        data: { repo: REPO, sha, superseded: true },
+      });
+    });
+
+  it("marks every older sha of the pull request with the newest one", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa");
+    await file(t, 2, "bbbbbbb");
+    await file(t, 3, "ccccccc");
+    // THE OLDEST IS STILL THE ONE HANDED OUT. The order does not change; what
+    // changes is what it costs to answer.
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      supersededBy: "ccccccc",
+    });
+    await answer(t, "aaaaaaa");
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "bbbbbbb",
+      supersededBy: "ccccccc",
+    });
+    await answer(t, "bbbbbbb");
+    // And the head itself is run, with nothing superseding it.
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "ccccccc",
+      supersededBy: null,
+    });
+  });
+
+  // A supersession is a fact about ONE branch. Two pull requests queued
+  // together are two live heads, and neither may answer the other away.
+  it("never supersedes across pull requests", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa", { pr: 172 });
+    await file(t, 2, "bbbbbbb", { pr: 173 });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      supersededBy: null,
+    });
+  });
+
+  // A check that sent no pull-request number is in the map for nothing: two
+  // shas that only look related are not a supersession.
+  it("never supersedes a request with no pull-request number", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa", { pr: null });
+    await file(t, 2, "bbbbbbb", { pr: null });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      supersededBy: null,
+    });
+  });
+
+  // THE ORDER IS THE PUSH'S, NOT THE REQUEST'S. Two pushes a minute apart
+  // start two jobs that each spend twenty to forty seconds on checkout before
+  // filing anything, so the NEWER push's request can reach Convex first. Read
+  // by arrival, the queue would mark the live head superseded — and that
+  // mistake does not heal, because the row it writes is what stops the box
+  // picking that sha up again.
+  it("reads the push order off the run id, not off when the request arrived", async () => {
+    const t = convexTest({ schema, modules });
+    // The newer push (run id 900) filed FIRST; the older push (run id 100)
+    // arrived second.
+    await file(t, 1, "bbbbbbb", { runId: 900 });
+    await file(t, 2, "aaaaaaa", { runId: 100 });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "bbbbbbb",
+      // The head, and it is run.
+      supersededBy: null,
+    });
+    await answer(t, "bbbbbbb");
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      supersededBy: "bbbbbbb",
+    });
+  });
+
+  // A request filed before the field existed has no place in the push order.
+  // It supersedes nothing and nothing supersedes it, in both directions.
+  it("never supersedes with or against a request carrying no run id", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa", { runId: null });
+    await file(t, 2, "bbbbbbb", { runId: 200 });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      supersededBy: null,
+    });
+    await answer(t, "aaaaaaa");
+    const t2 = convexTest({ schema, modules });
+    await file(t2, 1, "aaaaaaa", { runId: 100 });
+    await file(t2, 2, "bbbbbbb", { runId: null });
+    expect(await t2.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      supersededBy: null,
+    });
   });
 });

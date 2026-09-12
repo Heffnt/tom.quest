@@ -558,6 +558,31 @@ describe("gatherWeeklyFacts", () => {
     expect(f.ablation).toBeNull();
     expect(f.efficiency).toBeNull();
   });
+
+  // A ROW IS NOT A RUN. Three kinds of evals-run row are written in a POST
+  // each and score nothing: a branch that touched no watched path, a head a
+  // later push replaced, and a sha the box could not check out. Counted, they
+  // said three untrue things at once — runs the week did, CLEAN runs (their
+  // `regressions: null` fell through to zero), and, being newest, their empty
+  // arrays replaced the real ablation and token measurements.
+  it("counts no row that scored nothing, and lets none of them erase the week's measurement", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    const arm = Array.from({ length: 6 }, (_, i) => ({ id: `c${i}`, name: "know", kind: "layer", withPass: true, withoutPass: false }));
+    await t.run(async (ctx) => {
+      await event(ctx, EVALS_RUN, now - 3 * DAY, {
+        data: { weekly: true, regressions: 0, ablation: arm, efficiency: { cases: 6, unknown: 0, rises: [{ id: "real", headTokens: 1400, baseTokens: 900 }] } },
+      });
+      // The three that scored nothing, every one of them NEWER than the real run.
+      await event(ctx, EVALS_RUN, now - 2 * DAY, { data: { sha: "aaa", unaffected: true, regressions: 0, ablation: [], efficiency: { cases: 0, unknown: 0, rises: [] } } });
+      await event(ctx, EVALS_RUN, now - DAY, { data: { sha: "bbb", superseded: true, supersededBy: "ccc", error: "superseded by ccc", regressions: null, ablation: [], efficiency: { cases: 0, unknown: 0, rises: [] } } });
+      await event(ctx, EVALS_RUN, now - DAY + 1, { data: { sha: "ddd", error: "could not fetch ddd", regressions: null, ablation: [], efficiency: { cases: 0, unknown: 0, rises: [] } } });
+    });
+    const f = await gather(t, now + 1000);
+    expect(f.evals).toEqual({ runs: 1, clean: 1, regressions: [] });
+    expect(f.ablation).toEqual([{ name: "know", cases: 6, withPass: 6, withoutPass: 0, earned: true }]);
+    expect(f.efficiency).toEqual({ rises: [{ id: "real", headTokens: 1400, baseTokens: 900 }] });
+  });
 });
 
 describe("ablationFindings", () => {

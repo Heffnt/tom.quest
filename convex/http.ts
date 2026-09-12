@@ -2266,6 +2266,14 @@ const evalsRequest = httpAction(async (ctx, request) => {
   if (b.pr !== undefined && (!Number.isInteger(b.pr) || (b.pr as number) <= 0)) {
     return jsonResponse(400, { error: "pr, when given, is a positive integer" });
   }
+  // The workflow run's id — GitHub's own push order, which the queue reads to
+  // tell a pull request's live head from the shas behind it. OPTIONAL AND
+  // NEVER INFERRED: a check that does not send it supersedes nothing and is
+  // superseded by nothing, which is the safe answer for a request whose place
+  // in the push order is unknown.
+  if (b.runId !== undefined && (!Number.isInteger(b.runId) || (b.runId as number) <= 0)) {
+    return jsonResponse(400, { error: "runId, when given, is a positive integer" });
+  }
   if (!Array.isArray(b.paths) || !b.paths.every((path) => typeof path === "string" && path !== "")) {
     return jsonResponse(400, { error: "paths (array of non-empty strings) required" });
   }
@@ -2280,14 +2288,24 @@ const evalsRequest = httpAction(async (ctx, request) => {
   if (b.prBody !== undefined && typeof b.prBody !== "string") {
     return jsonResponse(400, { error: "prBody, when given, is a string" });
   }
+  // NOTHING WATCHED CHANGED, as the check decided from its own diff against
+  // scripts/evals-check.mjs's WATCHED_PATHS. The mutation answers a request
+  // like this as it files it — an evals-run row saying so, with no run behind
+  // it — because the merge gate needs a row and a branch with nothing to score
+  // must not wait an hour for one.
+  if (b.unaffected !== undefined && typeof b.unaffected !== "boolean") {
+    return jsonResponse(400, { error: "unaffected, when given, is a boolean" });
+  }
   const result = await ctx.runMutation(internal.ttsEvals.internalRequestEvals, {
     repo: b.repo,
     sha: b.sha,
     baseSha: typeof b.baseSha === "string" ? b.baseSha : undefined,
     pr: typeof b.pr === "number" ? b.pr : undefined,
+    runId: typeof b.runId === "number" ? b.runId : undefined,
     paths: b.paths,
     changed: Array.isArray(b.changed) ? (b.changed as string[]) : undefined,
     prBody: typeof b.prBody === "string" ? b.prBody : undefined,
+    unaffected: b.unaffected === true ? true : undefined,
   });
   return jsonResponse(200, { ok: true, ...result });
 });
@@ -3185,8 +3203,10 @@ const runsCompare = httpAction(async (ctx, request) => {
       }
     }
     return jsonResponse(200, { comparisons });
-  } catch {
-    return jsonResponse(400, { error: "run comparison rejected" });
+  } catch (error) {
+    // The reason, not a phrase. An opaque "run comparison rejected" is what
+    // hid a thrown Convex limit behind an hourly HTTP 400 in the cron log.
+    return jsonResponse(400, { error: error instanceof Error ? error.message : String(error) });
   }
 });
 http.route({ path: "/runs/compare", method: "POST", handler: runsCompare });

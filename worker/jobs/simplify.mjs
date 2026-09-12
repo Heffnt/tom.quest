@@ -196,15 +196,17 @@ export const GREP_EXCLUDES = [
 export const GATE_CHECKS = ["tests", "audit", "evals"];
 /** The three jobs of .github/workflows/guardrails.yml. */
 export const GUARDRAILS_JOBS = ["static-boundaries", "secret-scan", "tests"];
-/** The five scripts `pnpm check:guardrails` runs inside static-boundaries.
+/** The six scripts `pnpm check:guardrails` runs inside static-boundaries.
  *  Their pass/fail history is inside that job's log, and this job does not
  *  parse logs — so each row says `failuresKnown: false` and is forced to
- *  keep. */
+ *  keep. ADD A SCRIPT TO package.json's check:guardrails AND IT NEEDS A LINE
+ *  HERE; check 8 of scripts/check-session-mirrors.mjs is what says so. */
 export const STATIC_BOUNDARY_SCRIPTS = [
   "check-auth-boundary",
   "check-agents-md",
   "check-heavy-libs",
   "check-session-mirrors",
+  "check-setup-imports",
   "check-large-files",
 ];
 

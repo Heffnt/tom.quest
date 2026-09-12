@@ -1,12 +1,27 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
-import type { QueryCtx } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { DAY_MS, modelOfTomHeadOf } from "./ttsShared";
 
 export const PRELUDE_DELIVERY = "prelude-delivery";
 export const EVALS_REQUEST = "evals-request";
 export const EVALS_RUN = "evals-run";
+
+/**
+ * The coverage answer an UNAFFECTED run carries.
+ *
+ * `true` says a watched context file changed and this branch shipped what it
+ * owed. This says the question never arose — no watched path changed at all —
+ * and convex/ttsMerge.ts opens the evals arm on either, in different words.
+ * The distinction is kept because a gate that wrote `true` on an unscored row
+ * would be a row saying something it did not check.
+ *
+ * ONE WORD, THREE HOMES: here, scripts/evals-check.mjs COVERAGE_NOT_REQUIRED
+ * and worker/jobs/evals.mjs unaffectedRun. Neither of the others can import
+ * this file, so each spells it and each side's tests pin it.
+ */
+export const COVERAGE_NOT_REQUIRED = "not-required";
 
 /** A week of refused posts must not make an otherwise placeable session look
  * unplaced. The nightly check is deliberately before tonight's post. */
@@ -587,6 +602,21 @@ type EvalsRequest = {
   sha: string;
   baseSha: string | null;
   pr: number | null;
+  // THE WORKFLOW RUN'S ID, which is GitHub's own push order: it makes one run
+  // per push event, in the order the events arrive, with an increasing id.
+  //
+  // The queue needs that order and CANNOT take it from when the requests
+  // arrived. Two pushes a minute apart start two jobs that each spend twenty
+  // to forty seconds on checkout and node before filing anything, so the newer
+  // push's request can reach Convex first — and a queue reading arrival order
+  // would then mark the LIVE head superseded, permanently: the row it writes
+  // is exactly what stops the box picking that sha up again.
+  //
+  // NULL IS A VALUE. A check that sends no id supersedes nothing and is
+  // superseded by nothing, which is the safe answer for a request whose place
+  // in the push order is unknown — an older check, or WikiTom's Action, which
+  // fetches this file's sibling and runs it with its own environment.
+  runId: number | null;
   paths: string[];
   // WHAT THIS BRANCH ACTUALLY CHANGED, and the body an escape-hatch trailer
   // would be on.
@@ -605,7 +635,27 @@ type EvalsRequest = {
   // always has a diff, so a run nobody asked has not answered.
   changed: string[] | null;
   prBody: string | null;
+  // NOTHING THIS BRANCH TOUCHED IS WATCHED, as the check decided from its own
+  // diff and scripts/evals-check.mjs's WATCHED_PATHS. The request is filed for
+  // the record and answered in the same mutation, so the box never sees it —
+  // but worker/jobs/evals.mjs reads this field too, because a request written
+  // by a door that could not answer it is a request the box must still answer
+  // without spending fifty minutes on it.
+  unaffected: boolean;
   requestedAt: number;
+  // A LATER PUSH TO THE SAME PULL REQUEST already filed its own request, so
+  // this sha is not the head of anything any more. The box answers a request
+  // carrying this in one POST — no clone, no worktree, no model (worker/jobs/
+  // evals.mjs supersededRun) — so a morning of four pushes costs one run
+  // rather than four, and the check on the live head stops waiting out its
+  // seventy-five minutes behind three dead ones.
+  //
+  // DERIVED ON EVERY READ, NEVER STORED. It is a fact about the queue as it
+  // stands, not about the request as it was filed: the head of a branch moves
+  // with every push, and a field written at file time would say what was true
+  // then. A request that is the newest of its pull request carries null, and
+  // so does one whose check sent no pull-request number.
+  supersededBy: string | null;
 };
 
 function requestData(data: unknown): EvalsRequest | null {
@@ -619,14 +669,92 @@ function requestData(data: unknown): EvalsRequest | null {
       sha: value.sha,
       baseSha: typeof value.baseSha === "string" ? value.baseSha : null,
       pr: typeof value.pr === "number" ? value.pr : null,
+      runId: typeof value.runId === "number" ? value.runId : null,
       paths: value.paths,
       changed: Array.isArray(value.changed) && value.changed.every((path) => typeof path === "string")
         ? (value.changed as string[])
         : null,
       prBody: typeof value.prBody === "string" ? value.prBody : null,
+      unaffected: value.unaffected === true,
       requestedAt: value.requestedAt,
+      // The queue decides this, not the row; internalOldestEvalsRequest fills
+      // it in on the one request it hands out.
+      supersededBy: null,
     }
     : null;
+}
+
+/**
+ * The evals-run row an unaffected request is answered with, written by the
+ * door in the same mutation that files the request.
+ *
+ * NOT A RUN, AND IT NEVER PRETENDS TO BE ONE. It scored nothing, so `items`
+ * and `pass` are the BASE COMMIT'S numbers when a base run exists — the
+ * standing state of the set, restated for whoever reads the row, because this
+ * head changed nothing that could move them — and `goldenHash` stays null,
+ * since this row hashed no set of its own. `regressions: 0` is honest for the
+ * same reason: nothing was scored, so nothing regressed, and the one thing
+ * that could have made a regression possible (a change to a watched path) did
+ * not happen.
+ *
+ * ITS TWIN IS worker/jobs/evals.mjs unaffectedRun, which the box posts when it
+ * is handed an unaffected request an older door did not answer. The fields the
+ * merge gate and the digest read are pinned on both sides.
+ */
+export function unaffectedRunData(args: {
+  repo: string;
+  sha: string;
+  changed: string[] | null;
+  base: Record<string, unknown> | null;
+  at: number;
+}) {
+  const base = args.base ?? {};
+  const items = typeof base.items === "number" ? base.items : 0;
+  const pass = typeof base.pass === "number" ? base.pass : 0;
+  return {
+    repo: args.repo,
+    sha: args.sha,
+    // THE FLAG EVERY READER BRANCHES ON: scripts/evals-check.mjs gate() and
+    // report(), and convex/ttsMerge.ts through the coverage field below.
+    unaffected: true,
+    changed: args.changed,
+    tomquest: null,
+    wikitom: null,
+    goldenHash: null,
+    startedAt: args.at,
+    finishedAt: args.at,
+    calls: 0,
+    items,
+    pass,
+    fail: 0,
+    flaky: 0,
+    regressions: 0,
+    stillFailing: 0,
+    goldenCoverage: COVERAGE_NOT_REQUIRED,
+    weekly: false,
+    byPartition: [],
+    byVerdict: { approve: { items: 0, pass: 0 }, revise: { items: 0, pass: 0 } },
+    failures: [],
+    scoredIds: [],
+    skipped: [],
+    results: [],
+    efficiency: { cases: 0, unknown: 0, rises: [] },
+    ablation: [],
+    ablationSkipped: [],
+    // The shape worker/jobs/evals.mjs aggregate([]) returns, spelled out: an
+    // empty repo-task run, so every reader of `tasks` finds the fields it
+    // expects rather than an object missing half of them.
+    tasks: {
+      items: 0,
+      pass: 0,
+      fail: 0,
+      flaky: 0,
+      byPartition: [],
+      byVerdict: { approve: { items: 0, pass: 0 }, revise: { items: 0, pass: 0 } },
+      failures: [],
+    },
+    tasksSkipped: [],
+  };
 }
 
 export const internalRequestEvals = internalMutation({
@@ -635,9 +763,11 @@ export const internalRequestEvals = internalMutation({
     sha: v.string(),
     baseSha: v.optional(v.string()),
     pr: v.optional(v.number()),
+    runId: v.optional(v.number()),
     paths: v.array(v.string()),
     changed: v.optional(v.array(v.string())),
     prBody: v.optional(v.string()),
+    unaffected: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const key = `${args.repo}@${args.sha}`;
@@ -645,31 +775,69 @@ export const internalRequestEvals = internalMutation({
       .query("dtsEvents")
       .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_REQUEST).eq("key", key))
       .first();
-    if (existing !== null) return { existing: true };
     const requestedAt = Date.now();
-    await ctx.db.insert("dtsEvents", {
-      at: requestedAt,
-      kind: EVALS_REQUEST,
-      key,
-      data: {
-        repo: args.repo,
-        sha: args.sha,
-        baseSha: args.baseSha ?? null,
-        pr: args.pr ?? null,
-        paths: args.paths,
-        changed: args.changed ?? null,
-        // A pull-request body is text somebody else wrote, so it is stored and
-        // read as DATA — the only thing anything does with it is look for one
-        // anchored `evals: no-item` line.
-        prBody: args.prBody ?? null,
-        requestedAt,
-      },
-    });
-    return { existing: false };
+    if (existing === null) {
+      await ctx.db.insert("dtsEvents", {
+        at: requestedAt,
+        kind: EVALS_REQUEST,
+        key,
+        data: {
+          repo: args.repo,
+          sha: args.sha,
+          baseSha: args.baseSha ?? null,
+          pr: args.pr ?? null,
+          runId: args.runId ?? null,
+          paths: args.paths,
+          changed: args.changed ?? null,
+          // A pull-request body is text somebody else wrote, so it is stored and
+          // read as DATA — the only thing anything does with it is look for one
+          // anchored `evals: no-item` line.
+          prBody: args.prBody ?? null,
+          unaffected: args.unaffected === true,
+          requestedAt,
+        },
+      });
+    }
+    // ANSWERED HERE, IN THE SAME MUTATION THAT ASKED. A branch that touched no
+    // watched path has nothing to score, and the round trip to the box would
+    // produce a row saying exactly this — but only after the box's next cron
+    // tick, a clone and two worktrees. The gate still gets its third row, the
+    // check's first poll finds it, and no model runs.
+    //
+    // The queue is untouched by this: internalOldestEvalsRequest hands out
+    // only requests with no evals-run row at their key, so a request answered
+    // as it is filed is never picked up.
+    //
+    // OUTSIDE THE `existing === null` BRANCH, and that matters: a check re-run
+    // at the same sha finds its request already filed, and returning early
+    // there would leave a head with a request and no row — the exact shape
+    // that waits seventy-five minutes and then denies. Guarded on the RUN
+    // instead, so it is idempotent and it also answers an older unanswered
+    // request that nobody had a shortcut for.
+    if (args.unaffected === true && (await runForKey(ctx, key)) === null) {
+      const base =
+        args.baseSha === undefined ? null : await runForKey(ctx, `${args.repo}@${args.baseSha}`);
+      await ctx.db.insert("dtsEvents", {
+        at: requestedAt,
+        kind: EVALS_RUN,
+        key,
+        data: unaffectedRunData({
+          repo: args.repo,
+          sha: args.sha,
+          changed: args.changed ?? null,
+          base: (base?.data ?? null) as Record<string, unknown> | null,
+          at: requestedAt,
+        }),
+      });
+      return { existing: existing !== null, unaffected: true };
+    }
+    return { existing: existing !== null };
   },
 });
 
-async function runForKey(ctx: QueryCtx, key: string) {
+// Either ctx: the door's request mutation reads this too, to answer an
+// unaffected request without writing a second row over one that exists.
+async function runForKey(ctx: QueryCtx | MutationCtx, key: string) {
   return await ctx.db
     .query("dtsEvents")
     .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_RUN).eq("key", key))
@@ -686,6 +854,48 @@ export const internalEvalsRun = internalQuery({
   },
 });
 
+/**
+ * The head of each pull request, off the rows already read.
+ *
+ * The key is the repo and the pull-request number, because that is what "the
+ * same branch" means to everything downstream: the check sends the number, a
+ * branch has one open pull request, and a sha belongs to one head.
+ *
+ * ORDERED BY `runId`, NEVER BY ARRIVAL. The workflow run's id is GitHub's own
+ * push order (see the field's comment above); the order the requests reached
+ * Convex is the order two CI jobs happened to finish their checkout in, and
+ * two pushes a minute apart can arrive the wrong way round. Reading arrival
+ * order would let the LIVE head be marked superseded, and that mistake does
+ * not heal: the row written for it is exactly what stops the box picking that
+ * sha up again, so the pull request's check fails at every re-run with nothing
+ * able to score it.
+ *
+ * A request with NO id is in the map for nothing — it supersedes nothing and
+ * nothing supersedes it. That is the safe answer for a request whose place in
+ * the push order is unknown, and it is what every request filed before this
+ * field existed carries.
+ *
+ * NO SECOND READ. The rows are the queue scan's own window; a read of its own
+ * would double what this query costs on every five-minute poll, and these rows
+ * carry a pull-request body each. A pull request whose newest request falls
+ * outside the window names an older sha as its head, which only makes the
+ * sha the log points at less useful — the request being answered is superseded
+ * either way.
+ */
+function headShaByPullRequest(rows: Doc<"dtsEvents">[]): Map<string, { sha: string; runId: number }> {
+  const head = new Map<string, { sha: string; runId: number }>();
+  for (const row of rows) {
+    const request = requestData(row.data);
+    if (request === null || request.pr === null || request.runId === null) continue;
+    const key = `${request.repo}#${request.pr}`;
+    const seen = head.get(key);
+    if (seen === undefined || request.runId > seen.runId) {
+      head.set(key, { sha: request.sha, runId: request.runId });
+    }
+  }
+  return head;
+}
+
 export const internalOldestEvalsRequest = internalQuery({
   args: {},
   handler: async (ctx): Promise<EvalsRequest | null> => {
@@ -694,12 +904,33 @@ export const internalOldestEvalsRequest = internalQuery({
       .withIndex("by_kind_at", (q) => q.eq("kind", EVALS_REQUEST))
       .order("asc")
       .take(EVALS_REQUEST_SCAN_LIMIT);
+    // WHAT EACH PULL REQUEST'S HEAD IS, off the same window. A morning of four
+    // pushes to one branch files four requests, and the box serves one per
+    // pass at about thirty-five minutes: the check on the fourth waits out
+    // three runs of shas nobody will merge and then fails on its own deadline.
+    // Three of those four are answered in a POST each instead.
+    const heads = headShaByPullRequest(rows);
     for (const row of rows) {
       if (row.key === undefined) continue;
       const run = await runForKey(ctx, row.key);
       if (run === null) {
         const request = requestData(row.data);
-        if (request !== null) return request;
+        if (request === null) continue;
+        // THE OLDEST UNANSWERED REQUEST IS STILL THE ONE HANDED OUT, superseded
+        // or not. The order does not change; what changes is that a superseded
+        // one is answered without a run, so the queue behind it advances on the
+        // same pass rather than on the next cron tick (worker/jobs/evals.mjs
+        // --serve keeps going while the answer cost no model).
+        //
+        // A request with no `runId` has no place in the push order, so it is
+        // never superseded: `head` is undefined for it, and the strict `>` on
+        // the run ids is what decides every other case.
+        const head = request.pr === null || request.runId === null
+          ? undefined
+          : heads.get(`${request.repo}#${request.pr}`);
+        return head === undefined || head.runId <= request.runId!
+          ? request
+          : { ...request, supersededBy: head.sha };
       }
     }
     return null;

@@ -697,6 +697,19 @@ export async function gatherWeeklyFacts(
   let efficiencyAt = -1;
   for (const e of await eventsOfKind(EVALS_RUN)) {
     const d = (e.data ?? {}) as Record<string, unknown>;
+    // A ROW IS NOT A RUN. Three kinds of evals-run row score nothing and are
+    // written in a POST each: a branch that touched no watched path
+    // (`unaffected`), a head a later push replaced (`superseded`), and a sha
+    // the box could not fetch or check out (`error`). Counting them here said
+    // three untrue things at once — they were runs the week did, they were
+    // CLEAN runs (`regressions: null` fell through `?? 0` to zero), and, being
+    // the newest rows, their empty `ablation: []` and `efficiency.rises: []`
+    // replaced the real measurement off the last run that actually scored the
+    // set. The superseded row is the frequent one and is what made this
+    // visible, but the other two were already doing it.
+    if (d.unaffected === true || d.superseded === true || (typeof d.error === "string" && d.error !== "")) {
+      continue;
+    }
     evals.runs++;
     if (Array.isArray(d.ablation) && e.at > ablationAt) {
       ablation = ablationFindings(d.ablation);

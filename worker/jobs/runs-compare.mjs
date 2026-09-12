@@ -20,7 +20,15 @@ async function comparisonBatch(env, fetchImpl) {
     },
     body: "{}",
   });
-  if (!response.ok) throw new Error(`/runs/compare -> HTTP ${response.status}`);
+  if (!response.ok) {
+    // Carry the route's reason into the cron line. A bare status is what made
+    // the 400 unreadable for as long as it ran.
+    const reason = await response.text().then(
+      (text) => { try { return JSON.parse(text)?.error ?? text; } catch { return text; } },
+      () => "",
+    );
+    throw new Error(`/runs/compare -> HTTP ${response.status}${reason ? `: ${String(reason).split("\n")[0].slice(0, 300)}` : ""}`);
+  }
   const result = await response.json();
   if (!Array.isArray(result?.comparisons)) throw new Error("/runs/compare returned an invalid batch");
   return result.comparisons;

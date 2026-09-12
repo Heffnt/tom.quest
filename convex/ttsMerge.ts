@@ -3,7 +3,7 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { logEvent } from "./tts";
-import { EVALS_RUN } from "./ttsEvals";
+import { COVERAGE_NOT_REQUIRED, EVALS_RUN } from "./ttsEvals";
 import { redactSecrets } from "../worker/session-host/redact.mjs";
 
 // ── THE MECHANICAL MERGE GATE (Tom, 2026-09-09) ─────────────────────────────
@@ -279,8 +279,17 @@ export async function mergeGateFor(
   // ship what it owed" — and a gate that opened on "we did not check" is
   // precisely the failure the `regressions: null` rule above was written to
   // prevent (worker/jobs/evals.mjs failedRun).
+  //
+  // `not-required` IS AN ANSWER AND OPENS. It is the row an unaffected branch
+  // gets: the check read its own diff, nothing in it was a watched path, and
+  // the door recorded that instead of asking for a fifty-minute run of a set
+  // this change cannot move. The distinction from `true` is kept because the
+  // two are different facts — one says the branch paid for a context change,
+  // the other says there was none — and the `why` below says which.
   const coverage =
-    typeof evalsData.goldenCoverage === "boolean" || evalsData.goldenCoverage === null
+    typeof evalsData.goldenCoverage === "boolean" ||
+    evalsData.goldenCoverage === null ||
+    evalsData.goldenCoverage === COVERAGE_NOT_REQUIRED
       ? evalsData.goldenCoverage
       : undefined;
   const scored =
@@ -300,7 +309,17 @@ export async function mergeGateFor(
               regressions === 1 ? "" : "s"
             } at ${short}`,
           }
-        : coverage === true
+        : coverage === COVERAGE_NOT_REQUIRED
+          ? {
+              name: "evals",
+              passed: true,
+              // THE SAME WORDS the check's own log prints (scripts/
+              // evals-check.mjs report()), and the #tts-decisions merge line
+              // joins these whys — so the CI log, the gate and Tom's Slack all
+              // say one thing about this commit.
+              why: `the evals are unaffected at ${short}: no watched path changed`,
+            }
+          : coverage === true
           ? { name: "evals", passed: true, why: `the evals scored ${short} with no regression${scored}` }
           : coverage === false
             ? {

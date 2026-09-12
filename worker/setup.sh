@@ -171,6 +171,19 @@ cp "$WORKER_DIR"/runs/*.mjs /opt/tts/runs/
 # session-archive.mjs.
 cp "$WORKER_DIR"/jobs/worker-env.mjs /opt/tts/jobs/worker-env.mjs
 cp "$WORKER_DIR"/jobs/session-archive.mjs /opt/tts/jobs/session-archive.mjs
+# EVERY `../session-host/<file>` A runs/ MODULE IMPORTS NEEDS A LINE HERE, for
+# the same reason and with one extra twist: step 9 below copies the whole of
+# session-host/, but it runs AFTER step 8 writes the cron, so on a fresh
+# install the first runs-sweep tick fires against an empty /opt/tts/session-
+# host and dies with ERR_MODULE_NOT_FOUND. These three are their own closed
+# import graph (cut → overflow → redact) over node builtins only, so copying
+# them early is complete on its own and step 9 simply overwrites them.
+# Three imports today: ingest.mjs → cut/overflow/redact, sweep.mjs →
+# overflow/redact, store.mjs → redact.
+mkdir -p /opt/tts/session-host
+cp "$WORKER_DIR"/session-host/cut.mjs /opt/tts/session-host/cut.mjs
+cp "$WORKER_DIR"/session-host/overflow.mjs /opt/tts/session-host/overflow.mjs
+cp "$WORKER_DIR"/session-host/redact.mjs /opt/tts/session-host/redact.mjs
 mkdir -p /opt/tts/scripts /opt/tts/worker/jobs
 cp "$WORKER_DIR"/../scripts/session-start-hook.mjs /opt/tts/scripts/session-start-hook.mjs
 cp "$WORKER_DIR"/../scripts/run-hook.mjs /opt/tts/scripts/run-hook.mjs
