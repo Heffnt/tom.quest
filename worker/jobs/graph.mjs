@@ -115,6 +115,10 @@ export const RENDER_ORDER = Object.freeze([
   "source",
 ]);
 
+/** The two kinds a prompt never gains: the evidence entry and its sources. See
+ * the rule inside `walk`. */
+export const CITATION_KINDS = new Set(["evidence", "source"]);
+
 const RENDER_RANK = Object.freeze(
   Object.fromEntries(RENDER_ORDER.map((kind, index) => [kind, index])),
 );
@@ -144,7 +148,18 @@ export const WEIGHTS = Object.freeze({
   "member-of/page-area": 900,
   "member-of/line-skill": 560,
   "member-of/heading-skill": 560,
-  "member-of/page-skill": 560,
+  // A SKILL COSTS WHAT ITS PAGE COSTS, and this number is why.
+  //
+  // Calibrated by P2, which is the only reason a weight here may move. At 560
+  // the walk reached `page:tom.quest/AGENTS.md` at cost 130 and then spent the
+  // whole 12,288-byte budget on that page's 460 rule and heading nodes at cost
+  // 230, so `skill:repo-tom.quest` at 570 never made it in — the walk knew the
+  // page existed and did not know the one command that loads it, on three of
+  // the eight subjects. At 1000 the edge is free and a skill is admitted the
+  // moment its page is reached, which is what `routeSkills` does and what the
+  // grant block says. The line and heading edges keep 560: a run finds a skill
+  // through its page, never by walking up from one of its lines.
+  "member-of/page-skill": 1000,
   "member-of/todo-batch": 780,
   "member-of/outcome-batch": 600,
   "applies-to/caller-priorities": 880,
@@ -321,7 +336,13 @@ export function byteLength(text) {
 
 // ── Reading a page ───────────────────────────────────────────────────────────
 
-const HEADING = /^\s{0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/;
+// THE TRAILING `\r?` IS LOAD-BEARING. Splitting a CRLF file on `\n` leaves the
+// carriage return at the end of every line, and `.` in a JavaScript regular
+// expression matches every character EXCEPT a line terminator — `\r` included.
+// Without it, `## Map\r` is not a heading: `agent-rules.md` is CRLF on disk and
+// all sixteen of its headings read as ordinary lines, which flattens the whole
+// page into one list under the page node.
+const HEADING = /^\s{0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*\r?$/;
 const FENCE = /^\s{0,3}(?:```|~~~)/;
 
 /**
@@ -1090,7 +1111,7 @@ export function nodeBytes(row) {
  * @param {number} budgetBytes        the rendering's byte budget
  * @param {Record<string,number>|null} weights  overrides by edge kind or by full key
  * @param {{exclude?: Set<string>, maxHops?: number, maxVisit?: number,
- *          kinds?: string[], fixed?: string[]}} [options]
+ *          kinds?: string[], citations?: boolean}} [options]
  * @returns {{nodes: object[], frontier: object[], bytes: number, visited: number,
  *            costs: Record<string, number>, hops: Record<string, number>}}
  */
@@ -1100,6 +1121,8 @@ export function walk(graph, startNodes, budgetBytes, weights = null, options = {
   const maxHops = options.maxHops ?? 3;
   const maxVisit = options.maxVisit ?? 4_000;
   const only = options.kinds === undefined ? null : new Set(options.kinds);
+  const citations = options.citations === true;
+  const seeded = new Set();
 
   const costOf = (edge) => {
     const override = weights === null ? undefined : weights[edge.kind];
@@ -1122,6 +1145,7 @@ export function walk(graph, startNodes, budgetBytes, weights = null, options = {
     if (typeof id !== "string" || !index.byId.has(id)) continue;
     const weight = typeof seed === "string" ? SEED_WEIGHTS.task : (seed.weight ?? SEED_WEIGHTS.task);
     const cost = 1000 - weight;
+    seeded.add(id);
     if (best.has(id) && best.get(id) <= cost) continue;
     best.set(id, cost);
     hops.set(id, 0);
@@ -1160,6 +1184,22 @@ export function walk(graph, startNodes, budgetBytes, weights = null, options = {
     const row = index.byId.get(entry.id);
     if (exclude.has(entry.id)) continue;
     if (only !== null && !only.has(row.kind)) continue;
+    // THE TWO-RECORD RULE, AS A RULE RATHER THAN AS A WEIGHT.
+    //
+    // A synthesis line carries no citation; the citation is the `evidences`
+    // edge from its entry and from each of the entry's sources. Those edges
+    // have the lowest weights of any kind, which makes the chain cheap to reach
+    // and expensive to prefer — but a budget is a byte count, not a cost
+    // ceiling, so a large enough budget would admit the whole chain and put a
+    // date and a quotation mark into a run's prompt. The guarantee has to be
+    // something a later weight edit cannot quietly undo, so it is stated here:
+    // a walk admits an entry or a source only when a SEED is one, which is
+    // exactly the case `tts search near <line> --hops 2` is, or when the caller
+    // asks for citations by name.
+    if (CITATION_KINDS.has(row.kind) && !citations && !seeded.has(row.id)) {
+      frontier.push(row);
+      continue;
+    }
     const size = nodeBytes(row);
     if (bytes + size > budgetBytes) {
       frontier.push(row);
