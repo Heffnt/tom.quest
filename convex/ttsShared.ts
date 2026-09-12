@@ -56,6 +56,29 @@ export const AUTONOMOUS_SESSION_CONTRACT =
   "You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.";
 
 /** The closed TTS vocabulary, defined before a worker mission uses its terms. */
+/**
+ * ONE COMMIT KEY, and one home for it.
+ *
+ * `<repo>@<sha>` indexes the eval rows for a commit, and two spellings of it
+ * index two different sets of rows. It used to live in convex/ttsMerge.ts,
+ * where convex/ttsEvals.ts could not import it without making the two modules
+ * a cycle — ttsMerge.ts imports EVALS_RUN from ttsEvals.ts — so ttsEvals.ts
+ * wrote the template inline at three sites instead. Both modules already import
+ * this one, so this is where it can be read from without a cycle.
+ *
+ * `mergeKey` travels with it because it is the same identity in the merge
+ * event's older spelling, and splitting a pair like that across two files is
+ * how a second spelling starts.
+ */
+export function commitKey(repo: string, sha: string): string {
+  return `${repo}@${sha}`;
+}
+
+/** The merge event's own key, which predates the commit key. */
+export function mergeKey(repo: string, sha: string): string {
+  return `${repo}:${sha}`;
+}
+
 // <vocabulary generated version=a41d2676336ccc73 — scripts/vocabulary.mjs; do not edit>
 export const TTS_CLOSED_VOCABULARY = `The vocabulary, which is closed — these words mean exactly this and nothing else:
 - A BATCH holds how a set of todos gets completed. It is not itself a todo and it is never worked directly.

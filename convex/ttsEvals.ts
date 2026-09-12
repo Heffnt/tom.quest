@@ -2,11 +2,11 @@ import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
-import { DAY_MS, modelOfTomHeadOf } from "./ttsShared";
+import { DAY_MS, commitKey, modelOfTomHeadOf } from "./ttsShared";
 // The key every fact about one commit is filed under has one home, in
 // convex/ttsMerge.ts. Two spellings of it index two different sets of rows: a
 // row written under one is invisible to a reader using the other.
-import { commitKey } from "./ttsMerge";
+
 
 export const PRELUDE_DELIVERY = "prelude-delivery";
 export const EVALS_REQUEST = "evals-request";
