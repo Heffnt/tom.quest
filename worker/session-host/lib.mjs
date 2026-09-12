@@ -18,6 +18,11 @@ import { ENV_PATH, loadEnv as loadWorkerEnv } from "./worker-env.mjs";
 import { redactSecrets } from "./redact.mjs";
 
 export { ENV_PATH };
+// The published graph's version, so session.mjs can stamp it on a run it
+// registers. It comes through here rather than through a second import in
+// session.mjs because the symlink above is the daemon's ONE reach into
+// worker/jobs, and every caller already has this file.
+export { graphVersion } from "./worker-env.mjs";
 // The credential filter every persisted row passes through, applied in
 // sessionsFetch below. Its body is redact.mjs — dependency-free for the same
 // reason env-scrub.mjs is.

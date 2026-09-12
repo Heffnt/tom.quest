@@ -62,3 +62,75 @@ export function loadEnv({ path = ENV_PATH, require: required = [] } = {}) {
   }
   return env;
 }
+
+// ---------------------------------------------------------------------------
+// The two published versions a launcher stamps on a run
+// ---------------------------------------------------------------------------
+//
+// WHY THEY LIVE HERE. This file is already copied to BOTH install depths by
+// setup.sh (flat with the jobs at /opt/tts/, and again at
+// /opt/tts/session-host/ through the checked-in symlink), and it is already
+// every job's and the daemon's environment module. So a version reader put
+// here costs no new `cp` line and introduces no second resolution of the
+// WikiTom directory — which is exactly what the three launchers need, since
+// they sit at three different depths and one of them is the daemon.
+//
+// THE CANONICAL SPELLING OF THE WIKITOM PATH IS worker/jobs/search-lib.mjs
+// (BOX_WIKITOM_DIR and LAPTOP_WIKITOM_DIR). It is repeated rather than
+// imported because a static `./search-lib.mjs` import DANGLES in the
+// session-host copy of this file: search-lib.mjs lands flat at
+// /opt/tts/search-lib.mjs while this body is also installed one directory
+// down, and Node resolves a static import at module load — the daemon would
+// fail to start. Keep the two spellings in step; nothing else reads them.
+const BOX_WIKITOM_DIR = "/root/wikitom";
+const LAPTOP_WIKITOM_DIR = "C:/Users/heffn/Desktop/WikiTom";
+
+function wikitomDir() {
+  if (process.env.WIKITOM_DIR) return process.env.WIKITOM_DIR;
+  return process.platform === "win32" ? LAPTOP_WIKITOM_DIR : BOX_WIKITOM_DIR;
+}
+
+// Per-process cache, KEYED ON THE RESOLVED PATH rather than on the file name,
+// so a process that moves WIKITOM_DIR reads the new tree instead of the old
+// tree's answer. THE NULL IS CACHED TOO: a launcher with no WikiTom checkout
+// would otherwise re-stat a missing file on every run it registers, and the
+// answer cannot change under one path inside one process.
+const versionCache = new Map();
+
+/**
+ * The `version` field of one published JSON file under <WikiTom>/tts/.
+ *
+ * NEVER THROWS AND RETURNS null ON ANY FAILURE — a missing checkout, an
+ * unreadable file, malformed JSON, or a file with no string `version`. This is
+ * a stamp on a run row, not a precondition of the run: a launcher that cannot
+ * name the version must still launch, and absent is a supported value
+ * everywhere it lands.
+ */
+function publishedVersion(file) {
+  let path;
+  try {
+    path = `${wikitomDir()}/tts/${file}`;
+  } catch {
+    return null;
+  }
+  if (versionCache.has(path)) return versionCache.get(path);
+  let version = null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path, "utf8"));
+    if (parsed && typeof parsed.version === "string" && parsed.version !== "") version = parsed.version;
+  } catch {
+    version = null;
+  }
+  versionCache.set(path, version);
+  return version;
+}
+
+/** The published vocabulary's version, or null. */
+export function vocabularyVersion() {
+  return publishedVersion("vocabulary.json");
+}
+
+/** The published graph's version, or null. */
+export function graphVersion() {
+  return publishedVersion("graph.json");
+}

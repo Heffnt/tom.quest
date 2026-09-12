@@ -3,6 +3,10 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { DAY_MS, modelOfTomHeadOf } from "./ttsShared";
+// The key every fact about one commit is filed under has one home, in
+// convex/ttsMerge.ts. Two spellings of it index two different sets of rows: a
+// row written under one is invisible to a reader using the other.
+import { commitKey } from "./ttsMerge";
 
 export const PRELUDE_DELIVERY = "prelude-delivery";
 export const EVALS_REQUEST = "evals-request";
@@ -640,7 +644,7 @@ export const internalRequestEvals = internalMutation({
     prBody: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const key = `${args.repo}@${args.sha}`;
+    const key = commitKey(args.repo, args.sha);
     const existing = await ctx.db
       .query("dtsEvents")
       .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_REQUEST).eq("key", key))
@@ -680,8 +684,8 @@ async function runForKey(ctx: QueryCtx, key: string) {
 export const internalEvalsRun = internalQuery({
   args: { repo: v.string(), sha: v.string(), baseSha: v.optional(v.string()) },
   handler: async (ctx, args) => {
-    const run = await runForKey(ctx, `${args.repo}@${args.sha}`);
-    const base = args.baseSha === undefined ? null : await runForKey(ctx, `${args.repo}@${args.baseSha}`);
+    const run = await runForKey(ctx, commitKey(args.repo, args.sha));
+    const base = args.baseSha === undefined ? null : await runForKey(ctx, commitKey(args.repo, args.baseSha));
     return { run: run?.data ?? null, base: base?.data ?? null };
   },
 });

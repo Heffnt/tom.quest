@@ -42,6 +42,7 @@ import {
   CONTEXT_CALLER_NAMES,
   routeSkills,
 } from "../worker/jobs/skill-router.mjs";
+import { givenNodes } from "../worker/jobs/graph.mjs";
 
 /** scripts/skills.mjs is plain ESM: `renderGrants`s `granted = []` and
  * `refused = []` defaults infer as `never[]`, so the shape it actually takes
@@ -51,6 +52,16 @@ const renderGrantBlock = renderGrants as (input: {
   granted: string[];
   refused: { name: string; why: string }[];
 }) => string;
+
+/** worker/jobs/graph.mjs is plain ESM for the same reason, and its defaults
+ * infer the same way: `pages = []`, `prefixPaths = []` and `granted = []` are
+ * all `never[]` from here, so the shape is stated once rather than cast at the
+ * call site. */
+const nodesGiven = givenNodes as (input: {
+  pages: { path: string; body: string }[];
+  prefixPaths: string[];
+  granted: string[];
+}) => string[];
 
 /** What the run is about. `none` is the laptop hook and every caller with no
  * subject (the planner, the weekly gather, time notes): nothing routes off a
@@ -77,6 +88,13 @@ export type AssembledContext = {
    * rules are on disk at the commit it is working on. Always null in Convex —
    * see the cwd note at assembleContext. */
   repoRulesSource: "native" | null;
+  /** The version of the graph the publication was generated from, or null when
+   * the nightly that posted the base named none. */
+  graphVersion: string | null;
+  /** The `given` edges from the prompt side: the exact node ids this context
+   * carries — the fixed prefix pages' lines and headings, and one node per
+   * granted skill. */
+  graphNodes: string[];
   bytes: { prefix: number; grants: number };
 };
 
@@ -366,12 +384,29 @@ export async function assembleContext(
   const commit = catalog[0]?.commit ?? state.commit;
   const grants = renderGrantBlock({ commit, granted, refused });
 
+  // THE `given` EDGES, named from the pages already read above rather than
+  // guessed. Nothing here changes `prefix`, `grants` or `granted`: this is a
+  // second reading of the same selection, in node ids.
+  //
+  // ONE PAGE, NOT THREE. `given` means CARRIED, not "may load". `prefix` above
+  // is `modelOfTomText(state, ["operate"])` and nothing else — phase 6 took
+  // writing.md and ground.md out of the prefix bytes and made them the `write`
+  // SKILL, which is why two runs at one commit hold byte-identical prefixes
+  // whoever they are. Listing their two hundred line nodes here would say a
+  // reachesTom run's prompt carried text it did not carry, and the blast-radius
+  // count that reads this field would then be wrong in the generous direction
+  // for every line of both pages. The grant is already recorded: `skill:write`
+  // is one of the nodes below.
+  const prefixPaths = ["model-of-tom/agent-rules.md"];
+
   return {
     prefix,
     grants,
     granted,
     refused,
     repoRulesSource: routed.repoRulesSource,
+    graphVersion: state.graphVersion ?? null,
+    graphNodes: nodesGiven({ pages, prefixPaths, granted }),
     bytes: { prefix: byteLength(prefix), grants: byteLength(grants) },
   };
 }

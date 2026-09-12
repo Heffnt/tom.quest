@@ -20,6 +20,8 @@ import {
   skillRoots,
   usage,
 } from "./search-lib.mjs";
+import { buildGraph, lineId } from "./graph.mjs";
+import { serializeGraph } from "../../scripts/graph.mjs";
 import { writeRegistration } from "../runs/registration.mjs";
 
 const temporary = [];
@@ -587,6 +589,384 @@ describe("installed skills", () => {
   });
 });
 
+// ── the graph and the vocabulary ─────────────────────────────────────────────
+// The two GENERATED files in the WikiTom checkout. The fixture graph is built
+// by worker/jobs/graph.mjs's own buildGraph over fixture page text and written
+// with scripts/graph.mjs's own serializeGraph, so these tests read the shape the
+// nightly actually writes — a hand-written graph would agree with the commands
+// and with nothing else.
+describe("the graph", () => {
+  const AGENT_RULES = [
+    "# Agent rules",
+    "",
+    "You work for Tom.",
+    "",
+    "## Implementing and asking",
+    "",
+    "- Ask in prose.",
+    "- Mark what you infer about him.",
+    "",
+  ].join("\n");
+
+  const RESEARCH = [
+    "---",
+    "categories: [paper, cmt]",
+    "updated: 2026-09-01",
+    "---",
+    "",
+    "## Current state",
+    "",
+    "- The campaign runs on the cluster.",
+    "",
+  ].join("\n");
+
+  // The `line:` text here normalizes to the same bytes as the page bullet
+  // above, so the entry and the line share one bare id — which is what makes
+  // the ambiguity test an ambiguity the real files also produce.
+  const EVIDENCE = [
+    "# Evidence for agent-rules.md",
+    "",
+    "## Implementing and asking",
+    "",
+    "- line: Ask in prose.",
+    '  said: 2026-09-01 · "prose, not a form"',
+    "",
+  ].join("\n");
+
+  // lineId returns the whole id, kind and all; the bare half is what a caller
+  // types when it remembers a hash and not the kind that carries it.
+  const prose = lineId("- Ask in prose.");
+  const proseBare = prose.slice("line:".length);
+  const infer = lineId("- Mark what you infer about him.");
+
+  function vault() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
+    temporary.push(root);
+    const graph = buildGraph({
+      pages: [
+        { path: "model-of-tom/agent-rules.md", body: AGENT_RULES },
+        { path: "model-of-tom/areas/research.md", body: RESEARCH },
+      ],
+      evidence: [{ path: "model-of-tom/evidence/agent-rules.md", body: EVIDENCE }],
+      skills: [
+        {
+          name: "know-research",
+          description: "Tom's research: research, paper, cmt.",
+          sourcePaths: ["model-of-tom/areas/research.md"],
+        },
+      ],
+      commits: { wikitom: "wiki-sha", tomQuest: "quest-sha" },
+    });
+    graph.generatedFrom = { wikitomCommit: "wiki-sha", tomQuestCommit: "quest-sha", generator: "scripts/graph.mjs" };
+    fs.mkdirSync(path.join(root, "tts"), { recursive: true });
+    fs.writeFileSync(path.join(root, "tts", "graph.json"), serializeGraph(graph));
+    return root;
+  }
+
+  async function run(argv, root) {
+    const output = [];
+    const errors = [];
+    const code = await runSearchCli(argv.concat(["--wikitom", root]), {
+      env: {},
+      write: (line) => output.push(line),
+      error: (line) => errors.push(line),
+    });
+    return { code, output, errors, text: output.join("\n") };
+  }
+
+  it("prints one node's fields, its text, and every edge touching it", async () => {
+    const root = vault();
+    const { code, output } = await run(["node", prose], root);
+    expect(code).toBe(0);
+    expect(output).toHaveLength(1);
+    const lines = output[0].split("\n");
+    expect(lines[0]).toBe(
+      `graph/${prose} kind=line path=model-of-tom/agent-rules.md heading="Implementing and asking" order=6`,
+    );
+    expect(lines[1]).toBe("  text  - Ask in prose.");
+    // Out is where the node is the `from`, in is where it is the `to`; both
+    // carry the weight and the evidence pointer the edge was minted with.
+    expect(lines).toContain(
+      '  out   member-of → heading:model-of-tom/agent-rules.md#Implementing and asking (w900) · model-of-tom/agent-rules.md#Implementing and asking',
+    );
+    expect(lines.some((line) => line.startsWith("  in    evidences ← evidence:") && line.includes("(w200)"))).toBe(true);
+  });
+
+  it("resolves a bare id when one node carries it and refuses when two do", async () => {
+    const root = vault();
+    // `Mark what you infer about him.` is a line and nothing else.
+    const unique = await run(["node", infer.slice("line:".length)], root);
+    expect(unique.code).toBe(0);
+    expect(unique.output[0].split("\n")[0]).toContain(`graph/${infer} kind=line`);
+
+    // `Ask in prose.` is both a line of the page and an entry of the evidence
+    // file, and the two share one hash by construction.
+    const both = await run(["node", proseBare], root);
+    expect(both.code).toBe(3);
+    const lines = both.output[0].split("\n");
+    expect(lines[0]).toBe(`graph/${proseBare} ambiguous across 2 kinds`);
+    expect(lines[1]).toContain(`did you mean  evidence:${proseBare} kind=evidence`);
+    expect(lines[2]).toContain(`did you mean  line:${proseBare} kind=line`);
+  });
+
+  it("turns an unknown id into did you mean rows over text and title, and exits 3", async () => {
+    const root = vault();
+    const { code, output } = await run(["node", "term:prose"], root);
+    expect(code).toBe(3);
+    const lines = output[0].split("\n");
+    expect(lines[0]).toBe("graph/term:prose unknown");
+    // The kind prefix is dropped before the substring search: the question is
+    // about the word, and "term:prose" matches no text by construction.
+    // Three carriers of the word: the page's line, the evidence entry over it,
+    // and the source under that entry.
+    expect(lines).toHaveLength(4);
+    expect(lines.slice(1).join("\n")).toContain(prose);
+    expect(lines.slice(1).join("\n")).toContain(`evidence:${proseBare}`);
+
+    const nothing = await run(["node", "not-a-word-in-the-graph"], root);
+    expect(nothing.code).toBe(3);
+    expect(nothing.output[0]).toBe(
+      'graph/not-a-word-in-the-graph unknown\n  no node\'s text or title carries "not-a-word-in-the-graph"',
+    );
+  });
+
+  it("emits the node and its edges verbatim under --json", async () => {
+    const root = vault();
+    const { code, output } = await run(["node", prose, "--json"], root);
+    expect(code).toBe(0);
+    const body = JSON.parse(output[0]);
+    expect(body.node).toMatchObject({ kind: "line", id: prose, path: "model-of-tom/agent-rules.md" });
+    expect(body.edges.out[0]).toMatchObject({ kind: "member-of", from: prose, weight: 900 });
+    expect(body.edges.in.every((edge) => edge.to === prose)).toBe(true);
+
+    const refused = await run(["node", "term:prose", "--json"], root);
+    expect(refused.code).toBe(3);
+    expect(JSON.parse(refused.output[0])).toMatchObject({ refused: "unknown", id: "term:prose" });
+  });
+
+  it("walks outward under the default budget and reports admitted, frontier and bytes", async () => {
+    const root = vault();
+    const { code, output } = await run(["near", "area:research"], root);
+    expect(code).toBe(0);
+    const lines = output[0].split("\n");
+    // The seed first, then the page, then the terms the area applies to — the
+    // module's RENDER_ORDER, not the order the walk reached them in.
+    expect(lines[0]).toBe("area:research kind=area title=\"research\" path=model-of-tom/areas/research.md");
+    expect(lines[1]).toContain("page:model-of-tom/areas/research.md kind=page");
+    expect(lines).toContain("frontier:");
+    expect(lines).toContain("  none");
+    expect(lines.at(-1)).toBe("near/area:research hops=2 admitted=7 frontier=0 bytes=95/4,096");
+  });
+
+  it("takes --hops and --bytes, and names the command that reaches each node the budget left out", async () => {
+    const root = vault();
+    // One byte admits nothing at all: every node's rendering is its text plus a
+    // newline, so the whole neighbourhood becomes the frontier.
+    const campaign = lineId("- The campaign runs on the cluster.");
+    const { code, output } = await run(["near", campaign, "--hops", "3", "--bytes", "1"], root);
+    expect(code).toBe(0);
+    const lines = output[0].split("\n");
+    expect(lines[0]).toBe("frontier:");
+    // An area and a page have a cheaper door than another walk.
+    expect(lines).toContain("  area:research · tts-search areas research");
+    expect(lines).toContain("  page:model-of-tom/areas/research.md · model-of-tom/areas/research.md");
+    expect(lines).toContain("  skill:know-research · tts-search near skill:know-research");
+    expect(lines.at(-1)).toBe(`near/${campaign} hops=3 admitted=0 frontier=5 bytes=0/1`);
+
+    // A shallower walk reaches strictly less.
+    const shallow = await run(["near", campaign, "--hops", "1", "--bytes", "1"], root);
+    const deep = Number(/frontier=(\d+)/.exec(lines.at(-1))[1]);
+    expect(Number(/frontier=(\d+)/.exec(shallow.output[0].split("\n").at(-1))[1])).toBeLessThan(deep);
+  });
+
+  it("emits the walk under --json with the frontier's commands", async () => {
+    const root = vault();
+    const { code, output } = await run(["near", "area:research", "--hops", "1", "--bytes", "64", "--json"], root);
+    expect(code).toBe(0);
+    const body = JSON.parse(output[0]);
+    expect(body).toMatchObject({ seed: "area:research", hops: 1, budget: 64 });
+    expect(body.admitted[0]).toMatchObject({ id: "area:research", kind: "area" });
+    expect(body.frontier.every((entry) => typeof entry.command === "string")).toBe(true);
+  });
+
+  it("reports a missing tts/graph.json as text or JSON and exits 3, like the archive", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
+    temporary.push(root);
+    const text = await run(["node", "area:research"], root);
+    expect(text.code).toBe(3);
+    expect(text.output).toEqual([`tts-search: no graph at ${path.join(root, "tts", "graph.json")}`]);
+
+    const json = await run(["near", "area:research", "--json"], root);
+    expect(json.code).toBe(3);
+    expect(JSON.parse(json.output[0])).toEqual({ missing: path.join(root, "tts", "graph.json") });
+  });
+
+  it("takes only the options that apply to it", () => {
+    expect(parseSearchArgs(["near", "area:research"])).toMatchObject({ command: "near", hops: 2, bytes: 4096 });
+    expect(parseSearchArgs(["near", "area:research", "--hops", "1", "--bytes", "64"])).toMatchObject({ hops: 1, bytes: 64 });
+    expect(parseSearchArgs(["node", "area:research"])).toMatchObject({ command: "node", node: "area:research" });
+    expect(() => parseSearchArgs(["node"])).toThrow("node needs exactly one node id");
+    expect(() => parseSearchArgs(["near", "a", "b"])).toThrow("near needs exactly one node id");
+    expect(() => parseSearchArgs(["near", "a", "--hops", "0"])).toThrow("--hops must be a whole number from 1 to 6");
+    expect(() => parseSearchArgs(["near", "a", "--bytes", "0"])).toThrow("--bytes must be a whole number from 1 to 1048576");
+    expect(() => parseSearchArgs(["node", "a", "--hops", "2"])).toThrow("--hops does not apply to node");
+    expect(() => parseSearchArgs(["node", "a", "--limit", "5"])).toThrow("--limit does not apply to node");
+  });
+});
+
+describe("the vocabulary", () => {
+  const FILE = {
+    version: "8f3a1c02d7e45b19",
+    generatedFrom: { wikitomCommit: "wiki-sha", tomQuestCommit: "quest-sha", specSection: "12.1" },
+    terms: [
+      {
+        term: "batch",
+        kind: "concept",
+        definition: "a set of todos that share one purpose. Its own row, not a todo.",
+        specSection: "5.4",
+        codeSymbol: "convex/schema.ts:batches",
+        related: ["todo", "needs"],
+        refusedFor: null,
+      },
+      {
+        term: "todo",
+        kind: "concept",
+        definition: "one task or goal, one row of dtsTodos.",
+        specSection: "12.1",
+        codeSymbol: "convex/schema.ts:dtsTodos",
+        related: [],
+        refusedFor: null,
+      },
+      {
+        term: "#dump",
+        kind: "channel",
+        definition: "the Slack channel a capture arrives on.",
+        specSection: "12.1",
+        codeSymbol: null,
+        related: [],
+        refusedFor: null,
+      },
+      {
+        term: "ontology",
+        kind: "refused",
+        definition: "not a TTS word — a second name for the vocabulary",
+        specSection: "12.1",
+        codeSymbol: null,
+        related: [],
+        refusedFor: "batch",
+      },
+    ],
+    entities: [{}, {}],
+    relations: [{}],
+    jobs: [{}, {}, {}],
+    searchQuestions: [{}, {}, {}, {}],
+    skills: [{}, {}, {}, {}, {}],
+    repos: [{}, {}, {}, {}, {}, {}],
+    channels: [{}, {}, {}, {}, {}, {}, {}],
+  };
+
+  function vault(body = FILE) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
+    temporary.push(root);
+    fs.mkdirSync(path.join(root, "tts"), { recursive: true });
+    fs.writeFileSync(path.join(root, "tts", "vocabulary.json"), `${JSON.stringify(body, null, 2)}\n`);
+    return root;
+  }
+
+  async function run(argv, root) {
+    const output = [];
+    const code = await runSearchCli(argv.concat(["--wikitom", root]), { env: {}, write: (line) => output.push(line), error: () => {} });
+    return { code, output };
+  }
+
+  it("prints one term's kind, definition, spec section, code symbol and related words", async () => {
+    const { code, output } = await run(["define", "batch"], vault());
+    expect(code).toBe(0);
+    expect(output).toEqual([
+      'vocabulary/batch 12.1 kind=concept definition="a set of todos that share one purpose. Its own row, not a todo." '
+        + "spec=§5.4 code=convex/schema.ts:batches related=todo,needs",
+    ]);
+  });
+
+  it("prints a refused word as refused, with the word it is a second name for", async () => {
+    const { code, output } = await run(["define", "ONTOLOGY"], vault());
+    expect(code).toBe(0);
+    expect(output[0]).toContain("kind=refused");
+    expect(output[0]).toContain("refused-for=batch");
+  });
+
+  it("turns an unknown word into did you mean rows over the same fields, and exits 3", async () => {
+    const { code, output } = await run(["define", "dtsTodos"], vault());
+    expect(code).toBe(3);
+    const lines = output[0].split("\n");
+    // The word is in no term's name and in one term's code symbol, which is one
+    // of the fields the row prints.
+    expect(lines[0]).toBe("vocabulary/dtsTodos unknown");
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain("did you mean  vocabulary/todo 12.1 kind=concept");
+
+    const nothing = await run(["define", "zzzz"], vault());
+    expect(nothing.code).toBe(3);
+    expect(nothing.output[0]).toBe('vocabulary/zzzz unknown\n  no term\'s definition carries "zzzz"');
+  });
+
+  it("lists every term under a header naming the version, the counts and the two commits", async () => {
+    const { code, output } = await run(["vocabulary"], vault());
+    expect(code).toBe(0);
+    expect(output[0]).toBe(
+      "vocabulary/@version 8f3a1c02d7e45b19 terms=4 entities=2 jobs=3 search=4 skills=5 repos=6 channels=7 "
+        + "wikitom=wiki-sha tom.quest=quest-sha",
+    );
+    expect(output).toHaveLength(5);
+    expect(output[1]).toContain("vocabulary/batch");
+    expect(output.at(-1)).toContain("vocabulary/ontology");
+  });
+
+  it("narrows to one kind and refuses a kind the file does not carry", async () => {
+    const root = vault();
+    const { code, output } = await run(["vocabulary", "--kind", "channel"], root);
+    expect(code).toBe(0);
+    expect(output).toHaveLength(2);
+    expect(output[1]).toContain("vocabulary/#dump 12.1 kind=channel");
+
+    const errors = [];
+    expect(
+      await runSearchCli(["vocabulary", "--kind", "nope", "--wikitom", root], { env: {}, write: () => {}, error: (line) => errors.push(line) }),
+    ).toBe(2);
+    expect(errors[0]).toBe("tts-search: --kind must be one of channel, concept, refused");
+  });
+
+  it("reports a missing tts/vocabulary.json as text or JSON and exits 3", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tts-search-"));
+    temporary.push(root);
+    const text = await run(["define", "batch"], root);
+    expect(text.code).toBe(3);
+    expect(text.output).toEqual([`tts-search: no vocabulary at ${path.join(root, "tts", "vocabulary.json")}`]);
+
+    const json = await run(["vocabulary", "--json"], root);
+    expect(json.code).toBe(3);
+    expect(JSON.parse(json.output[0])).toEqual({ missing: path.join(root, "tts", "vocabulary.json") });
+  });
+
+  it("takes only the options that apply to it", () => {
+    expect(parseSearchArgs(["define", "batch"])).toMatchObject({ command: "define", term: "batch" });
+    expect(parseSearchArgs(["vocabulary", "--kind", "concept"])).toMatchObject({ command: "vocabulary", kind: "concept", limit: 20 });
+    expect(() => parseSearchArgs(["define"])).toThrow("define needs exactly one term");
+    expect(() => parseSearchArgs(["vocabulary", "batch"])).toThrow("vocabulary accepts options only");
+    expect(() => parseSearchArgs(["define", "batch", "--kind", "concept"])).toThrow("--kind does not apply to define");
+  });
+
+  // ONE ASSERTION FOR ALL FOUR. --since is a database narrowing and none of the
+  // generated files carries a date, so a run that passed one would be narrowing
+  // nothing and getting silence for it.
+  it("refuses --since on all four local commands", () => {
+    for (const command of ["node", "near", "define"]) {
+      expect(() => parseSearchArgs([command, "x", "--since", "2026-09-01"])).toThrow(`--since does not apply to ${command}`);
+    }
+    expect(() => parseSearchArgs(["vocabulary", "--since", "2026-09-01"])).toThrow("--since does not apply to vocabulary");
+  });
+});
+
 describe("the help", () => {
   // DATA-DRIVEN ON PURPOSE. A corpus added to the grammar and left out of HELP
   // fails here, rather than being discovered by a run that cannot find it.
@@ -594,15 +974,19 @@ describe("the help", () => {
     expect([...SEARCH_COMMANDS]).toEqual([
       "archive",
       "areas",
+      "define",
       "evals",
       "events",
       "evidence",
+      "near",
+      "node",
       "proposals",
       "rulings",
       "sessions",
       "skills",
       "sources",
       "todos",
+      "vocabulary",
     ]);
     for (const command of SEARCH_COMMANDS) {
       expect(usage()).toMatch(new RegExp(`^${command} `, "m"));

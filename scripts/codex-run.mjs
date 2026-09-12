@@ -92,6 +92,25 @@ const skillsUrl = [
   new URL("./scripts/skills.mjs", import.meta.url),
 ].find((candidate) => existsSync(fileURLToPath(candidate)));
 
+// The graph, resolved the same way again: in a checkout this file is
+// scripts/codex-run.mjs and the module is ../worker/jobs/graph.mjs; installed
+// flat at /opt/tts/codex-run.mjs it sits beside the other jobs.
+const graphUrl = [
+  new URL("../worker/jobs/graph.mjs", import.meta.url),
+  new URL("./graph.mjs", import.meta.url),
+].find((candidate) => existsSync(fileURLToPath(candidate)));
+
+// The published graph's version, from the one module that reads it. Resolved
+// as the pair above; worker-env.mjs touches nothing at module load, so this
+// one is imported straight away rather than at the point of use.
+const workerEnvUrl = [
+  new URL("../worker/jobs/worker-env.mjs", import.meta.url),
+  new URL("./worker-env.mjs", import.meta.url),
+].find((candidate) => existsSync(fileURLToPath(candidate)));
+const readGraphVersion = workerEnvUrl
+  ? (await import(workerEnvUrl.href)).graphVersion
+  : () => null;
+
 const SANDBOXES = new Set(["read-only", "workspace-write"]);
 const EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
 const DEFAULT_TIMEOUT_MS = 0; // 0 = no timeout; a cap is opt-in via --timeout
@@ -257,6 +276,39 @@ if (granted.length > 0 || refused.length > 0) {
   }
 }
 
+// WHAT THIS PROMPT CARRIES, as node ids. This launcher holds the one prefix
+// page's BODY — `operate.text` is model-of-tom/agent-rules.md read out of the
+// WikiTom commit above, and it goes into developerInstructions verbatim — so
+// the line and heading nodes are named from the bytes the run will actually
+// see, not guessed from a working directory. The granted skill names ride
+// along as their own nodes, because the run was told it may load them.
+//
+// THE PREFIX IS agent-rules.md ALONE here: a mechanical Codex child gets the
+// operate layer and nothing else, so writing.md and ground.md are not in this
+// prompt and must not be claimed.
+//
+// ABSENT STAYS A SUPPORTED VALUE. No operate read and no graph module both mean
+// this launcher does not know what the prompt carried, and `undefined` says
+// that; an empty array would claim it carried nothing. The import is guarded
+// for the same reason the grant block is: tts-codex runs from any repo,
+// including one whose install predates graph.mjs, and a run that would
+// otherwise have launched must not die on a module it only wanted to annotate
+// itself with.
+let graphNodes;
+if (graphUrl && operate) {
+  try {
+    const { givenNodes } = await import(graphUrl.href);
+    graphNodes = givenNodes({
+      pages: [{ path: "model-of-tom/agent-rules.md", body: operate.text }],
+      prefixPaths: ["model-of-tom/agent-rules.md"],
+      granted,
+    });
+  } catch {
+    process.stderr.write("codex-run: graph module unavailable; the run's node ids are not recorded\n");
+    graphNodes = undefined;
+  }
+}
+
 const stateDir = process.env.RUN_SWEEP_STATE_DIR
   || (process.platform === "win32"
     ? join(process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local"), "tts", "runs")
@@ -293,6 +345,10 @@ const spooled = writeRegistration({
     hooksConfigured: ["SessionStart", "SessionEnd", "Stop", "SubagentStart", "SubagentStop"],
     ...(operate ? { wikitomCommit: operate.commit } : {}),
     promptSha256: crypto.createHash("sha256").update(prompt).digest("hex"),
+    graphVersion: readGraphVersion() ?? undefined,
+    // Spread rather than set, so a launcher that could not name the nodes
+    // writes no key at all rather than an empty list.
+    ...(graphNodes === undefined ? {} : { graphNodes }),
   },
 });
 const childEnv = {

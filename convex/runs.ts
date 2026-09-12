@@ -48,6 +48,12 @@ const CONTEXT = v.object({
   // it. Same field as convex/schema.ts runs.context; a run carrying it is
   // refused at store time without it here.
   skillsAsked: v.optional(v.array(v.string())),
+  // The graph version a run ran under, and the exact node ids its prompt
+  // carried — the `given` edges. ABSENT IS A SUPPORTED VALUE, as it is for
+  // wikitomCommit and regToken: an unregistered run, and a run whose launcher
+  // could not build a graph, carry nothing, and nothing is inferred from that.
+  graphVersion: v.optional(v.string()),
+  graphNodes: v.optional(v.array(v.string())),
 });
 const OUTCOME = v.object({
   endedReason: v.optional(v.string()), finalTextSeq: v.optional(v.number()),

@@ -31,9 +31,19 @@
 // actions into a store, or graphify. The one shape borrowed from outside is the
 // budgeted walk.
 
+// TWO IMPORTS, BOTH FROM BESIDE THIS FILE, and that is a deployment fact rather
+// than a preference. worker/setup.sh installs worker/jobs/*.mjs flat in
+// /opt/tts/ AND at /opt/tts/worker/jobs/ AND at /opt/tts/jobs/, because
+// different callers reach them by different relative paths; scripts/*.mjs land
+// at /opt/tts/scripts/. A `../../scripts/x.mjs` specifier resolves from exactly
+// one of those three homes and dangles from the other two, and Node resolves a
+// static import at module load, so the module that imported it does not start.
+// This file is reached from all three, so it imports only its own directory —
+// and scripts/skills.mjs takes the four area helpers FROM here instead, which
+// keeps one definition and points the dependency at the module with no
+// dependencies of its own.
 import { hash8, ruleId, sha256Hex } from "./graph-hash.mjs";
 import { parseFrontmatter } from "./markdown-sections.mjs";
-import { AREAS_DIR, areaCategories, areaName, isAreaPath } from "../../scripts/skills.mjs";
 
 export class GraphError extends Error {}
 
@@ -250,6 +260,47 @@ export const GRAPH_NODES_CAP = 256;
 
 /** The most nodes one ablation arm removes from a case. */
 export const ABLATION_NODE_CAP = 5;
+
+// ── Areas ────────────────────────────────────────────────────────────────────
+// MOVED FROM scripts/skills.mjs, which now re-exports them from here. The
+// bodies are unchanged; only the home moved, for the reason at the imports.
+
+export const AREAS_DIR = "model-of-tom/areas";
+
+/** `research` from `model-of-tom/areas/research.md`. */
+export function areaName(path) {
+  const text = String(path ?? "");
+  if (!text.startsWith(`${AREAS_DIR}/`)) throw new GraphError(`${text} is not an area page`);
+  return text.slice(AREAS_DIR.length + 1).replace(/\.md$/, "");
+}
+
+export function isAreaPath(path) {
+  const text = String(path ?? "");
+  return text.startsWith(`${AREAS_DIR}/`) && /^[^/]+\.md$/.test(text.slice(AREAS_DIR.length + 1));
+}
+
+/**
+ * The categories of one area page: brackets stripped, lowercased, de-duplicated,
+ * the page's own name first.
+ *
+ * THE BRACKETS ARE THE POINT. `parseFrontmatter` parses nothing inside a value,
+ * so `categories: [admin, email, chores]` arrives as the literal string
+ * `[admin, email, chores]` — split on commas alone and the first and last terms
+ * are `[admin` and `chores]`, which match nothing. The retired layer assembler
+ * carried both of them for as long as it existed.
+ */
+export function areaCategories(path, source) {
+  const { fields } = parseFrontmatter(source);
+  const raw = String(fields.categories ?? "")
+    .trim()
+    .replace(/^\[/, "")
+    .replace(/\]$/, "");
+  const declared = raw
+    .split(",")
+    .map((term) => term.trim().toLowerCase())
+    .filter((term) => term !== "");
+  return [...new Set([areaName(path).toLowerCase(), ...declared])];
+}
 
 // ── Ids ──────────────────────────────────────────────────────────────────────
 
@@ -578,6 +629,7 @@ export function buildGraph(input = {}) {
   }
 
   // ── The skills ─────────────────────────────────────────────────────────────
+  const repoNames = new Set(repoFiles.map((file) => file.repo));
   for (const skill of input.skills ?? []) {
     b.node(
       node("skill", skillId(skill.name), {
@@ -588,7 +640,17 @@ export function buildGraph(input = {}) {
     );
     // A repository skill's source paths are repo-relative and its `origin` is
     // the repository, which is what tells the two `AGENTS.md` files apart.
-    const repo = skill.origin === undefined || skill.origin === "WikiTom" ? null : skill.origin;
+    //
+    // THE TEST IS WHETHER THE ORIGIN NAMES A REPOSITORY THIS BUILD READ, not
+    // whether it equals a sentinel string. scripts/skills.mjs writes "WikiTom"
+    // as the origin of a vault skill, so comparing against that name would read
+    // a repository actually named WikiTom — which the map's `### Repos` block
+    // names, and which `--repo WikiTom=<dir>` is a plausible way to pass — as
+    // the vault, look for its AGENTS.md among the vault pages, not find it, and
+    // publish that skill with an empty body, while the byte-identity proof
+    // compared two empty strings and passed. The repositories are in the input;
+    // asking it is exact and needs no sentinel.
+    const repo = repoNames.has(skill.origin) ? skill.origin : null;
     for (const source of skill.sourcePaths ?? []) {
       const page = repo === null
         ? pages.find((candidate) => candidate.path === source)
@@ -961,12 +1023,44 @@ export function splitHalves(graph) {
   };
 }
 
-/** Sixteen lowercase hex of the SHA-256 of the canonical serialization. Two
+/**
+ * Sixteen lowercase hex of the SHA-256 of the canonical serialization. Two
  * versions, because the two halves answer different questions at different
  * rates: a run records `version` to say which definitions and which rules it
- * ran under, and that must not change because a todo was captured overnight. */
+ * ran under, and that must not change because a todo was captured overnight.
+ *
+ * THE HASH IS LINE-ENDING BLIND AND THE FILE IS NOT, and both halves of that
+ * are deliberate. Git stores these files with LF and checks them out with the
+ * host's endings, so the same commit is CRLF on the laptop and LF on the box.
+ * A node's `text` carries the bytes its checkout had, because that is what
+ * makes a skill's body byte-identical to what the skill generator publishes on
+ * that host. If the version followed those bytes too, one commit would have two
+ * versions and a run row's `graphVersion` would name the host rather than the
+ * content — so the carriage returns are stripped before hashing and nowhere
+ * else.
+ */
 export function hash16(value) {
-  return sha256Hex(JSON.stringify(value, null, 2)).slice(0, 16);
+  return sha256Hex(canonical(value)).slice(0, 16);
+}
+
+/** Spelled as a constructed pattern rather than as a literal, so that no tool
+ * that rewrites this file can turn the escape into an actual carriage return. */
+const CARRIAGE_RETURN = new RegExp(String.fromCharCode(13), "g");
+
+/** The serialization the version is taken over: the same JSON, with every
+ * carriage return removed from the carried text. */
+export function canonical(value) {
+  const strip = (row) => (typeof row.text === "string" ? { ...row, text: row.text.replace(/\r/g, "") } : row);
+  return JSON.stringify(
+    {
+      nodeKinds: value.nodeKinds,
+      edgeKinds: value.edgeKinds,
+      nodes: (value.nodes ?? []).map(strip),
+      edges: value.edges ?? [],
+    },
+    null,
+    2,
+  );
 }
 
 export function countsOf(graph) {
@@ -1311,13 +1405,19 @@ export function renderPlaced(entries, { order: pathOrder } = {}) {
   return blocks.map(({ path, body }) => `${BLOCK} ${path} ${BLOCK}\n${body}`).join("\n\n");
 }
 
-/** A skill's body, rendered from the subgraph under its node. `origin` is the
- * repository for a `repo-` skill and absent for a WikiTom one, because that is
- * what keys the page — see `pageKey`. */
-export function renderSkillBody(graph, name, sourcePaths, origin) {
-  const repo = origin === undefined || origin === "WikiTom" ? null : origin;
-  return renderPlaced(subgraphOf(graph, skillId(name)), {
-    order: (sourcePaths ?? []).map((source) => pageKey(repo, source)),
+/**
+ * A skill's body, rendered from the subgraph under its node.
+ *
+ * Takes the skill ROW rather than four positionals, because the group is what
+ * says whether `origin` is a repository, and a caller passing the name and the
+ * origin without it can get that wrong in exactly one way: a repository named
+ * WikiTom. `group` is optional only so a caller holding a bare name can still
+ * ask about a vault skill.
+ */
+export function renderSkillBody(graph, skill) {
+  const repo = skill?.group === "repo" || skill?.repo === true ? (skill.origin ?? null) : null;
+  return renderPlaced(subgraphOf(graph, skillId(skill?.name)), {
+    order: (skill?.sourcePaths ?? []).map((source) => pageKey(repo, source)),
   });
 }
 
@@ -1381,11 +1481,15 @@ export function seedsFor({ subject, repo = null, paths = [], brief = "", terms =
  * THE `given` EDGES, from the prompt side: the exact node ids a run's prompt
  * carried.
  *
- * The stable prefix is a set of FIXED nodes rendered always and outside any
- * budget — every line of `agent-rules.md`, and of `writing.md` and `ground.md`
- * when the run's output reaches Tom. Those are its `line` nodes, named here
- * rather than guessed from a working directory. A granted skill is its own node,
- * because the run was told it may load it.
+ * `given` MEANS CARRIED, never "may load". The caller passes the paths whose
+ * text is actually in the prompt — today that is `agent-rules.md` and nothing
+ * else, because phase 6 took writing.md and ground.md out of the prefix and
+ * made them the `write` skill. A granted skill is its own node, one id, which
+ * is the honest record of a name the prompt carried and a body it did not.
+ *
+ * Naming a page whose bytes the prompt did not hold would make the blast-radius
+ * count wrong in the generous direction for every line of it, which is the
+ * failure `loadedSource` exists to make visible rather than one to introduce.
  *
  * Truncated at GRAPH_NODES_CAP, and the truncation is visible: a reader counting
  * exactly the cap knows to distrust the count, which a silent cut would hide.

@@ -3,9 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { ABLATION_NODE_CAP } from "./graph.mjs";
 import {
   ablationFindings,
   ablationFor,
+  ablationNodes,
   aggregate,
   efficiencyOf,
   efficiencyVerdict,
@@ -1108,17 +1110,113 @@ describe("the ablation arm", () => {
   // The finding is computed over the whole weekly set and never per case, and
   // a name with too little behind it is not reported at all.
   it("needs MIN_ABLATION_CASES behind a name before it reports one", () => {
-    const rows = (name, count, withPass, withoutPass) => Array.from({ length: count }, (_, index) => ({
-      id: `c${index}`, name, kind: "layer", withPass, withoutPass,
+    const rows = (name, count, withPass, withoutPass, kind = "layer") => Array.from({ length: count }, (_, index) => ({
+      id: `c${index}`, name, kind, withPass, withoutPass,
     }));
     expect(ablationFindings(rows("know", MIN_ABLATION_CASES - 1, true, true))).toEqual([]);
     expect(ablationFindings(rows("know", 5, true, true))).toEqual([
-      { name: "know", cases: 5, withPass: 5, withoutPass: 5, earned: false },
+      { name: "know", kind: "layer", cases: 5, withPass: 5, withoutPass: 5, earned: false },
     ]);
     expect(ablationFindings([...rows("write", 5, true, false)])).toEqual([
-      { name: "write", cases: 5, withPass: 5, withoutPass: 0, earned: true },
+      { name: "write", kind: "layer", cases: 5, withPass: 5, withoutPass: 0, earned: true },
     ]);
     expect(ablationFindings([])).toEqual([]);
+  });
+
+  // A node id is a name like any other to the grouping, and the kind is what
+  // keeps it from being added to a layer that happens to be spelled the same.
+  it("groups by node id beside the layer and skill names", () => {
+    const rows = (name, count, kind, withoutPass) => Array.from({ length: count }, (_, index) => ({
+      id: `c${index}`, name, kind, withPass: true, withoutPass,
+    }));
+    expect(ablationFindings([
+      ...rows("line:1a2b3c4d", 5, "node", false),
+      ...rows("know", 5, "layer", true),
+      ...rows("line:1a2b3c4d", 5, "layer", true),
+    ])).toEqual([
+      { name: "know", kind: "layer", cases: 5, withPass: 5, withoutPass: 5, earned: false },
+      { name: "line:1a2b3c4d", kind: "layer", cases: 5, withPass: 5, withoutPass: 5, earned: false },
+      { name: "line:1a2b3c4d", kind: "node", cases: 5, withPass: 5, withoutPass: 0, earned: true },
+    ]);
+  });
+});
+
+// ── The node arm ─────────────────────────────────────────────────────────────
+
+describe("the nodes one case's arm ablates", () => {
+  it("takes the five lowest-cost nodes of a walk, and the first five of a flat list", () => {
+    const walk = [
+      { id: "line:f", cost: 600 },
+      { id: "line:a", cost: 100 },
+      { id: "line:e", cost: 500 },
+      { id: "line:b", cost: 200 },
+      { id: "line:d", cost: 400 },
+      { id: "line:c", cost: 300 },
+    ];
+    expect(ablationNodes(walk)).toEqual(["line:a", "line:b", "line:c", "line:d", "line:e"]);
+    // A tie is broken by the id, so two machines cut the same five.
+    expect(ablationNodes([{ id: "line:z", cost: 1 }, { id: "line:y", cost: 1 }]))
+      .toEqual(["line:y", "line:z"]);
+    // A flat list keeps the prompt's own order and is cut at the cap.
+    const flat = ["page:a", "line:b", "line:c", "line:d", "rule:e", "skill:f", "line:g"];
+    expect(ablationNodes(flat)).toEqual(flat.slice(0, ABLATION_NODE_CAP));
+    expect(ablationNodes(flat)).toHaveLength(ABLATION_NODE_CAP);
+    expect(ablationNodes(undefined)).toEqual([]);
+    expect(ablationNodes([])).toEqual([]);
+  });
+
+  it("runs one trial per node beside the layers, and at most the cap", async () => {
+    // Seven nodes offered, five ablated: three layers plus five nodes is eight
+    // trials, and the judge answers pass for each.
+    const nodes = ["line:a", "line:b", "line:c", "line:d", "line:e", "line:f", "line:g"];
+    const item = runCaseItem({ input: { ...runCaseItem().input, preludeNodes: nodes } });
+    const io = runIo(Array.from({ length: 8 }, () => "pass"));
+    const arm = await ablationFor(item, runContext(), io, true);
+    expect(io.calls.regen).toBe(3 + ABLATION_NODE_CAP);
+    expect(arm.rows.filter((row) => row.kind === "node").map((row) => row.name))
+      .toEqual(nodes.slice(0, ABLATION_NODE_CAP));
+    expect(arm.rows.filter((row) => row.kind === "layer").map((row) => row.name))
+      .toEqual(["operate", "write", "know"]);
+    // A node arm removes the node and NOTHING ELSE: the layers it was given
+    // still assemble. The regenerations are the prompts the judge did not get.
+    const regen = io.calls.prompts.filter((prompt) => !prompt.startsWith("You are judging"));
+    expect(regen.slice(3).every((prompt) => prompt.includes("[operate+write+know]"))).toBe(true);
+  });
+
+  it("carries the remaining nodes into the object the assembler is handed", async () => {
+    const nodes = ["line:a", "line:b"];
+    const item = runCaseItem({
+      input: { ...runCaseItem().input, preludeNames: { layers: [], skills: [] }, preludeNodes: nodes },
+    });
+    const seen = [];
+    const context = runContext({
+      prelude: (names) => {
+        seen.push(names.nodes);
+        return { names: [], skills: [], text: "P", commit: "w1", files: [] };
+      },
+    });
+    await ablationFor(item, context, runIo(["pass", "pass"]), true);
+    // One trial asks the assembler twice (runItem resolves the prelude, then
+    // the builder asks for its text), so the DISTINCT selections are what say
+    // one node went per trial.
+    expect([...new Set(seen.map((one) => one.join(",")))]).toEqual(["line:b", "line:a"]);
+  });
+
+  it("ablates no node on a case that carries none, and skips one replayed verbatim", async () => {
+    const io = runIo(["pass", "pass", "pass"]);
+    const arm = await ablationFor(runCaseItem(), runContext(), io, true);
+    expect(arm.rows.some((row) => row.kind === "node")).toBe(false);
+
+    const replayed = runCaseItem({
+      input: { ...runCaseItem().input, preludeKnown: false, prompt: "REPLAYED", preludeNodes: ["line:a"] },
+    });
+    const quiet = runIo();
+    const skippedArm = await ablationFor(replayed, runContext(), quiet, true);
+    expect(skippedArm.rows).toEqual([]);
+    expect(skippedArm.skipped).toEqual([
+      { id: replayed.id, reason: "the prompt was replayed verbatim; there is no name to remove" },
+    ]);
+    expect(quiet.calls.regen).toBe(0);
   });
 });
 

@@ -14,7 +14,7 @@ import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { ENV_PATH, loadEnv as loadWorkerEnv } from "./worker-env.mjs";
+import { ENV_PATH, graphVersion, loadEnv as loadWorkerEnv } from "./worker-env.mjs";
 
 // Jobs run from worker/jobs in a checkout and are copied flat into /opt/tts on
 // the box. Keep one installed registration body at /opt/tts/runs while making
@@ -604,6 +604,12 @@ export function runClaude(
         tools: { allowed: allowedTools ?? null, denied: null },
         hooksConfigured: ["SessionStart", "SessionEnd", "Stop", "SubagentStart", "SubagentStop"],
         promptSha256: crypto.createHash("sha256").update(String(prompt)).digest("hex"),
+        // WHICH GRAPH THIS RUN RAN UNDER, and nothing about which of its nodes
+        // the prompt carried: a cron job assembles no node list here, and an
+        // empty array would claim it carried none rather than that this
+        // launcher does not know. So no graphNodes key at all, and `undefined`
+        // when there is no published graph to name.
+        graphVersion: graphVersion() ?? undefined,
       },
     });
     childEnv.TTS_RUN_REG_TOKEN = spooled.token;

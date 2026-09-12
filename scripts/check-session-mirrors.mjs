@@ -390,6 +390,20 @@ const REPO_LIST_ALLOWED = new Set([
   // tom.quest tree it scores and the pinned WikiTom tree it scores against.
   // That pair is a run's definition, not a list of repos sessions may work.
   "worker/jobs/evals.mjs",
+  // THE TWO GENERATORS, for the same reason as evals.mjs and explanations.ts
+  // together. Each takes the two checkouts it reads as parameters — `wikitom`
+  // and `tomQuest` — and every hit in either file is one of two shapes: the
+  // argument check that says which of the two is missing, or a PROVENANCE
+  // STRING inside a template literal naming which checkout a disagreement's
+  // two halves were read from ("WikiTom tts/spec.md §12.1" against
+  // "tom.quest convex/ttsShared.ts"). A disagreement report that could not name
+  // the checkout a row came from would not say where to go and fix it. Neither
+  // file enumerates the repos a session may work: the list of other
+  // repositories scripts/graph.mjs walks is handed in by its caller, which is
+  // worker/jobs/nightly.mjs, already on this list and deriving it from the one
+  // home. The comment strip cannot reach any of this because it is code.
+  "scripts/graph.mjs",
+  "scripts/vocabulary.mjs",
 ]);
 const REPO_NAME_WINDOW = 300;
 const SCAN_EXT = /\.(ts|tsx|mjs|cjs|js|jsx)$/;

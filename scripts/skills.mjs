@@ -19,6 +19,17 @@
 // Everything that touches a disk or a git object lives in publish-skills.mjs.
 
 import { parseFrontmatter } from "../worker/jobs/markdown-sections.mjs";
+// THE FOUR AREA HELPERS LIVE IN worker/jobs/graph.mjs NOW, and this file takes
+// them from there rather than keeping a second spelling. They moved because
+// graph.mjs is reached from three different install directories on the box and
+// a `../../scripts/` specifier resolves from only one of them; a module with no
+// cross-directory import of its own is the one that can hold a definition every
+// layout needs. `../worker/jobs/graph.mjs` resolves in the checkout and from
+// /opt/tts/scripts/ alike, which is why this direction works and the other did
+// not.
+import { AREAS_DIR, areaCategories, areaName, isAreaPath } from "../worker/jobs/graph.mjs";
+
+export { AREAS_DIR, areaCategories, areaName, isAreaPath };
 
 export class SkillsError extends Error {}
 
@@ -79,7 +90,6 @@ export const SKILL_GROUPS = Object.freeze(["write", "know", "repo"]);
  * character count, and it is checked rather than trusted. */
 export const DESCRIPTION_MAX_BYTES = 200;
 
-export const AREAS_DIR = "model-of-tom/areas";
 
 const WRITING_PATH = "model-of-tom/writing.md";
 const GROUND_PATH = "model-of-tom/ground.md";
@@ -185,18 +195,6 @@ export function skillDirName(name) {
   return `${SKILL_PREFIX}${bare}`;
 }
 
-/** `research` from `model-of-tom/areas/research.md`. */
-export function areaName(path) {
-  const text = String(path ?? "");
-  if (!text.startsWith(`${AREAS_DIR}/`)) throw new SkillsError(`${text} is not an area page`);
-  return text.slice(AREAS_DIR.length + 1).replace(/\.md$/, "");
-}
-
-export function isAreaPath(path) {
-  const text = String(path ?? "");
-  return text.startsWith(`${AREAS_DIR}/`) && /^[^/]+\.md$/.test(text.slice(AREAS_DIR.length + 1));
-}
-
 /** A nested rules file's flattened reference name: `convex/AGENTS.md` →
  * `convex-AGENTS.md`. One directory holds them all, so the path has to survive
  * as a name; `-` keeps it readable and keeps the `.md` extension. */
@@ -205,30 +203,6 @@ export function referenceName(path) {
 }
 
 // ── Area categories ──────────────────────────────────────────────────────────
-
-/**
- * The categories of one area page: brackets stripped, lowercased, de-duplicated,
- * the page's own name first.
- *
- * THE BRACKETS ARE THE POINT. `parseFrontmatter` parses nothing inside a value,
- * so `categories: [admin, email, chores]` arrives as the literal string
- * `[admin, email, chores]` — split on commas alone and the first and last terms
- * are `[admin` and `chores]`, which match nothing and read as junk in a
- * description. The layer assembler's own term list carried both of them for as
- * long as it existed; this is the one place that reads the line now.
- */
-export function areaCategories(path, source) {
-  const { fields } = parseFrontmatter(source);
-  const raw = String(fields.categories ?? "")
-    .trim()
-    .replace(/^\[/, "")
-    .replace(/\]$/, "");
-  const declared = raw
-    .split(",")
-    .map((term) => term.trim().toLowerCase())
-    .filter((term) => term !== "");
-  return [...new Set([areaName(path).toLowerCase(), ...declared])];
-}
 
 // ── The map's Repos block ────────────────────────────────────────────────────
 

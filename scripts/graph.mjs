@@ -1,5 +1,11 @@
-#!/usr/bin/env node
 // THE GRAPH GENERATOR: the half that touches a disk.
+//
+// NO SHEBANG. This file is always invoked as `node scripts/graph.mjs` and is
+// not marked executable, and a test imports it through vite, whose transform
+// prepends an import to the first line when a module uses a dynamic import —
+// which this one does, for the vocabulary — and then cannot parse a shebang
+// sitting beside it. A decorative shebang is not worth a test file that will
+// not load.
 //
 // `worker/jobs/graph.mjs` decides what the graph IS, from already-read text, and
 // is pure so that the box, the laptop and the Convex runtime all compute the
@@ -28,7 +34,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   EDGE_KINDS,
@@ -42,8 +48,25 @@ import {
   renderSkillBody,
   splitHalves,
 } from "../worker/jobs/graph.mjs";
-import { BOX_WIKITOM_DIR, LAPTOP_WIKITOM_DIR } from "../worker/jobs/search-lib.mjs";
 import { buildSkills, isAreaPath } from "./skills.mjs";
+
+// THE TWO WIKITOM DEFAULTS, SPELLED HERE, and this is a deviation with a reason.
+//
+// worker/jobs/search-lib.mjs owns the canonical spelling and the brief says to
+// import its two constants rather than repeat them. Importing it drags a
+// subtree: search-lib.mjs imports ./session-archive.mjs, which imports
+// ../session-host/redact.mjs, and on the box these live in three different
+// install directories, so a nested copy of search-lib.mjs needs a nested copy
+// of everything under it or it throws at load and takes this generator with it.
+// Two string constants are not worth a subtree. The same call was made, for the
+// same reason, for worker/jobs/worker-env.mjs on this branch.
+/** Spelled as constructed strings so that no tool which rewrites this file can
+ * turn an escape into an actual line break — which is a thing that happened. */
+const LF = String.fromCharCode(10);
+const CRLF = String.fromCharCode(13, 10);
+
+const LAPTOP_WIKITOM_DIR = "C:/Users/heffn/Desktop/WikiTom";
+const BOX_WIKITOM_DIR = "/root/wikitom";
 
 // ── Tom's four switches from the graph note ──────────────────────────────────
 // Module constants, never environment variables: an environment override would
@@ -253,6 +276,23 @@ export function readRecord(dir) {
   return record;
 }
 
+/**
+ * The schema, from the file when there is one and from the generator when there
+ * is not.
+ *
+ * THE VOCABULARY IS THE GRAPH'S SCHEMA whether or not it has been written. It
+ * supplies the `term`, `job`, `question` and `repo` nodes and every `defines`
+ * edge; a graph built without it has no terms but the ones the area pages name
+ * and no jobs or questions at all, which is a materially different file. The
+ * generator writes nothing while its seven wording disagreements stand (see
+ * worker/jobs/nightly.mjs graphStep), so a graph that could only read the file
+ * would be thin for exactly as long as that takes to settle, for no reason —
+ * the two are generated from one pair of commits in one step either way.
+ *
+ * The file still wins when it is there, because that is the object every other
+ * reader gets, and a build that preferred its own computation could disagree
+ * with `tts search define` about what a term is.
+ */
 function readVocabulary(wikitom) {
   const text = readIfPresent(path.join(wikitom, VOCABULARY_PATH));
   if (text === null) return null;
@@ -260,6 +300,46 @@ function readVocabulary(wikitom) {
     return JSON.parse(text);
   } catch {
     throw new InputError(`graph: ${VOCABULARY_PATH} is not JSON — regenerate it with scripts/vocabulary.mjs`);
+  }
+}
+
+/**
+ * The schema, in memory, when the file is not on disk.
+ *
+ * THE VOCABULARY IS THE GRAPH'S SCHEMA whether or not it has been written. It
+ * supplies the `term`, `job`, `question` and `repo` nodes and every `defines`
+ * edge; a graph built without it has only the terms the area pages name and no
+ * jobs or questions at all, which is a materially thinner file. The generator
+ * writes nothing while its seven wording disagreements stand (see
+ * worker/jobs/nightly.mjs graphStep), and a graph that could only read the file
+ * would be thin for exactly as long as that takes to settle, for no reason —
+ * the two are generated from one pair of commits in one step either way.
+ *
+ * The FILE WINS when it is there, because that is the object every other reader
+ * gets, and a build preferring its own computation could disagree with
+ * `tts search define` about what a term is.
+ *
+ * Asynchronous and only here: `generateGraph` stays a synchronous function of
+ * already-read text, and a caller that already holds the vocabulary — the
+ * nightly does — passes it in and never loads this.
+ */
+export async function vocabularyFor({ wikitom, tomQuest, record }) {
+  const onDisk = readVocabulary(wikitom);
+  if (onDisk !== null) return { vocabulary: onDisk, from: VOCABULARY_PATH };
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const candidate = path.join(here, "vocabulary.mjs");
+  if (!fs.existsSync(candidate)) {
+    return { vocabulary: null, from: "unavailable — scripts/vocabulary.mjs is not beside scripts/graph.mjs" };
+  }
+  try {
+    const module = await import(pathToFileURL(candidate).href);
+    if (typeof module.generateVocabulary !== "function") {
+      return { vocabulary: null, from: "unavailable — scripts/vocabulary.mjs exports no generateVocabulary" };
+    }
+    const built = module.generateVocabulary({ wikitom, tomQuest, record, write: false });
+    return { vocabulary: built.vocabulary, from: "scripts/vocabulary.mjs (in memory; the file is not written)" };
+  } catch (error) {
+    return { vocabulary: null, from: `unavailable — ${String(error?.message ?? error)}` };
   }
 }
 
@@ -318,6 +398,29 @@ export function serializeGraph(graph) {
   return `${JSON.stringify(body, null, 2)}\n`;
 }
 
+/** A serialized graph with every record-kind node and every edge touching one
+ * removed, re-serialized the same way. Used only by `--check --no-record`. */
+function staticOnly(text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return text; // Not JSON at all: report it as a whole-file difference.
+  }
+  const isRecord = (id) => RECORD_NODE_KINDS.includes(kindOf(id));
+  return serializeGraph({
+    version: parsed.version,
+    // Blanked, not dropped: both say something about the record half, which
+    // this comparison is deliberately blind to.
+    recordVersion: "",
+    generatedFrom: { ...parsed.generatedFrom, recordSource: "" },
+    nodeKinds: parsed.nodeKinds,
+    edgeKinds: parsed.edgeKinds,
+    nodes: (parsed.nodes ?? []).filter((row) => !isRecord(row.id)),
+    edges: (parsed.edges ?? []).filter((row) => !isRecord(row.from) && !isRecord(row.to)),
+  });
+}
+
 function compact(row) {
   const out = {};
   for (const [key, value] of Object.entries(row)) {
@@ -337,9 +440,18 @@ function compact(row) {
 function block(code, subject, rows, fix) {
   const lines = [`DISAGREEMENT ${code}  ${subject}`];
   for (const [label, text] of rows) {
-    const [first, ...rest] = String(text).split("\n");
-    lines.push(`  ${label.padEnd(5)} ${first}`);
-    for (const more of rest) lines.push(`        ${more}`);
+    // A MULTI-LINE VALUE STARTS ON ITS OWN LINE, indented with the rest of
+    // itself. Putting its first line beside the label and the rest eight
+    // columns in makes a diff read as though its first hunk header belonged to
+    // the label, and the diff is the one row where reading it wrongly costs
+    // something.
+    const parts = String(text).split(LF);
+    if (parts.length === 1) {
+      lines.push(`  ${label.padEnd(5)} ${parts[0]}`);
+      continue;
+    }
+    lines.push(`  ${label}`);
+    for (const more of parts) lines.push(`        ${more}`);
   }
   lines.push(`  fix   ${fix}`);
   return lines.join("\n");
@@ -352,18 +464,22 @@ function block(code, subject, rows, fix) {
  * here, because it has to keep working with the graph absent and a generator
  * re-implementing it would be a second authority on what an entry is.
  */
-function disagreementsOf(graph, { vocabulary, bytes, pages, evidence }) {
+function disagreementsOf(graph, { vocabulary, bytes, pages, evidence, notes = [] }) {
   const found = [];
 
   // G1 / G2 — a kind nothing declares.
-  const declaredNodeKinds =
-    KIND_AUTHORITY === "vocabulary" && vocabulary !== null
-      ? new Set(vocabularyKinds(vocabulary, "node"))
-      : new Set(NODE_KINDS);
-  const declaredEdgeKinds =
-    KIND_AUTHORITY === "vocabulary" && vocabulary !== null
-      ? new Set(vocabularyKinds(vocabulary, "edge"))
-      : new Set(EDGE_KINDS);
+  const fromVocabulary = KIND_AUTHORITY === "vocabulary" && vocabulary !== null;
+  const declaredNode = fromVocabulary ? vocabularyKinds(vocabulary, "node") : [];
+  const declaredEdge = fromVocabulary ? vocabularyKinds(vocabulary, "edge") : [];
+  const usingVocabulary = declaredNode.length > 0 && declaredEdge.length > 0;
+  if (!usingVocabulary) {
+    notes.push(
+      `KIND_AUTHORITY is "${KIND_AUTHORITY}" but ${VOCABULARY_PATH} declares no node or edge kinds — `
+        + "G1 and G2 checked against worker/jobs/graph.mjs's own lists instead",
+    );
+  }
+  const declaredNodeKinds = usingVocabulary ? new Set(declaredNode) : new Set(NODE_KINDS);
+  const declaredEdgeKinds = usingVocabulary ? new Set(declaredEdge) : new Set(EDGE_KINDS);
   for (const kind of [...new Set(graph.nodes.map((row) => row.kind))].sort()) {
     if (declaredNodeKinds.size > 0 && declaredNodeKinds.has(kind)) continue;
     if (declaredNodeKinds.size === 0) break;
@@ -434,18 +550,43 @@ function disagreementsOf(graph, { vocabulary, bytes, pages, evidence }) {
     );
   }
 
-  // G7 — a `defines` edge for a term the vocabulary does not define.
+  // G7 — a `defines` edge from a term the vocabulary does not declare.
+  //
+  // IT CANNOT FIRE TODAY, AND THAT IS THE RIGHT SHAPE. Every `defines` edge is
+  // minted from a `vocabulary.terms` row, so the two sets agree by
+  // construction; the class is the guard for the day a second source starts
+  // minting them, and it costs one pass over the edges.
+  //
+  // IT DOES NOT READ `applies-to`, and the brief's `fix` line — "an area page's
+  // `categories:` names a word §12.1 does not" — describes a check this round
+  // tried and withdrew. An area page's `categories:` names a TODO CATEGORY:
+  // `climbing`, `dnd`, `therapy`, `weed`. Those are labels on Tom's life, not
+  // words in the closed vocabulary of TTS, and they were never meant to be —
+  // widening G7 to them reported all fifty-seven of them as disagreements on
+  // the real vault, which is a checker being wrong about a namespace rather
+  // than a vault being wrong about a word. The graph mints one `term` kind from
+  // two namespaces, and telling them apart is a design question for Tom, not
+  // something to decide inside a check.
+  //
+  // TRIMMED THEN LOWERCASED, the order worker/jobs/graph.mjs:termsOf uses: a
+  // row spelled with surrounding whitespace draws its edges from the trimmed
+  // id, and a set built without the trim would report a term the vocabulary
+  // does define.
   if (vocabulary !== null) {
-    const terms = new Set((vocabulary.terms ?? []).map((row) => `term:${String(row.term).toLowerCase()}`));
-    const undefinedTerms = new Set(
-      graph.edges.filter((row) => row.kind === "defines" && !terms.has(row.from)).map((row) => row.from),
-    );
-    for (const term of [...undefinedTerms].sort()) {
+    const terms = new Set((vocabulary.terms ?? []).map((row) => `term:${String(row.term).trim().toLowerCase()}`));
+    const undeclared = new Map();
+    for (const edge of graph.edges) {
+      if (edge.kind !== "defines" || terms.has(edge.from)) continue;
+      if (!undeclared.has(edge.from)) undeclared.set(edge.from, []);
+      undeclared.get(edge.from).push(edge);
+    }
+    for (const [term, edges] of [...undeclared.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
       found.push(
-        block("G7", `defines edge from ${term}`, [
-          ["graph", `${graph.edges.filter((row) => row.from === term).length} defines edge(s)`],
+        block("G7", `defines edges from ${term}`, [
+          ["graph", `${edges.length} defines edge(s)`],
+          ["read", [...new Set(edges.map((edge) => edge.evidence))].sort().join(", ")],
           ["schema", `${VOCABULARY_PATH} has no such term`],
-        ], "an area page's `categories:` names a word §12.1 does not — add it, or drop the category"),
+        ], "a `defines` edge was minted from something other than a vocabulary row — find the second source"),
       );
     }
   }
@@ -453,9 +594,19 @@ function disagreementsOf(graph, { vocabulary, bytes, pages, evidence }) {
   return found;
 }
 
-/** The node and edge kinds the vocabulary declares, if it carries them. An
- * empty answer means the vocabulary predates the graph and the check is
- * skipped rather than failing every kind at once. */
+/**
+ * The node and edge kinds the vocabulary declares.
+ *
+ * THE FALLBACK IS REPORTED, NEVER SILENT. Under `KIND_AUTHORITY = "vocabulary"`
+ * the graph's schema is meant to be the vocabulary, so a kind the vocabulary
+ * does not declare fails the build. `tts/vocabulary.json` does not carry kind
+ * entries at this commit — the vocabulary generator reports seven wording
+ * disagreements and writes nothing until they are settled — so there is nothing
+ * to check against, and a check with nothing to check against is a check that
+ * passes for the wrong reason. It falls back to `worker/jobs/graph.mjs`'s own
+ * lists, which is what `"loose"` means, and the build's notes say so, so a
+ * reader of the report knows which authority actually ran.
+ */
 function vocabularyKinds(vocabulary, which) {
   const rows = vocabulary?.terms ?? [];
   const wanted = `${which}-kind`;
@@ -532,8 +683,24 @@ export function generateGraph(options) {
     ...readRepoRules(tomQuest, "tom.quest"),
     ...(options.repos ?? []).flatMap((entry) => readRepoRules(path.resolve(entry.dir), entry.repo)),
   ];
-  const vocabulary = readVocabulary(wikitom);
-  const record = recordDir === null ? {} : readRecord(requireDirectory(recordDir, "the record copy"));
+  // The caller may hand the schema in — the nightly has just built it — and
+  // otherwise it is the file on disk. `vocabularyFor` above is the async
+  // fallback a command line uses when neither is there.
+  const vocabulary = options.vocabulary !== undefined ? options.vocabulary : readVocabulary(wikitom);
+  // A MISSING SNAPSHOT IS AN EMPTY RECORD, NOT A BROKEN INPUT — unless the
+  // caller named one. The default is the table copy beside the vault, and a
+  // checkout that has never run the nightly simply does not have it; a
+  // generator that exited 3 there could not run on a fresh clone, and
+  // `--check` in CI would fail for a reason that has nothing to do with the
+  // change under review. A directory the caller named explicitly and that is
+  // not there is still an error, because that one is a typo.
+  const record = recordDir === null
+    ? {}
+    : options.record !== undefined
+      ? readRecord(requireDirectory(recordDir, "the record copy"))
+      : fs.existsSync(recordDir)
+        ? readRecord(recordDir)
+        : {};
 
   const built = buildSkills({
     commit: headCommit(wikitom) ?? "unknown",
@@ -563,28 +730,44 @@ export function generateGraph(options) {
     wikitomCommit: headCommit(wikitom),
     tomQuestCommit: headCommit(tomQuest),
     vocabularyVersion: vocabulary?.version ?? null,
-    recordSource: recordDir === null ? "none" : path.basename(recordDir),
+    recordSource: recordDir === null || !fs.existsSync(recordDir) ? "none" : path.basename(recordDir),
     generator: "scripts/graph.mjs",
     generatorVersion: GENERATOR_VERSION,
   };
 
   const rendered = serializeGraph(graph);
   const bytes = Buffer.byteLength(rendered, "utf8");
-  const disagreements = disagreementsOf(graph, { vocabulary, bytes, pages, evidence });
+  const disagreements = disagreementsOf(graph, { vocabulary, bytes, pages, evidence, notes: graph.notes });
 
   const file = path.join(wikitom, GRAPH_PATH);
   const onDisk = readIfPresent(file);
   const changed = [];
   let wrote = false;
 
-  if (options.check === true && onDisk !== rendered) {
-    disagreements.push(
-      block("G8", GRAPH_PATH, [
-        ["disk", onDisk === null ? "the file is absent" : `${Buffer.byteLength(onDisk, "utf8").toLocaleString("en-US")} bytes`],
-        ["render", `${bytes.toLocaleString("en-US")} bytes`],
-        ["diff", firstDifference(onDisk ?? "", rendered)],
-      ], "regenerate with `node scripts/graph.mjs --wikitom <dir> --write`; the file is never hand-edited"),
-    );
+  if (options.check === true) {
+    // `--check --no-record` COMPARES THE STATIC HALF, not the whole file.
+    //
+    // That is what makes the check runnable anywhere. The record half needs the
+    // night's table copy, which a laptop checkout and a CI runner do not have,
+    // and it changes every night by construction; the static half is the half a
+    // pull request can change. Comparing the whole file without the record
+    // would report a difference every time, which is a check nobody obeys.
+    // LINE-ENDING BLIND, for the reason `hash16` gives: one commit is CRLF on
+    // the laptop and LF on the box, and a check that failed on every laptop is
+    // a check nobody obeys.
+    const endings = (text) => text.split(CRLF).join(LF);
+    const comparable = recordDir === null ? (text) => endings(staticOnly(text)) : endings;
+    const left = onDisk === null ? null : comparable(onDisk);
+    const right = comparable(rendered);
+    if (left !== right) {
+      disagreements.push(
+        block("G8", recordDir === null ? `${GRAPH_PATH} (static half)` : GRAPH_PATH, [
+          ["disk", onDisk === null ? "the file is absent" : `${Buffer.byteLength(onDisk, "utf8").toLocaleString("en-US")} bytes`],
+          ["render", `${bytes.toLocaleString("en-US")} bytes`],
+          ["diff", firstDifference(left ?? "", right)],
+        ], "regenerate with `node scripts/graph.mjs --wikitom <dir> --write`; the file is never hand-edited"),
+      );
+    }
   }
 
   if (options.write === true && disagreements.length === 0) {
@@ -647,8 +830,7 @@ function defaultTomQuest() {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 }
 
-/** The same resolution worker/jobs/search-lib.mjs uses, by importing its two
- * constants rather than re-spelling the platform defaults. */
+/** The same resolution worker/jobs/search-lib.mjs performs. */
 export function defaultWikitom(env = process.env) {
   if (typeof env.WIKITOM_DIR === "string" && env.WIKITOM_DIR !== "") return env.WIKITOM_DIR;
   return process.platform === "win32" ? LAPTOP_WIKITOM_DIR : BOX_WIKITOM_DIR;
@@ -720,7 +902,13 @@ function report(result) {
   return lines.join("\n");
 }
 
-export function main(argv = process.argv.slice(2), out = console.log, err = console.error) {
+/**
+ * The command line. SYNCHRONOUS, because a caller wants an exit code and not a
+ * promise, and because `generateGraph` is a synchronous function of already-read
+ * text. The one asynchronous thing — loading the vocabulary generator when the
+ * file is not on disk — happens in `runCli` below and is handed in here.
+ */
+export function main(argv = process.argv.slice(2), out = console.log, err = console.error, given = {}) {
   let options;
   try {
     options = parseArgs(argv);
@@ -731,7 +919,7 @@ export function main(argv = process.argv.slice(2), out = console.log, err = cons
   const wikitom = options.wikitom ?? defaultWikitom();
   let result;
   try {
-    result = generateGraph({ ...options, wikitom });
+    result = generateGraph({ ...options, wikitom, ...given });
   } catch (error) {
     err(String(error.message ?? error));
     return 3;
@@ -750,8 +938,13 @@ export function main(argv = process.argv.slice(2), out = console.log, err = cons
   } else {
     out(report(result));
   }
-  if (result.disagreements.length > 0) return 2;
+  // THE CAP'S CODE WINS OVER THE DISAGREEMENT'S. Over the cap is both a G6
+  // disagreement and an unusable render, and the two codes mean different
+  // things: 2 is "something disagrees, fix it"; 3 is "an input is wrong, or the
+  // file will not fit". A caller handed 2 for a three-megabyte render would go
+  // looking for a wording conflict, which is the one thing it is not.
   if (result.bytes > result.cap) return 3;
+  if (result.disagreements.length > 0) return 2;
   return 0;
 }
 
@@ -761,7 +954,7 @@ export function skillBodies(result) {
   return result.skills.map((skill) => ({
     name: skill.name,
     published: skill.body,
-    rendered: renderSkillBody(result.graph, skill.name, skill.sourcePaths, skill.origin),
+    rendered: renderSkillBody(result.graph, skill),
   }));
 }
 
@@ -769,4 +962,32 @@ export { splitHalves, isAreaPath };
 
 const invoked = process.argv[1] !== undefined
   && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
-if (invoked) process.exitCode = main();
+/**
+ * What a command line runs: resolve the schema — the file when it is there, the
+ * generator in memory when it is not — then call `main` with it.
+ *
+ * Split from `main` so that `main` stays synchronous. A test drives `main`
+ * directly and gets an exit code; only the command line pays for the await.
+ */
+export async function runCli(argv = process.argv.slice(2), out = console.log, err = console.error) {
+  let options;
+  try {
+    options = parseArgs(argv);
+  } catch (error) {
+    err(String(error.message ?? error));
+    return 3;
+  }
+  const wikitom = options.wikitom ?? defaultWikitom();
+  const schema = await vocabularyFor({
+    wikitom,
+    tomQuest: options.tomQuest,
+    record: options.record === null ? null : undefined,
+  });
+  return main(argv, out, err, { vocabulary: schema.vocabulary });
+}
+
+if (invoked) {
+  runCli().then((code) => {
+    process.exitCode = code;
+  });
+}

@@ -2837,6 +2837,8 @@ describe("the git half", { timeout: 60_000 }, () => {
         layers,
         files,
         headers: selections.map((selection) => ({ layers: selection, header: header(selection) })),
+        // The graph step did not run in this test, so the post names no graph.
+        graphVersion: null,
       },
     });
     expect(result).toMatchObject({ commit, pushed: false, files: files.map((file) => file.path) });

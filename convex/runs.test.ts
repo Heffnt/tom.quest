@@ -166,6 +166,39 @@ describe("runs", () => {
     expect(stored?.context?.workflowId).toBe("wf_abc");
   });
 
+  it("round-trips the graph version and the given node ids, and refuses a node id that is not a string", async () => {
+    const t = convexTest(schema, modules);
+    const graphNodes = ["page:model-of-tom/agent-rules.md", "heading:model-of-tom/agent-rules.md#Map", "line:1a2b3c4d", "skill:write"];
+    const context = {
+      layersKnown: false, layersGiven: [], layersDenied: [], skillsOffered: [], skillsUsed: [], tools: [], hooks: [],
+      graphVersion: "0123456789abcdef", graphNodes,
+    };
+    expect(await t.mutation(internal.runs.internalIngest, ingest(run({ context })) as never)).toMatchObject({ ok: true });
+    const stored = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique());
+    expect(stored?.context?.graphVersion).toBe("0123456789abcdef");
+    expect(stored?.context?.graphNodes).toEqual(graphNodes);
+
+    // The list is v.array(v.string()) on both sides — a node id is a string or
+    // it is not a node id, and the door refuses it rather than storing a shape
+    // no reader of the `given` edges can follow.
+    const bad = convexTest(schema, modules);
+    await expect(bad.mutation(internal.runs.internalIngest, ingest(run({
+      context: { ...context, graphNodes: ["line:1a2b3c4d", 7] },
+    })) as never)).rejects.toThrow();
+  });
+
+  it("takes a run that names neither the graph version nor its nodes", async () => {
+    // Absent is a supported value: an unregistered run, and one whose launcher
+    // could not build a graph, carry nothing and nothing is inferred.
+    const t = convexTest(schema, modules);
+    expect(await t.mutation(internal.runs.internalIngest, ingest(run({
+      context: { layersKnown: false, layersGiven: [], layersDenied: [], skillsOffered: [], skillsUsed: [], tools: [], hooks: [] },
+    })) as never)).toMatchObject({ ok: true });
+    const stored = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique());
+    expect(stored?.context?.graphVersion).toBeUndefined();
+    expect(stored?.context?.graphNodes).toBeUndefined();
+  });
+
   it("stores mode only for session runs", async () => {
     const t = convexTest(schema, modules);
     expect(await t.mutation(internal.runs.internalIngest, ingest(run({ mode: "interactive" })) as never)).toMatchObject({ ok: true });
