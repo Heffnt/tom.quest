@@ -802,6 +802,7 @@ export async function skillResults(options, env) {
   const rows = catalog
     .filter((skill) => options.group === undefined || skill.group === options.group)
     .slice(0, options.limit)
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructuring is how the body is dropped
     .map(({ body, ...rest }) => rest);
   return {
     rows,

@@ -310,7 +310,7 @@ describe("repo rules go only to a run standing outside the checkout", () => {
 describe("a name the publication does not carry is refused, not fatal", () => {
   it("moves repo-tom.quest into refused with the one sentence", () => {
     const published = ["write", "know-intent", "know-week", "know-agent-systems"];
-    const { granted, refused } = routeRepo("C:/Users/heffn/Desktop/WikiTom");
+    const { granted } = routeRepo("C:/Users/heffn/Desktop/WikiTom");
     expect(granted).toContain(`repo-${REPO}`);
     const withCatalog = routeSkills({
       subject: { kind: "repo", repo: REPO, paths: ["convex/x.ts"] },
