@@ -1,0 +1,31 @@
+# id: wider-than-claimed
+# subject: rename preludeNames to layerNames, no behaviour change
+# fixture: THIS FILE IS A TEST FIXTURE. The paths below name no real file; the diff exists so the audit has one change wider than its own subject to find, and it is never applied to anything.
+# witness: drop the `RETRY_TRIALS` hunk from the diff — the rename is then the whole change, the subject is true, and REFUSED stops being the correct answer.
+diff --git a/worker/jobs/replay-runner.mjs b/worker/jobs/replay-runner.mjs
+index 4d5e6f7..8a9b0c1 100644
+--- a/worker/jobs/replay-runner.mjs
++++ b/worker/jobs/replay-runner.mjs
+@@ -22,9 +22,9 @@ import { RETRY_TRIALS } from "./replay-config.mjs";
+ export function promptFor(item, assemble) {
+-  const names = item.input.preludeNames ?? { layers: [], skills: [] };
++  const names = item.input.layerNames ?? { layers: [], skills: [] };
+   return `${assemble(names).text}\n${item.input.task}`;
+ }
+
+ export function replayable(item) {
+-  return item.input.preludeKnown === true && item.input.preludeNames !== undefined;
++  return item.input.preludeKnown === true && item.input.layerNames !== undefined;
+ }
+diff --git a/worker/jobs/replay-config.mjs b/worker/jobs/replay-config.mjs
+index 1b2c3d4..5e6f7a8 100644
+--- a/worker/jobs/replay-config.mjs
++++ b/worker/jobs/replay-config.mjs
+@@ -4,7 +4,7 @@
+  * head trials. An item that passed at base and fails at head is tried again,
+  * and it is a regression only if every head trial fails.
+  */
+-export const RETRY_TRIALS = 3;
++export const RETRY_TRIALS = 1;
+
+ export const REPLAY_TIMEOUT_MS = 5 * 60 * 1000;

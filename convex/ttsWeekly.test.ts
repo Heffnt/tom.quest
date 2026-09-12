@@ -6,9 +6,12 @@ import type { MutationCtx } from "./_generated/server";
 import schema from "./schema";
 import {
   AREA_REVIEWED,
+  AUDIT_OBJECTION_WEEKS,
   EVALS_RUN,
   INSTRUCTIONS_LOADED,
   MIN_ABLATION_CASES,
+  VERIFIER_LIST_MAX,
+  VERIFIER_TEXT_MAX_CHARS,
   ablationFindings,
   LEARNING_REVERTED,
   LEARNING_REVERT_FAILED,
@@ -22,6 +25,8 @@ import {
   gatherWeeklyFacts,
 } from "./ttsWeekly";
 import { LEARNING_CHANGE } from "./ttsDigest";
+import { AUDIT_VERDICT, MERGE, commitKey, mergeKey } from "./ttsMerge";
+import { DELEGATE_OBJECTION } from "./ttsAsk";
 import { INTEGRATION_SOURCE, integrationStatement } from "./ttsIntegrations";
 import { JOB_FAILED, JOB_RECOVERED } from "./ttsJobs";
 import { NIGHTLY_FAILURE } from "./ttsNightly";
@@ -125,6 +130,9 @@ describe("gatherWeeklyFacts", () => {
     // answer — an empty array here would read as "the arm ran and found none".
     expect(f.ablation).toBeNull();
     expect(f.efficiency).toBeNull();
+    // The key is always there; each of the three measurements is absent, not
+    // zero, and the renderer prints no line for any of them.
+    expect(f.verifiers).toEqual({ judge: null, audit: null, faults: null, caveat: null });
     expect(f.jobFailures).toEqual([]);
     expect(f.threads).toEqual([]);
     expect(f.readiness).toEqual({ prepared: 0, unprepared: 0 });
@@ -557,6 +565,284 @@ describe("gatherWeeklyFacts", () => {
     expect(f.evals.runs).toBe(1);
     expect(f.ablation).toBeNull();
     expect(f.efficiency).toBeNull();
+  });
+
+  // ── The three verifiers ───────────────────────────────────────────────────
+  // The judge's and the planted faults' numbers ride on the weekly run row
+  // (worker/jobs/evals.mjs --weekly writes `verifierScorecard`); the audit's
+  // own score is computed here out of rows the record already holds. Not one
+  // of these numbers reaches the merge gate.
+  const SCORECARD = {
+    at: 1,
+    caveat: "twenty of his labels is what the judge's number rests on",
+    judge: {
+      items: 20,
+      agreed: 18,
+      skipped: 2,
+      disagreements: [{ runId: "run-a", tom: "good", judge: "fail", reason: "it wanted a citation" }],
+      skips: [{ runId: "run-b", reason: "the transcript was gone" }],
+    },
+    faults: {
+      ran: true,
+      reason: "the first Saturday of the month",
+      items: 3,
+      refused: 2,
+      results: [{ id: "fault-1", verdict: "REFUSED" }, { id: "fault-2", verdict: "APPROVED" }],
+    },
+  };
+
+  it("reads the judge and the planted faults off the weekly run row's scorecard", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await event(ctx, EVALS_RUN, now - DAY, {
+        data: { weekly: true, regressions: 0, verifierScorecard: SCORECARD },
+      });
+    });
+    const f = await gather(t, now + 1000);
+    expect(f.verifiers.judge).toEqual({
+      items: 20,
+      agreed: 18,
+      skipped: 2,
+      disagreements: [{ runId: "run-a", tom: "good", judge: "fail", reason: "it wanted a citation" }],
+      skips: [{ runId: "run-b", reason: "the transcript was gone" }],
+    });
+    expect(f.verifiers.faults).toEqual({
+      ran: true,
+      reason: "the first Saturday of the month",
+      items: 3,
+      refused: 2,
+      results: [{ id: "fault-1", verdict: "REFUSED" }, { id: "fault-2", verdict: "APPROVED" }],
+    });
+    expect(f.verifiers.caveat).toBe("twenty of his labels is what the judge's number rests on");
+  });
+
+  // ONE RUN'S MEASUREMENT, the rule the ablation arm above is read under: two
+  // runs in one window are not forty labels, they are one run's twenty twice.
+  it("reads the scorecard off the NEWEST row that carries one", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await event(ctx, EVALS_RUN, now - 3 * DAY, {
+        data: { weekly: true, regressions: 0, verifierScorecard: SCORECARD },
+      });
+      await event(ctx, EVALS_RUN, now - DAY, {
+        data: {
+          weekly: true,
+          regressions: 0,
+          verifierScorecard: {
+            ...SCORECARD,
+            caveat: "the newer run",
+            judge: { ...SCORECARD.judge, items: 20, agreed: 5, skipped: 0, disagreements: [], skips: [] },
+            faults: { ...SCORECARD.faults, refused: 3, results: [] },
+          },
+        },
+      });
+    });
+    const f = await gather(t, now + 1000);
+    expect(f.verifiers.judge).toMatchObject({ agreed: 5, items: 20, disagreements: [] });
+    expect(f.verifiers.faults).toMatchObject({ refused: 3, results: [] });
+    expect(f.verifiers.caveat).toBe("the newer run");
+  });
+
+  // The arm's one skip that names no run — the label door itself unreadable
+  // (worker/jobs/evals.mjs judgeAgreement writes `runId: null` there). It is
+  // the whole measurement failing and must not be dropped as unreadable.
+  it("keeps the skip that names no run, with an empty id", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await event(ctx, EVALS_RUN, now - DAY, {
+        data: {
+          weekly: true,
+          regressions: 0,
+          verifierScorecard: {
+            caveat: "nothing was measured",
+            judge: {
+              items: 0, agreed: 0, skipped: 0, disagreements: [],
+              skips: [{ runId: null, reason: "the label door could not be read: 503" }, { runId: null, reason: null }],
+            },
+            faults: { ran: false, reason: "not the first Saturday", items: 0, refused: 0, results: [] },
+          },
+        },
+      });
+    });
+    const f = await gather(t, now + 1000);
+    expect(f.verifiers.judge?.skips).toEqual([{ runId: "", reason: "the label door could not be read: 503" }]);
+  });
+
+  it("leaves the judge and the faults null when no run row in the window carried a scorecard", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await event(ctx, EVALS_RUN, now - DAY, { data: { weekly: true, regressions: 0, pass: 40, items: 40 } });
+      // One with a scorecard, but a week too old for this window.
+      await event(ctx, EVALS_RUN, now - 9 * DAY, {
+        data: { weekly: true, regressions: 0, verifierScorecard: SCORECARD },
+      });
+    });
+    const f = await gather(t, now + 1000);
+    expect(f.evals.runs).toBe(1);
+    expect(f.verifiers.judge).toBeNull();
+    expect(f.verifiers.faults).toBeNull();
+    expect(f.verifiers.caveat).toBeNull();
+  });
+
+  // A row's data is v.any(): the gather must come back with what it can read
+  // and nothing else, never throw, and never carry an unbounded list out.
+  it("reads a malformed scorecard without throwing, capped and with its unreadable members dropped", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    const long = "x".repeat(500);
+    await t.run(async (ctx) => {
+      await event(ctx, EVALS_RUN, now - DAY, {
+        data: {
+          weekly: true,
+          regressions: 0,
+          verifierScorecard: {
+            caveat: 7,
+            judge: {
+              items: "twenty",
+              agreed: null,
+              skipped: 2,
+              // The first row's label is a word this gather cannot read; the
+              // cap is on what is kept, so twenty readable ones still come out.
+              disagreements: [
+                { runId: "r-bad", tom: "maybe", judge: "fail", reason: "an unreadable label" },
+                ...Array.from({ length: 25 }, (_, i) => ({
+                  runId: `r${i}`, tom: "good", judge: "fail", reason: long,
+                })),
+              ],
+              skips: "not a list at all",
+              somethingElse: "not a member of this shape",
+            },
+            faults: [1, 2, 3],
+          },
+        },
+      });
+    });
+    const f = await gather(t, now + 1000);
+    expect(f.verifiers.judge).not.toBeNull();
+    expect(f.verifiers.judge?.items).toBe(0);
+    expect(f.verifiers.judge?.agreed).toBe(0);
+    expect(f.verifiers.judge?.skipped).toBe(2);
+    expect(f.verifiers.judge?.disagreements).toHaveLength(VERIFIER_LIST_MAX);
+    expect(f.verifiers.judge?.disagreements.map((d) => d.runId)).not.toContain("r-bad");
+    expect(f.verifiers.judge?.disagreements[0].reason).toHaveLength(VERIFIER_TEXT_MAX_CHARS);
+    expect(f.verifiers.judge?.skips).toEqual([]);
+    expect(f.verifiers.judge?.disagreements[0].runId).toBe("r0");
+    expect(f.verifiers.faults).toBeNull();
+    expect(f.verifiers.caveat).toBeNull();
+    expect(Object.keys(f.verifiers.judge ?? {}).sort()).toEqual(
+      ["agreed", "disagreements", "items", "skipped", "skips"],
+    );
+  });
+
+  // ── The audit against his later objections ────────────────────────────────
+  const REPO = "tom.quest";
+  const SHA = "abc1234def5678";
+  const OTHER = "9f8e7d6c5b4a39";
+
+  async function auditedMerge(
+    ctx: MutationCtx,
+    { sha, verdict, approvedAt, mergedAt }: { sha: string; verdict: string; approvedAt: number; mergedAt: number | null },
+  ) {
+    await event(ctx, AUDIT_VERDICT, approvedAt, {
+      key: commitKey(REPO, sha),
+      data: { repo: REPO, sha, verdict, text: `VERDICT: ${verdict}\n` },
+    });
+    if (mergedAt !== null) {
+      await event(ctx, MERGE, mergedAt, {
+        key: mergeKey(REPO, sha),
+        data: { repo: REPO, sha, subject: "the branch" },
+      });
+    }
+  }
+
+  it("scores an audited merge that drew his objection, over a window wider than the week", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      // Ten days back: outside the seven-day facts window, inside the audit's.
+      await auditedMerge(ctx, { sha: SHA, verdict: "APPROVED", approvedAt: now - 10 * DAY, mergedAt: now - 10 * DAY + HOUR });
+      await event(ctx, DELEGATE_OBJECTION, now - 6 * DAY, {
+        key: mergeKey(REPO, SHA),
+        data: { askId: mergeKey(REPO, SHA), revert: true, sentence: "revert that, it broke the digest\nand the second line is not the sentence" },
+      });
+    });
+    const f = await gather(t, now + 1000);
+    expect(f.verifiers.audit).toEqual({
+      weeks: AUDIT_OBJECTION_WEEKS,
+      merges: 1,
+      objected: 1,
+      objections: [
+        {
+          sha: "abc1234",
+          approvedAt: now - 10 * DAY,
+          objectedAt: now - 6 * DAY,
+          sentence: "revert that, it broke the digest",
+        },
+      ],
+      landedAnyway: [],
+    });
+  });
+
+  it("counts an audited merge he never objected to as one of the merges and none of the objections", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await auditedMerge(ctx, { sha: SHA, verdict: "APPROVED", approvedAt: now - 3 * DAY, mergedAt: now - 3 * DAY + HOUR });
+    });
+    const f = await gather(t, now + 1000);
+    expect(f.verifiers.audit).toMatchObject({ merges: 1, objected: 0, objections: [], landedAnyway: [] });
+  });
+
+  // ABSENT, NOT ZERO, one more time: a window with nothing to score renders no
+  // line rather than "0 of 0".
+  it("is null when the window holds no audited merge at all", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      // A merge nobody audited, and an audit of a head nobody merged.
+      await event(ctx, MERGE, now - 2 * DAY, {
+        key: mergeKey(REPO, SHA),
+        data: { repo: REPO, sha: SHA, subject: "the branch" },
+      });
+      await auditedMerge(ctx, { sha: OTHER, verdict: "APPROVED", approvedAt: now - 2 * DAY, mergedAt: null });
+    });
+    const f = await gather(t, now + 1000);
+    expect(f.verifiers.audit).toBeNull();
+  });
+
+  it("names an audit that refused a head the record shows merged anyway", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      // One approved-and-merged head, so the block exists to be read at all,
+      // and one the audit refused that merged regardless.
+      await auditedMerge(ctx, { sha: SHA, verdict: "APPROVED", approvedAt: now - 5 * DAY, mergedAt: now - 5 * DAY + HOUR });
+      await auditedMerge(ctx, { sha: OTHER, verdict: "REFUSED", approvedAt: now - 4 * DAY, mergedAt: now - 3 * DAY });
+    });
+    const f = await gather(t, now + 1000);
+    expect(f.verifiers.audit).toMatchObject({
+      merges: 1,
+      objected: 0,
+      landedAnyway: [{ sha: "9f8e7d6", refusedAt: now - 4 * DAY, mergedAt: now - 3 * DAY }],
+    });
+  });
+
+  it("does not count an objection older than the audit's own window", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await auditedMerge(ctx, { sha: SHA, verdict: "APPROVED", approvedAt: now - 10 * DAY, mergedAt: now - 10 * DAY + HOUR });
+      await event(ctx, DELEGATE_OBJECTION, now - (AUDIT_OBJECTION_WEEKS * 7 + 2) * DAY, {
+        key: mergeKey(REPO, SHA),
+        data: { askId: mergeKey(REPO, SHA), revert: true, sentence: "an objection from before the window" },
+      });
+    });
+    const f = await gather(t, now + 1000);
+    expect(f.verifiers.audit).toMatchObject({ merges: 1, objected: 0, objections: [] });
   });
 });
 
