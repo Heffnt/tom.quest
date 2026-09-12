@@ -3,6 +3,19 @@
 // The CLI owns the transcript while launchers and hooks own facts the CLI can
 // never know. Keeping those facts in separate top-level groups lets each
 // writer preserve the others, including when SessionEnd races a late claim.
+//
+// THE ENVELOPE HAS FOUR GROUPS and one writer each:
+//
+//   writer + registration — the launcher, through writeRegistration.
+//   claim                 — the claimer, through claimRegistration or
+//                           writeRegistrationClaim.
+//   end                   — SessionEnd, through writeRegistrationEnd.
+//   skills                — `tts search skills`, through appendSkillAsk.
+//
+// `skills` arrived with envelopeVersion 2. A VERSION-1 ENVELOPE READS WITH
+// `skills` ABSENT AND THAT IS NOT AN ERROR: one already on disk when the
+// version changed describes a real run, and stamping 2 on it at a later claim
+// or end would restate a fact its launcher never wrote.
 
 import crypto from "node:crypto";
 import fsDefault from "node:fs";
@@ -10,6 +23,15 @@ import path from "node:path";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const LOCK_STALE_MS = 30_000;
+
+/** The version a NEW envelope is written at. An existing one keeps its own. */
+export const ENVELOPE_VERSION = 2;
+
+/** The most `skills.asked` entries an envelope keeps. AN ENVELOPE IS NOT A LOG:
+ * it records one run, and a session that walked the catalog would otherwise
+ * grow the sidecar without bound. Past the cap the OLDEST entry is dropped,
+ * because what a reader of the run wants is its most recent asks. */
+export const SKILL_ASK_CAP = 50;
 
 function jsonAt(file, fs) {
   try {
@@ -84,6 +106,29 @@ function endValue(end, now) {
   };
 }
 
+function skillAskValue(ask, now) {
+  const value = {
+    at: Number.isFinite(ask?.at) ? ask.at : now(),
+    name: String(ask?.name ?? ""),
+    result: ask?.result === "refused" ? "refused" : "ok",
+  };
+  if (typeof ask?.why === "string" && ask.why !== "") value.why = ask.why;
+  return value;
+}
+
+/** The `skills` group of two envelopes as one, oldest ask first and capped.
+ * A claim needs this because the group belongs to neither side alone: an ask
+ * made before the claim is on the spool, and one made after an early
+ * SessionEnd is already on the sidecar. */
+function mergeSkillAsks(...groups) {
+  const asked = groups
+    .flatMap((group) => (Array.isArray(group?.asked) ? group.asked : []))
+    .filter((entry) => entry !== null && typeof entry === "object")
+    .sort((a, b) => (Number(a.at) || 0) - (Number(b.at) || 0))
+    .slice(-SKILL_ASK_CAP);
+  return asked.length === 0 ? undefined : { asked };
+}
+
 export function registrationSidecarPath(runFile) {
   const file = path.resolve(String(runFile));
   return file.toLowerCase().endsWith(".jsonl")
@@ -107,7 +152,7 @@ export function writeRegistration({
 } = {}) {
   const file = spoolPath(spoolDir, token);
   const envelope = {
-    envelopeVersion: 1,
+    envelopeVersion: ENVELOPE_VERSION,
     token,
     writer: { ...writer, at: Number.isFinite(writer.at) ? writer.at : now() },
     registration: { ...registration },
@@ -146,7 +191,7 @@ export function writeRegistrationClaim({
     }
     const envelope = {
       ...existing,
-      envelopeVersion: existing.envelopeVersion ?? 1,
+      envelopeVersion: existing.envelopeVersion ?? ENVELOPE_VERSION,
       token: token ?? existing.token ?? null,
       ...(writer === undefined ? {} : { writer: { ...writer, at: Number.isFinite(writer.at) ? writer.at : now() } }),
       ...(registration === undefined ? {} : { registration: { ...registration } }),
@@ -186,12 +231,18 @@ export function claimRegistration({
     }
     const envelope = {
       ...(existing ?? {}),
-      envelopeVersion: 1,
+      // The spool is the launcher's authority on the version, so an envelope
+      // written at 1 is still at 1 after its claim. Only a claim that authors
+      // an envelope out of nothing gets the current version.
+      envelopeVersion: spooled.envelopeVersion ?? existing?.envelopeVersion ?? ENVELOPE_VERSION,
       token,
       writer: spooled.writer,
       registration: spooled.registration,
       claim: claimValue(claim, runFile, now),
     };
+    const skills = mergeSkillAsks(existing?.skills, spooled.skills);
+    if (skills === undefined) delete envelope.skills;
+    else envelope.skills = skills;
     atomicJson(file, envelope, fs);
     try { fs.unlinkSync(source); } catch (error) {
       if (error?.code !== "ENOENT") throw error;
@@ -207,6 +258,47 @@ export function writeRegistrationEnd({ runFile, end = {}, fs = fsDefault, now = 
     const existing = jsonAt(file, fs) ?? {};
     const envelope = { ...existing, end: endValue(end, now) };
     if (JSON.stringify(existing) !== JSON.stringify(envelope)) atomicJson(file, envelope, fs);
+    return { ok: true, file, envelope };
+  });
+}
+
+/**
+ * Append one `tts search skills <name>` to the run's envelope. APPEND-ONLY and
+ * the fourth writer: it touches `skills` and nothing else, under the same lock
+ * and the same atomic tmp+rename every other writer uses.
+ *
+ * It takes the spool, the sidecar, or both. `tts search skills` runs inside a
+ * child whose run file has NO SIDECAR YET — a sidecar is only created at claim
+ * time — so the spool is the ordinary target; the sidecar wins when it exists,
+ * because after a claim the spool is gone and the sidecar is the durable
+ * envelope.
+ *
+ * An envelope that is not on disk is NOT created here. There is no run to
+ * append to, and a skills-only file at a spool path would collide with the
+ * launcher's own write, which refuses a token whose content differs.
+ *
+ * The version is left exactly as found: a `skills` group reads fine at either
+ * version, and envelopeVersion records what the launcher wrote, not what a
+ * later writer happened to add.
+ */
+export function appendSkillAsk({ runFile, spoolDir, token, ask = {}, fs = fsDefault, now = Date.now } = {}) {
+  const sidecar = runFile === undefined || runFile === null || runFile === "" ? null : registrationSidecarPath(runFile);
+  const spool = spoolDir === undefined || spoolDir === null || spoolDir === "" ? null : spoolPath(spoolDir, token);
+  const file = sidecar !== null && fs.existsSync(sidecar) ? sidecar : (spool ?? sidecar);
+  if (file === null) return { ok: false, reason: "no run registration envelope named" };
+  return withEnvelopeLock(file, fs, now, () => {
+    const existing = jsonAt(file, fs);
+    if (existing === null) return { ok: false, reason: "run registration envelope missing", file };
+    if (token !== undefined && existing.token !== undefined && existing.token !== null && existing.token !== token) {
+      return { ok: false, reason: "registration token mismatch", file, envelope: existing };
+    }
+    const asked = Array.isArray(existing.skills?.asked) ? existing.skills.asked : [];
+    const envelope = {
+      ...existing,
+      envelopeVersion: existing.envelopeVersion ?? ENVELOPE_VERSION,
+      skills: { ...existing.skills, asked: [...asked, skillAskValue(ask, now)].slice(-SKILL_ASK_CAP) },
+    };
+    atomicJson(file, envelope, fs);
     return { ok: true, file, envelope };
   });
 }
@@ -263,6 +355,17 @@ export function mergeRegistration({ parsed, envelope, host, report = () => {} })
   for (const key of ["skillsGranted", "skillsRefused"]) {
     if (Array.isArray(registration[key])) run.context[key] = [...registration[key]];
     else delete run.context[key];
+  }
+  // The fourth group, written by `tts search skills` rather than by a
+  // launcher. It is FLATTENED TO PLAIN STRINGS because convex/schema.ts types
+  // every runs.context list as v.array(v.string()): a string array is the only
+  // additive shape, so the name and the result travel as one `name (result)`.
+  // Like skillsGranted it is set only on the applied path.
+  const asked = Array.isArray(envelope.skills?.asked) ? envelope.skills.asked : [];
+  if (asked.length > 0) {
+    run.context.skillsAsked = asked.map((entry) => `${String(entry?.name ?? "")} (${String(entry?.result ?? "")})`);
+  } else {
+    delete run.context.skillsAsked;
   }
   for (const key of ["modelRequested", "promptSha256", "writingStandardSource"]) setOptional(run.context, key, registration[key]);
   if (!run.context.wikitomCommit && typeof registration.wikitomCommit === "string") run.context.wikitomCommit = registration.wikitomCommit;

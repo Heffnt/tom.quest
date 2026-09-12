@@ -16,8 +16,11 @@ import {
   formatTodoResult,
   parseSearchArgs,
   runSearchCli,
+  SEARCH_COMMANDS,
+  skillRoots,
   usage,
 } from "./search-lib.mjs";
+import { writeRegistration } from "../runs/registration.mjs";
 
 const temporary = [];
 afterEach(() => {
@@ -435,5 +438,174 @@ describe("repository-rule proposals", () => {
     expect(parseSearchArgs(["proposals", "--repo", "tom.quest"])).toMatchObject({ command: "proposals", repo: "tom.quest", limit: 20 });
     expect(() => parseSearchArgs(["proposals", "--wikitom", "/tmp"])).toThrow("--wikitom does not apply to proposals");
     expect(() => parseSearchArgs(["proposals", "a-query"])).toThrow("proposals accepts options only");
+  });
+});
+
+// ── skills ───────────────────────────────────────────────────────────────────
+// The one corpus that is neither WikiTom nor a production door: the INSTALLED
+// skills directory, so the answer is exactly what this run could load.
+describe("installed skills", () => {
+  function installed() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tts-skills-"));
+    temporary.push(dir);
+    const publish = (name, description, body, references = {}) => {
+      const skill = path.join(dir, name);
+      fs.mkdirSync(skill, { recursive: true });
+      // The frontmatter renderSkillMd writes: `name` and `description`, the
+      // description JSON-quoted, and nothing else.
+      fs.writeFileSync(
+        path.join(skill, "SKILL.md"),
+        `---\nname: ${name}\ndescription: ${JSON.stringify(description)}\n---\n\n${body}\n`,
+      );
+      for (const [file, contents] of Object.entries(references)) fs.writeFileSync(path.join(skill, file), contents);
+    };
+    publish("tom-write", "His writing standard: Shape, Words", "The writing body.", { "ground.md": "what he knows" });
+    publish("tom-know-money", "Tom's money: money, banking.", "The money body.");
+    publish("tom-repo-cmt", "Rules of the CMT repository.", "The repo body.", { "cmt-AGENTS.md": "nested rules" });
+    // NOT ours: a checkout's own skill under the same root, which this command
+    // must never see. witness: drop the prefix filter and the first test fails.
+    publish("other-skill", "someone else's", "not Tom's.");
+    return dir;
+  }
+
+  it("names every tom- skill under the root, its group, bytes, path and description, and nothing else", async () => {
+    const dir = installed();
+    const output = [];
+    expect(await runSearchCli(["skills", "--skills-dir", dir], { env: {}, write: (line) => output.push(line), error: () => {} })).toBe(0);
+    expect(output.map((line) => line.split(" ")[0])).toEqual(["know-money", "repo-cmt", "write"]);
+    expect(output.join("\n")).not.toContain("someone else");
+    expect(output[0]).toContain("[know]");
+    expect(output[0]).toContain(path.join(dir, "tom-know-money"));
+    expect(output[0]).toContain('description="Tom\'s money: money, banking."');
+    expect(output[0]).toMatch(/\s\d+B\s/);
+    // The group is DERIVED from the name; the frontmatter never carries it.
+    expect(output[1]).toContain("[repo]");
+    expect(output[2]).toContain("[write]");
+  });
+
+  it("narrows to one group", async () => {
+    const dir = installed();
+    const output = [];
+    expect(await runSearchCli(["skills", "--group", "know", "--skills-dir", dir], { env: {}, write: (line) => output.push(line), error: () => {} })).toBe(0);
+    expect(output).toHaveLength(1);
+    expect(output[0]).toContain("know-money");
+  });
+
+  it("prints a known skill's body and its references' names and paths", async () => {
+    const dir = installed();
+    const output = [];
+    expect(await runSearchCli(["skills", "write", "--skills-dir", dir], { env: {}, write: (line) => output.push(line), error: () => {} })).toBe(0);
+    const text = output.join("\n");
+    expect(text).toContain("The writing body.");
+    expect(text).toContain(`references: ground.md ${path.join(dir, "tom-write", "ground.md")}`);
+
+    // The directory form is accepted and nothing is said about the prefix.
+    const prefixed = [];
+    expect(await runSearchCli(["skills", "tom-write", "--skills-dir", dir], { env: {}, write: (line) => prefixed.push(line), error: () => {} })).toBe(0);
+    expect(prefixed).toEqual(output);
+
+    const json = [];
+    expect(await runSearchCli(["skills", "write", "--skills-dir", dir, "--json"], { env: {}, write: (line) => json.push(line), error: () => {} })).toBe(0);
+    expect(JSON.parse(json[0])).toMatchObject({
+      skill: { name: "write", group: "write", body: "The writing body.", references: [{ name: "ground.md" }] },
+    });
+  });
+
+  it("refuses an unknown name with its near misses and appends the refusal to the run's envelope", async () => {
+    const dir = installed();
+    const state = fs.mkdtempSync(path.join(os.tmpdir(), "tts-skills-reg-"));
+    temporary.push(state);
+    const spoolDir = path.join(state, "registration");
+    const token = "77777777-7777-4777-8777-777777777777";
+    writeRegistration({ spoolDir, token, writer: { file: "launcher.mjs" }, registration: { host: "laptop" }, now: () => 1 });
+
+    const errors = [];
+    const env = { TTS_RUN_REG_SPOOL: spoolDir, TTS_RUN_REG_TOKEN: token };
+    expect(await runSearchCli(["skills", "know-nothing", "--skills-dir", dir], { env, write: () => {}, error: (line) => errors.push(line) })).toBe(2);
+    expect(errors[0]).toContain('skill "know-nothing" is not in the catalog');
+    expect(errors[0]).toContain("near misses: know-money");
+
+    // `tts search skills` runs inside the child, and a run's sidecar only
+    // exists after its claim — so the SPOOL is what the refusal lands on.
+    const envelope = JSON.parse(fs.readFileSync(path.join(spoolDir, `${token}.json`), "utf8"));
+    expect(envelope.skills.asked).toMatchObject([{ name: "know-nothing", result: "refused", why: "not in the catalog" }]);
+    expect(envelope).toMatchObject({ envelopeVersion: 2, token, writer: { file: "launcher.mjs" }, registration: { host: "laptop" } });
+
+    // A found skill is recorded too — the envelope answers "what did this run
+    // reach for", not only "what did it fail to reach for".
+    expect(await runSearchCli(["skills", "know-money", "--skills-dir", dir], { env, write: () => {}, error: () => {} })).toBe(0);
+    expect(JSON.parse(fs.readFileSync(path.join(spoolDir, `${token}.json`), "utf8")).skills.asked.at(-1)).toMatchObject({
+      name: "know-money",
+      result: "ok",
+    });
+
+    // With no run around it, the same refusal is still just a refusal.
+    const alone = [];
+    expect(await runSearchCli(["skills", "know-nothing", "--skills-dir", dir], { env: {}, write: () => {}, error: (line) => alone.push(line) })).toBe(2);
+    expect(alone[0]).toContain("near misses: know-money");
+  });
+
+  it("treats a missing skills directory as an empty catalog, not an error, and says where it looked", async () => {
+    const dir = path.join(os.tmpdir(), `tts-skills-absent-${process.pid}`);
+    const output = [];
+    expect(await runSearchCli(["skills", "--skills-dir", dir], { env: {}, write: (line) => output.push(line), error: () => {} })).toBe(0);
+    expect(output).toEqual([`tts-search: no skills directory at ${path.resolve(dir)}`]);
+
+    const json = [];
+    expect(await runSearchCli(["skills", "--skills-dir", dir, "--json"], { env: {}, write: (line) => json.push(line), error: () => {} })).toBe(0);
+    expect(JSON.parse(json[0])).toEqual({ skills: [] });
+  });
+
+  it("looks in CLAUDE_CONFIG_DIR first and the Codex root second, on either machine", () => {
+    // The box reaches its per-account root (/root/.claude-accounts/<account>)
+    // ONLY through CLAUDE_CONFIG_DIR; the laptop sets none and falls back.
+    expect(skillRoots({ CLAUDE_CONFIG_DIR: "/root/.claude-accounts/wpi", HOME: "/root" })).toEqual([
+      path.join("/root/.claude-accounts/wpi", "skills"),
+      path.join("/root", ".codex", "skills"),
+    ]);
+    expect(skillRoots({ HOME: "/home/tom" })).toEqual([
+      path.join("/home/tom", ".claude", "skills"),
+      path.join("/home/tom", ".codex", "skills"),
+    ]);
+  });
+
+  it("takes only the options that apply to it, and a name instead of a group", () => {
+    expect(parseSearchArgs(["skills"])).toMatchObject({ command: "skills", limit: 20, json: false });
+    expect(parseSearchArgs(["skills", "know-money"])).toMatchObject({ command: "skills", skill: "know-money" });
+    expect(parseSearchArgs(["skills", "--group", "know"])).toMatchObject({ group: "know" });
+    expect(() => parseSearchArgs(["skills", "--wikitom", "/tmp"])).toThrow("--wikitom does not apply to skills");
+    expect(() => parseSearchArgs(["skills", "--since", "2026-09-01"])).toThrow("--since does not apply to skills");
+    expect(() => parseSearchArgs(["skills", "a", "b"])).toThrow("skills takes at most one skill name");
+    expect(() => parseSearchArgs(["skills", "write", "--group", "write"])).toThrow("--group does not apply when skills names a skill");
+  });
+
+  it("refuses a group that is not one of the published three", async () => {
+    const dir = installed();
+    const errors = [];
+    expect(await runSearchCli(["skills", "--group", "nope", "--skills-dir", dir], { env: {}, write: () => {}, error: (line) => errors.push(line) })).toBe(2);
+    expect(errors[0]).toBe("tts-search: --group must be one of write, know, repo");
+  });
+});
+
+describe("the help", () => {
+  // DATA-DRIVEN ON PURPOSE. A corpus added to the grammar and left out of HELP
+  // fails here, rather than being discovered by a run that cannot find it.
+  it("names every corpus the grammar accepts", () => {
+    expect([...SEARCH_COMMANDS]).toEqual([
+      "archive",
+      "areas",
+      "evals",
+      "events",
+      "evidence",
+      "proposals",
+      "rulings",
+      "sessions",
+      "skills",
+      "sources",
+      "todos",
+    ]);
+    for (const command of SEARCH_COMMANDS) {
+      expect(usage()).toMatch(new RegExp(`^${command} `, "m"));
+    }
   });
 });

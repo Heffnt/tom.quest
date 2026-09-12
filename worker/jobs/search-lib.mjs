@@ -2,10 +2,11 @@
 // laptop checkout. It deliberately contains no model call and no write path.
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import readline from "node:readline";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { extractSections, parseFrontmatter } from "./markdown-sections.mjs";
 // session-archive.mjs owns the three-depth resolution for redact.mjs: in a
@@ -19,7 +20,12 @@ export const LAPTOP_WIKITOM_DIR = "C:/Users/heffn/Desktop/WikiTom";
 export const BOX_WIKITOM_DIR = process.env.WIKITOM_DIR || "/root/wikitom";
 
 const DATABASE_COMMANDS = new Set(["rulings", "sessions", "events", "todos", "evals", "proposals"]);
-const LOCAL_COMMANDS = new Set(["areas", "sources", "archive", "evidence"]);
+const LOCAL_COMMANDS = new Set(["areas", "sources", "archive", "evidence", "skills"]);
+/** EVERY CORPUS the grammar accepts, in one list. The help is checked against
+ * it, so a corpus added to the grammar and left out of HELP fails a test rather
+ * than being discovered by a run that cannot find it. */
+export const SEARCH_COMMANDS = Object.freeze([...DATABASE_COMMANDS, ...LOCAL_COMMANDS].sort());
+
 // The one database command that is NOT a /tts/search/* door: it reads the open
 // repository-rule proposals from /tts/repo-proposals, whose envelope is its own
 // (see proposalResults).
@@ -60,6 +66,10 @@ Filters --since by archive path date, falling back to file modification time.
 evidence <query> [--limit N] [--wikitom DIR] [--json]
 Search model-of-tom/evidence/ for the entry behind a page's line.
 Returns path:heading, the line: text, and the first said/paraphrase/read/rests on.
+
+skills [<name>] [--group GROUP] [--skills-dir DIR] [--limit N] [--json]
+List the skills installed for this run, or print one skill's body.
+Reads the installed skills directory, so it names only what can actually load.
 
 proposals [--repo NAME] [--limit N] [--json]
 List the open repository-rule proposals the nightly repo-learning step made.
@@ -118,6 +128,12 @@ export function parseSearchArgs(argv) {
     } else if (item === "--wikitom") {
       options.wikitom = optionValue(argv, i++, item);
       options.seen.add("wikitom");
+    } else if (item === "--group") {
+      options.group = optionValue(argv, i++, item);
+      options.seen.add("group");
+    } else if (item === "--skills-dir") {
+      options.skillsDir = optionValue(argv, i++, item);
+      options.seen.add("skills-dir");
     } else if (item.startsWith("--")) fail(`unknown option ${item}`);
     else options.positional.push(item);
   }
@@ -132,6 +148,12 @@ export function parseSearchArgs(argv) {
   } else if (command === "areas") {
     if (options.positional.length !== 1) fail("areas needs an area name or all");
     options.area = options.positional[0];
+  } else if (command === "skills") {
+    if (options.positional.length > 1) fail("skills takes at most one skill name");
+    if (options.positional.length === 1) options.skill = options.positional[0];
+    // A name already IS a group of one. Taking both would let a run write a
+    // pair that cannot both be true and get silence for it.
+    if (options.skill !== undefined && options.seen.has("group")) fail("--group does not apply when skills names a skill");
   } else if (options.positional.length > 0) {
     fail(`${command} accepts options only`);
   }
@@ -146,6 +168,7 @@ export function parseSearchArgs(argv) {
     archive: new Set(["json", "since", "limit", "wikitom"]),
     evidence: new Set(["json", "limit", "wikitom"]),
     proposals: new Set(["json", "repo", "limit"]),
+    skills: new Set(["json", "limit", "group", "skills-dir"]),
   };
   for (const name of options.seen) {
     if (!allowed[command].has(name)) fail(`--${name} does not apply to ${command}`);
@@ -567,6 +590,226 @@ export function evidenceResults(root, query, limit) {
   return { missing: null, rows: rows.slice(0, limit) };
 }
 
+// ── skills ───────────────────────────────────────────────────────────────────
+//
+// `skills` reads THE INSTALLED SKILLS DIRECTORY, not Convex. Every other
+// command here reads WikiTom or a production door; this one reads what a run's
+// harness would actually load, so it works with no network at all and it can
+// never name a skill that is published but not yet on this machine.
+
+/**
+ * The roots a harness resolves a skill directory from, first hit wins:
+ *
+ *   1. $CLAUDE_CONFIG_DIR/skills, else <home>/.claude/skills
+ *   2. <home>/.codex/skills
+ *
+ * ONE ORDER FOR BOTH MACHINES. The laptop sets no CLAUDE_CONFIG_DIR and falls
+ * back to <home>/.claude. The box's per-account roots are
+ * /root/.claude-accounts/<account>/skills and are reachable ONLY through
+ * CLAUDE_CONFIG_DIR — which its jobs, its cron and its session host all set —
+ * so naming the accounts directory here would be a second, staler answer.
+ */
+export function skillRoots(env = process.env) {
+  const home = env.HOME || env.USERPROFILE || os.homedir();
+  const claude = env.CLAUDE_CONFIG_DIR && env.CLAUDE_CONFIG_DIR !== "" ? env.CLAUDE_CONFIG_DIR : path.join(home, ".claude");
+  return [path.join(claude, "skills"), path.join(home, ".codex", "skills")];
+}
+
+// scripts/skills.mjs is THE definition of the prefix and the groups, and it
+// has two homes: scripts/ beside worker/ in a checkout, and /opt/tts/scripts/
+// beside the flat jobs on the box (worker/setup.sh copies it there). Both
+// specifiers are named rather than guessed, exactly as worker/jobs/tts-lib.mjs
+// names both homes of the registration body. The import is LAZY so a search
+// for a ruling never depends on the skill machinery being installed.
+const SKILLS_MODULE_URLS = [
+  new URL("../../scripts/skills.mjs", import.meta.url),
+  new URL("./scripts/skills.mjs", import.meta.url),
+];
+const REGISTRATION_MODULE_URLS = [
+  new URL("../runs/registration.mjs", import.meta.url),
+  new URL("./runs/registration.mjs", import.meta.url),
+];
+
+function installedModule(urls, extra) {
+  return [
+    ...urls.flatMap((candidate) => (candidate.protocol === "file:" ? [fileURLToPath(candidate)] : [])),
+    ...extra.map((candidate) => path.resolve(candidate)),
+  ].find((candidate) => fs.existsSync(candidate));
+}
+
+let skillsModule = null;
+async function loadSkillsModule() {
+  if (skillsModule === null) {
+    const file = installedModule(SKILLS_MODULE_URLS, ["scripts/skills.mjs"]);
+    if (!file) fail("the skill definitions (scripts/skills.mjs) are not installed");
+    skillsModule = await import(pathToFileURL(file).href);
+  }
+  return skillsModule;
+}
+
+let registrationModule = null;
+async function loadRegistrationModule() {
+  if (registrationModule === null) {
+    const file = installedModule(REGISTRATION_MODULE_URLS, ["worker/runs/registration.mjs", "runs/registration.mjs"]);
+    if (!file) return null;
+    registrationModule = await import(pathToFileURL(file).href);
+  }
+  return registrationModule;
+}
+
+/**
+ * Record the ask on this run's registration envelope, when this process was
+ * launched inside one (TTS_RUN_REG_SPOOL and TTS_RUN_REG_TOKEN together).
+ *
+ * THE ENVELOPE IS A RECORD, NEVER A REASON A SEARCH FAILS. A missing, busy or
+ * unreadable envelope is swallowed: the answer to `tts search skills` does not
+ * depend on it, and a search command that died writing its own telemetry would
+ * be the worst possible trade.
+ */
+async function noteSkillAsk(env, ask) {
+  const spoolDir = env.TTS_RUN_REG_SPOOL;
+  const token = env.TTS_RUN_REG_TOKEN;
+  if (!spoolDir || !token) return;
+  try {
+    const registration = await loadRegistrationModule();
+    if (registration === null) return;
+    registration.appendSkillAsk({ spoolDir, token, ask });
+  } catch {
+    // Deliberate: see above.
+  }
+}
+
+/** `know-research` from `know-research` OR `tom-know-research`. The prefix is a
+ * directory-naming fact and nothing a caller is corrected about. */
+function bareSkillName(name, prefix) {
+  const text = String(name ?? "").trim();
+  return text.startsWith(prefix) ? text.slice(prefix.length) : text;
+}
+
+/** THE GROUP IS DERIVED, NOT READ. A SKILL.md's frontmatter carries `name` and
+ * `description` and nothing else, by design (scripts/skills.mjs renderSkillMd
+ * says why), so the group comes off the name: `write` is write, `know-*` is
+ * know, `repo-*` is repo. */
+function skillGroup(name, groups) {
+  const head = String(name ?? "").split("-")[0];
+  return groups.includes(head) ? head : "unknown";
+}
+
+/** renderSkillMd JSON-quotes the description so a `"` or a `:` inside it cannot
+ * break the block, and parseFrontmatter parses nothing inside a value. */
+function frontmatterText(value) {
+  const raw = String(value ?? "").trim();
+  if (raw.startsWith('"') && raw.endsWith('"') && raw.length > 1) {
+    try {
+      return String(JSON.parse(raw));
+    } catch {
+      // Not JSON after all — the literal is the honest answer.
+    }
+  }
+  return raw;
+}
+
+/**
+ * Every one of Tom's skills installed under `dir`, by name.
+ *
+ * A directory is one of ours ONLY when its name starts with the publisher's
+ * prefix. Everything else under the root — a checkout's own skills, the
+ * harness's — is invisible here, because this command answers one question:
+ * what of Tom's can this run load.
+ */
+export function readSkillCatalog(dir, { prefix, groups }) {
+  if (!fs.existsSync(dir)) return [];
+  const catalog = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue;
+    const skillDir = path.join(dir, entry.name);
+    const file = path.join(skillDir, "SKILL.md");
+    if (!fs.existsSync(file)) continue;
+    const { fields, body } = parseFrontmatter(fs.readFileSync(file, "utf8"));
+    const name = bareSkillName(entry.name, prefix);
+    catalog.push({
+      name,
+      group: skillGroup(name, groups),
+      description: frontmatterText(fields.description),
+      // The bytes of SKILL.md itself — what loading this skill costs a prompt.
+      bytes: fs.statSync(file).size,
+      path: skillDir,
+      references: fs
+        .readdirSync(skillDir, { withFileTypes: true })
+        .filter((reference) => reference.isFile() && reference.name !== "SKILL.md")
+        .map((reference) => ({ name: reference.name, path: path.join(skillDir, reference.name) }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+      body: body.trim(),
+    });
+  }
+  return catalog.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function sharedPrefix(a, b) {
+  let length = 0;
+  while (length < a.length && length < b.length && a[length] === b[length]) length += 1;
+  return length;
+}
+
+/** The catalog names a refused name could plausibly have meant: one sharing a
+ * three-character prefix with it, or one in the same group — the group is
+ * derivable from whatever the caller typed, so `know-nothing` still points at
+ * every know- skill. `areas` refuses with the directory alone and no near-miss
+ * idiom to follow; this is it. */
+export function skillNearMisses(name, catalog, groups) {
+  const wanted = String(name ?? "").toLocaleLowerCase();
+  const group = skillGroup(wanted, groups);
+  return catalog
+    .filter((skill) => (group !== "unknown" && skill.group === group) || sharedPrefix(skill.name.toLocaleLowerCase(), wanted) >= 3)
+    .map((skill) => skill.name)
+    .sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * `skills [<name>]` — the installed catalog, or one skill whole.
+ *
+ * A MISSING DIRECTORY IS NOT AN ERROR: the list is simply empty, and the text
+ * form says which directories were looked in. An unknown NAME is an error,
+ * because the caller asked for something by name and got nothing.
+ */
+export async function skillResults(options, env) {
+  const { SKILL_PREFIX, SKILL_GROUPS } = await loadSkillsModule();
+  const searched = options.skillsDir === undefined ? skillRoots(env) : [path.resolve(options.skillsDir)];
+  const dir = searched.find((candidate) => fs.existsSync(candidate)) ?? null;
+  const catalog = dir === null ? [] : readSkillCatalog(dir, { prefix: SKILL_PREFIX, groups: SKILL_GROUPS });
+
+  if (options.skill !== undefined) {
+    const asked = bareSkillName(options.skill, SKILL_PREFIX);
+    const found = catalog.find((skill) => skill.name.toLocaleLowerCase() === asked.toLocaleLowerCase());
+    if (found === undefined) {
+      const near = skillNearMisses(asked, catalog, SKILL_GROUPS);
+      await noteSkillAsk(env, { name: asked, result: "refused", why: "not in the catalog" });
+      fail(
+        `skill "${asked}" is not in the catalog at ${searched.join(" or ")}; ${
+          near.length === 0 ? "no near misses" : `near misses: ${near.join(", ")}`
+        }`,
+      );
+    }
+    await noteSkillAsk(env, { name: found.name, result: "ok" });
+    return { rows: [found], note: null, json: { skill: found } };
+  }
+
+  if (options.group !== undefined && !SKILL_GROUPS.includes(options.group)) {
+    fail(`--group must be one of ${SKILL_GROUPS.join(", ")}`);
+  }
+  // The list form drops each body: the bodies together are far larger than any
+  // terminal wants, and `skills <name>` is how one is read.
+  const rows = catalog
+    .filter((skill) => options.group === undefined || skill.group === options.group)
+    .slice(0, options.limit)
+    .map(({ body, ...rest }) => rest);
+  return {
+    rows,
+    note: dir === null ? `tts-search: no skills directory at ${searched.join(" or ")}` : null,
+    json: { skills: rows },
+  };
+}
+
 /**
  * `proposals [--repo NAME]` — the OPEN repository-rule proposals the nightly
  * repo-learning step made, over GET /tts/repo-proposals.
@@ -621,6 +864,16 @@ export function formatProposalResult(row, fallback = "proposal") {
 }
 
 function formatLocal(command, row) {
+  if (command === "skills") {
+    const head = `${row.name} [${row.group}] ${row.bytes}B ${row.path}`;
+    // The name form carries the body; the list form does not. Same idiom as
+    // `areas`, whose all form carries no currentState.
+    if (!("body" in row)) return `${head} description=${quoted(row.description)}`;
+    const references = row.references.length === 0
+      ? "references: none"
+      : `references: ${row.references.map((reference) => `${reference.name} ${reference.path}`).join(", ")}`;
+    return `${head}\ndescription=${quoted(row.description)}\n${references}\n\n${row.body}`;
+  }
   if (command === "evidence") {
     const source = row.sourceKind === null || row.sourceKind === undefined
       ? "source=none"
@@ -656,10 +909,15 @@ export async function runSearchCli(
     let missing = null;
     let metadata = null;
     let jsonEnvelope = null;
+    let note = null;
     if (OWN_DOOR_COMMANDS.has(options.command)) {
       rows = await proposalResults(options, env, fetchFn);
     } else if (DATABASE_COMMANDS.has(options.command)) {
       ({ rows, metadata, json: jsonEnvelope } = await databaseResults(options.command, options, env, fetchFn));
+    } else if (options.command === "skills") {
+      // Not under wikiTomDir: the catalog is an installed directory, not a
+      // WikiTom page, and --wikitom does not apply to it.
+      ({ rows, note, json: jsonEnvelope } = await skillResults(options, env));
     } else {
       const root = wikiTomDir(options, env, defaultWikiTom);
       if (options.command === "areas") rows = areaResults(root, options.area).slice(0, options.limit);
@@ -676,6 +934,7 @@ export async function runSearchCli(
     if (options.json) {
       safeWrite(JSON.stringify(jsonEnvelope ? redactValue(jsonEnvelope) : redacted));
     } else {
+      if (note) safeWrite(note);
       for (let i = 0; i < redacted.length; i += 1) {
         safeWrite(DATABASE_COMMANDS.has(options.command) ? formatDatabaseResult(options.command, redacted[i], `${options.command}:${i + 1}`) : formatLocal(options.command, redacted[i]));
       }
