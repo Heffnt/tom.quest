@@ -111,7 +111,10 @@ describe("GET /tts/run-trace", () => {
   afterEach(() => vi.unstubAllEnvs());
 
   const KEY = { "X-TTS-Key": "s3cret" };
-  const TOKEN = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+  // Shaped like a real registration token on purpose — the door rejects a
+  // malformed one before it ever reaches the index. `gitleaks:allow`: the
+  // canonical example UUID, a fixture and not a credential.
+  const TOKEN = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"; // gitleaks:allow
   const RUN_ID = "claude:box:audit-trace-run";
 
   async function anAudit(t: ReturnType<typeof convexTest>) {

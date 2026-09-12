@@ -856,7 +856,9 @@ describe("what the audit row records about its own reading", () => {
     // above: a finding quotes the line it found, and a line a model printed can
     // carry a token. The findings arrive as an ARGUMENT, so this door is the
     // only place they can be filtered at all.
-    const token = "ghp_0123456789abcdefghijABCD";
+    // `gitleaks:allow` — the shape IS the test: a finding that quotes a
+    // credential-shaped line is the thing this door must redact.
+    const token = "ghp_0123456789abcdefghijABCD"; // gitleaks:allow
     await recordAudit(t, {
       traceFindings: [
         `it claimed the deploy ran with ${token} in the environment`,

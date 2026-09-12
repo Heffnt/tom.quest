@@ -798,7 +798,9 @@ function sourceRun(
       from: "store",
       at: NOW,
       parserVersion: "claude/2",
-      storeKey: "runs/claude/box/x/y",
+      // `gitleaks:allow`: a content-addressed store path, not a key.
+      // generic-api-key matched it on the field NAME ending in “Key”.
+      storeKey: "runs/claude/box/x/y", // gitleaks:allow
       rowsFromLine: 10,
       rowsToLine: 120,
       slices: 3,

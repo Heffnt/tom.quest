@@ -844,7 +844,13 @@ describe("runs.roots", () => {
 describe("runs: one run's tool calls, by its registration token", () => {
   afterEach(() => vi.unstubAllEnvs());
 
-  const TOKEN = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+  // The canonical example UUID, and a fixture. The door checks the token’s
+  // SHAPE before the indexed lookup, so a shapeless placeholder would not
+  // exercise the path this suite exists for. `gitleaks:allow` because
+  // generic-api-key fires on the NAME plus the value’s entropy, not on any
+  // real key — and now that the secret scan feeds the tests-run row, a false
+  // positive here is a blocked merge rather than one red check nobody reads.
+  const TOKEN = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"; // gitleaks:allow
   const TRACE_RUN_ID = "claude:box:audit-trace-run";
   const TOTALS = {
     inputTokens: 10, cacheReadTokens: 20, cacheWriteTokens: 30, cacheWrite5mTokens: 30,
