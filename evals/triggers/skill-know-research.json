@@ -1,0 +1,90 @@
+{
+  "name": "know-research",
+  "kind": "skill",
+  "note": "Whether a run reaches for the research page — the paper, the campaign and its rulings, the lab — when it plans or decides there, and leaves it alone in every other area.",
+  "cases": [
+    {
+      "id": "skill-know-research-pos-poison-ratio",
+      "negative": false,
+      "prompt": "Tom asks what poison ratio the September campaign took as its first guess at the lowest stable. Answer him.",
+      "why": "a campaign ruling of his is a fact on this page, and an answer that reasons one out is an invention about his own decision",
+      "expect": {
+        "mustName": [
+          "0.2"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-research-pos-next-block",
+      "negative": false,
+      "prompt": "Plan the next block of campaign runs.",
+      "why": "the campaign rulings fix one ten-epoch block with no early stopping, and a plan that stops early overrides a decision he made",
+      "expect": {
+        "mustNotName": [
+          "early stopping",
+          "early-stopping",
+          "stop early"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-research-pos-finals-functions",
+      "negative": false,
+      "prompt": "Tom asks how many functions the finals run over. Answer him.",
+      "why": "the count is a ruling of his, and a number guessed from the function families is a number he did not choose",
+      "expect": {
+        "mustName": [
+          "39"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-research-neg-practice-days",
+      "negative": true,
+      "prompt": "Tom asks which days the climbing team practises. Answer him.",
+      "why": "the practices are on his recurring week, and nothing about the paper bears on them",
+      "expect": {
+        "mustNotName": [
+          "poison ratio",
+          "LoRA",
+          "Raha",
+          "backdoor"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-research-neg-waiting-count",
+      "negative": true,
+      "prompt": "How many todos are waiting right now?",
+      "why": "a count read off the record is mechanical and takes no account of the campaign",
+      "expect": {
+        "mustNotName": [
+          "poison ratio",
+          "LoRA",
+          "campaign",
+          "parity"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-research-neg-shopping-trigger",
+      "negative": true,
+      "prompt": "Write the shopping trigger for his batch-cooking system.",
+      "why": "food is its own area, and the research rulings have no reach over it",
+      "expect": {
+        "mustNotName": [
+          "poison ratio",
+          "LoRA",
+          "campaign",
+          "Raha"
+        ]
+      },
+      "confirmedByTom": false
+    }
+  ]
+}

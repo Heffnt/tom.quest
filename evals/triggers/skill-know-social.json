@@ -1,0 +1,90 @@
+{
+  "name": "know-social",
+  "kind": "skill",
+  "note": "Whether a run reaches for the social page — D&D, cube, family, how he is with people — when it plans or decides there, and leaves it alone in every other area.",
+  "cases": [
+    {
+      "id": "skill-know-social-pos-meet-people",
+      "negative": false,
+      "prompt": "Propose how he meets more people this term.",
+      "why": "no plan of his makes one-on-one conversation with strangers its mechanism, so a proposal built on that is the rule failing where it must apply",
+      "expect": {
+        "mustNotName": [
+          "set up a coffee chat",
+          "introduce yourself to a stranger",
+          "strike up a conversation"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-social-pos-dnd-character",
+      "negative": false,
+      "prompt": "Tom asks who runs the D&D campaign and what his character is. Answer him.",
+      "why": "both are written down, and a character invented for the answer is an invention about his own game",
+      "expect": {
+        "mustName": [
+          "Byobu"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-social-pos-hiding",
+      "negative": false,
+      "prompt": "Friends are downstairs and he is in his room. Say what the healthy version of opting out looks like for him.",
+      "why": "he named the pattern and named the healthy version of it himself, and generic advice about socialising is not that",
+      "expect": {
+        "mustName": [
+          "say hi"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-social-neg-ankle-constraints",
+      "negative": true,
+      "prompt": "Tom asks what his ankle constraints are. Answer him.",
+      "why": "the ankle is a health question and none of the people in his life bear on it",
+      "expect": {
+        "mustNotName": [
+          "D&D",
+          "cube",
+          "Byobu",
+          "Ryan"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-social-neg-head-rows",
+      "negative": true,
+      "prompt": "Name the three head rows the merge gate reads.",
+      "why": "the gate's rows are read off the repository and take no account of him",
+      "expect": {
+        "mustNotName": [
+          "D&D",
+          "cube",
+          "Byobu",
+          "Charlie"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-social-neg-poison-ratio",
+      "negative": true,
+      "prompt": "What poison ratio did the September campaign take as its first guess at the lowest stable?",
+      "why": "a campaign ruling is on the research page, and who he spends time with does not bear on it",
+      "expect": {
+        "mustNotName": [
+          "D&D",
+          "cube",
+          "Byobu",
+          "Charlie"
+        ]
+      },
+      "confirmedByTom": false
+    }
+  ]
+}

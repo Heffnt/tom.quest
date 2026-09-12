@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +15,8 @@ import {
   isFlaky,
   JOBS,
   judgePrompt,
+  KNOW_AREAS,
+  LAYER_SKILL_ALIASES,
   loadGolden,
   loadTasks,
   loadTriggers,
@@ -34,7 +37,9 @@ import {
   scoreLearning,
   selectItems,
   SKILL_SEAM_REASON,
+  skillBodyOf,
   SkillsNotAssembledError,
+  skillsFor,
   stampAgainstBase,
   standardRulesFor,
   TASK_BRANCHES,
@@ -42,6 +47,7 @@ import {
   treesFor,
   trialsFor,
   triggerCounts,
+  triggerSkills,
   TRIALS_CAPABILITY,
   TRIALS_REGRESSION,
   verdictOf,
@@ -658,22 +664,31 @@ describe("the run job", () => {
   });
 });
 
-describe("the phase 6 skills seam", () => {
-  it("refuses a name set carrying skills while no assembler is wired", () => {
+describe("an io with no skill assembler", () => {
+  it("refuses a name set carrying skills rather than assembling half of one", () => {
     const io = { layers: () => layers };
-    expect(() => preludeFrom(io, "tq", "wiki", { layers: ["operate"], skills: ["merge-gate"] }))
+    expect(() => preludeFrom(io, "tq", "wiki", { layers: ["operate"], skills: ["know-research"] }))
       .toThrow(SkillsNotAssembledError);
     expect(preludeFrom(io, "tq", "wiki", { layers: ["operate"], skills: [] })).toBe(layers);
     // Nothing to assemble is not an error, and must not reach prelude.mjs.
     expect(preludeFrom(io, "tq", "wiki", { layers: [], skills: [] }).text).toBe("");
   });
 
-  it("hands the whole name set to the assembler once one is wired", () => {
+  // BOTH TREES go through, not just tom.quest. The catalogue is one tree's
+  // generator over the other tree's pages, and an assembler handed only the
+  // first would have to guess where the pages are.
+  it("hands both trees and the whole name set to the assembler that is wired", () => {
     const seen = [];
-    const io = { layers: () => layers, skills: (tree, names) => { seen.push([tree, names]); return { ...layers, skills: names.skills }; } };
-    const built = preludeFrom(io, "tq", "wiki", { layers: ["operate"], skills: ["merge-gate"] });
-    expect(seen).toEqual([["tq", { layers: ["operate"], skills: ["merge-gate"] }]]);
-    expect(built.skills).toEqual(["merge-gate"]);
+    const io = {
+      layers: () => layers,
+      skills: (tomquest, wikitom, names) => {
+        seen.push([tomquest, wikitom, names]);
+        return { ...layers, skills: names.skills };
+      },
+    };
+    const built = preludeFrom(io, "tq", "wiki", { layers: ["operate"], skills: ["know-research"] });
+    expect(seen).toEqual([["tq", "wiki", { layers: ["operate"], skills: ["know-research"] }]]);
+    expect(built.skills).toEqual(["know-research"]);
   });
 
   it("skips a case whose run was given skills, counts it, and calls no model", async () => {
@@ -684,11 +699,161 @@ describe("the phase 6 skills seam", () => {
         return { names: names.layers, skills: [], text: PRELUDE, commit: "w1", files: [] };
       },
     });
-    const item = runCaseItem({ input: { ...runCaseItem().input, preludeNames: { layers: ["operate"], skills: ["merge-gate"] } } });
+    const item = runCaseItem({ input: { ...runCaseItem().input, preludeNames: { layers: ["operate"], skills: ["know-research"] } } });
     const result = await runCase(item, context, io, { pr: false });
     expect(result).toMatchObject({ judged: "skip", reason: SKILL_SEAM_REASON });
     expect(io.calls.regen).toBe(0);
     expect(io.calls.judge).toBe(0);
+  });
+
+  it("says the io wired none, not that a phase has not landed", () => {
+    expect(SKILL_SEAM_REASON).toContain("wired no skill assembler");
+    expect(SKILL_SEAM_REASON).not.toContain("phase");
+  });
+});
+
+// The assembler realIo wires. The two scripts it shells out to are faked here —
+// publish-skills.mjs writes the catalogue this test decides on, prelude.mjs
+// yields the layer text — but the one-line module that asks the PINNED
+// scripts/skills.mjs for its directory names and its grant block is spawned for
+// real, because that is the half worth proving: the grant block a case carried
+// is rendered by the tree under test's own renderGrants and by nothing else.
+describe("skillsFor", () => {
+  const HERE = path.resolve(".");
+
+  function publishingRun(catalogue, refused = []) {
+    const calls = [];
+    const run = (exe, args, options) => {
+      calls.push(args);
+      const script = String(args[0]);
+      if (script.endsWith("prelude.mjs")) {
+        return args.includes("--json")
+          ? JSON.stringify({ commit: "wiki-commit", files: ["model-of-tom/writing.md"] })
+          : "LAYER TEXT";
+      }
+      if (script.endsWith("publish-skills.mjs")) {
+        const out = args[args.indexOf("--out") + 1];
+        for (const [name, body] of Object.entries(catalogue)) {
+          const dir = path.join(out, `tom-${name}`);
+          fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(
+            path.join(dir, "SKILL.md"),
+            `---\nname: tom-${name}\ndescription: "what it is"\n---\n\n` +
+              `<!-- generated from WikiTom p at commit wiki-commit — do not edit -->\n\n${body}\n`,
+          );
+        }
+        return JSON.stringify({
+          commit: "wiki-commit",
+          out,
+          skills: Object.keys(catalogue).map((name) => ({ name })),
+          refused,
+        });
+      }
+      return execFileSync(exe, args, options);
+    };
+    return { calls, run };
+  }
+
+  it("puts the layer text, the grant block and the granted bodies in one text", () => {
+    const work = tree();
+    const io = publishingRun({ write: "WRITE BODY", "know-research": "RESEARCH BODY" });
+    const built = skillsFor(HERE, `${work}-wiki`, { layers: ["write"], skills: ["know-research", "write"] }, io.run, work);
+    expect(built).toMatchObject({ names: ["write"], skills: ["know-research", "write"], commit: "wiki-commit" });
+    expect(built.text.startsWith("LAYER TEXT")).toBe(true);
+    expect(built.text).toContain("SKILLS (WikiTom commit wiki-commit)");
+    expect(built.text).toContain("granted: know-research, write");
+    // THE BODIES, in the order the names were given — that is what the ablation
+    // arm removes when it removes a name.
+    expect(built.text.indexOf("RESEARCH BODY")).toBeLessThan(built.text.indexOf("WRITE BODY"));
+    // The generated frontmatter and provenance line are how the file is found,
+    // not part of what the run read.
+    expect(built.text).not.toContain("do not edit");
+    // One shape for both halves, the one prelude.mjs's --json already gives.
+    expect(built.files).toEqual([
+      "model-of-tom/writing.md",
+      { path: "tom-know-research/SKILL.md", bytes: "RESEARCH BODY".length },
+      { path: "tom-write/SKILL.md", bytes: "WRITE BODY".length },
+    ]);
+  });
+
+  it("refuses a name the publication does not hold, and carries on", () => {
+    const work = tree();
+    const io = publishingRun({ write: "WRITE BODY" }, [
+      { name: "know-money", why: "model-of-tom/areas/money.md is blank at this commit" },
+    ]);
+    const built = skillsFor(HERE, `${work}-wiki`, { layers: [], skills: ["write", "know-money"] }, io.run, work);
+    expect(built.text).toContain("granted: write");
+    expect(built.text).toContain("refused: know-money — model-of-tom/areas/money.md is blank at this commit");
+    expect(built.text).toContain("WRITE BODY");
+    // No layers asked for, so prelude.mjs is never reached and the text opens
+    // with the grant block.
+    expect(built.names).toEqual([]);
+    expect(io.calls.some((args) => String(args[0]).endsWith("prelude.mjs"))).toBe(false);
+  });
+
+  it("publishes once for a pair of trees, however many name sets ask", () => {
+    const work = tree();
+    const io = publishingRun({ write: "W", "know-week": "K" });
+    const wikitom = `${work}-wiki`;
+    skillsFor(HERE, wikitom, { layers: [], skills: ["write"] }, io.run, work);
+    skillsFor(HERE, wikitom, { layers: [], skills: ["know-week"] }, io.run, work);
+    skillsFor(HERE, wikitom, { layers: [], skills: [] }, io.run, work);
+    expect(io.calls.filter((args) => String(args[0]).endsWith("publish-skills.mjs")).length).toBe(1);
+  });
+
+  it("strips the generated frontmatter and provenance line, and nothing else", () => {
+    const page = "---\nname: tom-write\ndescription: \"d\"\n---\n\n" +
+      "<!-- generated from WikiTom a, b at commit c — do not edit -->\n\n## Heading\n\nbody\n";
+    expect(skillBodyOf(page)).toBe("## Heading\n\nbody");
+    expect(skillBodyOf("no frontmatter at all")).toBe("no frontmatter at all");
+    expect(skillBodyOf(undefined)).toBe("");
+  });
+});
+
+// The trigger files name layers; the skills are what those layers became. This
+// is the one table that maps them, and the eight areas in it are written down
+// twice — here and in scripts/skills.mjs, which evals.mjs cannot import at run
+// time because worker/setup.sh puts the two at relative paths that differ
+// between the repo and /opt/tts. The second test is the pin on that copy.
+describe("the layer names as skill names", () => {
+  it("maps each layer onto the skills it became", () => {
+    expect(LAYER_SKILL_ALIASES.operate).toEqual([]);
+    expect(LAYER_SKILL_ALIASES.write).toEqual(["write"]);
+    expect(LAYER_SKILL_ALIASES.know).toEqual([
+      "know-intent",
+      "know-week",
+      "know-admin",
+      "know-agent-systems",
+      "know-climbing",
+      "know-health-and-food",
+      "know-mental-health",
+      "know-money",
+      "know-research",
+      "know-social",
+    ]);
+  });
+
+  it("holds the same eight areas the know layer requires", async () => {
+    const { PRELUDE_LAYERS } = await import("../../scripts/skills.mjs");
+    expect(KNOW_AREAS.map((area) => `model-of-tom/areas/${area}.md`))
+      .toEqual([...PRELUDE_LAYERS.know.areas.required]);
+  });
+
+  it("normalises every loaded trigger onto the skill names it is about", () => {
+    const dir = tree();
+    writeJson(dir, path.join("evals", "triggers", "layer-know.json"), { name: "know", kind: "layer", cases: [] });
+    writeJson(dir, path.join("evals", "triggers", "layer-operate.json"), { name: "operate", kind: "layer", cases: [] });
+    writeJson(dir, path.join("evals", "triggers", "skill-know-research.json"), { name: "know-research", kind: "skill", cases: [] });
+    const loaded = loadTriggers(dir);
+    expect(loaded.map((one) => one.skills)).toEqual([
+      [...LAYER_SKILL_ALIASES.know],
+      [],
+      ["know-research"],
+    ]);
+    // A file whose kind places it nowhere says so with an empty list rather
+    // than with a guess.
+    expect(triggerSkills({ name: "know-research" })).toEqual([]);
+    expect(triggerSkills({ name: "nothing-by-that-name", kind: "layer" })).toEqual([]);
   });
 });
 
@@ -1004,20 +1169,34 @@ describe("runEvals over a run case", () => {
 // something about a checked-in file.
 describe("the trigger set", () => {
   it("carries at least as many negatives as positives in every file", () => {
-    // The directory arrives with another branch; until then there is nothing
-    // to count, and an empty set is not a failure.
-    const short = loadTriggers(path.resolve("."))
-      .map((trigger) => ({ file: trigger.file, ...triggerCounts(trigger) }))
-      .filter((counts) => counts.negatives < counts.positives);
-    expect(short).toEqual([]);
+    const counted = loadTriggers(path.resolve("."))
+      .map((trigger) => ({ file: trigger.file, ...triggerCounts(trigger) }));
+    // SIXTEEN FILES: the three layer files the partition landed with, and one
+    // per skill the layer aliases do not already cover — write is layer-write,
+    // and operate is not a skill at all.
+    expect(counted.length).toBe(16);
+    expect(counted.filter((counts) => counts.negatives < counts.positives)).toEqual([]);
+    // Each of the sixteen is about a name that can be placed: a `skill` file
+    // names its own, a `layer` file names the skills that layer became, and
+    // operate names none because the base is not a skill.
+    const loaded = loadTriggers(path.resolve("."));
+    expect(loaded.filter((one) => one.skills.length === 0).map((one) => one.file)).toEqual(["layer-operate.json"]);
+    // Every skill the know layer became has a file of its own, so a run given
+    // one name rather than the whole layer is still scored on it.
+    const named = new Set(loaded.filter((one) => one.kind === "skill").map((one) => one.name));
+    for (const name of LAYER_SKILL_ALIASES.know) expect(named.has(name)).toBe(true);
   });
 
-  it("never loads a draft", () => {
+  it("never loads a draft, and counts a file written either way", () => {
     const dir = tree();
     writeJson(dir, path.join("evals", "triggers", "hourly.json"), { positives: ["a"], negatives: ["b", "c"] });
     writeJson(dir, path.join("evals", "triggers", "hourly.draft.json"), { positives: ["a", "b"], negatives: [] });
     expect(loadTriggers(dir).map((one) => one.file)).toEqual(["hourly.json"]);
     expect(triggerCounts(loadTriggers(dir)[0])).toEqual({ positives: 1, negatives: 2 });
     expect(loadTriggers(tree())).toEqual([]);
+    // The form every checked-in file uses: one `cases` list, each flagged.
+    expect(triggerCounts({ cases: [{ negative: false }, { negative: true }, { negative: true }] }))
+      .toEqual({ positives: 1, negatives: 2 });
+    expect(triggerCounts({ cases: [] })).toEqual({ positives: 0, negatives: 0 });
   });
 });

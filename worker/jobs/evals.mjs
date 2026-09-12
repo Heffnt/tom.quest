@@ -210,25 +210,162 @@ export function layersFor(tomquestTree, wikitomTree, names, run = execFileSync) 
 }
 
 /**
+ * The inline module the PINNED tree's own scripts/skills.mjs is asked through.
+ *
+ * A CHILD PROCESS RATHER THAN AN IMPORT, for two reasons. worker/setup.sh
+ * copies evals.mjs to /opt/tts/evals.mjs and skills.mjs to
+ * /opt/tts/scripts/skills.mjs — a different relative path from the one the two
+ * have in the repo — so no static import of it resolves in both homes. And the
+ * copy beside this file is not the one to ask anyway: what a case was given is
+ * what the TREE UNDER TEST names and renders, not what this checkout would.
+ *
+ * It answers three things in one spawn: the directory each requested name is
+ * published under, which of them the publication actually holds, and the grant
+ * block those two facts imply.
+ */
+const SKILLS_ASK = [
+  "const [href, json] = process.argv.slice(1);",
+  "const input = JSON.parse(json);",
+  "const fs = require('node:fs');",
+  "const path = require('node:path');",
+  "import(href).then((skills) => {",
+  "  const granted = [];",
+  "  const refused = [];",
+  "  const files = [];",
+  "  for (const name of input.names) {",
+  "    const file = path.join(input.out, skills.skillDirName(name), 'SKILL.md');",
+  "    if (fs.existsSync(file)) { granted.push(name); files.push(file); }",
+  "    else refused.push({ name, why: input.why[name] || 'the publication at this commit does not hold it' });",
+  "  }",
+  "  const grants = skills.renderGrants({ commit: input.commit, granted, refused });",
+  "  process.stdout.write(JSON.stringify({ granted, refused, files, grants }));",
+  "});",
+].join("\n");
+
+const RUN_OPTIONS = { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], maxBuffer: 64 * 1024 * 1024 };
+
+/**
+ * ONE PUBLICATION PER PAIR OF TREES, kept for the life of the process.
+ *
+ * The ablation arm asks for a dozen near-identical name sets and every case
+ * asks for its own; each of those would otherwise re-read every page of WikiTom
+ * out of git. The publication does not depend on the names at all — it is the
+ * whole catalogue — so it is built once and the name sets read out of it.
+ *
+ * The key is the pair of worktree directories, which one run pins for its whole
+ * lifetime: runEvals makes them at the top and removes them in its `finally`,
+ * and a head run and a base run never share both.
+ */
+const publications = new Map();
+
+export function publicationFor(tomquestTree, wikitomTree, run = execFileSync, workDir = WORK_DIR) {
+  const key = `${tomquestTree} ${wikitomTree}`;
+  const held = publications.get(key);
+  if (held !== undefined) return held;
+  const out = path.join(workDir, "skills", crypto.createHash("sha256").update(key).digest("hex").slice(0, 16));
+  const script = path.join(tomquestTree, "scripts", "publish-skills.mjs");
+  // The two trees are handed in as the two REPOSITORIES as well as as the
+  // sources of the pages: `repo-tom.quest` and `repo-WikiTom` are then the
+  // rules files of the exact commits this run pins, which is the standard every
+  // other part of the prelude is held to. A repository the run pins nothing of
+  // — ComplexMultiTrigger — has no commit here to read, and comes back as a
+  // refusal in the grant block rather than as whatever some checkout's HEAD says.
+  const result = JSON.parse(run(process.execPath, [
+    script,
+    "--wikitom", wikitomTree,
+    "--out", out,
+    "--repo", `tom.quest=${tomquestTree}`,
+    "--repo", `WikiTom=${wikitomTree}`,
+    "--json",
+  ], RUN_OPTIONS));
+  const built = {
+    commit: result.commit,
+    out: result.out ?? out,
+    published: (result.skills ?? []).map((skill) => skill.name),
+    why: Object.fromEntries((result.refused ?? []).map((entry) => [entry.name, entry.why])),
+  };
+  publications.set(key, built);
+  return built;
+}
+
+/** The body of a published SKILL.md: its generated frontmatter and provenance
+ *  comment off, the page itself untouched. What a run that loaded the skill
+ *  read is the page; the two generated lines above it are how the harness finds
+ *  the file, not part of what it says. */
+export function skillBodyOf(text) {
+  let rest = String(text ?? "");
+  const frontmatter = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(rest);
+  if (frontmatter !== null) rest = rest.slice(frontmatter[0].length);
+  return rest.replace(/^\s*<!--[\s\S]*?-->[ \t]*\r?\n/, "").trim();
+}
+
+/**
+ * The prelude text a case was given when its name set carries SKILLS.
+ *
+ * Generalises layersFor; it is NOT a second assembler. The layer half goes
+ * through the same pinned scripts/prelude.mjs. The skill half runs the PINNED
+ * tree's own scripts/publish-skills.mjs against the PINNED WikiTom tree and
+ * reads what that wrote, so what comes back is the catalogue those two commits
+ * produce and never a second opinion about what a skill is.
+ *
+ * The text is the layer text, then the grant block, then the granted skills'
+ * BODIES, in the order the names were given. The bodies are the point: what the
+ * eval measures is what the run could actually see, and the ablation arm's
+ * whole purpose is that removing a skill removes its body from this text.
+ *
+ * A name the publication does not hold is a REFUSAL in the grant block, not a
+ * throw. WikiTom is Tom's to edit, and a case naming a skill he has since
+ * emptied should score the prompt a run would be given today — which says, in
+ * the grant block, that the skill was asked for and is not there.
+ */
+export function skillsFor(tomquestTree, wikitomTree, names, run = execFileSync, workDir = WORK_DIR) {
+  const layerNames = names?.layers ?? [];
+  const skillNames = names?.skills ?? [];
+  const publication = publicationFor(tomquestTree, wikitomTree, run, workDir);
+  const layers = layerNames.length === 0 ? null : layersFor(tomquestTree, wikitomTree, layerNames, run);
+  const asked = JSON.parse(run(process.execPath, [
+    "-e", SKILLS_ASK,
+    pathToFileURL(path.join(tomquestTree, "scripts", "skills.mjs")).href,
+    JSON.stringify({ names: skillNames, out: publication.out, commit: publication.commit, why: publication.why }),
+  ], RUN_OPTIONS));
+  const loaded = asked.files.map((file) => ({
+    path: path.relative(publication.out, file).replace(/\\/g, "/"),
+    body: skillBodyOf(fs.readFileSync(file, "utf8")),
+  }));
+  return {
+    names: layerNames,
+    skills: skillNames,
+    text: [...(layers === null ? [] : [layers.text]), asked.grants, ...loaded.map((one) => one.body)].join("\n\n"),
+    commit: publication.commit,
+    // ONE SHAPE for both halves — `{ path, bytes }`, which is what prelude.mjs's
+    // --json gives for the layer files — so a reader of this list never has to
+    // ask which half an entry came from.
+    files: [
+      ...(layers?.files ?? []),
+      ...loaded.map((one) => ({ path: one.path, bytes: Buffer.byteLength(one.body, "utf8") })),
+    ],
+  };
+}
+
+/**
  * The prelude a case was given, when what it was given is a NAME SET rather
  * than a job's fixed layer selection: `{ layers: [...], skills: [...] }`.
  *
- * This is layersFor generalised, and it is not a second assembler. The layer
- * half goes through the same pinned scripts/prelude.mjs; the skill half goes
- * through io.skills, which is handed the WHOLE name set so that the one
- * assembler which knows about skills assembles both halves rather than this
- * file stitching two texts together.
+ * The layer half goes through the same pinned scripts/prelude.mjs; the skill
+ * half goes through io.skills, which is handed BOTH TREES and the whole name
+ * set — the catalogue is built out of the pinned WikiTom by the pinned
+ * tom.quest, and neither half of that pair can be assumed from the other.
  */
 export const NO_PRELUDE = Object.freeze({ names: [], skills: [], text: "", commit: null, files: [], known: false });
 
-/** THE PHASE 6 SEAM. No skill assembler exists yet: phase 6 adds
- *  scripts/skills.mjs and wires `io.skills` to it in realIo, one line, and
- *  this error and the skip it causes stop being reachable. Until then a case
- *  whose run was given skills is SKIPPED rather than scored, because scoring
- *  it would score a prompt that is missing part of what the original run saw
- *  and would report the difference as a regression. */
+/** An io with NO SKILL ASSEMBLER WIRED, asked for a name set that carries
+ *  skills. realIo wires one, so what reaches this is a test io or a caller that
+ *  built its own — and the refusal stays explicit rather than quietly
+ *  assembling the layer half alone: a case scored on a prompt missing part of
+ *  what the original run saw would report the difference as a regression.
+ *  runCase turns it into a skip, before any model call is paid for. */
 export class SkillsNotAssembledError extends Error {}
-export const SKILL_SEAM_REASON = "skill prelude not assembled — phase 6 has not landed";
+export const SKILL_SEAM_REASON = "skill prelude not assembled — the io in use wired no skill assembler";
 
 export function preludeFrom(io, tomquestTree, wikitomTree, names) {
   const layers = names?.layers ?? [];
@@ -238,7 +375,7 @@ export function preludeFrom(io, tomquestTree, wikitomTree, names) {
   if (layers.length === 0 && skills.length === 0) return NO_PRELUDE;
   if (skills.length > 0) {
     if (typeof io.skills !== "function") throw new SkillsNotAssembledError(SKILL_SEAM_REASON);
-    return io.skills(tomquestTree, names);
+    return io.skills(tomquestTree, wikitomTree, names);
   }
   return io.layers(tomquestTree, wikitomTree, layers);
 }
@@ -794,9 +931,10 @@ export async function runItem(item, context, io, { deterministic = null, receipt
     });
     fresh = job.parse(answer, context.modules[item.job]);
   } catch (err) {
-    // The skills seam is a SKIP, not a failure: nothing about the tree under
-    // test was measured, and calling that a regression would fail a merge on
-    // a phase that has not landed.
+    // An io with no skill assembler is a SKIP, not a failure: nothing about the
+    // tree under test was measured, and calling that a regression would fail a
+    // merge over a gap in the harness. realIo wires one, so a real run never
+    // reaches this; a test io or a caller that built its own still can.
     if (err instanceof SkillsNotAssembledError) return { ...base, judged: "skip", reason: err.message };
     return { ...base, judged: "fail", reason: `regeneration failed: ${serverErrorMessage(err)}` };
   }
@@ -925,20 +1063,85 @@ export function loadTasks(tomquestTree, repo) {
  */
 export const TRIGGERS_DIR = "evals/triggers";
 
+/**
+ * The eight area pages the know layer requires, and therefore the eight
+ * `know-<area>` skills the layer became.
+ *
+ * A FROZEN LIST, not a read of the WikiTom tree, and not an import. loadTriggers
+ * is handed a tom.quest tree and no WikiTom tree at all, so there is nothing
+ * here to derive an area list from; and scripts/skills.mjs — which holds the
+ * same eight in PRELUDE_LAYERS.know.areas.required — cannot be imported from
+ * this file, because worker/setup.sh puts the two at relative paths that differ
+ * between the repo and /opt/tts.
+ *
+ * So it is written down twice, and worker/jobs/evals.test.mjs PINS THE TWO
+ * EQUAL: vitest runs from the repo root, where the import does resolve, and an
+ * area Tom adds without touching this list is a red test naming it rather than
+ * a skill that quietly stops being scored.
+ */
+export const KNOW_AREAS = Object.freeze([
+  "admin",
+  "agent-systems",
+  "climbing",
+  "health-and-food",
+  "mental-health",
+  "money",
+  "research",
+  "social",
+]);
+
+/**
+ * A layer name, as the skill names that layer became.
+ *
+ * The trigger files predate the skills and name layers; this is the one table
+ * that maps them, so an old file keeps scoring and a new one names a skill
+ * directly. `operate` maps to nothing because the base is not a skill: it is
+ * the one file every prompt carries whoever the run writes for, and there is
+ * nothing to grant or withhold.
+ */
+export const LAYER_SKILL_ALIASES = Object.freeze({
+  operate: Object.freeze([]),
+  write: Object.freeze(["write"]),
+  know: Object.freeze(["know-intent", "know-week", ...KNOW_AREAS.map((area) => `know-${area}`)]),
+});
+
+/** The skill names one loaded trigger is about: a `skill` file names its own,
+ *  and a `layer` file names the skills that layer became. A file whose name is
+ *  in neither table is about nothing nameable, and says so with an empty list
+ *  rather than with a guess. */
+export function triggerSkills(trigger) {
+  if (trigger?.kind === "skill") return typeof trigger.name === "string" && trigger.name !== "" ? [trigger.name] : [];
+  if (trigger?.kind === "layer") return [...(LAYER_SKILL_ALIASES[trigger.name] ?? [])];
+  return [];
+}
+
 export function loadTriggers(tomquestTree) {
   const dir = path.join(tomquestTree, TRIGGERS_DIR);
   if (!fs.existsSync(dir)) return [];
   return fs.readdirSync(dir)
     .filter((name) => name.endsWith(".json") && !name.endsWith(".draft.json"))
     .sort()
-    .map((name) => ({ file: name, ...JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")) }));
+    .map((name) => {
+      const trigger = { file: name, ...JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")) };
+      // NORMALISED ON THE WAY OUT, never written into the file. A trigger file
+      // is Tom-facing text about one name, and a list of skill names copied
+      // into it would be a second copy of LAYER_SKILL_ALIASES that goes stale
+      // the day an area page is added.
+      return { ...trigger, skills: triggerSkills(trigger) };
+    });
 }
 
-/** How many positives and negatives one trigger file carries, whether it
- *  writes them as lists or as counts. ONE SPELLING of the count, so the rule
- *  and the report cannot come to disagree. */
+/** How many positives and negatives one trigger file carries, whichever way it
+ *  writes them: as a `cases` list flagged `negative`, which is the form every
+ *  checked-in file uses, or as the lists or counts the first sketch of the
+ *  format had. ONE SPELLING of the count, so the rule and the report cannot
+ *  come to disagree. */
 export function triggerCounts(trigger) {
   const count = (value) => (Array.isArray(value) ? value.length : (Number.isFinite(value) ? value : 0));
+  if (Array.isArray(trigger?.cases)) {
+    const negatives = trigger.cases.filter((one) => one?.negative === true).length;
+    return { positives: trigger.cases.length - negatives, negatives };
+  }
   return { positives: count(trigger?.positives), negatives: count(trigger?.negatives) };
 }
 
@@ -1273,9 +1476,10 @@ export async function runCase(item, context, io, { pr = false } = {}) {
   for (let trial = 0; trial < count; trial += 1) {
     const receipt = {};
     const result = await runItem(item, context, io, { deterministic, receipt });
-    // A skip is not a trial. The skills seam throws while the prompt is being
-    // assembled, before any model call, so nothing has been spent and nothing
-    // is scored — the case is counted as skipped and that is all.
+    // A skip is not a trial. An io with no skill assembler throws while the
+    // prompt is being assembled, before any model call, so nothing has been
+    // spent and nothing is scored — the case is counted as skipped, that is
+    // all, and realIo never takes this path.
     if (result.judged === "skip") return { ...base, judged: "skip", reason: result.reason };
     const record = await runRecordFor(io, receipt.runToken);
     perTrial.push({ judged: result.judged, reason: result.reason, tokens: record.tokens, turns: record.turns });
@@ -1551,10 +1755,12 @@ function realIo(env) {
     now: () => Date.now(),
     runClaude: async (prompt, options) => runClaude(prompt, options),
     layers: (tomquestTree, wikitomTree, names) => layersFor(tomquestTree, wikitomTree, names),
-    // THE PHASE 6 SEAM. `skills` is unwired on purpose: scripts/skills.mjs does
-    // not exist yet, and preludeFrom refuses a name set carrying skills rather
-    // than assembling half of one. Phase 6 adds the one line here.
-    // skills: (tomquestTree, names) => skillsFor(tomquestTree, names),
+    // The skill half of a name set, assembled by running the PINNED tree's own
+    // scripts/publish-skills.mjs against the PINNED WikiTom tree and reading
+    // what it wrote. Both trees go through, because the catalogue is one tree's
+    // generator over the other tree's pages; skillsFor is the only thing that
+    // needs to know that, and preludeFrom just hands the pair on.
+    skills: (tomquestTree, wikitomTree, names) => skillsFor(tomquestTree, wikitomTree, names),
     //
     // One trial's own run, read back out of the record so its tokens and turns
     // are the ones the sweeper parsed rather than a number this file counted.

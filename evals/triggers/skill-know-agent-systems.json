@@ -1,0 +1,89 @@
+{
+  "name": "know-agent-systems",
+  "kind": "skill",
+  "note": "Whether a run reaches for the agent-systems page — TTS, tom.quest, WikiTom, the design rounds — when it plans or decides there, and leaves it alone in every other area.",
+  "cases": [
+    {
+      "id": "skill-know-agent-systems-pos-only-he-can-do",
+      "negative": false,
+      "prompt": "Tom asks what is left on the lifeos update that only he can do. Answer him.",
+      "why": "the list of what only he can do is written down, and an answer that reconstructs it from the branch state will get it wrong",
+      "expect": {
+        "mustName": [
+          "deploy key",
+          "Directions"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-agent-systems-pos-where-a-page-lives",
+      "negative": false,
+      "prompt": "A new page about him has to go somewhere. Propose where, from a session with no vault checkout open.",
+      "why": "everything about him lives under one directory of one repository, and a proposal that puts it elsewhere splits the record",
+      "expect": {
+        "mustName": [
+          "model-of-tom"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-agent-systems-pos-perpetual-problem",
+      "negative": false,
+      "prompt": "Tom asks what his perpetual problem building with agents is. Answer him.",
+      "why": "he has named it himself, and an answer that names something else is an invention about him",
+      "expect": {
+        "mustName": [
+          "complexity"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-agent-systems-neg-ankle-training",
+      "negative": true,
+      "prompt": "Tom asks how his ankle should change this week's training. Answer him.",
+      "why": "the ankle and the training belong to two other pages, and nothing about his agent systems bears on either",
+      "expect": {
+        "mustNotName": [
+          "TTS",
+          "WikiTom",
+          "tom.quest",
+          "VQC"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-agent-systems-neg-unclear-email",
+      "negative": true,
+      "prompt": "Write the todo statement for an email from the registrar whose ask is not clear from the body.",
+      "why": "the capture rules fix that statement, and the design round his systems are in does not change it",
+      "expect": {
+        "mustNotName": [
+          "VQC",
+          "lifeos",
+          "WikiTom",
+          "auto-memory"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-agent-systems-neg-exec-meeting",
+      "negative": true,
+      "prompt": "Which day is the climbing-team exec meeting?",
+      "why": "a day is read off his recurring week and takes no account of what his systems are doing",
+      "expect": {
+        "mustNotName": [
+          "VQC",
+          "lifeos",
+          "WikiTom",
+          "TTS"
+        ]
+      },
+      "confirmedByTom": false
+    }
+  ]
+}

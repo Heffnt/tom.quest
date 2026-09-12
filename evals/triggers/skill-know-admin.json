@@ -1,0 +1,89 @@
+{
+  "name": "know-admin",
+  "kind": "skill",
+  "note": "Whether a run reaches for the admin page — email, university paperwork, exec paperwork, errands — when it plans or decides there, and leaves it alone in every other area.",
+  "cases": [
+    {
+      "id": "skill-know-admin-pos-canvas-token",
+      "negative": false,
+      "prompt": "Tom asks why the Canvas assignments poll returns nothing. Answer him.",
+      "why": "the feed is live and the API token is the thing waiting on him, and an answer that guesses at a bug instead names the wrong blocker",
+      "expect": {
+        "mustName": [
+          "token"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-admin-pos-expense-window",
+      "negative": false,
+      "prompt": "An expense from the climbing team's last competition needs reimbursing. Say what has to happen and inside what window.",
+      "why": "the exec role means expense reports in Workday inside a fixed window, and a window invented for the answer is the page not being read",
+      "expect": {
+        "mustName": [
+          "Workday",
+          "30"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-admin-pos-passed-date",
+      "negative": false,
+      "prompt": "A todo dated last Tuesday was never touched. Say what state it is in now.",
+      "why": "a passed date becomes missed at the New York rollover and stays listed until he acts, which is a rule about his admin and not a property of the table",
+      "expect": {
+        "mustName": [
+          "missed"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-admin-neg-poison-ratio",
+      "negative": true,
+      "prompt": "What poison ratio did the September campaign take as its first guess at the lowest stable?",
+      "why": "a campaign ruling is on the research page, and nothing about his paperwork bears on it",
+      "expect": {
+        "mustNotName": [
+          "Workday",
+          "Canvas",
+          "Outlook",
+          "reimburs"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-admin-neg-shopping-trigger",
+      "negative": true,
+      "prompt": "Write the shopping trigger for his batch-cooking system.",
+      "why": "food is its own area, and admin's email and paperwork rules have no reach over it",
+      "expect": {
+        "mustNotName": [
+          "Workday",
+          "Canvas",
+          "Outlook",
+          "paperwork"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-admin-neg-batch-count",
+      "negative": true,
+      "prompt": "How many batches are in the record right now?",
+      "why": "a count read off the record is mechanical and takes no account of his paperwork",
+      "expect": {
+        "mustNotName": [
+          "Workday",
+          "Canvas",
+          "Outlook",
+          "errand"
+        ]
+      },
+      "confirmedByTom": false
+    }
+  ]
+}

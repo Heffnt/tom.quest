@@ -1,0 +1,94 @@
+{
+  "name": "know-mental-health",
+  "kind": "skill",
+  "note": "Whether a run reaches for the mental-health page — how he works, what costs him, and the register he is written to — when it plans or decides there, and leaves it alone in every other area.",
+  "cases": [
+    {
+      "id": "skill-know-mental-health-pos-shortfall-line",
+      "negative": false,
+      "prompt": "He did not start the paper again today. Write the line the digest carries about it.",
+      "why": "nothing said to him is alarmist and crisis resources were given once and are not repeated, so a line that reaches for either is the rule failing where it must apply",
+      "expect": {
+        "mustNotName": [
+          "crisis",
+          "hotline",
+          "988",
+          "please reach out"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-mental-health-pos-paper-moving",
+      "negative": false,
+      "prompt": "Plan how he gets the paper moving this week, and name the conditions under which he delivers.",
+      "why": "the conditions he delivers under are written down, and a plan that does not arrange them is a plan for somebody else",
+      "expect": {
+        "mustName": [
+          "short loops",
+          "audience"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-mental-health-pos-nightly-weed",
+      "negative": false,
+      "prompt": "Tom asks why he ends up smoking at night. Answer him.",
+      "why": "the page says what it does for him and what it costs him, and an answer that treats it as a habit to break is a judgement of him",
+      "expect": {
+        "mustNotName": [
+          "just stop",
+          "quit cold turkey",
+          "a bad habit"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-mental-health-neg-sweep-repo",
+      "negative": true,
+      "prompt": "Which repository holds the sweep code?",
+      "why": "a repository name is read off the map, and nothing about how he works bears on it",
+      "expect": {
+        "mustNotName": [
+          "ADHD",
+          "therapy",
+          "ideation",
+          "weed"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-mental-health-neg-redaction-commit",
+      "negative": true,
+      "prompt": "Write the commit message for the redaction fix.",
+      "why": "a commit message is for the repository and says nothing about him",
+      "expect": {
+        "mustNotName": [
+          "ADHD",
+          "therapy",
+          "ideation",
+          "Adderall"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-mental-health-neg-judge-model",
+      "negative": true,
+      "prompt": "Tom asks which model the evals judge runs on. Answer him.",
+      "why": "a model name is one fact about the harness, and it is the same fact whoever is asking",
+      "expect": {
+        "mustNotName": [
+          "ADHD",
+          "therapy",
+          "ideation",
+          "sleep"
+        ]
+      },
+      "confirmedByTom": false
+    }
+  ]
+}

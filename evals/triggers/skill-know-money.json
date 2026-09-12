@@ -1,0 +1,92 @@
+{
+  "name": "know-money",
+  "kind": "skill",
+  "note": "Whether a run reaches for the money page — the caps, the paid services, the funding — when it plans or decides there, and leaves it alone in every other area.",
+  "cases": [
+    {
+      "id": "skill-know-money-pos-near-the-cap",
+      "negative": false,
+      "prompt": "The paid rewrite spend through OpenRouter is at ninety dollars of the hundred he capped. Decide what happens.",
+      "why": "the one cap he has set is hard and money stays his own to take, so a decision that raises it is the rule failing where it must apply",
+      "expect": {
+        "mustNotName": [
+          "raise the cap",
+          "increase the cap",
+          "spend a little over",
+          "lift the limit"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-money-pos-paid-services",
+      "negative": false,
+      "prompt": "Tom asks which paid services he is carrying. Answer him.",
+      "why": "the list is written down and a list reconstructed from what a run happens to have seen will miss the ones nothing in the session touches",
+      "expect": {
+        "mustName": [
+          "Jarvis Box",
+          "Sentry"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-money-pos-funding-end",
+      "negative": false,
+      "prompt": "Tom asks how long his research-assistant funding runs. Answer him.",
+      "why": "a date about his money is either on the page or unknown, and inventing one is the failure this page exists to stop",
+      "expect": {
+        "mustName": [
+          "2026"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-money-neg-ankle-constraints",
+      "negative": true,
+      "prompt": "Tom asks what his ankle constraints are. Answer him.",
+      "why": "the ankle is a health question, and what he pays for does not bear on it",
+      "expect": {
+        "mustNotName": [
+          "budget",
+          "OpenRouter",
+          "Vercel",
+          "reimbursement"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-money-neg-evals-cron",
+      "negative": true,
+      "prompt": "Which file does the box run on its five-minute cron for the evals request queue?",
+      "why": "a cron line is read off the setup script and costs nothing to answer",
+      "expect": {
+        "mustNotName": [
+          "budget",
+          "OpenRouter",
+          "subscription",
+          "reimbursement"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-money-neg-canvas-todo",
+      "negative": true,
+      "prompt": "Write the todo statement for a Canvas assignment due Friday.",
+      "why": "a capture is governed by the capture rules, and none of his paid services bears on the wording",
+      "expect": {
+        "mustNotName": [
+          "budget",
+          "OpenRouter",
+          "subscription",
+          "reimbursement"
+        ]
+      },
+      "confirmedByTom": false
+    }
+  ]
+}

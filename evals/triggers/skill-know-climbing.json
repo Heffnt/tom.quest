@@ -1,0 +1,89 @@
+{
+  "name": "know-climbing",
+  "kind": "skill",
+  "note": "Whether a run reaches for the climbing page — the team, the practices, the training repeats — when it plans or decides there, and leaves it alone in every other area.",
+  "cases": [
+    {
+      "id": "skill-know-climbing-pos-three-repeats",
+      "negative": false,
+      "prompt": "Tom asks what the three draft training repeats are. Answer him.",
+      "why": "the three are written down and an answer that invents a training split is an invention about how he trains",
+      "expect": {
+        "mustName": [
+          "antagonist",
+          "mobility"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-climbing-pos-coach",
+      "negative": false,
+      "prompt": "Tom asks who coaches the WPI climbing team. Answer him.",
+      "why": "a name he has given is the only answer, and guessing one is the invention this page exists to stop",
+      "expect": {
+        "mustName": [
+          "Scott"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-climbing-pos-training-log",
+      "negative": false,
+      "prompt": "He wants a training log. Say what it has to record.",
+      "why": "what he asked the log to hold is written down, and a log designed from scratch records something he did not ask for",
+      "expect": {
+        "mustName": [
+          "soreness",
+          "recovery"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-climbing-neg-third-setting",
+      "negative": true,
+      "prompt": "Tom asks what the campaign's third setting is. Answer him.",
+      "why": "a campaign ruling is on the research page, and how he trains does not bear on it",
+      "expect": {
+        "mustNotName": [
+          "climbing",
+          "Central Rock",
+          "practice",
+          "belay"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-climbing-neg-digest-header",
+      "negative": true,
+      "prompt": "Write the header line of the morning digest.",
+      "why": "a digest header is a form, not a decision about his training",
+      "expect": {
+        "mustNotName": [
+          "climbing",
+          "Central Rock",
+          "training repeat"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-climbing-neg-merge-gate-file",
+      "negative": true,
+      "prompt": "Which convex file holds the merge gate's three head rows?",
+      "why": "a file name is read off the repository and takes no account of him at all",
+      "expect": {
+        "mustNotName": [
+          "climbing",
+          "Central Rock",
+          "training",
+          "Scott"
+        ]
+      },
+      "confirmedByTom": false
+    }
+  ]
+}

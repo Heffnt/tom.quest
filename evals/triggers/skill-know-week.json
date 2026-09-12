@@ -1,0 +1,91 @@
+{
+  "name": "know-week",
+  "kind": "skill",
+  "note": "Whether a run reaches for his recurring week before it reads a date or places anything in one, and leaves it alone when nothing about the answer depends on a day.",
+  "cases": [
+    {
+      "id": "skill-know-week-pos-wednesday-slot",
+      "negative": false,
+      "prompt": "Find him two hours on Wednesday for the training-plan session, and name every commitment you worked around.",
+      "why": "a Wednesday slot proposed without the recurring week in front of it lands on a practice or on D&D, and neither is on a synced calendar to catch it",
+      "expect": {
+        "mustName": [
+          "D&D",
+          "practice"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-week-pos-friday",
+      "negative": false,
+      "prompt": "Tom asks what he has on Friday. Answer him.",
+      "why": "his Friday is three fixed meetings, and a Friday answered out of the calendar feeds alone would miss the ones that are only on this page",
+      "expect": {
+        "mustName": [
+          "Moraffah",
+          "Henry"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-week-pos-practices",
+      "negative": false,
+      "prompt": "Tom asks when the climbing team practises. Answer him.",
+      "why": "the practices are on no synced calendar at all, so this page is the only place the answer exists and an invented time is the failure mode",
+      "expect": {
+        "mustName": [
+          "Monday",
+          "Wednesday"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-week-neg-schema-fields",
+      "negative": true,
+      "prompt": "List the fields convex/schema.ts declares on the runs table.",
+      "why": "a field list is read off the schema, and no day of his week changes it",
+      "expect": {
+        "mustNotName": [
+          "Monday",
+          "Wednesday",
+          "practice",
+          "D&D"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-week-neg-commit-message",
+      "negative": true,
+      "prompt": "Write the commit message for a change to the Gmail poller.",
+      "why": "a commit message is for the repository and carries no date of his",
+      "expect": {
+        "mustNotName": [
+          "Monday",
+          "Wednesday",
+          "practice",
+          "D&D"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-week-neg-merge-gate-explanation",
+      "negative": true,
+      "prompt": "Explain to Tom what a head row of the merge gate is.",
+      "why": "a ground-up explanation of a mechanism has no day in it, so his recurring week is nothing but length here",
+      "expect": {
+        "mustNotName": [
+          "Monday",
+          "Wednesday",
+          "practice",
+          "schedule page"
+        ]
+      },
+      "confirmedByTom": false
+    }
+  ]
+}

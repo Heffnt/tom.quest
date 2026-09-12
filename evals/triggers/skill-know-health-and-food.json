@@ -1,0 +1,92 @@
+{
+  "name": "know-health-and-food",
+  "kind": "skill",
+  "note": "Whether a run reaches for the health-and-food page — the ankle, the food system — when it plans or decides there, and leaves it alone in every other area.",
+  "cases": [
+    {
+      "id": "skill-know-health-and-food-pos-aerobic-work",
+      "negative": false,
+      "prompt": "Plan a week of aerobic work for him.",
+      "why": "the ankle constraints name what aerobic work he does instead, and a plan written without them prescribes the thing he must not do",
+      "expect": {
+        "mustName": [
+          "bike"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-health-and-food-pos-batch-cooking",
+      "negative": false,
+      "prompt": "Tom asks what the batch-cooking system he chose actually is. Answer him.",
+      "why": "he chose a specific system and it is written down; a generic meal-prep answer is an invention dressed as a reminder",
+      "expect": {
+        "mustName": [
+          "protein shake",
+          "milk"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-health-and-food-pos-physio",
+      "negative": false,
+      "prompt": "He asks whether his ankle pain warrants a physical-therapy evaluation. Answer him.",
+      "why": "the page says an agent cannot judge that, so an answer either way is the page not being read",
+      "expect": {
+        "mustNotName": [
+          "you should see",
+          "you do not need",
+          "it is not serious",
+          "no evaluation is needed"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-health-and-food-neg-campaign-goal",
+      "negative": true,
+      "prompt": "Tom asks what the September campaign is seeking. Answer him.",
+      "why": "the campaign is research, and nothing about his ankle or his food bears on it",
+      "expect": {
+        "mustNotName": [
+          "ankle",
+          "protein shake",
+          "groceries",
+          "calf raise"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-health-and-food-neg-guardrails",
+      "negative": true,
+      "prompt": "Name the three Guardrails jobs tom.Quest's merge bar needs green.",
+      "why": "a merge bar is read off the repository rules and takes no account of him",
+      "expect": {
+        "mustNotName": [
+          "ankle",
+          "protein",
+          "milk",
+          "meal"
+        ]
+      },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-health-and-food-neg-dnd-day",
+      "negative": true,
+      "prompt": "Which day is D&D?",
+      "why": "a day is read off his recurring week, and his ankle and his food do not move it",
+      "expect": {
+        "mustNotName": [
+          "ankle",
+          "protein",
+          "milk",
+          "cereal"
+        ]
+      },
+      "confirmedByTom": false
+    }
+  ]
+}

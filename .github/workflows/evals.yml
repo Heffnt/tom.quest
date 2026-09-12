@@ -11,6 +11,11 @@ name: Evals
 # scripts/evals-check.test.mjs fails when they stop being identical. Union is
 # the safe direction: one unnecessary run costs a run, while an unwatched path
 # that changes the context silently is the failure the gate exists to prevent.
+#
+# The four skill paths — scripts/skills.mjs, scripts/publish-skills.mjs,
+# worker/jobs/skill-router.mjs and evals/triggers/** — are here for that same
+# reason: the first three decide what a run's prompt carries, and the fourth is
+# part of the set a run is scored against.
 on:
   pull_request:
     paths:
@@ -20,6 +25,8 @@ on:
       - "**/CLAUDE.md"
       - "model-of-tom/**"
       - "scripts/prelude.mjs"
+      - "scripts/skills.mjs"
+      - "scripts/publish-skills.mjs"
       - "convex/ttsShared.ts"
       - "convex/claudeSessions.ts"
       - "convex/ttsSkills.ts"
@@ -28,9 +35,11 @@ on:
       - "worker/jobs/plan-graphs.mjs"
       - "worker/jobs/weekly.mjs"
       - "worker/jobs/delegate.mjs"
+      - "worker/jobs/skill-router.mjs"
       - "worker/bin/tts-ask"
       - "evals/golden/**"
       - "evals/tasks/**"
+      - "evals/triggers/**"
 jobs:
   evals:
     runs-on: ubuntu-latest
