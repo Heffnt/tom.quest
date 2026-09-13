@@ -771,11 +771,38 @@ export const internalRequestEvals = internalMutation({
   },
   handler: async (ctx, args) => {
     const key = `${args.repo}@${args.sha}`;
-    const existing = await ctx.db
-      .query("dtsEvents")
-      .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_REQUEST).eq("key", key))
-      .first();
+    const existing = await requestRowFor(ctx, key);
     const requestedAt = Date.now();
+    if (existing !== null) {
+      // A REQUEST FOR A SHA THAT ALREADY HAS ONE IS A NEW QUESTION, not a
+      // duplicate of the old one. Only two things file it: a re-run of the
+      // check, and a force-push that puts an earlier commit back at the head
+      // of the branch. Both mean somebody is asking about this sha NOW.
+      //
+      // Leaving the row untouched — which is what it did — dropped the newer
+      // workflow run's id on the floor. A branch that returned to an earlier
+      // sha kept the id it carried the first time, so headShaByPullRequest
+      // went on naming the LATER sha the head, the live head stayed classified
+      // as superseded, and every re-run of its check read the same permanent
+      // superseded row. That head could never be scored and so never merged.
+      //
+      // THE NEWEST RUN WINS, AND ONLY UPWARD. `runId` is GitHub's push order,
+      // and this takes the maximum for the same reason headShaByPullRequest
+      // compares with a strict `>`: a re-run keeps its original run's id, so
+      // re-running an OLD sha's check must not make that sha look newest, and
+      // a request that carries no id at all cannot lower one that does.
+      const currentRunId = requestData(existing.data)?.runId ?? null;
+      const runId = args.runId !== undefined && (currentRunId === null || args.runId > currentRunId)
+        ? args.runId
+        : currentRunId;
+      // `requestedAt` MOVES EVERY TIME, and that is what un-answers a stale
+      // superseded row: answeredRun below reads one written BEFORE the request
+      // standing now as the answer to a question nobody is asking any more.
+      // See its comment — superseded is not a verdict.
+      await ctx.db.patch(existing._id, {
+        data: { ...(existing.data as Record<string, unknown>), runId, requestedAt },
+      });
+    }
     if (existing === null) {
       await ctx.db.insert("dtsEvents", {
         at: requestedAt,
@@ -814,9 +841,9 @@ export const internalRequestEvals = internalMutation({
     // that waits seventy-five minutes and then denies. Guarded on the RUN
     // instead, so it is idempotent and it also answers an older unanswered
     // request that nobody had a shortcut for.
-    if (args.unaffected === true && (await runForKey(ctx, key)) === null) {
+    if (args.unaffected === true && (await answeredRun(ctx, key)) === null) {
       const base =
-        args.baseSha === undefined ? null : await runForKey(ctx, `${args.repo}@${args.baseSha}`);
+        args.baseSha === undefined ? null : await answeredRun(ctx, `${args.repo}@${args.baseSha}`);
       await ctx.db.insert("dtsEvents", {
         at: requestedAt,
         kind: EVALS_RUN,
@@ -845,11 +872,66 @@ async function runForKey(ctx: QueryCtx | MutationCtx, key: string) {
     .first();
 }
 
+async function requestRowFor(ctx: QueryCtx | MutationCtx, key: string) {
+  return await ctx.db
+    .query("dtsEvents")
+    .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_REQUEST).eq("key", key))
+    .first();
+}
+
+/**
+ * The newest evals-run row that ANSWERS THE REQUEST STANDING NOW, or null.
+ *
+ * SUPERSEDED IS NOT A VERDICT. Every other row this returns is a measurement
+ * of the sha — it scored the set, or it established there was nothing of the
+ * set to score (`unaffected`), or it recorded that the tree could not be read
+ * (`error`). A superseded row says something about the QUEUE instead: at the
+ * moment it was written, a later push to the same pull request had already
+ * replaced this head, so scoring it would have been work on a sha nobody was
+ * going to merge. That is a fact about a moment, not about a commit.
+ *
+ * It is the same shape convex/ttsMerge.ts gives an UNAVAILABLE audit — the
+ * ABSENCE of an answer rather than an answer — and it needs the same escape.
+ * Write-once over it meant a branch force-pushed back to an earlier sha could
+ * never be scored: the superseded row from the first time round was permanent,
+ * so the queue skipped the request as answered, the box's `already scored`
+ * short-circuit refused to run it, and the check read the stale row and failed
+ * on every re-run. A valid head was left unmergeable with nothing able to fix
+ * it.
+ *
+ * THE TEST IS THE REQUEST'S OWN CLOCK, and it costs one indexed read of a row
+ * this file already writes. `requestedAt` moves every time a check files a
+ * request for the sha, and a superseded row is written only after the box has
+ * read the request that was standing — so `at >= requestedAt` on a row that
+ * answers the current question, and `at < requestedAt` on one that answered a
+ * question since withdrawn. No head map, no window scan, and no field a writer
+ * could get wrong: the ordering of two timestamps the record keeps anyway.
+ *
+ * What this deliberately does NOT do is make a superseded row disappear for a
+ * sha that really is superseded. Nobody re-files that request, so its
+ * `requestedAt` stays where it was, the row stands, and the check on it still
+ * reads `superseded by <sha>, re-run at head` on its first poll. A re-run of a
+ * genuinely superseded sha's check re-files and is handed out again — and the
+ * queue answers it superseded a second time, in one POST and no model, because
+ * the head map has not moved either.
+ *
+ * The stale row is NEVER deleted. It stays in the event log, exactly as the
+ * UNAVAILABLE audit row does, so the record still says the queue passed this
+ * sha over once; the newest row is simply the one every reader takes.
+ */
+async function answeredRun(ctx: QueryCtx | MutationCtx, key: string) {
+  const run = await runForKey(ctx, key);
+  if (run === null) return null;
+  if ((run.data as { superseded?: unknown } | undefined)?.superseded !== true) return run;
+  const requestedAt = requestData((await requestRowFor(ctx, key))?.data)?.requestedAt;
+  return requestedAt !== undefined && run.at < requestedAt ? null : run;
+}
+
 export const internalEvalsRun = internalQuery({
   args: { repo: v.string(), sha: v.string(), baseSha: v.optional(v.string()) },
   handler: async (ctx, args) => {
-    const run = await runForKey(ctx, `${args.repo}@${args.sha}`);
-    const base = args.baseSha === undefined ? null : await runForKey(ctx, `${args.repo}@${args.baseSha}`);
+    const run = await answeredRun(ctx, `${args.repo}@${args.sha}`);
+    const base = args.baseSha === undefined ? null : await answeredRun(ctx, `${args.repo}@${args.baseSha}`);
     return { run: run?.data ?? null, base: base?.data ?? null };
   },
 });
@@ -912,7 +994,10 @@ export const internalOldestEvalsRequest = internalQuery({
     const heads = headShaByPullRequest(rows);
     for (const row of rows) {
       if (row.key === undefined) continue;
-      const run = await runForKey(ctx, row.key);
+      // A STALE SUPERSEDED ROW DOES NOT ANSWER THIS REQUEST (answeredRun): a
+      // sha the branch has come back to is handed out again and scored for
+      // real, rather than skipped forever as already answered.
+      const run = await answeredRun(ctx, row.key);
       if (run === null) {
         const request = requestData(row.data);
         if (request === null) continue;

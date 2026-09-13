@@ -403,6 +403,18 @@ describe("a superseded request", () => {
       });
     });
 
+  // A REAL run row, the kind that measured the sha. Unlike a superseded row it
+  // answers its key for good, whatever any later request says.
+  const scored = (t: TestConvex<typeof schema>, sha: string) =>
+    t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: EVALS_RUN,
+        key: `${REPO}@${sha}`,
+        data: { repo: REPO, sha, regressions: 0 },
+      });
+    });
+
   it("marks every older sha of the pull request with the newest one", async () => {
     const t = convexTest({ schema, modules });
     await file(t, 1, "aaaaaaa");
@@ -472,6 +484,135 @@ describe("a superseded request", () => {
     expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
       sha: "aaaaaaa",
       supersededBy: "bbbbbbb",
+    });
+  });
+
+  // SUPERSEDED IS NOT A VERDICT, and the request's own clock is what says so.
+  //
+  // A force-push back to an earlier commit makes that commit the head again.
+  // Before this, the request row kept the run id it was filed with, so the
+  // head map went on naming the LATER sha the head; the superseded row written
+  // the first time round was permanent, so the queue skipped the request as
+  // already answered and the check read the stale row on every re-run. A valid
+  // head was left unmergeable with nothing able to fix it.
+  it("runs a sha the branch came back to, and stops reading its old superseded row", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa", { runId: 100 });
+    await file(t, 2, "bbbbbbb", { runId: 200 });
+    // The morning as it happened: A is superseded by B and answered without a
+    // run, B is the head and is scored.
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      supersededBy: "bbbbbbb",
+    });
+    await answer(t, "aaaaaaa");
+    expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
+      .toMatchObject({ run: { superseded: true } });
+
+    // THE FORCE-PUSH BACK TO A. GitHub makes a new workflow run with a higher
+    // id, and the check files its request through the real door.
+    await t.mutation(internal.ttsEvals.internalRequestEvals, {
+      repo: REPO,
+      sha: "aaaaaaa",
+      baseSha: "f5c1fb9",
+      pr: 173,
+      runId: 300,
+      paths: ["model-of-tom/**"],
+      changed: ["model-of-tom/intent.md"],
+    });
+    // One request row for the sha, carrying the NEWEST run's id.
+    const rows = await t.run(async (ctx) =>
+      await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_REQUEST).eq("key", `${REPO}@aaaaaaa`))
+        .collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect((rows[0].data as { runId: number }).runId).toBe(300);
+
+    // The stale superseded row answers nobody: the check polls on past it, and
+    // the box's `already scored` short-circuit does not fire either — both read
+    // this same door.
+    expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
+      .toMatchObject({ run: null });
+    // And the queue hands A out again, to be SCORED rather than answered away.
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      supersededBy: null,
+    });
+    // B is behind A now, which is what the higher run id means. A is scored for
+    // real this time — a row that measured the sha, which no later request can
+    // make stale.
+    await scored(t, "aaaaaaa");
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "bbbbbbb",
+      supersededBy: "aaaaaaa",
+    });
+  });
+
+  // The other half of the same rule: a sha that is STILL superseded stays
+  // answered. Without this the queue would hand the same dead sha out on every
+  // tick, and the box would post a superseded row for it on every tick.
+  it("leaves a sha that is still superseded answered", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa", { runId: 100 });
+    await file(t, 2, "bbbbbbb", { runId: 200 });
+    await answer(t, "aaaaaaa");
+    expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
+      .toMatchObject({ run: { superseded: true } });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "bbbbbbb",
+    });
+  });
+
+  // A RE-RUN OF THE CHECK IS A NEW QUESTION TOO. It re-files the request, so
+  // the superseded row that answered the old one goes stale and the sha is
+  // served again — and if it is still superseded, it is answered superseded a
+  // second time, in one POST and no model.
+  it("serves a re-run at the head again, and re-supersedes a re-run that is still behind", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa", { runId: 100 });
+    await answer(t, "aaaaaaa");
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
+    // The same run id: GitHub keeps it across a re-run, and that is fine —
+    // what re-opens the sha is the request being asked again, not the id.
+    await t.mutation(internal.ttsEvals.internalRequestEvals, {
+      repo: REPO, sha: "aaaaaaa", baseSha: "f5c1fb9", pr: 173, runId: 100, paths: ["model-of-tom/**"],
+    });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      supersededBy: null,
+    });
+    // Still behind a later push: handed out, and handed out AS SUPERSEDED, so
+    // the box answers it in one POST rather than scoring a dead sha.
+    await file(t, 2, "bbbbbbb", { runId: 900 });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      supersededBy: "bbbbbbb",
+    });
+  });
+
+  // ONLY UPWARD, for the same reason headShaByPullRequest compares with a
+  // strict `>`: re-running an OLD sha's check keeps that run's id, and must
+  // never make that sha look like the newest push.
+  it("never lowers a request's run id", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa", { runId: 500 });
+    await file(t, 2, "bbbbbbb", { runId: 200 });
+    await t.mutation(internal.ttsEvals.internalRequestEvals, {
+      repo: REPO, sha: "aaaaaaa", baseSha: "f5c1fb9", pr: 173, runId: 100, paths: ["model-of-tom/**"],
+    });
+    const row = await t.run(async (ctx) =>
+      await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_REQUEST).eq("key", `${REPO}@aaaaaaa`))
+        .first(),
+    );
+    expect((row!.data as { runId: number }).runId).toBe(500);
+    // A is still the head; had 100 been written, B would have superseded it.
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      supersededBy: null,
     });
   });
 

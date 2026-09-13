@@ -1214,6 +1214,22 @@ describe("a superseded request", () => {
       .toBe(undefined);
   });
 
+  // A DRY RUN WRITES NOTHING ON THIS ARM EITHER. --dry-run exists so a change
+  // to this file can be read before it lands in the record, and the cheap arms
+  // write a row exactly as a scored run does. A posted rehearsal would both
+  // enter the record the digest and the merge gate read and ANSWER the
+  // request, taking it out of the queue the next real tick was going to serve.
+  it("posts nothing on a dry run", async () => {
+    const posted = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url, init) => {
+      posted.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+    expect(await serveRequest(env, noIo, request(), { dryRun: true }))
+      .toMatchObject({ superseded: true, supersededBy: "0b1ca1f" });
+    expect(posted).toEqual([]);
+  });
+
   it("opens nothing", () => {
     // `regressions: null` and `goldenCoverage: null` are what convex/
     // ttsMerge.ts denies on: a stale sha can never carry a gate open.
