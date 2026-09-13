@@ -224,6 +224,12 @@ cp "$WORKER_DIR"/../scripts/evals-check.mjs /opt/tts/evals-check.mjs
 # are node builtins, so one file is the whole of it.
 cp "$WORKER_DIR"/../scripts/check-writing-standard.mjs /opt/tts/check-writing-standard.mjs
 cp "$WORKER_DIR"/jobs/markdown-sections.mjs /opt/tts/worker/jobs/markdown-sections.mjs
+# EVERY .diff IN evals/audit-faults/ HAS TO LAND HERE: auditFaultsRoot() looks in
+# /opt/tts/audit-faults (beside evals.mjs) before the repo-relative path, and the
+# box holds no checkout at run time — so with no copy the weekly scorecard's
+# fault arm grades an empty set and reports a silent zero rather than failing.
+mkdir -p /opt/tts/audit-faults
+cp "$WORKER_DIR"/../evals/audit-faults/*.diff /opt/tts/audit-faults/
 # The Codex wrapper is a repo script, not a job, but sessions need it from ANY
 # repo — including checkouts that predate it, and repos that are not tom.quest
 # at all. One copy here is what `tts-codex` executes, so the flags and the
