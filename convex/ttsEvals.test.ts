@@ -4,6 +4,7 @@ import { internal } from "./_generated/api";
 import {
   COVERAGE_NOT_REQUIRED,
   EVALS_REQUEST,
+  EVALS_REQUEST_SCAN_LIMIT,
   EVALS_RUN,
   GOLDEN_MAX_ITEMS,
   GOLDEN_PER_VERDICT_MAX,
@@ -766,6 +767,62 @@ describe("a superseded request", () => {
         .collect(),
     );
     expect(runs).toHaveLength(1);
+  });
+
+  // THE WINDOW TRAILS THE TABLE, and this is the case that killed the queue.
+  //
+  // The scan read the OLDEST rows, and request rows are never deleted — so once
+  // the table passed the scan limit, every row in the window was long since
+  // answered, the query returned null forever, and every new head's check waited
+  // out its seventy-five minutes and failed with nothing able to score anything
+  // again. The branch that deleted the workflow's `paths:` filter is the branch
+  // that made it reachable: a request is now filed for every pull-request head.
+  //
+  // Found by the box's audit.
+  it("serves a request filed after the scan limit has already been passed", async () => {
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      // A full window of old requests, every one of them answered.
+      for (let i = 0; i < EVALS_REQUEST_SCAN_LIMIT; i += 1) {
+        const sha = `old${i}`;
+        await ctx.db.insert("dtsEvents", {
+          at: i + 1,
+          kind: EVALS_REQUEST,
+          key: `${REPO}@${sha}`,
+          data: {
+            repo: REPO, sha, baseSha: "f5c1fb9", pr: 1, runId: i + 1,
+            paths: ["model-of-tom/**"], changed: [], prBody: null,
+            unaffected: false, requestedAt: i + 1,
+          },
+        });
+        await ctx.db.insert("dtsEvents", {
+          at: i + 1,
+          kind: EVALS_RUN,
+          key: `${REPO}@${sha}`,
+          data: { repo: REPO, sha, regressions: 0 },
+        });
+      }
+    });
+    // Nothing unanswered yet, which is the honest answer at this point.
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
+    // The next head. Under the old read it was outside the window and invisible.
+    await file(t, EVALS_REQUEST_SCAN_LIMIT + 1, "newhead", { runId: 10_000, pr: 173 });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "newhead",
+      supersededBy: null,
+    });
+  }, 30_000);
+
+  // And inside the window the order is unchanged: still oldest-first, so the
+  // reverse() did not turn the queue into a stack.
+  it("still hands out the oldest unanswered request in the window", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa", { runId: 100 });
+    await file(t, 2, "bbbbbbb", { runId: 200 });
+    await file(t, 3, "ccccccc", { runId: 300 });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+    });
   });
 
   // A request filed before the field existed has no place in the push order.

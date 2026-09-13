@@ -37,7 +37,7 @@ const SESSION_READ_LIMIT = 2_000;
 const INBOUND_READ_LIMIT = 1_000;
 const GOLDEN_RULING_READ_LIMIT = 2_000;
 const BATCH_MEMBER_READ_LIMIT = 500;
-const EVALS_REQUEST_SCAN_LIMIT = 500;
+export const EVALS_REQUEST_SCAN_LIMIT = 500;
 const EVALS_SEARCH_SCAN_LIMIT = 2_000;
 
 export type PreludeSession = {
@@ -1041,11 +1041,33 @@ function headShaByPullRequest(rows: Doc<"dtsEvents">[]): Map<string, { sha: stri
 export const internalOldestEvalsRequest = internalQuery({
   args: {},
   handler: async (ctx): Promise<EvalsRequest | null> => {
-    const rows = await ctx.db
+    // THE WINDOW IS THE MOST RECENT REQUESTS, NOT THE FIRST ONES EVER FILED.
+    //
+    // This read `.order("asc")`, which takes the OLDEST rows in the table — and
+    // request rows are never deleted. Every one of the first five hundred is
+    // long since answered, so once the table passed that mark the query would
+    // find no unanswered request in its window and return null forever: every
+    // new head's check would wait out its seventy-five minutes and fail, with
+    // nothing able to score anything again. The queue would be dead, silently,
+    // and no row would say why.
+    //
+    // It was survivable while `.github/workflows/evals.yml` carried a `paths:`
+    // filter and requests were rare. This branch deleted that filter so the
+    // check runs on EVERY pull request and files a request for every head, so
+    // the branch that made the bug reachable is the one that has to fix it.
+    //
+    // Read from the newest end and reversed, the window is a TRAILING one: the
+    // hand-out order inside it is still oldest-first, and the head map below is
+    // still computed off the same rows with no second read. What falls out of a
+    // trailing window is an unanswered request older than five hundred newer
+    // ones — a head whose check gave up long ago, which is the right thing to
+    // drop, and the opposite of dropping every head from now on.
+    const recent = await ctx.db
       .query("dtsEvents")
       .withIndex("by_kind_at", (q) => q.eq("kind", EVALS_REQUEST))
-      .order("asc")
+      .order("desc")
       .take(EVALS_REQUEST_SCAN_LIMIT);
+    const rows = recent.reverse();
     // WHAT EACH PULL REQUEST'S HEAD IS, off the same window. A morning of four
     // pushes to one branch files four requests, and the box serves one per
     // pass at about thirty-five minutes: the check on the fourth waits out
