@@ -616,6 +616,121 @@ describe("a superseded request", () => {
     });
   });
 
+  // THE WHOLE PAYLOAD IS THE NEW REQUEST'S, not two fields of it. `baseSha`,
+  // `pr`, `changed`, `prBody` and `unaffected` are facts about the DIFF the
+  // check just read, and a sha can be asked about against a different base — a
+  // pull request retargeted, a rebase that moves the merge base. Found by the
+  // box's audit of the first cut of this fix, which patched runId alone.
+  it("replaces every field of a re-filed request, not just the run id", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa", {
+      runId: 100,
+      baseSha: "f5c1fb9",
+      pr: 172,
+      changed: ["worker/setup.sh"],
+      prBody: "the first body",
+      unaffected: true,
+    });
+    await t.mutation(internal.ttsEvals.internalRequestEvals, {
+      repo: REPO,
+      sha: "aaaaaaa",
+      baseSha: "6af3eef",
+      pr: 173,
+      runId: 300,
+      paths: ["model-of-tom/**"],
+      changed: ["model-of-tom/intent.md"],
+      prBody: "the body as it reads now",
+    });
+    const row = await t.run(async (ctx) =>
+      await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_REQUEST).eq("key", `${REPO}@aaaaaaa`))
+        .first(),
+    );
+    expect(row!.data).toMatchObject({
+      baseSha: "6af3eef",
+      pr: 173,
+      runId: 300,
+      changed: ["model-of-tom/intent.md"],
+      prBody: "the body as it reads now",
+      // THE ONE THAT OPENS THE GATE. A stale `true` here would answer a diff
+      // that touches a watched path with `no watched path changed`.
+      unaffected: false,
+    });
+    // The queue's order is the `at` of the event, and the sha keeps the place
+    // in line it has held since it was first asked about.
+    expect(row!.at).toBe(1);
+  });
+
+  // A field the new request does not carry is NULL, never the old value: a
+  // list this check did not compute is not an answer to this check's question.
+  it("does not keep a field the new request left out", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa", { changed: ["worker/setup.sh"], prBody: "the first body" });
+    await t.mutation(internal.ttsEvals.internalRequestEvals, {
+      repo: REPO, sha: "aaaaaaa", baseSha: "f5c1fb9", pr: 173, runId: 300, paths: ["model-of-tom/**"],
+    });
+    const row = await t.run(async (ctx) =>
+      await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_REQUEST).eq("key", `${REPO}@aaaaaaa`))
+        .first(),
+    );
+    expect(row!.data).toMatchObject({ changed: null, prBody: null });
+  });
+
+  // The same staleness rule, pointing the other way. A superseded row left a
+  // valid head unmergeable; a stale UNAFFECTED row would open the gate on
+  // `no watched path changed` for a diff that changed one.
+  it("stops an unaffected row answering a request whose diff now touches a watched path", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa", { runId: 100, unaffected: true });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: 50,
+        kind: EVALS_RUN,
+        key: `${REPO}@aaaaaaa`,
+        data: { repo: REPO, sha: "aaaaaaa", unaffected: true, regressions: 0 },
+      });
+    });
+    // While that is what was asked, it answers.
+    expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
+      .toMatchObject({ run: { unaffected: true } });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
+    // Asked again against a base whose diff DOES touch a watched path.
+    await t.mutation(internal.ttsEvals.internalRequestEvals, {
+      repo: REPO, sha: "aaaaaaa", baseSha: "6af3eef", pr: 173, runId: 300,
+      paths: ["model-of-tom/**"], changed: ["model-of-tom/intent.md"],
+    });
+    expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
+      .toMatchObject({ run: null });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      unaffected: false,
+    });
+  });
+
+  // AND A SCORED ROW NEVER GOES STALE. It measured the tree, and no later
+  // request makes that untrue — `--force` is how a measurement is redone.
+  it("keeps a scored row answering however often the sha is asked about", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa", { runId: 100 });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: 50,
+        kind: EVALS_RUN,
+        key: `${REPO}@aaaaaaa`,
+        data: { repo: REPO, sha: "aaaaaaa", regressions: 0, pass: 29, items: 29 },
+      });
+    });
+    await t.mutation(internal.ttsEvals.internalRequestEvals, {
+      repo: REPO, sha: "aaaaaaa", baseSha: "6af3eef", pr: 173, runId: 300, paths: ["model-of-tom/**"],
+    });
+    expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
+      .toMatchObject({ run: { regressions: 0, pass: 29 } });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
+  });
+
   // A request filed before the field existed has no place in the push order.
   // It supersedes nothing and nothing supersedes it, in both directions.
   it("never supersedes with or against a request carrying no run id", async () => {

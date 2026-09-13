@@ -38,7 +38,7 @@ import { NIGHTLY_FAILURE } from "./ttsNightly";
 import { NEEDS_TOM, SLACK_REPLY_FAILED } from "./ttsSlack";
 import { DAY_MS, MODEL_OF_TOM_AREAS_DIR, isPrepared } from "./ttsShared";
 import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
-import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
+import { EVALS_RUN, PRELUDE_DELIVERY, scoredNothing } from "./ttsEvals";
 import { AUDIT_APPROVED, AUDIT_VERDICT, MERGE, commitKey, mergeKey } from "./ttsMerge";
 import { DELEGATE_OBJECTION } from "./ttsAsk";
 import { isIsoDay, parseFrontmatter } from "../worker/jobs/markdown-sections.mjs";
@@ -877,19 +877,17 @@ export async function gatherWeeklyFacts(
   let scorecardAt = -1;
   for (const e of await eventsOfKind(EVALS_RUN)) {
     const d = (e.data ?? {}) as Record<string, unknown>;
-    // A ROW IS NOT A RUN. Three kinds of evals-run row score nothing and are
-    // written in a POST each: a branch that touched no watched path
-    // (`unaffected`), a head a later push replaced (`superseded`), and a sha
-    // the box could not fetch or check out (`error`). Counting them here said
-    // three untrue things at once — they were runs the week did, they were
-    // CLEAN runs (`regressions: null` fell through `?? 0` to zero), and, being
-    // the newest rows, their empty `ablation: []` and `efficiency.rises: []`
-    // replaced the real measurement off the last run that actually scored the
-    // set. The superseded row is the frequent one and is what made this
-    // visible, but the other two were already doing it.
-    if (d.unaffected === true || d.superseded === true || (typeof d.error === "string" && d.error !== "")) {
-      continue;
-    }
+    // A ROW IS NOT A RUN. Counting the three rows that score nothing said three
+    // untrue things at once — they were runs the week did, they were CLEAN runs
+    // (`regressions: null` fell through `?? 0` to zero), and, being the newest
+    // rows, their empty `ablation: []` and `efficiency.rises: []` replaced the
+    // real measurement off the last run that actually scored the set. The
+    // superseded row is the frequent one and is what made this visible, but the
+    // other two were already doing it.
+    //
+    // The list itself lives in ttsEvals.ts, where convex/ttsEvals.ts answeredRun
+    // reads it too: a second copy here is how the two come apart.
+    if (scoredNothing(d)) continue;
     evals.runs++;
     if (Array.isArray(d.ablation) && e.at > ablationAt) {
       ablation = ablationFindings(d.ablation);

@@ -773,57 +773,63 @@ export const internalRequestEvals = internalMutation({
     const key = `${args.repo}@${args.sha}`;
     const existing = await requestRowFor(ctx, key);
     const requestedAt = Date.now();
-    if (existing !== null) {
-      // A REQUEST FOR A SHA THAT ALREADY HAS ONE IS A NEW QUESTION, not a
-      // duplicate of the old one. Only two things file it: a re-run of the
-      // check, and a force-push that puts an earlier commit back at the head
-      // of the branch. Both mean somebody is asking about this sha NOW.
-      //
-      // Leaving the row untouched — which is what it did — dropped the newer
-      // workflow run's id on the floor. A branch that returned to an earlier
-      // sha kept the id it carried the first time, so headShaByPullRequest
-      // went on naming the LATER sha the head, the live head stayed classified
-      // as superseded, and every re-run of its check read the same permanent
-      // superseded row. That head could never be scored and so never merged.
-      //
-      // THE NEWEST RUN WINS, AND ONLY UPWARD. `runId` is GitHub's push order,
-      // and this takes the maximum for the same reason headShaByPullRequest
-      // compares with a strict `>`: a re-run keeps its original run's id, so
-      // re-running an OLD sha's check must not make that sha look newest, and
-      // a request that carries no id at all cannot lower one that does.
-      const currentRunId = requestData(existing.data)?.runId ?? null;
-      const runId = args.runId !== undefined && (currentRunId === null || args.runId > currentRunId)
-        ? args.runId
-        : currentRunId;
-      // `requestedAt` MOVES EVERY TIME, and that is what un-answers a stale
-      // superseded row: answeredRun below reads one written BEFORE the request
+    // A REQUEST FOR A SHA THAT ALREADY HAS ONE IS A NEW QUESTION, not a
+    // duplicate of the old one. Only two things file it: a re-run of the check,
+    // and a force-push that puts an earlier commit back at the head of the
+    // branch. Both mean somebody is asking about this sha NOW, and the answer
+    // must be built out of what they are asking with.
+    //
+    // Leaving the row untouched — which is what it did — dropped the newer
+    // workflow run's id on the floor. A branch that returned to an earlier sha
+    // kept the id it carried the first time, so headShaByPullRequest went on
+    // naming the LATER sha the head, the live head stayed classified as
+    // superseded, and every re-run of its check read the same permanent
+    // superseded row. That head could never be scored and so never merged.
+    //
+    // THE WHOLE PAYLOAD IS REPLACED, not two fields of it. `baseSha`, `pr`,
+    // `changed`, `prBody` and `unaffected` are all facts about the DIFF the
+    // check just read, and a sha can be asked about against a different base —
+    // a pull request retargeted, a rebase that moves the merge base. Keeping
+    // the first request's copies would score the sha against a base nobody
+    // asked about, apply an `evals: no-item` trailer off a body since edited,
+    // or — worst — answer a request whose diff now touches a watched path with
+    // the old request's `unaffected: true`. One payload builder for both the
+    // insert and the replace, so the two spellings cannot come apart.
+    //
+    // `runId` IS THE ONE EXCEPTION, AND IT MOVES ONLY UPWARD. It is GitHub's
+    // push order, and this takes the maximum for the same reason
+    // headShaByPullRequest compares with a strict `>`: a re-run keeps its
+    // original run's id, so re-running an OLD sha's check must not make that
+    // sha look newest, and a request carrying no id cannot lower one that does.
+    const currentRunId = existing === null ? null : requestData(existing.data)?.runId ?? null;
+    const runId = args.runId !== undefined && (currentRunId === null || args.runId > currentRunId)
+      ? args.runId
+      : currentRunId;
+    const data = {
+      repo: args.repo,
+      sha: args.sha,
+      baseSha: args.baseSha ?? null,
+      pr: args.pr ?? null,
+      runId,
+      paths: args.paths,
+      changed: args.changed ?? null,
+      // A pull-request body is text somebody else wrote, so it is stored and
+      // read as DATA — the only thing anything does with it is look for one
+      // anchored `evals: no-item` line.
+      prBody: args.prBody ?? null,
+      unaffected: args.unaffected === true,
+      // MOVES EVERY TIME, and that is what un-answers a stale row that scored
+      // nothing: answeredRun below reads one written BEFORE the request
       // standing now as the answer to a question nobody is asking any more.
-      // See its comment — superseded is not a verdict.
-      await ctx.db.patch(existing._id, {
-        data: { ...(existing.data as Record<string, unknown>), runId, requestedAt },
-      });
-    }
+      requestedAt,
+    };
     if (existing === null) {
-      await ctx.db.insert("dtsEvents", {
-        at: requestedAt,
-        kind: EVALS_REQUEST,
-        key,
-        data: {
-          repo: args.repo,
-          sha: args.sha,
-          baseSha: args.baseSha ?? null,
-          pr: args.pr ?? null,
-          runId: args.runId ?? null,
-          paths: args.paths,
-          changed: args.changed ?? null,
-          // A pull-request body is text somebody else wrote, so it is stored and
-          // read as DATA — the only thing anything does with it is look for one
-          // anchored `evals: no-item` line.
-          prBody: args.prBody ?? null,
-          unaffected: args.unaffected === true,
-          requestedAt,
-        },
-      });
+      await ctx.db.insert("dtsEvents", { at: requestedAt, kind: EVALS_REQUEST, key, data });
+    } else {
+      // `at` IS NOT TOUCHED. It is the queue's order (by_kind_at), and a sha
+      // asked about a second time keeps the place in line it has held since it
+      // was first asked about.
+      await ctx.db.patch(existing._id, { data });
     }
     // ANSWERED HERE, IN THE SAME MUTATION THAT ASKED. A branch that touched no
     // watched path has nothing to score, and the round trip to the box would
@@ -841,7 +847,17 @@ export const internalRequestEvals = internalMutation({
     // that waits seventy-five minutes and then denies. Guarded on the RUN
     // instead, so it is idempotent and it also answers an older unanswered
     // request that nobody had a shortcut for.
-    if (args.unaffected === true && (await answeredRun(ctx, key)) === null) {
+    //
+    // A SECOND UNAFFECTED ROW ADDS NOTHING BUT A ROW — the posture
+    // convex/ttsMerge.ts takes on a second UNAVAILABLE audit. A re-run of an
+    // unaffected check moves `requestedAt`, which is what makes a standing row
+    // stale, but the row this door would write is the row already there and
+    // the answer has not changed. Only a row saying something ELSE is worth
+    // replacing, and only when the request standing now has moved past it.
+    const standing = await runForKey(ctx, key);
+    const standsUnaffected =
+      (standing?.data as { unaffected?: unknown } | undefined)?.unaffected === true;
+    if (args.unaffected === true && !standsUnaffected && (await answeredRun(ctx, key)) === null) {
       const base =
         args.baseSha === undefined ? null : await answeredRun(ctx, `${args.repo}@${args.baseSha}`);
       await ctx.db.insert("dtsEvents", {
@@ -880,15 +896,35 @@ async function requestRowFor(ctx: QueryCtx | MutationCtx, key: string) {
 }
 
 /**
+ * A ROW IS NOT A RUN. Three kinds of evals-run row score nothing and are
+ * written in a POST each: a branch that touched no watched path
+ * (`unaffected`), a head a later push replaced (`superseded`), and a sha the
+ * box could not fetch or check out (`error`).
+ *
+ * ONE SPELLING, read by both the readers that care. convex/ttsWeekly.ts skips
+ * these three when it counts the week's runs — counted, they said they were
+ * runs the week did, that they were CLEAN runs, and, being the newest rows,
+ * their empty arrays replaced the real measurement. answeredRun below asks the
+ * same question for a different reason. A second copy of the list is how the
+ * two come apart the next time a fourth kind is added.
+ */
+export function scoredNothing(data: unknown): boolean {
+  const d = (data ?? {}) as Record<string, unknown>;
+  return d.unaffected === true || d.superseded === true ||
+    (typeof d.error === "string" && d.error !== "");
+}
+
+/**
  * The newest evals-run row that ANSWERS THE REQUEST STANDING NOW, or null.
  *
- * SUPERSEDED IS NOT A VERDICT. Every other row this returns is a measurement
- * of the sha — it scored the set, or it established there was nothing of the
- * set to score (`unaffected`), or it recorded that the tree could not be read
- * (`error`). A superseded row says something about the QUEUE instead: at the
- * moment it was written, a later push to the same pull request had already
- * replaced this head, so scoring it would have been work on a sha nobody was
- * going to merge. That is a fact about a moment, not about a commit.
+ * A ROW THAT SCORED NOTHING IS NOT A VERDICT ON THE COMMIT. A scored row is a
+ * measurement of the tree: it ran the set and got numbers, and no later request
+ * can make that untrue (`--force` is how a measurement is redone). The three
+ * rows scoredNothing names are answers to A PARTICULAR REQUEST instead —
+ * `superseded` says a later push had already replaced this head when the queue
+ * looked, `unaffected` says the diff THAT REQUEST CARRIED touched no watched
+ * path, and an `error` row says the tree could not be read that time. All
+ * three are facts about a moment, not about a commit.
  *
  * It is the same shape convex/ttsMerge.ts gives an UNAVAILABLE audit — the
  * ABSENCE of an answer rather than an answer — and it needs the same escape.
@@ -897,20 +933,24 @@ async function requestRowFor(ctx: QueryCtx | MutationCtx, key: string) {
  * so the queue skipped the request as answered, the box's `already scored`
  * short-circuit refused to run it, and the check read the stale row and failed
  * on every re-run. A valid head was left unmergeable with nothing able to fix
- * it.
+ * it. The `unaffected` row is the same hole pointing the other way and it OPENS
+ * the gate: ask about a sha against one base, get `no watched path changed`,
+ * then ask about the same sha against a base whose diff DOES touch one, and a
+ * stale row would answer `unaffected` to a question it never heard.
  *
  * THE TEST IS THE REQUEST'S OWN CLOCK, and it costs one indexed read of a row
  * this file already writes. `requestedAt` moves every time a check files a
- * request for the sha, and a superseded row is written only after the box has
- * read the request that was standing — so `at >= requestedAt` on a row that
- * answers the current question, and `at < requestedAt` on one that answered a
- * question since withdrawn. No head map, no window scan, and no field a writer
- * could get wrong: the ordering of two timestamps the record keeps anyway.
+ * request for the sha, and one of these rows is written only after the box (or
+ * the door) has read the request that was standing — so `at >= requestedAt` on
+ * a row that answers the current question, and `at < requestedAt` on one that
+ * answered a question since withdrawn. No head map, no window scan on a
+ * thirty-second poll, and no new field a writer could get wrong: the ordering
+ * of two timestamps the record keeps anyway.
  *
- * What this deliberately does NOT do is make a superseded row disappear for a
- * sha that really is superseded. Nobody re-files that request, so its
- * `requestedAt` stays where it was, the row stands, and the check on it still
- * reads `superseded by <sha>, re-run at head` on its first poll. A re-run of a
+ * What this deliberately does NOT do is make a row disappear for a sha nothing
+ * is asking about again. Nobody re-files that request, so its `requestedAt`
+ * stays where it was, the row stands, and the check on it still reads
+ * `superseded by <sha>, re-run at head` on its first poll. A re-run of a
  * genuinely superseded sha's check re-files and is handed out again — and the
  * queue answers it superseded a second time, in one POST and no model, because
  * the head map has not moved either.
@@ -922,7 +962,7 @@ async function requestRowFor(ctx: QueryCtx | MutationCtx, key: string) {
 async function answeredRun(ctx: QueryCtx | MutationCtx, key: string) {
   const run = await runForKey(ctx, key);
   if (run === null) return null;
-  if ((run.data as { superseded?: unknown } | undefined)?.superseded !== true) return run;
+  if (!scoredNothing(run.data)) return run;
   const requestedAt = requestData((await requestRowFor(ctx, key))?.data)?.requestedAt;
   return requestedAt !== undefined && run.at < requestedAt ? null : run;
 }
