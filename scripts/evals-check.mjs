@@ -61,6 +61,15 @@ export const WATCHED_PATHS = [
   "**/CLAUDE.md",
   "model-of-tom/**",
   "scripts/prelude.mjs",
+  // WHAT scripts/prelude.mjs READS. The eval runner executes the pinned
+  // prelude, and these three are its transitive relative imports — change any
+  // one of them alone and the prompt every scored item is built from changes
+  // while the file named above does not. scripts/check-setup-imports.mjs walks
+  // the import graph and fails when this list and that graph disagree, so a
+  // fourth import lands here by being added rather than by being remembered.
+  "scripts/prelude-layers.mjs",
+  "worker/jobs/context-relevance.mjs",
+  "worker/jobs/markdown-sections.mjs",
   "convex/ttsShared.ts",
   "convex/claudeSessions.ts",
   "convex/ttsSkills.ts",

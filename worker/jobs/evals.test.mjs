@@ -45,6 +45,7 @@ import {
   SkillsNotAssembledError,
   stampAgainstBase,
   standardRulesFor,
+  servePass,
   supersededRun,
   TASK_BRANCHES,
   tokensOf,
@@ -1228,6 +1229,45 @@ describe("a superseded request", () => {
     expect(await serveRequest(env, noIo, request(), { dryRun: true }))
       .toMatchObject({ superseded: true, supersededBy: "0b1ca1f" });
     expect(posted).toEqual([]);
+  });
+
+  // THE PASS STOPS WHEN IT ANSWERED NOTHING. A dry run posts no row, so the
+  // queue hands back the same request on every turn: without this the loop ran
+  // the full twenty-five and then printed that twenty-five requests had been
+  // answered. Found by the box's audit.
+  it("takes one request and stops on a dry run", async () => {
+    const asked = [];
+    vi.stubGlobal("fetch", vi.fn(async (url, init) => {
+      if (String(url).includes("/tts/evals-request")) {
+        asked.push(1);
+        return { ok: true, status: 200, text: async () => JSON.stringify({ request: request() }) };
+      }
+      if (init) throw new Error("a dry run posted a row");
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+    await servePass(env, noIo, { dryRun: true });
+    expect(asked).toHaveLength(1);
+  });
+
+  // And without it, the pass keeps draining: each superseded request IS
+  // answered, so the door hands back the next one.
+  it("keeps draining superseded requests when it is answering them", async () => {
+    const shas = ["1111111", "2222222", "3333333"];
+    let next = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url) => {
+      if (String(url).includes("/tts/evals-request")) {
+        const sha = shas[next];
+        next += 1;
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ request: sha === undefined ? null : request({ sha }) }),
+        };
+      }
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+    await servePass(env, noIo, {});
+    expect(next).toBe(4);
   });
 
   it("opens nothing", () => {

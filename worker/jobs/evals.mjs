@@ -2334,6 +2334,42 @@ async function runAndPost(env, io, {
 }
 
 /**
+ * One polling pass over the request queue.
+ *
+ * ONE SCORED REQUEST PER PASS, so a cron tick is bounded — and that is the only
+ * thing bounded, because it is the only thing that costs anything. A superseded
+ * request is one POST and no model, so the pass keeps taking them: a queue four
+ * dead pushes deep drains on THIS tick and the live head is served on it too,
+ * rather than one dead sha every five minutes. The count is a stop, not a
+ * budget: a door that kept handing back the same request would otherwise spin
+ * here forever.
+ *
+ * Exported so that stop can be tested. It is reached only through `--serve`,
+ * and the shape of the bug it guards against — a loop that keeps asking a door
+ * whose answer it did nothing to change — is not visible from serveRequest.
+ */
+export async function servePass(env, io, options = {}) {
+  for (let answered = 0; answered < SERVE_SUPERSEDED_LIMIT; answered += 1) {
+    const { request } = await convexFetch(env, "/tts/evals-request");
+    if (request === null || request === undefined) {
+      console.log("[evals] no unanswered request");
+      return;
+    }
+    const data = await serveRequest(env, io, request, options);
+    // A DRY RUN ANSWERS NOTHING — that is the whole point of it — so there is
+    // nothing behind this request to move on to: the door would hand back the
+    // same request on every turn of this loop, twenty-five times, and then
+    // print that twenty-five requests had been answered. One request, and the
+    // pass is over.
+    if (options.dryRun === true || data?.superseded !== true) return;
+  }
+  console.log(
+    `[evals] ${SERVE_SUPERSEDED_LIMIT} superseded requests answered this pass; ` +
+      `the rest wait for the next tick`,
+  );
+}
+
+/**
  * One queued request, answered.
  *
  * Exported so the two paths out of it can be tested without a command line:
@@ -2471,26 +2507,7 @@ async function main() {
   }
 
   if (options.serve) {
-    // ONE SCORED REQUEST PER PASS, so a cron tick is bounded — and that is the
-    // only thing bounded, because it is the only thing that costs anything. A
-    // superseded request is one POST and no model, so the pass keeps taking
-    // them: a queue four dead pushes deep drains on THIS tick and the live
-    // head is served on it too, rather than one dead sha every five minutes.
-    // The count is a stop, not a budget: a door that kept handing back the
-    // same request would otherwise spin here forever.
-    for (let answered = 0; answered < SERVE_SUPERSEDED_LIMIT; answered += 1) {
-      const { request } = await convexFetch(env, "/tts/evals-request");
-      if (request === null || request === undefined) {
-        console.log("[evals] no unanswered request");
-        return;
-      }
-      const data = await serveRequest(env, io, request, options);
-      if (data?.superseded !== true) return;
-    }
-    console.log(
-      `[evals] ${SERVE_SUPERSEDED_LIMIT} superseded requests answered this pass; ` +
-        `the rest wait for the next tick`,
-    );
+    await servePass(env, io, options);
     return;
   }
 

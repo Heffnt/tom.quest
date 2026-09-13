@@ -20,6 +20,7 @@
 // step 7, or move one below the `== [8/10] cron ==` heading.
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, posix } from "node:path";
+import { unaffectedBy } from "./evals-check.mjs";
 
 const SETUP = "worker/setup.sh";
 const CRON_HEADING = '== [8/10] cron ==';
@@ -37,12 +38,49 @@ const beforeCron = cronAt === -1 ? setup : setup.slice(0, cronAt);
 // Static relative imports only: `import … from "../x.mjs"` / "./x.mjs". A
 // dynamic import() would not be resolved at load and is not this rule's
 // concern.
-const RELATIVE_IMPORT = /^\s*import\s[^\n]*?from\s+["'](\.\.?\/[^"']+)["']/gm;
+//
+// THE SPECIFIER LIST SPANS LINES, AND `export … from` IS AN IMPORT TOO. The
+// first spelling of this was `[^\n]*?`, which silently skipped both — and
+// scripts/prelude.mjs happens to import worker/jobs/context-relevance.mjs
+// across five lines, so the file this fence was written to catch was the file
+// it could not see. `[^;'"\`]*?` is what keeps the lazy span inside one
+// statement: it cannot cross a semicolon into the next, and it cannot cross a
+// quote into an unrelated string.
+const RELATIVE_IMPORT = /(?:^|\n)[ \t]*(?:import|export)\b[^;'"`]*?\bfrom[ \t\r\n]*["'](\.\.?\/[^"']+)["']/g;
+// `import "./x.mjs"` with no bindings: run for its side effects, and still a
+// file this module needs at load.
+const SIDE_EFFECT_IMPORT = /(?:^|\n)[ \t]*import[ \t]+["'](\.\.?\/[^"']+)["']/g;
 
 const relativeImportsOf = (file) => {
   const text = readFileSync(file, "utf8");
   const here = dirname(file).split("\\").join("/");
-  return [...text.matchAll(RELATIVE_IMPORT)].map((m) => posix.normalize(posix.join(here, m[1])));
+  return [...text.matchAll(RELATIVE_IMPORT), ...text.matchAll(SIDE_EFFECT_IMPORT)]
+    .map((m) => posix.normalize(posix.join(here, m[1])));
+};
+
+/** Every file reachable from `roots` by static relative imports, roots
+ *  included. One walker, because this file now holds two fences over the same
+ *  import graph: what worker/setup.sh must copy, and what the evals gate must
+ *  watch. */
+const reachableFrom = (roots, onMissing) => {
+  const seen = new Set(roots);
+  const queue = [...roots];
+  while (queue.length > 0) {
+    const file = queue.shift();
+    let imports;
+    try {
+      imports = relativeImportsOf(file);
+    } catch {
+      onMissing(file);
+      continue;
+    }
+    for (const target of imports) {
+      if (seen.has(target)) continue;
+      seen.add(target);
+      queue.push(target);
+    }
+  }
+  return seen;
 };
 
 // Start from every runs/ module; the glob `cp .../runs/*.mjs /opt/tts/runs/`
@@ -76,6 +114,35 @@ if (needed.size === 0) {
   failures.push("no cross-directory imports parsed out of worker/runs/*.mjs — the fence cannot run");
 }
 
+// ── Fence 2: what the eval prelude reads is what the eval gate watches ──────
+//
+// scripts/evals-check.mjs decides INSIDE the check whether a branch could have
+// moved the eval set, and a branch it calls unaffected gets a passing row with
+// nothing scored. The runner builds every scored item's prompt by executing the
+// pinned scripts/prelude.mjs — so each file that prelude transitively imports
+// changes what the set measures exactly as prelude.mjs itself does, and each
+// must make a branch AFFECTED on its own.
+//
+// DERIVED, NOT REMEMBERED. WATCHED_PATHS named `scripts/prelude.mjs` and none
+// of the three files it imports, so a change to any one of them alone was
+// misclassified. Enumerating them by hand is the thing this deletes: the graph
+// is walked here, and a fourth import fails this check until it is watched.
+const PRELUDE_ROOT = "scripts/prelude.mjs";
+const preludeFiles = reachableFrom([PRELUDE_ROOT], (file) =>
+  failures.push(`${file} is imported by the prelude graph but does not exist`),
+);
+if (preludeFiles.size < 2) {
+  failures.push(`no relative imports parsed out of ${PRELUDE_ROOT} — the prelude fence cannot run`);
+}
+for (const file of [...preludeFiles].sort()) {
+  if (unaffectedBy([file])) {
+    failures.push(
+      `${file} is read by ${PRELUDE_ROOT} but is not watched: add it to WATCHED_PATHS in ` +
+        `scripts/evals-check.mjs, or the evals gate calls a change to it unaffected and scores nothing`,
+    );
+  }
+}
+
 for (const [target, importer] of [...needed].sort()) {
   const rest = target.replace(/^worker\//, ""); // e.g. session-host/redact.mjs
   const dir = posix.dirname(rest);
@@ -103,4 +170,7 @@ if (failures.length > 0) {
   for (const f of failures) console.error("  - " + f);
   process.exit(1);
 }
-console.log(`setup.sh import check passed (${needed.size} cross-directory imports, all copied before the cron).`);
+console.log(
+  `setup.sh import check passed (${needed.size} cross-directory imports, all copied before the cron; ` +
+    `${preludeFiles.size} files in the prelude graph, all watched).`,
+);
