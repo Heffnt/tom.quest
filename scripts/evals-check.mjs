@@ -72,6 +72,16 @@ export const WATCHED_PATHS = [
   "worker/bin/tts-ask",
   "evals/golden/**",
   "evals/tasks/**",
+  // THE TRIGGER FILES ARE PART OF THE SET, and this line was missing from the
+  // workflow's `paths:` list before it moved here. `loadTriggers` reads
+  // evals/triggers/*.json into the run, and ITEM_PREFIXES below already names
+  // the directory as a place a golden item lives — so a trigger-only change
+  // moves what the set measures. While the filter lived in the workflow that
+  // omission failed CLOSED: the job did not run, no row was written, and the
+  // gate denied for want of one. Inside the check it fails OPEN — the check
+  // runs, finds nothing watched, and writes a passing unaffected row for a
+  // change to the set itself.
+  "evals/triggers/**",
 ];
 
 /** Where a golden item lives. A change that ships one of these is the thing

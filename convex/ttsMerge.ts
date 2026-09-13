@@ -3,7 +3,7 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { logEvent } from "./tts";
-import { COVERAGE_NOT_REQUIRED, EVALS_RUN } from "./ttsEvals";
+import { answeredEvalsRun, COVERAGE_NOT_REQUIRED, EVALS_RUN } from "./ttsEvals";
 import { redactSecrets } from "../worker/session-host/redact.mjs";
 
 // ── THE MECHANICAL MERGE GATE (Tom, 2026-09-09) ─────────────────────────────
@@ -353,7 +353,11 @@ export async function mergeGateFor(
             why: `the audit answered ${verdict ?? "nothing readable"} at ${short}${byWhom}, not ${AUDIT_APPROVED}${auditDetail}`,
           };
 
-  const evals = await rowFor(ctx, EVALS_RUN, key);
+  // THROUGH THE STALENESS RULE, not straight off the newest row. A row that
+  // scored nothing answers only the request it was written for (convex/
+  // ttsEvals.ts answeredRun), and this is the reader where getting that wrong
+  // opens the gate instead of merely delaying a run.
+  const evals = await answeredEvalsRun(ctx, repo, sha);
   const evalsData = (evals?.data ?? {}) as {
     regressions?: unknown;
     goldenCoverage?: unknown;

@@ -17,7 +17,7 @@ import {
   compactCount,
   removalNotesOf,
 } from "./ttsMerge";
-import { EVALS_RUN } from "./ttsEvals";
+import { COVERAGE_NOT_REQUIRED, EVALS_REQUEST, EVALS_RUN } from "./ttsEvals";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -401,6 +401,63 @@ describe("the evals arm's golden-coverage clause", () => {
     expect(gate.missing).toEqual(["evals"]);
     expect(gate.why).toContain("did not check golden coverage");
     expect(gate.why).toContain("--force");
+  });
+
+  // A ROW THAT SCORED NOTHING ANSWERS ONLY THE REQUEST IT WAS WRITTEN FOR, and
+  // the gate is the reader where getting that wrong OPENS something rather than
+  // delaying a run. An `unaffected` row says the diff THAT REQUEST CARRIED
+  // touched no watched path; ask about the same sha against a base whose diff
+  // does touch one, and the stale row would answer the gate `no watched path
+  // changed`. Found by the box's audit — every other reader went through the
+  // staleness rule and the gate did not.
+  it("does not open on an unaffected row the standing request has moved past", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await greenTests(t);
+    await approvedAudit(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: 50,
+        kind: EVALS_REQUEST,
+        key: commitKey(REPO, SHA),
+        data: {
+          repo: REPO, sha: SHA, baseSha: "f5c1fb9", pr: 1, runId: 1,
+          paths: ["model-of-tom/**"], changed: ["model-of-tom/intent.md"], prBody: null,
+          // The request standing NOW says the diff DOES touch a watched path.
+          unaffected: false, requestedAt: 50,
+        },
+      });
+    });
+    await seedFact(t, EVALS_RUN, { unaffected: true, regressions: 0, goldenCoverage: COVERAGE_NOT_REQUIRED });
+    const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+    expect(gate.allowed).toBe(false);
+    expect(gate.missing).toEqual(["evals"]);
+    expect(gate.checks.find((c: { name: string }) => c.name === "evals").why)
+      .toContain("no evals run scored");
+  });
+
+  // The other direction, so the rule is not just "unaffected never counts":
+  // while the standing request agrees, the row opens the arm exactly as before.
+  it("opens on an unaffected row the standing request still agrees with", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await greenTests(t);
+    await approvedAudit(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: 50,
+        kind: EVALS_REQUEST,
+        key: commitKey(REPO, SHA),
+        data: {
+          repo: REPO, sha: SHA, baseSha: "f5c1fb9", pr: 1, runId: 1,
+          paths: ["model-of-tom/**"], changed: ["worker/setup.sh"], prBody: null,
+          unaffected: true, requestedAt: 50,
+        },
+      });
+    });
+    await seedFact(t, EVALS_RUN, { unaffected: true, regressions: 0, goldenCoverage: COVERAGE_NOT_REQUIRED });
+    const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+    expect(gate.allowed).toBe(true);
   });
 
   it("names the regression first when a run both regressed and shipped no item", async () => {

@@ -146,6 +146,20 @@ describe("gate, continued", () => {
     expect(WATCHED_PATHS).toContain("evals/golden/**");
   });
 
+  // EVERY DIRECTORY THE SET IS READ FROM IS WATCHED. loadTriggers reads
+  // evals/triggers/*.json into the run, so a trigger-only change moves what the
+  // set measures — and the workflow `paths:` list this constant replaced never
+  // named the directory. That omission failed CLOSED while the filter lived in
+  // the workflow (no job, no row, gate denied for want of one); inside the check
+  // it fails OPEN, writing a passing unaffected row for a change to the set
+  // itself. Found by the box's audit.
+  it("watches every directory the eval set is read from", () => {
+    expect(WATCHED_PATHS).toContain("evals/triggers/**");
+    expect(unaffectedBy(["evals/triggers/layer-know.json"])).toBe(false);
+    expect(unaffectedBy(["evals/tasks/slack.json"])).toBe(false);
+    expect(unaffectedBy(["evals/golden/x.md"])).toBe(false);
+  });
+
   // A capability item is one that asks whether the system can now do a thing
   // it could not do before. gate() partitions on WHAT THE BASE RUN DID, never
   // on what the item calls itself, and this pins that: a capability the base

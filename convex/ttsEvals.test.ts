@@ -731,6 +731,43 @@ describe("a superseded request", () => {
     expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
   });
 
+  // A PLAIN RE-RUN OF AN UNAFFECTED CHECK IS NOT A NEW ANSWER. `requestedAt`
+  // moves, but an unaffected row is dated by the VERDICT and not by the clock:
+  // the row and the request claim the same thing about the same diff. Dating it
+  // by the clock cost either a second identical row on every re-run, or — if
+  // the door declined to write one — a check polling the full seventy-five
+  // minutes against a row its own readers had just decided to ignore. Found by
+  // the box's audit.
+  it("keeps an unaffected row answering a re-run that is still unaffected", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa", { runId: 100, unaffected: true });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: 50,
+        kind: EVALS_RUN,
+        key: `${REPO}@aaaaaaa`,
+        data: { repo: REPO, sha: "aaaaaaa", unaffected: true, regressions: 0 },
+      });
+    });
+    await t.mutation(internal.ttsEvals.internalRequestEvals, {
+      repo: REPO, sha: "aaaaaaa", baseSha: "f5c1fb9", pr: 173, runId: 100,
+      paths: ["model-of-tom/**"], changed: ["worker/setup.sh"], unaffected: true,
+    });
+    // The check's first poll ends here rather than at the deadline...
+    expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
+      .toMatchObject({ run: { unaffected: true } });
+    // ...the queue still has nothing to hand out...
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
+    // ...and the door wrote no second row.
+    const runs = await t.run(async (ctx) =>
+      await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_RUN).eq("key", `${REPO}@aaaaaaa`))
+        .collect(),
+    );
+    expect(runs).toHaveLength(1);
+  });
+
   // A request filed before the field existed has no place in the push order.
   // It supersedes nothing and nothing supersedes it, in both directions.
   it("never supersedes with or against a request carrying no run id", async () => {

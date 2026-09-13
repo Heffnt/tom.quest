@@ -847,17 +847,7 @@ export const internalRequestEvals = internalMutation({
     // that waits seventy-five minutes and then denies. Guarded on the RUN
     // instead, so it is idempotent and it also answers an older unanswered
     // request that nobody had a shortcut for.
-    //
-    // A SECOND UNAFFECTED ROW ADDS NOTHING BUT A ROW — the posture
-    // convex/ttsMerge.ts takes on a second UNAVAILABLE audit. A re-run of an
-    // unaffected check moves `requestedAt`, which is what makes a standing row
-    // stale, but the row this door would write is the row already there and
-    // the answer has not changed. Only a row saying something ELSE is worth
-    // replacing, and only when the request standing now has moved past it.
-    const standing = await runForKey(ctx, key);
-    const standsUnaffected =
-      (standing?.data as { unaffected?: unknown } | undefined)?.unaffected === true;
-    if (args.unaffected === true && !standsUnaffected && (await answeredRun(ctx, key)) === null) {
+    if (args.unaffected === true && (await answeredRun(ctx, key)) === null) {
       const base =
         args.baseSha === undefined ? null : await answeredRun(ctx, `${args.repo}@${args.baseSha}`);
       await ctx.db.insert("dtsEvents", {
@@ -963,8 +953,38 @@ async function answeredRun(ctx: QueryCtx | MutationCtx, key: string) {
   const run = await runForKey(ctx, key);
   if (run === null) return null;
   if (!scoredNothing(run.data)) return run;
-  const requestedAt = requestData((await requestRowFor(ctx, key))?.data)?.requestedAt;
-  return requestedAt !== undefined && run.at < requestedAt ? null : run;
+  const request = requestData((await requestRowFor(ctx, key))?.data);
+  // No request row at all: nothing is asking anything, so the row stands.
+  if (request === null) return run;
+  // AN `unaffected` ROW IS DATED BY THE VERDICT, NOT BY THE CLOCK. What it
+  // claims — this diff touches no watched path — is the very thing the request
+  // carries, so the two agree or they do not. Dating it by `requestedAt` would
+  // make a plain RE-RUN of an unaffected check stale its own standing row: the
+  // door would find nothing answering, write a second identical row, and if it
+  // instead declined to write one the check would poll the full seventy-five
+  // minutes against a row its readers had just decided to ignore.
+  if ((run.data as { unaffected?: unknown }).unaffected === true) {
+    return request.unaffected ? run : null;
+  }
+  // `superseded` and `error` ARE dated by the clock, because what they claim is
+  // about a MOMENT and not about the diff: the queue as it stood when it looked,
+  // the tree as it read when it tried. A request filed after such a row is a
+  // question asked after the moment passed.
+  return run.at < request.requestedAt ? null : run;
+}
+
+/**
+ * The gate's own read of the evals row, through the same staleness rule.
+ *
+ * convex/ttsMerge.ts read the newest row directly, which is the one place where
+ * reading a stale one OPENS something rather than merely delaying it: a former
+ * `unaffected` row left standing for a sha since re-asked against a base whose
+ * diff DOES touch a watched path would answer the gate `no watched path
+ * changed`. Every other reader goes through answeredRun; the gate is the reader
+ * it mattered most for, and it was the one that did not.
+ */
+export async function answeredEvalsRun(ctx: QueryCtx | MutationCtx, repo: string, sha: string) {
+  return await answeredRun(ctx, `${repo}@${sha}`);
 }
 
 export const internalEvalsRun = internalQuery({

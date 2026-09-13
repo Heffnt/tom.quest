@@ -570,7 +570,11 @@ export function checkRows(gate, io, { dir }) {
     rows.push({
       id: hash8(`check|static-boundaries|${name}`),
       where: "scripts/, inside the static-boundaries job",
-      text: `scripts/${name}.mjs, one of the five pnpm check:guardrails runs`,
+      // THE COUNT IS READ, NEVER SPELLED. It said "five" while the list held
+      // six, so the weekly pass was handed facts that contradicted themselves
+      // — the same drift check 8 of scripts/check-session-mirrors.mjs fences
+      // the list itself against, one line further on.
+      text: `scripts/${name}.mjs, one of the ${STATIC_BOUNDARY_SCRIPTS.length} pnpm check:guardrails runs`,
       failed: 0,
       heads: 0,
       known: false,
