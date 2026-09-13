@@ -55,14 +55,14 @@ conditions are not restated here beyond the phrase needed to identify the row.
 
 ## Cadences
 
-| Mechanism | Cadence |
-|---|---|
-| `npx tsc --noEmit` (type rung) | commit (CI `tests` job) |
-| `pnpm test:turing` (vitest: convex + vqc guards) | commit (CI `tests` job) |
-| `pnpm check:guardrails` (contract fences) | commit (CI `static-boundaries` job) |
-| `pnpm build` (production build) | commit (CI `tests` job) |
-| gitleaks | commit (CI `secret-scan` job) |
-| Playwright e2e | on demand / pre-deploy (not in CI — pre-existing) |
+| Verifier | Cadence | What runs |
+|---|---|---|
+| checks | every commit (CI `tests`, which now also carries `static-boundaries` and `secret-scan`); at each write door | `npx tsc --noEmit`, `pnpm test:turing` (the popover contract inside it), `pnpm check:guardrails`, `pnpm build`, gitleaks; the writing standard at the prepare door and as the prod rung; WikiTom's evidence check in the nightly job; the digest's facts-block verification; Playwright on demand, pre-deploy, not in CI |
+| the audit | before every merge | `worker/jobs/audit.mjs` → the `audit-verdict` head row |
+| the evals | on a pull request touching a watched context file (`scripts/evals-check.mjs`); the whole set weekly | `worker/jobs/evals.mjs` → the `evals-run` head row |
+
+There are exactly three verifiers and they are these three; `vqc/verifiers.md`
+says what each one verifies, what it costs, and how it fails.
 
 ## Rulings log (append-only: id, date, question, ruling, cites)
 

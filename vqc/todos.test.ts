@@ -20,7 +20,7 @@ type Entry = {
   resolution?: string;
 };
 
-const READINESS = ["unprepared", "preparing", "ready-for-tom"];
+const READINESS = ["unprepared", "preparing", "prepared"];
 const STATUS = ["active", "waiting", "archived", "done"];
 
 function openLedgerIds(): Set<string> {
@@ -72,9 +72,9 @@ describe("vqc/todos.yaml", () => {
     }
   });
 
-  it("requires a plan at ready-for-tom and a resolution at terminal status", () => {
+  it("requires a plan at prepared and a resolution at terminal status", () => {
     for (const entry of loadEntries()) {
-      if (entry.readiness === "ready-for-tom") {
+      if (entry.readiness === "prepared") {
         expect(entry.plan?.trim().length, entry.id).toBeGreaterThan(0);
       }
       if (entry.status === "done" || entry.status === "archived") {

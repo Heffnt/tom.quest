@@ -18,7 +18,7 @@
 #
 # Entry fields:
 #   id                    stable kebab-case id, never reused
-#   readiness             unprepared | preparing | ready-for-tom
+#   readiness             unprepared | preparing | prepared
 #   status                active | waiting | archived | done
 #   created               YYYY-MM-DD
 #   cites                 non-empty; constitution article ids (A*/C*/D*),
@@ -28,14 +28,14 @@
 #                         set has one home: vqc/cites.ts.
 #   statement             what and why, one short paragraph
 #   completion_condition  a checkable statement of finished
-#   plan                  required when readiness is ready-for-tom
+#   plan                  required when readiness is prepared
 #   resolution            required when status is done or archived
 #
 # List order = priority order (Tom's ratified post-MVP sequence, 2026-08-27).
 
 - id: tts-email-canvas-ingestion
   readiness: unprepared
-  status: active
+  status: done
   created: 2026-08-27
   cites: [tts-spec:17, tts-spec:18]
   statement: >-
@@ -49,10 +49,28 @@
     An important email and a Canvas deadline each appear in the digest as
     candidates/dated items with provenance links, with the triage profile
     consulted for the email judgment.
+  resolution: >-
+    Built, and closed on status (2026-09-12). worker/jobs/poll-gmail.mjs and
+    worker/jobs/poll-canvas.mjs each triage what they read and capture it
+    through POST /tts/capture with a provenance string; their cron lines are
+    in worker/setup.sh (gmail every ten minutes, canvas at :13 and :43); and
+    app/tts/components/todo-row.tsx renders each item's source with its
+    provenance beside it. TWO GAPS, named rather than hidden. (1) OUTLOOK IS
+    DELIBERATELY UNWIRED: worker/setup.sh carries poll-outlook.mjs's cron
+    line commented out because the file is a skeleton awaiting the OUTLOOK_*
+    credential, so the WPI tenant app-consent probe this statement opened
+    with was never the path taken — Gmail is. (2) THE DIGEST REPORTS A
+    CAPTURE COUNT, NOT PER-ITEM PROVENANCE LINKS: convex/ttsCompose.ts
+    changeClauses says "N items were captured", and convex/ttsDigest.ts reads
+    the email captures only to keep them out of the ready list twice. The
+    provenance link the completion condition asked for is on the page, not in
+    the digest. Smaller and true: both pollers are quiet no-ops until their
+    keys are in worker.env, and setup.sh still records the Canvas token
+    request as pending. If either gap matters it is a new entry, not this one.
 
 - id: tts-weekly-reflective-session
   readiness: unprepared
-  status: active
+  status: done
   created: 2026-08-27
   cites: [tts-spec:11]
   statement: >-
@@ -66,6 +84,17 @@
     A Friday arrives and the prepared agenda exists without anyone asking;
     the session's rulings land as TTS mutations; the session outcome is
     recorded as an event.
+  resolution: >-
+    Built, and closed on status (2026-09-12). worker/jobs/weekly.mjs runWeekly
+    prepares the agenda and opens the session; worker/setup.sh fires it at
+    08:00 and 09:00 UTC on Fridays and runWeekly's NY-hour guard keeps the
+    slot that is 4 a.m. New York and exits the other; the session's rulings
+    land through POST /tts/ruling, one named subject at a time, with the
+    verdict and Tom's own sentence carried verbatim; and the outcome is
+    recorded twice over — a "weekly-run" event keyed on the day (WEEKLY_RUN,
+    which the run refuses to duplicate) and an "## Outcome" section
+    (OUTCOME_HEADING) appended to the agenda file in WikiTom. Every clause of
+    the completion condition holds.
 
 - id: tts-preparation-swarm-codex-review
   readiness: unprepared
@@ -74,14 +103,24 @@
   cites: [tts-spec:15, C8]
   statement: >-
     Build the preparation swarm (spec §15) — background agents that advance
-    items from unprepared toward ready-for-tom (brief, options, plan,
+    items from unprepared toward prepared (brief, options, plan,
     ephemeral prototype), scaling with the backlog (volume handled by
     capacity, principle 1) — plus Codex CLI adversarial review at its two
     stations (before material reaches Tom; before persistence).
   completion_condition: >-
-    A captured item reaches ready-for-tom with a ground-up brief and plan
+    A captured item reaches prepared with a ground-up brief and plan
     without human involvement, having passed a Codex check, and the
     readiness pipeline timestamps are recorded.
+  verified: >-
+    2026-09-12: the PERSISTENCE-side station exists and is the merge gate's
+    audit — worker/jobs/audit.mjs runs a different model family read-only over
+    the diff and convex/ttsMerge.ts reads its answer as the "audit-verdict"
+    head row. The BEFORE-TOM station does not exist, and neither does the
+    swarm: what runs is one bounded cron pass in worker/jobs/plan-graphs.mjs.
+    The deterministic check-and-revise loop landing at the prepare door in
+    that same file this round is the DETERMINISTIC half of the before-Tom
+    station, not the adversarial one — no second model family reads a brief
+    before Tom does. Half a todo, so it stays open.
 
 - id: tts-two-way-event-messages
   readiness: unprepared
@@ -97,9 +136,20 @@
     2026-08-29); this entry keeps the reply-in-thread half (Slack Events
     API, inbound auth, thread-to-session binding).
   completion_condition: >-
-    A plan reaching ready-for-tom produces a Slack message within a minute,
+    A plan reaching prepared produces a Slack message within a minute,
     and replying to that message reaches a live Claude Code session that can
     integrate the reply into the plan.
+  verified: >-
+    2026-09-12: the INBOUND half is complete — POST /slack/events verifies
+    every signature, convex/ttsSlack.ts resolves a thread's subject and routes
+    a reply into the session it names, and a reply to an ended session opens
+    the replacement and claims the thread in the same transaction. Nothing
+    posts the first session-subject message a reply would bind to: a failed
+    session goes out as a #tts-broken line under a "job" subject, and
+    convex/claudeSessions.ts says in its own comment that a reachable "this
+    session needs Tom" edge is still new work. What is left is one outbound
+    post carrying the session as its subject; the inbound door is finished and
+    nothing is knocking on it.
 
 - id: tts-values-file
   readiness: unprepared
@@ -113,6 +163,14 @@
   completion_condition: >-
     The values file exists in WikiTom, Tom has ratified its content, and
     queue construction + the weekly direction check both read it.
+  verified: >-
+    2026-09-12: WikiTom model-of-tom/intent.md exists and is the values file,
+    but its "## Directions" section is EMPTY and its frontmatter "reviewed:"
+    is blank — the file says in so many words that he has not written it yet,
+    and the ordering below Directions is drawn from what he said elsewhere.
+    Nothing reads it for queue construction or for a weekly direction check.
+    The first step is a session with Tom, never an agent's edit: no agent
+    writes his Directions.
 
 - id: tts-session-sweep
   readiness: unprepared
@@ -129,6 +187,15 @@
     A deliberately abandoned test session surfaces in the next digest as a
     resumable candidate with a re-entry paragraph, and re-running the sweep
     does not duplicate it.
+  verified: >-
+    2026-09-12: nothing is built. The one file with a colliding name,
+    worker/runs/sweep.mjs, is the runs-record ingester — changed CLI files to
+    the run record — not a transcript sweep: no mining for abandoned threads,
+    no re-entry paragraph, no dedupe against prior proposals. The unified runs
+    record (convex/runs.ts, worker/runs/) did not exist when this was written
+    and is now the obvious substrate, since the sweep would read the record
+    rather than the raw transcript files. That is a plan change to put to Tom
+    before anyone builds it.
 
 - id: tts-focus-interaction-analysis
   readiness: unprepared
@@ -143,9 +210,16 @@
   completion_condition: >-
     The weekly materials include engagement-latency outliers and
     restructuring candidates computed from real recorded events.
+  verified: >-
+    2026-09-12: only convex/ttsWeekly.ts surfacedUntouched exists — items
+    surfaced three or more times and never touched — rendered into the agenda
+    by worker/jobs/weekly.mjs. There is no engagement-latency computation, no
+    forgetting-versus-avoidance classification and no restructuring-candidate
+    flag. surfacedUntouched is one signal this entry wanted; it is not the
+    entry.
 
 - id: tts-cmt-ruling-loop
-  readiness: ready-for-tom
+  readiness: prepared
   status: done
   created: 2026-08-27
   cites: [tts-spec:15, tts-spec:5]
@@ -175,7 +249,7 @@
     execution, direct-to-master for bookkeeping, brief all entries at once.
 
 - id: tts-session-wrapper
-  readiness: ready-for-tom
+  readiness: prepared
   status: done
   created: 2026-08-28
   cites: [tts-spec:15, tts-spec:7]
@@ -210,7 +284,7 @@
     TomGate dedup graduating ledger tts-shared-gate-dedup). 77/77 tests.
 
 - id: tts-batches-autonomy-round
-  readiness: ready-for-tom
+  readiness: prepared
   status: done
   created: 2026-08-28
   cites: [tts-spec:5, tts-spec:15]
@@ -236,7 +310,7 @@
     fact so closure is on record; details in the two commit messages.
 
 - id: tts-session-render-honesty
-  readiness: ready-for-tom
+  readiness: prepared
   status: done
   created: 2026-08-29
   cites: [C3, tts-spec:15]
@@ -277,7 +351,7 @@
     decisions); permission rows remain rendered for historical data.
 
 - id: tts-session-auto-permissions
-  readiness: ready-for-tom
+  readiness: prepared
   status: done
   created: 2026-08-29
   cites: [tts-spec:15]
@@ -312,7 +386,7 @@
     tier.
 
 - id: tts-session-arrival-redesign
-  readiness: ready-for-tom
+  readiness: prepared
   status: done
   created: 2026-08-29
   cites: [tts-spec:9, tts-spec:12]
@@ -352,7 +426,7 @@
     form.
 
 - id: tts-session-lifecycle
-  readiness: ready-for-tom
+  readiness: prepared
   status: done
   created: 2026-08-29
   cites: [tts-spec:9]
@@ -384,7 +458,7 @@
     browser, filter chips, "showing the latest 100 sessions" label.
 
 - id: tts-session-needs-you-notify
-  readiness: ready-for-tom
+  readiness: prepared
   status: done
   created: 2026-08-29
   cites: [tts-spec:7]

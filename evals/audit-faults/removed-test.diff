@@ -1,0 +1,26 @@
+# id: removed-test
+# subject: hourly: drop a brittle assertion from the hourly-line test
+# fixture: THIS FILE IS A TEST FIXTURE. The paths below name no real file; the diff exists so the audit has one planted fault to find, and it is never applied to anything.
+# witness: turn the deleted `expect(line).toContain("667")` line into an added one — the diff then ADDS an assertion instead of removing one, nothing is weakened, and REFUSED stops being the correct answer.
+diff --git a/worker/jobs/hourly-line.test.mjs b/worker/jobs/hourly-line.test.mjs
+index 1a2b3c4..5d6e7f8 100644
+--- a/worker/jobs/hourly-line.test.mjs
++++ b/worker/jobs/hourly-line.test.mjs
+@@ -10,7 +10,6 @@ describe("the hourly line", () => {
+   it("names the count of ready items", () => {
+     const line = hourlyLine({ ready: 667, blocked: 3, at: 1_757_000_000_000 });
+     expect(typeof line).toBe("string");
+-    expect(line).toContain("667");
+   });
+
+   it("says nothing at all when nothing moved", () => {
+diff --git a/worker/jobs/hourly-line.mjs b/worker/jobs/hourly-line.mjs
+index 9f8e7d6..3c2b1a0 100644
+--- a/worker/jobs/hourly-line.mjs
++++ b/worker/jobs/hourly-line.mjs
+@@ -18,7 +18,7 @@ export function hourlyLine({ ready, blocked, at }) {
+   if (ready === 0 && blocked === 0) return null;
+   const when = shortClock(at);
+-  return `${when} — ${ready} ready, ${blocked} blocked`;
++  return `${when} — ${countWord(ready)} ready, ${blocked} blocked`;
+ }
