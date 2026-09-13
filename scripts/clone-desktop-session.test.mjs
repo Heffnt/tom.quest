@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 const SCRIPT = fileURLToPath(new URL("./clone-desktop-session.mjs", import.meta.url));
 const CURRENT_ACCOUNT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const CURRENT_ORG = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+const SECOND_CURRENT_ORG = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
 const SOURCE_ACCOUNT = "cccccccc-cccc-cccc-cccc-cccccccccccc";
 const SOURCE_ORG = "dddddddd-dddd-dddd-dddd-dddddddddddd";
 
@@ -72,19 +73,15 @@ beforeEach(() => {
   writeJson(path.join(claudeApp, "config.json"), { lastKnownAccountUuid: CURRENT_ACCOUNT });
   writeJson(path.join(fixture.home, ".claude.json"), {
     oauthAccount: {
-      emailAddress: "current@example.test",
-      accountUuid: CURRENT_ACCOUNT,
-      organizationUuid: CURRENT_ORG,
+      emailAddress: "source@example.test",
+      accountUuid: SOURCE_ACCOUNT,
+      organizationUuid: SOURCE_ORG,
       tokenThatMustNotMatter: "fixture-secret",
     },
   });
   writeJson(path.join(fixture.home, ".claude", "clone-desktop-session-labels.json"), {
     version: 1,
-    labels: [{
-      emailAddress: "source@example.test",
-      accountUuid: SOURCE_ACCOUNT,
-      organizationUuid: SOURCE_ORG,
-    }],
+    labels: [],
   });
   writeJson(sourceFile("local_alpha.json"), record("Alpha investigation"));
   writeJson(sourceFile("local_alpha_two.json"), record("Alpha follow-up", { lastActivityAt: "2026-09-13T16:00:00.000Z" }));
@@ -97,16 +94,87 @@ afterEach(() => {
 });
 
 describe("clone-desktop-session", () => {
-  test("list labels the current folder and prints only non-archived sessions", () => {
+  test("list trusts the desktop account and labels the different CLI account", () => {
     const result = run("list");
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, new RegExp(`${CURRENT_ACCOUNT}/${CURRENT_ORG} \\[current, current@example\\.test\\]`));
+    assert.match(result.stdout, new RegExp(`${CURRENT_ACCOUNT}/${CURRENT_ORG} \\[current\\]`));
     assert.match(result.stdout, /source@example\.test/);
     assert.match(result.stdout, /Unique handoff/);
     assert.match(result.stdout, /last active:/);
     assert.match(result.stdout, /worktree\/cwd:/);
     assert.match(result.stdout, /isArchived: false/);
     assert.doesNotMatch(result.stdout, /Archived Alpha/);
+    const labels = JSON.parse(fs.readFileSync(
+      path.join(fixture.home, ".claude", "clone-desktop-session-labels.json"),
+      "utf8",
+    )).labels;
+    assert.deepEqual(labels.find((label) => label.emailAddress === "source@example.test"), {
+      emailAddress: "source@example.test",
+      accountUuid: SOURCE_ACCOUNT,
+      organizationUuid: SOURCE_ORG,
+    });
+  });
+
+  test("account disagreement does not prevent pull or undo", () => {
+    const pulled = run("pull", "unique", "--from", "source@example.test");
+    assert.equal(pulled.status, 0, pulled.stderr);
+    assert.equal(fs.existsSync(destinationFile("local_unique.json")), true);
+    const undone = run("undo", "unique");
+    assert.equal(undone.status, 0, undone.stderr);
+    assert.equal(fs.existsSync(destinationFile("local_unique.json")), false);
+  });
+
+  test("missing CLI identity is ignored and provides no label", () => {
+    fs.unlinkSync(path.join(fixture.home, ".claude.json"));
+    const listed = run("list");
+    assert.equal(listed.status, 0, listed.stderr);
+    assert.doesNotMatch(listed.stdout, /source@example\.test/);
+    const pulled = run("pull", "unique");
+    assert.equal(pulled.status, 0, pulled.stderr);
+    const undone = run("undo", "unique");
+    assert.equal(undone.status, 0, undone.stderr);
+  });
+
+  test("malformed CLI identity is ignored", () => {
+    fs.writeFileSync(path.join(fixture.home, ".claude.json"), "not JSON", "utf8");
+    const result = run("list");
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /source@example\.test/);
+  });
+
+  test("selects the only current-account org containing records", () => {
+    const emptyOrg = path.join(fixture.root, CURRENT_ACCOUNT, SECOND_CURRENT_ORG);
+    fs.mkdirSync(emptyOrg, { recursive: true });
+    writeJson(destinationFile("local_current.json"), record("Current account record"));
+    const result = run("list");
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`${CURRENT_ACCOUNT}/${CURRENT_ORG} \\[current\\]`));
+    assert.match(result.stdout, new RegExp(`${CURRENT_ACCOUNT}/${SECOND_CURRENT_ORG}`));
+  });
+
+  test("refuses multiple current orgs with records and --org prefix selects one", () => {
+    const secondOrg = path.join(fixture.root, CURRENT_ACCOUNT, SECOND_CURRENT_ORG);
+    fs.mkdirSync(secondOrg, { recursive: true });
+    writeJson(destinationFile("local_current.json"), record("First current org record"));
+    writeJson(path.join(secondOrg, "local_second.json"), record("Second current org record"));
+
+    const ambiguous = run("list");
+    assert.notEqual(ambiguous.status, 0);
+    assert.match(ambiguous.stderr, new RegExp(CURRENT_ORG));
+    assert.match(ambiguous.stderr, new RegExp(SECOND_CURRENT_ORG));
+    assert.match(ambiguous.stderr, /use --org/);
+
+    const selected = run("pull", "unique", "--org", "eeeeeeee", "--from", SOURCE_ACCOUNT.slice(0, 8));
+    assert.equal(selected.status, 0, selected.stderr);
+    assert.equal(fs.existsSync(path.join(secondOrg, "local_unique.json")), true);
+    assert.equal(fs.existsSync(destinationFile("local_unique.json")), false);
+  });
+
+  test("reports when the desktop account has no session folder", () => {
+    fs.rmSync(path.join(fixture.root, CURRENT_ACCOUNT), { recursive: true });
+    const result = run("list");
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /app has not created a session folder for this account yet/);
   });
 
   test("pull copies one title, drops only live-state keys, and writes no BOM", () => {

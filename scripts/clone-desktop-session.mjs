@@ -6,9 +6,9 @@
  * Only records created by this tool can be removed with `undo`.
  *
  * Usage:
- *   node scripts/clone-desktop-session.mjs list
- *   node scripts/clone-desktop-session.mjs pull "title" [--from account-or-email] [--all]
- *   node scripts/clone-desktop-session.mjs undo "title"
+ *   node scripts/clone-desktop-session.mjs list [--org orgUuid-or-prefix]
+ *   node scripts/clone-desktop-session.mjs pull "title" [--from account-or-email] [--org orgUuid-or-prefix] [--all]
+ *   node scripts/clone-desktop-session.mjs undo "title" [--org orgUuid-or-prefix]
  *   Add --root <dir>, --home <dir>, or --dry-run as needed.
  */
 import fs from "node:fs";
@@ -23,12 +23,16 @@ const KNOWN_LABELS = [{
   emailAddress: "ntheffernan@wpi.edu",
   accountUuid: "26454c9d-4301-4636-8348-6fefa877ef6c",
   organizationUuid: "ed2cc159-af2f-4c1a-822a-0787a572e3a1",
+}, {
+  emailAddress: "heffnt@gmail.com",
+  accountUuid: "2d919179-8156-4045-b6c9-0ccfc67ee7ec",
+  organizationUuid: "ca71c4ac-b536-4e00-a792-874afb31ab7f",
 }];
 
 const HELP = `Usage:
-  node scripts/clone-desktop-session.mjs list [--root <dir>] [--home <dir>] [--dry-run]
-  node scripts/clone-desktop-session.mjs pull <title substring> [--from <accountUuid-or-email-or-prefix>] [--all] [--root <dir>] [--home <dir>] [--dry-run]
-  node scripts/clone-desktop-session.mjs undo <title substring> [--root <dir>] [--home <dir>] [--dry-run]
+  node scripts/clone-desktop-session.mjs list [--org <orgUuid-or-prefix>] [--root <dir>] [--home <dir>] [--dry-run]
+  node scripts/clone-desktop-session.mjs pull <title substring> [--from <accountUuid-or-email-or-prefix>] [--org <orgUuid-or-prefix>] [--all] [--root <dir>] [--home <dir>] [--dry-run]
+  node scripts/clone-desktop-session.mjs undo <title substring> [--org <orgUuid-or-prefix>] [--root <dir>] [--home <dir>] [--dry-run]
 
 Commands:
   list   Show account/org folders and their non-archived desktop sessions.
@@ -37,6 +41,7 @@ Commands:
 
 Options:
   --from <value>  Choose a source by account UUID, email label, or prefix.
+  --org <value>   Choose the current account's org by UUID or prefix.
   --all           Pull every title match instead of refusing an ambiguous match.
   --root <dir>    Override the claude-code-sessions root (useful for tests).
   --home <dir>    Override the home containing .claude.json and tool state.
@@ -56,7 +61,7 @@ function parseArgs(argv) {
     if (arg === "--help" || arg === "-h") options.help = true;
     else if (arg === "--all") options.all = true;
     else if (arg === "--dry-run") options.dryRun = true;
-    else if (["--from", "--root", "--home"].includes(arg)) {
+    else if (["--from", "--org", "--root", "--home"].includes(arg)) {
       const value = argv[index + 1];
       if (!value || value.startsWith("--")) refuse(`${arg} requires a value`);
       options[arg.slice(2)] = value;
@@ -172,28 +177,32 @@ function recordsIn(folder, { includeArchived = false } = {}) {
   });
 }
 
-function loadIdentity(root, home) {
+function loadDesktopAccount(root) {
   const configFile = path.join(path.dirname(root), "config.json");
-  const identityFile = path.join(home, ".claude.json");
   const config = readJson(configFile, "Claude desktop config");
-  const identity = readJson(identityFile, "Claude login identity");
   const accountUuid = config.lastKnownAccountUuid;
-  const oauth = identity.oauthAccount;
   if (!accountUuid || typeof accountUuid !== "string") {
     refuse(`Claude desktop config has no lastKnownAccountUuid: ${configFile}`);
   }
-  if (!oauth || typeof oauth !== "object"
+  return accountUuid;
+}
+
+function loadIdentityLabel(home) {
+  const identityFile = path.join(home, ".claude.json");
+  let identity;
+  try {
+    identity = JSON.parse(fs.readFileSync(identityFile, "utf8"));
+  } catch {
+    return undefined;
+  }
+  const oauth = identity?.oauthAccount;
+  if (typeof oauth?.emailAddress !== "string"
       || typeof oauth.accountUuid !== "string"
-      || typeof oauth.organizationUuid !== "string") {
-    refuse(`Claude login identity is missing its account/org pair: ${identityFile}`);
-  }
-  if (oauth.accountUuid !== accountUuid) {
-    refuse("Claude desktop config and login identity disagree about the current account");
-  }
+      || typeof oauth.organizationUuid !== "string") return undefined;
   return {
-    accountUuid,
+    emailAddress: oauth.emailAddress,
+    accountUuid: oauth.accountUuid,
     organizationUuid: oauth.organizationUuid,
-    emailAddress: typeof oauth.emailAddress === "string" ? oauth.emailAddress : undefined,
   };
 }
 
@@ -216,14 +225,14 @@ function loadLabels(file) {
   return [...KNOWN_LABELS.filter((label) => !cachedPairs.has(`${label.accountUuid}\0${label.organizationUuid}`)), ...valid];
 }
 
-function learnCurrentLabel(file, labels, current, dryRun) {
-  if (!current.emailAddress) return labels;
-  const remaining = labels.filter((label) => !(
-    label.emailAddress.toLowerCase() === current.emailAddress.toLowerCase()
-    || (label.accountUuid === current.accountUuid
-      && label.organizationUuid === current.organizationUuid)
+function learnLabel(file, labels, label, dryRun) {
+  if (!label) return labels;
+  const remaining = labels.filter((existing) => !(
+    existing.emailAddress.toLowerCase() === label.emailAddress.toLowerCase()
+    || (existing.accountUuid === label.accountUuid
+      && existing.organizationUuid === label.organizationUuid)
   ));
-  const next = [...remaining, current];
+  const next = [...remaining, label];
   if (!dryRun) writeJson(file, { version: 1, labels: next });
   return next;
 }
@@ -233,13 +242,42 @@ function labelFor(folder, labels) {
     && label.organizationUuid === folder.organizationUuid)?.emailAddress;
 }
 
-function currentFolder(folders, current) {
-  const folder = folders.find((candidate) => candidate.accountUuid === current.accountUuid
-    && candidate.organizationUuid === current.organizationUuid);
-  if (!folder) {
-    refuse(`current account/org folder does not exist: ${current.accountUuid}/${current.organizationUuid}`);
+function containsRecord(folder) {
+  return fs.readdirSync(folder.path, { withFileTypes: true })
+    .some((entry) => entry.isFile() && RECORD_PATTERN.test(entry.name));
+}
+
+function currentFolder(root, folders, accountUuid, org) {
+  const accountPath = path.join(root, accountUuid);
+  if (!fs.existsSync(accountPath) || !fs.statSync(accountPath).isDirectory()) {
+    refuse(`the Claude desktop app has not created a session folder for this account yet: ${accountUuid}`);
   }
-  return folder;
+  const accountFolders = folders.filter((folder) => folder.accountUuid === accountUuid);
+  if (accountFolders.length === 0) {
+    refuse(`current account session folder has no org folders: ${accountUuid}`);
+  }
+  if (org) {
+    const needle = org.toLowerCase();
+    const matches = accountFolders.filter((folder) => folder.organizationUuid.toLowerCase().startsWith(needle));
+    if (matches.length !== 1) {
+      const available = accountFolders.map((folder) => folder.organizationUuid).join(", ");
+      const detail = matches.length === 0 ? "no org folders match" : `${matches.length} org folders match`;
+      refuse(`${detail} --org ${JSON.stringify(org)}; available orgs: ${available}`);
+    }
+    return matches[0];
+  }
+  if (accountFolders.length === 1) return accountFolders[0];
+  const withRecords = accountFolders.filter(containsRecord);
+  if (withRecords.length === 1) return withRecords[0];
+  const ambiguous = withRecords.length > 1 ? withRecords : accountFolders;
+  refuse(`current account has multiple possible org folders: ${ambiguous.map((folder) => folder.organizationUuid).join(", ")}; use --org <orgUuid-or-prefix> to choose`);
+}
+
+function currentIdentity(accountUuid, folder) {
+  return {
+    accountUuid,
+    organizationUuid: folder.organizationUuid,
+  };
 }
 
 function folderName(folder, labels, current) {
@@ -408,17 +446,19 @@ export function run(argv = process.argv.slice(2)) {
   const root = path.resolve(options.root
     ?? path.join(process.env.APPDATA ?? "", "Claude", "claude-code-sessions"));
   if (!options.root && !process.env.APPDATA) refuse("APPDATA is not set; pass --root explicitly");
-  const current = loadIdentity(root, home);
-  const folders = discoverFolders(root);
+  const accountUuid = loadDesktopAccount(root);
   const state = stateFiles(home);
   let labels = loadLabels(state.labels);
-  labels = learnCurrentLabel(state.labels, labels, current, options.dryRun);
+  labels = learnLabel(state.labels, labels, loadIdentityLabel(home), options.dryRun);
+  const folders = discoverFolders(root);
+  const destination = currentFolder(root, folders, accountUuid, options.org);
+  const current = currentIdentity(accountUuid, destination);
   const context = {
     current,
     folders,
     labels,
     state,
-    destination: currentFolder(folders, current),
+    destination,
   };
 
   if (command === "list") return listCommand(context);
