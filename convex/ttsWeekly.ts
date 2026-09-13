@@ -39,7 +39,16 @@ import { NEEDS_TOM, SLACK_REPLY_FAILED } from "./ttsSlack";
 import { DAY_MS, MODEL_OF_TOM_AREAS_DIR, isPrepared } from "./ttsShared";
 import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
+import { AUDIT_APPROVED, AUDIT_VERDICT, MERGE, commitKey, mergeKey } from "./ttsMerge";
+import { DELEGATE_OBJECTION } from "./ttsAsk";
 import { isIsoDay, parseFrontmatter } from "../worker/jobs/markdown-sections.mjs";
+// NEW IN THIS FILE THIS PHASE. Nothing here was redacted before the verifiers
+// block, because every string this gather carried came off a row a worker had
+// already put through the filter. The scorecard's strings are prose out of a
+// model run and an objection's sentence is Slack text Tom typed, so both go
+// through the one choke point the rest of Convex uses (convex/ttsMerge.ts,
+// convex/ttsSearch.ts).
+import { redactSecrets } from "../worker/session-host/redact.mjs";
 
 export const WEEK_MS = 7 * DAY_MS;
 
@@ -72,6 +81,31 @@ export const FAILURE_KINDS: readonly string[] = [
 /** "Surfaced three times" — the digest's own "surfaced" rows, counted per todo
  * over the week. */
 export const SURFACED_THRESHOLD = 3;
+
+// ── The three verifiers, and how far back the audit's own score reaches ───────
+// THE THREE VERIFIERS ARE checks, the audit AND the evals — the merge gate's
+// three head rows and nothing else. What follows measures two of them and says
+// so; NONE OF IT GATES ANYTHING. There is no new event kind, no new index, no
+// new row on any table: the judge's and the planted faults' numbers ride on the
+// weekly "evals-run" row the runner already writes, and the audit's own score is
+// arithmetic over rows the record already holds.
+//
+/** The audit's score reaches four weeks back while every other fact here reaches
+ * seven days, and the reason is the shape of an objection: Tom objects to a
+ * merge DAYS AFTER it lands, in the #tts-decisions thread, so a seven-day window
+ * would score the audit on merges whose objections had not arrived yet and read
+ * every recent merge as unobjected. Four weeks is the shortest window in which a
+ * merge's objection has had time to show up. */
+export const AUDIT_OBJECTION_WEEKS = 4;
+/** The word an audit answers when it refuses a head (convex/ttsMerge.ts reads
+ * the word itself and only compares against AUDIT_APPROVED, so this spelling is
+ * needed here and nowhere else). */
+const AUDIT_REFUSED = "REFUSED";
+/** How many rows of any one verifier list are kept, and how much of any one
+ * string: a weekly fact is a report, not an archive, and the run that produced
+ * these numbers still holds the whole of them. */
+export const VERIFIER_LIST_MAX = 20;
+export const VERIFIER_TEXT_MAX_CHARS = 300;
 
 // ── The ablation rule, kept in step with the runner ───────────────────────────
 // THE OTHER HOME IS worker/jobs/evals.mjs (MIN_ABLATION_CASES and
@@ -246,6 +280,51 @@ export type WeeklyFacts = {
   /** The cases that cost more tokens at head than at base; null when no run
    * row in the window carried the comparison. */
   efficiency: { rises: { id: string; headTokens: number; baseTokens: number }[] } | null;
+  // ── What the three verifiers are worth, this week ──────────────────────────
+  // ALWAYS PRESENT, each member independently null. The key is always here so
+  // the renderer has one thing to look for; each member is null when its own
+  // measurement was not made, for the reason `ablation` is null above — a
+  // measurement nobody took has no number, and a zero would read as one.
+  //
+  // REPORTS AND NEVER GATES. Not one of these numbers is read by
+  // convex/ttsMerge.ts: the gate keeps its three head rows, and a judge that
+  // agreed with eighteen of twenty of Tom's labels is evidence about the judge,
+  // not a verdict on anything it scored.
+  verifiers: {
+    /** The evals judge replayed against Tom's own labels — how often the judge
+     * agreed with him, and every case where it did not. Read off the weekly
+     * run row's `verifierScorecard` (worker/jobs/evals.mjs --weekly). */
+    judge: {
+      items: number;
+      agreed: number;
+      skipped: number;
+      disagreements: { runId: string; tom: "good" | "bad"; judge: "pass" | "fail"; reason: string }[];
+      skips: { runId: string; reason: string }[];
+    } | null;
+    /** The audit against Tom's later objections — computed here (below), not
+     * read off a row: it is arithmetic over the event record and the record is
+     * here. */
+    audit: {
+      weeks: number;
+      merges: number;
+      objected: number;
+      objections: { sha: string; approvedAt: number; objectedAt: number; sentence: string }[];
+      landedAnyway: { sha: string; refusedAt: number; mergedAt: number }[];
+    } | null;
+    /** The planted-fault audits: heads with a known defect in them, and what
+     * the audit answered. Read off the same scorecard. */
+    faults: {
+      ran: boolean;
+      reason: string;
+      items: number;
+      refused: number;
+      results: { id: string; verdict: string }[];
+    } | null;
+    /** The one sentence the run wrote about what these numbers do and do not
+     * mean; null when the row carried none, and the renderer then prints its
+     * own standing one. */
+    caveat: string | null;
+  };
   jobFailures: { job: string; count: number; lines: { at: number; error: string }[] }[];
   threads: {
     todoId: string;
@@ -263,6 +342,91 @@ function str(value: unknown): string | null {
 
 function num(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** A string off a row, redacted and capped, or null when it is not a string.
+ * REDACTED FIRST, THEN CAPPED, the order convex/ttsMerge.ts uses: a cap applied
+ * first can cut a credential in half and leave the half that still matches
+ * nothing. */
+function verifierText(value: unknown): string | null {
+  const s = str(value);
+  return s === null ? null : redactSecrets(s).slice(0, VERIFIER_TEXT_MAX_CHARS);
+}
+
+/** A row's `data` is `v.any()`, so every member below is checked rather than
+ * trusted and an unreadable one is DROPPED rather than carried out half-read.
+ * A malformed scorecard costs its own lines, never the whole gather. */
+function rowsOf(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  const rows: Record<string, unknown>[] = [];
+  for (const raw of value) {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) continue;
+    rows.push(raw as Record<string, unknown>);
+  }
+  return rows;
+}
+
+/** The judge half of a run's `verifierScorecard`, or null when the row has
+ * nothing readable there. */
+export function readJudgeScorecard(raw: unknown): WeeklyFacts["verifiers"]["judge"] {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const j = raw as Record<string, unknown>;
+  const disagreements: NonNullable<WeeklyFacts["verifiers"]["judge"]>["disagreements"] = [];
+  for (const row of rowsOf(j.disagreements)) {
+    // THE CAP IS ON WHAT IS KEPT, not on what is read: a list whose first rows
+    // are unreadable still reports twenty readable ones.
+    if (disagreements.length >= VERIFIER_LIST_MAX) break;
+    const runId = verifierText(row.runId);
+    const tom = str(row.tom);
+    const judge = str(row.judge);
+    // His label is one of two words and the judge's is one of two others; a
+    // third word is a row this gather cannot read and does not report.
+    if (runId === null || (tom !== "good" && tom !== "bad") || (judge !== "pass" && judge !== "fail")) continue;
+    disagreements.push({ runId, tom, judge, reason: verifierText(row.reason) ?? "" });
+  }
+  const skips: NonNullable<WeeklyFacts["verifiers"]["judge"]>["skips"] = [];
+  for (const row of rowsOf(j.skips)) {
+    if (skips.length >= VERIFIER_LIST_MAX) break;
+    const runId = verifierText(row.runId);
+    const reason = verifierText(row.reason);
+    // ONE SKIP IS NOT ABOUT A RUN AT ALL: the runner writes `runId: null` when
+    // the label door itself could not be read (worker/jobs/evals.mjs
+    // judgeAgreement), and that is the loudest thing the judge arm can say —
+    // the whole measurement failed. It is kept with an empty id, and the
+    // renderer prints it without one, rather than dropped as unreadable.
+    if (runId === null && reason === null) continue;
+    skips.push({ runId: runId ?? "", reason: reason ?? "" });
+  }
+  return {
+    items: num(j.items) ?? 0,
+    agreed: num(j.agreed) ?? 0,
+    skipped: num(j.skipped) ?? 0,
+    disagreements,
+    skips,
+  };
+}
+
+/** The planted-fault half of the same object, or null. */
+export function readFaultsScorecard(raw: unknown): WeeklyFacts["verifiers"]["faults"] {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const f = raw as Record<string, unknown>;
+  const results: NonNullable<WeeklyFacts["verifiers"]["faults"]>["results"] = [];
+  for (const row of rowsOf(f.results)) {
+    if (results.length >= VERIFIER_LIST_MAX) break;
+    const id = verifierText(row.id);
+    const verdict = verifierText(row.verdict);
+    if (id === null || verdict === null) continue;
+    results.push({ id, verdict });
+  }
+  return {
+    // `ran` is the arm saying it ran, and anything but `true` is it saying it
+    // did not — the same fail-closed reading the merge gate takes of a check.
+    ran: f.ran === true,
+    reason: verifierText(f.reason) ?? "",
+    items: num(f.items) ?? 0,
+    refused: num(f.refused) ?? 0,
+    results,
+  };
 }
 
 /** YYYY-MM-DD from a frontmatter value, or null when it is not one — a real
@@ -404,6 +568,15 @@ export async function gatherWeeklyFacts(
     await ctx.db
       .query("dtsEvents")
       .withIndex("by_kind_at", (q) => q.eq("kind", kind).gte("at", since).lt("at", until))
+      .collect();
+  // The same read with its own start. ONE FACT NEEDS A WIDER WINDOW than the
+  // week (the audit's score, below) and every other needs exactly the week, so
+  // this is a second helper rather than a widened first one: widening
+  // eventsOfKind would quietly move every fact in this gather.
+  const eventsOfKindSince = async (kind: string, from: number) =>
+    await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_kind_at", (q) => q.eq("kind", kind).gte("at", from).lt("at", until))
       .collect();
 
   // 1. Completions: done rows touched in the window (the status index orders
@@ -695,6 +868,13 @@ export async function gatherWeeklyFacts(
   let ablationAt = -1;
   let efficiency: WeeklyFacts["efficiency"] = null;
   let efficiencyAt = -1;
+  // The verifier scorecard rides on the SAME rows and is read the same way and
+  // for the same reason: it is one run's measurement of the judge and of the
+  // planted faults, not the week's runs added together.
+  let verifierJudge: WeeklyFacts["verifiers"]["judge"] = null;
+  let verifierFaults: WeeklyFacts["verifiers"]["faults"] = null;
+  let verifierCaveat: string | null = null;
+  let scorecardAt = -1;
   for (const e of await eventsOfKind(EVALS_RUN)) {
     const d = (e.data ?? {}) as Record<string, unknown>;
     evals.runs++;
@@ -718,6 +898,14 @@ export async function gatherWeeklyFacts(
       efficiency = rises;
       efficiencyAt = e.at;
     }
+    const card = d.verifierScorecard;
+    if (card !== null && typeof card === "object" && !Array.isArray(card) && e.at > scorecardAt) {
+      const c = card as Record<string, unknown>;
+      verifierJudge = readJudgeScorecard(c.judge);
+      verifierFaults = readFaultsScorecard(c.faults);
+      verifierCaveat = verifierText(c.caveat);
+      scorecardAt = e.at;
+    }
     const regressions = num(d.regressions) ?? 0;
     if (regressions === 0) {
       evals.clean++;
@@ -736,6 +924,101 @@ export async function gatherWeeklyFacts(
     });
   }
   evals.regressions.sort((a, b) => a.day.localeCompare(b.day) || a.repo.localeCompare(b.repo));
+
+  // ── The audit, scored against Tom's later objections ──────────────────────
+  // THE AUDIT IS CHECKED BY EXACTLY ONE THING: whether what it let through
+  // turned out to be what he wanted. That is its only score, and everything
+  // below is that one question asked arithmetically.
+  //
+  // COMPUTED HERE AND NOT IN THE RUNNER, because it is pure arithmetic over the
+  // event record and the record is here: three kinds already written, read on
+  // the index they are already on, joined on the keys they are already keyed by
+  // (convex/ttsMerge.ts commitKey and mergeKey). No new row, no new field.
+  //
+  // A merge is reported to #tts-decisions with its own mergeKey as the askId
+  // (internalRecordMerge), and an objection in that thread is recorded with the
+  // same askId (convex/ttsAsk.ts internalRecordDelegateObjection) — so an
+  // objection whose askId equals a merge's key IS his objection to that merge.
+  const auditSince = until - AUDIT_OBJECTION_WEEKS * WEEK_MS;
+  const approvedAt = new Map<string, number>();
+  const refusedAt = new Map<string, { at: number; sha: string }>();
+  for (const e of await eventsOfKindSince(AUDIT_VERDICT, auditSince)) {
+    const d = (e.data ?? {}) as Record<string, unknown>;
+    const repo = str(d.repo);
+    const sha = str(d.sha);
+    if (repo === null || sha === null) continue;
+    const key = commitKey(repo, sha);
+    const verdict = (str(d.verdict) ?? "").toUpperCase();
+    // Newest wins on each side: an UNAVAILABLE row can be replaced by a real
+    // verdict later (internalRecordAudit), and the real one is the audit.
+    if (verdict === AUDIT_APPROVED) {
+      if (e.at > (approvedAt.get(key) ?? -1)) approvedAt.set(key, e.at);
+    } else if (verdict === AUDIT_REFUSED) {
+      if (e.at > (refusedAt.get(key)?.at ?? -1)) refusedAt.set(key, { at: e.at, sha });
+    }
+  }
+  const objectedAt = new Map<string, { at: number; sentence: string }>();
+  for (const e of await eventsOfKindSince(DELEGATE_OBJECTION, auditSince)) {
+    const d = (e.data ?? {}) as Record<string, unknown>;
+    const askId = str(d.askId);
+    if (askId === null) continue;
+    // The FIRST objection in the thread is his objection; a later one in the
+    // same thread is the same objection continuing.
+    const held = objectedAt.get(askId);
+    if (held !== undefined && held.at <= e.at) continue;
+    const sentence = verifierText(d.sentence) ?? "";
+    objectedAt.set(askId, { at: e.at, sentence: sentence.split("\n")[0] ?? "" });
+  }
+  const auditedMerges: NonNullable<WeeklyFacts["verifiers"]["audit"]>["objections"] = [];
+  const mergedAt = new Map<string, number>();
+  let auditedCount = 0;
+  for (const e of await eventsOfKindSince(MERGE, auditSince)) {
+    const d = (e.data ?? {}) as Record<string, unknown>;
+    const repo = str(d.repo);
+    const sha = str(d.sha);
+    if (repo === null || sha === null) continue;
+    const commit = commitKey(repo, sha);
+    if (e.at > (mergedAt.get(commit) ?? -1)) mergedAt.set(commit, e.at);
+    const approved = approvedAt.get(commit);
+    // An unaudited merge is not the audit's to answer for.
+    if (approved === undefined) continue;
+    auditedCount++;
+    const objection = objectedAt.get(mergeKey(repo, sha));
+    if (objection === undefined) continue;
+    auditedMerges.push({
+      sha: sha.slice(0, 7),
+      approvedAt: approved,
+      objectedAt: objection.at,
+      sentence: objection.sentence,
+    });
+  }
+  auditedMerges.sort((a, b) => a.objectedAt - b.objectedAt);
+  // THE OTHER DIRECTION IS AN INTERPRETATION, and stated as one. The brief asks
+  // for "audits that REFUSED a head the record shows he later said should have
+  // landed", and the record's only deterministic signal that a head landed is a
+  // "merge" row at that commit. There is no row in which he says a refusal was
+  // wrong, and inventing one — a sentiment read, a model's guess — would be a
+  // measure nobody can check. So this is exactly: refused, and merged anyway.
+  const landedAnyway: NonNullable<WeeklyFacts["verifiers"]["audit"]>["landedAnyway"] = [];
+  for (const [commit, refused] of refusedAt) {
+    const merged = mergedAt.get(commit);
+    if (merged === undefined) continue;
+    landedAnyway.push({ sha: refused.sha.slice(0, 7), refusedAt: refused.at, mergedAt: merged });
+  }
+  landedAnyway.sort((a, b) => a.mergedAt - b.mergedAt);
+  // NULL WHEN THERE IS NOTHING TO SCORE. A window with no audited merge in it
+  // renders no line at all, rather than a line saying zero of zero — the same
+  // absent-is-not-zero rule the ablation arm above is written under.
+  const verifierAudit: WeeklyFacts["verifiers"]["audit"] =
+    auditedCount === 0
+      ? null
+      : {
+          weeks: AUDIT_OBJECTION_WEEKS,
+          merges: auditedCount,
+          objected: auditedMerges.length,
+          objections: auditedMerges.slice(0, VERIFIER_LIST_MAX),
+          landedAnyway: landedAnyway.slice(0, VERIFIER_LIST_MAX),
+        };
 
   // 12. Job failures by job.
   const byJob = new Map<string, WeeklyFacts["jobFailures"][number]>();
@@ -804,6 +1087,12 @@ export async function gatherWeeklyFacts(
     evals,
     ablation,
     efficiency,
+    verifiers: {
+      judge: verifierJudge,
+      audit: verifierAudit,
+      faults: verifierFaults,
+      caveat: verifierCaveat,
+    },
     jobFailures,
     threads,
     readiness: { prepared, unprepared },

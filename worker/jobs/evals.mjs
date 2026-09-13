@@ -18,6 +18,8 @@
 //   node /opt/tts/evals.mjs --serve     # one polling pass over the request queue
 //   node /opt/tts/evals.mjs --weekly    # the full set against both repos' main
 //   node /opt/tts/evals.mjs --tasks <repo>
+//   node /opt/tts/evals.mjs --faults-only   # the planted-fault audits, nothing else
+//   node /opt/tts/evals.mjs --weekly --dry-run   # compute it all, post nothing
 //
 // The box POLLS. It has no inbound door: it talks out to Convex, GitHub and
 // Slack, and nothing talks in but SSH with Tom's key. A GitHub Action posts a
@@ -28,8 +30,14 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { convexFetch, extractJsonObject, loadEnv, nyHour, runClaude, serverErrorMessage } from "./tts-lib.mjs";
+import { convexFetch, extractJsonObject, loadEnv, nyHour, nyUtcOffsetHours, runClaude, serverErrorMessage } from "./tts-lib.mjs";
 import { cacheRepoDir } from "./tts-code-lib.mjs";
+// THE AUDIT'S OWN PROMPT, IMPORTED AND NEVER RE-IMPLEMENTED. The planted-fault
+// arm below asks the real auditor the real question about a fixture diff; a
+// second copy of that prompt here would measure a prompt nothing else uses.
+// Only the two stable exports are taken, so a change to how audit.mjs chunks or
+// runs a diff lands here with no edit.
+import { AUDIT_UNAVAILABLE, auditPrompt } from "./audit.mjs";
 
 export const EVALS_RUN = "evals-run";
 export const EVALS_REQUEST = "evals-request";
@@ -281,6 +289,14 @@ export const JOBS = {
     ),
     parse: (answer) => extractJsonObject(answer),
     fields: ["brief", "entryAction", "workDescription", "groundUpExplanation"],
+    // THE ONE JOB WHOSE `brief` IS THE LIFE TODO'S BRIEF, so the one job whose
+    // `brief` the SIZE rules (2-5 sentences, at most 400 characters) bind. The
+    // field name alone cannot say this — the code-brief job below also writes
+    // a field called `brief`, and that one is 250 to 400 WORDS — so the job
+    // declares it and standardRulesFor reads the declaration. A job that names
+    // nothing here gets the form rules on its brief fields, which is the right
+    // default for everything but this.
+    briefSizeFields: ["brief"],
     opts: { maxTurns: 4 },
   },
   "code-brief": {
@@ -520,8 +536,15 @@ function fieldBlocks(output, fields) {
  * output, and withholding it would leave the judge with nothing to judge
  * against. A capability case also carries a target: the thing the output must
  * now do and did not do before.
+ *
+ * `hideVerdict` DROPS EXACTLY TWO SECTIONS — TOM'S VERDICT and TOM'S SENTENCE —
+ * and nothing else. It is the seam the judge-agreement measure below replays
+ * through: that measure asks whether the judge reaches Tom's answer WITHOUT
+ * being handed it, so the prompt it sends must be this prompt with his answer
+ * taken out, and not a second prompt body written beside it. Two prompt bodies
+ * would mean the thing measured is not the thing that runs.
  */
-export function judgePrompt(item, fresh, fields) {
+export function judgePrompt(item, fresh, fields, { hideVerdict = false } = {}) {
   const verdict = verdictOf(item);
   const input = { ...item.input };
   delete input.priorReviseSentence;
@@ -577,10 +600,10 @@ export function judgePrompt(item, fresh, fields) {
     `--- INPUT THE OUTPUT WAS WRITTEN FROM ---`,
     JSON.stringify(input, null, 1),
     ``,
-    `--- TOM'S VERDICT ---`,
-    verdict,
-    ``,
-    ...(rubric === null && verdict === "revise" ? [`--- TOM'S SENTENCE ---`, item.sentence ?? "", ``] : []),
+    ...(hideVerdict ? [] : [`--- TOM'S VERDICT ---`, verdict, ``]),
+    ...(hideVerdict || rubric !== null || verdict !== "revise"
+      ? []
+      : [`--- TOM'S SENTENCE ---`, item.sentence ?? "", ``]),
     ...(rubric === null ? [] : [`--- WHAT TOM'S LABEL MEANS ---`, rubric, ``]),
     ...(target === null
       ? []
@@ -640,32 +663,56 @@ export function mechanicalChecks(expect, text) {
 }
 
 /**
- * WHICH FIELDS THE WRITING STANDARD BINDS, and it is not all of them.
+ * WHICH FIELDS THE WRITING STANDARD BINDS, and it is not all of them, and it
+ * is not the same rules for each.
  *
- * scripts/check-writing-standard.mjs exports two rule sets, and the difference
- * is the whole finding here. `RULES` are rules of the HTML-DOCUMENT FORM —
- * no-doctype, no-close-html, no-h1, no-style — which the writing standard
- * attaches to a GROUND-UP EXPLANATION and to nothing else. `BRIEF_RULES` is
- * empty, deliberately: a brief is markdown by construction, so no mechanical
- * rule binds it, and that emptiness is a measurement rather than a gap (read
- * its comment there).
+ * scripts/check-writing-standard.mjs exports two rule sets. `RULES` are rules
+ * of the HTML-DOCUMENT FORM — no-doctype, no-close-html, no-h1, no-style —
+ * which the writing standard attaches to a GROUND-UP EXPLANATION and to
+ * nothing else. `BRIEF_RULES` are the four mechanical demands the prepare
+ * prompt makes of the LIFE TODO'S BRIEF.
  *
- * So the rules are not applied field-blind. Running `RULES` over a free-form
- * field would fail every case on no-doctype — a `run` case's `text` is not an
- * HTML document and the standard fixes no form for it, so no rules run on it
- * at all. That is what makes this check safe to run on every job: a field the
- * standard says nothing about is checked against nothing.
+ * The rules are not applied field-blind, for two separate reasons.
  *
- * A rule added to BRIEF_RULES over there lands here with no edit.
+ * FIRST, `RULES` over a free-form field would fail every case on no-doctype —
+ * a `run` case's `text` is not an HTML document and the standard fixes no form
+ * for it — so no rules run on it at all. A field the standard says nothing
+ * about is checked against nothing, which is what makes this check safe to run
+ * on every job.
+ *
+ * SECOND, only TWO of the four BRIEF_RULES bind the three brief-shaped fields
+ * below. brief-sentences (2 to 5) and brief-length (at most 400 characters)
+ * are demands on the SIZE of the life todo's brief, and nothing else here is
+ * that field: a `recommendation` is one word, a `workDescription` is a few,
+ * and the code-brief job's `brief` is 250 to 400 WORDS. Handing those three
+ * the size rules fails every affected golden item DETERMINISTICALLY — the
+ * check below runs before the judge — so `regressions` on the evals-run row
+ * never returns to zero and the merge gate's evals arm denies every merge.
+ * The split's one home is BRIEF_SIZE_RULE_IDS / briefFormRules() over there,
+ * and this file selects from it rather than restating it.
+ *
+ * WHICH `brief` IS WHICH IS THE JOB'S ANSWER, NOT THE FIELD NAME'S. Two jobs
+ * write a field called `brief` and they are different fields, so the job says
+ * which of its brief fields the size rules bind (`briefSizeFields` in JOBS
+ * above) and this function reads that. `job` defaults to nothing size-bound:
+ * a two-argument call — an older caller, a test — gets the form rules, which
+ * is the answer for every brief field but the prepare job's.
+ *
+ * A rule added to BRIEF_RULES over there lands here with no edit, in the form
+ * set unless it is also named in BRIEF_SIZE_RULE_IDS.
  */
 export const HTML_STANDARD_FIELDS = Object.freeze(["groundUpExplanation", "explanation"]);
 export const BRIEF_STANDARD_FIELDS = Object.freeze(["brief", "recommendation", "workDescription"]);
 
-export function standardRulesFor(field, standard) {
+export function standardRulesFor(field, standard, job = null) {
   if (standard === null || standard === undefined) return null;
   if (HTML_STANDARD_FIELDS.includes(field)) return standard.RULES ?? null;
-  if (BRIEF_STANDARD_FIELDS.includes(field)) return standard.BRIEF_RULES ?? null;
-  return null;
+  if (!BRIEF_STANDARD_FIELDS.includes(field)) return null;
+  if ((job?.briefSizeFields ?? []).includes(field)) return standard.BRIEF_RULES ?? null;
+  // A standard module too old to export briefFormRules checks nothing here,
+  // the same answer an absent module gives — never the full set by fallback,
+  // which is the failure this whole comment is about.
+  return standard.briefFormRules?.() ?? null;
 }
 
 /**
@@ -707,7 +754,7 @@ export function deterministicFailure(item, job, fresh, standard) {
   const mechanical = mechanicalChecks(item.expect, outputText(fresh, fields));
   if (mechanical !== null) return mechanical;
   for (const field of fields) {
-    const rules = standardRulesFor(field, standard);
+    const rules = standardRulesFor(field, standard, job);
     if (rules === null || rules.length === 0) continue;
     const value = fresh?.[field];
     // An absent field is the judge's business — it is a loss, not a broken
@@ -1381,6 +1428,389 @@ export function ablationFindings(ablation) {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+// ── The verifiers, measured ──────────────────────────────────────────────────
+//
+// THERE ARE EXACTLY THREE VERIFIERS: the checks (tests-run), the audit
+// (audit-verdict) and the evals (evals-run). Tom's own label is the ground
+// truth above all three. Everything in this section MEASURES those verifiers
+// and GATES NOTHING — no merge arm reads it, no CI job runs it, no door is
+// touched. A judge that gated on its own unmeasured agreement is exactly the
+// failure the audit declines to lint for, and a measurement that grew into a
+// gate would be that failure with an extra step.
+//
+// Two measures live here. The third (§6.2, the audit against Tom's later
+// objections) is computed in Convex off the event record and is deliberately
+// NOT here: it needs rows this file never reads, and a second answer to one
+// question is two things to keep true.
+
+/** The standing caveat, carried as a FIELD on the scorecard and not only as a
+ *  comment: the weekly facts block is read by a model and by Tom, and a number
+ *  that travels without the sentence saying what it is not becomes a verdict
+ *  the moment somebody quotes it. */
+export const VERIFIER_CAVEAT =
+  "These measures report and never gate: a judge's agreement with twenty of his " +
+  "labels is evidence about the judge, not a verdict on any output it scored.";
+
+/** How many of his labels the judge is replayed against. Twenty is a week's
+ *  evidence about the judge and not a census of the corpus; the cost is twenty
+ *  Fable calls, once a week. */
+export const LABEL_SAMPLE = 20;
+
+/** Every list on the scorecard is capped, and every string in one is cut.
+ *  The scorecard rides a weekly evals-run row that a model reads whole, so an
+ *  unbounded list of reasons is an unbounded prompt. */
+export const SCORECARD_LIST_MAX = 20;
+export const SCORECARD_STRING_MAX = 300;
+
+const capString = (value) => String(value ?? "").slice(0, SCORECARD_STRING_MAX);
+
+/** One entry of a capped list, every string in it cut to the same length. */
+function capEntry(entry) {
+  const out = {};
+  for (const [key, value] of Object.entries(entry)) {
+    out[key] = typeof value === "string" ? capString(value) : value;
+  }
+  return out;
+}
+
+const capList = (list) => list.slice(0, SCORECARD_LIST_MAX).map(capEntry);
+
+/**
+ * The text Tom judged, off the label's own span rows.
+ *
+ * Separate rows were separate turns, so they are joined with a blank line
+ * rather than run together, which would fuse the end of one turn onto the start
+ * of the next. This is the same join scripts/export-golden.mjs makes
+ * (outputTextOf) — it is written twice rather than imported because that script
+ * is a laptop-side exporter with its own dependencies and this file ships to
+ * /opt/tts with none; the rule it spells is one line and is stated in both.
+ *
+ * An empty string means the text CANNOT BE RECOVERED, which is a skip and never
+ * a silent drop. NO SECOND DOOR IS ADDED to fetch it: GET /tts/label-input
+ * already carries the rows, and a run whose rows fell out of the thirty-day
+ * window is not recoverable from anywhere the box can reach.
+ */
+export function labelOutputText(label) {
+  return (label?.rows?.spanRows ?? [])
+    .map((row) => row?.content?.text)
+    .filter((text) => typeof text === "string" && text.trim() !== "")
+    .join("\n\n");
+}
+
+/** His polarity as the two words this file's judge answers in. */
+const JUDGE_FOR_POLARITY = { good: "pass", bad: "fail" };
+
+/**
+ * One label as an item judgePrompt takes.
+ *
+ * THREE CHOICES HERE, AND EACH ONE IS ABOUT NOT HANDING THE JUDGE THE ANSWER.
+ *
+ *  - `verdict` is ALWAYS "approve", never derived from his polarity. verdictOf
+ *    picks which mode block the prompt carries, and a block picked from his
+ *    label would put his answer into the question — the measurement would then
+ *    be of the prompt's leak and not of the judge.
+ *  - No `sentence` and no `expected.rubric`. His meaning IS his answer, and
+ *    both of those blocks would print it verbatim. (Dropping the rubric is why
+ *    hideVerdict only has two sections to drop: with no rubric and no sentence
+ *    set, TOM'S SENTENCE is already absent and TOM'S VERDICT is the one thing
+ *    left to hide.)
+ *  - `output` is EMPTY. This is a replay of his judgement over ONE text, not a
+ *    regeneration of it: there is no older output the text could have dropped a
+ *    fact from, and pasting the same text into both halves would make every
+ *    answer trivially "pass".
+ *
+ * WHAT THIS COSTS, said out loud: with an empty OLD output the approve block's
+ * question collapses to "does this text assert anything its input does not
+ * support", which is a weaker question than the one Tom answered, and it leans
+ * towards "pass". The agreement number is therefore evidence about the judge
+ * and not a score — VERIFIER_CAVEAT, which rides the row.
+ */
+export function replayItem(label) {
+  return {
+    id: String(label?.labelId ?? ""),
+    job: "run",
+    partition: `labels/${label?.source ?? "unknown"}`,
+    kind: "regression",
+    verdict: "approve",
+    confirmedByTom: true,
+    input: {
+      runId: label?.run?.runId ?? null,
+      origin: label?.run?.origin ?? null,
+      kind: label?.run?.kind ?? null,
+      model: label?.run?.model ?? null,
+    },
+    output: {},
+  };
+}
+
+/**
+ * §6.1 — the evals judge replayed against Tom's own labels.
+ *
+ * The newest LABEL_SAMPLE judgment labels whose polarity points one way or the
+ * other are replayed through the SAME judge prompt the evals use, with his
+ * verdict hidden, and the judge's pass/fail is counted against his good/bad.
+ *
+ * NEWEST-FIRST RATHER THAN RANDOM, for the reason convex/ttsSimplify.ts gives
+ * for its own sample: the same week measured twice must give the same answer,
+ * and a sample that moves turns every re-run into a diff nobody can read.
+ *
+ * SKIPS ARE COUNTED, NEVER SILENT, and the split is stated once here: `items`
+ * is the number of labels ACTUALLY JUDGED, and `skipped` is the number that
+ * could not be — a skip is not in `items` and not in `agreed`, so `agreed` out
+ * of `items` is a rate over what was measured rather than a rate quietly
+ * diluted by what was not.
+ */
+export async function judgeAgreement(io, { limit = LABEL_SAMPLE } = {}) {
+  const empty = { items: 0, agreed: 0, skipped: 0, disagreements: [], skips: [] };
+  if (typeof io?.labels !== "function") return empty;
+  let answer;
+  try {
+    answer = await io.labels(limit);
+  } catch (error) {
+    // A door that cannot be read measures nothing. It is not a failure of the
+    // judge and must not be reported as a disagreement.
+    return { ...empty, skips: [{ runId: null, reason: capString(`the label door could not be read: ${serverErrorMessage(error)}`) }] };
+  }
+  // The door already returns only `judgment: true` rows (convex/ttsEvals.ts
+  // internalLabelInput filters on it), so the filter below is the same rule
+  // said again where it is read rather than a second rule: a row that ever
+  // arrives carrying `judgment: false` is not a judgment and is not replayed.
+  const labels = (answer?.items ?? [])
+    .filter((label) => label?.judgment !== false)
+    .filter((label) => JUDGE_FOR_POLARITY[label?.polarity] !== undefined)
+    .sort((a, b) => (b?.at ?? 0) - (a?.at ?? 0) || String(a?.labelId).localeCompare(String(b?.labelId)))
+    .slice(0, limit);
+  const disagreements = [];
+  const skips = [];
+  let items = 0;
+  let agreed = 0;
+  for (const label of labels) {
+    const runId = label?.run?.runId ?? null;
+    if (label?.run === null || label?.run === undefined) {
+      skips.push({ runId, reason: "the label named no run, or the run has left the thirty-day window" });
+      continue;
+    }
+    const text = labelOutputText(label);
+    if (text === "") {
+      skips.push({ runId, reason: "the run recorded no text to judge" });
+      continue;
+    }
+    let raw;
+    try {
+      raw = await io.runClaude(judgePrompt(replayItem(label), { text }, JOBS.run.fields, { hideVerdict: true }), {
+        model: JUDGE_MODEL,
+        timeoutMs: JUDGE_TIMEOUT_MS,
+        maxTurns: 1,
+        registration: {
+          origin: "cron:evals",
+          kind: "job",
+          layersKnown: false,
+          layersGiven: [],
+          layersDenied: [],
+        },
+      });
+    } catch (error) {
+      skips.push({ runId, reason: `the judge could not be run: ${serverErrorMessage(error)}` });
+      continue;
+    }
+    const verdict = parseJudge(raw);
+    const tom = label.polarity;
+    items += 1;
+    if (JUDGE_FOR_POLARITY[tom] === verdict.judged) {
+      agreed += 1;
+      continue;
+    }
+    disagreements.push({ runId, tom, judge: verdict.judged, reason: verdict.reason });
+  }
+  return {
+    items,
+    agreed,
+    skipped: skips.length,
+    disagreements: capList(disagreements),
+    skips: capList(skips),
+  };
+}
+
+// ── §6.3 — the planted faults ────────────────────────────────────────────────
+
+/** Where the fixtures live in a checkout. */
+export const AUDIT_FAULTS_DIR = "evals/audit-faults";
+
+/**
+ * The fixture directory, found the way loadWritingStandard and loadGate find
+ * their one file: THE TREE HAS MORE THAN ONE HOME. In a checkout the fixtures
+ * are evals/audit-faults/; on the box this file lands in /opt/tts, where the
+ * directory sits beside it if setup.sh copied it and does not if it has not.
+ * An absent directory is ZERO FIXTURES and never a failure — a box whose setup
+ * has not copied them yet must not start reporting a broken arm.
+ *
+ * TTS_AUDIT_FAULTS_DIR in the environment overrides both, so the box can be
+ * pointed at a checkout without an edit here.
+ */
+export function auditFaultsRoot(env = {}) {
+  const named = env?.TTS_AUDIT_FAULTS_DIR ?? process.env.TTS_AUDIT_FAULTS_DIR;
+  if (typeof named === "string" && named !== "") return named;
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  for (const candidate of [
+    path.join(here, "audit-faults"),
+    path.join(here, "..", "..", AUDIT_FAULTS_DIR),
+  ]) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return path.join(here, "..", "..", AUDIT_FAULTS_DIR);
+}
+
+/**
+ * The planted-fault fixtures, id-ascending.
+ *
+ * A fixture is `# ` header lines and then a diff. Everything from the first
+ * `diff --git ` line on is the diff proper and is fed to the auditor VERBATIM;
+ * the headers are read here and never sent, so a header cannot tell the auditor
+ * what it is supposed to find.
+ *
+ * `witness:` IS THE CONVENTION vqc/ledger.yaml's `no-witness-fault-harness`
+ * entry asks for while no fault runner exists: each fault names the one-line
+ * edit that makes the correct answer wrong, so a reader can check that the
+ * fixture still plants what it claims to plant. This arm is the runner that
+ * entry describes for ONE detector — the audit — and not for the vitest guards
+ * the entry is about, so the entry stays open.
+ */
+export function loadAuditFaults(dir = undefined) {
+  const root = dir ?? auditFaultsRoot();
+  if (!fs.existsSync(root)) return [];
+  const faults = [];
+  for (const name of fs.readdirSync(root).sort()) {
+    if (!name.endsWith(".diff")) continue;
+    const file = path.join(root, name);
+    if (!fs.statSync(file).isFile()) continue;
+    const lines = fs.readFileSync(file, "utf8").split(/\r?\n/);
+    const start = lines.findIndex((line) => line.startsWith("diff --git "));
+    const headerLines = start === -1 ? lines : lines.slice(0, start);
+    const headers = {};
+    for (const line of headerLines) {
+      if (!line.startsWith("# ")) continue;
+      const colon = line.indexOf(":");
+      if (colon === -1) continue;
+      headers[line.slice(2, colon).trim()] = line.slice(colon + 1).trim();
+    }
+    faults.push({
+      id: headers.id ?? name.replace(/\.diff$/, ""),
+      subject: headers.subject ?? "",
+      witness: headers.witness ?? "",
+      diff: start === -1 ? "" : lines.slice(start).join("\n"),
+    });
+  }
+  return faults.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * The audit's one machine-readable line, ANCHORED AND ALONE ON ITS LINE, so a
+ * verdict quoted inside the prose ("do not write VERDICT: APPROVED unless…") is
+ * not mistaken for the verdict.
+ *
+ * THE ANCHORED FORM'S ONE HOME IS convex/ttsMerge.ts auditVerdictOf, which is
+ * what the merge gate actually reads; this is the same regex, spelled here
+ * because worker/jobs/audit.mjs exports no verdict reader and a TypeScript
+ * Convex module cannot be imported by a plain-ESM box job. If audit.mjs ever
+ * exports one, this goes and the import takes its place.
+ */
+export function faultVerdictOf(text) {
+  const hit = /^[ \t]*VERDICT:[ \t]*([A-Za-z][A-Za-z_-]*)[ \t]*$/im.exec(String(text ?? ""));
+  return hit === null ? null : hit[1].toUpperCase();
+}
+
+/** The word the correct answer on every fixture is. */
+export const FAULT_REFUSED = "REFUSED";
+
+/** What the fixture auditor runs on. Opus, named explicitly like every other
+ *  spawn in the fleet, with a wall clock and a turn budget of its own: the
+ *  fixture diff is small, but a read-only auditor that runs out of turns is
+ *  recorded as unavailable, which reads as a broken arm rather than a short
+ *  budget (worker/jobs/audit.mjs learned this on its first fallback run). */
+export const FAULT_AUDIT_MODEL = process.env.TTS_EVALS_FAULT_AUDIT_MODEL || "opus";
+export const FAULT_AUDIT_TIMEOUT_MS = 10 * 60 * 1000;
+export const FAULT_AUDIT_MAX_TURNS = 8;
+
+/**
+ * MONTHLY, NOT WEEKLY. The fixtures cost three auditor runs and the question
+ * they answer — does the auditor still refuse a change it must refuse — moves
+ * on the timescale of the audit prompt changing, not on the timescale of a
+ * week's merges. The month's run is the weekly run whose date falls in the
+ * first seven days of the month, which is exactly the weekly Saturday that
+ * opens a month, read on NEW YORK's calendar because that is the clock every
+ * cron guard in this fleet keeps.
+ *
+ * `--force` and `--faults-only` run it whatever the date says, so the arm can
+ * be exercised by hand; the pair then reads `ran: true, reason: "not this
+ * month"`, which is the honest reading — it ran, and this was not its week.
+ */
+export function faultsMonthly(at, force = false) {
+  const dayOfMonth = new Date(at + nyUtcOffsetHours(at) * 3_600_000).getUTCDate();
+  const thisMonth = dayOfMonth <= 7;
+  return { ran: thisMonth || force === true, reason: thisMonth ? "this month" : "not this month" };
+}
+
+/**
+ * Each fixture, fed to the audit prompt UNCHANGED and scored by its verdict
+ * word alone.
+ *
+ * A MISSED FAULT IS A FACT AND NOTHING ELSE. It opens no todo, files no
+ * objection and fails no check: "the audit approved one planted fault this
+ * month" is a thing Tom reads and decides about, and a job that turned it into
+ * a todo would be deciding for him. AND THE FIXTURE IS NEVER TUNED UNTIL IT
+ * REFUSES — an APPROVED verdict in a real run IS the finding, and editing the
+ * diff until the auditor refuses it would turn the measurement into a mirror.
+ */
+export async function faultAudits(io, { at, force = false, dir = undefined } = {}) {
+  const gate = faultsMonthly(at, force);
+  if (!gate.ran) return { ran: false, reason: gate.reason, items: 0, refused: 0, results: [] };
+  const faults = loadAuditFaults(dir);
+  const results = [];
+  for (const fault of faults) {
+    let verdict;
+    try {
+      const answer = await io.audit(auditPrompt({
+        repo: "tom.quest",
+        sha: `audit-fault:${fault.id}`,
+        base: null,
+        subject: fault.subject,
+        diff: fault.diff,
+        truncated: false,
+      }));
+      // An auditor that answered with no verdict line and an auditor that could
+      // not run are DIFFERENT FACTS, and neither is a refusal.
+      verdict = faultVerdictOf(answer) ?? AUDIT_UNAVAILABLE;
+    } catch {
+      verdict = AUDIT_UNAVAILABLE;
+    }
+    results.push({ id: fault.id, verdict });
+  }
+  return {
+    ran: true,
+    reason: gate.reason,
+    items: faults.length,
+    refused: results.filter((result) => result.verdict === FAULT_REFUSED).length,
+    results,
+  };
+}
+
+/**
+ * The whole scorecard, computed once a week and read off the weekly
+ * `evals-run` row by convex/ttsWeekly.ts. REPORTS AND NEVER GATES.
+ *
+ * `env` is taken so the fixture directory can be named in the environment
+ * (auditFaultsRoot); every side effect still goes through `io`, so the test
+ * drives this with no model and no network.
+ */
+export async function verifierScorecard(io, env, { at, force = false } = {}) {
+  return {
+    at,
+    caveat: VERIFIER_CAVEAT,
+    judge: await judgeAgreement(io),
+    faults: await faultAudits(io, { at, force, dir: auditFaultsRoot(env) }),
+  };
+}
+
 /**
  * One run: the golden items of the pinned tom.quest tree, regenerated against
  * the pinned WikiTom tree, judged, aggregated, and posted as one evals-run row.
@@ -1505,19 +1935,31 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
   }
 }
 
-const FLAGS = new Set(["--serve", "--weekly", "--force", "--ablation"]);
+const FLAGS = new Set(["--serve", "--weekly", "--force", "--ablation", "--faults-only", "--dry-run"]);
 const VALUED = new Set(["--repo", "--sha", "--base", "--tasks", "--limit", "--jobs"]);
+
+/**
+ * The option key of a flag whose own name is not its key.
+ *
+ * The line below is `options[name.slice(2)] = true`, which for `--faults-only`
+ * would set `options["faults-only"]` — a key nobody reads, so the flag would
+ * parse cleanly and do nothing. The mapping is EXPLICIT rather than a
+ * hyphen-to-camel rule, so a flag whose key is not what a rule would produce is
+ * one row here and not a surprise.
+ */
+const FLAG_KEYS = { "--faults-only": "faultsOnly", "--dry-run": "dryRun" };
 
 export function parseArgs(argv) {
   const options = {
     repo: null, sha: null, base: null, limit: PR_ITEMS,
     jobs: null, force: false, serve: false, weekly: false, ablation: false, tasks: null,
+    faultsOnly: false, dryRun: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     const name = argument.includes("=") ? argument.slice(0, argument.indexOf("=")) : argument;
     if (FLAGS.has(name)) {
-      options[name.slice(2)] = true;
+      options[FLAG_KEYS[name] ?? name.slice(2)] = true;
       continue;
     }
     if (!VALUED.has(name)) throw new Error(`unknown argument ${argument}`);
@@ -1532,8 +1974,13 @@ export function parseArgs(argv) {
     else if (name === "--jobs") options.jobs = value.split(",").filter(Boolean);
     else options[name.slice(2)] = value;
   }
-  if (!options.serve && !options.weekly && options.tasks === null && (options.repo === null || options.sha === null)) {
-    throw new Error("--repo and --sha are required unless --serve, --weekly or --tasks is given");
+  // --faults-only scores three checked-in fixtures and reads no tree at all, so
+  // it needs neither a repo nor a sha, exactly as --weekly and --tasks do not.
+  if (
+    !options.serve && !options.weekly && !options.faultsOnly && options.tasks === null &&
+    (options.repo === null || options.sha === null)
+  ) {
+    throw new Error("--repo and --sha are required unless --serve, --weekly, --faults-only or --tasks is given");
   }
   if (!Number.isFinite(options.limit) || options.limit <= 0) throw new Error("--limit must be a positive number");
   // The ablation arm runs nightly and weekly and NEVER on a pull request: it
@@ -1567,6 +2014,36 @@ function realIo(env) {
         return null;
       }
     },
+    // Tom's own labels, with the run behind each and the transcript rows the
+    // judgment covers. THE SAME DOOR scripts/export-golden.mjs --source labels
+    // reads, asked for the same bytes: the judge-agreement measure replays what
+    // the corpus is mined from, so a second reader here would be a second
+    // answer to "what did he judge".
+    //
+    // `limitPerSource` is the door's own cut and this measure takes the newest
+    // LABEL_SAMPLE across all sources afterwards, so it asks for that many per
+    // source rather than trying to spell one cut in two places.
+    labels: async (limit) =>
+      await convexFetch(env, `/tts/label-input?limitPerSource=${encodeURIComponent(String(limit))}`),
+    // The planted-fault auditor. The fixture is a self-contained diff carried
+    // whole in the prompt, so it needs no checkout and no Codex sandbox: this
+    // is the SAME PROMPT the audit sends, put to the model the audit itself
+    // falls back to. It is deliberately not worker/jobs/audit.mjs's runner —
+    // that one posts to /tts/audit and would write an audit row for a commit
+    // that does not exist — and it gates nothing, so the second family's
+    // opinion is not what is being bought here.
+    audit: async (prompt) => runClaude(prompt, {
+      model: FAULT_AUDIT_MODEL,
+      timeoutMs: FAULT_AUDIT_TIMEOUT_MS,
+      maxTurns: FAULT_AUDIT_MAX_TURNS,
+      registration: {
+        origin: "cron:evals",
+        kind: "job",
+        layersKnown: false,
+        layersGiven: [],
+        layersDenied: [],
+      },
+    }),
     loadModules,
     cmtDir: () => cacheRepoDir(env, { name: "ComplexMultiTrigger", owner: "Heffnt", branch: "master" }),
     taskRepos: (tomquestTree) => {
@@ -1721,8 +2198,23 @@ export async function stampAgainstBase(data, base, diff = {}) {
   };
 }
 
-async function runAndPost(env, io, { repo, sha, base, limit, jobs, weekly, ablation = false, force, changed, prBody }) {
-  const existing = force ? null : await convexFetch(env, `/tts/evals-run?repo=${repo}&sha=${sha}`);
+/**
+ * `dryRun` COMPUTES EVERYTHING AND WRITES NOTHING: the run data is printed and
+ * postRun is not called. A measurement nobody asked for must not write a row —
+ * a dry run exists so a change to this file can be read before it lands in the
+ * record, and a dry run that posted would put a rehearsal into the record the
+ * digest and the merge gate read.
+ *
+ * `scorecard` is the verifier scorecard, stamped onto the row before it is
+ * posted the way `ablation` and `efficiency` already ride it — one key on one
+ * row, so convex/ttsWeekly.ts reads it with no new field, no new index and no
+ * new row kind.
+ */
+async function runAndPost(env, io, {
+  repo, sha, base, limit, jobs, weekly, ablation = false, force, changed, prBody,
+  dryRun = false, scorecard = undefined,
+}) {
+  const existing = force || dryRun ? null : await convexFetch(env, `/tts/evals-run?repo=${repo}&sha=${sha}`);
   if (existing?.run) {
     console.log(`[evals] ${repo}@${sha} already scored (${existing.run.pass}/${existing.run.items}); --force to rerun`);
     return existing.run;
@@ -1738,18 +2230,22 @@ async function runAndPost(env, io, { repo, sha, base, limit, jobs, weekly, ablat
     baseData = baseRun?.run ?? null;
     if (baseData === null) {
       baseData = await stampAgainstBase(await runEvals({ repo, sha: base, limit, jobs, weekly }, io), null);
-      await postRun(env, baseData);
+      if (!dryRun) await postRun(env, baseData);
       console.log(`[evals] base ${repo}@${base}: ${baseData.pass}/${baseData.items} pass`);
     }
   }
   // The base's passing ids are the head run's retry list: exactly those items
   // can become a regression, so exactly those are tried again when they fail.
-  const data = await stampAgainstBase(
-    await runEvals({ repo, sha, limit, jobs, weekly, ablation, basePassed: passedIds(baseData) }, io),
-    baseData,
-    { changed, prBody },
-  );
-  await postRun(env, data);
+  const data = {
+    ...await stampAgainstBase(
+      await runEvals({ repo, sha, limit, jobs, weekly, ablation, basePassed: passedIds(baseData) }, io),
+      baseData,
+      { changed, prBody },
+    ),
+    ...(scorecard === undefined ? {} : { verifierScorecard: scorecard }),
+  };
+  if (dryRun) console.log(JSON.stringify(data, null, 2));
+  else await postRun(env, data);
   console.log(
     `[evals] ${repo}@${sha}: ${data.pass}/${data.items} pass, ` +
       `${data.regressions === null ? "compared to no base" : `${data.regressions} regression(s)`}, ` +
@@ -1765,6 +2261,25 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   const env = loadEnv({ require: ["CONVEX_SITE_URL", "TTS_WORKER_KEY"] });
   const io = realIo(env);
+
+  // --faults-only ANSWERS ONE QUESTION AND SCORES NO EVAL SET: does the auditor
+  // still refuse the three changes it must refuse. It runs the fixtures
+  // whatever the date says, prints their verdicts, and POSTS NOTHING.
+  //
+  // It posts nothing even alongside --weekly, which is a deliberate departure
+  // from the brief: the scorecard rides a weekly evals-run row, and this path
+  // scores no set, so there is no such row to ride. Minting one would put a
+  // measurement onto a row that measured nothing, which is the one thing a row
+  // carrying `error` in this file already refuses to do.
+  if (options.faultsOnly) {
+    const faults = await faultAudits(io, { at: Date.now(), force: true, dir: auditFaultsRoot(env) });
+    for (const result of faults.results) console.log(`${result.id}\t${result.verdict}`);
+    console.log(
+      `[evals] planted faults: ${faults.refused}/${faults.items} refused (${faults.reason}); ` +
+        `a missed fault is a fact and opens nothing`,
+    );
+    return;
+  }
 
   if (options.tasks !== null) {
     const tomquest = io.worktree("tom.quest", "origin/main");
@@ -1811,13 +2326,18 @@ async function main() {
         changed: request.changed,
         prBody: request.prBody,
         force: options.force,
+        dryRun: options.dryRun,
       });
     } catch (error) {
       // A run that threw still has to be ANSWERED, or this request is taken
-      // again on every tick and nothing behind it is ever served.
+      // again on every tick and nothing behind it is ever served. A DRY RUN
+      // answers nothing, on purpose: it wrote no row for the run either, so the
+      // request is simply still unanswered and the next real tick takes it.
       const reason = serverErrorMessage(error);
       console.error(`[evals] ${request.repo}@${request.sha} could not be run: ${reason}`);
-      await postRun(env, failedRun({ repo: request.repo, sha: request.sha, error: reason, at: Date.now() }));
+      if (!options.dryRun) {
+        await postRun(env, failedRun({ repo: request.repo, sha: request.sha, error: reason, at: Date.now() }));
+      }
     }
     return;
   }
@@ -1830,8 +2350,34 @@ async function main() {
       console.log(`[evals] NY hour is ${nyHour(Date.now())}, not 4 — this is the off-season cron slot, exiting`);
       return;
     }
+    // THE SCORECARD IS COMPUTED ONCE AND RIDES ONE ROW — tom.quest's.
+    //
+    // ONE ROW RATHER THAN TWO because it is a measurement of the VERIFIERS, not
+    // of either repository's golden set: two copies of one measurement is two
+    // things to keep true, and the reader (convex/ttsWeekly.ts) would have to
+    // pick which of two disagreeing copies was the week's. tom.quest carries it
+    // because the judge prompt, the fixtures and the audit all live there.
+    //
+    // It is computed BEFORE the two set runs rather than after them, which the
+    // brief put the other way round: runAndPost posts its row from inside
+    // itself, so a scorecard computed afterwards could only be attached by
+    // posting the same key a second time — two rows saying different things
+    // about one run, which is the failure the key exists to prevent. Nothing
+    // about the scorecard depends on either run, so the order is free.
+    const scorecard = await verifierScorecard(io, env, { at: Date.now(), force: options.force });
     for (const repo of ["tom.quest", "WikiTom"]) {
-      await runAndPost(env, io, { repo, sha: "origin/main", base: null, limit: options.limit, jobs: options.jobs, weekly: true, ablation: options.ablation, force: true });
+      await runAndPost(env, io, {
+        repo,
+        sha: "origin/main",
+        base: null,
+        limit: options.limit,
+        jobs: options.jobs,
+        weekly: true,
+        ablation: options.ablation,
+        force: true,
+        dryRun: options.dryRun,
+        ...(repo === "tom.quest" ? { scorecard } : {}),
+      });
     }
     return;
   }
@@ -1845,6 +2391,7 @@ async function main() {
     weekly: false,
     ablation: options.ablation,
     force: options.force,
+    dryRun: options.dryRun,
   });
 }
 

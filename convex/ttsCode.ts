@@ -41,6 +41,10 @@ export const internalStoreBriefs = internalMutation({
         recommendation: RECOMMENDATION,
         execClass: EXEC_CLASS,
         evidence: v.optional(v.string()),
+        // THE DOOR CHECK'S MARK (phase 9): what this brief failed on when the
+        // planner read it back against the writing standard, on both
+        // attempts. Absent means the brief passed.
+        doorFaults: v.optional(v.array(v.string())),
       }),
     ),
     // THE RUN THAT WROTE THESE BRIEFS. A code ruling of Tom's is a judgment
@@ -67,9 +71,22 @@ export const internalStoreBriefs = internalMutation({
       // written with undefined DELETES the field, so a re-brief from an
       // unregistered caller would silently strip the edge the last registered
       // run left behind.
+      //
+      // doorFaults IS THE OPPOSITE CASE, and it is written UNCONDITIONALLY for
+      // that reason — the deletion a bare `undefined` causes is exactly what
+      // this field wants. producedByRunToken is an edge a caller may
+      // legitimately not know (an unregistered run has no token to send), so
+      // silence there means UNKNOWN and must not erase what a registered run
+      // recorded. The door mark is a property of THE TEXT BEING WRITTEN RIGHT
+      // NOW: this call replaces the brief, so silence means the replacement is
+      // CLEAN. Leaving a previous refusal's mark standing over rewritten text
+      // would print "the door check refused this brief twice" under a brief
+      // the door passed.
+      const { doorFaults, ...rest } = brief;
       const row = {
-        ...brief,
+        ...rest,
         ...(runToken === undefined ? {} : { producedByRunToken: runToken }),
+        doorFaults,
         preparedAt: now,
       };
       if (existing) {

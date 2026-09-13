@@ -54,7 +54,16 @@ export const AUDIT_TEXT_MAX_BYTES = 8 * 1024;
  *  (worker/jobs/audit.mjs AUDIT_REMOVAL_HEADING asks for this exact word). */
 export const AUDIT_REMOVAL_HEADING = "REMOVAL CHECK:";
 /** How many findings and how much of each are kept. A row is a record, not the
- *  audit's whole answer: the text it came out of is already on the row. */
+ *  audit's whole answer: the text it came out of is already on the row.
+ *
+ *  ONE PAIR OF NUMBERS FOR BOTH LISTS the audit row carries — the removal
+ *  check's findings and the trace check's (`traceFindings` below) — and for the
+ *  one line a counted absence carries (`trace.reason`). They mean the same
+ *  thing in all three places: a finding is one line for a person to read, and a
+ *  row that grew without a ceiling is a row nobody reads at all. Two numbers
+ *  named for the removal check and two more named for the trace check would be
+ *  four numbers that have to agree, which is three more than the fact needs.
+ *  If they ever genuinely need to differ, that is the moment to split them. */
 export const AUDIT_REMOVAL_NOTES_MAX = 20;
 export const AUDIT_REMOVAL_NOTE_MAX_CHARS = 300;
 
@@ -162,6 +171,76 @@ export function auditFallbackNote(data: { model?: unknown; fallback?: unknown })
 }
 
 /**
+ * A count at the magnitude a person reads it: `4,120`, `812 K`, `1.4 M`.
+ *
+ * The audit's character counts run to seven digits, and `1437221 of 1437221
+ * characters` in a sentence Tom reads is two numbers he has to count the digits
+ * of to compare. Grouped below ten thousand, because that is where the digits
+ * are still worth having; scaled above it, because past that the magnitude IS
+ * the fact and the last four digits are noise.
+ *
+ * `toLocaleString` is not used: the grouping has to be the same string in the
+ * Convex runtime, in vitest and in whatever locale a box happens to carry, and
+ * a separator that moves is a number that reads differently in the morning
+ * message than in the test that pinned it.
+ */
+export function compactCount(n: unknown): string {
+  if (typeof n !== "number" || !Number.isFinite(n)) return "?";
+  const sign = n < 0 ? "-" : "";
+  const abs = Math.abs(n);
+  const group = (value: string) => value.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  if (abs < 10_000) return sign + group(String(Math.round(abs)));
+  const [scale, unit] = abs < 1_000_000 ? ([1_000, "K"] as const) : ([1_000_000, "M"] as const);
+  const scaled = abs / scale;
+  // One decimal only while it still says something: 1.4 M is a different size
+  // from 1 M, 812.3 K is not a different size from 812 K.
+  const shown = scaled < 100 ? Math.round(scaled * 10) / 10 : Math.round(scaled);
+  const [whole, fraction] = String(shown).split(".");
+  return `${sign}${group(whole)}${fraction === undefined ? "" : `.${fraction}`} ${unit}`;
+}
+
+/**
+ * HOW MUCH OF THE DIFF THE AUDIT ACTUALLY READ, as one clause of the sentence
+ * Tom reads: "12 of 12 chunks, 1.4 M of 1.4 M characters".
+ *
+ * Why it exists: worker/jobs/audit.mjs used to cut the diff at 200,000
+ * characters and tell the auditor it had been cut. On 2026-09-11 the Opus
+ * auditor approved a ~30,000-line integration diff having read a slice of it,
+ * and THE ROW RECORDED NOTHING ABOUT HOW MUCH IT SAW — the verdict and the
+ * coverage were indistinguishable on the record from an audit that read every
+ * line. The audit now reads the whole diff in chunks; this is the part that
+ * makes what it read legible afterwards, in the gate's own answer and therefore
+ * in the #tts-decisions merge line, which joins these `why` strings.
+ *
+ * AN AUDIT THAT REFUSED AFTER 3 OF 12 CHUNKS IS AS INTERESTING AS ONE THAT
+ * APPROVED AFTER 12, so the clause rides the detail both arms carry, not the
+ * approval arm.
+ *
+ * EVERY FIELD IS READ DEFENSIVELY. `data` is `v.any()` coming back out, so a
+ * row whose `chunks` is a string, a null, or an object missing a number renders
+ * as if it carried none rather than printing half a sentence. An older row
+ * carries no `chunks` at all and must render exactly as it did before this
+ * clause existed — that is the same answer, and it is why this returns the
+ * empty string rather than a placeholder.
+ */
+export function auditChunkNote(data: { chunks?: unknown }): string {
+  const chunks = data.chunks;
+  if (typeof chunks !== "object" || chunks === null) return "";
+  const row = chunks as Record<string, unknown>;
+  const num = (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+  const count = num(row.count);
+  const read = num(row.read);
+  const charsRead = num(row.charsRead);
+  const charsTotal = num(row.charsTotal);
+  if (count === null || read === null || charsRead === null || charsTotal === null) return "";
+  return (
+    `${compactCount(read)} of ${compactCount(count)} chunk${count === 1 ? "" : "s"}, ` +
+    `${compactCount(charsRead)} of ${compactCount(charsTotal)} characters`
+  );
+}
+
+/**
  * What a PASSED check is, for each of the three kinds, in one place. The gate
  * below computes its three `passed` booleans with this, and convex/ttsSimplify.ts
  * counts how often a check has failed with it: two copies of this predicate is
@@ -238,12 +317,25 @@ export async function mergeGateFor(
     text?: unknown;
     model?: unknown;
     fallback?: unknown;
+    chunks?: unknown;
   };
   // The WORD is still read here, because the deny message names what the audit
   // answered; whether that word opens the gate is checkRowPassed's to say.
   const verdict = typeof auditData.verdict === "string" ? auditData.verdict.toUpperCase() : null;
   const auditWhy = auditReason(auditData.text);
-  const auditDetail = auditWhy === null ? "" : ` — ${auditWhy}`;
+  // The audit's reason and HOW MUCH OF THE DIFF IT READ, in the one detail
+  // clause both arms already carried. Appending to `auditDetail` rather than
+  // adding a second slot is what makes the coverage ride the refusal as well as
+  // the approval, and what keeps it out of the merge line's shape: that line
+  // joins these `why` strings, so it gets the clause for free.
+  //
+  // Nothing here is a condition. `chunks.read < chunks.count` still passes the
+  // audit arm exactly as it did — checkRowPassed reads the verdict and nothing
+  // else, and this file adds no fourth check to the three head rows.
+  const auditDetail = [auditWhy, auditChunkNote(auditData)]
+    .filter((clause): clause is string => typeof clause === "string" && clause !== "")
+    .map((clause) => ` — ${clause}`)
+    .join("");
   // A fallback audit is a WEAKER audit and says so wherever it is read: the
   // point of the check is a family that did not write the code, and at Codex's
   // weekly cap it was Opus that answered. The note rides the `why`, so the
@@ -372,6 +464,16 @@ export const internalRecordTests = internalMutation({
  * The removal check's findings are read out of that same answer and filed
  * beside it. The gate is unchanged by them: they are read by whoever opens
  * the row and by the weekly simplification pass.
+ *
+ * SO IS WHAT THE AUDIT SAW AND WHETHER ITS OWN CLAIMS ARE TRUE. On 2026-09-11
+ * the auditor approved a ~30,000-line diff having read the first 200,000
+ * characters of it, and the row said nothing about that — the record could not
+ * tell a full read from a slice. `chunks` is the coverage and `traceFindings`
+ * are the audit's claims checked against its run record. They live HERE, on the
+ * audit row, for the same reason `removalNotes` does: the audit is the verifier
+ * that READS A CHANGE, and whether the audit's own claims are true is part of
+ * what the audit answered. One home is one redaction path and one cap; a fourth
+ * table would be a fourth thing to redact and a fourth thing to forget to.
  */
 export const internalRecordAudit = internalMutation({
   args: {
@@ -383,6 +485,55 @@ export const internalRecordAudit = internalMutation({
     /** Why a stand-in auditor answered ("codex-cap"), when one did. */
     fallback: v.optional(v.string()),
     url: v.optional(v.string()),
+    /**
+     * How much of the diff the audit actually read. `read` is how many chunks
+     * came back with a parseable verdict, `count` how many there were.
+     *
+     * THE GATE DOES NOT READ ANY OF IT: checkRowPassed asks the audit row for
+     * its verdict and nothing else, and a head whose audit read 1 of 12 chunks
+     * still passes the audit arm. This is a RECORD, not a condition — the third
+     * thing on this row (with `removalNotes` and `traceFindings`) that is there
+     * to be read rather than to decide. The clause it puts in the gate's `why`
+     * (auditChunkNote) is what makes a thin read visible to Tom in the merge
+     * line, which is where an objection belongs.
+     *
+     * OPTIONAL AND NEVER DEFAULTED: a row with no `chunks` is an audit recorded
+     * before the diff was chunked at all, and that is a different fact from one
+     * that read 0 of 12.
+     */
+    chunks: v.optional(
+      v.object({
+        count: v.number(),
+        read: v.number(),
+        charsRead: v.number(),
+        charsTotal: v.number(),
+        truncatedChunks: v.number(),
+        files: v.number(),
+      }),
+    ),
+    /**
+     * The audit's own claims, checked against its run record: it said the tests
+     * pass and no `tests-run` row exists; it said it opened a path its run never
+     * opened; it did not read the whole diff; it changed a check in the same
+     * commit as the thing that check guards.
+     *
+     * Capped and redacted exactly as `removalNotes` is, and to the same two
+     * numbers — but NOT by the same route. `removalNotes` is derived from the
+     * stored text, which was redacted and capped before it was read, so it
+     * cannot say anything the row does not already say. THIS ARRIVES AS AN
+     * ARGUMENT from the trace checker, so it has never been through the filter:
+     * it is redacted HERE, on the way in, and that is the whole difference.
+     */
+    traceFindings: v.optional(v.array(v.string())),
+    /**
+     * THE COUNTED ABSENCE. `traceFindings: []` means the checks ran and found
+     * nothing; `traceFindings: []` WITH `trace: { available: false, reason }`
+     * means the audit's run record could not be read, so nothing was checked.
+     * Those two must not print the same sentence, which is the posture
+     * `regressions: null` already takes in the evals arm: "we did not check" is
+     * never recorded as "we checked and it was clean".
+     */
+    trace: v.optional(v.object({ available: v.boolean(), reason: v.optional(v.string()) })),
   },
   handler: async (ctx, args) => {
     const key = commitKey(args.repo, args.sha);
@@ -408,7 +559,47 @@ export const internalRecordAudit = internalMutation({
     // check falls past 8 KiB loses its notes, and the verdict, which is read
     // before the cap, does not.
     const removalNotes = removalNotesOf(text);
-    await logEvent(ctx, AUDIT_VERDICT, undefined, { ...args, verdict, text, removalNotes }, key);
+    // The trace findings go through the SAME cap and the SAME filter, one step
+    // later in the pipe: they never passed through the audit text, so this is
+    // the only place they can be redacted at all.
+    const traceFindings =
+      args.traceFindings === undefined
+        ? undefined
+        : args.traceFindings
+            .slice(0, AUDIT_REMOVAL_NOTES_MAX)
+            .map((finding) => redactSecrets(finding).slice(0, AUDIT_REMOVAL_NOTE_MAX_CHARS));
+    const trace =
+      args.trace === undefined
+        ? undefined
+        : {
+            available: args.trace.available,
+            ...(args.trace.reason === undefined
+              ? {}
+              : {
+                  reason: redactSecrets(args.trace.reason).slice(0, AUDIT_REMOVAL_NOTE_MAX_CHARS),
+                }),
+          };
+    // AN ABSENT FIELD WRITES NO KEY. `...args` already leaves out what was never
+    // sent, and the two conditional spreads put back only what was — so a row
+    // with no `chunks` stays a pre-chunking audit rather than becoming one that
+    // read 0 of 0, and a row with no `traceFindings` stays an audit nobody
+    // traced rather than one that was traced and found nothing. Defaulting
+    // either to a zero or an empty array is how the record forgets which of
+    // those happened.
+    await logEvent(
+      ctx,
+      AUDIT_VERDICT,
+      undefined,
+      {
+        ...args,
+        verdict,
+        text,
+        removalNotes,
+        ...(traceFindings === undefined ? {} : { traceFindings }),
+        ...(trace === undefined ? {} : { trace }),
+      },
+      key,
+    );
     return { existing: false, verdict, replaced: existing !== null };
   },
 });

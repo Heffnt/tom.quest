@@ -6,14 +6,21 @@ import {
   ablationFindings,
   ablationFor,
   aggregate,
+  AUDIT_FAULTS_DIR,
+  deterministicFailure,
   efficiencyOf,
   efficiencyVerdict,
   failedRun,
+  faultAudits,
+  faultsMonthly,
   goldenHash,
   HEAD_TRIALS,
   isFlaky,
   JOBS,
+  judgeAgreement,
   judgePrompt,
+  LABEL_SAMPLE,
+  loadAuditFaults,
   loadGolden,
   loadTasks,
   loadTriggers,
@@ -45,6 +52,8 @@ import {
   TRIALS_CAPABILITY,
   TRIALS_REGRESSION,
   verdictOf,
+  VERIFIER_CAVEAT,
+  verifierScorecard,
 } from "./evals.mjs";
 
 const dirs = [];
@@ -765,13 +774,59 @@ describe("the deterministic checks", () => {
   it("applies the HTML rules only to the explanation fields", async () => {
     const standard = await loadWritingStandard();
     expect(standard).not.toBe(null);
-    expect(standardRulesFor("groundUpExplanation", standard)).toBe(standard.RULES);
-    expect(standardRulesFor("explanation", standard)).toBe(standard.RULES);
-    expect(standardRulesFor("brief", standard)).toBe(standard.BRIEF_RULES);
-    expect(standardRulesFor("text", standard)).toBe(null);
-    expect(standardRulesFor("entryAction", standard)).toBe(null);
+    expect(standardRulesFor("groundUpExplanation", standard, JOBS.prepare)).toBe(standard.RULES);
+    expect(standardRulesFor("explanation", standard, JOBS.explanation)).toBe(standard.RULES);
+    expect(standardRulesFor("text", standard, JOBS.run)).toBe(null);
+    expect(standardRulesFor("entryAction", standard, JOBS.prepare)).toBe(null);
     // An absent file is "no rules ran", never a failure.
-    expect(standardRulesFor("groundUpExplanation", null)).toBe(null);
+    expect(standardRulesFor("groundUpExplanation", null, JOBS.prepare)).toBe(null);
+  });
+
+  // WHICH `brief` IS WHICH IS THE JOB'S ANSWER. Two jobs write a field called
+  // `brief`: the prepare job's IS the life todo's brief (2-5 sentences, at
+  // most 400 characters), and the code-brief job's is 250-400 WORDS. Handing
+  // the code brief the size rules fails it deterministically on every run,
+  // which is a regression on the evals-run row and a shut merge gate.
+  it("gives the size rules to the prepare job's brief and to nothing else", async () => {
+    const standard = await loadWritingStandard();
+    const ids = (rules) => rules.map((r) => r.id);
+    const FORM = ["brief-ellipsis", "brief-markup"];
+
+    expect(standardRulesFor("brief", standard, JOBS.prepare)).toBe(standard.BRIEF_RULES);
+    expect(ids(standardRulesFor("brief", standard, JOBS.prepare))).toEqual([
+      "brief-sentences", "brief-ellipsis", "brief-markup", "brief-length",
+    ]);
+
+    expect(ids(standardRulesFor("brief", standard, JOBS["code-brief"]))).toEqual(FORM);
+    expect(ids(standardRulesFor("recommendation", standard, JOBS["code-brief"]))).toEqual(FORM);
+    expect(ids(standardRulesFor("workDescription", standard, JOBS.prepare))).toEqual(FORM);
+
+    // The old two-argument shape still answers, with nothing size-bound.
+    expect(ids(standardRulesFor("brief", standard))).toEqual(FORM);
+
+    expect(standardRulesFor("nosuchfield", standard, JOBS.prepare)).toBe(null);
+    expect(standardRulesFor("brief", null, JOBS.prepare)).toBe(null);
+  });
+
+  // END TO END, through the check that runs before the judge. This is the
+  // output the merge gate would have died on.
+  it("lets a real 1,500-character code brief and a one-word recommendation through", async () => {
+    const standard = await loadWritingStandard();
+    const sentence =
+      "The retry loop in the poller drops an event whenever the socket closes " +
+      "between the acknowledgement and the commit. ";
+    const brief = sentence.repeat(Math.ceil(1500 / sentence.length)).trim();
+    expect(brief.length).toBeGreaterThan(1500);
+    const fresh = { brief, recommendation: "approve", execClass: "box", evidence: "a1b2c3d" };
+    const codeItem = { id: "code-brief-1", job: "code-brief", partition: "code-brief/x", verdict: "approve" };
+
+    expect(deterministicFailure(codeItem, JOBS["code-brief"], fresh, standard)).toBe(null);
+
+    // The FORM rules still bite: a bullet in a code brief is a breach at any
+    // length, and the reason names the rule rather than the field's size.
+    const withBullet = { ...fresh, brief: `${brief}\n- ship the patch behind a flag.` };
+    expect(deterministicFailure(codeItem, JOBS["code-brief"], withBullet, standard))
+      .toMatch(/^brief fails the writing standard: .*brief-markup/);
   });
 
   it("fails a writing-standard breach before any judge sees it", async () => {
@@ -1019,5 +1074,292 @@ describe("the trigger set", () => {
     expect(loadTriggers(dir).map((one) => one.file)).toEqual(["hourly.json"]);
     expect(triggerCounts(loadTriggers(dir)[0])).toEqual({ positives: 1, negatives: 2 });
     expect(loadTriggers(tree())).toEqual([]);
+  });
+});
+
+// ── The verifiers, measured ─────────────────────────────────────────────────
+// Every measure here REPORTS AND GATES NOTHING, and every test below runs with
+// no model and no network: the label door, the judge and the auditor are all
+// stubs on `io`.
+
+describe("the verifier scorecard", () => {
+  const label = (over = {}) => ({
+    labelId: "kl1",
+    at: 1_757_000_000_000,
+    source: "ruling",
+    polarity: "good",
+    meaning: "Tom approved this output",
+    ref: "ruling:r1",
+    run: { runId: "claude:box:r1", origin: "cron:planner", kind: "job", model: "opus", context: null, outcome: null },
+    rows: { contextRow: null, spanRows: [{ seq: 4, content: { text: "the text he judged" } }] },
+    link: { subjectKey: null },
+    ...over,
+  });
+
+  /** Three labels, newest first by `at`: good, bad, good. */
+  const three = () => [
+    label({ labelId: "a", at: 3, polarity: "good" }),
+    label({ labelId: "b", at: 2, polarity: "bad" }),
+    label({ labelId: "c", at: 1, polarity: "good" }),
+  ];
+
+  /** A judge that answers a canned list in order, and keeps every prompt. */
+  const judgeIo = (verdicts, over = {}) => {
+    const queue = [...verdicts];
+    const prompts = [];
+    return {
+      prompts,
+      labels: async () => ({ items: three() }),
+      runClaude: async (prompt) => {
+        prompts.push(prompt);
+        const next = queue.shift() ?? { verdict: "fail", reason: "out of answers" };
+        return JSON.stringify(typeof next === "string" ? { verdict: next, reason: "because of the wording" } : next);
+      },
+      ...over,
+    };
+  };
+
+  it("counts agreement when the judge matches him every time", async () => {
+    const judge = await judgeAgreement(judgeIo(["pass", "fail", "pass"]));
+    expect(judge).toMatchObject({ items: 3, agreed: 3, skipped: 0 });
+    expect(judge.disagreements).toEqual([]);
+    expect(judge.skips).toEqual([]);
+  });
+
+  it("counts every disagreement and names which way each went", async () => {
+    const judge = await judgeAgreement(judgeIo(["fail", "pass", "fail"]));
+    expect(judge).toMatchObject({ items: 3, agreed: 0, skipped: 0 });
+    expect(judge.disagreements).toEqual([
+      { runId: "claude:box:r1", tom: "good", judge: "fail", reason: "because of the wording" },
+      { runId: "claude:box:r1", tom: "bad", judge: "pass", reason: "because of the wording" },
+      { runId: "claude:box:r1", tom: "good", judge: "fail", reason: "because of the wording" },
+    ]);
+  });
+
+  it("counts a mixed week as it is", async () => {
+    const judge = await judgeAgreement(judgeIo(["pass", "pass", "pass"]));
+    expect(judge).toMatchObject({ items: 3, agreed: 2, skipped: 0 });
+    expect(judge.disagreements).toEqual([
+      { runId: "claude:box:r1", tom: "bad", judge: "pass", reason: "because of the wording" },
+    ]);
+  });
+
+  // The whole point of the replay: the judge must not be handed his answer.
+  it("replays through the same prompt with his verdict and his sentence taken out", async () => {
+    const io = judgeIo(["pass", "fail", "pass"]);
+    await judgeAgreement(io);
+    expect(io.prompts).toHaveLength(3);
+    for (const prompt of io.prompts) {
+      expect(prompt).toContain("You are judging one output of Tom's todo system");
+      expect(prompt).not.toContain("--- TOM'S VERDICT ---");
+      expect(prompt).not.toContain("--- TOM'S SENTENCE ---");
+      expect(prompt).not.toContain("--- WHAT TOM'S LABEL MEANS ---");
+      expect(prompt).not.toContain("Tom approved this output");
+      expect(prompt).toContain("the text he judged");
+    }
+    // And an ordinary judgePrompt still carries both, unchanged.
+    const ordinary = judgePrompt(item(), { brief: "b" }, JOBS.prepare.fields);
+    expect(ordinary).toContain("--- TOM'S VERDICT ---");
+    expect(ordinary).toContain("--- TOM'S SENTENCE ---");
+    expect(judgePrompt(item(), { brief: "b" }, JOBS.prepare.fields, { hideVerdict: true }))
+      .not.toContain("--- TOM'S VERDICT ---");
+  });
+
+  // A skip is counted and named. It is NOT in `items`, so `agreed` out of
+  // `items` stays a rate over what was actually measured.
+  it("skips a label whose run is gone or whose text cannot be recovered, and says why", async () => {
+    const io = judgeIo(["pass"], {
+      labels: async () => ({
+        items: [
+          label({ labelId: "a", at: 3, polarity: "good" }),
+          label({ labelId: "b", at: 2, polarity: "bad", run: null }),
+          label({ labelId: "c", at: 1, polarity: "good", rows: { contextRow: null, spanRows: [] } }),
+        ],
+      }),
+    });
+    const judge = await judgeAgreement(io);
+    expect(judge).toMatchObject({ items: 1, agreed: 1, skipped: 2 });
+    expect(judge.skips).toEqual([
+      { runId: null, reason: "the label named no run, or the run has left the thirty-day window" },
+      { runId: "claude:box:r1", reason: "the run recorded no text to judge" },
+    ]);
+    // One model call, for the one label that could be judged.
+    expect(io.prompts).toHaveLength(1);
+  });
+
+  it("caps the lists at twenty and every string in them at three hundred", async () => {
+    const many = Array.from({ length: 21 }, (_, index) => label({ labelId: `l${index}`, at: 100 - index, polarity: "bad" }));
+    const long = "x".repeat(500);
+    const io = {
+      labels: async () => ({ items: many }),
+      runClaude: async () => JSON.stringify({ verdict: "pass", reason: long }),
+    };
+    const judge = await judgeAgreement(io, { limit: 21 });
+    expect(judge.items).toBe(21);
+    expect(judge.agreed).toBe(0);
+    expect(judge.disagreements).toHaveLength(20);
+    expect(judge.disagreements[0].reason).toHaveLength(300);
+  });
+
+  it("takes twenty labels by default, newest first", async () => {
+    expect(LABEL_SAMPLE).toBe(20);
+    const many = Array.from({ length: 30 }, (_, index) => label({ labelId: `l${index}`, at: index, polarity: "good" }));
+    const seen = [];
+    const io = {
+      labels: async () => ({ items: many }),
+      runClaude: async (prompt) => {
+        seen.push(prompt);
+        return JSON.stringify({ verdict: "pass", reason: "kept" });
+      },
+    };
+    const judge = await judgeAgreement(io);
+    expect(judge.items).toBe(20);
+    expect(seen).toHaveLength(20);
+  });
+
+  // Monthly, not weekly: the run whose NY date falls in the first seven days
+  // of the month is the month's run, and the reason says which it was.
+  it("fires the fault arm on a first-of-month Saturday and not otherwise", () => {
+    // 2026-08-01 is a Saturday; noon UTC is 08:00 in New York.
+    expect(faultsMonthly(Date.UTC(2026, 7, 1, 12))).toEqual({ ran: true, reason: "this month" });
+    expect(faultsMonthly(Date.UTC(2026, 7, 7, 12))).toEqual({ ran: true, reason: "this month" });
+    expect(faultsMonthly(Date.UTC(2026, 7, 8, 12))).toEqual({ ran: false, reason: "not this month" });
+    expect(faultsMonthly(Date.UTC(2026, 7, 15, 12))).toEqual({ ran: false, reason: "not this month" });
+    // --force and --faults-only run it whatever the date says, and the pair
+    // then reads "it ran, and this was not its week".
+    expect(faultsMonthly(Date.UTC(2026, 7, 15, 12), true)).toEqual({ ran: true, reason: "not this month" });
+  });
+
+  const faultDir = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "evals-faults-"));
+    dirs.push(dir);
+    for (const id of ["alpha", "beta", "gamma"]) {
+      fs.writeFileSync(
+        path.join(dir, `${id}.diff`),
+        [
+          `# id: ${id}`,
+          `# subject: ${id} claims a rename`,
+          `# witness: drop the second hunk`,
+          `diff --git a/${id}.mjs b/${id}.mjs`,
+          `@@ -1 +1 @@`,
+          `-const a = 1;`,
+          `+const a = 2;`,
+          ``,
+        ].join("\n"),
+      );
+    }
+    return dir;
+  };
+
+  it("scores each planted fault by its verdict word and names which refused", async () => {
+    const verdicts = ["VERDICT: REFUSED\n\nIt deletes an assertion.", "VERDICT: APPROVED\n\nLooks fine.", "VERDICT: REFUSED\n\nIt plants a key."];
+    const prompts = [];
+    const io = {
+      audit: async (prompt) => {
+        prompts.push(prompt);
+        return verdicts.shift();
+      },
+    };
+    const faults = await faultAudits(io, { at: Date.UTC(2026, 7, 15, 12), force: true, dir: faultDir() });
+    expect(faults).toMatchObject({ ran: true, reason: "not this month", items: 3, refused: 2 });
+    expect(faults.results).toEqual([
+      { id: "alpha", verdict: "REFUSED" },
+      { id: "beta", verdict: "APPROVED" },
+      { id: "gamma", verdict: "REFUSED" },
+    ]);
+    // The fixture reaches the auditor through the audit's OWN prompt, and the
+    // header lines are read here rather than sent.
+    expect(prompts[0]).toContain("You are auditing one change");
+    expect(prompts[0]).toContain("alpha claims a rename");
+    expect(prompts[0]).toContain("diff --git a/alpha.mjs");
+    expect(prompts[0]).not.toContain("# witness:");
+  });
+
+  it("runs nothing and says so when it is not the month's week", async () => {
+    let called = 0;
+    const io = { audit: async () => { called += 1; return "VERDICT: REFUSED"; } };
+    const faults = await faultAudits(io, { at: Date.UTC(2026, 7, 15, 12), dir: faultDir() });
+    expect(faults).toEqual({ ran: false, reason: "not this month", items: 0, refused: 0, results: [] });
+    expect(called).toBe(0);
+  });
+
+  it("reads an answer with no verdict line as unavailable, never as a refusal", async () => {
+    const io = { audit: async () => "I think this is probably fine, honestly." };
+    const faults = await faultAudits(io, { at: 1, force: true, dir: faultDir() });
+    expect(faults.refused).toBe(0);
+    expect(faults.results.every((result) => result.verdict === "UNAVAILABLE")).toBe(true);
+  });
+
+  // The checked-in fixtures, parsed off disk. `witness:` is the convention
+  // vqc/ledger.yaml's no-witness-fault-harness entry asks for, so a fixture
+  // without one is the thing this test exists to catch.
+  it("parses the three checked-in fixtures, sorted by id, each with a witness", () => {
+    const faults = loadAuditFaults(path.join(path.resolve("."), ...AUDIT_FAULTS_DIR.split("/")));
+    expect(faults.map((one) => one.id)).toEqual(["planted-secret", "removed-test", "wider-than-claimed"]);
+    for (const fault of faults) {
+      expect(fault.subject.length).toBeGreaterThan(0);
+      expect(fault.witness.length).toBeGreaterThan(0);
+      expect(fault.diff.startsWith("diff --git ")).toBe(true);
+      // The headers are read, never sent: nothing before the first diff line
+      // survives into what the auditor sees.
+      expect(fault.diff).not.toContain("# witness:");
+    }
+  });
+
+  it("is empty for a directory that is not there, and never throws", () => {
+    expect(loadAuditFaults(path.join(tree(), "nowhere"))).toEqual([]);
+  });
+
+  it("assembles the whole scorecard in the shape the weekly reader takes", async () => {
+    const io = {
+      labels: async () => ({ items: three() }),
+      runClaude: async () => JSON.stringify({ verdict: "pass", reason: "kept" }),
+      audit: async () => "VERDICT: REFUSED\n\nIt removes a test.",
+    };
+    const card = await verifierScorecard(io, { TTS_AUDIT_FAULTS_DIR: faultDir() }, { at: 1_757_000_000_000, force: true });
+    expect(Object.keys(card).sort()).toEqual(["at", "caveat", "faults", "judge"]);
+    expect(card.at).toBe(1_757_000_000_000);
+    expect(card.caveat).toBe(VERIFIER_CAVEAT);
+    expect(Object.keys(card.judge).sort()).toEqual(["agreed", "disagreements", "items", "skipped", "skips"]);
+    expect(Object.keys(card.faults).sort()).toEqual(["items", "ran", "reason", "refused", "results"]);
+    expect(card.judge).toMatchObject({ items: 3, agreed: 2, skipped: 0 });
+    expect(card.faults).toMatchObject({ ran: true, items: 3, refused: 3 });
+  });
+
+  it("measures nothing rather than throwing when the label door is not wired", async () => {
+    const judge = await judgeAgreement({});
+    expect(judge).toEqual({ items: 0, agreed: 0, skipped: 0, disagreements: [], skips: [] });
+  });
+});
+
+describe("parseArgs takes the two new flags", () => {
+  it("maps the hyphenated flags to faultsOnly and dryRun", () => {
+    expect(parseArgs(["--faults-only"])).toMatchObject({ faultsOnly: true, dryRun: false });
+    expect(parseArgs(["--weekly", "--dry-run"])).toMatchObject({ weekly: true, dryRun: true });
+    // The landed `options[name.slice(2)] = true` would have written this key
+    // and nobody would have read it.
+    expect(parseArgs(["--faults-only"])["faults-only"]).toBe(undefined);
+    expect(parseArgs(["--weekly", "--dry-run"])["dry-run"]).toBe(undefined);
+  });
+
+  it("needs no repo or sha for --faults-only", () => {
+    expect(() => parseArgs(["--faults-only"])).not.toThrow();
+    expect(() => parseArgs([])).toThrow(/--repo and --sha/);
+  });
+
+  it("leaves every pre-existing flag parsing exactly as it did", () => {
+    expect(parseArgs(["--serve"])).toEqual({
+      repo: null, sha: null, base: null, limit: 40, jobs: null,
+      force: false, serve: true, weekly: false, ablation: false, tasks: null,
+      faultsOnly: false, dryRun: false,
+    });
+    expect(parseArgs(["--weekly", "--force"])).toMatchObject({ weekly: true, force: true, ablation: true });
+    expect(parseArgs(["--repo", "tom.quest", "--sha", "abc", "--ablation"]))
+      .toMatchObject({ repo: "tom.quest", sha: "abc", ablation: true, faultsOnly: false, dryRun: false });
+    expect(parseArgs(["--repo=WikiTom", "--sha=def", "--base=ghi", "--limit=6", "--jobs=prepare,run"]))
+      .toMatchObject({ repo: "WikiTom", sha: "def", base: "ghi", limit: 6, jobs: ["prepare", "run"] });
+    expect(parseArgs(["--tasks", "slack"]).tasks).toBe("slack");
+    expect(() => parseArgs(["--nope"])).toThrow(/unknown argument/);
+    expect(() => parseArgs(["--serve", "--limit", "0"])).toThrow(/--limit/);
   });
 });

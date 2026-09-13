@@ -6,6 +6,7 @@ import { internalMutation, internalQuery, mutation, query } from "./_generated/s
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { requireTom } from "./authRoles";
 import { LIVE_STATUSES, SESSION_MODEL, nyLocalHour } from "./ttsShared";
+import { redactSecrets } from "../worker/session-host/redact.mjs";
 
 const RUN_KIND = v.union(
   v.literal("session"), v.literal("worker"), v.literal("code"),
@@ -771,6 +772,105 @@ export const internalManifest = internalQuery({
           at: version.at,
         })),
       nextCursor: page.isDone ? null : page.continueCursor,
+    };
+  },
+});
+
+// ── The audit's own run, read back to check its own claims ───────────────────
+
+/** How many transcript rows one trace reads. THE BOUND IS 400 ROWS, NOT 400
+ *  TOOL CALLS: a transcript interleaves user, assistant, thinking and
+ *  tool-result rows, so a long run's tool calls are cut well before there are
+ *  400 of them. See the note on `truncated` below for what that costs. */
+export const RUN_TRACE_MAX_ROWS = 400;
+
+/** A tool name or path is USER TEXT — whatever the model typed — and this door
+ *  hands it to a job that posts it onto an event, so it is redacted and cut on
+ *  the way out, exactly as ttsMerge.internalRecordAudit treats every string it
+ *  is given from outside. */
+const RUN_TRACE_MAX_CHARS = 300;
+const traceText = (value: string) => redactSecrets(value).slice(0, RUN_TRACE_MAX_CHARS);
+
+/**
+ * ONE RUN'S TOOL CALLS, by the registration token it stamped on what it wrote.
+ *
+ * WHY IT EXISTS. The audit checks its own claims against ITS OWN RUN: it says
+ * it opened `convex/foo.ts`, and this answers whether any Read, Grep or Glob
+ * call in that run ever named that path (worker/jobs/audit.mjs, finding 2).
+ * Without it the audit's "I read the whole change" is unverifiable, which is
+ * the exact fault this round closes.
+ *
+ * `null` FOR AN UNKNOWN TOKEN IS A NORMAL ANSWER and never an error, exactly as
+ * ttsEvals.internalRunByToken treats it: the sweeper needs a moment to see the
+ * run's file, so the caller polls with a short bounded wait and a trace that
+ * never arrives is a counted absence, not a failed audit.
+ *
+ * NARROW LIKE ITS SIBLING. A caller holding a token is owed this run's tool
+ * NAMES AND PATHS — never its transcript, its tool results, or any other field
+ * of a call's input.
+ */
+export const internalRunTrace = internalQuery({
+  args: { token: v.string() },
+  handler: async (ctx, { token }) => {
+    const run = await ctx.db
+      .query("runs")
+      .withIndex("by_reg_token", (q) => q.eq("regToken", token))
+      .first();
+    if (run === null) return null;
+    const rows = await ctx.db
+      .query("claudeMessages")
+      .withIndex("by_run_seq", (q) => q.eq("runId", run.runId))
+      .take(RUN_TRACE_MAX_ROWS);
+    const toolCalls: Array<{ name: string; path: string | null }> = [];
+    for (const row of rows) {
+      if (row.kind !== "tool-call") continue;
+      // `content` is v.any(), so every field is read defensively and a row that
+      // cannot be read is DROPPED rather than thrown on: one malformed row must
+      // not cost an audit its whole trace.
+      const content = (row.content ?? {}) as Record<string, unknown>;
+      if (typeof content.name !== "string" || content.name === "") continue;
+      const input =
+        typeof content.input === "object" && content.input !== null && !Array.isArray(content.input)
+          ? (content.input as Record<string, unknown>)
+          : {};
+      // The first present of the three: Read and Edit name `file_path`, Glob
+      // and some tools name `path`, and Grep names `pattern`.
+      const named = [input.file_path, input.path, input.pattern].find(
+        (value) => typeof value === "string" && value !== "",
+      );
+      toolCalls.push({
+        name: traceText(content.name),
+        path: typeof named === "string" ? traceText(named) : null,
+      });
+    }
+    // THE SAME ARITHMETIC AS worker/jobs/evals.mjs `tokensOf`, and deliberately
+    // not a second one: input + cache-read + cache-write + output, those four
+    // fields and no others. That function is the other home; if the sum changes
+    // there it changes here.
+    const totals = run.outcome?.totals;
+    const tokens =
+      totals === undefined
+        ? null
+        : totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens + totals.outputTokens;
+    return {
+      runId: run.runId,
+      turns: run.outcome?.turns ?? null,
+      tokens,
+      toolCalls,
+      // WHY THE TRUNCATION IS DECLARED RATHER THAN SWALLOWED. A cut list does
+      // not quieten finding 2, it makes it LOUDER AND WRONG: the finding fires
+      // when a path the audit claims is in NO tool call of the list, so a path
+      // that was genuinely read on turn 300 and fell past the cut is reported
+      // as a claim the record does not support — a false accusation against an
+      // honest audit, which is the one failure this round cannot afford,
+      // because a check that cries wolf is a check nobody reads. So the cut is
+      // a fact on the answer, and a reader that sees `truncated: true` can
+      // silence finding 2 the way `trace.available: false` already silences it.
+      // The alternative — an unbounded read — is a transaction this deployment
+      // pays for on behalf of whoever holds a token, which is why the bound
+      // stays. An audit whose own run is longer than 400 rows is not a case
+      // this door serves fully, and it says so rather than guessing.
+      truncated: rows.length === RUN_TRACE_MAX_ROWS,
     };
   },
 });

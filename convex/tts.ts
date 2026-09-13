@@ -1380,10 +1380,20 @@ export const internalPrepareTodo = internalMutation({
     // an unregistered caller stamps nothing and a ruling on the row writes no
     // label rather than a guessed one.
     runToken: v.optional(v.string()),
+    // THE DOOR CHECK'S MARK (phase 9). The planner's prepare pass reads what
+    // it wrote against the writing standard and retries once; a write-up that
+    // fails on both attempts is still posted, and these are the complaints it
+    // failed on (Tom, 2026-09-12: "Agreed." — a silent hole costs more than a
+    // marked fault). They ride the "prepared" event's `data` below rather than
+    // the todo row: `data` is v.any(), so no schema change, and dtsEvents
+    // by_todo already finds them. A PASS SENDS NO doorFaults KEY AT ALL, so
+    // the newest "prepared" row answers "was the last write-up refused" by
+    // itself and there is nothing to clear.
+    doorFaults: v.optional(v.array(v.string())),
   },
   handler: async (
     ctx,
-    { id, brief, entryAction, workDescription, readiness, dueAt, dateKind, evidence, groundUpExplanation, status, runToken },
+    { id, brief, entryAction, workDescription, readiness, dueAt, dateKind, evidence, groundUpExplanation, status, runToken, doorFaults },
   ) => {
     const normalized = ctx.db.normalizeId("dtsTodos", id);
     if (!normalized) throw new Error(`Unknown todo id: ${id}`);
@@ -1443,6 +1453,7 @@ export const internalPrepareTodo = internalMutation({
     await logEvent(ctx, "prepared", normalized, {
       readiness: patch.readiness,
       fields: written,
+      ...(doorFaults === undefined ? {} : { doorFaults }),
     });
     // Completion runs LAST and through the ONE transition implementation
     // (applyStatusChange): a raw status patch would skip the kept-dates
