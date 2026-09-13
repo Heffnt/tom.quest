@@ -150,6 +150,14 @@ function archivedNames(folder) {
   }
 }
 
+function timestampMs(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== "string") return undefined;
+  const numeric = value.trim() === "" ? Number.NaN : Number(value);
+  const parsed = Number.isNaN(numeric) ? Date.parse(value) : numeric;
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 function recordsIn(folder, { includeArchived = false } = {}) {
   const archived = archivedNames(folder);
   const records = [];
@@ -171,8 +179,10 @@ function recordsIn(folder, { includeArchived = false } = {}) {
     records.push({ file, name: entry.name, record, isArchived });
   }
   return records.sort((a, b) => {
-    const right = Date.parse(b.record.lastActivityAt ?? "") || 0;
-    const left = Date.parse(a.record.lastActivityAt ?? "") || 0;
+    const right = timestampMs(b.record.lastActivityAt ?? b.record.createdAt);
+    const left = timestampMs(a.record.lastActivityAt ?? a.record.createdAt);
+    if (left === undefined) return right === undefined ? a.name.localeCompare(b.name) : 1;
+    if (right === undefined) return -1;
     return right - left || a.name.localeCompare(b.name);
   });
 }
@@ -291,8 +301,8 @@ function folderName(folder, labels, current) {
 }
 
 function formatTime(value) {
-  const parsed = Date.parse(value ?? "");
-  return Number.isNaN(parsed) ? "unknown" : new Date(parsed).toLocaleString();
+  const parsed = timestampMs(value);
+  return parsed === undefined ? "unknown" : new Date(parsed).toLocaleString();
 }
 
 function listCommand(context) {
@@ -305,7 +315,7 @@ function listCommand(context) {
     }
     for (const { record, isArchived } of records) {
       const location = record.worktreePath || record.cwd || "unknown";
-      console.log(`  ${JSON.stringify(record.title ?? "(untitled)")} | last active: ${formatTime(record.lastActivityAt)} | worktree/cwd: ${location} | isArchived: ${isArchived}`);
+      console.log(`  ${JSON.stringify(record.title ?? "(untitled)")} | last active: ${formatTime(record.lastActivityAt ?? record.createdAt)} | worktree/cwd: ${location} | isArchived: ${isArchived}`);
     }
   }
   return 0;

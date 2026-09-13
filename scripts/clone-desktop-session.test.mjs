@@ -28,8 +28,8 @@ function record(title, overrides = {}) {
     cwd: `C:\\work\\${title}`,
     worktreePath: `C:\\trees\\${title}`,
     branch: "feature/test",
-    createdAt: "2026-09-12T10:00:00.000Z",
-    lastActivityAt: "2026-09-13T15:30:00.000Z",
+    createdAt: 1789207200000,
+    lastActivityAt: 1789313400000,
     isArchived: false,
     bridgeSessionIds: ["live-bridge"],
     error: "stale banner",
@@ -84,7 +84,7 @@ beforeEach(() => {
     labels: [],
   });
   writeJson(sourceFile("local_alpha.json"), record("Alpha investigation"));
-  writeJson(sourceFile("local_alpha_two.json"), record("Alpha follow-up", { lastActivityAt: "2026-09-13T16:00:00.000Z" }));
+  writeJson(sourceFile("local_alpha_two.json"), record("Alpha follow-up", { lastActivityAt: 1789315200000 }));
   writeJson(sourceFile("local_archived.json"), record("Archived Alpha", { isArchived: true }));
   writeJson(sourceFile("local_unique.json"), record("Unique handoff", { customField: "preserve me" }));
 });
@@ -113,6 +113,16 @@ describe("clone-desktop-session", () => {
       accountUuid: SOURCE_ACCOUNT,
       organizationUuid: SOURCE_ORG,
     });
+  });
+
+  test("list formats numeric activity timestamps and orders newest first", () => {
+    const result = run("list");
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /"Alpha follow-up" \| last active: (?!unknown)[^|]+ \|/);
+    assert.ok(
+      result.stdout.indexOf('"Alpha follow-up"') < result.stdout.indexOf('"Alpha investigation"'),
+      result.stdout,
+    );
   });
 
   test("account disagreement does not prevent pull or undo", () => {
