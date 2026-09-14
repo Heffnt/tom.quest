@@ -4,11 +4,13 @@
 // never know. Keeping those facts in separate top-level groups lets each
 // writer preserve the others, including when SessionEnd races a late claim.
 //
-// THE ENVELOPE HAS FOUR GROUPS and one writer each:
+// THE ENVELOPE HAS FIVE GROUPS and one writer each:
 //
 //   writer + registration — the launcher, through writeRegistration.
 //   claim                 — the claimer, through claimRegistration or
 //                           writeRegistrationClaim.
+//   receipt               — the hook that rendered the grant block, through
+//                           writeRegistrationReceipt.
 //   end                   — SessionEnd, through writeRegistrationEnd.
 //   skills                — `tts search skills`, through appendSkillAsk.
 //
@@ -108,6 +110,13 @@ function endValue(end, now) {
     ...end,
     at: Number.isFinite(end?.at) ? end.at : now(),
     status: end?.status === "failed" ? "failed" : "ended",
+  };
+}
+
+function receiptValue(receipt, now) {
+  return {
+    ...receipt,
+    at: Number.isFinite(receipt?.at) ? receipt.at : now(),
   };
 }
 
@@ -232,6 +241,21 @@ export function writeRegistrationClaim({
   });
 }
 
+/**
+ * Write the hook-owned record of the grant block it rendered. This is separate
+ * from a claim: SessionStart can record what it showed before the CLI exposes
+ * enough facts to claim the launcher's spool.
+ */
+export function writeRegistrationReceipt({ runFile, receipt = {}, fs = fsDefault, now = Date.now } = {}) {
+  const file = registrationSidecarPath(runFile);
+  return withEnvelopeLock(file, fs, now, () => {
+    const existing = jsonAt(file, fs) ?? {};
+    const envelope = { ...existing, receipt: receiptValue(receipt, now) };
+    if (JSON.stringify(existing) !== JSON.stringify(envelope)) atomicJson(file, envelope, fs);
+    return { ok: true, file, envelope };
+  });
+}
+
 /** Move a launcher spool into the CLI-derived sidecar path, idempotently. */
 export function claimRegistration({
   spoolDir,
@@ -282,8 +306,10 @@ export function claimRegistration({
       // launcher token can be claimed. It is the actual rendered grant block,
       // so retain it while the launcher supplies the rest of registration.
       registration: { ...spooled.registration, ...existing?.registration },
+      receipt: existing?.receipt,
       claim: claimValue(claim, runFile, now),
     };
+    if (envelope.receipt === undefined) delete envelope.receipt;
     const skills = mergeSkillAsks(existing?.skills, spooled.skills);
     if (skills === undefined) delete envelope.skills;
     else envelope.skills = skills;
@@ -313,7 +339,7 @@ export function writeRegistrationEnd({ runFile, end = {}, fs = fsDefault, now = 
 
 /**
  * Append one `tts search skills <name>` to the run's envelope. APPEND-ONLY and
- * the fourth writer: it touches `skills` and nothing else, under the same lock
+ * the fifth writer: it touches `skills` and nothing else, under the same lock
  * and the same atomic tmp+rename every other writer uses.
  *
  * It takes the spool, the sidecar, or both. `tts search skills` runs inside a
@@ -339,13 +365,18 @@ export function appendSkillAsk({ runFile, spoolDir, token, ask = {}, fs = fsDefa
   const sidecar = runFile === undefined || runFile === null || runFile === "" ? null : registrationSidecarPath(runFile);
   const spool = spoolDir === undefined || spoolDir === null || spoolDir === "" ? null : spoolPath(spoolDir, token);
   let file = sidecar !== null && fs.existsSync(sidecar) ? sidecar : (spool ?? sidecar);
+  let followedPointer = null;
   if (file === null) return { ok: false, reason: "no run registration envelope named" };
   // A caller holding only the token, after the claim took the spool away:
   // follow the forwarding address to the sidecar. This is the ORDINARY case on
   // the box, where every ask is made inside a claimed session.
   if (spool !== null && !fs.existsSync(file)) {
-    const pointed = jsonAt(claimPointerPath(spoolDir, token), fs);
-    if (typeof pointed?.runFile === "string" && pointed.runFile !== "") file = registrationSidecarPath(pointed.runFile);
+    const pointer = claimPointerPath(spoolDir, token);
+    const pointed = jsonAt(pointer, fs);
+    if (typeof pointed?.runFile === "string" && pointed.runFile !== "") {
+      file = registrationSidecarPath(pointed.runFile);
+      followedPointer = pointer;
+    }
   }
   const append = (target) => withEnvelopeLock(target, fs, now, () => {
     const existing = jsonAt(target, fs);
@@ -367,12 +398,30 @@ export function appendSkillAsk({ runFile, spoolDir, token, ask = {}, fs = fsDefa
     return { ok: true, file: target, envelope };
   });
   const result = append(file);
-  if (!result.retryClaimPointer || spool === null) return result;
-  const pointed = jsonAt(claimPointerPath(spoolDir, token), fs);
+  if (!result.retryClaimPointer || spool === null) {
+    // A successful append proves that the forwarding address is live. Refresh
+    // it only now: a bad or missing target must still age out in the sweep.
+    if (result.ok && followedPointer !== null) {
+      try {
+        const at = new Date(now());
+        fs.utimesSync(followedPointer, at, at);
+      } catch {}
+    }
+    return result;
+  }
+  const pointer = claimPointerPath(spoolDir, token);
+  const pointed = jsonAt(pointer, fs);
   if (typeof pointed?.runFile !== "string" || pointed.runFile === "") {
     return { ok: false, reason: "run registration envelope missing", file };
   }
-  return append(registrationSidecarPath(pointed.runFile));
+  const retried = append(registrationSidecarPath(pointed.runFile));
+  if (retried.ok) {
+    try {
+      const at = new Date(now());
+      fs.utimesSync(pointer, at, at);
+    } catch {}
+  }
+  return retried;
 }
 
 export function readRegistration(runFile, { fs = fsDefault } = {}) {
@@ -429,7 +478,7 @@ export function mergeRegistration({ parsed, envelope, host, report = () => {} })
     if (Array.isArray(registration[key])) run.context[key] = [...registration[key]];
     else delete run.context[key];
   }
-  // The fourth group, written by `tts search skills` rather than by a
+  // The fifth group, written by `tts search skills` rather than by a
   // launcher. It is FLATTENED TO PLAIN STRINGS because convex/schema.ts types
   // every runs.context list as v.array(v.string()): a string array is the only
   // additive shape, so the name and the result travel as one `name (result)`.

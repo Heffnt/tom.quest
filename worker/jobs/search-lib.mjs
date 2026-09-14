@@ -606,14 +606,16 @@ export function runningCli(env = process.env) {
   if (env.CODEX_THREAD_ID) return "codex";
   if (env.CLAUDECODE || env.CLAUDE_CODE_ENTRYPOINT || env.CLAUDE_CONFIG_DIR) return "claude";
   if (env.CODEX_HOME) return "codex";
-  return "claude";
+  return null;
 }
 
 /** The one root the running CLI resolves. `CODEX_HOME` is the Codex config
  * directory itself, while `CLAUDE_CONFIG_DIR` is Claude's config directory. */
 export function skillRoots(env = process.env) {
   const home = env.HOME || env.USERPROFILE || os.homedir();
-  if (runningCli(env) === "codex") {
+  const cli = runningCli(env);
+  if (cli === null) return [];
+  if (cli === "codex") {
     const codex = env.CODEX_HOME && env.CODEX_HOME !== "" ? env.CODEX_HOME : path.join(home, ".codex");
     return [path.join(codex, "skills")];
   }
@@ -690,8 +692,8 @@ function skillGroup(name, groups) {
   return groups.includes(head) ? head : "unknown";
 }
 
-/** renderSkillMd JSON-quotes the description so a `"` or a `:` inside it cannot
- * break the block, and parseFrontmatter parses nothing inside a value. An
+/** renderSkillMd JSON-quotes the scalar description so a `"` or a `:` inside it
+ * cannot break the block, and parseFrontmatter does not parse its contents. An
  * interrupted publish can leave an installed body behind, so search shows its
  * literal malformed description instead of hiding an inspectable skill. */
 function frontmatterText(value) {
@@ -726,7 +728,7 @@ export function readSkillCatalog(dir, { prefix, groups, bareName }) {
     // interrupted between those steps leaves no loadable skill to list.
     if (!fs.existsSync(file)) continue;
     const { fields, body } = parseFrontmatter(fs.readFileSync(file, "utf8"));
-    const name = bareName(entry.name);
+    const name = bareName(entry.name.slice(prefix.length));
     const firstDirectory = directories.get(name);
     // REMOVAL CHECK: cannot remove; two on-disk spellings can normalize to one load name and make the selected body ambiguous.
     if (firstDirectory !== undefined) {
@@ -779,8 +781,13 @@ export function skillNearMisses(name, catalog, groups) {
  * because the caller asked for something by name and got nothing.
  */
 export async function skillResults(options, env) {
-  const { SKILL_PREFIX, SKILL_GROUPS, bareSkillName } = await loadSkillsModule();
+  // The isolated catalog root is required by the test harness.
   const searched = options.skillsDir === undefined ? skillRoots(env) : [path.resolve(options.skillsDir)];
+  if (searched.length === 0) {
+    const note = "tts-search: launcher identity missing; skill catalog was not read";
+    return { rows: [], note, json: { skills: [], note } };
+  }
+  const { SKILL_PREFIX, SKILL_GROUPS, bareSkillName } = await loadSkillsModule();
   const dir = searched.find((candidate) => fs.existsSync(candidate)) ?? null;
   const catalog = dir === null ? [] : readSkillCatalog(dir, { prefix: SKILL_PREFIX, groups: SKILL_GROUPS, bareName: bareSkillName });
 

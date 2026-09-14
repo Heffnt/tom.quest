@@ -120,7 +120,7 @@ describe("session-start-hook", () => {
     expect(context).not.toContain("--layers know");
   });
 
-  it("hands the actual granted and refused names to run diagnostics", () => {
+  it("hands the actual granted and refused names to the independent receipt", () => {
     const wikitom = fixture({ writing: false });
     const skills = temp("session-start-registration-skills-");
     const transcript = path.join(temp("session-start-registration-run-"), "session.jsonl");
@@ -131,10 +131,44 @@ describe("session-start-hook", () => {
       payload: { hook_event_name: "SessionStart", transcript_path: transcript },
     }));
 
-    expect(JSON.parse(fs.readFileSync(registrationSidecarPath(transcript), "utf8")).registration).toMatchObject({
+    const envelope = JSON.parse(fs.readFileSync(registrationSidecarPath(transcript), "utf8"));
+    expect(envelope.receipt).toMatchObject({
+      by: "hook:session-start-grants",
+      runFile: path.resolve(transcript),
       skillsGranted: [],
       skillsRefused: ["write"],
     });
+    expect(envelope.claim).toBeUndefined();
+  });
+
+  it("accepts only Claude's transcript_path and Codex's rollout_path run-file fields", () => {
+    const wikitom = fixture();
+    const skills = temp("session-start-run-file-skills-");
+    const legacy = path.join(temp("session-start-legacy-run-"), "legacy.jsonl");
+    contextOf(run({ wikitom, skills, payload: { transcriptPath: legacy, cli_name: "Claude Code" } }));
+    expect(fs.existsSync(registrationSidecarPath(legacy))).toBe(false);
+
+    const rollout = path.join(temp("session-start-rollout-run-"), "rollout.jsonl");
+    contextOf(run({ wikitom, skills, payload: { rollout_path: rollout, cli_name: "Codex" } }));
+    expect(JSON.parse(fs.readFileSync(registrationSidecarPath(rollout), "utf8")).receipt.runFile).toBe(path.resolve(rollout));
+  });
+
+  it("keeps operate context but does not route skills without launcher identity", () => {
+    const wikitom = fixture();
+    const skills = path.join(temp("session-start-unidentified-skills-"), "skills");
+    const transcript = path.join(temp("session-start-unidentified-run-"), "session.jsonl");
+    const context = contextOf(run({
+      wikitom,
+      skills,
+      payload: { hook_event_name: "SessionStart", transcript_path: transcript },
+      env: {
+        TTS_CLI: "", TTS_RUNNER: "", CODEX_THREAD_ID: "", CLAUDECODE: "", CLAUDE_CODE_ENTRYPOINT: "", CODEX_HOME: "", CLAUDE_CONFIG_DIR: "",
+      },
+    }));
+    expect(context).toContain("── model-of-tom/agent-rules.md ──");
+    expect(context).toContain("SKILLS could not be routed: launcher identity missing; skill catalog was not read");
+    expect(fs.existsSync(skills)).toBe(false);
+    expect(fs.existsSync(registrationSidecarPath(transcript))).toBe(false);
   });
 
   it("stays inside the laptop budget, on the fixture and on the real vault", () => {

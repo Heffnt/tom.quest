@@ -145,14 +145,9 @@ export function subjectNeedsRecord(subject) {
  * category is matched against, where those terms came from, and the page itself
  * for a caller that wants its body.
  *
- * THE ONE CORRECTION to the moved code. context-relevance.mjs's areaMatchTerms
- * split the raw `categories:` value on commas alone, and `parseFrontmatter`
- * parses nothing inside a value — so `categories: [admin, email]` yielded the
- * terms `[admin` and `email]`, neither of which matches anything, and the FIRST
- * AND LAST category of every area page was dead. scripts/skills.mjs's
- * `areaCategories` strips the brackets, and it is already what the published
- * skill descriptions are written from, so the terms a run is routed by and the
- * terms its description advertises now come out of one function.
+ * Routing and skill descriptions share the parser-normalized category arrays:
+ * `parseFrontmatter` converts each area page's bracket-list form, and
+ * scripts/skills.mjs's `areaCategories` consumes that same array.
  *
  * THE FALLBACK IS THE MOVED CODE'S, unchanged: a page with no `categories:`
  * line matches on its own name plus its `# ` title, and says so through

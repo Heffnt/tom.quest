@@ -17,6 +17,7 @@ import {
   writeRegistration,
   writeRegistrationClaim,
   writeRegistrationEnd,
+  writeRegistrationReceipt,
 } from "../registration.mjs";
 import { codexResponseItem, jsonl } from "./fixtures.mjs";
 
@@ -47,6 +48,46 @@ describe("run registration", () => {
     expect(result.ok).toBe(true);
     expect(result.envelope).toMatchObject({ writer: { file: "launcher.mjs" }, registration: { origin: "job" }, claim: { by: "hook:SessionStart" }, end: { reason: "done", status: "ended" } });
     expect(fs.existsSync(path.join(spoolDir, `${token}.json`))).toBe(false);
+  });
+
+  it("writes a grant receipt after a claim without changing its claim facts", () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
+    const token = "12121212-1212-4121-8121-121212121212";
+    writeRegistration({ spoolDir, token, writer: { file: "launcher.mjs" }, registration: { host: "laptop" }, now: () => 1 });
+    claimRegistration({ spoolDir, token, runFile, claim: {
+      by: "hook:SessionStart", threadId: "session-42", cliVersion: "1.2.3", claimant: "session-hook",
+      hookPayloadKeys: ["session_id", "cwd", "session_id"],
+    }, now: () => 2 });
+
+    const receipt = writeRegistrationReceipt({ runFile, receipt: {
+      skillsGranted: ["tom-write", "know-research"], skillsRefused: ["unsafe-write"],
+    }, now: () => 3 });
+
+    expect(receipt.envelope).toMatchObject({
+      claim: { by: "hook:SessionStart", threadId: "session-42", cliVersion: "1.2.3", claimant: "session-hook", hookPayloadKeys: ["cwd", "session_id"] },
+      receipt: { at: 3, skillsGranted: ["tom-write", "know-research"], skillsRefused: ["unsafe-write"] },
+    });
+    expect(readRegistration(runFile)).toEqual(receipt.envelope);
+  });
+
+  it("keeps a grant receipt written before the launcher spool is claimed", () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
+    const token = "23232323-2323-4232-8232-232323232323";
+    writeRegistration({ spoolDir, token, writer: { file: "launcher.mjs" }, registration: { host: "laptop" }, now: () => 1 });
+    writeRegistrationReceipt({ runFile, receipt: {
+      skillsGranted: ["tom-write"], skillsRefused: ["know-private"],
+    }, now: () => 2 });
+
+    const claimed = claimRegistration({ spoolDir, token, runFile, claim: {
+      by: "hook:SessionStart", threadId: "session-43", cliVersion: "1.2.3", claimant: "session-hook",
+      hookPayloadKeys: ["transcript_path", "session_id"],
+    }, now: () => 3 });
+
+    expect(claimed.envelope).toMatchObject({
+      registration: { host: "laptop" },
+      claim: { by: "hook:SessionStart", threadId: "session-43", cliVersion: "1.2.3", claimant: "session-hook", hookPayloadKeys: ["session_id", "transcript_path"] },
+      receipt: { at: 2, skillsGranted: ["tom-write"], skillsRefused: ["know-private"] },
+    });
   });
 
   it("keeps a same-token sidecar intact and removes its stale spool", () => {
@@ -158,11 +199,11 @@ describe("run registration", () => {
     expect(fs.existsSync(registrationSidecarPath(runFile))).toBe(false);
   });
 
-  // ── the fourth group ──────────────────────────────────────────────────────
+  // -- the fifth group ------------------------------------------------------
   // `skills` arrived with envelopeVersion 2, written by `tts search skills`
   // and by nothing else.
 
-  it("keeps four writers, four keys, and no lost update", () => {
+  it("keeps five writers, five keys, and no lost update", () => {
     const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
     const token = "88888888-8888-4888-8888-888888888888";
     writeRegistration({ spoolDir, token, writer: { file: "launcher.mjs" }, registration: { host: "laptop", origin: "job" }, now: () => 1 });
@@ -254,6 +295,26 @@ describe("run registration", () => {
     // measurable at all.
     expect(mergeRegistration({ parsed: parsed(), host: "box", envelope: readRegistration(runFile) }).run.context.skillsAsked)
       .toEqual(["know-research (ok)"]);
+  });
+
+  it("refreshes a followed claim pointer only after the target append succeeds", () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
+    const token = "78787878-7878-4787-8787-787878787878";
+    writeRegistration({ spoolDir, token, writer: { file: "launcher.mjs" }, registration: { host: "box" }, now: () => 1 });
+    claimRegistration({ spoolDir, token, runFile, claim: { by: "hook:SessionStart" }, now: () => 2 });
+    const pointer = claimPointerPath(spoolDir, token);
+    const old = new Date(1_000);
+    fs.utimesSync(pointer, old, old);
+
+    expect(appendSkillAsk({ spoolDir, token, ask: { name: "know-research", result: "ok" }, now: () => 2_000 }))
+      .toMatchObject({ ok: true, file: registrationSidecarPath(runFile) });
+    expect(fs.statSync(pointer).mtimeMs).toBeGreaterThan(old.getTime());
+
+    fs.unlinkSync(registrationSidecarPath(runFile));
+    const beforeFailure = fs.statSync(pointer).mtimeMs;
+    expect(appendSkillAsk({ spoolDir, token, ask: { name: "know-private", result: "refused" }, now: () => 3_000 }))
+      .toMatchObject({ ok: false });
+    expect(fs.statSync(pointer).mtimeMs).toBe(beforeFailure);
   });
 
   it("recreates an expired claim pointer when a resumed session reclaims its token", () => {

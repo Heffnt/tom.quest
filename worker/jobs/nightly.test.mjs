@@ -2996,14 +2996,19 @@ describe("the git half", { timeout: 60_000 }, () => {
   });
 
   it("posts every repo in the list", async () => {
+    const wikiTom = rulesRepo("# WikiTom\n\nThe vault.\n");
     const checkouts = [
       { repo: "tom.quest", dir: rulesRepo("# tom.quest\n\nThe site.\n") },
-      { repo: "WikiTom", dir: rulesRepo("# WikiTom\n\nThe vault.\n") },
+      { repo: "WikiTom", dir: wikiTom },
       { repo: "ComplexMultiTrigger", dir: rulesRepo("# CMT\n\nThe research code.\n") },
     ];
     const r = learningRun(tmp());
     const convex = fakeConvex();
-    const result = await repoRulesStep(r, { fetch: convex.fetch, checkouts });
+    const result = await repoRulesStep(r, {
+      fetch: convex.fetch,
+      checkouts,
+      wikiTomCommit: run(wikiTom, "rev-parse", "HEAD").trim(),
+    });
     expect(result.repos.map((entry) => entry.repo)).toEqual(["tom.quest", "WikiTom", "ComplexMultiTrigger"]);
     expect(convex.posts.map((post) => post.route)).toEqual(["/tts/repo-rules", "/tts/repo-rules", "/tts/repo-rules"]);
     expect(convex.posts.map((post) => post.body.repo)).toEqual(["tom.quest", "WikiTom", "ComplexMultiTrigger"]);
@@ -3030,18 +3035,81 @@ describe("the git half", { timeout: 60_000 }, () => {
   // witness: one loop, one throw. A box rebuilt with two of the three clones
   // present posted nothing at all, because the first missing one ended the loop.
   it("loses only the checkout that is missing, and the other two still post", async () => {
+    const wikiTom = rulesRepo("# WikiTom\n\nThe vault.\n");
     const checkouts = [
       { repo: "tom.quest", dir: path.join(tmp(), "never-cloned") },
-      { repo: "WikiTom", dir: rulesRepo("# WikiTom\n\nThe vault.\n") },
+      { repo: "WikiTom", dir: wikiTom },
       { repo: "ComplexMultiTrigger", dir: path.join(tmp(), "also-never-cloned") },
     ];
     const r = learningRun(tmp());
     const convex = fakeConvex();
-    const result = await repoRulesStep(r, { fetch: convex.fetch, checkouts });
+    const result = await repoRulesStep(r, {
+      fetch: convex.fetch,
+      checkouts,
+      wikiTomCommit: run(wikiTom, "rev-parse", "HEAD").trim(),
+    });
     expect(result.repos.map((entry) => entry.repo)).toEqual(["WikiTom"]);
     expect(convex.posts.filter((post) => post.route === "/tts/repo-rules").map((post) => post.body.repo)).toEqual(["WikiTom"]);
     expect(r.failures.map((failure) => failure.step)).toEqual(["repo-rules", "repo-rules"]);
     expect(r.failures[0].error).toContain("is not a git checkout");
     expect(r.failures[1].error).toContain("also-never-cloned");
+  });
+
+  it("posts WikiTom rules from the model-of-tom commit, not its newer HEAD or work tree", async () => {
+    const wikiTom = rulesRepo("# WikiTom\n\nPinned rules.\n");
+    const pinned = run(wikiTom, "rev-parse", "HEAD").trim();
+    write(wikiTom, "AGENTS.md", "# WikiTom\n\nNewer HEAD rules.\n");
+    run(wikiTom, "commit", "-am", "newer rules");
+    write(wikiTom, "AGENTS.md", "# WikiTom\n\nWorking-tree rules.\n");
+    const r = learningRun(tmp());
+    const convex = fakeConvex();
+
+    await repoRulesStep(r, {
+      fetch: convex.fetch,
+      checkouts: [{ repo: "WikiTom", dir: wikiTom }],
+      wikiTomCommit: pinned,
+    });
+
+    const post = convex.posts.find((entry) => entry.route === "/tts/repo-rules");
+    expect(post.body).toMatchObject({ repo: "WikiTom", commit: pinned });
+    expect(post.body.files).toEqual([
+      {
+        path: "AGENTS.md",
+        body: "# WikiTom\n\nPinned rules.\n",
+        bytes: Buffer.byteLength("# WikiTom\n\nPinned rules.\n"),
+      },
+    ]);
+  });
+
+  it("omits WikiTom when the model-of-tom post has no commit without reading its work tree", async () => {
+    const wikiTom = rulesRepo("# WikiTom\n\nPinned rules.\n");
+    const wikiTomAgents = path.join(wikiTom, "AGENTS.md");
+    write(wikiTom, "AGENTS.md", "# WikiTom\n\nWorking-tree rules.\n");
+    const originalReadFileSync = fs.readFileSync;
+    const readFileSync = vi.spyOn(fs, "readFileSync").mockImplementation((file, ...args) => {
+      if (path.resolve(String(file)) === path.resolve(wikiTomAgents)) {
+        throw new Error("WikiTom working tree must not be read");
+      }
+      return originalReadFileSync.call(fs, file, ...args);
+    });
+    const r = learningRun(tmp());
+    const convex = fakeConvex();
+
+    try {
+      const result = await repoRulesStep(r, {
+        fetch: convex.fetch,
+        checkouts: [
+          { repo: "tom.quest", dir: rulesRepo("# tom.quest\n\nThe site.\n") },
+          { repo: "WikiTom", dir: wikiTom },
+          { repo: "ComplexMultiTrigger", dir: rulesRepo("# CMT\n\nThe research code.\n") },
+        ],
+        wikiTomCommit: null,
+      });
+      expect(result.repos.map((entry) => entry.repo)).toEqual(["tom.quest", "ComplexMultiTrigger"]);
+      expect(convex.posts.map((post) => post.body.repo)).toEqual(["tom.quest", "ComplexMultiTrigger"]);
+      expect(r.failures).toEqual([]);
+    } finally {
+      readFileSync.mockRestore();
+    }
   });
 });

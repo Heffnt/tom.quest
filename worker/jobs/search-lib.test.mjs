@@ -16,6 +16,7 @@ import {
   formatTodoResult,
   parseSearchArgs,
   runSearchCli,
+  runningCli,
   SEARCH_COMMANDS,
   skillRoots,
   usage,
@@ -499,10 +500,10 @@ describe("installed skills", () => {
     expect(text).toContain("The writing body.");
     expect(text).toContain(`references: ground.md ${path.join(dir, "tom-write", "ground.md")}`);
 
-    // The directory form is accepted and nothing is said about the prefix.
+    // The directory prefix is not a load name; catalog discovery stripped it.
     const prefixed = [];
-    expect(await runSearchCli(["skills", "tom-write", "--skills-dir", dir], { env: {}, write: (line) => prefixed.push(line), error: () => {} })).toBe(0);
-    expect(prefixed).toEqual(output);
+    expect(await runSearchCli(["skills", "tom-write", "--skills-dir", dir], { env: {}, write: () => {}, error: (line) => prefixed.push(line) })).toBe(2);
+    expect(prefixed[0]).toContain('skill "tom-write" is not in the catalog');
 
     const json = [];
     expect(await runSearchCli(["skills", "write", "--skills-dir", dir, "--json"], { env: {}, write: (line) => json.push(line), error: () => {} })).toBe(0);
@@ -578,15 +579,25 @@ describe("installed skills", () => {
     expect(skillRoots({ TTS_CLI: "Claude Code", CLAUDE_CONFIG_DIR: "/root/.claude-accounts/wpi", HOME: "/root" })).toEqual([
       path.join("/root/.claude-accounts/wpi", "skills"),
     ]);
-    expect(skillRoots({ HOME: "/home/tom" })).toEqual([
-      path.join("/home/tom", ".claude", "skills"),
-    ]);
+    expect(skillRoots({ HOME: "/home/tom" })).toEqual([]);
     expect(skillRoots({ CODEX_THREAD_ID: "thread", HOME: "/home/tom" })).toEqual([
       path.join("/home/tom", ".codex", "skills"),
     ]);
     expect(skillRoots({ TTS_CLI: "Codex", CODEX_HOME: "/srv/custom-codex", HOME: "/home/tom" })).toEqual([
       path.join("/srv/custom-codex", "skills"),
     ]);
+  });
+
+  it("does not read a catalog without launcher identity and reports the notice in both forms", async () => {
+    const env = { HOME: fs.mkdtempSync(path.join(os.tmpdir(), "tts-unidentified-skills-")) };
+    temporary.push(env.HOME);
+    expect(runningCli(env)).toBeNull();
+    const plain = [];
+    expect(await runSearchCli(["skills"], { env, write: (line) => plain.push(line), error: () => {} })).toBe(0);
+    expect(plain).toEqual(["tts-search: launcher identity missing; skill catalog was not read"]);
+    const json = [];
+    expect(await runSearchCli(["skills", "--json"], { env, write: (line) => json.push(line), error: () => {} })).toBe(0);
+    expect(JSON.parse(json[0])).toEqual({ skills: [], note: "tts-search: launcher identity missing; skill catalog was not read" });
   });
 
   it("does not read a stale Claude catalog during a Codex run", async () => {

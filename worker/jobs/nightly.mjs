@@ -2544,9 +2544,22 @@ export async function deliveryStep(run, deps = {}) {
 // costs itself and nothing else: each of those is one failure row and a
 // `continue`, and the repos after it still post.
 export async function repoRulesStep(run, deps = {}) {
-  const { fetch = convexFetch, checkouts = REPO_CHECKOUTS, commitTime = commitSyncedAt } = deps;
+  const {
+    fetch = convexFetch,
+    checkouts = REPO_CHECKOUTS,
+    commitTime = commitSyncedAt,
+    wikiTomCommit = null,
+  } = deps;
   const posted = [];
+  // postStep returns a fully resolved Git object ID. Do not turn another ref
+  // (notably HEAD) into a WikiTom rule source after the post is over.
+  const hasWikiTomCommit = typeof wikiTomCommit === "string" && /^[0-9a-f]{40,64}$/i.test(wikiTomCommit);
   for (const { repo, dir } of checkouts) {
+    // WikiTom's rules must be from the exact object Convex accepted for the
+    // model-of-tom post. A missing or refused base has no safe commit to pair
+    // them with, so leave its previous rules in place rather than reading the
+    // checkout's HEAD or work tree. The other repositories remain HEAD-based.
+    if (repo === "WikiTom" && !hasWikiTomCommit) continue;
     if (!fs.existsSync(path.join(dir, ".git"))) {
       await recordFailure(
         run,
@@ -2559,7 +2572,11 @@ export async function repoRulesStep(run, deps = {}) {
     let collected;
     try {
       const { collectRepoRules } = await loadPrelude();
-      collected = collectRepoRules({ dir, repo, commit: "HEAD" });
+      collected = collectRepoRules({
+        dir,
+        repo,
+        commit: repo === "WikiTom" ? wikiTomCommit : "HEAD",
+      });
     } catch (error) {
       await recordFailure(run, "repo-rules", error, { fetch });
       continue;
@@ -2661,7 +2678,9 @@ async function main() {
     if (only.every((name) => CHECKOUTLESS_STEPS.includes(name))) {
       if (only.includes("repo-rules")) {
         try {
-          run.results["repo-rules"] = await repoRulesStep(run);
+          run.results["repo-rules"] = await repoRulesStep(run, {
+            wikiTomCommit: run.results.post?.commit,
+          });
         } catch (err) {
           await recordFailure(run, "repo-rules", err);
         }
@@ -2725,7 +2744,15 @@ async function main() {
   // OUTSIDE THE LOCK, and outside the try that holds it: this step reads a
   // different checkout, writes nothing, and a night that lost the WikiTom lock
   // is exactly a night whose repo rules should still reach Convex.
-  if (only.includes("repo-rules")) await runStep("repo-rules");
+  if (only.includes("repo-rules")) {
+    try {
+      run.results["repo-rules"] = await repoRulesStep(run, {
+        wikiTomCommit: run.results.post?.commit,
+      });
+    } catch (err) {
+      await recordFailure(run, "repo-rules", err);
+    }
+  }
   await recordSummary(run, only);
 }
 

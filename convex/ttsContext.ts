@@ -132,9 +132,7 @@ function recordFacts(record: ContextRecord): string {
     (ruling) => `${ruling.ruledDay} ${ruling.verdict}${ruling.sentence ? `: ${ruling.sentence}` : ""}`,
   );
   const outcomes = boundedFactText(
-    [...record.sessions]
-      .sort((a, b) => b.statusChangedAt - a.statusChangedAt || a.outcome.localeCompare(b.outcome))
-      .slice(0, OUTCOMES_PER_BATCH),
+    record.sessions,
     OUTCOMES_BYTES,
     (session) => `${session.endedDay} ${session.outcome}${session.outcomeSummary ? `: ${session.outcomeSummary}` : ""}`,
   );
@@ -285,11 +283,13 @@ async function readRecord(
   }
 
   // A session is read two ways — by its batch and by its repos — and one
-  // session is very often both. Deduplicated by id HERE rather than by rendered
-  // text, so a batch's own last session cannot appear twice in one record.
+  // session is very often both. The batch walk gets the three context slots
+  // first, in its indexed recency order; repository outcomes fill only what is
+  // left. Deduplicate by id here rather than rendered text, so a batch's own
+  // last session cannot appear twice in one record.
   const seenSessions = new Set<string>();
   const addSession = (session: Doc<"claudeSessions">) => {
-    if (seenSessions.has(session._id)) return;
+    if (seenSessions.has(session._id) || record.sessions.length >= OUTCOMES_PER_BATCH) return;
     const row = sessionRow(session);
     if (row === null) return;
     seenSessions.add(session._id);

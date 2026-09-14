@@ -316,6 +316,8 @@ spawned agent inherits the parent's model unless the parent names a cheaper one,
 which is exactly the delegation rule in `AGENTS.md`: the strong model keeps
 judgment and review, `gpt-5.6-terra` gets the reading and the mechanical edits.
 
+Bare `codex` sessions carry no context; use the wrapper or `/codex`.
+
 **Quota is shared, not extra.** Codex here draws on the same ChatGPT Plus rate
 windows as Tom's own laptop use — a busy fleet hour is an hour he finds his
 own Codex throttled. The fleet caps its own weekly Codex consumption at 90% of

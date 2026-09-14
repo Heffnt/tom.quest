@@ -206,3 +206,4 @@ updateRunHookConfig(path.join(home, ".codex", "hooks.json"), runHookCommand);
 installSkills();
 installRunsSweepTask();
 reportMissingLaptopEnv();
+console.log("bare codex sessions carry no context; use the wrapper or /codex");

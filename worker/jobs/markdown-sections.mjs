@@ -225,10 +225,10 @@ export function frontmatterBlock(markdown) {
 
 /**
  * The `key: value` lines between the two `---` fences that open a page, as an
- * object of strings (values trimmed, an empty value ""), and the rest of the
- * page as `body`. A page that does not open with a fence has no fields and is
- * its own body. Only the first fence pair is read; nothing is parsed inside a
- * value.
+ * object whose ordinary values are trimmed strings (an empty value is "") and
+ * whose `categories: [...]` value is a trimmed array split at commas, plus the
+ * rest of the page as `body`. A page without a fence has no fields and is its
+ * own body. Only the first fence pair is read.
  */
 export function parseFrontmatter(markdown) {
   const text = String(markdown ?? "");
@@ -239,7 +239,12 @@ export function parseFrontmatter(markdown) {
   const fields = {};
   for (const line of lines.slice(1, end)) {
     const m = /^([A-Za-z0-9_-]+)\s*:\s*(.*)$/.exec(line);
-    if (m) fields[m[1]] = m[2].trim();
+    if (m) {
+      const value = m[2].trim();
+      fields[m[1]] = m[1] === "categories" && /^\[.*\]$/.test(value)
+        ? value.slice(1, -1).split(",").map((item) => item.trim()).filter(Boolean)
+        : value;
+    }
   }
   return { fields, body: lines.slice(end + 1).join("\n") };
 }

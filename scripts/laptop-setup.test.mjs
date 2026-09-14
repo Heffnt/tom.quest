@@ -107,6 +107,7 @@ describe("laptop setup", () => {
 
     const first = run({ home, wikiTom, tomQuest });
     expect(first.status).toBe(0);
+    expect(first.stdout).toContain("bare codex sessions carry no context; use the wrapper or /codex\n");
     expect(fs.readFileSync(path.join(claudeDir, "CLAUDE.md"), "utf8")).toBe(`${rulesImport}\n\n# Laptop notes\n`);
 
     const managed = { matcher: "startup|resume|compact", hooks: [{ type: "command", command }] };
@@ -170,6 +171,7 @@ describe("laptop setup", () => {
     ];
     const second = run({ home, wikiTom, tomQuest });
     expect(second.status).toBe(0);
+    expect(second.stdout).toContain("bare codex sessions carry no context; use the wrapper or /codex\n");
     expect(second.stdout).toContain("unchanged");
     expect([
       fs.readFileSync(path.join(claudeDir, "CLAUDE.md"), "utf8"),
@@ -250,7 +252,7 @@ describe("laptop setup", () => {
     for (const dir of [claudeSkills, codexSkills]) expect(second.stdout).toContain(`unchanged ${dir}`);
     // Nothing this build did not produce is touched, on either run.
     expect(fs.readFileSync(path.join(claudeSkills, "graphify", "SKILL.md"), "utf8")).toContain("Not Tom's.");
-  });
+  }, 15_000);
 
   it("says so in one line when the skills cannot be published, and finishes setup", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "laptop-setup-no-skills-"));

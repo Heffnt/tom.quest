@@ -513,7 +513,20 @@ function cleanupSpool(stateDir, fs, now) {
   try {
     for (const name of fs.readdirSync(dir)) {
       const file = path.join(dir, name);
-      try { if (now() - fs.statSync(file).mtimeMs > SPOOL_MAX_AGE_MS) { fs.unlinkSync(file); removed += 1; } } catch {}
+      try {
+        if (now() - fs.statSync(file).mtimeMs <= SPOOL_MAX_AGE_MS) continue;
+        if (name.endsWith(".claimed.json")) {
+          const pointer = readJson(file, fs);
+          const envelope = typeof pointer?.runFile === "string" && pointer.runFile !== ""
+            ? readRegistration(pointer.runFile, { fs })
+            : null;
+          // A pointer is still useful only while it names a readable, live
+          // envelope. An own `end` is terminal even if its value is malformed.
+          if (envelope !== null && !Object.hasOwn(envelope, "end")) continue;
+        }
+        fs.unlinkSync(file);
+        removed += 1;
+      } catch {}
     }
   } catch {}
   return removed;

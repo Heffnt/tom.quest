@@ -351,6 +351,44 @@ describe("run sweep", () => {
     expect(deletable({ host: "box", kind: "session" }, { verified: true, endSeen: true, gitTracked: false }, { now: NOW })).toMatchObject({ ok: false, reason: expect.stringContaining("cutover") });
   });
 
+  it("keeps only stale claim pointers with a readable live target envelope", async () => {
+    const dir = temp(); const item = runFile(dir); const cfg = config(dir, item);
+    const registrationDir = path.join(cfg.stateDir, "registration");
+    const old = new Date(NOW - 2 * 24 * 60 * 60_000);
+    const pointer = (name, runFile) => {
+      const file = path.join(registrationDir, `${name}.claimed.json`);
+      fs.mkdirSync(registrationDir, { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({ runFile }));
+      fs.utimesSync(file, old, old);
+      return file;
+    };
+    const liveRun = path.join(dir, "live.jsonl");
+    writeRegistrationClaim({ runFile: liveRun, registration: { host: "laptop" }, now: () => 1 });
+    const endedRun = path.join(dir, "ended.jsonl");
+    writeRegistrationClaim({ runFile: endedRun, registration: { host: "laptop" }, now: () => 1 });
+    writeRegistrationEnd({ runFile: endedRun, now: () => 2 });
+    const corruptRun = path.join(dir, "corrupt.jsonl");
+    fs.writeFileSync(corruptRun.replace(/\.jsonl$/, ".registration.json"), "not json");
+    const live = pointer("live", liveRun);
+    const ended = pointer("ended", endedRun);
+    const missing = pointer("missing", path.join(dir, "missing.jsonl"));
+    const corrupt = pointer("corrupt", corruptRun);
+
+    const result = await sweepRuns({
+      config: cfg,
+      file: item.path,
+      store: store(),
+      post: async (route, body) => route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true },
+      fs: largeDiskFs(), now: () => NOW, log: () => {},
+    });
+
+    expect(result.staleSpool).toBe(3);
+    expect(fs.existsSync(live)).toBe(true);
+    expect(fs.existsSync(ended)).toBe(false);
+    expect(fs.existsSync(missing)).toBe(false);
+    expect(fs.existsSync(corrupt)).toBe(false);
+  });
+
   // The store is the only durable copy of a run and it holds redacted text, so
   // a run rebuilt from its store object has to present the same cursor proof
   // the sweep recorded. That is only true if both sides hash the same bytes.

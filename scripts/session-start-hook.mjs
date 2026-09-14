@@ -62,13 +62,10 @@ function firstString(...values) {
 }
 
 function sessionRunFile(payload) {
+  // Claude supplies transcript_path and Codex supplies rollout_path in hook payloads.
   const value = firstString(
     payload?.transcript_path,
-    payload?.transcriptPath,
     payload?.rollout_path,
-    payload?.rolloutPath,
-    payload?.run_file,
-    payload?.runFile,
   );
   return value === null ? null : path.resolve(value);
 }
@@ -80,10 +77,11 @@ function recordGrantReceipt(payload, { granted, refused }) {
   const runFile = sessionRunFile(payload);
   if (runFile === null || registration === null) return;
   try {
-    registration.writeRegistrationClaim({
+    registration.writeRegistrationReceipt({
       runFile,
-      claim: { by: "hook:session-start-grants", runFile },
-      registration: {
+      receipt: {
+        by: "hook:session-start-grants",
+        runFile,
         skillsGranted: [...granted],
         skillsRefused: refused.map((entry) => entry.name),
       },
@@ -167,7 +165,7 @@ export function runningCli(payload, env = process.env) {
   if (firstString(env.CODEX_THREAD_ID) !== null) return "codex";
   if (firstString(env.CLAUDECODE, env.CLAUDE_CODE_ENTRYPOINT, env.CLAUDE_CONFIG_DIR) !== null) return "claude";
   if (firstString(env.CODEX_HOME) !== null) return "codex";
-  return "claude";
+  return null;
 }
 
 /** `TTS_SKILLS_DIRS` preserves the documented Claude-then-Codex order. */
@@ -283,9 +281,11 @@ function main() {
   // that failure is the one line below, which says the catalog may be older
   // than WikiTom and names the reason.
   let stale;
+  const cli = runningCli(payload);
   let destinations = [];
-  try {
-    destinations = skillsDestinations();
+  if (cli !== null) {
+    try {
+      destinations = skillsDestinations();
     // ONE PUBLISHER PER HOST. On the box the nightly post step writes all three
     // account directories from WikiTom at the commit it also posts to Convex
     // (worker/jobs/nightly.mjs BOX_SKILLS_DIRS), and worker/setup.sh makes the
@@ -299,23 +299,27 @@ function main() {
     if (failed.length > 0) {
       stale = `skill catalog may be stale: ${failed.map((result) => `${result.dir} — ${result.why}`).join("; ")}`;
     }
-  } catch (error) {
-    stale = `skill catalog may be stale: ${oneLine(error)}`;
+    } catch (error) {
+      stale = `skill catalog may be stale: ${oneLine(error)}`;
+    }
   }
 
   let additionalContext;
   try {
     const prelude = assemblePrelude({ wikitom, layers: "operate" });
-    let grants;
-    let routed;
-    try {
+    if (cli === null) {
+      additionalContext = `${prelude.text}\n\nSKILLS could not be routed: launcher identity missing; skill catalog was not read`;
+    } else {
+      let grants;
+      let routed;
+      try {
       // `subject: { kind: "none" }` because the hook has no `--for` argument to
       // take one from: a session start knows its caller and its cwd and nothing
       // about what the session is for. For the `laptop` caller that leaves one
       // row of the routing table standing — WRITE GOES WHEN THE RUN'S OUTPUT
       // REACHES TOM — so the grant is `write`, and the know layer is a `tts
       // search skills` away rather than a prompt away.
-      const catalog = publishedCatalog(destinationForCli(destinations, runningCli(payload)));
+      const catalog = publishedCatalog(destinationForCli(destinations, cli));
       routed = routeSkills({
         subject: { kind: "none" },
         caller: "laptop",
@@ -331,11 +335,12 @@ function main() {
       // checkout commit for bodies it did not read.
       const commit = catalog.commit ?? (catalog.names.size === 0 ? prelude.commit : "unknown");
       grants = renderGrants({ commit, granted: routed.granted, refused: routed.refused });
-    } catch (error) {
-      grants = `SKILLS could not be routed: ${oneLine(error)}`;
+      } catch (error) {
+        grants = `SKILLS could not be routed: ${oneLine(error)}`;
+      }
+      if (routed !== undefined) recordGrantReceipt(payload, routed);
+      additionalContext = `${prelude.text}\n\n${grants}`;
     }
-    if (routed !== undefined) recordGrantReceipt(payload, routed);
-    additionalContext = `${prelude.text}\n\n${grants}`;
   } catch (error) {
     additionalContext = `model-of-tom context could not be loaded: ${oneLine(error)}`;
   }
