@@ -631,6 +631,12 @@ async function graphStep(run) {
   const graphModule = await loadScript("graph.mjs");
   const { generateVocabulary } = vocabularyModule;
   const { generateGraph } = graphModule;
+  // REMOVAL CHECK: cannot remove; loadScript covers a DIFFERENT case. It fails
+  // when the file is not installed, and these fail when it is installed and
+  // older than its export — which is the case the box actually produces, since
+  // worker/setup.sh copies these two files and a box that has not been re-run
+  // since the export landed carries the previous body. Without them the call
+  // below is `undefined(...)`, whose message names neither file.
   if (typeof generateVocabulary !== "function") {
     throw new Error("scripts/vocabulary.mjs exports no generateVocabulary — the graph's schema has no generator");
   }
@@ -683,8 +689,12 @@ async function graphStep(run) {
     throw new Error(`graph: ${graph.disagreements.length} disagreement(s) — nothing written\n${graph.report}`);
   }
 
-  const changed = [...vocabulary.changed, ...graph.changed];
-  const paths = changed.filter((entry) => entry.startsWith("tts/"));
+  // ONLY THE GRAPH'S OWN WRITES. The graph runs `write: true` and its `changed`
+  // is therefore what it put on disk; the vocabulary runs `write: false` and
+  // writes nothing at all, so its `changed` — which both generators compute by
+  // comparing the render against disk, written or not — names files this step
+  // did not touch. Committing those would claim a write that never happened.
+  const paths = graph.changed.filter((entry) => entry.startsWith("tts/"));
   if (paths.length > 0) {
     run.commits.push({
       paths,
@@ -705,7 +715,10 @@ async function graphStep(run) {
       version: vocabulary.version,
       counts: vocabulary.counts,
       bytes: vocabulary.bytes,
-      changed: vocabulary.changed,
+      // NOT `changed`: this run wrote nothing, so the list is what DIFFERS
+      // between the render and disk. The old name said the generator had
+      // changed them, which was never true while `write` is false.
+      differsOnDisk: vocabulary.changed,
       // The row says what the vocabulary found and that it wrote nothing, so
       // the digest can carry the count and the morning reader can act on it.
       wrote: false,
@@ -728,22 +741,17 @@ async function graphStep(run) {
     mapCandidateDiff: String(vocabulary.mapCandidateDiff ?? "").slice(0, 2_000),
   };
 
-  // Anything the generators changed OUTSIDE tts/ is tom.quest's — today that is
-  // only convex/ttsShared.ts — and this job cannot land it. Named, not summed:
-  // the row has to say which file drifted.
-  const outside = changed.filter((entry) => !entry.startsWith("tts/"));
-  if (outside.length > 0) {
-    result.outsideWikitom = outside;
-    await recordFailure(
-      run,
-      "graph",
-      new Error(
-        `${outside.join(", ")} on disk differed from the render at vocabulary ${vocabulary.version} — `
-          + "the generator rewrote it in the tom.quest checkout, which this job never commits or pushes; "
-          + "land it through tom.quest's own gate",
-      ),
-    );
-  }
+  // THERE IS NO CHECK HERE FOR A FILE CHANGED OUTSIDE tts/, and there was one.
+  // It read the vocabulary's `changed` list and recorded a failure saying the
+  // generator "rewrote convex/ttsShared.ts in the tom.quest checkout". That
+  // sentence could never be true: the call above passes `write: false`, so
+  // nothing is written anywhere, and `changed` is a disk COMPARISON that fills
+  // in the moment any input moves the vocabulary version. It therefore fired
+  // every night, said something false, and asked for something impossible —
+  // `--write` refuses to write past the seven standing disagreements. A check
+  // that cannot fire truthfully is deleted, not corrected. The drift it was
+  // reaching for is convex/ttsShared.ts's, and `check:vocabulary` reports that
+  // on tom.quest's own gate, where the file lives and can actually be landed.
   return result;
 }
 
