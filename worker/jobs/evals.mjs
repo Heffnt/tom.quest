@@ -32,6 +32,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { convexFetch, extractJsonObject, loadEnv, nyHour, nyUtcOffsetHours, runClaude, serverErrorMessage } from "./tts-lib.mjs";
 import { cacheRepoDir } from "./tts-code-lib.mjs";
+import { BOX_WIKITOM_DIR } from "./search-lib.mjs";
 // THE AUDIT'S OWN PROMPT, IMPORTED AND NEVER RE-IMPLEMENTED. The planted-fault
 // arm below asks the real auditor the real question about a fixture diff; a
 // second copy of that prompt here would measure a prompt nothing else uses.
@@ -182,6 +183,12 @@ export function goldenHash(items) {
   return hash.digest("hex").slice(0, 12);
 }
 
+/** The exact bytes of one scored item, retained on the run so the gate compares
+ * only equal-id, equal-content measurements. */
+export function contentHash(item) {
+  return crypto.createHash("sha256").update(JSON.stringify(item)).digest("hex");
+}
+
 /** The newest `count` approve and `count` revise across the whole set, by
  *  ruledAt descending — the set a pull request scores. Items with no ruledAt
  *  (the mined explanations) sort by their day. */
@@ -218,25 +225,198 @@ export function layersFor(tomquestTree, wikitomTree, names, run = execFileSync) 
 }
 
 /**
+ * The inline module the PINNED tree's own scripts/skills.mjs is asked through.
+ *
+ * A CHILD PROCESS RATHER THAN AN IMPORT, for two reasons. worker/setup.sh
+ * copies evals.mjs to /opt/tts/evals.mjs and skills.mjs to
+ * /opt/tts/scripts/skills.mjs — a different relative path from the one the two
+ * have in the repo — so no static import of it resolves in both homes. And the
+ * copy beside this file is not the one to ask anyway: what a case was given is
+ * what the TREE UNDER TEST names and renders, not what this checkout would.
+ *
+ * It answers three things in one spawn: the directory each requested name is
+ * published under, which of them the publication actually holds, and the grant
+ * block those two facts imply.
+ */
+const SKILLS_ASK = [
+  "const [href, json] = process.argv.slice(1);",
+  "const input = JSON.parse(json);",
+  "const fs = require('node:fs');",
+  "const path = require('node:path');",
+  "import(href).then((skills) => {",
+  "  const granted = [];",
+  "  const refused = [];",
+  "  const files = [];",
+  "  for (const name of input.names) {",
+  "    const file = path.join(input.out, skills.skillDirName(name), 'SKILL.md');",
+  "    if (fs.existsSync(file)) { granted.push(name); files.push(file); }",
+  "    else refused.push({ name, why: input.why[name] || 'the publication at this commit does not hold it' });",
+  "  }",
+  "  const grants = skills.renderGrants({ commit: input.commit, granted, refused });",
+  "  process.stdout.write(JSON.stringify({ granted, refused, files, grants }));",
+  "});",
+].join("\n");
+
+const RUN_OPTIONS = { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], maxBuffer: 64 * 1024 * 1024 };
+
+/**
+ * ONE PUBLICATION PER PAIR OF TREES, kept for the life of the process.
+ *
+ * The ablation arm asks for a dozen near-identical name sets and every case
+ * asks for its own; each of those would otherwise re-read every page of WikiTom
+ * out of git. The publication does not depend on the names at all — it is the
+ * whole catalogue — so it is built once and the name sets read out of it.
+ *
+ * The key is the pair of commits that the publisher reads, not the reusable
+ * worktree directories. Weekly runs recreate `origin/main` at the same paths;
+ * after either repository advances, reusing a catalogue made from those paths
+ * would pair a new recorded commit with old skill bodies.
+ */
+const publications = new Map();
+
+/** The two immutable objects a publication reads: WikiTom supplies its pages,
+ * and tom.quest supplies the published repository rules. */
+function publicationKey(tomquestTree, wikitomTree) {
+  const tomquest = git(tomquestTree, "rev-parse", "HEAD").trim();
+  const wikitom = git(wikitomTree, "rev-parse", "HEAD").trim();
+  return `${tomquest} ${wikitom}`;
+}
+
+/** Hash the exact on-disk catalog bytes the pinned publisher produced. */
+export function catalogHashFor(out) {
+  const hash = crypto.createHash("sha256");
+  const visit = (dir, relative = "") => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const childRelative = relative === "" ? entry.name : `${relative}/${entry.name}`;
+      const child = path.join(dir, entry.name);
+      if (entry.isDirectory()) visit(child, childRelative);
+      else if (entry.isFile()) {
+        hash.update(childRelative);
+        hash.update("\0");
+        hash.update(fs.readFileSync(child));
+        hash.update("\0");
+      }
+    }
+  };
+  visit(out);
+  return hash.digest("hex");
+}
+
+export function publicationFor(tomquestTree, wikitomTree, run = execFileSync, workDir = WORK_DIR) {
+  const key = publicationKey(tomquestTree, wikitomTree);
+  const held = publications.get(key);
+  if (held !== undefined) return held;
+  const out = path.join(workDir, "skills", crypto.createHash("sha256").update(key).digest("hex").slice(0, 16));
+  const script = path.join(tomquestTree, "scripts", "publish-skills.mjs");
+  // The two trees are handed in as the two REPOSITORIES as well as as the
+  // sources of the pages: `repo-tom-quest` and `repo-wikitom` are then the
+  // rules files of the exact commits this run pins, which is the standard every
+  // other part of the prelude is held to. A repository the run pins nothing of
+  // has no commit here to read, and comes back as a refusal in the grant block
+  // rather than as whatever some checkout's HEAD says.
+  const result = JSON.parse(run(process.execPath, [
+    script,
+    "--wikitom", wikitomTree,
+    "--out", out,
+    "--repo", `tom.quest=${tomquestTree}`,
+    "--repo", `WikiTom=${wikitomTree}`,
+    "--json",
+  ], RUN_OPTIONS));
+  const built = {
+    commit: result.commit,
+    out: result.out,
+    catalogHash: catalogHashFor(result.out),
+    published: result.skills.map((skill) => skill.name),
+    why: Object.fromEntries(result.refused.map((entry) => [entry.name, entry.why])),
+  };
+  publications.set(key, built);
+  return built;
+}
+
+/** The body of a published SKILL.md: its generated frontmatter and provenance
+ *  comment off, the page itself untouched. What a run that loaded the skill
+ *  read is the page; the two generated lines above it are how the harness finds
+ *  the file, not part of what it says. */
+export function skillBodyOf(text) {
+  // The publisher is the only writer here, but a partial or corrupt generated
+  // file must fail this evaluation rather than silently score a different prompt.
+  const frontmatter = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(text);
+  if (frontmatter === null) throw new Error("published SKILL.md has no frontmatter");
+  const rest = text.slice(frontmatter[0].length);
+  const provenance = /^\s*<!--[\s\S]*?-->[ \t]*\r?\n/.exec(rest);
+  if (provenance === null) throw new Error("published SKILL.md has no provenance");
+  return rest.slice(provenance[0].length).trim();
+}
+
+/**
+ * The prelude text a case was given when its name set carries SKILLS.
+ *
+ * Generalises layersFor; it is NOT a second assembler. The layer half goes
+ * through the same pinned scripts/prelude.mjs. The skill half runs the PINNED
+ * tree's own scripts/publish-skills.mjs against the PINNED WikiTom tree and
+ * reads what that wrote, so what comes back is the catalogue those two commits
+ * produce and never a second opinion about what a skill is.
+ *
+ * The text is the layer text, then the grant block, then the granted skills'
+ * BODIES, in the order the names were given. The bodies are the point: what the
+ * eval measures is what the run could actually see, and the ablation arm's
+ * whole purpose is that removing a skill removes its body from this text.
+ *
+ * A name the publication does not hold is a REFUSAL in the grant block, not a
+ * throw. WikiTom is Tom's to edit, and a case naming a skill he has since
+ * emptied should score the prompt a run would be given today — which says, in
+ * the grant block, that the skill was asked for and is not there.
+ */
+export function skillsFor(tomquestTree, wikitomTree, names, run = execFileSync, workDir = WORK_DIR) {
+  const layerNames = names?.layers ?? [];
+  const skillNames = names?.skills ?? [];
+  const publication = publicationFor(tomquestTree, wikitomTree, run, workDir);
+  const layers = layerNames.length === 0 ? null : layersFor(tomquestTree, wikitomTree, layerNames, run);
+  const asked = JSON.parse(run(process.execPath, [
+    "-e", SKILLS_ASK,
+    pathToFileURL(path.join(tomquestTree, "scripts", "skills.mjs")).href,
+    JSON.stringify({ names: skillNames, out: publication.out, commit: publication.commit, why: publication.why }),
+  ], RUN_OPTIONS));
+  const loaded = asked.files.map((file) => ({
+    path: path.relative(publication.out, file).replace(/\\/g, "/"),
+    body: skillBodyOf(fs.readFileSync(file, "utf8")),
+  }));
+  return {
+    names: layerNames,
+    skills: asked.granted,
+    skillsRefused: asked.refused.map((entry) => entry.name),
+    text: [...(layers === null ? [] : [layers.text]), asked.grants, ...loaded.map((one) => one.body)].join("\n\n"),
+    commit: publication.commit,
+    catalogHash: publication.catalogHash,
+    // ONE SHAPE for both halves — `{ path, bytes }`, which is what prelude.mjs's
+    // --json gives for the layer files — so a reader of this list never has to
+    // ask which half an entry came from.
+    files: [
+      ...(layers?.files ?? []),
+      ...loaded.map((one) => ({ path: one.path, bytes: Buffer.byteLength(one.body, "utf8") })),
+    ],
+  };
+}
+
+/**
  * The prelude a case was given, when what it was given is a NAME SET rather
  * than a job's fixed layer selection: `{ layers: [...], skills: [...] }`.
  *
- * This is layersFor generalised, and it is not a second assembler. The layer
- * half goes through the same pinned scripts/prelude.mjs; the skill half goes
- * through io.skills, which is handed the WHOLE name set so that the one
- * assembler which knows about skills assembles both halves rather than this
- * file stitching two texts together.
+ * The layer half goes through the same pinned scripts/prelude.mjs; the skill
+ * half goes through io.skills, which is handed BOTH TREES and the whole name
+ * set — the catalogue is built out of the pinned WikiTom by the pinned
+ * tom.quest, and neither half of that pair can be assumed from the other.
  */
 export const NO_PRELUDE = Object.freeze({ names: [], skills: [], text: "", commit: null, files: [], known: false });
 
-/** THE PHASE 6 SEAM. No skill assembler exists yet: phase 6 adds
- *  scripts/skills.mjs and wires `io.skills` to it in realIo, one line, and
- *  this error and the skip it causes stop being reachable. Until then a case
- *  whose run was given skills is SKIPPED rather than scored, because scoring
- *  it would score a prompt that is missing part of what the original run saw
- *  and would report the difference as a regression. */
+/** An io with NO SKILL ASSEMBLER WIRED, asked for a name set that carries
+ *  skills. realIo wires one, so what reaches this is a test io or a caller that
+ *  built its own — and the refusal stays explicit rather than quietly
+ *  assembling the layer half alone: a case scored on a prompt missing part of
+ *  what the original run saw would report the difference as a regression.
+ *  runCase turns it into a skip, before any model call is paid for. */
 export class SkillsNotAssembledError extends Error {}
-export const SKILL_SEAM_REASON = "skill prelude not assembled — phase 6 has not landed";
+export const SKILL_SEAM_REASON = "skill prelude not assembled — the io in use wired no skill assembler";
 
 export function preludeFrom(io, tomquestTree, wikitomTree, names) {
   const layers = names?.layers ?? [];
@@ -245,8 +425,9 @@ export function preludeFrom(io, tomquestTree, wikitomTree, names) {
   // refuses an empty --layers.
   if (layers.length === 0 && skills.length === 0) return NO_PRELUDE;
   if (skills.length > 0) {
+    // REMOVAL CHECK: cannot remove; scoring a prompt missing requested skill bodies would turn an assembly fault into an apparent model regression.
     if (typeof io.skills !== "function") throw new SkillsNotAssembledError(SKILL_SEAM_REASON);
-    return io.skills(tomquestTree, names);
+    return io.skills(tomquestTree, wikitomTree, names);
   }
   return io.layers(tomquestTree, wikitomTree, layers);
 }
@@ -836,14 +1017,16 @@ export async function runItem(item, context, io, { deterministic = null, receipt
         layersGiven: known ? layers.names : [],
         layersDenied: known ? LAYER_NAMES.filter((name) => !layers.names.includes(name)) : [],
         skillsGranted: layers.skills ?? [],
+        skillsRefused: layers.skillsRefused ?? [],
         ...(layers.commit ? { wikitomCommit: layers.commit } : {}),
       },
     });
     fresh = job.parse(answer, context.modules[item.job]);
   } catch (err) {
-    // The skills seam is a SKIP, not a failure: nothing about the tree under
-    // test was measured, and calling that a regression would fail a merge on
-    // a phase that has not landed.
+    // An io with no skill assembler is a SKIP, not a failure: nothing about the
+    // tree under test was measured, and calling that a regression would fail a
+    // merge over a gap in the harness. realIo wires one, so a real run never
+    // reaches this; a test io or a caller that built its own still can.
     if (err instanceof SkillsNotAssembledError) return { ...base, judged: "skip", reason: err.message };
     return { ...base, judged: "fail", reason: `regeneration failed: ${serverErrorMessage(err)}` };
   }
@@ -933,8 +1116,9 @@ export function aggregate(results) {
     byVerdict,
     failures: results
       .filter((result) => result.judged !== "pass")
-      .map(({ id, partition, verdict, reason, confirmed, trials }) => ({
+      .map(({ id, partition, verdict, reason, confirmed, trials, method }) => ({
         id, partition, verdict, reason, confirmed,
+        ...(method === undefined ? {} : { method }),
         // The failure carries its own trial count, so a row read later says
         // whether this id failed once or failed every time it was tried.
         ...(trials === undefined ? {} : { trials }),
@@ -972,21 +1156,302 @@ export function loadTasks(tomquestTree, repo) {
  */
 export const TRIGGERS_DIR = "evals/triggers";
 
-export function loadTriggers(tomquestTree) {
-  const dir = path.join(tomquestTree, TRIGGERS_DIR);
-  if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir)
-    .filter((name) => name.endsWith(".json") && !name.endsWith(".draft.json"))
-    .sort()
-    .map((name) => ({ file: name, ...JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")) }));
+/** The area-trigger files live in WikiTom because their cases may only be
+ * stored with the private area pages they exercise. Intent and week remain
+ * public trigger files: neither is an area page. */
+export const AREA_TRIGGER_FILES = Object.freeze([
+  "skill-know-admin.json",
+  "skill-know-agent-systems.json",
+  "skill-know-climbing.json",
+  "skill-know-health-and-food.json",
+  "skill-know-mental-health.json",
+  "skill-know-money.json",
+  "skill-know-research.json",
+  "skill-know-social.json",
+]);
+
+/**
+ * The eight area pages the know layer requires, and therefore the eight
+ * `know-<area>` skills the layer became.
+ *
+ * A FROZEN LIST, not a read of the WikiTom tree, and not an import. loadTriggers
+ * is handed a tom.quest tree and no WikiTom tree at all, so there is nothing
+ * here to derive an area list from; and scripts/skills.mjs — which holds the
+ * same eight in PRELUDE_LAYERS.know.areas.required — cannot be imported from
+ * this file, because worker/setup.sh puts the two at relative paths that differ
+ * between the repo and /opt/tts.
+ *
+ * So it is written down twice, and worker/jobs/evals.test.mjs PINS THE TWO
+ * EQUAL: vitest runs from the repo root, where the import does resolve, and an
+ * area Tom adds without touching this list is a red test naming it rather than
+ * a skill that quietly stops being scored.
+ */
+export const KNOW_AREAS = Object.freeze([
+  "admin",
+  "agent-systems",
+  "climbing",
+  "health-and-food",
+  "mental-health",
+  "money",
+  "research",
+  "social",
+]);
+
+/**
+ * A layer name, as the skill names that layer became.
+ *
+ * The trigger files predate the skills and name layers; this is the one table
+ * that maps them. The layer triggers deliberately exercise a whole layer;
+ * replacing one with a single skill trigger would no longer test its complete
+ * grant set. The deployed worker cannot import scripts/skills.mjs because
+ * setup installs those files at different relative paths, so this checked and
+ * tested mapping remains the one compatible representation. `operate` maps to
+ * nothing because the base is not a skill: it is the one file every prompt
+ * carries whoever the run writes for, and there is nothing to grant or withhold.
+ */
+export const LAYER_SKILL_ALIASES = Object.freeze({
+  operate: Object.freeze([]),
+  write: Object.freeze(["write"]),
+  know: Object.freeze(["know-intent", "know-week", ...KNOW_AREAS.map((area) => `know-${area}`)]),
+});
+
+/**
+ * The mapping, REQUIRED and never defaulted. The identity default this replaces
+ * was the one path on which a trigger's skill name was spelled without
+ * scripts/skills.mjs: a caller that forgot `repoSkillName` scored
+ * `repo-tom.quest`, a name no publisher can produce, and the miss looked like a
+ * clean run. There is nothing here to fall back TO — a name spelled by anything
+ * but the central function is wrong — so the absent mapping is an error.
+ */
+function skillNameMapping({ bareSkillName, repoSkillName } = {}) {
+  if (typeof bareSkillName !== "function" || typeof repoSkillName !== "function") {
+    throw new Error("trigger skill names need the scripts/skills.mjs mapping (bareSkillName and repoSkillName)");
+  }
+  return { bareSkillName, repoSkillName };
 }
 
-/** How many positives and negatives one trigger file carries, whether it
- *  writes them as lists or as counts. ONE SPELLING of the count, so the rule
- *  and the report cannot come to disagree. */
+/** The skill names one loaded trigger is about: a `skill` file names its own,
+ *  and a `layer` file names the skills that layer became. */
+export function triggerSkills(trigger, mapping = {}) {
+  if (trigger?.kind === "skill") {
+    if (typeof trigger.name !== "string" || trigger.name === "") throw new Error("skill trigger needs a name");
+    const { bareSkillName, repoSkillName } = skillNameMapping(mapping);
+    // Repository labels keep their punctuation and capitalization for humans;
+    // their published skill name comes only from the central mapping. THE
+    // FILE'S OWN `name` MUST BE THAT NAME: a fixture holding a second spelling
+    // of the repository is the defect this round found, and tolerating it in
+    // the file while silently scoring the mapped name leaves the wrong name
+    // readable, quotable, and free to spread into ids and expectations.
+    if (typeof trigger.repo === "string" && trigger.repo !== "") {
+      const published = repoSkillName(trigger.repo);
+      if (trigger.name !== published) {
+        throw new Error(`skill trigger for ${trigger.repo} is named ${trigger.name}; the published skill is ${published}`);
+      }
+      return [published];
+    }
+    const bare = bareSkillName(trigger.name);
+    if (trigger.name !== bare) {
+      throw new Error(`skill trigger is named ${trigger.name}; the published skill is ${bare}`);
+    }
+    return [bare];
+  }
+  if (trigger?.kind === "layer") {
+    const skills = LAYER_SKILL_ALIASES[trigger.name];
+    if (skills === undefined) throw new Error(`unknown layer trigger ${String(trigger.name)}`);
+    const { bareSkillName } = skillNameMapping(mapping);
+    return skills.map((name) => bareSkillName(name));
+  }
+  throw new Error(`unknown trigger kind ${String(trigger?.kind)}`);
+}
+
+export function loadTriggers(tomquestTree, { wikitomDir = BOX_WIKITOM_DIR, bareSkillName, repoSkillName } = {}) {
+  const publicDir = path.join(tomquestTree, TRIGGERS_DIR);
+  const privateDir = path.join(wikitomDir, TRIGGERS_DIR);
+  const files = [
+    ...(fs.existsSync(publicDir)
+      ? fs.readdirSync(publicDir)
+        .filter((name) => name.endsWith(".json") && !name.endsWith(".draft.json") && !AREA_TRIGGER_FILES.includes(name))
+        .map((name) => ({ dir: publicDir, name }))
+      : []),
+    ...AREA_TRIGGER_FILES.map((name) => ({ dir: privateDir, name })),
+  ];
+  return files
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(({ dir, name }) => {
+      const trigger = { file: name, ...JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")) };
+      // A checked-in trigger is executable input. Validate its dispatch shape
+      // while the source filename is still known, including the private area
+      // fixtures that this checkout cannot repair.
+      if (Array.isArray(trigger.cases)) {
+        for (const one of trigger.cases) {
+          const id = typeof one?.id === "string" && one.id.trim() !== "" ? one.id : "<missing id>";
+          try {
+            triggerBase(trigger, one);
+            triggerMethod(one);
+          } catch (error) {
+            throw new Error(`trigger case ${id} in ${name}: ${error.message}`);
+          }
+        }
+      }
+      // NORMALISED ON THE WAY OUT, never written into the file. A trigger file
+      // is Tom-facing text about one name, and a list of skill names copied
+      // into it would be a second copy of LAYER_SKILL_ALIASES that goes stale
+      // the day an area page is added.
+      try {
+        return { ...trigger, skills: triggerSkills(trigger, { bareSkillName, repoSkillName }) };
+      } catch (error) {
+        throw new Error(`trigger ${name}: ${error.message}`);
+      }
+    });
+}
+
+/** How many positives and negatives one current-format trigger file carries. */
 export function triggerCounts(trigger) {
-  const count = (value) => (Array.isArray(value) ? value.length : (Number.isFinite(value) ? value : 0));
-  return { positives: count(trigger?.positives), negatives: count(trigger?.negatives) };
+  if (!Array.isArray(trigger?.cases)) throw new Error("trigger needs a cases list");
+  const negatives = trigger.cases.filter((one) => one?.negative === true).length;
+  return { positives: trigger.cases.length - negatives, negatives };
+}
+
+/** The executable trigger filenames changed by a pull request. Drafts and
+ * malformed paths cannot claim coverage because the runner never loads them. */
+export function changedTriggerFiles(changed) {
+  if (!Array.isArray(changed)) return new Set();
+  return new Set(changed
+    .filter((path) => typeof path === "string")
+    .map((path) => path.replace(/\\/g, "/").replace(/^\.\//, ""))
+    .filter((path) => path.startsWith(`${TRIGGERS_DIR}/`) && path.endsWith(".json") && !path.endsWith(".draft.json"))
+    .map((path) => path.slice(`${TRIGGERS_DIR}/`.length)));
+}
+
+/**
+ * The two trigger case methods. A `route` case is a complete, generic input to
+ * routeSkills: `caller`, `subject`, optional `record`/`cwd`/`repoDirs`, and an
+ * `expected` router result. It contains no prose for a model to interpret, so
+ * it is scored once without a runner. A case with a prompt is an output-
+ * behaviour check and therefore needs the runner once. A malformed checked-in
+ * case is an authoring error, not a measurement to silently skip.
+ */
+export const TRIGGER_METHOD_ROUTER = "router";
+export const TRIGGER_METHOD_RUNNER = "runner";
+
+export function triggerMethod(one) {
+  const hasRoute = one !== null && typeof one === "object" && Object.hasOwn(one, "route");
+  const hasPrompt = one !== null && typeof one === "object" && Object.hasOwn(one, "prompt");
+  if (hasRoute && hasPrompt) throw new Error("trigger case cannot carry both route and prompt");
+  // A router case is scored by exact comparison against `route.expected`;
+  // scoreTriggerRoute never reads `expect`. One checked in anyway held two
+  // spellings of a skill name that no publisher produces, and read as a
+  // passing assertion because a mustNotName nobody can name is vacuously true.
+  // The expectation has one home, so the second one is refused rather than
+  // ignored.
+  if (hasRoute && Object.hasOwn(one, "expect")) {
+    throw new Error("router case scores route.expected; it cannot also carry expect");
+  }
+  if (hasRoute) return TRIGGER_METHOD_ROUTER;
+  if (hasPrompt && typeof one.prompt === "string" && one.prompt.trim() !== "") return TRIGGER_METHOD_RUNNER;
+  throw new Error("trigger case needs route or prompt");
+}
+
+export function triggerBase(trigger, one) {
+  if (typeof one?.id !== "string" || one.id.trim() === "") {
+    throw new Error("trigger case needs a non-empty id");
+  }
+  // A case id names the skill it is about, and `<kind>-<name>-` is how every
+  // trigger file already spells it. Anchoring it here is what keeps a skill
+  // name from acquiring a second spelling in the one field nothing validates:
+  // the two repo files carried `skill-repo-tom.quest-…` ids for a skill
+  // published as `repo-tom-quest`.
+  if (typeof trigger?.kind === "string" && typeof trigger?.name === "string" && trigger.name !== "") {
+    const prefix = `${trigger.kind}-${trigger.name}-`;
+    if (!one.id.startsWith(prefix)) throw new Error(`trigger case id ${one.id} does not start with ${prefix}`);
+  }
+  return {
+    id: one.id,
+    partition: `trigger/${trigger?.name ?? "unknown"}`,
+    verdict: "approve",
+    confirmed: one?.confirmedByTom === true,
+  };
+}
+
+function sameJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/** Score one schema-described router case. It deliberately has no fallback to
+ * a model: a partial route description is a broken fixture, not a question a
+ * model is permitted to answer. */
+export function scoreTriggerRoute(trigger, one, router) {
+  const base = triggerBase(trigger, one);
+  if (one?.route === null || typeof one?.route !== "object" || Array.isArray(one.route)) {
+    return { ...base, method: TRIGGER_METHOD_ROUTER, judged: "fail", reason: "router case needs a route object" };
+  }
+  const expected = one.route.expected;
+  if (expected === null || typeof expected !== "object" || Array.isArray(expected)) {
+    return { ...base, method: TRIGGER_METHOD_ROUTER, judged: "fail", reason: "router case needs an expected result" };
+  }
+  try {
+    const actual = router({
+      caller: one.route.caller,
+      subject: one.route.subject,
+      record: one.route.record,
+      cwd: one.route.cwd,
+      repoDirs: one.route.repoDirs,
+      pages: one.route.pages,
+      published: one.route.published,
+    });
+    const projected = {
+      granted: actual.granted,
+      refused: actual.refused,
+      repoRulesSource: actual.repoRulesSource,
+    };
+    return sameJson(projected, expected)
+      ? { ...base, method: TRIGGER_METHOD_ROUTER, judged: "pass", trials: { head: 1, headPassed: 1 } }
+      : { ...base, method: TRIGGER_METHOD_ROUTER, judged: "fail", reason: "router result differs from the case expectation", trials: { head: 1, headPassed: 0 } };
+  } catch (error) {
+    return { ...base, method: TRIGGER_METHOD_ROUTER, judged: "fail", reason: `router failed: ${serverErrorMessage(error)}`, trials: { head: 1, headPassed: 0 } };
+  }
+}
+
+/** One model-required trigger case. Its checked-in mechanical expectation is
+ * the verdict, so there is no second judge call after the one runner call. */
+export async function runTriggerCase(trigger, one, io, router = null, publication = null) {
+  const method = triggerMethod(one);
+  if (method === TRIGGER_METHOD_ROUTER) return scoreTriggerRoute(trigger, one, router);
+  const base = triggerBase(trigger, one);
+  const pinReason = publication?.reason ?? (
+    publication === null ||
+    typeof publication.text !== "string" ||
+    typeof publication.expectedCommit !== "string" ||
+    publication.commit !== publication.expectedCommit ||
+    !/^[0-9a-f]{64}$/.test(publication.catalogHash ?? "")
+      ? "the trigger publication could not be pinned to the named WikiTom commit"
+      : null
+  );
+  // REMOVAL CHECK: cannot remove; an unpinned runner result can be stamped with a WikiTom commit whose skill bytes it never saw.
+  if (pinReason !== null) return { ...base, method, judged: "skip", reason: pinReason };
+  try {
+    const answer = await io.runClaude([publication.text, one.prompt].filter((part) => part !== "").join("\n\n"), {
+      model: REGEN_MODEL,
+      timeoutMs: REGEN_TIMEOUT_MS,
+      maxTurns: JOBS.run.opts.maxTurns,
+      registration: {
+        origin: "cron:evals",
+        kind: "trigger",
+        layersKnown: true,
+        layersGiven: [],
+        layersDenied: [],
+        skillsGranted: publication.skills ?? [],
+        skillsRefused: publication.skillsRefused ?? [],
+        wikitomCommit: publication.commit,
+      },
+    });
+    const reason = mechanicalChecks(one.expect, answer);
+    return reason === null
+      ? { ...base, method, judged: "pass", trials: { head: 1, headPassed: 1 } }
+      : { ...base, method, judged: "fail", reason, trials: { head: 1, headPassed: 0 } };
+  } catch (error) {
+    return { ...base, method, judged: "fail", reason: `trigger runner failed: ${serverErrorMessage(error)}`, trials: { head: 1, headPassed: 0 } };
+  }
 }
 
 /**
@@ -1320,9 +1785,10 @@ export async function runCase(item, context, io, { pr = false } = {}) {
   for (let trial = 0; trial < count; trial += 1) {
     const receipt = {};
     const result = await runItem(item, context, io, { deterministic, receipt });
-    // A skip is not a trial. The skills seam throws while the prompt is being
-    // assembled, before any model call, so nothing has been spent and nothing
-    // is scored — the case is counted as skipped and that is all.
+    // A skip is not a trial. An io with no skill assembler throws while the
+    // prompt is being assembled, before any model call, so nothing has been
+    // spent and nothing is scored — the case is counted as skipped, that is
+    // all, and realIo never takes this path.
     if (result.judged === "skip") return { ...base, judged: "skip", reason: result.reason };
     const record = await runRecordFor(io, receipt.runToken);
     perTrial.push({ judged: result.judged, reason: result.reason, tokens: record.tokens, turns: record.turns });
@@ -1811,13 +2277,43 @@ export async function verifierScorecard(io, env, { at, force = false } = {}) {
   };
 }
 
+/** The pinned skill-name mapping. Trigger files keep human repository labels,
+ * while the evaluated catalog uses the one canonical bare spelling. */
+async function triggerNameMappingFor(tomquestTree, io) {
+  if (io.triggerNameMapping !== undefined) return io.triggerNameMapping;
+  const skillsModule = await import(pathToFileURL(path.join(tomquestTree, "scripts", "skills.mjs")).href);
+  return {
+    bareSkillName: skillsModule.bareSkillName,
+    repoSkillName: skillsModule.repoSkillName,
+  };
+}
+
+/** The pinned router and the pinned area pages it reads. The router is imported
+ * from the worktree being evaluated, not this box copy: a weekly result must
+ * change when the router at either pinned commit changes. Tests may supply the
+ * complete bound router to keep their trees intentionally small. */
+async function triggerRouterFor(tomquestTree, wikitomTree, io) {
+  if (typeof io.triggerRouter === "function") return io.triggerRouter;
+  const routerModule = await import(pathToFileURL(path.join(tomquestTree, "worker", "jobs", "skill-router.mjs")).href);
+  const skillsModule = await import(pathToFileURL(path.join(tomquestTree, "scripts", "skills.mjs")).href);
+  const areas = path.join(wikitomTree, skillsModule.AREAS_DIR);
+  const pages = fs.existsSync(areas)
+    ? fs.readdirSync(areas).filter((name) => name.endsWith(".md")).sort().map((name) => ({
+      path: path.posix.join(skillsModule.AREAS_DIR, name),
+      body: fs.readFileSync(path.join(areas, name), "utf8"),
+    }))
+    : [];
+  const published = publicationFor(tomquestTree, wikitomTree).published;
+  return (input) => routerModule.routeSkills({ ...input, pages: input.pages ?? pages, published: input.published ?? published });
+}
+
 /**
  * One run: the golden items of the pinned tom.quest tree, regenerated against
  * the pinned WikiTom tree, judged, aggregated, and posted as one evals-run row.
  * `io` carries every side effect so the test can drive this with no network
  * and no model.
  */
-export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekly = false, ablation = false, basePassed = new Set() }, io) {
+export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekly = false, ablation = false, basePassed = new Set(), changed = undefined }, io) {
   const startedAt = io.now();
   const trees = treesFor(repo, sha);
   const tomquest = io.worktree("tom.quest", trees.tomquest);
@@ -1826,6 +2322,20 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
     const all = loadGolden(tomquest.dir);
     const wanted = jobs === null ? all : all.filter((item) => jobs.includes(item.job));
     const items = weekly ? wanted : selectItems(wanted, Math.max(1, Math.floor(limit / 2)));
+    // Weekly runs take the whole trigger set. A pull-request run takes every
+    // case from exactly the trigger files it changed, so its coverage cannot
+    // be satisfied by a case deferred to the weekly job.
+    const changedTriggers = changedTriggerFiles(changed);
+    const shouldLoadTriggers = weekly || changedTriggers.size > 0;
+    const triggerNameMapping = shouldLoadTriggers ? await triggerNameMappingFor(tomquest.dir, io) : null;
+    const triggers = shouldLoadTriggers
+      ? loadTriggers(tomquest.dir, { wikitomDir: wikitom.dir, ...triggerNameMapping })
+        .filter((trigger) => weekly || changedTriggers.has(trigger.file))
+      : [];
+    const triggerCases = triggers.flatMap((trigger) => (trigger.cases ?? []).map((one) => ({ trigger, one })));
+    const router = triggerCases.some(({ one }) => triggerMethod(one) === TRIGGER_METHOD_ROUTER)
+      ? await triggerRouterFor(tomquest.dir, wikitom.dir, io)
+      : null;
     const modules = await io.loadModules(tomquest.dir, items);
     const layerCache = new Map();
     const preludeCache = new Map();
@@ -1867,14 +2377,67 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       }
       results.push(await runTrials(item.id, basePassed, () => runItem(item, context, io)));
     }
-    const tasks = [];
-    for (const taskRepo of io.taskRepos?.(tomquest.dir) ?? []) {
-      for (const task of loadTasks(tomquest.dir, taskRepo)) {
-        tasks.push(await runTrials(task.id, basePassed, () => runTask(task, trees, io)));
+    const triggerResults = [];
+    let catalogHash = null;
+    for (const { trigger, one } of triggerCases) {
+      let pinned = null;
+      if (triggerMethod(one) === TRIGGER_METHOD_RUNNER) {
+        try {
+          // Real runner prompts always carry operate. Triggers must score that
+          // same prompt, including when their only mapped grant is an area skill.
+          const requested = { layers: ["operate"], skills: trigger.skills ?? [] };
+          // Even a trigger with no skill names (operate) must pin the catalog
+          // identity; preludeFrom deliberately returns early for an empty set.
+          let assembled;
+          if (requested.skills.length === 0) {
+            if (typeof io.skills !== "function") throw new SkillsNotAssembledError(SKILL_SEAM_REASON);
+            assembled = io.skills(tomquest.dir, wikitom.dir, requested);
+          } else {
+            assembled = context.prelude(requested);
+          }
+          pinned = { ...assembled, expectedCommit: wikitom.commit };
+          if (assembled.commit === wikitom.commit && /^[0-9a-f]{64}$/.test(assembled.catalogHash ?? "")) {
+            if (catalogHash !== null && catalogHash !== assembled.catalogHash) {
+              pinned = { reason: "the pinned trigger catalog changed during the eval run" };
+            } else {
+              catalogHash = assembled.catalogHash;
+            }
+          }
+        } catch (error) {
+          pinned = { reason: `the trigger publication could not be pinned: ${serverErrorMessage(error)}` };
+        }
       }
+      triggerResults.push(await runTriggerCase(trigger, one, io, router, pinned));
     }
+    const taskItems = (io.taskRepos?.(tomquest.dir) ?? [])
+      .flatMap((taskRepo) => loadTasks(tomquest.dir, taskRepo));
+    const tasks = [];
+    for (const task of taskItems) tasks.push(await runTrials(task.id, basePassed, () => runTask(task, trees, io)));
     const scored = results.filter((result) => result.judged !== "skip");
-    const summary = aggregate(scored);
+    const scoredTriggers = triggerResults.filter((result) => result.judged !== "skip");
+    const scoredTasks = tasks.filter((task) => task.judged !== "skip");
+    const scoredAll = [...scored, ...scoredTriggers];
+    const sourceById = new Map();
+    for (const source of [...items, ...triggerCases.map(({ trigger, one }) => ({ ...one, trigger: trigger.file })), ...taskItems]) {
+      if (sourceById.has(source.id)) throw new Error(`duplicate scored item id ${source.id}`);
+      sourceById.set(source.id, source);
+    }
+    const scoredHashes = Object.fromEntries([...scoredAll, ...scoredTasks]
+      .map((result) => {
+        const source = sourceById.get(result.id);
+        if (source === undefined) throw new Error(`scored item ${result.id} has no source`);
+        return [result.id, contentHash(source)];
+      })
+      .sort(([left], [right]) => left.localeCompare(right)));
+    // A file is listed only when EVERY one of its cases ran, so a skipped case
+    // cannot leave a file claiming coverage it did not measure.
+    const ranByFile = new Map();
+    triggerCases.forEach(({ trigger }, index) => {
+      const ran = triggerResults[index]?.judged !== "skip";
+      ranByFile.set(trigger.file, (ranByFile.get(trigger.file) ?? true) && ran);
+    });
+    const triggerFilesRun = [...ranByFile].filter(([, ran]) => ran).map(([file]) => file).sort();
+    const summary = aggregate(scoredAll);
     return {
       repo,
       // The RESOLVED commit of whichever repo this run pins, so a run named
@@ -1882,7 +2445,8 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       sha: repo === "WikiTom" ? wikitom.commit : tomquest.commit,
       tomquest: tomquest.commit,
       wikitom: wikitom.commit,
-      goldenHash: goldenHash(all),
+      catalogHash,
+      goldenHash: goldenHash([...all, ...triggerCases.map(({ trigger, one }) => ({ ...one, trigger: trigger.file }))]),
       regenModel: REGEN_MODEL,
       judgeModel: JUDGE_MODEL,
       startedAt,
@@ -1890,11 +2454,15 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       // Trials, not items: a retried item costs its calls again and the row
       // says so. The ablation arm is one trial per name and costs the same two
       // calls each, so it is counted rather than hidden.
-      calls: (scored.reduce((total, result) => total + (result.trials?.head ?? 1), 0) + ablationRows.length) * 2,
+      calls: (scored.reduce((total, result) => total + (result.trials?.head ?? 1), 0) + ablationRows.length) * 2 +
+        scoredTriggers.filter((result) => result.method === TRIGGER_METHOD_RUNNER).length,
       // The ids actually scored, so the gate can tell a newly added item apart
       // from one that regressed without re-deriving the selection.
-      scoredIds: [...scored, ...tasks.filter((task) => task.judged !== "skip")].map((result) => result.id).sort(),
-      skipped: results.filter((result) => result.judged === "skip").map(({ id, reason }) => ({ id, reason })),
+      scoredIds: [...scoredAll, ...scoredTasks].map((result) => result.id).sort(),
+      scoredHashes,
+      // The coverage gate requires every changed trigger filename to be here.
+      triggerFilesRun,
+      skipped: [...results, ...triggerResults].filter((result) => result.judged === "skip").map(({ id, reason, method }) => ({ id, reason, method })),
       // A --weekly run SAYS SO ON THE ROW. The weekly graduation pass
       // (scripts/graduate-golden.mjs) promotes a capability case on this
       // evidence and no other: a pull-request run scores a 40-item subset
@@ -1915,9 +2483,10 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       // a measured case whose record did not come back: the difference between
       // "not asked" and "asked, no answer". The efficiency block counts only
       // the cases that were asked.
-      results: scored.map((result) => ({
+      results: scoredAll.map((result) => ({
         id: result.id,
         judged: result.judged,
+        ...(result.method === undefined ? {} : { method: result.method }),
         passK: result.passK ?? (result.trials === undefined
           ? result.judged === "pass"
           : result.trials.headPassed === result.trials.head),
@@ -1998,10 +2567,12 @@ function realIo(env) {
     now: () => Date.now(),
     runClaude: async (prompt, options) => runClaude(prompt, options),
     layers: (tomquestTree, wikitomTree, names) => layersFor(tomquestTree, wikitomTree, names),
-    // THE PHASE 6 SEAM. `skills` is unwired on purpose: scripts/skills.mjs does
-    // not exist yet, and preludeFrom refuses a name set carrying skills rather
-    // than assembling half of one. Phase 6 adds the one line here.
-    // skills: (tomquestTree, names) => skillsFor(tomquestTree, names),
+    // The skill half of a name set, assembled by running the PINNED tree's own
+    // scripts/publish-skills.mjs against the PINNED WikiTom tree and reading
+    // what it wrote. Both trees go through, because the catalogue is one tree's
+    // generator over the other tree's pages; skillsFor is the only thing that
+    // needs to know that, and preludeFrom just hands the pair on.
+    skills: (tomquestTree, wikitomTree, names) => skillsFor(tomquestTree, wikitomTree, names),
     //
     // One trial's own run, read back out of the record so its tokens and turns
     // are the ones the sweeper parsed rather than a number this file counted.
@@ -2112,6 +2683,8 @@ export function failedRun({ repo, sha, error, at }) {
     byVerdict: { approve: { items: 0, pass: 0 }, revise: { items: 0, pass: 0 } },
     failures: [],
     scoredIds: [],
+    scoredHashes: {},
+    triggerFilesRun: [],
     skipped: [],
     results: [],
     efficiency: { cases: 0, unknown: 0, rises: [] },
@@ -2238,7 +2811,7 @@ async function runAndPost(env, io, {
   // can become a regression, so exactly those are tried again when they fail.
   const data = {
     ...await stampAgainstBase(
-      await runEvals({ repo, sha, limit, jobs, weekly, ablation, basePassed: passedIds(baseData) }, io),
+      await runEvals({ repo, sha, limit, jobs, weekly, ablation, basePassed: passedIds(baseData), changed }, io),
       baseData,
       { changed, prBody },
     ),

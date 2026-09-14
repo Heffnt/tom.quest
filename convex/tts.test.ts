@@ -25,8 +25,9 @@ describe("POST /tts/time-notes", () => {
     await t.run(async (ctx) => {
       await ctx.db.insert("modelOfTomPublication", {
         key: "current", commit: "time-notes-test", committedAt: 1, pushed: true,
-        operate: "operate layer", write: "write layer", know: "know layer",
-        headers: [{ layers: ["operate", "write"], header: "published map + operate + write" }],
+        // `operate` alone: the write and know layers became skills in phase 6.
+        operate: "operate layer",
+        headers: [{ layers: ["operate"], header: "published map + operate" }],
       });
     });
 
@@ -36,15 +37,15 @@ describe("POST /tts/time-notes", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.notes).toEqual([]);
-    // The door serves the ASSEMBLED CONTEXT now, not two whole layers (the
-    // dynamic-context round): the stable prefix — the map, the operate rules
-    // and the write layer — and then, this caller having no subject of its
-    // own, no expansion at all and the fetchable index. The assembler's exact
-    // output is pinned in convex/ttsContext.test.ts; what this asserts is that
-    // the door serves it under the field name the worker asks for.
-    const [prefix, index] = body.writingStandard.split("\n\nMODEL-OF-TOM FETCHABLE (");
-    expect(prefix).toBe("published map + operate + write\n\noperate layer\n\nwrite layer");
-    expect(index).toContain("--layers know");
+    // The door serves the ASSEMBLED CONTEXT now, not two whole layers: the
+    // stable prefix — the map and the operate rules — and the grant block,
+    // naming what this caller may load. The assembler's exact output is pinned
+    // in convex/ttsContext.test.ts; what this asserts is that the door serves
+    // it under the field name the worker asks for.
+    const [prefix, grants] = body.writingStandard.split("\n\nSKILLS (WikiTom commit ");
+    expect(prefix).toBe("published map + operate\n\noperate layer");
+    expect(grants).toContain("granted:");
+    expect(body.writingStandard).not.toContain("write layer");
   });
 });
 

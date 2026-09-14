@@ -1,16 +1,23 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  appendSkillAsk,
+  claimPointerPath,
   claimRegistration,
   findCodexRegistration,
   mergeRegistration,
   readRegistration,
   registrationSidecarPath,
+  SKILL_ASK_CAP,
   writeRegistration,
+  writeRegistrationClaim,
   writeRegistrationEnd,
+  writeRegistrationReceipt,
 } from "../registration.mjs";
 import { codexResponseItem, jsonl } from "./fixtures.mjs";
 
@@ -43,10 +50,51 @@ describe("run registration", () => {
     expect(fs.existsSync(path.join(spoolDir, `${token}.json`))).toBe(false);
   });
 
-  it("keeps a same-token sidecar intact instead of bootstrapping its spool again", () => {
+  it("writes a grant receipt after a claim without changing its claim facts", () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
+    const token = "12121212-1212-4121-8121-121212121212";
+    writeRegistration({ spoolDir, token, writer: { file: "launcher.mjs" }, registration: { host: "laptop" }, now: () => 1 });
+    claimRegistration({ spoolDir, token, runFile, claim: {
+      by: "hook:SessionStart", threadId: "session-42", cliVersion: "1.2.3", claimant: "session-hook",
+      hookPayloadKeys: ["session_id", "cwd", "session_id"],
+    }, now: () => 2 });
+
+    const receipt = writeRegistrationReceipt({ runFile, receipt: {
+      skillsGranted: ["tom-write", "know-research"], skillsRefused: ["unsafe-write"],
+    }, now: () => 3 });
+
+    expect(receipt.envelope).toMatchObject({
+      claim: { by: "hook:SessionStart", threadId: "session-42", cliVersion: "1.2.3", claimant: "session-hook", hookPayloadKeys: ["cwd", "session_id"] },
+      receipt: { at: 3, skillsGranted: ["tom-write", "know-research"], skillsRefused: ["unsafe-write"] },
+    });
+    expect(readRegistration(runFile)).toEqual(receipt.envelope);
+  });
+
+  it("keeps a grant receipt written before the launcher spool is claimed", () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
+    const token = "23232323-2323-4232-8232-232323232323";
+    writeRegistration({ spoolDir, token, writer: { file: "launcher.mjs" }, registration: { host: "laptop" }, now: () => 1 });
+    writeRegistrationReceipt({ runFile, receipt: {
+      skillsGranted: ["tom-write"], skillsRefused: ["know-private"],
+    }, now: () => 2 });
+
+    const claimed = claimRegistration({ spoolDir, token, runFile, claim: {
+      by: "hook:SessionStart", threadId: "session-43", cliVersion: "1.2.3", claimant: "session-hook",
+      hookPayloadKeys: ["transcript_path", "session_id"],
+    }, now: () => 3 });
+
+    expect(claimed.envelope).toMatchObject({
+      registration: { host: "laptop" },
+      claim: { by: "hook:SessionStart", threadId: "session-43", cliVersion: "1.2.3", claimant: "session-hook", hookPayloadKeys: ["session_id", "transcript_path"] },
+      receipt: { at: 2, skillsGranted: ["tom-write"], skillsRefused: ["know-private"] },
+    });
+  });
+
+  it("keeps a same-token sidecar intact and removes its stale spool", () => {
     const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
     const token = "44444444-4444-4444-8444-444444444444";
     writeRegistration({ spoolDir, token, writer: { file: "stale-launcher.mjs" }, registration: { host: "laptop", origin: "stale" }, now: () => 1 });
+    appendSkillAsk({ spoolDir, token, ask: { name: "stale-spool-ask", result: "ok" }, now: () => 3 });
     const sidecar = path.join(dir, "run.registration.json");
     fs.writeFileSync(sidecar, JSON.stringify({
       envelopeVersion: 1,
@@ -54,11 +102,25 @@ describe("run registration", () => {
       writer: { file: "sidecar-launcher.mjs", at: 2 },
       registration: { host: "laptop", origin: "sidecar" },
       claim: { by: "hook:SessionStart", at: 2 },
+      skills: { asked: [{ at: 2, name: "sidecar-ask", result: "refused" }] },
     }));
 
     const result = claimRegistration({ spoolDir, token, runFile, claim: { by: "repair" }, now: () => 3 });
     expect(result).toMatchObject({ ok: true, claimed: false, envelope: { writer: { file: "sidecar-launcher.mjs" }, registration: { origin: "sidecar" }, claim: { by: "hook:SessionStart" } } });
-    expect(fs.existsSync(path.join(spoolDir, `${token}.json`))).toBe(true);
+    expect(fs.existsSync(path.join(spoolDir, `${token}.json`))).toBe(false);
+    expect(readRegistration(runFile).skills.asked).toEqual([
+      { at: 2, name: "sidecar-ask", result: "refused" },
+      { at: 3, name: "stale-spool-ask", result: "ok" },
+    ]);
+    // A token-only child must now follow the sidecar pointer, not write an
+    // orphaned spool which the sweep never reads.
+    expect(appendSkillAsk({ spoolDir, token, ask: { name: "know-research", result: "ok" }, now: () => 4 }))
+      .toMatchObject({ ok: true, file: registrationSidecarPath(runFile) });
+    expect(readRegistration(runFile).skills.asked).toEqual([
+      { at: 2, name: "sidecar-ask", result: "refused" },
+      { at: 3, name: "stale-spool-ask", result: "ok" },
+      { at: 4, name: "know-research", result: "ok" },
+    ]);
   });
 
   it("replaces a corrupt spool with the launcher-owned envelope", () => {
@@ -74,6 +136,21 @@ describe("run registration", () => {
     const result = mergeRegistration({ parsed: parsed(), host: "laptop", envelope: { writer: { file: "scripts/codex-run.mjs" }, registration: { host: "laptop", origin: "cron:audit", kind: "job", modelRequested: "requested", parentRunId: "codex:laptop:registered-parent", layersKnown: true, layersGiven: ["operate"], layersDenied: ["write"], wikitomCommit: "envelope-commit", promptSha256: "hash" }, end: { status: "failed", reason: "failed" } } });
     expect(result.run).toMatchObject({ model: "file-model", origin: "cron:audit", kind: "job", parentRunId: "codex:laptop:registered-parent", status: "failed" });
     expect(result.run.context).toMatchObject({ registered: true, modelRequested: "requested", layersGiven: ["operate"], wikitomCommit: "file-commit", tools: ["seen"] });
+  });
+
+  it("uses the rendered receipt over legacy registration grant arrays", () => {
+    const result = mergeRegistration({
+      parsed: parsed(),
+      host: "laptop",
+      envelope: {
+        registration: { host: "laptop", layersKnown: false, skillsGranted: ["legacy-grant"], skillsRefused: ["legacy-refusal"] },
+        receipt: { skillsGranted: ["rendered-grant"], skillsRefused: ["rendered-refusal"] },
+      },
+    });
+    expect(result.run.context).toMatchObject({
+      skillsGranted: ["rendered-grant"],
+      skillsRefused: ["rendered-refusal"],
+    });
   });
 
   it("refuses a host mismatch and makes missing registration honestly unknown", () => {
@@ -145,5 +222,221 @@ describe("run registration", () => {
     expect(result).toMatchObject({ ok: false, reason: "run registration token absent" });
     expect(fs.existsSync(path.join(spoolDir, `${token}.json`))).toBe(true);
     expect(fs.existsSync(registrationSidecarPath(runFile))).toBe(false);
+  });
+
+  // -- the fifth group ------------------------------------------------------
+  // `skills` arrived with envelopeVersion 2, written by `tts-search skills`
+  // and by nothing else.
+
+  it("keeps five writers, five keys, and no lost update", () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
+    const token = "88888888-8888-4888-8888-888888888888";
+    writeRegistration({ spoolDir, token, writer: { file: "launcher.mjs" }, registration: { host: "laptop", origin: "job" }, now: () => 1 });
+    // The wrapper runs inside the child, BEFORE any claim: the sidecar does not
+    // exist yet, so the spool is what it appends to.
+    expect(appendSkillAsk({ spoolDir, token, ask: { name: "know-money", result: "ok" }, now: () => 2 })).toMatchObject({ ok: true });
+    claimRegistration({ spoolDir, token, runFile, claim: { by: "hook:SessionStart" }, now: () => 3 });
+    // And after the claim the spool is gone, so the sidecar is.
+    expect(appendSkillAsk({ runFile, spoolDir, token, ask: { name: "know-nothing", result: "refused", why: "not in the catalog" }, now: () => 4 })).toMatchObject({ ok: true });
+    writeRegistrationEnd({ runFile, end: { reason: "done" }, now: () => 5 });
+
+    expect(readRegistration(runFile)).toMatchObject({
+      envelopeVersion: 2,
+      token,
+      writer: { file: "launcher.mjs" },
+      registration: { origin: "job" },
+      claim: { by: "hook:SessionStart" },
+      end: { reason: "done", status: "ended" },
+      skills: { asked: [
+        { at: 2, name: "know-money", result: "ok" },
+        { at: 4, name: "know-nothing", result: "refused", why: "not in the catalog" },
+      ] },
+    });
+  });
+
+  it("keeps an ask that begins while a claim owns the spool lock", async () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
+    const token = "12121212-1212-4121-8121-121212121212";
+    const source = path.join(spoolDir, `${token}.json`);
+    const ready = path.join(dir, "append-ready");
+    const start = path.join(dir, "append-start");
+    const resultFile = path.join(dir, "append-result.json");
+    writeRegistration({ spoolDir, token, writer: { file: "launcher.mjs" }, registration: { host: "box" }, now: () => 1 });
+
+    // A separate process makes this a real interleaving: it is ready to append,
+    // then waits until claimRegistration has acquired the spool lock.
+    const child = spawn(process.execPath, ["--input-type=module", "--eval", [
+      `import fs from "node:fs";`,
+      `import { appendSkillAsk } from ${JSON.stringify(pathToFileURL(path.resolve("worker/runs/registration.mjs")).href)};`,
+      `fs.writeFileSync(${JSON.stringify(ready)}, "ready");`,
+      `while (!fs.existsSync(${JSON.stringify(start)})) await new Promise((resolve) => setTimeout(resolve, 2));`,
+      `const result = appendSkillAsk({ spoolDir: ${JSON.stringify(spoolDir)}, token: ${JSON.stringify(token)}, ask: { name: "know-week", result: "ok" }, now: () => 2 });`,
+      `fs.writeFileSync(${JSON.stringify(resultFile)}, JSON.stringify(result));`,
+    ].join("\n")], { stdio: "ignore" });
+    const exited = new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+    for (let attempt = 0; attempt < 100 && !fs.existsSync(ready); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(fs.existsSync(ready)).toBe(true);
+
+    const coordinatedFs = {
+      ...fs,
+      openSync(file, ...args) {
+        const handle = fs.openSync(file, ...args);
+        if (file === `${source}.lock`) fs.writeFileSync(start, "go");
+        return handle;
+      },
+    };
+    expect(claimRegistration({ spoolDir, token, runFile, claim: { by: "hook:SessionStart" }, fs: coordinatedFs, now: () => 3 }))
+      .toMatchObject({ ok: true, claimed: true });
+    const exitCode = await exited;
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(fs.readFileSync(resultFile, "utf8"))).toMatchObject({ ok: true, file: registrationSidecarPath(runFile) });
+    expect(readRegistration(runFile).skills.asked).toEqual([{ at: 2, name: "know-week", result: "ok" }]);
+  });
+
+  it("finds the claimed envelope from the token alone, which is all the box gives a child", () => {
+    // THE BOX PATH, and it is the only path there is for an ask: the
+    // session-host puts TTS_RUN_REG_TOKEN and TTS_RUN_REG_SPOOL in its child
+    // env and nothing else — the transcript path is the CLI's, and nobody knows
+    // it at spawn time — while every `tts-search skills` a session makes comes
+    // AFTER its SessionStart claim, which takes the spool away. Without the
+    // claim's forwarding address this ask would land nowhere and be swallowed.
+    const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
+    const token = "77777777-7777-4777-8777-777777777777";
+    writeRegistration({ spoolDir, token, writer: { file: "worker/session-host/session.mjs" }, registration: { host: "box" }, now: () => 1 });
+    claimRegistration({ spoolDir, token, runFile, claim: { by: "hook:SessionStart" }, now: () => 2 });
+    expect(fs.existsSync(path.join(spoolDir, `${token}.json`))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(claimPointerPath(spoolDir, token), "utf8")))
+      .toEqual({ runFile: path.resolve(runFile) });
+
+    expect(appendSkillAsk({ spoolDir, token, ask: { name: "know-research", result: "ok" }, now: () => 3 }))
+      .toMatchObject({ ok: true, file: registrationSidecarPath(runFile) });
+    expect(readRegistration(runFile).skills.asked).toEqual([{ at: 3, name: "know-research", result: "ok" }]);
+    // And it reaches the run row, which is what makes the catalog asks
+    // measurable at all.
+    expect(mergeRegistration({ parsed: parsed(), host: "box", envelope: readRegistration(runFile) }).run.context.skillsAsked)
+      .toEqual(["know-research (ok)"]);
+  });
+
+  it("refreshes a followed claim pointer only after the target append succeeds", () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
+    const token = "78787878-7878-4787-8787-787878787878";
+    writeRegistration({ spoolDir, token, writer: { file: "launcher.mjs" }, registration: { host: "box" }, now: () => 1 });
+    claimRegistration({ spoolDir, token, runFile, claim: { by: "hook:SessionStart" }, now: () => 2 });
+    const pointer = claimPointerPath(spoolDir, token);
+    const old = new Date(1_000);
+    fs.utimesSync(pointer, old, old);
+
+    expect(appendSkillAsk({ spoolDir, token, ask: { name: "know-research", result: "ok" }, now: () => 2_000 }))
+      .toMatchObject({ ok: true, file: registrationSidecarPath(runFile) });
+    expect(fs.statSync(pointer).mtimeMs).toBeGreaterThan(old.getTime());
+
+    fs.unlinkSync(registrationSidecarPath(runFile));
+    const beforeFailure = fs.statSync(pointer).mtimeMs;
+    expect(appendSkillAsk({ spoolDir, token, ask: { name: "know-private", result: "refused" }, now: () => 3_000 }))
+      .toMatchObject({ ok: false });
+    expect(fs.statSync(pointer).mtimeMs).toBe(beforeFailure);
+  });
+
+  it("recreates an expired claim pointer when a resumed session reclaims its token", () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
+    const token = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    writeRegistration({ spoolDir, token, writer: { file: "launcher.mjs" }, registration: { host: "box" }, now: () => 1 });
+    claimRegistration({ spoolDir, token, runFile, claim: { by: "hook:SessionStart" }, now: () => 2 });
+    fs.unlinkSync(claimPointerPath(spoolDir, token));
+
+    expect(claimRegistration({ spoolDir, token, runFile, claim: { by: "resume" }, now: () => 3 }))
+      .toMatchObject({ ok: true, claimed: false });
+    expect(appendSkillAsk({ spoolDir, token, ask: { name: "know-research", result: "ok" }, now: () => 4 }))
+      .toMatchObject({ ok: true, file: registrationSidecarPath(runFile) });
+  });
+
+  it("writes a brand-new envelope at version 2, from either author", () => {
+    const dir = temp();
+    const { envelope } = writeRegistration({
+      spoolDir: path.join(dir, "spool"), token: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      writer: { file: "launcher.mjs" }, registration: { host: "laptop" }, now: () => 1,
+    });
+    expect(envelope.envelopeVersion).toBe(2);
+    const claimed = writeRegistrationClaim({ runFile: path.join(dir, "fresh.jsonl"), claim: { by: "hook:SessionStart" }, now: () => 2 });
+    expect(claimed.envelope.envelopeVersion).toBe(2);
+  });
+
+  it("leaves a version-1 envelope at 1 through a claim and an end, with skills absent", () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
+    const token = "99999999-9999-4999-8999-999999999999";
+    fs.mkdirSync(spoolDir, { recursive: true });
+    fs.writeFileSync(path.join(spoolDir, `${token}.json`), JSON.stringify({
+      envelopeVersion: 1, token, writer: { file: "old-launcher.mjs", at: 1 }, registration: { host: "laptop", origin: "job" },
+    }));
+    claimRegistration({ spoolDir, token, runFile, claim: { by: "hook:SessionStart" }, now: () => 2 });
+    writeRegistrationEnd({ runFile, end: { reason: "done" }, now: () => 3 });
+
+    const envelope = readRegistration(runFile);
+    expect(envelope.envelopeVersion).toBe(1);
+    expect("skills" in envelope).toBe(false);
+    // Reading one is not an error: it simply describes a run that asked for no
+    // skill, because nothing could yet write that it had.
+    const merged = mergeRegistration({ parsed: parsed(), host: "laptop", envelope });
+    expect(merged.envelopeApplied).toBe(true);
+    expect("skillsAsked" in merged.run.context).toBe(false);
+  });
+
+  it("appends only, keeps the newest fifty asks, and creates no envelope of its own", () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool");
+    const token = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    writeRegistration({ spoolDir, token, writer: { file: "launcher.mjs" }, registration: { host: "laptop" }, now: () => 0 });
+    for (let index = 1; index <= SKILL_ASK_CAP + 10; index += 1) {
+      appendSkillAsk({ spoolDir, token, ask: { name: `know-${index}`, result: "ok" }, now: () => index });
+    }
+    const envelope = JSON.parse(fs.readFileSync(path.join(spoolDir, `${token}.json`), "utf8"));
+    expect(envelope.skills.asked).toHaveLength(SKILL_ASK_CAP);
+    // The OLDEST go: an envelope is a record of a run, not a log of it.
+    expect(envelope.skills.asked[0]).toMatchObject({ name: "know-11" });
+    expect(envelope.skills.asked.at(-1)).toMatchObject({ name: `know-${SKILL_ASK_CAP + 10}` });
+    // Append-only: the launcher's own groups are byte-for-byte what it wrote.
+    expect(envelope).toMatchObject({ envelopeVersion: 2, token, writer: { file: "launcher.mjs", at: 0 }, registration: { host: "laptop" } });
+
+    // Nothing to append to is a refusal, NOT a new envelope: a skills-only file
+    // at a spool path would collide with the launcher's own later write.
+    const orphan = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    expect(appendSkillAsk({ spoolDir, token: orphan, ask: { name: "know-money" } })).toMatchObject({ ok: false });
+    expect(fs.existsSync(path.join(spoolDir, `${orphan}.json`))).toBe(false);
+  });
+
+  it("rejects an unknown skill ask result instead of treating it as ok", () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool");
+    const token = "abababab-abab-4bab-8bab-abababababab";
+    writeRegistration({ spoolDir, token, writer: { file: "launcher.mjs" }, registration: { host: "laptop" }, now: () => 0 });
+    expect(appendSkillAsk({ spoolDir, token, ask: { name: "know-money", result: "maybe" } }))
+      .toEqual({ ok: false, reason: "invalid skill ask result" });
+    expect(JSON.parse(fs.readFileSync(path.join(spoolDir, `${token}.json`), "utf8")).skills).toBeUndefined();
+  });
+
+  it("carries the asks onto the run as plain strings, and only on the applied path", () => {
+    const envelope = {
+      envelopeVersion: 2,
+      token: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      writer: { file: "scripts/codex-run.mjs" },
+      registration: { host: "laptop", layersKnown: false },
+      skills: { asked: [
+        { at: 1, name: "know-money", result: "ok" },
+        { at: 2, name: "know-nothing", result: "refused", why: "not in the catalog" },
+      ] },
+    };
+    // PLAIN STRINGS: convex/schema.ts types every runs.context list as
+    // v.array(v.string()), so a string array is the only additive shape.
+    expect(mergeRegistration({ parsed: parsed(), host: "laptop", envelope }).run.context.skillsAsked)
+      .toEqual(["know-money (ok)", "know-nothing (refused)"]);
+
+    const refused = mergeRegistration({
+      parsed: parsed(), host: "laptop", report: () => {},
+      envelope: { ...envelope, registration: { host: "box", layersKnown: false } },
+    });
+    expect(refused.run.context.skillsAsked).toBeUndefined();
   });
 });

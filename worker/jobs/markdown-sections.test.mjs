@@ -44,6 +44,10 @@ describe("frontmatter", () => {
     expect(frontmatterBlock(page)).toBe("---\nupdated: 2026-09-06\nreviewed:\nwindow_days: 30\n---");
   });
 
+  it("parses the bracket-list form used by real area-page categories", () => {
+    expect(parseFrontmatter("---\ncategories: [admin, email]\n---\n").fields.categories).toEqual(["admin", "email"]);
+  });
+
   it("gives a page without a fence no fields and itself as the body", () => {
     expect(parseFrontmatter("# Plain\n")).toEqual({ fields: {}, body: "# Plain\n" });
     expect(parseFrontmatter("---\nnever closed\n")).toEqual({

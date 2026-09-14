@@ -946,38 +946,79 @@ export default defineSchema({
     preparedAt: v.number(),
   }).index("by_repo_external", ["repo", "externalId"]),
 
-  // Per-file publication facts for caller-selected model-of-tom layers (the
-  // lifeos update, phase 4): one row per WikiTom file the nightly job posts to
-  // POST /tts/model-of-tom. They are traceability metadata, not a prompt
-  // renderer: the three already-rendered verbatim layers live in the singleton
-  // modelOfTomPublication record below. This separation means a transcript
-  // cannot change when file assembly rules change later.
+  // THE PUBLISHED SKILL CATALOG — one row per skill, which is what this table's
+  // name has said all along (the unified agent ecosystem, phase 6). Until this
+  // commit it held one row per model-of-tom FILE; those rows moved to
+  // modelOfTomFiles below with their shape untouched, and this table now holds
+  // what scripts/skills.mjs builds: `write`, `know-intent`, `know-week`, one
+  // `know-<area>` per area page, and one `repo-<name>` per repository.
+  //
+  // A WIDEN-MIGRATE-NARROW TABLE REPLACEMENT. Existing production rows use the
+  // old per-file shape (`sourcePath`, optional `bytes`, no catalog fields), so
+  // every field belonging to either side alone remains optional during this
+  // deploy. Readers treat an old-shaped row as absent, and POST /tts/skills
+  // deletes an old row only after modelOfTomFiles carries its exact sourcePath.
+  // Dropping the old fields and requiring the catalog fields belongs in a later
+  // PR, after one clean nightly proves the whole replacement has run in prod.
   ttsSkills: defineTable({
+    name: v.string(), // "know-research" — the bare name, never the `tom-` directory spelling
+    group: v.optional(v.union(v.literal("write"), v.literal("know"), v.literal("repo"))),
+    // At most DESCRIPTION_MAX_BYTES (200). A description is a prompt cost every
+    // run pays whether or not the skill is loaded, so the cap is checked at the
+    // door rather than trusted from the publisher.
+    description: v.optional(v.string()),
+    body: v.string(),
+    // The extra files a skill carries beside its body: ground.md under `write`,
+    // each nested AGENTS.md under a `repo-` skill.
+    references: v.optional(v.array(v.object({ name: v.string(), path: v.string(), body: v.string() }))),
+    sourcePaths: v.optional(v.array(v.string())), // the WikiTom (or repo) paths the body came from
+    commit: v.optional(v.string()), // WikiTom's commit, or the repository's own for a `repo-` skill
+    syncedAt: v.number(), // the commit's time, not the post's
+    pushed: v.optional(v.boolean()), // whether that commit had reached GitHub when it was posted
+    // OLD per-file fields. Kept only for the widening deploy described above.
+    sourcePath: v.optional(v.string()),
+    bytes: v.optional(v.number()),
+  }).index("by_name", ["name"]),
+
+  // The per-file model-of-tom source facts, MOVED HERE from ttsSkills above
+  // with their shape untouched: one row per WikiTom file the nightly job posts
+  // to POST /tts/model-of-tom. They are traceability metadata and a source-text
+  // store, never a prompt renderer — the weekly area review reads each area
+  // page's frontmatter and byte count off these rows, and the context assembler
+  // reads each page's `categories:` line off them to route a run's skills.
+  //
+  // A TABLE RATHER THAN A FIELD on modelOfTomPublication because that singleton
+  // has no `files` field, and one row per file is the shape every reader of
+  // them already wants.
+  modelOfTomFiles: defineTable({
     name: v.string(), // the path inside model-of-tom/ without ".md": "writing", "areas/research"
-    // Source text stays available for fact consumers (weekly area review,
-    // frontmatter, and byte accounting). Publication, not this field, renders
-    // the prompt layers.
     body: v.string(),
     sourcePath: v.string(), // path inside WikiTom, so a row traces to its file
     bytes: v.optional(v.number()), // source bytes reported by the publisher
-    // The WikiTom commit the file was read at. Absent only on a row the
-    // retired six-hourly sync wrote; a complete modern fact set can seed the
-    // one-time publication backfill, but never renders a prompt directly.
+    // The WikiTom commit the file was read at. It remains optional because rows
+    // written by the retired six-hourly sync still have to survive this move.
     commit: v.optional(v.string()),
     syncedAt: v.number(), // the commit's time, not the post's
     // Whether the commit had reached GitHub when it was posted. The job posts
     // local HEAD even when its push was refused, so a prompt names the commit
     // it began with; false is what lets the digest say "not yet pushed".
-    // Absent on a row posted before the flag existed.
+    // It remains optional because rows posted before that flag still inhabit
+    // this table until the next whole replacement.
     pushed: v.optional(v.boolean()),
   }).index("by_name", ["name"]),
 
   // Exactly one `key: "current"` document is the published model-of-tom
-  // revision. It stores each complete, verbatim layer and the exact header for
-  // every nonempty canonical selection (7 total), so readers never recreate
-  // prompt text from the per-file facts above. Roll out this table by deploying
-  // first, running `ttsSkills.backfillLayers` once, then letting nightly posts
-  // replace it; readers fail closed while the singleton is absent.
+  // revision — THE BASE every prompt begins with. It stores the verbatim
+  // layers and the exact header for every canonical selection that remains, so
+  // readers never recreate prompt text from the per-file facts above.
+  //
+  // `write` AND `know` STAY DECLARED AND GO UNWRITTEN from phase 6 on: the two
+  // layers became skills (`write`, `know-intent`, `know-week`, `know-<area>`)
+  // and nothing selects them any more. They are not removed because a row
+  // stored before this commit still carries them and a removed field fails
+  // validation on READ, taking the base down with it; the next nightly post
+  // replaces the row without them. Readers fail closed while the singleton is
+  // absent.
   modelOfTomPublication: defineTable({
     key: v.literal("current"),
     commit: v.string(),
@@ -1332,6 +1373,11 @@ export default defineSchema({
     context: v.optional(v.object({
       wikitomCommit: v.optional(v.string()), layersKnown: v.boolean(), layersGiven: v.array(v.string()), layersDenied: v.array(v.string()), skillsOffered: v.array(v.string()), skillsUsed: v.array(v.string()), tools: v.array(v.string()), hooks: v.array(v.string()), cwd: v.optional(v.string()), gitBranch: v.optional(v.string()), gitCommit: v.optional(v.string()), baseInstructionsHash: v.optional(v.string()), entrypoint: v.optional(v.string()), originator: v.optional(v.string()), permissionMode: v.optional(v.string()), contextWindow: v.optional(v.number()),
       registered: v.optional(v.boolean()), launcher: v.optional(v.string()), modelRequested: v.optional(v.string()), skillsGranted: v.optional(v.array(v.string())), skillsRefused: v.optional(v.array(v.string())), promptSha256: v.optional(v.string()), writingStandardSource: v.optional(v.string()), workflowId: v.optional(v.string()),
+      // What the run ASKED FOR, as "<name> (<result>)" — the Skill tool calls
+      // its transcript holds, beside skillsGranted, which is what the prompt
+      // offered it. Written by worker/runs/registration.mjs; absent on every
+      // run before phase 6.
+      skillsAsked: v.optional(v.array(v.string())),
     })),
     outcome: v.optional(v.object({
       endedReason: v.optional(v.string()), finalTextSeq: v.optional(v.number()),

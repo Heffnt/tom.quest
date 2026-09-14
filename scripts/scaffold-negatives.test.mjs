@@ -5,7 +5,6 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_OUT,
   SOURCES,
-  draftFor,
   fileStem,
   headingsOf,
   isPositive,
@@ -142,26 +141,55 @@ describe("parseArgs", () => {
 describe("evals/triggers", () => {
   const names = fs.readdirSync(TRIGGERS).filter((name) => name.endsWith(".json") && !name.endsWith(".draft.json"));
 
-  it("has a file for every layer source", () => {
-    expect(names.sort()).toEqual(SOURCES.map((source) => `${fileStem(source)}.json`).sort());
+  // REMOVAL CHECK: cannot remove; this closed public set is the test-level backstop against copying private area trigger cases out of WikiTom.
+  it("keeps the public trigger set to layers and non-area skills", () => {
+    expect(names.sort()).toEqual([
+      "layer-know.json",
+      "layer-operate.json",
+      "layer-write.json",
+      "skill-know-intent.json",
+      "skill-know-week.json",
+      "skill-repo-tom-quest.json",
+      "skill-repo-wikitom.json",
+    ]);
   });
 
   it.each(names)("%s parses, and its cases are unique and well shaped", (name) => {
     const file = JSON.parse(fs.readFileSync(path.join(TRIGGERS, name), "utf8"));
     expect(typeof file.name).toBe("string");
     expect(["layer", "skill"]).toContain(file.kind);
-    expect(`${file.kind}-${file.name}.json`).toBe(name);
+    const stem = name.replace(/\.json$/, "").replace(new RegExp(`^${file.kind}-`), "");
+    expect(stem).toBe(file.name);
     expect(Array.isArray(file.cases)).toBe(true);
     const ids = file.cases.map((one) => one.id);
     expect(new Set(ids).size).toBe(ids.length);
     for (const one of file.cases) {
       expect(typeof one.id).toBe("string");
       expect(typeof one.negative).toBe("boolean");
-      expect(typeof one.prompt).toBe("string");
-      expect(one.prompt.trim()).not.toBe("");
+      // A `route` case is decided with no model at all (worker/jobs/evals.mjs
+      // triggerMethod), so it carries a route where a runner case carries a
+      // prompt. Exactly one of the two, or the runner would score a case the
+      // router already answered.
+      if (one.route === undefined) {
+        expect(typeof one.prompt).toBe("string");
+        expect(one.prompt.trim()).not.toBe("");
+      } else {
+        expect(one.prompt).toBeUndefined();
+        expect(typeof one.route).toBe("object");
+      }
       expect(typeof one.why).toBe("string");
       expect(one.why.trim()).not.toBe("");
       expect(typeof one.confirmedByTom).toBe("boolean");
+      if (one.route !== undefined) {
+        // A ROUTER CASE'S EXPECTATION IS `route.expected`, and it is compared
+        // whole. An `expect` block beside it is read by nothing — the two
+        // checked in here named `repo-tom.quest` and `repo-WikiTom`, spellings
+        // no publisher produces, and read as passing negatives because a
+        // mustNotName nobody can name is vacuously true.
+        expect(one.expect).toBeUndefined();
+        expect(Object.keys(one.route.expected ?? {}).sort()).toEqual(["granted", "refused", "repoRulesSource"]);
+        continue;
+      }
       // The ONE vocabulary: exactly what mechanicalChecks in worker/jobs/
       // evals.mjs reads. A third key would be a check nothing runs.
       expect(Object.keys(one.expect).every((key) => key === "mustName" || key === "mustNotName")).toBe(true);
@@ -186,6 +214,14 @@ describe("evals/triggers", () => {
     for (const name of names) {
       const file = JSON.parse(fs.readFileSync(path.join(TRIGGERS, name), "utf8"));
       for (const one of file.cases.filter((two) => two.negative === true)) {
+        // A router negative is already mechanical — `route.expected` names the
+        // whole grant set, so the skill's ABSENCE from it is the assertion, and
+        // a mustNotName beside it would be a second, weaker spelling of the
+        // same claim. Only a prompt negative needs a name to look for.
+        if (one.route !== undefined) {
+          expect(Array.isArray(one.route.expected.granted)).toBe(true);
+          continue;
+        }
         expect(one.expect.mustNotName?.length ?? 0).toBeGreaterThan(0);
       }
     }

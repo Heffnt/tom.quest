@@ -242,9 +242,13 @@ the `HEAD` the four left:
    out of every prompt until a night that reads it again. Convex refuses a
    post without `writing.md` on its own account. **Rollout of the publication
    singleton, in this order:** deploy Convex (readers refuse to open a session
-   until it is populated), run `ttsSkills.backfillLayers` once to build it from
-   the per-file rows already stored, and readers work; the next nightly post
-   overwrites it.
+   until it is populated), then run the post step once — `--only=post` — and
+   readers work. The backfill door that used to seed it from the per-file rows
+   is gone: `ttsSkills` now holds one row per skill, not one per file, so there
+   are no per-file rows to seed from. The same post writes the box's three
+   skill directories and the catalog behind `POST /tts/skills`; those two halves
+   fail separately, so a night that cannot publish the catalog still delivers
+   the base.
 
 Then one `nightly-run` row with the summary (commit, pushed or not, table
 and row counts, files archived, the failures). By hand:
@@ -311,6 +315,8 @@ Codex has native subagents (`spawn_agent`, types `explorer` and `worker`) and a
 spawned agent inherits the parent's model unless the parent names a cheaper one,
 which is exactly the delegation rule in `AGENTS.md`: the strong model keeps
 judgment and review, `gpt-5.6-terra` gets the reading and the mechanical edits.
+
+Bare `codex` sessions carry no context; use the wrapper or `/codex`.
 
 **Quota is shared, not extra.** Codex here draws on the same ChatGPT Plus rate
 windows as Tom's own laptop use — a busy fleet hour is an hour he finds his

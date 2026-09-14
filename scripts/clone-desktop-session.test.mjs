@@ -3,10 +3,13 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, test } from "node:test";
-import { fileURLToPath } from "node:url";
+// vitest, like every other test in this repository: `npx vitest run` collects
+// every *.test.mjs, and a file importing node:test cannot even be loaded by it.
+import { afterEach, beforeEach, describe, test } from "vitest";
 
-const SCRIPT = fileURLToPath(new URL("./clone-desktop-session.mjs", import.meta.url));
+// Resolved from the repository root, the way every other script test spells it:
+// under the test runner `import.meta.url` is not always a file URL.
+const SCRIPT = path.resolve("scripts/clone-desktop-session.mjs");
 const CURRENT_ACCOUNT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const CURRENT_ORG = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 const SECOND_CURRENT_ORG = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";

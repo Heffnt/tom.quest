@@ -52,8 +52,10 @@ async function publishSessionPrelude(t: ReturnType<typeof convexTest>) {
   await t.run(async (ctx) => {
     await ctx.db.insert("modelOfTomPublication", {
       key: "current", commit: "weekly-session-test", committedAt: 1, pushed: true,
-        operate: "operate layer", write: "write layer", know: "know layer",
-        headers: [{ layers: ["operate", "write"], header: "MODEL-OF-TOM FILES (test)" }],
+        // `operate` alone: the write and know layers became skills in phase 6,
+        // and one selection is all a prompt can name.
+        operate: "operate layer",
+        headers: [{ layers: ["operate"], header: "MODEL-OF-TOM FILES (test)" }],
     });
   });
 }
@@ -264,7 +266,7 @@ describe("gatherWeeklyFacts", () => {
         ["model-of-tom/areas/money.md", AREA_BODY(""), 404],
       ] as const;
       for (const [path, body, bytes] of sourceFiles) {
-        await ctx.db.insert("ttsSkills", {
+        await ctx.db.insert("modelOfTomFiles", {
           name: path.slice("model-of-tom/".length).replace(/\.md$/, ""),
           body,
           sourcePath: path,
@@ -1010,7 +1012,7 @@ describe("POST /tts/area-reviewed", () => {
       body: JSON.stringify(body),
     });
 
-  it("records one area-reviewed row keyed on the page, which the gather reads", async () => {
+  it("keeps area pages and the review route working from old per-file rows before the clean nightly replacement", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
     await t.run(async (ctx) => {
@@ -1022,6 +1024,7 @@ describe("POST /tts/area-reviewed", () => {
         syncedAt: Date.now() - DAY,
       });
     });
+    expect(await t.run(async (ctx) => await ctx.db.query("modelOfTomFiles").collect())).toEqual([]);
     const today = new Date().toISOString().slice(0, 10);
     const res = await post(t, { path: "model-of-tom/areas/research.md", reviewedOn: today });
     expect(res.status).toBe(200);
@@ -1101,8 +1104,8 @@ describe("GET /tts/weekly-input", () => {
     await t.run(async (ctx) => {
       await ctx.db.insert("modelOfTomPublication", {
         key: "current", commit: "weekly-context-test", committedAt: 1, pushed: true,
-        operate: "operate layer", write: "write layer", know: "know layer",
-        headers: [{ layers: ["operate", "write"], header: "published map + operate + write" }],
+        operate: "operate layer",
+        headers: [{ layers: ["operate"], header: "published map + operate" }],
       });
     });
     const res = await get(t, `/tts/weekly-input?until=${until}`);
@@ -1112,13 +1115,14 @@ describe("GET /tts/weekly-input", () => {
     expect(body.since).toBe(until - WEEK_MS);
     expect(body.readiness).toEqual({ prepared: 0, unprepared: 0 });
     expect(body.integrations.length).toBe(3);
-    // The door serves the ASSEMBLED CONTEXT now, not two whole layers (the
-    // dynamic-context round): the stable prefix, then — the Friday gather
-    // having no subject of its own — no expansion and the fetchable index. The
-    // assembler's exact output is pinned in convex/ttsContext.test.ts.
-    const [prefix, index] = body.writingStandard.split("\n\nMODEL-OF-TOM FETCHABLE (");
-    expect(prefix).toBe("published map + operate + write\n\noperate layer\n\nwrite layer");
-    expect(index).toContain("--layers know");
+    // The door serves the ASSEMBLED CONTEXT now, not two whole layers: the
+    // stable prefix and the grant block, and nothing else. The assembler's
+    // exact output is pinned in convex/ttsContext.test.ts.
+    const [prefix, grants] = body.writingStandard.split("\n\nSKILLS (WikiTom commit ");
+    expect(prefix).toBe("published map + operate\n\noperate layer");
+    // Nothing is published as a skill in this fixture, so the caller's own
+    // grants are refused by name rather than silently dropped.
+    expect(grants).toContain("refused: write — no published body at this commit");
   });
 });
 

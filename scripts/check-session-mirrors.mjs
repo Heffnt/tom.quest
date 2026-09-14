@@ -374,11 +374,18 @@ const REPO_LIST_ALLOWED = new Set([
   // the ⓘ popover renders, and one of them names the three known repos
   // in a sentence. It carries no repo list that anything branches on.
   "app/tts/explanations.ts",
-  // LAPTOP PATHS, not the session repo list: where Tom's own checkouts live on
-  // the machine the hook runs on. Neither file can import a Convex .ts, and the
-  // one home holds repo NAMES, which is a different fact from a directory.
+  // CHECKOUT PATHS, not the session repo list: where each repository's working
+  // copy lives on the machine the code runs on. None of these can import a
+  // Convex .ts, and the one home holds repo NAMES, which is a different fact
+  // from a directory. session-start-hook.mjs and nightly.mjs joined the pair
+  // when the skills landed: a `repo-<name>` skill is generated from a
+  // checkout's AGENTS.md files, so both need name-to-directory, and the NAMES
+  // they use are the ones the map's Repos block spells (model-of-tom/
+  // agent-rules.md), which is a WikiTom fact rather than a Convex one.
   "scripts/laptop-setup.mjs",
   "scripts/instructions-loaded-hook.mjs",
+  "scripts/session-start-hook.mjs",
+  "worker/jobs/nightly.mjs",
   // The evals runner checks out the two trees ONE RUN reads — the pinned
   // tom.quest tree it scores and the pinned WikiTom tree it scores against.
   // That pair is a run's definition, not a list of repos sessions may work.

@@ -151,8 +151,20 @@ echo "== [6/10] directories =="
 # /root/.claude-accounts/{gmail,wpi} — one Claude Code config dir per Max
 #     account; an "active" symlink (managed by tts-account) picks which one
 #     the jobs use.
+# .../skills and /root/.codex/skills — the three skill directories. Claude Code
+#     reads its personal skills out of $CLAUDE_CONFIG_DIR/skills, which is what
+#     separates the two accounts; Codex reads its own out of $CODEX_HOME/skills,
+#     and CODEX_HOME here is /root/.codex.
 mkdir -p /opt/tts /opt/tts/runs /opt/tts/jobs /var/lib/tts /var/cache/tts/runs /etc/tts /var/log/tts \
   /root/.claude-accounts/gmail /root/.claude-accounts/wpi /root/.codex
+# THE DIRECTORIES AND NOTHING IN THEM. The nightly's post step is the one
+# publisher of skill bodies (worker/jobs/nightly.mjs, BOX_SKILLS_DIRS): it has
+# WikiTom at a commit and it writes all three from it. Setup writing bodies too
+# would make two publishers of the same files, and the one that ran last would
+# win — so this makes the empty directories and stops. The base is unchanged and
+# stays where it is: each account's CLAUDE.md is the one line importing
+# agent-rules.md, written below.
+mkdir -p /root/.claude-accounts/gmail/skills /root/.claude-accounts/wpi/skills /root/.codex/skills
 
 echo "== [7/10] install worker files =="
 # Job scripts (plain Node ESM, zero npm deps — a copy is a deploy).
@@ -176,11 +188,28 @@ cp "$WORKER_DIR"/../scripts/session-start-hook.mjs /opt/tts/scripts/session-star
 cp "$WORKER_DIR"/../scripts/run-hook.mjs /opt/tts/scripts/run-hook.mjs
 cp "$WORKER_DIR"/../scripts/prelude.mjs /opt/tts/scripts/prelude.mjs
 # prelude.mjs's own import graph has to land in the same shape it has in the
-# repo: the layer table beside it, and the relevance body one directory over
-# (prelude.mjs reaches for ../worker/jobs/context-relevance.mjs). Without both
-# copies the assembler cannot load on the box at all.
-cp "$WORKER_DIR"/../scripts/prelude-layers.mjs /opt/tts/scripts/prelude-layers.mjs
-cp "$WORKER_DIR"/jobs/context-relevance.mjs /opt/tts/worker/jobs/context-relevance.mjs
+# repo: scripts/skills.mjs beside it — one file holding both the layer table and
+# the skill set — because prelude.mjs reaches for ./skills.mjs by that relative
+# path. Without this copy the assembler cannot load on the box at all.
+#
+# IT NO LONGER REACHES ../worker/jobs/context-relevance.mjs. That import went
+# with the know-layer expansion: prelude.mjs assembles whole layers now, and the
+# caps it used to borrow are only called from Convex and the Next app, neither
+# of which runs here. context-relevance.mjs still lands in /opt/tts flat with
+# every other job above, so a job that wants it can still load it.
+cp "$WORKER_DIR"/../scripts/skills.mjs /opt/tts/scripts/skills.mjs
+# The skill generator goes beside it, not because prelude.mjs wants it, but
+# because the nightly runs it against /root/wikitom to rebuild the box's own
+# skill directories. It imports ./skills.mjs by that relative path, so scripts/
+# is the one place it can live and still load.
+cp "$WORKER_DIR"/../scripts/publish-skills.mjs /opt/tts/scripts/publish-skills.mjs
+# The router, one directory along the same graph:
+# scripts/session-start-hook.mjs imports ../worker/jobs/skill-router.mjs
+# to work out what this run is granted. Without this copy the hook throws at
+# module load on the box, exits non-zero with empty stdout, and the session
+# starts with NO context at all — worse than any failure the hook's own three
+# fallbacks are written to survive.
+cp "$WORKER_DIR"/jobs/skill-router.mjs /opt/tts/worker/jobs/skill-router.mjs
 # The pull-request check's body, beside the jobs rather than under scripts/:
 # evals.mjs imports gate() from it so the box stamps a run with the SAME rule
 # the check applies, and there is one body of what a regression is.
@@ -195,6 +224,12 @@ cp "$WORKER_DIR"/../scripts/evals-check.mjs /opt/tts/evals-check.mjs
 # are node builtins, so one file is the whole of it.
 cp "$WORKER_DIR"/../scripts/check-writing-standard.mjs /opt/tts/check-writing-standard.mjs
 cp "$WORKER_DIR"/jobs/markdown-sections.mjs /opt/tts/worker/jobs/markdown-sections.mjs
+# EVERY .diff IN evals/audit-faults/ HAS TO LAND HERE: auditFaultsRoot() looks in
+# /opt/tts/audit-faults (beside evals.mjs) before the repo-relative path, and the
+# box holds no checkout at run time — so with no copy the weekly scorecard's
+# fault arm grades an empty set and reports a silent zero rather than failing.
+mkdir -p /opt/tts/audit-faults
+cp "$WORKER_DIR"/../evals/audit-faults/*.diff /opt/tts/audit-faults/
 # The Codex wrapper is a repo script, not a job, but sessions need it from ANY
 # repo — including checkouts that predate it, and repos that are not tom.quest
 # at all. One copy here is what `tts-codex` executes, so the flags and the

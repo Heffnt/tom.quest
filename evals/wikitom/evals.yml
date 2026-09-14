@@ -3,6 +3,14 @@
 # WikiTom as .github/workflows/evals.yml; it fetches the checker from this
 # repo's main at run time, so there is one body of gate() and no vendored
 # second copy to drift.
+#
+# THIS LIST IS NOT A MIRROR of scripts/evals-check.mjs's WATCHED_PATHS, and
+# scripts/evals-check.test.mjs pins that list against .github/workflows/
+# evals.yml alone. WATCHED_PATHS is the union over BOTH repositories, and every
+# entry in it but this one names a file WikiTom does not have: no scripts/, no
+# worker/, no evals/, no convex/. What WikiTom holds that a run reads is
+# model-of-tom/, and the skill bodies are that directory's pages — so a change
+# to a page fires this whether it reaches a run as a layer or as a skill.
 name: Evals
 on:
   pull_request:
