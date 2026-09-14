@@ -913,10 +913,17 @@ function defaultRun(command, args, options = {}) {
 // empty claim is honest (the prompt drops the line entirely and the auditor
 // judges the diff on the one question), and a wrong claim is not.
 
-/** How much of a claim goes in the prompt. A pull-request body can be longer
- *  than the diff chunk it is attached to, and a claim that crowded out the diff
- *  would starve the only thing the auditor must read in full. */
-export const AUDIT_CLAIM_MAX_CHARS = 4000;
+/** How much of a claim goes in the prompt: A QUARTER OF A CHUNK, derived from
+ *  AUDIT_CHUNK_MAX_CHARS rather than picked, so the claim can never be the
+ *  larger half of what an auditor is holding.
+ *
+ *  IT WAS 4,000, AND THE FIRST REAL RUN SAID SO. #172's body is 21,208
+ *  characters; all three auditors wrote that the claim was "cut off at section
+ *  4" and declined to weigh the change's width against a claim they could not
+ *  see — which is the very refusal this round exists to stop manufacturing. A
+ *  cap that cuts the ordinary case is not a cap, it is a truncation; the diff
+ *  it was protecting is thirty times larger than the claim it cut. */
+export const AUDIT_CLAIM_MAX_CHARS = Math.floor(AUDIT_CHUNK_MAX_CHARS / 4);
 
 /** `gh`'s own placeholders resolve the owner and name from the checkout's
  *  remote, so the box never has to map "tom.quest" onto a GitHub path. */

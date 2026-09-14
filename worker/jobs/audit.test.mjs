@@ -264,6 +264,18 @@ describe("claimOf", () => {
     expect(claimOf({ dir: "/w", sha: "sha", base: "base" }, empty)).toEqual({ text: "", source: "none" });
   });
 
+  // A CAP THAT CUTS THE ORDINARY CASE IS A TRUNCATION. #172's body is 21,208
+  // characters and the first cap was 4,000: all three auditors wrote that the
+  // claim was cut and declined to judge the change's width by it.
+  it("carries a whole ordinary pull-request body, and stays a fraction of one chunk", () => {
+    expect(AUDIT_CLAIM_MAX_CHARS).toBeGreaterThan(21_208);
+    expect(AUDIT_CLAIM_MAX_CHARS).toBeLessThan(AUDIT_CHUNK_MAX_CHARS / 2);
+    const { run } = runner({
+      gh: JSON.stringify([{ number: 1, title: "t", body: "x".repeat(21_208) }]),
+    });
+    expect(claimOf({ dir: "/w", sha: "sha", base: "base" }, run).text).not.toContain("cut here");
+  });
+
   it("caps the claim, so it cannot crowd out the diff it is attached to", () => {
     const { run } = runner({
       gh: JSON.stringify([{ number: 1, title: "t", body: "x".repeat(AUDIT_CLAIM_MAX_CHARS * 2) }]),
