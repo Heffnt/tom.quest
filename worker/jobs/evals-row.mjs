@@ -98,3 +98,87 @@ export function scoredNothing(data) {
   return row.unaffected === true || row.superseded === true || row.error === true ||
     (typeof row.error === "string" && row.error !== "");
 }
+
+/**
+ * A row whose answer can go wrong WITHOUT THE QUESTION CHANGING.
+ *
+ * `superseded` is a fact about the queue at the moment it looked, not about
+ * the commit: a branch force-pushed back to an earlier sha makes that sha the
+ * head again, and the row saying it was behind something is then simply
+ * wrong. `error` is a fact about one attempt: the box could not fetch the tree
+ * that time, and asking again is the whole point of asking again.
+ *
+ * `unaffected` is NOT in this set, and that is the distinction the identity
+ * rule below turns on. What an unaffected row says — this diff touched no
+ * watched path — is decided entirely by the base sha and the changed paths,
+ * which are two thirds of the request's identity. Ask the same question and
+ * the answer cannot have changed; change either one and the identity changes
+ * and the row stops answering anyway. A scored row is likewise a measurement
+ * of a tree against a base, and re-asking the same question of the same trees
+ * is what this round exists to stop paying for.
+ */
+export function reopensOnReask(data) {
+  const row = data !== null && typeof data === "object" ? data : {};
+  return row.superseded === true || row.error === true ||
+    (typeof row.error === "string" && row.error !== "");
+}
+
+/**
+ * The `evals: no-item <reason>` trailer on a pull-request body, or null.
+ *
+ * ANCHORED AND ALONE ON ITS LINE, so that a body DISCUSSING the escape hatch
+ * ("put `evals: no-item why` on the body if…") is not read as using it.
+ *
+ * SPELLED TWICE, ON PURPOSE. scripts/evals-check.mjs carries the same reader
+ * and cannot import this one: that file has zero imports by design — WikiTom's
+ * Action fetches the single file and runs it, and worker/setup.sh copies it
+ * beside the jobs. This copy exists because the Convex door needs the rule too
+ * and cannot load a check that shells out. scripts/evals-check.test.mjs runs
+ * both over one table of cases, so the two cannot drift in silence.
+ */
+export function noItemTrailer(prBody) {
+  if (typeof prBody !== "string") return null;
+  for (const line of prBody.split(/\r?\n/)) {
+    const hit = /^[ \t]*evals:[ \t]*no-item[ \t]+(.+?)[ \t]*$/i.exec(line);
+    if (hit !== null) return hit[1];
+  }
+  return null;
+}
+
+/**
+ * WHAT MAKES A REQUEST A DIFFERENT QUESTION — three things, and the pull-request
+ * body is not one of them.
+ *
+ * A run scores a TREE against a BASE and then answers one question about
+ * coverage. The base sha and the changed paths are what decide the first; the
+ * no-item trailer is the only part of the body anything reads, and it decides
+ * the second. Everything else on a request is either fixed (the sha is the
+ * key) or a diagnostic: `pr`, `paths`, the run id, and the body around the
+ * trailer.
+ *
+ * WHY IT MATTERS THAT THE BODY IS OUT. `.github/workflows/evals.yml` fires on
+ * `edited`, which is right — a trailer added to the body has to be honoured,
+ * and nothing else would notice it. But the same trigger fires on every typo
+ * fixed in a description, and re-dating the request on one of those threw away
+ * a scored run and bought a fresh fifty-minute one that could only reach the
+ * same numbers. The trigger stays; an edit that does not touch the trailer now
+ * costs nothing.
+ *
+ * THE CHANGED PATHS ARE COMPARED, NOT DIGESTED. Both lists are in hand at the
+ * comparison, so there is nothing a hash would buy and one thing it would
+ * cost: a collision reads a different diff as the same question and skips the
+ * re-score. Sorted and de-duplicated first, because the order CI lists them in
+ * is not a fact about the diff. A request carrying no list at all (the hint is
+ * optional) is not the same question as one that carries an empty one: null
+ * means unknown and `[]` means nothing changed.
+ */
+export function evalsRequestIdentity(request) {
+  const changed = Array.isArray(request?.changed)
+    ? [...new Set(request.changed.map((path) => String(path)))].sort()
+    : null;
+  return JSON.stringify([
+    typeof request?.baseSha === "string" ? request.baseSha : null,
+    changed,
+    noItemTrailer(request?.prBody ?? null),
+  ]);
+}

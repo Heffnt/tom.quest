@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { noItemTrailer as rowTrailer } from "../worker/jobs/evals-row.mjs";
 import {
   COVERAGE_NOT_REQUIRED,
   changedPathsFromGit,
@@ -491,6 +492,32 @@ describe("noItemTrailer", () => {
     expect(noItemTrailer("Put `evals: no-item <reason>` on the body if you owe none.")).toBe(null);
     expect(noItemTrailer("evals: no-item")).toBe(null);
     expect(noItemTrailer(undefined)).toBe(null);
+  });
+
+  // THE SECOND SPELLING, KEPT HONEST. worker/jobs/evals-row.mjs carries this
+  // reader too, because the Convex door needs it to decide whether a re-filed
+  // request is the same question (evalsRequestIdentity) and cannot import this
+  // file: it has zero imports on purpose — WikiTom's Action fetches the single
+  // file and runs it. Two bodies of one rule can only be trusted if something
+  // runs both, so this does.
+  it("agrees with the copy the Convex door reads", () => {
+    const bodies = [
+      "Lands the narrow.\n\nevals: no-item pure deletion, no new behaviour\n",
+      "evals:no-item   a typo fix in a comment  ",
+      "EVALS: NO-ITEM shouting still counts",
+      "Put `evals: no-item <reason>` on the body if you owe none.",
+      "evals: no-item",
+      "\tevals: no-item  leading tab and trailing space \t",
+      "first line\r\nevals: no-item windows line endings\r\nlast line",
+      "an evals: no-item reason mid-sentence does not count",
+      "",
+      undefined,
+      null,
+      42,
+    ];
+    for (const body of bodies) {
+      expect([body, rowTrailer(body)]).toEqual([body, noItemTrailer(body)]);
+    }
   });
 });
 

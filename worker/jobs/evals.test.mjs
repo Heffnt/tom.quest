@@ -2214,3 +2214,97 @@ describe("parseArgs takes the two new flags", () => {
     expect(() => parseArgs(["--serve", "--limit", "0"])).toThrow(/--limit/);
   });
 });
+
+// THE JUDGE KEPT QUOTING, AND A QUOTE INSIDE A JSON STRING IS AN UNREADABLE
+// ANSWER. The rule asks for three or four words of the output and the judge
+// supplied them in quotation marks, unescaped, so the object would not parse
+// and the item was scored `judge answer unreadable` — a failed item whose
+// regeneration was fine. The prompt now forbids the quotes and the runner asks
+// once more when one slips through anyway.
+describe("the judge's unreadable answers", () => {
+  const regenerated = JSON.stringify({
+    brief: "a", entryAction: "b", workDescription: "c", groundUpExplanation: "d",
+  });
+
+  /** An io whose judge answers the given texts in order. */
+  const judgeSaying = (...answers) => {
+    const said = [];
+    return {
+      said,
+      io: {
+        runClaude: async (prompt) => {
+          if (!prompt.startsWith("You are judging")) return regenerated;
+          said.push(prompt);
+          return answers[said.length - 1] ?? answers[answers.length - 1];
+        },
+      },
+    };
+  };
+
+  it("forbids quotation marks in the reason, in the prompt itself", () => {
+    const prompt = judgePrompt(item(), { brief: "b" }, ["brief"]);
+    expect(prompt).toContain("PUT NO QUOTATION MARKS IN THE REASON");
+  });
+
+  it("marks an unreadable answer so the runner can tell it from a verdict", () => {
+    expect(parseJudge("I think it is probably fine").judgeUnreadable).toBe(true);
+    expect(parseJudge('{"verdict":"fail","reason":"restates the statement"}').judgeUnreadable)
+      .toBeUndefined();
+  });
+
+  it("asks once more and keeps the second answer", async () => {
+    const mod = await import("./plan-graphs.mjs");
+    const judge = judgeSaying(
+      '{"verdict":"pass","reason":"names the "D-lock barrel" plainly"}',
+      '{"verdict":"pass","reason":"names the D-lock barrel plainly"}',
+    );
+    const result = await runItem(item(), context(mod), judge.io);
+    expect(judge.said).toHaveLength(2);
+    expect(result).toMatchObject({ judged: "pass", judgeRetries: 1 });
+    expect(result.errored).toBeUndefined();
+  });
+
+  it("asks once more and no more, and the item fails with the answer's head", async () => {
+    const mod = await import("./plan-graphs.mjs");
+    const judge = judgeSaying("not JSON at all", "still not JSON");
+    const result = await runItem(item(), context(mod), judge.io);
+    expect(judge.said).toHaveLength(2);
+    expect(result).toMatchObject({
+      judged: "fail",
+      errored: true,
+      judgeRetries: 1,
+      reason: expect.stringMatching(/^runner failed: judge answer unreadable/),
+    });
+  });
+
+  // NOT A RETRY OF A VERDICT. A judge that says `fail` readably is asked once
+  // and its answer stands; retrying until the wanted answer arrives is how a
+  // measurement becomes a wish.
+  it("never asks again about a readable fail", async () => {
+    const mod = await import("./plan-graphs.mjs");
+    const judge = judgeSaying('{"verdict":"fail","reason":"still restates the statement"}');
+    const result = await runItem(item(), context(mod), judge.io);
+    expect(judge.said).toHaveLength(1);
+    expect(result).toMatchObject({ judged: "fail", judgeRetries: 0 });
+  });
+});
+
+// Every explanation item failed `error_max_turns` on the box on 2026-09-14:
+// two turns, and the model spent both reading the tree. The regeneration has
+// everything it is meant to have in its prompt, so it asks for no tools.
+describe("the explanation job's tools", () => {
+  it("regenerates with an empty allow-list and the budget it had", () => {
+    expect(JOBS.explanation.opts).toEqual({ maxTurns: 2, allowedTools: [] });
+  });
+});
+
+describe("the judge-retry count on the aggregate", () => {
+  it("sums what the items paid, and says zero when nothing was re-asked", () => {
+    const one = (id, over = {}) => ({
+      id, partition: "prepare/chores", verdict: "approve", judged: "pass", ...over,
+    });
+    expect(aggregate([one("a"), one("b")]).judgeRetries).toBe(0);
+    expect(aggregate([one("a", { judgeRetries: 1 }), one("b", { judgeRetries: 1 }), one("c")])
+      .judgeRetries).toBe(2);
+  });
+});

@@ -64,6 +64,7 @@ import {
 // Only the two stable exports are taken, so a change to how audit.mjs chunks or
 // runs a diff lands here with no edit.
 import { AUDIT_UNAVAILABLE, auditPrompt } from "./audit.mjs";
+import { pruneStaleWorktrees, takeEvalsLock } from "./evals-lock.mjs";
 
 export const EVALS_RUN = "evals-run";
 export const EVALS_REQUEST = "evals-request";
@@ -74,6 +75,13 @@ export const REGEN_MODEL = process.env.TTS_EVALS_REGEN_MODEL || "haiku";
 export const JUDGE_MODEL = process.env.TTS_EVALS_JUDGE_MODEL || "fable";
 export const REGEN_TIMEOUT_MS = 5 * 60 * 1000;
 export const JUDGE_TIMEOUT_MS = 3 * 60 * 1000;
+
+/** How many times an UNREADABLE judge answer is asked again. One: a malformed
+ *  JSON string is a slip of the sampling and the second draw fixes it, and a
+ *  judge that cannot write the object twice is telling the run something the
+ *  run should record rather than paper over. A readable verdict is never
+ *  retried at any count. */
+export const JUDGE_RETRIES = 1;
 
 /** The on-commit set: the newest 20 approve and 20 revise across the whole
  *  golden set, by ruledAt. The weekly run uses everything. */
@@ -402,7 +410,15 @@ export const JOBS = {
     ].join("\n"),
     parse: (answer) => ({ explanation: String(answer ?? "").trim() }),
     fields: ["explanation"],
-    opts: { maxTurns: 2 },
+    // NO TOOLS, AND THAT IS WHY TWO TURNS IS ENOUGH. Every one of these items
+    // failed `error_max_turns` on the box on 2026-09-14: the prompt carries
+    // the topic, its context lines and the layers, and the model went reading
+    // the tree anyway — one turn to Read, one to Grep, and the budget was
+    // gone before a word was written. The regeneration has everything it is
+    // meant to have IN THE PROMPT; a file it goes and finds is a file the
+    // original never saw, so the tools were not a budget problem to widen but
+    // an input the item does not want. The empty allow-list is the ask.
+    opts: { maxTurns: 2, allowedTools: [] },
   },
   // One REGISTERED RUN, replayed. The case is mined out of a runLabels row
   // rather than out of snapshot text, so what it carries is the run's own
@@ -632,7 +648,10 @@ export function judgePrompt(item, fresh, fields, { hideVerdict = false } = {}) {
     `- You are checking one thing. Never judge on style preference, on which output you find better`,
     `  written, or on anything Tom did not rule on.`,
     `- The reason is one sentence, under 30 words, and names the specific text that decided it —`,
-    `  quote three or four words of the NEW output. "It is worse" is not a reason.`,
+    `  give three or four words of the NEW output. Saying it is worse is not a reason.`,
+    `- PUT NO QUOTATION MARKS IN THE REASON, of any kind. The reason is a JSON string value and one`,
+    `  unescaped quote makes the whole answer unreadable — which is scored as a failed item, not as`,
+    `  the verdict you reached. Name the words plainly, without quoting them.`,
     `- Answer with ONE JSON object and nothing else, no code fence:`,
     `{"verdict":"pass","reason":"<one sentence>"}`,
     ``,
@@ -656,6 +675,23 @@ export function judgePrompt(item, fresh, fields, { hideVerdict = false } = {}) {
 }
 
 /**
+ * An unreadable judge answer is MARKED, not merely worded.
+ *
+ * runItem asks the judge a second time when it sees this flag, and "did the
+ * reason happen to start with these words" is not a thing to branch on. The
+ * flag never reaches a row: aggregate's failure list names the fields it
+ * carries, and this is not one of them.
+ */
+export const JUDGE_UNREADABLE = "judge answer unreadable";
+
+function judgeUnreadable(answer) {
+  return {
+    ...runnerFailure(`${JUDGE_UNREADABLE}: ${String(answer ?? "").slice(0, 120)}`),
+    judgeUnreadable: true,
+  };
+}
+
+/**
  * A judge answer that is not {verdict: pass|fail, reason: <non-empty>} is a
  * FAIL with the answer's head in the reason — the same treatment a failed
  * regeneration gets, and for the same reason: a call that cannot produce a
@@ -667,12 +703,12 @@ export function parseJudge(answer) {
   try {
     parsed = extractJsonObject(answer);
   } catch {
-    return runnerFailure(`judge answer unreadable: ${String(answer ?? "").slice(0, 120)}`);
+    return judgeUnreadable(answer);
   }
   const verdict = parsed?.verdict;
   const reason = parsed?.reason;
   if ((verdict !== "pass" && verdict !== "fail") || typeof reason !== "string" || reason.trim() === "") {
-    return runnerFailure(`judge answer unreadable: ${String(answer ?? "").slice(0, 120)}`);
+    return judgeUnreadable(answer);
   }
   // Judge output is untrusted text which reaches the persisted failure record
   // and CI report. Keep its diagnostic content, but never its credentials.
@@ -916,24 +952,46 @@ export async function runItem(item, context, io, { deterministic = null, receipt
       return { ...base, ...runnerFailure(serverErrorMessage(err)) };
     }
   }
-  let answer;
-  try {
-    answer = await io.runClaude(judgePrompt(item, fresh, job.fields), {
-      model: JUDGE_MODEL,
-      timeoutMs: JUDGE_TIMEOUT_MS,
-      maxTurns: 1,
-      registration: {
-        origin: "cron:evals",
-        kind: "job",
-        layersKnown: false,
-        layersGiven: [],
-        layersDenied: [],
-      },
-    });
-  } catch (err) {
-    return { ...base, ...runnerFailure(serverErrorMessage(err)) };
+  // ONE RETRY, AND ONLY FOR AN ANSWER THAT COULD NOT BE READ.
+  //
+  // The judge writes a JSON object with the reason inside it, and the rule
+  // above asks it for three or four words of the output — which it kept
+  // supplying in quotation marks, unescaped, so the object would not parse and
+  // the item scored `judge answer unreadable`. The prompt now forbids the
+  // quotes; this is the second half, because a prompt rule is a tendency and
+  // not a guarantee, and one malformed string should not fail an item whose
+  // regeneration was fine.
+  //
+  // IT IS NOT A RETRY OF A VERDICT. A judge that answers `fail` readably is
+  // asked once and its answer stands — retrying until the wanted answer
+  // arrives is exactly how a measurement becomes a wish. Only unreadability is
+  // retried, and only once; a second failure is a failed item with the
+  // answer's head in the reason, as before.
+  let verdict;
+  let judgeRetries = 0;
+  for (;;) {
+    let answer;
+    try {
+      answer = await io.runClaude(judgePrompt(item, fresh, job.fields), {
+        model: JUDGE_MODEL,
+        timeoutMs: JUDGE_TIMEOUT_MS,
+        maxTurns: 1,
+        registration: {
+          origin: "cron:evals",
+          kind: "job",
+          layersKnown: false,
+          layersGiven: [],
+          layersDenied: [],
+        },
+      });
+    } catch (err) {
+      return { ...base, ...runnerFailure(serverErrorMessage(err)), judgeRetries };
+    }
+    verdict = parseJudge(answer);
+    if (verdict.judgeUnreadable !== true || judgeRetries >= JUDGE_RETRIES) break;
+    judgeRetries += 1;
   }
-  return { ...base, ...parseJudge(answer) };
+  return { ...base, ...verdict, judgeRetries };
 }
 
 /**
@@ -958,6 +1016,11 @@ export function aggregate(results) {
   let pass = 0;
   let flaky = 0;
   let errored = 0;
+  // How often the judge had to be asked twice because its first answer was not
+  // readable JSON. A DIAGNOSTIC, never a gate: the merge arm reads regressions.
+  // A number climbing here says the judge prompt is drifting back towards
+  // quoting, which is a thing to fix in the prompt and not in the parser.
+  let judgeRetries = 0;
   for (const result of results) {
     if (isFlaky(result)) flaky += 1;
     const row = byPartition.get(result.partition) ?? { partition: result.partition, items: 0, pass: 0, fail: 0 };
@@ -971,6 +1034,7 @@ export function aggregate(results) {
     }
     if (result.judged === "pass") pass += 1;
     if (result.errored === true) errored += 1;
+    if (Number.isInteger(result.judgeRetries)) judgeRetries += result.judgeRetries;
   }
   return {
     items: results.length,
@@ -980,6 +1044,7 @@ export function aggregate(results) {
     // fail count: it is the noise in the measurement, said out loud.
     flaky,
     errored,
+    judgeRetries,
     byPartition: [...byPartition.values()].sort((a, b) => a.partition.localeCompare(b.partition)),
     byVerdict,
     failures: results
@@ -1144,8 +1209,22 @@ export function ensureRef(repoDir, ref, run = git) {
  * touching a checkout somebody else owns — the nightly job owns /root/wikitom's
  * working tree, and this must never reset --hard it.
  */
-export function worktreeFor(repoDir, repo, ref) {
-  const dir = path.join(WORK_DIR, repo, `${ref}`.replace(/[^A-Za-z0-9]/g, "-").slice(0, 24));
+export function worktreeFor(repoDir, repo, ref, { pid = process.pid } = {}) {
+  // THE PATH CARRIES THE PROCESS THAT MADE IT, and the rmSync on the next line
+  // is why it has to. This built its name out of the repo and the ref alone,
+  // so a run started by hand and the five-minute `--serve` cron, asked about
+  // the same head, computed the same directory — and each one began by
+  // deleting the other's checkout. The head worktree disappeared under a
+  // regeneration, the run died somewhere unrelated to the cause, and the row
+  // it posted said the tree could not be read (twice, 2026-09-14).
+  //
+  // The lock in main() is the real answer: two runs do not start. This is what
+  // makes the two-runs case merely wasteful rather than corrupting, for the
+  // paths around the lock — a run under a different lock file, a debug run —
+  // and it is what lets pruneStaleWorktrees tell a dead run's debris from a
+  // live run's tree (worker/jobs/evals-lock.mjs).
+  const slug = `${ref}`.replace(/[^A-Za-z0-9]/g, "-").slice(0, 24);
+  const dir = path.join(WORK_DIR, repo, `${slug}.${pid}`);
   fs.mkdirSync(path.dirname(dir), { recursive: true });
   fs.rmSync(dir, { recursive: true, force: true });
   git(repoDir, "worktree", "prune");
@@ -2845,6 +2924,37 @@ export async function serveRequest(env, io, request, options = {}) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  // ONE EVALS RUN ON THIS BOX AT A TIME, TAKEN HERE AND NOT IN THE CRON LINE.
+  //
+  // The cron was the only thing that had ever started this file, so nothing
+  // guarded the case that actually happened: a run started by hand while the
+  // five-minute `--serve` tick was mid-run. Both cleared the same worktrees
+  // and both posted rows. A lock in the crontab would still not have covered
+  // it — the hand-run does not go through the crontab — so it is taken by the
+  // program itself, where every caller passes.
+  //
+  // REFUSING IS NOT FAILING. A held lock is the normal state of a job that
+  // runs every five minutes and sometimes takes fifty minutes; the next tick
+  // takes it. The line says who holds it, and the exit is clean so the tick
+  // does not read as a broken job.
+  const lock = takeEvalsLock({ what: process.argv.slice(2).join(" ") || "evals" });
+  if (!lock.held) {
+    console.log(`[evals] another evals run is already going — ${lock.why}; this one is doing nothing`);
+    return;
+  }
+  try {
+    await runMain(options);
+  } finally {
+    lock.release();
+  }
+}
+
+async function runMain(options) {
+  // The debris of runs that were killed, cleared before this one adds its own.
+  // Worktrees name the process that made them, so this takes only what no live
+  // run owns (worker/jobs/evals-lock.mjs).
+  const pruned = pruneStaleWorktrees(WORK_DIR);
+  if (pruned.length > 0) console.log(`[evals] cleared ${pruned.length} worktree(s) left by runs that died`);
   const env = loadEnv({ require: ["CONVEX_SITE_URL", "TTS_WORKER_KEY"] });
   const io = realIo(env);
 

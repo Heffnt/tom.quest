@@ -9,7 +9,7 @@ import {
   GOLDEN_PER_VERDICT_MAX,
   partitionOf,
 } from "./ttsEvals";
-import { EVALS_PROTOCOL, EVALS_PROTOCOL_SINCE } from "../worker/jobs/evals-row.mjs";
+import { EVALS_PROTOCOL, EVALS_PROTOCOL_SINCE, PROTOCOL_SUPERSEDED } from "../worker/jobs/evals-row.mjs";
 import schema from "./schema";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -396,6 +396,250 @@ describe("an unaffected evals request", () => {
   });
 });
 
+
+// AN IDENTICAL RE-RUN IS NOT A NEW QUESTION, and the cost is the reason it
+// matters: a run is about fifty minutes and eighty model calls, and re-dating
+// the request is what throws the last one away. `.github/workflows/evals.yml`
+// fires on `edited` so that an `evals: no-item` trailer ADDED to a body is
+// honoured — nothing else would notice it — and the same trigger fires on
+// every typo fixed in a description. The trailer is part of the question; the
+// prose around it is not.
+describe("an identical evals request", () => {
+  const REPO = "tom.quest";
+  const SHA = "aee6483245faf746b3cf92bfe3da2108a1061d57";
+  const BASE = "f5c1fb9c36092bdebb2c4ab1ee0f411c97edd4eb";
+  const TRAILER = "evals: no-item gate and runner infrastructure";
+
+  const file = (t: TestConvex<typeof schema>, over: Record<string, unknown> = {}) =>
+    t.mutation(internal.ttsEvals.internalRequestEvals, {
+      repo: REPO,
+      sha: SHA,
+      baseSha: BASE,
+      pr: 172,
+      runId: 100,
+      paths: ["model-of-tom/**"],
+      changed: ["worker/jobs/evals.mjs", "convex/ttsEvals.ts"],
+      prBody: "The branch as it stands.",
+      ...over,
+    });
+
+  const requests = (t: TestConvex<typeof schema>) =>
+    t.run(async (ctx) =>
+      ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_REQUEST).eq("key", `${REPO}@${SHA}`))
+        .collect(),
+    );
+
+  const standingRequestedAt = async (t: TestConvex<typeof schema>) =>
+    ((await requests(t))[0].data as { requestedAt: number }).requestedAt;
+
+  /** An evals-run row stamped with the request standing when it was written. */
+  const row = async (t: TestConvex<typeof schema>, data: Record<string, unknown>) => {
+    const answersRequestAt = await standingRequestedAt(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now(),
+        kind: EVALS_RUN,
+        key: `${REPO}@${SHA}`,
+        data: { repo: REPO, sha: SHA, answersRequestAt, ...data },
+      });
+    });
+  };
+
+  /** A real measurement of the trees. */
+  const score = (t: TestConvex<typeof schema>) =>
+    row(t, { regressions: 0, goldenCoverage: true });
+
+  const scoredRun = (t: TestConvex<typeof schema>) =>
+    t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: SHA });
+
+  it("keeps one row and answers the re-run out of the run already scored", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t);
+    await score(t);
+    const before = await standingRequestedAt(t);
+    expect(await file(t)).toMatchObject({ existing: true, renewed: false });
+    const after = await requests(t);
+    expect(after).toHaveLength(1);
+    expect((after[0].data as { requestedAt: number }).requestedAt).toBe(before);
+    // The whole point: the scored row still answers, so nothing is served.
+    expect(await scoredRun(t)).toMatchObject({ run: { regressions: 0 } });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
+  });
+
+  // THE ORDER CI LISTS THE DIFF IN IS NOT A FACT ABOUT THE DIFF, so a
+  // re-ordering that re-scored would be a fifty-minute run bought by nothing.
+  it("reads the same paths in another order as the same question", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t);
+    await score(t);
+    expect(await file(t, { changed: ["convex/ttsEvals.ts", "worker/jobs/evals.mjs"] }))
+      .toMatchObject({ renewed: false });
+    expect(await scoredRun(t)).toMatchObject({ run: { regressions: 0 } });
+  });
+
+  // A BASE IS HALF THE MEASUREMENT. A pull request retargeted, or a rebase that
+  // moves the merge base, asks about a different diff between different trees,
+  // and the numbers from the old base say nothing about it.
+  it("re-scores when the base moves", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t);
+    await score(t);
+    expect(await file(t, { baseSha: "6af3eef4c1b2a09876543210fedcba9876543210" }))
+      .toMatchObject({ renewed: true });
+    expect(await scoredRun(t)).toMatchObject({ run: null });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: SHA,
+      baseSha: "6af3eef4c1b2a09876543210fedcba9876543210",
+    });
+  });
+
+  it("re-scores when the diff moves", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t);
+    await score(t);
+    expect(await file(t, { changed: ["worker/jobs/evals.mjs", "model-of-tom/intent.md"] }))
+      .toMatchObject({ renewed: true });
+    expect(await scoredRun(t)).toMatchObject({ run: null });
+  });
+
+  it("does not re-score a body edited outside the trailer", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, { prBody: `The branch as it stands.\n\n${TRAILER}\n` });
+    await score(t);
+    expect(await file(t, { prBody: `The branch, reworded entirely.\n\n${TRAILER}\n` }))
+      .toMatchObject({ renewed: false });
+    expect(await scoredRun(t)).toMatchObject({ run: { regressions: 0 } });
+  });
+
+  // THE TRAILER IS THE COVERAGE ANSWER, so adding one, rewording its reason or
+  // removing it asks the box something it has not been asked.
+  it("re-scores when the trailer is added, reworded or removed", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t);
+    await score(t);
+    expect(await file(t, { prBody: `The branch as it stands.\n\n${TRAILER}\n` }))
+      .toMatchObject({ renewed: true });
+    expect(await scoredRun(t)).toMatchObject({ run: null });
+
+    await score(t);
+    expect(await file(t, { prBody: `The branch as it stands.\n\n${TRAILER}, no layer changed\n` }))
+      .toMatchObject({ renewed: true });
+    expect(await scoredRun(t)).toMatchObject({ run: null });
+
+    await score(t);
+    expect(await file(t, { prBody: "The branch as it stands." })).toMatchObject({ renewed: true });
+    expect(await scoredRun(t)).toMatchObject({ run: null });
+  });
+
+  // A RE-RUN WHILE THE BOX IS STILL WORKING KEEPS ITS PLACE IN LINE. Re-dating
+  // an unanswered request sends it to the back of a queue served one request a
+  // pass, which is how a check times out behind its own re-runs.
+  it("keeps a pending request where it is in the queue", async () => {
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: PROTOCOL_ERA + 1,
+        kind: EVALS_REQUEST,
+        key: `${REPO}@earlier`,
+        data: {
+          repo: REPO, sha: "earlier", baseSha: BASE, pr: 171, runId: 50,
+          paths: ["model-of-tom/**"], changed: ["model-of-tom/intent.md"],
+          prBody: null, unaffectedClaimed: false, requestedAt: PROTOCOL_ERA + 1,
+        },
+      });
+    });
+    await file(t);
+    const before = (await requests(t))[0].at;
+    expect(await file(t)).toMatchObject({ renewed: false });
+    expect((await requests(t))[0].at).toBe(before);
+    // Still behind the request filed before it, which is where it was.
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {}))
+      .toMatchObject({ sha: "earlier" });
+  });
+
+  // THE ONE ANSWER AN IDENTICAL RE-ASK DOES NOT INHERIT. A superseded row says
+  // where the sha stood in the push order when the queue looked, and a branch
+  // force-pushed back to it makes that sha the head again. Leaving the row
+  // standing is the permanent-unmergeable bug the re-dating rule was opened to
+  // fix, so it survives the identity rule intact.
+  it("re-serves a sha the branch came back to, identical request and all", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t);
+    await row(t, { superseded: true, supersededBy: "bbbbbbb", regressions: null });
+    expect(await scoredRun(t)).toMatchObject({ run: { superseded: true } });
+    expect(await file(t, { runId: 300 })).toMatchObject({ renewed: true });
+    expect(await scoredRun(t)).toMatchObject({ run: null });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {}))
+      .toMatchObject({ sha: SHA, runId: 300 });
+  });
+
+  // The same for a run that failed: an error row is a fact about one attempt.
+  it("re-serves a sha whose run errored", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t);
+    await row(t, { error: "could not fetch the tree", regressions: null });
+    expect(await file(t)).toMatchObject({ renewed: true });
+    expect(await scoredRun(t)).toMatchObject({ run: null });
+  });
+
+  // An UNAFFECTED row is decided by the base sha and the changed paths, which
+  // are two thirds of the identity: ask the same question and the answer
+  // cannot have changed, so the row stands and the re-run costs nothing.
+  it("answers an identical re-run out of an unaffected row", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, { unaffected: true });
+    await row(t, { unaffected: true, regressions: 0 });
+    expect(await file(t, { unaffected: true })).toMatchObject({ renewed: false });
+    expect(await scoredRun(t)).toMatchObject({ run: { unaffected: true } });
+  });
+
+  // A REQUEST OLDER THAN THE PROTOCOL IS NEVER SERVED, and the way out it is
+  // given is exactly the one the identity rule would close: re-run the check
+  // and the request that files is dated now. Held at its old date it would be
+  // refused on every re-run until the drain reached it, the check timing out
+  // each time.
+  it("re-dates a request filed before the protocol, identical or not", async () => {
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: PROTOCOL_ERA - DAY,
+        kind: EVALS_REQUEST,
+        key: `${REPO}@${SHA}`,
+        data: {
+          repo: REPO, sha: SHA, baseSha: BASE, pr: 172, runId: 100,
+          paths: ["model-of-tom/**"],
+          changed: ["worker/jobs/evals.mjs", "convex/ttsEvals.ts"],
+          prBody: "The branch as it stands.", unaffectedClaimed: false,
+          requestedAt: PROTOCOL_ERA - DAY,
+        },
+      });
+    });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {}))
+      .toMatchObject({ sha: SHA, supersededBy: PROTOCOL_SUPERSEDED });
+    expect(await file(t)).toMatchObject({ renewed: true });
+    // Dated now, so it is served like any other.
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {}))
+      .toMatchObject({ sha: SHA, supersededBy: null });
+  });
+
+  // The push order is not the question, and it still has to move: the head map
+  // is built on `runId`, so a re-run whose id is higher must be recorded even
+  // when nothing else about the request changed.
+  it("records a higher run id without re-dating the question", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t);
+    await score(t);
+    const before = await standingRequestedAt(t);
+    expect(await file(t, { runId: 900 })).toMatchObject({ renewed: false });
+    const after = await requests(t);
+    expect(after).toHaveLength(1);
+    expect((after[0].data as { runId: number }).runId).toBe(900);
+    expect((after[0].data as { requestedAt: number }).requestedAt).toBe(before);
+    expect(await scoredRun(t)).toMatchObject({ run: { regressions: 0 } });
+  });
+});
 
 // Four pushes to one branch in a morning file four requests, and the box
 // serves one per pass at about thirty-five minutes: the check on the fourth

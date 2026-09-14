@@ -21,7 +21,13 @@ name: Evals
 on:
   pull_request:
     # `edited` reruns when retargeting changes the `BASE...HEAD` watched diff
-    # at the same head SHA.
+    # at the same head SHA, and when the body gains or loses its
+    # `evals: no-item` trailer — nothing else would notice either. It fires on
+    # every typo fixed in a description too, and those cost nothing: the Convex
+    # door reads a re-filed request by its IDENTITY (the base sha, the changed
+    # paths and that trailer, never the prose around it), so an edit that does
+    # not touch the trailer is answered out of the run already scored
+    # (convex/ttsEvals.ts internalRequestEvals).
     types: [opened, synchronize, reopened, edited]
 jobs:
   evals:

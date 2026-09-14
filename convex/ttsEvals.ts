@@ -8,7 +8,9 @@ import {
   EVALS_PROTOCOL,
   EVALS_PROTOCOL_SINCE,
   PROTOCOL_SUPERSEDED,
+  evalsRequestIdentity,
   predatesEvalsProtocol,
+  reopensOnReask,
   scoredNothing,
   supersededFields,
 } from "../worker/jobs/evals-row.mjs";
@@ -772,9 +774,12 @@ export const internalRequestEvals = internalMutation({
   handler: async (ctx, args) => {
     const key = `${args.repo}@${args.sha}`;
     const existing = await requestRowFor(ctx, key);
-    const currentRunId = existing === null ? null : requestData(existing.data)?.runId ?? null;
+    const standing = existing === null ? null : requestData(existing.data);
+    const currentRunId = standing?.runId ?? null;
     // A REQUEST FOR A SHA THAT ALREADY HAS ONE IS A NEW QUESTION UNLESS ITS
-    // place in GitHub's push order proves it is an older copy arriving late.
+    // place in GitHub's push order proves it is an older copy arriving late,
+    // or its identity proves it is the same question asked again (the second
+    // block below).
     // Only two things file it: a re-run of the check, and a force-push that puts
     // an earlier commit back at the head of the branch. Both mean somebody is
     // asking about this sha NOW when their run is not older, and the answer
@@ -787,8 +792,9 @@ export const internalRequestEvals = internalMutation({
     // superseded, and every re-run of its check read the same permanent
     // superseded row. That head could never be scored and so never merged.
     //
-    // EVERY REQUEST NOT PROVED OLDER REPLACES THE WHOLE PAYLOAD, not two fields
-    // of it. `baseSha`, `pr`, `changed`, `prBody` and `unaffected` are all facts
+    // EVERY REQUEST NOT PROVED OLDER AND NOT PROVED IDENTICAL REPLACES THE
+    // WHOLE PAYLOAD, not two fields of it.
+    // `baseSha`, `pr`, `changed`, `prBody` and `unaffected` are all facts
     // about the DIFF the check just read, and a sha can be asked about against
     // a different base — a pull request retargeted, a rebase that moves the
     // merge base. Keeping the first request's copies would score the sha
@@ -809,12 +815,11 @@ export const internalRequestEvals = internalMutation({
     // sha look newest, and a request carrying no id cannot lower one that does.
     const incomingIsOlder = existing !== null && args.runId !== undefined &&
       currentRunId !== null && args.runId < currentRunId;
-    if (incomingIsOlder) return { existing: true };
-    const requestedAt = Date.now();
+    if (incomingIsOlder) return { existing: true, renewed: false };
     const runId = args.runId !== undefined && (currentRunId === null || args.runId > currentRunId)
       ? args.runId
       : currentRunId;
-    const data = {
+    const payload = {
       repo: args.repo,
       sha: args.sha,
       baseSha: args.baseSha ?? null,
@@ -827,10 +832,70 @@ export const internalRequestEvals = internalMutation({
       // anchored `evals: no-item` line.
       prBody: args.prBody ?? null,
       unaffectedClaimed: args.unaffected === true,
-      // MOVES WITH EVERY REQUEST NOT PROVED STALE, and that is what un-answers
-      // a stale row that scored nothing: answeredRun below reads one written
-      // BEFORE the request standing now as the answer to a question nobody is
-      // asking any more.
+    };
+    // AN IDENTICAL RE-RUN IS THE SAME QUESTION, AND THE SAME QUESTION IS NOT
+    // ASKED TWICE.
+    //
+    // Everything above decides whether this request is NEWER than the one
+    // standing. This decides whether it is DIFFERENT, which is a separate
+    // fact and the one the cost turns on: a run is fifty minutes and eighty
+    // model calls, and re-dating the request is what throws the last one away.
+    // evalsRequestIdentity (worker/jobs/evals-row.mjs) names the three things
+    // a run's answer depends on — the base sha, the changed paths, and the
+    // `evals: no-item` trailer — and the pull-request body around that trailer
+    // is deliberately not one of them. `.github/workflows/evals.yml` fires on
+    // `edited` so that a trailer ADDED to the body is honoured; every typo
+    // fixed in a description fires it too, and those now cost nothing.
+    //
+    // WHAT THE UNCHANGED QUESTION KEEPS. Its `requestedAt`, so a row already
+    // stamped with it goes on answering — that is the no-re-score — and its
+    // `at`, so a request still waiting in the queue keeps its place in line
+    // rather than going to the back of it on every re-run of the check.
+    //
+    // AND THE ONE ANSWER THAT DOES NOT SURVIVE A RE-ASK. `superseded` and
+    // `error` rows are facts about a moment, not about the trees (evals-row.mjs
+    // reopensOnReask): a branch force-pushed back to an earlier sha makes that
+    // sha the head again, and leaving the superseded row standing is exactly
+    // the permanent-unmergeable bug this door was opened to fix. Those re-date
+    // even when the question is word for word the same. A scored row and an
+    // `unaffected` row both stand: what they say is decided by the identity
+    // above, so an identical question cannot have a different answer.
+    //
+    // NOR DOES A REQUEST OLDER THAN THE PROTOCOL KEEP ITS DATE. Such a request
+    // is never served (evals-row.mjs EVALS_PROTOCOL_SINCE) — the queue hands it
+    // out only to be answered superseded — and the way out it is given is
+    // exactly the one this block would close: re-run the check and the request
+    // that files is dated now. Held at its old date it would be refused on
+    // every re-run until the drain reached it, with the check timing out each
+    // time.
+    if (existing !== null && standing !== null &&
+      !predatesEvalsProtocol(standing.requestedAt) &&
+      evalsRequestIdentity(standing) === evalsRequestIdentity(payload)) {
+      const answer = await runForKey(ctx, key);
+      const answers = answer === null
+        ? null
+        : (answer.data as { answersRequestAt?: unknown }).answersRequestAt;
+      const stands = answer !== null && answers === standing.requestedAt;
+      if (!stands || !reopensOnReask(answer!.data)) {
+        // The push order is not the question, and it still has to move: the
+        // head map is built on `runId` (headShaByPullRequest), so a re-run
+        // whose id is higher must be recorded or a live head reads as behind
+        // a dead one. This is the only field an unchanged question writes.
+        if (runId !== currentRunId) {
+          await ctx.db.patch(existing._id, {
+            data: { ...(existing.data as Record<string, unknown>), runId },
+          });
+        }
+        return { existing: true, renewed: false };
+      }
+    }
+    const requestedAt = Date.now();
+    const data = {
+      ...payload,
+      // MOVES WITH EVERY REQUEST NOT PROVED STALE AND NOT PROVED IDENTICAL, and
+      // that is what un-answers a stale row that scored nothing: answeredRun
+      // below reads one written BEFORE the request standing now as the answer
+      // to a question nobody is asking any more.
       requestedAt,
     };
     if (existing === null) {
@@ -848,7 +913,7 @@ export const internalRequestEvals = internalMutation({
       // same tick anyway.
       await ctx.db.patch(existing._id, { at: requestedAt, data });
     }
-    return { existing: existing !== null };
+    return { existing: existing !== null, renewed: true };
   },
 });
 

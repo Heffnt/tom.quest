@@ -476,12 +476,27 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Evals. The box POLLS: it has no inbound door, so a GitHub Action posts a
 # request to Convex and this tick picks up the oldest unanswered one and runs
 # it. One request per pass, so a tick is bounded.
-*/5 * * * * root /usr/bin/flock -n /var/lock/tts-evals.lock /usr/bin/node /opt/tts/evals.mjs --serve >> /var/log/tts/evals.log 2>&1
+#
+# NO `flock -n` WRAPPER ON THESE TWO LINES, AND IT IS THE ONE EXCEPTION IN THIS
+# FILE. evals.mjs takes /var/lock/tts-evals.lock ITSELF now (worker/jobs/
+# evals-lock.mjs), because the collision that actually happened was one the
+# crontab could never have covered: a run started BY HAND while the tick was
+# mid-run. Both computed the same worktree path, and worktreeFor clears the
+# directory on its way in, so each deleted the other's checkout and both runs
+# died saying the tree could not be read (twice, 2026-09-14).
+#
+# DO NOT PUT THE WRAPPER BACK. The program's lock is a pid file on that same
+# path — Node has no flock(2), and an exclusive create is the atomic primitive
+# it does have — so a `flock` holding the same file would leave a holder the
+# program cannot read and the program would clear it. One mechanism, one owner,
+# one path. Every other job here keeps the wrapper: they are cron-only.
+*/5 * * * * root /usr/bin/node /opt/tts/evals.mjs --serve >> /var/log/tts/evals.log 2>&1
 
 # The full golden set against both repos' main, Saturday, so it does not
 # contend with Friday's weekly agenda job. Two slots for the same NY hour, as
-# the nightly and weekly lines do.
-0 8,9 * * 6 root /usr/bin/flock -n /var/lock/tts-evals.lock /usr/bin/node /opt/tts/evals.mjs --weekly >> /var/log/tts/evals.log 2>&1
+# the nightly and weekly lines do. Same lock, taken the same way, so the
+# Saturday run and a five-minute tick cannot overlap either.
+0 8,9 * * 6 root /usr/bin/node /opt/tts/evals.mjs --weekly >> /var/log/tts/evals.log 2>&1
 
 # CODE-TODO RULING LOOP (CMT's vqc/todos.yaml -> briefs -> Tom rules -> a
 # worker mission): the BRIEFS are the planner's second pass (below, every 30
