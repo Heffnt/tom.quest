@@ -21,10 +21,10 @@ function fact(label: string, value: string | undefined): string | null {
 
 /**
  * The brief as the prompt carries it: whole, or cut at the last heading before
- * SUPPLEMENTAL_CAPS.brief with a line saying where the rest is. One home for
- * the cut (worker/jobs/context-relevance.mjs), which is also where the
- * fetchable block writes the matching line — so the text that was cut and the
- * line saying so cannot disagree.
+ * SUPPLEMENTAL_CAPS.brief with a line saying where the rest is. ONE HOME for
+ * the cut (worker/jobs/context-relevance.mjs), which the autonomous twin in
+ * convex/claudeSessions.ts calls too — so the two prompts cannot disagree about
+ * where a brief stops or where the rest of it is.
  */
 function briefFact(brief: string | undefined): string | null {
   return fact("brief", brief === undefined ? undefined : briefForPrompt(brief).text);

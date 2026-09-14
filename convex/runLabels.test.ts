@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
@@ -7,34 +7,6 @@ import { REACTION_POLARITY, baseEmoji, meaningFault, plainMeaning } from "./runL
 import { parseConfirmReply } from "./ttsSlack";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
-
-/**
- * Run every function the test scheduled, and return once none is left.
- *
- * `finishAllScheduledFunctions` on its own is not enough, and the same race is
- * written out in convex/ttsRulings.test.ts: convex-test puts a runAfter(0) job
- * in the `pending` state and starts it from a real setTimeout, while that
- * helper waits only for jobs already RUNNING. Called the instant the mutation
- * returns, it can find nothing to wait for and come back before the scheduled
- * function has written anything. On this machine the timer wins; on a loaded
- * CI runner it does not, which is a flake the merge gate cannot absorb — the
- * tests row is written ONCE per commit, so one red run bars that head forever.
- * Yielding a macrotask first lets the timer fire, and the loop re-checks the
- * queue until it is empty.
- */
-async function drain(t: ReturnType<typeof convexTest>) {
-  for (let pass = 0; pass < 50; pass++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await t.finishInProgressScheduledFunctions();
-    const left = await t.run(async (ctx) =>
-      (await ctx.db.system.query("_scheduled_functions").collect()).filter(
-        (job) => job.state.kind === "pending" || job.state.kind === "inProgress",
-      ).length,
-    );
-    if (left === 0) return;
-  }
-  throw new Error("scheduled functions never drained");
-}
 
 const SOURCE_HASH = "a".repeat(64);
 const STORED_HASH = "b".repeat(64);
@@ -472,49 +444,56 @@ describe("a reply in a session becomes a label", () => {
   });
 
   it("writes for a turn Tom typed and nothing for an agent's own turn", async () => {
-    const t = convexTest(schema, modules);
-    const sessionId = await seedSession(t);
-    await seedRun(t, { regToken: "tok-session", runId: "claude:box:session-run", sessionId });
-    await seedTranscriptRow(t, sessionId, 0, "user");
-    await seedTranscriptRow(t, sessionId, 1, "assistant-text");
-    await t.run((ctx) => ctx.db.patch(sessionId, { nextSeq: 2 }));
+    vi.useFakeTimers();
+    try {
+      const t = convexTest(schema, modules);
+      const sessionId = await seedSession(t);
+      await seedRun(t, { regToken: "tok-session", runId: "claude:box:session-run", sessionId });
+      await seedTranscriptRow(t, sessionId, 0, "user");
+      await seedTranscriptRow(t, sessionId, 1, "assistant-text");
+      await t.run((ctx) => ctx.db.patch(sessionId, { nextSeq: 2 }));
 
-    const inbound = async (author: "tom" | "agent", text: string) =>
-      await t.run((ctx) =>
-        ctx.db.insert("claudeInbound", {
-          sessionId,
-          kind: "user-turn",
-          text,
-          author,
-          status: "pending",
-          createdAt: 9_000,
-        }),
-      );
-    const agentTurn = await inbound("agent", "continue with the next item");
-    await t.mutation(internal.claudeSessions.internalIngest, {
-      sessionId,
-      finalize: [{ seq: 2, turn: 1, kind: "user", content: { text: "continue with the next item" } }],
-      inboundUpdates: [{ id: agentTurn, status: "delivered" }],
-    });
-    expect(await labels(t)).toHaveLength(0);
+      const inbound = async (author: "tom" | "agent", text: string) =>
+        await t.run((ctx) =>
+          ctx.db.insert("claudeInbound", {
+            sessionId,
+            kind: "user-turn",
+            text,
+            author,
+            status: "pending",
+            createdAt: 9_000,
+          }),
+        );
+      const agentTurn = await inbound("agent", "continue with the next item");
+      await t.mutation(internal.claudeSessions.internalIngest, {
+        sessionId,
+        finalize: [{ seq: 2, turn: 1, kind: "user", content: { text: "continue with the next item" } }],
+        inboundUpdates: [{ id: agentTurn, status: "delivered" }],
+      });
+      expect(await labels(t)).toHaveLength(0);
 
-    const tomTurn = await inbound("tom", "no, do the visa one first");
-    await t.mutation(internal.claudeSessions.internalIngest, {
-      sessionId,
-      finalize: [{ seq: 3, turn: 2, kind: "user", content: { text: "no, do the visa one first" } }],
-      inboundUpdates: [{ id: tomTurn, status: "delivered" }],
-    });
-    await drain(t);
-    const rows = await labels(t);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
-      source: "session-reply",
-      ref: `reply:${sessionId}:3`,
-      meaning: "no, do the visa one first",
-      // The span the reply is about: from the assistant row before it to the
-      // reply's own row.
-      rowSpan: { seqStart: 1, seqEnd: 3 },
-    });
+      const tomTurn = await inbound("tom", "no, do the visa one first");
+      await t.mutation(internal.claudeSessions.internalIngest, {
+        sessionId,
+        finalize: [{ seq: 3, turn: 2, kind: "user", content: { text: "no, do the visa one first" } }],
+        inboundUpdates: [{ id: tomTurn, status: "delivered" }],
+      });
+      // Scheduling is asynchronous even at delay zero. Fake timers establish
+      // the queue's completion boundary before the label row is inspected.
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      const rows = await labels(t);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        source: "session-reply",
+        ref: `reply:${sessionId}:3`,
+        meaning: "no, do the visa one first",
+        // The span the reply is about: from the assistant row before it to the
+        // reply's own row.
+        rowSpan: { seqStart: 1, seqEnd: 3 },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

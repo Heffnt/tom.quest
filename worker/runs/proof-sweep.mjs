@@ -132,17 +132,23 @@ export async function runSweepProof({
 
   writeRegistrationClaim({
     runFile,
+    // REMOVAL CHECK: the proof recovery has no launcher token, so it needs a
+    // direct sidecar claim to exercise the same recovery path as a live hook.
+    token: null,
     writer: { file: "worker/runs/proof-sweep.mjs", job: "runs-proof" },
     registration: {
       host,
       origin: "laptop",
       kind: "session",
-      // What scripts/session-start-hook.mjs gives a laptop session: the stable
-      // prefix is operate and write, and the know layer is expanded per subject
-      // rather than given or denied whole.
+      // What scripts/session-start-hook.mjs gives a laptop session: the operate
+      // layer, and write as a granted skill whose body the CLI loads when the
+      // agent acts on it. The know layer is in neither list — its pages are ten
+      // skills the launcher grants by subject.
       layersKnown: true,
-      layersGiven: ["operate", "write"],
+      layersGiven: ["operate"],
       layersDenied: [],
+      skillsGranted: ["write"],
+      skillsRefused: [],
     },
     claim: { by: "proof:manual-envelope", threadId: path.basename(runFile, ".jsonl"), hookPayloadKeys: [] },
     fs,

@@ -1,0 +1,55 @@
+{
+  "name": "know-intent",
+  "kind": "skill",
+  "note": "Whether a run reaches for intent when it captures, plans, or decides on Tom's behalf, and leaves it alone for mechanical repository questions.",
+  "cases": [
+    {
+      "id": "skill-know-intent-pos-capture",
+      "negative": false,
+      "prompt": "Capture a message whose requested action is unclear as a todo.",
+      "why": "capture wording follows the intent rules rather than an inferred personal priority.",
+      "expect": { "mustName": ["Read and handle"] },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-intent-pos-order",
+      "negative": false,
+      "prompt": "Order ready todos and state the rule that decided the order.",
+      "why": "ordering on Tom's behalf uses the stated decision rules rather than a guessed rating.",
+      "expect": { "mustNotName": ["priority score", "importance rating"] },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-intent-pos-uncertain-decision",
+      "negative": false,
+      "prompt": "A task needs a decision that only Tom can make. State what happens next.",
+      "why": "the intent rules distinguish an agent decision from one that must wait for Tom.",
+      "expect": { "mustName": ["Tom"] },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-intent-neg-schema",
+      "negative": true,
+      "prompt": "List the fields declared by a database table.",
+      "why": "a schema lookup is mechanical and does not need intent.",
+      "expect": { "mustNotName": ["priority score", "decision rule", "area page"] },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-intent-neg-test-command",
+      "negative": true,
+      "prompt": "What command runs a repository test suite?",
+      "why": "a repository command is read from its rules file and does not need intent.",
+      "expect": { "mustNotName": ["priority score", "decision rule", "area page"] },
+      "confirmedByTom": false
+    },
+    {
+      "id": "skill-know-intent-neg-pattern",
+      "negative": true,
+      "prompt": "Does a regular expression match a supplied string?",
+      "why": "a mechanical pattern question has no intent dependency.",
+      "expect": { "mustNotName": ["priority score", "decision rule", "area page"] },
+      "confirmedByTom": false
+    }
+  ]
+}

@@ -8,6 +8,14 @@
 # length: a workflow that does not run records nothing, and the merge gate
 # denies a head with no evals row. The checker it fetches holds WATCHED_PATHS
 # and decides there, answering an unaffected branch in seconds.
+#
+# THERE IS NOTHING HERE FOR A FILTER TO NAME ANYWAY. WATCHED_PATHS is the union
+# over BOTH repositories, and every entry in it but one names a file WikiTom
+# does not have: no scripts/, no worker/, no evals/, no convex/. What WikiTom
+# holds that a run reads is model-of-tom/, and since phase 6 the skill bodies
+# are that directory's pages — so a change to a page moves what a run is built
+# from whether it reaches the run as a layer or as a skill, and the checker
+# sees it either way.
 name: Evals
 on:
   pull_request:

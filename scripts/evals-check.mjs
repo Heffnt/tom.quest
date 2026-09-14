@@ -49,10 +49,24 @@ export const POLL_TIMEOUT_MS = 75 * 60 * 1000;
  * the context Tom's jobs read changes his outputs with nothing scoring them,
  * which is the exact failure the whole gate exists to prevent.
  *
- * NOTHING NEW IS WATCHED BEYOND THAT RECONCILIATION. evals/golden/runs/** is
- * already inside evals/golden/**, and the harness's own files (this one,
- * worker/jobs/evals.mjs) are not context files: watching them would fire a
- * fifty-minute run on every change to the evals code itself.
+ * FOUR PATHS WERE ADDED WHEN THE SKILLS LANDED, and each is a context file in
+ * exactly the sense this list means — a file whose content reaches a run's
+ * prompt. scripts/skills.mjs is the table that decides what the skill set IS
+ * and writes every description a run reads before it loads one;
+ * scripts/publish-skills.mjs is the generator that turns that table into the
+ * directories; worker/jobs/skill-router.mjs is what decides which of them a run
+ * is granted. A change to any of the three changes what Tom's jobs are given
+ * with nothing else scoring it. evals/triggers/** is watched for the reason
+ * evals/golden/** is: it is the set, and a change to the set changes what a
+ * comparison means. It is not ordinarily a pull-request coverage item: only a
+ * skill description or router change may pay with a trigger case, because that
+ * is the one change a trigger directly scores.
+ *
+ * THE HARNESS'S OWN FILES ARE STILL NOT WATCHED. This one and
+ * worker/jobs/evals.mjs are the machinery that runs the measurement, not the
+ * context being measured, and watching them would fire a fifty-minute run on
+ * every change to the evals code itself. evals/golden/runs/** needs no entry
+ * either: it is already inside evals/golden/**.
  */
 export const WATCHED_PATHS = [
   "AGENTS.md",
@@ -62,12 +76,21 @@ export const WATCHED_PATHS = [
   "model-of-tom/**",
   "scripts/prelude.mjs",
   // WHAT scripts/prelude.mjs READS. The eval runner executes the pinned
-  // prelude, and these three are its transitive relative imports — change any
-  // one of them alone and the prompt every scored item is built from changes
-  // while the file named above does not. scripts/check-setup-imports.mjs walks
-  // the import graph and fails when this list and that graph disagree, so a
-  // fourth import lands here by being added rather than by being remembered.
-  "scripts/prelude-layers.mjs",
+  // prelude, and skills.mjs and markdown-sections.mjs are its transitive
+  // relative imports — change either one alone and the prompt every scored
+  // item is built from changes while the file named above does not.
+  // scripts/check-setup-imports.mjs walks the import graph and fails when
+  // this list and that graph disagree, so a new import lands here by being
+  // added rather than by being remembered. Phase 6 is why the graph moved:
+  // the layers became skills, prelude-layers.mjs is gone, and skills.mjs is
+  // what the prelude reads now.
+  "scripts/skills.mjs",
+  // NOT IN THE PRELUDE GRAPH, AND WATCHED ANYWAY. publish-skills.mjs writes
+  // the catalog the prelude reads and context-relevance.mjs is what a brief
+  // is cut with; neither is imported by prelude.mjs, and both decide what a
+  // run is given. The fence asks only that the graph be a SUBSET of this
+  // list, so a file that earns its place by a second route keeps it.
+  "scripts/publish-skills.mjs",
   "worker/jobs/context-relevance.mjs",
   "worker/jobs/markdown-sections.mjs",
   "convex/ttsShared.ts",
@@ -78,6 +101,7 @@ export const WATCHED_PATHS = [
   "worker/jobs/plan-graphs.mjs",
   "worker/jobs/weekly.mjs",
   "worker/jobs/delegate.mjs",
+  "worker/jobs/skill-router.mjs",
   "worker/bin/tts-ask",
   "evals/golden/**",
   "evals/tasks/**",
@@ -95,7 +119,12 @@ export const WATCHED_PATHS = [
 
 /** Where a golden item lives. A change that ships one of these is the thing
  *  the coverage rule asks for. */
-const ITEM_PREFIXES = ["evals/golden/", "evals/triggers/"];
+const ITEM_PREFIXES = ["evals/golden/"];
+const TRIGGER_COVERED_SKILL_PATHS = new Set([
+  "scripts/skills.mjs",
+  "scripts/publish-skills.mjs",
+  "worker/jobs/skill-router.mjs",
+]);
 
 /**
  * One changed path against one WATCHED_PATHS entry. Three forms, because three
@@ -196,7 +225,7 @@ export function noItemTrailer(prBody) {
 
 /** Coverage, and the reason when a trailer is what excused it. The reason
  *  travels on the verdict because report() is given no pull-request body. */
-function coverageOf(changed, prBody) {
+function coverageOf(changed, prBody, triggerFilesRun = []) {
   // NO DIFF, NO VERDICT. A --weekly run and a run by hand supply no changed
   // list, and answering `false` there would fail a run that was never asked
   // about a pull request at all.
@@ -204,8 +233,24 @@ function coverageOf(changed, prBody) {
   const paths = changed
     .filter((path) => typeof path === "string")
     .map((path) => path.replace(/\\/g, "/").replace(/^\.\//, ""));
-  if (!paths.some((path) => matchesWatched(path))) return { coverage: true, excuse: null };
+  const watched = paths.filter((path) => matchesWatched(path));
+  if (watched.length === 0) return { coverage: true, excuse: null };
   if (paths.some((path) => ITEM_PREFIXES.some((prefix) => path.startsWith(prefix)))) {
+    return { coverage: true, excuse: null };
+  }
+  // A trigger case directly scores the published skill description or the
+  // router. It does not score an arbitrary watched context file, so only those
+  // three changes may use a trigger file to satisfy pull-request coverage.
+  const triggerCoveredOnly = watched.every((path) =>
+    path.startsWith("evals/triggers/") || TRIGGER_COVERED_SKILL_PATHS.has(path));
+  const changedTriggers = paths
+    .filter((path) => path.startsWith("evals/triggers/") && path.endsWith(".json"))
+    .map((path) => path.slice("evals/triggers/".length));
+  const ranTriggers = new Set(Array.isArray(triggerFilesRun) ? triggerFilesRun : []);
+  if (triggerCoveredOnly &&
+    changedTriggers.length > 0 &&
+    changedTriggers.every((file) => ranTriggers.has(file)) &&
+    watched.some((path) => TRIGGER_COVERED_SKILL_PATHS.has(path))) {
     return { coverage: true, excuse: null };
   }
   const excuse = noItemTrailer(prBody);
@@ -222,8 +267,8 @@ function coverageOf(changed, prBody) {
  *           a change to Tom's outputs that no one ever looked at.
  *   null  — no diff was supplied, so there is no verdict to give.
  */
-export function goldenItemRule(changed, prBody) {
-  return coverageOf(changed, prBody).coverage;
+export function goldenItemRule(changed, prBody, triggerFilesRun) {
+  return coverageOf(changed, prBody, triggerFilesRun).coverage;
 }
 
 /** Every failure of a run, golden items and repo tasks alike, by id. */
@@ -234,18 +279,47 @@ function failuresOf(run) {
   return map;
 }
 
-/** The ids a run actually scored — the row carries them so the gate can tell a
- *  newly added item apart from one that regressed. */
-function scoredOf(run) {
-  return new Set(run?.scoredIds ?? []);
+/**
+ * Two runs compared on the INTERSECTION of what they scored: the ids both ran
+ * with the same content are the only measurement, an id only at head is new,
+ * an id only at base is removed, and an id whose content moved is both. A pair
+ * with no intersection measured nothing, and says so with its reason.
+ */
+function mismatchOf(head, base) {
+  if (!base) return null;
+  // Box rows are regenerated under PR #172's protocol, so there is no
+  // scoredIds compatibility path: per-item hashes are the measurement.
+  if (head?.scoredHashes === null || typeof head?.scoredHashes !== "object" ||
+    base?.scoredHashes === null || typeof base?.scoredHashes !== "object") {
+    return { kind: "nonmeasurement", reason: "one or both runs lack per-item content hashes", comparable: [], new: [], removed: [], changed: [] };
+  }
+  const headIds = Object.keys(head.scoredHashes).filter((id) => typeof head.scoredHashes[id] === "string");
+  const baseIds = Object.keys(base.scoredHashes).filter((id) => typeof base.scoredHashes[id] === "string");
+  const baseSet = new Set(baseIds);
+  const headSet = new Set(headIds);
+  const comparable = headIds.filter((id) => baseSet.has(id) && head.scoredHashes[id] === base.scoredHashes[id]).sort();
+  const changed = headIds.filter((id) => baseSet.has(id) && head.scoredHashes[id] !== base.scoredHashes[id]).sort();
+  const added = headIds.filter((id) => !baseSet.has(id)).sort();
+  const removed = baseIds.filter((id) => !headSet.has(id)).sort();
+  const detail = {
+    comparable,
+    // A same-id changed body is new at head and removed at base, so neither
+    // result is evidence that the other body regressed.
+    new: [...added, ...changed].sort(),
+    removed: [...removed, ...changed].sort(),
+    changed,
+  };
+  if (comparable.length === 0) {
+    return { kind: "nonmeasurement", reason: "the runs share no scored item with the same content hash", ...detail };
+  }
+  return detail;
 }
 
 /**
  * The gate. Pure, exported, tested.
  *
- * FAILS: a regression (an item that passes in base and fails in head), a
- * golden-set hash mismatch (the two runs scored different sets and the
- * comparison would be a lie), or no head run at all.
+ * FAILS: a regression on the equal-id, equal-content intersection, a run with
+ * no such intersection, or no head run at all.
  *
  * REPORTED, does not fail: an item failing in both runs (standing debt, not
  * something this pull request did), an item failing in head that base never
@@ -258,7 +332,7 @@ function scoredOf(run) {
  * call, a run by hand), coverage answers null and gates nothing.
  */
 export function gate(head, base, { changed, prBody } = {}) {
-  const { coverage: goldenCoverage, excuse: goldenExcuse } = coverageOf(changed, prBody);
+  const { coverage: goldenCoverage, excuse: goldenExcuse } = coverageOf(changed, prBody, head?.triggerFilesRun);
   // The early returns carry coverage too, so no caller ever reads `undefined`
   // off a verdict and has to guess whether that meant false or unasked.
   if (!head) {
@@ -296,8 +370,9 @@ export function gate(head, base, { changed, prBody } = {}) {
   }
   const headFailures = failuresOf(head);
   const baseFailures = failuresOf(base);
-  const baseScored = scoredOf(base);
-  const mismatch = Boolean(base) && head.goldenHash !== base.goldenHash;
+  const mismatchDetail = mismatchOf(head, base);
+  const mismatch = mismatchDetail?.kind === "nonmeasurement";
+  const comparable = new Set(mismatchDetail?.comparable ?? []);
   const regressions = [];
   const errored = [];
   const stillFailing = [];
@@ -314,19 +389,24 @@ export function gate(head, base, { changed, prBody } = {}) {
   // the base run did is a fact about this commit; what an item calls itself is
   // a label with a lifecycle.
   for (const [id, failure] of headFailures) {
-    if (failure.errored === true) {
-      errored.push(failure);
-    } else if (failure.confirmed === false) unconfirmed.push(failure);
+    // A RUNNER FAILURE IS NOT A FAILING ITEM. It is an item that was never
+    // measured, so it belongs in neither the regression bucket nor the
+    // new-failing one, and it is read first for that reason.
+    if (failure.errored === true) errored.push(failure);
+    else if (failure.confirmed === false) unconfirmed.push(failure);
+    else if (!base || !comparable.has(id)) newFailing.push(failure);
     else if (baseFailures.has(id)) stillFailing.push(failure);
-    else if (!base || (baseScored.size > 0 && !baseScored.has(id))) newFailing.push(failure);
     else regressions.push(failure);
   }
-  const fixed = [...baseFailures.values()].filter((failure) => !headFailures.has(failure.id));
+  const fixed = [...baseFailures.values()].filter((failure) => comparable.has(failure.id) && !headFailures.has(failure.id));
   // Coverage fails the check on `false` alone. `null` is the absence of a
   // question, not an answer of no, and a run with no diff to read must not
   // fail a check it was never given the input for.
   const ok = errored.length === 0 && regressions.length === 0 && !mismatch && goldenCoverage !== false;
-  return { ok, mismatch, errored, regressions, stillFailing, newFailing, fixed, unconfirmed, noBaseline: !base, goldenCoverage, goldenExcuse };
+  return {
+    ok, mismatch, mismatchDetail, errored, regressions, stillFailing, newFailing, fixed,
+    unconfirmed, noBaseline: !base, goldenCoverage, goldenExcuse,
+  };
 }
 
 /** What Tom sees in the check's log. A clean check is one line. */
@@ -396,7 +476,8 @@ export function report(head, base, verdict) {
   // hatch used silently is a hatch nobody audits.
   const quiet = verdict.stillFailing.length === 0 && verdict.newFailing.length === 0 &&
     verdict.unconfirmed.length === 0 && verdict.fixed.length === 0 &&
-    !verdict.goldenExcuse;
+    !verdict.goldenExcuse && (verdict.mismatchDetail?.new?.length ?? 0) === 0 &&
+    (verdict.mismatchDetail?.removed?.length ?? 0) === 0;
   if (verdict.ok && quiet) {
     return [`${setLine}: ${head.pass} pass, ${head.fail} fail, ${notes.join(", ")}.`];
   }
@@ -404,14 +485,20 @@ export function report(head, base, verdict) {
   lines.push(`  head: ${head.pass} pass, ${head.fail} fail, ${flaky} flaky` + (base ? `      base: ${base.pass} pass, ${base.fail} fail` : ""));
   if (verdict.noBaseline) lines.push(`  no baseline for the base commit; reporting only`);
   if (verdict.mismatch) {
-    lines.push(`  GOLDEN SET MISMATCH  head ${head.goldenHash} vs base ${base.goldenHash} — re-run the base:`);
+    lines.push(`  GOLDEN SET COMPARISON UNAVAILABLE  ${verdict.mismatchDetail?.reason} — re-run the base and head:`);
     lines.push(`    node /opt/tts/evals.mjs --repo ${head.repo} --sha ${base.sha} --force`);
+  }
+  if (verdict.mismatchDetail?.new?.length > 0) {
+    lines.push(`  new scored items: ${verdict.mismatchDetail.new.join(", ")}`);
+  }
+  if (verdict.mismatchDetail?.removed?.length > 0) {
+    lines.push(`  removed scored items: ${verdict.mismatchDetail.removed.join(", ")}`);
   }
   // Coverage says nothing at all when it is null: a run with no diff was never
   // asked, and a line about a rule that did not apply is noise in every
   // by-hand and weekly log.
   if (verdict.goldenCoverage === false) {
-    lines.push(`  NO GOLDEN ITEM  a watched context file changed and this branch ships no item under evals/golden/** or evals/triggers/** — add one, or put "evals: no-item <reason>" on the pull-request body`);
+    lines.push(`  NO GOLDEN ITEM  a watched context file changed and this branch ships no item under evals/golden/** — a trigger file satisfies coverage only after its cases ran in this pull-request run and only with scripts/skills.mjs, scripts/publish-skills.mjs, or worker/jobs/skill-router.mjs — add one, or put "evals: no-item <reason>" on the pull-request body`);
   } else if (verdict.goldenExcuse) {
     lines.push(`  golden item excused: ${verdict.goldenExcuse}`);
   }
@@ -429,7 +516,7 @@ export function report(head, base, verdict) {
     : verdict.errored.length > 0
       ? `FAILED: ${verdict.errored.length} errored.`
       : verdict.mismatch
-      ? `FAILED: the two runs scored different golden sets.`
+      ? `FAILED: the runs have no comparable scored item.`
       : verdict.regressions.length > 0
         ? `FAILED: ${verdict.regressions.length} regression${verdict.regressions.length === 1 ? "" : "s"}.`
         : `FAILED: a watched context file changed and no golden item shipped with it.`) + unconfirmedNote);

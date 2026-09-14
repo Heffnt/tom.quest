@@ -14,6 +14,12 @@ name: Evals
 #
 # So the filter moved INTO the check, where the answer can be recorded, and
 # WATCHED_PATHS is now the single spelling with no copy here to drift from it.
+# Phase 6's four skill paths — scripts/skills.mjs, scripts/publish-skills.mjs,
+# worker/jobs/skill-router.mjs and evals/triggers/** — went into that list and
+# not into a filter here, for the same reason: the first three decide what a
+# run's prompt carries and the fourth is part of the set a run is scored
+# against, and a list that exists once cannot drift.
+#
 # The check reads its own diff against that list, and when NOTHING watched
 # changed it posts a request marked `unaffected`. That is a CLAIM and not the
 # answer: the Convex door writes no row for it (convex/http.ts), because a

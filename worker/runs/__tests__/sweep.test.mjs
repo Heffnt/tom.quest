@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { claudeLine, claudeToolResult, claudeUserTurn, jsonl } from "./fixtures.mjs";
+import { claudeLine, claudeToolResult, claudeUserTurn, codexDeveloper, codexMeta, codexResponseItem, codexSkillsInstructions, codexTokenCount, codexToolCall, codexTurnContext, jsonl } from "./fixtures.mjs";
 import { writeRegistrationClaim, writeRegistrationEnd } from "../registration.mjs";
 import {
   MAX_ATTEMPTS,
@@ -87,6 +87,92 @@ function largeDiskFs() {
 }
 
 describe("run sweep", () => {
+  it("recovers a legacy Codex cursor's identity from full context without losing its prior outcome", async () => {
+    const dir = temp(); const project = path.join(dir, "codex", "project"); fs.mkdirSync(project, { recursive: true });
+    const file = path.join(project, "rollout.jsonl");
+    const prefix = jsonl([
+      codexMeta({ id: "legacy-thread", cwd: "C:/work" }),
+      codexTurnContext({ model: "gpt-5.6-terra" }),
+      codexResponseItem("message", { role: "assistant", content: [{ output_text: "original answer" }] }),
+      codexTokenCount({ input: 7, cachedInput: 0, cacheWrite: 0, output: 3, reasoning: 0, total: 10 }),
+    ]);
+    fs.writeFileSync(file, prefix);
+    const stateDir = path.join(dir, "state");
+    fs.mkdirSync(path.dirname(stateFileFor(stateDir, "codex:laptop:rollout")), { recursive: true });
+    fs.writeFileSync(stateFileFor(stateDir, "codex:laptop:rollout"), JSON.stringify({
+      runId: "codex:laptop:legacy-thread",
+      path: file,
+      committedLine: 4,
+      committedPrefixSha256: prefixSha256(Buffer.from(prefix), 4),
+      bytes: Buffer.byteLength(prefix),
+      verified: true,
+    }));
+    fs.appendFileSync(file, jsonl([codexToolCall({ name: "read_file", args: {} })]));
+    const stat = fs.statSync(file);
+    const item = { runtime: "codex", host: "laptop", root: path.dirname(project), project: "project", threadId: "rollout", kind: "root", path: file, mtimeMs: stat.mtimeMs, bytes: stat.size };
+    const ingests = [];
+    await sweepRunFile(item, {
+      stateDir,
+      store: store(),
+      post: async (route, body) => {
+        if (route === "/runs/ingest") ingests.push(body);
+        return route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true };
+      },
+      now: () => NOW,
+    });
+    expect(ingests).toHaveLength(1);
+    expect(ingests[0].run).toMatchObject({
+      runId: "codex:laptop:legacy-thread",
+      model: "gpt-5.6-terra",
+      context: { cwd: "C:/work" },
+      outcome: { finalTextSeq: 3_000, totals: { totalTokens: 10 }, toolCalls: 1 },
+    });
+  });
+
+  it("carries a Codex run's metadata through a second file part without session_meta", async () => {
+    const dir = temp(); const project = path.join(dir, "codex", "project"); fs.mkdirSync(project, { recursive: true });
+    const file = path.join(project, "rollout.jsonl");
+    const catalog = codexSkillsInstructions({ roots: { r0: "C:/skills" }, skills: [{ name: "tom-write", file: "r0/tom-write/SKILL.md" }] });
+    fs.writeFileSync(file, jsonl([
+      codexMeta({ id: "child", parent: "parent", cwd: "C:/work", cliVersion: "0.153.3", git: { branch: "main", commit_hash: "a".repeat(40) }, baseInstructions: "original instructions", contextWindow: 272_000 }),
+      codexTurnContext({ model: "gpt-5.6-terra", effort: "xhigh" }),
+      codexDeveloper(catalog),
+    ]));
+    let stat = fs.statSync(file);
+    const item = { runtime: "codex", host: "laptop", root: path.dirname(project), project: "project", threadId: "rollout", kind: "root", path: file, mtimeMs: stat.mtimeMs, bytes: stat.size };
+    const ingests = [];
+    const post = async (route, body) => {
+      if (route === "/runs/ingest") ingests.push(body);
+      return route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true };
+    };
+    const stateDir = path.join(dir, "state");
+    await sweepRunFile(item, { stateDir, store: store(), post, now: () => NOW });
+    const first = ingests.at(-1).run;
+    fs.appendFileSync(file, jsonl([codexToolCall({ args: { path: "C:/skills/tom-write/SKILL.md" } })]));
+    stat = fs.statSync(file); item.mtimeMs = stat.mtimeMs; item.bytes = stat.size;
+    await sweepRunFile(item, { stateDir, store: store(), post, now: () => NOW + 1 });
+    const tail = ingests.at(-1).run;
+    expect(tail).toMatchObject({
+      runId: first.runId,
+      parentRunId: first.parentRunId,
+      rootRunId: first.rootRunId,
+      model: "gpt-5.6-terra",
+      sessionModel: "gpt-5.6-terra",
+      runtimeVersion: "0.153.3",
+      startedAt: first.startedAt,
+      context: {
+        cwd: "C:/work",
+        gitBranch: "main",
+        gitCommit: "a".repeat(40),
+        baseInstructionsHash: first.context.baseInstructionsHash,
+        contextWindow: 272_000,
+        skillsOffered: ["tom-write"],
+        skillsUsed: ["tom-write"],
+      },
+    });
+    expect(tail.runId).not.toContain("unknown");
+  });
+
   it("stores first, pages at 200 rows, and advances only through the delivered page", async () => {
     const dir = temp(); const item = runFile(dir, manyLines(201)); const activeStore = store();
     const ingest = [];
@@ -263,6 +349,44 @@ describe("run sweep", () => {
     expect(result.deletable).toBe(1);
     expect(fs.existsSync(item.path)).toBe(true);
     expect(deletable({ host: "box", kind: "session" }, { verified: true, endSeen: true, gitTracked: false }, { now: NOW })).toMatchObject({ ok: false, reason: expect.stringContaining("cutover") });
+  });
+
+  it("keeps only stale claim pointers with a readable live target envelope", async () => {
+    const dir = temp(); const item = runFile(dir); const cfg = config(dir, item);
+    const registrationDir = path.join(cfg.stateDir, "registration");
+    const old = new Date(NOW - 2 * 24 * 60 * 60_000);
+    const pointer = (name, runFile) => {
+      const file = path.join(registrationDir, `${name}.claimed.json`);
+      fs.mkdirSync(registrationDir, { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({ runFile }));
+      fs.utimesSync(file, old, old);
+      return file;
+    };
+    const liveRun = path.join(dir, "live.jsonl");
+    writeRegistrationClaim({ runFile: liveRun, registration: { host: "laptop" }, now: () => 1 });
+    const endedRun = path.join(dir, "ended.jsonl");
+    writeRegistrationClaim({ runFile: endedRun, registration: { host: "laptop" }, now: () => 1 });
+    writeRegistrationEnd({ runFile: endedRun, now: () => 2 });
+    const corruptRun = path.join(dir, "corrupt.jsonl");
+    fs.writeFileSync(corruptRun.replace(/\.jsonl$/, ".registration.json"), "not json");
+    const live = pointer("live", liveRun);
+    const ended = pointer("ended", endedRun);
+    const missing = pointer("missing", path.join(dir, "missing.jsonl"));
+    const corrupt = pointer("corrupt", corruptRun);
+
+    const result = await sweepRuns({
+      config: cfg,
+      file: item.path,
+      store: store(),
+      post: async (route, body) => route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true },
+      fs: largeDiskFs(), now: () => NOW, log: () => {},
+    });
+
+    expect(result.staleSpool).toBe(3);
+    expect(fs.existsSync(live)).toBe(true);
+    expect(fs.existsSync(ended)).toBe(false);
+    expect(fs.existsSync(missing)).toBe(false);
+    expect(fs.existsSync(corrupt)).toBe(false);
   });
 
   // The store is the only durable copy of a run and it holds redacted text, so

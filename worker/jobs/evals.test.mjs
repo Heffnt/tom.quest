@@ -1,12 +1,19 @@
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { bareSkillName, repoSkillName } from "../../scripts/skills.mjs";
+import { NO_BODY, routeSkills } from "./skill-router.mjs";
 import {
   ablationFindings,
   ablationFor,
   aggregate,
+  contentHash,
+  AREA_TRIGGER_FILES,
   AUDIT_FAULTS_DIR,
+  changedTriggerFiles,
   deterministicFailure,
   DIFF_HISTORY_DEEPEN,
   efficiencyOf,
@@ -24,6 +31,8 @@ import {
   JOBS,
   judgeAgreement,
   judgePrompt,
+  KNOW_AREAS,
+  LAYER_SKILL_ALIASES,
   LABEL_SAMPLE,
   loadAuditFaults,
   loadGolden,
@@ -36,6 +45,7 @@ import {
   parseArgs,
   parseJudge,
   passedIds,
+  publicationFor,
   preludeFrom,
   PR_TRIALS,
   runCase,
@@ -44,12 +54,15 @@ import {
   runItem,
   runnerFailure,
   runTask,
+  runTriggerCase,
   runTrials,
   serveRequest,
   scoreLearning,
   selectItems,
   SKILL_SEAM_REASON,
+  skillBodyOf,
   SkillsNotAssembledError,
+  skillsFor,
   stampAgainstBase,
   standardRulesFor,
   servePass,
@@ -60,6 +73,9 @@ import {
   trialsFor,
   trustedRequestDiff,
   triggerCounts,
+  triggerBase,
+  triggerMethod,
+  triggerSkills,
   unaffectedRun,
   TRIALS_CAPABILITY,
   TRIALS_REGRESSION,
@@ -73,6 +89,11 @@ const dirs = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
+
+/** THE ONE MAPPING, handed to loadTriggers here exactly as the runner hands it
+ * the pinned tree's copy. A test that spelled skill names itself would be
+ * asserting its own second spelling. */
+const NAMES = { bareSkillName, repoSkillName };
 
 const LABEL = "This tells me nothing I did not already know from the statement.";
 const PRIOR = "Say what the lock actually is.";
@@ -193,6 +214,22 @@ function context(mod) {
 }
 
 describe("runItem", () => {
+  it("records only published skills as granted and records refusals", async () => {
+    const mod = await import("./plan-graphs.mjs");
+    const registrations = [];
+    await runItem(item(), {
+      modules: { prepare: mod },
+      cmtDir: undefined,
+      layers: () => ({ names: ["write"], skills: ["write"], skillsRefused: ["know-money"], text: "layer text", commit: "w1", files: [] }),
+    }, {
+      runClaude: async (_prompt, options) => {
+        registrations.push(options.registration);
+        return JSON.stringify({ brief: "a", entryAction: "b", workDescription: "c", groundUpExplanation: "d" });
+      },
+    });
+    expect(registrations[0]).toMatchObject({ skillsGranted: ["write"], skillsRefused: ["know-money"] });
+  });
+
   it("turns a thrown regeneration into a fail and does not stop the run", async () => {
     const mod = await import("./plan-graphs.mjs");
     const results = [];
@@ -279,9 +316,35 @@ describe("aggregate", () => {
   });
 });
 
+/**
+ * A fixture worktree, INSIDE THE PROJECT ROOT and not in the system temp
+ * directory.
+ *
+ * The code under test IMPORTS OUT OF THIS TREE — basePolicyOf loads the base
+ * worktree's scripts/evals-check.mjs, and triggerNameMappingFor loads its
+ * scripts/skills.mjs — and under vitest a dynamic import resolves through
+ * Vite, which serves nothing outside the project root. A tree in os.tmpdir()
+ * therefore fails those imports with "Cannot find module" while fs.existsSync
+ * on the same path answers true, which is as confusing a failure as this file
+ * has. The dot prefix keeps it out of every glob; afterEach removes it.
+ */
 function tree() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "evals-tree-"));
+  const dir = fs.mkdtempSync(path.join(process.cwd(), ".evals-tree-"));
   dirs.push(dir);
+  return dir;
+}
+
+/**
+ * The area trigger files, seeded empty. loadTriggers requires every one of
+ * AREA_TRIGGER_FILES to exist in the pinned tree, so any fixture a WEEKLY run
+ * is made against needs them — a weekly run takes the whole trigger set. They
+ * carry no cases, because a fixture about something else must not also pay for
+ * trigger cases.
+ */
+function writeAreaTriggers(dir) {
+  for (const file of AREA_TRIGGER_FILES) {
+    writeJson(dir, path.join("evals", "triggers", file), { name: file.replace(/^skill-/, "").replace(/.json$/, ""), kind: "skill", cases: [] });
+  }
   return dir;
 }
 
@@ -447,8 +510,8 @@ describe("stampAgainstBase", () => {
 
   it("counts the regressions when there is one", async () => {
     const failure = { id: "a", partition: "prepare/chores", verdict: "revise", reason: "r", confirmed: true };
-    const head = { goldenHash: "h", scoredIds: ["a"], failures: [failure], tasks: { failures: [] } };
-    const base = { goldenHash: "h", scoredIds: ["a"], failures: [], tasks: { failures: [] } };
+    const head = { goldenHash: "h", scoredIds: ["a"], scoredHashes: { a: "same" }, failures: [failure], tasks: { failures: [] } };
+    const base = { goldenHash: "h", scoredIds: ["a"], scoredHashes: { a: "same" }, failures: [], tasks: { failures: [] } };
     const stamped = await stampAgainstBase(head, base);
     expect(stamped.regressions).toBe(1);
     expect(stamped.failures[0].regression).toBe(true);
@@ -486,10 +549,10 @@ describe("the head trials", () => {
     };
     return { once, calls };
   };
-  const rowFor = (result) => ({ goldenHash: "h", scoredIds: ["a"], ...aggregate([result]), tasks: aggregate([]) });
-  const basePassing = { goldenHash: "h", scoredIds: ["a"], failures: [], tasks: { failures: [] } };
+  const rowFor = (result) => ({ goldenHash: "h", scoredIds: ["a"], scoredHashes: { a: "same" }, ...aggregate([result]), tasks: aggregate([]) });
+  const basePassing = { goldenHash: "h", scoredIds: ["a"], scoredHashes: { a: "same" }, failures: [], tasks: { failures: [] } };
   const baseFailing = {
-    goldenHash: "h", scoredIds: ["a"], tasks: { failures: [] },
+    goldenHash: "h", scoredIds: ["a"], scoredHashes: { a: "same" }, tasks: { failures: [] },
     failures: [{ id: "a", partition: "prepare/chores", verdict: "revise", reason: "was already bad", confirmed: true }],
   };
 
@@ -570,6 +633,11 @@ describe("runEvals carries the trial rule end to end", () => {
     layers: () => layers,
     loadModules: async () => ({ prepare: { preparePrompt: () => "PROMPT WITH NO LABEL IN IT" } }),
     taskRepos: () => [],
+    // A weekly run takes the whole trigger set, and the mapping is imported
+    // from the pinned tree unless the io supplies it. These fixtures pin no
+    // scripts/skills.mjs, and what they are about is what a broken RUNNER does
+    // to a run's numbers — not what the trigger arm reads.
+    triggerNameMapping: NAMES,
     worktree: (repo) => ({ dir, commit: repo === "WikiTom" ? "wiki1" : "tq1", remove: () => {} }),
   });
   const regen = '{"brief":"b","entryAction":"e","workDescription":"w","groundUpExplanation":"g"}';
@@ -598,7 +666,7 @@ describe("runEvals carries the trial rule end to end", () => {
   });
 
   it("records an all-runner-failure set as a catastrophic nonmeasurement", async () => {
-    const dir = tree();
+    const dir = writeAreaTriggers(tree());
     for (let index = 0; index < 29; index += 1) {
       writeJson(dir, path.join("evals", "golden", `${index}.json`), item({ id: `item-${index}`, sentence: LABEL }));
     }
@@ -612,7 +680,7 @@ describe("runEvals carries the trial rule end to end", () => {
   });
 
   it("stamps thrown model-launcher failures as catastrophic even for unconfirmed items", async () => {
-    const dir = tree();
+    const dir = writeAreaTriggers(tree());
     for (let index = 0; index < 29; index += 1) {
       writeJson(dir, path.join("evals", "golden", `${index}.json`), item({
         id: `item-${index}`,
@@ -645,7 +713,7 @@ describe("runEvals carries the trial rule end to end", () => {
   });
 
   it("keeps three runner failures in a twenty-nine-item run as partial errors", async () => {
-    const dir = tree();
+    const dir = writeAreaTriggers(tree());
     for (let index = 0; index < 29; index += 1) {
       writeJson(dir, path.join("evals", "golden", `${index}.json`), item({ id: `item-${index}`, sentence: LABEL }));
     }
@@ -808,22 +876,31 @@ describe("the run job", () => {
   });
 });
 
-describe("the phase 6 skills seam", () => {
-  it("refuses a name set carrying skills while no assembler is wired", () => {
+describe("an io with no skill assembler", () => {
+  it("refuses a name set carrying skills rather than assembling half of one", () => {
     const io = { layers: () => layers };
-    expect(() => preludeFrom(io, "tq", "wiki", { layers: ["operate"], skills: ["merge-gate"] }))
+    expect(() => preludeFrom(io, "tq", "wiki", { layers: ["operate"], skills: ["know-research"] }))
       .toThrow(SkillsNotAssembledError);
     expect(preludeFrom(io, "tq", "wiki", { layers: ["operate"], skills: [] })).toBe(layers);
     // Nothing to assemble is not an error, and must not reach prelude.mjs.
     expect(preludeFrom(io, "tq", "wiki", { layers: [], skills: [] }).text).toBe("");
   });
 
-  it("hands the whole name set to the assembler once one is wired", () => {
+  // BOTH TREES go through, not just tom.quest. The catalogue is one tree's
+  // generator over the other tree's pages, and an assembler handed only the
+  // first would have to guess where the pages are.
+  it("hands both trees and the whole name set to the assembler that is wired", () => {
     const seen = [];
-    const io = { layers: () => layers, skills: (tree, names) => { seen.push([tree, names]); return { ...layers, skills: names.skills }; } };
-    const built = preludeFrom(io, "tq", "wiki", { layers: ["operate"], skills: ["merge-gate"] });
-    expect(seen).toEqual([["tq", { layers: ["operate"], skills: ["merge-gate"] }]]);
-    expect(built.skills).toEqual(["merge-gate"]);
+    const io = {
+      layers: () => layers,
+      skills: (tomquest, wikitom, names) => {
+        seen.push([tomquest, wikitom, names]);
+        return { ...layers, skills: names.skills };
+      },
+    };
+    const built = preludeFrom(io, "tq", "wiki", { layers: ["operate"], skills: ["know-research"] });
+    expect(seen).toEqual([["tq", "wiki", { layers: ["operate"], skills: ["know-research"] }]]);
+    expect(built.skills).toEqual(["know-research"]);
   });
 
   it("skips a case whose run was given skills, counts it, and calls no model", async () => {
@@ -834,11 +911,334 @@ describe("the phase 6 skills seam", () => {
         return { names: names.layers, skills: [], text: PRELUDE, commit: "w1", files: [] };
       },
     });
-    const item = runCaseItem({ input: { ...runCaseItem().input, preludeNames: { layers: ["operate"], skills: ["merge-gate"] } } });
+    const item = runCaseItem({ input: { ...runCaseItem().input, preludeNames: { layers: ["operate"], skills: ["know-research"] } } });
     const result = await runCase(item, context, io, { pr: false });
     expect(result).toMatchObject({ judged: "skip", reason: SKILL_SEAM_REASON });
     expect(io.calls.regen).toBe(0);
     expect(io.calls.judge).toBe(0);
+  });
+
+  it("says the io wired none, not that a phase has not landed", () => {
+    expect(SKILL_SEAM_REASON).toContain("wired no skill assembler");
+    expect(SKILL_SEAM_REASON).not.toContain("phase");
+  });
+});
+
+// The assembler realIo wires. The two scripts it shells out to are faked here —
+// publish-skills.mjs writes the catalogue this test decides on, prelude.mjs
+// yields the layer text — but the one-line module that asks the PINNED
+// scripts/skills.mjs for its directory names and its grant block is spawned for
+// real, because that is the half worth proving: the grant block a case carried
+// is rendered by the tree under test's own renderGrants and by nothing else.
+describe("skillsFor", () => {
+  const HERE = path.resolve(".");
+  let fixtureSerial = 0;
+
+  function committedWikiTom() {
+    const dir = tree();
+    const write = (relative, body) => {
+      const file = path.join(dir, relative);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, body);
+    };
+    write("AGENTS.md", "# WikiTom\n\nThe vault.\n");
+    write("model-of-tom/agent-rules.md", "# Agent rules\n\n## Map\n\n### Repos\n- tom.quest: the site.\n- WikiTom: the vault.\n");
+    write("model-of-tom/writing.md", "# Writing\n\nUse short sentences.\n");
+    write("model-of-tom/ground.md", "# Ground\n\nKnown facts.\n");
+    write("model-of-tom/intent.md", "# Intent\n\n## Directions\n\n- Ship.\n");
+    write("model-of-tom/priorities.md", "# Priorities\n\n- First things first.\n");
+    write("model-of-tom/schedule.md", "# Schedule\n\n## Week\n\n- Monday — practice.\n");
+    // Each fixture is a different publication. The process-wide cache is
+    // deliberately keyed by commits, so identical fixture commits would share
+    // a real catalogue while their fake publishers disagree about its contents.
+    write(`fixture-${++fixtureSerial}.txt`, "fixture\n");
+    execFileSync("git", ["init", "-q", "-b", "main", dir]);
+    execFileSync("git", ["-C", dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "add", "-A"]);
+    execFileSync("git", ["-C", dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "fixture"]);
+    return dir;
+  }
+
+  function commit(dir, message) {
+    execFileSync("git", ["-C", dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "add", "-A"]);
+    execFileSync("git", ["-C", dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-q", "-m", message]);
+  }
+
+  function committedRepo(body = "# Rules\n\nFirst.\n") {
+    const dir = tree();
+    fs.writeFileSync(path.join(dir, "AGENTS.md"), body);
+    execFileSync("git", ["init", "-q", "-b", "main", dir]);
+    commit(dir, "fixture");
+    return dir;
+  }
+
+  it("runs publicationFor through the real publisher's JSON CLI", () => {
+    const work = tree();
+    const wiki = committedWikiTom();
+    const published = publicationFor(HERE, wiki, execFileSync, work);
+    expect(published.published).toContain("write");
+    expect(published.catalogHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(fs.existsSync(path.join(published.out, "tom-write", "SKILL.md"))).toBe(true);
+  });
+
+  it("rebuilds a publication when a reused weekly worktree advances", () => {
+    const work = tree();
+    const tomquest = committedRepo();
+    const wiki = committedWikiTom();
+    const calls = [];
+    const publish = (_exe, args) => {
+      calls.push(args);
+      const out = args[args.indexOf("--out") + 1];
+      const body = fs.readFileSync(path.join(tomquest, "AGENTS.md"), "utf8").includes("Second")
+        ? "SECOND PUBLICATION"
+        : "FIRST PUBLICATION";
+      fs.mkdirSync(path.join(out, "tom-repo-tom-quest"), { recursive: true });
+      fs.writeFileSync(
+        path.join(out, "tom-repo-tom-quest", "SKILL.md"),
+        `---\nname: tom-repo-tom-quest\ndescription: "rules"\n---\n\n<!-- generated -->\n\n${body}\n`,
+      );
+      return JSON.stringify({ commit: "wiki-commit", out, skills: [{ name: "repo-tom-quest" }], refused: [] });
+    };
+    const first = publicationFor(tomquest, wiki, publish, work);
+    // The same two commits share the one catalogue; this is the cache's useful
+    // case, before the reused worktree advances below.
+    expect(publicationFor(tomquest, wiki, publish, work)).toBe(first);
+    expect(calls).toHaveLength(1);
+    fs.writeFileSync(path.join(tomquest, "AGENTS.md"), "# Rules\n\nSecond.\n");
+    commit(tomquest, "advance tom quest");
+    const second = publicationFor(tomquest, wiki, publish, work);
+    expect(calls).toHaveLength(2);
+    expect(first.out).not.toBe(second.out);
+    expect(fs.readFileSync(path.join(first.out, "tom-repo-tom-quest", "SKILL.md"), "utf8")).toContain("FIRST PUBLICATION");
+    expect(fs.readFileSync(path.join(second.out, "tom-repo-tom-quest", "SKILL.md"), "utf8")).toContain("SECOND PUBLICATION");
+
+    fs.writeFileSync(path.join(wiki, "revision.txt"), "second wiki revision\n");
+    commit(wiki, "advance wikitom");
+    const wikiAdvanced = publicationFor(tomquest, wiki, publish, work);
+    expect(calls).toHaveLength(3);
+    expect(wikiAdvanced.out).not.toBe(second.out);
+  });
+
+  function publishingRun(catalogue, refused = []) {
+    const calls = [];
+    const run = (exe, args, options) => {
+      calls.push(args);
+      const script = String(args[0]);
+      if (script.endsWith("prelude.mjs")) {
+        return args.includes("--json")
+          ? JSON.stringify({ commit: "wiki-commit", files: ["model-of-tom/writing.md"] })
+          : "LAYER TEXT";
+      }
+      if (script.endsWith("publish-skills.mjs")) {
+        const out = args[args.indexOf("--out") + 1];
+        for (const [name, body] of Object.entries(catalogue)) {
+          const dir = path.join(out, `tom-${name}`);
+          fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(
+            path.join(dir, "SKILL.md"),
+            `---\nname: tom-${name}\ndescription: "what it is"\n---\n\n` +
+              `<!-- generated from WikiTom p at commit wiki-commit — do not edit -->\n\n${body}\n`,
+          );
+        }
+        return JSON.stringify({
+          commit: "wiki-commit",
+          out,
+          skills: Object.keys(catalogue).map((name) => ({ name })),
+          refused,
+        });
+      }
+      return execFileSync(exe, args, options);
+    };
+    return { calls, run };
+  }
+
+  it("puts the layer text, the grant block and the granted bodies in one text", () => {
+    const work = tree();
+    const wiki = committedWikiTom();
+    const io = publishingRun({ write: "WRITE BODY", "know-research": "RESEARCH BODY" });
+    const built = skillsFor(HERE, wiki, { layers: ["write"], skills: ["know-research", "write"] }, io.run, work);
+    expect(built).toMatchObject({ names: ["write"], skills: ["know-research", "write"], skillsRefused: [], commit: "wiki-commit" });
+    expect(built.catalogHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(built.text.startsWith("LAYER TEXT")).toBe(true);
+    expect(built.text).toContain("SKILLS (WikiTom commit wiki-commit)");
+    expect(built.text).toContain("granted: know-research, write");
+    // THE BODIES, in the order the names were given — that is what the ablation
+    // arm removes when it removes a name.
+    expect(built.text.indexOf("RESEARCH BODY")).toBeLessThan(built.text.indexOf("WRITE BODY"));
+    // The generated frontmatter and provenance line are how the file is found,
+    // not part of what the run read.
+    expect(built.text).not.toContain("do not edit");
+    // One shape for both halves, the one prelude.mjs's --json already gives.
+    expect(built.files).toEqual([
+      "model-of-tom/writing.md",
+      { path: "tom-know-research/SKILL.md", bytes: "RESEARCH BODY".length },
+      { path: "tom-write/SKILL.md", bytes: "WRITE BODY".length },
+    ]);
+  });
+
+  it("refuses a name the publication does not hold, and carries on", () => {
+    const work = tree();
+    const wiki = committedWikiTom();
+    const io = publishingRun({ write: "WRITE BODY" }, [
+      { name: "know-money", why: "model-of-tom/areas/money.md is blank at this commit" },
+    ]);
+    const built = skillsFor(HERE, wiki, { layers: [], skills: ["write", "know-money"] }, io.run, work);
+    expect(built.text).toContain("granted: write");
+    expect(built.text).toContain("refused: know-money — model-of-tom/areas/money.md is blank at this commit");
+    expect(built.text).toContain("WRITE BODY");
+    expect(built.skills).toEqual(["write"]);
+    expect(built.skillsRefused).toEqual(["know-money"]);
+    // No layers asked for, so prelude.mjs is never reached and the text opens
+    // with the grant block.
+    expect(built.names).toEqual([]);
+    expect(io.calls.some((args) => String(args[0]).endsWith("prelude.mjs"))).toBe(false);
+  });
+
+  it("publishes once for a pair of trees, however many name sets ask", () => {
+    const work = tree();
+    const io = publishingRun({ write: "W", "know-week": "K" });
+    const wikitom = committedWikiTom();
+    skillsFor(HERE, wikitom, { layers: [], skills: ["write"] }, io.run, work);
+    skillsFor(HERE, wikitom, { layers: [], skills: ["know-week"] }, io.run, work);
+    skillsFor(HERE, wikitom, { layers: [], skills: [] }, io.run, work);
+    expect(io.calls.filter((args) => String(args[0]).endsWith("publish-skills.mjs")).length).toBe(1);
+  });
+
+  it("strips the generated frontmatter and provenance line, and rejects non-publication text", () => {
+    const page = "---\nname: tom-write\ndescription: \"d\"\n---\n\n" +
+      "<!-- generated from WikiTom a, b at commit c — do not edit -->\n\n## Heading\n\nbody\n";
+    expect(skillBodyOf(page)).toBe("## Heading\n\nbody");
+    expect(() => skillBodyOf("no frontmatter at all")).toThrow("published SKILL.md has no frontmatter");
+    expect(() => skillBodyOf("---\nname: tom-write\n---\n\nbody")).toThrow("published SKILL.md has no provenance");
+  });
+
+  it("ships a skills golden with a routed prelude and an assembled refusal", async () => {
+    const golden = JSON.parse(fs.readFileSync(
+      path.join(HERE, "evals", "golden", "runs", "run-skills-grant-routing-r6.json"),
+      "utf8",
+    ));
+    // These are the concrete router inputs recorded in the run task: a
+    // tom.quest repo subject outside its checkout gets the life area plus its
+    // repository rules; a partial publication refuses the latter.
+    const routed = routeSkills({
+      caller: "cli",
+      subject: { kind: "repo", repo: "tom.quest", paths: ["worker/jobs/skill-router.mjs"] },
+      cwd: "/work/WikiTom",
+      repoDirs: { "tom.quest": "/work/tom.quest" },
+      pages: [{
+        path: "model-of-tom/areas/agent-systems.md",
+        body: "---\ncategories: [tom.quest]\n---\n\n# Agent systems\n",
+      }],
+      published: ["write", "know-agent-systems"],
+    });
+    expect(routed).toEqual({
+      granted: ["write", "know-agent-systems"],
+      refused: [{ name: "repo-tom-quest", why: NO_BODY }],
+      repoRulesSource: null,
+    });
+    expect(golden.input.preludeNames).toEqual({
+      layers: [],
+      skills: ["write", "know-agent-systems", "know-unpublished"],
+    });
+
+    const registrations = [];
+    const result = await runItem(golden, {
+      modules: {}, cmtDir: undefined, layers: () => layers,
+      prelude: () => ({
+        names: [], skills: ["write", "know-agent-systems"], skillsRefused: ["know-unpublished"],
+        text: "SKILLS (WikiTom commit fixture)\n\ngrant block\n- granted: write, know-agent-systems\n- refused: know-unpublished â€” no published body at this commit",
+        commit: "fixture", files: [],
+      }),
+    }, {
+      runClaude: async (prompt, options) => {
+        registrations.push(options.registration);
+        if (String(prompt).startsWith("You are judging")) {
+          return JSON.stringify({ verdict: "pass", reason: "the assembled grant block is correctly described" });
+        }
+        return "The grant block grants write and know-agent-systems. It refuses know-unpublished because it has no published body; retired context layers do not supply another grant.";
+      },
+    }, {
+      deterministic: (fresh) => deterministicFailure(golden, JOBS.run, fresh, null),
+    });
+    expect(result).toMatchObject({ judged: "pass" });
+    expect(registrations[0]).toMatchObject({
+      skillsGranted: ["write", "know-agent-systems"],
+      skillsRefused: ["know-unpublished"],
+    });
+  });
+});
+
+// The trigger files name layers; the skills are what those layers became. This
+// is the one table that maps them, and the eight areas in it are written down
+// twice — here and in scripts/skills.mjs, which evals.mjs cannot import at run
+// time because worker/setup.sh puts the two at relative paths that differ
+// between the repo and /opt/tts. The second test is the pin on that copy.
+describe("the layer names as skill names", () => {
+  it("maps each layer onto the skills it became", () => {
+    expect(LAYER_SKILL_ALIASES.operate).toEqual([]);
+    expect(LAYER_SKILL_ALIASES.write).toEqual(["write"]);
+    expect(LAYER_SKILL_ALIASES.know).toEqual([
+      "know-intent",
+      "know-week",
+      "know-admin",
+      "know-agent-systems",
+      "know-climbing",
+      "know-health-and-food",
+      "know-mental-health",
+      "know-money",
+      "know-research",
+      "know-social",
+    ]);
+  });
+
+  it("holds the same eight areas the know layer requires", async () => {
+    const { PRELUDE_LAYERS } = await import("../../scripts/skills.mjs");
+    expect(KNOW_AREAS.map((area) => `model-of-tom/areas/${area}.md`))
+      .toEqual([...PRELUDE_LAYERS.know.areas.required]);
+  });
+
+  it("normalises every loaded trigger onto the skill names it is about", () => {
+    const dir = tree();
+    const wikitom = tree();
+    for (const file of AREA_TRIGGER_FILES) {
+      writeJson(wikitom, path.join("evals", "triggers", file), { name: file.replace(/^skill-/, "").replace(/\.json$/, ""), kind: "skill", cases: [] });
+    }
+    writeJson(dir, path.join("evals", "triggers", "layer-know.json"), { name: "know", kind: "layer", cases: [] });
+    writeJson(dir, path.join("evals", "triggers", "layer-operate.json"), { name: "operate", kind: "layer", cases: [] });
+    writeJson(wikitom, path.join("evals", "triggers", "skill-know-research.json"), { name: "know-research", kind: "skill", cases: [] });
+    const loaded = loadTriggers(dir, { wikitomDir: wikitom, ...NAMES });
+    expect(loaded.find((one) => one.file === "layer-know.json").skills).toEqual([...LAYER_SKILL_ALIASES.know]);
+    expect(loaded.find((one) => one.file === "layer-operate.json").skills).toEqual([]);
+    expect(loaded.find((one) => one.file === "skill-know-research.json").skills).toEqual(["know-research"]);
+    expect(() => triggerSkills({ name: "know-research" }, NAMES)).toThrow("unknown trigger kind");
+    expect(() => triggerSkills({ name: "nothing-by-that-name", kind: "layer" }, NAMES)).toThrow("unknown layer trigger");
+    expect(() => triggerSkills({ kind: "skill" }, NAMES)).toThrow("skill trigger needs a name");
+    // THE MAPPING IS NOT OPTIONAL: the identity default this replaces let a
+    // caller that forgot it score `repo-tom.quest`, a name no publisher makes.
+    expect(() => triggerSkills({ name: "know-research", kind: "skill" }))
+      .toThrow("trigger skill names need the scripts/skills.mjs mapping");
+    expect(() => triggerSkills({ name: "repo-tom.quest", kind: "skill", repo: "tom.quest" }, NAMES))
+      .toThrow("skill trigger for tom.quest is named repo-tom.quest; the published skill is repo-tom-quest");
+  });
+
+  it("requires every private area trigger rather than silently omitting it", () => {
+    const dir = tree();
+    const wikitom = tree();
+    expect(() => loadTriggers(dir, { wikitomDir: wikitom, ...NAMES })).toThrow(/skill-know-admin\.json/);
+  });
+
+  it("names the private fixture and case when its dispatch shape is malformed", () => {
+    const dir = tree();
+    const wikitom = tree();
+    for (const file of AREA_TRIGGER_FILES) {
+      writeJson(wikitom, path.join("evals", "triggers", file), {
+        name: file.replace(/^skill-/, "").replace(/\.json$/, ""), kind: "skill", cases: [],
+      });
+    }
+    writeJson(wikitom, path.join("evals", "triggers", AREA_TRIGGER_FILES[0]), {
+      name: "know-admin", kind: "skill", cases: [{ id: "skill-know-admin-both-methods", route: {}, prompt: "ambiguous" }],
+    });
+    expect(() => loadTriggers(dir, { wikitomDir: wikitom, ...NAMES }))
+      .toThrow("trigger case skill-know-admin-both-methods in skill-know-admin.json: trigger case cannot carry both route and prompt");
   });
 });
 
@@ -1156,13 +1556,22 @@ describe("the ablation arm", () => {
 describe("runEvals over a run case", () => {
   const runIoFor = (dir, verdicts) => runIo(verdicts, [], {
     layers: () => layers,
+    skills: (_tomquest, _wikitom, names) => ({
+      names: [],
+      skills: names.skills ?? [],
+      skillsRefused: [],
+      text: `PINNED SKILLS: ${(names.skills ?? []).join(", ")}`,
+      commit: "wiki1",
+      catalogHash: "c".repeat(64),
+      files: [],
+    }),
     loadModules: async () => ({}),
     taskRepos: () => [],
+    triggerNameMapping: NAMES,
     worktree: (repo) => ({ dir, commit: repo === "WikiTom" ? "wiki1" : "tq1", remove: () => {} }),
   });
   const caseDir = (over) => {
-    const dir = fs.mkdtempSync(path.join(process.cwd(), ".evals-case-"));
-    dirs.push(dir);
+    const dir = writeAreaTriggers(tree());
     writeJson(dir, path.join("evals", "golden", "runs", "a.json"), runCaseItem({ id: "a", ...over }));
     const policy = path.join(dir, "scripts", "evals-check.mjs");
     fs.mkdirSync(path.dirname(policy), { recursive: true });
@@ -1378,6 +1787,196 @@ describe("runEvals over a run case", () => {
     expect((await runEvals({ repo: "tom.quest", sha: "head" }, quiet)).ablation).toEqual([]);
     expect(quiet.calls.regen).toBe(1);
   });
+
+  it("runs every case in exactly the trigger files a pull request changed", async () => {
+    const dir = caseDir();
+    writeJson(dir, path.join("evals", "triggers", "skill-write.json"), {
+      name: "write",
+      kind: "skill",
+      cases: [
+        {
+          id: "skill-write-router-safe",
+          route: {
+            caller: "cli",
+            subject: { kind: "none" },
+            expected: { granted: ["write"], refused: [], repoRulesSource: null },
+          },
+        },
+        { id: "skill-write-runner-safe", prompt: "safe runner fixture", expect: { mustName: ["fresh"] } },
+      ],
+    });
+    writeJson(dir, path.join("evals", "triggers", "skill-unrelated.json"), {
+      name: "write",
+      kind: "skill",
+      cases: [{
+        id: "skill-write-unrelated",
+        route: {
+          caller: "cli",
+          subject: { kind: "none" },
+          expected: { granted: ["write"], refused: [], repoRulesSource: null },
+        },
+      }],
+    });
+    const io = runIoFor(dir, ["pass", "pass", "pass"]);
+    io.triggerRouter = () => ({ granted: ["write"], refused: [], repoRulesSource: null });
+    const weekly = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, io);
+    expect(weekly).toMatchObject({ items: 4, pass: 4, fail: 0, calls: 7, wikitom: "wiki1", catalogHash: "c".repeat(64) });
+    expect(weekly.scoredIds).toEqual(["a", "skill-write-router-safe", "skill-write-runner-safe", "skill-write-unrelated"]);
+    expect(weekly.results).toContainEqual(expect.objectContaining({ id: "skill-write-router-safe", method: "router", judged: "pass", passK: true }));
+    expect(weekly.results).toContainEqual(expect.objectContaining({ id: "skill-write-runner-safe", method: "runner", judged: "pass", passK: true }));
+    expect(io.calls.regen).toBe(4);
+    expect(io.calls.prompts.some((prompt) => prompt.includes("PINNED SKILLS: write\n\nsafe runner fixture"))).toBe(true);
+
+    const prIo = runIoFor(dir, ["pass", "pass"]);
+    prIo.triggerRouter = io.triggerRouter;
+    const pr = await runEvals({
+      repo: "tom.quest",
+      sha: "head",
+      changed: ["evals/triggers/skill-write.json"],
+    }, prIo);
+    expect(pr.scoredIds).toEqual(["a", "skill-write-router-safe", "skill-write-runner-safe"]);
+    expect(pr.triggerFilesRun).toEqual(["skill-write.json"]);
+    expect(pr.results).toContainEqual(expect.objectContaining({ id: "skill-write-router-safe", method: "router", judged: "pass" }));
+    expect(pr.results).toContainEqual(expect.objectContaining({ id: "skill-write-runner-safe", method: "runner", judged: "pass" }));
+    expect(pr.results.find((result) => result.id === "skill-write-unrelated")).toBeUndefined();
+    expect(pr.scoredHashes).toMatchObject({
+      a: contentHash(runCaseItem({ id: "a" })),
+      "skill-write-router-safe": expect.any(String),
+      "skill-write-runner-safe": expect.any(String),
+    });
+    expect(prIo.calls.regen).toBe(2);
+  });
+
+  it("skips a runner trigger when its publication is not the named WikiTom commit", async () => {
+    const dir = caseDir();
+    writeJson(dir, path.join("evals", "triggers", "skill-write.json"), {
+      name: "write",
+      kind: "skill",
+      cases: [{ id: "skill-write-runner-unpinned", prompt: "safe runner fixture", expect: { mustName: ["fresh"] } }],
+    });
+    const io = runIoFor(dir, ["pass", "pass", "pass"]);
+    io.skills = (_tomquest, _wikitom, names) => ({
+      names: [], skills: names.skills ?? [], skillsRefused: [], text: "WRONG PUBLICATION",
+      commit: "local-head", catalogHash: "d".repeat(64), files: [],
+    });
+    const weekly = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, io);
+    expect(weekly.catalogHash).toBeNull();
+    expect(weekly.skipped).toContainEqual(expect.objectContaining({
+      id: "skill-write-runner-unpinned",
+      method: "runner",
+      reason: "the trigger publication could not be pinned to the named WikiTom commit",
+    }));
+    expect(io.calls.regen).toBe(3);
+    // A file whose only case was skipped never ran, so it cannot satisfy the
+    // pull-request coverage rule that reads this list.
+    expect(weekly.triggerFilesRun).toEqual([]);
+  });
+
+  it("pins the catalog for a runner trigger whose mapped skill list is empty", async () => {
+    const dir = caseDir();
+    writeJson(dir, path.join("evals", "triggers", "layer-operate.json"), {
+      name: "operate",
+      kind: "layer",
+      cases: [{ id: "layer-operate-fixture", prompt: "operate fixture", expect: { mustName: ["fresh"] } }],
+    });
+    const io = runIoFor(dir, ["pass", "pass", "pass"]);
+    const assembled = [];
+    const originalSkills = io.skills;
+    io.skills = (...args) => {
+      assembled.push(args[2]);
+      return originalSkills(...args);
+    };
+    const weekly = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, io);
+    expect(weekly.catalogHash).toBe("c".repeat(64));
+    expect(weekly.results).toContainEqual(expect.objectContaining({ id: "layer-operate-fixture", judged: "pass" }));
+    expect(io.calls.prompts.some((prompt) => prompt.includes("PINNED SKILLS: \n\noperate fixture"))).toBe(true);
+    expect(assembled).toContainEqual({ layers: ["operate"], skills: [] });
+  });
+});
+
+describe("trigger case methods", () => {
+  it("uses the router only for an explicit route schema", async () => {
+    expect(triggerMethod({ route: {} })).toBe("router");
+    expect(triggerMethod({ prompt: "model-required fixture" })).toBe("runner");
+    expect(() => triggerMethod({})).toThrow("trigger case needs route or prompt");
+    expect(() => triggerMethod({ route: {}, prompt: "ambiguous" })).toThrow("cannot carry both route and prompt");
+    expect(() => triggerBase({ name: "write" }, { route: {} })).toThrow("needs a non-empty id");
+    const router = await runTriggerCase({ name: "write" }, {
+      id: "router-case", route: {
+        caller: "cli",
+        subject: { kind: "none" },
+        expected: { granted: ["write"], refused: [], repoRulesSource: null },
+      },
+    }, runIo(), () => ({ granted: ["write"], refused: [], repoRulesSource: null }));
+    expect(router).toMatchObject({ method: "router", judged: "pass", trials: { head: 1, headPassed: 1 } });
+  });
+
+  it("runs a prompt case with its pinned published skill text and receipt", async () => {
+    let received;
+    const io = {
+      runClaude: async (prompt, options) => {
+        received = { prompt, options };
+        return "fresh answer";
+      },
+    };
+    const result = await runTriggerCase(
+      { name: "write", skills: ["write"] },
+      { id: "runner-case", prompt: "raw prompt", expect: { mustName: ["fresh"] } },
+      io,
+      null,
+      {
+        text: "PINNED WRITE BODY",
+        commit: "wiki1",
+        expectedCommit: "wiki1",
+        catalogHash: "e".repeat(64),
+        skills: ["write"],
+        skillsRefused: [],
+      },
+    );
+    expect(result).toMatchObject({ method: "runner", judged: "pass" });
+    expect(received.prompt).toBe("PINNED WRITE BODY\n\nraw prompt");
+    expect(received.options.registration).toMatchObject({
+      layersKnown: true,
+      skillsGranted: ["write"],
+      skillsRefused: [],
+      wikitomCommit: "wiki1",
+    });
+  });
+
+  it("skips a prompt case when no pinned publication is supplied", async () => {
+    const io = runIo();
+    const result = await runTriggerCase(
+      { name: "write", skills: ["write"] },
+      { id: "runner-case", prompt: "raw prompt", expect: { mustName: ["fresh"] } },
+      io,
+    );
+    expect(result).toMatchObject({ method: "runner", judged: "skip", reason: expect.stringContaining("could not be pinned") });
+    expect(io.calls.regen).toBe(0);
+  });
+
+  it("scores the checked-in tom.quest native-repository case without a runner", async () => {
+    const skills = await import("../../scripts/skills.mjs");
+    const wikitom = tree();
+    for (const file of AREA_TRIGGER_FILES) {
+      writeJson(wikitom, path.join("evals", "triggers", file), { name: file.replace(/^skill-/, "").replace(/\.json$/, ""), kind: "skill", cases: [] });
+    }
+    const trigger = loadTriggers(path.resolve("."), {
+      wikitomDir: wikitom,
+      bareSkillName: skills.bareSkillName,
+      repoSkillName: skills.repoSkillName,
+    }).find((one) => one.repo === "tom.quest");
+    expect(trigger.name).toBe(skills.repoSkillName("tom.quest"));
+    const one = trigger.cases.find((caseItem) => caseItem.id === "skill-repo-tom-quest-neg-standing-inside");
+    const io = runIo();
+    const result = await runTriggerCase(trigger, one, io, (input) => routeSkills({
+      ...input,
+      pages: [{ path: "model-of-tom/areas/agent-systems.md", body: "---\ncategories: [tom.quest, WikiTom]\n---\n# Agent systems\n" }],
+      published: ["write", "know-agent-systems"],
+    }));
+    expect(result).toMatchObject({ id: one.id, method: "router", judged: "pass", trials: { head: 1, headPassed: 1 } });
+    expect(io.calls.regen).toBe(0);
+    expect(io.calls.judge).toBe(0);
+  });
 });
 
 // The count rule lives here, where `npm test` states it in one line, rather
@@ -1385,21 +1984,108 @@ describe("runEvals over a run case", () => {
 // something about a checked-in file.
 describe("the trigger set", () => {
   it("carries at least as many negatives as positives in every file", () => {
-    // The directory arrives with another branch; until then there is nothing
-    // to count, and an empty set is not a failure.
-    const short = loadTriggers(path.resolve("."))
-      .map((trigger) => ({ file: trigger.file, ...triggerCounts(trigger) }))
-      .filter((counts) => counts.negatives < counts.positives);
-    expect(short).toEqual([]);
+    const publicDir = path.resolve(".");
+    const privateDir = tree();
+    for (const file of AREA_TRIGGER_FILES) {
+      writeJson(privateDir, path.join("evals", "triggers", file), { name: file.replace(/^skill-/, "").replace(/\.json$/, ""), kind: "skill", cases: [] });
+    }
+    const counted = loadTriggers(publicDir, { wikitomDir: privateDir, ...NAMES })
+      .map((trigger) => ({ file: trigger.file, ...triggerCounts(trigger) }));
+    // SIXTEEN FILES: the three layer files the partition landed with, and one
+    // per skill the layer aliases do not already cover — write is layer-write,
+    // and operate is not a skill at all.
+    expect(counted.length).toBe(15);
+    expect(counted.filter((counts) => counts.negatives < counts.positives)).toEqual([]);
+    // Each of the sixteen is about a name that can be placed: a `skill` file
+    // names its own, a `layer` file names the skills that layer became, and
+    // operate names none because the base is not a skill.
+    const loaded = loadTriggers(publicDir, { wikitomDir: privateDir, ...NAMES });
+    expect(loaded.filter((one) => one.skills.length === 0).map((one) => one.file)).toEqual(["layer-operate.json"]);
+    // Every skill the know layer became has a file of its own, so a run given
+    // one name rather than the whole layer is still scored on it.
+    expect(loaded.filter((one) => one.kind === "skill").map((one) => one.name)).toEqual([
+      "know-admin", "know-agent-systems", "know-climbing", "know-health-and-food", "know-intent",
+      "know-mental-health", "know-money", "know-research", "know-social", "know-week",
+      "repo-tom-quest", "repo-wikitom",
+    ]);
+    const publicNames = fs.readdirSync(path.join(publicDir, "evals", "triggers"));
+    expect(AREA_TRIGGER_FILES.filter((name) => publicNames.includes(name))).toEqual([]);
   });
 
-  it("never loads a draft", () => {
+  it("loads the eight area triggers from WikiTom and never from tom.quest", () => {
+    const publicDir = tree();
+    const wikitomDir = tree();
+    for (const file of AREA_TRIGGER_FILES) {
+      const name = file.replace(/\.json$/, "");
+      writeJson(wikitomDir, path.join("evals", "triggers", file), { name, kind: "skill", cases: [] });
+    }
+    writeJson(publicDir, path.join("evals", "triggers", AREA_TRIGGER_FILES[0]), { name: "wrong-source", kind: "skill", cases: [] });
+    const loaded = loadTriggers(publicDir, { wikitomDir, ...NAMES });
+    expect(loaded.map((trigger) => trigger.file)).toEqual([...AREA_TRIGGER_FILES].sort());
+    expect(loaded.map((trigger) => trigger.name)).toEqual(AREA_TRIGGER_FILES.map((file) => file.replace(/\.json$/, "")).sort());
+  });
+
+  it("keeps private tokens and all eight private area files out of public triggers", () => {
+    const publicDir = path.join(path.resolve("."), "evals", "triggers");
+    const publicNames = fs.readdirSync(publicDir).filter((name) => name.endsWith(".json")).sort();
+    const stringsOf = (value) => {
+      if (typeof value === "string") return [value];
+      if (Array.isArray(value)) return value.flatMap(stringsOf);
+      if (value && typeof value === "object") return Object.values(value).flatMap(stringsOf);
+      return [];
+    };
+    // These SHA-256 digests pin tokens removed from the public recurring-week
+    // and intent cases without placing the private tokens in this repository.
+    const privateTokenDigests = new Set([
+      "576ba7c2e4abb7184ca409154dbbbd5306c1a80747fbce4148ea6271fd21e776",
+      "927a3aed189d610b2e151c4208913b3ed0cb38f6be613756819b1513c8924d7f",
+      "2212180a140694246e19b367e01980b14995371fa4db25dc4fc18b18c7511fdf",
+      "5589aa5863c2d85622d06d651add002416e5513afdbb455666cdde01bb3e257d",
+      "7f871cbf905f6e0cd598b11609f33f609e60a61892ac6b37e80cf1de282ee367",
+      "12df7f0ee89f9d7f17fb8e881e8b568794603af2a9d53c1d0379d2c588792a50",
+      "877c3aec832cd41012590679bdb84ebe25e5ebbd71b6b81722b48b129feb76ae",
+    ]);
+    const tokens = publicNames.flatMap((name) => stringsOf(JSON.parse(fs.readFileSync(path.join(publicDir, name), "utf8"))))
+      .flatMap((text) => text.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+    const privateTokens = tokens.filter((token) => privateTokenDigests.has(createHash("sha256").update(token).digest("hex")));
+    expect(privateTokens).toEqual([]);
+    expect(AREA_TRIGGER_FILES).toHaveLength(8);
+    expect(AREA_TRIGGER_FILES.filter((name) => publicNames.includes(name))).toEqual([]);
+  });
+
+  it("never loads a draft and counts the checked-in cases format", () => {
     const dir = tree();
-    writeJson(dir, path.join("evals", "triggers", "hourly.json"), { positives: ["a"], negatives: ["b", "c"] });
-    writeJson(dir, path.join("evals", "triggers", "hourly.draft.json"), { positives: ["a", "b"], negatives: [] });
-    expect(loadTriggers(dir).map((one) => one.file)).toEqual(["hourly.json"]);
-    expect(triggerCounts(loadTriggers(dir)[0])).toEqual({ positives: 1, negatives: 2 });
-    expect(loadTriggers(tree())).toEqual([]);
+    const wikitom = tree();
+    for (const file of AREA_TRIGGER_FILES) {
+      writeJson(wikitom, path.join("evals", "triggers", file), { name: file.replace(/^skill-/, "").replace(/\.json$/, ""), kind: "skill", cases: [] });
+    }
+    writeJson(dir, path.join("evals", "triggers", "hourly.json"), {
+      name: "hourly", kind: "skill", cases: [
+        { id: "skill-hourly-positive", prompt: "positive", negative: false },
+        { id: "skill-hourly-negative-one", prompt: "negative one", negative: true },
+        { id: "skill-hourly-negative-two", prompt: "negative two", negative: true },
+      ],
+    });
+    writeJson(dir, path.join("evals", "triggers", "hourly.draft.json"), { cases: [{ negative: false }, { negative: false }] });
+    expect(loadTriggers(dir, { wikitomDir: wikitom, ...NAMES }).map((one) => one.file)).toEqual(["hourly.json", ...AREA_TRIGGER_FILES].sort());
+    expect(triggerCounts(loadTriggers(dir, { wikitomDir: wikitom, ...NAMES })[0])).toEqual({ positives: 1, negatives: 2 });
+    expect(() => loadTriggers(tree(), { wikitomDir: tree(), ...NAMES })).toThrow(/skill-know-admin\.json/);
+    expect(triggerCounts({ cases: [] })).toEqual({ positives: 0, negatives: 0 });
+    expect(() => triggerCounts({ positives: ["a"], negatives: ["b"] })).toThrow("trigger needs a cases list");
+  });
+
+  it("names the changed trigger files a pull-request run must execute, and nothing else", () => {
+    expect([...changedTriggerFiles([
+      "evals/triggers/hourly.json",
+      "evals\\triggers\\skill-write.json",
+      "./evals/triggers/nested/deep.json",
+      // A draft is never loaded, so it can never claim to have run.
+      "evals/triggers/hourly.draft.json",
+      "evals/triggers/README.md",
+      "evals/golden/runs/one.json",
+      "scripts/skills.mjs",
+    ])].sort()).toEqual(["hourly.json", "nested/deep.json", "skill-write.json"]);
+    expect([...changedTriggerFiles(undefined)]).toEqual([]);
   });
 });
 

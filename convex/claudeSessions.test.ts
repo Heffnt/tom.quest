@@ -251,20 +251,20 @@ describe("claude sessions", () => {
     // prompt verbatim, then the fetchable index; the outcome-pen footer is
     // appended server-side (pinned by its own test below).
     //
-    // THE KNOW LAYER IS NOT HERE, and never is whole again: this session has
-    // no subject, so nothing expands (rule 12) and the whole know layer is one
-    // line in the index saying how to read it (convex/ttsContext.ts).
+    // NO LAYER BUT `operate` IS HERE, and none ever is again: the write layer
+    // and the know layer became skills, so what this session may load beyond
+    // the operate rules is a NAME in the grant block (convex/ttsContext.ts).
     const text = inbound[0].text ?? "";
     expect(text.startsWith(`${MODEL_OF_TOM_HEADER} (WikiTom commit testprelude)`)).toBe(true);
     expect(text).toContain(TEST_PRELUDE_LAYERS.operate);
-    expect(text).toContain(TEST_PRELUDE_LAYERS.write);
+    expect(text).not.toContain(TEST_PRELUDE_LAYERS.write);
     expect(text).not.toContain(TEST_PRELUDE_LAYERS.know);
+    expect(text).toContain("SKILLS (WikiTom commit testprelude)");
     expect(text.indexOf(TEST_PRELUDE_LAYERS.operate)).toBeLessThan(
-      text.indexOf(TEST_PRELUDE_LAYERS.write),
+      text.indexOf("SKILLS (WikiTom commit testprelude)"),
     );
-    expect(text.indexOf(TEST_PRELUDE_LAYERS.write)).toBeLessThan(text.indexOf("\n\nhello"));
-    expect(text.indexOf("\n\nhello")).toBeLessThan(text.indexOf("MODEL-OF-TOM FETCHABLE"));
-    expect(text).toContain("--layers know");
+    expect(text.indexOf("SKILLS (WikiTom commit testprelude)")).toBeLessThan(text.indexOf("\n\nhello"));
+    expect(text).not.toContain("MODEL-OF-TOM FETCHABLE");
   });
 
   // witness: insertSession prefixed the prelude to whatever the seed's prompt
@@ -276,7 +276,7 @@ describe("claude sessions", () => {
     // What a paste actually is: the opener of a live session, copied whole —
     // and what is strippable in it is the STABLE PREFIX, which is all a paste
     // can carry that the live record does not rebuild anyway.
-    const prelude = await t.run(async (ctx) => modelOfTomPrelude(ctx, ["operate", "write"]));
+    const prelude = await t.run(async (ctx) => modelOfTomPrelude(ctx, ["operate"]));
     const sessionId = await tom.mutation(api.claudeSessions.createSession, {
       title: "pasted opener",
       kind: "adhoc",
@@ -5331,8 +5331,10 @@ describe("frontier scheduler", () => {
     expect(text).toContain("publish the page");
     expect(text).toContain("ALSO READY IN THIS BATCH RIGHT NOW (1");
     expect(text).toContain("check the citations");
-    // The selected publication's writing layer reaches the worker verbatim.
-    expect(text).toContain(TEST_PRELUDE_LAYERS.write);
+    // The operate rules reach the worker verbatim; the writing standard is a
+    // grant it loads by name.
+    expect(text).toContain(TEST_PRELUDE_LAYERS.operate);
+    expect(text).not.toContain(TEST_PRELUDE_LAYERS.write);
     expect(text).toContain(AUTONOMOUS_SESSION_CONTRACT);
     expect(text).not.toContain("The vocabulary, which is closed");
     expect(text).not.toContain("<!DOCTYPE html>");

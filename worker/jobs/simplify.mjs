@@ -208,6 +208,11 @@ export const STATIC_BOUNDARY_SCRIPTS = [
   "check-session-mirrors",
   "check-setup-imports",
   "check-large-files",
+  // Phase 6 arrived with a seventh: nothing from model-of-tom may enter this
+  // public repository, and a check enforces it. It is here because the weekly
+  // pass cannot read the static-boundaries log — a check missing from this
+  // list is a check the pass believes does not exist.
+  "check-private-paths",
 ];
 
 /** The directory walk's skip list, taken from scripts/check-agents-md.mjs so
@@ -875,7 +880,7 @@ export function factsRowLine(row) {
 
 /**
  * The facts, once, as an object. It is written twice: as JSON on this run's own
- * "simplify-run" event, so `tts search events` can find months later what a
+ * "simplify-run" event, so `tts-search events` can find months later what a
  * proposal was measured from, and as the text below for the prompt.
  */
 export function factsBlock({ day, input, table, repoReadable, failures }) {
@@ -920,7 +925,7 @@ export function factsBlock({ day, input, table, repoReadable, failures }) {
 
 /**
  * The same facts, sized for ONE Convex document — what rides the run's own
- * "simplify-run" event so `tts search events` can find months later what a
+ * "simplify-run" event so `tts-search events` can find months later what a
  * proposal was measured from.
  *
  * Only what is re-derivable is trimmed: the text is clipped, the noun set
