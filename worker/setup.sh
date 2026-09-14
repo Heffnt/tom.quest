@@ -43,6 +43,12 @@ if ! command -v node >/dev/null 2>&1 || [ "$(node -v | cut -d. -f1)" != "v22" ];
 fi
 echo "node: $(node -v)"
 
+# pnpm is what a box run's --install and --tests flags shell out to
+# (worker/runs/box-run.mjs) to install a checked-out worktree's node_modules.
+# NON-FATAL: everything else this script installs works with no pnpm at all,
+# so a missing pnpm is reported and setup continues rather than aborting.
+command -v pnpm >/dev/null 2>&1 || echo "  pnpm is NOT on PATH — see NEXT STEPS below"
+
 echo "== [3/10] Claude Code CLI =="
 # npm -g install is idempotent (re-running upgrades to latest).
 npm install -g @anthropic-ai/claude-code
@@ -155,8 +161,16 @@ echo "== [6/10] directories =="
 #     reads its personal skills out of $CLAUDE_CONFIG_DIR/skills, which is what
 #     separates the two accounts; Codex reads its own out of $CODEX_HOME/skills,
 #     and CODEX_HOME here is /root/.codex.
-mkdir -p /opt/tts /opt/tts/runs /opt/tts/jobs /var/lib/tts /var/cache/tts/runs /etc/tts /var/log/tts \
-  /root/.claude-accounts/gmail /root/.claude-accounts/wpi /root/.codex
+# /var/cache/tts/runs/work   — one directory per run of worker/runs/box-run.mjs
+#     (tts-run), reaped when the run exits.
+# /var/cache/tts/runs/repos  — the bare mirror of each repo a run checks out;
+#     every run's worktree hangs off the mirror for its repo.
+# /var/cache/tts/pnpm-store  — one pnpm store shared by every run's worktree,
+#     so a second worktree's node_modules costs kilobytes: pnpm hardlinks
+#     packages from this store on Linux instead of copying them.
+mkdir -p /opt/tts /opt/tts/runs /opt/tts/jobs /var/lib/tts /var/cache/tts/runs \
+  /var/cache/tts/runs/work /var/cache/tts/runs/repos /var/cache/tts/pnpm-store \
+  /etc/tts /var/log/tts /root/.claude-accounts/gmail /root/.claude-accounts/wpi /root/.codex
 # THE DIRECTORIES AND NOTHING IN THEM. The nightly's post step is the one
 # publisher of skill bodies (worker/jobs/nightly.mjs, BOX_SKILLS_DIRS): it has
 # WikiTom at a commit and it writes all three from it. Setup writing bodies too
@@ -288,8 +302,8 @@ done
 cp "$WORKER_DIR"/bin/* /usr/local/bin/
 chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
   /usr/local/bin/tts-turing /usr/local/bin/tts-git-credential \
-  /usr/local/bin/tts-codex /usr/local/bin/tts-search /usr/local/bin/tts-ask \
-  /usr/local/bin/tts-audit
+  /usr/local/bin/tts-codex /usr/local/bin/tts-run /usr/local/bin/tts-search \
+  /usr/local/bin/tts-ask /usr/local/bin/tts-audit
 
 # GitHub credentials for sessions (ledger graduation sessions-cannot-open-prs,
 # 2026-08-31). Two consumers, one source of truth (GH_TOKEN in worker.env):
@@ -712,6 +726,11 @@ NEXT STEPS (manual, in order):
   6. Check the session-host daemon (once SESSIONS_WORKER_KEY is set):
        systemctl status tts-session-host
        journalctl -u tts-session-host -f
+
+  7. If step 2 reported pnpm missing, install it — a run started with
+     --install or --tests (worker/runs/box-run.mjs, tts-run) needs pnpm on
+     PATH to install the worktree's node_modules:
+       npm install -g pnpm
 
 Cron is already installed (/etc/cron.d/tts); logs land in /var/log/tts/.
 Re-running this script at any time is safe and is also how you roll out
