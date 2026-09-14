@@ -367,11 +367,16 @@ describe("a superseded request", () => {
 
   const answer = (t: TestConvex<typeof schema>, sha: string) =>
     t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_REQUEST).eq("key", `${REPO}@${sha}`))
+        .first();
+      const request = row!.data as { requestedAt: number };
       await ctx.db.insert("dtsEvents", {
         at: 99,
         kind: EVALS_RUN,
         key: `${REPO}@${sha}`,
-        data: { repo: REPO, sha, superseded: true },
+        data: { repo: REPO, sha, superseded: true, answersRequestAt: request.requestedAt },
       });
     });
 
@@ -692,7 +697,7 @@ describe("a superseded request", () => {
         at: 50,
         kind: EVALS_RUN,
         key: `${REPO}@aaaaaaa`,
-        data: { repo: REPO, sha: "aaaaaaa", unaffected: true, regressions: 0 },
+        data: { repo: REPO, sha: "aaaaaaa", unaffected: true, regressions: 0, answersRequestAt: 1 },
       });
     });
     // While that is what was asked, it answers.
@@ -712,8 +717,7 @@ describe("a superseded request", () => {
     });
   });
 
-  // A scored row is current only for the request facts it recorded.
-  it("requires a scored row to answer the base and coverage inputs it recorded", async () => {
+  it("lets a stamped scored row answer exactly its request and serves a mismatch", async () => {
     const t = convexTest({ schema, modules });
     await file(t, 1, "aaaaaaa", { runId: 100, prBody: "evals: no-item wording only" });
     await t.run(async (ctx) => {
@@ -742,7 +746,7 @@ describe("a superseded request", () => {
     expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({ sha: "aaaaaaa" });
   });
 
-  it("does not let a legacy scored row before a base-only retarget answer", async () => {
+  it("keeps an unstamped scored row historical while serving the pending request", async () => {
     const t = convexTest({ schema, modules });
     await file(t, 1, "aaaaaaa");
     await t.mutation(internal.ttsEvals.internalRequestEvals, {
@@ -752,108 +756,18 @@ describe("a superseded request", () => {
     const request = await t.query(internal.ttsEvals.internalEvalsRequest, { repo: REPO, sha: "aaaaaaa" });
     await t.run(async (ctx) => {
       await ctx.db.insert("dtsEvents", {
-        at: request!.requestedAt - 1,
+        at: request!.requestedAt + 1,
         kind: EVALS_RUN,
         key: `${REPO}@aaaaaaa`,
         data: { repo: REPO, sha: "aaaaaaa", regressions: 0, pass: 29, items: 29 },
       });
     });
-    expect(request).toMatchObject({ baseSha: "6af3eef", changed: ["model-of-tom/intent.md"] });
     expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
       .toMatchObject({ run: null });
     expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
       sha: "aaaaaaa",
-      baseSha: "6af3eef",
       changed: ["model-of-tom/intent.md"],
     });
-  });
-
-  it("lets an equal or later legacy scored row answer a base-only retarget", async () => {
-    const t = convexTest({ schema, modules });
-    await file(t, 1, "aaaaaaa");
-    await t.mutation(internal.ttsEvals.internalRequestEvals, {
-      repo: REPO, sha: "aaaaaaa", baseSha: "6af3eef", pr: 173, runId: 100,
-      paths: ["model-of-tom/**"], changed: ["model-of-tom/intent.md"],
-    });
-    const request = await t.query(internal.ttsEvals.internalEvalsRequest, { repo: REPO, sha: "aaaaaaa" });
-    for (const offset of [0, 1]) {
-      await t.run(async (ctx) => {
-        await ctx.db.insert("dtsEvents", {
-          at: request!.requestedAt + offset,
-          kind: EVALS_RUN,
-          key: `${REPO}@aaaaaaa`,
-          data: { repo: REPO, sha: "aaaaaaa", regressions: 0, pass: 29, items: 29 },
-        });
-      });
-      expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
-        .toMatchObject({ run: { regressions: 0, pass: 29, items: 29 } });
-      expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
-    }
-  });
-
-  it("lets a legacy scored row written after its unre-filed request answer", async () => {
-    const t = convexTest({ schema, modules });
-    await file(t, 1, "aaaaaaa");
-    await t.run(async (ctx) => {
-      await ctx.db.insert("dtsEvents", {
-        at: 2,
-        kind: EVALS_RUN,
-        key: `${REPO}@aaaaaaa`,
-        data: { repo: REPO, sha: "aaaaaaa", regressions: 0, pass: 29, items: 29 },
-      });
-    });
-    expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
-      .toMatchObject({ run: { regressions: 0, pass: 29, items: 29 } });
-    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
-  });
-
-  it("does not let a legacy scored row before a changed-diff-only re-file answer", async () => {
-    const t = convexTest({ schema, modules });
-    await file(t, 1, "aaaaaaa", { changed: ["worker/setup.sh"] });
-    await t.mutation(internal.ttsEvals.internalRequestEvals, {
-      repo: REPO, sha: "aaaaaaa", baseSha: "f5c1fb9", pr: 173, runId: 100,
-      paths: ["model-of-tom/**"], changed: ["model-of-tom/intent.md"],
-    });
-    const request = await t.query(internal.ttsEvals.internalEvalsRequest, { repo: REPO, sha: "aaaaaaa" });
-    await t.run(async (ctx) => {
-      await ctx.db.insert("dtsEvents", {
-        at: request!.requestedAt - 1,
-        kind: EVALS_RUN,
-        key: `${REPO}@aaaaaaa`,
-        data: { repo: REPO, sha: "aaaaaaa", regressions: 0, pass: 29, items: 29 },
-      });
-    });
-    expect(request).toMatchObject({ baseSha: "f5c1fb9", changed: ["model-of-tom/intent.md"] });
-    expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
-      .toMatchObject({ run: null });
-    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
-      sha: "aaaaaaa",
-      baseSha: "f5c1fb9",
-      changed: ["model-of-tom/intent.md"],
-    });
-  });
-
-  it("lets an equal or later legacy scored row answer a changed-diff-only re-file", async () => {
-    const t = convexTest({ schema, modules });
-    await file(t, 1, "aaaaaaa", { changed: ["worker/setup.sh"] });
-    await t.mutation(internal.ttsEvals.internalRequestEvals, {
-      repo: REPO, sha: "aaaaaaa", baseSha: "f5c1fb9", pr: 173, runId: 100,
-      paths: ["model-of-tom/**"], changed: ["model-of-tom/intent.md"],
-    });
-    const request = await t.query(internal.ttsEvals.internalEvalsRequest, { repo: REPO, sha: "aaaaaaa" });
-    for (const offset of [0, 1]) {
-      await t.run(async (ctx) => {
-        await ctx.db.insert("dtsEvents", {
-          at: request!.requestedAt + offset,
-          kind: EVALS_RUN,
-          key: `${REPO}@aaaaaaa`,
-          data: { repo: REPO, sha: "aaaaaaa", regressions: 0, pass: 29, items: 29 },
-        });
-      });
-      expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
-        .toMatchObject({ run: { regressions: 0, pass: 29, items: 29 } });
-      expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
-    }
   });
 
   it("does not let a scored no-item exemption answer after the trailer is removed", async () => {
@@ -895,9 +809,7 @@ describe("a superseded request", () => {
     expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({ sha: "aaaaaaa" });
   });
 
-  // A prior no-run result never answers a re-filed request. Its predecessor
-  // trusted the client's claim; the next answer must be recomputed by the box.
-  it("queues a re-filed unaffected claim for the box", async () => {
+  it("keeps an unstamped unaffected row from answering the request it cannot name", async () => {
     const t = convexTest({ schema, modules });
     await file(t, 1, "aaaaaaa", { runId: 100, unaffected: true });
     await t.run(async (ctx) => {
@@ -907,6 +819,12 @@ describe("a superseded request", () => {
         key: `${REPO}@aaaaaaa`,
         data: { repo: REPO, sha: "aaaaaaa", unaffected: true, regressions: 0 },
       });
+    });
+    expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
+      .toMatchObject({ run: null });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      unaffectedClaimed: true,
     });
     await t.mutation(internal.ttsEvals.internalRequestEvals, {
       repo: REPO, sha: "aaaaaaa", baseSha: "f5c1fb9", pr: 173, runId: 100,
@@ -1054,7 +972,14 @@ describe("a superseded request", () => {
         at: 2,
         kind: EVALS_RUN,
         key: `${REPO}@head000`,
-        data: { repo: REPO, sha: "head000", error: true, reason: "runner failed: Not logged in", regressions: null },
+        data: {
+          repo: REPO,
+          sha: "head000",
+          error: true,
+          reason: "runner failed: Not logged in",
+          regressions: null,
+          answersRequestAt: 1,
+        },
       });
       await ctx.db.insert("dtsEvents", {
         at: 2,

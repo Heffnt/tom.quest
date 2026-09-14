@@ -385,6 +385,66 @@ describe("the evals arm's golden-coverage clause", () => {
     expect(gate.why).toBe(`the evals are unaffected at ${SHA.slice(0, 7)}: no watched path changed`);
   });
 
+  it("does not read an unstamped verdict when a newer row exists and no request is pending", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await greenTests(t);
+    await approvedAudit(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: 10,
+        kind: EVALS_RUN,
+        key: commitKey(REPO, SHA),
+        data: { repo: REPO, sha: SHA, regressions: 0, goldenCoverage: true, pass: 40, items: 40 },
+      });
+      await ctx.db.insert("dtsEvents", {
+        at: 20,
+        kind: EVALS_RUN,
+        key: commitKey(REPO, SHA),
+        data: { repo: REPO, sha: SHA, regressions: 1, goldenCoverage: true, answersRequestAt: 1 },
+      });
+    });
+    const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+    expect(gate.allowed).toBe(false);
+    expect(gate.checks.find((c: { name: string }) => c.name === "evals").why)
+      .toBe(`the evals found 1 regression at ${SHA.slice(0, 7)}`);
+  });
+
+  it("reads a newest unstamped verdict when no request is pending", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await greenTests(t);
+    await approvedAudit(t);
+    await seedFact(t, EVALS_RUN, { regressions: 0, goldenCoverage: true, pass: 40, items: 40 });
+    const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+    expect(gate.allowed).toBe(true);
+  });
+
+  it("denies a pending request while an unstamped scored row is historical", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await greenTests(t);
+    await approvedAudit(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: 50,
+        kind: EVALS_REQUEST,
+        key: commitKey(REPO, SHA),
+        data: {
+          repo: REPO, sha: SHA, baseSha: "f5c1fb9", pr: 1, runId: 1,
+          paths: ["model-of-tom/**"], changed: ["model-of-tom/intent.md"], prBody: null,
+          unaffectedClaimed: false, requestedAt: 50,
+        },
+      });
+    });
+    await seedFact(t, EVALS_RUN, { regressions: 0, goldenCoverage: true, pass: 40, items: 40 });
+    const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+    expect(gate.allowed).toBe(false);
+    expect(gate.missing).toEqual(["evals"]);
+    expect(gate.checks.find((c: { name: string }) => c.name === "evals").why)
+      .toBe(`the evals are being scored again at ${SHA.slice(0, 7)}`);
+  });
+
   // "not-required" is the ONE word that opens this way. Anything else on the
   // field is a run that did not answer, and the gate denies it.
   it("denies any other string on the field", async () => {
@@ -451,7 +511,7 @@ describe("the evals arm's golden-coverage clause", () => {
     expect(gate.allowed).toBe(false);
     expect(gate.missing).toEqual(["evals"]);
     expect(gate.checks.find((c: { name: string }) => c.name === "evals").why)
-      .toContain("no evals run scored");
+      .toBe(`the evals are being scored again at ${SHA.slice(0, 7)}`);
   });
 
   // The other direction, so the rule is not just "unaffected never counts":

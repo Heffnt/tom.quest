@@ -795,8 +795,7 @@ export function scoredNothing(data: unknown): boolean {
  *
  * A ROW THAT SCORED NOTHING IS NOT A VERDICT ON THE COMMIT. A scored row is a
  * measurement of the tree: it ran the set and got numbers. A stamped row names
- * the request it measured exactly; a legacy row without that stamp can answer
- * only a request filed at or before the legacy row itself. The three
+ * the request it measured exactly. The three
  * rows scoredNothing names are answers to A PARTICULAR REQUEST instead —
  * `superseded` says a later push had already replaced this head when the queue
  * looked, `unaffected` says the diff THAT REQUEST CARRIED touched no watched
@@ -814,15 +813,6 @@ export function scoredNothing(data: unknown): boolean {
  * the gate: ask about a sha against one base, get `no watched path changed`,
  * then ask about the same sha against a base whose diff DOES touch one, and a
  * stale row would answer `unaffected` to a question it never heard.
- *
- * THE TEST IS THE REQUEST'S OWN CLOCK, and it costs one indexed read of a row
- * this file already writes. A stamped row matches `requestedAt` exactly. An
- * unstamped legacy score uses the safe side of the clock: `at >= requestedAt`.
- * A normal legacy box post lands after the request it read, so it still answers;
- * a row written before a retarget re-file answered the old question, so it must
- * leave the renewed request pending. No head map, no window scan on a
- * thirty-second poll, and no new field a writer could get wrong: the ordering
- * of two timestamps the record keeps anyway.
  *
  * What this deliberately does NOT do is make a row disappear for a sha nothing
  * is asking about again. Nobody re-files that request, so its `requestedAt`
@@ -842,39 +832,11 @@ async function answeredRun(ctx: QueryCtx | MutationCtx, key: string) {
   const request = requestData((await requestRowFor(ctx, key))?.data);
   // No request row at all: nothing is asking anything, so the row stands.
   if (request === null) return run;
-  if (!scoredNothing(run.data)) {
-    // The box records its resolved base and diff as provenance. Request fields
-    // are client hints, so only the exact request timestamp can make a scored
-    // row current for the question now standing.
-    //
-    // ABSENCE AND MISMATCH MEAN DIFFERENT THINGS. Convex deploys before the
-    // manually rolled box, so a box from before this field scores the sha but
-    // cannot name the request it read. Its own write time is the only compatible
-    // fallback, and the safe side is `run.at >= request.requestedAt`: a normal
-    // legacy post arrives after the request it read and can answer, while a row
-    // written before a retarget re-file answered the old question and must not.
-    // Once the box records the timestamp, it must name the request standing now
-    // exactly.
-    const answers = (run.data as { answersRequestAt?: unknown }).answersRequestAt;
-    if (answers === undefined) return run.at >= request.requestedAt ? run : null;
-    return answers === request.requestedAt ? run : null;
-  }
-  // `superseded` AND `error` ARE DATED BY THE QUESTION THEY ANSWER, because what
-  // they claim is about a MOMENT and not about the diff: the queue as it stood
-  // when it looked, the tree as it read when it tried. Each carries the
-  // `requestedAt` of the request it was written for, so the match is exact.
-  //
-  // WRITE TIME WOULD BE RACY, and the race is the failure this whole rule
-  // exists to prevent. The box reads the request and posts seconds later; if
-  // the sha becomes the live head again in between, the row lands stamped after
-  // the replacement request, and a clock comparison would accept the stale
-  // supersession and fail the live head until yet another re-run.
+  // Every row answers a standing request only by its exact stamp. An unstamped
+  // legacy row cannot establish which request it answered, so it remains
+  // historical until no request stands.
   const answers = (run.data as { answersRequestAt?: unknown }).answersRequestAt;
-  if (typeof answers === "number") return answers === request.requestedAt ? run : null;
-  // A row written before the field existed has only its write time to go on,
-  // and the clock is the safe reading of it: a row older than the standing
-  // question did not answer that question.
-  return run.at < request.requestedAt ? null : run;
+  return typeof answers === "number" && answers === request.requestedAt ? run : null;
 }
 
 /**
@@ -889,6 +851,13 @@ async function answeredRun(ctx: QueryCtx | MutationCtx, key: string) {
  */
 export async function answeredEvalsRun(ctx: QueryCtx | MutationCtx, repo: string, sha: string) {
   return await answeredRun(ctx, `${repo}@${sha}`);
+}
+
+/** The request currently standing for a sha, if there is one. Readers that
+ *  must distinguish historical rows from a run still being served use this
+ *  alongside answeredEvalsRun. */
+export async function evalsRequestFor(ctx: QueryCtx | MutationCtx, repo: string, sha: string) {
+  return requestData((await requestRowFor(ctx, `${repo}@${sha}`))?.data);
 }
 
 export const internalEvalsRun = internalQuery({
@@ -908,7 +877,7 @@ export const internalEvalsRun = internalQuery({
 // of this sha's own question.
 export const internalEvalsRequest = internalQuery({
   args: { repo: v.string(), sha: v.string() },
-  handler: async (ctx, args) => requestData((await requestRowFor(ctx, `${args.repo}@${args.sha}`))?.data),
+  handler: async (ctx, args) => await evalsRequestFor(ctx, args.repo, args.sha),
 });
 
 /**

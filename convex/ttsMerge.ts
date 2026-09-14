@@ -3,7 +3,7 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { logEvent } from "./tts";
-import { answeredEvalsRun, COVERAGE_NOT_REQUIRED, EVALS_RUN } from "./ttsEvals";
+import { answeredEvalsRun, COVERAGE_NOT_REQUIRED, EVALS_RUN, evalsRequestFor } from "./ttsEvals";
 import { redactSecrets } from "../worker/session-host/redact.mjs";
 
 // ── THE MECHANICAL MERGE GATE (Tom, 2026-09-09) ─────────────────────────────
@@ -358,6 +358,9 @@ export async function mergeGateFor(
   // ttsEvals.ts answeredRun), and this is the reader where getting that wrong
   // opens the gate instead of merely delaying a run.
   const evals = await answeredEvalsRun(ctx, repo, sha);
+  const pendingEvalsRequest = evals === null
+    ? await evalsRequestFor(ctx, repo, sha)
+    : null;
   const evalsData = (evals?.data ?? {}) as {
     regressions?: unknown;
     goldenCoverage?: unknown;
@@ -404,7 +407,9 @@ export async function mergeGateFor(
     ? evalsData.reason
     : typeof evalsData.error === "string" && evalsData.error !== "" ? evalsData.error : "runner failed";
   const evalsCheck: MergeCheck =
-    evals === null
+    pendingEvalsRequest !== null
+      ? { name: "evals", passed: false, why: `the evals are being scored again at ${short}` }
+    : evals === null
       ? { name: "evals", passed: false, why: `no evals run scored ${short}` }
       : evalsUnavailable
         ? { name: "evals", passed: false, why: `the evals could not run at ${short}: ${evalsReason}` }
