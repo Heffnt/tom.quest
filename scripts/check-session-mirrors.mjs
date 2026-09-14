@@ -15,6 +15,13 @@ import { narrowListFailures } from "./narrow-list-mirror.mjs";
 const shared = readFileSync("convex/ttsShared.ts", "utf8");
 const sessionMjs = readFileSync("worker/session-host/session.mjs", "utf8");
 const hostMjs = readFileSync("worker/session-host/session-host.mjs", "utf8");
+// The THIRD copy of the repo map. worker/runs/box-run.mjs is the box transport's
+// body: it validates --repo and clones the mirror, and it restates the map for
+// the same reason session.mjs does — it must stay a zero-dependency script that
+// runs from /opt/tts/runs, and importing session.mjs would pull the whole
+// daemon. A run offered a repo the daemon does not know, or refused one it
+// does, is the drift this third side of check 2 fences.
+const boxRunMjs = readFileSync("worker/runs/box-run.mjs", "utf8");
 
 const failures = [];
 
@@ -56,16 +63,19 @@ const readRepos = (block, where) => {
 
 const sharedBlock = shared.match(/SESSION_REPOS = \{([^}]+)\}/);
 const daemonBlock = sessionMjs.match(/const REPO_GITHUB = \{([^}]+)\}/);
+const boxRunBlock = boxRunMjs.match(/const REPO_GITHUB = \{([^}]+)\}/);
 if (!sharedBlock) failures.push("ttsShared.ts: SESSION_REPOS not found");
 if (!daemonBlock) failures.push("session.mjs: REPO_GITHUB not found");
-if (sharedBlock && daemonBlock) {
+if (!boxRunBlock) failures.push("box-run.mjs: REPO_GITHUB not found");
+if (sharedBlock && daemonBlock && boxRunBlock) {
   const a = readRepos(sharedBlock[1], "ttsShared.ts SESSION_REPOS")
     .sort()
     .join("|");
   const b = readRepos(daemonBlock[1], "session.mjs REPO_GITHUB").sort().join("|");
-  if (a !== b) {
+  const c = readRepos(boxRunBlock[1], "box-run.mjs REPO_GITHUB").sort().join("|");
+  if (a !== b || a !== c) {
     failures.push(
-      `repo maps drifted:\n  ttsShared.ts: ${a}\n  session.mjs:  ${b}`,
+      `repo maps drifted:\n  ttsShared.ts: ${a}\n  session.mjs:  ${b}\n  box-run.mjs:  ${c}`,
     );
   }
 }
@@ -368,6 +378,11 @@ for (const [file, text] of [
 const REPO_LIST_ALLOWED = new Set([
   "convex/ttsShared.ts", // the one home
   "worker/session-host/session.mjs", // the daemon mirror, fenced by check 2 above
+  // The box transport's mirror, fenced by check 2 above alongside the daemon's.
+  // It cannot import the one home (a .ts) and must not import session.mjs (the
+  // whole daemon, npm deps included) because it runs as a plain script from
+  // /opt/tts/runs — the same constraint that put the map in session.mjs.
+  "worker/runs/box-run.mjs",
   "scripts/check-session-mirrors.mjs", // this file
   // Prose, like a comment, but inside template literals the comment strip
   // cannot reach: this file is nothing but the HTML explanation documents
