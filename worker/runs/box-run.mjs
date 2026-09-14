@@ -649,9 +649,18 @@ child.on("close", (code) => {
   // final line of the one block it relays.
   process.stdout.write(`box-run: run ${id} host box runner ${opts.runner} exit ${exit} after ${seconds}s\n`);
   if (timedOut) note(`timed out after ${seconds}s (limit ${opts.timeout} ms)`);
-  else if (code !== 0) note(`${opts.runner} exited ${code} after ${seconds}s; stderr at ${errLog}`);
-  else note(`exit 0 after ${seconds}s`);
-  if (opts.keepWorktree) note(`work dir kept at ${workDir}`);
+  else if (code !== 0) {
+    note(`${opts.runner} exited ${code} after ${seconds}s`);
+    // THE TAIL, NOT THE PATH. The reap below deletes the work directory, so
+    // naming the log file would hand the laptop an address that no longer
+    // resolves — and the one case this matters most is the one where the CLI
+    // wrote no answer at all, which is exactly where a Codex weekly-cap
+    // message lives. --keep-worktree is what keeps the whole log.
+    let tail = "";
+    try { tail = redactSecrets(fs.readFileSync(errLog, "utf8")).trim().split("\n").slice(-5).join("\n"); } catch {}
+    if (tail) process.stderr.write(`${tail}\n`);
+  } else note(`exit 0 after ${seconds}s`);
+  if (opts.keepWorktree) note(`work dir kept at ${workDir}, log at ${errLog}`);
   reap();
   process.exit(exit);
 });
