@@ -32,6 +32,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { convexFetch, extractJsonObject, loadEnv, nyHour, nyUtcOffsetHours, runClaude, serverErrorMessage } from "./tts-lib.mjs";
 import { cacheRepoDir } from "./tts-code-lib.mjs";
+import { BOX_WIKITOM_DIR } from "./search-lib.mjs";
 // THE AUDIT'S OWN PROMPT, IMPORTED AND NEVER RE-IMPLEMENTED. The planted-fault
 // arm below asks the real auditor the real question about a fixture diff; a
 // second copy of that prompt here would measure a prompt nothing else uses.
@@ -1077,8 +1078,9 @@ export function aggregate(results) {
     byVerdict,
     failures: results
       .filter((result) => result.judged !== "pass")
-      .map(({ id, partition, verdict, reason, confirmed, trials }) => ({
+      .map(({ id, partition, verdict, reason, confirmed, trials, method }) => ({
         id, partition, verdict, reason, confirmed,
+        ...(method === undefined ? {} : { method }),
         // The failure carries its own trial count, so a row read later says
         // whether this id failed once or failed every time it was tried.
         ...(trials === undefined ? {} : { trials }),
@@ -1115,6 +1117,20 @@ export function loadTasks(tomquestTree, repo) {
  * to fetch a run from the box to state a fact about a checked-in file.
  */
 export const TRIGGERS_DIR = "evals/triggers";
+
+/** The area-trigger files live in WikiTom because their cases may only be
+ * stored with the private area pages they exercise. Intent and week remain
+ * public trigger files: neither is an area page. */
+export const AREA_TRIGGER_FILES = Object.freeze([
+  "skill-know-admin.json",
+  "skill-know-agent-systems.json",
+  "skill-know-climbing.json",
+  "skill-know-health-and-food.json",
+  "skill-know-mental-health.json",
+  "skill-know-money.json",
+  "skill-know-research.json",
+  "skill-know-social.json",
+]);
 
 /**
  * The eight area pages the know layer requires, and therefore the eight
@@ -1160,32 +1176,48 @@ export const LAYER_SKILL_ALIASES = Object.freeze({
 
 /** The skill names one loaded trigger is about: a `skill` file names its own,
  *  and a `layer` file names the skills that layer became. */
-export function triggerSkills(trigger) {
+export function triggerSkills(trigger, { bareSkillName = (name) => name, repoSkillName = null } = {}) {
   if (trigger?.kind === "skill") {
     if (typeof trigger.name !== "string" || trigger.name === "") throw new Error("skill trigger needs a name");
-    return [trigger.name];
+    // Repository labels keep their punctuation and capitalization for humans;
+    // their published skill name comes only from the central mapping. A fixture
+    // may keep an older logical `name`, but it cannot make the router score a
+    // second spelling of that repository.
+    if (typeof trigger.repo === "string" && trigger.repo !== "") {
+      if (typeof repoSkillName === "function") return [repoSkillName(trigger.repo)];
+    }
+    return [bareSkillName(trigger.name)];
   }
   if (trigger?.kind === "layer") {
     const skills = LAYER_SKILL_ALIASES[trigger.name];
     if (skills === undefined) throw new Error(`unknown layer trigger ${String(trigger.name)}`);
-    return [...skills];
+    return skills.map((name) => bareSkillName(name));
   }
   throw new Error(`unknown trigger kind ${String(trigger?.kind)}`);
 }
 
-export function loadTriggers(tomquestTree) {
-  const dir = path.join(tomquestTree, TRIGGERS_DIR);
-  if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir)
-    .filter((name) => name.endsWith(".json") && !name.endsWith(".draft.json"))
-    .sort()
-    .map((name) => {
+export function loadTriggers(tomquestTree, { wikitomDir = BOX_WIKITOM_DIR, bareSkillName, repoSkillName } = {}) {
+  const publicDir = path.join(tomquestTree, TRIGGERS_DIR);
+  const privateDir = path.join(wikitomDir, TRIGGERS_DIR);
+  const files = [
+    ...(fs.existsSync(publicDir)
+      ? fs.readdirSync(publicDir)
+        .filter((name) => name.endsWith(".json") && !name.endsWith(".draft.json") && !AREA_TRIGGER_FILES.includes(name))
+        .map((name) => ({ dir: publicDir, name }))
+      : []),
+    ...AREA_TRIGGER_FILES
+      .filter((name) => fs.existsSync(path.join(privateDir, name)))
+      .map((name) => ({ dir: privateDir, name })),
+  ];
+  return files
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(({ dir, name }) => {
       const trigger = { file: name, ...JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")) };
       // NORMALISED ON THE WAY OUT, never written into the file. A trigger file
       // is Tom-facing text about one name, and a list of skill names copied
       // into it would be a second copy of LAYER_SKILL_ALIASES that goes stale
       // the day an area page is added.
-      return { ...trigger, skills: triggerSkills(trigger) };
+      return { ...trigger, skills: triggerSkills(trigger, { bareSkillName, repoSkillName }) };
     });
 }
 
@@ -1194,6 +1226,97 @@ export function triggerCounts(trigger) {
   if (!Array.isArray(trigger?.cases)) throw new Error("trigger needs a cases list");
   const negatives = trigger.cases.filter((one) => one?.negative === true).length;
   return { positives: trigger.cases.length - negatives, negatives };
+}
+
+/**
+ * The two trigger case methods. A `route` case is a complete, generic input to
+ * routeSkills: `caller`, `subject`, optional `record`/`cwd`/`repoDirs`, and an
+ * `expected` router result. It contains no prose for a model to interpret, so
+ * it is scored once without a runner. A case with a prompt is an output-
+ * behaviour check and therefore needs the runner once. A malformed case is
+ * recorded as a schema skip rather than guessed into either method.
+ */
+export const TRIGGER_METHOD_ROUTER = "router";
+export const TRIGGER_METHOD_RUNNER = "runner";
+export const TRIGGER_METHOD_SCHEMA = "schema";
+
+export function triggerMethod(one) {
+  if (one?.route !== undefined) return TRIGGER_METHOD_ROUTER;
+  if (typeof one?.prompt === "string" && one.prompt.trim() !== "") return TRIGGER_METHOD_RUNNER;
+  return TRIGGER_METHOD_SCHEMA;
+}
+
+function triggerBase(trigger, one) {
+  return {
+    id: String(one?.id ?? `${trigger?.name ?? "trigger"}-unnamed`),
+    partition: `trigger/${trigger?.name ?? "unknown"}`,
+    verdict: "approve",
+    confirmed: one?.confirmedByTom === true,
+  };
+}
+
+function sameJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/** Score one schema-described router case. It deliberately has no fallback to
+ * a model: a partial route description is a broken fixture, not a question a
+ * model is permitted to answer. */
+export function scoreTriggerRoute(trigger, one, router) {
+  const base = triggerBase(trigger, one);
+  if (one?.route === null || typeof one?.route !== "object" || Array.isArray(one.route)) {
+    return { ...base, method: TRIGGER_METHOD_ROUTER, judged: "fail", reason: "router case needs a route object" };
+  }
+  const expected = one.route.expected;
+  if (expected === null || typeof expected !== "object" || Array.isArray(expected)) {
+    return { ...base, method: TRIGGER_METHOD_ROUTER, judged: "fail", reason: "router case needs an expected result" };
+  }
+  try {
+    const actual = router({
+      caller: one.route.caller,
+      subject: one.route.subject,
+      record: one.route.record,
+      cwd: one.route.cwd,
+      repoDirs: one.route.repoDirs,
+      pages: one.route.pages,
+      published: one.route.published,
+    });
+    const projected = {
+      granted: actual.granted,
+      refused: actual.refused,
+      repoRulesSource: actual.repoRulesSource,
+    };
+    return sameJson(projected, expected)
+      ? { ...base, method: TRIGGER_METHOD_ROUTER, judged: "pass", trials: { head: 1, headPassed: 1 } }
+      : { ...base, method: TRIGGER_METHOD_ROUTER, judged: "fail", reason: "router result differs from the case expectation", trials: { head: 1, headPassed: 0 } };
+  } catch (error) {
+    return { ...base, method: TRIGGER_METHOD_ROUTER, judged: "fail", reason: `router failed: ${serverErrorMessage(error)}`, trials: { head: 1, headPassed: 0 } };
+  }
+}
+
+/** One model-required trigger case. Its checked-in mechanical expectation is
+ * the verdict, so there is no second judge call after the one runner call. */
+export async function runTriggerCase(trigger, one, io, router = null) {
+  const method = triggerMethod(one);
+  if (method === TRIGGER_METHOD_ROUTER) return scoreTriggerRoute(trigger, one, router);
+  const base = triggerBase(trigger, one);
+  if (method === TRIGGER_METHOD_SCHEMA) {
+    return { ...base, method, judged: "skip", reason: "trigger case needs route or prompt" };
+  }
+  try {
+    const answer = await io.runClaude(one.prompt, {
+      model: REGEN_MODEL,
+      timeoutMs: REGEN_TIMEOUT_MS,
+      maxTurns: JOBS.run.opts.maxTurns,
+      registration: { origin: "cron:evals", kind: "trigger", layersKnown: false, layersGiven: [], layersDenied: [] },
+    });
+    const reason = mechanicalChecks(one.expect, answer);
+    return reason === null
+      ? { ...base, method, judged: "pass", trials: { head: 1, headPassed: 1 } }
+      : { ...base, method, judged: "fail", reason, trials: { head: 1, headPassed: 0 } };
+  } catch (error) {
+    return { ...base, method, judged: "fail", reason: `trigger runner failed: ${serverErrorMessage(error)}`, trials: { head: 1, headPassed: 0 } };
+  }
 }
 
 /**
@@ -2019,6 +2142,36 @@ export async function verifierScorecard(io, env, { at, force = false } = {}) {
   };
 }
 
+/** The pinned skill-name mapping. Trigger files keep human repository labels,
+ * while the evaluated catalog uses the one canonical bare spelling. */
+async function triggerNameMappingFor(tomquestTree, io) {
+  if (io.triggerNameMapping !== undefined) return io.triggerNameMapping;
+  const skillsModule = await import(pathToFileURL(path.join(tomquestTree, "scripts", "skills.mjs")).href);
+  return {
+    bareSkillName: skillsModule.bareSkillName,
+    repoSkillName: skillsModule.repoSkillName,
+  };
+}
+
+/** The pinned router and the pinned area pages it reads. The router is imported
+ * from the worktree being evaluated, not this box copy: a weekly result must
+ * change when the router at either pinned commit changes. Tests may supply the
+ * complete bound router to keep their trees intentionally small. */
+async function triggerRouterFor(tomquestTree, wikitomTree, io) {
+  if (typeof io.triggerRouter === "function") return io.triggerRouter;
+  const routerModule = await import(pathToFileURL(path.join(tomquestTree, "worker", "jobs", "skill-router.mjs")).href);
+  const skillsModule = await import(pathToFileURL(path.join(tomquestTree, "scripts", "skills.mjs")).href);
+  const areas = path.join(wikitomTree, skillsModule.AREAS_DIR);
+  const pages = fs.existsSync(areas)
+    ? fs.readdirSync(areas).filter((name) => name.endsWith(".md")).sort().map((name) => ({
+      path: path.posix.join(skillsModule.AREAS_DIR, name),
+      body: fs.readFileSync(path.join(areas, name), "utf8"),
+    }))
+    : [];
+  const published = publicationFor(tomquestTree, wikitomTree).published;
+  return (input) => routerModule.routeSkills({ ...input, pages: input.pages ?? pages, published: input.published ?? published });
+}
+
 /**
  * One run: the golden items of the pinned tom.quest tree, regenerated against
  * the pinned WikiTom tree, judged, aggregated, and posted as one evals-run row.
@@ -2034,6 +2187,16 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
     const all = loadGolden(tomquest.dir);
     const wanted = jobs === null ? all : all.filter((item) => jobs.includes(item.job));
     const items = weekly ? wanted : selectItems(wanted, Math.max(1, Math.floor(limit / 2)));
+    // Trigger files are a weekly measurement of the skill router and of the
+    // output behaviour it cannot decide. They are deliberately absent from a
+    // pull-request or --serve run: those runs keep their fixed golden subset
+    // and never turn a context-file edit into extra model work.
+    const triggerNameMapping = weekly ? await triggerNameMappingFor(tomquest.dir, io) : null;
+    const triggers = weekly ? loadTriggers(tomquest.dir, { wikitomDir: wikitom.dir, ...triggerNameMapping }) : [];
+    const triggerCases = triggers.flatMap((trigger) => (trigger.cases ?? []).map((one) => ({ trigger, one })));
+    const router = triggerCases.some(({ one }) => triggerMethod(one) === TRIGGER_METHOD_ROUTER)
+      ? await triggerRouterFor(tomquest.dir, wikitom.dir, io)
+      : null;
     const modules = await io.loadModules(tomquest.dir, items);
     const layerCache = new Map();
     const preludeCache = new Map();
@@ -2075,6 +2238,10 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       }
       results.push(await runTrials(item.id, basePassed, () => runItem(item, context, io)));
     }
+    const triggerResults = [];
+    for (const { trigger, one } of triggerCases) {
+      triggerResults.push(await runTriggerCase(trigger, one, io, router));
+    }
     const tasks = [];
     for (const taskRepo of io.taskRepos?.(tomquest.dir) ?? []) {
       for (const task of loadTasks(tomquest.dir, taskRepo)) {
@@ -2082,7 +2249,9 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       }
     }
     const scored = results.filter((result) => result.judged !== "skip");
-    const summary = aggregate(scored);
+    const scoredTriggers = triggerResults.filter((result) => result.judged !== "skip");
+    const scoredAll = [...scored, ...scoredTriggers];
+    const summary = aggregate(scoredAll);
     return {
       repo,
       // The RESOLVED commit of whichever repo this run pins, so a run named
@@ -2090,7 +2259,7 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       sha: repo === "WikiTom" ? wikitom.commit : tomquest.commit,
       tomquest: tomquest.commit,
       wikitom: wikitom.commit,
-      goldenHash: goldenHash(all),
+      goldenHash: goldenHash([...all, ...triggerCases.map(({ trigger, one }) => ({ ...one, trigger: trigger.file }))]),
       regenModel: REGEN_MODEL,
       judgeModel: JUDGE_MODEL,
       startedAt,
@@ -2098,11 +2267,12 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       // Trials, not items: a retried item costs its calls again and the row
       // says so. The ablation arm is one trial per name and costs the same two
       // calls each, so it is counted rather than hidden.
-      calls: (scored.reduce((total, result) => total + (result.trials?.head ?? 1), 0) + ablationRows.length) * 2,
+      calls: (scored.reduce((total, result) => total + (result.trials?.head ?? 1), 0) + ablationRows.length) * 2 +
+        scoredTriggers.filter((result) => result.method === TRIGGER_METHOD_RUNNER).length,
       // The ids actually scored, so the gate can tell a newly added item apart
       // from one that regressed without re-deriving the selection.
-      scoredIds: [...scored, ...tasks.filter((task) => task.judged !== "skip")].map((result) => result.id).sort(),
-      skipped: results.filter((result) => result.judged === "skip").map(({ id, reason }) => ({ id, reason })),
+      scoredIds: [...scoredAll, ...tasks.filter((task) => task.judged !== "skip")].map((result) => result.id).sort(),
+      skipped: [...results, ...triggerResults].filter((result) => result.judged === "skip").map(({ id, reason, method }) => ({ id, reason, method })),
       // A --weekly run SAYS SO ON THE ROW. The weekly graduation pass
       // (scripts/graduate-golden.mjs) promotes a capability case on this
       // evidence and no other: a pull-request run scores a 40-item subset
@@ -2123,9 +2293,10 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       // a measured case whose record did not come back: the difference between
       // "not asked" and "asked, no answer". The efficiency block counts only
       // the cases that were asked.
-      results: scored.map((result) => ({
+      results: scoredAll.map((result) => ({
         id: result.id,
         judged: result.judged,
+        ...(result.method === undefined ? {} : { method: result.method }),
         passK: result.passK ?? (result.trials === undefined
           ? result.judged === "pass"
           : result.trials.headPassed === result.trials.head),

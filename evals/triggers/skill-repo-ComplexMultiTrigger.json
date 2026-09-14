@@ -1,5 +1,6 @@
 {
-  "name": "repo-ComplexMultiTrigger",
+  "name": "repo-complexmultitrigger",
+  "repo": "ComplexMultiTrigger",
   "kind": "skill",
   "note": "Whether a run with no CMT checkout open reaches for its rules, and whether a run standing inside CMT leaves the skill alone because the CLI has already loaded AGENTS.md.",
   "cases": [
@@ -41,6 +42,13 @@
     },
     {
       "id": "skill-repo-ComplexMultiTrigger-neg-standing-inside",
+      "route": {
+        "caller": "cli",
+        "subject": { "kind": "repo", "repo": "ComplexMultiTrigger" },
+        "cwd": "/work/ComplexMultiTrigger",
+        "repoDirs": { "ComplexMultiTrigger": "/work/ComplexMultiTrigger" },
+        "expected": { "granted": ["write", "know-research"], "refused": [], "repoRulesSource": "native" }
+      },
       "negative": true,
       "prompt": "You are in the ComplexMultiTrigger checkout, adding a sweep method. Say what to change.",
       "why": "a run standing inside CMT has already been given AGENTS.md by the CLI, so the skill must stay silent rather than carry a second copy of it into the prompt",

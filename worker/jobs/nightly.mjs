@@ -291,6 +291,18 @@ function git(dir, ...args) {
   });
 }
 
+// `syncedAt` orders replacement posts. It must therefore name the immutable
+// commit that supplied the bytes, rather than the later instant the worker
+// happened to make its HTTP request: a delayed old checkout must stay older
+// than a catalog or ruleset that has already landed.
+function commitSyncedAt(dir, commit) {
+  const seconds = Number(git(dir, "log", "-1", "--format=%ct", commit).trim());
+  if (!Number.isSafeInteger(seconds) || seconds < 0) {
+    throw new Error(`${commit.slice(0, 12)} has no finite commit time`);
+  }
+  return seconds * 1000;
+}
+
 // THE STEP ORDER, and where a step is inserted.
 //
 //   delivery           needs no checkout and no lock: asks Convex what prelude
@@ -2366,6 +2378,7 @@ export async function postStep(run, deps = {}) {
   const skills = await skillsHalf(run, {
     fetch,
     commit: prelude.commit,
+    syncedAt: prelude.committedAt,
     pushed: prelude.pushed,
     publishSkills: deps.publishSkills,
     checkouts: deps.checkouts ?? REPO_CHECKOUTS,
@@ -2499,7 +2512,7 @@ export function readSkillCatalog(outDir, published, { skillDirName, referencePat
  * the base post has already happened by the time this is called, and losing it
  * to a bad skill body is the one outcome this shape exists to prevent.
  */
-async function skillsHalf(run, { fetch, commit, pushed, publishSkills, checkouts, dirs }) {
+async function skillsHalf(run, { fetch, commit, syncedAt, pushed, publishSkills, checkouts, dirs }) {
   let published;
   let catalog;
   try {
@@ -2554,7 +2567,7 @@ async function skillsHalf(run, { fetch, commit, pushed, publishSkills, checkouts
   try {
     await fetch(run.env, "/tts/skills", {
       commit: published.commit,
-      syncedAt: Date.now(),
+      syncedAt,
       pushed,
       skills: catalog,
       refused: published.refused,
@@ -2569,7 +2582,9 @@ async function skillsHalf(run, { fetch, commit, pushed, publishSkills, checkouts
     `[nightly] skills: ${catalog.length} skill(s) at WikiTom ${published.commit.slice(0, 12)} -> ${dirs.join(", ")}` +
       `${published.refused.length > 0 ? `; refused ${published.refused.map((entry) => entry.name).join(", ")}` : ""}`,
   );
-  return { commit: published.commit, count: catalog.length, dirs: [...dirs], refused: published.refused };
+  // This field is created only after convexFetch has returned, which means it
+  // names a catalog Convex accepted rather than a request it refused.
+  return { commit: published.commit, count: catalog.length, dirs: [...dirs], refused: published.refused, syncedAt };
 }
 
 // ── the golden export ────────────────────────────────────────────────────────
@@ -2671,7 +2686,7 @@ export async function deliveryStep(run, deps = {}) {
 // costs itself and nothing else: each of those is one failure row and a
 // `continue`, and the repos after it still post.
 export async function repoRulesStep(run, deps = {}) {
-  const { fetch = convexFetch, checkouts = REPO_CHECKOUTS } = deps;
+  const { fetch = convexFetch, checkouts = REPO_CHECKOUTS, commitTime = commitSyncedAt } = deps;
   const posted = [];
   for (const { repo, dir } of checkouts) {
     if (!fs.existsSync(path.join(dir, ".git"))) {
@@ -2701,11 +2716,13 @@ export async function repoRulesStep(run, deps = {}) {
       continue;
     }
     let res;
+    let syncedAt;
     try {
+      syncedAt = commitTime(dir, collected.commit);
       res = await fetch(run.env, "/tts/repo-rules", {
         repo,
         commit: collected.commit,
-        syncedAt: Date.now(),
+        syncedAt,
         files: collected.rules.map(({ path: filePath, body, bytes }) => ({ path: filePath, body, bytes })),
       });
     } catch (error) {
@@ -2715,7 +2732,9 @@ export async function repoRulesStep(run, deps = {}) {
     console.log(
       `[nightly] repo-rules: ${res.files} file(s) for ${repo} at ${collected.commit.slice(0, 12)} — ${collected.rules.map((r) => r.path).join(", ")}`,
     );
-    posted.push({ repo, commit: collected.commit, files: collected.rules.map((r) => r.path) });
+    // As with the skills catalog, report a sync time only once the replacement
+    // door has acknowledged the immutable commit.
+    posted.push({ repo, commit: collected.commit, files: collected.rules.map((r) => r.path), syncedAt });
   }
   return { repos: posted };
 }

@@ -22,7 +22,7 @@
 // is deliberate rather than lazy.
 
 import { headings, parseFrontmatter } from "./markdown-sections.mjs";
-import { AREAS_DIR, areaCategories, areaName, isAreaPath, SKILL_PREFIX } from "../../scripts/skills.mjs";
+import { AREAS_DIR, areaCategories, areaName, bareSkillName, isAreaPath, repoSkillName } from "../../scripts/skills.mjs";
 
 /** Kept under the name context-relevance.mjs threw, because this class moved
  * out of that file along with the functions that throw it. */
@@ -391,12 +391,7 @@ function byGrantOrder(a, b) {
 function publishedSet(published) {
   if (published === null || published === undefined) return new Set();
   const names = published instanceof Set ? [...published] : [...(published ?? [])];
-  return new Set(names.map(bareName));
-}
-
-function bareName(name) {
-  const text = String(name ?? "");
-  return text.startsWith(SKILL_PREFIX) ? text.slice(SKILL_PREFIX.length) : text;
+  return new Set(names.map(bareSkillName));
 }
 
 /** The refusal a wanted name gets when the publication does not carry it. The
@@ -573,7 +568,7 @@ export function routeSkills(input) {
         repoRulesSource = "native";
         continue;
       }
-      wanted.push(`repo-${repo}`);
+      wanted.push(repoSkillName(repo));
     }
   }
 
@@ -583,7 +578,7 @@ export function routeSkills(input) {
   // failure than a session told in one line that the page is not there.
   const granted = [];
   const refused = [];
-  for (const name of [...new Set(wanted)]) {
+  for (const name of [...new Set(wanted.map(bareSkillName))]) {
     if (catalog.has(name)) granted.push(name);
     else refused.push({ name, why: NO_BODY });
   }

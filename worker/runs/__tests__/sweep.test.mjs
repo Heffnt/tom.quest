@@ -87,11 +87,15 @@ function largeDiskFs() {
 }
 
 describe("run sweep", () => {
-  it("keeps the first Codex catalog while a later tail reads its skill", async () => {
+  it("carries a Codex run's metadata through a second file part without session_meta", async () => {
     const dir = temp(); const project = path.join(dir, "codex", "project"); fs.mkdirSync(project, { recursive: true });
     const file = path.join(project, "rollout.jsonl");
     const catalog = codexSkillsInstructions({ roots: { r0: "C:/skills" }, skills: [{ name: "tom-write", file: "r0/tom-write/SKILL.md" }] });
-    fs.writeFileSync(file, jsonl([codexMeta(), codexTurnContext(), codexDeveloper(catalog)]));
+    fs.writeFileSync(file, jsonl([
+      codexMeta({ id: "child", parent: "parent", cwd: "C:/work", cliVersion: "0.153.3", git: { branch: "main", commit_hash: "a".repeat(40) }, baseInstructions: "original instructions", contextWindow: 272_000 }),
+      codexTurnContext({ model: "gpt-5.6-terra", effort: "xhigh" }),
+      codexDeveloper(catalog),
+    ]));
     let stat = fs.statSync(file);
     const item = { runtime: "codex", host: "laptop", root: path.dirname(project), project: "project", threadId: "rollout", kind: "root", path: file, mtimeMs: stat.mtimeMs, bytes: stat.size };
     const ingests = [];
@@ -101,11 +105,30 @@ describe("run sweep", () => {
     };
     const stateDir = path.join(dir, "state");
     await sweepRunFile(item, { stateDir, store: store(), post, now: () => NOW });
+    const first = ingests.at(-1).run;
     fs.appendFileSync(file, jsonl([codexToolCall({ args: { path: "C:/skills/tom-write/SKILL.md" } })]));
     stat = fs.statSync(file); item.mtimeMs = stat.mtimeMs; item.bytes = stat.size;
     await sweepRunFile(item, { stateDir, store: store(), post, now: () => NOW + 1 });
-
-    expect(ingests.at(-1).run.context).toMatchObject({ skillsOffered: ["tom-write"], skillsUsed: ["tom-write"] });
+    const tail = ingests.at(-1).run;
+    expect(tail).toMatchObject({
+      runId: first.runId,
+      parentRunId: first.parentRunId,
+      rootRunId: first.rootRunId,
+      model: "gpt-5.6-terra",
+      sessionModel: "gpt-5.6-terra",
+      runtimeVersion: "0.153.3",
+      startedAt: first.startedAt,
+      context: {
+        cwd: "C:/work",
+        gitBranch: "main",
+        gitCommit: "a".repeat(40),
+        baseInstructionsHash: first.context.baseInstructionsHash,
+        contextWindow: 272_000,
+        skillsOffered: ["tom-write"],
+        skillsUsed: ["tom-write"],
+      },
+    });
+    expect(tail.runId).not.toContain("unknown");
   });
 
   it("stores first, pages at 200 rows, and advances only through the delivered page", async () => {

@@ -201,6 +201,9 @@ function stateAfterDelivery(item, response, now) {
     endSeen: item.endSeen,
     reportedAbandoned: item.markAbandoned || false,
     envelopeMtimeMs: item.envelopeMtimeMs ?? 0,
+    // A Codex tail often starts after session_meta. Retain the accepted run
+    // and its safe meta facts so that tail has the same identity and context.
+    ...(item.payload.run.runner === "codex" ? { run: item.payload.run, codexMeta: item.codexMeta } : {}),
   };
 }
 
@@ -329,7 +332,7 @@ async function eventPost(post, event) {
   if (event) await post("/tts/event", event);
 }
 
-function queuePages({ merged, overflows, endSeen, envelopeMtimeMs, sourceBytes, priorState, now }) {
+function queuePages({ merged, overflows, endSeen, envelopeMtimeMs, sourceBytes, priorState, now, codexMeta }) {
   const pages = Math.max(1, Math.ceil(merged.rows.length / 200));
   const createdAt = now();
   const boundaries = [];
@@ -358,6 +361,7 @@ function queuePages({ merged, overflows, endSeen, envelopeMtimeMs, sourceBytes, 
       pages,
       endSeen,
       envelopeMtimeMs,
+      ...(merged.run.runner === "codex" ? { codexMeta } : {}),
       cursorProofs,
       payload: {
         run,
@@ -394,7 +398,7 @@ async function parseAndStore(item, { stateDir, store, fs, post, now, markAbandon
   const sourceText = storeText(sourceBytes);
   const common = { path: item.path, text: textFromLine(sourceText, fromLine), host: item.host, fileVersion: stored.fileVersion, baseLine: fromLine };
   let parsed;
-  if (item.runtime !== "claude") parsed = parseCodexFile({ ...common, contextText: sourceText });
+  if (item.runtime !== "claude") parsed = parseCodexFile({ ...common, contextText: sourceText, priorRun: previous?.run, priorMeta: previous?.codexMeta });
   else if (item.kind === "subagent") {
     // A child's sidecar carries its depth and its spawning tool-use id, so it
     // is part of the record and gets its own immutable object beside the run.
@@ -413,7 +417,7 @@ async function parseAndStore(item, { stateDir, store, fs, post, now, markAbandon
   await eventPost(post, merged.event);
   const split = splitOverflow(merged.rows);
   merged.rows = split.rows;
-  return { merged, overflows: split.overflows, endSeen: Boolean(envelope?.end && merged.envelopeApplied), sourceBytes };
+  return { merged, overflows: split.overflows, endSeen: Boolean(envelope?.end && merged.envelopeApplied), sourceBytes, codexMeta: parsed.codexMeta };
 }
 
 async function refuseChangedFile(item, state, sourceBytes, { stateDir, post, fs, now, kind }) {
@@ -446,7 +450,7 @@ export async function sweepRunFile(item, {
     && registrationMtime <= (state.envelopeMtimeMs ?? 0)) return { skipped: "unchanged" };
 
   const prepared = await parseAndStore(item, { stateDir, store, fs, post, now, markAbandoned, onStoreVerified });
-  const pages = queuePages({ merged: prepared.merged, overflows: prepared.overflows, endSeen: prepared.endSeen, envelopeMtimeMs: registrationMtime, sourceBytes: prepared.sourceBytes, priorState: state, now });
+  const pages = queuePages({ merged: prepared.merged, overflows: prepared.overflows, endSeen: prepared.endSeen, envelopeMtimeMs: registrationMtime, sourceBytes: prepared.sourceBytes, priorState: state, now, codexMeta: prepared.codexMeta });
   for (let index = 0; index < pages.length; index += 1) {
     const page = pages[index];
     try {

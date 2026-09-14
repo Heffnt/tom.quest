@@ -16,7 +16,7 @@
 //     which is what makes it the cache boundary.
 //
 //   THE GRANTS — about two hundred bytes naming the skills this run may load
-//     (`write`, `know-research`, `repo-tom.quest`, …), and the ones the router
+//     (`write`, `know-research`, `repo-tom-quest`, …), and the ones the router
 //     wanted that the catalog does not carry. The run loads a body itself, once,
 //     only if it needs it.
 //
@@ -355,7 +355,7 @@ async function readRecord(
  * here and every repo the subject names is granted as a skill, even to a run
  * standing in that checkout. What would close it is the session's own working
  * directory ON THE ROW at insert time, passed through to this call; until that
- * exists, a box session in tom.quest carries a `repo-tom.quest` grant it does
+ * exists, a box session in tom.quest carries a `repo-tom-quest` grant it does
  * not need, which costs one line of the grant block and no bytes of body.
  *
  * FAILS CLOSED, like every other reader of the publication: a deployment with

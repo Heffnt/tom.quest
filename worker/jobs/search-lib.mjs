@@ -675,13 +675,6 @@ async function noteSkillAsk(env, ask) {
   }
 }
 
-/** `know-research` from `know-research` OR `tom-know-research`. The prefix is a
- * directory-naming fact and nothing a caller is corrected about. */
-function bareSkillName(name, prefix) {
-  const text = String(name ?? "").trim();
-  return text.startsWith(prefix) ? text.slice(prefix.length) : text;
-}
-
 /** THE GROUP IS DERIVED, NOT READ. A SKILL.md's frontmatter carries `name` and
  * `description` and nothing else, by design (scripts/skills.mjs renderSkillMd
  * says why), so the group comes off the name: `write` is write, `know-*` is
@@ -715,10 +708,11 @@ function frontmatterText(value) {
  * harness's — is invisible here, because this command answers one question:
  * what of Tom's can this run load.
  */
-export function readSkillCatalog(dir, { prefix, groups }) {
+export function readSkillCatalog(dir, { prefix, groups, bareName }) {
   if (!fs.existsSync(dir)) return [];
   const catalog = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+  const directories = new Map();
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
     if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue;
     const skillDir = path.join(dir, entry.name);
     const file = path.join(skillDir, "SKILL.md");
@@ -726,7 +720,12 @@ export function readSkillCatalog(dir, { prefix, groups }) {
     // interrupted between those steps leaves no loadable skill to list.
     if (!fs.existsSync(file)) continue;
     const { fields, body } = parseFrontmatter(fs.readFileSync(file, "utf8"));
-    const name = bareSkillName(entry.name, prefix);
+    const name = bareName(entry.name);
+    const firstDirectory = directories.get(name);
+    if (firstDirectory !== undefined) {
+      throw new Error(`skill directories ${JSON.stringify(firstDirectory)} and ${JSON.stringify(entry.name)} both map to ${name}`);
+    }
+    directories.set(name, entry.name);
     catalog.push({
       name,
       group: skillGroup(name, groups),
@@ -773,13 +772,13 @@ export function skillNearMisses(name, catalog, groups) {
  * because the caller asked for something by name and got nothing.
  */
 export async function skillResults(options, env) {
-  const { SKILL_PREFIX, SKILL_GROUPS } = await loadSkillsModule();
+  const { SKILL_PREFIX, SKILL_GROUPS, bareSkillName } = await loadSkillsModule();
   const searched = options.skillsDir === undefined ? skillRoots(env) : [path.resolve(options.skillsDir)];
   const dir = searched.find((candidate) => fs.existsSync(candidate)) ?? null;
-  const catalog = dir === null ? [] : readSkillCatalog(dir, { prefix: SKILL_PREFIX, groups: SKILL_GROUPS });
+  const catalog = dir === null ? [] : readSkillCatalog(dir, { prefix: SKILL_PREFIX, groups: SKILL_GROUPS, bareName: bareSkillName });
 
   if (options.skill !== undefined) {
-    const asked = bareSkillName(options.skill, SKILL_PREFIX);
+    const asked = bareSkillName(options.skill);
     const found = catalog.find((skill) => skill.name.toLocaleLowerCase() === asked.toLocaleLowerCase());
     if (found === undefined) {
       const near = skillNearMisses(asked, catalog, SKILL_GROUPS);

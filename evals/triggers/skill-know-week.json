@@ -1,90 +1,54 @@
 {
   "name": "know-week",
   "kind": "skill",
-  "note": "Whether a run reaches for his recurring week before it reads a date or places anything in one, and leaves it alone when nothing about the answer depends on a day.",
+  "note": "Whether a run reaches for the recurring-week page when it plans around a day or a recurring commitment, and leaves it alone for work with no schedule dependency.",
   "cases": [
     {
-      "id": "skill-know-week-pos-wednesday-slot",
+      "id": "skill-know-week-pos-place-session",
       "negative": false,
-      "prompt": "Find him two hours on Wednesday for the training-plan session, and name every commitment you worked around.",
-      "why": "a Wednesday slot proposed without the recurring week in front of it lands on a practice or on D&D, and neither is on a synced calendar to catch it",
-      "expect": {
-        "mustName": [
-          "D&D",
-          "practice"
-        ]
-      },
+      "prompt": "Find two hours on a specified weekday for a planning session and name the recurring commitments you worked around.",
+      "why": "placing work on a day requires the recurring-week page so the plan accounts for the commitments already on that day.",
+      "expect": { "mustName": ["commitment"] },
       "confirmedByTom": false
     },
     {
-      "id": "skill-know-week-pos-friday",
+      "id": "skill-know-week-pos-day-commitments",
       "negative": false,
-      "prompt": "Tom asks what he has on Friday. Answer him.",
-      "why": "his Friday is three fixed meetings, and a Friday answered out of the calendar feeds alone would miss the ones that are only on this page",
-      "expect": {
-        "mustName": [
-          "Moraffah",
-          "Henry"
-        ]
-      },
+      "prompt": "What recurring commitments fall on a specified weekday?",
+      "why": "the recurring-week page is the source for commitments that may not be in a calendar feed.",
+      "expect": { "mustName": ["recurring"] },
       "confirmedByTom": false
     },
     {
-      "id": "skill-know-week-pos-practices",
+      "id": "skill-know-week-pos-recurring-event",
       "negative": false,
-      "prompt": "Tom asks when the climbing team practises. Answer him.",
-      "why": "the practices are on no synced calendar at all, so this page is the only place the answer exists and an invented time is the failure mode",
-      "expect": {
-        "mustName": [
-          "Monday",
-          "Wednesday"
-        ]
-      },
+      "prompt": "When does a recurring group event take place?",
+      "why": "a recurring event is answered from the recurring-week page rather than guessed from a calendar.",
+      "expect": { "mustName": ["week"] },
       "confirmedByTom": false
     },
     {
       "id": "skill-know-week-neg-schema-fields",
       "negative": true,
-      "prompt": "List the fields convex/schema.ts declares on the runs table.",
-      "why": "a field list is read off the schema, and no day of his week changes it",
-      "expect": {
-        "mustNotName": [
-          "Monday",
-          "Wednesday",
-          "practice",
-          "D&D"
-        ]
-      },
+      "prompt": "List the fields a database table declares.",
+      "why": "a field list is read from the schema and has no schedule dependency.",
+      "expect": { "mustNotName": ["weekday", "recurring commitment", "schedule page"] },
       "confirmedByTom": false
     },
     {
       "id": "skill-know-week-neg-commit-message",
       "negative": true,
-      "prompt": "Write the commit message for a change to the Gmail poller.",
-      "why": "a commit message is for the repository and carries no date of his",
-      "expect": {
-        "mustNotName": [
-          "Monday",
-          "Wednesday",
-          "practice",
-          "D&D"
-        ]
-      },
+      "prompt": "Write the commit message for a change to a service poller.",
+      "why": "a commit message is for the repository and carries no recurring-week information.",
+      "expect": { "mustNotName": ["weekday", "recurring commitment", "schedule page"] },
       "confirmedByTom": false
     },
     {
-      "id": "skill-know-week-neg-merge-gate-explanation",
+      "id": "skill-know-week-neg-mechanism-explanation",
       "negative": true,
-      "prompt": "Explain to Tom what a head row of the merge gate is.",
-      "why": "a ground-up explanation of a mechanism has no day in it, so his recurring week is nothing but length here",
-      "expect": {
-        "mustNotName": [
-          "Monday",
-          "Wednesday",
-          "practice",
-          "schedule page"
-        ]
-      },
+      "prompt": "Explain a repository mechanism to Tom.",
+      "why": "an explanation of a mechanism has no schedule dependency.",
+      "expect": { "mustNotName": ["weekday", "recurring commitment", "schedule page"] },
       "confirmedByTom": false
     }
   ]

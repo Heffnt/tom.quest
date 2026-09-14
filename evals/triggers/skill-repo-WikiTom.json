@@ -1,5 +1,6 @@
 {
-  "name": "repo-WikiTom",
+  "name": "repo-wikitom",
+  "repo": "WikiTom",
   "kind": "skill",
   "note": "Whether a run with no WikiTom checkout open reaches for the vault's rules, and whether a run standing inside WikiTom leaves the skill alone because the CLI has already loaded AGENTS.md.",
   "cases": [
@@ -42,6 +43,13 @@
     },
     {
       "id": "skill-repo-WikiTom-neg-standing-inside",
+      "route": {
+        "caller": "cli",
+        "subject": { "kind": "repo", "repo": "WikiTom" },
+        "cwd": "/work/WikiTom",
+        "repoDirs": { "WikiTom": "/work/WikiTom" },
+        "expected": { "granted": ["write", "know-agent-systems"], "refused": [], "repoRulesSource": "native" }
+      },
       "negative": true,
       "prompt": "You are in the WikiTom checkout, editing model-of-tom/intent.md. Say what to change.",
       "why": "a run standing inside the vault has already been given AGENTS.md by the CLI, so the skill must stay silent rather than carry a second copy of it into the prompt",

@@ -548,23 +548,36 @@ function codexParent(meta) {
   return null;
 }
 
-export function parseCodexFile({ path, text, contextText = text, host, fileVersion, fromLine = 0, baseLine: suppliedBaseLine = fromLine }) {
+export function parseCodexFile({ path, text, contextText = text, host, fileVersion, fromLine = 0, baseLine: suppliedBaseLine = fromLine, priorRun = null, priorMeta = null }) {
   // `baseLine` is the absolute source-line ordinal of text's first supplied
   // line. `fromLine` remains its older spelling for callers that already use
   // it; an explicit baseLine wins when both are present.
   const baseLine = suppliedBaseLine ?? fromLine;
   if (!Number.isInteger(baseLine) || baseLine < 0) throw new RangeError("baseLine must be a non-negative integer");
+  const prior = baseLine > 0 && priorRun?.runner === "codex" ? priorRun : null;
+  const priorParentId = typeof prior?.parentRunId === "string"
+    ? prior.parentRunId.replace(`codex:${host}:`, "")
+    : null;
   const { lines, incompleteTail } = fileLines(text); const rows = [], children = [], attachments = [], dropped = {};
   const firstFileTimestamp = lines.map((raw) => { try { return millis(JSON.parse(raw).timestamp); } catch { return 0; } }).find(Boolean) ?? 0;
   const drop = (kind) => { dropped[kind] = (dropped[kind] ?? 0) + 1; };
-  let meta = {}, runId, parentId, model, effort, startedAt = firstFileTimestamp, lastLineAt = 0, runtimeVersion, finalTextSeq, toolCalls = 0, approvalPolicy, sandboxPolicy, modelChangeReported = false;
+  let meta = priorMeta && typeof priorMeta === "object" ? { ...priorMeta } : {};
+  let runId = prior?.runId, parentId = codexParent(meta) ?? priorParentId, model = prior?.model, effort = prior?.effort,
+    startedAt = prior?.startedAt ?? firstFileTimestamp, lastLineAt = prior?.lastLineAt ?? 0,
+    runtimeVersion = prior?.runtimeVersion, finalTextSeq, toolCalls = 0, approvalPolicy, sandboxPolicy, modelChangeReported = false;
   let currentTurn = 0; const turns = new Map(); let lastTokenCount = null; const usageRecords = []; let taskComplete = null; let lastAssistantText = null;
   const longContextRequestKeys = new Set();
   for (let relativeLine = 0; relativeLine < lines.length; relativeLine += 1) {
     const line = baseLine + relativeLine; const raw = lines[relativeLine]; if (!raw.trim()) { drop("_blank"); continue; }
     let entry; try { entry = JSON.parse(raw); } catch { rowFactory({ path, fileVersion, runId: runId ?? `codex:${host}:unknown`, rows, line, turn: currentTurn, sourceKind: "malformed-json", timestamp: 0 })("error", { error: `malformed JSON at line ${line}` }); continue; }
     const payload = entry.payload ?? {}; const timestamp = millis(entry.timestamp); startedAt ||= timestamp; lastLineAt = timestamp || lastLineAt;
-    if (entry.type === "session_meta") { meta = payload; const id = payload.id ?? payload.session_id ?? "unknown"; runId = `codex:${host}:${id}`; parentId = codexParent(payload); runtimeVersion = payload.cli_version; }
+    if (entry.type === "session_meta") {
+      meta = { ...meta, ...payload };
+      const id = payload.id ?? payload.session_id ?? "unknown";
+      runId = `codex:${host}:${id}`;
+      parentId = codexParent(payload) ?? parentId;
+      runtimeVersion ??= payload.cli_version;
+    }
     const turnId = payload.turn_id ?? payload.turnId;
     if (turnId !== undefined) { if (!turns.has(turnId)) turns.set(turnId, turns.size); currentTurn = turns.get(turnId); }
     const sourceKind = `${entry.type ?? "unknown"}/${payload.type ?? "unknown"}`;
@@ -610,16 +623,19 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
     // whether it duplicates the final assistant message.
     if (rows.length === rowsBefore && Object.values(dropped).reduce((sum, count) => sum + count, 0) === dropsBefore && !(entry.type === "event_msg" && payload.type === "task_complete")) drop(sourceKind);
   }
-  // A full ingest assembles context from the metadata in the file. A tail has
-  // no synthetic context row, and its run facts are intentionally tail-local.
-  for (const raw of lines) { try { const entry = JSON.parse(raw); const p = entry.payload ?? {}; if (entry.type === "session_meta") meta = p; if (entry.type === "turn_context") { model ??= p.model; effort ??= p.effort; approvalPolicy ??= p.approval_policy; sandboxPolicy ??= p.sandbox_policy?.type; } } catch {} }
-  const id = meta.id ?? meta.session_id ?? "unknown"; runId = `codex:${host}:${id}`; parentId = codexParent(meta);
+  // A tail normally has no session_meta. The sweeper gives it the accepted run
+  // and its safe metadata facts, so it keeps the original identity and context
+  // instead of inventing an unknown run while it adds new transcript rows.
+  for (const raw of lines) { try { const entry = JSON.parse(raw); const p = entry.payload ?? {}; if (entry.type === "session_meta") meta = { ...meta, ...p }; if (entry.type === "turn_context") { model ??= p.model; effort ??= p.effort; approvalPolicy ??= p.approval_policy; sandboxPolicy ??= p.sandbox_policy?.type; } } catch {} }
+  const id = meta.id ?? meta.session_id;
+  runId = id ? `codex:${host}:${id}` : runId ?? `codex:${host}:unknown`;
+  parentId = codexParent(meta) ?? parentId;
   // A catalog and its SKILL.md read can land in different sweep tails, so the
   // tail alone cannot tell whether that read used an offered skill.
   const contextLines = fileLines(contextText).lines;
   const developer = contextLines.map((raw) => { try { return JSON.parse(raw); } catch { return null; } }).find((entry) => entry?.type === "response_item" && entry.payload?.type === "message" && entry.payload?.role === "developer");
   const prompt = (developer?.payload?.content ?? []).map((part) => part.text ?? part.input_text ?? "").join("\n");
-  const mot = modelOfTomFromPrompt(prompt);
+  const mot = prompt ? modelOfTomFromPrompt(prompt) : {};
   const tools = [];
   // The same pass collects what each tool call was ASKED to do, because that
   // text is the only evidence a rollout leaves that a SKILL.md was read.
@@ -637,7 +653,23 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
   }
   const offered = codexSkillsOffered(prompt);
   const permissionMode = sandboxPolicy ? `approval=${approvalPolicy ?? "unknown"}; sandbox=${sandboxPolicy}` : approvalPolicy;
-  const context = { ...mot, skillsOffered: sorted(offered.names), skillsUsed: sorted(codexSkillsUsed(offered, toolCallTexts)), tools: sorted(tools), hooks: [], ...(meta.cwd ? { cwd: meta.cwd } : {}), ...(meta.git?.branch ? { gitBranch: meta.git.branch } : {}), ...(meta.git?.commit_hash ? { gitCommit: meta.git.commit_hash } : {}), ...(meta.base_instructions?.text ? { baseInstructionsHash: sha256(meta.base_instructions.text) } : {}), ...(meta.originator ? { originator: meta.originator } : {}), ...(meta.context_window ? { contextWindow: meta.context_window } : {}), ...(permissionMode ? { permissionMode } : {}) };
+  const priorContext = prior?.context && typeof prior.context === "object" ? prior.context : {};
+  const context = {
+    ...priorContext,
+    ...mot,
+    skillsOffered: offered.names.length > 0 ? sorted(offered.names) : priorContext.skillsOffered ?? [],
+    skillsUsed: toolCallTexts.length > 0 ? sorted(codexSkillsUsed(offered, toolCallTexts)) : priorContext.skillsUsed ?? [],
+    tools: tools.length > 0 ? sorted(tools) : priorContext.tools ?? [],
+    hooks: priorContext.hooks ?? [],
+    ...(meta.cwd ? { cwd: meta.cwd } : {}),
+    ...(meta.git?.branch ? { gitBranch: meta.git.branch } : {}),
+    ...(meta.git?.commit_hash ? { gitCommit: meta.git.commit_hash } : {}),
+    ...(meta.base_instructions?.text ? { baseInstructionsHash: sha256(meta.base_instructions.text) } : {}),
+    ...(meta.baseInstructionsHash ? { baseInstructionsHash: meta.baseInstructionsHash } : {}),
+    ...(meta.originator ? { originator: meta.originator } : {}),
+    ...(meta.context_window ? { contextWindow: meta.context_window } : {}),
+    ...(permissionMode ? { permissionMode } : {}),
+  };
   if (baseLine === 0) rows.unshift({ seq: 0, turn: 0, kind: "context", content: { ...(model ? { model } : {}), ...context, prompt }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: 0, block: 0, sourceKind: "context" }), createdAt: startedAt });
   if (taskComplete?.message && taskComplete.message !== lastAssistantText) { const row = { seq: sourceSeq(taskComplete.line, 998), turn: taskComplete.turn, kind: "assistant-text", content: { text: taskComplete.message }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: taskComplete.line, block: 998, sourceKind: "event_msg/task_complete" }), createdAt: taskComplete.timestamp }; rows.push(row); finalTextSeq = row.seq; }
   else if (taskComplete) drop("event_msg/task_complete");
@@ -654,9 +686,23 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
   }), { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0, cacheWriteBreakdownKnown: true, outputTokens: 0, thinkingTokens: 0, totalTokens: 0 });
   totals.longContextRequests = longContextRequestKeys.size;
   const price = costOf({ model, totals });
-  const rootRunId = parentId ? `codex:${host}:${parentId}` : runId;
-  const run = { runId, ...(parentId ? { parentRunId: rootRunId } : {}), rootRunId, depth: parentId ? 1 : 0, linkKnown: !parentId, origin: "unknown", host, runner: "codex", ...(model ? { model } : {}), ...(sessionModelOf(model) ? { sessionModel: sessionModelOf(model) } : {}), ...(effort ? { effort } : {}), ...(runtimeVersion ?? meta.cli_version ? { runtimeVersion: runtimeVersion ?? meta.cli_version } : {}), parserVersion: PARSER_VERSION, kind: parentId ? "codex-child" : "unknown", status: "unknown", startedAt, lastLineAt, context, attachments, outcome: { ...(finalTextSeq !== undefined ? { finalTextSeq } : {}), totals, ...(price === null ? {} : { costUsd: price, priceTableVersion: priceTableVersion() }), turns: Math.max(1, turns.size), toolCalls }, file: { path, sourceHash: sha256(Buffer.from(text)), storedHash: fileVersion, bytes: Buffer.byteLength(text), storedBytes: 0, committedLine: baseLine + lines.length, committedPrefixSha256: prefixHash(lines, lines.length), incompleteTail } };
-  return finishResult({ run, rows, children, attachments, lastLine: baseLine + lines.length, incompleteTail, dropped });
+  const parentRunId = prior?.parentRunId ?? (parentId ? `codex:${host}:${parentId}` : undefined);
+  const rootRunId = prior?.rootRunId ?? parentRunId ?? runId;
+  const run = { runId, ...(parentRunId ? { parentRunId } : {}), rootRunId, depth: parentId ? 1 : 0, linkKnown: !parentId, origin: "unknown", host, runner: "codex", ...(model ? { model } : {}), ...(sessionModelOf(model) ? { sessionModel: sessionModelOf(model) } : {}), ...(effort ? { effort } : {}), ...(runtimeVersion ?? meta.cli_version ? { runtimeVersion: runtimeVersion ?? meta.cli_version } : {}), parserVersion: PARSER_VERSION, kind: parentId ? "codex-child" : "unknown", status: "unknown", startedAt, lastLineAt, context, attachments, outcome: { ...(finalTextSeq !== undefined ? { finalTextSeq } : {}), totals, ...(price === null ? {} : { costUsd: price, priceTableVersion: priceTableVersion() }), turns: Math.max(1, turns.size), toolCalls }, file: { path, sourceHash: sha256(Buffer.from(text)), storedHash: fileVersion, bytes: Buffer.byteLength(text), storedBytes: 0, committedLine: baseLine + lines.length, committedPrefixSha256: prefixHash(lines, lines.length), incompleteTail } };
+  const result = finishResult({ run, rows, children, attachments, lastLine: baseLine + lines.length, incompleteTail, dropped });
+  // This is sweep state only, never a Convex run field. It keeps the pieces a
+  // later tail needs without copying base_instructions text onto disk again.
+  result.codexMeta = {
+    ...(id ? { id } : {}),
+    ...(parentId ? { parent_thread_id: parentId } : {}),
+    ...(meta.cwd ? { cwd: meta.cwd } : {}),
+    ...(runtimeVersion ? { cli_version: runtimeVersion } : {}),
+    ...(meta.git ? { git: meta.git } : {}),
+    ...(meta.originator ? { originator: meta.originator } : {}),
+    ...(meta.context_window ? { context_window: meta.context_window } : {}),
+    ...(context.baseInstructionsHash ? { baseInstructionsHash: context.baseInstructionsHash } : {}),
+  };
+  return result;
 }
 
 function filesUnder(directory, fs, found = []) {

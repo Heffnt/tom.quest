@@ -59,7 +59,9 @@ export const POLL_TIMEOUT_MS = 75 * 60 * 1000;
  * is granted. A change to any of the three changes what Tom's jobs are given
  * with nothing else scoring it. evals/triggers/** is watched for the reason
  * evals/golden/** is: it is the set, and a change to the set changes what a
- * comparison means.
+ * comparison means. It is not ordinarily a pull-request coverage item: only a
+ * skill description or router change may pay with a trigger case, because that
+ * is the one change a trigger directly scores.
  *
  * THE HARNESS'S OWN FILES ARE STILL NOT WATCHED. This one and
  * worker/jobs/evals.mjs are the machinery that runs the measurement, not the
@@ -93,7 +95,12 @@ export const WATCHED_PATHS = [
 
 /** Where a golden item lives. A change that ships one of these is the thing
  *  the coverage rule asks for. */
-const ITEM_PREFIXES = ["evals/golden/", "evals/triggers/"];
+const ITEM_PREFIXES = ["evals/golden/"];
+const TRIGGER_COVERED_SKILL_PATHS = new Set([
+  "scripts/skills.mjs",
+  "scripts/publish-skills.mjs",
+  "worker/jobs/skill-router.mjs",
+]);
 
 /**
  * One changed path against one WATCHED_PATHS entry. Three forms, because three
@@ -152,6 +159,13 @@ function coverageOf(changed, prBody) {
     .map((path) => path.replace(/\\/g, "/").replace(/^\.\//, ""));
   if (!paths.some((path) => matchesWatched(path))) return { coverage: true, excuse: null };
   if (paths.some((path) => ITEM_PREFIXES.some((prefix) => path.startsWith(prefix)))) {
+    return { coverage: true, excuse: null };
+  }
+  // A trigger case directly scores the published skill description or the
+  // router. It does not score an arbitrary watched context file, so only those
+  // three changes may use a trigger file to satisfy pull-request coverage.
+  if (paths.some((path) => path.startsWith("evals/triggers/")) &&
+    paths.some((path) => TRIGGER_COVERED_SKILL_PATHS.has(path))) {
     return { coverage: true, excuse: null };
   }
   const excuse = noItemTrailer(prBody);
@@ -295,7 +309,7 @@ export function report(head, base, verdict) {
   // asked, and a line about a rule that did not apply is noise in every
   // by-hand and weekly log.
   if (verdict.goldenCoverage === false) {
-    lines.push(`  NO GOLDEN ITEM  a watched context file changed and this branch ships no item under evals/golden/** or evals/triggers/** — add one, or put "evals: no-item <reason>" on the pull-request body`);
+    lines.push(`  NO GOLDEN ITEM  a watched context file changed and this branch ships no item under evals/golden/** — a trigger file also satisfies coverage only with scripts/skills.mjs, scripts/publish-skills.mjs, or worker/jobs/skill-router.mjs — add one, or put "evals: no-item <reason>" on the pull-request body`);
   } else if (verdict.goldenExcuse) {
     lines.push(`  golden item excused: ${verdict.goldenExcuse}`);
   }

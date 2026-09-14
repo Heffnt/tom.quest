@@ -1,5 +1,6 @@
 {
-  "name": "repo-tom.quest",
+  "name": "repo-tom-quest",
+  "repo": "tom.quest",
   "kind": "skill",
   "note": "Whether a run with no tom.quest checkout open reaches for its rules, and whether a run standing inside tom.quest leaves the skill alone because the CLI has already loaded AGENTS.md.",
   "cases": [
@@ -43,6 +44,13 @@
     },
     {
       "id": "skill-repo-tom.quest-neg-standing-inside",
+      "route": {
+        "caller": "cli",
+        "subject": { "kind": "repo", "repo": "tom.quest" },
+        "cwd": "/work/tom.quest",
+        "repoDirs": { "tom.quest": "/work/tom.quest" },
+        "expected": { "granted": ["write", "know-agent-systems"], "refused": [], "repoRulesSource": "native" }
+      },
       "negative": true,
       "prompt": "You are in the tom.quest checkout, adding a quest route. Say what to change.",
       "why": "a run standing inside tom.quest has already been given AGENTS.md by the CLI, so the skill must stay silent rather than carry a second copy of it into the prompt",

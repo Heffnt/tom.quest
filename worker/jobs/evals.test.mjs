@@ -1,12 +1,15 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { routeSkills } from "./skill-router.mjs";
 import {
   ablationFindings,
   ablationFor,
   aggregate,
+  AREA_TRIGGER_FILES,
   AUDIT_FAULTS_DIR,
   deterministicFailure,
   efficiencyOf,
@@ -41,6 +44,7 @@ import {
   runEvals,
   runItem,
   runTask,
+  runTriggerCase,
   runTrials,
   scoreLearning,
   selectItems,
@@ -55,6 +59,7 @@ import {
   treesFor,
   trialsFor,
   triggerCounts,
+  triggerMethod,
   triggerSkills,
   TRIALS_CAPABILITY,
   TRIALS_REGRESSION,
@@ -897,10 +902,11 @@ describe("the layer names as skill names", () => {
 
   it("normalises every loaded trigger onto the skill names it is about", () => {
     const dir = tree();
+    const wikitom = tree();
     writeJson(dir, path.join("evals", "triggers", "layer-know.json"), { name: "know", kind: "layer", cases: [] });
     writeJson(dir, path.join("evals", "triggers", "layer-operate.json"), { name: "operate", kind: "layer", cases: [] });
-    writeJson(dir, path.join("evals", "triggers", "skill-know-research.json"), { name: "know-research", kind: "skill", cases: [] });
-    const loaded = loadTriggers(dir);
+    writeJson(wikitom, path.join("evals", "triggers", "skill-know-research.json"), { name: "know-research", kind: "skill", cases: [] });
+    const loaded = loadTriggers(dir, { wikitomDir: wikitom });
     expect(loaded.map((one) => one.skills)).toEqual([
       [...LAYER_SKILL_ALIASES.know],
       [],
@@ -1228,6 +1234,7 @@ describe("runEvals over a run case", () => {
     layers: () => layers,
     loadModules: async () => ({}),
     taskRepos: () => [],
+    triggerNameMapping: { bareSkillName: (name) => name },
     worktree: (repo) => ({ dir, commit: repo === "WikiTom" ? "wiki1" : "tq1", remove: () => {} }),
   });
   const caseDir = (over) => {
@@ -1263,6 +1270,74 @@ describe("runEvals over a run case", () => {
     expect((await runEvals({ repo: "tom.quest", sha: "head" }, quiet)).ablation).toEqual([]);
     expect(quiet.calls.regen).toBe(1);
   });
+
+  it("adds trigger cases only to weekly accounting, with router cases deterministic", async () => {
+    const dir = caseDir();
+    writeJson(dir, path.join("evals", "triggers", "skill-write.json"), {
+      name: "write",
+      kind: "skill",
+      cases: [
+        {
+          id: "trigger-router-safe",
+          route: {
+            caller: "cli",
+            subject: { kind: "none" },
+            expected: { granted: ["write"], refused: [], repoRulesSource: null },
+          },
+        },
+        { id: "trigger-runner-safe", prompt: "safe runner fixture", expect: { mustName: ["fresh"] } },
+      ],
+    });
+    const io = runIoFor(dir, ["pass", "pass", "pass"]);
+    io.triggerRouter = () => ({ granted: ["write"], refused: [], repoRulesSource: null });
+    const weekly = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, io);
+    expect(weekly).toMatchObject({ items: 3, pass: 3, fail: 0, calls: 7 });
+    expect(weekly.scoredIds).toEqual(["a", "trigger-router-safe", "trigger-runner-safe"]);
+    expect(weekly.results).toContainEqual(expect.objectContaining({ id: "trigger-router-safe", method: "router", judged: "pass", passK: true }));
+    expect(weekly.results).toContainEqual(expect.objectContaining({ id: "trigger-runner-safe", method: "runner", judged: "pass", passK: true }));
+    expect(io.calls.regen).toBe(4);
+
+    const prIo = runIoFor(dir, ["pass"]);
+    const pr = await runEvals({ repo: "tom.quest", sha: "head" }, prIo);
+    expect(pr.scoredIds).toEqual(["a"]);
+    expect(pr.results).toEqual([{ id: "a", judged: "pass", passK: true, tokensMedian: null }]);
+    expect(prIo.calls.regen).toBe(1);
+  });
+});
+
+describe("trigger case methods", () => {
+  it("uses the router only for an explicit route schema", async () => {
+    expect(triggerMethod({ route: {} })).toBe("router");
+    expect(triggerMethod({ prompt: "model-required fixture" })).toBe("runner");
+    expect(triggerMethod({})).toBe("schema");
+    const router = await runTriggerCase({ name: "write" }, {
+      id: "router-case", route: {
+        caller: "cli",
+        subject: { kind: "none" },
+        expected: { granted: ["write"], refused: [], repoRulesSource: null },
+      },
+    }, runIo(), () => ({ granted: ["write"], refused: [], repoRulesSource: null }));
+    expect(router).toMatchObject({ method: "router", judged: "pass", trials: { head: 1, headPassed: 1 } });
+  });
+
+  it("scores the checked-in tom.quest native-repository case without a runner", async () => {
+    const skills = await import("../../scripts/skills.mjs");
+    const trigger = loadTriggers(path.resolve("."), {
+      wikitomDir: tree(),
+      bareSkillName: skills.bareSkillName,
+      repoSkillName: skills.repoSkillName,
+    }).find((one) => one.repo === "tom.quest");
+    const one = trigger.cases.find((caseItem) => caseItem.id === "skill-repo-tom.quest-neg-standing-inside");
+    const io = runIo();
+    const result = await runTriggerCase(trigger, one, io, (input) => routeSkills({
+      ...input,
+      pages: [{ path: "model-of-tom/areas/agent-systems.md", body: "---\ncategories: [tom.quest, WikiTom]\n---\n# Agent systems\n" }],
+      published: ["write", "know-agent-systems"],
+    }));
+    expect(result).toMatchObject({ id: one.id, method: "router", judged: "pass", trials: { head: 1, headPassed: 1 } });
+    expect(io.calls.regen).toBe(0);
+    expect(io.calls.judge).toBe(0);
+  });
 });
 
 // The count rule lives here, where `npm test` states it in one line, rather
@@ -1270,22 +1345,68 @@ describe("runEvals over a run case", () => {
 // something about a checked-in file.
 describe("the trigger set", () => {
   it("carries at least as many negatives as positives in every file", () => {
-    const counted = loadTriggers(path.resolve("."))
+    const publicDir = path.resolve(".");
+    const privateDir = tree();
+    const counted = loadTriggers(publicDir, { wikitomDir: privateDir })
       .map((trigger) => ({ file: trigger.file, ...triggerCounts(trigger) }));
     // SIXTEEN FILES: the three layer files the partition landed with, and one
     // per skill the layer aliases do not already cover — write is layer-write,
     // and operate is not a skill at all.
-    expect(counted.length).toBe(16);
+    expect(counted.length).toBe(8);
     expect(counted.filter((counts) => counts.negatives < counts.positives)).toEqual([]);
     // Each of the sixteen is about a name that can be placed: a `skill` file
     // names its own, a `layer` file names the skills that layer became, and
     // operate names none because the base is not a skill.
-    const loaded = loadTriggers(path.resolve("."));
+    const loaded = loadTriggers(publicDir, { wikitomDir: privateDir });
     expect(loaded.filter((one) => one.skills.length === 0).map((one) => one.file)).toEqual(["layer-operate.json"]);
     // Every skill the know layer became has a file of its own, so a run given
     // one name rather than the whole layer is still scored on it.
-    const named = new Set(loaded.filter((one) => one.kind === "skill").map((one) => one.name));
-    for (const name of LAYER_SKILL_ALIASES.know) expect(named.has(name)).toBe(true);
+    expect(loaded.filter((one) => one.kind === "skill").map((one) => one.name)).toEqual([
+      "know-intent", "know-week", "repo-complexmultitrigger", "repo-tom-quest", "repo-wikitom",
+    ]);
+    const publicNames = fs.readdirSync(path.join(publicDir, "evals", "triggers"));
+    expect(AREA_TRIGGER_FILES.filter((name) => publicNames.includes(name))).toEqual([]);
+  });
+
+  it("loads the eight area triggers from WikiTom and never from tom.quest", () => {
+    const publicDir = tree();
+    const wikitomDir = tree();
+    for (const file of AREA_TRIGGER_FILES) {
+      const name = file.replace(/\.json$/, "");
+      writeJson(wikitomDir, path.join("evals", "triggers", file), { name, kind: "skill", cases: [] });
+    }
+    writeJson(publicDir, path.join("evals", "triggers", AREA_TRIGGER_FILES[0]), { name: "wrong-source", kind: "skill", cases: [] });
+    const loaded = loadTriggers(publicDir, { wikitomDir });
+    expect(loaded.map((trigger) => trigger.file)).toEqual([...AREA_TRIGGER_FILES].sort());
+    expect(loaded.map((trigger) => trigger.name)).toEqual(AREA_TRIGGER_FILES.map((file) => file.replace(/\.json$/, "")).sort());
+  });
+
+  it("keeps private tokens and all eight private area files out of public triggers", () => {
+    const publicDir = path.join(path.resolve("."), "evals", "triggers");
+    const publicNames = fs.readdirSync(publicDir).filter((name) => name.endsWith(".json")).sort();
+    const stringsOf = (value) => {
+      if (typeof value === "string") return [value];
+      if (Array.isArray(value)) return value.flatMap(stringsOf);
+      if (value && typeof value === "object") return Object.values(value).flatMap(stringsOf);
+      return [];
+    };
+    // These SHA-256 digests pin tokens removed from the public recurring-week
+    // and intent cases without placing the private tokens in this repository.
+    const privateTokenDigests = new Set([
+      "576ba7c2e4abb7184ca409154dbbbd5306c1a80747fbce4148ea6271fd21e776",
+      "927a3aed189d610b2e151c4208913b3ed0cb38f6be613756819b1513c8924d7f",
+      "2212180a140694246e19b367e01980b14995371fa4db25dc4fc18b18c7511fdf",
+      "5589aa5863c2d85622d06d651add002416e5513afdbb455666cdde01bb3e257d",
+      "7f871cbf905f6e0cd598b11609f33f609e60a61892ac6b37e80cf1de282ee367",
+      "12df7f0ee89f9d7f17fb8e881e8b568794603af2a9d53c1d0379d2c588792a50",
+      "877c3aec832cd41012590679bdb84ebe25e5ebbd71b6b81722b48b129feb76ae",
+    ]);
+    const tokens = publicNames.flatMap((name) => stringsOf(JSON.parse(fs.readFileSync(path.join(publicDir, name), "utf8"))))
+      .flatMap((text) => text.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+    const privateTokens = tokens.filter((token) => privateTokenDigests.has(createHash("sha256").update(token).digest("hex")));
+    expect(privateTokens).toEqual([]);
+    expect(AREA_TRIGGER_FILES).toHaveLength(8);
+    expect(AREA_TRIGGER_FILES.filter((name) => publicNames.includes(name))).toEqual([]);
   });
 
   it("never loads a draft and counts the checked-in cases format", () => {

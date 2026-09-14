@@ -269,20 +269,22 @@ describe("the golden-item rule", () => {
     expect(goldenItemRule(WATCHED, "A body with no hatch in it.")).toBe(false);
   });
 
-  it("is satisfied by an item under evals/golden or evals/triggers", () => {
+  it("is satisfied by an item under evals/golden", () => {
     expect(goldenItemRule([...WATCHED, "evals/golden/runs/x.json"], "")).toBe(true);
-    expect(goldenItemRule([...WATCHED, "evals/triggers/delegate-refusal.md"], "")).toBe(true);
+    expect(goldenItemRule([...WATCHED, "evals/triggers/skill-know-research.json"], "")).toBe(false);
   });
 
-  // The skill table is now a watched context file, so a change to it owes an
-  // item like any other. A trigger file IS that item — ITEM_PREFIXES has held
-  // evals/triggers/ since the partition landed — and the hatch still opens.
-  // Checked rather than assumed: the rule and the prefix list were written on
-  // different branches and neither one names the other.
-  it("makes a change to the skill table owe a trigger item, and still opens to the hatch", () => {
+  // A trigger directly scores the published descriptions and their router, so
+  // those three watched files may ship one instead of a golden item. Other
+  // watched files cannot: a trigger is not evidence about an arbitrary prompt
+  // context change.
+  it("lets a trigger cover only a skill description or router change", () => {
     const changed = ["scripts/skills.mjs"];
     expect(goldenItemRule(changed, "Split one description shape in two.")).toBe(false);
     expect(goldenItemRule([...changed, "evals/triggers/skill-know-research.json"], "")).toBe(true);
+    expect(goldenItemRule(["model-of-tom/intent.md", "evals/triggers/skill-know-research.json"], "")).toBe(false);
+    expect(goldenItemRule(["scripts/publish-skills.mjs", "evals/triggers/a.json"], "")).toBe(true);
+    expect(goldenItemRule(["worker/jobs/skill-router.mjs", "evals/triggers/a.json"], "")).toBe(true);
     expect(goldenItemRule(changed, "Split one description shape in two.\n\nevals: no-item no rule changed, only a comment\n")).toBe(true);
     const head = run();
     const verdict = gate(head, run({ sha: "9f8e7d6c" }), {
@@ -313,7 +315,8 @@ describe("the golden-item rule", () => {
     expect(verdict).toMatchObject({ ok: false, goldenCoverage: false, regressions: [] });
     const lines = report(head, base, verdict);
     expect(lines.join("\n")).toContain("NO GOLDEN ITEM");
-    expect(lines.join("\n")).toContain("evals/golden/** or evals/triggers/**");
+    expect(lines.join("\n")).toContain("evals/golden/**");
+    expect(lines.join("\n")).toContain("trigger file also satisfies coverage only");
     // Zero regressions and still a failure: the summary has to say which.
     expect(lines[lines.length - 1]).toBe(
       "FAILED: a watched context file changed and no golden item shipped with it.",

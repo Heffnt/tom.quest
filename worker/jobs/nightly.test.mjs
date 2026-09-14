@@ -2872,6 +2872,7 @@ describe("the git half", { timeout: 60_000 }, () => {
     expect(catalog.commit).toBe(result.commit);
     expect(catalog.pushed).toBe(false);
     expect(typeof catalog.syncedAt).toBe("number");
+    expect(catalog.syncedAt).toBe(Number(run(dir, "log", "-1", "--format=%ct", "HEAD").trim()) * 1000);
     expect(catalog.refused).toEqual([]);
     const names = catalog.skills.map((skill) => skill.name);
     expect(names).toEqual(expect.arrayContaining(["write", "know-intent", "know-week"]));
@@ -2896,7 +2897,7 @@ describe("the git half", { timeout: 60_000 }, () => {
       expect(fs.readFileSync(path.join(out, "tom-write", "SKILL.md"), "utf8")).toContain("name: tom-write");
       expect(fs.existsSync(path.join(out, "tom-write", "ground.md"))).toBe(true);
     }
-    expect(result.skills).toEqual({ commit: result.commit, count: names.length, dirs: outs, refused: [] });
+    expect(result.skills).toEqual({ commit: result.commit, count: names.length, dirs: outs, refused: [], syncedAt: catalog.syncedAt });
   });
 
   it("records a skills-publication failure of its own, and the base still went out", async () => {
@@ -2960,6 +2961,21 @@ describe("the git half", { timeout: 60_000 }, () => {
     // The bodies are on the disk and tonight's agents will load them; what is
     // stale is the catalog Convex serves, and that is what the row says.
     expect(fs.readdirSync(outs[0]).length).toBeGreaterThan(0);
+  });
+
+  it("does not report a rejected stale skills base as newly synced", async () => {
+    const dir = preludeRepo();
+    const r = learningRun(dir);
+    const posts = [];
+    const result = await postStep(r, {
+      fetch: recording(posts, { "/tts/skills": "the post's commit is older than the stored catalog — store left as it was" }),
+      checkouts: [],
+      skillsDirs: skillsDirs(1),
+    });
+    expect(posts.find((post) => post.route === "/tts/skills").body.syncedAt)
+      .toBe(Number(run(dir, "log", "-1", "--format=%ct", "HEAD").trim()) * 1000);
+    expect(result.skills).toBeNull();
+    expect(r.failures).toEqual([expect.objectContaining({ step: "skills" })]);
   });
 
   it("reads a published skill back as the catalog entry, and throws when SKILL.md is not what it wrote", async () => {
@@ -3033,6 +3049,23 @@ describe("the git half", { timeout: 60_000 }, () => {
     expect(convex.posts.map((post) => post.route)).toEqual(["/tts/repo-rules", "/tts/repo-rules", "/tts/repo-rules"]);
     expect(convex.posts.map((post) => post.body.repo)).toEqual(["tom.quest", "WikiTom", "ComplexMultiTrigger"]);
     expect(r.failures).toEqual([]);
+  });
+
+  it("does not report a rejected stale repo rules base as newly synced", async () => {
+    const checkout = { repo: "tom.quest", dir: rulesRepo("# tom.quest\n\nThe site.\n") };
+    const r = learningRun(tmp());
+    const posts = [];
+    const result = await repoRulesStep(r, {
+      checkouts: [checkout],
+      commitTime: () => 123,
+      fetch: async (_env, route, body) => {
+        posts.push({ route, body });
+        throw new Error("the post's commit is older than the stored rules — store left as it was");
+      },
+    });
+    expect(posts[0]).toEqual(expect.objectContaining({ route: "/tts/repo-rules", body: expect.objectContaining({ syncedAt: 123 }) }));
+    expect(result.repos).toEqual([]);
+    expect(r.failures).toEqual([expect.objectContaining({ step: "repo-rules" })]);
   });
 
   // witness: one loop, one throw. A box rebuilt with two of the three clones

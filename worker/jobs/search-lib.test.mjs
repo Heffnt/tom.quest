@@ -461,7 +461,7 @@ describe("installed skills", () => {
     };
     publish("tom-write", "His writing standard: Shape, Words", "The writing body.", { "ground.md": "what he knows" });
     publish("tom-know-money", "Tom's money: money, banking.", "The money body.");
-    publish("tom-repo-cmt", "Rules of the CMT repository.", "The repo body.", { "cmt-AGENTS.md": "nested rules" });
+    publish("tom-repo-tom-quest", "Rules of the tom.quest repository.", "The repo body.", { "tom-quest-AGENTS.md": "nested rules" });
     // NOT ours: a checkout's own skill under the same root, which this command
     // must never see. witness: drop the prefix filter and the first test fails.
     publish("other-skill", "someone else's", "not Tom's.");
@@ -472,7 +472,7 @@ describe("installed skills", () => {
     const dir = installed();
     const output = [];
     expect(await runSearchCli(["skills", "--skills-dir", dir], { env: {}, write: (line) => output.push(line), error: () => {} })).toBe(0);
-    expect(output.map((line) => line.split(" ")[0])).toEqual(["know-money", "repo-cmt", "write"]);
+    expect(output.map((line) => line.split(" ")[0])).toEqual(["know-money", "repo-tom-quest", "write"]);
     expect(output.join("\n")).not.toContain("someone else");
     expect(output[0]).toContain("[know]");
     expect(output[0]).toContain(path.join(dir, "tom-know-money"));
@@ -509,6 +509,24 @@ describe("installed skills", () => {
     expect(JSON.parse(json[0])).toMatchObject({
       skill: { name: "write", group: "write", body: "The writing body.", references: [{ name: "ground.md" }] },
     });
+  });
+
+  it("maps a punctuation-bearing repository query to the catalog's generated name", async () => {
+    const dir = installed();
+    const output = [];
+    expect(await runSearchCli(["skills", "repo-tom.quest", "--skills-dir", dir], { env: {}, write: (line) => output.push(line), error: () => {} })).toBe(0);
+    expect(output.join("\n")).toContain("repo-tom-quest");
+    expect(output.join("\n")).toContain("The repo body.");
+  });
+
+  it("refuses two installed directories that punctuation maps to one skill", async () => {
+    const dir = installed();
+    const legacy = path.join(dir, "tom-repo-tom.quest");
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.writeFileSync(path.join(legacy, "SKILL.md"), "---\nname: tom-repo-tom.quest\ndescription: legacy\n---\n\nLegacy body.\n");
+    const errors = [];
+    expect(await runSearchCli(["skills", "--skills-dir", dir], { env: {}, write: () => {}, error: (line) => errors.push(line) })).toBe(2);
+    expect(errors).toEqual(['skill directories "tom-repo-tom-quest" and "tom-repo-tom.quest" both map to repo-tom-quest']);
   });
 
   it("refuses an unknown name with its near misses and appends the refusal to the run's envelope", async () => {
