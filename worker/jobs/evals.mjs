@@ -2082,10 +2082,26 @@ async function postRun(env, data) {
 /** The fields of a row that scored nothing — shared by the two rows the box
  *  posts without running anything, so the pair cannot drift in the fields
  *  every reader of an evals run expects to find. */
-function unscoredRun({ repo, sha, at }) {
+/**
+ * `answersRequestAt` IS THE QUESTION THIS ROW ANSWERS, and it is what makes a
+ * row that scored nothing datable at all.
+ *
+ * These rows are not measurements of a commit: `superseded` says a later push
+ * had already replaced this head when the queue looked, and an `error` row says
+ * the tree could not be read that time. convex/ttsEvals.ts answeredRun has to
+ * be able to tell such a row apart from one answering a question since
+ * withdrawn, and comparing WRITE TIMES cannot do it. The box reads the request
+ * and then posts, seconds later: if the sha becomes the live head again in
+ * between, the row lands stamped AFTER the replacement request and a clock
+ * comparison accepts the stale supersession — failing the live head until yet
+ * another re-run. Carrying the request's own `requestedAt` makes the match
+ * exact instead of racy.
+ */
+function unscoredRun({ repo, sha, at, answersRequestAt = null }) {
   return {
     repo,
     sha,
+    answersRequestAt,
     tomquest: null,
     wikitom: null,
     goldenHash: null,
@@ -2125,9 +2141,9 @@ function unscoredRun({ repo, sha, at }) {
  * `error` makes scripts/evals-check.mjs's gate() fail rather than read "no
  * failures" off a run that scored nothing.
  */
-export function failedRun({ repo, sha, error, at }) {
+export function failedRun({ repo, sha, error, at, answersRequestAt = null }) {
   return {
-    ...unscoredRun({ repo, sha, at }),
+    ...unscoredRun({ repo, sha, at, answersRequestAt }),
     error,
     regressions: null,
     // A run that could not be made checked no diff either, so the coverage
@@ -2154,9 +2170,9 @@ export function failedRun({ repo, sha, error, at }) {
  * a copy of scripts/evals-check.mjs that predates the superseded branch still
  * fails the check, and says why.
  */
-export function supersededRun({ repo, sha, by, at }) {
+export function supersededRun({ repo, sha, by, at, answersRequestAt = null }) {
   return {
-    ...unscoredRun({ repo, sha, at }),
+    ...unscoredRun({ repo, sha, at, answersRequestAt }),
     superseded: true,
     supersededBy: by,
     error: `superseded by ${String(by).slice(0, 7)}; re-run this check at the head of the branch`,
@@ -2186,9 +2202,9 @@ export const COVERAGE_NOT_REQUIRED = "not-required";
  * restate the base commit's numbers when a base run exists; `goldenHash` stays
  * null, because this row hashed no set of its own.
  */
-export function unaffectedRun({ repo, sha, changed, base, at }) {
+export function unaffectedRun({ repo, sha, changed, base, at, answersRequestAt = null }) {
   return {
-    ...unscoredRun({ repo, sha, at }),
+    ...unscoredRun({ repo, sha, at, answersRequestAt }),
     unaffected: true,
     changed: changed ?? null,
     items: typeof base?.items === "number" ? base.items : 0,
@@ -2400,6 +2416,7 @@ export async function serveRequest(env, io, request, options = {}) {
       sha: request.sha,
       by: request.supersededBy,
       at: Date.now(),
+      answersRequestAt: request.requestedAt ?? null,
     });
     if (!dryRun) await postRun(env, data);
     console.log(
@@ -2424,6 +2441,7 @@ export async function serveRequest(env, io, request, options = {}) {
       changed: request.changed,
       base,
       at: Date.now(),
+      answersRequestAt: request.requestedAt ?? null,
     });
     if (!dryRun) await postRun(env, data);
     console.log(
@@ -2458,7 +2476,13 @@ export async function serveRequest(env, io, request, options = {}) {
     // again on every tick and nothing behind it is ever served.
     const reason = serverErrorMessage(error);
     console.error(`[evals] ${request.repo}@${request.sha} could not be run: ${reason}`);
-    const data = failedRun({ repo: request.repo, sha: request.sha, error: reason, at: Date.now() });
+    const data = failedRun({
+      repo: request.repo,
+      sha: request.sha,
+      error: reason,
+      at: Date.now(),
+      answersRequestAt: request.requestedAt ?? null,
+    });
     if (!dryRun) await postRun(env, data);
     return data;
   }

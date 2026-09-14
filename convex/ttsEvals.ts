@@ -707,6 +707,7 @@ export function unaffectedRunData(args: {
   changed: string[] | null;
   base: Record<string, unknown> | null;
   at: number;
+  answersRequestAt?: number | null;
 }) {
   const base = args.base ?? {};
   const items = typeof base.items === "number" ? base.items : 0;
@@ -714,6 +715,9 @@ export function unaffectedRunData(args: {
   return {
     repo: args.repo,
     sha: args.sha,
+    // THE QUESTION THIS ROW ANSWERS — see worker/jobs/evals.mjs unscoredRun,
+    // whose twin this is, and answeredRun below.
+    answersRequestAt: args.answersRequestAt ?? null,
     // THE FLAG EVERY READER BRANCHES ON: scripts/evals-check.mjs gate() and
     // report(), and convex/ttsMerge.ts through the coverage field below.
     unaffected: true,
@@ -826,10 +830,17 @@ export const internalRequestEvals = internalMutation({
     if (existing === null) {
       await ctx.db.insert("dtsEvents", { at: requestedAt, kind: EVALS_REQUEST, key, data });
     } else {
-      // `at` IS NOT TOUCHED. It is the queue's order (by_kind_at), and a sha
-      // asked about a second time keeps the place in line it has held since it
-      // was first asked about.
-      await ctx.db.patch(existing._id, { data });
+      // `at` MOVES WITH THE QUESTION, and it has to. It is the field
+      // internalOldestEvalsRequest's index and trailing window are built on, so
+      // a renewed request left at its original `at` ages out of that window and
+      // becomes invisible — while the re-filing has just staled whatever
+      // answered it. The sha would then be unanswered AND unservable, and its
+      // check would time out on every retry: exactly the force-push-back case
+      // this door exists to make work. Re-dating costs the row its old place in
+      // line, which is the right trade: a question asked now belongs where it
+      // was asked, and `--serve` answers everything cheap ahead of it on the
+      // same tick anyway.
+      await ctx.db.patch(existing._id, { at: requestedAt, data });
     }
     // ANSWERED HERE, IN THE SAME MUTATION THAT ASKED. A branch that touched no
     // watched path has nothing to score, and the round trip to the box would
@@ -860,6 +871,7 @@ export const internalRequestEvals = internalMutation({
           changed: args.changed ?? null,
           base: (base?.data ?? null) as Record<string, unknown> | null,
           at: requestedAt,
+          answersRequestAt: requestedAt,
         }),
       });
       return { existing: existing !== null, unaffected: true };
@@ -966,10 +978,21 @@ async function answeredRun(ctx: QueryCtx | MutationCtx, key: string) {
   if ((run.data as { unaffected?: unknown }).unaffected === true) {
     return request.unaffected ? run : null;
   }
-  // `superseded` and `error` ARE dated by the clock, because what they claim is
-  // about a MOMENT and not about the diff: the queue as it stood when it looked,
-  // the tree as it read when it tried. A request filed after such a row is a
-  // question asked after the moment passed.
+  // `superseded` AND `error` ARE DATED BY THE QUESTION THEY ANSWER, because what
+  // they claim is about a MOMENT and not about the diff: the queue as it stood
+  // when it looked, the tree as it read when it tried. Each carries the
+  // `requestedAt` of the request it was written for, so the match is exact.
+  //
+  // WRITE TIME WOULD BE RACY, and the race is the failure this whole rule
+  // exists to prevent. The box reads the request and posts seconds later; if
+  // the sha becomes the live head again in between, the row lands stamped after
+  // the replacement request, and a clock comparison would accept the stale
+  // supersession and fail the live head until yet another re-run.
+  const answers = (run.data as { answersRequestAt?: unknown }).answersRequestAt;
+  if (typeof answers === "number") return answers === request.requestedAt ? run : null;
+  // A row written before the field existed has only its write time to go on,
+  // and the clock is the safe reading of it: a row older than the standing
+  // question did not answer that question.
   return run.at < request.requestedAt ? null : run;
 }
 

@@ -536,19 +536,24 @@ describe("a superseded request", () => {
     // this same door.
     expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
       .toMatchObject({ run: null });
-    // And the queue hands A out again, to be SCORED rather than answered away.
-    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
-      sha: "aaaaaaa",
-      supersededBy: null,
-    });
-    // B is behind A now, which is what the higher run id means. A is scored for
-    // real this time — a row that measured the sha, which no later request can
-    // make stale.
-    await scored(t, "aaaaaaa");
+    // B IS BEHIND A NOW, which is what the higher run id means — and B is the
+    // oldest unanswered request, because re-filing A re-dated it to now.
     expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
       sha: "bbbbbbb",
       supersededBy: "aaaaaaa",
     });
+    await answer(t, "bbbbbbb");
+    // And then A itself, handed out to be SCORED rather than answered away.
+    // This is the whole point of the change: the head the branch came back to
+    // is servable again.
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      supersededBy: null,
+    });
+    // Scored for real, and a row that measured the sha is one no later request
+    // can make stale.
+    await scored(t, "aaaaaaa");
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
   });
 
   // The other half of the same rule: a sha that is STILL superseded stays
@@ -584,9 +589,16 @@ describe("a superseded request", () => {
       sha: "aaaaaaa",
       supersededBy: null,
     });
-    // Still behind a later push: handed out, and handed out AS SUPERSEDED, so
-    // the box answers it in one POST rather than scoring a dead sha.
+    // A later push arrives. It is older by `at` — A was re-dated when it was
+    // re-filed — so it is handed out first, and it is the head.
     await file(t, 2, "bbbbbbb", { runId: 900 });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "bbbbbbb",
+      supersededBy: null,
+    });
+    await answer(t, "bbbbbbb");
+    // And A, still behind it, is handed out AS SUPERSEDED — so the box answers
+    // it in one POST rather than scoring a dead sha.
     expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
       sha: "aaaaaaa",
       supersededBy: "bbbbbbb",
@@ -610,10 +622,11 @@ describe("a superseded request", () => {
         .first(),
     );
     expect((row!.data as { runId: number }).runId).toBe(500);
-    // A is still the head; had 100 been written, B would have superseded it.
+    // A is still the head, so B is what is superseded. Had 100 been written, it
+    // would be the other way round.
     expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
-      sha: "aaaaaaa",
-      supersededBy: null,
+      sha: "bbbbbbb",
+      supersededBy: "aaaaaaa",
     });
   });
 
@@ -658,9 +671,11 @@ describe("a superseded request", () => {
       // that touches a watched path with `no watched path changed`.
       unaffected: false,
     });
-    // The queue's order is the `at` of the event, and the sha keeps the place
-    // in line it has held since it was first asked about.
-    expect(row!.at).toBe(1);
+    // AND `at` MOVES WITH IT. That field is what internalOldestEvalsRequest's
+    // trailing window is built on, so a renewed request left at its original
+    // date ages out of the window and becomes invisible — unanswered and
+    // unservable at once.
+    expect(row!.at).toBeGreaterThan(1);
   });
 
   // A field the new request does not carry is NULL, never the old value: a
@@ -822,6 +837,43 @@ describe("a superseded request", () => {
     await file(t, 3, "ccccccc", { runId: 300 });
     expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
       sha: "aaaaaaa",
+    });
+  });
+
+  // THE RACE BETWEEN THE QUEUE'S GET AND THE BOX'S POST. The box reads a
+  // superseded request and posts its answer seconds later; if the sha becomes
+  // the live head again in between, the row lands with a WRITE TIME after the
+  // replacement request. Dated by the clock, that stale supersession would be
+  // accepted and the live head failed until yet another re-run — so the row
+  // carries the `requestedAt` of the request it actually answered, and the
+  // match is exact. Found by the box's audit.
+  it("refuses a superseded row that answers a request already replaced", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa", { runId: 100 });
+    await file(t, 2, "bbbbbbb", { runId: 200 });
+    // The box takes A's request, which was filed at 1.
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa", requestedAt: 1, supersededBy: "bbbbbbb",
+    });
+    // A force-push puts A back at the head BEFORE that answer is posted.
+    await t.mutation(internal.ttsEvals.internalRequestEvals, {
+      repo: REPO, sha: "aaaaaaa", baseSha: "f5c1fb9", pr: 173, runId: 300, paths: ["model-of-tom/**"],
+    });
+    // Now the in-flight answer lands. Its write time is LATER than the new
+    // request's, so a clock would accept it; the question it names is not.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now() + 60_000,
+        kind: EVALS_RUN,
+        key: `${REPO}@aaaaaaa`,
+        data: { repo: REPO, sha: "aaaaaaa", superseded: true, supersededBy: "bbbbbbb", answersRequestAt: 1 },
+      });
+    });
+    expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
+      .toMatchObject({ run: null });
+    // A is the head and is still servable, which is the point.
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "bbbbbbb", supersededBy: "aaaaaaa",
     });
   });
 
