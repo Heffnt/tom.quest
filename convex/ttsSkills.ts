@@ -190,8 +190,12 @@ export const internalReplaceModelOfTom = internalMutation({
     layers: v.object({ operate: v.string(), write: v.optional(v.string()), know: v.optional(v.string()) }),
     headers: v.array(v.object({ layers: v.array(layerValidator), header: v.string() })),
     files: v.array(v.object({ path: v.string(), body: v.string(), bytes: v.number() })),
+    // The graph generated from this same commit, by the same nightly step, so
+    // a reader of the publication and a reader of a run row name one object.
+    // Optional: a night whose graph step failed still posts a base worth having.
+    graphVersion: v.optional(v.string()),
   },
-  handler: async (ctx, { commit, committedAt, pushed, force, layers, headers, files }) => {
+  handler: async (ctx, { commit, committedAt, pushed, force, layers, headers, files, graphVersion }) => {
     if (commit.trim() === "") throw new Error("commit is required");
     if (!Number.isFinite(committedAt)) throw new Error("committedAt must be finite");
     for (const name of STORED_LAYER_NAMES) {
@@ -240,6 +244,9 @@ export const internalReplaceModelOfTom = internalMutation({
       committedAt,
       pushed,
       operate: layers.operate,
+      // Spread, so a post without one stores no key rather than an empty
+      // string — the same shape the run row's own graphVersion takes.
+      ...(graphVersion === undefined ? {} : { graphVersion }),
       headers: stored,
     };
     if (current === null) await ctx.db.insert("modelOfTomPublication", publication);

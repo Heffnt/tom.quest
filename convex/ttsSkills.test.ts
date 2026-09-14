@@ -377,6 +377,28 @@ describe("POST /tts/model-of-tom", () => {
     expect((await publication(t))?.operate).toBe(LAYERS.operate);
   });
 
+  // THE GRAPH VERSION IS STORED, NOT DROPPED. The nightly's post step sends it
+  // (worker/jobs/nightly.mjs postStep) off the graph the same step generated
+  // from the same commit, and the publication is where a reader who is not
+  // reading a run row finds which graph the base was made from. It was sent and
+  // silently dropped by the route's fixed forward list until this test.
+  it("stores the graph version the post names, and stores none when it names none", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+    const t = convexTest({ schema, modules });
+    expect((await send(t, payload({ graphVersion: "0123456789abcdef" }))).status).toBe(200);
+    expect((await publication(t))?.graphVersion).toBe("0123456789abcdef");
+
+    // A night whose graph step failed still posts a base: absent stores no key
+    // rather than an empty string, exactly as it does on a run row.
+    const bare = convexTest({ schema, modules });
+    expect((await send(bare, payload())).status).toBe(200);
+    expect((await publication(bare))?.graphVersion).toBeUndefined();
+
+    // Sent but empty is a caller bug, not an absence, and is refused as one.
+    expect((await send(t, payload({ graphVersion: "   " }))).status).toBe(400);
+    expect((await send(t, payload({ graphVersion: 7 }))).status).toBe(400);
+  });
+
   it("rejects malformed layers, headers, and file metadata before mutation", async () => {
     vi.stubEnv("TTS_WORKER_KEY", "s3cret");
     const t = convexTest({ schema, modules });
