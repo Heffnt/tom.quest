@@ -795,8 +795,8 @@ export function scoredNothing(data: unknown): boolean {
  *
  * A ROW THAT SCORED NOTHING IS NOT A VERDICT ON THE COMMIT. A scored row is a
  * measurement of the tree: it ran the set and got numbers. A stamped row names
- * the request it measured exactly; a legacy row without that stamp can only
- * answer a request filed strictly after the legacy row itself. The three
+ * the request it measured exactly; a legacy row without that stamp can answer
+ * only a request filed at or before the legacy row itself. The three
  * rows scoredNothing names are answers to A PARTICULAR REQUEST instead —
  * `superseded` says a later push had already replaced this head when the queue
  * looked, `unaffected` says the diff THAT REQUEST CARRIED touched no watched
@@ -817,11 +817,12 @@ export function scoredNothing(data: unknown): boolean {
  *
  * THE TEST IS THE REQUEST'S OWN CLOCK, and it costs one indexed read of a row
  * this file already writes. A stamped row matches `requestedAt` exactly. An
- * unstamped legacy score can only predate it strictly: a legacy box can post
- * after a renewed request while still answering the question it read before the
- * renewal. No head map, no window scan on a thirty-second poll, and no new
- * field a writer could get wrong: the ordering of two timestamps the record
- * keeps anyway.
+ * unstamped legacy score uses the safe side of the clock: `at >= requestedAt`.
+ * A normal legacy box post lands after the request it read, so it still answers;
+ * a row written before a retarget re-file answered the old question, so it must
+ * leave the renewed request pending. No head map, no window scan on a
+ * thirty-second poll, and no new field a writer could get wrong: the ordering
+ * of two timestamps the record keeps anyway.
  *
  * What this deliberately does NOT do is make a row disappear for a sha nothing
  * is asking about again. Nobody re-files that request, so its `requestedAt`
@@ -848,14 +849,14 @@ async function answeredRun(ctx: QueryCtx | MutationCtx, key: string) {
     //
     // ABSENCE AND MISMATCH MEAN DIFFERENT THINGS. Convex deploys before the
     // manually rolled box, so a box from before this field scores the sha but
-    // cannot name the request it read. Its own write time is the only safe
-    // fallback: it can answer only a request filed strictly after it. A legacy
-    // box can post after a request is renewed while still answering the old
-    // question, so a same-or-later row must leave the renewed request pending.
-    // Once the box records the timestamp, it must name the request standing
-    // now exactly.
+    // cannot name the request it read. Its own write time is the only compatible
+    // fallback, and the safe side is `run.at >= request.requestedAt`: a normal
+    // legacy post arrives after the request it read and can answer, while a row
+    // written before a retarget re-file answered the old question and must not.
+    // Once the box records the timestamp, it must name the request standing now
+    // exactly.
     const answers = (run.data as { answersRequestAt?: unknown }).answersRequestAt;
-    if (answers === undefined) return run.at < request.requestedAt ? run : null;
+    if (answers === undefined) return run.at >= request.requestedAt ? run : null;
     return answers === request.requestedAt ? run : null;
   }
   // `superseded` AND `error` ARE DATED BY THE QUESTION THEY ANSWER, because what

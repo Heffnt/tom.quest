@@ -742,7 +742,7 @@ describe("a superseded request", () => {
     expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({ sha: "aaaaaaa" });
   });
 
-  it("lets a legacy scored row older than a base-only retarget answer", async () => {
+  it("does not let a legacy scored row before a base-only retarget answer", async () => {
     const t = convexTest({ schema, modules });
     await file(t, 1, "aaaaaaa");
     await t.mutation(internal.ttsEvals.internalRequestEvals, {
@@ -760,11 +760,15 @@ describe("a superseded request", () => {
     });
     expect(request).toMatchObject({ baseSha: "6af3eef", changed: ["model-of-tom/intent.md"] });
     expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
-      .toMatchObject({ run: { regressions: 0, pass: 29, items: 29 } });
-    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
+      .toMatchObject({ run: null });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      baseSha: "6af3eef",
+      changed: ["model-of-tom/intent.md"],
+    });
   });
 
-  it("serves a base-only retarget when an equal or later legacy row arrives after its re-file", async () => {
+  it("lets an equal or later legacy scored row answer a base-only retarget", async () => {
     const t = convexTest({ schema, modules });
     await file(t, 1, "aaaaaaa");
     await t.mutation(internal.ttsEvals.internalRequestEvals, {
@@ -782,16 +786,28 @@ describe("a superseded request", () => {
         });
       });
       expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
-        .toMatchObject({ run: null });
-      expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
-        sha: "aaaaaaa",
-        baseSha: "6af3eef",
-        changed: ["model-of-tom/intent.md"],
-      });
+        .toMatchObject({ run: { regressions: 0, pass: 29, items: 29 } });
+      expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
     }
   });
 
-  it("lets a legacy scored row older than a changed-diff-only re-file answer", async () => {
+  it("lets a legacy scored row written after its unre-filed request answer", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa");
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: 2,
+        kind: EVALS_RUN,
+        key: `${REPO}@aaaaaaa`,
+        data: { repo: REPO, sha: "aaaaaaa", regressions: 0, pass: 29, items: 29 },
+      });
+    });
+    expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
+      .toMatchObject({ run: { regressions: 0, pass: 29, items: 29 } });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
+  });
+
+  it("does not let a legacy scored row before a changed-diff-only re-file answer", async () => {
     const t = convexTest({ schema, modules });
     await file(t, 1, "aaaaaaa", { changed: ["worker/setup.sh"] });
     await t.mutation(internal.ttsEvals.internalRequestEvals, {
@@ -809,11 +825,15 @@ describe("a superseded request", () => {
     });
     expect(request).toMatchObject({ baseSha: "f5c1fb9", changed: ["model-of-tom/intent.md"] });
     expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
-      .toMatchObject({ run: { regressions: 0, pass: 29, items: 29 } });
-    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
+      .toMatchObject({ run: null });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      baseSha: "f5c1fb9",
+      changed: ["model-of-tom/intent.md"],
+    });
   });
 
-  it("serves a changed-diff-only re-file when an equal or later legacy row arrives after it", async () => {
+  it("lets an equal or later legacy scored row answer a changed-diff-only re-file", async () => {
     const t = convexTest({ schema, modules });
     await file(t, 1, "aaaaaaa", { changed: ["worker/setup.sh"] });
     await t.mutation(internal.ttsEvals.internalRequestEvals, {
@@ -831,12 +851,8 @@ describe("a superseded request", () => {
         });
       });
       expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
-        .toMatchObject({ run: null });
-      expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
-        sha: "aaaaaaa",
-        baseSha: "f5c1fb9",
-        changed: ["model-of-tom/intent.md"],
-      });
+        .toMatchObject({ run: { regressions: 0, pass: 29, items: 29 } });
+      expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
     }
   });
 
