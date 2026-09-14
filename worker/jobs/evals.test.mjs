@@ -1274,6 +1274,61 @@ describe("runEvals over a run case", () => {
     });
   });
 
+  it("remakes an unaffected or superseded stored base before comparing the head", async () => {
+    const posted = [];
+    let storedBase;
+    const env = { CONVEX_SITE_URL: "https://example.convex.site", TTS_WORKER_KEY: "k" };
+    vi.stubGlobal("fetch", vi.fn(async (url, init) => {
+      const href = String(url);
+      if (href.includes("sha=head000")) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ run: null, base: null }) };
+      }
+      if (href.includes("sha=base000")) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ run: storedBase, base: null }) };
+      }
+      if (init?.body) posted.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+
+    for (const [kind, row] of [
+      ["unaffected", { unaffected: true }],
+      ["superseded", { superseded: true }],
+    ]) {
+      posted.length = 0;
+      storedBase = { items: 0, pass: 0, regressions: 0, ...row };
+      const dir = caseDir();
+      const io = runIo(["pass", "pass"], [], {
+        layers: () => layers,
+        loadModules: async () => ({}),
+        taskRepos: () => [],
+        worktree: (repo, ref) => ({
+          dir,
+          commit: repo === "WikiTom" ? "wiki1" : ref,
+          remove: () => {},
+        }),
+      });
+
+      const data = await runAndPost(env, io, {
+        repo: "tom.quest",
+        sha: "head000",
+        base: "base000",
+        limit: 10,
+        jobs: null,
+        weekly: false,
+        force: false,
+        changed: [],
+      });
+
+      // The stored zero-row was discarded: the box made a real base first,
+      // then compared the head to that evidence rather than accepting its 0.
+      expect(io.calls.judge).toBe(2);
+      expect(posted).toHaveLength(2);
+      expect(posted[0].data).toMatchObject({ sha: "base000", items: 1, pass: 1, regressions: null });
+      expect(posted[0].data).not.toHaveProperty(kind, true);
+      expect(data).toMatchObject({ items: 1, pass: 1, regressions: 0 });
+    }
+  });
+
   it("looks up request identity for every direct run, not only --force", () => {
     const source = fs.readFileSync("worker/jobs/evals.mjs", "utf8");
     expect(source).toContain("const requestIdentity = await directRequestIdentity(");

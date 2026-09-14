@@ -3,6 +3,7 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { DAY_MS, modelOfTomHeadOf } from "./ttsShared";
+import { scoredNothing } from "../worker/jobs/evals-row.mjs";
 
 export const PRELUDE_DELIVERY = "prelude-delivery";
 export const EVALS_REQUEST = "evals-request";
@@ -684,11 +685,12 @@ export const internalRequestEvals = internalMutation({
   handler: async (ctx, args) => {
     const key = `${args.repo}@${args.sha}`;
     const existing = await requestRowFor(ctx, key);
-    const requestedAt = Date.now();
-    // A REQUEST FOR A SHA THAT ALREADY HAS ONE IS A NEW QUESTION, not a
-    // duplicate of the old one. Only two things file it: a re-run of the check,
-    // and a force-push that puts an earlier commit back at the head of the
-    // branch. Both mean somebody is asking about this sha NOW, and the answer
+    const currentRunId = existing === null ? null : requestData(existing.data)?.runId ?? null;
+    // A REQUEST FOR A SHA THAT ALREADY HAS ONE IS A NEW QUESTION UNLESS ITS
+    // place in GitHub's push order proves it is an older copy arriving late.
+    // Only two things file it: a re-run of the check, and a force-push that puts
+    // an earlier commit back at the head of the branch. Both mean somebody is
+    // asking about this sha NOW when their run is not older, and the answer
     // must be built out of what they are asking with.
     //
     // Leaving the row untouched — which is what it did — dropped the newer
@@ -698,22 +700,30 @@ export const internalRequestEvals = internalMutation({
     // superseded, and every re-run of its check read the same permanent
     // superseded row. That head could never be scored and so never merged.
     //
-    // THE WHOLE PAYLOAD IS REPLACED, not two fields of it. `baseSha`, `pr`,
-    // `changed`, `prBody` and `unaffected` are all facts about the DIFF the
-    // check just read, and a sha can be asked about against a different base —
-    // a pull request retargeted, a rebase that moves the merge base. Keeping
-    // the first request's copies would score the sha against a base nobody
-    // asked about, apply an `evals: no-item` trailer off a body since edited,
-    // or — worst — answer a request whose diff now touches a watched path with
-    // the old request's `unaffected: true`. One payload builder for both the
-    // insert and the replace, so the two spellings cannot come apart.
+    // EVERY REQUEST NOT PROVED OLDER REPLACES THE WHOLE PAYLOAD, not two fields
+    // of it. `baseSha`, `pr`, `changed`, `prBody` and `unaffected` are all facts
+    // about the DIFF the check just read, and a sha can be asked about against
+    // a different base — a pull request retargeted, a rebase that moves the
+    // merge base. Keeping the first request's copies would score the sha
+    // against a base nobody asked about, apply an `evals: no-item` trailer off
+    // a body since edited, or — worst — answer a request whose diff now touches
+    // a watched path with the old request's `unaffected: true`. One payload
+    // builder for both the insert and the replace, so the two spellings cannot
+    // come apart.
+    //
+    // UNKNOWN ORDER STILL REPLACES. If either request has no run id there is no
+    // proof that the incoming payload is stale; the maximum below only makes
+    // sure a request carrying no id cannot lower one that does.
     //
     // `runId` IS THE ONE EXCEPTION, AND IT MOVES ONLY UPWARD. It is GitHub's
     // push order, and this takes the maximum for the same reason
     // headShaByPullRequest compares with a strict `>`: a re-run keeps its
     // original run's id, so re-running an OLD sha's check must not make that
     // sha look newest, and a request carrying no id cannot lower one that does.
-    const currentRunId = existing === null ? null : requestData(existing.data)?.runId ?? null;
+    const incomingIsOlder = existing !== null && args.runId !== undefined &&
+      currentRunId !== null && args.runId < currentRunId;
+    if (incomingIsOlder) return { existing: true };
+    const requestedAt = Date.now();
     const runId = args.runId !== undefined && (currentRunId === null || args.runId > currentRunId)
       ? args.runId
       : currentRunId;
@@ -730,9 +740,10 @@ export const internalRequestEvals = internalMutation({
       // anchored `evals: no-item` line.
       prBody: args.prBody ?? null,
       unaffectedClaimed: args.unaffected === true,
-      // MOVES EVERY TIME, and that is what un-answers a stale row that scored
-      // nothing: answeredRun below reads one written BEFORE the request
-      // standing now as the answer to a question nobody is asking any more.
+      // MOVES WITH EVERY REQUEST NOT PROVED STALE, and that is what un-answers
+      // a stale row that scored nothing: answeredRun below reads one written
+      // BEFORE the request standing now as the answer to a question nobody is
+      // asking any more.
       requestedAt,
     };
     if (existing === null) {
@@ -769,25 +780,6 @@ async function requestRowFor(ctx: QueryCtx | MutationCtx, key: string) {
     .query("dtsEvents")
     .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_REQUEST).eq("key", key))
     .first();
-}
-
-/**
- * A ROW IS NOT A RUN. Three kinds of evals-run row score nothing and are
- * written in a POST each: a branch that touched no watched path
- * (`unaffected`), a head a later push replaced (`superseded`), and a sha the
- * box could not fetch or check out (`error`).
- *
- * ONE SPELLING, read by both the readers that care. convex/ttsWeekly.ts skips
- * these three when it counts the week's runs — counted, they said they were
- * runs the week did, that they were CLEAN runs, and, being the newest rows,
- * their empty arrays replaced the real measurement. answeredRun below asks the
- * same question for a different reason. A second copy of the list is how the
- * two come apart the next time a fourth kind is added.
- */
-export function scoredNothing(data: unknown): boolean {
-  const d = (data ?? {}) as Record<string, unknown>;
-  return d.unaffected === true || d.superseded === true || d.error === true ||
-    (typeof d.error === "string" && d.error !== "");
 }
 
 /**

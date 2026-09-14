@@ -33,6 +33,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { convexFetch, extractJsonObject, loadEnv, nyHour, nyUtcOffsetHours, runClaude, serverErrorMessage } from "./tts-lib.mjs";
 import { cacheRepoDir } from "./tts-code-lib.mjs";
 import { redactSecrets } from "./session-archive.mjs";
+import { scoredNothing } from "./evals-row.mjs";
 // THE AUDIT'S OWN PROMPT, IMPORTED AND NEVER RE-IMPLEMENTED. The planted-fault
 // arm below asks the real auditor the real question about a fixture diff; a
 // second copy of that prompt here would measure a prompt nothing else uses.
@@ -1163,7 +1164,7 @@ export async function loadModules(tomquestTree, items) {
  * regression.
  */
 export function passedIds(run) {
-  if (run === null || run === undefined || nonmeasurement(run)) return new Set();
+  if (run === null || run === undefined || scoredNothing(run)) return new Set();
   const failed = new Set([...(run.failures ?? []), ...(run.tasks?.failures ?? [])].map((failure) => failure.id));
   return new Set((run.scoredIds ?? []).filter((id) => !failed.has(id)));
 }
@@ -2219,14 +2220,6 @@ export function failedRun({ repo, sha, error, at, answersRequestAt = null }) {
   };
 }
 
-/** Rows that did not produce a trustworthy measurement. Historical eval rows
- * are append-only, so their string `error` remains a nonmeasurement until a
- * fresh run supersedes it; catastrophic rows use the newer boolean spelling. */
-export function nonmeasurement(data) {
-  return data?.error === true ||
-    (typeof data?.error === "string" && data.error !== "");
-}
-
 /**
  * The row a head A LATER PUSH REPLACED is answered with, with no model run.
  *
@@ -2401,11 +2394,14 @@ export async function stampAgainstBase(data, base, diff = {}) {
   const goldenCoverage = gateModule === null
     ? null
     : gateModule.goldenItemRule(diff.changed, diff.prBody);
-  // A catastrophic head is not a comparison, and an error row is not a base.
+  // A head that scored nothing is not a comparison, and neither is a base
+  // that scored nothing. The shared helper includes request-only rows too:
+  // normal unaffected and superseded requests bypass this path, but they fail
+  // closed if one reaches stamping unexpectedly.
   // A run is catastrophic when at least one item was scored and
   // errored * 2 >= scoredItems: exactly half is runner failed because less than
   // half of expected evidence remains trustworthy. All-error is included.
-  if (nonmeasurement(data)) {
+  if (scoredNothing(data)) {
     return {
       ...data,
       regressions: null,
@@ -2415,7 +2411,7 @@ export async function stampAgainstBase(data, base, diff = {}) {
       failures: data.failures.map((failure) => ({ ...failure, regression: false })),
     };
   }
-  if (gateModule === null || base === null || base === undefined || nonmeasurement(base)) {
+  if (gateModule === null || base === null || base === undefined || scoredNothing(base)) {
     // NULL, NOT ZERO. A run compared to nothing has no number of regressions,
     // and the merge gate opens its evals arm on exactly `regressions === 0`
     // (convex/ttsMerge.ts) — stamping 0 here would let a head that was never
@@ -2484,7 +2480,7 @@ export async function runAndPost(env, io, {
   if (base) {
     const baseRun = await convexFetch(env, `/tts/evals-run?repo=${repo}&sha=${base}`);
     baseData = baseRun?.run ?? null;
-    if (nonmeasurement(baseData)) baseData = null;
+    if (scoredNothing(baseData)) baseData = null;
     if (baseData === null) {
       baseData = await stampAgainstBase(await runEvals({ repo, sha: base, limit, jobs, weekly }, io), null);
       if (!dryRun) await postRun(env, baseData);
@@ -2680,7 +2676,7 @@ export async function serveRequest(env, io, request, options = {}) {
       repo: request.repo,
       sha: request.sha,
       changed: boxDiff.changed,
-      base: nonmeasurement(base) ? null : base,
+      base: scoredNothing(base) ? null : base,
       at: Date.now(),
       answersRequestAt: request.requestedAt ?? null,
     });

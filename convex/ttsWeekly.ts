@@ -38,7 +38,8 @@ import { NIGHTLY_FAILURE } from "./ttsNightly";
 import { NEEDS_TOM, SLACK_REPLY_FAILED } from "./ttsSlack";
 import { DAY_MS, MODEL_OF_TOM_AREAS_DIR, isPrepared } from "./ttsShared";
 import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
-import { EVALS_RUN, PRELUDE_DELIVERY, scoredNothing } from "./ttsEvals";
+import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
+import { scoredNothing } from "../worker/jobs/evals-row.mjs";
 import { AUDIT_APPROVED, AUDIT_VERDICT, MERGE, commitKey, mergeKey } from "./ttsMerge";
 import { DELEGATE_OBJECTION } from "./ttsAsk";
 import { isIsoDay, parseFrontmatter } from "../worker/jobs/markdown-sections.mjs";
@@ -885,8 +886,9 @@ export async function gatherWeeklyFacts(
     // superseded row is the frequent one and is what made this visible, but the
     // other two were already doing it.
     //
-    // The list itself lives in ttsEvals.ts, where convex/ttsEvals.ts answeredRun
-    // reads it too: a second copy here is how the two come apart.
+    // The shared helper is also what Convex uses for merge evidence and the box
+    // uses for baselines: a second spelling here could count a row either side
+    // had already refused.
     if (scoredNothing(d)) continue;
     evals.runs++;
     if (Array.isArray(d.ablation) && e.at > ablationAt) {

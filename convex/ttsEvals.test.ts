@@ -597,15 +597,32 @@ describe("a superseded request", () => {
     });
   });
 
-  // ONLY UPWARD, for the same reason headShaByPullRequest compares with a
-  // strict `>`: re-running an OLD sha's check keeps that run's id, and must
-  // never make that sha look like the newest push.
-  it("never lowers a request's run id", async () => {
+  // A LATE REQUEST FROM AN OLDER PUSH IS NOT A NEW QUESTION. Its run id proves
+  // that its whole view of the diff predates the request already standing, so
+  // it cannot restore a removed no-item trailer or re-date the stale payload
+  // into the question the box answers.
+  it("keeps the whole newer request when an older run arrives late", async () => {
     const t = convexTest({ schema, modules });
-    await file(t, 1, "aaaaaaa", { runId: 500 });
+    await file(t, 1, "aaaaaaa", {
+      baseSha: "6af3eef",
+      pr: 172,
+      runId: 500,
+      paths: ["model-of-tom/**"],
+      changed: ["model-of-tom/intent.md"],
+      prBody: "the body as it reads now",
+      unaffected: false,
+    });
     await file(t, 2, "bbbbbbb", { runId: 200 });
     await t.mutation(internal.ttsEvals.internalRequestEvals, {
-      repo: REPO, sha: "aaaaaaa", baseSha: "f5c1fb9", pr: 173, runId: 100, paths: ["model-of-tom/**"],
+      repo: REPO,
+      sha: "aaaaaaa",
+      baseSha: "f5c1fb9",
+      pr: 173,
+      runId: 100,
+      paths: ["worker/**"],
+      changed: ["worker/setup.sh"],
+      prBody: "evals: no-item\nold body",
+      unaffected: true,
     });
     const row = await t.run(async (ctx) =>
       await ctx.db
@@ -613,12 +630,26 @@ describe("a superseded request", () => {
         .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_REQUEST).eq("key", `${REPO}@aaaaaaa`))
         .first(),
     );
-    expect((row!.data as { runId: number }).runId).toBe(500);
-    // A is still the head, so B is what is superseded. Had 100 been written, it
-    // would be the other way round.
+    expect(row).toMatchObject({
+      at: 1,
+      data: {
+        repo: REPO,
+        sha: "aaaaaaa",
+        baseSha: "6af3eef",
+        pr: 172,
+        runId: 500,
+        paths: ["model-of-tom/**"],
+        changed: ["model-of-tom/intent.md"],
+        prBody: "the body as it reads now",
+        unaffected: false,
+        requestedAt: 1,
+      },
+    });
+    // A keeps its old place in line too, and is still the head. Had 100 and the
+    // stale timestamp been written, it would instead look superseded by B.
     expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
-      sha: "bbbbbbb",
-      supersededBy: "aaaaaaa",
+      sha: "aaaaaaa",
+      supersededBy: null,
     });
   });
 
@@ -667,6 +698,56 @@ describe("a superseded request", () => {
     // date ages out of the window and becomes invisible — unanswered and
     // unservable at once.
     expect(row!.at).toBeGreaterThan(1);
+  });
+
+  // NO ID MEANS NO ORDER, NOT STALE. In either direction the incoming diff is
+  // the current question because there is no proof it arrived late. A missing
+  // incoming id still cannot lower the known id already on the row.
+  it("replaces every field when either request has no run id", async () => {
+    for (const { currentRunId, incomingRunId, standingRunId } of [
+      { currentRunId: null, incomingRunId: 300, standingRunId: 300 },
+      { currentRunId: 100, incomingRunId: null, standingRunId: 100 },
+    ]) {
+      const t = convexTest({ schema, modules });
+      await file(t, 1, "aaaaaaa", {
+        runId: currentRunId,
+        baseSha: "f5c1fb9",
+        pr: 172,
+        paths: ["worker/**"],
+        changed: ["worker/setup.sh"],
+        prBody: "the first body",
+        unaffected: true,
+      });
+      await t.mutation(internal.ttsEvals.internalRequestEvals, {
+        repo: REPO,
+        sha: "aaaaaaa",
+        baseSha: "6af3eef",
+        pr: 173,
+        ...(incomingRunId === null ? {} : { runId: incomingRunId }),
+        paths: ["model-of-tom/**"],
+        changed: ["model-of-tom/intent.md"],
+        prBody: "the body as it reads now",
+      });
+      const row = await t.run(async (ctx) =>
+        await ctx.db
+          .query("dtsEvents")
+          .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_REQUEST).eq("key", `${REPO}@aaaaaaa`))
+          .first(),
+      );
+      expect(row).toMatchObject({
+        data: {
+          baseSha: "6af3eef",
+          pr: 173,
+          runId: standingRunId,
+          paths: ["model-of-tom/**"],
+          changed: ["model-of-tom/intent.md"],
+          prBody: "the body as it reads now",
+          unaffectedClaimed: false,
+        },
+      });
+      expect(row!.at).toBeGreaterThan(1);
+      expect((row!.data as { requestedAt: number }).requestedAt).toBeGreaterThan(1);
+    }
   });
 
   // A field the new request does not carry is NULL, never the old value: a
