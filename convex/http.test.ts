@@ -659,7 +659,7 @@ describe("POST /slack/events: a reaction on the morning digest", () => {
   const OTHER = "U0SOMEONEELSE";
   const DIGEST_TS = "1757000000.001200";
   const REACTED_AT = "1757000100.000200";
-  const TOKEN = "8f14e45f-ceea-467a-9a36-dedd4bea2543";
+  const TOKEN = "8f14e45f-ceea-467a-9a36-dedd4bea2543"; // gitleaks:allow
   const RUN_ID = "claude:box:write-slack-run";
 
   function reactionEnv() {
