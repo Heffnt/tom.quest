@@ -2,11 +2,24 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { registrationSidecarPath, writeRegistration, writeRegistrationReceipt } from "../worker/runs/registration.mjs";
 
 const SCRIPT = path.resolve("scripts/run-hook.mjs");
+
+// The hook resolves its registration module off import.meta.url, and neither a
+// static nor a dynamic import of it survives the vitest transform, which hands
+// the module a non-file URL. This suite already drives the hook as a Node
+// subprocess; ask the same Node for the exported rule rather than keeping a
+// second copy of it here.
+function currentRunPointerPath(stateDir, cwd) {
+  const probe = "const m = await import(process.argv[1]); process.stdout.write(m.currentRunPointerPath(process.argv[2], process.argv[3]));";
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", probe, pathToFileURL(SCRIPT).href, stateDir, cwd], { encoding: "utf8" });
+  if (result.status !== 0) throw new Error(result.stderr);
+  return result.stdout;
+}
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "run-hook-"));
@@ -187,6 +200,38 @@ describe("run lifecycle hook", () => {
       expect(fs.readdirSync(f.state).sort()).toEqual(["hook.log"]);
     });
   }
+
+  it("hands the box transport the laptop session's run id, then takes it back", () => {
+    const f = fixture();
+    const start = payloadFor(f.root, "claude", "SessionStart");
+    expect(run(start, { ...f, env: { RUN_HOST: "laptop" } }).status).toBe(0);
+    const pointer = currentRunPointerPath(f.state, start.cwd);
+    expect(JSON.parse(fs.readFileSync(pointer, "utf8"))).toMatchObject({
+      runId: "claude:laptop:parent",
+      rootRunId: "claude:laptop:parent",
+      depth: 0,
+      sessionId: "parent",
+      runFile: path.resolve(start.transcript_path),
+    });
+
+    expect(run({ ...start, hook_event_name: "SessionEnd", reason: "completed" }, { ...f, env: { RUN_HOST: "laptop" } }).status).toBe(0);
+    expect(fs.existsSync(pointer)).toBe(false);
+  });
+
+  it("writes no pointer without a cwd, and never fails a session over one", () => {
+    const f = fixture();
+    const cwdless = payloadFor(f.root, "claude", "SessionStart");
+    delete cwdless.cwd;
+    expect(run(cwdless, f).status).toBe(0);
+    expect(fs.existsSync(path.join(f.state, "current"))).toBe(false);
+
+    // An unwritable state directory is a hook problem, never a session's.
+    const blocked = path.join(f.root, "blocking-file");
+    fs.writeFileSync(blocked, "not a directory");
+    const result = run(payloadFor(f.root, "claude", "SessionStart"), { ...f, state: path.join(blocked, "state") });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+  });
 
   it("returns while its detached sweep child is still running", async () => {
     const f = fixture();

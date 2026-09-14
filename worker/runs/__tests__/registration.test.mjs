@@ -192,6 +192,60 @@ describe("run registration", () => {
     expect(withId.run).toMatchObject({ linkKnown: true, spawnedByToolUseId: "tool-1" });
   });
 
+  it("promotes a root the box launcher gave a parent, and moves every row with it", () => {
+    const root = () => ({
+      run: {
+        runId: "claude:box:box-session", rootRunId: "claude:box:box-session", depth: 0,
+        linkKnown: true, origin: "unknown", kind: "session", host: "box", status: "unknown",
+        context: { layersKnown: false, layersGiven: [], layersDenied: [], skillsOffered: [], skillsUsed: [], tools: [], hooks: [] },
+      },
+      rows: [{ seq: 0, depth: 0 }, { seq: 1, depth: 0 }],
+      children: [],
+    });
+    const envelope = (file) => ({
+      writer: { file },
+      registration: {
+        host: "box", layersKnown: false,
+        parentRunId: "claude:laptop:orchestrator", rootRunId: "claude:laptop:orchestrator", depth: 1,
+      },
+    });
+
+    const promoted = mergeRegistration({ parsed: root(), host: "box", envelope: envelope("worker/runs/box-run.mjs") });
+    // linkKnown drops because convex/runs.ts validRunPayload refuses a run that
+    // claims a known link to a parent with no tool-use id behind it, and
+    // ingest.mjs parses a Claude ROOT file as linkKnown. Every row's depth
+    // moves too: internalIngest refuses a row whose depth is not the run's.
+    expect(promoted.run).toMatchObject({
+      parentRunId: "claude:laptop:orchestrator",
+      rootRunId: "claude:laptop:orchestrator",
+      depth: 1,
+      linkKnown: false,
+    });
+    expect(promoted.rows.map((entry) => entry.depth)).toEqual([1, 1]);
+
+    // A launcher off PARENT_LINK_LAUNCHERS names no parent at all: a wrong
+    // position in the tree is worse than a missing one.
+    const untrusted = mergeRegistration({ parsed: root(), host: "box", envelope: envelope("scripts/some-other.mjs") });
+    expect(untrusted.run.parentRunId).toBeUndefined();
+    expect(untrusted.run).toMatchObject({ rootRunId: "claude:box:box-session", depth: 0, linkKnown: true });
+    expect(untrusted.rows.map((entry) => entry.depth)).toEqual([0, 0]);
+  });
+
+  it("never re-roots a run the parser already placed in a tree", () => {
+    const deep = {
+      run: { ...parsed().run, runId: "codex:laptop:grandchild", parentRunId: "codex:laptop:middle", rootRunId: "codex:laptop:root", depth: 2 },
+      rows: [{ seq: 0, depth: 2 }],
+      children: [],
+    };
+    const merged = mergeRegistration({
+      parsed: deep,
+      host: "laptop",
+      envelope: { writer: { file: "scripts/codex-run.mjs" }, registration: { host: "laptop", layersKnown: false, parentRunId: "claude:laptop:orchestrator", rootRunId: "claude:laptop:orchestrator", depth: 1 } },
+    });
+    expect(merged.run).toMatchObject({ parentRunId: "claude:laptop:orchestrator", rootRunId: "codex:laptop:root", depth: 2 });
+    expect(merged.rows.map((entry) => entry.depth)).toEqual([2]);
+  });
+
   it("claims a Codex spool only from the first persisted developer instruction", () => {
     const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "rollout.jsonl");
     const token = "22222222-2222-4222-8222-222222222222";

@@ -35,4 +35,14 @@ describe("run configuration", () => {
     expect(config.roots.claude).toEqual([{ path: one }, { path: two }]);
     expect(config.roots.codex).toEqual([{ path: one }]);
   });
+
+  it("caps box runs in flight at two unless a positive number says otherwise", () => {
+    const dir = temp();
+    const base = { USERPROFILE: dir };
+    const of = (env) => runConfig({ env: { ...base, ...env }, envFiles: [], platform: "win32", homedir: dir }).maxParallel;
+    expect(of({})).toBe(2);
+    expect(of({ RUN_MAX_PARALLEL: "5" })).toBe(5);
+    // A typo is a typo, not permission to launch without limit.
+    for (const bad of ["0", "-1", "abc"]) expect(of({ RUN_MAX_PARALLEL: bad })).toBe(2);
+  });
 });

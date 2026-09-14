@@ -20,6 +20,7 @@ export const RUN_ENV_NAMES = Object.freeze([
   "RUN_BACKLOG_PASS_MS",
   "RUN_BACKLOG_MAX_FILE_BYTES",
   "RUN_BACKLOG_ALLOW_LOCAL_STORE",
+  "RUN_MAX_PARALLEL",
   "WIKITOM_DIR",
   "WIKITOM_SESSIONS_DIR",
   "RUN_FILES_DELETE_AFTER_UPLOAD",
@@ -127,6 +128,10 @@ export function runConfig({
     host,
     stateDir,
     storeConfig,
+    // The most box runs the transport may have in flight at once. A typo is a
+    // typo, not permission to launch without limit, so it falls back the same
+    // way a backlog limit does.
+    maxParallel: positive(value("RUN_MAX_PARALLEL"), 2),
     convexSiteUrl: value("CONVEX_SITE_URL") || null,
     sessionsKey: value("SESSIONS_WORKER_KEY") || null,
     ttsKey: value("TTS_WORKER_KEY") || null,
