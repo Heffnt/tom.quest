@@ -355,6 +355,12 @@ describe("the evals arm's golden-coverage clause", () => {
     expect(gate.why).toContain("no regression");
   });
 
+  it("denies a catastrophic eval before regressions, coverage, or unaffected can open it", async () => {
+    const gate = await gateWith({ error: true, scoredNothing: true, reason: "runner failed: Not logged in", regressions: 0, goldenCoverage: "not-required", unaffected: true });
+    expect(gate).toMatchObject({ allowed: false, missing: ["evals"] });
+    expect(gate.why).toBe(`the evals could not run at ${SHA.slice(0, 7)}: runner failed: Not logged in`);
+  });
+
   // The row an UNAFFECTED branch gets: the check read its own diff, nothing in
   // it was a watched path, and the door recorded that in seconds instead of
   // asking for a run of a set this change cannot move. Before it existed, the

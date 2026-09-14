@@ -252,9 +252,6 @@ export function gate(head, base, { changed, prBody } = {}) {
   // and convex/ttsMerge.ts says so in its own words. Read off the ROW, not
   // re-derived from the diff here, so what the gate opens on and what the log
   // prints are the one fact the door recorded.
-  if (head.unaffected === true) {
-    return { ok: true, regressions: [], stillFailing: [], newFailing: [], fixed: [], unconfirmed: [], mismatch: false, noBaseline: !base, goldenCoverage: COVERAGE_NOT_REQUIRED, goldenExcuse: null };
-  }
   // A LATER PUSH REPLACED THIS HEAD, and the box answered the request without
   // running anything (worker/jobs/evals.mjs supersededRun). Before the `error`
   // branch, which the same row also carries for readers that predate this one:
@@ -267,14 +264,21 @@ export function gate(head, base, { changed, prBody } = {}) {
   // out) is posted as a row carrying `error`, so the request queue advances.
   // A row like that scored nothing, and a gate that reads "no failures" off it
   // would open on a run that never happened.
-  if (typeof head.error === "string" && head.error !== "") {
-    return { ok: false, reason: head.error, regressions: [], stillFailing: [], newFailing: [], fixed: [], unconfirmed: [], mismatch: false, goldenCoverage, goldenExcuse };
+  if (head.superseded !== true && (head.error === true || head.scoredNothing === true || (typeof head.error === "string" && head.error !== ""))) {
+    const reason = typeof head.reason === "string" && head.reason !== ""
+      ? head.reason
+      : typeof head.error === "string" && head.error !== "" ? head.error : "runner failed";
+    return { ok: false, reason, errored: [], regressions: [], stillFailing: [], newFailing: [], fixed: [], unconfirmed: [], mismatch: false, goldenCoverage, goldenExcuse };
+  }
+  if (head.unaffected === true) {
+    return { ok: true, errored: [], regressions: [], stillFailing: [], newFailing: [], fixed: [], unconfirmed: [], mismatch: false, noBaseline: !base, goldenCoverage: COVERAGE_NOT_REQUIRED, goldenExcuse: null };
   }
   const headFailures = failuresOf(head);
   const baseFailures = failuresOf(base);
   const baseScored = scoredOf(base);
   const mismatch = Boolean(base) && head.goldenHash !== base.goldenHash;
   const regressions = [];
+  const errored = [];
   const stillFailing = [];
   const newFailing = [];
   const unconfirmed = [];
@@ -289,7 +293,10 @@ export function gate(head, base, { changed, prBody } = {}) {
   // the base run did is a fact about this commit; what an item calls itself is
   // a label with a lifecycle.
   for (const [id, failure] of headFailures) {
-    if (failure.confirmed === false) unconfirmed.push(failure);
+    if (failure.errored === true) {
+      errored.push(failure);
+      stillFailing.push(failure);
+    } else if (failure.confirmed === false) unconfirmed.push(failure);
     else if (baseFailures.has(id)) stillFailing.push(failure);
     else if (!base || (baseScored.size > 0 && !baseScored.has(id))) newFailing.push(failure);
     else regressions.push(failure);
@@ -298,12 +305,18 @@ export function gate(head, base, { changed, prBody } = {}) {
   // Coverage fails the check on `false` alone. `null` is the absence of a
   // question, not an answer of no, and a run with no diff to read must not
   // fail a check it was never given the input for.
-  const ok = regressions.length === 0 && !mismatch && goldenCoverage !== false;
-  return { ok, mismatch, regressions, stillFailing, newFailing, fixed, unconfirmed, noBaseline: !base, goldenCoverage, goldenExcuse };
+  const ok = errored.length === 0 && regressions.length === 0 && !mismatch && goldenCoverage !== false;
+  return { ok, mismatch, errored, regressions, stillFailing, newFailing, fixed, unconfirmed, noBaseline: !base, goldenCoverage, goldenExcuse };
 }
 
 /** What Tom sees in the check's log. A clean check is one line. */
 export function report(head, base, verdict) {
+  if (head.superseded !== true && (head.error === true || head.scoredNothing === true || (typeof head.error === "string" && head.error !== ""))) {
+    const reason = typeof head.reason === "string" && head.reason !== ""
+      ? head.reason
+      : typeof head.error === "string" && head.error !== "" ? head.error : "runner failed";
+    return [`the evals could not run on the box: ${reason}`];
+  }
   // ONE LINE, and it names the sha and the count, because the whole content of
   // an unaffected check is "we looked at the diff and it touched nothing the
   // evals watch". THE SAME WORDS the merge gate's `why` uses (convex/
@@ -348,6 +361,7 @@ export function report(head, base, verdict) {
   const notes = [
     verdict.regressions.length === 0 ? "0 regressions" : null,
     `${flaky} flaky`,
+    verdict.errored.length > 0 ? `${verdict.errored.length} errored` : null,
     verdict.stillFailing.length > 0 ? `${verdict.stillFailing.length} still failing` : null,
     verdict.unconfirmed.length > 0 ? `${verdict.unconfirmed.length} failing but not confirmed by Tom` : null,
   ].filter((note) => note !== null);
@@ -376,6 +390,7 @@ export function report(head, base, verdict) {
     lines.push(`  golden item excused: ${verdict.goldenExcuse}`);
   }
   const say = (label, failure) => `  ${label}  ${failure.id} (${failure.partition}, ${failure.verdict}) — ${failure.reason}`;
+  for (const failure of verdict.errored) lines.push(say("errored", failure));
   for (const failure of verdict.regressions) lines.push(say("REGRESSION", failure));
   for (const failure of verdict.stillFailing) lines.push(say("still failing", failure));
   for (const failure of verdict.newFailing) lines.push(say("new, failing", failure));
@@ -385,7 +400,9 @@ export function report(head, base, verdict) {
   // regressions, and "FAILED: 0 regressions." is a sentence no one can act on.
   lines.push((verdict.ok
     ? `PASSED: 0 regressions.`
-    : verdict.mismatch
+    : verdict.errored.length > 0
+      ? `FAILED: ${verdict.errored.length} errored.`
+      : verdict.mismatch
       ? `FAILED: the two runs scored different golden sets.`
       : verdict.regressions.length > 0
         ? `FAILED: ${verdict.regressions.length} regression${verdict.regressions.length === 1 ? "" : "s"}.`

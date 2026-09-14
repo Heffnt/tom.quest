@@ -896,4 +896,41 @@ describe("a superseded request", () => {
       supersededBy: null,
     });
   });
+
+  it("returns a current catastrophic head, suppresses it as a base, and serves a re-file", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "head000");
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: 2,
+        kind: EVALS_RUN,
+        key: `${REPO}@head000`,
+        data: { repo: REPO, sha: "head000", error: true, scoredNothing: true, reason: "runner failed: Not logged in", regressions: null },
+      });
+      await ctx.db.insert("dtsEvents", {
+        at: 2,
+        kind: EVALS_RUN,
+        key: `${REPO}@base000`,
+        data: { repo: REPO, sha: "base000", error: "legacy runner failed", regressions: null },
+      });
+    });
+    expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "head000", baseSha: "base000" }))
+      .toMatchObject({ run: { error: true, reason: "runner failed: Not logged in" }, base: null });
+    await t.mutation(internal.ttsEvals.internalRequestEvals, {
+      repo: REPO, sha: "head000", baseSha: "base000", pr: 173, runId: 300, paths: ["model-of-tom/**"],
+    });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({ sha: "head000" });
+    // The worker's --force branch posts a fresh measurement over this key. The
+    // clean row must replace the catastrophic answer for all subsequent reads.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now() + 1,
+        kind: EVALS_RUN,
+        key: `${REPO}@head000`,
+        data: { repo: REPO, sha: "head000", regressions: 0, goldenCoverage: true, pass: 29, items: 29 },
+      });
+    });
+    expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "head000" }))
+      .toMatchObject({ run: { regressions: 0, goldenCoverage: true, pass: 29, items: 29 } });
+  });
 });

@@ -869,7 +869,7 @@ export const internalRequestEvals = internalMutation({
           repo: args.repo,
           sha: args.sha,
           changed: args.changed ?? null,
-          base: (base?.data ?? null) as Record<string, unknown> | null,
+          base: (base === null || scoredNothing(base.data) ? null : base.data) as Record<string, unknown> | null,
           at: requestedAt,
           answersRequestAt: requestedAt,
         }),
@@ -912,7 +912,7 @@ async function requestRowFor(ctx: QueryCtx | MutationCtx, key: string) {
  */
 export function scoredNothing(data: unknown): boolean {
   const d = (data ?? {}) as Record<string, unknown>;
-  return d.unaffected === true || d.superseded === true ||
+  return d.unaffected === true || d.superseded === true || d.scoredNothing === true || d.error === true ||
     (typeof d.error === "string" && d.error !== "");
 }
 
@@ -1015,7 +1015,9 @@ export const internalEvalsRun = internalQuery({
   handler: async (ctx, args) => {
     const run = await answeredRun(ctx, `${args.repo}@${args.sha}`);
     const base = args.baseSha === undefined ? null : await answeredRun(ctx, `${args.repo}@${args.baseSha}`);
-    return { run: run?.data ?? null, base: base?.data ?? null };
+    // The requested head remains visible so CI can report a box failure. A
+    // base is comparison evidence, though, and a nonmeasurement cannot seed it.
+    return { run: run?.data ?? null, base: base === null || scoredNothing(base.data) ? null : base.data };
   },
 });
 

@@ -50,6 +50,15 @@ describe("gate", () => {
     expect(report(head, base, verdict).join("\n")).toContain("still failing  one");
   });
 
+  it("fails partial runner errors as still failing, never as regressions", () => {
+    const head = run({ pass: 26, fail: 3, items: 29, failures: [failure("one", { errored: true }), failure("two", { errored: true }), failure("three", { errored: true })] });
+    const base = run({ sha: "9f8e7d6c", items: 29, pass: 29, scoredIds: Array.from({ length: 29 }, (_, i) => `item-${i}`) });
+    const verdict = gate(head, base);
+    expect(verdict).toMatchObject({ ok: false, regressions: [] });
+    expect(verdict.stillFailing).toHaveLength(3);
+    expect(report(head, base, verdict).at(-1)).toBe("FAILED: 3 errored.");
+  });
+
   it("passes with no baseline when the base run is missing", () => {
     const head = run({ pass: 2, fail: 1, failures: [failure("one")] });
     const verdict = gate(head, null);
@@ -103,7 +112,14 @@ describe("gate, continued", () => {
     const head = run({ items: 0, pass: 0, fail: 0, scoredIds: [], error: "could not fetch deadbeef" });
     const verdict = gate(head, null);
     expect(verdict).toMatchObject({ ok: false, reason: "could not fetch deadbeef" });
-    expect(report(head, null, verdict).join("\n")).toContain("FAILED: the run could not be made");
+    expect(report(head, null, verdict).join("\n")).toBe("the evals could not run on the box: could not fetch deadbeef");
+  });
+
+  it("fails the new catastrophic row shape before regressions can open it", () => {
+    const head = run({ error: true, reason: "runner failed: Not logged in", scoredNothing: true, regressions: 0 });
+    const verdict = gate(head, run());
+    expect(verdict.ok).toBe(false);
+    expect(report(head, run(), verdict)).toEqual(["the evals could not run on the box: runner failed: Not logged in"]);
   });
 
   it("counts an item head scored and base never did as new, not as a regression", () => {

@@ -32,6 +32,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { convexFetch, extractJsonObject, loadEnv, nyHour, nyUtcOffsetHours, runClaude, serverErrorMessage } from "./tts-lib.mjs";
 import { cacheRepoDir } from "./tts-code-lib.mjs";
+import { redactSecrets } from "./session-archive.mjs";
 // THE AUDIT'S OWN PROMPT, IMPORTED AND NEVER RE-IMPLEMENTED. The planted-fault
 // arm below asks the real auditor the real question about a fixture diff; a
 // second copy of that prompt here would measure a prompt nothing else uses.
@@ -634,14 +635,23 @@ export function parseJudge(answer) {
   try {
     parsed = extractJsonObject(answer);
   } catch {
-    return { judged: "fail", reason: `judge answer unreadable: ${String(answer ?? "").slice(0, 120)}` };
+    return runnerFailure(`judge answer unreadable: ${String(answer ?? "").slice(0, 120)}`);
   }
   const verdict = parsed?.verdict;
   const reason = parsed?.reason;
   if ((verdict !== "pass" && verdict !== "fail") || typeof reason !== "string" || reason.trim() === "") {
-    return { judged: "fail", reason: `judge answer unreadable: ${String(answer ?? "").slice(0, 120)}` };
+    return runnerFailure(`judge answer unreadable: ${String(answer ?? "").slice(0, 120)}`);
   }
-  return { judged: verdict, reason: reason.trim() };
+  // Judge output is untrusted text which reaches the persisted failure record
+  // and CI report. Keep its diagnostic content, but never its credentials.
+  return { judged: verdict, reason: redactSecrets(reason.trim()) };
+}
+
+/** A model/transport failure is not a negative measurement. Redact it before it
+ * can become an item reason, aggregate error, persisted row, or log line. */
+export function runnerFailure(error) {
+  const message = redactSecrets(String(error ?? "runner failed")).slice(0, 300);
+  return { judged: "fail", errored: true, errorMessage: message, reason: `runner failed: ${message}` };
 }
 
 // ── The deterministic checks ─────────────────────────────────────────────────
@@ -851,7 +861,7 @@ export async function runItem(item, context, io, { deterministic = null, receipt
     // test was measured, and calling that a regression would fail a merge on
     // a phase that has not landed.
     if (err instanceof SkillsNotAssembledError) return { ...base, judged: "skip", reason: err.message };
-    return { ...base, judged: "fail", reason: `regeneration failed: ${serverErrorMessage(err)}` };
+    return { ...base, ...runnerFailure(serverErrorMessage(err)) };
   }
   if (deterministic !== null) {
     // A check that throws is a failed check, reported as one. runItem never
@@ -871,7 +881,7 @@ export async function runItem(item, context, io, { deterministic = null, receipt
     try {
       return { ...base, ...job.score(item, fresh, context.modules[item.job]) };
     } catch (err) {
-      return { ...base, judged: "fail", reason: `scoring failed: ${serverErrorMessage(err)}` };
+      return { ...base, ...runnerFailure(serverErrorMessage(err)) };
     }
   }
   let answer;
@@ -889,7 +899,7 @@ export async function runItem(item, context, io, { deterministic = null, receipt
       },
     });
   } catch (err) {
-    return { ...base, judged: "fail", reason: `judge answer unreadable: ${serverErrorMessage(err)}` };
+    return { ...base, ...runnerFailure(serverErrorMessage(err)) };
   }
   return { ...base, ...parseJudge(answer) };
 }
@@ -915,6 +925,7 @@ export function aggregate(results) {
   const byVerdict = { approve: { items: 0, pass: 0 }, revise: { items: 0, pass: 0 } };
   let pass = 0;
   let flaky = 0;
+  let errored = 0;
   for (const result of results) {
     if (isFlaky(result)) flaky += 1;
     const row = byPartition.get(result.partition) ?? { partition: result.partition, items: 0, pass: 0, fail: 0 };
@@ -927,6 +938,7 @@ export function aggregate(results) {
       if (result.judged === "pass") verdict.pass += 1;
     }
     if (result.judged === "pass") pass += 1;
+    if (result.errored === true) errored += 1;
   }
   return {
     items: results.length,
@@ -935,12 +947,13 @@ export function aggregate(results) {
     // Passed once, failed once. NEVER a regression and never folded into the
     // fail count: it is the noise in the measurement, said out loud.
     flaky,
+    errored,
     byPartition: [...byPartition.values()].sort((a, b) => a.partition.localeCompare(b.partition)),
     byVerdict,
     failures: results
       .filter((result) => result.judged !== "pass")
-      .map(({ id, partition, verdict, reason, confirmed, trials }) => ({
-        id, partition, verdict, reason, confirmed,
+      .map(({ id, partition, verdict, reason, confirmed, trials, errored }) => ({
+        id, partition, verdict, reason, confirmed, ...(errored === true ? { errored: true } : {}),
         // The failure carries its own trial count, so a row read later says
         // whether this id failed once or failed every time it was tried.
         ...(trials === undefined ? {} : { trials }),
@@ -1031,7 +1044,15 @@ export async function runTask(task, trees, io) {
   if (typeof io?.runTaskKind !== "function") {
     return { ...base, judged: "skip", reason: `no runner wired for task kind ${task.kind}` };
   }
-  const produced = await io.runTaskKind(task, trees);
+  let produced;
+  try {
+    produced = await io.runTaskKind(task, trees);
+  } catch (error) {
+    return { ...base, ...runnerFailure(serverErrorMessage(error)) };
+  }
+  if (produced === null || typeof produced !== "object" || (produced.judged !== "pass" && produced.judged !== "fail" && produced.judged !== "skip")) {
+    return { ...base, ...runnerFailure("task runner returned no usable answer") };
+  }
   // THE MECHANICAL HALF DECIDES FIRST. mustName and mustNotName are read off
   // the answer's own text with no model in the loop, and a violation is the
   // item's score — the kind runner's own verdict, and any judge behind it, is
@@ -1134,7 +1155,7 @@ export async function loadModules(tomquestTree, items) {
  * regression.
  */
 export function passedIds(run) {
-  if (run === null || run === undefined) return new Set();
+  if (run === null || run === undefined || nonmeasurement(run)) return new Set();
   const failed = new Set([...(run.failures ?? []), ...(run.tasks?.failures ?? [])].map((failure) => failure.id));
   return new Set((run.scoredIds ?? []).filter((id) => !failed.has(id)));
 }
@@ -1154,6 +1175,9 @@ export function passedIds(run) {
 export async function runTrials(id, basePassed, once) {
   const first = await once();
   if (first.judged === "skip") return first;
+  // A runner failure is terminal evidence for this item. Retrying a failed
+  // transport until it happens to work would turn an outage into a pass.
+  if (first.errored === true) return { ...first, trials: { head: 1, headPassed: 0 } };
   if (first.judged === "pass" || !basePassed.has(id)) {
     return { ...first, trials: { head: 1, headPassed: first.judged === "pass" ? 1 : 0 } };
   }
@@ -1161,6 +1185,9 @@ export async function runTrials(id, basePassed, once) {
   while (results.length < HEAD_TRIALS) {
     const next = await once();
     results.push(next);
+    if (next.errored === true) {
+      return { ...next, trials: { head: results.length, headPassed: results.filter((result) => result.judged === "pass").length } };
+    }
     if (next.judged === "pass") break;
   }
   const passing = results.find((result) => result.judged === "pass");
@@ -1332,6 +1359,19 @@ export async function runCase(item, context, io, { pr = false } = {}) {
     if (result.judged === "skip") return { ...base, judged: "skip", reason: result.reason };
     const record = await runRecordFor(io, receipt.runToken);
     perTrial.push({ judged: result.judged, reason: result.reason, tokens: record.tokens, turns: record.turns });
+    if (result.errored === true) {
+      return {
+        ...base,
+        ...result,
+        trialCount: perTrial.length,
+        passed: 0,
+        passK: false,
+        passAtK: false,
+        trials: { head: perTrial.length, headPassed: 0 },
+        tokensMedian: medianTokens(perTrial),
+        perTrial,
+      };
+    }
   }
   const passed = perTrial.filter((trial) => trial.judged === "pass").length;
   const failing = perTrial.find((trial) => trial.judged !== "pass");
@@ -1874,13 +1914,25 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       results.push(await runTrials(item.id, basePassed, () => runItem(item, context, io)));
     }
     const tasks = [];
-    for (const taskRepo of io.taskRepos?.(tomquest.dir) ?? []) {
+    for (const taskRepo of [...(io.taskRepos?.(tomquest.dir) ?? [])].sort()) {
       for (const task of loadTasks(tomquest.dir, taskRepo)) {
         tasks.push(await runTrials(task.id, basePassed, () => runTask(task, trees, io)));
       }
     }
     const scored = results.filter((result) => result.judged !== "skip");
     const summary = aggregate(scored);
+    const scoredTasks = tasks.filter((task) => task.judged !== "skip");
+    const taskSummary = aggregate(scoredTasks);
+    const errors = [...scored, ...scoredTasks]
+      .filter((result) => result.errored === true)
+      .map((result) => result.errorMessage ?? String(result.reason ?? "runner failed").replace(/^runner failed: /, ""))
+      .slice(0, 3);
+    const errored = summary.errored + taskSummary.errored;
+    const scoredItems = scored.length + scoredTasks.length;
+    // A run is catastrophic when at least one item was scored and
+    // errored * 2 >= scoredItems: exactly half is runner failed because less
+    // than half of expected evidence remains trustworthy. All-error is included.
+    const catastrophic = scoredItems > 0 && errored * 2 >= scoredItems;
     return {
       repo,
       // The RESOLVED commit of whichever repo this run pins, so a run named
@@ -1924,6 +1976,7 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       results: scored.map((result) => ({
         id: result.id,
         judged: result.judged,
+        ...(result.errored === true ? { errored: true } : {}),
         passK: result.passK ?? (result.trials === undefined
           ? result.judged === "pass"
           : result.trials.headPassed === result.trials.head),
@@ -1932,7 +1985,12 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       ablation: ablationRows,
       ablationSkipped,
       ...summary,
-      tasks: aggregate(tasks.filter((task) => task.judged !== "skip")),
+      errored,
+      errors,
+      ...(catastrophic
+        ? { error: true, reason: `runner failed: ${errors[0] ?? "runner failed"}`, scoredNothing: true, regressions: null, goldenCoverage: null }
+        : {}),
+      tasks: taskSummary,
       tasksSkipped: tasks.filter((task) => task.judged === "skip").map(({ id, reason }) => ({ id, reason })),
     };
   } finally {
@@ -2144,13 +2202,21 @@ function unscoredRun({ repo, sha, at, answersRequestAt = null }) {
 export function failedRun({ repo, sha, error, at, answersRequestAt = null }) {
   return {
     ...unscoredRun({ repo, sha, at, answersRequestAt }),
-    error,
+    error: redactSecrets(String(error ?? "runner failed")).slice(0, 300),
     regressions: null,
     // A run that could not be made checked no diff either, so the coverage
     // field says so rather than saying "satisfied". The merge gate denies on
     // null, which is what a row carrying `error` must do on every arm.
     goldenCoverage: null,
   };
+}
+
+/** Rows that did not produce a trustworthy measurement. `error` was a string
+ * before runner failures became item-level facts, so both spellings remain
+ * nonmeasurements for old rows and new catastrophic rows alike. */
+export function nonmeasurement(data) {
+  return data?.scoredNothing === true || data?.error === true ||
+    (typeof data?.error === "string" && data.error !== "");
 }
 
 /**
@@ -2255,7 +2321,21 @@ export async function stampAgainstBase(data, base, diff = {}) {
   const goldenCoverage = gateModule === null
     ? null
     : gateModule.goldenItemRule(diff.changed, diff.prBody);
-  if (gateModule === null || base === null || base === undefined) {
+  // A catastrophic head is not a comparison, and an error row is not a base.
+  // A run is catastrophic when at least one item was scored and
+  // errored * 2 >= scoredItems: exactly half is runner failed because less than
+  // half of expected evidence remains trustworthy. All-error is included.
+  if (nonmeasurement(data)) {
+    return {
+      ...data,
+      regressions: null,
+      stillFailing: 0,
+      goldenCoverage: null,
+      efficiency: efficiencyOf(data.results, null),
+      failures: data.failures.map((failure) => ({ ...failure, regression: false })),
+    };
+  }
+  if (gateModule === null || base === null || base === undefined || nonmeasurement(base)) {
     // NULL, NOT ZERO. A run compared to nothing has no number of regressions,
     // and the merge gate opens its evals arm on exactly `regressions === 0`
     // (convex/ttsMerge.ts) — stamping 0 here would let a head that was never
@@ -2320,6 +2400,7 @@ async function runAndPost(env, io, {
   if (base) {
     const baseRun = await convexFetch(env, `/tts/evals-run?repo=${repo}&sha=${base}`);
     baseData = baseRun?.run ?? null;
+    if (nonmeasurement(baseData)) baseData = null;
     if (baseData === null) {
       baseData = await stampAgainstBase(await runEvals({ repo, sha: base, limit, jobs, weekly }, io), null);
       if (!dryRun) await postRun(env, baseData);
@@ -2439,7 +2520,7 @@ export async function serveRequest(env, io, request, options = {}) {
       repo: request.repo,
       sha: request.sha,
       changed: request.changed,
-      base,
+      base: nonmeasurement(base) ? null : base,
       at: Date.now(),
       answersRequestAt: request.requestedAt ?? null,
     });
@@ -2474,7 +2555,7 @@ export async function serveRequest(env, io, request, options = {}) {
   } catch (error) {
     // A run that threw still has to be ANSWERED, or this request is taken
     // again on every tick and nothing behind it is ever served.
-    const reason = serverErrorMessage(error);
+    const reason = redactSecrets(serverErrorMessage(error)).slice(0, 300);
     console.error(`[evals] ${request.repo}@${request.sha} could not be run: ${reason}`);
     const data = failedRun({
       repo: request.repo,

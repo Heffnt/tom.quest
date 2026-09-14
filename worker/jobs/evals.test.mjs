@@ -36,6 +36,7 @@ import {
   runCase,
   runEvals,
   runItem,
+  runnerFailure,
   runTask,
   runTrials,
   serveRequest,
@@ -191,7 +192,7 @@ describe("runItem", () => {
         },
       }));
     }
-    expect(results[0]).toMatchObject({ judged: "fail", reason: expect.stringMatching(/^regeneration failed/) });
+    expect(results[0]).toMatchObject({ judged: "fail", errored: true, reason: expect.stringMatching(/^runner failed/) });
     expect(results[1].judged).toBe("pass");
   });
 
@@ -206,7 +207,7 @@ describe("runItem", () => {
           : "I think it is probably fine, honestly";
       },
     });
-    expect(result).toMatchObject({ judged: "fail", reason: expect.stringMatching(/^judge answer unreadable/) });
+    expect(result).toMatchObject({ judged: "fail", errored: true, reason: expect.stringMatching(/^runner failed: judge answer unreadable/) });
   });
 
   it("refuses to score an item whose label sentence reached the prompt", async () => {
@@ -228,9 +229,16 @@ describe("parseJudge", () => {
     expect(parseJudge('```json\n{"verdict":"fail","reason":"still restates the statement"}\n```').judged).toBe("fail");
   });
 
+  it("redacts credentials in a valid judge failure reason before it is stored", () => {
+    const secret = "ghp_abcdefghijklmnopqrstuvwxyz1234567890";
+    const result = parseJudge(JSON.stringify({ verdict: "fail", reason: `judge transport mentioned ${secret}` }));
+    expect(result).toMatchObject({ judged: "fail", reason: expect.stringContaining("judge transport mentioned") });
+    expect(result.reason).not.toContain(secret);
+  });
+
   it("rejects a verdict that is not pass or fail, and an empty reason", () => {
-    expect(parseJudge('{"verdict":"maybe","reason":"x"}').reason).toMatch(/^judge answer unreadable/);
-    expect(parseJudge('{"verdict":"pass","reason":"  "}').reason).toMatch(/^judge answer unreadable/);
+    expect(parseJudge('{"verdict":"maybe","reason":"x"}').reason).toMatch(/^runner failed: judge answer unreadable/);
+    expect(parseJudge('{"verdict":"pass","reason":"  "}').reason).toMatch(/^runner failed: judge answer unreadable/);
   });
 });
 
@@ -343,6 +351,15 @@ describe("repo tasks", () => {
     const task = { id: "t", repo: "slack", kind: "slack", expect: { mustName: ["667"], mustNotName: [] } };
     const result = await runTask(task, {}, { runTaskKind: async () => ({ judged: "pass", reason: "scored elsewhere" }) });
     expect(result.judged).toBe("pass");
+  });
+
+  it("turns a thrown task runner into one redacted item error", async () => {
+    const secret = "ghp_abcdefghijklmnopqrstuvwxyz1234567890";
+    const result = await runTask({ id: "t", repo: "slack", kind: "slack" }, {}, {
+      runTaskKind: async () => { throw new Error(`Not logged in ${secret}`); },
+    });
+    expect(result).toMatchObject({ judged: "fail", errored: true, reason: expect.stringMatching(/^runner failed: Not logged in/) });
+    expect(result.reason).not.toContain(secret);
   });
 
   it("fails an unknown task kind rather than silently passing it", async () => {
@@ -486,6 +503,18 @@ describe("the head trials", () => {
     expect(calls.count).toBe(1);
   });
 
+  it("makes a runner error terminal and redacts it before it reaches the item", async () => {
+    const raw = "Not logged in ghp_abcdefghijklmnopqrstuvwxyz1234567890";
+    const calls = { count: 0 };
+    const result = await runTrials("a", new Set(["a"]), async () => {
+      calls.count += 1;
+      return { id: "a", partition: "prepare/chores", verdict: "revise", confirmed: true, ...runnerFailure(raw) };
+    });
+    expect(calls.count).toBe(1);
+    expect(result).toMatchObject({ judged: "fail", errored: true, reason: expect.stringMatching(/^runner failed: Not logged in/) });
+    expect(result.reason).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
+  });
+
   it("reads the base's passing ids off the row, tasks and golden items alike", () => {
     const base = {
       scoredIds: ["a", "b", "task-1"],
@@ -494,6 +523,7 @@ describe("the head trials", () => {
     };
     expect([...passedIds(base)]).toEqual(["a"]);
     expect(passedIds(null).size).toBe(0);
+    expect(passedIds({ error: true, scoredNothing: true, scoredIds: ["a"] }).size).toBe(0);
   });
 });
 
@@ -530,6 +560,46 @@ describe("runEvals carries the trial rule end to end", () => {
     const run = await runEvals({ repo: "tom.quest", sha: "head" }, io(answers, dir));
     expect(run).toMatchObject({ items: 1, pass: 0, fail: 1, flaky: 0, calls: 2 });
     expect(answers.length).toBe(2);
+  });
+
+  it("records an all-runner-failure set as a catastrophic nonmeasurement", async () => {
+    const dir = tree();
+    for (let index = 0; index < 29; index += 1) {
+      writeJson(dir, path.join("evals", "golden", `${index}.json`), item({ id: `item-${index}`, sentence: LABEL }));
+    }
+    const broken = {
+      ...io([], dir),
+      runClaude: async () => { throw new Error("Not logged in"); },
+    };
+    const run = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, broken);
+    expect(run).toMatchObject({ items: 29, errored: 29, error: true, scoredNothing: true, reason: "runner failed: Not logged in", regressions: null, goldenCoverage: null });
+    expect(run.errors).toEqual(["Not logged in", "Not logged in", "Not logged in"]);
+  });
+
+  it("keeps three runner failures in a twenty-nine-item run as partial errors", async () => {
+    const dir = tree();
+    for (let index = 0; index < 29; index += 1) {
+      writeJson(dir, path.join("evals", "golden", `${index}.json`), item({ id: `item-${index}`, sentence: LABEL }));
+    }
+    let errors = 0;
+    let successfulCalls = 0;
+    const partial = {
+      ...io([], dir),
+      runClaude: async () => {
+        if (errors < 3) {
+          errors += 1;
+          throw new Error("Not logged in");
+        }
+        successfulCalls += 1;
+        return successfulCalls % 2 === 1 ? regen : '{"verdict":"pass","reason":"yes"}';
+      },
+    };
+    const run = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, partial);
+    expect(run).toMatchObject({ items: 29, pass: 26, fail: 3, errored: 3 });
+    expect(run.error).toBeUndefined();
+    expect(run.scoredNothing).toBeUndefined();
+    expect(run.failures).toHaveLength(3);
+    expect(run.failures.every((failure) => failure.errored === true)).toBe(true);
   });
 });
 

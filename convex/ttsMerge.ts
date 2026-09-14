@@ -363,6 +363,9 @@ export async function mergeGateFor(
     goldenCoverage?: unknown;
     items?: unknown;
     pass?: unknown;
+    error?: unknown;
+    reason?: unknown;
+    scoredNothing?: unknown;
   };
   const regressions = typeof evalsData.regressions === "number" ? evalsData.regressions : null;
   // STILL THREE HEAD ROWS. Golden coverage is not a fourth check and has no
@@ -392,9 +395,16 @@ export async function mergeGateFor(
     typeof evalsData.pass === "number" && typeof evalsData.items === "number"
       ? ` (${evalsData.pass} of ${evalsData.items} pass)`
       : "";
+  const evalsUnavailable = evalsData.error === true || evalsData.scoredNothing === true ||
+    (typeof evalsData.error === "string" && evalsData.error !== "");
+  const evalsReason = typeof evalsData.reason === "string" && evalsData.reason !== ""
+    ? evalsData.reason
+    : typeof evalsData.error === "string" && evalsData.error !== "" ? evalsData.error : "runner failed";
   const evalsCheck: MergeCheck =
     evals === null
       ? { name: "evals", passed: false, why: `no evals run scored ${short}` }
+      : evalsUnavailable
+        ? { name: "evals", passed: false, why: `the evals could not run at ${short}: ${evalsReason}` }
       // `regressions !== 0` spelled with the one predicate the gate and
       // convex/ttsSimplify.ts share: a second copy is how the two come apart.
       : !checkRowPassed(EVALS_RUN, evalsData)
