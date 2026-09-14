@@ -770,6 +770,32 @@ describe("a superseded request", () => {
     });
   });
 
+  it("uses an unstamped scored base as comparison evidence while withholding the head", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "head000");
+    await file(t, 2, "base000");
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: 3,
+        kind: EVALS_RUN,
+        key: `${REPO}@head000`,
+        data: { repo: REPO, sha: "head000", regressions: 0, pass: 29, items: 29 },
+      });
+      await ctx.db.insert("dtsEvents", {
+        at: 4,
+        kind: EVALS_RUN,
+        key: `${REPO}@base000`,
+        data: { repo: REPO, sha: "base000", regressions: 0, pass: 28, items: 29 },
+      });
+    });
+    expect(await t.query(internal.ttsEvals.internalEvalsRun, {
+      repo: REPO, sha: "head000", baseSha: "base000",
+    })).toMatchObject({
+      run: null,
+      base: { regressions: 0, pass: 28, items: 29 },
+    });
+  });
+
   it("does not let a scored no-item exemption answer after the trailer is removed", async () => {
     const t = convexTest({ schema, modules });
     await file(t, 1, "aaaaaaa", { prBody: "evals: no-item wording only" });

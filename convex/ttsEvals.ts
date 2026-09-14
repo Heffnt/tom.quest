@@ -792,6 +792,8 @@ export function scoredNothing(data: unknown): boolean {
 
 /**
  * The newest evals-run row that ANSWERS THE REQUEST STANDING NOW, or null.
+ * This is the head read: the row can answer the gate only when it names the
+ * request the gate is asking about now.
  *
  * A ROW THAT SCORED NOTHING IS NOT A VERDICT ON THE COMMIT. A scored row is a
  * measurement of the tree: it ran the set and got numbers. A stamped row names
@@ -864,9 +866,12 @@ export const internalEvalsRun = internalQuery({
   args: { repo: v.string(), sha: v.string(), baseSha: v.optional(v.string()) },
   handler: async (ctx, args) => {
     const run = await answeredRun(ctx, `${args.repo}@${args.sha}`);
-    const base = args.baseSha === undefined ? null : await answeredRun(ctx, `${args.repo}@${args.baseSha}`);
-    // The requested head remains visible so CI can report a box failure. A
-    // base is comparison evidence, though, and a nonmeasurement cannot seed it.
+    // The requested head answers the request standing for it, so it uses the
+    // exact identity check above. A base is comparison evidence about a tree,
+    // not an answer to the request standing for that base sha: its newest row
+    // is usable regardless of whether such a request exists. A nonmeasurement
+    // still cannot seed a comparison.
+    const base = args.baseSha === undefined ? null : await runForKey(ctx, `${args.repo}@${args.baseSha}`);
     return { run: run?.data ?? null, base: base === null || scoredNothing(base.data) ? null : base.data };
   },
 });
