@@ -533,8 +533,8 @@ describe("gatherWeeklyFacts", () => {
     });
     const f = await gather(t, now + 1000);
     expect(f.ablation).toEqual([
-      { name: "know", cases: 5, withPass: 4, withoutPass: 2, earned: true },
-      { name: "write", cases: 5, withPass: 2, withoutPass: 4, earned: false },
+      { name: "know", kind: "layer", cases: 5, withPass: 4, withoutPass: 2, earned: true },
+      { name: "write", kind: "layer", cases: 5, withPass: 2, withoutPass: 4, earned: false },
     ]);
   });
 
@@ -553,7 +553,7 @@ describe("gatherWeeklyFacts", () => {
     });
     const f = await gather(t, now + 1000);
     // Six cases, not twelve: the newer run's arm stands alone.
-    expect(f.ablation).toEqual([{ name: "know", cases: 6, withPass: 6, withoutPass: 0, earned: true }]);
+    expect(f.ablation).toEqual([{ name: "know", kind: "layer", cases: 6, withPass: 6, withoutPass: 0, earned: true }]);
     expect(f.efficiency).toEqual({ rises: [{ id: "new", headTokens: 1400, baseTokens: 900 }] });
   });
 
@@ -856,7 +856,7 @@ describe("ablationFindings", () => {
     expect(ablationFindings(rows)).toEqual([]);
     expect(
       ablationFindings([...rows, { id: "last", name: "know", kind: "layer", withPass: true, withoutPass: false }]),
-    ).toEqual([{ name: "know", cases: MIN_ABLATION_CASES, withPass: MIN_ABLATION_CASES, withoutPass: 0, earned: true }]);
+    ).toEqual([{ name: "know", kind: "layer", cases: MIN_ABLATION_CASES, withPass: MIN_ABLATION_CASES, withoutPass: 0, earned: true }]);
   });
 
   it("reads a row that is not a row as no row at all", () => {

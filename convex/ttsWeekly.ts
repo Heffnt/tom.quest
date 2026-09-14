@@ -119,6 +119,7 @@ export const VERIFIER_TEXT_MAX_CHARS = 300;
  * false means the set passed more often WITHOUT the name than with it. */
 export type AblationFinding = {
   name: string;
+  kind: string;
   cases: number;
   withPass: number;
   withoutPass: number;
@@ -144,22 +145,29 @@ export const MIN_ABLATION_CASES = 5;
 export function ablationFindings(
   ablation: readonly unknown[],
 ): AblationFinding[] {
+  // KEYED ON THE KIND AND THE NAME TOGETHER, and each finding says which kind
+  // it is about. A node's `name` is its node id (`line:1a2b3c4d`), a layer's is
+  // a layer name, and nothing stops a future id from reading like a name — one
+  // key would silently add the two counts together and report a finding about
+  // neither. The runner's copy (worker/jobs/evals.mjs) keys the same way.
   const byName = new Map<string, AblationFinding>();
   for (const raw of ablation) {
     if (raw === null || typeof raw !== "object") continue;
     const row = raw as Record<string, unknown>;
     const name = str(row.name);
     if (name === null) continue;
-    const entry = byName.get(name) ?? { name, cases: 0, withPass: 0, withoutPass: 0, earned: false };
+    const kind = str(row.kind) ?? "";
+    const key = `${kind}|${name}`;
+    const entry = byName.get(key) ?? { name, kind, cases: 0, withPass: 0, withoutPass: 0, earned: false };
     entry.cases += 1;
     if (row.withPass === true) entry.withPass += 1;
     if (row.withoutPass === true) entry.withoutPass += 1;
-    byName.set(name, entry);
+    byName.set(key, entry);
   }
   return [...byName.values()]
     .filter((entry) => entry.cases >= MIN_ABLATION_CASES)
     .map((entry) => ({ ...entry, earned: entry.withoutPass / entry.cases < entry.withPass / entry.cases }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort((a, b) => a.name.localeCompare(b.name) || a.kind.localeCompare(b.kind));
 }
 
 // ── What counts as Tom touching an item ──────────────────────────────────────

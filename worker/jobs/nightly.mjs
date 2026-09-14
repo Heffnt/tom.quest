@@ -2724,6 +2724,73 @@ async function skillsHalf(run, { fetch, commit, syncedAt, pushed, publishSkills,
   return { commit: staged.published.commit, count: staged.published.catalog.length, dirs: [...dirs], refused: staged.published.refused, syncedAt };
 }
 
+// ── the golden export ────────────────────────────────────────────────────────
+// One run of scripts/export-golden.mjs --source labels, turning every judgment
+// Tom wrote about a registered run into an eval case under evals/golden/runs/.
+//
+// IT RUNS NIGHTLY AND NOT WEEKLY, and that is the whole reason it is a step in
+// this job rather than in Friday's. A label names a run, and Convex evicts a
+// run's stored output after thirty days; a label whose run has been evicted is
+// UNBUILDABLE, and phase 7 deliberately does not reach back into the object
+// store to refetch one. A weekly pass would therefore lose cases to a window
+// nothing can reopen — a nightly one never sees the window at all.
+//
+// IT NEVER PUSHES MAIN FROM THIS BOX. evals/golden/** is a watched path, so the
+// export lands on a branch and goes through the evals gate like every other
+// change — which is exactly the property wanted: a case the exporter invented
+// wrongly is caught by the same check it would gate.
+//
+// THE LANDING IS A SEAM AND IS NAMED AS ONE. Every other repository write in
+// this job goes to the WikiTom checkout, under the WikiTom writer lock, through
+// commitTree and syncRemote — helpers that stage WikiTom's own directories and
+// push the branch already checked out. None of that is a branch-and-open-a-PR
+// mechanism, and none of it points at tom.quest. So the export is made, its
+// counts are reported, and `deps.land` is the one call a caller supplies to put
+// it on a branch; with no lander the files sit in the disposable cache clone,
+// the result says `landed: false`, and NOTHING is committed or pushed anywhere.
+//
+// The clone is the box's established tom.quest checkout mechanism — the shallow
+// cache clone evals.mjs takes its worktrees from (tts-code-lib.mjs
+// cacheRepoDir), rebuilt from origin on every use — NOT /root/tom.quest, which
+// is the checkout this box runs from and must not be left dirty by a cron job.
+export const GOLDEN_EXPORT_SCRIPT = "scripts/export-golden.mjs";
+/** Where `--source labels` writes, one level below the rulings set so
+ * worker/jobs/evals.mjs loadGolden discovers it with no edit (the exporter's
+ * own RUNS_SUBDIR). */
+export const GOLDEN_RUNS_DIR = "evals/golden/runs";
+
+export async function goldenExportStep(run, deps = {}) {
+  const checkout = deps.checkout ?? (() => cacheRepoDir(run.env, { name: "tom.quest", owner: "Heffnt", branch: "main" }));
+  const exec = deps.exec ?? ((dir, args) =>
+    execFileSync(process.execPath, args, {
+      cwd: dir,
+      encoding: "utf8",
+      // stdin closed (cron has no terminal); stderr to the cron log, where the
+      // exporter's own refusals are diagnosable. The credentials ride in the
+      // child's environment and are never an argument, so nothing secret can
+      // reach a process listing or this log.
+      stdio: ["ignore", "pipe", "inherit"],
+      env: { ...process.env, ...run.env },
+    }));
+  const land = deps.land ?? null;
+  const dir = checkout();
+  const output = String(exec(dir, [GOLDEN_EXPORT_SCRIPT, "--source", "labels"]) ?? "");
+  // The exporter's own last line, kept verbatim rather than re-derived: it
+  // already counts what it built, what it could not build and what it dropped,
+  // and a second count here would be a second definition of "an item".
+  const summary = output.split("\n").map((l) => l.trim()).filter((l) => l !== "").at(-1) ?? "";
+  const outDir = path.join(dir, GOLDEN_RUNS_DIR);
+  const items = fs.existsSync(outDir) ? fs.readdirSync(outDir).filter((n) => n.endsWith(".json")).length : 0;
+  const landed = land === null ? false : land({ dir, paths: [GOLDEN_RUNS_DIR], day: run.day }) === true;
+  console.log(
+    `[nightly] golden-export: ${items} case(s) in ${GOLDEN_RUNS_DIR} — ${summary || "the exporter said nothing"}; ` +
+      (landed
+        ? "landed on a branch"
+        : "NOT landed: this job has no tom.quest branch-and-commit helper, so the files stay in the cache clone"),
+  );
+  return { dir, items, summary, landed };
+}
+
 // This check never touches the checkout, so it runs outside the WikiTom
 // writer lock and before tonight's post can enter the commit timeline.
 export async function deliveryStep(run, deps = {}) {

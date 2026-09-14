@@ -463,7 +463,7 @@ describe("installed skills", () => {
       for (const [file, contents] of Object.entries(references)) fs.writeFileSync(path.join(skill, file), contents);
     };
     publish("tom-write", "His writing standard: Shape, Words", "The writing body.", { "ground.md": "what he knows" });
-    publish("tom-know-money", "Tom's money: money, banking.", "The money body.");
+    publish("tom-know-mulch", "Tom's mulch: mulch, compost.", "The mulch body.");
     publish("tom-repo-tom-quest", "Rules of the tom.quest repository.", "The repo body.", { "tom-quest-AGENTS.md": "nested rules" });
     // NOT ours: a checkout's own skill under the same root, which this command
     // must never see. witness: drop the prefix filter and the first test fails.
@@ -475,7 +475,7 @@ describe("installed skills", () => {
     const dir = installed();
     const output = [];
     expect(await runSearchCli(["skills", "--skills-dir", dir], { env: {}, write: (line) => output.push(line), error: () => {} })).toBe(0);
-    expect(output.map((line) => line.split(" ")[0])).toEqual(["know-money", "repo-tom-quest", "write"]);
+    expect(output.map((line) => line.split(" ")[0])).toEqual(["know-mulch", "repo-tom-quest", "write"]);
     expect(output.join("\n")).not.toContain("someone else");
     expect(output[0]).toContain("[know]");
     expect(output[0]).toContain(path.join(dir, "tom-know-mulch"));

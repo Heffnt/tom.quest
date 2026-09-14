@@ -982,14 +982,15 @@ const NEAR_MISSES = 5;
 // The import is LAZY for the same reason the skills module's is: a search for a
 // ruling must not depend on the graph machinery being installed beside it, and
 // graph.mjs reaches scripts/skills.mjs, which on the box is a separate copy.
-const GRAPH_MODULE_URLS = [new URL("./graph.mjs", import.meta.url)];
+// Both homes, named the way SKILLS_MODULE_SPECIFIERS names its two: worker/
+// jobs/ beside this file in a checkout, and the flat /opt/tts/ on the box.
+const GRAPH_MODULE_SPECIFIERS = ["./graph.mjs"];
 
 let graphModule = null;
 async function loadGraphModule() {
   if (graphModule === null) {
-    const file = installedModule(GRAPH_MODULE_URLS, ["worker/jobs/graph.mjs", "graph.mjs"]);
-    if (!file) fail("the graph module (worker/jobs/graph.mjs) is not installed");
-    graphModule = await import(pathToFileURL(file).href);
+    graphModule = await installedModule(GRAPH_MODULE_SPECIFIERS);
+    if (graphModule === null) fail("the graph module (worker/jobs/graph.mjs) is not installed");
   }
   return graphModule;
 }
