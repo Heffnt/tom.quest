@@ -264,7 +264,7 @@ export function gate(head, base, { changed, prBody } = {}) {
   // out) is posted as a row carrying `error`, so the request queue advances.
   // A row like that scored nothing, and a gate that reads "no failures" off it
   // would open on a run that never happened.
-  if (head.superseded !== true && (head.error === true || head.scoredNothing === true || (typeof head.error === "string" && head.error !== ""))) {
+  if (head.superseded !== true && (head.error === true || (typeof head.error === "string" && head.error !== ""))) {
     const reason = typeof head.reason === "string" && head.reason !== ""
       ? head.reason
       : typeof head.error === "string" && head.error !== "" ? head.error : "runner failed";
@@ -311,7 +311,7 @@ export function gate(head, base, { changed, prBody } = {}) {
 
 /** What Tom sees in the check's log. A clean check is one line. */
 export function report(head, base, verdict) {
-  if (head.superseded !== true && (head.error === true || head.scoredNothing === true || (typeof head.error === "string" && head.error !== ""))) {
+  if (head.superseded !== true && (head.error === true || (typeof head.error === "string" && head.error !== ""))) {
     const reason = typeof head.reason === "string" && head.reason !== ""
       ? head.reason
       : typeof head.error === "string" && head.error !== "" ? head.error : "runner failed";

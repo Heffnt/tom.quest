@@ -313,6 +313,18 @@ describe("the merge gate's three checks", () => {
     );
   });
 
+  it("denies a partial runner failure with its persisted error count", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await greenTests(t);
+    await approvedAudit(t);
+    await seedFact(t, EVALS_RUN, { regressions: null, errored: 3, goldenCoverage: true, pass: 26, items: 29 });
+    const answer = await (await mergeReport(t)).json();
+    expect(answer.gate.missing).toEqual(["evals"]);
+    expect(answer.gate.checks.find((c: { name: string }) => c.name === "evals").why)
+      .toBe(`the evals run at ${SHA.slice(0, 7)} had 3 runner errors`);
+  });
+
   it("checks the head it was given, not another commit", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convex();
@@ -356,7 +368,7 @@ describe("the evals arm's golden-coverage clause", () => {
   });
 
   it("denies a catastrophic eval before regressions, coverage, or unaffected can open it", async () => {
-    const gate = await gateWith({ error: true, scoredNothing: true, reason: "runner failed: Not logged in", regressions: 0, goldenCoverage: "not-required", unaffected: true });
+    const gate = await gateWith({ error: true, reason: "runner failed: Not logged in", regressions: 0, goldenCoverage: "not-required", unaffected: true });
     expect(gate).toMatchObject({ allowed: false, missing: ["evals"] });
     expect(gate.why).toBe(`the evals could not run at ${SHA.slice(0, 7)}: runner failed: Not logged in`);
   });

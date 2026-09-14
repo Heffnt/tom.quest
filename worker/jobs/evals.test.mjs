@@ -434,6 +434,22 @@ describe("stampAgainstBase", () => {
     expect(stamped.regressions).toBe(1);
     expect(stamped.failures[0].regression).toBe(true);
   });
+
+  it("does not stamp three errored items out of twenty-nine as zero regressions", async () => {
+    const scoredIds = Array.from({ length: 29 }, (_value, index) => `item-${index}`);
+    const failures = scoredIds.slice(0, 3).map((id) => ({
+      id, partition: "prepare/chores", verdict: "revise", reason: "runner failed", confirmed: true, errored: true,
+    }));
+    const head = {
+      goldenHash: "h", scoredIds, failures, errored: 3, items: 29, results: [], tasks: { failures: [] },
+    };
+    const base = {
+      goldenHash: "h", scoredIds, failures: [], errored: 0, items: 29, results: [], tasks: { failures: [] },
+    };
+
+    const stamped = await stampAgainstBase(head, base);
+    expect(stamped).toMatchObject({ regressions: null, errored: 3 });
+  });
 });
 
 // Every item is a live model call, so one trial is a sample and not a
@@ -523,7 +539,7 @@ describe("the head trials", () => {
     };
     expect([...passedIds(base)]).toEqual(["a"]);
     expect(passedIds(null).size).toBe(0);
-    expect(passedIds({ error: true, scoredNothing: true, scoredIds: ["a"] }).size).toBe(0);
+    expect(passedIds({ error: true, scoredIds: ["a"] }).size).toBe(0);
   });
 });
 
@@ -572,7 +588,7 @@ describe("runEvals carries the trial rule end to end", () => {
       runClaude: async () => { throw new Error("Not logged in"); },
     };
     const run = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, broken);
-    expect(run).toMatchObject({ items: 29, errored: 29, error: true, scoredNothing: true, reason: "runner failed: Not logged in", regressions: null, goldenCoverage: null });
+    expect(run).toMatchObject({ items: 29, errored: 29, error: true, reason: "runner failed: Not logged in", regressions: null, goldenCoverage: null });
     expect(run.errors).toEqual(["Not logged in", "Not logged in", "Not logged in"]);
   });
 
@@ -597,7 +613,6 @@ describe("runEvals carries the trial rule end to end", () => {
     const run = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, partial);
     expect(run).toMatchObject({ items: 29, pass: 26, fail: 3, errored: 3 });
     expect(run.error).toBeUndefined();
-    expect(run.scoredNothing).toBeUndefined();
     expect(run.failures).toHaveLength(3);
     expect(run.failures.every((failure) => failure.errored === true)).toBe(true);
   });

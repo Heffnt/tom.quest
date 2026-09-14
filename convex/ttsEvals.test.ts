@@ -905,7 +905,7 @@ describe("a superseded request", () => {
         at: 2,
         kind: EVALS_RUN,
         key: `${REPO}@head000`,
-        data: { repo: REPO, sha: "head000", error: true, scoredNothing: true, reason: "runner failed: Not logged in", regressions: null },
+        data: { repo: REPO, sha: "head000", error: true, reason: "runner failed: Not logged in", regressions: null },
       });
       await ctx.db.insert("dtsEvents", {
         at: 2,

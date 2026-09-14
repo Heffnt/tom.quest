@@ -116,7 +116,7 @@ describe("gate, continued", () => {
   });
 
   it("fails the new catastrophic row shape before regressions can open it", () => {
-    const head = run({ error: true, reason: "runner failed: Not logged in", scoredNothing: true, regressions: 0 });
+    const head = run({ error: true, reason: "runner failed: Not logged in", regressions: 0 });
     const verdict = gate(head, run());
     expect(verdict.ok).toBe(false);
     expect(report(head, run(), verdict)).toEqual(["the evals could not run on the box: runner failed: Not logged in"]);

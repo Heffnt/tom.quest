@@ -11,6 +11,9 @@
 name: Evals
 on:
   pull_request:
+    # `edited` reruns when retargeting changes the `BASE...HEAD` watched diff
+    # at the same head SHA.
+    types: [opened, synchronize, reopened, edited]
 jobs:
   evals:
     runs-on: ubuntu-latest

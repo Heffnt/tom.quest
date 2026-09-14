@@ -24,6 +24,10 @@ import { unaffectedBy } from "./evals-check.mjs";
 
 const SETUP = "worker/setup.sh";
 const CRON_HEADING = '== [8/10] cron ==';
+// The one complete session-host copy contains every `.mjs` module there. It
+// covers an imported session-host file only when this exact command lands
+// before cron; a broader glob would hide a missing module or wrong destination.
+const SESSION_HOST_COPY = /cp\s+"\$WORKER_DIR"\/session-host\/\*\.mjs\s+"\$WORKER_DIR"\/session-host\/package\.json\s+\\?\s*[\r\n]+\s*\/opt\/tts\/session-host\/(?:\s|$)/m;
 
 const setup = readFileSync(SETUP, "utf8");
 const failures = [];
@@ -153,8 +157,10 @@ for (const [target, importer] of [...needed].sort()) {
   const escaped = rest.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   // The destination may be spelled as the full path or as the directory.
   const cp = new RegExp(`cp\\s+"\\$WORKER_DIR"/${escaped}\\s+/opt/tts/${escaped.replace(/\\\//g, "/")}(?:\\s|$)|cp\\s+"\\$WORKER_DIR"/${escaped}\\s+/opt/tts/${dir}/(?:\\s|$)`, "m");
-  if (!cp.test(beforeCron)) {
-    if (new RegExp(`cp\\s+"\\$WORKER_DIR"/${escaped}\\s`).test(setup)) {
+  const copiedBySessionHostGlob = dir === "session-host" && SESSION_HOST_COPY.test(beforeCron);
+  if (!cp.test(beforeCron) && !copiedBySessionHostGlob) {
+    if (new RegExp(`cp\\s+"\\$WORKER_DIR"/${escaped}\\s`).test(setup) ||
+      (dir === "session-host" && SESSION_HOST_COPY.test(setup))) {
       failures.push(`${SETUP}: ${rest} is copied only after '${CRON_HEADING}' — the first cron tick runs before it lands. Move the cp line into step 7 (${importer} imports it).`);
     } else {
       failures.push(`${SETUP}: no line copies ${rest} to /opt/tts/${rest}, which ${importer} imports — the cron entry that runs it will fail with ERR_MODULE_NOT_FOUND every tick. Add: cp "$WORKER_DIR"/${rest} /opt/tts/${rest}`);

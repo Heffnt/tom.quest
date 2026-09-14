@@ -1988,7 +1988,7 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       errored,
       errors,
       ...(catastrophic
-        ? { error: true, reason: `runner failed: ${errors[0] ?? "runner failed"}`, scoredNothing: true, regressions: null, goldenCoverage: null }
+        ? { error: true, reason: `runner failed: ${errors[0] ?? "runner failed"}`, regressions: null, goldenCoverage: null }
         : {}),
       tasks: taskSummary,
       tasksSkipped: tasks.filter((task) => task.judged === "skip").map(({ id, reason }) => ({ id, reason })),
@@ -2211,11 +2211,11 @@ export function failedRun({ repo, sha, error, at, answersRequestAt = null }) {
   };
 }
 
-/** Rows that did not produce a trustworthy measurement. `error` was a string
- * before runner failures became item-level facts, so both spellings remain
- * nonmeasurements for old rows and new catastrophic rows alike. */
+/** Rows that did not produce a trustworthy measurement. Historical eval rows
+ * are append-only, so their string `error` remains a nonmeasurement until a
+ * fresh run supersedes it; catastrophic rows use the newer boolean spelling. */
 export function nonmeasurement(data) {
-  return data?.scoredNothing === true || data?.error === true ||
+  return data?.error === true ||
     (typeof data?.error === "string" && data.error !== "");
 }
 
@@ -2360,7 +2360,11 @@ export async function stampAgainstBase(data, base, diff = {}) {
   const regressed = new Set(verdict.regressions.map((failure) => failure.id));
   return {
     ...data,
-    regressions: verdict.regressions.length,
+    // An errored item leaves no trustworthy comparison number: `0` would open
+    // the merge gate even though the eval gate refused this run. Keep the count
+    // so the gate's denial says what the runner did not answer.
+    regressions: verdict.errored.length > 0 ? null : verdict.regressions.length,
+    errored: verdict.errored.length,
     stillFailing: verdict.stillFailing.length,
     // From the gate's own verdict rather than from the rule called twice: one
     // body decides what coverage is, here and in the check's log alike.

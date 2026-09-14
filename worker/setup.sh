@@ -171,19 +171,15 @@ cp "$WORKER_DIR"/runs/*.mjs /opt/tts/runs/
 # session-archive.mjs.
 cp "$WORKER_DIR"/jobs/worker-env.mjs /opt/tts/jobs/worker-env.mjs
 cp "$WORKER_DIR"/jobs/session-archive.mjs /opt/tts/jobs/session-archive.mjs
-# EVERY `../session-host/<file>` A runs/ MODULE IMPORTS NEEDS A LINE HERE, for
-# the same reason and with one extra twist: step 9 below copies the whole of
-# session-host/, but it runs AFTER step 8 writes the cron, so on a fresh
-# install the first runs-sweep tick fires against an empty /opt/tts/session-
-# host and dies with ERR_MODULE_NOT_FOUND. These three are their own closed
-# import graph (cut → overflow → redact) over node builtins only, so copying
-# them early is complete on its own and step 9 simply overwrites them.
-# Three imports today: ingest.mjs → cut/overflow/redact, sweep.mjs →
-# overflow/redact, store.mjs → redact.
+# The complete session-host deployment lands before cron: runs/ imports its
+# modules at load, so a fresh install cannot wait for the daemon step below.
+# worker-env.mjs in this glob is a SYMLINK to ../jobs/worker-env.mjs (the one
+# env-file reader, shared with the cron jobs). Plain `cp` follows it, so the
+# install dir gets a real file at a path the daemon's "./worker-env.mjs"
+# import resolves.
 mkdir -p /opt/tts/session-host
-cp "$WORKER_DIR"/session-host/cut.mjs /opt/tts/session-host/cut.mjs
-cp "$WORKER_DIR"/session-host/overflow.mjs /opt/tts/session-host/overflow.mjs
-cp "$WORKER_DIR"/session-host/redact.mjs /opt/tts/session-host/redact.mjs
+cp "$WORKER_DIR"/session-host/*.mjs "$WORKER_DIR"/session-host/package.json \
+  /opt/tts/session-host/
 mkdir -p /opt/tts/scripts /opt/tts/worker/jobs
 cp "$WORKER_DIR"/../scripts/session-start-hook.mjs /opt/tts/scripts/session-start-hook.mjs
 cp "$WORKER_DIR"/../scripts/run-hook.mjs /opt/tts/scripts/run-hook.mjs
@@ -568,17 +564,9 @@ echo "== [9/10] session-host daemon =="
 # them into Convex (worker/session-host/README.md). Unlike the cron jobs it
 # carries the Jarvis Box's ONE sanctioned npm dependency (@anthropic-ai/
 # claude-agent-sdk — pinned in its package.json), so this step also runs
-# npm install in its install dir. Everything here is idempotent: cp + install
-# + unit rewrite + restart is exactly how updated daemon code rolls out after
-# a git pull.
-mkdir -p /opt/tts/session-host
-# worker-env.mjs in this glob is a SYMLINK to ../jobs/worker-env.mjs (the one
-# env-file reader, shared with the cron jobs). Plain `cp` follows it, so the
-# install dir gets a real file at a path the daemon's "./worker-env.mjs"
-# import resolves — which a spelled-out ../jobs import could not, since jobs
-# land flat in /opt/tts and this daemon lives one level down.
-cp "$WORKER_DIR"/session-host/*.mjs "$WORKER_DIR"/session-host/package.json \
-  /opt/tts/session-host/
+# npm install in its install dir. The files arrived before cron so runs/ can
+# import their shared modules on a fresh install; install + unit rewrite +
+# restart is how updated daemon code rolls out after a git pull.
 (cd /opt/tts/session-host && npm install --omit=dev)
 
 cat > /etc/systemd/system/tts-session-host.service <<'UNIT'

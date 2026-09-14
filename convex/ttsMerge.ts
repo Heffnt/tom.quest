@@ -365,9 +365,12 @@ export async function mergeGateFor(
     pass?: unknown;
     error?: unknown;
     reason?: unknown;
-    scoredNothing?: unknown;
+    errored?: unknown;
   };
   const regressions = typeof evalsData.regressions === "number" ? evalsData.regressions : null;
+  const errored = typeof evalsData.errored === "number" && evalsData.errored > 0
+    ? evalsData.errored
+    : null;
   // STILL THREE HEAD ROWS. Golden coverage is not a fourth check and has no
   // row of its own: it is a field of the evals run, so the evals arm asks two
   // questions of one fact and GET /tts/merge-gate's shape does not move.
@@ -395,7 +398,7 @@ export async function mergeGateFor(
     typeof evalsData.pass === "number" && typeof evalsData.items === "number"
       ? ` (${evalsData.pass} of ${evalsData.items} pass)`
       : "";
-  const evalsUnavailable = evalsData.error === true || evalsData.scoredNothing === true ||
+  const evalsUnavailable = evalsData.error === true ||
     (typeof evalsData.error === "string" && evalsData.error !== "");
   const evalsReason = typeof evalsData.reason === "string" && evalsData.reason !== ""
     ? evalsData.reason
@@ -405,6 +408,12 @@ export async function mergeGateFor(
       ? { name: "evals", passed: false, why: `no evals run scored ${short}` }
       : evalsUnavailable
         ? { name: "evals", passed: false, why: `the evals could not run at ${short}: ${evalsReason}` }
+      : errored !== null
+        ? {
+            name: "evals",
+            passed: false,
+            why: `the evals run at ${short} had ${errored} runner error${errored === 1 ? "" : "s"}`,
+          }
       // `regressions !== 0` spelled with the one predicate the gate and
       // convex/ttsSimplify.ts share: a second copy is how the two come apart.
       : !checkRowPassed(EVALS_RUN, evalsData)

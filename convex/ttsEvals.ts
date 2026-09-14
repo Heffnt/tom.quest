@@ -912,7 +912,7 @@ async function requestRowFor(ctx: QueryCtx | MutationCtx, key: string) {
  */
 export function scoredNothing(data: unknown): boolean {
   const d = (data ?? {}) as Record<string, unknown>;
-  return d.unaffected === true || d.superseded === true || d.scoredNothing === true || d.error === true ||
+  return d.unaffected === true || d.superseded === true || d.error === true ||
     (typeof d.error === "string" && d.error !== "");
 }
 
