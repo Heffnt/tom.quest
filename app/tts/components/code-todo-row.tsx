@@ -119,6 +119,18 @@ export default function CodeTodoRow({
               <div className="text-sm text-text-muted whitespace-pre-wrap border border-border rounded-md px-2 py-1.5 bg-surface/60">
                 {brief.brief}
               </div>
+              {/* THE DOOR MARK. The planner reads what it wrote against the
+                  writing standard and retries once; a brief that failed both
+                  attempts is posted anyway and says so here (Tom, 2026-09-12).
+                  A FACT, NOT A CONTROL: no popover, no link, nothing to click
+                  — there is nothing to do about it from here, and the next
+                  clean re-brief clears the field. */}
+              {brief.doorFaults && brief.doorFaults.length > 0 && (
+                <div className="text-xs text-text-faint">
+                  the door check refused this brief twice:{" "}
+                  {brief.doorFaults.join("; ")}
+                </div>
+              )}
             </div>
           )}
 

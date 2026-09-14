@@ -23,6 +23,7 @@ import {
   NO_FORKS_LINE,
   OUTCOME_HEADING,
   SUSTAINABILITY_QUESTION,
+  VERIFIER_CAVEAT,
   WEEKLY_DIR,
   agendaFileName,
   agendaSubjects,
@@ -286,6 +287,118 @@ describe("renderFactLines", () => {
       golden: { items: 3, capability: 0, graduated: [], preludeUnknown: 0 },
     }).join("\n");
     expect(text).toContain("Golden set: 3 items, 0 capability, 0 graduated this week, 0 blind to a layer change.");
+  });
+
+  // ── The three verifiers (phase 9) ──────────────────────────────────────────
+  // Same rule as the three evals blocks: printed only when the facts carry
+  // them. A week gathered before this phase has no `verifiers` key at all, and
+  // each member is independently null when its own measurement was not made.
+  const VERIFIERS = {
+    judge: {
+      items: 20,
+      agreed: 18,
+      skipped: 2,
+      disagreements: [{ runId: "run-a", tom: "good", judge: "fail", reason: "it wanted a citation" }],
+      skips: [{ runId: "run-b", reason: "the transcript was gone" }],
+    },
+    audit: {
+      weeks: 4,
+      merges: 6,
+      objected: 1,
+      objections: [
+        { sha: "abc1234", approvedAt: UNTIL - 10 * DAY, objectedAt: UNTIL - 6 * DAY, sentence: "revert that, it broke the digest" },
+      ],
+      landedAnyway: [{ sha: "9f8e7d6", refusedAt: UNTIL - 4 * DAY, mergedAt: UNTIL - 3 * DAY }],
+    },
+    faults: {
+      ran: true,
+      reason: "the first Saturday of the month",
+      items: 3,
+      refused: 2,
+      results: [{ id: "fault-1", verdict: "REFUSED" }],
+    },
+    caveat: null,
+  };
+
+  it("prints none of the verifier blocks, and no caveat, when the facts carry no verifiers at all", () => {
+    const text = renderFactLines(fullFacts()).join("\n");
+    expect(text).not.toContain("Evals judge:");
+    expect(text).not.toContain("Audit:");
+    expect(text).not.toContain("Planted-fault audits:");
+    expect(text).not.toContain(VERIFIER_CAVEAT);
+  });
+
+  it("prints the judge, the audit and the planted faults when the facts carry them", () => {
+    const text = renderFactLines({ ...fullFacts(), verifiers: VERIFIERS }).join("\n");
+    expect(text).toContain("Evals judge: 18 of 20 replayed labels matched (2 skipped).");
+    expect(text).toContain("- run-a: he said good, the judge said fail — it wanted a citation");
+    expect(text).toContain("- run-b: skipped — the transcript was gone");
+    expect(text).toContain("Audit: 1 of 6 audited merges drew an objection.");
+    expect(text).toContain("- abc1234: approved 2026-09-01, objected 2026-09-05 — revert that, it broke the digest");
+    expect(text).toContain("- 9f8e7d6: the audit refused it on 2026-09-07 and it merged on 2026-09-08");
+    expect(text).toContain("Planted-fault audits: 2 of 3 refused (run this month).");
+    expect(text).toContain("- fault-1: the audit answered REFUSED");
+    // The standing caveat, once, under whichever blocks printed.
+    expect(text.split("\n").filter((l) => l === VERIFIER_CAVEAT)).toHaveLength(1);
+  });
+
+  it("prints the skip that names no run without an empty id in front of it", () => {
+    const text = renderFactLines({
+      ...emptyFacts(),
+      verifiers: {
+        judge: { items: 0, agreed: 0, skipped: 0, disagreements: [], skips: [{ runId: "", reason: "the label door could not be read: 503" }] },
+        audit: null,
+        faults: null,
+        caveat: null,
+      },
+    }).join("\n");
+    expect(text).toContain("- skipped — the label door could not be read: 503");
+    expect(text).not.toContain("- : skipped");
+  });
+
+  it("says the planted-fault arm did not run this month when it did not", () => {
+    const text = renderFactLines({
+      ...emptyFacts(),
+      verifiers: { judge: null, audit: null, faults: { ...VERIFIERS.faults, ran: false, items: 0, refused: 0, results: [] }, caveat: null },
+    }).join("\n");
+    expect(text).toContain("Planted-fault audits: 0 of 0 refused (run not this month).");
+  });
+
+  it("suppresses only its own block when a member is null", () => {
+    const only = (member) =>
+      renderFactLines({
+        ...emptyFacts(),
+        verifiers: { judge: null, audit: null, faults: null, caveat: null, [member]: VERIFIERS[member] },
+      }).join("\n");
+    const judge = only("judge");
+    expect(judge).toContain("Evals judge:");
+    expect(judge).not.toContain("Audit:");
+    expect(judge).not.toContain("Planted-fault audits:");
+    const audit = only("audit");
+    expect(audit).toContain("Audit:");
+    expect(audit).not.toContain("Evals judge:");
+    expect(audit).not.toContain("Planted-fault audits:");
+    const faults = only("faults");
+    expect(faults).toContain("Planted-fault audits:");
+    expect(faults).not.toContain("Evals judge:");
+    expect(faults).not.toContain("Audit:");
+    // One block is still a block, so the caveat goes under each of them.
+    for (const text of [judge, audit, faults]) expect(text).toContain(VERIFIER_CAVEAT);
+  });
+
+  it("prints no caveat when every member is null, and the run's own sentence when it wrote one", () => {
+    const none = renderFactLines({
+      ...emptyFacts(),
+      verifiers: { judge: null, audit: null, faults: null, caveat: "a caveat with nothing to caveat" },
+    }).join("\n");
+    expect(none).not.toContain("a caveat with nothing to caveat");
+    expect(none).not.toContain(VERIFIER_CAVEAT);
+    const own = renderFactLines({
+      ...emptyFacts(),
+      verifiers: { ...VERIFIERS, caveat: "this run replayed twenty labels and no more" },
+    }).join("\n");
+    expect(own).toContain("this run replayed twenty labels and no more");
+    expect(own).not.toContain(VERIFIER_CAVEAT);
   });
 
   it("grades nothing", () => {

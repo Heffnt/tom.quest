@@ -837,3 +837,160 @@ describe("runs.roots", () => {
     await expect(stranger.query(api.runs.roots, {})).rejects.toThrow();
   });
 });
+
+// ── runs.internalRunTrace: the audit's own run, by its token ─────────────────
+// What the trace checker reads to tell a claim from a fact: it said it opened a
+// path, and this is every Read, Grep and Glob call the run actually made.
+describe("runs: one run's tool calls, by its registration token", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  // The canonical example UUID, and a fixture. The door checks the token’s
+  // SHAPE before the indexed lookup, so a shapeless placeholder would not
+  // exercise the path this suite exists for. `gitleaks:allow` because
+  // generic-api-key fires on the NAME plus the value’s entropy, not on any
+  // real key — and now that the secret scan feeds the tests-run row, a false
+  // positive here is a blocked merge rather than one red check nobody reads.
+  const TOKEN = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"; // gitleaks:allow
+  const TRACE_RUN_ID = "claude:box:audit-trace-run";
+  const TOTALS = {
+    inputTokens: 10, cacheReadTokens: 20, cacheWriteTokens: 30, cacheWrite5mTokens: 30,
+    cacheWrite1hTokens: 0, cacheWriteBreakdownKnown: true, outputTokens: 40,
+    // 999, not 100: `tokens` is the tokensOf SUM of four fields, never this.
+    thinkingTokens: 5, totalTokens: 999,
+  };
+
+  async function seed(
+    t: SchemaTest,
+    rows: Array<{ kind: string; content: unknown }>,
+    // `null` is a run with NO outcome — a run still going. It cannot be
+    // `undefined`, which a default parameter reads as "not given".
+    outcome: unknown | null = { turns: 12, toolCalls: 3, totals: TOTALS },
+  ) {
+    await t.run(async (ctx) => {
+      await ctx.db.insert("runs", {
+        ...storedRun({ runId: TRACE_RUN_ID, rootRunId: TRACE_RUN_ID, host: "box", kind: "job", status: "ended" }),
+        regToken: TOKEN,
+        ...(outcome === null ? {} : { outcome }),
+        ingestedAt: 1,
+      } as never);
+      for (const [seq, row] of rows.entries()) {
+        await ctx.db.insert("claudeMessages", {
+          runId: TRACE_RUN_ID, seq, turn: 0, kind: row.kind, content: row.content, createdAt: seq + 1,
+        } as never);
+      }
+    });
+  }
+  const trace = (t: SchemaTest) => t.query(internal.runs.internalRunTrace, { token: TOKEN });
+
+  it("returns the tool-call rows and nothing else in the transcript", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t, [
+      { kind: "user", content: { text: "audit this head" } },
+      { kind: "tool-call", content: { name: "Read", input: { file_path: "convex/http.ts" } } },
+      { kind: "assistant-text", content: { text: "VERDICT: APPROVED" } },
+      { kind: "tool-result", content: { text: "every byte of convex/http.ts" } },
+      { kind: "thinking", content: { text: "thinking about convex/http.ts" } },
+    ]);
+    const answer = await trace(t);
+    expect(answer?.toolCalls).toEqual([{ name: "Read", path: "convex/http.ts" }]);
+    // The words of the run never leave: not the prompt, not the answer, not the
+    // tool result, not the thinking.
+    const serialized = JSON.stringify(answer);
+    expect(serialized).not.toContain("audit this head");
+    expect(serialized).not.toContain("VERDICT");
+    expect(serialized).not.toContain("every byte");
+    expect(serialized).not.toContain("thinking about");
+  });
+
+  it("reads a path out of file_path, path or pattern, in that order", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t, [
+      { kind: "tool-call", content: { name: "Read", input: { file_path: "convex/runs.ts" } } },
+      { kind: "tool-call", content: { name: "Glob", input: { path: "convex/" } } },
+      { kind: "tool-call", content: { name: "Grep", input: { pattern: "internalRunTrace" } } },
+      // Both present: file_path wins, because it is the one a Read names.
+      { kind: "tool-call", content: { name: "Edit", input: { file_path: "convex/http.ts", path: "elsewhere" } } },
+    ]);
+    expect((await trace(t))?.toolCalls).toEqual([
+      { name: "Read", path: "convex/runs.ts" },
+      { name: "Glob", path: "convex/" },
+      { name: "Grep", path: "internalRunTrace" },
+      { name: "Edit", path: "convex/http.ts" },
+    ]);
+  });
+
+  // `content` is v.any(), so one row the daemon wrote oddly must cost this run
+  // its trace no more than one bad line costs a file its parse.
+  it("drops a row whose content cannot be read, rather than throwing", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t, [
+      { kind: "tool-call", content: null },
+      { kind: "tool-call", content: "Read convex/http.ts" },
+      { kind: "tool-call", content: 7 },
+      { kind: "tool-call", content: {} },
+      { kind: "tool-call", content: { name: 42, input: { file_path: "convex/http.ts" } } },
+      { kind: "tool-call", content: { name: "", input: { file_path: "convex/http.ts" } } },
+      // A name it CAN read and an input it cannot is half a row, and the half
+      // it can read is the half finding 2 counts.
+      { kind: "tool-call", content: { name: "Bash", input: "npm test" } },
+      { kind: "tool-call", content: { name: "Read", input: { file_path: 7 } } },
+      { kind: "tool-call", content: { name: "Read", input: { file_path: "convex/runs.ts" } } },
+    ]);
+    expect((await trace(t))?.toolCalls).toEqual([
+      { name: "Bash", path: null },
+      { name: "Read", path: null },
+      { name: "Read", path: "convex/runs.ts" },
+    ]);
+  });
+
+  it("redacts a credential-shaped argument and cuts a long one at 300", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t, [
+      { kind: "tool-call", content: { name: "Grep", input: { pattern: "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345" } } },
+      { kind: "tool-call", content: { name: "Read", input: { file_path: `convex/${"a".repeat(400)}.ts` } } },
+    ]);
+    const toolCalls = (await trace(t))?.toolCalls ?? [];
+    expect(toolCalls[0]).toEqual({ name: "Grep", path: "[redacted:github]" });
+    expect(toolCalls[1]?.path).toHaveLength(300);
+  });
+
+  it("reads turns and tokens off the outcome, and answers null where there is none", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t, [{ kind: "tool-call", content: { name: "Read", input: { file_path: "a/b.ts" } } }]);
+    // input + cacheRead + cacheWrite + output, the sum worker/jobs/evals.mjs
+    // tokensOf makes — not totalTokens, which is 999 on this row.
+    expect(await trace(t)).toMatchObject({ runId: TRACE_RUN_ID, turns: 12, tokens: 100 });
+
+    const running = convexTest(schema, modules);
+    await seed(running, [{ kind: "tool-call", content: { name: "Read", input: { file_path: "a/b.ts" } } }], null);
+    expect(await trace(running)).toMatchObject({ turns: null, tokens: null });
+  });
+
+  it("answers null for a token no run carries", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t, []);
+    expect(await t.query(internal.runs.internalRunTrace, { token: "00000000-0000-4000-8000-000000000000" })).toBeNull();
+  });
+
+  // THE BOUND IS 400 ROWS, and the answer says when it bit: a cut list makes
+  // finding 2 fire on a path that WAS read and fell past the cut, so the reader
+  // has to be able to tell a whole trace from a slice.
+  it("stops at 400 rows and declares the cut", async () => {
+    const t = convexTest(schema, modules);
+    await seed(
+      t,
+      Array.from({ length: 500 }, (_, index) => ({
+        kind: "tool-call" as const,
+        content: { name: "Read", input: { file_path: `convex/file-${index}.ts` } },
+      })),
+    );
+    const answer = await trace(t);
+    expect(answer?.toolCalls).toHaveLength(400);
+    expect(answer?.toolCalls.at(-1)).toEqual({ name: "Read", path: "convex/file-399.ts" });
+    expect(answer?.truncated).toBe(true);
+
+    const short = convexTest(schema, modules);
+    await seed(short, [{ kind: "tool-call", content: { name: "Read", input: { file_path: "a/b.ts" } } }]);
+    expect((await trace(short))?.truncated).toBe(false);
+  });
+});
