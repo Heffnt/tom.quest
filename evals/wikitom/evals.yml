@@ -37,4 +37,7 @@ jobs:
           SHA: ${{ github.event.pull_request.head.sha }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR: ${{ github.event.pull_request.number }}
+          # See tom.quest's .github/workflows/evals.yml for why the queue needs
+          # the event order as well as the pull request and head SHA.
+          RUN_ID: ${{ github.run_id }}
           PR_BODY: ${{ github.event.pull_request.body }}

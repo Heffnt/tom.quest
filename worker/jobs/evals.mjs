@@ -14,7 +14,7 @@
 // Plain Node ESM, ZERO npm dependencies — tts-lib.mjs's rule; this file lands
 // in /opt/tts/ with the rest through worker/setup.sh.
 //
-//   node /opt/tts/evals.mjs --repo tom.quest --sha <sha> [--base <sha>] [--limit N] [--jobs prepare,code-brief] [--ablation] [--force]
+//   node /opt/tts/evals.mjs --repo tom.quest --sha <sha> [--limit N] [--jobs prepare,code-brief] [--ablation] [--force]
 //   node /opt/tts/evals.mjs --serve     # one polling pass over the request queue
 //   node /opt/tts/evals.mjs --weekly    # the full set against both repos' main
 //   node /opt/tts/evals.mjs --tasks <repo>
@@ -57,6 +57,11 @@ export const PR_ITEMS = 40;
  *  stop against a door that kept handing back the same request, not a budget
  *  against cost. */
 export const SERVE_SUPERSEDED_LIMIT = 25;
+
+/** A shallow cache needs this much history from each trusted tip before Git
+ * can name their merge base. A deeper unbounded fetch would make a polling
+ * pass depend on the whole repository history. */
+export const DIFF_HISTORY_DEEPEN = 256;
 
 /**
  * How many times an item is tried at the head commit before one failure of it
@@ -654,14 +659,6 @@ export function runnerFailure(error) {
   return { judged: "fail", errored: true, errorMessage: message, reason: `runner failed: ${message}` };
 }
 
-/** `runClaude` normally throws when its launcher fails. Some runners return the
- * launcher diagnostic as their answer instead. Catch that form before a
- * free-form job can hand it to a judge as though it were regenerated prose. */
-function isModelCommandFailure(answer) {
-  return typeof answer === "string" &&
-    /(?:^|\r?\n)(?:Error:\s*)?Command failed:\s+(?:\S+[\\/])?claude(?:\.cmd)?\s+-p(?:\s|$)/.test(answer);
-}
-
 // ── The deterministic checks ─────────────────────────────────────────────────
 // Everything below decides WITHOUT A MODEL, and a failure here is the trial's
 // verdict with the judge never called. A text that broke a rule Tom wrote down
@@ -863,7 +860,6 @@ export async function runItem(item, context, io, { deterministic = null, receipt
         ...(layers.commit ? { wikitomCommit: layers.commit } : {}),
       },
     });
-    if (isModelCommandFailure(answer)) return { ...base, ...runnerFailure(answer) };
     fresh = job.parse(answer, context.modules[item.job]);
   } catch (err) {
     // The skills seam is a SKIP, not a failure: nothing about the tree under
@@ -1059,6 +1055,9 @@ export async function runTask(task, trees, io) {
   } catch (error) {
     return { ...base, ...runnerFailure(serverErrorMessage(error)) };
   }
+  // Task runners are separate wiring seams. Their output cannot be trusted to
+  // have this shape: deleting the guard would let a broken runner become a
+  // persisted measurement with no verdict instead of an explicit failed item.
   if (produced === null || typeof produced !== "object" || (produced.judged !== "pass" && produced.judged !== "fail" && produced.judged !== "skip")) {
     return { ...base, ...runnerFailure("task runner returned no usable answer") };
   }
@@ -2009,7 +2008,7 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
 }
 
 const FLAGS = new Set(["--serve", "--weekly", "--force", "--ablation", "--faults-only", "--dry-run"]);
-const VALUED = new Set(["--repo", "--sha", "--base", "--tasks", "--limit", "--jobs"]);
+const VALUED = new Set(["--repo", "--sha", "--tasks", "--limit", "--jobs"]);
 
 /**
  * The option key of a flag whose own name is not its key.
@@ -2024,7 +2023,7 @@ const FLAG_KEYS = { "--faults-only": "faultsOnly", "--dry-run": "dryRun" };
 
 export function parseArgs(argv) {
   const options = {
-    repo: null, sha: null, base: null, limit: PR_ITEMS,
+    repo: null, sha: null, limit: PR_ITEMS,
     jobs: null, force: false, serve: false, weekly: false, ablation: false, tasks: null,
     faultsOnly: false, dryRun: false,
   };
@@ -2303,6 +2302,13 @@ export function changedPathsFromGit(out) {
  * imported here. WikiTom's Action fetches this check from tom.quest, so its
  * policy comes from tom.quest's base too: the request repository supplies the
  * comparison, and no request head supplies the watch.
+ *
+ * The cache starts at depth one. Deepening the box-fetched main and head tips
+ * by a bounded amount lets Git find their merge base; that base names the
+ * branch diff while current main remains the evaluation baseline. The request
+ * `baseSha` is not used because a request can be stale or retargeted. A
+ * two-dot diff intersected with head paths still needs head history, so it
+ * would add another shallow-history rule instead of establishing the branch.
  */
 export async function trustedRequestDiff(request, io, run = git) {
   let baseTree = null;
@@ -2320,10 +2326,19 @@ export async function trustedRequestDiff(request, io, run = git) {
     if (!Array.isArray(policy.WATCHED_PATHS) || typeof policy.unaffectedBy !== "function") {
       throw new Error("base evals policy is incomplete");
     }
+    // This fetch has both tips from the box's cache, never a commit named by
+    // the request. If their bounded history has no common ancestor, the catch
+    // below posts the required failed row rather than scoring a guessed diff.
+    run(
+      baseTree.dir,
+      "fetch", "--deepen", String(DIFF_HISTORY_DEEPEN), "origin", "main", headTree.commit,
+    );
+    const mergeBase = run(baseTree.dir, "merge-base", baseTree.commit, headTree.commit).trim();
+    if (mergeBase === "") throw new Error("the trusted tips have no merge base within the shallow-history bound");
     const out = run(
       baseTree.dir,
       "diff", "--no-renames", "--name-only", "-z",
-      `${baseTree.commit}..${headTree.commit}`,
+      `${mergeBase}..${headTree.commit}`,
     );
     const changed = changedPathsFromGit(out);
     // The list is read from the same base module that supplies its predicate.
@@ -2542,8 +2557,16 @@ export async function directRequestIdentity(env, { repo, sha }) {
   return {
     prBody: request.prBody ?? null,
     answersRequestAt: request.requestedAt ?? null,
-    unaffectedClaimed: request.unaffectedClaimed === true || request.unaffected === true,
+    unaffectedClaimed: requestClaimsUnaffected(request),
   };
+}
+
+/** Requests filed before `unaffected` became `unaffectedClaimed` can still be
+ * waiting when this deploys. Like `answersRequestAt`, keep their old spelling
+ * through that rollout window; remove it after no pre-rename request can stand
+ * in the queue. */
+function requestClaimsUnaffected(request) {
+  return request.unaffectedClaimed === true || request.unaffected === true;
 }
 
 /**
@@ -2555,7 +2578,8 @@ export async function directRequestIdentity(env, { repo, sha }) {
  * dead pushes deep drains on THIS tick and the live head is served on it too,
  * rather than one dead sha every five minutes. The count is a stop, not a
  * budget: a door that kept handing back the same request would otherwise spin
- * here forever.
+ * here forever. The bound cannot be deleted: repeated delivery after an answer
+ * is a queue failure, and one cron pass must stop instead of spinning on it.
  *
  * Exported so that stop can be tested. It is reached only through `--serve`,
  * and the shape of the bug it guards against — a loop that keeps asking a door
@@ -2628,7 +2652,7 @@ export async function serveRequest(env, io, request, options = {}) {
   // `changed` and `unaffected` from CI are claims. Only this box-side diff,
   // judged with the base tree's policy, may take the no-run shortcut.
   const boxDiff = await trustedRequestDiff(request, io, options.diffRun ?? git);
-  const unaffectedClaimed = request.unaffectedClaimed === true || request.unaffected === true;
+  const unaffectedClaimed = requestClaimsUnaffected(request);
   if (typeof boxDiff.error === "string" && boxDiff.error !== "") {
     // A box diff is the evidence for both a baseline and the no-run shortcut.
     // Without it, a scored row would look like a valid no-baseline run and

@@ -8,6 +8,7 @@ import {
   aggregate,
   AUDIT_FAULTS_DIR,
   deterministicFailure,
+  DIFF_HISTORY_DEEPEN,
   efficiencyOf,
   efficiencyVerdict,
   failedRun,
@@ -595,7 +596,7 @@ describe("runEvals carries the trial rule end to end", () => {
     expect(run.errors).toEqual(["Not logged in", "Not logged in", "Not logged in"]);
   });
 
-  it("stamps model-command failures as catastrophic even for unconfirmed items", async () => {
+  it("stamps thrown model-launcher failures as catastrophic even for unconfirmed items", async () => {
     const dir = tree();
     for (let index = 0; index < 29; index += 1) {
       writeJson(dir, path.join("evals", "golden", `${index}.json`), item({
@@ -609,11 +610,9 @@ describe("runEvals carries the trial rule end to end", () => {
     }
     const broken = {
       ...io([], dir),
-      // Free-form jobs would otherwise hand this launcher diagnostic to the
-      // judge, which can call it a normal, unconfirmed failure.
-      runClaude: async (prompt) => (String(prompt).startsWith("You are judging")
-        ? '{"verdict":"fail","reason":"the regeneration did not answer"}'
-        : "Command failed: claude -p --model haiku"),
+      // The real launcher throws on a failed command, so the eval records it
+      // as an error before a free-form job can hand it to the judge.
+      runClaude: async () => { throw new Error("Command failed: claude -p --model haiku"); },
     };
     const run = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, broken);
     expect(run).toMatchObject({
@@ -1420,10 +1419,30 @@ describe("an unaffected request", () => {
     const seen = [];
     const diff = await trustedRequestDiff(request(), diffIo(base, head), (dir, ...args) => {
       seen.push({ dir, args });
+      if (args[0] === "merge-base") return "merge000";
       return "model-of-tom/intent.md\0";
     });
     expect(diff).toMatchObject({ base: "base000", changed: ["model-of-tom/intent.md"], unaffected: false, watchedPaths: ["model-of-tom/**"] });
-    expect(seen).toEqual([{ dir: base, args: ["diff", "--no-renames", "--name-only", "-z", "base000..2e08b28"] }]);
+    expect(seen).toEqual([
+      { dir: base, args: ["fetch", "--deepen", String(DIFF_HISTORY_DEEPEN), "origin", "main", "2e08b28"] },
+      { dir: base, args: ["merge-base", "base000", "2e08b28"] },
+      { dir: base, args: ["diff", "--no-renames", "--name-only", "-z", "merge000..2e08b28"] },
+    ]);
+  });
+
+  it("excludes a watched path main changed after the branch base", async () => {
+    const base = policyTree(["model-of-tom/**"]);
+    const head = policyTree(["worker/**"]);
+    const mainOnlyWatched = "model-of-tom/intent.md";
+    const branchChanged = "worker/jobs/evals.mjs";
+    const diff = await trustedRequestDiff(request(), diffIo(base, head), (_dir, ...args) => {
+      if (args[0] === "merge-base") return "branch-base";
+      if (args[0] === "diff" && args.at(-1) === "base000..2e08b28") return `${mainOnlyWatched}\0${branchChanged}\0`;
+      if (args[0] === "diff" && args.at(-1) === "branch-base..2e08b28") return `${branchChanged}\0`;
+      return "";
+    });
+    expect(diff.changed).toEqual([branchChanged]);
+    expect(diff.changed).not.toContain(mainOnlyWatched);
   });
 
   it("uses WikiTom's trusted commits with tom.quest's trusted policy", async () => {
@@ -1443,6 +1462,7 @@ describe("an unaffected request", () => {
     const seen = [];
     const diff = await trustedRequestDiff(request({ repo: "WikiTom", sha: "wikihead" }), io, (dir, ...args) => {
       seen.push({ dir, args });
+      if (args[0] === "merge-base") return "wikimerge";
       return "model-of-tom/intent.md\0";
     });
     expect(worktrees).toEqual([
@@ -1456,7 +1476,11 @@ describe("an unaffected request", () => {
       unaffected: false,
       watchedPaths: ["model-of-tom/**"],
     });
-    expect(seen).toEqual([{ dir: wikiBase, args: ["diff", "--no-renames", "--name-only", "-z", "WikiTom-base..wikihead"] }]);
+    expect(seen).toEqual([
+      { dir: wikiBase, args: ["fetch", "--deepen", String(DIFF_HISTORY_DEEPEN), "origin", "main", "wikihead"] },
+      { dir: wikiBase, args: ["merge-base", "WikiTom-base", "wikihead"] },
+      { dir: wikiBase, args: ["diff", "--no-renames", "--name-only", "-z", "wikimerge..wikihead"] },
+    ]);
   });
 
   it("posts a failed row when the box cannot establish the trusted diff", async () => {
@@ -1939,17 +1963,18 @@ describe("parseArgs takes the two new flags", () => {
 
   it("leaves every pre-existing flag parsing exactly as it did", () => {
     expect(parseArgs(["--serve"])).toEqual({
-      repo: null, sha: null, base: null, limit: 40, jobs: null,
+      repo: null, sha: null, limit: 40, jobs: null,
       force: false, serve: true, weekly: false, ablation: false, tasks: null,
       faultsOnly: false, dryRun: false,
     });
     expect(parseArgs(["--weekly", "--force"])).toMatchObject({ weekly: true, force: true, ablation: true });
     expect(parseArgs(["--repo", "tom.quest", "--sha", "abc", "--ablation"]))
       .toMatchObject({ repo: "tom.quest", sha: "abc", ablation: true, faultsOnly: false, dryRun: false });
-    expect(parseArgs(["--repo=WikiTom", "--sha=def", "--base=ghi", "--limit=6", "--jobs=prepare,run"]))
-      .toMatchObject({ repo: "WikiTom", sha: "def", base: "ghi", limit: 6, jobs: ["prepare", "run"] });
+    expect(parseArgs(["--repo=WikiTom", "--sha=def", "--limit=6", "--jobs=prepare,run"]))
+      .toMatchObject({ repo: "WikiTom", sha: "def", limit: 6, jobs: ["prepare", "run"] });
     expect(parseArgs(["--tasks", "slack"]).tasks).toBe("slack");
     expect(() => parseArgs(["--nope"])).toThrow(/unknown argument/);
+    expect(() => parseArgs(["--base", "ghi"])).toThrow(/unknown argument/);
     expect(() => parseArgs(["--serve", "--limit", "0"])).toThrow(/--limit/);
   });
 });
