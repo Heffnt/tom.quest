@@ -166,8 +166,17 @@ describe("evals/triggers", () => {
     for (const one of file.cases) {
       expect(typeof one.id).toBe("string");
       expect(typeof one.negative).toBe("boolean");
-      expect(typeof one.prompt).toBe("string");
-      expect(one.prompt.trim()).not.toBe("");
+      // A `route` case is decided with no model at all (worker/jobs/evals.mjs
+      // triggerMethod), so it carries a route where a runner case carries a
+      // prompt. Exactly one of the two, or the runner would score a case the
+      // router already answered.
+      if (one.route === undefined) {
+        expect(typeof one.prompt).toBe("string");
+        expect(one.prompt.trim()).not.toBe("");
+      } else {
+        expect(one.prompt).toBeUndefined();
+        expect(typeof one.route).toBe("object");
+      }
       expect(typeof one.why).toBe("string");
       expect(one.why.trim()).not.toBe("");
       expect(typeof one.confirmedByTom).toBe("boolean");
