@@ -557,20 +557,31 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
   const baseLine = suppliedBaseLine ?? fromLine;
   if (!Number.isInteger(baseLine) || baseLine < 0) throw new RangeError("baseLine must be a non-negative integer");
   let recoveredPrior = baseLine > 0 && priorRun?.runner === "codex" ? priorRun : null;
+  let recoveredMeta = priorMeta && typeof priorMeta === "object" ? priorMeta : null;
+  const turnIdsKnown = Array.isArray(recoveredMeta?.turnIds);
   // Legacy sweep state predates both `run` and `codexMeta`. Its cursor still
   // proves the accepted prefix, and contextText holds that prefix plus this
   // tail, so recover only those committed lines. Reingesting from line zero
   // would emit that accepted prefix a second time (forking one run's outcome),
-  // while reconstruction carries it forward before this tail is appended.
-  if (recoveredPrior === null && baseLine > 0) {
+  // while reconstruction supplies whichever of run state and parser metadata
+  // the old sweep record did not retain before this tail is appended.
+  if (baseLine > 0 && (recoveredPrior === null || !turnIdsKnown)) {
     const committed = fileLines(contextText).lines.slice(0, baseLine);
     if (committed.length === baseLine) {
-      recoveredPrior = parseCodexFile({
+      const recovered = parseCodexFile({
         path,
         text: `${committed.join("\n")}\n`,
         host,
         fileVersion,
-      }).run;
+      });
+      if (recoveredPrior === null) recoveredPrior = recovered.run;
+      // HEAD persisted other codexMeta facts before it persisted turnIds. Keep
+      // those facts, while filling the missing map from the accepted prefix.
+      recoveredMeta = {
+        ...(recovered.codexMeta ?? {}),
+        ...(recoveredMeta ?? {}),
+        ...(!turnIdsKnown ? { turnIds: recovered.codexMeta?.turnIds ?? [] } : {}),
+      };
     }
   }
   const prior = recoveredPrior;
@@ -580,14 +591,21 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
   const { lines, incompleteTail } = fileLines(text); const rows = [], children = [], attachments = [], dropped = {};
   const firstFileTimestamp = lines.map((raw) => { try { return millis(JSON.parse(raw).timestamp); } catch { return 0; } }).find(Boolean) ?? 0;
   const drop = (kind) => { dropped[kind] = (dropped[kind] ?? 0) + 1; };
-  let meta = priorMeta && typeof priorMeta === "object" ? { ...priorMeta } : {};
+  let meta = recoveredMeta ? { ...recoveredMeta } : {};
   const priorOutcome = prior?.outcome && typeof prior.outcome === "object" ? prior.outcome : {};
   let runId = prior?.runId, parentId = codexParent(meta) ?? priorParentId, model = prior?.model, effort = prior?.effort,
     startedAt = prior?.startedAt ?? firstFileTimestamp, lastLineAt = prior?.lastLineAt ?? 0,
     runtimeVersion = prior?.runtimeVersion, finalTextSeq = priorOutcome.finalTextSeq,
     toolCalls = baseLine > 0 ? number(priorOutcome.toolCalls) : 0,
     approvalPolicy, sandboxPolicy, modelChangeReported = false;
-  let currentTurn = 0; const turns = new Map(); let lastTokenCount = null; const usageRecords = []; let taskComplete = null; let lastAssistantText = null;
+  // A tail contains only later lines, while one turn can cross a sweep. Keep
+  // the previous ID-to-ordinal table in sweep-only state so both a repeated
+  // turn and the next distinct turn retain their original ordinals.
+  const priorTurnIds = Array.isArray(recoveredMeta?.turnIds)
+    ? recoveredMeta.turnIds.filter((id) => typeof id === "string" || typeof id === "number")
+    : [];
+  const turns = new Map(priorTurnIds.map((id, index) => [id, index]));
+  let currentTurn = Math.max(turns.size - 1, 0); let lastTokenCount = null; const usageRecords = []; let taskComplete = null; let lastAssistantText = null;
   const longContextRequestKeys = new Set();
   for (let relativeLine = 0; relativeLine < lines.length; relativeLine += 1) {
     const line = baseLine + relativeLine; const raw = lines[relativeLine]; if (!raw.trim()) { drop("_blank"); continue; }
@@ -601,7 +619,10 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
       runtimeVersion ??= payload.cli_version;
     }
     const turnId = payload.turn_id ?? payload.turnId;
-    if (turnId !== undefined) { if (!turns.has(turnId)) turns.set(turnId, turns.size); currentTurn = turns.get(turnId); }
+    if (turnId !== undefined) {
+      if (!turns.has(turnId)) turns.set(turnId, turns.size);
+      currentTurn = turns.get(turnId);
+    }
     const sourceKind = `${entry.type ?? "unknown"}/${payload.type ?? "unknown"}`;
     const emit = rowFactory({ path, fileVersion, runId: runId ?? `codex:${host}:unknown`, rows, line, turn: currentTurn, sourceKind, timestamp });
     const rowsBefore = rows.length;
@@ -740,6 +761,7 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
     ...(meta.originator ? { originator: meta.originator } : {}),
     ...(meta.context_window ? { context_window: meta.context_window } : {}),
     ...(context.baseInstructionsHash ? { baseInstructionsHash: context.baseInstructionsHash } : {}),
+    turnIds: [...turns.keys()],
   };
   return result;
 }

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { routeSkills } from "./skill-router.mjs";
+import { NO_BODY, routeSkills } from "./skill-router.mjs";
 import {
   ablationFindings,
   ablationFor,
@@ -751,6 +751,7 @@ describe("an io with no skill assembler", () => {
 // is rendered by the tree under test's own renderGrants and by nothing else.
 describe("skillsFor", () => {
   const HERE = path.resolve(".");
+  let fixtureSerial = 0;
 
   function committedWikiTom() {
     const dir = tree();
@@ -766,9 +767,26 @@ describe("skillsFor", () => {
     write("model-of-tom/intent.md", "# Intent\n\n## Directions\n\n- Ship.\n");
     write("model-of-tom/priorities.md", "# Priorities\n\n- First things first.\n");
     write("model-of-tom/schedule.md", "# Schedule\n\n## Week\n\n- Monday — practice.\n");
+    // Each fixture is a different publication. The process-wide cache is
+    // deliberately keyed by commits, so identical fixture commits would share
+    // a real catalogue while their fake publishers disagree about its contents.
+    write(`fixture-${++fixtureSerial}.txt`, "fixture\n");
     execFileSync("git", ["init", "-q", "-b", "main", dir]);
     execFileSync("git", ["-C", dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "add", "-A"]);
     execFileSync("git", ["-C", dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "fixture"]);
+    return dir;
+  }
+
+  function commit(dir, message) {
+    execFileSync("git", ["-C", dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "add", "-A"]);
+    execFileSync("git", ["-C", dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-q", "-m", message]);
+  }
+
+  function committedRepo(body = "# Rules\n\nFirst.\n") {
+    const dir = tree();
+    fs.writeFileSync(path.join(dir, "AGENTS.md"), body);
+    execFileSync("git", ["init", "-q", "-b", "main", dir]);
+    commit(dir, "fixture");
     return dir;
   }
 
@@ -779,6 +797,44 @@ describe("skillsFor", () => {
     expect(published.published).toContain("write");
     expect(published.catalogHash).toMatch(/^[0-9a-f]{64}$/);
     expect(fs.existsSync(path.join(published.out, "tom-write", "SKILL.md"))).toBe(true);
+  });
+
+  it("rebuilds a publication when a reused weekly worktree advances", () => {
+    const work = tree();
+    const tomquest = committedRepo();
+    const wiki = committedWikiTom();
+    const calls = [];
+    const publish = (_exe, args) => {
+      calls.push(args);
+      const out = args[args.indexOf("--out") + 1];
+      const body = fs.readFileSync(path.join(tomquest, "AGENTS.md"), "utf8").includes("Second")
+        ? "SECOND PUBLICATION"
+        : "FIRST PUBLICATION";
+      fs.mkdirSync(path.join(out, "tom-repo-tom-quest"), { recursive: true });
+      fs.writeFileSync(
+        path.join(out, "tom-repo-tom-quest", "SKILL.md"),
+        `---\nname: tom-repo-tom-quest\ndescription: "rules"\n---\n\n<!-- generated -->\n\n${body}\n`,
+      );
+      return JSON.stringify({ commit: "wiki-commit", out, skills: [{ name: "repo-tom-quest" }], refused: [] });
+    };
+    const first = publicationFor(tomquest, wiki, publish, work);
+    // The same two commits share the one catalogue; this is the cache's useful
+    // case, before the reused worktree advances below.
+    expect(publicationFor(tomquest, wiki, publish, work)).toBe(first);
+    expect(calls).toHaveLength(1);
+    fs.writeFileSync(path.join(tomquest, "AGENTS.md"), "# Rules\n\nSecond.\n");
+    commit(tomquest, "advance tom quest");
+    const second = publicationFor(tomquest, wiki, publish, work);
+    expect(calls).toHaveLength(2);
+    expect(first.out).not.toBe(second.out);
+    expect(fs.readFileSync(path.join(first.out, "tom-repo-tom-quest", "SKILL.md"), "utf8")).toContain("FIRST PUBLICATION");
+    expect(fs.readFileSync(path.join(second.out, "tom-repo-tom-quest", "SKILL.md"), "utf8")).toContain("SECOND PUBLICATION");
+
+    fs.writeFileSync(path.join(wiki, "revision.txt"), "second wiki revision\n");
+    commit(wiki, "advance wikitom");
+    const wikiAdvanced = publicationFor(tomquest, wiki, publish, work);
+    expect(calls).toHaveLength(3);
+    expect(wikiAdvanced.out).not.toBe(second.out);
   });
 
   function publishingRun(catalogue, refused = []) {
@@ -816,8 +872,9 @@ describe("skillsFor", () => {
 
   it("puts the layer text, the grant block and the granted bodies in one text", () => {
     const work = tree();
+    const wiki = committedWikiTom();
     const io = publishingRun({ write: "WRITE BODY", "know-research": "RESEARCH BODY" });
-    const built = skillsFor(HERE, `${work}-wiki`, { layers: ["write"], skills: ["know-research", "write"] }, io.run, work);
+    const built = skillsFor(HERE, wiki, { layers: ["write"], skills: ["know-research", "write"] }, io.run, work);
     expect(built).toMatchObject({ names: ["write"], skills: ["know-research", "write"], skillsRefused: [], commit: "wiki-commit" });
     expect(built.catalogHash).toMatch(/^[0-9a-f]{64}$/);
     expect(built.text.startsWith("LAYER TEXT")).toBe(true);
@@ -839,10 +896,11 @@ describe("skillsFor", () => {
 
   it("refuses a name the publication does not hold, and carries on", () => {
     const work = tree();
+    const wiki = committedWikiTom();
     const io = publishingRun({ write: "WRITE BODY" }, [
       { name: "know-money", why: "model-of-tom/areas/money.md is blank at this commit" },
     ]);
-    const built = skillsFor(HERE, `${work}-wiki`, { layers: [], skills: ["write", "know-money"] }, io.run, work);
+    const built = skillsFor(HERE, wiki, { layers: [], skills: ["write", "know-money"] }, io.run, work);
     expect(built.text).toContain("granted: write");
     expect(built.text).toContain("refused: know-money — model-of-tom/areas/money.md is blank at this commit");
     expect(built.text).toContain("WRITE BODY");
@@ -857,7 +915,7 @@ describe("skillsFor", () => {
   it("publishes once for a pair of trees, however many name sets ask", () => {
     const work = tree();
     const io = publishingRun({ write: "W", "know-week": "K" });
-    const wikitom = `${work}-wiki`;
+    const wikitom = committedWikiTom();
     skillsFor(HERE, wikitom, { layers: [], skills: ["write"] }, io.run, work);
     skillsFor(HERE, wikitom, { layers: [], skills: ["know-week"] }, io.run, work);
     skillsFor(HERE, wikitom, { layers: [], skills: [] }, io.run, work);
@@ -870,6 +928,61 @@ describe("skillsFor", () => {
     expect(skillBodyOf(page)).toBe("## Heading\n\nbody");
     expect(() => skillBodyOf("no frontmatter at all")).toThrow("published SKILL.md has no frontmatter");
     expect(() => skillBodyOf("---\nname: tom-write\n---\n\nbody")).toThrow("published SKILL.md has no provenance");
+  });
+
+  it("ships a skills golden with a routed prelude and an assembled refusal", async () => {
+    const golden = JSON.parse(fs.readFileSync(
+      path.join(HERE, "evals", "golden", "runs", "run-skills-grant-routing-r6.json"),
+      "utf8",
+    ));
+    // These are the concrete router inputs recorded in the run task: a
+    // tom.quest repo subject outside its checkout gets the life area plus its
+    // repository rules; a partial publication refuses the latter.
+    const routed = routeSkills({
+      caller: "cli",
+      subject: { kind: "repo", repo: "tom.quest", paths: ["worker/jobs/skill-router.mjs"] },
+      cwd: "/work/WikiTom",
+      repoDirs: { "tom.quest": "/work/tom.quest" },
+      pages: [{
+        path: "model-of-tom/areas/agent-systems.md",
+        body: "---\ncategories: [tom.quest]\n---\n\n# Agent systems\n",
+      }],
+      published: ["write", "know-agent-systems"],
+    });
+    expect(routed).toEqual({
+      granted: ["write", "know-agent-systems"],
+      refused: [{ name: "repo-tom-quest", why: NO_BODY }],
+      repoRulesSource: null,
+    });
+    expect(golden.input.preludeNames).toEqual({
+      layers: [],
+      skills: ["write", "know-agent-systems", "know-unpublished"],
+    });
+
+    const registrations = [];
+    const result = await runItem(golden, {
+      modules: {}, cmtDir: undefined, layers: () => layers,
+      prelude: () => ({
+        names: [], skills: ["write", "know-agent-systems"], skillsRefused: ["know-unpublished"],
+        text: "SKILLS (WikiTom commit fixture)\n\ngrant block\n- granted: write, know-agent-systems\n- refused: know-unpublished â€” no published body at this commit",
+        commit: "fixture", files: [],
+      }),
+    }, {
+      runClaude: async (prompt, options) => {
+        registrations.push(options.registration);
+        if (String(prompt).startsWith("You are judging")) {
+          return JSON.stringify({ verdict: "pass", reason: "the assembled grant block is correctly described" });
+        }
+        return "The grant block grants write and know-agent-systems. It refuses know-unpublished because it has no published body; retired context layers do not supply another grant.";
+      },
+    }, {
+      deterministic: (fresh) => deterministicFailure(golden, JOBS.run, fresh, null),
+    });
+    expect(result).toMatchObject({ judged: "pass" });
+    expect(registrations[0]).toMatchObject({
+      skillsGranted: ["write", "know-agent-systems"],
+      skillsRefused: ["know-unpublished"],
+    });
   });
 });
 

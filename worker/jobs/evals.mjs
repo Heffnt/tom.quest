@@ -261,11 +261,20 @@ const RUN_OPTIONS = { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], ma
  * out of git. The publication does not depend on the names at all — it is the
  * whole catalogue — so it is built once and the name sets read out of it.
  *
- * The key is the pair of worktree directories, which one run pins for its whole
- * lifetime: runEvals makes them at the top and removes them in its `finally`,
- * and a head run and a base run never share both.
+ * The key is the pair of commits that the publisher reads, not the reusable
+ * worktree directories. Weekly runs recreate `origin/main` at the same paths;
+ * after either repository advances, reusing a catalogue made from those paths
+ * would pair a new recorded commit with old skill bodies.
  */
 const publications = new Map();
+
+/** The two immutable objects a publication reads: WikiTom supplies its pages,
+ * and tom.quest supplies the published repository rules. */
+function publicationKey(tomquestTree, wikitomTree) {
+  const tomquest = git(tomquestTree, "rev-parse", "HEAD").trim();
+  const wikitom = git(wikitomTree, "rev-parse", "HEAD").trim();
+  return `${tomquest} ${wikitom}`;
+}
 
 /** Hash the exact on-disk catalog bytes the pinned publisher produced. */
 export function catalogHashFor(out) {
@@ -288,7 +297,7 @@ export function catalogHashFor(out) {
 }
 
 export function publicationFor(tomquestTree, wikitomTree, run = execFileSync, workDir = WORK_DIR) {
-  const key = `${tomquestTree} ${wikitomTree}`;
+  const key = publicationKey(tomquestTree, wikitomTree);
   const held = publications.get(key);
   if (held !== undefined) return held;
   const out = path.join(workDir, "skills", crypto.createHash("sha256").update(key).digest("hex").slice(0, 16));

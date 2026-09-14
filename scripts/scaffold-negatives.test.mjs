@@ -5,14 +5,12 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_OUT,
   SOURCES,
-  draftFor,
   fileStem,
   headingsOf,
   isPositive,
   parseArgs,
   scaffold,
 } from "./scaffold-negatives.mjs";
-import { bareSkillName } from "./skills.mjs";
 
 const TRIGGERS = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", DEFAULT_OUT);
 
@@ -151,8 +149,8 @@ describe("evals/triggers", () => {
       "layer-write.json",
       "skill-know-intent.json",
       "skill-know-week.json",
-      "skill-repo-WikiTom.json",
-      "skill-repo-tom.quest.json",
+      "skill-repo-tom-quest.json",
+      "skill-repo-wikitom.json",
     ]);
   });
 
@@ -161,7 +159,7 @@ describe("evals/triggers", () => {
     expect(typeof file.name).toBe("string");
     expect(["layer", "skill"]).toContain(file.kind);
     const stem = name.replace(/\.json$/, "").replace(new RegExp(`^${file.kind}-`), "");
-    expect(file.kind === "skill" ? bareSkillName(stem) : stem).toBe(file.name);
+    expect(stem).toBe(file.name);
     expect(Array.isArray(file.cases)).toBe(true);
     const ids = file.cases.map((one) => one.id);
     expect(new Set(ids).size).toBe(ids.length);

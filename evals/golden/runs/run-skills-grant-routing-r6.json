@@ -1,0 +1,37 @@
+{
+  "id": "run-skills-grant-routing-r6",
+  "job": "run",
+  "partition": "runs/skills",
+  "kind": "regression",
+  "verdict": "approve",
+  "confirmedByTom": false,
+  "trials": 3,
+  "negative": false,
+  "labelId": "merge-gate-uae-skills-r6",
+  "labelSource": "merge-gate",
+  "runId": "merge-gate:uae-skills:r6",
+  "at": 1789401600000,
+  "intentKey": "merge-gate:uae-skills|skills:grant-routing",
+  "input": {
+    "preludeKnown": true,
+    "preludeNames": {
+      "layers": [],
+      "skills": ["write", "know-agent-systems", "know-unpublished"]
+    },
+    "task": "The routing inputs are caller `cli`, subject `{ kind: \"repo\", repo: \"tom.quest\", paths: [\"worker/jobs/skill-router.mjs\"] }`, cwd `/work/WikiTom`, and tom.quest at `/work/tom.quest`. With a publication containing only `write` and `know-agent-systems`, the expected route grants those two names and refuses `repo-tom-quest` because it has no published body. This replay assembles the expected granted prelude names `write` and `know-agent-systems` and also requests the deliberately unpublished `know-unpublished` to exercise the grant block's refusal. Explain which skills are granted, why a refused name is not a grant, and why the retired operate/write/know context layers are not reconstructed.",
+    "prompt": null,
+    "contextRowSeq": null,
+    "spanSeqs": null
+  },
+  "expected": {
+    "rubric": "The response treats the grant block as the authority: it identifies the routed grants, records the deliberately unpublished requested skill as refused, and does not claim that retired context layers were supplied.",
+    "target": null
+  },
+  "output": {
+    "text": "The grant block names `write` and `know-agent-systems` as the available skills. `know-unpublished` is refused because this publication has no body for it, so it is neither loaded nor recorded as a grant. The retired operate/write/know context layers do not supply a second permission path."
+  },
+  "expect": {
+    "mustName": ["grant block", "write", "know-agent-systems", "know-unpublished", "refus"],
+    "mustNotName": ["retired operate/write/know context layers were supplied"]
+  }
+}

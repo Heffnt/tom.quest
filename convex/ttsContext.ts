@@ -96,7 +96,9 @@ export const SESSION_SCAN_MAX = 60;
 const SESSION_SCAN_PER_STATUS = SESSION_SCAN_MAX / 2;
 /** Every model-of-tom source file, so each area page's `categories:` line is
  * readable — that line is what routes a todo's category to an area's skill.
- * The model-of-tom door caps its post at the same number. */
+ * The model-of-tom door caps its post at the same number.
+ * REMOVAL CHECK: retain this read-time ceiling as defence in depth. A bad or
+ * legacy writer must not turn context assembly into an unbounded read. */
 const MODEL_OF_TOM_FILES_MAX = 64;
 const BATCH_TODOS_MAX = 40;
 /** The catalog is fourteen rows; the ceiling is the door's. */
@@ -305,21 +307,26 @@ async function readRecord(
     for (const session of onBatch) addSession(session);
   }
 
-  // The unindexed half: the two terminal statuses, newest first, filtered in
-  // memory on `repos`. SESSION_SCAN_MAX documents to a reader exactly how deep
-  // this walk can go — nothing here is a table scan.
+  // The unindexed half: each terminal-status walk is newest first, then their
+  // matching rows compete by timestamp before they fill the remaining slots.
+  // SESSION_SCAN_MAX documents tells a reader exactly how deep this walk can
+  // go — nothing here is a table scan.
   if (repos.length > 0) {
-    for (const status of ["ended", "failed"] as const) {
-      const recent = await ctx.db
+    const recentByStatus = await Promise.all((["ended", "failed"] as const).map(async (status) =>
+      await ctx.db
         .query("claudeSessions")
         .withIndex("by_status", (q) => q.eq("status", status))
         .order("desc")
-        .take(SESSION_SCAN_PER_STATUS);
-      for (const session of recent) {
-        if (!(session.repos ?? [session.repo]).some((repo) => repos.includes(repo))) continue;
-        addSession(session);
-      }
-    }
+        .take(SESSION_SCAN_PER_STATUS),
+    ));
+    const repositorySessions = recentByStatus
+      .flat()
+      .filter((session) =>
+        !seenSessions.has(session._id)
+        && (session.repos ?? [session.repo]).some((repo) => repos.includes(repo)),
+      )
+      .sort((a, b) => b.statusChangedAt - a.statusChangedAt || a._id.localeCompare(b._id));
+    for (const session of repositorySessions) addSession(session);
   }
   return { record, repos };
 }

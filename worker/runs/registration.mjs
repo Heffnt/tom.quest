@@ -275,6 +275,13 @@ export function claimRegistration({
     // The sidecar is already the durable binding when this token claimed it.
     // A delayed repair must not replace its launcher facts with an older spool.
     if (existing?.token === token) {
+      // Preserve asks that reached the stale spool before this same-token claim
+      // makes it safe to delete. The two envelopes have different writers for
+      // that group, so neither one alone is authoritative.
+      const spooled = jsonAt(source, fs);
+      const skills = mergeSkillAsks(existing.skills, spooled?.token === token ? spooled.skills : undefined);
+      const envelope = skills === undefined ? existing : { ...existing, skills };
+      if (JSON.stringify(existing) !== JSON.stringify(envelope)) atomicJson(file, envelope, fs);
       // A same-token re-claim is the condition that makes this spool deletable:
       // the sidecar is already the durable envelope for this exact token and
       // the pointer below names it. Leaving the stale spool would make a
@@ -283,7 +290,7 @@ export function claimRegistration({
         if (error?.code !== "ENOENT") throw error;
       }
       writeClaimPointer(spoolDir, token, runFile, fs);
-      return { ok: true, claimed: false, file, envelope: existing };
+      return { ok: true, claimed: false, file, envelope };
     }
     const spooled = jsonAt(source, fs);
     if (!spooled) {
@@ -291,6 +298,9 @@ export function claimRegistration({
       return { ok: false, reason: "registration spool missing", file, envelope: existing };
     }
     if (spooled.token !== token) return { ok: false, reason: "registration spool token mismatch", file, envelope: existing };
+    // REMOVAL CHECK: cannot remove; session-start-hook.mjs writes a grant
+    // receipt to a tokenless sidecar before run-hook.mjs learns the launcher's
+    // token. That receipt must be claimable into its matching token.
     if (existing?.token !== undefined && existing.token !== null && existing.token !== token) {
       return { ok: false, reason: "registration sidecar belongs to another token", file, envelope: existing };
     }
@@ -385,6 +395,9 @@ export function appendSkillAsk({ runFile, spoolDir, token, ask = {}, fs = fsDefa
     // taking the sidecar lock here would invert claimRegistration's lock order.
     if (existing === null && target === spool) return { retryClaimPointer: true };
     if (existing === null) return { ok: false, reason: "run registration envelope missing", file: target };
+    // REMOVAL CHECK: cannot remove; run-hook.mjs legitimately creates a
+    // tokenless sidecar for an interactive SessionStart. A skills caller that
+    // knows that transcript path may still append its ask without a token.
     if (token !== undefined && existing.token !== undefined && existing.token !== null && existing.token !== token) {
       return { ok: false, reason: "registration token mismatch", file: target, envelope: existing };
     }
@@ -474,8 +487,11 @@ export function mergeRegistration({ parsed, envelope, host, report = () => {} })
   if (typeof registration.layersKnown === "boolean") run.context.layersKnown = registration.layersKnown;
   run.context.layersGiven = registration.layersKnown && Array.isArray(registration.layersGiven) ? [...registration.layersGiven] : [];
   run.context.layersDenied = registration.layersKnown && Array.isArray(registration.layersDenied) ? [...registration.layersDenied] : [];
+  // The receipt is the exact grant block rendered at SessionStart. Registration
+  // remains the fallback for envelopes written before receipts were separate.
   for (const key of ["skillsGranted", "skillsRefused"]) {
-    if (Array.isArray(registration[key])) run.context[key] = [...registration[key]];
+    const value = Array.isArray(envelope.receipt?.[key]) ? envelope.receipt[key] : registration[key];
+    if (Array.isArray(value)) run.context[key] = [...value];
     else delete run.context[key];
   }
   // The fifth group, written by `tts search skills` rather than by a

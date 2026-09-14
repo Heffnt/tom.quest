@@ -4,7 +4,7 @@ import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
-import { renderGrants } from "./skills.mjs";
+import { renderGrants, skillDirName } from "./skills.mjs";
 
 const RUNNER = path.resolve("scripts/codex-run.mjs");
 const IDENTITY = ["-c", "user.name=test", "-c", "user.email=test@example.com"];
@@ -26,6 +26,14 @@ function wikitomFixture({ rules = "# Rules\n\nKeep the promise.\n" } = {}) {
   git(dir, "add", "-A");
   git(dir, "commit", "-q", "-m", "fixture");
   return dir;
+}
+
+function installedSkills(...names) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-skills-"));
+  for (const name of names) {
+    write(home, path.join("skills", skillDirName(name), "SKILL.md"), "---\nname: fixture\n---\n");
+  }
+  return home;
 }
 
 function fakeCodex() {
@@ -52,7 +60,7 @@ function run(args, env) {
   const result = spawnSync(process.execPath, [RUNNER, ...args], {
     encoding: "utf8",
     input: "answer this\n",
-    env: { ...process.env, RUN_SWEEP_STATE_DIR: state, ...env },
+    env: { ...process.env, RUN_SWEEP_STATE_DIR: state, TTS_RUN_REG_SPOOL: path.join(state, "registration"), ...env },
   });
   result.state = state;
   return result;
@@ -196,6 +204,7 @@ describe("codex-run skill grants", () => {
       CODEX_BIN: fakeCodex(),
       WIKITOM_DIR: wikitomFixture({ rules }),
       FAKE_CODEX_ARGS: argsFile,
+      CODEX_HOME: installedSkills("write", "know-research"),
     });
     expect(result.status).toBe(0);
     const developer = developerInstructions(argsFile);
@@ -227,6 +236,24 @@ describe("codex-run skill grants", () => {
     });
   });
 
+  it("refuses a named grant whose installed SKILL.md is missing", () => {
+    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-missing-skill.json`);
+    const result = run(["--grant", "write", "--grant", "know-research"], {
+      CODEX_BIN: fakeCodex(),
+      WIKITOM_DIR: wikitomFixture(),
+      FAKE_CODEX_ARGS: argsFile,
+      CODEX_HOME: installedSkills("write"),
+    });
+    expect(result.status).toBe(0);
+    expect(developerInstructions(argsFile)).toContain("granted: write");
+    expect(developerInstructions(argsFile)).toContain("its installed SKILL.md is missing");
+    const registration = spooledEnvelope(result.state).envelope.registration;
+    expect(registration.skillsGranted).toEqual(["write"]);
+    expect(registration.skillsRefused).toHaveLength(1);
+    expect(registration.skillsRefused[0]).toContain("know-research");
+    expect(registration.skillsRefused[0]).toContain("its installed SKILL.md is missing");
+  });
+
   it("omits the block, and grants nothing, when no commit can be cited", () => {
     const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-nocommit.json`);
     const result = run(["--grant", "write"], {
@@ -245,5 +272,62 @@ describe("codex-run skill grants", () => {
     const result = run(["--refuse", "write"], { CODEX_BIN: fakeCodex(), WIKITOM_DIR: wikitomFixture() });
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("--refuse takes NAME=WHY");
+  });
+
+  it.each([
+    [["--grant", "write", "--grant", "write"], "--grant names write more than once"],
+    [["--refuse", "write=no need", "--refuse", "write=still no need"], "--refuse names write more than once"],
+  ])("rejects duplicate skill decisions", (args, message) => {
+    const result = run(args, { CODEX_BIN: fakeCodex(), WIKITOM_DIR: wikitomFixture() });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(message);
+  });
+
+  it.each([
+    [
+      ["--grant", "repo-tom.quest", "--grant", "repo-tom-quest"],
+      "--grant names repo-tom.quest and repo-tom-quest as the same skill (tom-repo-tom-quest)",
+    ],
+    [
+      ["--refuse", "repo-tom.quest=no need", "--refuse", "repo-tom-quest=still no need"],
+      "--refuse names repo-tom.quest and repo-tom-quest as the same skill (tom-repo-tom-quest)",
+    ],
+  ])("rejects canonical-equivalent decisions of the same kind", (args, message) => {
+    const result = run(args, { CODEX_BIN: fakeCodex(), WIKITOM_DIR: wikitomFixture() });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(message);
+  });
+
+  it.each([
+    [
+      ["--grant", "write", "--refuse", "write=withheld"],
+      "--refuse write conflicts with --grant write (tom-write)",
+    ],
+    [
+      ["--grant", "repo-tom.quest", "--refuse", "repo-tom-quest=withheld"],
+      "--refuse repo-tom-quest conflicts with --grant repo-tom.quest (tom-repo-tom-quest)",
+    ],
+  ])("rejects conflicting grant and refusal decisions", (args, message) => {
+    const result = run(args, { CODEX_BIN: fakeCodex(), WIKITOM_DIR: wikitomFixture() });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(message);
+  });
+
+  it("refuses a named grant when SKILL.md is a directory rather than an installed skill file", () => {
+    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-skill-directory.json`);
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-skills-"));
+    fs.mkdirSync(path.join(home, "skills", skillDirName("write"), "SKILL.md"), { recursive: true });
+    const result = run(["--grant", "write"], {
+      CODEX_BIN: fakeCodex(),
+      WIKITOM_DIR: wikitomFixture(),
+      FAKE_CODEX_ARGS: argsFile,
+      CODEX_HOME: home,
+    });
+    expect(result.status).toBe(0);
+    expect(developerInstructions(argsFile)).toContain("refused: write — its installed SKILL.md is missing");
+    expect(spooledEnvelope(result.state).envelope.registration).toMatchObject({
+      skillsGranted: [],
+      skillsRefused: ["write — its installed SKILL.md is missing"],
+    });
   });
 });

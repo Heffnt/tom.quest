@@ -97,6 +97,81 @@ describe("Codex parser", () => {
       toolCalls: first.run.outcome.toolCalls + 1,
     });
   });
+  it("keeps a turn-ID map through incremental sweep tails", () => {
+    const first = parseCodexFile({
+      path: "/rollout.jsonl",
+      host: "laptop",
+      fileVersion: "v1",
+      text: jsonl([codexMeta(), codexTurnContext({ turnId: "first" })]),
+    });
+    const repeated = parseCodexFile({
+      path: "/rollout.jsonl",
+      host: "laptop",
+      fileVersion: "v2",
+      baseLine: first.lastLine,
+      text: jsonl([
+        codexTurnContext({ turnId: "first" }),
+        codexResponseItem("message", { role: "assistant", content: [{ output_text: "same turn" }] }),
+      ]),
+      priorRun: first.run,
+      priorMeta: first.codexMeta,
+    });
+    expect(repeated.rows.find((row) => row.kind === "assistant-text").turn).toBe(0);
+    expect(repeated.run.outcome.turns).toBe(1);
+    const second = parseCodexFile({
+      path: "/rollout.jsonl",
+      host: "laptop",
+      fileVersion: "v3",
+      baseLine: repeated.lastLine,
+      text: jsonl([
+        codexTurnContext({ turnId: "second" }),
+        codexResponseItem("message", { role: "assistant", content: [{ output_text: "second turn" }] }),
+      ]),
+      priorRun: repeated.run,
+      priorMeta: repeated.codexMeta,
+    });
+    expect(second.rows.find((row) => row.kind === "assistant-text").turn).toBe(1);
+    expect(second.run.outcome.turns).toBe(2);
+    expect(second.codexMeta.turnIds).toEqual(["first", "second"]);
+  });
+  it("recovers the legacy turn-ID map before parsing its first incremental tail", () => {
+    const source = [
+      codexMeta(),
+      codexTurnContext({ turnId: "first" }),
+      codexResponseItem("message", { role: "assistant", content: [{ output_text: "first turn" }] }),
+      codexTurnContext({ turnId: "first" }),
+      codexResponseItem("message", { role: "assistant", content: [{ output_text: "same first turn" }] }),
+      codexTurnContext({ turnId: "second" }),
+      codexResponseItem("message", { role: "assistant", content: [{ output_text: "second turn" }] }),
+    ];
+    const result = parseCodexFile({
+      path: "/rollout.jsonl", host: "laptop", fileVersion: "v2",
+      baseLine: 3,
+      text: jsonl(source.slice(3)),
+      contextText: jsonl(source),
+    });
+    expect(result.rows.filter((row) => row.kind === "assistant-text").map((row) => row.turn)).toEqual([0, 1]);
+    expect(result.run.outcome.turns).toBe(2);
+    expect(result.codexMeta.turnIds).toEqual(["first", "second"]);
+  });
+  it("fills a missing turn-ID map in HEAD-shaped prior metadata", () => {
+    const prefix = [codexMeta(), codexTurnContext({ turnId: "first" })];
+    const first = parseCodexFile({ path: "/rollout.jsonl", host: "laptop", fileVersion: "v1", text: jsonl(prefix) });
+    const headMeta = { ...first.codexMeta };
+    delete headMeta.turnIds;
+    const tail = [
+      codexTurnContext({ turnId: "second" }),
+      codexResponseItem("message", { role: "assistant", content: [{ output_text: "second turn" }] }),
+    ];
+    const result = parseCodexFile({
+      path: "/rollout.jsonl", host: "laptop", fileVersion: "v2", baseLine: first.lastLine,
+      text: jsonl(tail), contextText: jsonl([...prefix, ...tail]), priorRun: first.run,
+      priorMeta: headMeta,
+    });
+    expect(result.rows.find((row) => row.kind === "assistant-text").turn).toBe(1);
+    expect(result.run.outcome.turns).toBe(2);
+    expect(result.codexMeta).toMatchObject({ id: first.codexMeta.id, git: first.codexMeta.git, turnIds: ["first", "second"] });
+  });
   it("accounts for every zero-row state line while task_complete stays emitted", () => {
     const result = parse([
       codexMeta(),

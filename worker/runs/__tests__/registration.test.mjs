@@ -94,6 +94,7 @@ describe("run registration", () => {
     const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
     const token = "44444444-4444-4444-8444-444444444444";
     writeRegistration({ spoolDir, token, writer: { file: "stale-launcher.mjs" }, registration: { host: "laptop", origin: "stale" }, now: () => 1 });
+    appendSkillAsk({ spoolDir, token, ask: { name: "stale-spool-ask", result: "ok" }, now: () => 3 });
     const sidecar = path.join(dir, "run.registration.json");
     fs.writeFileSync(sidecar, JSON.stringify({
       envelopeVersion: 1,
@@ -101,16 +102,25 @@ describe("run registration", () => {
       writer: { file: "sidecar-launcher.mjs", at: 2 },
       registration: { host: "laptop", origin: "sidecar" },
       claim: { by: "hook:SessionStart", at: 2 },
+      skills: { asked: [{ at: 2, name: "sidecar-ask", result: "refused" }] },
     }));
 
     const result = claimRegistration({ spoolDir, token, runFile, claim: { by: "repair" }, now: () => 3 });
     expect(result).toMatchObject({ ok: true, claimed: false, envelope: { writer: { file: "sidecar-launcher.mjs" }, registration: { origin: "sidecar" }, claim: { by: "hook:SessionStart" } } });
     expect(fs.existsSync(path.join(spoolDir, `${token}.json`))).toBe(false);
+    expect(readRegistration(runFile).skills.asked).toEqual([
+      { at: 2, name: "sidecar-ask", result: "refused" },
+      { at: 3, name: "stale-spool-ask", result: "ok" },
+    ]);
     // A token-only child must now follow the sidecar pointer, not write an
     // orphaned spool which the sweep never reads.
     expect(appendSkillAsk({ spoolDir, token, ask: { name: "know-research", result: "ok" }, now: () => 4 }))
       .toMatchObject({ ok: true, file: registrationSidecarPath(runFile) });
-    expect(readRegistration(runFile).skills.asked).toEqual([{ at: 4, name: "know-research", result: "ok" }]);
+    expect(readRegistration(runFile).skills.asked).toEqual([
+      { at: 2, name: "sidecar-ask", result: "refused" },
+      { at: 3, name: "stale-spool-ask", result: "ok" },
+      { at: 4, name: "know-research", result: "ok" },
+    ]);
   });
 
   it("replaces a corrupt spool with the launcher-owned envelope", () => {
@@ -126,6 +136,21 @@ describe("run registration", () => {
     const result = mergeRegistration({ parsed: parsed(), host: "laptop", envelope: { writer: { file: "scripts/codex-run.mjs" }, registration: { host: "laptop", origin: "cron:audit", kind: "job", modelRequested: "requested", parentRunId: "codex:laptop:registered-parent", layersKnown: true, layersGiven: ["operate"], layersDenied: ["write"], wikitomCommit: "envelope-commit", promptSha256: "hash" }, end: { status: "failed", reason: "failed" } } });
     expect(result.run).toMatchObject({ model: "file-model", origin: "cron:audit", kind: "job", parentRunId: "codex:laptop:registered-parent", status: "failed" });
     expect(result.run.context).toMatchObject({ registered: true, modelRequested: "requested", layersGiven: ["operate"], wikitomCommit: "file-commit", tools: ["seen"] });
+  });
+
+  it("uses the rendered receipt over legacy registration grant arrays", () => {
+    const result = mergeRegistration({
+      parsed: parsed(),
+      host: "laptop",
+      envelope: {
+        registration: { host: "laptop", layersKnown: false, skillsGranted: ["legacy-grant"], skillsRefused: ["legacy-refusal"] },
+        receipt: { skillsGranted: ["rendered-grant"], skillsRefused: ["rendered-refusal"] },
+      },
+    });
+    expect(result.run.context).toMatchObject({
+      skillsGranted: ["rendered-grant"],
+      skillsRefused: ["rendered-refusal"],
+    });
   });
 
   it("refuses a host mismatch and makes missing registration honestly unknown", () => {

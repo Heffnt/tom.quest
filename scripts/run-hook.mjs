@@ -194,18 +194,25 @@ export function handleHook(payload, { event, env = process.env, spawnImpl = spaw
   if (hookEvent === "SessionStart") {
     const token = firstString(env.TTS_RUN_REG_TOKEN);
     // The session-start hook writes its actual grant decision before this hook
-    // claims the run. Retain those fields; without that receipt skills stay
-    // unknown instead of being a static claim about a prompt we did not see.
-    const receipt = readRegistration?.(runFile)?.registration;
+    // claims the run. The receipt remains its own group: it is evidence of the
+    // rendered grant block, not a fact this claim writer may re-author.
+    const receipt = readRegistration?.(runFile)?.receipt;
     const result = token
       ? claimRegistration({ spoolDir: env.TTS_RUN_REG_SPOOL || path.join(stateDir, "registration"), token, runFile, claim })
       : writeRegistrationClaim({
           runFile,
           claim,
+          // REMOVAL CHECK: SessionStart has no launcher token for ordinary
+          // interactive sessions, so it must author a local claim sidecar.
           token: null,
           writer: { file: "scripts/run-hook.mjs", job: "run-hook" },
-          registration: { ...receipt, ...hookRegistration(payload, hookEvent, runFile, env) },
+          registration: hookRegistration(payload, hookEvent, runFile, env),
         });
+    // Both claim paths must preserve the grant block that SessionStart rendered.
+    // A missing receipt here is a diagnostic only; a hook must not block a run.
+    if (receipt !== undefined && result.ok && result.envelope?.receipt === undefined) {
+      hookLog(stateDir, `${hookEvent} claim lost its pre-existing grant receipt`);
+    }
     if (!result.ok) hookLog(stateDir, `${hookEvent} could not claim its registration: ${result.reason}`);
     return { handled: true, file: result.file };
   }
@@ -213,6 +220,8 @@ export function handleHook(payload, { event, env = process.env, spawnImpl = spaw
     const result = writeRegistrationClaim({
       runFile,
       claim,
+      // REMOVAL CHECK: SubagentStart has no launcher token because the parent
+      // process, not a launcher, creates the child transcript.
       token: null,
       writer: { file: "scripts/run-hook.mjs", job: "run-hook" },
       registration: hookRegistration(payload, hookEvent, runFile, env),

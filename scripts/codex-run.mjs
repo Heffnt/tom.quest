@@ -37,9 +37,9 @@
 // That is the map's own division of labour — "Mechanical work runs on Codex:
 // reading, searching, edits, tests, audits" (agent-rules.md, How you work). A
 // run doing mechanical work needs the operate layer and its prompt, not the
-// write or know layers, so nothing is granted until its spawner names one. The
-// grant block then records exactly what was named, and the registration says
-// the same thing to the run record.
+// write or know layers, so nothing is granted until its spawner names one. A
+// named skill is granted only after its installed SKILL.md is found; otherwise
+// the block and registration record its refusal and reason.
 //
 // THERE IS NO TIME LIMIT BY DEFAULT (Tom's ruling, 2026-09-09). A Codex run at
 // `xhigh` on real work routinely outlasts any number worth guessing, and a kill
@@ -63,7 +63,7 @@
 // a machine whose config was never written still runs the fleet model.
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, createWriteStream } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, createWriteStream } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -136,7 +136,8 @@ function parseArgs(argv) {
       case "--grant": {
         const name = next().trim();
         if (!name) fail("--grant needs a skill name");
-        if (!opts.granted.includes(name)) opts.granted.push(name);
+        if (opts.granted.includes(name)) fail(`--grant names ${name} more than once`);
+        opts.granted.push(name);
         break;
       }
       case "--refuse": {
@@ -147,7 +148,8 @@ function parseArgs(argv) {
         const name = value.slice(0, at).trim();
         const why = value.slice(at + 1).trim();
         if (!name || !why) fail("--refuse takes NAME=WHY");
-        if (!opts.refused.some((entry) => entry.name === name)) opts.refused.push({ name, why });
+        if (opts.refused.some((entry) => entry.name === name)) fail(`--refuse names ${name} more than once`);
+        opts.refused.push({ name, why });
         break;
       }
       default: fail(`unknown option ${arg}`);
@@ -189,6 +191,53 @@ function readStdin() {
   }
 }
 
+function isRegularFile(file) {
+  try {
+    return statSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+// The prompt and the installed catalog both name a skill by the normalized
+// directory mapping. A second spelling is still the same authority decision:
+// accepting both would make a grant and a refusal, or two grants, look like
+// distinct caller choices when the run can load only one SKILL.md.
+async function validateSkillDecisions(opts) {
+  const decisions = [
+    ...opts.granted.map((name) => ({ kind: "grant", name })),
+    ...opts.refused.map(({ name }) => ({ kind: "refuse", name })),
+  ];
+  if (decisions.length < 2) return;
+
+  let skillDirName = null;
+  if (skillsUrl) ({ skillDirName } = await import(skillsUrl.href));
+  const seen = new Map();
+  for (const decision of decisions) {
+    // A launcher copied without skills.mjs can still reject exact conflicts.
+    // Two distinct spellings count as equivalent only when the installed
+    // catalog's own mapping successfully resolves both of them.
+    let canonical = decision.name;
+    if (skillDirName) {
+      try {
+        canonical = skillDirName(decision.name);
+      } catch {
+        // The later grant pass records this unsupported name as a refusal.
+        // Do not invent an equivalence the catalog itself did not establish.
+      }
+    }
+    const previous = seen.get(canonical);
+    if (!previous) {
+      seen.set(canonical, decision);
+      continue;
+    }
+    if (previous.kind === decision.kind) {
+      fail(`--${decision.kind} names ${previous.name} and ${decision.name} as the same skill (${canonical})`);
+    }
+    fail(`--${decision.kind} ${decision.name} conflicts with --${previous.kind} ${previous.name} (${canonical})`);
+  }
+}
+
 // Read a committed object, never the work tree: an in-progress nightly edit
 // must not alter a Codex run's operate instructions.
 function operateInstructions() {
@@ -225,6 +274,7 @@ function killTree(child) {
 }
 
 const opts = parseArgs(process.argv.slice(2));
+await validateSkillDecisions(opts);
 const prompt = readStdin();
 if (!prompt.trim()) fail("no prompt on stdin");
 
@@ -252,7 +302,26 @@ if (granted.length > 0 || refused.length > 0) {
     process.stderr.write("codex-run: skills named but scripts/skills.mjs is not installed; grant block omitted\n");
     granted = []; refused = [];
   } else {
-    const { renderGrants } = await import(skillsUrl.href);
+    const { renderGrants, skillDirName } = await import(skillsUrl.href);
+    const codexHome = process.env.CODEX_HOME && process.env.CODEX_HOME.trim() !== ""
+      ? process.env.CODEX_HOME
+      : join(homedir(), ".codex");
+    const installedSkills = join(codexHome, "skills");
+    const available = [];
+    const unavailable = [];
+    for (const name of granted) {
+      let skillFile;
+      try {
+        skillFile = join(installedSkills, skillDirName(name), "SKILL.md");
+      } catch {
+        unavailable.push({ name, why: "the skill name is not supported by the installed catalog" });
+        continue;
+      }
+      if (isRegularFile(skillFile)) available.push(name);
+      else unavailable.push({ name, why: "its installed SKILL.md is missing" });
+    }
+    granted = available;
+    refused = [...refused, ...unavailable];
     grantBlock = renderGrants({ commit: operate.commit, granted, refused });
   }
 }
