@@ -51,7 +51,6 @@
         "expected": { "granted": ["write", "know-agent-systems"], "refused": [], "repoRulesSource": "native" }
       },
       "negative": true,
-      "prompt": "You are in the WikiTom checkout, editing model-of-tom/intent.md. Say what to change.",
       "why": "a run standing inside the vault has already been given AGENTS.md by the CLI, so the skill must stay silent rather than carry a second copy of it into the prompt",
       "expect": {
         "mustNotName": [

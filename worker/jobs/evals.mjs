@@ -1246,6 +1246,20 @@ export function loadTriggers(tomquestTree, { wikitomDir = BOX_WIKITOM_DIR, bareS
     .sort((a, b) => a.name.localeCompare(b.name))
     .map(({ dir, name }) => {
       const trigger = { file: name, ...JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")) };
+      // A checked-in trigger is executable input. Validate its dispatch shape
+      // while the source filename is still known, including the private area
+      // fixtures that this checkout cannot repair.
+      if (Array.isArray(trigger.cases)) {
+        for (const one of trigger.cases) {
+          const id = typeof one?.id === "string" && one.id.trim() !== "" ? one.id : "<missing id>";
+          try {
+            triggerBase(trigger, one);
+            triggerMethod(one);
+          } catch (error) {
+            throw new Error(`trigger case ${id} in ${name}: ${error.message}`);
+          }
+        }
+      }
       // NORMALISED ON THE WAY OUT, never written into the file. A trigger file
       // is Tom-facing text about one name, and a list of skill names copied
       // into it would be a second copy of LAYER_SKILL_ALIASES that goes stale
@@ -1273,14 +1287,20 @@ export const TRIGGER_METHOD_ROUTER = "router";
 export const TRIGGER_METHOD_RUNNER = "runner";
 
 export function triggerMethod(one) {
-  if (one?.route !== undefined) return TRIGGER_METHOD_ROUTER;
-  if (typeof one?.prompt === "string" && one.prompt.trim() !== "") return TRIGGER_METHOD_RUNNER;
+  const hasRoute = one !== null && typeof one === "object" && Object.hasOwn(one, "route");
+  const hasPrompt = one !== null && typeof one === "object" && Object.hasOwn(one, "prompt");
+  if (hasRoute && hasPrompt) throw new Error("trigger case cannot carry both route and prompt");
+  if (hasRoute) return TRIGGER_METHOD_ROUTER;
+  if (hasPrompt && typeof one.prompt === "string" && one.prompt.trim() !== "") return TRIGGER_METHOD_RUNNER;
   throw new Error("trigger case needs route or prompt");
 }
 
-function triggerBase(trigger, one) {
+export function triggerBase(trigger, one) {
+  if (typeof one?.id !== "string" || one.id.trim() === "") {
+    throw new Error("trigger case needs a non-empty id");
+  }
   return {
-    id: String(one?.id ?? `${trigger?.name ?? "trigger"}-unnamed`),
+    id: one.id,
     partition: `trigger/${trigger?.name ?? "unknown"}`,
     verdict: "approve",
     confirmed: one?.confirmedByTom === true,

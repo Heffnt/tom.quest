@@ -666,7 +666,7 @@ async function loadRegistrationModule() {
  * launched inside one (TTS_RUN_REG_SPOOL and TTS_RUN_REG_TOKEN together).
  *
  * THE ENVELOPE IS A RECORD, NEVER A REASON A SEARCH FAILS. A missing, busy or
- * unreadable envelope is swallowed: the answer to `tts search skills` does not
+ * unreadable envelope is swallowed: the answer to `tts-search skills` does not
  * depend on it, and a search command that died writing its own telemetry would
  * be the worst possible trade.
  */

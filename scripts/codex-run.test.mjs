@@ -236,6 +236,19 @@ describe("codex-run skill grants", () => {
     });
   });
 
+  it("records a normalized grant with the spelling rendered in the prompt", () => {
+    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-normalized-grant.json`);
+    const result = run(["--grant", "repo-tom.quest"], {
+      CODEX_BIN: fakeCodex(),
+      WIKITOM_DIR: wikitomFixture(),
+      FAKE_CODEX_ARGS: argsFile,
+      CODEX_HOME: installedSkills("repo-tom-quest"),
+    });
+    expect(result.status).toBe(0);
+    expect(developerInstructions(argsFile)).toContain("granted: repo-tom-quest");
+    expect(spooledEnvelope(result.state).envelope.registration.skillsGranted).toEqual(["repo-tom-quest"]);
+  });
+
   it("refuses a named grant whose installed SKILL.md is missing", () => {
     const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-missing-skill.json`);
     const result = run(["--grant", "write", "--grant", "know-research"], {

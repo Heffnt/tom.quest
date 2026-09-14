@@ -225,7 +225,7 @@ describe("run registration", () => {
   });
 
   // -- the fifth group ------------------------------------------------------
-  // `skills` arrived with envelopeVersion 2, written by `tts search skills`
+  // `skills` arrived with envelopeVersion 2, written by `tts-search skills`
   // and by nothing else.
 
   it("keeps five writers, five keys, and no lost update", () => {
@@ -302,7 +302,7 @@ describe("run registration", () => {
     // THE BOX PATH, and it is the only path there is for an ask: the
     // session-host puts TTS_RUN_REG_TOKEN and TTS_RUN_REG_SPOOL in its child
     // env and nothing else — the transcript path is the CLI's, and nobody knows
-    // it at spawn time — while every `tts search skills` a session makes comes
+    // it at spawn time — while every `tts-search skills` a session makes comes
     // AFTER its SessionStart claim, which takes the spool away. Without the
     // claim's forwarding address this ask would land nowhere and be swallowed.
     const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");

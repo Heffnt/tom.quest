@@ -12,7 +12,7 @@
 //   receipt               — the hook that rendered the grant block, through
 //                           writeRegistrationReceipt.
 //   end                   — SessionEnd, through writeRegistrationEnd.
-//   skills                — `tts search skills`, through appendSkillAsk.
+//   skills                — `tts-search skills`, through appendSkillAsk.
 //
 // Beside the envelope, a claim leaves ONE POINTER FILE at the token it claimed
 // (claimPointerPath). It is not a group and carries no fact about the run; it
@@ -161,7 +161,7 @@ export function spoolPath(spoolDir, token) {
  *
  * THE TOKEN IS ALL A CHILD PROCESS HAS. The session-host puts exactly
  * TTS_RUN_REG_TOKEN and TTS_RUN_REG_SPOOL in its child env — the transcript
- * path is the CLI's and nobody knows it at spawn time — so `tts search skills`
+ * path is the CLI's and nobody knows it at spawn time — so `tts-search skills`
  * can name the spool and nothing else. The claim removes the spool, and without
  * this pointer every ask made after SessionStart, which is every ask there is,
  * would have no envelope to land on.
@@ -348,11 +348,11 @@ export function writeRegistrationEnd({ runFile, end = {}, fs = fsDefault, now = 
 }
 
 /**
- * Append one `tts search skills <name>` to the run's envelope. APPEND-ONLY and
+ * Append one `tts-search skills <name>` to the run's envelope. APPEND-ONLY and
  * the fifth writer: it touches `skills` and nothing else, under the same lock
  * and the same atomic tmp+rename every other writer uses.
  *
- * It takes the spool, the sidecar, or both. `tts search skills` runs inside a
+ * It takes the spool, the sidecar, or both. `tts-search skills` runs inside a
  * child whose run file has NO SIDECAR YET — a sidecar is only created at claim
  * time — so the spool is the ordinary target; the sidecar wins when it exists,
  * because after a claim the spool is gone and the sidecar is the durable
@@ -494,7 +494,7 @@ export function mergeRegistration({ parsed, envelope, host, report = () => {} })
     if (Array.isArray(value)) run.context[key] = [...value];
     else delete run.context[key];
   }
-  // The fifth group, written by `tts search skills` rather than by a
+  // The fifth group, written by `tts-search skills` rather than by a
   // launcher. It is FLATTENED TO PLAIN STRINGS because convex/schema.ts types
   // every runs.context list as v.array(v.string()): a string array is the only
   // additive shape, so the name and the result travel as one `name (result)`.

@@ -55,6 +55,7 @@ import {
   parseLearningAnswer,
   planTableFiles,
   postStep,
+  promoteStagedSkills,
   parseArgs,
   boxSkillsDirs,
   repoRulesStep,
@@ -2769,6 +2770,9 @@ describe("the git half", { timeout: 60_000 }, () => {
   function skillsDirs(count = 3) {
     return Array.from({ length: count }, () => tmp());
   }
+  function stagedSiblings(out) {
+    return fs.readdirSync(path.dirname(out)).filter((name) => name.startsWith(".tts-skills-stage-"));
+  }
   /** A fetch that keeps every post, and throws for the routes named. */
   function recording(posts, refuse = {}) {
     return async (_env, route, body) => {
@@ -2896,7 +2900,9 @@ describe("the git half", { timeout: 60_000 }, () => {
 
   it("records a skills-publication failure of its own, and the base still went out", async () => {
     const dir = preludeRepo();
-    const outs = skillsDirs(1);
+    const stageRoot = tmp();
+    const outs = [path.join(stageRoot, "skills")];
+    fs.mkdirSync(outs[0]);
     const r = learningRun(dir);
     const posts = [];
     const result = await postStep(r, {
@@ -2917,6 +2923,27 @@ describe("the git half", { timeout: 60_000 }, () => {
     expect(result.files).toContain("model-of-tom/agent-rules.md");
     expect(result.skills).toBeNull();
     expect(fs.readdirSync(outs[0])).toEqual([]);
+    expect(stagedSiblings(outs[0])).toEqual([]);
+  });
+
+  it("removes every owned stage when per-directory catalog generation disagrees", async () => {
+    const dir = preludeRepo();
+    const stageRoot = tmp();
+    const outs = [path.join(stageRoot, "first"), path.join(stageRoot, "second")];
+    let calls = 0;
+    const result = await postStep(learningRun(dir), {
+      fetch: recording([]),
+      checkouts: [],
+      skillsDirs: outs,
+      publishSkills: () => {
+        calls += 1;
+        return { commit: `commit-${calls}`, catalog: [{ name: "write" }], refused: [] };
+      },
+    });
+
+    expect(result.skills).toBeNull();
+    expect(calls).toBe(2);
+    for (const out of outs) expect(stagedSiblings(out)).toEqual([]);
   });
 
   it("records a refused base post and still publishes the skills, saying the store has no commit", async () => {
@@ -2939,9 +2966,15 @@ describe("the git half", { timeout: 60_000 }, () => {
     expect(fs.readdirSync(outs[0]).length).toBeGreaterThan(0);
   });
 
-  it("records a refused /tts/skills post without throwing, and leaves the directories written", async () => {
+  it("records a refused /tts/skills post without changing the prior directory bytes", async () => {
     const dir = preludeRepo();
     const outs = skillsDirs(1);
+    write(outs[0], "tom-write/SKILL.md", "old skill bytes\n");
+    write(outs[0], "tom-write/ground.md", "old reference bytes\n");
+    const before = {
+      skill: fs.readFileSync(path.join(outs[0], "tom-write", "SKILL.md"), "utf8"),
+      reference: fs.readFileSync(path.join(outs[0], "tom-write", "ground.md"), "utf8"),
+    };
     const r = learningRun(dir);
     const posts = [];
     const result = await postStep(r, {
@@ -2955,9 +2988,46 @@ describe("the git half", { timeout: 60_000 }, () => {
     expect(r.failures[0].error).toContain("503");
     expect(result.commit).not.toBeNull();
     expect(result.skills).toBeNull();
-    // The bodies are on the disk and tonight's agents will load them; what is
-    // stale is the catalog Convex serves, and that is what the row says.
-    expect(fs.readdirSync(outs[0]).length).toBeGreaterThan(0);
+    // The generated catalog lived only in a private staging directory. Convex
+    // kept its old catalog, and the byte-for-byte old local body stayed live.
+    expect(fs.readFileSync(path.join(outs[0], "tom-write", "SKILL.md"), "utf8")).toBe(before.skill);
+    expect(fs.readFileSync(path.join(outs[0], "tom-write", "ground.md"), "utf8")).toBe(before.reference);
+  });
+
+  it("records an accepted catalog whose local promotion fails, with prior bytes restored", async () => {
+    const dir = preludeRepo();
+    const outs = skillsDirs(1);
+    write(outs[0], "tom-write/SKILL.md", "old skill bytes\n");
+    const r = learningRun(dir);
+    const posts = [];
+    const result = await postStep(r, {
+      fetch: recording(posts),
+      checkouts: [],
+      skillsDirs: outs,
+      promoteSkills: () => { throw new Error("disk promotion failed"); },
+    });
+
+    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/skills", "/tts/event"]);
+    expect(result.skills).toBeNull();
+    expect(r.failures).toEqual([expect.objectContaining({ step: "skills", error: "disk promotion failed" })]);
+    expect(fs.readFileSync(path.join(outs[0], "tom-write", "SKILL.md"), "utf8")).toBe("old skill bytes\n");
+  });
+
+  it("rolls earlier live directories back when a later staged promotion cannot finish", () => {
+    const outs = skillsDirs(2);
+    write(outs[0], "tom-write/SKILL.md", "first old bytes\n");
+    write(outs[1], "tom-write/SKILL.md", "second old bytes\n");
+    const firstStage = tmp();
+    const brokenStage = tmp();
+    write(firstStage, "tom-write/SKILL.md", "first new bytes\n");
+    // `brokenStage` deliberately has no tom-write directory: the failure is
+    // after the first destination was promoted, so restoration is observable.
+    expect(() => promoteStagedSkills([
+      { out: outs[0], stage: firstStage },
+      { out: outs[1], stage: brokenStage },
+    ], ["tom-write"])).toThrow("restored the prior local directories");
+    expect(fs.readFileSync(path.join(outs[0], "tom-write", "SKILL.md"), "utf8")).toBe("first old bytes\n");
+    expect(fs.readFileSync(path.join(outs[1], "tom-write", "SKILL.md"), "utf8")).toBe("second old bytes\n");
   });
 
   it("does not report a rejected stale skills base as newly synced", async () => {

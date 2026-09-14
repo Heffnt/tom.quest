@@ -59,6 +59,7 @@ import {
   treesFor,
   trialsFor,
   triggerCounts,
+  triggerBase,
   triggerMethod,
   triggerSkills,
   TRIALS_CAPABILITY,
@@ -1038,6 +1039,21 @@ describe("the layer names as skill names", () => {
     const wikitom = tree();
     expect(() => loadTriggers(dir, { wikitomDir: wikitom })).toThrow(/skill-know-admin\.json/);
   });
+
+  it("names the private fixture and case when its dispatch shape is malformed", () => {
+    const dir = tree();
+    const wikitom = tree();
+    for (const file of AREA_TRIGGER_FILES) {
+      writeJson(wikitom, path.join("evals", "triggers", file), {
+        name: file.replace(/^skill-/, "").replace(/\.json$/, ""), kind: "skill", cases: [],
+      });
+    }
+    writeJson(wikitom, path.join("evals", "triggers", AREA_TRIGGER_FILES[0]), {
+      name: "know-admin", kind: "skill", cases: [{ id: "both-methods", route: {}, prompt: "ambiguous" }],
+    });
+    expect(() => loadTriggers(dir, { wikitomDir: wikitom }))
+      .toThrow("trigger case both-methods in skill-know-admin.json: trigger case cannot carry both route and prompt");
+  });
 });
 
 // Two rules meet in runCase. The landed one governs the merge gate: passing
@@ -1488,6 +1504,8 @@ describe("trigger case methods", () => {
     expect(triggerMethod({ route: {} })).toBe("router");
     expect(triggerMethod({ prompt: "model-required fixture" })).toBe("runner");
     expect(() => triggerMethod({})).toThrow("trigger case needs route or prompt");
+    expect(() => triggerMethod({ route: {}, prompt: "ambiguous" })).toThrow("cannot carry both route and prompt");
+    expect(() => triggerBase({ name: "write" }, { route: {} })).toThrow("needs a non-empty id");
     const router = await runTriggerCase({ name: "write" }, {
       id: "router-case", route: {
         caller: "cli",
@@ -1645,7 +1663,13 @@ describe("the trigger set", () => {
     for (const file of AREA_TRIGGER_FILES) {
       writeJson(wikitom, path.join("evals", "triggers", file), { name: file.replace(/^skill-/, "").replace(/\.json$/, ""), kind: "skill", cases: [] });
     }
-    writeJson(dir, path.join("evals", "triggers", "hourly.json"), { name: "hourly", kind: "skill", cases: [{ negative: false }, { negative: true }, { negative: true }] });
+    writeJson(dir, path.join("evals", "triggers", "hourly.json"), {
+      name: "hourly", kind: "skill", cases: [
+        { id: "hourly-positive", prompt: "positive", negative: false },
+        { id: "hourly-negative-one", prompt: "negative one", negative: true },
+        { id: "hourly-negative-two", prompt: "negative two", negative: true },
+      ],
+    });
     writeJson(dir, path.join("evals", "triggers", "hourly.draft.json"), { cases: [{ negative: false }, { negative: false }] });
     expect(loadTriggers(dir, { wikitomDir: wikitom }).map((one) => one.file)).toEqual(["hourly.json", ...AREA_TRIGGER_FILES].sort());
     expect(triggerCounts(loadTriggers(dir, { wikitomDir: wikitom })[0])).toEqual({ positives: 1, negatives: 2 });

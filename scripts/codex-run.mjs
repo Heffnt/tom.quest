@@ -133,10 +133,12 @@ function parseArgs(argv) {
       case "--schema": opts.schema = next(); break;
       case "--keep-logs": opts.keepLogs = true; break;
       case "--no-operate": opts.operate = false; break;
+      // REMOVAL CHECK: --grant and --refuse carry the spawner's per-run authority
+      // decision into both the prompt and the receipt. Removing them would
+      // force an all-skills default or lose why a skill was withheld.
       case "--grant": {
         const name = next().trim();
         if (!name) fail("--grant needs a skill name");
-        if (opts.granted.includes(name)) fail(`--grant names ${name} more than once`);
         opts.granted.push(name);
         break;
       }
@@ -148,7 +150,6 @@ function parseArgs(argv) {
         const name = value.slice(0, at).trim();
         const why = value.slice(at + 1).trim();
         if (!name || !why) fail("--refuse takes NAME=WHY");
-        if (opts.refused.some((entry) => entry.name === name)) fail(`--refuse names ${name} more than once`);
         opts.refused.push({ name, why });
         break;
       }
@@ -161,6 +162,34 @@ function parseArgs(argv) {
   if (!existsSync(opts.cwd)) fail(`--cwd ${opts.cwd} does not exist`);
   if (opts.schema && !existsSync(opts.schema)) fail(`--schema ${opts.schema} does not exist`);
   return opts;
+}
+
+// Normalize once before conflict checks, rendering, and registration. The
+// grant block names bare skills, so its receipt must use that same spelling.
+// Keep the caller's raw spelling only for a useful duplicate-decision error.
+async function normalizeSkillDecisions(opts) {
+  opts.rawGranted = [...opts.granted];
+  opts.rawRefused = opts.refused.map(({ name }) => name);
+  opts.canonicalGranted = [...opts.granted];
+  opts.canonicalRefused = [...opts.rawRefused];
+  if (!skillsUrl || (opts.granted.length === 0 && opts.refused.length === 0)) return;
+  const { bareSkillName, SKILL_PREFIX } = await import(skillsUrl.href);
+  const normalize = (name) => {
+    try {
+      const bare = bareSkillName(name);
+      return { name: bare, canonical: `${SKILL_PREFIX}${bare}` };
+    } catch {
+      // Preserve an unsupported name so the existing missing-catalog path can
+      // explain the refusal rather than failing before it renders the block.
+      return { name, canonical: name };
+    }
+  };
+  const grants = opts.granted.map(normalize);
+  const refusals = opts.refused.map((entry) => ({ entry, normalized: normalize(entry.name) }));
+  opts.granted = grants.map(({ name }) => name);
+  opts.canonicalGranted = grants.map(({ canonical }) => canonical);
+  opts.refused = refusals.map(({ entry, normalized }) => ({ ...entry, name: normalized.name }));
+  opts.canonicalRefused = refusals.map(({ normalized }) => normalized.canonical);
 }
 
 // Binary lookup order: CODEX_BIN env var, then `codex` on PATH (the pinned npm
@@ -205,36 +234,33 @@ function isRegularFile(file) {
 // distinct caller choices when the run can load only one SKILL.md.
 async function validateSkillDecisions(opts) {
   const decisions = [
-    ...opts.granted.map((name) => ({ kind: "grant", name })),
-    ...opts.refused.map(({ name }) => ({ kind: "refuse", name })),
+    ...opts.granted.map((name, index) => ({
+      kind: "grant", name, rawName: opts.rawGranted?.[index] ?? name, canonical: opts.canonicalGranted?.[index] ?? name,
+    })),
+    ...opts.refused.map(({ name }, index) => ({
+      kind: "refuse", name, rawName: opts.rawRefused?.[index] ?? name, canonical: opts.canonicalRefused?.[index] ?? name,
+    })),
   ];
   if (decisions.length < 2) return;
 
-  let skillDirName = null;
-  if (skillsUrl) ({ skillDirName } = await import(skillsUrl.href));
   const seen = new Map();
   for (const decision of decisions) {
     // A launcher copied without skills.mjs can still reject exact conflicts.
     // Two distinct spellings count as equivalent only when the installed
     // catalog's own mapping successfully resolves both of them.
-    let canonical = decision.name;
-    if (skillDirName) {
-      try {
-        canonical = skillDirName(decision.name);
-      } catch {
-        // The later grant pass records this unsupported name as a refusal.
-        // Do not invent an equivalence the catalog itself did not establish.
-      }
-    }
+    const canonical = decision.canonical;
     const previous = seen.get(canonical);
     if (!previous) {
       seen.set(canonical, decision);
       continue;
     }
     if (previous.kind === decision.kind) {
-      fail(`--${decision.kind} names ${previous.name} and ${decision.name} as the same skill (${canonical})`);
+      if (previous.rawName === decision.rawName) {
+        fail(`--${decision.kind} names ${decision.rawName} more than once`);
+      }
+      fail(`--${decision.kind} names ${previous.rawName} and ${decision.rawName} as the same skill (${canonical})`);
     }
-    fail(`--${decision.kind} ${decision.name} conflicts with --${previous.kind} ${previous.name} (${canonical})`);
+    fail(`--${decision.kind} ${decision.rawName} conflicts with --${previous.kind} ${previous.rawName} (${canonical})`);
   }
 }
 
@@ -274,6 +300,7 @@ function killTree(child) {
 }
 
 const opts = parseArgs(process.argv.slice(2));
+await normalizeSkillDecisions(opts);
 await validateSkillDecisions(opts);
 const prompt = readStdin();
 if (!prompt.trim()) fail("no prompt on stdin");

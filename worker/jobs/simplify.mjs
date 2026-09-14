@@ -869,7 +869,7 @@ export function factsRowLine(row) {
 
 /**
  * The facts, once, as an object. It is written twice: as JSON on this run's own
- * "simplify-run" event, so `tts search events` can find months later what a
+ * "simplify-run" event, so `tts-search events` can find months later what a
  * proposal was measured from, and as the text below for the prompt.
  */
 export function factsBlock({ day, input, table, repoReadable, failures }) {
@@ -914,7 +914,7 @@ export function factsBlock({ day, input, table, repoReadable, failures }) {
 
 /**
  * The same facts, sized for ONE Convex document — what rides the run's own
- * "simplify-run" event so `tts search events` can find months later what a
+ * "simplify-run" event so `tts-search events` can find months later what a
  * proposal was measured from.
  *
  * Only what is re-derivable is trimmed: the text is clipped, the noun set

@@ -204,12 +204,26 @@ function scoredOf(run) {
   return new Set(run?.scoredIds ?? []);
 }
 
+function mismatchOf(head, base) {
+  if (!base) return null;
+  if (!Array.isArray(head.scoredIds) || !Array.isArray(base.scoredIds)) return { kind: "legacy", missing: [] };
+  const headIds = new Set(head.scoredIds);
+  const baseIds = new Set(base.scoredIds);
+  const missing = [...baseIds].filter((id) => !headIds.has(id)).sort();
+  if (missing.length > 0) return { kind: "missing", missing };
+  // New head-only ids are coverage working: the base could not score them.
+  // A hash can only identify a changed shared body when both runs scored the
+  // same IDs; with a strict superset it necessarily includes new content.
+  if (headIds.size === baseIds.size && head.goldenHash !== base.goldenHash) return { kind: "changed", missing: [] };
+  return null;
+}
+
 /**
  * The gate. Pure, exported, tested.
  *
  * FAILS: a regression (an item that passes in base and fails in head), a
- * golden-set hash mismatch (the two runs scored different sets and the
- * comparison would be a lie), or no head run at all.
+ * a base-scored item missing from head, a changed equal-ID golden set, a row
+ * without scoredIds, or no head run at all.
  *
  * REPORTED, does not fail: an item failing in both runs (standing debt, not
  * something this pull request did), an item failing in head that base never
@@ -238,7 +252,8 @@ export function gate(head, base, { changed, prBody } = {}) {
   const headFailures = failuresOf(head);
   const baseFailures = failuresOf(base);
   const baseScored = scoredOf(base);
-  const mismatch = Boolean(base) && head.goldenHash !== base.goldenHash;
+  const mismatchDetail = mismatchOf(head, base);
+  const mismatch = mismatchDetail !== null;
   const regressions = [];
   const stillFailing = [];
   const newFailing = [];
@@ -264,7 +279,10 @@ export function gate(head, base, { changed, prBody } = {}) {
   // question, not an answer of no, and a run with no diff to read must not
   // fail a check it was never given the input for.
   const ok = regressions.length === 0 && !mismatch && goldenCoverage !== false;
-  return { ok, mismatch, regressions, stillFailing, newFailing, fixed, unconfirmed, noBaseline: !base, goldenCoverage, goldenExcuse };
+  return {
+    ok, mismatch, mismatchDetail, regressions, stillFailing, newFailing, fixed,
+    unconfirmed, noBaseline: !base, goldenCoverage, goldenExcuse,
+  };
 }
 
 /** What Tom sees in the check's log. A clean check is one line. */
@@ -306,7 +324,14 @@ export function report(head, base, verdict) {
   lines.push(`  head: ${head.pass} pass, ${head.fail} fail, ${flaky} flaky` + (base ? `      base: ${base.pass} pass, ${base.fail} fail` : ""));
   if (verdict.noBaseline) lines.push(`  no baseline for the base commit; reporting only`);
   if (verdict.mismatch) {
-    lines.push(`  GOLDEN SET MISMATCH  head ${head.goldenHash} vs base ${base.goldenHash} — re-run the base:`);
+    if (verdict.mismatchDetail?.kind === "legacy") {
+      lines.push(`  GOLDEN SET COMPARISON UNAVAILABLE  one or both runs lack scoredIds — re-run the base and head:`);
+    } else {
+      const missing = verdict.mismatchDetail?.missing ?? [];
+      lines.push(verdict.mismatchDetail?.kind === "changed"
+        ? `  GOLDEN SET MISMATCH  both runs scored the same ids but head ${head.goldenHash} differs from base ${base.goldenHash} — re-run the base:`
+        : `  GOLDEN SET MISMATCH  base items missing from head: ${missing.join(", ")} — re-run the base:`);
+    }
     lines.push(`    node /opt/tts/evals.mjs --repo ${head.repo} --sha ${base.sha} --force`);
   }
   // Coverage says nothing at all when it is null: a run with no diff was never
@@ -328,7 +353,9 @@ export function report(head, base, verdict) {
   lines.push((verdict.ok
     ? `PASSED: 0 regressions.`
     : verdict.mismatch
-      ? `FAILED: the two runs scored different golden sets.`
+      ? verdict.mismatchDetail?.kind === "legacy"
+        ? `FAILED: scoredIds are missing; re-run the base and head.`
+        : `FAILED: a base-scored item is missing or a shared item changed.`
       : verdict.regressions.length > 0
         ? `FAILED: ${verdict.regressions.length} regression${verdict.regressions.length === 1 ? "" : "s"}.`
         : `FAILED: a watched context file changed and no golden item shipped with it.`) + unconfirmedNote);

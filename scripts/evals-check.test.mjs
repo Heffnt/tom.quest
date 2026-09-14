@@ -12,18 +12,20 @@ import {
 
 const failure = (id, over = {}) => ({ id, partition: "prepare/chores", verdict: "revise", reason: `${id} reason`, confirmed: true, ...over });
 
-const run = (over = {}) => ({
-  repo: "tom.quest",
-  sha: "a1b2c3d4e5f6",
-  goldenHash: "3f9c1a22b0de",
-  items: 3,
-  pass: 3,
-  fail: 0,
-  scoredIds: ["one", "two", "three"],
-  failures: [],
-  tasks: { items: 0, pass: 0, fail: 0, failures: [] },
-  ...over,
-});
+const run = (over = {}) => {
+  return {
+    repo: "tom.quest",
+    sha: "a1b2c3d4e5f6",
+    goldenHash: "3f9c1a22b0de",
+    items: 3,
+    pass: 3,
+    fail: 0,
+    scoredIds: ["one", "two", "three"],
+    failures: [],
+    tasks: { items: 0, pass: 0, fail: 0, failures: [] },
+    ...over,
+  };
+};
 
 describe("gate", () => {
   it("fails on an item that passes in base and fails in head, and names it", () => {
@@ -55,14 +57,44 @@ describe("gate", () => {
 });
 
 describe("gate, continued", () => {
-  it("fails on a golden-set hash mismatch and says how to re-run the base", () => {
-    const head = run();
-    const base = run({ sha: "9f8e7d6c", goldenHash: "0000deadbeef" });
+  it("allows a head whose scored set is the base plus a new item", () => {
+    const head = run({
+      scoredIds: ["one", "two", "three", "four"],
+      goldenHash: "added-item-hash",
+    });
+    const base = run({ sha: "9f8e7d6c" });
+    expect(gate(head, base)).toMatchObject({ ok: true, mismatch: false });
+  });
+
+  it("fails when a base-scored item is missing from head", () => {
+    const head = run({
+      scoredIds: ["one", "two"],
+    });
+    const base = run({ sha: "9f8e7d6c" });
     const verdict = gate(head, base);
     expect(verdict).toMatchObject({ ok: false, mismatch: true });
     const lines = report(head, base, verdict).join("\n");
     expect(lines).toContain("GOLDEN SET MISMATCH");
+    expect(lines).toContain("three");
     expect(lines).toContain("--repo tom.quest --sha 9f8e7d6c --force");
+  });
+
+  it("fails when a shared scored item's content changes", () => {
+    const head = run({
+      goldenHash: "changed-shared-item-hash",
+    });
+    const base = run({ sha: "9f8e7d6c" });
+    expect(gate(head, base)).toMatchObject({ ok: false, mismatch: true, mismatchDetail: {
+      kind: "changed",
+    } });
+  });
+
+  it("fails conservatively when a legacy run lacks scored ids", () => {
+    const head = run();
+    const base = run({ sha: "9f8e7d6c", scoredIds: undefined });
+    const verdict = gate(head, base);
+    expect(verdict).toMatchObject({ ok: false, mismatch: true, mismatchDetail: { kind: "legacy" } });
+    expect(report(head, base, verdict).join("\n")).toContain("re-run the base and head");
   });
 
   it("prints fixed for an item that fails in base and passes in head", () => {

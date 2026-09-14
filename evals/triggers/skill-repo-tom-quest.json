@@ -52,7 +52,6 @@
         "expected": { "granted": ["write", "know-agent-systems"], "refused": [], "repoRulesSource": "native" }
       },
       "negative": true,
-      "prompt": "You are in the tom.quest checkout, adding a quest route. Say what to change.",
       "why": "a run standing inside tom.quest has already been given AGENTS.md by the CLI, so the skill must stay silent rather than carry a second copy of it into the prompt",
       "expect": {
         "mustNotName": [

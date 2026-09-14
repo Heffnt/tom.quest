@@ -172,6 +172,74 @@ describe("Codex parser", () => {
     expect(result.run.outcome.turns).toBe(2);
     expect(result.codexMeta).toMatchObject({ id: first.codexMeta.id, git: first.codexMeta.git, turnIds: ["first", "second"] });
   });
+  it("makes every post-context sweep split agree with a whole Codex fold", () => {
+    const source = [
+      codexMeta(),
+      codexTurnContext({ turnId: "first", model: "first" }),
+      codexTokenCount({ input: 10, cachedInput: 0, cacheWrite: 0, output: 2, total: 12, lastInput: 300_000, responseId: "long-request" }),
+      codexUsageRecord({ usage: { input_tokens: 900, output_tokens: 100 } }),
+      // The second copy is normal rollout noise.  When the sweep splits
+      // between these two lines, it must not emit a second model-change row.
+      codexTurnContext({ turnId: "second", model: "second" }),
+      codexTurnContext({ turnId: "second", model: "second" }),
+      // This is the same request as before the split; cardinality alone would
+      // count it again.  The following request must still count separately.
+      codexTokenCount({ input: 20, cachedInput: 0, cacheWrite: 0, output: 3, total: 23, lastInput: 300_000, responseId: "long-request" }),
+      codexTokenCount({ input: 30, cachedInput: 0, cacheWrite: 0, output: 4, total: 34, lastInput: 300_000, responseId: "another-long-request" }),
+      // A nullable token count makes the fold use all usage records instead
+      // of the earlier cumulative count, even if it lands in a later tail.
+      codexUsageRecord({ usage: { input_tokens: 800, output_tokens: 200 } }),
+      { type: "event_msg", timestamp: "2026-01-01T00:00:00Z", payload: { type: "token_count", info: {} } },
+      codexResponseItem("message", { role: "assistant", content: [{ output_text: "final answer" }] }),
+      codexTaskComplete({ turnId: "second", lastAgentMessage: "final answer" }),
+    ];
+    const wholeText = jsonl(source);
+    const whole = parseCodexFile({ path: "/rollout.jsonl", host: "laptop", fileVersion: "v", text: wholeText });
+    expect(whole.rows.filter((row) => row.kind === "error" && /model changed/.test(row.content.error))).toHaveLength(1);
+    const withoutFile = (run) => {
+      const { file, ...record } = run;
+      return record;
+    };
+
+    // Every safe source boundary after session metadata and initial context is
+    // a sweep boundary candidate.  In particular this covers the assistant /
+    // task_complete pair, the duplicated model switch, and repeated response
+    // ids on opposite sides of a tail.
+    for (let boundary = 2; boundary < source.length; boundary += 1) {
+      const prefix = parseCodexFile({
+        path: "/rollout.jsonl", host: "laptop", fileVersion: "v",
+        text: jsonl(source.slice(0, boundary)),
+      });
+      const tail = parseCodexFile({
+        path: "/rollout.jsonl", host: "laptop", fileVersion: "v",
+        baseLine: boundary, text: jsonl(source.slice(boundary)), contextText: wholeText,
+        priorRun: prefix.run, priorMeta: prefix.codexMeta,
+      });
+      expect([...prefix.rows, ...tail.rows], `boundary ${boundary}`).toEqual(whole.rows);
+      expect(withoutFile(tail.run), `boundary ${boundary}`).toEqual(withoutFile(whole.run));
+      expect(tail.codexMeta, `boundary ${boundary}`).toEqual(whole.codexMeta);
+      expect(tail.run.outcome.totals).toMatchObject({ totalTokens: 2_000, longContextRequests: 2 });
+    }
+  });
+  it("uses all accepted usage records after a tail clears total_token_usage", () => {
+    const source = [
+      codexMeta(),
+      codexUsageRecord({ usage: { input_tokens: 5, output_tokens: 1 } }),
+      codexTokenCount({ input: 100, cachedInput: 0, cacheWrite: 0, output: 10, reasoning: 0, total: 110 }),
+      codexUsageRecord({ usage: { input_tokens: 7, output_tokens: 2 } }),
+      { type: "event_msg", timestamp: "2026-01-01T00:00:00Z", payload: { type: "token_count", info: {} } },
+    ];
+    const wholeText = jsonl(source);
+    const whole = parseCodexFile({ path: "/rollout.jsonl", host: "laptop", fileVersion: "v", text: wholeText });
+    const prefix = parseCodexFile({ path: "/rollout.jsonl", host: "laptop", fileVersion: "v", text: jsonl(source.slice(0, 3)) });
+    const tail = parseCodexFile({
+      path: "/rollout.jsonl", host: "laptop", fileVersion: "v", baseLine: 3,
+      text: jsonl(source.slice(3)), contextText: wholeText, priorRun: prefix.run, priorMeta: prefix.codexMeta,
+    });
+    expect(tail.run.outcome.totals).toMatchObject({ inputTokens: 12, outputTokens: 3, totalTokens: 15 });
+    expect(tail.run.outcome.totals).toEqual(whole.run.outcome.totals);
+    expect(tail.codexMeta).toEqual(whole.codexMeta);
+  });
   it("accounts for every zero-row state line while task_complete stays emitted", () => {
     const result = parse([
       codexMeta(),

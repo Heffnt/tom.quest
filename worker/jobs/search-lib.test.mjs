@@ -544,7 +544,7 @@ describe("installed skills", () => {
     expect(errors[0]).toContain('skill "know-nothing" is not in the catalog');
     expect(errors[0]).toContain("near misses: know-money");
 
-    // `tts search skills` runs inside the child, and a run's sidecar only
+    // `tts-search skills` runs inside the child, and a run's sidecar only
     // exists after its claim — so the SPOOL is what the refusal lands on.
     const envelope = JSON.parse(fs.readFileSync(path.join(spoolDir, `${token}.json`), "utf8"));
     expect(envelope.skills.asked).toMatchObject([{ name: "know-nothing", result: "refused", why: "not in the catalog" }]);
