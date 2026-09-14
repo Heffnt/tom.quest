@@ -2295,25 +2295,28 @@ export function changedPathsFromGit(out) {
 
 /**
  * The box, rather than the pull-request checkout, decides whether a request
- * is unaffected. Both commits are detached worktrees in the box cache: the
- * diff is read from that cache and the watch policy is imported from BASE.
+ * is unaffected. Both commits are detached worktrees in the request's cache:
+ * the diff is read from that cache and the watch policy is imported from the
+ * trusted tom.quest base.
  *
  * A head may edit scripts/evals-check.mjs to narrow the list, so it is never
- * imported here. Failure to obtain either worktree, the base policy, or the
- * diff is deliberately a full-run answer (`unaffected: false`).
+ * imported here. WikiTom's Action fetches this check from tom.quest, so its
+ * policy comes from tom.quest's base too: the request repository supplies the
+ * comparison, and no request head supplies the watch.
  */
 export async function trustedRequestDiff(request, io, run = git) {
-  if (!request.sha) return { base: null, changed: null, unaffected: false };
   let baseTree = null;
   let headTree = null;
+  let policyTree = null;
   try {
     // `baseSha` is a CI hint. The box's own origin/main is the only baseline
     // that may decide policy, an empty diff, or comparison provenance.
-    baseTree = io.worktree("tom.quest", "origin/main");
-    headTree = io.worktree("tom.quest", request.sha);
-    const policy = typeof io.loadEvalsPolicy === "function"
-      ? await io.loadEvalsPolicy(baseTree.dir)
-      : await import(pathToFileURL(path.join(baseTree.dir, "scripts", "evals-check.mjs")).href);
+    baseTree = io.worktree(request.repo, "origin/main");
+    headTree = io.worktree(request.repo, request.sha);
+    policyTree = request.repo === "tom.quest"
+      ? baseTree
+      : io.worktree("tom.quest", "origin/main");
+    const policy = await import(pathToFileURL(path.join(policyTree.dir, "scripts", "evals-check.mjs")).href);
     if (!Array.isArray(policy.WATCHED_PATHS) || typeof policy.unaffectedBy !== "function") {
       throw new Error("base evals policy is incomplete");
     }
@@ -2328,9 +2331,10 @@ export async function trustedRequestDiff(request, io, run = git) {
     return { base: baseTree.commit, changed, unaffected: policy.unaffectedBy(changed), watchedPaths };
   } catch (error) {
     const reason = redactSecrets(serverErrorMessage(error)).slice(0, 300);
-    console.error(`[evals] ${request.repo}@${request.sha}: could not establish the box diff (${reason}); running in full`);
-    return { base: null, changed: null, unaffected: false };
+    console.error(`[evals] ${request.repo}@${request.sha}: could not establish the box diff (${reason}); failing the request`);
+    return { base: null, changed: null, unaffected: false, error: reason };
   } finally {
+    if (policyTree !== baseTree) policyTree?.remove();
     headTree?.remove();
     baseTree?.remove();
   }
@@ -2625,6 +2629,20 @@ export async function serveRequest(env, io, request, options = {}) {
   // judged with the base tree's policy, may take the no-run shortcut.
   const boxDiff = await trustedRequestDiff(request, io, options.diffRun ?? git);
   const unaffectedClaimed = request.unaffectedClaimed === true || request.unaffected === true;
+  if (typeof boxDiff.error === "string" && boxDiff.error !== "") {
+    // A box diff is the evidence for both a baseline and the no-run shortcut.
+    // Without it, a scored row would look like a valid no-baseline run and
+    // could downgrade a regression to a new failure.
+    const data = failedRun({
+      repo: request.repo,
+      sha: request.sha,
+      error: boxDiff.error,
+      at: Date.now(),
+      answersRequestAt: request.requestedAt ?? null,
+    });
+    if (!dryRun) await postRun(env, data);
+    return data;
+  }
   if (boxDiff.unaffected) {
     const base = boxDiff.base
       ? (await convexFetch(env, `/tts/evals-run?repo=${request.repo}&sha=${boxDiff.base}`))?.run ?? null
@@ -2775,6 +2793,12 @@ async function main() {
     { repo: options.repo, sha: options.sha },
   );
   const boxDiff = await trustedRequestDiff({ repo: options.repo, sha: options.sha }, io);
+  // A direct run has no served request to receive failedRun. It cannot score
+  // without the trusted comparison: a null base would hide a broken box as a
+  // valid no-baseline measurement.
+  if (typeof boxDiff.error === "string" && boxDiff.error !== "") {
+    throw new Error(`could not establish the trusted diff: ${boxDiff.error}`);
+  }
 
   await runAndPost(env, io, {
     repo: options.repo,

@@ -1147,8 +1147,12 @@ describe("runEvals over a run case", () => {
     worktree: (repo) => ({ dir, commit: repo === "WikiTom" ? "wiki1" : "tq1", remove: () => {} }),
   });
   const caseDir = (over) => {
-    const dir = tree();
+    const dir = fs.mkdtempSync(path.join(process.cwd(), ".evals-case-"));
+    dirs.push(dir);
     writeJson(dir, path.join("evals", "golden", "runs", "a.json"), runCaseItem({ id: "a", ...over }));
+    const policy = path.join(dir, "scripts", "evals-check.mjs");
+    fs.mkdirSync(path.dirname(policy), { recursive: true });
+    fs.copyFileSync(path.join("scripts", "evals-check.mjs"), policy);
     return dir;
   };
 
@@ -1182,10 +1186,12 @@ describe("runEvals over a run case", () => {
       prBody: "evals: no-item wording only",
       unaffected: false,
       requestedAt: 1,
-    });
+    }, { diffRun: () => "model-of-tom/intent.md\0" });
     expect(data).toMatchObject({ error: "eval request replaced while the runner was measuring it", regressions: null });
-    expect(posted).toHaveLength(1);
-    expect(posted[0].data).toMatchObject({ answersRequestAt: 1, regressions: null, goldenCoverage: null });
+    // The missing base is measured first; the head's stale answer remains the
+    // last row and is the only row that can answer this request.
+    expect(posted).toHaveLength(2);
+    expect(posted.at(-1).data).toMatchObject({ answersRequestAt: 1, regressions: null, goldenCoverage: null });
   });
 
   it("posts a plain direct recovery run with the live request identity", async () => {
@@ -1345,7 +1351,8 @@ describe("an unaffected request", () => {
   const env = { CONVEX_SITE_URL: "https://example.convex.site", TTS_WORKER_KEY: "k" };
 
   const policyTree = (watched) => {
-    const dir = tree();
+    const dir = fs.mkdtempSync(path.join(process.cwd(), ".evals-policy-"));
+    dirs.push(dir);
     const file = path.join(dir, "scripts", "evals-check.mjs");
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, [
@@ -1357,20 +1364,12 @@ describe("an unaffected request", () => {
     return dir;
   };
 
-  const diffIo = (base, head, watched, baseCommit = "base000") => ({
+  const diffIo = (base, head, baseCommit = "base000") => ({
     worktree: (_repo, ref) => ({
       dir: ref === "origin/main" ? base : head,
       commit: ref === "origin/main" ? baseCommit : ref,
       remove: () => {},
     }),
-    loadEvalsPolicy: async (dir) => {
-      if (dir !== base) throw new Error("the policy did not come from base");
-      return {
-        WATCHED_PATHS: watched,
-        unaffectedBy: (changed) => !changed.some((entry) => watched.some((pattern) =>
-          pattern.endsWith("/**") ? entry.startsWith(pattern.slice(0, -2)) : entry === pattern)),
-      };
-    },
   });
 
   afterEach(() => vi.unstubAllGlobals());
@@ -1386,7 +1385,7 @@ describe("an unaffected request", () => {
     }));
     const base = policyTree(["model-of-tom/**"]);
     expect(fs.existsSync(path.join(base, "scripts", "evals-check.mjs"))).toBe(true);
-    const data = await serveRequest(env, diffIo(base, tree(), ["model-of-tom/**"]), request(), {
+    const data = await serveRequest(env, diffIo(base, tree()), request(), {
       diffRun: () => "worker/jobs/evals.mjs\0convex/ttsMerge.ts\0",
     });
     expect(data).toMatchObject({
@@ -1409,7 +1408,7 @@ describe("an unaffected request", () => {
         : { ok: true, status: 200, text: async () => "{}" }));
     const base = policyTree(["model-of-tom/**"]);
     expect(fs.existsSync(path.join(base, "scripts", "evals-check.mjs"))).toBe(true);
-    expect(await serveRequest(env, diffIo(base, tree(), ["model-of-tom/**"]), request(), {
+    expect(await serveRequest(env, diffIo(base, tree()), request(), {
       diffRun: () => "worker/jobs/evals.mjs\0",
     })).toMatchObject({ items: 0, pass: 0, regressions: 0 });
   });
@@ -1419,12 +1418,68 @@ describe("an unaffected request", () => {
     const head = policyTree(["worker/**"]);
     expect(fs.existsSync(path.join(base, "scripts", "evals-check.mjs"))).toBe(true);
     const seen = [];
-    const diff = await trustedRequestDiff(request(), diffIo(base, head, ["model-of-tom/**"]), (dir, ...args) => {
+    const diff = await trustedRequestDiff(request(), diffIo(base, head), (dir, ...args) => {
       seen.push({ dir, args });
       return "model-of-tom/intent.md\0";
     });
     expect(diff).toMatchObject({ base: "base000", changed: ["model-of-tom/intent.md"], unaffected: false, watchedPaths: ["model-of-tom/**"] });
     expect(seen).toEqual([{ dir: base, args: ["diff", "--no-renames", "--name-only", "-z", "base000..2e08b28"] }]);
+  });
+
+  it("uses WikiTom's trusted commits with tom.quest's trusted policy", async () => {
+    const wikiBase = tree();
+    const wikiHead = tree();
+    const tomquestBase = policyTree(["model-of-tom/**"]);
+    const worktrees = [];
+    const io = {
+      worktree: (repo, ref) => {
+        worktrees.push([repo, ref]);
+        const dir = repo === "WikiTom"
+          ? (ref === "origin/main" ? wikiBase : wikiHead)
+          : tomquestBase;
+        return { dir, commit: ref === "origin/main" ? `${repo}-base` : ref, remove: () => {} };
+      },
+    };
+    const seen = [];
+    const diff = await trustedRequestDiff(request({ repo: "WikiTom", sha: "wikihead" }), io, (dir, ...args) => {
+      seen.push({ dir, args });
+      return "model-of-tom/intent.md\0";
+    });
+    expect(worktrees).toEqual([
+      ["WikiTom", "origin/main"],
+      ["WikiTom", "wikihead"],
+      ["tom.quest", "origin/main"],
+    ]);
+    expect(diff).toMatchObject({
+      base: "WikiTom-base",
+      changed: ["model-of-tom/intent.md"],
+      unaffected: false,
+      watchedPaths: ["model-of-tom/**"],
+    });
+    expect(seen).toEqual([{ dir: wikiBase, args: ["diff", "--no-renames", "--name-only", "-z", "WikiTom-base..wikihead"] }]);
+  });
+
+  it("posts a failed row when the box cannot establish the trusted diff", async () => {
+    const posted = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url, init) => {
+      posted.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+    const data = await serveRequest(env, {
+      worktree: () => { throw new Error("the cache is unavailable"); },
+    }, request({ requestedAt: 7 }));
+    expect(data).toMatchObject({
+      error: "the cache is unavailable",
+      regressions: null,
+      goldenCoverage: null,
+    });
+    expect(posted).toHaveLength(1);
+    expect(posted[0].data).toMatchObject({
+      error: "the cache is unavailable",
+      answersRequestAt: 7,
+      regressions: null,
+      goldenCoverage: null,
+    });
   });
 
   it("refutes a head-as-base unaffected claim, records it, and runs the full evaluation", async () => {
@@ -1442,10 +1497,6 @@ describe("an unaffected request", () => {
         commit: ref === "origin/main" ? "base000" : ref,
         remove: () => {},
       }),
-      loadEvalsPolicy: async (dir) => {
-        if (dir !== base) throw new Error("the policy did not come from base");
-        return { WATCHED_PATHS: ["model-of-tom/**"], unaffectedBy: (changed) => !changed.some((path) => path.startsWith("model-of-tom/")) };
-      },
     });
     vi.stubGlobal("fetch", vi.fn(async (url, init) => {
       const href = String(url);

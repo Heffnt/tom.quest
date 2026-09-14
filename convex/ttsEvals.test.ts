@@ -742,6 +742,22 @@ describe("a superseded request", () => {
     expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({ sha: "aaaaaaa" });
   });
 
+  it("accepts a scored row from before the box recorded request timestamps", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa");
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: 50,
+        kind: EVALS_RUN,
+        key: `${REPO}@aaaaaaa`,
+        data: { repo: REPO, sha: "aaaaaaa", regressions: 0, pass: 29, items: 29 },
+      });
+    });
+    expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
+      .toMatchObject({ run: { regressions: 0, pass: 29, items: 29 } });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
+  });
+
   it("does not let a scored no-item exemption answer after the trailer is removed", async () => {
     const t = convexTest({ schema, modules });
     await file(t, 1, "aaaaaaa", { prBody: "evals: no-item wording only" });

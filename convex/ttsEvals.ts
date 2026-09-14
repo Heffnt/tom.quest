@@ -845,10 +845,15 @@ async function answeredRun(ctx: QueryCtx | MutationCtx, key: string) {
     // The box records its resolved base and diff as provenance. Request fields
     // are client hints, so only the exact request timestamp can make a scored
     // row current for the question now standing.
-    const data = run.data as {
-      answersRequestAt?: unknown;
-    };
-    return data.answersRequestAt === request.requestedAt ? run : null;
+    //
+    // ABSENCE AND MISMATCH MEAN DIFFERENT THINGS. Convex deploys before the
+    // manually rolled box, so a box from before this field scores the sha but
+    // cannot name the request it read. That is missing provenance, not a row
+    // that names a different question; rejecting it would leave every scored
+    // row unanswered until the box rolls. Once the box records the timestamp,
+    // though, it must name the request standing now.
+    const answers = (run.data as { answersRequestAt?: unknown }).answersRequestAt;
+    return answers === undefined || answers === request.requestedAt ? run : null;
   }
   // `superseded` AND `error` ARE DATED BY THE QUESTION THEY ANSWER, because what
   // they claim is about a MOMENT and not about the diff: the queue as it stood
