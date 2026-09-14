@@ -72,12 +72,12 @@ const WIKITOM_PAGES = Object.freeze([
   "model-of-tom/schedule.md",
 ]);
 
-function areaPaths(dir, commit) {
+export function areaPaths(dir, commit, run = git) {
   let names;
   try {
-    names = git(dir, "ls-tree", "--name-only", commit, "--", `${AREAS_DIR}/`);
+    names = run(dir, "ls-tree", "--name-only", commit, "--", `${AREAS_DIR}/`);
   } catch {
-    return [];
+    throw new PublishError(`cannot list area pages at ${commit}`);
   }
   return names
     .split("\n")

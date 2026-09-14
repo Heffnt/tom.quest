@@ -2674,7 +2674,7 @@ describe("the git half", { timeout: 60_000 }, () => {
     const r = learningRun(dir);
     const outs = skillsDirs(1);
     const convex = fakeConvex();
-    const result = await postStep(r, { fetch: convex.fetch, checkouts: [] });
+    const result = await postStep(r, { fetch: convex.fetch, checkouts: [], skillsDirs: outs });
     // Neither half: it is the same HEAD, and a skill body read off a
     // half-replayed commit is the same bad post one table over.
     expect(result).toMatchObject({ commit: null, pushed: false, files: null, skills: null });
@@ -2693,7 +2693,7 @@ describe("the git half", { timeout: 60_000 }, () => {
     // guard is what stopped it and not the state of the checkout's files.
     abortStaleRebase(dir);
     const after = learningRun(dir);
-    await postStep(after, { fetch: fakeConvex().fetch, checkouts: [] });
+    await postStep(after, { fetch: fakeConvex().fetch, checkouts: [], skillsDirs: outs });
     // The repository now carries agent-rules.md (learningCheckout writes it),
     // so the first required file the assembler misses is an area page.
     expect(after.failures[0].error).toContain("is absent");
@@ -2769,9 +2769,7 @@ describe("the git half", { timeout: 60_000 }, () => {
   }
   /** Somewhere other than /root for the skills half to write. */
   function skillsDirs(count = 3) {
-    const dirs = Array.from({ length: count }, () => tmp());
-    vi.stubEnv("TTS_SKILLS_DIRS", dirs.join(path.delimiter));
-    return dirs;
+    return Array.from({ length: count }, () => tmp());
   }
   /** A fetch that keeps every post, and throws for the routes named. */
   function recording(posts, refuse = {}) {
@@ -2792,7 +2790,7 @@ describe("the git half", { timeout: 60_000 }, () => {
     write(dir, "model-of-tom/writing.md", "# Writing\n\nUncommitted.\n");
 
     const posts = [];
-    const result = await postStep(learningRun(dir), { fetch: recording(posts), checkouts: [] });
+    const result = await postStep(learningRun(dir), { fetch: recording(posts), checkouts: [], skillsDirs: outs });
 
     const layers = {
       operate: "── model-of-tom/agent-rules.md ──\n# Rules\n\nOperate safely.\n",
@@ -2848,7 +2846,7 @@ describe("the git half", { timeout: 60_000 }, () => {
   // witness: one widened door. A night whose skill bodies would not build took
   // the model-of-tom post down with them, and every prompt the next day began
   // with nothing about Tom at all.
-  it("names the two Claude accounts' skill directories and Codex's, and lets a test move them", () => {
+  it("names the two Claude accounts' skill directories and Codex's", () => {
     // The two accounts are separated by CLAUDE_CONFIG_DIR; the third is
     // $CODEX_HOME/skills, and CODEX_HOME on the box is /root/.codex.
     expect([...BOX_SKILLS_DIRS]).toEqual([
@@ -2857,15 +2855,13 @@ describe("the git half", { timeout: 60_000 }, () => {
       "/root/.codex/skills",
     ]);
     expect(boxSkillsDirs()).toEqual([...BOX_SKILLS_DIRS]);
-    vi.stubEnv("TTS_SKILLS_DIRS", ["/tmp/one", "/tmp/two"].join(path.delimiter));
-    expect(boxSkillsDirs()).toEqual(["/tmp/one", "/tmp/two"]);
   });
 
   it("writes every skills directory and then posts the catalog", async () => {
     const dir = preludeRepo();
     const outs = skillsDirs();
     const posts = [];
-    const result = await postStep(learningRun(dir), { fetch: recording(posts), checkouts: [] });
+    const result = await postStep(learningRun(dir), { fetch: recording(posts), checkouts: [], skillsDirs: outs });
 
     expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/skills"]);
     const catalog = posts[1].body;
@@ -2908,6 +2904,7 @@ describe("the git half", { timeout: 60_000 }, () => {
     const result = await postStep(r, {
       fetch: recording(posts),
       checkouts: [],
+      skillsDirs: outs,
       publishSkills: () => {
         throw new Error("the skill generator fell over");
       },
@@ -2932,6 +2929,7 @@ describe("the git half", { timeout: 60_000 }, () => {
     const result = await postStep(r, {
       fetch: recording(posts, { "/tts/model-of-tom": "Convex refused the base (503)" }),
       checkouts: [],
+      skillsDirs: outs,
     });
 
     expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/event", "/tts/skills"]);
@@ -2951,6 +2949,7 @@ describe("the git half", { timeout: 60_000 }, () => {
     const result = await postStep(r, {
       fetch: recording(posts, { "/tts/skills": "Convex refused the catalog (503)" }),
       checkouts: [],
+      skillsDirs: outs,
     });
 
     expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/skills", "/tts/event"]);
@@ -2981,7 +2980,7 @@ describe("the git half", { timeout: 60_000 }, () => {
   it("reads a published skill back as the catalog entry, and throws when SKILL.md is not what it wrote", async () => {
     const dir = preludeRepo();
     const outs = skillsDirs(1);
-    await postStep(learningRun(dir), { fetch: recording([]), checkouts: [] });
+    await postStep(learningRun(dir), { fetch: recording([]), checkouts: [], skillsDirs: outs });
     const { publishSkills } = await import("../../scripts/publish-skills.mjs");
     const { skillDirName, referenceName } = await import("../../scripts/skills.mjs");
     const published = publishSkills({ wikitom: dir, commit: "HEAD", repos: [], out: outs[0] });

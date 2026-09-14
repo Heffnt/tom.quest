@@ -1012,11 +1012,11 @@ describe("POST /tts/area-reviewed", () => {
       body: JSON.stringify(body),
     });
 
-  it("records one area-reviewed row keyed on the page, which the gather reads", async () => {
+  it("keeps area pages and the review route working from old per-file rows before the clean nightly replacement", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convexTest({ schema, modules });
     await t.run(async (ctx) => {
-      await ctx.db.insert("modelOfTomFiles", {
+      await ctx.db.insert("ttsSkills", {
         name: "areas/research",
         body: AREA_BODY("2026-01-01"),
         sourcePath: "model-of-tom/areas/research.md",
@@ -1024,6 +1024,7 @@ describe("POST /tts/area-reviewed", () => {
         syncedAt: Date.now() - DAY,
       });
     });
+    expect(await t.run(async (ctx) => await ctx.db.query("modelOfTomFiles").collect())).toEqual([]);
     const today = new Date().toISOString().slice(0, 10);
     const res = await post(t, { path: "model-of-tom/areas/research.md", reviewedOn: today });
     expect(res.status).toBe(200);

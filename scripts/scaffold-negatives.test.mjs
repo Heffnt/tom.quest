@@ -151,7 +151,6 @@ describe("evals/triggers", () => {
       "layer-write.json",
       "skill-know-intent.json",
       "skill-know-week.json",
-      "skill-repo-ComplexMultiTrigger.json",
       "skill-repo-WikiTom.json",
       "skill-repo-tom.quest.json",
     ]);

@@ -37,7 +37,7 @@ import { JOB_FAILED, JOB_RECOVERED } from "./ttsJobs";
 import { NIGHTLY_FAILURE } from "./ttsNightly";
 import { NEEDS_TOM, SLACK_REPLY_FAILED } from "./ttsSlack";
 import { DAY_MS, MODEL_OF_TOM_AREAS_DIR, isPrepared } from "./ttsShared";
-import { isModelOfTomPath, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
+import { isModelOfTomPath, modelOfTomFilesWithLegacyFallback, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import { AUDIT_APPROVED, AUDIT_VERDICT, MERGE, commitKey, mergeKey } from "./ttsMerge";
 import { DELEGATE_OBJECTION } from "./ttsAsk";
@@ -729,10 +729,12 @@ export async function gatherWeeklyFacts(
   // 8, 9. The area pages and the size of the model-of-tom files, from the
   // rows the nightly job posted (a small table: one row per file).
   //
-  // modelOfTomFiles, NOT ttsSkills: the per-file source facts moved to their
-  // own table in phase 6 when ttsSkills became the published skill catalog.
+  // The new table holds per-file source facts; old ttsSkills rows fill only
+  // the source paths the new table lacks during the widening rollout.
   // Same rows, same fields, same post — only the table name changed.
-  const skills = await ctx.db.query("modelOfTomFiles").collect();
+  const filesFromNewTable = await ctx.db.query("modelOfTomFiles").collect();
+  const skills = await ctx.db.query("ttsSkills").collect();
+  const modelOfTomFiles = modelOfTomFilesWithLegacyFallback(filesFromNewTable, skills);
   const files: WeeklyFacts["modelOfTom"]["files"] = [];
   const areaPages: WeeklyFacts["areaPages"] = [];
   const publication = await ctx.db.query("modelOfTomPublication")
@@ -744,7 +746,7 @@ export async function gatherWeeklyFacts(
       layers.push({ name, bytes: new TextEncoder().encode(body).length });
     }
   }
-  for (const row of [...skills].sort((a, b) =>
+  for (const row of [...modelOfTomFiles].sort((a, b) =>
     a.sourcePath < b.sourcePath ? -1 : a.sourcePath > b.sourcePath ? 1 : 0,
   )) {
     if (!isModelOfTomPath(row.sourcePath)) continue;

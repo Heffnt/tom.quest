@@ -142,7 +142,6 @@ describe("laptop setup", () => {
       hooks: {
         SessionStart: [
           { matcher: "resume", hooks: [{ type: "command", command: "echo codex local" }] },
-          managed,
           runEntry("SessionStart"),
         ],
         SubagentStart: [runEntry("SubagentStart")],
@@ -155,6 +154,13 @@ describe("laptop setup", () => {
       `${JSON.stringify(expectedCodexHooks, null, 2)}\n`,
     );
     expect(fs.readFileSync(configToml, "utf8")).toBe('model = "local"\n');
+
+    // This invokes the real laptop setup hook installer, not a stand-in Codex
+    // process. Codex's launcher is now the only skill-grant authority; its
+    // remaining SessionStart hook only records lifecycle state.
+    const codexSessionStart = JSON.parse(fs.readFileSync(path.join(codexDir, "hooks.json"), "utf8")).hooks.SessionStart;
+    expect(JSON.stringify(codexSessionStart)).not.toContain("session-start-hook.mjs");
+    expect(JSON.stringify(codexSessionStart)).toContain("run-hook.mjs");
 
     const beforeSecondRun = [
       fs.readFileSync(path.join(claudeDir, "CLAUDE.md"), "utf8"),

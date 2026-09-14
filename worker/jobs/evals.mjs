@@ -297,8 +297,8 @@ export function publicationFor(tomquestTree, wikitomTree, run = execFileSync, wo
   // sources of the pages: `repo-tom.quest` and `repo-WikiTom` are then the
   // rules files of the exact commits this run pins, which is the standard every
   // other part of the prelude is held to. A repository the run pins nothing of
-  // — ComplexMultiTrigger — has no commit here to read, and comes back as a
-  // refusal in the grant block rather than as whatever some checkout's HEAD says.
+  // has no commit here to read, and comes back as a refusal in the grant block
+  // rather than as whatever some checkout's HEAD says.
   const result = JSON.parse(run(process.execPath, [
     script,
     "--wikitom", wikitomTree,
@@ -1186,10 +1186,13 @@ export const KNOW_AREAS = Object.freeze([
  * A layer name, as the skill names that layer became.
  *
  * The trigger files predate the skills and name layers; this is the one table
- * that maps them, so an old file keeps scoring and a new one names a skill
- * directly. `operate` maps to nothing because the base is not a skill: it is
- * the one file every prompt carries whoever the run writes for, and there is
- * nothing to grant or withhold.
+ * that maps them. The layer triggers deliberately exercise a whole layer;
+ * replacing one with a single skill trigger would no longer test its complete
+ * grant set. The deployed worker cannot import scripts/skills.mjs because
+ * setup installs those files at different relative paths, so this checked and
+ * tested mapping remains the one compatible representation. `operate` maps to
+ * nothing because the base is not a skill: it is the one file every prompt
+ * carries whoever the run writes for, and there is nothing to grant or withhold.
  */
 export const LAYER_SKILL_ALIASES = Object.freeze({
   operate: Object.freeze([]),
@@ -1228,9 +1231,7 @@ export function loadTriggers(tomquestTree, { wikitomDir = BOX_WIKITOM_DIR, bareS
         .filter((name) => name.endsWith(".json") && !name.endsWith(".draft.json") && !AREA_TRIGGER_FILES.includes(name))
         .map((name) => ({ dir: publicDir, name }))
       : []),
-    ...AREA_TRIGGER_FILES
-      .filter((name) => fs.existsSync(path.join(privateDir, name)))
-      .map((name) => ({ dir: privateDir, name })),
+    ...AREA_TRIGGER_FILES.map((name) => ({ dir: privateDir, name })),
   ];
   return files
     .sort((a, b) => a.name.localeCompare(b.name))
@@ -1256,17 +1257,16 @@ export function triggerCounts(trigger) {
  * routeSkills: `caller`, `subject`, optional `record`/`cwd`/`repoDirs`, and an
  * `expected` router result. It contains no prose for a model to interpret, so
  * it is scored once without a runner. A case with a prompt is an output-
- * behaviour check and therefore needs the runner once. A malformed case is
- * recorded as a schema skip rather than guessed into either method.
+ * behaviour check and therefore needs the runner once. A malformed checked-in
+ * case is an authoring error, not a measurement to silently skip.
  */
 export const TRIGGER_METHOD_ROUTER = "router";
 export const TRIGGER_METHOD_RUNNER = "runner";
-export const TRIGGER_METHOD_SCHEMA = "schema";
 
 export function triggerMethod(one) {
   if (one?.route !== undefined) return TRIGGER_METHOD_ROUTER;
   if (typeof one?.prompt === "string" && one.prompt.trim() !== "") return TRIGGER_METHOD_RUNNER;
-  return TRIGGER_METHOD_SCHEMA;
+  throw new Error("trigger case needs route or prompt");
 }
 
 function triggerBase(trigger, one) {
@@ -1323,9 +1323,6 @@ export async function runTriggerCase(trigger, one, io, router = null, publicatio
   const method = triggerMethod(one);
   if (method === TRIGGER_METHOD_ROUTER) return scoreTriggerRoute(trigger, one, router);
   const base = triggerBase(trigger, one);
-  if (method === TRIGGER_METHOD_SCHEMA) {
-    return { ...base, method, judged: "skip", reason: "trigger case needs route or prompt" };
-  }
   const pinReason = publication?.reason ?? (
     publication === null ||
     typeof publication.text !== "string" ||

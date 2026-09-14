@@ -264,8 +264,10 @@ export type PublishedSkillRow = Doc<"ttsSkills"> & {
   pushed: boolean;
 };
 
+export type ModelOfTomFileRow = Pick<Doc<"modelOfTomFiles">, "sourcePath" | "body" | "bytes">;
+
 /** Old per-file rows remain schema-valid for the widening deploy, but are not
- * catalog entries and must be invisible until the first replacement post. */
+ * catalog entries and must be invisible to catalog readers. */
 export function isPublishedSkillRow(row: Doc<"ttsSkills">): row is PublishedSkillRow {
   return row.sourcePath === undefined &&
     (row.group === "write" || row.group === "know" || row.group === "repo") &&
@@ -274,6 +276,26 @@ export function isPublishedSkillRow(row: Doc<"ttsSkills">): row is PublishedSkil
     Array.isArray(row.sourcePaths) &&
     typeof row.commit === "string" &&
     typeof row.pushed === "boolean";
+}
+
+/**
+ * The first nightly post after this widening deploy moves every per-file row
+ * from `ttsSkills` to `modelOfTomFiles`. Until then, a source page is read
+ * from its old row only when the new table has no row for that exact path.
+ * Delete this fallback after one clean nightly replaces old rows.
+ */
+export function modelOfTomFilesWithLegacyFallback(
+  files: readonly ModelOfTomFileRow[],
+  skills: readonly Doc<"ttsSkills">[],
+): ModelOfTomFileRow[] {
+  const byPath = new Map(files.map((file) => [file.sourcePath, file]));
+  for (const row of skills) {
+    if (typeof row.sourcePath !== "string" || !isModelOfTomPath(row.sourcePath)) continue;
+    if (!byPath.has(row.sourcePath)) {
+      byPath.set(row.sourcePath, { sourcePath: row.sourcePath, body: row.body, bytes: row.bytes });
+    }
+  }
+  return [...byPath.values()];
 }
 
 /**

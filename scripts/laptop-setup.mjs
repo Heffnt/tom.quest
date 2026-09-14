@@ -87,6 +87,20 @@ function updateHookConfig(file, command) {
   writeIfChanged(file, `${JSON.stringify(settings, null, 2)}\n`);
 }
 
+// Codex receives its skill decision from scripts/codex-run.mjs, which also
+// writes that exact decision into the run registration. Remove this formerly
+// installed SessionStart context hook on the laptop rather than letting a
+// second authority add an independent grant block before the launcher runs.
+function removeHookConfig(file, command) {
+  if (!fs.existsSync(file)) return;
+  let settings = JSON.parse(fs.readFileSync(file, "utf8"));
+  if (!settings || Array.isArray(settings) || typeof settings !== "object") settings = {};
+  if (!settings.hooks || Array.isArray(settings.hooks) || typeof settings.hooks !== "object") settings.hooks = {};
+
+  settings.hooks.SessionStart = withoutManagedHooks(settings.hooks.SessionStart, command);
+  writeIfChanged(file, `${JSON.stringify(settings, null, 2)}\n`);
+}
+
 function updateInstructionsLoadedConfig(file, command) {
   let settings = {};
   if (fs.existsSync(file)) settings = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -186,7 +200,7 @@ const claudeDir = path.join(home, ".claude");
 updateClaudeMd(path.join(claudeDir, "CLAUDE.md"));
 updateHookConfig(path.join(claudeDir, "settings.json"), hookCommand);
 updateInstructionsLoadedConfig(path.join(claudeDir, "settings.json"), instructionsLoadedCommand);
-updateHookConfig(path.join(home, ".codex", "hooks.json"), hookCommand);
+removeHookConfig(path.join(home, ".codex", "hooks.json"), hookCommand);
 updateRunHookConfig(path.join(claudeDir, "settings.json"), runHookCommand);
 updateRunHookConfig(path.join(home, ".codex", "hooks.json"), runHookCommand);
 installSkills();

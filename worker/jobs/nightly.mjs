@@ -369,13 +369,11 @@ export const BOX_SKILLS_DIRS = Object.freeze([
   "/root/.codex/skills",
 ]);
 
-/** The directories tonight writes: BOX_SKILLS_DIRS, or TTS_SKILLS_DIRS when it
- * is set — a path-delimiter-separated list, which is how the tests point the
- * publication at a temporary directory instead of /root. */
+/** The directories tonight writes. Tests inject temporary directories through
+ * postStep's deps.skillsDirs seam, so production never accepts a writable
+ * directory list from its environment. */
 export function boxSkillsDirs() {
-  const override = process.env.TTS_SKILLS_DIRS;
-  if (override === undefined || override.trim() === "") return [...BOX_SKILLS_DIRS];
-  return override.split(path.delimiter).map((entry) => entry.trim()).filter((entry) => entry !== "");
+  return [...BOX_SKILLS_DIRS];
 }
 // The five that write the WikiTom checkout. The post runs under the same
 // lock after them (see main), reading what they left.
@@ -2532,25 +2530,12 @@ async function skillsHalf(run, { fetch, commit, syncedAt, pushed, publishSkills,
     for (const out of dirs) published = publish({ wikitom: run.dir, commit, repos, out });
     // The candidate paths behind each repo skill's references (see
     // referencePathResolver). Same helper, same HEAD, as the repo-rules step.
-    //
-    // PER REPO AND FORGIVING, because collectRepoRules can be refused for a
-    // reason that has nothing to do with this skill: prelude.mjs's git() runs
-    // at execFileSync's 1 MB default, and `ls-tree -r` over WikiTom is 3.5 MB
-    // of archived session files, so it fails there as "cannot list". A repo
-    // that could not be listed contributes no candidates and costs nothing
-    // unless one of its skills actually carries a reference — and then the
-    // resolver throws, by name, instead of storing a guessed path. (The fix is
-    // the maxBuffer line scripts/publish-skills.mjs already carries, one
-    // directory over; until it is in prelude.mjs, the repo-rules step loses
-    // WikiTom to the same 1 MB the same way, as its own failure row.)
-    const rulesByRepo = new Map();
-    for (const { repo, dir } of repos) {
-      try {
-        rulesByRepo.set(repo, collectRepoRules({ dir, repo, commit: "HEAD" }).rules.map((rule) => rule.path));
-      } catch {
-        rulesByRepo.set(repo, []);
-      }
-    }
+    // If the committed rules cannot be collected, this publication fails rather
+    // than posting a catalog whose references are silently unresolvable.
+    const rulesByRepo = new Map(repos.map(({ repo, dir }) => [
+      repo,
+      collectRepoRules({ dir, repo, commit: "HEAD" }).rules.map((rule) => rule.path),
+    ]));
     catalog = readSkillCatalog(dirs[0], published, {
       skillDirName,
       referencePath: referencePathResolver(rulesByRepo, referenceName),

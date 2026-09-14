@@ -554,7 +554,23 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
   // it; an explicit baseLine wins when both are present.
   const baseLine = suppliedBaseLine ?? fromLine;
   if (!Number.isInteger(baseLine) || baseLine < 0) throw new RangeError("baseLine must be a non-negative integer");
-  const prior = baseLine > 0 && priorRun?.runner === "codex" ? priorRun : null;
+  let recoveredPrior = baseLine > 0 && priorRun?.runner === "codex" ? priorRun : null;
+  // Legacy sweep state predates both `run` and `codexMeta`. Its cursor still
+  // proves the accepted prefix, and contextText holds that prefix plus this
+  // tail, so recover only those committed lines. Parsing the full context here
+  // would fold the tail into the prior outcome and count it twice below.
+  if (recoveredPrior === null && baseLine > 0) {
+    const committed = fileLines(contextText).lines.slice(0, baseLine);
+    if (committed.length === baseLine) {
+      recoveredPrior = parseCodexFile({
+        path,
+        text: `${committed.join("\n")}\n`,
+        host,
+        fileVersion,
+      }).run;
+    }
+  }
+  const prior = recoveredPrior;
   const priorParentId = typeof prior?.parentRunId === "string"
     ? prior.parentRunId.replace(`codex:${host}:`, "")
     : null;
@@ -626,16 +642,17 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
     // whether it duplicates the final assistant message.
     if (rows.length === rowsBefore && Object.values(dropped).reduce((sum, count) => sum + count, 0) === dropsBefore && !(entry.type === "event_msg" && payload.type === "task_complete")) drop(sourceKind);
   }
-  // A tail normally has no session_meta. The sweeper gives it the accepted run
-  // and its safe metadata facts, so it keeps the original identity and context
-  // instead of inventing an unknown run while it adds new transcript rows.
-  for (const raw of lines) { try { const entry = JSON.parse(raw); const p = entry.payload ?? {}; if (entry.type === "session_meta") meta = { ...meta, ...p }; if (entry.type === "turn_context") { model ??= p.model; effort ??= p.effort; approvalPolicy ??= p.approval_policy; sandboxPolicy ??= p.sandbox_policy?.type; } } catch {} }
+  // A tail normally has no session_meta. New sweep state supplies its safe
+  // metadata, but legacy state has no codexMeta; in that case the immutable
+  // full context is the only source that can recover the original thread id.
+  const contextLines = fileLines(contextText).lines;
+  const hasMetaId = typeof meta.id === "string" || typeof meta.session_id === "string";
+  for (const raw of (hasMetaId ? lines : contextLines)) { try { const entry = JSON.parse(raw); const p = entry.payload ?? {}; if (entry.type === "session_meta") meta = { ...meta, ...p }; if (entry.type === "turn_context") { model ??= p.model; effort ??= p.effort; approvalPolicy ??= p.approval_policy; sandboxPolicy ??= p.sandbox_policy?.type; } } catch {} }
   const id = meta.id ?? meta.session_id;
   runId = id ? `codex:${host}:${id}` : runId ?? `codex:${host}:unknown`;
   parentId = codexParent(meta) ?? parentId;
   // A catalog and its SKILL.md read can land in different sweep tails, so the
   // tail alone cannot tell whether that read used an offered skill.
-  const contextLines = fileLines(contextText).lines;
   const developer = contextLines.map((raw) => { try { return JSON.parse(raw); } catch { return null; } }).find((entry) => entry?.type === "response_item" && entry.payload?.type === "message" && entry.payload?.role === "developer");
   const prompt = (developer?.payload?.content ?? []).map((part) => part.text ?? part.input_text ?? "").join("\n");
   const mot = prompt ? modelOfTomFromPrompt(prompt) : {};

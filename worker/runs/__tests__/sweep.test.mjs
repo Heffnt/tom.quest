@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { claudeLine, claudeToolResult, claudeUserTurn, codexDeveloper, codexMeta, codexSkillsInstructions, codexToolCall, codexTurnContext, jsonl } from "./fixtures.mjs";
+import { claudeLine, claudeToolResult, claudeUserTurn, codexDeveloper, codexMeta, codexResponseItem, codexSkillsInstructions, codexTokenCount, codexToolCall, codexTurnContext, jsonl } from "./fixtures.mjs";
 import { writeRegistrationClaim, writeRegistrationEnd } from "../registration.mjs";
 import {
   MAX_ATTEMPTS,
@@ -87,6 +87,48 @@ function largeDiskFs() {
 }
 
 describe("run sweep", () => {
+  it("recovers a legacy Codex cursor's identity from full context without losing its prior outcome", async () => {
+    const dir = temp(); const project = path.join(dir, "codex", "project"); fs.mkdirSync(project, { recursive: true });
+    const file = path.join(project, "rollout.jsonl");
+    const prefix = jsonl([
+      codexMeta({ id: "legacy-thread", cwd: "C:/work" }),
+      codexTurnContext({ model: "gpt-5.6-terra" }),
+      codexResponseItem("message", { role: "assistant", content: [{ output_text: "original answer" }] }),
+      codexTokenCount({ input: 7, cachedInput: 0, cacheWrite: 0, output: 3, reasoning: 0, total: 10 }),
+    ]);
+    fs.writeFileSync(file, prefix);
+    const stateDir = path.join(dir, "state");
+    fs.mkdirSync(path.dirname(stateFileFor(stateDir, "codex:laptop:rollout")), { recursive: true });
+    fs.writeFileSync(stateFileFor(stateDir, "codex:laptop:rollout"), JSON.stringify({
+      runId: "codex:laptop:legacy-thread",
+      path: file,
+      committedLine: 4,
+      committedPrefixSha256: prefixSha256(Buffer.from(prefix), 4),
+      bytes: Buffer.byteLength(prefix),
+      verified: true,
+    }));
+    fs.appendFileSync(file, jsonl([codexToolCall({ name: "read_file", args: {} })]));
+    const stat = fs.statSync(file);
+    const item = { runtime: "codex", host: "laptop", root: path.dirname(project), project: "project", threadId: "rollout", kind: "root", path: file, mtimeMs: stat.mtimeMs, bytes: stat.size };
+    const ingests = [];
+    await sweepRunFile(item, {
+      stateDir,
+      store: store(),
+      post: async (route, body) => {
+        if (route === "/runs/ingest") ingests.push(body);
+        return route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true };
+      },
+      now: () => NOW,
+    });
+    expect(ingests).toHaveLength(1);
+    expect(ingests[0].run).toMatchObject({
+      runId: "codex:laptop:legacy-thread",
+      model: "gpt-5.6-terra",
+      context: { cwd: "C:/work" },
+      outcome: { finalTextSeq: 3_000, totals: { totalTokens: 10 }, toolCalls: 1 },
+    });
+  });
+
   it("carries a Codex run's metadata through a second file part without session_meta", async () => {
     const dir = temp(); const project = path.join(dir, "codex", "project"); fs.mkdirSync(project, { recursive: true });
     const file = path.join(project, "rollout.jsonl");
