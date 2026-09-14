@@ -2284,7 +2284,9 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       let pinned = null;
       if (triggerMethod(one) === TRIGGER_METHOD_RUNNER) {
         try {
-          const requested = { layers: [], skills: trigger.skills ?? [] };
+          // Real runner prompts always carry operate. Triggers must score that
+          // same prompt, including when their only mapped grant is an area skill.
+          const requested = { layers: ["operate"], skills: trigger.skills ?? [] };
           // Even a trigger with no skill names (operate) must pin the catalog
           // identity; preludeFrom deliberately returns early for an empty set.
           let assembled;

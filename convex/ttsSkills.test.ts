@@ -180,7 +180,7 @@ describe("model-of-tom publication", () => {
     expect(await catalog(t)).toEqual([expect.objectContaining({ commit: newer, syncedAt: COMMITTED_AT + 1, body: "new body" })]);
   });
 
-  it("replaces old per-file rows with the first posted catalog", async () => {
+  it("keeps old per-file rows until modelOfTomFiles holds their source page", async () => {
     const t = convexTest({ schema, modules });
     await t.run(async (ctx) => {
       await ctx.db.insert("ttsSkills", {
@@ -204,14 +204,43 @@ describe("model-of-tom publication", () => {
         sourcePaths: ["model-of-tom/areas/research.md"],
       }],
     });
-    expect(result).toEqual({ skills: 1, deleted: 1, commit: COMMIT });
-    expect(await catalog(t)).toEqual([
+    expect(result).toEqual({ skills: 1, deleted: 0, commit: COMMIT });
+    expect(await catalog(t)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "areas/research",
+        sourcePath: "model-of-tom/areas/research.md",
+        body: "old per-file body",
+      }),
       expect.objectContaining({
         name: "know-research",
         group: "know",
         body: "new catalog body",
         commit: COMMIT,
       }),
+    ]));
+
+    await t.run(async (ctx) => {
+      await ctx.db.insert("modelOfTomFiles", {
+        name: "areas/research",
+        body: "new source body",
+        sourcePath: "model-of-tom/areas/research.md",
+        bytes: 15,
+        commit: COMMIT,
+        syncedAt: COMMITTED_AT,
+        pushed: true,
+      });
+    });
+    const next = await t.mutation(internal.ttsSkills.internalReplaceSkills, {
+      commit: "a".repeat(40), syncedAt: COMMITTED_AT + 1, pushed: true,
+      skills: [{
+        name: "know-research", group: "know", description: "Tom's research.",
+        body: "newer catalog body", references: [],
+        sourcePaths: ["model-of-tom/areas/research.md"],
+      }],
+    });
+    expect(next).toEqual({ skills: 1, deleted: 2, commit: "a".repeat(40) });
+    expect(await catalog(t)).toEqual([
+      expect.objectContaining({ name: "know-research", body: "newer catalog body" }),
     ]);
   });
 

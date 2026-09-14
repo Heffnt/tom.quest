@@ -956,8 +956,8 @@ export default defineSchema({
   // A WIDEN-MIGRATE-NARROW TABLE REPLACEMENT. Existing production rows use the
   // old per-file shape (`sourcePath`, optional `bytes`, no catalog fields), so
   // every field belonging to either side alone remains optional during this
-  // deploy. Readers treat an old-shaped row as absent, and the first successful
-  // POST /tts/skills deletes every old row before writing the new catalog.
+  // deploy. Readers treat an old-shaped row as absent, and POST /tts/skills
+  // deletes an old row only after modelOfTomFiles carries its exact sourcePath.
   // Dropping the old fields and requiring the catalog fields belongs in a later
   // PR, after one clean nightly proves the whole replacement has run in prod.
   ttsSkills: defineTable({

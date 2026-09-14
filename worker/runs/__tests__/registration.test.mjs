@@ -49,7 +49,7 @@ describe("run registration", () => {
     expect(fs.existsSync(path.join(spoolDir, `${token}.json`))).toBe(false);
   });
 
-  it("keeps a same-token sidecar intact instead of bootstrapping its spool again", () => {
+  it("keeps a same-token sidecar intact and removes its stale spool", () => {
     const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
     const token = "44444444-4444-4444-8444-444444444444";
     writeRegistration({ spoolDir, token, writer: { file: "stale-launcher.mjs" }, registration: { host: "laptop", origin: "stale" }, now: () => 1 });
@@ -64,7 +64,12 @@ describe("run registration", () => {
 
     const result = claimRegistration({ spoolDir, token, runFile, claim: { by: "repair" }, now: () => 3 });
     expect(result).toMatchObject({ ok: true, claimed: false, envelope: { writer: { file: "sidecar-launcher.mjs" }, registration: { origin: "sidecar" }, claim: { by: "hook:SessionStart" } } });
-    expect(fs.existsSync(path.join(spoolDir, `${token}.json`))).toBe(true);
+    expect(fs.existsSync(path.join(spoolDir, `${token}.json`))).toBe(false);
+    // A token-only child must now follow the sidecar pointer, not write an
+    // orphaned spool which the sweep never reads.
+    expect(appendSkillAsk({ spoolDir, token, ask: { name: "know-research", result: "ok" }, now: () => 4 }))
+      .toMatchObject({ ok: true, file: registrationSidecarPath(runFile) });
+    expect(readRegistration(runFile).skills.asked).toEqual([{ at: 4, name: "know-research", result: "ok" }]);
   });
 
   it("replaces a corrupt spool with the launcher-owned envelope", () => {
@@ -315,6 +320,15 @@ describe("run registration", () => {
     const orphan = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
     expect(appendSkillAsk({ spoolDir, token: orphan, ask: { name: "know-money" } })).toMatchObject({ ok: false });
     expect(fs.existsSync(path.join(spoolDir, `${orphan}.json`))).toBe(false);
+  });
+
+  it("rejects an unknown skill ask result instead of treating it as ok", () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool");
+    const token = "abababab-abab-4bab-8bab-abababababab";
+    writeRegistration({ spoolDir, token, writer: { file: "launcher.mjs" }, registration: { host: "laptop" }, now: () => 0 });
+    expect(appendSkillAsk({ spoolDir, token, ask: { name: "know-money", result: "maybe" } }))
+      .toEqual({ ok: false, reason: "invalid skill ask result" });
+    expect(JSON.parse(fs.readFileSync(path.join(spoolDir, `${token}.json`), "utf8")).skills).toBeUndefined();
   });
 
   it("carries the asks onto the run as plain strings, and only on the applied path", () => {

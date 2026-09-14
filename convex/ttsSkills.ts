@@ -351,8 +351,27 @@ export const internalReplaceSkills = internalMutation({
     if (currentSyncedAt !== null && syncedAt < currentSyncedAt) {
       throw new Error(`the post's commit ${commit.slice(0, 12)} (${new Date(syncedAt).toISOString()}) is older than the stored catalog (${new Date(currentSyncedAt).toISOString()}) — store left as it was`);
     }
-    for (const row of existing) await ctx.db.delete(row._id);
+    const storedSourcePaths = new Set(
+      (await ctx.db.query("modelOfTomFiles").collect()).map((file) => file.sourcePath),
+    );
+    let deleted = 0;
+    for (const row of existing) {
+      if (isPublishedSkillRow(row)) {
+        await ctx.db.delete(row._id);
+        deleted += 1;
+        continue;
+      }
+      // Widen-migrate-narrow: a legacy per-file row becomes deletable only
+      // when modelOfTomFiles has a row for that exact sourcePath. That is the
+      // code-tested proof that the new store holds the page this row carries;
+      // before then it remains the reader's only source copy if the base post
+      // failed while the independent catalog post still succeeded.
+      if (typeof row.sourcePath === "string" && storedSourcePaths.has(row.sourcePath)) {
+        await ctx.db.delete(row._id);
+        deleted += 1;
+      }
+    }
     for (const skill of skills) await ctx.db.insert("ttsSkills", { ...skill, commit, syncedAt, pushed });
-    return { skills: skills.length, deleted: existing.length, commit };
+    return { skills: skills.length, deleted, commit };
   },
 });

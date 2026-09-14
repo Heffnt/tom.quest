@@ -497,17 +497,19 @@ export function codexSkillsOffered(developerText) {
     if (at <= 0) continue;
     const name = body.slice(0, at).trim();
     if (!name) continue;
-    names.push(name);
     // The trailing "(file: ...)" is the last parenthesis on the line; a
     // description may hold parentheses of its own, so anchor at the end.
     const short = /\(file:\s*([^)]+)\)\s*$/.exec(body)?.[1]?.trim();
     if (!short) continue;
-    shortPaths[name] = short;
     const segments = short.split(/[\\/]/);
     const root = roots.get(segments[0]);
-    // A short path whose root was never declared stays as written rather than
-    // becoming a fabricated absolute path.
-    paths[name] = root ? [root, ...segments.slice(1)].join("/") : short;
+    // The CLI emits roots and entries as one catalog. An entry naming an
+    // undeclared root is malformed producer data, not a usable skill: keeping
+    // it would let an arbitrary short string become evidence of a skill read.
+    if (!root || segments.length < 2) continue;
+    names.push(name);
+    shortPaths[name] = short;
+    paths[name] = [root, ...segments.slice(1)].join("/");
   }
   return { names: sorted(names), paths, shortPaths };
 }
@@ -557,8 +559,9 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
   let recoveredPrior = baseLine > 0 && priorRun?.runner === "codex" ? priorRun : null;
   // Legacy sweep state predates both `run` and `codexMeta`. Its cursor still
   // proves the accepted prefix, and contextText holds that prefix plus this
-  // tail, so recover only those committed lines. Parsing the full context here
-  // would fold the tail into the prior outcome and count it twice below.
+  // tail, so recover only those committed lines. Reingesting from line zero
+  // would emit that accepted prefix a second time (forking one run's outcome),
+  // while reconstruction carries it forward before this tail is appended.
   if (recoveredPrior === null && baseLine > 0) {
     const committed = fileLines(contextText).lines.slice(0, baseLine);
     if (committed.length === baseLine) {

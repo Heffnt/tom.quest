@@ -112,10 +112,11 @@ function endValue(end, now) {
 }
 
 function skillAskValue(ask, now) {
+  if (ask?.result !== "ok" && ask?.result !== "refused") return null;
   const value = {
     at: Number.isFinite(ask?.at) ? ask.at : now(),
     name: String(ask?.name ?? ""),
-    result: ask?.result === "refused" ? "refused" : "ok",
+    result: ask.result,
   };
   if (typeof ask?.why === "string" && ask.why !== "") value.why = ask.why;
   return value;
@@ -250,6 +251,13 @@ export function claimRegistration({
     // The sidecar is already the durable binding when this token claimed it.
     // A delayed repair must not replace its launcher facts with an older spool.
     if (existing?.token === token) {
+      // A same-token re-claim is the condition that makes this spool deletable:
+      // the sidecar is already the durable envelope for this exact token and
+      // the pointer below names it. Leaving the stale spool would make a
+      // token-only skills writer choose it over that durable envelope.
+      try { fs.unlinkSync(source); } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
       writeClaimPointer(spoolDir, token, runFile, fs);
       return { ok: true, claimed: false, file, envelope: existing };
     }
@@ -323,6 +331,11 @@ export function writeRegistrationEnd({ runFile, end = {}, fs = fsDefault, now = 
  * later writer happened to add.
  */
 export function appendSkillAsk({ runFile, spoolDir, token, ask = {}, fs = fsDefault, now = Date.now } = {}) {
+  const skill = skillAskValue(ask, now);
+  // The producer owns this enum. Recording an unknown result as success would
+  // turn malformed producer data into a false grant receipt, so reject it at
+  // the boundary instead of inventing an interpretation.
+  if (skill === null) return { ok: false, reason: "invalid skill ask result" };
   const sidecar = runFile === undefined || runFile === null || runFile === "" ? null : registrationSidecarPath(runFile);
   const spool = spoolDir === undefined || spoolDir === null || spoolDir === "" ? null : spoolPath(spoolDir, token);
   let file = sidecar !== null && fs.existsSync(sidecar) ? sidecar : (spool ?? sidecar);
@@ -348,7 +361,7 @@ export function appendSkillAsk({ runFile, spoolDir, token, ask = {}, fs = fsDefa
     const envelope = {
       ...existing,
       envelopeVersion: existing.envelopeVersion ?? ENVELOPE_VERSION,
-      skills: { ...existing.skills, asked: [...asked, skillAskValue(ask, now)].slice(-SKILL_ASK_CAP) },
+      skills: { ...existing.skills, asked: [...asked, skill].slice(-SKILL_ASK_CAP) },
     };
     atomicJson(target, envelope, fs);
     return { ok: true, file: target, envelope };

@@ -166,6 +166,24 @@ describe("Codex skill catalog", () => {
     });
   });
 
+  it("rejects an entry whose skill root was not declared", () => {
+    const malformed = codexSkillsInstructions({
+      roots: ROOTS,
+      skills: [...SKILLS, { name: "unbound", description: "bad root", file: "r9/unbound/SKILL.md" }],
+    });
+    expect(codexSkillsOffered(malformed)).toEqual({
+      names: ["sites:sites-building", "tom-write"],
+      paths: {
+        "tom-write": "C:/Users/heffn/.codex/skills/tom-write/SKILL.md",
+        "sites:sites-building": "C:/Users/heffn/.codex/skills/.system/sites-building/SKILL.md",
+      },
+      shortPaths: {
+        "tom-write": "r0/tom-write/SKILL.md",
+        "sites:sites-building": "r1/sites-building/SKILL.md",
+      },
+    });
+  });
+
   it("counts a skill as used only when a tool call read its file", () => {
     const offered = codexSkillsOffered(catalog(ROOTS));
     // A Windows path reaches the arguments as JSON, its separators doubled.

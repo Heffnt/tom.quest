@@ -57,8 +57,6 @@ import {
   postStep,
   parseArgs,
   boxSkillsDirs,
-  readSkillCatalog,
-  referencePathResolver,
   repoRulesStep,
   readManifests,
   rebaseInProgress,
@@ -2977,47 +2975,9 @@ describe("the git half", { timeout: 60_000 }, () => {
     expect(r.failures).toEqual([expect.objectContaining({ step: "skills" })]);
   });
 
-  it("reads a published skill back as the catalog entry, and throws when SKILL.md is not what it wrote", async () => {
-    const dir = preludeRepo();
-    const outs = skillsDirs(1);
-    await postStep(learningRun(dir), { fetch: recording([]), checkouts: [], skillsDirs: outs });
-    const { publishSkills } = await import("../../scripts/publish-skills.mjs");
-    const { skillDirName, referenceName } = await import("../../scripts/skills.mjs");
-    const published = publishSkills({ wikitom: dir, commit: "HEAD", repos: [], out: outs[0] });
-    const readers = { skillDirName, referencePath: referencePathResolver(new Map(), referenceName) };
-    expect(readSkillCatalog(outs[0], published, readers).map((skill) => skill.name).sort())
-      .toEqual(published.skills.map((skill) => skill.name).sort());
-    // A body edited under the reader is a loud failure, not a quiet wrong post.
-    const target = path.join(outs[0], skillDirName(published.skills[0].name), "SKILL.md");
-    fs.writeFileSync(target, `${fs.readFileSync(target, "utf8")}tampered\n`);
-    expect(() => readSkillCatalog(outs[0], published, readers)).toThrow(/did not read back/);
-  });
-
   // witness: `convex/AGENTS.md` flattens to `convex-AGENTS.md`, and tom.quest
   // has a `turing-api/` — so unflattening a reference name on its hyphens
   // invents `turing/api/AGENTS.md`. The path is looked up, never inverted.
-  it("resolves a reference's source path by lookup, and refuses to guess one", () => {
-    const referenceName = (file) => file.replace(/\//g, "-");
-    const resolve = referencePathResolver(
-      new Map([["tom.quest", ["AGENTS.md", "turing-api/AGENTS.md", "convex/AGENTS.md"]]]),
-      referenceName,
-    );
-    const repo = (name, origin) => ({ name, group: "repo", origin, sourcePaths: ["AGENTS.md"], file: "f" });
-    expect(resolve(repo("turing-api-AGENTS.md", "tom.quest"))).toBe("turing-api/AGENTS.md");
-    // And the group decides, not the origin: WikiTom is both the vault every
-    // write and know skill is built from and a repository with rules of its
-    // own, so ground.md must not take the repo lookup.
-    expect(resolve({
-      name: "ground.md",
-      group: "write",
-      origin: "WikiTom",
-      sourcePaths: ["model-of-tom/writing.md"],
-      file: "f",
-    })).toBe("model-of-tom/ground.md");
-    expect(() => resolve(repo("app-AGENTS.md", "tom.quest"))).toThrow(/no rules file named/);
-    expect(() => resolve(repo("AGENTS.md", "WikiTom"))).toThrow(/no rules file named/);
-  });
-
   // ── the repo rules, three checkouts ──────────────────────────────────────
   /** A one-commit repository whose root AGENTS.md is the given body. */
   function rulesRepo(body) {

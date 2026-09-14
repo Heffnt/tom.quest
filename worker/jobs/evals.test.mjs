@@ -1356,10 +1356,17 @@ describe("runEvals over a run case", () => {
       cases: [{ id: "trigger-operate", prompt: "operate fixture", expect: { mustName: ["fresh"] } }],
     });
     const io = runIoFor(dir, ["pass", "pass", "pass"]);
+    const assembled = [];
+    const originalSkills = io.skills;
+    io.skills = (...args) => {
+      assembled.push(args[2]);
+      return originalSkills(...args);
+    };
     const weekly = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, io);
     expect(weekly.catalogHash).toBe("c".repeat(64));
     expect(weekly.results).toContainEqual(expect.objectContaining({ id: "trigger-operate", judged: "pass" }));
     expect(io.calls.prompts.some((prompt) => prompt.includes("PINNED SKILLS: \n\noperate fixture"))).toBe(true);
+    expect(assembled).toContainEqual({ layers: ["operate"], skills: [] });
   });
 });
 

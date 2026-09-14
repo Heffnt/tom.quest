@@ -2387,120 +2387,6 @@ export async function postStep(run, deps = {}) {
 }
 
 /**
- * The catalog read back out of the directories publishSkills has just written:
- * one entry per skill, in the shape POST /tts/skills takes.
- *
- * WHY IT IS READ BACK RATHER THAN HANDED OVER. publishSkills returns a REPORT —
- * name, group, byte counts, reference names, how many files it wrote — because
- * its job is to put a directory on a disk, and nothing until now needed the
- * bodies afterwards. The catalog needs them. Reading the files it just wrote is
- * the one way to get them without a second definition of what the page set is,
- * and it has a property worth having: the catalog Convex holds is literally the
- * bytes the box's agents will load.
- *
- * IT IS COUPLED TO renderSkillMd's LAYOUT, so it fails loud rather than
- * quietly: every field is checked back against the byte counts publishSkills
- * reported, and a mismatch throws — which makes it the skills half's recorded
- * failure, not a silently wrong post. The cheaper fix, when someone owns that
- * file, is for publishSkills to return the built skills and for this function
- * to be deleted.
- */
-export const SKILL_PROVENANCE = /^<!-- generated from (\S+) (.+) at commit ([0-9a-f]+) — do not edit -->$/;
-
-/**
- * Where one reference's body came from — the field POST /tts/skills requires
- * and the only one publishSkills' report does not carry.
- *
- * A reference is written under its FLATTENED name (scripts/skills.mjs
- * referenceName: every "/" becomes "-", so `convex/AGENTS.md` is the file
- * `convex-AGENTS.md`), and that flattening does not invert — a directory with
- * a hyphen in it would read back wrong. So the path is looked up rather than
- * unflattened, against the two things that produce a reference:
- *
- *   a skill of the REPO group carries that repository's nested AGENTS.md
- *   files, and `rules` is the list of them read from its own HEAD by the same
- *   helper the repo-rules step uses — one entry per candidate path, matched by
- *   name;
- *   any other skill's reference (ground.md) sits beside the page the skill was
- *   built from, so it is that page's directory and this name.
- *
- * The GROUP decides which, and not the origin: WikiTom is both the vault every
- * write and know skill is built from AND a repository with rules of its own, so
- * the origin name alone would send `ground.md` to the repo lookup.
- *
- * An unresolved name THROWS, which makes it the skills half's failure row: a
- * guessed path in the store is worse than a night without a catalog.
- *
- * THE HONEST FIX IS ONE LINE ELSEWHERE. publishSkills already holds
- * `{ name, path, body }` for every reference and reports only the name; when
- * scripts/publish-skills.mjs is next open, have it return the built skills, and
- * this function and readSkillCatalog both go.
- */
-export function referencePathResolver(rulesByRepo, referenceName) {
-  return ({ name, group, origin, sourcePaths, file }) => {
-    if (group === "repo") {
-      const rules = rulesByRepo.get(origin) ?? [];
-      const match = rules.find((candidate) => referenceName(candidate) === name);
-      if (match === undefined) {
-        throw new Error(`${file}: ${origin} at this commit has no rules file named ${name}`);
-      }
-      return match;
-    }
-    const beside = sourcePaths[0];
-    if (typeof beside !== "string" || !beside.includes("/")) {
-      throw new Error(`${file}: cannot say where the reference ${name} came from`);
-    }
-    return `${beside.slice(0, beside.lastIndexOf("/"))}/${name}`;
-  };
-}
-
-export function readSkillCatalog(outDir, published, { skillDirName, referencePath }) {
-  return published.skills.map((reported) => {
-    const dir = path.join(outDir, skillDirName(reported.name));
-    const file = path.join(dir, "SKILL.md");
-    const lines = fs.readFileSync(file, "utf8").split("\n");
-    const close = lines.indexOf("---", 1);
-    if (lines[0] !== "---" || close === -1) throw new Error(`${file} carries no frontmatter`);
-    const declared = lines.slice(1, close).find((line) => line.startsWith("description: "));
-    if (declared === undefined) throw new Error(`${file} carries no description`);
-    let description;
-    try {
-      description = JSON.parse(declared.slice("description: ".length));
-    } catch {
-      throw new Error(`${file}: the description is not the JSON string renderSkillMd writes`);
-    }
-    const provenance = SKILL_PROVENANCE.exec(lines[close + 2] ?? "");
-    if (provenance === null) throw new Error(`${file} carries no provenance line`);
-    const sourcePaths = provenance[2].split(", ");
-    const rest = lines.slice(close + 4).join("\n");
-    const body = rest.endsWith("\n") ? rest.slice(0, -1) : rest;
-    if (Buffer.byteLength(body) !== reported.bodyBytes || Buffer.byteLength(description) !== reported.descriptionBytes) {
-      throw new Error(
-        `${file} did not read back as the ${reported.descriptionBytes}-byte description and ${reported.bodyBytes}-byte ` +
-          "body publish-skills.mjs reported — SKILL.md's layout changed under this reader",
-      );
-    }
-    return {
-      name: reported.name,
-      group: reported.group,
-      description,
-      body,
-      references: reported.references.map((name) => {
-        const referenceBody = fs.readFileSync(path.join(dir, name), "utf8");
-        return {
-          name,
-          path: referencePath({ name, group: reported.group, origin: provenance[1], sourcePaths, file }),
-          body: referenceBody,
-          bytes: Buffer.byteLength(referenceBody),
-        };
-      }),
-      sourcePaths,
-      bytes: reported.bodyBytes,
-    };
-  });
-}
-
-/**
  * The skills half of the post: the box's skill directories written from the
  * same HEAD the base came off, then the catalog to POST /tts/skills, in that
  * order.
@@ -2516,8 +2402,6 @@ async function skillsHalf(run, { fetch, commit, syncedAt, pushed, publishSkills,
   try {
     if (dirs.length === 0) throw new Error("no skills directory is configured, so there is nothing to write");
     const publish = publishSkills ?? (await loadPublishSkills()).publishSkills;
-    const { skillDirName, referenceName } = await loadSkills();
-    const { collectRepoRules } = await loadPrelude();
     // Only the checkouts that are really here: readRepo throws on a missing
     // one, and one absent clone must not cost the other two their skills. That
     // it is missing is already the repo-rules step's own failure row.
@@ -2528,18 +2412,7 @@ async function skillsHalf(run, { fetch, commit, syncedAt, pushed, publishSkills,
     // is write-if-changed, so an unchanged night touches nothing, and a copy
     // would be a second thing that can be half-done.
     for (const out of dirs) published = publish({ wikitom: run.dir, commit, repos, out });
-    // The candidate paths behind each repo skill's references (see
-    // referencePathResolver). Same helper, same HEAD, as the repo-rules step.
-    // If the committed rules cannot be collected, this publication fails rather
-    // than posting a catalog whose references are silently unresolvable.
-    const rulesByRepo = new Map(repos.map(({ repo, dir }) => [
-      repo,
-      collectRepoRules({ dir, repo, commit: "HEAD" }).rules.map((rule) => rule.path),
-    ]));
-    catalog = readSkillCatalog(dirs[0], published, {
-      skillDirName,
-      referencePath: referencePathResolver(rulesByRepo, referenceName),
-    });
+    catalog = published.catalog;
     // The door refuses an empty post — it replaces the store whole, and an
     // empty one would wipe it — so say why here rather than read a 400 back.
     if (catalog.length === 0) {
