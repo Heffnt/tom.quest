@@ -16,6 +16,7 @@ import {
   formatTodoResult,
   parseSearchArgs,
   runSearchCli,
+  runningCli,
   SEARCH_COMMANDS,
   skillRoots,
   usage,
@@ -462,8 +463,8 @@ describe("installed skills", () => {
       for (const [file, contents] of Object.entries(references)) fs.writeFileSync(path.join(skill, file), contents);
     };
     publish("tom-write", "His writing standard: Shape, Words", "The writing body.", { "ground.md": "what he knows" });
-    publish("tom-know-mulch", "Tom's mulch: mulch, compost.", "The mulch body.");
-    publish("tom-repo-cmt", "Rules of the CMT repository.", "The repo body.", { "cmt-AGENTS.md": "nested rules" });
+    publish("tom-know-money", "Tom's money: money, banking.", "The money body.");
+    publish("tom-repo-tom-quest", "Rules of the tom.quest repository.", "The repo body.", { "tom-quest-AGENTS.md": "nested rules" });
     // NOT ours: a checkout's own skill under the same root, which this command
     // must never see. witness: drop the prefix filter and the first test fails.
     publish("other-skill", "someone else's", "not Tom's.");
@@ -474,7 +475,7 @@ describe("installed skills", () => {
     const dir = installed();
     const output = [];
     expect(await runSearchCli(["skills", "--skills-dir", dir], { env: {}, write: (line) => output.push(line), error: () => {} })).toBe(0);
-    expect(output.map((line) => line.split(" ")[0])).toEqual(["know-mulch", "repo-cmt", "write"]);
+    expect(output.map((line) => line.split(" ")[0])).toEqual(["know-money", "repo-tom-quest", "write"]);
     expect(output.join("\n")).not.toContain("someone else");
     expect(output[0]).toContain("[know]");
     expect(output[0]).toContain(path.join(dir, "tom-know-mulch"));
@@ -501,16 +502,34 @@ describe("installed skills", () => {
     expect(text).toContain("The writing body.");
     expect(text).toContain(`references: ground.md ${path.join(dir, "tom-write", "ground.md")}`);
 
-    // The directory form is accepted and nothing is said about the prefix.
+    // The directory prefix is not a load name; catalog discovery stripped it.
     const prefixed = [];
-    expect(await runSearchCli(["skills", "tom-write", "--skills-dir", dir], { env: {}, write: (line) => prefixed.push(line), error: () => {} })).toBe(0);
-    expect(prefixed).toEqual(output);
+    expect(await runSearchCli(["skills", "tom-write", "--skills-dir", dir], { env: {}, write: () => {}, error: (line) => prefixed.push(line) })).toBe(2);
+    expect(prefixed[0]).toContain('skill "tom-write" is not in the catalog');
 
     const json = [];
     expect(await runSearchCli(["skills", "write", "--skills-dir", dir, "--json"], { env: {}, write: (line) => json.push(line), error: () => {} })).toBe(0);
     expect(JSON.parse(json[0])).toMatchObject({
       skill: { name: "write", group: "write", body: "The writing body.", references: [{ name: "ground.md" }] },
     });
+  });
+
+  it("maps a punctuation-bearing repository query to the catalog's generated name", async () => {
+    const dir = installed();
+    const output = [];
+    expect(await runSearchCli(["skills", "repo-tom.quest", "--skills-dir", dir], { env: {}, write: (line) => output.push(line), error: () => {} })).toBe(0);
+    expect(output.join("\n")).toContain("repo-tom-quest");
+    expect(output.join("\n")).toContain("The repo body.");
+  });
+
+  it("refuses two installed directories that punctuation maps to one skill", async () => {
+    const dir = installed();
+    const legacy = path.join(dir, "tom-repo-tom.quest");
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.writeFileSync(path.join(legacy, "SKILL.md"), "---\nname: tom-repo-tom.quest\ndescription: legacy\n---\n\nLegacy body.\n");
+    const errors = [];
+    expect(await runSearchCli(["skills", "--skills-dir", dir], { env: {}, write: () => {}, error: (line) => errors.push(line) })).toBe(2);
+    expect(errors).toEqual(['skill directories "tom-repo-tom-quest" and "tom-repo-tom.quest" both map to repo-tom-quest']);
   });
 
   it("refuses an unknown name with its near misses and appends the refusal to the run's envelope", async () => {
@@ -527,7 +546,7 @@ describe("installed skills", () => {
     expect(errors[0]).toContain('skill "know-nothing" is not in the catalog');
     expect(errors[0]).toContain("near misses: know-mulch");
 
-    // `tts search skills` runs inside the child, and a run's sidecar only
+    // `tts-search skills` runs inside the child, and a run's sidecar only
     // exists after its claim — so the SPOOL is what the refusal lands on.
     const envelope = JSON.parse(fs.readFileSync(path.join(spoolDir, `${token}.json`), "utf8"));
     expect(envelope.skills.asked).toMatchObject([{ name: "know-nothing", result: "refused", why: "not in the catalog" }]);
@@ -558,17 +577,49 @@ describe("installed skills", () => {
     expect(JSON.parse(json[0])).toEqual({ skills: [] });
   });
 
-  it("looks in CLAUDE_CONFIG_DIR first and the Codex root second, on either machine", () => {
-    // The box reaches its per-account root (/root/.claude-accounts/<account>)
-    // ONLY through CLAUDE_CONFIG_DIR; the laptop sets none and falls back.
-    expect(skillRoots({ CLAUDE_CONFIG_DIR: "/root/.claude-accounts/wpi", HOME: "/root" })).toEqual([
+  it("chooses the running CLI's root and honors a custom CODEX_HOME", () => {
+    expect(skillRoots({ TTS_CLI: "Claude Code", CLAUDE_CONFIG_DIR: "/root/.claude-accounts/wpi", HOME: "/root" })).toEqual([
       path.join("/root/.claude-accounts/wpi", "skills"),
-      path.join("/root", ".codex", "skills"),
     ]);
-    expect(skillRoots({ HOME: "/home/tom" })).toEqual([
-      path.join("/home/tom", ".claude", "skills"),
+    expect(skillRoots({ HOME: "/home/tom" })).toEqual([]);
+    expect(skillRoots({ CODEX_THREAD_ID: "thread", HOME: "/home/tom" })).toEqual([
       path.join("/home/tom", ".codex", "skills"),
     ]);
+    expect(skillRoots({ TTS_CLI: "Codex", CODEX_HOME: "/srv/custom-codex", HOME: "/home/tom" })).toEqual([
+      path.join("/srv/custom-codex", "skills"),
+    ]);
+  });
+
+  it("does not read a catalog without launcher identity and reports the notice in both forms", async () => {
+    const env = { HOME: fs.mkdtempSync(path.join(os.tmpdir(), "tts-unidentified-skills-")) };
+    temporary.push(env.HOME);
+    expect(runningCli(env)).toBeNull();
+    const plain = [];
+    expect(await runSearchCli(["skills"], { env, write: (line) => plain.push(line), error: () => {} })).toBe(0);
+    expect(plain).toEqual(["tts-search: launcher identity missing; skill catalog was not read"]);
+    const json = [];
+    expect(await runSearchCli(["skills", "--json"], { env, write: (line) => json.push(line), error: () => {} })).toBe(0);
+    expect(JSON.parse(json[0])).toEqual({ skills: [], note: "tts-search: launcher identity missing; skill catalog was not read" });
+  });
+
+  it("does not read a stale Claude catalog during a Codex run", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "tts-cli-catalog-"));
+    temporary.push(home);
+    const claude = path.join(home, ".claude", "skills", "tom-write");
+    const codexHome = path.join(home, "custom-codex");
+    const codex = path.join(codexHome, "skills", "tom-write");
+    fs.mkdirSync(claude, { recursive: true });
+    fs.mkdirSync(codex, { recursive: true });
+    fs.writeFileSync(path.join(claude, "SKILL.md"), "---\nname: tom-write\ndescription: stale\n---\n\nSTALE CLAUDE BODY\n");
+    fs.writeFileSync(path.join(codex, "SKILL.md"), "---\nname: tom-write\ndescription: current\n---\n\nCURRENT CODEX BODY\n");
+    const output = [];
+    expect(await runSearchCli(["skills", "write"], {
+      env: { TTS_CLI: "Codex", HOME: home, CODEX_HOME: codexHome },
+      write: (line) => output.push(line),
+      error: () => {},
+    })).toBe(0);
+    expect(output.join("\n")).toContain("CURRENT CODEX BODY");
+    expect(output.join("\n")).not.toContain("STALE CLAUDE BODY");
   });
 
   it("takes only the options that apply to it, and a name instead of a group", () => {

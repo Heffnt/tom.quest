@@ -4,7 +4,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
-import { registrationSidecarPath, writeRegistration } from "../worker/runs/registration.mjs";
+import { registrationSidecarPath, writeRegistration, writeRegistrationReceipt } from "../worker/runs/registration.mjs";
 
 const SCRIPT = path.resolve("scripts/run-hook.mjs");
 
@@ -24,6 +24,8 @@ function run(payload, { state, sweep, env = {}, args = [] }) {
       ...process.env,
       RUN_SWEEP_STATE_DIR: state,
       RUN_SWEEP_SCRIPT: sweep,
+      TTS_RUN_REG_TOKEN: "",
+      TTS_RUN_REG_SPOOL: "",
       ...env,
     },
   });
@@ -88,6 +90,10 @@ describe("run lifecycle hook", () => {
       writer: { file: "worker/jobs/evals.mjs", job: "evals" },
       registration: { host: "laptop", runner: "claude", origin: "cron:evals", kind: "job" },
     });
+    writeRegistrationReceipt({
+      runFile: payload.transcript_path,
+      receipt: { skillsGranted: ["write"], skillsRefused: ["know-private"] },
+    });
     const result = run(payload, {
       ...f,
       env: { TTS_RUN_REG_TOKEN: spooled.token, TTS_RUN_REG_SPOOL: spoolDir },
@@ -98,27 +104,45 @@ describe("run lifecycle hook", () => {
       token: spooled.token,
       writer: { file: "worker/jobs/evals.mjs" },
       claim: { by: "hook:SessionStart" },
+      receipt: { skillsGranted: ["write"], skillsRefused: ["know-private"] },
     });
   });
 
-  it("knows laptop startup layers before RUN_HOST is configured", () => {
+  it("records laptop startup layers but leaves skills unknown without the session-start receipt", () => {
     const f = fixture();
     const payload = payloadFor(f.root, "claude", "SessionStart");
     const result = run(payload, { ...f, env: { RUN_HOST: "" } });
     expect(result.status).toBe(0);
     const envelope = JSON.parse(fs.readFileSync(registrationSidecarPath(payload.transcript_path), "utf8"));
-    // session-start-hook.mjs loads the operate layer and nothing else, and
-    // grants write as a skill. The know layer is in neither list: its pages are
-    // ten skills the launcher grants by subject, and a session has no subject.
+    // The session-start hook owns the actual skill decision: publication can
+    // refuse a body without refusing the session. This hook therefore has no
+    // static skillsGranted claim when it did not receive that receipt.
     expect(envelope.registration).toMatchObject({
       host: null,
       origin: "laptop",
       layersKnown: true,
       layersGiven: ["operate"],
       layersDenied: [],
-      skillsGranted: ["write"],
-      skillsRefused: [],
     });
+    expect(envelope.registration.skillsGranted).toBeUndefined();
+    expect(envelope.registration.skillsRefused).toBeUndefined();
+  });
+
+  it("preserves the session-start hook's actual grant receipt without masking it as registration", () => {
+    const f = fixture();
+    const payload = payloadFor(f.root, "claude", "SessionStart");
+    writeRegistrationReceipt({
+      runFile: payload.transcript_path,
+      receipt: { skillsGranted: [], skillsRefused: ["write"] },
+    });
+    expect(run(payload, { ...f, env: { RUN_HOST: "laptop" } }).status).toBe(0);
+    const envelope = JSON.parse(fs.readFileSync(registrationSidecarPath(payload.transcript_path), "utf8"));
+    expect(envelope.registration).toMatchObject({
+      layersGiven: ["operate"],
+    });
+    expect(envelope.registration.skillsGranted).toBeUndefined();
+    expect(envelope.registration.skillsRefused).toBeUndefined();
+    expect(envelope.receipt).toMatchObject({ skillsGranted: [], skillsRefused: ["write"] });
   });
 
   it("leaves a subagent's layers unknown rather than inheriting its parent's", () => {

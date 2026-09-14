@@ -16,7 +16,7 @@
 //     which is what makes it the cache boundary.
 //
 //   THE GRANTS — about two hundred bytes naming the skills this run may load
-//     (`write`, `know-research`, `repo-tom.quest`, …), and the ones the router
+//     (`write`, `know-research`, `repo-tom-quest`, …), and the ones the router
 //     wanted that the catalog does not carry. The run loads a body itself, once,
 //     only if it needs it.
 //
@@ -34,7 +34,12 @@
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
-import { modelOfTomState, modelOfTomText } from "./ttsSkills";
+import {
+  isPublishedSkillRow,
+  modelOfTomFilesWithLegacyFallback,
+  modelOfTomState,
+  modelOfTomText,
+} from "./ttsSkills";
 import { nyCalendarDayKey, SESSION_REPO_NAMES } from "./ttsShared";
 import { renderGrants } from "../scripts/skills.mjs";
 import {
@@ -109,13 +114,54 @@ export const SESSION_SCAN_MAX = 60;
 const SESSION_SCAN_PER_STATUS = SESSION_SCAN_MAX / 2;
 /** Every model-of-tom source file, so each area page's `categories:` line is
  * readable — that line is what routes a todo's category to an area's skill.
- * The model-of-tom door caps its post at the same number. */
+ * The model-of-tom door caps its post at the same number.
+ * REMOVAL CHECK: retain this read-time ceiling as defence in depth. A bad or
+ * legacy writer must not turn context assembly into an unbounded read. */
 const MODEL_OF_TOM_FILES_MAX = 64;
 const BATCH_TODOS_MAX = 40;
 /** The catalog is fourteen rows; the ceiling is the door's. */
 const SKILLS_MAX = 64;
 const RULINGS_PER_SUBJECT = 5;
 const OUTCOMES_PER_BATCH = 3;
+// The former relevance assembler gave these volatile facts this total room.
+// They still ride the opener, so removing the caps would recreate its large tail.
+export const RULINGS_BYTES = 2048;
+export const OUTCOMES_BYTES = 1536;
+
+function boundedFactText<Row>(rows: Row[], maxBytes: number, render: (row: Row) => string): string[] {
+  const chosen = [];
+  let used = 0;
+  for (const row of rows) {
+    const text = render(row);
+    const bytes = byteLength(text);
+    if (used + bytes > maxBytes) break;
+    chosen.push(text);
+    used += bytes;
+  }
+  return chosen;
+}
+
+/** The grant names published, immutable bodies; this small tail carries the
+ * subject's live facts, which have no body a session could load later. */
+function recordFacts(record: ContextRecord): string {
+  const rulings = boundedFactText(
+    [...record.rulings]
+      .sort((a, b) => b.ruledAt - a.ruledAt || a.verdict.localeCompare(b.verdict))
+      .slice(0, RULINGS_PER_SUBJECT),
+    RULINGS_BYTES,
+    (ruling) => `${ruling.ruledDay} ${ruling.verdict}${ruling.sentence ? `: ${ruling.sentence}` : ""}`,
+  );
+  const outcomes = boundedFactText(
+    record.sessions,
+    OUTCOMES_BYTES,
+    (session) => `${session.endedDay} ${session.outcome}${session.outcomeSummary ? `: ${session.outcomeSummary}` : ""}`,
+  );
+  if (rulings.length === 0 && outcomes.length === 0) return "";
+  return [
+    ...(rulings.length === 0 ? [] : ["RULINGS ON THIS SUBJECT", ...rulings.map((ruling) => `- ${ruling}`)]),
+    ...(outcomes.length === 0 ? [] : ["RECENT SESSION OUTCOMES", ...outcomes.map((outcome) => `- ${outcome}`)]),
+  ].join("\n");
+}
 
 // ── The record ───────────────────────────────────────────────────────────────
 // Exactly the fields worker/jobs/skill-router.mjs reads, and no more. The
@@ -135,6 +181,7 @@ type ContextRecord = {
     entryAction?: string;
     batchId?: string;
     repos?: string[];
+    codeRepo?: string;
   }[];
   batches: { id: string; repos?: string[] }[];
   rulings: {
@@ -168,6 +215,13 @@ function todoRow(todo: Doc<"dtsTodos">): ContextRecord["todos"][number] {
     workDescription: todo.workDescription,
     entryAction: todo.entryAction,
     batchId: todo.batchId,
+    // The goal's CODE SUBJECT repository, carried for the router's area row
+    // alone: a goal bound to an upstream code todo names the repository that
+    // work lives in even when its batch declares no repos, and 60 active rows
+    // carry it. The paired `codeExternalId` is NOT carried — nothing in the
+    // routing table reads it, and this record holds exactly what the router
+    // reads.
+    codeRepo: todo.codeRepo,
   };
 }
 
@@ -249,11 +303,13 @@ async function readRecord(
   }
 
   // A session is read two ways — by its batch and by its repos — and one
-  // session is very often both. Deduplicated by id HERE rather than by rendered
-  // text, so a batch's own last session cannot appear twice in one record.
+  // session is very often both. The batch walk gets the three context slots
+  // first, in its indexed recency order; repository outcomes fill only what is
+  // left. Deduplicate by id here rather than rendered text, so a batch's own
+  // last session cannot appear twice in one record.
   const seenSessions = new Set<string>();
   const addSession = (session: Doc<"claudeSessions">) => {
-    if (seenSessions.has(session._id)) return;
+    if (seenSessions.has(session._id) || record.sessions.length >= OUTCOMES_PER_BATCH) return;
     const row = sessionRow(session);
     if (row === null) return;
     seenSessions.add(session._id);
@@ -269,21 +325,26 @@ async function readRecord(
     for (const session of onBatch) addSession(session);
   }
 
-  // The unindexed half: the two terminal statuses, newest first, filtered in
-  // memory on `repos`. SESSION_SCAN_MAX documents to a reader exactly how deep
-  // this walk can go — nothing here is a table scan.
+  // The unindexed half: each terminal-status walk is newest first, then their
+  // matching rows compete by timestamp before they fill the remaining slots.
+  // SESSION_SCAN_MAX documents tells a reader exactly how deep this walk can
+  // go — nothing here is a table scan.
   if (repos.length > 0) {
-    for (const status of ["ended", "failed"] as const) {
-      const recent = await ctx.db
+    const recentByStatus = await Promise.all((["ended", "failed"] as const).map(async (status) =>
+      await ctx.db
         .query("claudeSessions")
         .withIndex("by_status", (q) => q.eq("status", status))
         .order("desc")
-        .take(SESSION_SCAN_PER_STATUS);
-      for (const session of recent) {
-        if (!(session.repos ?? [session.repo]).some((repo) => repos.includes(repo))) continue;
-        addSession(session);
-      }
-    }
+        .take(SESSION_SCAN_PER_STATUS),
+    ));
+    const repositorySessions = recentByStatus
+      .flat()
+      .filter((session) =>
+        !seenSessions.has(session._id)
+        && (session.repos ?? [session.repo]).some((repo) => repos.includes(repo)),
+      )
+      .sort((a, b) => b.statusChangedAt - a.statusChangedAt || a._id.localeCompare(b._id));
+    for (const session of repositorySessions) addSession(session);
   }
   return { record, repos };
 }
@@ -324,7 +385,7 @@ async function readRecord(
  * here and every repo the subject names is granted as a skill, even to a run
  * standing in that checkout. What would close it is the session's own working
  * directory ON THE ROW at insert time, passed through to this call; until that
- * exists, a box session in tom.quest carries a `repo-tom.quest` grant it does
+ * exists, a box session in tom.quest carries a `repo-tom-quest` grant it does
  * not need, which costs one line of the grant block and no bytes of body.
  *
  * FAILS CLOSED, like every other reader of the publication: a deployment with
@@ -344,10 +405,14 @@ export async function assembleContext(
 
   const files = await ctx.db.query("modelOfTomFiles").withIndex("by_name").take(MODEL_OF_TOM_FILES_MAX + 1);
   if (files.length > MODEL_OF_TOM_FILES_MAX) throw new Error("too many model-of-tom files to assemble context from");
-  const pages = files.map((file) => ({ path: file.sourcePath, body: file.body }));
 
-  const catalog = await ctx.db.query("ttsSkills").withIndex("by_name").take(SKILLS_MAX + 1);
+  const storedSkills = await ctx.db.query("ttsSkills").withIndex("by_name").take(SKILLS_MAX + 1);
+  // During the widening deploy, old per-file rows can coexist with the schema.
+  // They are not published skills and therefore count as an empty catalog.
+  const catalog = storedSkills.filter(isPublishedSkillRow);
   if (catalog.length > SKILLS_MAX) throw new Error("too many published skills to assemble context from");
+  const pages = modelOfTomFilesWithLegacyFallback(files, storedSkills)
+    .map((file) => ({ path: file.sourcePath, body: file.body }));
 
   const now = options.now ?? Date.now();
   const { record } = subject.kind === "none"
@@ -382,7 +447,11 @@ export async function assembleContext(
   // one the BODIES a run is about to load actually came from. With no catalog
   // at all there are no bodies, and the base's commit is the only one there is.
   const commit = catalog[0]?.commit ?? state.commit;
-  const grants = renderGrantBlock({ commit, granted, refused });
+  // A ruling or outcome is live record state, not a published skill body. It
+  // must ride the session that needs it; naming a skill could not recover it.
+  const grants = [renderGrantBlock({ commit, granted, refused }), recordFacts(record)]
+    .filter((part) => part !== "")
+    .join("\n\n");
 
   // THE `given` EDGES, named from the pages already read above rather than
   // guessed. Nothing here changes `prefix`, `grants` or `granted`: this is a

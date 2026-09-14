@@ -66,3 +66,9 @@ test-results/
 # A committed draft would enter the golden set unconfirmed, which is the one
 # thing the evals layer exists to prevent.
 evals/triggers/*.draft.json
+
+# Privacy rule: nothing from model-of-tom enters this public repository; area
+# trigger cases live in WikiTom evals/triggers/.
+evals/triggers/skill-know-*.json
+!evals/triggers/skill-know-intent.json
+!evals/triggers/skill-know-week.json

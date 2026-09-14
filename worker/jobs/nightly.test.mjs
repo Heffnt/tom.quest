@@ -55,10 +55,9 @@ import {
   parseLearningAnswer,
   planTableFiles,
   postStep,
+  promoteStagedSkills,
   parseArgs,
   boxSkillsDirs,
-  readSkillCatalog,
-  referencePathResolver,
   repoRulesStep,
   readManifests,
   rebaseInProgress,
@@ -2674,7 +2673,7 @@ describe("the git half", { timeout: 60_000 }, () => {
     const r = learningRun(dir);
     const outs = skillsDirs(1);
     const convex = fakeConvex();
-    const result = await postStep(r, { fetch: convex.fetch, checkouts: [] });
+    const result = await postStep(r, { fetch: convex.fetch, checkouts: [], skillsDirs: outs });
     // Neither half: it is the same HEAD, and a skill body read off a
     // half-replayed commit is the same bad post one table over.
     expect(result).toMatchObject({ commit: null, pushed: false, files: null, skills: null });
@@ -2693,7 +2692,7 @@ describe("the git half", { timeout: 60_000 }, () => {
     // guard is what stopped it and not the state of the checkout's files.
     abortStaleRebase(dir);
     const after = learningRun(dir);
-    await postStep(after, { fetch: fakeConvex().fetch, checkouts: [] });
+    await postStep(after, { fetch: fakeConvex().fetch, checkouts: [], skillsDirs: outs });
     // The repository now carries agent-rules.md (learningCheckout writes it),
     // so the first required file the assembler misses is an area page.
     expect(after.failures[0].error).toContain("is absent");
@@ -2769,9 +2768,10 @@ describe("the git half", { timeout: 60_000 }, () => {
   }
   /** Somewhere other than /root for the skills half to write. */
   function skillsDirs(count = 3) {
-    const dirs = Array.from({ length: count }, () => tmp());
-    vi.stubEnv("TTS_SKILLS_DIRS", dirs.join(path.delimiter));
-    return dirs;
+    return Array.from({ length: count }, () => tmp());
+  }
+  function stagedSiblings(out) {
+    return fs.readdirSync(path.dirname(out)).filter((name) => name.startsWith(".tts-skills-stage-"));
   }
   /** A fetch that keeps every post, and throws for the routes named. */
   function recording(posts, refuse = {}) {
@@ -2792,7 +2792,7 @@ describe("the git half", { timeout: 60_000 }, () => {
     write(dir, "model-of-tom/writing.md", "# Writing\n\nUncommitted.\n");
 
     const posts = [];
-    const result = await postStep(learningRun(dir), { fetch: recording(posts), checkouts: [] });
+    const result = await postStep(learningRun(dir), { fetch: recording(posts), checkouts: [], skillsDirs: outs });
 
     const layers = {
       operate: "── model-of-tom/agent-rules.md ──\n# Rules\n\nOperate safely.\n",
@@ -2850,7 +2850,7 @@ describe("the git half", { timeout: 60_000 }, () => {
   // witness: one widened door. A night whose skill bodies would not build took
   // the model-of-tom post down with them, and every prompt the next day began
   // with nothing about Tom at all.
-  it("names the two Claude accounts' skill directories and Codex's, and lets a test move them", () => {
+  it("names the two Claude accounts' skill directories and Codex's", () => {
     // The two accounts are separated by CLAUDE_CONFIG_DIR; the third is
     // $CODEX_HOME/skills, and CODEX_HOME on the box is /root/.codex.
     expect([...BOX_SKILLS_DIRS]).toEqual([
@@ -2859,21 +2859,20 @@ describe("the git half", { timeout: 60_000 }, () => {
       "/root/.codex/skills",
     ]);
     expect(boxSkillsDirs()).toEqual([...BOX_SKILLS_DIRS]);
-    vi.stubEnv("TTS_SKILLS_DIRS", ["/tmp/one", "/tmp/two"].join(path.delimiter));
-    expect(boxSkillsDirs()).toEqual(["/tmp/one", "/tmp/two"]);
   });
 
   it("writes every skills directory and then posts the catalog", async () => {
     const dir = preludeRepo();
     const outs = skillsDirs();
     const posts = [];
-    const result = await postStep(learningRun(dir), { fetch: recording(posts), checkouts: [] });
+    const result = await postStep(learningRun(dir), { fetch: recording(posts), checkouts: [], skillsDirs: outs });
 
     expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/skills"]);
     const catalog = posts[1].body;
     expect(catalog.commit).toBe(result.commit);
     expect(catalog.pushed).toBe(false);
     expect(typeof catalog.syncedAt).toBe("number");
+    expect(catalog.syncedAt).toBe(Number(run(dir, "log", "-1", "--format=%ct", "HEAD").trim()) * 1000);
     expect(catalog.refused).toEqual([]);
     const names = catalog.skills.map((skill) => skill.name);
     expect(names).toEqual(expect.arrayContaining(["write", "know-intent", "know-week"]));
@@ -2898,17 +2897,20 @@ describe("the git half", { timeout: 60_000 }, () => {
       expect(fs.readFileSync(path.join(out, "tom-write", "SKILL.md"), "utf8")).toContain("name: tom-write");
       expect(fs.existsSync(path.join(out, "tom-write", "ground.md"))).toBe(true);
     }
-    expect(result.skills).toEqual({ commit: result.commit, count: names.length, dirs: outs, refused: [] });
+    expect(result.skills).toEqual({ commit: result.commit, count: names.length, dirs: outs, refused: [], syncedAt: catalog.syncedAt });
   });
 
   it("records a skills-publication failure of its own, and the base still went out", async () => {
     const dir = preludeRepo();
-    const outs = skillsDirs(1);
+    const stageRoot = tmp();
+    const outs = [path.join(stageRoot, "skills")];
+    fs.mkdirSync(outs[0]);
     const r = learningRun(dir);
     const posts = [];
     const result = await postStep(r, {
       fetch: recording(posts),
       checkouts: [],
+      skillsDirs: outs,
       publishSkills: () => {
         throw new Error("the skill generator fell over");
       },
@@ -2923,6 +2925,51 @@ describe("the git half", { timeout: 60_000 }, () => {
     expect(result.files).toContain("model-of-tom/agent-rules.md");
     expect(result.skills).toBeNull();
     expect(fs.readdirSync(outs[0])).toEqual([]);
+    expect(stagedSiblings(outs[0])).toEqual([]);
+  });
+
+  it.each([
+    ["is absent", () => path.join(tmp(), "missing-checkout")],
+    ["is not a git checkout", () => tmp()],
+  ])("refuses a skills publication when a configured checkout %s, preserving the catalog bytes", async (_case, checkoutDir) => {
+    const dir = preludeRepo();
+    const stageRoot = tmp();
+    const out = path.join(stageRoot, "skills");
+    write(out, "tom-write/SKILL.md", "published skill bytes\n");
+    const r = learningRun(dir);
+    const posts = [];
+    const result = await postStep(r, {
+      fetch: recording(posts),
+      checkouts: [{ repo: "tom.quest", dir: checkoutDir() }],
+      skillsDirs: [out],
+    });
+
+    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/event"]);
+    expect(posts[1].body.data.step).toBe("skills");
+    expect(r.failures).toEqual([expect.objectContaining({ step: "skills", error: expect.stringContaining("tom.quest") })]);
+    expect(result.skills).toBeNull();
+    expect(fs.readFileSync(path.join(out, "tom-write", "SKILL.md"), "utf8")).toBe("published skill bytes\n");
+    expect(stagedSiblings(out)).toEqual([]);
+  });
+
+  it("removes every owned stage when per-directory catalog generation disagrees", async () => {
+    const dir = preludeRepo();
+    const stageRoot = tmp();
+    const outs = [path.join(stageRoot, "first"), path.join(stageRoot, "second")];
+    let calls = 0;
+    const result = await postStep(learningRun(dir), {
+      fetch: recording([]),
+      checkouts: [],
+      skillsDirs: outs,
+      publishSkills: () => {
+        calls += 1;
+        return { commit: `commit-${calls}`, catalog: [{ name: "write" }], refused: [] };
+      },
+    });
+
+    expect(result.skills).toBeNull();
+    expect(calls).toBe(2);
+    for (const out of outs) expect(stagedSiblings(out)).toEqual([]);
   });
 
   it("records a refused base post and still publishes the skills, saying the store has no commit", async () => {
@@ -2933,6 +2980,7 @@ describe("the git half", { timeout: 60_000 }, () => {
     const result = await postStep(r, {
       fetch: recording(posts, { "/tts/model-of-tom": "Convex refused the base (503)" }),
       checkouts: [],
+      skillsDirs: outs,
     });
 
     expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/event", "/tts/skills"]);
@@ -2944,14 +2992,21 @@ describe("the git half", { timeout: 60_000 }, () => {
     expect(fs.readdirSync(outs[0]).length).toBeGreaterThan(0);
   });
 
-  it("records a refused /tts/skills post without throwing, and leaves the directories written", async () => {
+  it("records a refused /tts/skills post without changing the prior directory bytes", async () => {
     const dir = preludeRepo();
     const outs = skillsDirs(1);
+    write(outs[0], "tom-write/SKILL.md", "old skill bytes\n");
+    write(outs[0], "tom-write/ground.md", "old reference bytes\n");
+    const before = {
+      skill: fs.readFileSync(path.join(outs[0], "tom-write", "SKILL.md"), "utf8"),
+      reference: fs.readFileSync(path.join(outs[0], "tom-write", "ground.md"), "utf8"),
+    };
     const r = learningRun(dir);
     const posts = [];
     const result = await postStep(r, {
       fetch: recording(posts, { "/tts/skills": "Convex refused the catalog (503)" }),
       checkouts: [],
+      skillsDirs: outs,
     });
 
     expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/skills", "/tts/event"]);
@@ -2959,52 +3014,67 @@ describe("the git half", { timeout: 60_000 }, () => {
     expect(r.failures[0].error).toContain("503");
     expect(result.commit).not.toBeNull();
     expect(result.skills).toBeNull();
-    // The bodies are on the disk and tonight's agents will load them; what is
-    // stale is the catalog Convex serves, and that is what the row says.
-    expect(fs.readdirSync(outs[0]).length).toBeGreaterThan(0);
+    // The generated catalog lived only in a private staging directory. Convex
+    // kept its old catalog, and the byte-for-byte old local body stayed live.
+    expect(fs.readFileSync(path.join(outs[0], "tom-write", "SKILL.md"), "utf8")).toBe(before.skill);
+    expect(fs.readFileSync(path.join(outs[0], "tom-write", "ground.md"), "utf8")).toBe(before.reference);
   });
 
-  it("reads a published skill back as the catalog entry, and throws when SKILL.md is not what it wrote", async () => {
+  it("records an accepted catalog whose local promotion fails, with prior bytes restored", async () => {
     const dir = preludeRepo();
     const outs = skillsDirs(1);
-    await postStep(learningRun(dir), { fetch: recording([]), checkouts: [] });
-    const { publishSkills } = await import("../../scripts/publish-skills.mjs");
-    const { skillDirName, referenceName } = await import("../../scripts/skills.mjs");
-    const published = publishSkills({ wikitom: dir, commit: "HEAD", repos: [], out: outs[0] });
-    const readers = { skillDirName, referencePath: referencePathResolver(new Map(), referenceName) };
-    expect(readSkillCatalog(outs[0], published, readers).map((skill) => skill.name).sort())
-      .toEqual(published.skills.map((skill) => skill.name).sort());
-    // A body edited under the reader is a loud failure, not a quiet wrong post.
-    const target = path.join(outs[0], skillDirName(published.skills[0].name), "SKILL.md");
-    fs.writeFileSync(target, `${fs.readFileSync(target, "utf8")}tampered\n`);
-    expect(() => readSkillCatalog(outs[0], published, readers)).toThrow(/did not read back/);
+    write(outs[0], "tom-write/SKILL.md", "old skill bytes\n");
+    const r = learningRun(dir);
+    const posts = [];
+    const result = await postStep(r, {
+      fetch: recording(posts),
+      checkouts: [],
+      skillsDirs: outs,
+      promoteSkills: () => { throw new Error("disk promotion failed"); },
+    });
+
+    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/skills", "/tts/event"]);
+    expect(result.skills).toBeNull();
+    expect(r.failures).toEqual([expect.objectContaining({ step: "skills", error: "disk promotion failed" })]);
+    expect(fs.readFileSync(path.join(outs[0], "tom-write", "SKILL.md"), "utf8")).toBe("old skill bytes\n");
   });
 
-  // witness: `convex/AGENTS.md` flattens to `convex-AGENTS.md`, and tom.quest
-  // has a `turing-api/` — so unflattening a reference name on its hyphens
-  // invents `turing/api/AGENTS.md`. The path is looked up, never inverted.
-  it("resolves a reference's source path by lookup, and refuses to guess one", () => {
-    const referenceName = (file) => file.replace(/\//g, "-");
-    const resolve = referencePathResolver(
-      new Map([["tom.quest", ["AGENTS.md", "turing-api/AGENTS.md", "convex/AGENTS.md"]]]),
-      referenceName,
-    );
-    const repo = (name, origin) => ({ name, group: "repo", origin, sourcePaths: ["AGENTS.md"], file: "f" });
-    expect(resolve(repo("turing-api-AGENTS.md", "tom.quest"))).toBe("turing-api/AGENTS.md");
-    // And the group decides, not the origin: WikiTom is both the vault every
-    // write and know skill is built from and a repository with rules of its
-    // own, so ground.md must not take the repo lookup.
-    expect(resolve({
-      name: "ground.md",
-      group: "write",
-      origin: "WikiTom",
-      sourcePaths: ["model-of-tom/writing.md"],
-      file: "f",
-    })).toBe("model-of-tom/ground.md");
-    expect(() => resolve(repo("app-AGENTS.md", "tom.quest"))).toThrow(/no rules file named/);
-    expect(() => resolve(repo("AGENTS.md", "WikiTom"))).toThrow(/no rules file named/);
+  it("rolls earlier live directories back when a later staged promotion cannot finish", () => {
+    const outs = skillsDirs(2);
+    write(outs[0], "tom-write/SKILL.md", "first old bytes\n");
+    write(outs[1], "tom-write/SKILL.md", "second old bytes\n");
+    const firstStage = tmp();
+    const brokenStage = tmp();
+    write(firstStage, "tom-write/SKILL.md", "first new bytes\n");
+    // `brokenStage` deliberately has no tom-write directory: the failure is
+    // after the first destination was promoted, so restoration is observable.
+    expect(() => promoteStagedSkills([
+      { out: outs[0], stage: firstStage },
+      { out: outs[1], stage: brokenStage },
+    ], ["tom-write"])).toThrow("restored the prior local directories");
+    expect(fs.readFileSync(path.join(outs[0], "tom-write", "SKILL.md"), "utf8")).toBe("first old bytes\n");
+    expect(fs.readFileSync(path.join(outs[1], "tom-write", "SKILL.md"), "utf8")).toBe("second old bytes\n");
   });
 
+  it("does not report a rejected stale skills base as newly synced", async () => {
+    const dir = preludeRepo();
+    const r = learningRun(dir);
+    const posts = [];
+    const result = await postStep(r, {
+      fetch: recording(posts, { "/tts/skills": "the post's commit is older than the stored catalog — store left as it was" }),
+      checkouts: [],
+      skillsDirs: skillsDirs(1),
+    });
+    expect(posts.find((post) => post.route === "/tts/skills").body.syncedAt)
+      .toBe(Number(run(dir, "log", "-1", "--format=%ct", "HEAD").trim()) * 1000);
+    expect(result.skills).toBeNull();
+    expect(r.failures).toEqual([expect.objectContaining({ step: "skills" })]);
+  });
+
+  // witness: `convex/AGENTS.md` is published as `convex__AGENTS.md`, so a
+  // directory boundary no longer becomes a hyphen that tom.quest's own
+  // `turing-api/` already contains. The path is still looked up and never
+  // inverted, and buildSkills refuses a publication whose encoded names collide.
   // ── the repo rules, three checkouts ──────────────────────────────────────
   /** A one-commit repository whose root AGENTS.md is the given body. */
   function rulesRepo(body) {
@@ -3019,38 +3089,124 @@ describe("the git half", { timeout: 60_000 }, () => {
   it("names the three checkouts whose AGENTS.md ride into Convex", () => {
     expect(REPO_CHECKOUTS.map((entry) => entry.repo)).toEqual(["tom.quest", "WikiTom", "ComplexMultiTrigger"]);
     expect(REPO_CHECKOUTS.map((entry) => entry.dir)).toEqual([TOM_QUEST_DIR, WIKITOM_DIR, CMT_DIR]);
+    if (process.platform !== "win32") expect(CMT_DIR).toBe("/var/cache/tts/ComplexMultiTrigger");
   });
 
   it("posts every repo in the list", async () => {
+    const wikiTom = rulesRepo("# WikiTom\n\nThe vault.\n");
     const checkouts = [
       { repo: "tom.quest", dir: rulesRepo("# tom.quest\n\nThe site.\n") },
-      { repo: "WikiTom", dir: rulesRepo("# WikiTom\n\nThe vault.\n") },
+      { repo: "WikiTom", dir: wikiTom },
       { repo: "ComplexMultiTrigger", dir: rulesRepo("# CMT\n\nThe research code.\n") },
     ];
     const r = learningRun(tmp());
     const convex = fakeConvex();
-    const result = await repoRulesStep(r, { fetch: convex.fetch, checkouts });
+    const result = await repoRulesStep(r, {
+      fetch: convex.fetch,
+      checkouts,
+      wikiTomCommit: run(wikiTom, "rev-parse", "HEAD").trim(),
+    });
     expect(result.repos.map((entry) => entry.repo)).toEqual(["tom.quest", "WikiTom", "ComplexMultiTrigger"]);
     expect(convex.posts.map((post) => post.route)).toEqual(["/tts/repo-rules", "/tts/repo-rules", "/tts/repo-rules"]);
     expect(convex.posts.map((post) => post.body.repo)).toEqual(["tom.quest", "WikiTom", "ComplexMultiTrigger"]);
     expect(r.failures).toEqual([]);
   });
 
+  it("does not report a rejected stale repo rules base as newly synced", async () => {
+    const checkout = { repo: "tom.quest", dir: rulesRepo("# tom.quest\n\nThe site.\n") };
+    const r = learningRun(tmp());
+    const posts = [];
+    const result = await repoRulesStep(r, {
+      checkouts: [checkout],
+      commitTime: () => 123,
+      fetch: async (_env, route, body) => {
+        posts.push({ route, body });
+        throw new Error("the post's commit is older than the stored rules — store left as it was");
+      },
+    });
+    expect(posts[0]).toEqual(expect.objectContaining({ route: "/tts/repo-rules", body: expect.objectContaining({ syncedAt: 123 }) }));
+    expect(result.repos).toEqual([]);
+    expect(r.failures).toEqual([expect.objectContaining({ step: "repo-rules" })]);
+  });
+
   // witness: one loop, one throw. A box rebuilt with two of the three clones
   // present posted nothing at all, because the first missing one ended the loop.
   it("loses only the checkout that is missing, and the other two still post", async () => {
+    const wikiTom = rulesRepo("# WikiTom\n\nThe vault.\n");
     const checkouts = [
       { repo: "tom.quest", dir: path.join(tmp(), "never-cloned") },
-      { repo: "WikiTom", dir: rulesRepo("# WikiTom\n\nThe vault.\n") },
+      { repo: "WikiTom", dir: wikiTom },
       { repo: "ComplexMultiTrigger", dir: path.join(tmp(), "also-never-cloned") },
     ];
     const r = learningRun(tmp());
     const convex = fakeConvex();
-    const result = await repoRulesStep(r, { fetch: convex.fetch, checkouts });
+    const result = await repoRulesStep(r, {
+      fetch: convex.fetch,
+      checkouts,
+      wikiTomCommit: run(wikiTom, "rev-parse", "HEAD").trim(),
+    });
     expect(result.repos.map((entry) => entry.repo)).toEqual(["WikiTom"]);
     expect(convex.posts.filter((post) => post.route === "/tts/repo-rules").map((post) => post.body.repo)).toEqual(["WikiTom"]);
     expect(r.failures.map((failure) => failure.step)).toEqual(["repo-rules", "repo-rules"]);
     expect(r.failures[0].error).toContain("is not a git checkout");
     expect(r.failures[1].error).toContain("also-never-cloned");
+  });
+
+  it("posts WikiTom rules from the model-of-tom commit, not its newer HEAD or work tree", async () => {
+    const wikiTom = rulesRepo("# WikiTom\n\nPinned rules.\n");
+    const pinned = run(wikiTom, "rev-parse", "HEAD").trim();
+    write(wikiTom, "AGENTS.md", "# WikiTom\n\nNewer HEAD rules.\n");
+    run(wikiTom, "commit", "-am", "newer rules");
+    write(wikiTom, "AGENTS.md", "# WikiTom\n\nWorking-tree rules.\n");
+    const r = learningRun(tmp());
+    const convex = fakeConvex();
+
+    await repoRulesStep(r, {
+      fetch: convex.fetch,
+      checkouts: [{ repo: "WikiTom", dir: wikiTom }],
+      wikiTomCommit: pinned,
+    });
+
+    const post = convex.posts.find((entry) => entry.route === "/tts/repo-rules");
+    expect(post.body).toMatchObject({ repo: "WikiTom", commit: pinned });
+    expect(post.body.files).toEqual([
+      {
+        path: "AGENTS.md",
+        body: "# WikiTom\n\nPinned rules.\n",
+        bytes: Buffer.byteLength("# WikiTom\n\nPinned rules.\n"),
+      },
+    ]);
+  });
+
+  it("omits WikiTom when the model-of-tom post has no commit without reading its work tree", async () => {
+    const wikiTom = rulesRepo("# WikiTom\n\nPinned rules.\n");
+    const wikiTomAgents = path.join(wikiTom, "AGENTS.md");
+    write(wikiTom, "AGENTS.md", "# WikiTom\n\nWorking-tree rules.\n");
+    const originalReadFileSync = fs.readFileSync;
+    const readFileSync = vi.spyOn(fs, "readFileSync").mockImplementation((file, ...args) => {
+      if (path.resolve(String(file)) === path.resolve(wikiTomAgents)) {
+        throw new Error("WikiTom working tree must not be read");
+      }
+      return originalReadFileSync.call(fs, file, ...args);
+    });
+    const r = learningRun(tmp());
+    const convex = fakeConvex();
+
+    try {
+      const result = await repoRulesStep(r, {
+        fetch: convex.fetch,
+        checkouts: [
+          { repo: "tom.quest", dir: rulesRepo("# tom.quest\n\nThe site.\n") },
+          { repo: "WikiTom", dir: wikiTom },
+          { repo: "ComplexMultiTrigger", dir: rulesRepo("# CMT\n\nThe research code.\n") },
+        ],
+        wikiTomCommit: null,
+      });
+      expect(result.repos.map((entry) => entry.repo)).toEqual(["tom.quest", "ComplexMultiTrigger"]);
+      expect(convex.posts.map((post) => post.body.repo)).toEqual(["tom.quest", "ComplexMultiTrigger"]);
+      expect(r.failures).toEqual([]);
+    } finally {
+      readFileSync.mockRestore();
+    }
   });
 });

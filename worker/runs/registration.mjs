@@ -4,13 +4,20 @@
 // never know. Keeping those facts in separate top-level groups lets each
 // writer preserve the others, including when SessionEnd races a late claim.
 //
-// THE ENVELOPE HAS FOUR GROUPS and one writer each:
+// THE ENVELOPE HAS FIVE GROUPS and one writer each:
 //
 //   writer + registration — the launcher, through writeRegistration.
 //   claim                 — the claimer, through claimRegistration or
 //                           writeRegistrationClaim.
+//   receipt               — the hook that rendered the grant block, through
+//                           writeRegistrationReceipt.
 //   end                   — SessionEnd, through writeRegistrationEnd.
-//   skills                — `tts search skills`, through appendSkillAsk.
+//   skills                — `tts-search skills`, through appendSkillAsk.
+//
+// Beside the envelope, a claim leaves ONE POINTER FILE at the token it claimed
+// (claimPointerPath). It is not a group and carries no fact about the run; it
+// exists so a child process holding only the token can still find the envelope
+// after the claim removed the spool. See claimPointerPath.
 //
 // `skills` arrived with envelopeVersion 2. A VERSION-1 ENVELOPE READS WITH
 // `skills` ABSENT AND THAT IS NOT AN ERROR: one already on disk when the
@@ -108,11 +115,19 @@ function endValue(end, now) {
   };
 }
 
+function receiptValue(receipt, now) {
+  return {
+    ...receipt,
+    at: Number.isFinite(receipt?.at) ? receipt.at : now(),
+  };
+}
+
 function skillAskValue(ask, now) {
+  if (ask?.result !== "ok" && ask?.result !== "refused") return null;
   const value = {
     at: Number.isFinite(ask?.at) ? ask.at : now(),
     name: String(ask?.name ?? ""),
-    result: ask?.result === "refused" ? "refused" : "ok",
+    result: ask.result,
   };
   if (typeof ask?.why === "string" && ask.why !== "") value.why = ask.why;
   return value;
@@ -141,6 +156,30 @@ export function registrationSidecarPath(runFile) {
 export function spoolPath(spoolDir, token) {
   if (!UUID.test(String(token))) throw new Error("invalid run registration token");
   return path.join(path.resolve(String(spoolDir)), `${token}.json`);
+}
+
+/**
+ * Where a claim leaves the run file it claimed the token into.
+ *
+ * THE TOKEN IS ALL A CHILD PROCESS HAS. The session-host puts exactly
+ * TTS_RUN_REG_TOKEN and TTS_RUN_REG_SPOOL in its child env — the transcript
+ * path is the CLI's and nobody knows it at spawn time — so `tts-search skills`
+ * can name the spool and nothing else. The claim removes the spool, and without
+ * this pointer every ask made after SessionStart, which is every ask there is,
+ * would have no envelope to land on.
+ *
+ * A SEPARATE NAME rather than leaving a stub at the spool path: writeRegistration
+ * refuses a token whose file holds different content, and the spool path is its
+ * to own. The sweep's spool cleanup ages this file out with everything else in
+ * the directory; an idempotent claim restores it before a resumed session asks.
+ */
+export function claimPointerPath(spoolDir, token) {
+  if (!UUID.test(String(token))) throw new Error("invalid run registration token");
+  return path.join(path.resolve(String(spoolDir)), `${token}.claimed.json`);
+}
+
+function writeClaimPointer(spoolDir, token, runFile, fs) {
+  try { atomicJson(claimPointerPath(spoolDir, token), { runFile: path.resolve(runFile) }, fs); } catch {}
 }
 
 /** Write the launcher-owned groups before the child can start. */
@@ -196,9 +235,24 @@ export function writeRegistrationClaim({
       envelopeVersion: existing.envelopeVersion ?? ENVELOPE_VERSION,
       token: token ?? existing.token ?? null,
       ...(writer === undefined ? {} : { writer: { ...writer, at: Number.isFinite(writer.at) ? writer.at : now() } }),
-      ...(registration === undefined ? {} : { registration: { ...registration } }),
+      ...(registration === undefined ? {} : { registration: { ...existing.registration, ...registration } }),
       claim: claimValue(claim, runFile, now),
     };
+    if (JSON.stringify(existing) !== JSON.stringify(envelope)) atomicJson(file, envelope, fs);
+    return { ok: true, file, envelope };
+  });
+}
+
+/**
+ * Write the hook-owned record of the grant block it rendered. This is separate
+ * from a claim: SessionStart can record what it showed before the CLI exposes
+ * enough facts to claim the launcher's spool.
+ */
+export function writeRegistrationReceipt({ runFile, receipt = {}, fs = fsDefault, now = Date.now } = {}) {
+  const file = registrationSidecarPath(runFile);
+  return withEnvelopeLock(file, fs, now, () => {
+    const existing = jsonAt(file, fs) ?? {};
+    const envelope = { ...existing, receipt: receiptValue(receipt, now) };
     if (JSON.stringify(existing) !== JSON.stringify(envelope)) atomicJson(file, envelope, fs);
     return { ok: true, file, envelope };
   });
@@ -215,12 +269,30 @@ export function claimRegistration({
 } = {}) {
   const source = spoolPath(spoolDir, token);
   const file = registrationSidecarPath(runFile);
-  return withEnvelopeLock(file, fs, now, () => {
+  // The spool and its sidecar are one move. Taking the spool lock first means
+  // an ask that began before the claim either lands in this envelope or follows
+  // the pointer after it; it cannot disappear between this read and delete.
+  return withEnvelopeLock(source, fs, now, () => withEnvelopeLock(file, fs, now, () => {
     const existing = jsonAt(file, fs);
     // The sidecar is already the durable binding when this token claimed it.
     // A delayed repair must not replace its launcher facts with an older spool.
     if (existing?.token === token) {
-      return { ok: true, claimed: false, file, envelope: existing };
+      // Preserve asks that reached the stale spool before this same-token claim
+      // makes it safe to delete. The two envelopes have different writers for
+      // that group, so neither one alone is authoritative.
+      const spooled = jsonAt(source, fs);
+      const skills = mergeSkillAsks(existing.skills, spooled?.token === token ? spooled.skills : undefined);
+      const envelope = skills === undefined ? existing : { ...existing, skills };
+      if (JSON.stringify(existing) !== JSON.stringify(envelope)) atomicJson(file, envelope, fs);
+      // A same-token re-claim is the condition that makes this spool deletable:
+      // the sidecar is already the durable envelope for this exact token and
+      // the pointer below names it. Leaving the stale spool would make a
+      // token-only skills writer choose it over that durable envelope.
+      try { fs.unlinkSync(source); } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      writeClaimPointer(spoolDir, token, runFile, fs);
+      return { ok: true, claimed: false, file, envelope };
     }
     const spooled = jsonAt(source, fs);
     if (!spooled) {
@@ -228,7 +300,10 @@ export function claimRegistration({
       return { ok: false, reason: "registration spool missing", file, envelope: existing };
     }
     if (spooled.token !== token) return { ok: false, reason: "registration spool token mismatch", file, envelope: existing };
-    if (existing?.token !== undefined && existing.token !== token) {
+    // REMOVAL CHECK: cannot remove; session-start-hook.mjs writes a grant
+    // receipt to a tokenless sidecar before run-hook.mjs learns the launcher's
+    // token. That receipt must be claimable into its matching token.
+    if (existing?.token !== undefined && existing.token !== null && existing.token !== token) {
       return { ok: false, reason: "registration sidecar belongs to another token", file, envelope: existing };
     }
     const envelope = {
@@ -239,9 +314,14 @@ export function claimRegistration({
       envelopeVersion: spooled.envelopeVersion ?? existing?.envelopeVersion ?? ENVELOPE_VERSION,
       token,
       writer: spooled.writer,
-      registration: spooled.registration,
+      // SessionStart's grant receipt is written beside the transcript before a
+      // launcher token can be claimed. It is the actual rendered grant block,
+      // so retain it while the launcher supplies the rest of registration.
+      registration: { ...spooled.registration, ...existing?.registration },
+      receipt: existing?.receipt,
       claim: claimValue(claim, runFile, now),
     };
+    if (envelope.receipt === undefined) delete envelope.receipt;
     const skills = mergeSkillAsks(existing?.skills, spooled.skills);
     if (skills === undefined) delete envelope.skills;
     else envelope.skills = skills;
@@ -249,8 +329,13 @@ export function claimRegistration({
     try { fs.unlinkSync(source); } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
+    // The forwarding address the spool leaves behind. A later ask holding only
+    // the token follows it to this sidecar; see claimPointerPath. It is written
+    // after the sidecar, so a reader that finds it finds an envelope there, and
+    // a failure to write it costs asks, never the claim.
+    writeClaimPointer(spoolDir, token, runFile, fs);
     return { ok: true, claimed: true, file, envelope };
-  });
+  }));
 }
 
 /** Write only the SessionEnd-owned group and preserve registration and claim. */
@@ -265,11 +350,11 @@ export function writeRegistrationEnd({ runFile, end = {}, fs = fsDefault, now = 
 }
 
 /**
- * Append one `tts search skills <name>` to the run's envelope. APPEND-ONLY and
- * the fourth writer: it touches `skills` and nothing else, under the same lock
+ * Append one `tts-search skills <name>` to the run's envelope. APPEND-ONLY and
+ * the fifth writer: it touches `skills` and nothing else, under the same lock
  * and the same atomic tmp+rename every other writer uses.
  *
- * It takes the spool, the sidecar, or both. `tts search skills` runs inside a
+ * It takes the spool, the sidecar, or both. `tts-search skills` runs inside a
  * child whose run file has NO SIDECAR YET — a sidecar is only created at claim
  * time — so the spool is the ordinary target; the sidecar wins when it exists,
  * because after a claim the spool is gone and the sidecar is the durable
@@ -284,25 +369,74 @@ export function writeRegistrationEnd({ runFile, end = {}, fs = fsDefault, now = 
  * later writer happened to add.
  */
 export function appendSkillAsk({ runFile, spoolDir, token, ask = {}, fs = fsDefault, now = Date.now } = {}) {
+  const skill = skillAskValue(ask, now);
+  // The producer owns this enum. Recording an unknown result as success would
+  // turn malformed producer data into a false grant receipt, so reject it at
+  // the boundary instead of inventing an interpretation.
+  if (skill === null) return { ok: false, reason: "invalid skill ask result" };
   const sidecar = runFile === undefined || runFile === null || runFile === "" ? null : registrationSidecarPath(runFile);
   const spool = spoolDir === undefined || spoolDir === null || spoolDir === "" ? null : spoolPath(spoolDir, token);
-  const file = sidecar !== null && fs.existsSync(sidecar) ? sidecar : (spool ?? sidecar);
+  let file = sidecar !== null && fs.existsSync(sidecar) ? sidecar : (spool ?? sidecar);
+  let followedPointer = null;
   if (file === null) return { ok: false, reason: "no run registration envelope named" };
-  return withEnvelopeLock(file, fs, now, () => {
-    const existing = jsonAt(file, fs);
-    if (existing === null) return { ok: false, reason: "run registration envelope missing", file };
+  // A caller holding only the token, after the claim took the spool away:
+  // follow the forwarding address to the sidecar. This is the ORDINARY case on
+  // the box, where every ask is made inside a claimed session.
+  if (spool !== null && !fs.existsSync(file)) {
+    const pointer = claimPointerPath(spoolDir, token);
+    const pointed = jsonAt(pointer, fs);
+    if (typeof pointed?.runFile === "string" && pointed.runFile !== "") {
+      file = registrationSidecarPath(pointed.runFile);
+      followedPointer = pointer;
+    }
+  }
+  const append = (target) => withEnvelopeLock(target, fs, now, () => {
+    const existing = jsonAt(target, fs);
+    // A claim may have removed a spool after this call selected it but before
+    // its lock was acquired. Release that lock, then follow the claim pointer;
+    // taking the sidecar lock here would invert claimRegistration's lock order.
+    if (existing === null && target === spool) return { retryClaimPointer: true };
+    if (existing === null) return { ok: false, reason: "run registration envelope missing", file: target };
+    // REMOVAL CHECK: cannot remove; run-hook.mjs legitimately creates a
+    // tokenless sidecar for an interactive SessionStart. A skills caller that
+    // knows that transcript path may still append its ask without a token.
     if (token !== undefined && existing.token !== undefined && existing.token !== null && existing.token !== token) {
-      return { ok: false, reason: "registration token mismatch", file, envelope: existing };
+      return { ok: false, reason: "registration token mismatch", file: target, envelope: existing };
     }
     const asked = Array.isArray(existing.skills?.asked) ? existing.skills.asked : [];
     const envelope = {
       ...existing,
       envelopeVersion: existing.envelopeVersion ?? ENVELOPE_VERSION,
-      skills: { ...existing.skills, asked: [...asked, skillAskValue(ask, now)].slice(-SKILL_ASK_CAP) },
+      skills: { ...existing.skills, asked: [...asked, skill].slice(-SKILL_ASK_CAP) },
     };
-    atomicJson(file, envelope, fs);
-    return { ok: true, file, envelope };
+    atomicJson(target, envelope, fs);
+    return { ok: true, file: target, envelope };
   });
+  const result = append(file);
+  if (!result.retryClaimPointer || spool === null) {
+    // A successful append proves that the forwarding address is live. Refresh
+    // it only now: a bad or missing target must still age out in the sweep.
+    if (result.ok && followedPointer !== null) {
+      try {
+        const at = new Date(now());
+        fs.utimesSync(followedPointer, at, at);
+      } catch {}
+    }
+    return result;
+  }
+  const pointer = claimPointerPath(spoolDir, token);
+  const pointed = jsonAt(pointer, fs);
+  if (typeof pointed?.runFile !== "string" || pointed.runFile === "") {
+    return { ok: false, reason: "run registration envelope missing", file };
+  }
+  const retried = append(registrationSidecarPath(pointed.runFile));
+  if (retried.ok) {
+    try {
+      const at = new Date(now());
+      fs.utimesSync(pointer, at, at);
+    } catch {}
+  }
+  return retried;
 }
 
 export function readRegistration(runFile, { fs = fsDefault } = {}) {
@@ -327,6 +461,7 @@ export function mergeRegistration({ parsed, envelope, host, report = () => {} })
     return { ...result, envelopeApplied: false };
   }
   const registration = envelope.registration;
+  // REMOVAL CHECK: cannot remove; accepting another host's envelope assigns its identity and authority to the wrong run.
   if (registration.host && registration.host !== host) {
     const event = { kind: "runs-envelope-host-mismatch", data: { runId: run.runId, registeredHost: registration.host, sweepHost: host } };
     report(event);
@@ -354,8 +489,11 @@ export function mergeRegistration({ parsed, envelope, host, report = () => {} })
   if (typeof registration.layersKnown === "boolean") run.context.layersKnown = registration.layersKnown;
   run.context.layersGiven = registration.layersKnown && Array.isArray(registration.layersGiven) ? [...registration.layersGiven] : [];
   run.context.layersDenied = registration.layersKnown && Array.isArray(registration.layersDenied) ? [...registration.layersDenied] : [];
+  // The receipt is the exact grant block rendered at SessionStart. Registration
+  // remains the fallback for envelopes written before receipts were separate.
   for (const key of ["skillsGranted", "skillsRefused"]) {
-    if (Array.isArray(registration[key])) run.context[key] = [...registration[key]];
+    const value = Array.isArray(envelope.receipt?.[key]) ? envelope.receipt[key] : registration[key];
+    if (Array.isArray(value)) run.context[key] = [...value];
     else delete run.context[key];
   }
   // THE `given` EDGES: the exact node ids this run's prompt carried, beside
@@ -372,7 +510,7 @@ export function mergeRegistration({ parsed, envelope, host, report = () => {} })
   if (Array.isArray(registration.graphNodes)) {
     run.context.graphNodes = registration.graphNodes.slice(0, GRAPH_NODES_CAP).map((id) => String(id));
   } else delete run.context.graphNodes;
-  // The fourth group, written by `tts search skills` rather than by a
+  // The fifth group, written by `tts-search skills` rather than by a
   // launcher. It is FLATTENED TO PLAIN STRINGS because convex/schema.ts types
   // every runs.context list as v.array(v.string()): a string array is the only
   // additive shape, so the name and the result travel as one `name (result)`.

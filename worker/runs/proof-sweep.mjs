@@ -132,6 +132,9 @@ export async function runSweepProof({
 
   writeRegistrationClaim({
     runFile,
+    // REMOVAL CHECK: the proof recovery has no launcher token, so it needs a
+    // direct sidecar claim to exercise the same recovery path as a live hook.
+    token: null,
     writer: { file: "worker/runs/proof-sweep.mjs", job: "runs-proof" },
     registration: {
       host,

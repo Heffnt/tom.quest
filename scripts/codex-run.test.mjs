@@ -4,10 +4,11 @@ import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
-import { renderGrants } from "./skills.mjs";
+import { renderGrants, skillDirName } from "./skills.mjs";
 
 const RUNNER = path.resolve("scripts/codex-run.mjs");
 const IDENTITY = ["-c", "user.name=test", "-c", "user.email=test@example.com"];
+const PUBLISHED_COMMIT = "e".repeat(40);
 
 function git(dir, ...args) {
   return execFileSync("git", ["-C", dir, ...IDENTITY, ...args], { encoding: "utf8" });
@@ -26,6 +27,15 @@ function wikitomFixture({ rules = "# Rules\n\nKeep the promise.\n" } = {}) {
   git(dir, "add", "-A");
   git(dir, "commit", "-q", "-m", "fixture");
   return dir;
+}
+
+function installedSkills(...names) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-skills-"));
+  for (const name of names) {
+    write(home, path.join("skills", skillDirName(name), "SKILL.md"), "---\nname: fixture\n---\n");
+    write(home, path.join("skills", skillDirName(name), ".tom-skill.json"), `${JSON.stringify({ commit: PUBLISHED_COMMIT })}\n`);
+  }
+  return home;
 }
 
 function fakeCodex() {
@@ -52,7 +62,7 @@ function run(args, env) {
   const result = spawnSync(process.execPath, [RUNNER, ...args], {
     encoding: "utf8",
     input: "answer this\n",
-    env: { ...process.env, RUN_SWEEP_STATE_DIR: state, ...env },
+    env: { ...process.env, RUN_SWEEP_STATE_DIR: state, TTS_RUN_REG_SPOOL: path.join(state, "registration"), ...env },
   });
   result.state = state;
   return result;
@@ -192,17 +202,23 @@ describe("codex-run skill grants", () => {
   it("puts the grant block between the operate text and the token line", () => {
     const rules = "# Rules\n\nKeep the promise.\n";
     const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-grants.json`);
+    const vault = wikitomFixture({ rules });
     const result = run(["--grant", "write", "--grant", "know-research"], {
       CODEX_BIN: fakeCodex(),
-      WIKITOM_DIR: wikitomFixture({ rules }),
+      WIKITOM_DIR: vault,
       FAKE_CODEX_ARGS: argsFile,
+      CODEX_HOME: installedSkills("write", "know-research"),
     });
     expect(result.status).toBe(0);
     const developer = developerInstructions(argsFile);
     const { envelope } = spooledEnvelope(result.state);
     // The renderer is the one authority on the block's bytes; the wrapper's
     // job is only to put them in the right place.
-    const block = renderGrants({ commit: envelope.registration.wikitomCommit, granted: ["write", "know-research"] });
+    const block = renderGrants({
+      commit: PUBLISHED_COMMIT,
+      checkoutCommit: git(vault, "rev-parse", "HEAD").trim(),
+      granted: ["write", "know-research"],
+    });
     expect(developer).toContain(block);
     expect(developer.indexOf(rules)).toBeLessThan(developer.indexOf(block));
     expect(developer.indexOf(block)).toBeLessThan(developer.indexOf("TTS-RUN-TOKEN:"));
@@ -210,6 +226,7 @@ describe("codex-run skill grants", () => {
     expect(developer).toMatch(/\nTTS-RUN-TOKEN: [0-9a-f-]{36}$/);
     expect(envelope.registration.skillsGranted).toEqual(["write", "know-research"]);
     expect(envelope.registration.skillsRefused).toEqual([]);
+    expect(envelope.registration.wikitomCommit).toBe(PUBLISHED_COMMIT);
   });
 
   it("carries a refusal and its reason into both the block and the record", () => {
@@ -227,23 +244,130 @@ describe("codex-run skill grants", () => {
     });
   });
 
-  it("omits the block, and grants nothing, when no commit can be cited", () => {
+  it("records a normalized grant with the spelling rendered in the prompt", () => {
+    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-normalized-grant.json`);
+    const result = run(["--grant", "repo-tom.quest"], {
+      CODEX_BIN: fakeCodex(),
+      WIKITOM_DIR: wikitomFixture(),
+      FAKE_CODEX_ARGS: argsFile,
+      CODEX_HOME: installedSkills("repo-tom-quest"),
+    });
+    expect(result.status).toBe(0);
+    expect(developerInstructions(argsFile)).toContain("granted: repo-tom-quest");
+    expect(spooledEnvelope(result.state).envelope.registration.skillsGranted).toEqual(["repo-tom-quest"]);
+  });
+
+  it("refuses a named grant whose installed SKILL.md is missing", () => {
+    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-missing-skill.json`);
+    const result = run(["--grant", "write", "--grant", "know-research"], {
+      CODEX_BIN: fakeCodex(),
+      WIKITOM_DIR: wikitomFixture(),
+      FAKE_CODEX_ARGS: argsFile,
+      CODEX_HOME: installedSkills("write"),
+    });
+    expect(result.status).toBe(0);
+    expect(developerInstructions(argsFile)).toContain("granted: write");
+    expect(developerInstructions(argsFile)).toContain("its installed SKILL.md is missing");
+    const registration = spooledEnvelope(result.state).envelope.registration;
+    expect(registration.skillsGranted).toEqual(["write"]);
+    expect(registration.skillsRefused).toHaveLength(1);
+    expect(registration.skillsRefused[0]).toContain("know-research");
+    expect(registration.skillsRefused[0]).toContain("its installed SKILL.md is missing");
+  });
+
+  it("grants a published skill even when the checkout is unavailable", () => {
     const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-nocommit.json`);
     const result = run(["--grant", "write"], {
       CODEX_BIN: fakeCodex(),
       WIKITOM_DIR: path.join(os.tmpdir(), "no-wikitom-here"),
       FAKE_CODEX_ARGS: argsFile,
+      CODEX_HOME: installedSkills("write"),
     });
     expect(result.status).toBe(0);
-    expect(result.stderr).toContain("codex-run: skills named but no WikiTom commit to cite; grant block omitted\n");
-    expect(developerInstructions(argsFile)).toMatch(/^TTS-RUN-TOKEN: [0-9a-f-]{36}$/);
-    // A grant the run never received is not a grant, and is not a refusal either.
-    expect(spooledEnvelope(result.state).envelope.registration).toMatchObject({ skillsGranted: [], skillsRefused: [] });
+    expect(developerInstructions(argsFile)).toContain(`SKILLS (WikiTom commit ${PUBLISHED_COMMIT})`);
+    expect(developerInstructions(argsFile)).toContain("granted: write");
+    expect(spooledEnvelope(result.state).envelope.registration).toMatchObject({
+      skillsGranted: ["write"],
+      skillsRefused: [],
+      wikitomCommit: PUBLISHED_COMMIT,
+    });
+  });
+
+  it("refuses a hand-written SKILL.md that has no published catalog metadata", () => {
+    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-missing-metadata.json`);
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-skills-"));
+    write(home, path.join("skills", skillDirName("write"), "SKILL.md"), "---\nname: fixture\n---\n");
+    const result = run(["--grant", "write"], {
+      CODEX_BIN: fakeCodex(),
+      WIKITOM_DIR: wikitomFixture(),
+      FAKE_CODEX_ARGS: argsFile,
+      CODEX_HOME: home,
+    });
+    expect(result.status).toBe(0);
+    expect(developerInstructions(argsFile)).toContain("its published catalog metadata is missing or invalid");
+    expect(spooledEnvelope(result.state).envelope.registration.skillsGranted).toEqual([]);
   });
 
   it("rejects a refusal with no reason", () => {
     const result = run(["--refuse", "write"], { CODEX_BIN: fakeCodex(), WIKITOM_DIR: wikitomFixture() });
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("--refuse takes NAME=WHY");
+  });
+
+  it.each([
+    [["--grant", "write", "--grant", "write"], "--grant names write more than once"],
+    [["--refuse", "write=no need", "--refuse", "write=still no need"], "--refuse names write more than once"],
+  ])("rejects duplicate skill decisions", (args, message) => {
+    const result = run(args, { CODEX_BIN: fakeCodex(), WIKITOM_DIR: wikitomFixture() });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(message);
+  });
+
+  it.each([
+    [
+      ["--grant", "repo-tom.quest", "--grant", "repo-tom-quest"],
+      "--grant names repo-tom.quest and repo-tom-quest as the same skill (tom-repo-tom-quest)",
+    ],
+    [
+      ["--refuse", "repo-tom.quest=no need", "--refuse", "repo-tom-quest=still no need"],
+      "--refuse names repo-tom.quest and repo-tom-quest as the same skill (tom-repo-tom-quest)",
+    ],
+  ])("rejects canonical-equivalent decisions of the same kind", (args, message) => {
+    const result = run(args, { CODEX_BIN: fakeCodex(), WIKITOM_DIR: wikitomFixture() });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(message);
+  });
+
+  it.each([
+    [
+      ["--grant", "write", "--refuse", "write=withheld"],
+      "--refuse write conflicts with --grant write (tom-write)",
+    ],
+    [
+      ["--grant", "repo-tom.quest", "--refuse", "repo-tom-quest=withheld"],
+      "--refuse repo-tom-quest conflicts with --grant repo-tom.quest (tom-repo-tom-quest)",
+    ],
+  ])("rejects conflicting grant and refusal decisions", (args, message) => {
+    const result = run(args, { CODEX_BIN: fakeCodex(), WIKITOM_DIR: wikitomFixture() });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(message);
+  });
+
+  it("refuses a named grant when SKILL.md is a directory rather than an installed skill file", () => {
+    const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-skill-directory.json`);
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-run-skills-"));
+    fs.mkdirSync(path.join(home, "skills", skillDirName("write"), "SKILL.md"), { recursive: true });
+    const result = run(["--grant", "write"], {
+      CODEX_BIN: fakeCodex(),
+      WIKITOM_DIR: wikitomFixture(),
+      FAKE_CODEX_ARGS: argsFile,
+      CODEX_HOME: home,
+    });
+    expect(result.status).toBe(0);
+    expect(developerInstructions(argsFile)).toContain("refused: write — its installed SKILL.md is missing");
+    expect(spooledEnvelope(result.state).envelope.registration).toMatchObject({
+      skillsGranted: [],
+      skillsRefused: ["write — its installed SKILL.md is missing"],
+    });
   });
 });

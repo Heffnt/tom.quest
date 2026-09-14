@@ -21,9 +21,10 @@
 // them) and go unwritten from here on, so `operate` is the only layer any
 // selection can name.
 import { v } from "convex/values";
+import type { Doc } from "./_generated/dataModel";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { MODEL_OF_TOM_HEADER } from "./ttsShared";
-import { byteLength, DESCRIPTION_MAX_BYTES, SKILL_GROUPS } from "../scripts/skills.mjs";
+import { byteLength, DESCRIPTION_MAX_BYTES } from "../scripts/skills.mjs";
 
 /** The layer names a POST may still name. `write` and `know` stay in the
  * vocabulary because the nightly publisher spells them until it is narrowed;
@@ -256,6 +257,50 @@ export const internalReplaceModelOfTom = internalMutation({
 export const SKILLS_MAX = 64;
 
 const skillReference = v.object({ name: v.string(), path: v.string(), body: v.string() });
+const skillGroup = v.union(v.literal("write"), v.literal("know"), v.literal("repo"));
+
+export type PublishedSkillRow = Doc<"ttsSkills"> & {
+  group: "write" | "know" | "repo";
+  description: string;
+  references: { name: string; path: string; body: string }[];
+  sourcePaths: string[];
+  commit: string;
+  pushed: boolean;
+};
+
+export type ModelOfTomFileRow = Pick<Doc<"modelOfTomFiles">, "sourcePath" | "body" | "bytes">;
+
+/** Old per-file rows remain schema-valid for the widening deploy, but are not
+ * catalog entries and must be invisible to catalog readers. */
+export function isPublishedSkillRow(row: Doc<"ttsSkills">): row is PublishedSkillRow {
+  return row.sourcePath === undefined &&
+    (row.group === "write" || row.group === "know" || row.group === "repo") &&
+    typeof row.description === "string" &&
+    Array.isArray(row.references) &&
+    Array.isArray(row.sourcePaths) &&
+    typeof row.commit === "string" &&
+    typeof row.pushed === "boolean";
+}
+
+/**
+ * The first nightly post after this widening deploy moves every per-file row
+ * from `ttsSkills` to `modelOfTomFiles`. Until then, a source page is read
+ * from its old row only when the new table has no row for that exact path.
+ * Delete this fallback after one clean nightly replaces old rows.
+ */
+export function modelOfTomFilesWithLegacyFallback(
+  files: readonly ModelOfTomFileRow[],
+  skills: readonly Doc<"ttsSkills">[],
+): ModelOfTomFileRow[] {
+  const byPath = new Map(files.map((file) => [file.sourcePath, file]));
+  for (const row of skills) {
+    if (typeof row.sourcePath !== "string" || !isModelOfTomPath(row.sourcePath)) continue;
+    if (!byPath.has(row.sourcePath)) {
+      byPath.set(row.sourcePath, { sourcePath: row.sourcePath, body: row.body, bytes: row.bytes });
+    }
+  }
+  return [...byPath.values()];
+}
 
 /**
  * The catalog, replaced whole. Same shape of refusal as
@@ -274,16 +319,17 @@ export const internalReplaceSkills = internalMutation({
     pushed: v.boolean(),
     skills: v.array(v.object({
       name: v.string(),
-      group: v.string(),
+      group: skillGroup,
       description: v.string(),
       body: v.string(),
       references: v.array(skillReference),
       sourcePaths: v.array(v.string()),
-      bytes: v.number(),
     })),
   },
   handler: async (ctx, { commit, syncedAt, pushed, skills }) => {
     if (commit.trim() === "") throw new Error("commit is required");
+    // This timestamp orders whole-catalog posts; commit hashes have no ordering
+    // relation, so deleting it would let a delayed publisher roll the catalog back.
     if (!Number.isFinite(syncedAt)) throw new Error("syncedAt must be finite");
     if (skills.length === 0) throw new Error("no skills posted — store left as it was");
     if (skills.length > SKILLS_MAX) throw new Error(`at most ${SKILLS_MAX} skills per post — got ${skills.length}`);
@@ -291,23 +337,45 @@ export const internalReplaceSkills = internalMutation({
     for (const skill of skills) {
       if (skill.name.trim() === "") throw new Error("a skill needs a name");
       if (names.has(skill.name)) throw new Error(`skill posted twice: ${skill.name}`);
-      if (!(SKILL_GROUPS as readonly string[]).includes(skill.group)) {
-        throw new Error(`not a skill group: ${skill.group} (one of ${SKILL_GROUPS.join(", ")})`);
-      }
       if (skill.body.trim() === "") throw new Error(`body for ${skill.name} must be non-empty`);
       if (skill.description.trim() === "") throw new Error(`description for ${skill.name} must be non-empty`);
       const described = byteLength(skill.description);
       if (described > DESCRIPTION_MAX_BYTES) {
         throw new Error(`description for ${skill.name} is ${described} bytes, over the ${DESCRIPTION_MAX_BYTES}-byte cap`);
       }
-      if (!Number.isSafeInteger(skill.bytes) || skill.bytes < 0) {
-        throw new Error(`bytes for ${skill.name} must be a nonnegative integer`);
-      }
       names.add(skill.name);
     }
     const existing = await ctx.db.query("ttsSkills").collect();
-    for (const row of existing) await ctx.db.delete(row._id);
+    // Old per-file rows are migration input, not a catalog revision; their
+    // timestamps cannot veto the first post that replaces them.
+    const currentSyncedAt = existing.filter(isPublishedSkillRow).reduce<number | null>(
+      (latest, row) => latest === null || row.syncedAt > latest ? row.syncedAt : latest,
+      null,
+    );
+    if (currentSyncedAt !== null && syncedAt < currentSyncedAt) {
+      throw new Error(`the post's commit ${commit.slice(0, 12)} (${new Date(syncedAt).toISOString()}) is older than the stored catalog (${new Date(currentSyncedAt).toISOString()}) — store left as it was`);
+    }
+    const storedSourcePaths = new Set(
+      (await ctx.db.query("modelOfTomFiles").collect()).map((file) => file.sourcePath),
+    );
+    let deleted = 0;
+    for (const row of existing) {
+      if (isPublishedSkillRow(row)) {
+        await ctx.db.delete(row._id);
+        deleted += 1;
+        continue;
+      }
+      // Widen-migrate-narrow: a legacy per-file row becomes deletable only
+      // when modelOfTomFiles has a row for that exact sourcePath. That is the
+      // code-tested proof that the new store holds the page this row carries;
+      // before then it remains the reader's only source copy if the base post
+      // failed while the independent catalog post still succeeded.
+      if (typeof row.sourcePath === "string" && storedSourcePaths.has(row.sourcePath)) {
+        await ctx.db.delete(row._id);
+        deleted += 1;
+      }
+    }
     for (const skill of skills) await ctx.db.insert("ttsSkills", { ...skill, commit, syncedAt, pushed });
-    return { skills: skills.length, deleted: existing.length, commit };
+    return { skills: skills.length, deleted, commit };
   },
 });

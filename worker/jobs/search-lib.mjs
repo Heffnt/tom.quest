@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import readline from "node:readline";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 import { extractSections, parseFrontmatter } from "./markdown-sections.mjs";
 // session-archive.mjs owns the three-depth resolution for redact.mjs: in a
@@ -661,22 +661,30 @@ export function evidenceResults(root, query, limit) {
 // harness would actually load, so it works with no network at all and it can
 // never name a skill that is published but not yet on this machine.
 
-/**
- * The roots a harness resolves a skill directory from, first hit wins:
- *
- *   1. $CLAUDE_CONFIG_DIR/skills, else <home>/.claude/skills
- *   2. <home>/.codex/skills
- *
- * ONE ORDER FOR BOTH MACHINES. The laptop sets no CLAUDE_CONFIG_DIR and falls
- * back to <home>/.claude. The box's per-account roots are
- * /root/.claude-accounts/<account>/skills and are reachable ONLY through
- * CLAUDE_CONFIG_DIR — which its jobs, its cron and its session host all set —
- * so naming the accounts directory here would be a second, staler answer.
- */
+/** The running harness owns exactly one catalog. Explicit launcher identity is
+ * strongest, followed by the CLIs' own environment markers. */
+export function runningCli(env = process.env) {
+  const explicit = String(env.TTS_CLI || env.TTS_RUNNER || "").toLowerCase();
+  if (explicit.includes("codex")) return "codex";
+  if (explicit.includes("claude")) return "claude";
+  if (env.CODEX_THREAD_ID) return "codex";
+  if (env.CLAUDECODE || env.CLAUDE_CODE_ENTRYPOINT || env.CLAUDE_CONFIG_DIR) return "claude";
+  if (env.CODEX_HOME) return "codex";
+  return null;
+}
+
+/** The one root the running CLI resolves. `CODEX_HOME` is the Codex config
+ * directory itself, while `CLAUDE_CONFIG_DIR` is Claude's config directory. */
 export function skillRoots(env = process.env) {
   const home = env.HOME || env.USERPROFILE || os.homedir();
+  const cli = runningCli(env);
+  if (cli === null) return [];
+  if (cli === "codex") {
+    const codex = env.CODEX_HOME && env.CODEX_HOME !== "" ? env.CODEX_HOME : path.join(home, ".codex");
+    return [path.join(codex, "skills")];
+  }
   const claude = env.CLAUDE_CONFIG_DIR && env.CLAUDE_CONFIG_DIR !== "" ? env.CLAUDE_CONFIG_DIR : path.join(home, ".claude");
-  return [path.join(claude, "skills"), path.join(home, ".codex", "skills")];
+  return [path.join(claude, "skills")];
 }
 
 // scripts/skills.mjs is THE definition of the prefix and the groups, and it
@@ -685,28 +693,26 @@ export function skillRoots(env = process.env) {
 // specifiers are named rather than guessed, exactly as worker/jobs/tts-lib.mjs
 // names both homes of the registration body. The import is LAZY so a search
 // for a ruling never depends on the skill machinery being installed.
-const SKILLS_MODULE_URLS = [
-  new URL("../../scripts/skills.mjs", import.meta.url),
-  new URL("./scripts/skills.mjs", import.meta.url),
-];
-const REGISTRATION_MODULE_URLS = [
-  new URL("../runs/registration.mjs", import.meta.url),
-  new URL("./runs/registration.mjs", import.meta.url),
-];
+const SKILLS_MODULE_SPECIFIERS = ["../../scripts/skills.mjs", "./scripts/skills.mjs"];
+const REGISTRATION_MODULE_SPECIFIERS = ["../runs/registration.mjs", "./runs/registration.mjs"];
 
-function installedModule(urls, extra) {
-  return [
-    ...urls.flatMap((candidate) => (candidate.protocol === "file:" ? [fileURLToPath(candidate)] : [])),
-    ...extra.map((candidate) => path.resolve(candidate)),
-  ].find((candidate) => fs.existsSync(candidate));
+async function installedModule(specifiers) {
+  for (const specifier of specifiers) {
+    try {
+      return await import(specifier);
+    } catch (error) {
+      if (error?.code !== "ERR_MODULE_NOT_FOUND") throw error;
+      // The checkout and /opt/tts are the only two supported installations.
+    }
+  }
+  return null;
 }
 
 let skillsModule = null;
 async function loadSkillsModule() {
   if (skillsModule === null) {
-    const file = installedModule(SKILLS_MODULE_URLS, ["scripts/skills.mjs"]);
-    if (!file) fail("the skill definitions (scripts/skills.mjs) are not installed");
-    skillsModule = await import(pathToFileURL(file).href);
+    skillsModule = await installedModule(SKILLS_MODULE_SPECIFIERS);
+    if (skillsModule === null) fail("the skill definitions (scripts/skills.mjs) are not installed");
   }
   return skillsModule;
 }
@@ -714,9 +720,7 @@ async function loadSkillsModule() {
 let registrationModule = null;
 async function loadRegistrationModule() {
   if (registrationModule === null) {
-    const file = installedModule(REGISTRATION_MODULE_URLS, ["worker/runs/registration.mjs", "runs/registration.mjs"]);
-    if (!file) return null;
-    registrationModule = await import(pathToFileURL(file).href);
+    registrationModule = await installedModule(REGISTRATION_MODULE_SPECIFIERS);
   }
   return registrationModule;
 }
@@ -726,7 +730,7 @@ async function loadRegistrationModule() {
  * launched inside one (TTS_RUN_REG_SPOOL and TTS_RUN_REG_TOKEN together).
  *
  * THE ENVELOPE IS A RECORD, NEVER A REASON A SEARCH FAILS. A missing, busy or
- * unreadable envelope is swallowed: the answer to `tts search skills` does not
+ * unreadable envelope is swallowed: the answer to `tts-search skills` does not
  * depend on it, and a search command that died writing its own telemetry would
  * be the worst possible trade.
  */
@@ -743,13 +747,6 @@ async function noteSkillAsk(env, ask) {
   }
 }
 
-/** `know-research` from `know-research` OR `tom-know-research`. The prefix is a
- * directory-naming fact and nothing a caller is corrected about. */
-function bareSkillName(name, prefix) {
-  const text = String(name ?? "").trim();
-  return text.startsWith(prefix) ? text.slice(prefix.length) : text;
-}
-
 /** THE GROUP IS DERIVED, NOT READ. A SKILL.md's frontmatter carries `name` and
  * `description` and nothing else, by design (scripts/skills.mjs renderSkillMd
  * says why), so the group comes off the name: `write` is write, `know-*` is
@@ -759,8 +756,10 @@ function skillGroup(name, groups) {
   return groups.includes(head) ? head : "unknown";
 }
 
-/** renderSkillMd JSON-quotes the description so a `"` or a `:` inside it cannot
- * break the block, and parseFrontmatter parses nothing inside a value. */
+/** renderSkillMd JSON-quotes the scalar description so a `"` or a `:` inside it
+ * cannot break the block, and parseFrontmatter does not parse its contents. An
+ * interrupted publish can leave an installed body behind, so search shows its
+ * literal malformed description instead of hiding an inspectable skill. */
 function frontmatterText(value) {
   const raw = String(value ?? "").trim();
   if (raw.startsWith('"') && raw.endsWith('"') && raw.length > 1) {
@@ -781,16 +780,25 @@ function frontmatterText(value) {
  * harness's — is invisible here, because this command answers one question:
  * what of Tom's can this run load.
  */
-export function readSkillCatalog(dir, { prefix, groups }) {
+export function readSkillCatalog(dir, { prefix, groups, bareName }) {
   if (!fs.existsSync(dir)) return [];
   const catalog = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+  const directories = new Map();
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
     if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue;
     const skillDir = path.join(dir, entry.name);
     const file = path.join(skillDir, "SKILL.md");
+    // Publication creates a directory before it writes SKILL.md. A process
+    // interrupted between those steps leaves no loadable skill to list.
     if (!fs.existsSync(file)) continue;
     const { fields, body } = parseFrontmatter(fs.readFileSync(file, "utf8"));
-    const name = bareSkillName(entry.name, prefix);
+    const name = bareName(entry.name.slice(prefix.length));
+    const firstDirectory = directories.get(name);
+    // REMOVAL CHECK: cannot remove; two on-disk spellings can normalize to one load name and make the selected body ambiguous.
+    if (firstDirectory !== undefined) {
+      throw new Error(`skill directories ${JSON.stringify(firstDirectory)} and ${JSON.stringify(entry.name)} both map to ${name}`);
+    }
+    directories.set(name, entry.name);
     catalog.push({
       name,
       group: skillGroup(name, groups),
@@ -837,13 +845,18 @@ export function skillNearMisses(name, catalog, groups) {
  * because the caller asked for something by name and got nothing.
  */
 export async function skillResults(options, env) {
-  const { SKILL_PREFIX, SKILL_GROUPS } = await loadSkillsModule();
+  // The isolated catalog root is required by the test harness.
   const searched = options.skillsDir === undefined ? skillRoots(env) : [path.resolve(options.skillsDir)];
+  if (searched.length === 0) {
+    const note = "tts-search: launcher identity missing; skill catalog was not read";
+    return { rows: [], note, json: { skills: [], note } };
+  }
+  const { SKILL_PREFIX, SKILL_GROUPS, bareSkillName } = await loadSkillsModule();
   const dir = searched.find((candidate) => fs.existsSync(candidate)) ?? null;
-  const catalog = dir === null ? [] : readSkillCatalog(dir, { prefix: SKILL_PREFIX, groups: SKILL_GROUPS });
+  const catalog = dir === null ? [] : readSkillCatalog(dir, { prefix: SKILL_PREFIX, groups: SKILL_GROUPS, bareName: bareSkillName });
 
   if (options.skill !== undefined) {
-    const asked = bareSkillName(options.skill, SKILL_PREFIX);
+    const asked = bareSkillName(options.skill);
     const found = catalog.find((skill) => skill.name.toLocaleLowerCase() === asked.toLocaleLowerCase());
     if (found === undefined) {
       const near = skillNearMisses(asked, catalog, SKILL_GROUPS);

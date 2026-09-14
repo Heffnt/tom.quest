@@ -1,10 +1,11 @@
 {
-  "name": "repo-WikiTom",
+  "name": "repo-wikitom",
+  "repo": "WikiTom",
   "kind": "skill",
   "note": "Whether a run with no WikiTom checkout open reaches for the vault's rules, and whether a run standing inside WikiTom leaves the skill alone because the CLI has already loaded AGENTS.md.",
   "cases": [
     {
-      "id": "skill-repo-WikiTom-pos-evidence-home",
+      "id": "skill-repo-wikitom-pos-evidence-home",
       "negative": false,
       "prompt": "From a session with no vault checkout, say where the evidence entry for a bullet in model-of-tom/areas/research.md goes.",
       "why": "the two-record rule is written in the vault's own rules, and a run outside it either loads them or puts the entry somewhere nobody will find it",
@@ -16,7 +17,7 @@
       "confirmedByTom": false
     },
     {
-      "id": "skill-repo-WikiTom-pos-inferred-mark",
+      "id": "skill-repo-wikitom-pos-inferred-mark",
       "negative": false,
       "prompt": "A line about him that he has never stated is being written into the vault. Say how it is marked.",
       "why": "the mark is a rule of that repository, and a line written without it claims he said something he did not",
@@ -28,7 +29,7 @@
       "confirmedByTom": false
     },
     {
-      "id": "skill-repo-WikiTom-pos-entry-forms",
+      "id": "skill-repo-wikitom-pos-entry-forms",
       "negative": false,
       "prompt": "From a session with no vault checkout, name the forms an evidence entry may take.",
       "why": "the forms are a closed list in the vault's rules, and an invented form is an entry no check will read",
@@ -41,20 +42,20 @@
       "confirmedByTom": false
     },
     {
-      "id": "skill-repo-WikiTom-neg-standing-inside",
-      "negative": true,
-      "prompt": "You are in the WikiTom checkout, editing model-of-tom/intent.md. Say what to change.",
-      "why": "a run standing inside the vault has already been given AGENTS.md by the CLI, so the skill must stay silent rather than carry a second copy of it into the prompt",
-      "expect": {
-        "mustNotName": [
-          "repo-WikiTom",
-          "tom-repo-WikiTom"
-        ]
+      "id": "skill-repo-wikitom-neg-standing-inside",
+      "route": {
+        "caller": "cli",
+        "subject": { "kind": "repo", "repo": "WikiTom" },
+        "cwd": "/work/WikiTom",
+        "repoDirs": { "WikiTom": "/work/WikiTom" },
+        "expected": { "granted": ["write", "know-agent-systems"], "refused": [], "repoRulesSource": "native" }
       },
+      "negative": true,
+      "why": "a run standing inside the vault has already been given AGENTS.md by the CLI, so the skill must stay silent rather than carry a second copy of it into the prompt — `expected.granted` above is the whole grant set, so the absent repo skill is the assertion",
       "confirmedByTom": false
     },
     {
-      "id": "skill-repo-WikiTom-neg-guardrails",
+      "id": "skill-repo-wikitom-neg-guardrails",
       "negative": true,
       "prompt": "Name the three Guardrails jobs tom.Quest's merge bar needs green.",
       "why": "a merge bar belongs to another repository, and the vault's two-record rule has no reach over it",
@@ -68,7 +69,7 @@
       "confirmedByTom": false
     },
     {
-      "id": "skill-repo-WikiTom-neg-cmt-boot-surface",
+      "id": "skill-repo-wikitom-neg-cmt-boot-surface",
       "negative": true,
       "prompt": "Say what `cmt/engine/AGENTS.md` is the operating knowledge for.",
       "why": "a question about a third repository is answered out of that repository, and the vault's rules are not part of the answer",

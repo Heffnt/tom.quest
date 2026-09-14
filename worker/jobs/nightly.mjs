@@ -59,10 +59,10 @@
 //      prompt names the commit it began with; `pushed` says whether that
 //      commit is on GitHub yet. A named file missing or empty is a failure
 //      row and NO post: the store is replaced whole, so a partial post would
-//      drop that file from every prompt. Then the skills: the box's three
-//      skill directories written from the same commit
-//      (scripts/publish-skills.mjs, BOX_SKILLS_DIRS), and the catalog to
-//      POST /tts/skills. The skills half is its own failure row and never
+//      drop that file from every prompt. Then the skills: generated from that
+//      same commit into private staging directories, the catalog posted to
+//      POST /tts/skills, then the three live directories atomically promoted.
+//      The skills half is its own failure row and never
 //      throws, so a night that cannot publish them still delivered the base.
 //  10. repo-rules — reads DIFFERENT checkouts (tom.quest, WikiTom and
 //      ComplexMultiTrigger) for their nested AGENTS.md bodies and posts them
@@ -298,6 +298,18 @@ function git(dir, ...args) {
   });
 }
 
+// `syncedAt` orders replacement posts. It must therefore name the immutable
+// commit that supplied the bytes, rather than the later instant the worker
+// happened to make its HTTP request: a delayed old checkout must stay older
+// than a catalog or ruleset that has already landed.
+function commitSyncedAt(dir, commit) {
+  const seconds = Number(git(dir, "log", "-1", "--format=%ct", commit).trim());
+  if (!Number.isSafeInteger(seconds) || seconds < 0) {
+    throw new Error(`${commit.slice(0, 12)} has no finite commit time`);
+  }
+  return seconds * 1000;
+}
+
 // THE STEP ORDER, and where a step is inserted.
 //
 //   delivery           needs no checkout and no lock: asks Convex what prelude
@@ -347,10 +359,9 @@ const STEPS = ["delivery", "golden-export", "snapshot", "graph", "learning", "ru
 // entry the night it gets a clone.
 export const TOM_QUEST_DIR = process.env.TOM_QUEST_DIR
   || (process.platform === "win32" ? "C:/Users/heffn/Desktop/tom.quest" : "/root/tom.quest");
-export const CMT_DIR = process.env.CMT_DIR
-  || (process.platform === "win32"
-    ? "C:/Users/heffn/Desktop/booleanbackdoor/ComplexMultiTrigger"
-    : "/root/ComplexMultiTrigger");
+export const CMT_DIR = process.platform === "win32"
+  ? "C:/Users/heffn/Desktop/booleanbackdoor/ComplexMultiTrigger"
+  : "/var/cache/tts/ComplexMultiTrigger";
 export const REPO_CHECKOUTS = [
   { repo: "tom.quest", dir: TOM_QUEST_DIR },
   { repo: "WikiTom", dir: WIKITOM_DIR },
@@ -370,13 +381,11 @@ export const BOX_SKILLS_DIRS = Object.freeze([
   "/root/.codex/skills",
 ]);
 
-/** The directories tonight writes: BOX_SKILLS_DIRS, or TTS_SKILLS_DIRS when it
- * is set — a path-delimiter-separated list, which is how the tests point the
- * publication at a temporary directory instead of /root. */
+/** The directories tonight writes. Tests inject temporary directories through
+ * postStep's deps.skillsDirs seam, so production never accepts a writable
+ * directory list from its environment. */
 export function boxSkillsDirs() {
-  const override = process.env.TTS_SKILLS_DIRS;
-  if (override === undefined || override.trim() === "") return [...BOX_SKILLS_DIRS];
-  return override.split(path.delimiter).map((entry) => entry.trim()).filter((entry) => entry !== "");
+  return [...BOX_SKILLS_DIRS];
 }
 // The six that write the WikiTom checkout. The post runs under the same
 // lock after them (see main), reading what they left.
@@ -2464,8 +2473,9 @@ function gitError(err) {
 // THE STEP HAS TWO HALVES AND THEY FAIL SEPARATELY.
 //
 //   1. the base — the model-of-tom files and POST /tts/model-of-tom, below.
-//   2. the skills — the box's three skill directories written from the same
-//      HEAD, then the catalog to POST /tts/skills (skillsHalf).
+//   2. the skills — generated into private staging directories from the same
+//      HEAD, then the catalog to POST /tts/skills, then atomically promoted
+//      into the box's three live directories (skillsHalf).
 //
 // In that order, under the one lock this step already holds, off the one HEAD
 // the rebase guard below cleared. Two doors and not one widened door, because a
@@ -2548,8 +2558,10 @@ export async function postStep(run, deps = {}) {
   const skills = await skillsHalf(run, {
     fetch,
     commit: prelude.commit,
+    syncedAt: prelude.committedAt,
     pushed: prelude.pushed,
     publishSkills: deps.publishSkills,
+    promoteSkills: deps.promoteSkills,
     checkouts: deps.checkouts ?? REPO_CHECKOUTS,
     dirs: deps.skillsDirs ?? boxSkillsDirs(),
   });
@@ -2558,267 +2570,158 @@ export async function postStep(run, deps = {}) {
 }
 
 /**
- * The catalog read back out of the directories publishSkills has just written:
- * one entry per skill, in the shape POST /tts/skills takes.
- *
- * WHY IT IS READ BACK RATHER THAN HANDED OVER. publishSkills returns a REPORT —
- * name, group, byte counts, reference names, how many files it wrote — because
- * its job is to put a directory on a disk, and nothing until now needed the
- * bodies afterwards. The catalog needs them. Reading the files it just wrote is
- * the one way to get them without a second definition of what the page set is,
- * and it has a property worth having: the catalog Convex holds is literally the
- * bytes the box's agents will load.
- *
- * IT IS COUPLED TO renderSkillMd's LAYOUT, so it fails loud rather than
- * quietly: every field is checked back against the byte counts publishSkills
- * reported, and a mismatch throws — which makes it the skills half's recorded
- * failure, not a silently wrong post. The cheaper fix, when someone owns that
- * file, is for publishSkills to return the built skills and for this function
- * to be deleted.
- */
-export const SKILL_PROVENANCE = /^<!-- generated from (\S+) (.+) at commit ([0-9a-f]+) — do not edit -->$/;
-
-/**
- * Where one reference's body came from — the field POST /tts/skills requires
- * and the only one publishSkills' report does not carry.
- *
- * A reference is written under its FLATTENED name (scripts/skills.mjs
- * referenceName: every "/" becomes "-", so `convex/AGENTS.md` is the file
- * `convex-AGENTS.md`), and that flattening does not invert — a directory with
- * a hyphen in it would read back wrong. So the path is looked up rather than
- * unflattened, against the two things that produce a reference:
- *
- *   a skill of the REPO group carries that repository's nested AGENTS.md
- *   files, and `rules` is the list of them read from its own HEAD by the same
- *   helper the repo-rules step uses — one entry per candidate path, matched by
- *   name;
- *   any other skill's reference (ground.md) sits beside the page the skill was
- *   built from, so it is that page's directory and this name.
- *
- * The GROUP decides which, and not the origin: WikiTom is both the vault every
- * write and know skill is built from AND a repository with rules of its own, so
- * the origin name alone would send `ground.md` to the repo lookup.
- *
- * An unresolved name THROWS, which makes it the skills half's failure row: a
- * guessed path in the store is worse than a night without a catalog.
- *
- * THE HONEST FIX IS ONE LINE ELSEWHERE. publishSkills already holds
- * `{ name, path, body }` for every reference and reports only the name; when
- * scripts/publish-skills.mjs is next open, have it return the built skills, and
- * this function and readSkillCatalog both go.
- */
-export function referencePathResolver(rulesByRepo, referenceName) {
-  return ({ name, group, origin, sourcePaths, file }) => {
-    if (group === "repo") {
-      const rules = rulesByRepo.get(origin) ?? [];
-      const match = rules.find((candidate) => referenceName(candidate) === name);
-      if (match === undefined) {
-        throw new Error(`${file}: ${origin} at this commit has no rules file named ${name}`);
-      }
-      return match;
-    }
-    const beside = sourcePaths[0];
-    if (typeof beside !== "string" || !beside.includes("/")) {
-      throw new Error(`${file}: cannot say where the reference ${name} came from`);
-    }
-    return `${beside.slice(0, beside.lastIndexOf("/"))}/${name}`;
-  };
-}
-
-export function readSkillCatalog(outDir, published, { skillDirName, referencePath }) {
-  return published.skills.map((reported) => {
-    const dir = path.join(outDir, skillDirName(reported.name));
-    const file = path.join(dir, "SKILL.md");
-    const lines = fs.readFileSync(file, "utf8").split("\n");
-    const close = lines.indexOf("---", 1);
-    if (lines[0] !== "---" || close === -1) throw new Error(`${file} carries no frontmatter`);
-    const declared = lines.slice(1, close).find((line) => line.startsWith("description: "));
-    if (declared === undefined) throw new Error(`${file} carries no description`);
-    let description;
-    try {
-      description = JSON.parse(declared.slice("description: ".length));
-    } catch {
-      throw new Error(`${file}: the description is not the JSON string renderSkillMd writes`);
-    }
-    const provenance = SKILL_PROVENANCE.exec(lines[close + 2] ?? "");
-    if (provenance === null) throw new Error(`${file} carries no provenance line`);
-    const sourcePaths = provenance[2].split(", ");
-    const rest = lines.slice(close + 4).join("\n");
-    const body = rest.endsWith("\n") ? rest.slice(0, -1) : rest;
-    if (Buffer.byteLength(body) !== reported.bodyBytes || Buffer.byteLength(description) !== reported.descriptionBytes) {
-      throw new Error(
-        `${file} did not read back as the ${reported.descriptionBytes}-byte description and ${reported.bodyBytes}-byte ` +
-          "body publish-skills.mjs reported — SKILL.md's layout changed under this reader",
-      );
-    }
-    return {
-      name: reported.name,
-      group: reported.group,
-      description,
-      body,
-      references: reported.references.map((name) => {
-        const referenceBody = fs.readFileSync(path.join(dir, name), "utf8");
-        return {
-          name,
-          path: referencePath({ name, group: reported.group, origin: provenance[1], sourcePaths, file }),
-          body: referenceBody,
-          bytes: Buffer.byteLength(referenceBody),
-        };
-      }),
-      sourcePaths,
-      bytes: reported.bodyBytes,
-    };
-  });
-}
-
-/**
- * The skills half of the post: the box's skill directories written from the
- * same HEAD the base came off, then the catalog to POST /tts/skills, in that
- * order.
+ * The skills half of the post. It generates one private, same-filesystem
+ * staging directory per live skills directory, posts the catalog those exact
+ * bytes produced, and only then promotes all the staged `tom-` directories.
+ * A refused post consequently leaves the prior live bytes completely alone.
  *
  * Returns `{ commit, count, dirs, refused }`, or NULL when it could not run.
  * Every failure inside it is recorded as its own "skills" row and swallowed —
  * the base post has already happened by the time this is called, and losing it
  * to a bad skill body is the one outcome this shape exists to prevent.
  */
-async function skillsHalf(run, { fetch, commit, pushed, publishSkills, checkouts, dirs }) {
-  let published;
-  let catalog;
-  try {
-    if (dirs.length === 0) throw new Error("no skills directory is configured, so there is nothing to write");
-    const publish = publishSkills ?? (await loadPublishSkills()).publishSkills;
-    const { skillDirName, referenceName } = await loadSkills();
-    const { collectRepoRules } = await loadPrelude();
-    // Only the checkouts that are really here: readRepo throws on a missing
-    // one, and one absent clone must not cost the other two their skills. That
-    // it is missing is already the repo-rules step's own failure row.
-    const repos = checkouts
-      .filter(({ dir }) => fs.existsSync(path.join(dir, ".git")))
-      .map(({ repo, dir }) => ({ repo, dir }));
-    // Three identical publications rather than one and two copies: publishSkills
-    // is write-if-changed, so an unchanged night touches nothing, and a copy
-    // would be a second thing that can be half-done.
-    for (const out of dirs) published = publish({ wikitom: run.dir, commit, repos, out });
-    // The candidate paths behind each repo skill's references (see
-    // referencePathResolver). Same helper, same HEAD, as the repo-rules step.
-    //
-    // PER REPO AND FORGIVING, because collectRepoRules can be refused for a
-    // reason that has nothing to do with this skill: prelude.mjs's git() runs
-    // at execFileSync's 1 MB default, and `ls-tree -r` over WikiTom is 3.5 MB
-    // of archived session files, so it fails there as "cannot list". A repo
-    // that could not be listed contributes no candidates and costs nothing
-    // unless one of its skills actually carries a reference — and then the
-    // resolver throws, by name, instead of storing a guessed path. (The fix is
-    // the maxBuffer line scripts/publish-skills.mjs already carries, one
-    // directory over; until it is in prelude.mjs, the repo-rules step loses
-    // WikiTom to the same 1 MB the same way, as its own failure row.)
-    const rulesByRepo = new Map();
-    for (const { repo, dir } of repos) {
-      try {
-        rulesByRepo.set(repo, collectRepoRules({ dir, repo, commit: "HEAD" }).rules.map((rule) => rule.path));
-      } catch {
-        rulesByRepo.set(repo, []);
-      }
+function removeDir(dir) {
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+function skillErrorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** Generate every destination privately. The stages are siblings of their
+ * destinations, so rename is atomic and never crosses a filesystem. */
+async function stageSkills({ run, commit, publishSkills, checkouts, dirs }) {
+  const publish = publishSkills ?? (await loadPublishSkills()).publishSkills;
+  const { skillDirName } = await loadSkills();
+  // `/tts/skills` replaces the whole catalog and promotion removes every
+  // unproduced tom- directory. A temporarily absent configured checkout must
+  // therefore refuse this entire publication, preserving the existing catalog
+  // and bodies until all configured repositories can be built again.
+  const repos = checkouts.map(({ repo, dir }) => {
+    if (typeof dir !== "string" || !fs.existsSync(path.join(dir, ".git"))) {
+      throw new Error(`skills checkout ${repo} at ${String(dir)} is not a git checkout; refusing to replace the catalog`);
     }
-    catalog = readSkillCatalog(dirs[0], published, {
-      skillDirName,
-      referencePath: referencePathResolver(rulesByRepo, referenceName),
-    });
-    // The door refuses an empty post — it replaces the store whole, and an
-    // empty one would wipe it — so say why here rather than read a 400 back.
-    if (catalog.length === 0) {
+    return { repo, dir };
+  });
+  const stages = [];
+  try {
+    let published = null;
+    for (const out of dirs) {
+      const resolved = path.resolve(out);
+      fs.mkdirSync(path.dirname(resolved), { recursive: true });
+      const stage = fs.mkdtempSync(path.join(path.dirname(resolved), ".tts-skills-stage-"));
+      // Own the directory before publishing into it: publish and the catalog
+      // comparison can throw, and the catch must remove this stage too.
+      stages.push({ out: resolved, stage });
+      const next = publish({ wikitom: run.dir, commit, repos, out: stage });
+      if (published !== null &&
+        (next.commit !== published.commit || JSON.stringify(next.catalog) !== JSON.stringify(published.catalog) ||
+          JSON.stringify(next.refused) !== JSON.stringify(published.refused))) {
+        throw new Error("skill staging produced different catalogs for the live directories");
+      }
+      published = next;
+    }
+    if (published.catalog.length === 0) {
       throw new Error(`no skill built at ${published.commit.slice(0, 12)}; the store keeps the catalog it has`);
     }
+    return {
+      published,
+      stages,
+      names: published.catalog.map((skill) => skillDirName(skill.name)),
+    };
+  } catch (error) {
+    for (const { stage } of stages) removeDir(stage);
+    throw error;
+  }
+}
+
+/**
+ * Replace only directories this publisher owns. Every old directory is held in
+ * a sibling backup until every staged directory is live; a promotion failure
+ * restores all prior bytes before it returns. This cannot make an HTTP post
+ * transactional, so skillsHalf records the exceptional "accepted, local
+ * promotion failed" state for the next nightly to repair rather than claiming
+ * the catalog and disk agree.
+ */
+export function promoteStagedSkills(stages, names) {
+  const states = [];
+  try {
+    for (const { out, stage } of stages) {
+      const backup = fs.mkdtempSync(path.join(path.dirname(out), ".tts-skills-backup-"));
+      const state = { out, stage, backup, old: [], promoted: [] };
+      states.push(state);
+      fs.mkdirSync(out, { recursive: true });
+      for (const entry of fs.readdirSync(out, { withFileTypes: true })) {
+        if (!entry.isDirectory() || !entry.name.startsWith("tom-")) continue;
+        fs.renameSync(path.join(out, entry.name), path.join(backup, entry.name));
+        state.old.push(entry.name);
+      }
+      for (const name of names) {
+        fs.renameSync(path.join(stage, name), path.join(out, name));
+        state.promoted.push(name);
+      }
+    }
+  } catch (error) {
+    const rollbackErrors = [];
+    for (const state of [...states].reverse()) {
+      try {
+        for (const name of state.promoted) removeDir(path.join(state.out, name));
+        for (const name of state.old) fs.renameSync(path.join(state.backup, name), path.join(state.out, name));
+      } catch (rollbackError) {
+        rollbackErrors.push(skillErrorMessage(rollbackError));
+      }
+    }
+    if (rollbackErrors.length > 0) {
+      throw new Error(`skill promotion failed (${skillErrorMessage(error)}); rollback also failed: ${rollbackErrors.join("; ")}`);
+    }
+    throw new Error(`skill promotion failed and restored the prior local directories: ${skillErrorMessage(error)}`);
+  } finally {
+    for (const { stage } of stages) removeDir(stage);
+    for (const state of states) removeDir(state.backup);
+  }
+}
+
+async function skillsHalf(run, { fetch, commit, syncedAt, pushed, publishSkills, promoteSkills = promoteStagedSkills, checkouts, dirs }) {
+  let staged;
+  try {
+    if (dirs.length === 0) throw new Error("no skills directory is configured, so there is nothing to write");
+    staged = await stageSkills({ run, commit, publishSkills, checkouts, dirs });
   } catch (error) {
     await recordFailure(run, "skills", error, { fetch });
     return null;
   }
   try {
     await fetch(run.env, "/tts/skills", {
-      commit: published.commit,
-      syncedAt: Date.now(),
+      commit: staged.published.commit,
+      syncedAt,
       pushed,
-      skills: catalog,
-      refused: published.refused,
+      skills: staged.published.catalog,
+      refused: staged.published.refused,
     });
   } catch (error) {
-    // The directories are written and the box's agents will load them tonight;
-    // what is stale is the catalog Convex serves, and the row says so.
+    // The staged directories are discarded. A rejected catalog therefore
+    // leaves every live skill body at the same commit Convex still advertises.
+    for (const { stage } of staged.stages) removeDir(stage);
+    await recordFailure(run, "skills", error, { fetch });
+    return null;
+  }
+  try {
+    promoteSkills(staged.stages, staged.names);
+  } catch (error) {
+    // Convex already accepted this catalog. promoteStagedSkills restores the
+    // old local bytes on its own failure, so record the mismatch loudly for a
+    // later nightly instead of ever presenting a partially promoted directory.
+    for (const { stage } of staged.stages) removeDir(stage);
     await recordFailure(run, "skills", error, { fetch });
     return null;
   }
   console.log(
-    `[nightly] skills: ${catalog.length} skill(s) at WikiTom ${published.commit.slice(0, 12)} -> ${dirs.join(", ")}` +
-      `${published.refused.length > 0 ? `; refused ${published.refused.map((entry) => entry.name).join(", ")}` : ""}`,
+    `[nightly] skills: ${staged.published.catalog.length} skill(s) at WikiTom ${staged.published.commit.slice(0, 12)} -> ${dirs.join(", ")}` +
+      `${staged.published.refused.length > 0 ? `; refused ${staged.published.refused.map((entry) => entry.name).join(", ")}` : ""}`,
   );
-  return { commit: published.commit, count: catalog.length, dirs: [...dirs], refused: published.refused };
-}
-
-// ── the golden export ────────────────────────────────────────────────────────
-// One run of scripts/export-golden.mjs --source labels, turning every judgment
-// Tom wrote about a registered run into an eval case under evals/golden/runs/.
-//
-// IT RUNS NIGHTLY AND NOT WEEKLY, and that is the whole reason it is a step in
-// this job rather than in Friday's. A label names a run, and Convex evicts a
-// run's stored output after thirty days; a label whose run has been evicted is
-// UNBUILDABLE, and phase 7 deliberately does not reach back into the object
-// store to refetch one. A weekly pass would therefore lose cases to a window
-// nothing can reopen — a nightly one never sees the window at all.
-//
-// IT NEVER PUSHES MAIN FROM THIS BOX. evals/golden/** is a watched path, so the
-// export lands on a branch and goes through the evals gate like every other
-// change — which is exactly the property wanted: a case the exporter invented
-// wrongly is caught by the same check it would gate.
-//
-// THE LANDING IS A SEAM AND IS NAMED AS ONE. Every other repository write in
-// this job goes to the WikiTom checkout, under the WikiTom writer lock, through
-// commitTree and syncRemote — helpers that stage WikiTom's own directories and
-// push the branch already checked out. None of that is a branch-and-open-a-PR
-// mechanism, and none of it points at tom.quest. So the export is made, its
-// counts are reported, and `deps.land` is the one call a caller supplies to put
-// it on a branch; with no lander the files sit in the disposable cache clone,
-// the result says `landed: false`, and NOTHING is committed or pushed anywhere.
-//
-// The clone is the box's established tom.quest checkout mechanism — the shallow
-// cache clone evals.mjs takes its worktrees from (tts-code-lib.mjs
-// cacheRepoDir), rebuilt from origin on every use — NOT /root/tom.quest, which
-// is the checkout this box runs from and must not be left dirty by a cron job.
-export const GOLDEN_EXPORT_SCRIPT = "scripts/export-golden.mjs";
-/** Where `--source labels` writes, one level below the rulings set so
- * worker/jobs/evals.mjs loadGolden discovers it with no edit (the exporter's
- * own RUNS_SUBDIR). */
-export const GOLDEN_RUNS_DIR = "evals/golden/runs";
-
-export async function goldenExportStep(run, deps = {}) {
-  const checkout = deps.checkout ?? (() => cacheRepoDir(run.env, { name: "tom.quest", owner: "Heffnt", branch: "main" }));
-  const exec = deps.exec ?? ((dir, args) =>
-    execFileSync(process.execPath, args, {
-      cwd: dir,
-      encoding: "utf8",
-      // stdin closed (cron has no terminal); stderr to the cron log, where the
-      // exporter's own refusals are diagnosable. The credentials ride in the
-      // child's environment and are never an argument, so nothing secret can
-      // reach a process listing or this log.
-      stdio: ["ignore", "pipe", "inherit"],
-      env: { ...process.env, ...run.env },
-    }));
-  const land = deps.land ?? null;
-  const dir = checkout();
-  const output = String(exec(dir, [GOLDEN_EXPORT_SCRIPT, "--source", "labels"]) ?? "");
-  // The exporter's own last line, kept verbatim rather than re-derived: it
-  // already counts what it built, what it could not build and what it dropped,
-  // and a second count here would be a second definition of "an item".
-  const summary = output.split("\n").map((l) => l.trim()).filter((l) => l !== "").at(-1) ?? "";
-  const outDir = path.join(dir, GOLDEN_RUNS_DIR);
-  const items = fs.existsSync(outDir) ? fs.readdirSync(outDir).filter((n) => n.endsWith(".json")).length : 0;
-  const landed = land === null ? false : land({ dir, paths: [GOLDEN_RUNS_DIR], day: run.day }) === true;
-  console.log(
-    `[nightly] golden-export: ${items} case(s) in ${GOLDEN_RUNS_DIR} — ${summary || "the exporter said nothing"}; ` +
-      (landed
-        ? "landed on a branch"
-        : "NOT landed: this job has no tom.quest branch-and-commit helper, so the files stay in the cache clone"),
-  );
-  return { dir, items, summary, landed };
+  // This field is created only after convexFetch has returned, which means it
+  // names a catalog Convex accepted rather than a request it refused.
+  return { commit: staged.published.commit, count: staged.published.catalog.length, dirs: [...dirs], refused: staged.published.refused, syncedAt };
 }
 
 // This check never touches the checkout, so it runs outside the WikiTom
@@ -2853,9 +2756,22 @@ export async function deliveryStep(run, deps = {}) {
 // costs itself and nothing else: each of those is one failure row and a
 // `continue`, and the repos after it still post.
 export async function repoRulesStep(run, deps = {}) {
-  const { fetch = convexFetch, checkouts = REPO_CHECKOUTS } = deps;
+  const {
+    fetch = convexFetch,
+    checkouts = REPO_CHECKOUTS,
+    commitTime = commitSyncedAt,
+    wikiTomCommit = null,
+  } = deps;
   const posted = [];
+  // postStep returns a fully resolved Git object ID. Do not turn another ref
+  // (notably HEAD) into a WikiTom rule source after the post is over.
+  const hasWikiTomCommit = typeof wikiTomCommit === "string" && /^[0-9a-f]{40,64}$/i.test(wikiTomCommit);
   for (const { repo, dir } of checkouts) {
+    // WikiTom's rules must be from the exact object Convex accepted for the
+    // model-of-tom post. A missing or refused base has no safe commit to pair
+    // them with, so leave its previous rules in place rather than reading the
+    // checkout's HEAD or work tree. The other repositories remain HEAD-based.
+    if (repo === "WikiTom" && !hasWikiTomCommit) continue;
     if (!fs.existsSync(path.join(dir, ".git"))) {
       await recordFailure(
         run,
@@ -2868,7 +2784,11 @@ export async function repoRulesStep(run, deps = {}) {
     let collected;
     try {
       const { collectRepoRules } = await loadPrelude();
-      collected = collectRepoRules({ dir, repo, commit: "HEAD" });
+      collected = collectRepoRules({
+        dir,
+        repo,
+        commit: repo === "WikiTom" ? wikiTomCommit : "HEAD",
+      });
     } catch (error) {
       await recordFailure(run, "repo-rules", error, { fetch });
       continue;
@@ -2883,11 +2803,13 @@ export async function repoRulesStep(run, deps = {}) {
       continue;
     }
     let res;
+    let syncedAt;
     try {
+      syncedAt = commitTime(dir, collected.commit);
       res = await fetch(run.env, "/tts/repo-rules", {
         repo,
         commit: collected.commit,
-        syncedAt: Date.now(),
+        syncedAt,
         files: collected.rules.map(({ path: filePath, body, bytes }) => ({ path: filePath, body, bytes })),
       });
     } catch (error) {
@@ -2897,7 +2819,9 @@ export async function repoRulesStep(run, deps = {}) {
     console.log(
       `[nightly] repo-rules: ${res.files} file(s) for ${repo} at ${collected.commit.slice(0, 12)} — ${collected.rules.map((r) => r.path).join(", ")}`,
     );
-    posted.push({ repo, commit: collected.commit, files: collected.rules.map((r) => r.path) });
+    // As with the skills catalog, report a sync time only once the replacement
+    // door has acknowledged the immutable commit.
+    posted.push({ repo, commit: collected.commit, files: collected.rules.map((r) => r.path), syncedAt });
   }
   return { repos: posted };
 }
@@ -2966,7 +2890,9 @@ async function main() {
     if (only.every((name) => CHECKOUTLESS_STEPS.includes(name))) {
       if (only.includes("repo-rules")) {
         try {
-          run.results["repo-rules"] = await repoRulesStep(run);
+          run.results["repo-rules"] = await repoRulesStep(run, {
+            wikiTomCommit: run.results.post?.commit,
+          });
         } catch (err) {
           await recordFailure(run, "repo-rules", err);
         }
@@ -3031,7 +2957,15 @@ async function main() {
   // OUTSIDE THE LOCK, and outside the try that holds it: this step reads a
   // different checkout, writes nothing, and a night that lost the WikiTom lock
   // is exactly a night whose repo rules should still reach Convex.
-  if (only.includes("repo-rules")) await runStep("repo-rules");
+  if (only.includes("repo-rules")) {
+    try {
+      run.results["repo-rules"] = await repoRulesStep(run, {
+        wikiTomCommit: run.results.post?.commit,
+      });
+    } catch (err) {
+      await recordFailure(run, "repo-rules", err);
+    }
+  }
   await recordSummary(run, only);
 }
 

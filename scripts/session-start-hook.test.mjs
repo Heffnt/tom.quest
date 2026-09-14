@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { assemblePrelude } from "./prelude.mjs";
 import { renderGrants } from "./skills.mjs";
 import { PULL_TIMEOUT_MS, pullWikiTom } from "./session-start-hook.mjs";
+import { registrationSidecarPath } from "../worker/runs/registration.mjs";
 
 const HOOK = path.resolve("scripts/session-start-hook.mjs");
 const IDENTITY = ["-c", "user.name=test", "-c", "user.email=test@example.com"];
@@ -68,10 +69,13 @@ function fixture({ writing = true } = {}) {
  * configuration cannot reach a test, and `TOM_QUEST_DIR` is pointed at a
  * directory that is not a checkout so the run publishes no repo but WikiTom's.
  */
-function run({ wikitom, skills, tomQuest }) {
+function run({ wikitom, skills, tomQuest, env = {}, payload = {
+  hook_event_name: "SessionStart",
+  transcript_path: path.join(temp("session-start-default-run-"), "session.jsonl"),
+} }) {
   return spawnSync(process.execPath, [HOOK], {
     encoding: "utf8",
-    input: '{"hook_event_name":"SessionStart"}\n',
+    input: `${JSON.stringify(payload)}\n`,
     env: {
       ...process.env,
       WIKITOM_DIR: wikitom,
@@ -79,6 +83,7 @@ function run({ wikitom, skills, tomQuest }) {
       TOM_QUEST_DIR: tomQuest ?? path.join(os.tmpdir(), "no-tom-quest-checkout"),
       CLAUDE_CONFIG_DIR: "",
       CMT_DIR: "",
+      ...env,
     },
   });
 }
@@ -92,7 +97,10 @@ function contextOf(result) {
   return json.hookSpecificOutput.additionalContext;
 }
 
-describe("session-start-hook", () => {
+// Every case here SPAWNS the hook — a node process, a git checkout and a skill
+// publication each — so the default five seconds is a load measurement rather
+// than a fact about the hook (worker/jobs/nightly.test.mjs says the same).
+describe("session-start-hook", { timeout: 30_000 }, () => {
   // The skills round: the write layer became the `write` skill and the
   // fetchable index went with it, so what rides every session start is the
   // operate layer and the names this run may load — and NOTHING ELSE.
@@ -116,6 +124,85 @@ describe("session-start-hook", () => {
     // And neither is the index of what the run could fetch.
     expect(context).not.toContain("MODEL-OF-TOM FETCHABLE");
     expect(context).not.toContain("--layers know");
+  });
+
+  it("hands the actual granted and refused names to the independent receipt", () => {
+    const wikitom = fixture({ writing: false });
+    const skills = temp("session-start-registration-skills-");
+    const transcript = path.join(temp("session-start-registration-run-"), "session.jsonl");
+
+    contextOf(run({
+      wikitom,
+      skills,
+      payload: { hook_event_name: "SessionStart", transcript_path: transcript },
+    }));
+
+    const envelope = JSON.parse(fs.readFileSync(registrationSidecarPath(transcript), "utf8"));
+    expect(envelope.receipt).toMatchObject({
+      by: "hook:session-start-grants",
+      runFile: path.resolve(transcript),
+      skillsGranted: [],
+      skillsRefused: ["write"],
+    });
+    expect(envelope.claim).toBeUndefined();
+  });
+
+  it("accepts only Claude's transcript_path and Codex's rollout_path run-file fields", () => {
+    const wikitom = fixture();
+    const skills = temp("session-start-run-file-skills-");
+    const legacy = path.join(temp("session-start-legacy-run-"), "legacy.jsonl");
+    contextOf(run({ wikitom, skills, payload: { hook_event_name: "SessionStart", transcriptPath: legacy } }));
+    expect(fs.existsSync(registrationSidecarPath(legacy))).toBe(false);
+
+    const rollout = path.join(temp("session-start-rollout-run-"), "rollout.jsonl");
+    contextOf(run({ wikitom, skills, payload: { hook_event_name: "SessionStart", rollout_path: rollout } }));
+    expect(JSON.parse(fs.readFileSync(registrationSidecarPath(rollout), "utf8")).receipt.runFile).toBe(path.resolve(rollout));
+  });
+
+  it("keeps operate context but does not route skills for an invalid or ambiguous payload", () => {
+    const wikitom = fixture();
+    const skills = path.join(temp("session-start-unidentified-skills-"), "skills");
+    const invalid = path.join(temp("session-start-invalid-run-"), "session.jsonl");
+    const transcript = path.join(temp("session-start-unidentified-run-"), "session.jsonl");
+    const invalidContext = contextOf(run({
+      wikitom,
+      skills,
+      payload: { hook_event_name: "SessionStart", transcriptPath: invalid },
+    }));
+    expect(invalidContext).toContain("SKILLS could not be routed: launcher identity missing; skill catalog was not read");
+    expect(fs.existsSync(registrationSidecarPath(invalid))).toBe(false);
+
+    const context = contextOf(run({
+      wikitom,
+      skills,
+      payload: { hook_event_name: "SessionStart", transcript_path: transcript, rollout_path: transcript },
+      env: {
+        TTS_CLI: "Codex", TTS_RUNNER: "claude", CODEX_THREAD_ID: "thread", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "entry", CODEX_HOME: "somewhere", CLAUDE_CONFIG_DIR: "somewhere-else",
+      },
+    }));
+    expect(context).toContain("── model-of-tom/agent-rules.md ──");
+    expect(context).toContain("SKILLS could not be routed: launcher identity missing; skill catalog was not read");
+    expect(fs.existsSync(skills)).toBe(false);
+    expect(fs.existsSync(registrationSidecarPath(transcript))).toBe(false);
+  });
+
+  it("routes ordinary Claude and Codex SessionStart payloads from their own fields", () => {
+    const wikitom = fixture();
+    const claudeSkills = temp("session-start-payload-claude-skills-");
+    const codexSkills = temp("session-start-payload-codex-skills-");
+    const claudeRun = path.join(temp("session-start-payload-claude-run-"), "session.jsonl");
+    const codexRun = path.join(temp("session-start-payload-codex-run-"), "rollout.jsonl");
+
+    expect(contextOf(run({
+      wikitom,
+      skills: claudeSkills,
+      payload: { hook_event_name: "SessionStart", transcript_path: claudeRun, session_id: "claude-session", cwd: process.cwd() },
+    }))).toContain("granted: write");
+    expect(contextOf(run({
+      wikitom,
+      skills: codexSkills,
+      payload: { hook_event_name: "SessionStart", rollout_path: codexRun, thread_id: "codex-thread", cwd: process.cwd() },
+    }))).toContain("granted: write");
   });
 
   it("stays inside the laptop budget, on the fixture and on the real vault", () => {
@@ -177,7 +264,7 @@ describe("session-start-hook", () => {
     for (const dir of [skills, other]) {
       expect(fs.existsSync(path.join(dir, "tom-write", "SKILL.md"))).toBe(true);
       expect(fs.existsSync(path.join(dir, "tom-know-admin", "SKILL.md"))).toBe(true);
-      expect(fs.existsSync(path.join(dir, "tom-repo-WikiTom", "SKILL.md"))).toBe(true);
+      expect(fs.existsSync(path.join(dir, "tom-repo-wikitom", "SKILL.md"))).toBe(true);
     }
     expect(fs.readFileSync(path.join(skills, "graphify", "SKILL.md"), "utf8")).toContain("Not Tom's.");
     expect(fs.readFileSync(path.join(skills, "tom-write", "SKILL.md"), "utf8")).toContain("Use short sentences.");
@@ -192,6 +279,60 @@ describe("session-start-hook", () => {
     expect(context).toContain("granted: —");
     expect(context).toContain("refused: write — no published body at this commit");
     expect(context).not.toContain("skill catalog may be stale");
+  });
+
+  it("labels box grants with the commit in their existing skill bodies", () => {
+    const wikitom = fixture();
+    const skills = temp("session-start-box-stale-");
+    const oldCommit = git(wikitom, "rev-parse", "HEAD").trim();
+    contextOf(run({ wikitom, skills }));
+
+    write(wikitom, "model-of-tom/writing.md", "# Writing\n\n## Sentences\n\nThe new body.\n");
+    git(wikitom, "add", "-A");
+    git(wikitom, "commit", "-q", "-m", "new body");
+    const newCommit = git(wikitom, "rev-parse", "HEAD").trim();
+
+    const context = contextOf(run({ wikitom, skills, env: { RUN_HOST: "box" } }));
+    expect(context).toContain(`SKILLS (WikiTom commit ${oldCommit})`);
+    expect(context).not.toContain(`SKILLS (WikiTom commit ${newCommit})`);
+    expect(fs.readFileSync(path.join(skills, "tom-write", "SKILL.md"), "utf8")).toContain("Use short sentences.");
+  });
+
+  it("routes the Claude SessionStart grant from Claude's directory only", () => {
+    const wikitom = fixture();
+    const claude = temp("session-start-claude-catalog-");
+    const codex = temp("session-start-codex-catalog-");
+    const commit = git(wikitom, "rev-parse", "HEAD").trim();
+    fs.mkdirSync(path.join(codex, "tom-write"));
+    fs.writeFileSync(
+      path.join(codex, "tom-write", "SKILL.md"),
+      `<!-- generated from WikiTom model-of-tom/writing.md at commit ${commit} — do not edit -->\n`,
+    );
+
+    const context = contextOf(run({ wikitom, skills: [claude, codex], env: { RUN_HOST: "box" } }));
+    expect(context).toContain("granted: —");
+    expect(context).toContain("refused: write — no published body at this commit");
+  });
+
+  it("routes a Codex SessionStart grant from Codex's directory only", () => {
+    const wikitom = fixture();
+    const claude = temp("session-start-claude-catalog-");
+    const codex = temp("session-start-codex-catalog-");
+    const commit = git(wikitom, "rev-parse", "HEAD").trim();
+    fs.mkdirSync(path.join(claude, "tom-write"));
+    fs.writeFileSync(
+      path.join(claude, "tom-write", "SKILL.md"),
+      `<!-- generated from WikiTom model-of-tom/writing.md at commit ${commit} — do not edit -->\n`,
+    );
+
+    const context = contextOf(run({
+      wikitom,
+      skills: [claude, codex],
+      env: { RUN_HOST: "box" },
+      payload: { hook_event_name: "SessionStart", rollout_path: path.join(temp("session-start-codex-route-"), "rollout.jsonl") },
+    }));
+    expect(context).toContain("granted: —");
+    expect(context).toContain("refused: write — no published body at this commit");
   });
 
   // A session start waits for the pull, so the pull must be capped: without a

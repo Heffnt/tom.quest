@@ -18,6 +18,8 @@
 //   node /opt/tts/evals.mjs --serve     # one polling pass over the request queue
 //   node /opt/tts/evals.mjs --weekly    # the full set against both repos' main
 //   node /opt/tts/evals.mjs --tasks <repo>
+//   node /opt/tts/evals.mjs --faults-only   # the planted-fault audits, nothing else
+//   node /opt/tts/evals.mjs --weekly --dry-run   # compute it all, post nothing
 //
 // The box POLLS. It has no inbound door: it talks out to Convex, GitHub and
 // Slack, and nothing talks in but SSH with Tom's key. A GitHub Action posts a
@@ -28,12 +30,19 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { convexFetch, extractJsonObject, loadEnv, nyHour, runClaude, serverErrorMessage } from "./tts-lib.mjs";
+import { convexFetch, extractJsonObject, loadEnv, nyHour, nyUtcOffsetHours, runClaude, serverErrorMessage } from "./tts-lib.mjs";
 import { cacheRepoDir } from "./tts-code-lib.mjs";
 // The cap on the node arm, imported rather than re-declared: worker/jobs/graph.mjs
 // owns every number about the graph, and a second copy of this one here would
 // drift the day either moves.
 import { ABLATION_NODE_CAP } from "./graph.mjs";
+import { BOX_WIKITOM_DIR } from "./search-lib.mjs";
+// THE AUDIT'S OWN PROMPT, IMPORTED AND NEVER RE-IMPLEMENTED. The planted-fault
+// arm below asks the real auditor the real question about a fixture diff; a
+// second copy of that prompt here would measure a prompt nothing else uses.
+// Only the two stable exports are taken, so a change to how audit.mjs chunks or
+// runs a diff lands here with no edit.
+import { AUDIT_UNAVAILABLE, auditPrompt } from "./audit.mjs";
 
 export const EVALS_RUN = "evals-run";
 export const EVALS_REQUEST = "evals-request";
@@ -178,6 +187,12 @@ export function goldenHash(items) {
   return hash.digest("hex").slice(0, 12);
 }
 
+/** The exact bytes of one scored item, retained on the run so the gate compares
+ * only equal-id, equal-content measurements. */
+export function contentHash(item) {
+  return crypto.createHash("sha256").update(JSON.stringify(item)).digest("hex");
+}
+
 /** The newest `count` approve and `count` revise across the whole set, by
  *  ruledAt descending — the set a pull request scores. Items with no ruledAt
  *  (the mined explanations) sort by their day. */
@@ -256,24 +271,53 @@ const RUN_OPTIONS = { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], ma
  * out of git. The publication does not depend on the names at all — it is the
  * whole catalogue — so it is built once and the name sets read out of it.
  *
- * The key is the pair of worktree directories, which one run pins for its whole
- * lifetime: runEvals makes them at the top and removes them in its `finally`,
- * and a head run and a base run never share both.
+ * The key is the pair of commits that the publisher reads, not the reusable
+ * worktree directories. Weekly runs recreate `origin/main` at the same paths;
+ * after either repository advances, reusing a catalogue made from those paths
+ * would pair a new recorded commit with old skill bodies.
  */
 const publications = new Map();
 
+/** The two immutable objects a publication reads: WikiTom supplies its pages,
+ * and tom.quest supplies the published repository rules. */
+function publicationKey(tomquestTree, wikitomTree) {
+  const tomquest = git(tomquestTree, "rev-parse", "HEAD").trim();
+  const wikitom = git(wikitomTree, "rev-parse", "HEAD").trim();
+  return `${tomquest} ${wikitom}`;
+}
+
+/** Hash the exact on-disk catalog bytes the pinned publisher produced. */
+export function catalogHashFor(out) {
+  const hash = crypto.createHash("sha256");
+  const visit = (dir, relative = "") => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const childRelative = relative === "" ? entry.name : `${relative}/${entry.name}`;
+      const child = path.join(dir, entry.name);
+      if (entry.isDirectory()) visit(child, childRelative);
+      else if (entry.isFile()) {
+        hash.update(childRelative);
+        hash.update("\0");
+        hash.update(fs.readFileSync(child));
+        hash.update("\0");
+      }
+    }
+  };
+  visit(out);
+  return hash.digest("hex");
+}
+
 export function publicationFor(tomquestTree, wikitomTree, run = execFileSync, workDir = WORK_DIR) {
-  const key = `${tomquestTree} ${wikitomTree}`;
+  const key = publicationKey(tomquestTree, wikitomTree);
   const held = publications.get(key);
   if (held !== undefined) return held;
   const out = path.join(workDir, "skills", crypto.createHash("sha256").update(key).digest("hex").slice(0, 16));
   const script = path.join(tomquestTree, "scripts", "publish-skills.mjs");
   // The two trees are handed in as the two REPOSITORIES as well as as the
-  // sources of the pages: `repo-tom.quest` and `repo-WikiTom` are then the
+  // sources of the pages: `repo-tom-quest` and `repo-wikitom` are then the
   // rules files of the exact commits this run pins, which is the standard every
   // other part of the prelude is held to. A repository the run pins nothing of
-  // — ComplexMultiTrigger — has no commit here to read, and comes back as a
-  // refusal in the grant block rather than as whatever some checkout's HEAD says.
+  // has no commit here to read, and comes back as a refusal in the grant block
+  // rather than as whatever some checkout's HEAD says.
   const result = JSON.parse(run(process.execPath, [
     script,
     "--wikitom", wikitomTree,
@@ -284,9 +328,10 @@ export function publicationFor(tomquestTree, wikitomTree, run = execFileSync, wo
   ], RUN_OPTIONS));
   const built = {
     commit: result.commit,
-    out: result.out ?? out,
-    published: (result.skills ?? []).map((skill) => skill.name),
-    why: Object.fromEntries((result.refused ?? []).map((entry) => [entry.name, entry.why])),
+    out: result.out,
+    catalogHash: catalogHashFor(result.out),
+    published: result.skills.map((skill) => skill.name),
+    why: Object.fromEntries(result.refused.map((entry) => [entry.name, entry.why])),
   };
   publications.set(key, built);
   return built;
@@ -297,10 +342,14 @@ export function publicationFor(tomquestTree, wikitomTree, run = execFileSync, wo
  *  read is the page; the two generated lines above it are how the harness finds
  *  the file, not part of what it says. */
 export function skillBodyOf(text) {
-  let rest = String(text ?? "");
-  const frontmatter = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(rest);
-  if (frontmatter !== null) rest = rest.slice(frontmatter[0].length);
-  return rest.replace(/^\s*<!--[\s\S]*?-->[ \t]*\r?\n/, "").trim();
+  // The publisher is the only writer here, but a partial or corrupt generated
+  // file must fail this evaluation rather than silently score a different prompt.
+  const frontmatter = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(text);
+  if (frontmatter === null) throw new Error("published SKILL.md has no frontmatter");
+  const rest = text.slice(frontmatter[0].length);
+  const provenance = /^\s*<!--[\s\S]*?-->[ \t]*\r?\n/.exec(rest);
+  if (provenance === null) throw new Error("published SKILL.md has no provenance");
+  return rest.slice(provenance[0].length).trim();
 }
 
 /**
@@ -338,9 +387,11 @@ export function skillsFor(tomquestTree, wikitomTree, names, run = execFileSync, 
   }));
   return {
     names: layerNames,
-    skills: skillNames,
+    skills: asked.granted,
+    skillsRefused: asked.refused.map((entry) => entry.name),
     text: [...(layers === null ? [] : [layers.text]), asked.grants, ...loaded.map((one) => one.body)].join("\n\n"),
     commit: publication.commit,
+    catalogHash: publication.catalogHash,
     // ONE SHAPE for both halves — `{ path, bytes }`, which is what prelude.mjs's
     // --json gives for the layer files — so a reader of this list never has to
     // ask which half an entry came from.
@@ -378,6 +429,7 @@ export function preludeFrom(io, tomquestTree, wikitomTree, names) {
   // refuses an empty --layers.
   if (layers.length === 0 && skills.length === 0) return NO_PRELUDE;
   if (skills.length > 0) {
+    // REMOVAL CHECK: cannot remove; scoring a prompt missing requested skill bodies would turn an assembly fault into an apparent model regression.
     if (typeof io.skills !== "function") throw new SkillsNotAssembledError(SKILL_SEAM_REASON);
     return io.skills(tomquestTree, wikitomTree, names);
   }
@@ -422,6 +474,14 @@ export const JOBS = {
     ),
     parse: (answer) => extractJsonObject(answer),
     fields: ["brief", "entryAction", "workDescription", "groundUpExplanation"],
+    // THE ONE JOB WHOSE `brief` IS THE LIFE TODO'S BRIEF, so the one job whose
+    // `brief` the SIZE rules (2-5 sentences, at most 400 characters) bind. The
+    // field name alone cannot say this — the code-brief job below also writes
+    // a field called `brief`, and that one is 250 to 400 WORDS — so the job
+    // declares it and standardRulesFor reads the declaration. A job that names
+    // nothing here gets the form rules on its brief fields, which is the right
+    // default for everything but this.
+    briefSizeFields: ["brief"],
     opts: { maxTurns: 4 },
   },
   "code-brief": {
@@ -661,8 +721,15 @@ function fieldBlocks(output, fields) {
  * output, and withholding it would leave the judge with nothing to judge
  * against. A capability case also carries a target: the thing the output must
  * now do and did not do before.
+ *
+ * `hideVerdict` DROPS EXACTLY TWO SECTIONS — TOM'S VERDICT and TOM'S SENTENCE —
+ * and nothing else. It is the seam the judge-agreement measure below replays
+ * through: that measure asks whether the judge reaches Tom's answer WITHOUT
+ * being handed it, so the prompt it sends must be this prompt with his answer
+ * taken out, and not a second prompt body written beside it. Two prompt bodies
+ * would mean the thing measured is not the thing that runs.
  */
-export function judgePrompt(item, fresh, fields) {
+export function judgePrompt(item, fresh, fields, { hideVerdict = false } = {}) {
   const verdict = verdictOf(item);
   const input = { ...item.input };
   delete input.priorReviseSentence;
@@ -718,10 +785,10 @@ export function judgePrompt(item, fresh, fields) {
     `--- INPUT THE OUTPUT WAS WRITTEN FROM ---`,
     JSON.stringify(input, null, 1),
     ``,
-    `--- TOM'S VERDICT ---`,
-    verdict,
-    ``,
-    ...(rubric === null && verdict === "revise" ? [`--- TOM'S SENTENCE ---`, item.sentence ?? "", ``] : []),
+    ...(hideVerdict ? [] : [`--- TOM'S VERDICT ---`, verdict, ``]),
+    ...(hideVerdict || rubric !== null || verdict !== "revise"
+      ? []
+      : [`--- TOM'S SENTENCE ---`, item.sentence ?? "", ``]),
     ...(rubric === null ? [] : [`--- WHAT TOM'S LABEL MEANS ---`, rubric, ``]),
     ...(target === null
       ? []
@@ -781,32 +848,56 @@ export function mechanicalChecks(expect, text) {
 }
 
 /**
- * WHICH FIELDS THE WRITING STANDARD BINDS, and it is not all of them.
+ * WHICH FIELDS THE WRITING STANDARD BINDS, and it is not all of them, and it
+ * is not the same rules for each.
  *
- * scripts/check-writing-standard.mjs exports two rule sets, and the difference
- * is the whole finding here. `RULES` are rules of the HTML-DOCUMENT FORM —
- * no-doctype, no-close-html, no-h1, no-style — which the writing standard
- * attaches to a GROUND-UP EXPLANATION and to nothing else. `BRIEF_RULES` is
- * empty, deliberately: a brief is markdown by construction, so no mechanical
- * rule binds it, and that emptiness is a measurement rather than a gap (read
- * its comment there).
+ * scripts/check-writing-standard.mjs exports two rule sets. `RULES` are rules
+ * of the HTML-DOCUMENT FORM — no-doctype, no-close-html, no-h1, no-style —
+ * which the writing standard attaches to a GROUND-UP EXPLANATION and to
+ * nothing else. `BRIEF_RULES` are the four mechanical demands the prepare
+ * prompt makes of the LIFE TODO'S BRIEF.
  *
- * So the rules are not applied field-blind. Running `RULES` over a free-form
- * field would fail every case on no-doctype — a `run` case's `text` is not an
- * HTML document and the standard fixes no form for it, so no rules run on it
- * at all. That is what makes this check safe to run on every job: a field the
- * standard says nothing about is checked against nothing.
+ * The rules are not applied field-blind, for two separate reasons.
  *
- * A rule added to BRIEF_RULES over there lands here with no edit.
+ * FIRST, `RULES` over a free-form field would fail every case on no-doctype —
+ * a `run` case's `text` is not an HTML document and the standard fixes no form
+ * for it — so no rules run on it at all. A field the standard says nothing
+ * about is checked against nothing, which is what makes this check safe to run
+ * on every job.
+ *
+ * SECOND, only TWO of the four BRIEF_RULES bind the three brief-shaped fields
+ * below. brief-sentences (2 to 5) and brief-length (at most 400 characters)
+ * are demands on the SIZE of the life todo's brief, and nothing else here is
+ * that field: a `recommendation` is one word, a `workDescription` is a few,
+ * and the code-brief job's `brief` is 250 to 400 WORDS. Handing those three
+ * the size rules fails every affected golden item DETERMINISTICALLY — the
+ * check below runs before the judge — so `regressions` on the evals-run row
+ * never returns to zero and the merge gate's evals arm denies every merge.
+ * The split's one home is BRIEF_SIZE_RULE_IDS / briefFormRules() over there,
+ * and this file selects from it rather than restating it.
+ *
+ * WHICH `brief` IS WHICH IS THE JOB'S ANSWER, NOT THE FIELD NAME'S. Two jobs
+ * write a field called `brief` and they are different fields, so the job says
+ * which of its brief fields the size rules bind (`briefSizeFields` in JOBS
+ * above) and this function reads that. `job` defaults to nothing size-bound:
+ * a two-argument call — an older caller, a test — gets the form rules, which
+ * is the answer for every brief field but the prepare job's.
+ *
+ * A rule added to BRIEF_RULES over there lands here with no edit, in the form
+ * set unless it is also named in BRIEF_SIZE_RULE_IDS.
  */
 export const HTML_STANDARD_FIELDS = Object.freeze(["groundUpExplanation", "explanation"]);
 export const BRIEF_STANDARD_FIELDS = Object.freeze(["brief", "recommendation", "workDescription"]);
 
-export function standardRulesFor(field, standard) {
+export function standardRulesFor(field, standard, job = null) {
   if (standard === null || standard === undefined) return null;
   if (HTML_STANDARD_FIELDS.includes(field)) return standard.RULES ?? null;
-  if (BRIEF_STANDARD_FIELDS.includes(field)) return standard.BRIEF_RULES ?? null;
-  return null;
+  if (!BRIEF_STANDARD_FIELDS.includes(field)) return null;
+  if ((job?.briefSizeFields ?? []).includes(field)) return standard.BRIEF_RULES ?? null;
+  // A standard module too old to export briefFormRules checks nothing here,
+  // the same answer an absent module gives — never the full set by fallback,
+  // which is the failure this whole comment is about.
+  return standard.briefFormRules?.() ?? null;
 }
 
 /**
@@ -848,7 +939,7 @@ export function deterministicFailure(item, job, fresh, standard) {
   const mechanical = mechanicalChecks(item.expect, outputText(fresh, fields));
   if (mechanical !== null) return mechanical;
   for (const field of fields) {
-    const rules = standardRulesFor(field, standard);
+    const rules = standardRulesFor(field, standard, job);
     if (rules === null || rules.length === 0) continue;
     const value = fresh?.[field];
     // An absent field is the judge's business — it is a loss, not a broken
@@ -930,6 +1021,7 @@ export async function runItem(item, context, io, { deterministic = null, receipt
         layersGiven: known ? layers.names : [],
         layersDenied: known ? LAYER_NAMES.filter((name) => !layers.names.includes(name)) : [],
         skillsGranted: layers.skills ?? [],
+        skillsRefused: layers.skillsRefused ?? [],
         ...(layers.commit ? { wikitomCommit: layers.commit } : {}),
       },
     });
@@ -1028,8 +1120,9 @@ export function aggregate(results) {
     byVerdict,
     failures: results
       .filter((result) => result.judged !== "pass")
-      .map(({ id, partition, verdict, reason, confirmed, trials }) => ({
+      .map(({ id, partition, verdict, reason, confirmed, trials, method }) => ({
         id, partition, verdict, reason, confirmed,
+        ...(method === undefined ? {} : { method }),
         // The failure carries its own trial count, so a row read later says
         // whether this id failed once or failed every time it was tried.
         ...(trials === undefined ? {} : { trials }),
@@ -1067,6 +1160,20 @@ export function loadTasks(tomquestTree, repo) {
  */
 export const TRIGGERS_DIR = "evals/triggers";
 
+/** The area-trigger files live in WikiTom because their cases may only be
+ * stored with the private area pages they exercise. Intent and week remain
+ * public trigger files: neither is an area page. */
+export const AREA_TRIGGER_FILES = Object.freeze([
+  "skill-know-admin.json",
+  "skill-know-agent-systems.json",
+  "skill-know-climbing.json",
+  "skill-know-health-and-food.json",
+  "skill-know-mental-health.json",
+  "skill-know-money.json",
+  "skill-know-research.json",
+  "skill-know-social.json",
+]);
+
 /**
  * The eight area pages the know layer requires, and therefore the eight
  * `know-<area>` skills the layer became.
@@ -1098,10 +1205,13 @@ export const KNOW_AREAS = Object.freeze([
  * A layer name, as the skill names that layer became.
  *
  * The trigger files predate the skills and name layers; this is the one table
- * that maps them, so an old file keeps scoring and a new one names a skill
- * directly. `operate` maps to nothing because the base is not a skill: it is
- * the one file every prompt carries whoever the run writes for, and there is
- * nothing to grant or withhold.
+ * that maps them. The layer triggers deliberately exercise a whole layer;
+ * replacing one with a single skill trigger would no longer test its complete
+ * grant set. The deployed worker cannot import scripts/skills.mjs because
+ * setup installs those files at different relative paths, so this checked and
+ * tested mapping remains the one compatible representation. `operate` maps to
+ * nothing because the base is not a skill: it is the one file every prompt
+ * carries whoever the run writes for, and there is nothing to grant or withhold.
  */
 export const LAYER_SKILL_ALIASES = Object.freeze({
   operate: Object.freeze([]),
@@ -1109,44 +1219,243 @@ export const LAYER_SKILL_ALIASES = Object.freeze({
   know: Object.freeze(["know-intent", "know-week", ...KNOW_AREAS.map((area) => `know-${area}`)]),
 });
 
-/** The skill names one loaded trigger is about: a `skill` file names its own,
- *  and a `layer` file names the skills that layer became. A file whose name is
- *  in neither table is about nothing nameable, and says so with an empty list
- *  rather than with a guess. */
-export function triggerSkills(trigger) {
-  if (trigger?.kind === "skill") return typeof trigger.name === "string" && trigger.name !== "" ? [trigger.name] : [];
-  if (trigger?.kind === "layer") return [...(LAYER_SKILL_ALIASES[trigger.name] ?? [])];
-  return [];
+/**
+ * The mapping, REQUIRED and never defaulted. The identity default this replaces
+ * was the one path on which a trigger's skill name was spelled without
+ * scripts/skills.mjs: a caller that forgot `repoSkillName` scored
+ * `repo-tom.quest`, a name no publisher can produce, and the miss looked like a
+ * clean run. There is nothing here to fall back TO — a name spelled by anything
+ * but the central function is wrong — so the absent mapping is an error.
+ */
+function skillNameMapping({ bareSkillName, repoSkillName } = {}) {
+  if (typeof bareSkillName !== "function" || typeof repoSkillName !== "function") {
+    throw new Error("trigger skill names need the scripts/skills.mjs mapping (bareSkillName and repoSkillName)");
+  }
+  return { bareSkillName, repoSkillName };
 }
 
-export function loadTriggers(tomquestTree) {
-  const dir = path.join(tomquestTree, TRIGGERS_DIR);
-  if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir)
-    .filter((name) => name.endsWith(".json") && !name.endsWith(".draft.json"))
-    .sort()
-    .map((name) => {
+/** The skill names one loaded trigger is about: a `skill` file names its own,
+ *  and a `layer` file names the skills that layer became. */
+export function triggerSkills(trigger, mapping = {}) {
+  if (trigger?.kind === "skill") {
+    if (typeof trigger.name !== "string" || trigger.name === "") throw new Error("skill trigger needs a name");
+    const { bareSkillName, repoSkillName } = skillNameMapping(mapping);
+    // Repository labels keep their punctuation and capitalization for humans;
+    // their published skill name comes only from the central mapping. THE
+    // FILE'S OWN `name` MUST BE THAT NAME: a fixture holding a second spelling
+    // of the repository is the defect this round found, and tolerating it in
+    // the file while silently scoring the mapped name leaves the wrong name
+    // readable, quotable, and free to spread into ids and expectations.
+    if (typeof trigger.repo === "string" && trigger.repo !== "") {
+      const published = repoSkillName(trigger.repo);
+      if (trigger.name !== published) {
+        throw new Error(`skill trigger for ${trigger.repo} is named ${trigger.name}; the published skill is ${published}`);
+      }
+      return [published];
+    }
+    const bare = bareSkillName(trigger.name);
+    if (trigger.name !== bare) {
+      throw new Error(`skill trigger is named ${trigger.name}; the published skill is ${bare}`);
+    }
+    return [bare];
+  }
+  if (trigger?.kind === "layer") {
+    const skills = LAYER_SKILL_ALIASES[trigger.name];
+    if (skills === undefined) throw new Error(`unknown layer trigger ${String(trigger.name)}`);
+    const { bareSkillName } = skillNameMapping(mapping);
+    return skills.map((name) => bareSkillName(name));
+  }
+  throw new Error(`unknown trigger kind ${String(trigger?.kind)}`);
+}
+
+export function loadTriggers(tomquestTree, { wikitomDir = BOX_WIKITOM_DIR, bareSkillName, repoSkillName } = {}) {
+  const publicDir = path.join(tomquestTree, TRIGGERS_DIR);
+  const privateDir = path.join(wikitomDir, TRIGGERS_DIR);
+  const files = [
+    ...(fs.existsSync(publicDir)
+      ? fs.readdirSync(publicDir)
+        .filter((name) => name.endsWith(".json") && !name.endsWith(".draft.json") && !AREA_TRIGGER_FILES.includes(name))
+        .map((name) => ({ dir: publicDir, name }))
+      : []),
+    ...AREA_TRIGGER_FILES.map((name) => ({ dir: privateDir, name })),
+  ];
+  return files
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(({ dir, name }) => {
       const trigger = { file: name, ...JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")) };
+      // A checked-in trigger is executable input. Validate its dispatch shape
+      // while the source filename is still known, including the private area
+      // fixtures that this checkout cannot repair.
+      if (Array.isArray(trigger.cases)) {
+        for (const one of trigger.cases) {
+          const id = typeof one?.id === "string" && one.id.trim() !== "" ? one.id : "<missing id>";
+          try {
+            triggerBase(trigger, one);
+            triggerMethod(one);
+          } catch (error) {
+            throw new Error(`trigger case ${id} in ${name}: ${error.message}`);
+          }
+        }
+      }
       // NORMALISED ON THE WAY OUT, never written into the file. A trigger file
       // is Tom-facing text about one name, and a list of skill names copied
       // into it would be a second copy of LAYER_SKILL_ALIASES that goes stale
       // the day an area page is added.
-      return { ...trigger, skills: triggerSkills(trigger) };
+      try {
+        return { ...trigger, skills: triggerSkills(trigger, { bareSkillName, repoSkillName }) };
+      } catch (error) {
+        throw new Error(`trigger ${name}: ${error.message}`);
+      }
     });
 }
 
-/** How many positives and negatives one trigger file carries, whichever way it
- *  writes them: as a `cases` list flagged `negative`, which is the form every
- *  checked-in file uses, or as the lists or counts the first sketch of the
- *  format had. ONE SPELLING of the count, so the rule and the report cannot
- *  come to disagree. */
+/** How many positives and negatives one current-format trigger file carries. */
 export function triggerCounts(trigger) {
-  const count = (value) => (Array.isArray(value) ? value.length : (Number.isFinite(value) ? value : 0));
-  if (Array.isArray(trigger?.cases)) {
-    const negatives = trigger.cases.filter((one) => one?.negative === true).length;
-    return { positives: trigger.cases.length - negatives, negatives };
+  if (!Array.isArray(trigger?.cases)) throw new Error("trigger needs a cases list");
+  const negatives = trigger.cases.filter((one) => one?.negative === true).length;
+  return { positives: trigger.cases.length - negatives, negatives };
+}
+
+/** The executable trigger filenames changed by a pull request. Drafts and
+ * malformed paths cannot claim coverage because the runner never loads them. */
+export function changedTriggerFiles(changed) {
+  if (!Array.isArray(changed)) return new Set();
+  return new Set(changed
+    .filter((path) => typeof path === "string")
+    .map((path) => path.replace(/\\/g, "/").replace(/^\.\//, ""))
+    .filter((path) => path.startsWith(`${TRIGGERS_DIR}/`) && path.endsWith(".json") && !path.endsWith(".draft.json"))
+    .map((path) => path.slice(`${TRIGGERS_DIR}/`.length)));
+}
+
+/**
+ * The two trigger case methods. A `route` case is a complete, generic input to
+ * routeSkills: `caller`, `subject`, optional `record`/`cwd`/`repoDirs`, and an
+ * `expected` router result. It contains no prose for a model to interpret, so
+ * it is scored once without a runner. A case with a prompt is an output-
+ * behaviour check and therefore needs the runner once. A malformed checked-in
+ * case is an authoring error, not a measurement to silently skip.
+ */
+export const TRIGGER_METHOD_ROUTER = "router";
+export const TRIGGER_METHOD_RUNNER = "runner";
+
+export function triggerMethod(one) {
+  const hasRoute = one !== null && typeof one === "object" && Object.hasOwn(one, "route");
+  const hasPrompt = one !== null && typeof one === "object" && Object.hasOwn(one, "prompt");
+  if (hasRoute && hasPrompt) throw new Error("trigger case cannot carry both route and prompt");
+  // A router case is scored by exact comparison against `route.expected`;
+  // scoreTriggerRoute never reads `expect`. One checked in anyway held two
+  // spellings of a skill name that no publisher produces, and read as a
+  // passing assertion because a mustNotName nobody can name is vacuously true.
+  // The expectation has one home, so the second one is refused rather than
+  // ignored.
+  if (hasRoute && Object.hasOwn(one, "expect")) {
+    throw new Error("router case scores route.expected; it cannot also carry expect");
   }
-  return { positives: count(trigger?.positives), negatives: count(trigger?.negatives) };
+  if (hasRoute) return TRIGGER_METHOD_ROUTER;
+  if (hasPrompt && typeof one.prompt === "string" && one.prompt.trim() !== "") return TRIGGER_METHOD_RUNNER;
+  throw new Error("trigger case needs route or prompt");
+}
+
+export function triggerBase(trigger, one) {
+  if (typeof one?.id !== "string" || one.id.trim() === "") {
+    throw new Error("trigger case needs a non-empty id");
+  }
+  // A case id names the skill it is about, and `<kind>-<name>-` is how every
+  // trigger file already spells it. Anchoring it here is what keeps a skill
+  // name from acquiring a second spelling in the one field nothing validates:
+  // the two repo files carried `skill-repo-tom.quest-…` ids for a skill
+  // published as `repo-tom-quest`.
+  if (typeof trigger?.kind === "string" && typeof trigger?.name === "string" && trigger.name !== "") {
+    const prefix = `${trigger.kind}-${trigger.name}-`;
+    if (!one.id.startsWith(prefix)) throw new Error(`trigger case id ${one.id} does not start with ${prefix}`);
+  }
+  return {
+    id: one.id,
+    partition: `trigger/${trigger?.name ?? "unknown"}`,
+    verdict: "approve",
+    confirmed: one?.confirmedByTom === true,
+  };
+}
+
+function sameJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/** Score one schema-described router case. It deliberately has no fallback to
+ * a model: a partial route description is a broken fixture, not a question a
+ * model is permitted to answer. */
+export function scoreTriggerRoute(trigger, one, router) {
+  const base = triggerBase(trigger, one);
+  if (one?.route === null || typeof one?.route !== "object" || Array.isArray(one.route)) {
+    return { ...base, method: TRIGGER_METHOD_ROUTER, judged: "fail", reason: "router case needs a route object" };
+  }
+  const expected = one.route.expected;
+  if (expected === null || typeof expected !== "object" || Array.isArray(expected)) {
+    return { ...base, method: TRIGGER_METHOD_ROUTER, judged: "fail", reason: "router case needs an expected result" };
+  }
+  try {
+    const actual = router({
+      caller: one.route.caller,
+      subject: one.route.subject,
+      record: one.route.record,
+      cwd: one.route.cwd,
+      repoDirs: one.route.repoDirs,
+      pages: one.route.pages,
+      published: one.route.published,
+    });
+    const projected = {
+      granted: actual.granted,
+      refused: actual.refused,
+      repoRulesSource: actual.repoRulesSource,
+    };
+    return sameJson(projected, expected)
+      ? { ...base, method: TRIGGER_METHOD_ROUTER, judged: "pass", trials: { head: 1, headPassed: 1 } }
+      : { ...base, method: TRIGGER_METHOD_ROUTER, judged: "fail", reason: "router result differs from the case expectation", trials: { head: 1, headPassed: 0 } };
+  } catch (error) {
+    return { ...base, method: TRIGGER_METHOD_ROUTER, judged: "fail", reason: `router failed: ${serverErrorMessage(error)}`, trials: { head: 1, headPassed: 0 } };
+  }
+}
+
+/** One model-required trigger case. Its checked-in mechanical expectation is
+ * the verdict, so there is no second judge call after the one runner call. */
+export async function runTriggerCase(trigger, one, io, router = null, publication = null) {
+  const method = triggerMethod(one);
+  if (method === TRIGGER_METHOD_ROUTER) return scoreTriggerRoute(trigger, one, router);
+  const base = triggerBase(trigger, one);
+  const pinReason = publication?.reason ?? (
+    publication === null ||
+    typeof publication.text !== "string" ||
+    typeof publication.expectedCommit !== "string" ||
+    publication.commit !== publication.expectedCommit ||
+    !/^[0-9a-f]{64}$/.test(publication.catalogHash ?? "")
+      ? "the trigger publication could not be pinned to the named WikiTom commit"
+      : null
+  );
+  // REMOVAL CHECK: cannot remove; an unpinned runner result can be stamped with a WikiTom commit whose skill bytes it never saw.
+  if (pinReason !== null) return { ...base, method, judged: "skip", reason: pinReason };
+  try {
+    const answer = await io.runClaude([publication.text, one.prompt].filter((part) => part !== "").join("\n\n"), {
+      model: REGEN_MODEL,
+      timeoutMs: REGEN_TIMEOUT_MS,
+      maxTurns: JOBS.run.opts.maxTurns,
+      registration: {
+        origin: "cron:evals",
+        kind: "trigger",
+        layersKnown: true,
+        layersGiven: [],
+        layersDenied: [],
+        skillsGranted: publication.skills ?? [],
+        skillsRefused: publication.skillsRefused ?? [],
+        wikitomCommit: publication.commit,
+      },
+    });
+    const reason = mechanicalChecks(one.expect, answer);
+    return reason === null
+      ? { ...base, method, judged: "pass", trials: { head: 1, headPassed: 1 } }
+      : { ...base, method, judged: "fail", reason, trials: { head: 1, headPassed: 0 } };
+  } catch (error) {
+    return { ...base, method, judged: "fail", reason: `trigger runner failed: ${serverErrorMessage(error)}`, trials: { head: 1, headPassed: 0 } };
+  }
 }
 
 /**
@@ -1652,13 +1961,426 @@ export function ablationFindings(ablation) {
     .sort((a, b) => a.name.localeCompare(b.name) || a.kind.localeCompare(b.kind));
 }
 
+// ── The verifiers, measured ──────────────────────────────────────────────────
+//
+// THERE ARE EXACTLY THREE VERIFIERS: the checks (tests-run), the audit
+// (audit-verdict) and the evals (evals-run). Tom's own label is the ground
+// truth above all three. Everything in this section MEASURES those verifiers
+// and GATES NOTHING — no merge arm reads it, no CI job runs it, no door is
+// touched. A judge that gated on its own unmeasured agreement is exactly the
+// failure the audit declines to lint for, and a measurement that grew into a
+// gate would be that failure with an extra step.
+//
+// Two measures live here. The third (§6.2, the audit against Tom's later
+// objections) is computed in Convex off the event record and is deliberately
+// NOT here: it needs rows this file never reads, and a second answer to one
+// question is two things to keep true.
+
+/** The standing caveat, carried as a FIELD on the scorecard and not only as a
+ *  comment: the weekly facts block is read by a model and by Tom, and a number
+ *  that travels without the sentence saying what it is not becomes a verdict
+ *  the moment somebody quotes it. */
+export const VERIFIER_CAVEAT =
+  "These measures report and never gate: a judge's agreement with twenty of his " +
+  "labels is evidence about the judge, not a verdict on any output it scored.";
+
+/** How many of his labels the judge is replayed against. Twenty is a week's
+ *  evidence about the judge and not a census of the corpus; the cost is twenty
+ *  Fable calls, once a week. */
+export const LABEL_SAMPLE = 20;
+
+/** Every list on the scorecard is capped, and every string in one is cut.
+ *  The scorecard rides a weekly evals-run row that a model reads whole, so an
+ *  unbounded list of reasons is an unbounded prompt. */
+export const SCORECARD_LIST_MAX = 20;
+export const SCORECARD_STRING_MAX = 300;
+
+const capString = (value) => String(value ?? "").slice(0, SCORECARD_STRING_MAX);
+
+/** One entry of a capped list, every string in it cut to the same length. */
+function capEntry(entry) {
+  const out = {};
+  for (const [key, value] of Object.entries(entry)) {
+    out[key] = typeof value === "string" ? capString(value) : value;
+  }
+  return out;
+}
+
+const capList = (list) => list.slice(0, SCORECARD_LIST_MAX).map(capEntry);
+
+/**
+ * The text Tom judged, off the label's own span rows.
+ *
+ * Separate rows were separate turns, so they are joined with a blank line
+ * rather than run together, which would fuse the end of one turn onto the start
+ * of the next. This is the same join scripts/export-golden.mjs makes
+ * (outputTextOf) — it is written twice rather than imported because that script
+ * is a laptop-side exporter with its own dependencies and this file ships to
+ * /opt/tts with none; the rule it spells is one line and is stated in both.
+ *
+ * An empty string means the text CANNOT BE RECOVERED, which is a skip and never
+ * a silent drop. NO SECOND DOOR IS ADDED to fetch it: GET /tts/label-input
+ * already carries the rows, and a run whose rows fell out of the thirty-day
+ * window is not recoverable from anywhere the box can reach.
+ */
+export function labelOutputText(label) {
+  return (label?.rows?.spanRows ?? [])
+    .map((row) => row?.content?.text)
+    .filter((text) => typeof text === "string" && text.trim() !== "")
+    .join("\n\n");
+}
+
+/** His polarity as the two words this file's judge answers in. */
+const JUDGE_FOR_POLARITY = { good: "pass", bad: "fail" };
+
+/**
+ * One label as an item judgePrompt takes.
+ *
+ * THREE CHOICES HERE, AND EACH ONE IS ABOUT NOT HANDING THE JUDGE THE ANSWER.
+ *
+ *  - `verdict` is ALWAYS "approve", never derived from his polarity. verdictOf
+ *    picks which mode block the prompt carries, and a block picked from his
+ *    label would put his answer into the question — the measurement would then
+ *    be of the prompt's leak and not of the judge.
+ *  - No `sentence` and no `expected.rubric`. His meaning IS his answer, and
+ *    both of those blocks would print it verbatim. (Dropping the rubric is why
+ *    hideVerdict only has two sections to drop: with no rubric and no sentence
+ *    set, TOM'S SENTENCE is already absent and TOM'S VERDICT is the one thing
+ *    left to hide.)
+ *  - `output` is EMPTY. This is a replay of his judgement over ONE text, not a
+ *    regeneration of it: there is no older output the text could have dropped a
+ *    fact from, and pasting the same text into both halves would make every
+ *    answer trivially "pass".
+ *
+ * WHAT THIS COSTS, said out loud: with an empty OLD output the approve block's
+ * question collapses to "does this text assert anything its input does not
+ * support", which is a weaker question than the one Tom answered, and it leans
+ * towards "pass". The agreement number is therefore evidence about the judge
+ * and not a score — VERIFIER_CAVEAT, which rides the row.
+ */
+export function replayItem(label) {
+  return {
+    id: String(label?.labelId ?? ""),
+    job: "run",
+    partition: `labels/${label?.source ?? "unknown"}`,
+    kind: "regression",
+    verdict: "approve",
+    confirmedByTom: true,
+    input: {
+      runId: label?.run?.runId ?? null,
+      origin: label?.run?.origin ?? null,
+      kind: label?.run?.kind ?? null,
+      model: label?.run?.model ?? null,
+    },
+    output: {},
+  };
+}
+
+/**
+ * §6.1 — the evals judge replayed against Tom's own labels.
+ *
+ * The newest LABEL_SAMPLE judgment labels whose polarity points one way or the
+ * other are replayed through the SAME judge prompt the evals use, with his
+ * verdict hidden, and the judge's pass/fail is counted against his good/bad.
+ *
+ * NEWEST-FIRST RATHER THAN RANDOM, for the reason convex/ttsSimplify.ts gives
+ * for its own sample: the same week measured twice must give the same answer,
+ * and a sample that moves turns every re-run into a diff nobody can read.
+ *
+ * SKIPS ARE COUNTED, NEVER SILENT, and the split is stated once here: `items`
+ * is the number of labels ACTUALLY JUDGED, and `skipped` is the number that
+ * could not be — a skip is not in `items` and not in `agreed`, so `agreed` out
+ * of `items` is a rate over what was measured rather than a rate quietly
+ * diluted by what was not.
+ */
+export async function judgeAgreement(io, { limit = LABEL_SAMPLE } = {}) {
+  const empty = { items: 0, agreed: 0, skipped: 0, disagreements: [], skips: [] };
+  if (typeof io?.labels !== "function") return empty;
+  let answer;
+  try {
+    answer = await io.labels(limit);
+  } catch (error) {
+    // A door that cannot be read measures nothing. It is not a failure of the
+    // judge and must not be reported as a disagreement.
+    return { ...empty, skips: [{ runId: null, reason: capString(`the label door could not be read: ${serverErrorMessage(error)}`) }] };
+  }
+  // The door already returns only `judgment: true` rows (convex/ttsEvals.ts
+  // internalLabelInput filters on it), so the filter below is the same rule
+  // said again where it is read rather than a second rule: a row that ever
+  // arrives carrying `judgment: false` is not a judgment and is not replayed.
+  const labels = (answer?.items ?? [])
+    .filter((label) => label?.judgment !== false)
+    .filter((label) => JUDGE_FOR_POLARITY[label?.polarity] !== undefined)
+    .sort((a, b) => (b?.at ?? 0) - (a?.at ?? 0) || String(a?.labelId).localeCompare(String(b?.labelId)))
+    .slice(0, limit);
+  const disagreements = [];
+  const skips = [];
+  let items = 0;
+  let agreed = 0;
+  for (const label of labels) {
+    const runId = label?.run?.runId ?? null;
+    if (label?.run === null || label?.run === undefined) {
+      skips.push({ runId, reason: "the label named no run, or the run has left the thirty-day window" });
+      continue;
+    }
+    const text = labelOutputText(label);
+    if (text === "") {
+      skips.push({ runId, reason: "the run recorded no text to judge" });
+      continue;
+    }
+    let raw;
+    try {
+      raw = await io.runClaude(judgePrompt(replayItem(label), { text }, JOBS.run.fields, { hideVerdict: true }), {
+        model: JUDGE_MODEL,
+        timeoutMs: JUDGE_TIMEOUT_MS,
+        maxTurns: 1,
+        registration: {
+          origin: "cron:evals",
+          kind: "job",
+          layersKnown: false,
+          layersGiven: [],
+          layersDenied: [],
+        },
+      });
+    } catch (error) {
+      skips.push({ runId, reason: `the judge could not be run: ${serverErrorMessage(error)}` });
+      continue;
+    }
+    const verdict = parseJudge(raw);
+    const tom = label.polarity;
+    items += 1;
+    if (JUDGE_FOR_POLARITY[tom] === verdict.judged) {
+      agreed += 1;
+      continue;
+    }
+    disagreements.push({ runId, tom, judge: verdict.judged, reason: verdict.reason });
+  }
+  return {
+    items,
+    agreed,
+    skipped: skips.length,
+    disagreements: capList(disagreements),
+    skips: capList(skips),
+  };
+}
+
+// ── §6.3 — the planted faults ────────────────────────────────────────────────
+
+/** Where the fixtures live in a checkout. */
+export const AUDIT_FAULTS_DIR = "evals/audit-faults";
+
+/**
+ * The fixture directory, found the way loadWritingStandard and loadGate find
+ * their one file: THE TREE HAS MORE THAN ONE HOME. In a checkout the fixtures
+ * are evals/audit-faults/; on the box this file lands in /opt/tts, where the
+ * directory sits beside it if setup.sh copied it and does not if it has not.
+ * An absent directory is ZERO FIXTURES and never a failure — a box whose setup
+ * has not copied them yet must not start reporting a broken arm.
+ *
+ * TTS_AUDIT_FAULTS_DIR in the environment overrides both, so the box can be
+ * pointed at a checkout without an edit here.
+ */
+export function auditFaultsRoot(env = {}) {
+  const named = env?.TTS_AUDIT_FAULTS_DIR ?? process.env.TTS_AUDIT_FAULTS_DIR;
+  if (typeof named === "string" && named !== "") return named;
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  for (const candidate of [
+    path.join(here, "audit-faults"),
+    path.join(here, "..", "..", AUDIT_FAULTS_DIR),
+  ]) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return path.join(here, "..", "..", AUDIT_FAULTS_DIR);
+}
+
+/**
+ * The planted-fault fixtures, id-ascending.
+ *
+ * A fixture is `# ` header lines and then a diff. Everything from the first
+ * `diff --git ` line on is the diff proper and is fed to the auditor VERBATIM;
+ * the headers are read here and never sent, so a header cannot tell the auditor
+ * what it is supposed to find.
+ *
+ * `witness:` IS THE CONVENTION vqc/ledger.yaml's `no-witness-fault-harness`
+ * entry asks for while no fault runner exists: each fault names the one-line
+ * edit that makes the correct answer wrong, so a reader can check that the
+ * fixture still plants what it claims to plant. This arm is the runner that
+ * entry describes for ONE detector — the audit — and not for the vitest guards
+ * the entry is about, so the entry stays open.
+ */
+export function loadAuditFaults(dir = undefined) {
+  const root = dir ?? auditFaultsRoot();
+  if (!fs.existsSync(root)) return [];
+  const faults = [];
+  for (const name of fs.readdirSync(root).sort()) {
+    if (!name.endsWith(".diff")) continue;
+    const file = path.join(root, name);
+    if (!fs.statSync(file).isFile()) continue;
+    const lines = fs.readFileSync(file, "utf8").split(/\r?\n/);
+    const start = lines.findIndex((line) => line.startsWith("diff --git "));
+    const headerLines = start === -1 ? lines : lines.slice(0, start);
+    const headers = {};
+    for (const line of headerLines) {
+      if (!line.startsWith("# ")) continue;
+      const colon = line.indexOf(":");
+      if (colon === -1) continue;
+      headers[line.slice(2, colon).trim()] = line.slice(colon + 1).trim();
+    }
+    faults.push({
+      id: headers.id ?? name.replace(/\.diff$/, ""),
+      subject: headers.subject ?? "",
+      witness: headers.witness ?? "",
+      diff: start === -1 ? "" : lines.slice(start).join("\n"),
+    });
+  }
+  return faults.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * The audit's one machine-readable line, ANCHORED AND ALONE ON ITS LINE, so a
+ * verdict quoted inside the prose ("do not write VERDICT: APPROVED unless…") is
+ * not mistaken for the verdict.
+ *
+ * THE ANCHORED FORM'S ONE HOME IS convex/ttsMerge.ts auditVerdictOf, which is
+ * what the merge gate actually reads; this is the same regex, spelled here
+ * because worker/jobs/audit.mjs exports no verdict reader and a TypeScript
+ * Convex module cannot be imported by a plain-ESM box job. If audit.mjs ever
+ * exports one, this goes and the import takes its place.
+ */
+export function faultVerdictOf(text) {
+  const hit = /^[ \t]*VERDICT:[ \t]*([A-Za-z][A-Za-z_-]*)[ \t]*$/im.exec(String(text ?? ""));
+  return hit === null ? null : hit[1].toUpperCase();
+}
+
+/** The word the correct answer on every fixture is. */
+export const FAULT_REFUSED = "REFUSED";
+
+/** What the fixture auditor runs on. Opus, named explicitly like every other
+ *  spawn in the fleet, with a wall clock and a turn budget of its own: the
+ *  fixture diff is small, but a read-only auditor that runs out of turns is
+ *  recorded as unavailable, which reads as a broken arm rather than a short
+ *  budget (worker/jobs/audit.mjs learned this on its first fallback run). */
+export const FAULT_AUDIT_MODEL = process.env.TTS_EVALS_FAULT_AUDIT_MODEL || "opus";
+export const FAULT_AUDIT_TIMEOUT_MS = 10 * 60 * 1000;
+export const FAULT_AUDIT_MAX_TURNS = 8;
+
+/**
+ * MONTHLY, NOT WEEKLY. The fixtures cost three auditor runs and the question
+ * they answer — does the auditor still refuse a change it must refuse — moves
+ * on the timescale of the audit prompt changing, not on the timescale of a
+ * week's merges. The month's run is the weekly run whose date falls in the
+ * first seven days of the month, which is exactly the weekly Saturday that
+ * opens a month, read on NEW YORK's calendar because that is the clock every
+ * cron guard in this fleet keeps.
+ *
+ * `--force` and `--faults-only` run it whatever the date says, so the arm can
+ * be exercised by hand; the pair then reads `ran: true, reason: "not this
+ * month"`, which is the honest reading — it ran, and this was not its week.
+ */
+export function faultsMonthly(at, force = false) {
+  const dayOfMonth = new Date(at + nyUtcOffsetHours(at) * 3_600_000).getUTCDate();
+  const thisMonth = dayOfMonth <= 7;
+  return { ran: thisMonth || force === true, reason: thisMonth ? "this month" : "not this month" };
+}
+
+/**
+ * Each fixture, fed to the audit prompt UNCHANGED and scored by its verdict
+ * word alone.
+ *
+ * A MISSED FAULT IS A FACT AND NOTHING ELSE. It opens no todo, files no
+ * objection and fails no check: "the audit approved one planted fault this
+ * month" is a thing Tom reads and decides about, and a job that turned it into
+ * a todo would be deciding for him. AND THE FIXTURE IS NEVER TUNED UNTIL IT
+ * REFUSES — an APPROVED verdict in a real run IS the finding, and editing the
+ * diff until the auditor refuses it would turn the measurement into a mirror.
+ */
+export async function faultAudits(io, { at, force = false, dir = undefined } = {}) {
+  const gate = faultsMonthly(at, force);
+  if (!gate.ran) return { ran: false, reason: gate.reason, items: 0, refused: 0, results: [] };
+  const faults = loadAuditFaults(dir);
+  const results = [];
+  for (const fault of faults) {
+    let verdict;
+    try {
+      const answer = await io.audit(auditPrompt({
+        repo: "tom.quest",
+        sha: `audit-fault:${fault.id}`,
+        base: null,
+        subject: fault.subject,
+        diff: fault.diff,
+        truncated: false,
+      }));
+      // An auditor that answered with no verdict line and an auditor that could
+      // not run are DIFFERENT FACTS, and neither is a refusal.
+      verdict = faultVerdictOf(answer) ?? AUDIT_UNAVAILABLE;
+    } catch {
+      verdict = AUDIT_UNAVAILABLE;
+    }
+    results.push({ id: fault.id, verdict });
+  }
+  return {
+    ran: true,
+    reason: gate.reason,
+    items: faults.length,
+    refused: results.filter((result) => result.verdict === FAULT_REFUSED).length,
+    results,
+  };
+}
+
+/**
+ * The whole scorecard, computed once a week and read off the weekly
+ * `evals-run` row by convex/ttsWeekly.ts. REPORTS AND NEVER GATES.
+ *
+ * `env` is taken so the fixture directory can be named in the environment
+ * (auditFaultsRoot); every side effect still goes through `io`, so the test
+ * drives this with no model and no network.
+ */
+export async function verifierScorecard(io, env, { at, force = false } = {}) {
+  return {
+    at,
+    caveat: VERIFIER_CAVEAT,
+    judge: await judgeAgreement(io),
+    faults: await faultAudits(io, { at, force, dir: auditFaultsRoot(env) }),
+  };
+}
+
+/** The pinned skill-name mapping. Trigger files keep human repository labels,
+ * while the evaluated catalog uses the one canonical bare spelling. */
+async function triggerNameMappingFor(tomquestTree, io) {
+  if (io.triggerNameMapping !== undefined) return io.triggerNameMapping;
+  const skillsModule = await import(pathToFileURL(path.join(tomquestTree, "scripts", "skills.mjs")).href);
+  return {
+    bareSkillName: skillsModule.bareSkillName,
+    repoSkillName: skillsModule.repoSkillName,
+  };
+}
+
+/** The pinned router and the pinned area pages it reads. The router is imported
+ * from the worktree being evaluated, not this box copy: a weekly result must
+ * change when the router at either pinned commit changes. Tests may supply the
+ * complete bound router to keep their trees intentionally small. */
+async function triggerRouterFor(tomquestTree, wikitomTree, io) {
+  if (typeof io.triggerRouter === "function") return io.triggerRouter;
+  const routerModule = await import(pathToFileURL(path.join(tomquestTree, "worker", "jobs", "skill-router.mjs")).href);
+  const skillsModule = await import(pathToFileURL(path.join(tomquestTree, "scripts", "skills.mjs")).href);
+  const areas = path.join(wikitomTree, skillsModule.AREAS_DIR);
+  const pages = fs.existsSync(areas)
+    ? fs.readdirSync(areas).filter((name) => name.endsWith(".md")).sort().map((name) => ({
+      path: path.posix.join(skillsModule.AREAS_DIR, name),
+      body: fs.readFileSync(path.join(areas, name), "utf8"),
+    }))
+    : [];
+  const published = publicationFor(tomquestTree, wikitomTree).published;
+  return (input) => routerModule.routeSkills({ ...input, pages: input.pages ?? pages, published: input.published ?? published });
+}
+
 /**
  * One run: the golden items of the pinned tom.quest tree, regenerated against
  * the pinned WikiTom tree, judged, aggregated, and posted as one evals-run row.
  * `io` carries every side effect so the test can drive this with no network
  * and no model.
  */
-export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekly = false, ablation = false, basePassed = new Set() }, io) {
+export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekly = false, ablation = false, basePassed = new Set(), changed = undefined }, io) {
   const startedAt = io.now();
   const trees = treesFor(repo, sha);
   const tomquest = io.worktree("tom.quest", trees.tomquest);
@@ -1667,6 +2389,20 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
     const all = loadGolden(tomquest.dir);
     const wanted = jobs === null ? all : all.filter((item) => jobs.includes(item.job));
     const items = weekly ? wanted : selectItems(wanted, Math.max(1, Math.floor(limit / 2)));
+    // Weekly runs take the whole trigger set. A pull-request run takes every
+    // case from exactly the trigger files it changed, so its coverage cannot
+    // be satisfied by a case deferred to the weekly job.
+    const changedTriggers = changedTriggerFiles(changed);
+    const shouldLoadTriggers = weekly || changedTriggers.size > 0;
+    const triggerNameMapping = shouldLoadTriggers ? await triggerNameMappingFor(tomquest.dir, io) : null;
+    const triggers = shouldLoadTriggers
+      ? loadTriggers(tomquest.dir, { wikitomDir: wikitom.dir, ...triggerNameMapping })
+        .filter((trigger) => weekly || changedTriggers.has(trigger.file))
+      : [];
+    const triggerCases = triggers.flatMap((trigger) => (trigger.cases ?? []).map((one) => ({ trigger, one })));
+    const router = triggerCases.some(({ one }) => triggerMethod(one) === TRIGGER_METHOD_ROUTER)
+      ? await triggerRouterFor(tomquest.dir, wikitom.dir, io)
+      : null;
     const modules = await io.loadModules(tomquest.dir, items);
     const layerCache = new Map();
     const preludeCache = new Map();
@@ -1712,14 +2448,67 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       }
       results.push(await runTrials(item.id, basePassed, () => runItem(item, context, io)));
     }
-    const tasks = [];
-    for (const taskRepo of io.taskRepos?.(tomquest.dir) ?? []) {
-      for (const task of loadTasks(tomquest.dir, taskRepo)) {
-        tasks.push(await runTrials(task.id, basePassed, () => runTask(task, trees, io)));
+    const triggerResults = [];
+    let catalogHash = null;
+    for (const { trigger, one } of triggerCases) {
+      let pinned = null;
+      if (triggerMethod(one) === TRIGGER_METHOD_RUNNER) {
+        try {
+          // Real runner prompts always carry operate. Triggers must score that
+          // same prompt, including when their only mapped grant is an area skill.
+          const requested = { layers: ["operate"], skills: trigger.skills ?? [] };
+          // Even a trigger with no skill names (operate) must pin the catalog
+          // identity; preludeFrom deliberately returns early for an empty set.
+          let assembled;
+          if (requested.skills.length === 0) {
+            if (typeof io.skills !== "function") throw new SkillsNotAssembledError(SKILL_SEAM_REASON);
+            assembled = io.skills(tomquest.dir, wikitom.dir, requested);
+          } else {
+            assembled = context.prelude(requested);
+          }
+          pinned = { ...assembled, expectedCommit: wikitom.commit };
+          if (assembled.commit === wikitom.commit && /^[0-9a-f]{64}$/.test(assembled.catalogHash ?? "")) {
+            if (catalogHash !== null && catalogHash !== assembled.catalogHash) {
+              pinned = { reason: "the pinned trigger catalog changed during the eval run" };
+            } else {
+              catalogHash = assembled.catalogHash;
+            }
+          }
+        } catch (error) {
+          pinned = { reason: `the trigger publication could not be pinned: ${serverErrorMessage(error)}` };
+        }
       }
+      triggerResults.push(await runTriggerCase(trigger, one, io, router, pinned));
     }
+    const taskItems = (io.taskRepos?.(tomquest.dir) ?? [])
+      .flatMap((taskRepo) => loadTasks(tomquest.dir, taskRepo));
+    const tasks = [];
+    for (const task of taskItems) tasks.push(await runTrials(task.id, basePassed, () => runTask(task, trees, io)));
     const scored = results.filter((result) => result.judged !== "skip");
-    const summary = aggregate(scored);
+    const scoredTriggers = triggerResults.filter((result) => result.judged !== "skip");
+    const scoredTasks = tasks.filter((task) => task.judged !== "skip");
+    const scoredAll = [...scored, ...scoredTriggers];
+    const sourceById = new Map();
+    for (const source of [...items, ...triggerCases.map(({ trigger, one }) => ({ ...one, trigger: trigger.file })), ...taskItems]) {
+      if (sourceById.has(source.id)) throw new Error(`duplicate scored item id ${source.id}`);
+      sourceById.set(source.id, source);
+    }
+    const scoredHashes = Object.fromEntries([...scoredAll, ...scoredTasks]
+      .map((result) => {
+        const source = sourceById.get(result.id);
+        if (source === undefined) throw new Error(`scored item ${result.id} has no source`);
+        return [result.id, contentHash(source)];
+      })
+      .sort(([left], [right]) => left.localeCompare(right)));
+    // A file is listed only when EVERY one of its cases ran, so a skipped case
+    // cannot leave a file claiming coverage it did not measure.
+    const ranByFile = new Map();
+    triggerCases.forEach(({ trigger }, index) => {
+      const ran = triggerResults[index]?.judged !== "skip";
+      ranByFile.set(trigger.file, (ranByFile.get(trigger.file) ?? true) && ran);
+    });
+    const triggerFilesRun = [...ranByFile].filter(([, ran]) => ran).map(([file]) => file).sort();
+    const summary = aggregate(scoredAll);
     return {
       repo,
       // The RESOLVED commit of whichever repo this run pins, so a run named
@@ -1727,7 +2516,8 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       sha: repo === "WikiTom" ? wikitom.commit : tomquest.commit,
       tomquest: tomquest.commit,
       wikitom: wikitom.commit,
-      goldenHash: goldenHash(all),
+      catalogHash,
+      goldenHash: goldenHash([...all, ...triggerCases.map(({ trigger, one }) => ({ ...one, trigger: trigger.file }))]),
       regenModel: REGEN_MODEL,
       judgeModel: JUDGE_MODEL,
       startedAt,
@@ -1735,11 +2525,15 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       // Trials, not items: a retried item costs its calls again and the row
       // says so. The ablation arm is one trial per name and costs the same two
       // calls each, so it is counted rather than hidden.
-      calls: (scored.reduce((total, result) => total + (result.trials?.head ?? 1), 0) + ablationRows.length) * 2,
+      calls: (scored.reduce((total, result) => total + (result.trials?.head ?? 1), 0) + ablationRows.length) * 2 +
+        scoredTriggers.filter((result) => result.method === TRIGGER_METHOD_RUNNER).length,
       // The ids actually scored, so the gate can tell a newly added item apart
       // from one that regressed without re-deriving the selection.
-      scoredIds: [...scored, ...tasks.filter((task) => task.judged !== "skip")].map((result) => result.id).sort(),
-      skipped: results.filter((result) => result.judged === "skip").map(({ id, reason }) => ({ id, reason })),
+      scoredIds: [...scoredAll, ...scoredTasks].map((result) => result.id).sort(),
+      scoredHashes,
+      // The coverage gate requires every changed trigger filename to be here.
+      triggerFilesRun,
+      skipped: [...results, ...triggerResults].filter((result) => result.judged === "skip").map(({ id, reason, method }) => ({ id, reason, method })),
       // A --weekly run SAYS SO ON THE ROW. The weekly graduation pass
       // (scripts/graduate-golden.mjs) promotes a capability case on this
       // evidence and no other: a pull-request run scores a 40-item subset
@@ -1760,9 +2554,10 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       // a measured case whose record did not come back: the difference between
       // "not asked" and "asked, no answer". The efficiency block counts only
       // the cases that were asked.
-      results: scored.map((result) => ({
+      results: scoredAll.map((result) => ({
         id: result.id,
         judged: result.judged,
+        ...(result.method === undefined ? {} : { method: result.method }),
         passK: result.passK ?? (result.trials === undefined
           ? result.judged === "pass"
           : result.trials.headPassed === result.trials.head),
@@ -1780,19 +2575,31 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
   }
 }
 
-const FLAGS = new Set(["--serve", "--weekly", "--force", "--ablation"]);
+const FLAGS = new Set(["--serve", "--weekly", "--force", "--ablation", "--faults-only", "--dry-run"]);
 const VALUED = new Set(["--repo", "--sha", "--base", "--tasks", "--limit", "--jobs"]);
+
+/**
+ * The option key of a flag whose own name is not its key.
+ *
+ * The line below is `options[name.slice(2)] = true`, which for `--faults-only`
+ * would set `options["faults-only"]` — a key nobody reads, so the flag would
+ * parse cleanly and do nothing. The mapping is EXPLICIT rather than a
+ * hyphen-to-camel rule, so a flag whose key is not what a rule would produce is
+ * one row here and not a surprise.
+ */
+const FLAG_KEYS = { "--faults-only": "faultsOnly", "--dry-run": "dryRun" };
 
 export function parseArgs(argv) {
   const options = {
     repo: null, sha: null, base: null, limit: PR_ITEMS,
     jobs: null, force: false, serve: false, weekly: false, ablation: false, tasks: null,
+    faultsOnly: false, dryRun: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     const name = argument.includes("=") ? argument.slice(0, argument.indexOf("=")) : argument;
     if (FLAGS.has(name)) {
-      options[name.slice(2)] = true;
+      options[FLAG_KEYS[name] ?? name.slice(2)] = true;
       continue;
     }
     if (!VALUED.has(name)) throw new Error(`unknown argument ${argument}`);
@@ -1807,8 +2614,13 @@ export function parseArgs(argv) {
     else if (name === "--jobs") options.jobs = value.split(",").filter(Boolean);
     else options[name.slice(2)] = value;
   }
-  if (!options.serve && !options.weekly && options.tasks === null && (options.repo === null || options.sha === null)) {
-    throw new Error("--repo and --sha are required unless --serve, --weekly or --tasks is given");
+  // --faults-only scores three checked-in fixtures and reads no tree at all, so
+  // it needs neither a repo nor a sha, exactly as --weekly and --tasks do not.
+  if (
+    !options.serve && !options.weekly && !options.faultsOnly && options.tasks === null &&
+    (options.repo === null || options.sha === null)
+  ) {
+    throw new Error("--repo and --sha are required unless --serve, --weekly, --faults-only or --tasks is given");
   }
   if (!Number.isFinite(options.limit) || options.limit <= 0) throw new Error("--limit must be a positive number");
   // The ablation arm runs nightly and weekly and NEVER on a pull request: it
@@ -1844,6 +2656,36 @@ function realIo(env) {
         return null;
       }
     },
+    // Tom's own labels, with the run behind each and the transcript rows the
+    // judgment covers. THE SAME DOOR scripts/export-golden.mjs --source labels
+    // reads, asked for the same bytes: the judge-agreement measure replays what
+    // the corpus is mined from, so a second reader here would be a second
+    // answer to "what did he judge".
+    //
+    // `limitPerSource` is the door's own cut and this measure takes the newest
+    // LABEL_SAMPLE across all sources afterwards, so it asks for that many per
+    // source rather than trying to spell one cut in two places.
+    labels: async (limit) =>
+      await convexFetch(env, `/tts/label-input?limitPerSource=${encodeURIComponent(String(limit))}`),
+    // The planted-fault auditor. The fixture is a self-contained diff carried
+    // whole in the prompt, so it needs no checkout and no Codex sandbox: this
+    // is the SAME PROMPT the audit sends, put to the model the audit itself
+    // falls back to. It is deliberately not worker/jobs/audit.mjs's runner —
+    // that one posts to /tts/audit and would write an audit row for a commit
+    // that does not exist — and it gates nothing, so the second family's
+    // opinion is not what is being bought here.
+    audit: async (prompt) => runClaude(prompt, {
+      model: FAULT_AUDIT_MODEL,
+      timeoutMs: FAULT_AUDIT_TIMEOUT_MS,
+      maxTurns: FAULT_AUDIT_MAX_TURNS,
+      registration: {
+        origin: "cron:evals",
+        kind: "job",
+        layersKnown: false,
+        layersGiven: [],
+        layersDenied: [],
+      },
+    }),
     loadModules,
     cmtDir: () => cacheRepoDir(env, { name: "ComplexMultiTrigger", owner: "Heffnt", branch: "master" }),
     taskRepos: (tomquestTree) => {
@@ -1912,6 +2754,8 @@ export function failedRun({ repo, sha, error, at }) {
     byVerdict: { approve: { items: 0, pass: 0 }, revise: { items: 0, pass: 0 } },
     failures: [],
     scoredIds: [],
+    scoredHashes: {},
+    triggerFilesRun: [],
     skipped: [],
     results: [],
     efficiency: { cases: 0, unknown: 0, rises: [] },
@@ -1998,8 +2842,23 @@ export async function stampAgainstBase(data, base, diff = {}) {
   };
 }
 
-async function runAndPost(env, io, { repo, sha, base, limit, jobs, weekly, ablation = false, force, changed, prBody }) {
-  const existing = force ? null : await convexFetch(env, `/tts/evals-run?repo=${repo}&sha=${sha}`);
+/**
+ * `dryRun` COMPUTES EVERYTHING AND WRITES NOTHING: the run data is printed and
+ * postRun is not called. A measurement nobody asked for must not write a row —
+ * a dry run exists so a change to this file can be read before it lands in the
+ * record, and a dry run that posted would put a rehearsal into the record the
+ * digest and the merge gate read.
+ *
+ * `scorecard` is the verifier scorecard, stamped onto the row before it is
+ * posted the way `ablation` and `efficiency` already ride it — one key on one
+ * row, so convex/ttsWeekly.ts reads it with no new field, no new index and no
+ * new row kind.
+ */
+async function runAndPost(env, io, {
+  repo, sha, base, limit, jobs, weekly, ablation = false, force, changed, prBody,
+  dryRun = false, scorecard = undefined,
+}) {
+  const existing = force || dryRun ? null : await convexFetch(env, `/tts/evals-run?repo=${repo}&sha=${sha}`);
   if (existing?.run) {
     console.log(`[evals] ${repo}@${sha} already scored (${existing.run.pass}/${existing.run.items}); --force to rerun`);
     return existing.run;
@@ -2015,18 +2874,22 @@ async function runAndPost(env, io, { repo, sha, base, limit, jobs, weekly, ablat
     baseData = baseRun?.run ?? null;
     if (baseData === null) {
       baseData = await stampAgainstBase(await runEvals({ repo, sha: base, limit, jobs, weekly }, io), null);
-      await postRun(env, baseData);
+      if (!dryRun) await postRun(env, baseData);
       console.log(`[evals] base ${repo}@${base}: ${baseData.pass}/${baseData.items} pass`);
     }
   }
   // The base's passing ids are the head run's retry list: exactly those items
   // can become a regression, so exactly those are tried again when they fail.
-  const data = await stampAgainstBase(
-    await runEvals({ repo, sha, limit, jobs, weekly, ablation, basePassed: passedIds(baseData) }, io),
-    baseData,
-    { changed, prBody },
-  );
-  await postRun(env, data);
+  const data = {
+    ...await stampAgainstBase(
+      await runEvals({ repo, sha, limit, jobs, weekly, ablation, basePassed: passedIds(baseData), changed }, io),
+      baseData,
+      { changed, prBody },
+    ),
+    ...(scorecard === undefined ? {} : { verifierScorecard: scorecard }),
+  };
+  if (dryRun) console.log(JSON.stringify(data, null, 2));
+  else await postRun(env, data);
   console.log(
     `[evals] ${repo}@${sha}: ${data.pass}/${data.items} pass, ` +
       `${data.regressions === null ? "compared to no base" : `${data.regressions} regression(s)`}, ` +
@@ -2042,6 +2905,25 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   const env = loadEnv({ require: ["CONVEX_SITE_URL", "TTS_WORKER_KEY"] });
   const io = realIo(env);
+
+  // --faults-only ANSWERS ONE QUESTION AND SCORES NO EVAL SET: does the auditor
+  // still refuse the three changes it must refuse. It runs the fixtures
+  // whatever the date says, prints their verdicts, and POSTS NOTHING.
+  //
+  // It posts nothing even alongside --weekly, which is a deliberate departure
+  // from the brief: the scorecard rides a weekly evals-run row, and this path
+  // scores no set, so there is no such row to ride. Minting one would put a
+  // measurement onto a row that measured nothing, which is the one thing a row
+  // carrying `error` in this file already refuses to do.
+  if (options.faultsOnly) {
+    const faults = await faultAudits(io, { at: Date.now(), force: true, dir: auditFaultsRoot(env) });
+    for (const result of faults.results) console.log(`${result.id}\t${result.verdict}`);
+    console.log(
+      `[evals] planted faults: ${faults.refused}/${faults.items} refused (${faults.reason}); ` +
+        `a missed fault is a fact and opens nothing`,
+    );
+    return;
+  }
 
   if (options.tasks !== null) {
     const tomquest = io.worktree("tom.quest", "origin/main");
@@ -2088,13 +2970,18 @@ async function main() {
         changed: request.changed,
         prBody: request.prBody,
         force: options.force,
+        dryRun: options.dryRun,
       });
     } catch (error) {
       // A run that threw still has to be ANSWERED, or this request is taken
-      // again on every tick and nothing behind it is ever served.
+      // again on every tick and nothing behind it is ever served. A DRY RUN
+      // answers nothing, on purpose: it wrote no row for the run either, so the
+      // request is simply still unanswered and the next real tick takes it.
       const reason = serverErrorMessage(error);
       console.error(`[evals] ${request.repo}@${request.sha} could not be run: ${reason}`);
-      await postRun(env, failedRun({ repo: request.repo, sha: request.sha, error: reason, at: Date.now() }));
+      if (!options.dryRun) {
+        await postRun(env, failedRun({ repo: request.repo, sha: request.sha, error: reason, at: Date.now() }));
+      }
     }
     return;
   }
@@ -2107,8 +2994,34 @@ async function main() {
       console.log(`[evals] NY hour is ${nyHour(Date.now())}, not 4 — this is the off-season cron slot, exiting`);
       return;
     }
+    // THE SCORECARD IS COMPUTED ONCE AND RIDES ONE ROW — tom.quest's.
+    //
+    // ONE ROW RATHER THAN TWO because it is a measurement of the VERIFIERS, not
+    // of either repository's golden set: two copies of one measurement is two
+    // things to keep true, and the reader (convex/ttsWeekly.ts) would have to
+    // pick which of two disagreeing copies was the week's. tom.quest carries it
+    // because the judge prompt, the fixtures and the audit all live there.
+    //
+    // It is computed BEFORE the two set runs rather than after them, which the
+    // brief put the other way round: runAndPost posts its row from inside
+    // itself, so a scorecard computed afterwards could only be attached by
+    // posting the same key a second time — two rows saying different things
+    // about one run, which is the failure the key exists to prevent. Nothing
+    // about the scorecard depends on either run, so the order is free.
+    const scorecard = await verifierScorecard(io, env, { at: Date.now(), force: options.force });
     for (const repo of ["tom.quest", "WikiTom"]) {
-      await runAndPost(env, io, { repo, sha: "origin/main", base: null, limit: options.limit, jobs: options.jobs, weekly: true, ablation: options.ablation, force: true });
+      await runAndPost(env, io, {
+        repo,
+        sha: "origin/main",
+        base: null,
+        limit: options.limit,
+        jobs: options.jobs,
+        weekly: true,
+        ablation: options.ablation,
+        force: true,
+        dryRun: options.dryRun,
+        ...(repo === "tom.quest" ? { scorecard } : {}),
+      });
     }
     return;
   }
@@ -2122,6 +3035,7 @@ async function main() {
     weekly: false,
     ablation: options.ablation,
     force: options.force,
+    dryRun: options.dryRun,
   });
 }
 

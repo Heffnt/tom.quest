@@ -22,7 +22,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { AREAS_DIR, SKILL_PREFIX, buildSkills, byteLength, renderSkillMd, skillDirName } from "./skills.mjs";
+import {
+  AREAS_DIR,
+  PUBLISHED_SKILL_METADATA,
+  SKILL_PREFIX,
+  buildSkills,
+  byteLength,
+  renderSkillMd,
+  renderSkillMetadata,
+  skillDirName,
+} from "./skills.mjs";
 
 class PublishError extends Error {}
 
@@ -37,6 +46,7 @@ function git(dir, ...args) {
     // of archived session files, and `ls-tree -r` over it is megabytes: at
     // the 1 MB default this failed as "cannot list repository", which reads
     // like a broken checkout rather than a truncated pipe.
+    // REMOVAL CHECK: cannot remove; the default child-process buffer truncates the vault's tracked-file listing.
     maxBuffer: 256 * 1024 * 1024,
   });
 }
@@ -49,11 +59,14 @@ function resolveCommit(dir, requested) {
   }
 }
 
-function readObject(dir, commit, file) {
+export function readObject(dir, commit, file, run = git) {
   try {
-    return git(dir, "show", `${commit}:${file}`);
+    return run(dir, "show", `${commit}:${file}`);
   } catch {
-    return null;
+    // Callers invoke this only after ls-tree named `file`. It therefore cannot
+    // mean "absent": treating an object-read failure as a refusal would make
+    // the stale-directory pass delete the last good catalog.
+    throw new PublishError(`cannot read ${file} at ${commit}`);
   }
 }
 
@@ -71,12 +84,12 @@ const WIKITOM_PAGES = Object.freeze([
   "model-of-tom/schedule.md",
 ]);
 
-function areaPaths(dir, commit) {
+export function areaPaths(dir, commit, run = git) {
   let names;
   try {
-    names = git(dir, "ls-tree", "--name-only", commit, "--", `${AREAS_DIR}/`);
+    names = run(dir, "ls-tree", "--name-only", commit, "--", `${AREAS_DIR}/`);
   } catch {
-    return [];
+    throw new PublishError(`cannot list area pages at ${commit}`);
   }
   return names
     .split("\n")
@@ -85,11 +98,24 @@ function areaPaths(dir, commit) {
     .sort();
 }
 
-function readWikitom(dir, commit) {
+function wikitomPaths(dir, commit) {
+  let names;
+  try {
+    names = git(dir, "ls-tree", "-r", "--name-only", commit);
+  } catch {
+    throw new PublishError(`cannot list WikiTom at ${commit}`);
+  }
+  return new Set(names.split("\n").map((name) => name.trim()).filter(Boolean));
+}
+
+function readWikitom(dir, commit, read = readObject) {
   const pages = [];
-  for (const page of [...WIKITOM_PAGES, ...areaPaths(dir, commit)]) {
-    const body = readObject(dir, commit, page);
-    if (body === null) continue;
+  const listed = wikitomPaths(dir, commit);
+  // Fixed pages such as schedule.md are legitimately optional inputs to a
+  // particular skill. Do not ask git to show one unless this tree listed it;
+  // every object we do ask it to read is consequently mandatory to read.
+  for (const page of [...WIKITOM_PAGES.filter((page) => listed.has(page)), ...areaPaths(dir, commit)]) {
+    const body = read(dir, commit, page);
     pages.push({ path: page, body });
   }
   return pages;
@@ -101,7 +127,7 @@ function readWikitom(dir, commit) {
  * nested `AGENTS.md` under it. `global_AGENTS.md` is not one of them, which is
  * why the test is on the `/AGENTS.md` suffix and not on the basename.
  */
-function readRepo(repo, dir, requested = "HEAD") {
+function readRepo(repo, dir, requested = "HEAD", read = readObject) {
   let commit;
   try {
     commit = resolveCommit(dir, requested);
@@ -120,8 +146,11 @@ function readRepo(repo, dir, requested = "HEAD") {
     .map((name) => name.trim())
     .filter((name) => name === "AGENTS.md" || name.endsWith("/AGENTS.md"))
     .sort()) {
-    const body = readObject(dir, commit, file);
-    if (body === null || body.trim() === "") continue;
+    const body = read(dir, commit, file);
+    // An empty rules file is an incomplete repository publication, not an
+    // absent optional reference. Abort before the stale-directory pass so the
+    // previous catalog remains intact until the repository is repaired.
+    if (body.trim() === "") throw new PublishError(`repository ${repo} has empty ${file} at ${commit}`);
     files.push({ path: file, body });
   }
   return { repo, commit, files };
@@ -146,6 +175,7 @@ function sameBytes(target, body) {
 function skillFiles(skill, commit) {
   return [
     { name: "SKILL.md", body: renderSkillMd(skill, commit) },
+    { name: PUBLISHED_SKILL_METADATA, body: renderSkillMetadata(commit) },
     ...skill.references.map((reference) => ({ name: reference.name, body: reference.body })),
   ];
 }
@@ -157,18 +187,24 @@ function skillFiles(skill, commit) {
  * alone, so a nightly that publishes an unchanged WikiTom touches nothing and
  * the box's mtimes stay meaningful.
  */
-export function publishSkills({ wikitom, commit: requested = "HEAD", repos = [], out, dryRun = false } = {}) {
+export function publishSkills({
+  wikitom,
+  commit: requested = "HEAD",
+  repos = [],
+  out,
+  dryRun = false,
+  readObject: read = readObject,
+} = {}) {
   if (typeof wikitom !== "string" || wikitom === "") throw new PublishError("--wikitom DIR is required");
   if (typeof out !== "string" || out === "") throw new PublishError("--out DIR is required");
   if (!fs.existsSync(wikitom)) throw new PublishError(`cannot read WikiTom at ${wikitom}`);
   const commit = resolveCommit(wikitom, requested);
-  const pages = readWikitom(wikitom, commit);
-  const read = repos.map((entry) => readRepo(entry.repo, entry.dir, entry.commit));
+  const pages = readWikitom(wikitom, commit, read);
+  const repoPages = repos.map((entry) => readRepo(entry.repo, entry.dir, entry.commit, read));
   const built = buildSkills({
     commit,
     pages,
-    repos: read,
-    agentRules: pages.find((page) => page.path === "model-of-tom/agent-rules.md")?.body,
+    repos: repoPages,
   });
 
   const outDir = path.resolve(out);
@@ -229,7 +265,10 @@ export function publishSkills({ wikitom, commit: requested = "HEAD", repos = [],
     });
   }
 
-  return { commit, out: outDir, skills: reported, refused: built.refused, deleted };
+  // The nightly posts this exact built catalog to Convex. Returning it avoids
+  // reparsing our own rendered files and keeps disk layout a delivery artifact,
+  // not a second catalog definition.
+  return { commit, out: outDir, skills: reported, catalog: built.skills, refused: built.refused, deleted };
 }
 
 // ── Command line ─────────────────────────────────────────────────────────────
@@ -244,10 +283,14 @@ function parseArgs(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--json") {
+      // worker/jobs/evals.mjs:publicationFor consumes this result to assemble
+      // the exact pinned catalog a real evaluation can load.
       json = true;
       continue;
     }
     if (argument === "--dry-run") {
+      // Publication removes stale tom- directories, so its planned deletions
+      // must be inspectable without changing a shared harness directory.
       dryRun = true;
       continue;
     }

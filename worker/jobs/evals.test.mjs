@@ -1,24 +1,37 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ABLATION_NODE_CAP } from "./graph.mjs";
+import { bareSkillName, repoSkillName } from "../../scripts/skills.mjs";
+import { NO_BODY, routeSkills } from "./skill-router.mjs";
 import {
   ablationFindings,
   ablationFor,
   ablationNodes,
   aggregate,
+  contentHash,
+  AREA_TRIGGER_FILES,
+  AUDIT_FAULTS_DIR,
+  changedTriggerFiles,
+  deterministicFailure,
   efficiencyOf,
   efficiencyVerdict,
   failedRun,
+  faultAudits,
+  faultsMonthly,
   goldenHash,
   HEAD_TRIALS,
   isFlaky,
   JOBS,
+  judgeAgreement,
   judgePrompt,
   KNOW_AREAS,
   LAYER_SKILL_ALIASES,
+  LABEL_SAMPLE,
+  loadAuditFaults,
   loadGolden,
   loadTasks,
   loadTriggers,
@@ -29,12 +42,14 @@ import {
   parseArgs,
   parseJudge,
   passedIds,
+  publicationFor,
   preludeFrom,
   PR_TRIALS,
   runCase,
   runEvals,
   runItem,
   runTask,
+  runTriggerCase,
   runTrials,
   scoreLearning,
   selectItems,
@@ -49,16 +64,25 @@ import {
   treesFor,
   trialsFor,
   triggerCounts,
+  triggerBase,
+  triggerMethod,
   triggerSkills,
   TRIALS_CAPABILITY,
   TRIALS_REGRESSION,
   verdictOf,
+  VERIFIER_CAVEAT,
+  verifierScorecard,
 } from "./evals.mjs";
 
 const dirs = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
+
+/** THE ONE MAPPING, handed to loadTriggers here exactly as the runner hands it
+ * the pinned tree's copy. A test that spelled skill names itself would be
+ * asserting its own second spelling. */
+const NAMES = { bareSkillName, repoSkillName };
 
 const LABEL = "This tells me nothing I did not already know from the statement.";
 const PRIOR = "Say what the lock actually is.";
@@ -168,6 +192,22 @@ function context(mod) {
 }
 
 describe("runItem", () => {
+  it("records only published skills as granted and records refusals", async () => {
+    const mod = await import("./plan-graphs.mjs");
+    const registrations = [];
+    await runItem(item(), {
+      modules: { prepare: mod },
+      cmtDir: undefined,
+      layers: () => ({ names: ["write"], skills: ["write"], skillsRefused: ["know-money"], text: "layer text", commit: "w1", files: [] }),
+    }, {
+      runClaude: async (_prompt, options) => {
+        registrations.push(options.registration);
+        return JSON.stringify({ brief: "a", entryAction: "b", workDescription: "c", groundUpExplanation: "d" });
+      },
+    });
+    expect(registrations[0]).toMatchObject({ skillsGranted: ["write"], skillsRefused: ["know-money"] });
+  });
+
   it("turns a thrown regeneration into a fail and does not stop the run", async () => {
     const mod = await import("./plan-graphs.mjs");
     const results = [];
@@ -406,8 +446,8 @@ describe("stampAgainstBase", () => {
 
   it("counts the regressions when there is one", async () => {
     const failure = { id: "a", partition: "prepare/chores", verdict: "revise", reason: "r", confirmed: true };
-    const head = { goldenHash: "h", scoredIds: ["a"], failures: [failure], tasks: { failures: [] } };
-    const base = { goldenHash: "h", scoredIds: ["a"], failures: [], tasks: { failures: [] } };
+    const head = { goldenHash: "h", scoredIds: ["a"], scoredHashes: { a: "same" }, failures: [failure], tasks: { failures: [] } };
+    const base = { goldenHash: "h", scoredIds: ["a"], scoredHashes: { a: "same" }, failures: [], tasks: { failures: [] } };
     const stamped = await stampAgainstBase(head, base);
     expect(stamped.regressions).toBe(1);
     expect(stamped.failures[0].regression).toBe(true);
@@ -429,10 +469,10 @@ describe("the head trials", () => {
     };
     return { once, calls };
   };
-  const rowFor = (result) => ({ goldenHash: "h", scoredIds: ["a"], ...aggregate([result]), tasks: aggregate([]) });
-  const basePassing = { goldenHash: "h", scoredIds: ["a"], failures: [], tasks: { failures: [] } };
+  const rowFor = (result) => ({ goldenHash: "h", scoredIds: ["a"], scoredHashes: { a: "same" }, ...aggregate([result]), tasks: aggregate([]) });
+  const basePassing = { goldenHash: "h", scoredIds: ["a"], scoredHashes: { a: "same" }, failures: [], tasks: { failures: [] } };
   const baseFailing = {
-    goldenHash: "h", scoredIds: ["a"], tasks: { failures: [] },
+    goldenHash: "h", scoredIds: ["a"], scoredHashes: { a: "same" }, tasks: { failures: [] },
     failures: [{ id: "a", partition: "prepare/chores", verdict: "revise", reason: "was already bad", confirmed: true }],
   };
 
@@ -722,6 +762,91 @@ describe("an io with no skill assembler", () => {
 // is rendered by the tree under test's own renderGrants and by nothing else.
 describe("skillsFor", () => {
   const HERE = path.resolve(".");
+  let fixtureSerial = 0;
+
+  function committedWikiTom() {
+    const dir = tree();
+    const write = (relative, body) => {
+      const file = path.join(dir, relative);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, body);
+    };
+    write("AGENTS.md", "# WikiTom\n\nThe vault.\n");
+    write("model-of-tom/agent-rules.md", "# Agent rules\n\n## Map\n\n### Repos\n- tom.quest: the site.\n- WikiTom: the vault.\n");
+    write("model-of-tom/writing.md", "# Writing\n\nUse short sentences.\n");
+    write("model-of-tom/ground.md", "# Ground\n\nKnown facts.\n");
+    write("model-of-tom/intent.md", "# Intent\n\n## Directions\n\n- Ship.\n");
+    write("model-of-tom/priorities.md", "# Priorities\n\n- First things first.\n");
+    write("model-of-tom/schedule.md", "# Schedule\n\n## Week\n\n- Monday — practice.\n");
+    // Each fixture is a different publication. The process-wide cache is
+    // deliberately keyed by commits, so identical fixture commits would share
+    // a real catalogue while their fake publishers disagree about its contents.
+    write(`fixture-${++fixtureSerial}.txt`, "fixture\n");
+    execFileSync("git", ["init", "-q", "-b", "main", dir]);
+    execFileSync("git", ["-C", dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "add", "-A"]);
+    execFileSync("git", ["-C", dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "fixture"]);
+    return dir;
+  }
+
+  function commit(dir, message) {
+    execFileSync("git", ["-C", dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "add", "-A"]);
+    execFileSync("git", ["-C", dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-q", "-m", message]);
+  }
+
+  function committedRepo(body = "# Rules\n\nFirst.\n") {
+    const dir = tree();
+    fs.writeFileSync(path.join(dir, "AGENTS.md"), body);
+    execFileSync("git", ["init", "-q", "-b", "main", dir]);
+    commit(dir, "fixture");
+    return dir;
+  }
+
+  it("runs publicationFor through the real publisher's JSON CLI", () => {
+    const work = tree();
+    const wiki = committedWikiTom();
+    const published = publicationFor(HERE, wiki, execFileSync, work);
+    expect(published.published).toContain("write");
+    expect(published.catalogHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(fs.existsSync(path.join(published.out, "tom-write", "SKILL.md"))).toBe(true);
+  });
+
+  it("rebuilds a publication when a reused weekly worktree advances", () => {
+    const work = tree();
+    const tomquest = committedRepo();
+    const wiki = committedWikiTom();
+    const calls = [];
+    const publish = (_exe, args) => {
+      calls.push(args);
+      const out = args[args.indexOf("--out") + 1];
+      const body = fs.readFileSync(path.join(tomquest, "AGENTS.md"), "utf8").includes("Second")
+        ? "SECOND PUBLICATION"
+        : "FIRST PUBLICATION";
+      fs.mkdirSync(path.join(out, "tom-repo-tom-quest"), { recursive: true });
+      fs.writeFileSync(
+        path.join(out, "tom-repo-tom-quest", "SKILL.md"),
+        `---\nname: tom-repo-tom-quest\ndescription: "rules"\n---\n\n<!-- generated -->\n\n${body}\n`,
+      );
+      return JSON.stringify({ commit: "wiki-commit", out, skills: [{ name: "repo-tom-quest" }], refused: [] });
+    };
+    const first = publicationFor(tomquest, wiki, publish, work);
+    // The same two commits share the one catalogue; this is the cache's useful
+    // case, before the reused worktree advances below.
+    expect(publicationFor(tomquest, wiki, publish, work)).toBe(first);
+    expect(calls).toHaveLength(1);
+    fs.writeFileSync(path.join(tomquest, "AGENTS.md"), "# Rules\n\nSecond.\n");
+    commit(tomquest, "advance tom quest");
+    const second = publicationFor(tomquest, wiki, publish, work);
+    expect(calls).toHaveLength(2);
+    expect(first.out).not.toBe(second.out);
+    expect(fs.readFileSync(path.join(first.out, "tom-repo-tom-quest", "SKILL.md"), "utf8")).toContain("FIRST PUBLICATION");
+    expect(fs.readFileSync(path.join(second.out, "tom-repo-tom-quest", "SKILL.md"), "utf8")).toContain("SECOND PUBLICATION");
+
+    fs.writeFileSync(path.join(wiki, "revision.txt"), "second wiki revision\n");
+    commit(wiki, "advance wikitom");
+    const wikiAdvanced = publicationFor(tomquest, wiki, publish, work);
+    expect(calls).toHaveLength(3);
+    expect(wikiAdvanced.out).not.toBe(second.out);
+  });
 
   function publishingRun(catalogue, refused = []) {
     const calls = [];
@@ -758,9 +883,11 @@ describe("skillsFor", () => {
 
   it("puts the layer text, the grant block and the granted bodies in one text", () => {
     const work = tree();
+    const wiki = committedWikiTom();
     const io = publishingRun({ write: "WRITE BODY", "know-research": "RESEARCH BODY" });
-    const built = skillsFor(HERE, `${work}-wiki`, { layers: ["write"], skills: ["know-research", "write"] }, io.run, work);
-    expect(built).toMatchObject({ names: ["write"], skills: ["know-research", "write"], commit: "wiki-commit" });
+    const built = skillsFor(HERE, wiki, { layers: ["write"], skills: ["know-research", "write"] }, io.run, work);
+    expect(built).toMatchObject({ names: ["write"], skills: ["know-research", "write"], skillsRefused: [], commit: "wiki-commit" });
+    expect(built.catalogHash).toMatch(/^[0-9a-f]{64}$/);
     expect(built.text.startsWith("LAYER TEXT")).toBe(true);
     expect(built.text).toContain("SKILLS (WikiTom commit wiki-commit)");
     expect(built.text).toContain("granted: know-research, write");
@@ -780,13 +907,16 @@ describe("skillsFor", () => {
 
   it("refuses a name the publication does not hold, and carries on", () => {
     const work = tree();
+    const wiki = committedWikiTom();
     const io = publishingRun({ write: "WRITE BODY" }, [
       { name: "know-money", why: "model-of-tom/areas/money.md is blank at this commit" },
     ]);
-    const built = skillsFor(HERE, `${work}-wiki`, { layers: [], skills: ["write", "know-money"] }, io.run, work);
+    const built = skillsFor(HERE, wiki, { layers: [], skills: ["write", "know-money"] }, io.run, work);
     expect(built.text).toContain("granted: write");
     expect(built.text).toContain("refused: know-money — model-of-tom/areas/money.md is blank at this commit");
     expect(built.text).toContain("WRITE BODY");
+    expect(built.skills).toEqual(["write"]);
+    expect(built.skillsRefused).toEqual(["know-money"]);
     // No layers asked for, so prelude.mjs is never reached and the text opens
     // with the grant block.
     expect(built.names).toEqual([]);
@@ -796,19 +926,74 @@ describe("skillsFor", () => {
   it("publishes once for a pair of trees, however many name sets ask", () => {
     const work = tree();
     const io = publishingRun({ write: "W", "know-week": "K" });
-    const wikitom = `${work}-wiki`;
+    const wikitom = committedWikiTom();
     skillsFor(HERE, wikitom, { layers: [], skills: ["write"] }, io.run, work);
     skillsFor(HERE, wikitom, { layers: [], skills: ["know-week"] }, io.run, work);
     skillsFor(HERE, wikitom, { layers: [], skills: [] }, io.run, work);
     expect(io.calls.filter((args) => String(args[0]).endsWith("publish-skills.mjs")).length).toBe(1);
   });
 
-  it("strips the generated frontmatter and provenance line, and nothing else", () => {
+  it("strips the generated frontmatter and provenance line, and rejects non-publication text", () => {
     const page = "---\nname: tom-write\ndescription: \"d\"\n---\n\n" +
       "<!-- generated from WikiTom a, b at commit c — do not edit -->\n\n## Heading\n\nbody\n";
     expect(skillBodyOf(page)).toBe("## Heading\n\nbody");
-    expect(skillBodyOf("no frontmatter at all")).toBe("no frontmatter at all");
-    expect(skillBodyOf(undefined)).toBe("");
+    expect(() => skillBodyOf("no frontmatter at all")).toThrow("published SKILL.md has no frontmatter");
+    expect(() => skillBodyOf("---\nname: tom-write\n---\n\nbody")).toThrow("published SKILL.md has no provenance");
+  });
+
+  it("ships a skills golden with a routed prelude and an assembled refusal", async () => {
+    const golden = JSON.parse(fs.readFileSync(
+      path.join(HERE, "evals", "golden", "runs", "run-skills-grant-routing-r6.json"),
+      "utf8",
+    ));
+    // These are the concrete router inputs recorded in the run task: a
+    // tom.quest repo subject outside its checkout gets the life area plus its
+    // repository rules; a partial publication refuses the latter.
+    const routed = routeSkills({
+      caller: "cli",
+      subject: { kind: "repo", repo: "tom.quest", paths: ["worker/jobs/skill-router.mjs"] },
+      cwd: "/work/WikiTom",
+      repoDirs: { "tom.quest": "/work/tom.quest" },
+      pages: [{
+        path: "model-of-tom/areas/agent-systems.md",
+        body: "---\ncategories: [tom.quest]\n---\n\n# Agent systems\n",
+      }],
+      published: ["write", "know-agent-systems"],
+    });
+    expect(routed).toEqual({
+      granted: ["write", "know-agent-systems"],
+      refused: [{ name: "repo-tom-quest", why: NO_BODY }],
+      repoRulesSource: null,
+    });
+    expect(golden.input.preludeNames).toEqual({
+      layers: [],
+      skills: ["write", "know-agent-systems", "know-unpublished"],
+    });
+
+    const registrations = [];
+    const result = await runItem(golden, {
+      modules: {}, cmtDir: undefined, layers: () => layers,
+      prelude: () => ({
+        names: [], skills: ["write", "know-agent-systems"], skillsRefused: ["know-unpublished"],
+        text: "SKILLS (WikiTom commit fixture)\n\ngrant block\n- granted: write, know-agent-systems\n- refused: know-unpublished â€” no published body at this commit",
+        commit: "fixture", files: [],
+      }),
+    }, {
+      runClaude: async (prompt, options) => {
+        registrations.push(options.registration);
+        if (String(prompt).startsWith("You are judging")) {
+          return JSON.stringify({ verdict: "pass", reason: "the assembled grant block is correctly described" });
+        }
+        return "The grant block grants write and know-agent-systems. It refuses know-unpublished because it has no published body; retired context layers do not supply another grant.";
+      },
+    }, {
+      deterministic: (fresh) => deterministicFailure(golden, JOBS.run, fresh, null),
+    });
+    expect(result).toMatchObject({ judged: "pass" });
+    expect(registrations[0]).toMatchObject({
+      skillsGranted: ["write", "know-agent-systems"],
+      skillsRefused: ["know-unpublished"],
+    });
   });
 });
 
@@ -843,19 +1028,47 @@ describe("the layer names as skill names", () => {
 
   it("normalises every loaded trigger onto the skill names it is about", () => {
     const dir = tree();
+    const wikitom = tree();
+    for (const file of AREA_TRIGGER_FILES) {
+      writeJson(wikitom, path.join("evals", "triggers", file), { name: file.replace(/^skill-/, "").replace(/\.json$/, ""), kind: "skill", cases: [] });
+    }
     writeJson(dir, path.join("evals", "triggers", "layer-know.json"), { name: "know", kind: "layer", cases: [] });
     writeJson(dir, path.join("evals", "triggers", "layer-operate.json"), { name: "operate", kind: "layer", cases: [] });
-    writeJson(dir, path.join("evals", "triggers", "skill-know-research.json"), { name: "know-research", kind: "skill", cases: [] });
-    const loaded = loadTriggers(dir);
-    expect(loaded.map((one) => one.skills)).toEqual([
-      [...LAYER_SKILL_ALIASES.know],
-      [],
-      ["know-research"],
-    ]);
-    // A file whose kind places it nowhere says so with an empty list rather
-    // than with a guess.
-    expect(triggerSkills({ name: "know-research" })).toEqual([]);
-    expect(triggerSkills({ name: "nothing-by-that-name", kind: "layer" })).toEqual([]);
+    writeJson(wikitom, path.join("evals", "triggers", "skill-know-research.json"), { name: "know-research", kind: "skill", cases: [] });
+    const loaded = loadTriggers(dir, { wikitomDir: wikitom, ...NAMES });
+    expect(loaded.find((one) => one.file === "layer-know.json").skills).toEqual([...LAYER_SKILL_ALIASES.know]);
+    expect(loaded.find((one) => one.file === "layer-operate.json").skills).toEqual([]);
+    expect(loaded.find((one) => one.file === "skill-know-research.json").skills).toEqual(["know-research"]);
+    expect(() => triggerSkills({ name: "know-research" }, NAMES)).toThrow("unknown trigger kind");
+    expect(() => triggerSkills({ name: "nothing-by-that-name", kind: "layer" }, NAMES)).toThrow("unknown layer trigger");
+    expect(() => triggerSkills({ kind: "skill" }, NAMES)).toThrow("skill trigger needs a name");
+    // THE MAPPING IS NOT OPTIONAL: the identity default this replaces let a
+    // caller that forgot it score `repo-tom.quest`, a name no publisher makes.
+    expect(() => triggerSkills({ name: "know-research", kind: "skill" }))
+      .toThrow("trigger skill names need the scripts/skills.mjs mapping");
+    expect(() => triggerSkills({ name: "repo-tom.quest", kind: "skill", repo: "tom.quest" }, NAMES))
+      .toThrow("skill trigger for tom.quest is named repo-tom.quest; the published skill is repo-tom-quest");
+  });
+
+  it("requires every private area trigger rather than silently omitting it", () => {
+    const dir = tree();
+    const wikitom = tree();
+    expect(() => loadTriggers(dir, { wikitomDir: wikitom, ...NAMES })).toThrow(/skill-know-admin\.json/);
+  });
+
+  it("names the private fixture and case when its dispatch shape is malformed", () => {
+    const dir = tree();
+    const wikitom = tree();
+    for (const file of AREA_TRIGGER_FILES) {
+      writeJson(wikitom, path.join("evals", "triggers", file), {
+        name: file.replace(/^skill-/, "").replace(/\.json$/, ""), kind: "skill", cases: [],
+      });
+    }
+    writeJson(wikitom, path.join("evals", "triggers", AREA_TRIGGER_FILES[0]), {
+      name: "know-admin", kind: "skill", cases: [{ id: "skill-know-admin-both-methods", route: {}, prompt: "ambiguous" }],
+    });
+    expect(() => loadTriggers(dir, { wikitomDir: wikitom, ...NAMES }))
+      .toThrow("trigger case skill-know-admin-both-methods in skill-know-admin.json: trigger case cannot carry both route and prompt");
   });
 });
 
@@ -932,13 +1145,59 @@ describe("the deterministic checks", () => {
   it("applies the HTML rules only to the explanation fields", async () => {
     const standard = await loadWritingStandard();
     expect(standard).not.toBe(null);
-    expect(standardRulesFor("groundUpExplanation", standard)).toBe(standard.RULES);
-    expect(standardRulesFor("explanation", standard)).toBe(standard.RULES);
-    expect(standardRulesFor("brief", standard)).toBe(standard.BRIEF_RULES);
-    expect(standardRulesFor("text", standard)).toBe(null);
-    expect(standardRulesFor("entryAction", standard)).toBe(null);
+    expect(standardRulesFor("groundUpExplanation", standard, JOBS.prepare)).toBe(standard.RULES);
+    expect(standardRulesFor("explanation", standard, JOBS.explanation)).toBe(standard.RULES);
+    expect(standardRulesFor("text", standard, JOBS.run)).toBe(null);
+    expect(standardRulesFor("entryAction", standard, JOBS.prepare)).toBe(null);
     // An absent file is "no rules ran", never a failure.
-    expect(standardRulesFor("groundUpExplanation", null)).toBe(null);
+    expect(standardRulesFor("groundUpExplanation", null, JOBS.prepare)).toBe(null);
+  });
+
+  // WHICH `brief` IS WHICH IS THE JOB'S ANSWER. Two jobs write a field called
+  // `brief`: the prepare job's IS the life todo's brief (2-5 sentences, at
+  // most 400 characters), and the code-brief job's is 250-400 WORDS. Handing
+  // the code brief the size rules fails it deterministically on every run,
+  // which is a regression on the evals-run row and a shut merge gate.
+  it("gives the size rules to the prepare job's brief and to nothing else", async () => {
+    const standard = await loadWritingStandard();
+    const ids = (rules) => rules.map((r) => r.id);
+    const FORM = ["brief-ellipsis", "brief-markup"];
+
+    expect(standardRulesFor("brief", standard, JOBS.prepare)).toBe(standard.BRIEF_RULES);
+    expect(ids(standardRulesFor("brief", standard, JOBS.prepare))).toEqual([
+      "brief-sentences", "brief-ellipsis", "brief-markup", "brief-length",
+    ]);
+
+    expect(ids(standardRulesFor("brief", standard, JOBS["code-brief"]))).toEqual(FORM);
+    expect(ids(standardRulesFor("recommendation", standard, JOBS["code-brief"]))).toEqual(FORM);
+    expect(ids(standardRulesFor("workDescription", standard, JOBS.prepare))).toEqual(FORM);
+
+    // The old two-argument shape still answers, with nothing size-bound.
+    expect(ids(standardRulesFor("brief", standard))).toEqual(FORM);
+
+    expect(standardRulesFor("nosuchfield", standard, JOBS.prepare)).toBe(null);
+    expect(standardRulesFor("brief", null, JOBS.prepare)).toBe(null);
+  });
+
+  // END TO END, through the check that runs before the judge. This is the
+  // output the merge gate would have died on.
+  it("lets a real 1,500-character code brief and a one-word recommendation through", async () => {
+    const standard = await loadWritingStandard();
+    const sentence =
+      "The retry loop in the poller drops an event whenever the socket closes " +
+      "between the acknowledgement and the commit. ";
+    const brief = sentence.repeat(Math.ceil(1500 / sentence.length)).trim();
+    expect(brief.length).toBeGreaterThan(1500);
+    const fresh = { brief, recommendation: "approve", execClass: "box", evidence: "a1b2c3d" };
+    const codeItem = { id: "code-brief-1", job: "code-brief", partition: "code-brief/x", verdict: "approve" };
+
+    expect(deterministicFailure(codeItem, JOBS["code-brief"], fresh, standard)).toBe(null);
+
+    // The FORM rules still bite: a bullet in a code brief is a breach at any
+    // length, and the reason names the rule rather than the field's size.
+    const withBullet = { ...fresh, brief: `${brief}\n- ship the patch behind a flag.` };
+    expect(deterministicFailure(codeItem, JOBS["code-brief"], withBullet, standard))
+      .toMatch(/^brief fails the writing standard: .*brief-markup/);
   });
 
   it("fails a writing-standard breach before any judge sees it", async () => {
@@ -1223,12 +1482,25 @@ describe("the nodes one case's arm ablates", () => {
 describe("runEvals over a run case", () => {
   const runIoFor = (dir, verdicts) => runIo(verdicts, [], {
     layers: () => layers,
+    skills: (_tomquest, _wikitom, names) => ({
+      names: [],
+      skills: names.skills ?? [],
+      skillsRefused: [],
+      text: `PINNED SKILLS: ${(names.skills ?? []).join(", ")}`,
+      commit: "wiki1",
+      catalogHash: "c".repeat(64),
+      files: [],
+    }),
     loadModules: async () => ({}),
     taskRepos: () => [],
+    triggerNameMapping: NAMES,
     worktree: (repo) => ({ dir, commit: repo === "WikiTom" ? "wiki1" : "tq1", remove: () => {} }),
   });
   const caseDir = (over) => {
     const dir = tree();
+    for (const file of AREA_TRIGGER_FILES) {
+      writeJson(dir, path.join("evals", "triggers", file), { name: file.replace(/^skill-/, "").replace(/\.json$/, ""), kind: "skill", cases: [] });
+    }
     writeJson(dir, path.join("evals", "golden", "runs", "a.json"), runCaseItem({ id: "a", ...over }));
     return dir;
   };
@@ -1260,6 +1532,196 @@ describe("runEvals over a run case", () => {
     expect((await runEvals({ repo: "tom.quest", sha: "head" }, quiet)).ablation).toEqual([]);
     expect(quiet.calls.regen).toBe(1);
   });
+
+  it("runs every case in exactly the trigger files a pull request changed", async () => {
+    const dir = caseDir();
+    writeJson(dir, path.join("evals", "triggers", "skill-write.json"), {
+      name: "write",
+      kind: "skill",
+      cases: [
+        {
+          id: "skill-write-router-safe",
+          route: {
+            caller: "cli",
+            subject: { kind: "none" },
+            expected: { granted: ["write"], refused: [], repoRulesSource: null },
+          },
+        },
+        { id: "skill-write-runner-safe", prompt: "safe runner fixture", expect: { mustName: ["fresh"] } },
+      ],
+    });
+    writeJson(dir, path.join("evals", "triggers", "skill-unrelated.json"), {
+      name: "write",
+      kind: "skill",
+      cases: [{
+        id: "skill-write-unrelated",
+        route: {
+          caller: "cli",
+          subject: { kind: "none" },
+          expected: { granted: ["write"], refused: [], repoRulesSource: null },
+        },
+      }],
+    });
+    const io = runIoFor(dir, ["pass", "pass", "pass"]);
+    io.triggerRouter = () => ({ granted: ["write"], refused: [], repoRulesSource: null });
+    const weekly = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, io);
+    expect(weekly).toMatchObject({ items: 4, pass: 4, fail: 0, calls: 7, wikitom: "wiki1", catalogHash: "c".repeat(64) });
+    expect(weekly.scoredIds).toEqual(["a", "skill-write-router-safe", "skill-write-runner-safe", "skill-write-unrelated"]);
+    expect(weekly.results).toContainEqual(expect.objectContaining({ id: "skill-write-router-safe", method: "router", judged: "pass", passK: true }));
+    expect(weekly.results).toContainEqual(expect.objectContaining({ id: "skill-write-runner-safe", method: "runner", judged: "pass", passK: true }));
+    expect(io.calls.regen).toBe(4);
+    expect(io.calls.prompts.some((prompt) => prompt.includes("PINNED SKILLS: write\n\nsafe runner fixture"))).toBe(true);
+
+    const prIo = runIoFor(dir, ["pass", "pass"]);
+    prIo.triggerRouter = io.triggerRouter;
+    const pr = await runEvals({
+      repo: "tom.quest",
+      sha: "head",
+      changed: ["evals/triggers/skill-write.json"],
+    }, prIo);
+    expect(pr.scoredIds).toEqual(["a", "skill-write-router-safe", "skill-write-runner-safe"]);
+    expect(pr.triggerFilesRun).toEqual(["skill-write.json"]);
+    expect(pr.results).toContainEqual(expect.objectContaining({ id: "skill-write-router-safe", method: "router", judged: "pass" }));
+    expect(pr.results).toContainEqual(expect.objectContaining({ id: "skill-write-runner-safe", method: "runner", judged: "pass" }));
+    expect(pr.results.find((result) => result.id === "skill-write-unrelated")).toBeUndefined();
+    expect(pr.scoredHashes).toMatchObject({
+      a: contentHash(runCaseItem({ id: "a" })),
+      "skill-write-router-safe": expect.any(String),
+      "skill-write-runner-safe": expect.any(String),
+    });
+    expect(prIo.calls.regen).toBe(2);
+  });
+
+  it("skips a runner trigger when its publication is not the named WikiTom commit", async () => {
+    const dir = caseDir();
+    writeJson(dir, path.join("evals", "triggers", "skill-write.json"), {
+      name: "write",
+      kind: "skill",
+      cases: [{ id: "skill-write-runner-unpinned", prompt: "safe runner fixture", expect: { mustName: ["fresh"] } }],
+    });
+    const io = runIoFor(dir, ["pass", "pass", "pass"]);
+    io.skills = (_tomquest, _wikitom, names) => ({
+      names: [], skills: names.skills ?? [], skillsRefused: [], text: "WRONG PUBLICATION",
+      commit: "local-head", catalogHash: "d".repeat(64), files: [],
+    });
+    const weekly = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, io);
+    expect(weekly.catalogHash).toBeNull();
+    expect(weekly.skipped).toContainEqual(expect.objectContaining({
+      id: "skill-write-runner-unpinned",
+      method: "runner",
+      reason: "the trigger publication could not be pinned to the named WikiTom commit",
+    }));
+    expect(io.calls.regen).toBe(3);
+    // A file whose only case was skipped never ran, so it cannot satisfy the
+    // pull-request coverage rule that reads this list.
+    expect(weekly.triggerFilesRun).toEqual([]);
+  });
+
+  it("pins the catalog for a runner trigger whose mapped skill list is empty", async () => {
+    const dir = caseDir();
+    writeJson(dir, path.join("evals", "triggers", "layer-operate.json"), {
+      name: "operate",
+      kind: "layer",
+      cases: [{ id: "layer-operate-fixture", prompt: "operate fixture", expect: { mustName: ["fresh"] } }],
+    });
+    const io = runIoFor(dir, ["pass", "pass", "pass"]);
+    const assembled = [];
+    const originalSkills = io.skills;
+    io.skills = (...args) => {
+      assembled.push(args[2]);
+      return originalSkills(...args);
+    };
+    const weekly = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, io);
+    expect(weekly.catalogHash).toBe("c".repeat(64));
+    expect(weekly.results).toContainEqual(expect.objectContaining({ id: "layer-operate-fixture", judged: "pass" }));
+    expect(io.calls.prompts.some((prompt) => prompt.includes("PINNED SKILLS: \n\noperate fixture"))).toBe(true);
+    expect(assembled).toContainEqual({ layers: ["operate"], skills: [] });
+  });
+});
+
+describe("trigger case methods", () => {
+  it("uses the router only for an explicit route schema", async () => {
+    expect(triggerMethod({ route: {} })).toBe("router");
+    expect(triggerMethod({ prompt: "model-required fixture" })).toBe("runner");
+    expect(() => triggerMethod({})).toThrow("trigger case needs route or prompt");
+    expect(() => triggerMethod({ route: {}, prompt: "ambiguous" })).toThrow("cannot carry both route and prompt");
+    expect(() => triggerBase({ name: "write" }, { route: {} })).toThrow("needs a non-empty id");
+    const router = await runTriggerCase({ name: "write" }, {
+      id: "router-case", route: {
+        caller: "cli",
+        subject: { kind: "none" },
+        expected: { granted: ["write"], refused: [], repoRulesSource: null },
+      },
+    }, runIo(), () => ({ granted: ["write"], refused: [], repoRulesSource: null }));
+    expect(router).toMatchObject({ method: "router", judged: "pass", trials: { head: 1, headPassed: 1 } });
+  });
+
+  it("runs a prompt case with its pinned published skill text and receipt", async () => {
+    let received;
+    const io = {
+      runClaude: async (prompt, options) => {
+        received = { prompt, options };
+        return "fresh answer";
+      },
+    };
+    const result = await runTriggerCase(
+      { name: "write", skills: ["write"] },
+      { id: "runner-case", prompt: "raw prompt", expect: { mustName: ["fresh"] } },
+      io,
+      null,
+      {
+        text: "PINNED WRITE BODY",
+        commit: "wiki1",
+        expectedCommit: "wiki1",
+        catalogHash: "e".repeat(64),
+        skills: ["write"],
+        skillsRefused: [],
+      },
+    );
+    expect(result).toMatchObject({ method: "runner", judged: "pass" });
+    expect(received.prompt).toBe("PINNED WRITE BODY\n\nraw prompt");
+    expect(received.options.registration).toMatchObject({
+      layersKnown: true,
+      skillsGranted: ["write"],
+      skillsRefused: [],
+      wikitomCommit: "wiki1",
+    });
+  });
+
+  it("skips a prompt case when no pinned publication is supplied", async () => {
+    const io = runIo();
+    const result = await runTriggerCase(
+      { name: "write", skills: ["write"] },
+      { id: "runner-case", prompt: "raw prompt", expect: { mustName: ["fresh"] } },
+      io,
+    );
+    expect(result).toMatchObject({ method: "runner", judged: "skip", reason: expect.stringContaining("could not be pinned") });
+    expect(io.calls.regen).toBe(0);
+  });
+
+  it("scores the checked-in tom.quest native-repository case without a runner", async () => {
+    const skills = await import("../../scripts/skills.mjs");
+    const wikitom = tree();
+    for (const file of AREA_TRIGGER_FILES) {
+      writeJson(wikitom, path.join("evals", "triggers", file), { name: file.replace(/^skill-/, "").replace(/\.json$/, ""), kind: "skill", cases: [] });
+    }
+    const trigger = loadTriggers(path.resolve("."), {
+      wikitomDir: wikitom,
+      bareSkillName: skills.bareSkillName,
+      repoSkillName: skills.repoSkillName,
+    }).find((one) => one.repo === "tom.quest");
+    expect(trigger.name).toBe(skills.repoSkillName("tom.quest"));
+    const one = trigger.cases.find((caseItem) => caseItem.id === "skill-repo-tom-quest-neg-standing-inside");
+    const io = runIo();
+    const result = await runTriggerCase(trigger, one, io, (input) => routeSkills({
+      ...input,
+      pages: [{ path: "model-of-tom/areas/agent-systems.md", body: "---\ncategories: [tom.quest, WikiTom]\n---\n# Agent systems\n" }],
+      published: ["write", "know-agent-systems"],
+    }));
+    expect(result).toMatchObject({ id: one.id, method: "router", judged: "pass", trials: { head: 1, headPassed: 1 } });
+    expect(io.calls.regen).toBe(0);
+    expect(io.calls.judge).toBe(0);
+  });
 });
 
 // The count rule lives here, where `npm test` states it in one line, rather
@@ -1267,34 +1729,394 @@ describe("runEvals over a run case", () => {
 // something about a checked-in file.
 describe("the trigger set", () => {
   it("carries at least as many negatives as positives in every file", () => {
-    const counted = loadTriggers(path.resolve("."))
+    const publicDir = path.resolve(".");
+    const privateDir = tree();
+    for (const file of AREA_TRIGGER_FILES) {
+      writeJson(privateDir, path.join("evals", "triggers", file), { name: file.replace(/^skill-/, "").replace(/\.json$/, ""), kind: "skill", cases: [] });
+    }
+    const counted = loadTriggers(publicDir, { wikitomDir: privateDir, ...NAMES })
       .map((trigger) => ({ file: trigger.file, ...triggerCounts(trigger) }));
     // SIXTEEN FILES: the three layer files the partition landed with, and one
     // per skill the layer aliases do not already cover — write is layer-write,
     // and operate is not a skill at all.
-    expect(counted.length).toBe(16);
+    expect(counted.length).toBe(15);
     expect(counted.filter((counts) => counts.negatives < counts.positives)).toEqual([]);
     // Each of the sixteen is about a name that can be placed: a `skill` file
     // names its own, a `layer` file names the skills that layer became, and
     // operate names none because the base is not a skill.
-    const loaded = loadTriggers(path.resolve("."));
+    const loaded = loadTriggers(publicDir, { wikitomDir: privateDir, ...NAMES });
     expect(loaded.filter((one) => one.skills.length === 0).map((one) => one.file)).toEqual(["layer-operate.json"]);
     // Every skill the know layer became has a file of its own, so a run given
     // one name rather than the whole layer is still scored on it.
-    const named = new Set(loaded.filter((one) => one.kind === "skill").map((one) => one.name));
-    for (const name of LAYER_SKILL_ALIASES.know) expect(named.has(name)).toBe(true);
+    expect(loaded.filter((one) => one.kind === "skill").map((one) => one.name)).toEqual([
+      "know-admin", "know-agent-systems", "know-climbing", "know-health-and-food", "know-intent",
+      "know-mental-health", "know-money", "know-research", "know-social", "know-week",
+      "repo-tom-quest", "repo-wikitom",
+    ]);
+    const publicNames = fs.readdirSync(path.join(publicDir, "evals", "triggers"));
+    expect(AREA_TRIGGER_FILES.filter((name) => publicNames.includes(name))).toEqual([]);
   });
 
-  it("never loads a draft, and counts a file written either way", () => {
+  it("loads the eight area triggers from WikiTom and never from tom.quest", () => {
+    const publicDir = tree();
+    const wikitomDir = tree();
+    for (const file of AREA_TRIGGER_FILES) {
+      const name = file.replace(/\.json$/, "");
+      writeJson(wikitomDir, path.join("evals", "triggers", file), { name, kind: "skill", cases: [] });
+    }
+    writeJson(publicDir, path.join("evals", "triggers", AREA_TRIGGER_FILES[0]), { name: "wrong-source", kind: "skill", cases: [] });
+    const loaded = loadTriggers(publicDir, { wikitomDir, ...NAMES });
+    expect(loaded.map((trigger) => trigger.file)).toEqual([...AREA_TRIGGER_FILES].sort());
+    expect(loaded.map((trigger) => trigger.name)).toEqual(AREA_TRIGGER_FILES.map((file) => file.replace(/\.json$/, "")).sort());
+  });
+
+  it("keeps private tokens and all eight private area files out of public triggers", () => {
+    const publicDir = path.join(path.resolve("."), "evals", "triggers");
+    const publicNames = fs.readdirSync(publicDir).filter((name) => name.endsWith(".json")).sort();
+    const stringsOf = (value) => {
+      if (typeof value === "string") return [value];
+      if (Array.isArray(value)) return value.flatMap(stringsOf);
+      if (value && typeof value === "object") return Object.values(value).flatMap(stringsOf);
+      return [];
+    };
+    // These SHA-256 digests pin tokens removed from the public recurring-week
+    // and intent cases without placing the private tokens in this repository.
+    const privateTokenDigests = new Set([
+      "576ba7c2e4abb7184ca409154dbbbd5306c1a80747fbce4148ea6271fd21e776",
+      "927a3aed189d610b2e151c4208913b3ed0cb38f6be613756819b1513c8924d7f",
+      "2212180a140694246e19b367e01980b14995371fa4db25dc4fc18b18c7511fdf",
+      "5589aa5863c2d85622d06d651add002416e5513afdbb455666cdde01bb3e257d",
+      "7f871cbf905f6e0cd598b11609f33f609e60a61892ac6b37e80cf1de282ee367",
+      "12df7f0ee89f9d7f17fb8e881e8b568794603af2a9d53c1d0379d2c588792a50",
+      "877c3aec832cd41012590679bdb84ebe25e5ebbd71b6b81722b48b129feb76ae",
+    ]);
+    const tokens = publicNames.flatMap((name) => stringsOf(JSON.parse(fs.readFileSync(path.join(publicDir, name), "utf8"))))
+      .flatMap((text) => text.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+    const privateTokens = tokens.filter((token) => privateTokenDigests.has(createHash("sha256").update(token).digest("hex")));
+    expect(privateTokens).toEqual([]);
+    expect(AREA_TRIGGER_FILES).toHaveLength(8);
+    expect(AREA_TRIGGER_FILES.filter((name) => publicNames.includes(name))).toEqual([]);
+  });
+
+  it("never loads a draft and counts the checked-in cases format", () => {
     const dir = tree();
-    writeJson(dir, path.join("evals", "triggers", "hourly.json"), { positives: ["a"], negatives: ["b", "c"] });
-    writeJson(dir, path.join("evals", "triggers", "hourly.draft.json"), { positives: ["a", "b"], negatives: [] });
-    expect(loadTriggers(dir).map((one) => one.file)).toEqual(["hourly.json"]);
-    expect(triggerCounts(loadTriggers(dir)[0])).toEqual({ positives: 1, negatives: 2 });
-    expect(loadTriggers(tree())).toEqual([]);
-    // The form every checked-in file uses: one `cases` list, each flagged.
-    expect(triggerCounts({ cases: [{ negative: false }, { negative: true }, { negative: true }] }))
-      .toEqual({ positives: 1, negatives: 2 });
+    const wikitom = tree();
+    for (const file of AREA_TRIGGER_FILES) {
+      writeJson(wikitom, path.join("evals", "triggers", file), { name: file.replace(/^skill-/, "").replace(/\.json$/, ""), kind: "skill", cases: [] });
+    }
+    writeJson(dir, path.join("evals", "triggers", "hourly.json"), {
+      name: "hourly", kind: "skill", cases: [
+        { id: "skill-hourly-positive", prompt: "positive", negative: false },
+        { id: "skill-hourly-negative-one", prompt: "negative one", negative: true },
+        { id: "skill-hourly-negative-two", prompt: "negative two", negative: true },
+      ],
+    });
+    writeJson(dir, path.join("evals", "triggers", "hourly.draft.json"), { cases: [{ negative: false }, { negative: false }] });
+    expect(loadTriggers(dir, { wikitomDir: wikitom, ...NAMES }).map((one) => one.file)).toEqual(["hourly.json", ...AREA_TRIGGER_FILES].sort());
+    expect(triggerCounts(loadTriggers(dir, { wikitomDir: wikitom, ...NAMES })[0])).toEqual({ positives: 1, negatives: 2 });
+    expect(() => loadTriggers(tree(), { wikitomDir: tree(), ...NAMES })).toThrow(/skill-know-admin\.json/);
     expect(triggerCounts({ cases: [] })).toEqual({ positives: 0, negatives: 0 });
+    expect(() => triggerCounts({ positives: ["a"], negatives: ["b"] })).toThrow("trigger needs a cases list");
+  });
+
+  it("names the changed trigger files a pull-request run must execute, and nothing else", () => {
+    expect([...changedTriggerFiles([
+      "evals/triggers/hourly.json",
+      "evals\\triggers\\skill-write.json",
+      "./evals/triggers/nested/deep.json",
+      // A draft is never loaded, so it can never claim to have run.
+      "evals/triggers/hourly.draft.json",
+      "evals/triggers/README.md",
+      "evals/golden/runs/one.json",
+      "scripts/skills.mjs",
+    ])].sort()).toEqual(["hourly.json", "nested/deep.json", "skill-write.json"]);
+    expect([...changedTriggerFiles(undefined)]).toEqual([]);
+  });
+});
+
+// ── The verifiers, measured ─────────────────────────────────────────────────
+// Every measure here REPORTS AND GATES NOTHING, and every test below runs with
+// no model and no network: the label door, the judge and the auditor are all
+// stubs on `io`.
+
+describe("the verifier scorecard", () => {
+  const label = (over = {}) => ({
+    labelId: "kl1",
+    at: 1_757_000_000_000,
+    source: "ruling",
+    polarity: "good",
+    meaning: "Tom approved this output",
+    ref: "ruling:r1",
+    run: { runId: "claude:box:r1", origin: "cron:planner", kind: "job", model: "opus", context: null, outcome: null },
+    rows: { contextRow: null, spanRows: [{ seq: 4, content: { text: "the text he judged" } }] },
+    link: { subjectKey: null },
+    ...over,
+  });
+
+  /** Three labels, newest first by `at`: good, bad, good. */
+  const three = () => [
+    label({ labelId: "a", at: 3, polarity: "good" }),
+    label({ labelId: "b", at: 2, polarity: "bad" }),
+    label({ labelId: "c", at: 1, polarity: "good" }),
+  ];
+
+  /** A judge that answers a canned list in order, and keeps every prompt. */
+  const judgeIo = (verdicts, over = {}) => {
+    const queue = [...verdicts];
+    const prompts = [];
+    return {
+      prompts,
+      labels: async () => ({ items: three() }),
+      runClaude: async (prompt) => {
+        prompts.push(prompt);
+        const next = queue.shift() ?? { verdict: "fail", reason: "out of answers" };
+        return JSON.stringify(typeof next === "string" ? { verdict: next, reason: "because of the wording" } : next);
+      },
+      ...over,
+    };
+  };
+
+  it("counts agreement when the judge matches him every time", async () => {
+    const judge = await judgeAgreement(judgeIo(["pass", "fail", "pass"]));
+    expect(judge).toMatchObject({ items: 3, agreed: 3, skipped: 0 });
+    expect(judge.disagreements).toEqual([]);
+    expect(judge.skips).toEqual([]);
+  });
+
+  it("counts every disagreement and names which way each went", async () => {
+    const judge = await judgeAgreement(judgeIo(["fail", "pass", "fail"]));
+    expect(judge).toMatchObject({ items: 3, agreed: 0, skipped: 0 });
+    expect(judge.disagreements).toEqual([
+      { runId: "claude:box:r1", tom: "good", judge: "fail", reason: "because of the wording" },
+      { runId: "claude:box:r1", tom: "bad", judge: "pass", reason: "because of the wording" },
+      { runId: "claude:box:r1", tom: "good", judge: "fail", reason: "because of the wording" },
+    ]);
+  });
+
+  it("counts a mixed week as it is", async () => {
+    const judge = await judgeAgreement(judgeIo(["pass", "pass", "pass"]));
+    expect(judge).toMatchObject({ items: 3, agreed: 2, skipped: 0 });
+    expect(judge.disagreements).toEqual([
+      { runId: "claude:box:r1", tom: "bad", judge: "pass", reason: "because of the wording" },
+    ]);
+  });
+
+  // The whole point of the replay: the judge must not be handed his answer.
+  it("replays through the same prompt with his verdict and his sentence taken out", async () => {
+    const io = judgeIo(["pass", "fail", "pass"]);
+    await judgeAgreement(io);
+    expect(io.prompts).toHaveLength(3);
+    for (const prompt of io.prompts) {
+      expect(prompt).toContain("You are judging one output of Tom's todo system");
+      expect(prompt).not.toContain("--- TOM'S VERDICT ---");
+      expect(prompt).not.toContain("--- TOM'S SENTENCE ---");
+      expect(prompt).not.toContain("--- WHAT TOM'S LABEL MEANS ---");
+      expect(prompt).not.toContain("Tom approved this output");
+      expect(prompt).toContain("the text he judged");
+    }
+    // And an ordinary judgePrompt still carries both, unchanged.
+    const ordinary = judgePrompt(item(), { brief: "b" }, JOBS.prepare.fields);
+    expect(ordinary).toContain("--- TOM'S VERDICT ---");
+    expect(ordinary).toContain("--- TOM'S SENTENCE ---");
+    expect(judgePrompt(item(), { brief: "b" }, JOBS.prepare.fields, { hideVerdict: true }))
+      .not.toContain("--- TOM'S VERDICT ---");
+  });
+
+  // A skip is counted and named. It is NOT in `items`, so `agreed` out of
+  // `items` stays a rate over what was actually measured.
+  it("skips a label whose run is gone or whose text cannot be recovered, and says why", async () => {
+    const io = judgeIo(["pass"], {
+      labels: async () => ({
+        items: [
+          label({ labelId: "a", at: 3, polarity: "good" }),
+          label({ labelId: "b", at: 2, polarity: "bad", run: null }),
+          label({ labelId: "c", at: 1, polarity: "good", rows: { contextRow: null, spanRows: [] } }),
+        ],
+      }),
+    });
+    const judge = await judgeAgreement(io);
+    expect(judge).toMatchObject({ items: 1, agreed: 1, skipped: 2 });
+    expect(judge.skips).toEqual([
+      { runId: null, reason: "the label named no run, or the run has left the thirty-day window" },
+      { runId: "claude:box:r1", reason: "the run recorded no text to judge" },
+    ]);
+    // One model call, for the one label that could be judged.
+    expect(io.prompts).toHaveLength(1);
+  });
+
+  it("caps the lists at twenty and every string in them at three hundred", async () => {
+    const many = Array.from({ length: 21 }, (_, index) => label({ labelId: `l${index}`, at: 100 - index, polarity: "bad" }));
+    const long = "x".repeat(500);
+    const io = {
+      labels: async () => ({ items: many }),
+      runClaude: async () => JSON.stringify({ verdict: "pass", reason: long }),
+    };
+    const judge = await judgeAgreement(io, { limit: 21 });
+    expect(judge.items).toBe(21);
+    expect(judge.agreed).toBe(0);
+    expect(judge.disagreements).toHaveLength(20);
+    expect(judge.disagreements[0].reason).toHaveLength(300);
+  });
+
+  it("takes twenty labels by default, newest first", async () => {
+    expect(LABEL_SAMPLE).toBe(20);
+    const many = Array.from({ length: 30 }, (_, index) => label({ labelId: `l${index}`, at: index, polarity: "good" }));
+    const seen = [];
+    const io = {
+      labels: async () => ({ items: many }),
+      runClaude: async (prompt) => {
+        seen.push(prompt);
+        return JSON.stringify({ verdict: "pass", reason: "kept" });
+      },
+    };
+    const judge = await judgeAgreement(io);
+    expect(judge.items).toBe(20);
+    expect(seen).toHaveLength(20);
+  });
+
+  // Monthly, not weekly: the run whose NY date falls in the first seven days
+  // of the month is the month's run, and the reason says which it was.
+  it("fires the fault arm on a first-of-month Saturday and not otherwise", () => {
+    // 2026-08-01 is a Saturday; noon UTC is 08:00 in New York.
+    expect(faultsMonthly(Date.UTC(2026, 7, 1, 12))).toEqual({ ran: true, reason: "this month" });
+    expect(faultsMonthly(Date.UTC(2026, 7, 7, 12))).toEqual({ ran: true, reason: "this month" });
+    expect(faultsMonthly(Date.UTC(2026, 7, 8, 12))).toEqual({ ran: false, reason: "not this month" });
+    expect(faultsMonthly(Date.UTC(2026, 7, 15, 12))).toEqual({ ran: false, reason: "not this month" });
+    // --force and --faults-only run it whatever the date says, and the pair
+    // then reads "it ran, and this was not its week".
+    expect(faultsMonthly(Date.UTC(2026, 7, 15, 12), true)).toEqual({ ran: true, reason: "not this month" });
+  });
+
+  const faultDir = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "evals-faults-"));
+    dirs.push(dir);
+    for (const id of ["alpha", "beta", "gamma"]) {
+      fs.writeFileSync(
+        path.join(dir, `${id}.diff`),
+        [
+          `# id: ${id}`,
+          `# subject: ${id} claims a rename`,
+          `# witness: drop the second hunk`,
+          `diff --git a/${id}.mjs b/${id}.mjs`,
+          `@@ -1 +1 @@`,
+          `-const a = 1;`,
+          `+const a = 2;`,
+          ``,
+        ].join("\n"),
+      );
+    }
+    return dir;
+  };
+
+  it("scores each planted fault by its verdict word and names which refused", async () => {
+    const verdicts = ["VERDICT: REFUSED\n\nIt deletes an assertion.", "VERDICT: APPROVED\n\nLooks fine.", "VERDICT: REFUSED\n\nIt plants a key."];
+    const prompts = [];
+    const io = {
+      audit: async (prompt) => {
+        prompts.push(prompt);
+        return verdicts.shift();
+      },
+    };
+    const faults = await faultAudits(io, { at: Date.UTC(2026, 7, 15, 12), force: true, dir: faultDir() });
+    expect(faults).toMatchObject({ ran: true, reason: "not this month", items: 3, refused: 2 });
+    expect(faults.results).toEqual([
+      { id: "alpha", verdict: "REFUSED" },
+      { id: "beta", verdict: "APPROVED" },
+      { id: "gamma", verdict: "REFUSED" },
+    ]);
+    // The fixture reaches the auditor through the audit's OWN prompt, and the
+    // header lines are read here rather than sent.
+    expect(prompts[0]).toContain("You are auditing one change");
+    expect(prompts[0]).toContain("alpha claims a rename");
+    expect(prompts[0]).toContain("diff --git a/alpha.mjs");
+    expect(prompts[0]).not.toContain("# witness:");
+  });
+
+  it("runs nothing and says so when it is not the month's week", async () => {
+    let called = 0;
+    const io = { audit: async () => { called += 1; return "VERDICT: REFUSED"; } };
+    const faults = await faultAudits(io, { at: Date.UTC(2026, 7, 15, 12), dir: faultDir() });
+    expect(faults).toEqual({ ran: false, reason: "not this month", items: 0, refused: 0, results: [] });
+    expect(called).toBe(0);
+  });
+
+  it("reads an answer with no verdict line as unavailable, never as a refusal", async () => {
+    const io = { audit: async () => "I think this is probably fine, honestly." };
+    const faults = await faultAudits(io, { at: 1, force: true, dir: faultDir() });
+    expect(faults.refused).toBe(0);
+    expect(faults.results.every((result) => result.verdict === "UNAVAILABLE")).toBe(true);
+  });
+
+  // The checked-in fixtures, parsed off disk. `witness:` is the convention
+  // vqc/ledger.yaml's no-witness-fault-harness entry asks for, so a fixture
+  // without one is the thing this test exists to catch.
+  it("parses the three checked-in fixtures, sorted by id, each with a witness", () => {
+    const faults = loadAuditFaults(path.join(path.resolve("."), ...AUDIT_FAULTS_DIR.split("/")));
+    expect(faults.map((one) => one.id)).toEqual(["planted-secret", "removed-test", "wider-than-claimed"]);
+    for (const fault of faults) {
+      expect(fault.subject.length).toBeGreaterThan(0);
+      expect(fault.witness.length).toBeGreaterThan(0);
+      expect(fault.diff.startsWith("diff --git ")).toBe(true);
+      // The headers are read, never sent: nothing before the first diff line
+      // survives into what the auditor sees.
+      expect(fault.diff).not.toContain("# witness:");
+    }
+  });
+
+  it("is empty for a directory that is not there, and never throws", () => {
+    expect(loadAuditFaults(path.join(tree(), "nowhere"))).toEqual([]);
+  });
+
+  it("assembles the whole scorecard in the shape the weekly reader takes", async () => {
+    const io = {
+      labels: async () => ({ items: three() }),
+      runClaude: async () => JSON.stringify({ verdict: "pass", reason: "kept" }),
+      audit: async () => "VERDICT: REFUSED\n\nIt removes a test.",
+    };
+    const card = await verifierScorecard(io, { TTS_AUDIT_FAULTS_DIR: faultDir() }, { at: 1_757_000_000_000, force: true });
+    expect(Object.keys(card).sort()).toEqual(["at", "caveat", "faults", "judge"]);
+    expect(card.at).toBe(1_757_000_000_000);
+    expect(card.caveat).toBe(VERIFIER_CAVEAT);
+    expect(Object.keys(card.judge).sort()).toEqual(["agreed", "disagreements", "items", "skipped", "skips"]);
+    expect(Object.keys(card.faults).sort()).toEqual(["items", "ran", "reason", "refused", "results"]);
+    expect(card.judge).toMatchObject({ items: 3, agreed: 2, skipped: 0 });
+    expect(card.faults).toMatchObject({ ran: true, items: 3, refused: 3 });
+  });
+
+  it("measures nothing rather than throwing when the label door is not wired", async () => {
+    const judge = await judgeAgreement({});
+    expect(judge).toEqual({ items: 0, agreed: 0, skipped: 0, disagreements: [], skips: [] });
+  });
+});
+
+describe("parseArgs takes the two new flags", () => {
+  it("maps the hyphenated flags to faultsOnly and dryRun", () => {
+    expect(parseArgs(["--faults-only"])).toMatchObject({ faultsOnly: true, dryRun: false });
+    expect(parseArgs(["--weekly", "--dry-run"])).toMatchObject({ weekly: true, dryRun: true });
+    // The landed `options[name.slice(2)] = true` would have written this key
+    // and nobody would have read it.
+    expect(parseArgs(["--faults-only"])["faults-only"]).toBe(undefined);
+    expect(parseArgs(["--weekly", "--dry-run"])["dry-run"]).toBe(undefined);
+  });
+
+  it("needs no repo or sha for --faults-only", () => {
+    expect(() => parseArgs(["--faults-only"])).not.toThrow();
+    expect(() => parseArgs([])).toThrow(/--repo and --sha/);
+  });
+
+  it("leaves every pre-existing flag parsing exactly as it did", () => {
+    expect(parseArgs(["--serve"])).toEqual({
+      repo: null, sha: null, base: null, limit: 40, jobs: null,
+      force: false, serve: true, weekly: false, ablation: false, tasks: null,
+      faultsOnly: false, dryRun: false,
+    });
+    expect(parseArgs(["--weekly", "--force"])).toMatchObject({ weekly: true, force: true, ablation: true });
+    expect(parseArgs(["--repo", "tom.quest", "--sha", "abc", "--ablation"]))
+      .toMatchObject({ repo: "tom.quest", sha: "abc", ablation: true, faultsOnly: false, dryRun: false });
+    expect(parseArgs(["--repo=WikiTom", "--sha=def", "--base=ghi", "--limit=6", "--jobs=prepare,run"]))
+      .toMatchObject({ repo: "WikiTom", sha: "def", base: "ghi", limit: 6, jobs: ["prepare", "run"] });
+    expect(parseArgs(["--tasks", "slack"]).tasks).toBe("slack");
+    expect(() => parseArgs(["--nope"])).toThrow(/unknown argument/);
+    expect(() => parseArgs(["--serve", "--limit", "0"])).toThrow(/--limit/);
   });
 });

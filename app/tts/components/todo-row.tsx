@@ -11,8 +11,9 @@
 // time-note-field.tsx).
 
 import { useEffect, useState } from "react";
-import { useMutation } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import type { Doc } from "@/convex/_generated/dataModel";
 import {
   READINESS_VALUES,
   countdownText,
@@ -153,6 +154,39 @@ function FieldEditor({
   );
 }
 
+// ── The door mark ───────────────────────────────────────────────────────────
+// The planner's prepare pass reads what it wrote against the writing standard
+// and retries once. A write-up that failed both attempts is POSTED ANYWAY and
+// carries the complaints (Tom, 2026-09-12: a silent hole costs more than a
+// marked fault), on the "prepared" event this row's last preparation logged —
+// not on the todo row itself, so nothing had to be added to the schema and
+// there is nothing to clear: the next clean preparation logs a fresh event
+// that simply carries no faults.
+//
+// HOW THIS ROW REACHES THAT EVENT. The /tts page runs no query over events at
+// all, so the row reads the recent window itself — listRecentEvents, the
+// existing Tom-gated query, and ONLY while the row is expanded, which is the
+// only state in which the brief and this line are on screen. Every expanded
+// row asks for the same window with the same argument, so they share one
+// subscription. THE WINDOW IS THE LIMIT of this path: a refusal older than the
+// newest EVENT_WINDOW events is not shown. The durable fix is a query indexed
+// by todo (dtsEvents.by_todo exists); this is the smallest path that uses a
+// query the record already exposes.
+const EVENT_WINDOW = 1000;
+
+function doorFaultsOf(
+  events: Doc<"dtsEvents">[] | undefined,
+  todoId: string,
+): string[] {
+  if (events === undefined) return [];
+  // Newest first (listRecentEvents orders by time, descending), so the first
+  // "prepared" row for this todo is the last write-up made.
+  const prepared = events.find((e) => e.kind === "prepared" && e.todoId === todoId);
+  const faults = (prepared?.data as { doorFaults?: unknown } | undefined)?.doorFaults;
+  if (!Array.isArray(faults)) return [];
+  return faults.filter((f): f is string => typeof f === "string");
+}
+
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
@@ -199,6 +233,15 @@ export default function TodoRow({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+
+  // The door mark for this row's last preparation (see doorFaultsOf above).
+  // Asked for only while the row is open, which is the only state that shows
+  // the brief this line sits under.
+  const recentEvents = useQuery(
+    api.tts.listRecentEvents,
+    expanded ? { limit: EVENT_WINDOW } : "skip",
+  );
+  const doorFaults = doorFaultsOf(recentEvents, todo._id);
 
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -396,6 +439,13 @@ export default function TodoRow({
               <div className="text-xs text-text-muted whitespace-pre-wrap border border-border rounded-md px-2 py-1.5 bg-surface/60">
                 {todo.brief}
               </div>
+              {/* A FACT, NOT A CONTROL: no popover, no link, nothing to click
+                  — there is nothing to do about it from here. */}
+              {doorFaults.length > 0 && (
+                <div className="text-xs text-text-faint">
+                  the door check refused this brief twice: {doorFaults.join("; ")}
+                </div>
+              )}
             </div>
           )}
 

@@ -22,7 +22,7 @@
 // is deliberate rather than lazy.
 
 import { headings, parseFrontmatter } from "./markdown-sections.mjs";
-import { AREAS_DIR, areaCategories, areaName, isAreaPath, SKILL_PREFIX } from "../../scripts/skills.mjs";
+import { AREAS_DIR, areaCategories, areaName, bareSkillName, isAreaPath, repoSkillName } from "../../scripts/skills.mjs";
 
 /** Kept under the name context-relevance.mjs threw, because this class moved
  * out of that file along with the functions that throw it. */
@@ -39,12 +39,12 @@ export class ContextError extends Error {}
 // the corrections he has already made; a run that may capture for him gets the
 // rule for what becomes a todo. Capture beats judge when a caller is both.
 export const CONTEXT_CALLERS = Object.freeze({
-  opener: Object.freeze({ reachesTom: true, judges: true, captures: false }),
-  planner: Object.freeze({ reachesTom: true, judges: true, captures: false }),
-  "capture-context": Object.freeze({ reachesTom: true, judges: false, captures: true }),
-  "time-notes": Object.freeze({ reachesTom: true, judges: false, captures: false }),
-  "batch-context": Object.freeze({ reachesTom: true, judges: true, captures: false }),
-  "weekly-input": Object.freeze({ reachesTom: true, judges: true, captures: false }),
+  opener: Object.freeze({ judges: true, captures: false }),
+  planner: Object.freeze({ judges: true, captures: false }),
+  "capture-context": Object.freeze({ judges: false, captures: true }),
+  "time-notes": Object.freeze({ judges: false, captures: false }),
+  "batch-context": Object.freeze({ judges: true, captures: false }),
+  "weekly-input": Object.freeze({ judges: true, captures: false }),
   // The weekly simplification pass (worker/jobs/simplify.mjs, through GET
   // /tts/simplify-input). Its OWN row rather than borrowing weekly-input's:
   // the two want the same three booleans today, and a caller that reads
@@ -53,11 +53,11 @@ export const CONTEXT_CALLERS = Object.freeze({
   // to #tts-decisions; `judges` because judging what the fleet can lose is the
   // whole job; `captures` false because the pass files no todo — a LATER run
   // does, once the objection window has closed.
-  "simplify-input": Object.freeze({ reachesTom: true, judges: true, captures: false }),
-  prepare: Object.freeze({ reachesTom: true, judges: true, captures: false }),
-  triage: Object.freeze({ reachesTom: true, judges: false, captures: true }),
-  laptop: Object.freeze({ reachesTom: true, judges: false, captures: false }),
-  cli: Object.freeze({ reachesTom: true, judges: false, captures: false }),
+  "simplify-input": Object.freeze({ judges: true, captures: false }),
+  prepare: Object.freeze({ judges: true, captures: false }),
+  triage: Object.freeze({ judges: false, captures: true }),
+  laptop: Object.freeze({ judges: false, captures: false }),
+  cli: Object.freeze({ judges: false, captures: false }),
 });
 
 export const CONTEXT_CALLER_NAMES = Object.freeze(Object.keys(CONTEXT_CALLERS));
@@ -65,7 +65,7 @@ export const CONTEXT_CALLER_NAMES = Object.freeze(Object.keys(CONTEXT_CALLERS));
 /** The caller's row, or a hard error — a caller nobody declared would silently
  * take the least context, which is the failure this table exists to stop. */
 export function callerRules(caller) {
-  const rules = CONTEXT_CALLERS[caller];
+  const rules = Object.hasOwn(CONTEXT_CALLERS, caller) ? CONTEXT_CALLERS[caller] : undefined;
   if (rules === undefined) {
     throw new ContextError(`unknown caller ${caller} (one of ${CONTEXT_CALLER_NAMES.join(", ")})`);
   }
@@ -84,7 +84,8 @@ export function callerRules(caller) {
 export const INTENT_CALLERS = Object.freeze(["opener", "planner", "prepare", "weekly-input"]);
 
 /**
- * The callers granted `know-week`: the runs that read or write a date.
+ * The callers granted `know-week` without a dated subject: the runs that read
+ * or write the current week.
  *
  * THE DIGEST WRITER BELONGS IN THIS LIST AND IS NOT IN IT. The digest
  * (worker/jobs/write-slack.mjs) reaches context through a caller that has no
@@ -144,14 +145,9 @@ export function subjectNeedsRecord(subject) {
  * category is matched against, where those terms came from, and the page itself
  * for a caller that wants its body.
  *
- * THE ONE CORRECTION to the moved code. context-relevance.mjs's areaMatchTerms
- * split the raw `categories:` value on commas alone, and `parseFrontmatter`
- * parses nothing inside a value — so `categories: [admin, email]` yielded the
- * terms `[admin` and `email]`, neither of which matches anything, and the FIRST
- * AND LAST category of every area page was dead. scripts/skills.mjs's
- * `areaCategories` strips the brackets, and it is already what the published
- * skill descriptions are written from, so the terms a run is routed by and the
- * terms its description advertises now come out of one function.
+ * Routing and skill descriptions share the parser-normalized category arrays:
+ * `parseFrontmatter` converts each area page's bracket-list form, and
+ * scripts/skills.mjs's `areaCategories` consumes that same array.
  *
  * THE FALLBACK IS THE MOVED CODE'S, unchanged: a page with no `categories:`
  * line matches on its own name plus its `# ` title, and says so through
@@ -272,13 +268,47 @@ export function areasForBatch(areaTerms, categories) {
 /**
  * MOVED. The areas whose terms name this repository.
  *
- * NOT WIRED INTO routeSkills at this commit: the routing table has no row that
- * turns a `repo:` subject into a `know-<area>` grant, and the router implements
- * the table and nothing past it. It moved with its siblings so the matching
- * half lives in one file, and so that row is one call if it is ever wanted.
+ * WIRED INTO routeSkills as of the area-repo row — see the table below and the
+ * measurement it rests on (scratchpad/uae/area-routing.md). It was unwired when
+ * it moved: the table had no row that turned a repository into an area, and the
+ * router implements the table and nothing past it. The row exists now because
+ * the category door beside it fires on nothing — `category` is set on 3 of
+ * 1,332 active todos and on no batch at all — while `repos` and `codeRepo`
+ * stand on 724 of them, and A REPOSITORY NAME ALREADY IS AN AREA CATEGORY:
+ * `tom.quest` and `wikitom` are terms of agent-systems, `complexmultitrigger`
+ * of research. No new field, no new vocabulary, no model call.
  */
 export function areasForRepo(areaTerms, repo) {
   return areasForCategory(areaTerms, repo).sort(byAreaRank);
+}
+
+/**
+ * The areas EVERY repository of one subject names, ranked as one list.
+ *
+ * An area two of the subject's repositories name outranks one a single
+ * repository names; ties fall to the ordinary area rank, which is itself a
+ * total order. So the cap the router applies to this list is deterministic —
+ * the same input cannot order it two ways, and the grant block sits inside a
+ * cached prefix. The shape is areasForBatch's, counting repositories where that
+ * one counts member todos.
+ */
+export function areasForRepos(areaTerms, repos) {
+  const byName = new Map();
+  for (const repo of repos) {
+    for (const hit of areasForRepo(areaTerms, repo)) {
+      const seen = byName.get(hit.name);
+      if (seen === undefined) byName.set(hit.name, { ...hit, repoCount: 1 });
+      else {
+        seen.repoCount += 1;
+        seen.exact = seen.exact || hit.exact;
+        seen.hitCount = Math.max(seen.hitCount, hit.hitCount);
+      }
+    }
+  }
+  return [...byName.values()].sort((a, b) => {
+    if (a.repoCount !== b.repoCount) return b.repoCount - a.repoCount;
+    return byAreaRank(a, b);
+  });
 }
 
 // ── Path tokens ──────────────────────────────────────────────────────────────
@@ -350,16 +380,13 @@ function byGrantOrder(a, b) {
 
 /** A published catalog as a set of BARE names. `tom-` is a directory-naming
  * fact only, so a caller that passes directory names gets the same answer as
- * one that passes skill names. */
+ * one that passes skill names. An absent catalog is empty: both production
+ * callers read one before routing, and granting a body we did not inspect
+ * would make this authorization fail open. */
 function publishedSet(published) {
-  if (published === null || published === undefined) return null;
+  if (published === null || published === undefined) return new Set();
   const names = published instanceof Set ? [...published] : [...(published ?? [])];
-  return new Set(names.map(bareName));
-}
-
-function bareName(name) {
-  const text = String(name ?? "");
-  return text.startsWith(SKILL_PREFIX) ? text.slice(SKILL_PREFIX.length) : text;
+  return new Set(names.map(bareSkillName));
 }
 
 /** The refusal a wanted name gets when the publication does not carry it. The
@@ -371,12 +398,15 @@ export const NO_BODY = "no published body at this commit";
 //
 // THE WHOLE TABLE, in the order it is applied:
 //
-//   reachesTom                                  write
+//   every declared caller                       write
 //   area:<name>                                 know-<name>
 //   todo whose category matches an area         know-<area>
 //   batch, by its members' categories           know-<area>  ×≤2
+//   the subject's repos or codeRepo name an
+//     area (batch repos, a goal's codeRepo,
+//     or the `repo:` subject itself)            know-<area>  ×≤1
 //   judges, or an INTENT_CALLERS caller         know-intent
-//   a WEEK_CALLERS caller                       know-week
+//   a dated todo, or a WEEK_CALLERS caller       know-week
 //   the subject names paths in repo X and
 //     cwd is not inside X's checkout            repo-X
 //   cwd IS inside repo X                        nothing; repoRulesSource native
@@ -400,6 +430,24 @@ export const NO_BODY = "no published body at this commit";
  * areas is a real answer for one; the moved code's CAPS.areaPages, at its value.
  */
 export const AREA_CAPS = Object.freeze({ todo: 1, batch: 2, area: 1 });
+
+/**
+ * How many `know-<area>` skills the REPOSITORY row may take, whatever the
+ * subject kind is.
+ *
+ * ONE, and one for every kind. A repository names the part of his life its work
+ * belongs to, and it names one; a second area would be there only because two
+ * pages share a term, and the rank areasForRepos applies is a total order, so
+ * the one taken is the one that fits best.
+ *
+ * IT IS ADDED TO THE CATEGORY ROW'S CAP, NOT SHARED WITH IT. A todo whose
+ * category and whose repository name different areas would otherwise have to
+ * lose one of the two silently, and which one it lost would turn on the order
+ * the rows happen to sit in. In the record as it stands this is nearly always
+ * moot — 1,329 of 1,332 active todos carry no category at all, so the category
+ * row contributes nothing and this row is the only area a run gets.
+ */
+export const REPO_AREA_CAP = 1;
 
 /**
  * WHICH SKILLS THIS RUN IS GRANTED.
@@ -426,13 +474,22 @@ export function routeSkills(input) {
   const wanted = [];
 
   // write ────────────────────────────────────────────────────────────────────
-  if (rules.reachesTom) wanted.push("write");
+  wanted.push("write");
 
   // know-<area> ──────────────────────────────────────────────────────────────
   let areaHits = [];
   const areaCap = AREA_CAPS[subject.kind] ?? 0;
   let repos = [];
+  // The repositories the AREA row reads. It is `repos` plus every `codeRepo`
+  // the subject reaches, and it is a SECOND list rather than a wider `repos`
+  // because the two rows ask different questions. `repos` decides which
+  // repository RULES ride the prompt, and that row is gated on the brief naming
+  // a path in the repository; a goal's `codeRepo` is a subject binding —
+  // "that upstream code todo is closed" — and is no claim that any path was
+  // named. Whose LIFE the work belongs to is answerable from the binding alone.
+  let areaRepos = [];
   let tokens = [];
+  let dueDays = [];
 
   if (subject.kind === "area") {
     const entry = areaTerms.find((candidate) => candidate.area === subject.area);
@@ -446,27 +503,50 @@ export function routeSkills(input) {
     const batch =
       todo.batchId === undefined ? null : (record.batches ?? []).find((row) => row.id === todo.batchId) ?? null;
     repos = batch?.repos ?? todo.repos ?? [];
+    areaRepos = [...repos, todo.codeRepo];
     tokens = pathTokens(`${todo.brief ?? ""}\n${todo.workDescription ?? ""}\n${todo.entryAction ?? ""}`);
+    if (todo.timingClass === "dated" && typeof todo.dueDay === "string") dueDays.push(todo.dueDay);
+    for (const outcome of todo.dateOutcomes ?? []) {
+      if (typeof outcome?.dueDay === "string" && outcome.dueDay >= String(record.today ?? "")) dueDays.push(outcome.dueDay);
+    }
   } else if (subject.kind === "batch") {
     const batch = batchOf(record, subject.batchId);
     const members = (record.todos ?? []).filter((row) => row.batchId === batch.id);
     areaHits = areasForBatch(areaTerms, members.map((row) => row.category ?? ""));
     repos = batch.repos ?? [];
+    areaRepos = [...repos, ...members.map((row) => row.codeRepo)];
     tokens = pathTokens(
       members.map((row) => `${row.brief ?? ""}\n${row.workDescription ?? ""}\n${row.entryAction ?? ""}`).join("\n"),
     );
   } else if (subject.kind === "repo") {
     repos = [subject.repo];
+    areaRepos = [subject.repo];
     tokens = subject.paths ?? [];
   }
 
   for (const hit of areaHits.slice(0, areaCap)) wanted.push(`know-${hit.name}`);
 
+  // know-<area>, BY REPOSITORY ───────────────────────────────────────────────
+  // NOT GATED ON THE cwd, and that is the point of the row. A run standing in
+  // the checkout still gets no `repo-<name>` skill below — its rules are on
+  // disk at the commit it is working on — but the area page is the page of HIS
+  // LIFE that bears on the work, and no checkout carries that.
+  //
+  // Nor is it gated on the brief naming a path: the repository row below wants
+  // evidence the run will touch files, and this one wants none. A todo that
+  // only thinks about tom.quest is still agent-systems work.
+  const areaRepoNames = [...new Set(areaRepos.filter((repo) => typeof repo === "string" && repo !== ""))].sort();
+  for (const hit of areasForRepos(areaTerms, areaRepoNames).slice(0, REPO_AREA_CAP)) wanted.push(`know-${hit.name}`);
+
   // know-intent ──────────────────────────────────────────────────────────────
-  if (rules.judges || INTENT_CALLERS.includes(caller)) wanted.push("know-intent");
+  // `know-intent` contains priorities.md too. A capture needs its “What
+  // becomes a todo” policy even though it is not judging on Tom's behalf.
+  if (rules.judges || rules.captures || INTENT_CALLERS.includes(caller)) wanted.push("know-intent");
 
   // know-week ────────────────────────────────────────────────────────────────
-  if (WEEK_CALLERS.includes(caller)) wanted.push("know-week");
+  // A dated todo needs the schedule for the date it owes, whoever opened it;
+  // the two caller rows additionally need the current week without a subject.
+  if (dueDays.length > 0 || WEEK_CALLERS.includes(caller)) wanted.push("know-week");
 
   // repo-<name> ──────────────────────────────────────────────────────────────
   // The gate is the moved code's rule 9 gate: a brief that named a path, or a
@@ -479,11 +559,12 @@ export function routeSkills(input) {
       // A run standing in the checkout already has the rules on disk, at the
       // commit it is working on. Granting it last night's published copy is a
       // second answer to a question that has one.
+      // REMOVAL CHECK: cannot remove; the published copy can be stale relative to the checkout the run is editing.
       if (isInsideRepo(input?.cwd, repoDirs[repo])) {
         repoRulesSource = "native";
         continue;
       }
-      wanted.push(`repo-${repo}`);
+      wanted.push(repoSkillName(repo));
     }
   }
 
@@ -493,8 +574,8 @@ export function routeSkills(input) {
   // failure than a session told in one line that the page is not there.
   const granted = [];
   const refused = [];
-  for (const name of [...new Set(wanted)]) {
-    if (catalog === null || catalog.has(name)) granted.push(name);
+  for (const name of [...new Set(wanted.map(bareSkillName))]) {
+    if (catalog.has(name)) granted.push(name);
     else refused.push({ name, why: NO_BODY });
   }
   granted.sort(byGrantOrder);

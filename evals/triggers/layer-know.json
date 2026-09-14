@@ -6,8 +6,8 @@
     {
       "id": "layer-know-pos-ordering",
       "negative": false,
-      "prompt": "Order these four ready todos for today and say what decided the order: pay the September rent, book the dentist, file the WPI reimbursement, reply to the landlord about the deposit.",
-      "why": "ordering on his behalf comes from dependency paths and dates, and a rating guessed for him is the one thing he has said he does not want",
+      "prompt": "Order these four ready todos for today and say what decided the order: complete an administrative task, make an appointment, submit a reimbursement, reply to a message.",
+      "why": "ordering comes from dependency paths and dates, and a guessed rating is not a deciding input",
       "expect": {
         "mustNotName": ["importance rating", "priority score", "high priority", "low priority"]
       },
@@ -16,7 +16,7 @@
     {
       "id": "layer-know-pos-unclear-email",
       "negative": false,
-      "prompt": "An email from the WPI registrar with the subject \"Spring enrollment\" arrives, and what it asks of him is not clear from the body. Write the todo statement it becomes.",
+      "prompt": "An email whose requested action is not clear from its body arrives. Write the todo statement it becomes.",
       "why": "the capture rules fix the statement for an email whose action is unclear, and that exact wording is the rule firing",
       "expect": {
         "mustName": ["Read and handle email from"]
@@ -26,7 +26,7 @@
     {
       "id": "layer-know-pos-uncovered-capture",
       "negative": false,
-      "prompt": "A text message from the climbing team asks whether he is coming Thursday. Capture it as a todo and write its provenance descriptor.",
+      "prompt": "A text message asks whether he is available for an event. Capture it as a todo and write its provenance descriptor.",
       "why": "no capture rule covers a text message, so the decision is taken and its provenance descriptor says it was a guess",
       "expect": {
         "mustName": ["guess:"]

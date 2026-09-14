@@ -131,6 +131,28 @@ function totalsOf(usage = {}) {
   };
 }
 
+function addTotals(base, item) {
+  return {
+    inputTokens: number(base?.inputTokens) + number(item?.inputTokens),
+    cacheReadTokens: number(base?.cacheReadTokens) + number(item?.cacheReadTokens),
+    cacheWriteTokens: number(base?.cacheWriteTokens) + number(item?.cacheWriteTokens),
+    cacheWrite5mTokens: number(base?.cacheWrite5mTokens) + number(item?.cacheWrite5mTokens),
+    cacheWrite1hTokens: number(base?.cacheWrite1hTokens) + number(item?.cacheWrite1hTokens),
+    cacheWriteBreakdownKnown: base?.cacheWriteBreakdownKnown !== false && item?.cacheWriteBreakdownKnown !== false,
+    outputTokens: number(base?.outputTokens) + number(item?.outputTokens),
+    thinkingTokens: number(base?.thinkingTokens) + number(item?.thinkingTokens),
+    totalTokens: number(base?.totalTokens) + number(item?.totalTokens),
+  };
+}
+
+function emptyTotals() {
+  return {
+    inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheWrite5mTokens: 0,
+    cacheWrite1hTokens: 0, cacheWriteBreakdownKnown: true, outputTokens: 0,
+    thinkingTokens: 0, totalTokens: 0,
+  };
+}
+
 function finishResult(result) {
   const redacted = jsonValue(redactDeep(result));
   for (const row of redacted.rows) {
@@ -497,17 +519,19 @@ export function codexSkillsOffered(developerText) {
     if (at <= 0) continue;
     const name = body.slice(0, at).trim();
     if (!name) continue;
-    names.push(name);
     // The trailing "(file: ...)" is the last parenthesis on the line; a
     // description may hold parentheses of its own, so anchor at the end.
     const short = /\(file:\s*([^)]+)\)\s*$/.exec(body)?.[1]?.trim();
     if (!short) continue;
-    shortPaths[name] = short;
     const segments = short.split(/[\\/]/);
     const root = roots.get(segments[0]);
-    // A short path whose root was never declared stays as written rather than
-    // becoming a fabricated absolute path.
-    paths[name] = root ? [root, ...segments.slice(1)].join("/") : short;
+    // The CLI emits roots and entries as one catalog. An entry naming an
+    // undeclared root is malformed producer data, not a usable skill: keeping
+    // it would let an arbitrary short string become evidence of a skill read.
+    if (!root || segments.length < 2) continue;
+    names.push(name);
+    shortPaths[name] = short;
+    paths[name] = [root, ...segments.slice(1)].join("/");
   }
   return { names: sorted(names), paths, shortPaths };
 }
@@ -548,25 +572,118 @@ function codexParent(meta) {
   return null;
 }
 
-export function parseCodexFile({ path, text, host, fileVersion, fromLine = 0, baseLine: suppliedBaseLine = fromLine }) {
+export function parseCodexFile({ path, text, contextText = text, host, fileVersion, fromLine = 0, baseLine: suppliedBaseLine = fromLine, priorRun = null, priorMeta = null }) {
   // `baseLine` is the absolute source-line ordinal of text's first supplied
   // line. `fromLine` remains its older spelling for callers that already use
   // it; an explicit baseLine wins when both are present.
   const baseLine = suppliedBaseLine ?? fromLine;
   if (!Number.isInteger(baseLine) || baseLine < 0) throw new RangeError("baseLine must be a non-negative integer");
+  let recoveredPrior = baseLine > 0 && priorRun?.runner === "codex" ? priorRun : null;
+  let recoveredMeta = priorMeta && typeof priorMeta === "object" ? priorMeta : null;
+  const turnIdsKnown = Array.isArray(recoveredMeta?.turnIds);
+  // Fold state is the small part of a Codex rollout that cannot be recovered
+  // from the tail alone.  Its marker lets an older sweep state reconstruct
+  // once from contextText instead of silently changing a record at its next
+  // boundary.
+  const foldStateKnown = recoveredMeta?.foldState === 2;
+  // Legacy sweep state predates both `run` and `codexMeta`. Its cursor still
+  // proves the accepted prefix, and contextText holds that prefix plus this
+  // tail, so recover only those committed lines. Reingesting from line zero
+  // would emit that accepted prefix a second time (forking one run's outcome),
+  // while reconstruction supplies whichever of run state and parser metadata
+  // the old sweep record did not retain before this tail is appended.
+  if (baseLine > 0 && (recoveredPrior === null || !turnIdsKnown || !foldStateKnown)) {
+    const committed = fileLines(contextText).lines.slice(0, baseLine);
+    if (committed.length === baseLine) {
+      const recovered = parseCodexFile({
+        path,
+        text: `${committed.join("\n")}\n`,
+        host,
+        fileVersion,
+      });
+      if (recoveredPrior === null) recoveredPrior = recovered.run;
+      // HEAD persisted other codexMeta facts before it persisted turnIds. Keep
+      // those facts, while filling the missing map from the accepted prefix.
+      recoveredMeta = {
+        ...(recovered.codexMeta ?? {}),
+        ...(recoveredMeta ?? {}),
+        ...(!turnIdsKnown ? { turnIds: recovered.codexMeta?.turnIds ?? [] } : {}),
+      };
+    }
+  }
+  const prior = recoveredPrior;
+  const priorParentId = typeof prior?.parentRunId === "string"
+    ? prior.parentRunId.replace(`codex:${host}:`, "")
+    : null;
   const { lines, incompleteTail } = fileLines(text); const rows = [], children = [], attachments = [], dropped = {};
   const firstFileTimestamp = lines.map((raw) => { try { return millis(JSON.parse(raw).timestamp); } catch { return 0; } }).find(Boolean) ?? 0;
   const drop = (kind) => { dropped[kind] = (dropped[kind] ?? 0) + 1; };
-  let meta = {}, runId, parentId, model, effort, startedAt = firstFileTimestamp, lastLineAt = 0, runtimeVersion, finalTextSeq, toolCalls = 0, approvalPolicy, sandboxPolicy, modelChangeReported = false;
-  let currentTurn = 0; const turns = new Map(); let lastTokenCount = null; const usageRecords = []; let taskComplete = null; let lastAssistantText = null;
-  const longContextRequestKeys = new Set();
+  let meta = recoveredMeta ? { ...recoveredMeta } : {};
+  const priorOutcome = prior?.outcome && typeof prior.outcome === "object" ? prior.outcome : {};
+  let runId = prior?.runId, parentId = codexParent(meta) ?? priorParentId, model = prior?.model, effort = prior?.effort,
+    startedAt = prior?.startedAt ?? firstFileTimestamp, lastLineAt = prior?.lastLineAt ?? 0,
+    runtimeVersion = prior?.runtimeVersion, finalTextSeq = priorOutcome.finalTextSeq,
+    toolCalls = baseLine > 0 ? number(priorOutcome.toolCalls) : 0,
+    approvalPolicy, sandboxPolicy, modelChangeReported = recoveredMeta?.modelChangeReported === true;
+  // A tail contains only later lines, while one turn can cross a sweep. Keep
+  // the previous ID-to-ordinal table in sweep-only state so both a repeated
+  // turn and the next distinct turn retain their original ordinals.
+  const priorTurnIds = Array.isArray(recoveredMeta?.turnIds)
+    ? recoveredMeta.turnIds.filter((id) => typeof id === "string" || typeof id === "number")
+    : [];
+  const turns = new Map(priorTurnIds.map((id, index) => [id, index]));
+  // A repeated turn id can be the last accepted line without being the most
+  // recently *created* map entry.  Preserve the active ordinal separately;
+  // deriving it from turns.size would move a tail into a later turn.
+  let currentTurn = Number.isInteger(recoveredMeta?.currentTurn)
+    && recoveredMeta.currentTurn >= 0
+    && recoveredMeta.currentTurn < Math.max(turns.size, 1)
+    ? recoveredMeta.currentTurn
+    : Math.max(turns.size - 1, 0);
+  // A cumulative token count wins over usage records even if the count was in
+  // an accepted prefix.  Keep it here so a later tail makes the same choice a
+  // whole-file fold would make.
+  let lastTokenCount = recoveredMeta?.lastTokenCount && typeof recoveredMeta.lastTokenCount === "object"
+    ? recoveredMeta.lastTokenCount
+    : null;
+  // token_count may later become nullable, which makes the whole fold fall
+  // back to every usage record it has seen.  Keep their associative total in
+  // sweep state so that fallback is identical after a boundary.
+  let usageTotals = recoveredMeta?.usageTotals && typeof recoveredMeta.usageTotals === "object"
+    ? recoveredMeta.usageTotals
+    : emptyTotals();
+  let taskComplete = null;
+  let lastAssistantText = null;
+  // Store only the redacted-text hash in sweep state: it is enough to join an
+  // assistant message to task_complete across a boundary without retaining
+  // another copy of transcript text on disk.
+  let lastAssistantTextHash = typeof recoveredMeta?.lastAssistantTextHash === "string"
+    ? recoveredMeta.lastAssistantTextHash
+    : null;
+  // Response ids identify one long-context request across several token_count
+  // events.  Hash them before persisting for the same reason as assistant
+  // text; the cardinality alone cannot distinguish a repeat from a new id.
+  const longContextRequestKeys = new Set(
+    Array.isArray(recoveredMeta?.longContextRequestKeys)
+      ? recoveredMeta.longContextRequestKeys.filter((key) => typeof key === "string" && key !== "")
+      : [],
+  );
   for (let relativeLine = 0; relativeLine < lines.length; relativeLine += 1) {
     const line = baseLine + relativeLine; const raw = lines[relativeLine]; if (!raw.trim()) { drop("_blank"); continue; }
     let entry; try { entry = JSON.parse(raw); } catch { rowFactory({ path, fileVersion, runId: runId ?? `codex:${host}:unknown`, rows, line, turn: currentTurn, sourceKind: "malformed-json", timestamp: 0 })("error", { error: `malformed JSON at line ${line}` }); continue; }
     const payload = entry.payload ?? {}; const timestamp = millis(entry.timestamp); startedAt ||= timestamp; lastLineAt = timestamp || lastLineAt;
-    if (entry.type === "session_meta") { meta = payload; const id = payload.id ?? payload.session_id ?? "unknown"; runId = `codex:${host}:${id}`; parentId = codexParent(payload); runtimeVersion = payload.cli_version; }
+    if (entry.type === "session_meta") {
+      meta = { ...meta, ...payload };
+      const id = payload.id ?? payload.session_id ?? "unknown";
+      runId = `codex:${host}:${id}`;
+      parentId = codexParent(payload) ?? parentId;
+      runtimeVersion ??= payload.cli_version;
+    }
     const turnId = payload.turn_id ?? payload.turnId;
-    if (turnId !== undefined) { if (!turns.has(turnId)) turns.set(turnId, turns.size); currentTurn = turns.get(turnId); }
+    if (turnId !== undefined) {
+      if (!turns.has(turnId)) turns.set(turnId, turns.size);
+      currentTurn = turns.get(turnId);
+    }
     const sourceKind = `${entry.type ?? "unknown"}/${payload.type ?? "unknown"}`;
     const emit = rowFactory({ path, fileVersion, runId: runId ?? `codex:${host}:unknown`, rows, line, turn: currentTurn, sourceKind, timestamp });
     const rowsBefore = rows.length;
@@ -577,7 +694,7 @@ export function parseCodexFile({ path, text, host, fileVersion, fromLine = 0, ba
         const content = payload.content ?? []; const role = payload.role;
         for (const part of content) {
           const value = part.text ?? part.input_text ?? part.output_text ?? "";
-          if (role === "assistant") { const row = emit("assistant-text", { text: value }); finalTextSeq = row?.seq ?? finalTextSeq; lastAssistantText = value; }
+          if (role === "assistant") { const row = emit("assistant-text", { text: value }); finalTextSeq = row?.seq ?? finalTextSeq; lastAssistantText = value; lastAssistantTextHash = sha256(redactSecrets(String(value))); }
           else if (role === "user") emit("user", { text: value });
           else if (role === "developer") { /* context only */ }
           else emit("system", { role, text: value });
@@ -594,34 +711,41 @@ export function parseCodexFile({ path, text, host, fileVersion, fromLine = 0, ba
           // Rollouts normally emit one token_count per response. Prefer a
           // response identifier when a future CLI supplies one, otherwise the
           // source ordinal is the only honest per-request evidence.
-          longContextRequestKeys.add(String(payload.response_id ?? payload.info?.response_id ?? entry.ordinal ?? line));
+          longContextRequestKeys.add(sha256(String(payload.response_id ?? payload.info?.response_id ?? entry.ordinal ?? line)));
         }
       }
       else if (payload.type === "task_complete") {
         // Only the last completion can supply the synthetic final-text row;
         // earlier completions are folded state and account as dropped.
         if (taskComplete) drop("event_msg/task_complete");
-        taskComplete = { message: payload.last_agent_message, line, turn: currentTurn, timestamp };
+        taskComplete = { message: payload.last_agent_message, reason: payload.reason, line, turn: currentTurn, timestamp };
       }
       else if (!["task_started", "item_completed"].includes(payload.type)) emit("system", { event: payload });
-    } else if (entry.type === "token_usage_record") usageRecords.push(payload.usage ?? {});
+    } else if (entry.type === "token_usage_record") usageTotals = addTotals(usageTotals, totalsOf(payload.usage ?? {}));
     else if (!["session_meta", "world_state"].includes(entry.type)) emit("system", { unknownLineType: entry.type, line: entry });
     // task_complete is emitted (or dropped) after the loop once we know
     // whether it duplicates the final assistant message.
     if (rows.length === rowsBefore && Object.values(dropped).reduce((sum, count) => sum + count, 0) === dropsBefore && !(entry.type === "event_msg" && payload.type === "task_complete")) drop(sourceKind);
   }
-  // A full ingest assembles context from the metadata in the file. A tail has
-  // no synthetic context row, and its run facts are intentionally tail-local.
-  for (const raw of lines) { try { const entry = JSON.parse(raw); const p = entry.payload ?? {}; if (entry.type === "session_meta") meta = p; if (entry.type === "turn_context") { model ??= p.model; effort ??= p.effort; approvalPolicy ??= p.approval_policy; sandboxPolicy ??= p.sandbox_policy?.type; } } catch {} }
-  const id = meta.id ?? meta.session_id ?? "unknown"; runId = `codex:${host}:${id}`; parentId = codexParent(meta);
-  const developer = lines.map((raw) => { try { return JSON.parse(raw); } catch { return null; } }).find((entry) => entry?.type === "response_item" && entry.payload?.type === "message" && entry.payload?.role === "developer");
+  // A tail normally has no session_meta. New sweep state supplies its safe
+  // metadata, but legacy state has no codexMeta; in that case the immutable
+  // full context is the only source that can recover the original thread id.
+  const contextLines = fileLines(contextText).lines;
+  const hasMetaId = typeof meta.id === "string" || typeof meta.session_id === "string";
+  for (const raw of (hasMetaId ? lines : contextLines)) { try { const entry = JSON.parse(raw); const p = entry.payload ?? {}; if (entry.type === "session_meta") meta = { ...meta, ...p }; if (entry.type === "turn_context") { model ??= p.model; effort ??= p.effort; approvalPolicy ??= p.approval_policy; sandboxPolicy ??= p.sandbox_policy?.type; } } catch {} }
+  const id = meta.id ?? meta.session_id;
+  runId = id ? `codex:${host}:${id}` : runId ?? `codex:${host}:unknown`;
+  parentId = codexParent(meta) ?? parentId;
+  // A catalog and its SKILL.md read can land in different sweep tails, so the
+  // tail alone cannot tell whether that read used an offered skill.
+  const developer = contextLines.map((raw) => { try { return JSON.parse(raw); } catch { return null; } }).find((entry) => entry?.type === "response_item" && entry.payload?.type === "message" && entry.payload?.role === "developer");
   const prompt = (developer?.payload?.content ?? []).map((part) => part.text ?? part.input_text ?? "").join("\n");
-  const mot = modelOfTomFromPrompt(prompt);
+  const mot = prompt ? modelOfTomFromPrompt(prompt) : {};
   const tools = [];
   // The same pass collects what each tool call was ASKED to do, because that
   // text is the only evidence a rollout leaves that a SKILL.md was read.
   const toolCallTexts = [];
-  for (const raw of lines) {
+  for (const raw of contextLines) {
     try {
       const p = JSON.parse(raw).payload ?? {};
       if (!["custom_tool_call", "function_call"].includes(p.type)) continue;
@@ -634,26 +758,66 @@ export function parseCodexFile({ path, text, host, fileVersion, fromLine = 0, ba
   }
   const offered = codexSkillsOffered(prompt);
   const permissionMode = sandboxPolicy ? `approval=${approvalPolicy ?? "unknown"}; sandbox=${sandboxPolicy}` : approvalPolicy;
-  const context = { ...mot, skillsOffered: sorted(offered.names), skillsUsed: sorted(codexSkillsUsed(offered, toolCallTexts)), tools: sorted(tools), hooks: [], ...(meta.cwd ? { cwd: meta.cwd } : {}), ...(meta.git?.branch ? { gitBranch: meta.git.branch } : {}), ...(meta.git?.commit_hash ? { gitCommit: meta.git.commit_hash } : {}), ...(meta.base_instructions?.text ? { baseInstructionsHash: sha256(meta.base_instructions.text) } : {}), ...(meta.originator ? { originator: meta.originator } : {}), ...(meta.context_window ? { contextWindow: meta.context_window } : {}), ...(permissionMode ? { permissionMode } : {}) };
+  const priorContext = prior?.context && typeof prior.context === "object" ? prior.context : {};
+  const context = {
+    ...priorContext,
+    ...mot,
+    skillsOffered: offered.names.length > 0 ? sorted(offered.names) : priorContext.skillsOffered ?? [],
+    skillsUsed: toolCallTexts.length > 0 ? sorted(codexSkillsUsed(offered, toolCallTexts)) : priorContext.skillsUsed ?? [],
+    tools: tools.length > 0 ? sorted(tools) : priorContext.tools ?? [],
+    hooks: priorContext.hooks ?? [],
+    ...(meta.cwd ? { cwd: meta.cwd } : {}),
+    ...(meta.git?.branch ? { gitBranch: meta.git.branch } : {}),
+    ...(meta.git?.commit_hash ? { gitCommit: meta.git.commit_hash } : {}),
+    ...(meta.base_instructions?.text ? { baseInstructionsHash: sha256(meta.base_instructions.text) } : {}),
+    ...(meta.baseInstructionsHash ? { baseInstructionsHash: meta.baseInstructionsHash } : {}),
+    ...(meta.originator ? { originator: meta.originator } : {}),
+    ...(meta.context_window ? { contextWindow: meta.context_window } : {}),
+    ...(permissionMode ? { permissionMode } : {}),
+  };
   if (baseLine === 0) rows.unshift({ seq: 0, turn: 0, kind: "context", content: { ...(model ? { model } : {}), ...context, prompt }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: 0, block: 0, sourceKind: "context" }), createdAt: startedAt });
-  if (taskComplete?.message && taskComplete.message !== lastAssistantText) { const row = { seq: sourceSeq(taskComplete.line, 998), turn: taskComplete.turn, kind: "assistant-text", content: { text: taskComplete.message }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: taskComplete.line, block: 998, sourceKind: "event_msg/task_complete" }), createdAt: taskComplete.timestamp }; rows.push(row); finalTextSeq = row.seq; }
+  const taskCompleteMatchesAssistant = taskComplete?.message && (
+    taskComplete.message === lastAssistantText
+    || sha256(redactSecrets(String(taskComplete.message))) === lastAssistantTextHash
+  );
+  if (taskComplete?.message && !taskCompleteMatchesAssistant) { const row = { seq: sourceSeq(taskComplete.line, 998), turn: taskComplete.turn, kind: "assistant-text", content: { text: taskComplete.message }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: taskComplete.line, block: 998, sourceKind: "event_msg/task_complete" }), createdAt: taskComplete.timestamp }; rows.push(row); finalTextSeq = row.seq; }
   else if (taskComplete) drop("event_msg/task_complete");
-  const totals = lastTokenCount ? totalsOf(lastTokenCount) : usageRecords.map(totalsOf).reduce((sum, item) => ({
-    inputTokens: sum.inputTokens + item.inputTokens,
-    cacheReadTokens: sum.cacheReadTokens + item.cacheReadTokens,
-    cacheWriteTokens: sum.cacheWriteTokens + item.cacheWriteTokens,
-    cacheWrite5mTokens: sum.cacheWrite5mTokens + item.cacheWrite5mTokens,
-    cacheWrite1hTokens: sum.cacheWrite1hTokens + item.cacheWrite1hTokens,
-    cacheWriteBreakdownKnown: sum.cacheWriteBreakdownKnown && item.cacheWriteBreakdownKnown,
-    outputTokens: sum.outputTokens + item.outputTokens,
-    thinkingTokens: sum.thinkingTokens + item.thinkingTokens,
-    totalTokens: sum.totalTokens + item.totalTokens,
-  }), { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0, cacheWriteBreakdownKnown: true, outputTokens: 0, thinkingTokens: 0, totalTokens: 0 });
-  totals.longContextRequests = longContextRequestKeys.size;
+  // The last provided cumulative count wins.  A later malformed or nullable
+  // token_count deliberately clears it, matching the whole-file parser's
+  // fallback to all usage records rather than mixing two accounting modes.
+  const totals = {
+    ...(lastTokenCount ? totalsOf(lastTokenCount) : usageTotals),
+    longContextRequests: longContextRequestKeys.size,
+  };
   const price = costOf({ model, totals });
-  const rootRunId = parentId ? `codex:${host}:${parentId}` : runId;
-  const run = { runId, ...(parentId ? { parentRunId: rootRunId } : {}), rootRunId, depth: parentId ? 1 : 0, linkKnown: !parentId, origin: "unknown", host, runner: "codex", ...(model ? { model } : {}), ...(sessionModelOf(model) ? { sessionModel: sessionModelOf(model) } : {}), ...(effort ? { effort } : {}), ...(runtimeVersion ?? meta.cli_version ? { runtimeVersion: runtimeVersion ?? meta.cli_version } : {}), parserVersion: PARSER_VERSION, kind: parentId ? "codex-child" : "unknown", status: "unknown", startedAt, lastLineAt, context, attachments, outcome: { ...(finalTextSeq !== undefined ? { finalTextSeq } : {}), totals, ...(price === null ? {} : { costUsd: price, priceTableVersion: priceTableVersion() }), turns: Math.max(1, turns.size), toolCalls }, file: { path, sourceHash: sha256(Buffer.from(text)), storedHash: fileVersion, bytes: Buffer.byteLength(text), storedBytes: 0, committedLine: baseLine + lines.length, committedPrefixSha256: prefixHash(lines, lines.length), incompleteTail } };
-  return finishResult({ run, rows, children, attachments, lastLine: baseLine + lines.length, incompleteTail, dropped });
+  const parentRunId = prior?.parentRunId ?? (parentId ? `codex:${host}:${parentId}` : undefined);
+  const rootRunId = prior?.rootRunId ?? parentRunId ?? runId;
+  const endedReason = typeof taskComplete?.reason === "string" && taskComplete.reason !== ""
+    ? taskComplete.reason
+    : priorOutcome.endedReason;
+  const run = { runId, ...(parentRunId ? { parentRunId } : {}), rootRunId, depth: parentId ? 1 : 0, linkKnown: !parentId, origin: "unknown", host, runner: "codex", ...(model ? { model } : {}), ...(sessionModelOf(model) ? { sessionModel: sessionModelOf(model) } : {}), ...(effort ? { effort } : {}), ...(runtimeVersion ?? meta.cli_version ? { runtimeVersion: runtimeVersion ?? meta.cli_version } : {}), parserVersion: PARSER_VERSION, kind: parentId ? "codex-child" : "unknown", status: "unknown", startedAt, lastLineAt, context, attachments, outcome: { ...(finalTextSeq !== undefined ? { finalTextSeq } : {}), ...(endedReason !== undefined ? { endedReason } : {}), totals, ...(price === null ? {} : { costUsd: price, priceTableVersion: priceTableVersion() }), turns: Math.max(number(priorOutcome.turns), 1, turns.size), toolCalls }, file: { path, sourceHash: sha256(Buffer.from(text)), storedHash: fileVersion, bytes: Buffer.byteLength(text), storedBytes: 0, committedLine: baseLine + lines.length, committedPrefixSha256: prefixHash(lines, lines.length), incompleteTail } };
+  const result = finishResult({ run, rows, children, attachments, lastLine: baseLine + lines.length, incompleteTail, dropped });
+  // This is sweep state only, never a Convex run field. It keeps the pieces a
+  // later tail needs without copying base_instructions text onto disk again.
+  result.codexMeta = {
+    ...(id ? { id } : {}),
+    ...(parentId ? { parent_thread_id: parentId } : {}),
+    ...(meta.cwd ? { cwd: meta.cwd } : {}),
+    ...(runtimeVersion ? { cli_version: runtimeVersion } : {}),
+    ...(meta.git ? { git: meta.git } : {}),
+    ...(meta.originator ? { originator: meta.originator } : {}),
+    ...(meta.context_window ? { context_window: meta.context_window } : {}),
+    ...(context.baseInstructionsHash ? { baseInstructionsHash: context.baseInstructionsHash } : {}),
+    turnIds: [...turns.keys()],
+    currentTurn,
+    foldState: 2,
+    ...(modelChangeReported ? { modelChangeReported: true } : {}),
+    ...(lastAssistantTextHash ? { lastAssistantTextHash } : {}),
+    ...(lastTokenCount ? { lastTokenCount } : {}),
+    usageTotals,
+    longContextRequestKeys: sorted([...longContextRequestKeys]),
+  };
+  return result;
 }
 
 function filesUnder(directory, fs, found = []) {

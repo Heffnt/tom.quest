@@ -934,6 +934,15 @@ export default defineSchema({
     // The registration token of the run that wrote this brief. Same field name
     // and same meaning as on dtsTodos and batches; see the note there.
     producedByRunToken: v.optional(v.string()),
+    // THE DOOR CHECK'S MARK (phase 9): the complaints this brief failed on
+    // when the planner's brief pass read it back against the writing standard
+    // twice. Tom, 2026-09-12: a brief that fails both attempts is still
+    // posted, carrying the mark — /tts prints one faint line under the brief.
+    // ADDITIVE and optional, so every stored row stays legal as written.
+    // ABSENT MEANS CLEAN, not unknown: the pen writes this field on every
+    // upsert (convex/ttsCode.ts says why it differs from producedByRunToken
+    // there), so a re-brief that passed leaves no stale mark behind.
+    doorFaults: v.optional(v.array(v.string())),
     preparedAt: v.number(),
   }).index("by_repo_external", ["repo", "externalId"]),
 
@@ -944,37 +953,32 @@ export default defineSchema({
   // what scripts/skills.mjs builds: `write`, `know-intent`, `know-week`, one
   // `know-<area>` per area page, and one `repo-<name>` per repository.
   //
-  // A TABLE REPLACEMENT, NOT AN ADDITIVE MIGRATION — the one exception to the
-  // phase-2 rule that a field is added and never narrowed. Three facts make it
-  // safe here and nowhere else: nothing in the record points at a ttsSkills row
-  // (no id, no foreign key, no path), the rows are a CACHE of WikiTom rather
-  // than a record of anything that happened, and the nightly rebuilds them
-  // whole from one immutable commit through POST /tts/skills. Nothing a
-  // replacement drops is anything but last night's copy of a file still in git.
-  //
-  // ONE DEPLOY ORDER, AND IT MATTERS: Convex validates every stored row against
-  // this table on push, and the rows in it today are the OLD per-file shape. So
-  // the old rows are deleted FIRST and this schema pushed after; the night's
-  // POST /tts/skills then fills the table. Between the delete and the post the
-  // catalog is empty, and an empty catalog is not an outage — every run gets
-  // its prefix and a grant block whose names are all refused by one line each.
+  // A WIDEN-MIGRATE-NARROW TABLE REPLACEMENT. Existing production rows use the
+  // old per-file shape (`sourcePath`, optional `bytes`, no catalog fields), so
+  // every field belonging to either side alone remains optional during this
+  // deploy. Readers treat an old-shaped row as absent, and POST /tts/skills
+  // deletes an old row only after modelOfTomFiles carries its exact sourcePath.
+  // Dropping the old fields and requiring the catalog fields belongs in a later
+  // PR, after one clean nightly proves the whole replacement has run in prod.
   ttsSkills: defineTable({
     name: v.string(), // "know-research" — the bare name, never the `tom-` directory spelling
-    group: v.string(), // "write" | "know" | "repo" (scripts/skills.mjs SKILL_GROUPS)
+    group: v.optional(v.union(v.literal("write"), v.literal("know"), v.literal("repo"))),
     // At most DESCRIPTION_MAX_BYTES (200). A description is a prompt cost every
     // run pays whether or not the skill is loaded, so the cap is checked at the
     // door rather than trusted from the publisher.
-    description: v.string(),
+    description: v.optional(v.string()),
     body: v.string(),
     // The extra files a skill carries beside its body: ground.md under `write`,
     // each nested AGENTS.md under a `repo-` skill.
-    references: v.array(v.object({ name: v.string(), path: v.string(), body: v.string() })),
-    sourcePaths: v.array(v.string()), // the WikiTom (or repo) paths the body came from
-    bytes: v.number(),
-    commit: v.string(), // WikiTom's commit, or the repository's own for a `repo-` skill
+    references: v.optional(v.array(v.object({ name: v.string(), path: v.string(), body: v.string() }))),
+    sourcePaths: v.optional(v.array(v.string())), // the WikiTom (or repo) paths the body came from
+    commit: v.optional(v.string()), // WikiTom's commit, or the repository's own for a `repo-` skill
     syncedAt: v.number(), // the commit's time, not the post's
-    pushed: v.boolean(), // whether that commit had reached GitHub when it was posted
-  }).index("by_name", ["name"]).index("by_group", ["group", "name"]),
+    pushed: v.optional(v.boolean()), // whether that commit had reached GitHub when it was posted
+    // OLD per-file fields. Kept only for the widening deploy described above.
+    sourcePath: v.optional(v.string()),
+    bytes: v.optional(v.number()),
+  }).index("by_name", ["name"]),
 
   // The per-file model-of-tom source facts, MOVED HERE from ttsSkills above
   // with their shape untouched: one row per WikiTom file the nightly job posts
@@ -991,14 +995,15 @@ export default defineSchema({
     body: v.string(),
     sourcePath: v.string(), // path inside WikiTom, so a row traces to its file
     bytes: v.optional(v.number()), // source bytes reported by the publisher
-    // The WikiTom commit the file was read at. Absent only on a row the
-    // retired six-hourly sync wrote.
+    // The WikiTom commit the file was read at. It remains optional because rows
+    // written by the retired six-hourly sync still have to survive this move.
     commit: v.optional(v.string()),
     syncedAt: v.number(), // the commit's time, not the post's
     // Whether the commit had reached GitHub when it was posted. The job posts
     // local HEAD even when its push was refused, so a prompt names the commit
     // it began with; false is what lets the digest say "not yet pushed".
-    // Absent on a row posted before the flag existed.
+    // It remains optional because rows posted before that flag still inhabit
+    // this table until the next whole replacement.
     pushed: v.optional(v.boolean()),
   }).index("by_name", ["name"]),
 

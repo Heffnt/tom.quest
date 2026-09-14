@@ -27,6 +27,7 @@ function run({ home, wikiTom, tomQuest }) {
       // laptop's skills directory however this machine happens to be set up.
       CLAUDE_CONFIG_DIR: "",
       TTS_SKILLS_DIRS: "",
+      CODEX_HOME: path.join(home, ".codex"),
       CMT_DIR: "",
     },
   });
@@ -106,6 +107,7 @@ describe("laptop setup", () => {
 
     const first = run({ home, wikiTom, tomQuest });
     expect(first.status).toBe(0);
+    expect(first.stdout).toContain("bare codex sessions carry no context; use the wrapper or /codex\n");
     expect(fs.readFileSync(path.join(claudeDir, "CLAUDE.md"), "utf8")).toBe(`${rulesImport}\n\n# Laptop notes\n`);
 
     const managed = { matcher: "startup|resume|compact", hooks: [{ type: "command", command }] };
@@ -141,7 +143,6 @@ describe("laptop setup", () => {
       hooks: {
         SessionStart: [
           { matcher: "resume", hooks: [{ type: "command", command: "echo codex local" }] },
-          managed,
           runEntry("SessionStart"),
         ],
         SubagentStart: [runEntry("SubagentStart")],
@@ -155,6 +156,13 @@ describe("laptop setup", () => {
     );
     expect(fs.readFileSync(configToml, "utf8")).toBe('model = "local"\n');
 
+    // This invokes the real laptop setup hook installer, not a stand-in Codex
+    // process. Codex's launcher is now the only skill-grant authority; its
+    // remaining SessionStart hook only records lifecycle state.
+    const codexSessionStart = JSON.parse(fs.readFileSync(path.join(codexDir, "hooks.json"), "utf8")).hooks.SessionStart;
+    expect(JSON.stringify(codexSessionStart)).not.toContain("session-start-hook.mjs");
+    expect(JSON.stringify(codexSessionStart)).toContain("run-hook.mjs");
+
     const beforeSecondRun = [
       fs.readFileSync(path.join(claudeDir, "CLAUDE.md"), "utf8"),
       fs.readFileSync(path.join(claudeDir, "settings.json"), "utf8"),
@@ -163,6 +171,7 @@ describe("laptop setup", () => {
     ];
     const second = run({ home, wikiTom, tomQuest });
     expect(second.status).toBe(0);
+    expect(second.stdout).toContain("bare codex sessions carry no context; use the wrapper or /codex\n");
     expect(second.stdout).toContain("unchanged");
     expect([
       fs.readFileSync(path.join(claudeDir, "CLAUDE.md"), "utf8"),
@@ -243,7 +252,7 @@ describe("laptop setup", () => {
     for (const dir of [claudeSkills, codexSkills]) expect(second.stdout).toContain(`unchanged ${dir}`);
     // Nothing this build did not produce is touched, on either run.
     expect(fs.readFileSync(path.join(claudeSkills, "graphify", "SKILL.md"), "utf8")).toContain("Not Tom's.");
-  });
+  }, 15_000);
 
   it("says so in one line when the skills cannot be published, and finishes setup", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "laptop-setup-no-skills-"));

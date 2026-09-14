@@ -17,6 +17,7 @@ const registrationUrl = [
 // registration module the hook still returns, and the sweep still runs.
 const registration = registrationUrl ? await import(registrationUrl.href) : null;
 const claimRegistration = registration?.claimRegistration;
+const readRegistration = registration?.readRegistration;
 const writeRegistrationClaim = registration?.writeRegistrationClaim;
 const writeRegistrationEnd = registration?.writeRegistrationEnd;
 
@@ -121,15 +122,13 @@ function claimFields(payload, event, runFile) {
 // after it. Naming operate is reading that hook's code, not guessing.
 //
 // WRITE MOVED FROM A LAYER TO A SKILL. It used to ride every laptop session as
-// 10.5 KB of prefix; now the hook grants the name and the CLI loads the body
-// when the agent acts on it, which is why it belongs in skillsGranted and not
-// in layersGiven. The know layer is in neither list — its pages became ten
-// skills the launcher grants by subject, and a laptop session has no subject.
+// 10.5 KB of prefix; now session-start-hook.mjs records the grant it rendered
+// after it has inspected the catalog. This hook must not guess it: publication
+// can refuse the body while the session still starts.
 //
 // A subagent gets no prelude of its own, so its layers stay unknown rather than
 // inheriting a claim nobody made for it.
 export const LAPTOP_SESSION_LAYERS = Object.freeze(["operate"]);
-export const LAPTOP_SESSION_SKILLS = Object.freeze(["write"]);
 
 function hookRegistration(payload, event, runFile, env) {
   const host = env.RUN_HOST === "box" || env.RUN_HOST === "laptop" ? env.RUN_HOST : null;
@@ -161,8 +160,6 @@ function hookRegistration(payload, event, runFile, env) {
     layersKnown,
     layersGiven: layersKnown ? [...LAPTOP_SESSION_LAYERS] : [],
     layersDenied: [],
-    skillsGranted: layersKnown ? [...LAPTOP_SESSION_SKILLS] : [],
-    skillsRefused: [],
     hooksConfigured: [...HOOKS_CONFIGURED],
   };
 }
@@ -196,15 +193,26 @@ export function handleHook(payload, { event, env = process.env, spawnImpl = spaw
   }
   if (hookEvent === "SessionStart") {
     const token = firstString(env.TTS_RUN_REG_TOKEN);
+    // The session-start hook writes its actual grant decision before this hook
+    // claims the run. The receipt remains its own group: it is evidence of the
+    // rendered grant block, not a fact this claim writer may re-author.
+    const receipt = readRegistration?.(runFile)?.receipt;
     const result = token
       ? claimRegistration({ spoolDir: env.TTS_RUN_REG_SPOOL || path.join(stateDir, "registration"), token, runFile, claim })
       : writeRegistrationClaim({
           runFile,
           claim,
+          // REMOVAL CHECK: SessionStart has no launcher token for ordinary
+          // interactive sessions, so it must author a local claim sidecar.
           token: null,
           writer: { file: "scripts/run-hook.mjs", job: "run-hook" },
           registration: hookRegistration(payload, hookEvent, runFile, env),
         });
+    // Both claim paths must preserve the grant block that SessionStart rendered.
+    // A missing receipt here is a diagnostic only; a hook must not block a run.
+    if (receipt !== undefined && result.ok && result.envelope?.receipt === undefined) {
+      hookLog(stateDir, `${hookEvent} claim lost its pre-existing grant receipt`);
+    }
     if (!result.ok) hookLog(stateDir, `${hookEvent} could not claim its registration: ${result.reason}`);
     return { handled: true, file: result.file };
   }
@@ -212,6 +220,8 @@ export function handleHook(payload, { event, env = process.env, spawnImpl = spaw
     const result = writeRegistrationClaim({
       runFile,
       claim,
+      // REMOVAL CHECK: SubagentStart has no launcher token because the parent
+      // process, not a launcher, creates the child transcript.
       token: null,
       writer: { file: "scripts/run-hook.mjs", job: "run-hook" },
       registration: hookRegistration(payload, hookEvent, runFile, env),

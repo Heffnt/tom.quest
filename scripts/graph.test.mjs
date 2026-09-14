@@ -671,7 +671,7 @@ describe("every skill's subgraph renders what buildSkills publishes", () => {
       "know-intent",
       "know-week",
       "know-garden",
-      "repo-tom.quest",
+      "repo-tom-quest",
     ]);
     for (const { name, published, rendered } of bodies) {
       expect(rendered, name).toBe(published);
@@ -683,7 +683,7 @@ describe("every skill's subgraph renders what buildSkills publishes", () => {
     // `pageKey` is what tells `tom.quest/AGENTS.md` from any other AGENTS.md.
     const result = makeCheckout("skill-bodies-repo").build();
     const bodies = Object.fromEntries(skillBodies(result).map((row) => [row.name, row.rendered]));
-    expect(bodies["repo-tom.quest"]).toContain("Commit with a full message before every stop.");
+    expect(bodies["repo-tom-quest"]).toContain("Commit with a full message before every stop.");
     expect(bodies.write).not.toContain("Commit with a full message");
     expect(bodies["know-garden"]).not.toContain("Commit with a full message");
   });

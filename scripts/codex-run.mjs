@@ -37,9 +37,9 @@
 // That is the map's own division of labour — "Mechanical work runs on Codex:
 // reading, searching, edits, tests, audits" (agent-rules.md, How you work). A
 // run doing mechanical work needs the operate layer and its prompt, not the
-// write or know layers, so nothing is granted until its spawner names one. The
-// grant block then records exactly what was named, and the registration says
-// the same thing to the run record.
+// write or know layers, so nothing is granted until its spawner names one. A
+// named skill is granted only after its installed SKILL.md is found; otherwise
+// the block and registration record its refusal and reason.
 //
 // THERE IS NO TIME LIMIT BY DEFAULT (Tom's ruling, 2026-09-09). A Codex run at
 // `xhigh` on real work routinely outlasts any number worth guessing, and a kill
@@ -63,7 +63,7 @@
 // a machine whose config was never written still runs the fleet model.
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, createWriteStream } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, createWriteStream } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -152,10 +152,13 @@ function parseArgs(argv) {
       case "--schema": opts.schema = next(); break;
       case "--keep-logs": opts.keepLogs = true; break;
       case "--no-operate": opts.operate = false; break;
+      // REMOVAL CHECK: --grant and --refuse carry the spawner's per-run authority
+      // decision into both the prompt and the receipt. Removing them would
+      // force an all-skills default or lose why a skill was withheld.
       case "--grant": {
         const name = next().trim();
         if (!name) fail("--grant needs a skill name");
-        if (!opts.granted.includes(name)) opts.granted.push(name);
+        opts.granted.push(name);
         break;
       }
       case "--refuse": {
@@ -166,7 +169,7 @@ function parseArgs(argv) {
         const name = value.slice(0, at).trim();
         const why = value.slice(at + 1).trim();
         if (!name || !why) fail("--refuse takes NAME=WHY");
-        if (!opts.refused.some((entry) => entry.name === name)) opts.refused.push({ name, why });
+        opts.refused.push({ name, why });
         break;
       }
       default: fail(`unknown option ${arg}`);
@@ -178,6 +181,34 @@ function parseArgs(argv) {
   if (!existsSync(opts.cwd)) fail(`--cwd ${opts.cwd} does not exist`);
   if (opts.schema && !existsSync(opts.schema)) fail(`--schema ${opts.schema} does not exist`);
   return opts;
+}
+
+// Normalize once before conflict checks, rendering, and registration. The
+// grant block names bare skills, so its receipt must use that same spelling.
+// Keep the caller's raw spelling only for a useful duplicate-decision error.
+async function normalizeSkillDecisions(opts) {
+  opts.rawGranted = [...opts.granted];
+  opts.rawRefused = opts.refused.map(({ name }) => name);
+  opts.canonicalGranted = [...opts.granted];
+  opts.canonicalRefused = [...opts.rawRefused];
+  if (!skillsUrl || (opts.granted.length === 0 && opts.refused.length === 0)) return;
+  const { bareSkillName, SKILL_PREFIX } = await import(skillsUrl.href);
+  const normalize = (name) => {
+    try {
+      const bare = bareSkillName(name);
+      return { name: bare, canonical: `${SKILL_PREFIX}${bare}` };
+    } catch {
+      // Preserve an unsupported name so the existing missing-catalog path can
+      // explain the refusal rather than failing before it renders the block.
+      return { name, canonical: name };
+    }
+  };
+  const grants = opts.granted.map(normalize);
+  const refusals = opts.refused.map((entry) => ({ entry, normalized: normalize(entry.name) }));
+  opts.granted = grants.map(({ name }) => name);
+  opts.canonicalGranted = grants.map(({ canonical }) => canonical);
+  opts.refused = refusals.map(({ entry, normalized }) => ({ ...entry, name: normalized.name }));
+  opts.canonicalRefused = refusals.map(({ normalized }) => normalized.canonical);
 }
 
 // Binary lookup order: CODEX_BIN env var, then `codex` on PATH (the pinned npm
@@ -205,6 +236,50 @@ function readStdin() {
     return readFileSync(0, "utf8");
   } catch {
     return "";
+  }
+}
+
+function isRegularFile(file) {
+  try {
+    return statSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+// The prompt and the installed catalog both name a skill by the normalized
+// directory mapping. A second spelling is still the same authority decision:
+// accepting both would make a grant and a refusal, or two grants, look like
+// distinct caller choices when the run can load only one SKILL.md.
+async function validateSkillDecisions(opts) {
+  const decisions = [
+    ...opts.granted.map((name, index) => ({
+      kind: "grant", name, rawName: opts.rawGranted?.[index] ?? name, canonical: opts.canonicalGranted?.[index] ?? name,
+    })),
+    ...opts.refused.map(({ name }, index) => ({
+      kind: "refuse", name, rawName: opts.rawRefused?.[index] ?? name, canonical: opts.canonicalRefused?.[index] ?? name,
+    })),
+  ];
+  if (decisions.length < 2) return;
+
+  const seen = new Map();
+  for (const decision of decisions) {
+    // A launcher copied without skills.mjs can still reject exact conflicts.
+    // Two distinct spellings count as equivalent only when the installed
+    // catalog's own mapping successfully resolves both of them.
+    const canonical = decision.canonical;
+    const previous = seen.get(canonical);
+    if (!previous) {
+      seen.set(canonical, decision);
+      continue;
+    }
+    if (previous.kind === decision.kind) {
+      if (previous.rawName === decision.rawName) {
+        fail(`--${decision.kind} names ${decision.rawName} more than once`);
+      }
+      fail(`--${decision.kind} names ${previous.rawName} and ${decision.rawName} as the same skill (${canonical})`);
+    }
+    fail(`--${decision.kind} ${decision.rawName} conflicts with --${previous.kind} ${previous.rawName} (${canonical})`);
   }
 }
 
@@ -244,35 +319,77 @@ function killTree(child) {
 }
 
 const opts = parseArgs(process.argv.slice(2));
+await normalizeSkillDecisions(opts);
+await validateSkillDecisions(opts);
 const prompt = readStdin();
 if (!prompt.trim()) fail("no prompt on stdin");
 
 const operate = opts.operate ? operateInstructions() : null;
 
-// THE GRANT BLOCK CITES A COMMIT OR IT IS NOT WRITTEN. renderGrants' first line
-// is "SKILLS (WikiTom commit <sha>)", and that commit is the provenance of the
-// skill bodies the run is being told to load. Without an operate read there is
-// no commit this process actually saw, and a caller-supplied one would be an
-// assertion about a tree nobody here read. So the block is omitted and one line
-// says why — the same shape as the missing-operate warning above it.
-//
-// Omitted means NOT GRANTED, and the registration says so too: skillsGranted
-// stays empty, exactly as layersGiven stays empty when the operate file could
-// not be read. An absence is not a refusal, so the names do not move into
-// skillsRefused either.
+// A grant is labeled with the installed catalog's own published commit, never
+// the WikiTom checkout's current HEAD. The checkout is shown separately when
+// it has advanced; a missing checkout therefore cannot relabel a published
+// catalog, and a hand-written SKILL.md has no authority to become a grant.
 let grantBlock = "";
 let granted = opts.granted;
 let refused = opts.refused;
+let skillCatalogCommit = null;
 if (granted.length > 0 || refused.length > 0) {
-  if (!operate?.commit) {
-    process.stderr.write("codex-run: skills named but no WikiTom commit to cite; grant block omitted\n");
-    granted = []; refused = [];
-  } else if (!skillsUrl) {
+  if (!skillsUrl) {
     process.stderr.write("codex-run: skills named but scripts/skills.mjs is not installed; grant block omitted\n");
     granted = []; refused = [];
   } else {
-    const { renderGrants } = await import(skillsUrl.href);
-    grantBlock = renderGrants({ commit: operate.commit, granted, refused });
+    const { PUBLISHED_SKILL_METADATA, renderGrants, skillDirName } = await import(skillsUrl.href);
+    const codexHome = process.env.CODEX_HOME && process.env.CODEX_HOME.trim() !== ""
+      ? process.env.CODEX_HOME
+      : join(homedir(), ".codex");
+    const installedSkills = join(codexHome, "skills");
+    const available = [];
+    const unavailable = [];
+    for (const name of granted) {
+      let skillFile;
+      try {
+        skillFile = join(installedSkills, skillDirName(name), "SKILL.md");
+      } catch {
+        unavailable.push({ name, why: "the skill name is not supported by the installed catalog" });
+        continue;
+      }
+      if (!isRegularFile(skillFile)) {
+        unavailable.push({ name, why: "its installed SKILL.md is missing" });
+        continue;
+      }
+      let publishedCommit;
+      try {
+        // An installed catalog older than the sidecar has no name to read here
+        // and lands in the same refusal as one whose sidecar is gone: either
+        // way this process never saw the commit those bodies were built at.
+        const metadata = join(installedSkills, skillDirName(name), PUBLISHED_SKILL_METADATA);
+        publishedCommit = JSON.parse(readFileSync(metadata, "utf8")).commit;
+      } catch {
+        unavailable.push({ name, why: "its published catalog metadata is missing or invalid" });
+        continue;
+      }
+      if (typeof publishedCommit !== "string" || !/^[0-9a-f]{7,64}$/i.test(publishedCommit)) {
+        unavailable.push({ name, why: "its published catalog metadata is missing or invalid" });
+        continue;
+      }
+      publishedCommit = publishedCommit.toLowerCase();
+      if (skillCatalogCommit !== null && skillCatalogCommit !== publishedCommit) {
+        unavailable.push({ name, why: `its published catalog is at ${publishedCommit}, unlike ${skillCatalogCommit}` });
+        continue;
+      }
+      skillCatalogCommit = publishedCommit;
+      available.push(name);
+    }
+    granted = available;
+    refused = [...refused, ...unavailable];
+    const labelCommit = skillCatalogCommit ?? operate?.commit;
+    if (labelCommit) {
+      grantBlock = renderGrants({ commit: labelCommit, checkoutCommit: skillCatalogCommit ? operate?.commit : null, granted, refused });
+    } else {
+      process.stderr.write("codex-run: skills named but no published catalog commit to cite; grant block omitted\n");
+      granted = []; refused = [];
+    }
   }
 }
 
@@ -329,6 +446,11 @@ const spooled = writeRegistration({
     effortRequested: opts.effort,
     cwd: opts.cwd,
     parentRunId: process.env.TTS_RUN_PARENT_RUN_ID || null,
+    // The commit this run is ABOUT, when its launcher knows one — the audit
+    // sets it (worker/jobs/audit.mjs) so its own tool calls can be found from
+    // the commit afterwards. Spread conditionally: an absent env writes no key
+    // rather than a null one, and mergeRegistration only copies what is there.
+    ...(process.env.TTS_RUN_MERGE_KEY ? { mergeKey: process.env.TTS_RUN_MERGE_KEY } : {}),
     spawnedByToolUseId: null,
     continuesRunId: null,
     layersKnown: true,
@@ -343,7 +465,7 @@ const spooled = writeRegistration({
     skillsRefused: refused.map(({ name, why }) => `${name} — ${why}`),
     tools: { allowed: null, denied: null },
     hooksConfigured: ["SessionStart", "SessionEnd", "Stop", "SubagentStart", "SubagentStop"],
-    ...(operate ? { wikitomCommit: operate.commit } : {}),
+    ...(skillCatalogCommit || operate ? { wikitomCommit: skillCatalogCommit ?? operate.commit } : {}),
     promptSha256: crypto.createHash("sha256").update(prompt).digest("hex"),
     graphVersion: readGraphVersion() ?? undefined,
     // Spread rather than set, so a launcher that could not name the nodes
