@@ -180,6 +180,16 @@ describe("evals/triggers", () => {
       expect(typeof one.why).toBe("string");
       expect(one.why.trim()).not.toBe("");
       expect(typeof one.confirmedByTom).toBe("boolean");
+      if (one.route !== undefined) {
+        // A ROUTER CASE'S EXPECTATION IS `route.expected`, and it is compared
+        // whole. An `expect` block beside it is read by nothing — the two
+        // checked in here named `repo-tom.quest` and `repo-WikiTom`, spellings
+        // no publisher produces, and read as passing negatives because a
+        // mustNotName nobody can name is vacuously true.
+        expect(one.expect).toBeUndefined();
+        expect(Object.keys(one.route.expected ?? {}).sort()).toEqual(["granted", "refused", "repoRulesSource"]);
+        continue;
+      }
       // The ONE vocabulary: exactly what mechanicalChecks in worker/jobs/
       // evals.mjs reads. A third key would be a check nothing runs.
       expect(Object.keys(one.expect).every((key) => key === "mustName" || key === "mustNotName")).toBe(true);
@@ -204,6 +214,14 @@ describe("evals/triggers", () => {
     for (const name of names) {
       const file = JSON.parse(fs.readFileSync(path.join(TRIGGERS, name), "utf8"));
       for (const one of file.cases.filter((two) => two.negative === true)) {
+        // A router negative is already mechanical — `route.expected` names the
+        // whole grant set, so the skill's ABSENCE from it is the assertion, and
+        // a mustNotName beside it would be a second, weaker spelling of the
+        // same claim. Only a prompt negative needs a name to look for.
+        if (one.route !== undefined) {
+          expect(Array.isArray(one.route.expected.granted)).toBe(true);
+          continue;
+        }
         expect(one.expect.mustNotName?.length ?? 0).toBeGreaterThan(0);
       }
     }

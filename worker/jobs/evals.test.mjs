@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { bareSkillName, repoSkillName } from "../../scripts/skills.mjs";
 import { NO_BODY, routeSkills } from "./skill-router.mjs";
 import {
   ablationFindings,
@@ -75,6 +76,11 @@ const dirs = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
+
+/** THE ONE MAPPING, handed to loadTriggers here exactly as the runner hands it
+ * the pinned tree's copy. A test that spelled skill names itself would be
+ * asserting its own second spelling. */
+const NAMES = { bareSkillName, repoSkillName };
 
 const LABEL = "This tells me nothing I did not already know from the statement.";
 const PRIOR = "Say what the lock actually is.";
@@ -1027,19 +1033,25 @@ describe("the layer names as skill names", () => {
     writeJson(dir, path.join("evals", "triggers", "layer-know.json"), { name: "know", kind: "layer", cases: [] });
     writeJson(dir, path.join("evals", "triggers", "layer-operate.json"), { name: "operate", kind: "layer", cases: [] });
     writeJson(wikitom, path.join("evals", "triggers", "skill-know-research.json"), { name: "know-research", kind: "skill", cases: [] });
-    const loaded = loadTriggers(dir, { wikitomDir: wikitom });
+    const loaded = loadTriggers(dir, { wikitomDir: wikitom, ...NAMES });
     expect(loaded.find((one) => one.file === "layer-know.json").skills).toEqual([...LAYER_SKILL_ALIASES.know]);
     expect(loaded.find((one) => one.file === "layer-operate.json").skills).toEqual([]);
     expect(loaded.find((one) => one.file === "skill-know-research.json").skills).toEqual(["know-research"]);
-    expect(() => triggerSkills({ name: "know-research" })).toThrow("unknown trigger kind");
-    expect(() => triggerSkills({ name: "nothing-by-that-name", kind: "layer" })).toThrow("unknown layer trigger");
-    expect(() => triggerSkills({ kind: "skill" })).toThrow("skill trigger needs a name");
+    expect(() => triggerSkills({ name: "know-research" }, NAMES)).toThrow("unknown trigger kind");
+    expect(() => triggerSkills({ name: "nothing-by-that-name", kind: "layer" }, NAMES)).toThrow("unknown layer trigger");
+    expect(() => triggerSkills({ kind: "skill" }, NAMES)).toThrow("skill trigger needs a name");
+    // THE MAPPING IS NOT OPTIONAL: the identity default this replaces let a
+    // caller that forgot it score `repo-tom.quest`, a name no publisher makes.
+    expect(() => triggerSkills({ name: "know-research", kind: "skill" }))
+      .toThrow("trigger skill names need the scripts/skills.mjs mapping");
+    expect(() => triggerSkills({ name: "repo-tom.quest", kind: "skill", repo: "tom.quest" }, NAMES))
+      .toThrow("skill trigger for tom.quest is named repo-tom.quest; the published skill is repo-tom-quest");
   });
 
   it("requires every private area trigger rather than silently omitting it", () => {
     const dir = tree();
     const wikitom = tree();
-    expect(() => loadTriggers(dir, { wikitomDir: wikitom })).toThrow(/skill-know-admin\.json/);
+    expect(() => loadTriggers(dir, { wikitomDir: wikitom, ...NAMES })).toThrow(/skill-know-admin\.json/);
   });
 
   it("names the private fixture and case when its dispatch shape is malformed", () => {
@@ -1051,10 +1063,10 @@ describe("the layer names as skill names", () => {
       });
     }
     writeJson(wikitom, path.join("evals", "triggers", AREA_TRIGGER_FILES[0]), {
-      name: "know-admin", kind: "skill", cases: [{ id: "both-methods", route: {}, prompt: "ambiguous" }],
+      name: "know-admin", kind: "skill", cases: [{ id: "skill-know-admin-both-methods", route: {}, prompt: "ambiguous" }],
     });
-    expect(() => loadTriggers(dir, { wikitomDir: wikitom }))
-      .toThrow("trigger case both-methods in skill-know-admin.json: trigger case cannot carry both route and prompt");
+    expect(() => loadTriggers(dir, { wikitomDir: wikitom, ...NAMES }))
+      .toThrow("trigger case skill-know-admin-both-methods in skill-know-admin.json: trigger case cannot carry both route and prompt");
   });
 });
 
@@ -1383,7 +1395,7 @@ describe("runEvals over a run case", () => {
     }),
     loadModules: async () => ({}),
     taskRepos: () => [],
-    triggerNameMapping: { bareSkillName: (name) => name },
+    triggerNameMapping: NAMES,
     worktree: (repo) => ({ dir, commit: repo === "WikiTom" ? "wiki1" : "tq1", remove: () => {} }),
   });
   const caseDir = (over) => {
@@ -1430,21 +1442,21 @@ describe("runEvals over a run case", () => {
       kind: "skill",
       cases: [
         {
-          id: "trigger-router-safe",
+          id: "skill-write-router-safe",
           route: {
             caller: "cli",
             subject: { kind: "none" },
             expected: { granted: ["write"], refused: [], repoRulesSource: null },
           },
         },
-        { id: "trigger-runner-safe", prompt: "safe runner fixture", expect: { mustName: ["fresh"] } },
+        { id: "skill-write-runner-safe", prompt: "safe runner fixture", expect: { mustName: ["fresh"] } },
       ],
     });
     writeJson(dir, path.join("evals", "triggers", "skill-unrelated.json"), {
       name: "write",
       kind: "skill",
       cases: [{
-        id: "trigger-unrelated",
+        id: "skill-write-unrelated",
         route: {
           caller: "cli",
           subject: { kind: "none" },
@@ -1456,9 +1468,9 @@ describe("runEvals over a run case", () => {
     io.triggerRouter = () => ({ granted: ["write"], refused: [], repoRulesSource: null });
     const weekly = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, io);
     expect(weekly).toMatchObject({ items: 4, pass: 4, fail: 0, calls: 7, wikitom: "wiki1", catalogHash: "c".repeat(64) });
-    expect(weekly.scoredIds).toEqual(["a", "trigger-router-safe", "trigger-runner-safe", "trigger-unrelated"]);
-    expect(weekly.results).toContainEqual(expect.objectContaining({ id: "trigger-router-safe", method: "router", judged: "pass", passK: true }));
-    expect(weekly.results).toContainEqual(expect.objectContaining({ id: "trigger-runner-safe", method: "runner", judged: "pass", passK: true }));
+    expect(weekly.scoredIds).toEqual(["a", "skill-write-router-safe", "skill-write-runner-safe", "skill-write-unrelated"]);
+    expect(weekly.results).toContainEqual(expect.objectContaining({ id: "skill-write-router-safe", method: "router", judged: "pass", passK: true }));
+    expect(weekly.results).toContainEqual(expect.objectContaining({ id: "skill-write-runner-safe", method: "runner", judged: "pass", passK: true }));
     expect(io.calls.regen).toBe(4);
     expect(io.calls.prompts.some((prompt) => prompt.includes("PINNED SKILLS: write\n\nsafe runner fixture"))).toBe(true);
 
@@ -1469,15 +1481,15 @@ describe("runEvals over a run case", () => {
       sha: "head",
       changed: ["evals/triggers/skill-write.json"],
     }, prIo);
-    expect(pr.scoredIds).toEqual(["a", "trigger-router-safe", "trigger-runner-safe"]);
+    expect(pr.scoredIds).toEqual(["a", "skill-write-router-safe", "skill-write-runner-safe"]);
     expect(pr.triggerFilesRun).toEqual(["skill-write.json"]);
-    expect(pr.results).toContainEqual(expect.objectContaining({ id: "trigger-router-safe", method: "router", judged: "pass" }));
-    expect(pr.results).toContainEqual(expect.objectContaining({ id: "trigger-runner-safe", method: "runner", judged: "pass" }));
-    expect(pr.results.find((result) => result.id === "trigger-unrelated")).toBeUndefined();
+    expect(pr.results).toContainEqual(expect.objectContaining({ id: "skill-write-router-safe", method: "router", judged: "pass" }));
+    expect(pr.results).toContainEqual(expect.objectContaining({ id: "skill-write-runner-safe", method: "runner", judged: "pass" }));
+    expect(pr.results.find((result) => result.id === "skill-write-unrelated")).toBeUndefined();
     expect(pr.scoredHashes).toMatchObject({
       a: contentHash(runCaseItem({ id: "a" })),
-      "trigger-router-safe": expect.any(String),
-      "trigger-runner-safe": expect.any(String),
+      "skill-write-router-safe": expect.any(String),
+      "skill-write-runner-safe": expect.any(String),
     });
     expect(prIo.calls.regen).toBe(2);
   });
@@ -1487,7 +1499,7 @@ describe("runEvals over a run case", () => {
     writeJson(dir, path.join("evals", "triggers", "skill-write.json"), {
       name: "write",
       kind: "skill",
-      cases: [{ id: "trigger-runner-unpinned", prompt: "safe runner fixture", expect: { mustName: ["fresh"] } }],
+      cases: [{ id: "skill-write-runner-unpinned", prompt: "safe runner fixture", expect: { mustName: ["fresh"] } }],
     });
     const io = runIoFor(dir, ["pass", "pass", "pass"]);
     io.skills = (_tomquest, _wikitom, names) => ({
@@ -1497,7 +1509,7 @@ describe("runEvals over a run case", () => {
     const weekly = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, io);
     expect(weekly.catalogHash).toBeNull();
     expect(weekly.skipped).toContainEqual(expect.objectContaining({
-      id: "trigger-runner-unpinned",
+      id: "skill-write-runner-unpinned",
       method: "runner",
       reason: "the trigger publication could not be pinned to the named WikiTom commit",
     }));
@@ -1512,7 +1524,7 @@ describe("runEvals over a run case", () => {
     writeJson(dir, path.join("evals", "triggers", "layer-operate.json"), {
       name: "operate",
       kind: "layer",
-      cases: [{ id: "trigger-operate", prompt: "operate fixture", expect: { mustName: ["fresh"] } }],
+      cases: [{ id: "layer-operate-fixture", prompt: "operate fixture", expect: { mustName: ["fresh"] } }],
     });
     const io = runIoFor(dir, ["pass", "pass", "pass"]);
     const assembled = [];
@@ -1523,7 +1535,7 @@ describe("runEvals over a run case", () => {
     };
     const weekly = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, io);
     expect(weekly.catalogHash).toBe("c".repeat(64));
-    expect(weekly.results).toContainEqual(expect.objectContaining({ id: "trigger-operate", judged: "pass" }));
+    expect(weekly.results).toContainEqual(expect.objectContaining({ id: "layer-operate-fixture", judged: "pass" }));
     expect(io.calls.prompts.some((prompt) => prompt.includes("PINNED SKILLS: \n\noperate fixture"))).toBe(true);
     expect(assembled).toContainEqual({ layers: ["operate"], skills: [] });
   });
@@ -1600,7 +1612,8 @@ describe("trigger case methods", () => {
       bareSkillName: skills.bareSkillName,
       repoSkillName: skills.repoSkillName,
     }).find((one) => one.repo === "tom.quest");
-    const one = trigger.cases.find((caseItem) => caseItem.id === "skill-repo-tom.quest-neg-standing-inside");
+    expect(trigger.name).toBe(skills.repoSkillName("tom.quest"));
+    const one = trigger.cases.find((caseItem) => caseItem.id === "skill-repo-tom-quest-neg-standing-inside");
     const io = runIo();
     const result = await runTriggerCase(trigger, one, io, (input) => routeSkills({
       ...input,
@@ -1623,7 +1636,7 @@ describe("the trigger set", () => {
     for (const file of AREA_TRIGGER_FILES) {
       writeJson(privateDir, path.join("evals", "triggers", file), { name: file.replace(/^skill-/, "").replace(/\.json$/, ""), kind: "skill", cases: [] });
     }
-    const counted = loadTriggers(publicDir, { wikitomDir: privateDir })
+    const counted = loadTriggers(publicDir, { wikitomDir: privateDir, ...NAMES })
       .map((trigger) => ({ file: trigger.file, ...triggerCounts(trigger) }));
     // SIXTEEN FILES: the three layer files the partition landed with, and one
     // per skill the layer aliases do not already cover — write is layer-write,
@@ -1633,7 +1646,7 @@ describe("the trigger set", () => {
     // Each of the sixteen is about a name that can be placed: a `skill` file
     // names its own, a `layer` file names the skills that layer became, and
     // operate names none because the base is not a skill.
-    const loaded = loadTriggers(publicDir, { wikitomDir: privateDir });
+    const loaded = loadTriggers(publicDir, { wikitomDir: privateDir, ...NAMES });
     expect(loaded.filter((one) => one.skills.length === 0).map((one) => one.file)).toEqual(["layer-operate.json"]);
     // Every skill the know layer became has a file of its own, so a run given
     // one name rather than the whole layer is still scored on it.
@@ -1654,7 +1667,7 @@ describe("the trigger set", () => {
       writeJson(wikitomDir, path.join("evals", "triggers", file), { name, kind: "skill", cases: [] });
     }
     writeJson(publicDir, path.join("evals", "triggers", AREA_TRIGGER_FILES[0]), { name: "wrong-source", kind: "skill", cases: [] });
-    const loaded = loadTriggers(publicDir, { wikitomDir });
+    const loaded = loadTriggers(publicDir, { wikitomDir, ...NAMES });
     expect(loaded.map((trigger) => trigger.file)).toEqual([...AREA_TRIGGER_FILES].sort());
     expect(loaded.map((trigger) => trigger.name)).toEqual(AREA_TRIGGER_FILES.map((file) => file.replace(/\.json$/, "")).sort());
   });
@@ -1695,15 +1708,15 @@ describe("the trigger set", () => {
     }
     writeJson(dir, path.join("evals", "triggers", "hourly.json"), {
       name: "hourly", kind: "skill", cases: [
-        { id: "hourly-positive", prompt: "positive", negative: false },
-        { id: "hourly-negative-one", prompt: "negative one", negative: true },
-        { id: "hourly-negative-two", prompt: "negative two", negative: true },
+        { id: "skill-hourly-positive", prompt: "positive", negative: false },
+        { id: "skill-hourly-negative-one", prompt: "negative one", negative: true },
+        { id: "skill-hourly-negative-two", prompt: "negative two", negative: true },
       ],
     });
     writeJson(dir, path.join("evals", "triggers", "hourly.draft.json"), { cases: [{ negative: false }, { negative: false }] });
-    expect(loadTriggers(dir, { wikitomDir: wikitom }).map((one) => one.file)).toEqual(["hourly.json", ...AREA_TRIGGER_FILES].sort());
-    expect(triggerCounts(loadTriggers(dir, { wikitomDir: wikitom })[0])).toEqual({ positives: 1, negatives: 2 });
-    expect(() => loadTriggers(tree(), { wikitomDir: tree() })).toThrow(/skill-know-admin\.json/);
+    expect(loadTriggers(dir, { wikitomDir: wikitom, ...NAMES }).map((one) => one.file)).toEqual(["hourly.json", ...AREA_TRIGGER_FILES].sort());
+    expect(triggerCounts(loadTriggers(dir, { wikitomDir: wikitom, ...NAMES })[0])).toEqual({ positives: 1, negatives: 2 });
+    expect(() => loadTriggers(tree(), { wikitomDir: tree(), ...NAMES })).toThrow(/skill-know-admin\.json/);
     expect(triggerCounts({ cases: [] })).toEqual({ positives: 0, negatives: 0 });
     expect(() => triggerCounts({ positives: ["a"], negatives: ["b"] })).toThrow("trigger needs a cases list");
   });

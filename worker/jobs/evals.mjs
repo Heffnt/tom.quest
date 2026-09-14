@@ -309,7 +309,7 @@ export function publicationFor(tomquestTree, wikitomTree, run = execFileSync, wo
   const out = path.join(workDir, "skills", crypto.createHash("sha256").update(key).digest("hex").slice(0, 16));
   const script = path.join(tomquestTree, "scripts", "publish-skills.mjs");
   // The two trees are handed in as the two REPOSITORIES as well as as the
-  // sources of the pages: `repo-tom.quest` and `repo-WikiTom` are then the
+  // sources of the pages: `repo-tom-quest` and `repo-wikitom` are then the
   // rules files of the exact commits this run pins, which is the standard every
   // other part of the prelude is held to. A repository the run pins nothing of
   // has no commit here to read, and comes back as a refusal in the grant block
@@ -1215,23 +1215,50 @@ export const LAYER_SKILL_ALIASES = Object.freeze({
   know: Object.freeze(["know-intent", "know-week", ...KNOW_AREAS.map((area) => `know-${area}`)]),
 });
 
+/**
+ * The mapping, REQUIRED and never defaulted. The identity default this replaces
+ * was the one path on which a trigger's skill name was spelled without
+ * scripts/skills.mjs: a caller that forgot `repoSkillName` scored
+ * `repo-tom.quest`, a name no publisher can produce, and the miss looked like a
+ * clean run. There is nothing here to fall back TO — a name spelled by anything
+ * but the central function is wrong — so the absent mapping is an error.
+ */
+function skillNameMapping({ bareSkillName, repoSkillName } = {}) {
+  if (typeof bareSkillName !== "function" || typeof repoSkillName !== "function") {
+    throw new Error("trigger skill names need the scripts/skills.mjs mapping (bareSkillName and repoSkillName)");
+  }
+  return { bareSkillName, repoSkillName };
+}
+
 /** The skill names one loaded trigger is about: a `skill` file names its own,
  *  and a `layer` file names the skills that layer became. */
-export function triggerSkills(trigger, { bareSkillName = (name) => name, repoSkillName = null } = {}) {
+export function triggerSkills(trigger, mapping = {}) {
   if (trigger?.kind === "skill") {
     if (typeof trigger.name !== "string" || trigger.name === "") throw new Error("skill trigger needs a name");
+    const { bareSkillName, repoSkillName } = skillNameMapping(mapping);
     // Repository labels keep their punctuation and capitalization for humans;
-    // their published skill name comes only from the central mapping. A fixture
-    // may keep an older logical `name`, but it cannot make the router score a
-    // second spelling of that repository.
+    // their published skill name comes only from the central mapping. THE
+    // FILE'S OWN `name` MUST BE THAT NAME: a fixture holding a second spelling
+    // of the repository is the defect this round found, and tolerating it in
+    // the file while silently scoring the mapped name leaves the wrong name
+    // readable, quotable, and free to spread into ids and expectations.
     if (typeof trigger.repo === "string" && trigger.repo !== "") {
-      if (typeof repoSkillName === "function") return [repoSkillName(trigger.repo)];
+      const published = repoSkillName(trigger.repo);
+      if (trigger.name !== published) {
+        throw new Error(`skill trigger for ${trigger.repo} is named ${trigger.name}; the published skill is ${published}`);
+      }
+      return [published];
     }
-    return [bareSkillName(trigger.name)];
+    const bare = bareSkillName(trigger.name);
+    if (trigger.name !== bare) {
+      throw new Error(`skill trigger is named ${trigger.name}; the published skill is ${bare}`);
+    }
+    return [bare];
   }
   if (trigger?.kind === "layer") {
     const skills = LAYER_SKILL_ALIASES[trigger.name];
     if (skills === undefined) throw new Error(`unknown layer trigger ${String(trigger.name)}`);
+    const { bareSkillName } = skillNameMapping(mapping);
     return skills.map((name) => bareSkillName(name));
   }
   throw new Error(`unknown trigger kind ${String(trigger?.kind)}`);
@@ -1270,7 +1297,11 @@ export function loadTriggers(tomquestTree, { wikitomDir = BOX_WIKITOM_DIR, bareS
       // is Tom-facing text about one name, and a list of skill names copied
       // into it would be a second copy of LAYER_SKILL_ALIASES that goes stale
       // the day an area page is added.
-      return { ...trigger, skills: triggerSkills(trigger, { bareSkillName, repoSkillName }) };
+      try {
+        return { ...trigger, skills: triggerSkills(trigger, { bareSkillName, repoSkillName }) };
+      } catch (error) {
+        throw new Error(`trigger ${name}: ${error.message}`);
+      }
     });
 }
 
@@ -1307,6 +1338,15 @@ export function triggerMethod(one) {
   const hasRoute = one !== null && typeof one === "object" && Object.hasOwn(one, "route");
   const hasPrompt = one !== null && typeof one === "object" && Object.hasOwn(one, "prompt");
   if (hasRoute && hasPrompt) throw new Error("trigger case cannot carry both route and prompt");
+  // A router case is scored by exact comparison against `route.expected`;
+  // scoreTriggerRoute never reads `expect`. One checked in anyway held two
+  // spellings of a skill name that no publisher produces, and read as a
+  // passing assertion because a mustNotName nobody can name is vacuously true.
+  // The expectation has one home, so the second one is refused rather than
+  // ignored.
+  if (hasRoute && Object.hasOwn(one, "expect")) {
+    throw new Error("router case scores route.expected; it cannot also carry expect");
+  }
   if (hasRoute) return TRIGGER_METHOD_ROUTER;
   if (hasPrompt && typeof one.prompt === "string" && one.prompt.trim() !== "") return TRIGGER_METHOD_RUNNER;
   throw new Error("trigger case needs route or prompt");
@@ -1315,6 +1355,15 @@ export function triggerMethod(one) {
 export function triggerBase(trigger, one) {
   if (typeof one?.id !== "string" || one.id.trim() === "") {
     throw new Error("trigger case needs a non-empty id");
+  }
+  // A case id names the skill it is about, and `<kind>-<name>-` is how every
+  // trigger file already spells it. Anchoring it here is what keeps a skill
+  // name from acquiring a second spelling in the one field nothing validates:
+  // the two repo files carried `skill-repo-tom.quest-…` ids for a skill
+  // published as `repo-tom-quest`.
+  if (typeof trigger?.kind === "string" && typeof trigger?.name === "string" && trigger.name !== "") {
+    const prefix = `${trigger.kind}-${trigger.name}-`;
+    if (!one.id.startsWith(prefix)) throw new Error(`trigger case id ${one.id} does not start with ${prefix}`);
   }
   return {
     id: one.id,
