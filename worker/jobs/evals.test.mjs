@@ -1372,29 +1372,37 @@ describe("the ablation arm", () => {
     }));
     expect(ablationFindings(rows("know", MIN_ABLATION_CASES - 1, true, true))).toEqual([]);
     expect(ablationFindings(rows("know", 5, true, true))).toEqual([
-      { name: "know", kind: "layer", cases: 5, withPass: 5, withoutPass: 5, earned: false },
+      { name: "know", cases: 5, withPass: 5, withoutPass: 5, earned: false },
     ]);
     expect(ablationFindings([...rows("write", 5, true, false)])).toEqual([
-      { name: "write", kind: "layer", cases: 5, withPass: 5, withoutPass: 0, earned: true },
+      { name: "write", cases: 5, withPass: 5, withoutPass: 0, earned: true },
     ]);
     expect(ablationFindings([])).toEqual([]);
   });
 
-  // A node id is a name like any other to the grouping, and the kind is what
-  // keeps it from being added to a layer that happens to be spelled the same.
-  it("groups by node id beside the layer and skill names", () => {
+  // `write` was a layer and is now a skill, so the two kinds really do share a
+  // name; the kind keeps their counts apart. It is a KEY AND NOT A FIELD: the
+  // twin of this function feeds POST /tts/weekly-decisions, whose argument
+  // check is an exact object that does not list `kind`, and Convex refuses a
+  // field a check does not list.
+  it("keeps a layer and a skill of one name apart, and puts the kind on neither", () => {
     const rows = (name, count, kind, withoutPass) => Array.from({ length: count }, (_, index) => ({
       id: `c${index}`, name, kind, withPass: true, withoutPass,
     }));
-    expect(ablationFindings([
-      ...rows("line:1a2b3c4d", 5, "node", false),
-      ...rows("know", 5, "layer", true),
-      ...rows("line:1a2b3c4d", 5, "layer", true),
-    ])).toEqual([
-      { name: "know", kind: "layer", cases: 5, withPass: 5, withoutPass: 5, earned: false },
-      { name: "line:1a2b3c4d", kind: "layer", cases: 5, withPass: 5, withoutPass: 5, earned: false },
-      { name: "line:1a2b3c4d", kind: "node", cases: 5, withPass: 5, withoutPass: 0, earned: true },
+    const found = ablationFindings([
+      ...rows("write", 5, "skill", false),
+      ...rows("write", 5, "layer", true),
     ]);
+    // Two findings of one name, not one of ten cases: the skill's (which the
+    // set never passed without) and the layer's (which it always did).
+    expect(found).toEqual([
+      { name: "write", cases: 5, withPass: 5, withoutPass: 0, earned: true },
+      { name: "write", cases: 5, withPass: 5, withoutPass: 5, earned: false },
+    ]);
+    // The shape the route accepts, exactly: no `kind` on any finding.
+    for (const one of found) {
+      expect(Object.keys(one).sort()).toEqual(["cases", "earned", "name", "withPass", "withoutPass"]);
+    }
   });
 });
 

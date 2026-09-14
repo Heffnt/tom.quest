@@ -119,7 +119,6 @@ export const VERIFIER_TEXT_MAX_CHARS = 300;
  * false means the set passed more often WITHOUT the name than with it. */
 export type AblationFinding = {
   name: string;
-  kind: string;
   cases: number;
   withPass: number;
   withoutPass: number;
@@ -145,20 +144,24 @@ export const MIN_ABLATION_CASES = 5;
 export function ablationFindings(
   ablation: readonly unknown[],
 ): AblationFinding[] {
-  // KEYED ON THE KIND AND THE NAME TOGETHER, and each finding says which kind
-  // it is about. A node's `name` is its node id (`line:1a2b3c4d`), a layer's is
-  // a layer name, and nothing stops a future id from reading like a name — one
-  // key would silently add the two counts together and report a finding about
-  // neither. The runner's copy (worker/jobs/evals.mjs) keys the same way.
+  // KEYED ON THE KIND AND THE NAME TOGETHER, AND THE KIND DOES NOT TRAVEL.
+  // A layer and a skill can carry one name — `write` was a layer and is now a
+  // skill — and one key would add the two counts together and report a finding
+  // about neither, so the kind belongs in the key. It does NOT belong on the
+  // finding: these go to POST /tts/weekly-decisions, whose argument check is
+  // an exact object, and Convex refuses a field that check does not list. A
+  // finding carrying `kind` returns 400 and the week posts nothing to
+  // #tts-decisions — no unearned name and no graduated case, since both ride
+  // one request. The runner's copy (worker/jobs/evals.mjs) keys and emits the
+  // same way, which is the rule those two files carry between them.
   const byName = new Map<string, AblationFinding>();
   for (const raw of ablation) {
     if (raw === null || typeof raw !== "object") continue;
     const row = raw as Record<string, unknown>;
     const name = str(row.name);
     if (name === null) continue;
-    const kind = str(row.kind) ?? "";
-    const key = `${kind}|${name}`;
-    const entry = byName.get(key) ?? { name, kind, cases: 0, withPass: 0, withoutPass: 0, earned: false };
+    const key = `${str(row.kind) ?? ""}|${name}`;
+    const entry = byName.get(key) ?? { name, cases: 0, withPass: 0, withoutPass: 0, earned: false };
     entry.cases += 1;
     if (row.withPass === true) entry.withPass += 1;
     if (row.withoutPass === true) entry.withoutPass += 1;
@@ -167,7 +170,7 @@ export function ablationFindings(
   return [...byName.values()]
     .filter((entry) => entry.cases >= MIN_ABLATION_CASES)
     .map((entry) => ({ ...entry, earned: entry.withoutPass / entry.cases < entry.withPass / entry.cases }))
-    .sort((a, b) => a.name.localeCompare(b.name) || a.kind.localeCompare(b.kind));
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // ── What counts as Tom touching an item ──────────────────────────────────────

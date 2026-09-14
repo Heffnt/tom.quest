@@ -1909,14 +1909,16 @@ export const MIN_ABLATION_CASES = 5;
 export function ablationFindings(ablation) {
   const byName = new Map();
   for (const row of ablation ?? []) {
-    // KEYED ON THE KIND AND THE NAME TOGETHER, and each finding says which kind
-    // it is about. A node's `name` is its node id (`line:1a2b3c4d`), a layer's
-    // is a layer name, and nothing stops a future id from reading like a name —
-    // one key would silently add the two counts together and report a finding
-    // about neither.
-    const kind = String(row.kind ?? "");
-    const key = `${kind}|${row.name}`;
-    const entry = byName.get(key) ?? { name: row.name, kind, cases: 0, withPass: 0, withoutPass: 0 };
+    // KEYED ON THE KIND AND THE NAME TOGETHER, AND THE KIND DOES NOT TRAVEL.
+    // A layer and a skill can carry one name — `write` was a layer and is now a
+    // skill — and one key would add the two counts together and report a
+    // finding about neither, so the kind belongs in the key. It does NOT belong
+    // on the finding: the twin of this function in convex/ttsWeekly.ts feeds
+    // POST /tts/weekly-decisions, whose argument check is an exact object, and
+    // Convex refuses a field that check does not list. The two copies emit the
+    // same shape so that neither can teach the other a field the route rejects.
+    const key = `${String(row.kind ?? "")}|${row.name}`;
+    const entry = byName.get(key) ?? { name: row.name, cases: 0, withPass: 0, withoutPass: 0 };
     entry.cases += 1;
     if (row.withPass) entry.withPass += 1;
     if (row.withoutPass) entry.withoutPass += 1;
@@ -1925,7 +1927,7 @@ export function ablationFindings(ablation) {
   return [...byName.values()]
     .filter((entry) => entry.cases >= MIN_ABLATION_CASES)
     .map((entry) => ({ ...entry, earned: entry.withoutPass / entry.cases < entry.withPass / entry.cases }))
-    .sort((a, b) => a.name.localeCompare(b.name) || a.kind.localeCompare(b.kind));
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // ── The verifiers, measured ──────────────────────────────────────────────────

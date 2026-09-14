@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHmac } from "node:crypto";
 import { internal } from "./_generated/api";
 import schema from "./schema";
+import { ablationFindings, MIN_ABLATION_CASES } from "./ttsWeekly";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -886,6 +887,30 @@ describe("POST /slack/events: a reaction on the morning digest", () => {
       expect(blank.status).toBe(400);
       const absent = await post(t, { ablation: [] });
       expect(absent.status).toBe(400);
+    });
+
+    // THE ROUTE IS THE SHAPE ablationFindings MUST EMIT. Its argument check is
+    // an exact object, so a finding carrying one extra field takes the whole
+    // request down — the unearned names AND the graduated cases, which ride
+    // together — and #tts-decisions hears nothing that week. The gather keys on
+    // the kind and deliberately does not put it on the finding; this is the
+    // test that says so from the route's side.
+    it("refuses a finding carrying a field the check does not list", async () => {
+      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+      const t = convexTest(schema, modules);
+      const withKind = await post(t, {
+        isoWeek: "2026-W37",
+        ablation: [{ name: "know", kind: "layer", cases: 7, withPass: 5, withoutPass: 6, earned: false }],
+      });
+      expect(withKind.status).toBe(400);
+      // And exactly what ablationFindings emits goes through.
+      const asEmitted = await post(t, {
+        isoWeek: "2026-W37",
+        ablation: ablationFindings(Array.from({ length: MIN_ABLATION_CASES }, (_, i) => (
+          { id: `c${i}`, name: "know", kind: "layer", withPass: true, withoutPass: false }
+        ))),
+      });
+      expect(asEmitted.status).toBe(200);
     });
 
     it("is behind the worker key like every other pen", async () => {
