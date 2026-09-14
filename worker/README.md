@@ -85,6 +85,19 @@ an expected rollout window from a runner that has stopped.
 
 roll the box (worker/setup.sh) before or immediately after merging a change to the evals row contract; until it rolls, every evals request is pending and the gate names the protocol gap
 
+Then drain the pre-protocol queue once:
+
+    npx convex run ttsEvals:internalSupersedeLegacyEvalsRequests '{}'
+
+`EVALS_PROTOCOL_SINCE` in `jobs/evals-row.mjs` is the cutoff, and it is updated
+at the merge that deploys a bump. A request filed before it was answered, if at
+all, by a row carrying no `answersRequestAt`, so the queue can no longer see
+that answer and would hand the sha out for a full run — every such sha, ahead of
+every live head. Both roads refuse it instead: the queue hands it out marked
+`protocol-2` and the box answers it superseded in one POST with no model call,
+and the drain above does the whole standing backlog in one command. The check on
+such a sha fails with "re-run at head", which a branch that still matters does.
+
 A box rolled BEFORE the merge reads a base tree older than its own watch
 policy. It scores the whole evaluation rather than failing the request, and the
 row says `basePolicy: "absent"` (`basePolicyOf` in `jobs/evals.mjs`): the

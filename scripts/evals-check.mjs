@@ -140,6 +140,24 @@ export function matchesWatched(path) {
 export const COVERAGE_NOT_REQUIRED = "not-required";
 
 /**
+ * The `supersededBy` on a request the queue refused because it was filed
+ * before the box's current evals row contract (worker/jobs/evals-row.mjs
+ * PROTOCOL_SUPERSEDED, the one place it is defined; this file imports nothing,
+ * so the word is written out here too and the tests on both sides pin it).
+ *
+ * The ANSWER IS THE SAME as for a head a later push replaced — nothing ran,
+ * re-run at the head — and only the sentence differs, because "a later push
+ * replaced this head" would be false about a sha nobody pushed over.
+ */
+export const PROTOCOL_SUPERSEDED = "protocol-2";
+
+/** A sha is shown short; the protocol's name is shown whole. */
+function supersededName(by) {
+  if (typeof by !== "string" || by === "") return "a later push";
+  return /^[0-9a-f]{7,40}$/i.test(by) ? by.slice(0, 7) : by;
+}
+
+/**
  * Does this branch need an evals run at all?
  *
  * TRUE ONLY ON A DIFF THAT WAS ACTUALLY READ. `null` — no checkout, a shallow
@@ -257,8 +275,11 @@ export function gate(head, base, { changed, prBody } = {}) {
   // branch, which the same row also carries for readers that predate this one:
   // both fail, and this one says the thing that can be acted on.
   if (head.superseded === true) {
-    const by = typeof head.supersededBy === "string" ? head.supersededBy.slice(0, 7) : "a later push";
-    return { ok: false, reason: `superseded by ${by}, re-run at head`, regressions: [], stillFailing: [], newFailing: [], fixed: [], unconfirmed: [], mismatch: false, goldenCoverage, goldenExcuse };
+    const by = supersededName(head.supersededBy);
+    const reason = head.supersededBy === PROTOCOL_SUPERSEDED
+      ? "filed before the box's evals protocol, re-run at head"
+      : `superseded by ${by}, re-run at head`;
+    return { ok: false, reason, regressions: [], stillFailing: [], newFailing: [], fixed: [], unconfirmed: [], mismatch: false, goldenCoverage, goldenExcuse };
   }
   // A run the box could not make at all (a sha it could not fetch or check
   // out) is posted as a row carrying `error`, so the request queue advances.
@@ -333,7 +354,13 @@ export function report(head, base, verdict) {
   // base and nothing to compare, and the only useful sentence is which sha to
   // look at instead.
   if (head.superseded === true) {
-    const by = typeof head.supersededBy === "string" ? head.supersededBy.slice(0, 7) : "a later push";
+    const by = supersededName(head.supersededBy);
+    if (head.supersededBy === PROTOCOL_SUPERSEDED) {
+      return [
+        `evals — ${head.repo} ${String(head.sha).slice(0, 7)}: filed before the box's evals protocol.`,
+        `FAILED: this request predates the evals row contract the box now writes, so it was never run. Re-run this check at the head of the branch.`,
+      ];
+    }
     return [
       `evals — ${head.repo} ${String(head.sha).slice(0, 7)}: superseded by ${by}.`,
       `FAILED: a later push replaced this head before the box reached it — nothing was run. Re-run this check at the head of the branch.`,

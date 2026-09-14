@@ -1887,6 +1887,28 @@ describe("a superseded request", () => {
     });
   });
 
+  // THE PRE-PROTOCOL BACKLOG, answered the same way and just as cheaply. The
+  // queue marks a request filed before EVALS_PROTOCOL_SINCE with the
+  // protocol's name instead of a sha (convex/ttsEvals.ts
+  // internalOldestEvalsRequest), so the box answers it in one POST with no
+  // clone, no worktree and no model — which is what keeps a deploy's worth of
+  // legacy requests from being re-run ahead of every live head.
+  it("answers a request older than the protocol without a run", async () => {
+    const posted = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url, init) => {
+      posted.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+    const data = await serveRequest(env, noIo, request({ supersededBy: "protocol-2" }));
+    expect(data).toMatchObject({ superseded: true, supersededBy: "protocol-2" });
+    // The name is not a sha and is never shortened into one.
+    expect(data.error).toBe(
+      "filed before evals protocol 2; re-run this check at the head of the branch",
+    );
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({ kind: "evals-run", key: "tom.quest@2e08b28" });
+  });
+
   it("opens nothing", () => {
     // `regressions: null` and `goldenCoverage: null` are what convex/
     // ttsMerge.ts denies on: a stale sha can never carry a gate open.

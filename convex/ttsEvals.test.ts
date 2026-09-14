@@ -9,11 +9,17 @@ import {
   GOLDEN_PER_VERDICT_MAX,
   partitionOf,
 } from "./ttsEvals";
-import { EVALS_PROTOCOL } from "../worker/jobs/evals-row.mjs";
+import { EVALS_PROTOCOL, EVALS_PROTOCOL_SINCE } from "../worker/jobs/evals-row.mjs";
 import schema from "./schema";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 const DAY = 86_400_000;
+// EVERY REQUEST THESE TESTS FILE IS FILED UNDER THE PROTOCOL, because one
+// filed before it is never served (worker/jobs/evals-row.mjs
+// EVALS_PROTOCOL_SINCE): the queue answers it superseded without a run, which
+// is a different question from the ones below. The rows' `at` stays small — it
+// is the order, not the date — and `requestedAt` is the date.
+const PROTOCOL_ERA = Date.parse(EVALS_PROTOCOL_SINCE);
 
 describe("the box evals protocol", () => {
   afterEach(() => vi.unstubAllEnvs());
@@ -425,7 +431,7 @@ describe("a superseded request", () => {
           changed: ["model-of-tom/intent.md"],
           prBody: null,
           unaffected: false,
-          requestedAt: at,
+          requestedAt: PROTOCOL_ERA + at,
           ...over,
         },
       });
@@ -708,7 +714,7 @@ describe("a superseded request", () => {
         changed: ["model-of-tom/intent.md"],
         prBody: "the body as it reads now",
         unaffected: false,
-        requestedAt: 1,
+        requestedAt: PROTOCOL_ERA + 1,
       },
     });
     // A keeps its old place in line too, and is still the head. Had 100 and the
@@ -844,7 +850,7 @@ describe("a superseded request", () => {
         at: 50,
         kind: EVALS_RUN,
         key: `${REPO}@aaaaaaa`,
-        data: { repo: REPO, sha: "aaaaaaa", unaffected: true, regressions: 0, answersRequestAt: 1 },
+        data: { repo: REPO, sha: "aaaaaaa", unaffected: true, regressions: 0, answersRequestAt: PROTOCOL_ERA + 1 },
       });
     });
     // While that is what was asked, it answers.
@@ -874,7 +880,7 @@ describe("a superseded request", () => {
         key: `${REPO}@aaaaaaa`,
         data: {
           repo: REPO, sha: "aaaaaaa", regressions: 0, pass: 29, items: 29,
-          answersRequestAt: 1,
+          answersRequestAt: PROTOCOL_ERA + 1,
           answersBaseSha: "f5c1fb9",
           answersChanged: ["model-of-tom/intent.md"],
           answersPrBody: "evals: no-item wording only",
@@ -1041,7 +1047,7 @@ describe("a superseded request", () => {
           data: {
             repo: REPO, sha, baseSha: "f5c1fb9", pr: 1, runId: i + 1,
             paths: ["model-of-tom/**"], changed: [], prBody: null,
-            unaffected: false, requestedAt: i + 1,
+            unaffected: false, requestedAt: PROTOCOL_ERA + i + 1,
           },
         });
         await ctx.db.insert("dtsEvents", {
@@ -1050,7 +1056,7 @@ describe("a superseded request", () => {
           key: `${REPO}@${sha}`,
           data: {
             repo: REPO, sha, regressions: 0,
-            answersRequestAt: i + 1,
+            answersRequestAt: PROTOCOL_ERA + i + 1,
             answersBaseSha: "f5c1fb9",
             answersChanged: [],
             answersPrBody: null,
@@ -1093,7 +1099,7 @@ describe("a superseded request", () => {
     await file(t, 2, "bbbbbbb", { runId: 200 });
     // The box takes A's request, which was filed at 1.
     expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
-      sha: "aaaaaaa", requestedAt: 1, supersededBy: "bbbbbbb",
+      sha: "aaaaaaa", requestedAt: PROTOCOL_ERA + 1, supersededBy: "bbbbbbb",
     });
     // A force-push puts A back at the head BEFORE that answer is posted.
     await t.mutation(internal.ttsEvals.internalRequestEvals, {
@@ -1106,7 +1112,7 @@ describe("a superseded request", () => {
         at: Date.now() + 60_000,
         kind: EVALS_RUN,
         key: `${REPO}@aaaaaaa`,
-        data: { repo: REPO, sha: "aaaaaaa", superseded: true, supersededBy: "bbbbbbb", answersRequestAt: 1 },
+        data: { repo: REPO, sha: "aaaaaaa", superseded: true, supersededBy: "bbbbbbb", answersRequestAt: PROTOCOL_ERA + 1 },
       });
     });
     expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
@@ -1151,7 +1157,7 @@ describe("a superseded request", () => {
           error: true,
           reason: "runner failed: Not logged in",
           regressions: null,
-          answersRequestAt: 1,
+          answersRequestAt: PROTOCOL_ERA + 1,
         },
       });
       await ctx.db.insert("dtsEvents", {
@@ -1188,5 +1194,162 @@ describe("a superseded request", () => {
     });
     expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "head000" }))
       .toMatchObject({ run: { regressions: 0, goldenCoverage: true, pass: 29, items: 29 } });
+  });
+});
+
+// THE DEPLOY OF PROTOCOL 2, which is the case the box's audit refused the first
+// cut of this branch over.
+//
+// A row written before this contract carries no `answersRequestAt`, so
+// answeredRun cannot see it and reads its sha as unanswered. On the deploy that
+// is EVERY sha the check ever asked about that is still inside the window: each
+// would be handed out for a full run, one per pass, ahead of every live head.
+// The cutoff refuses the lot without a model call, and the drain empties the
+// standing queue in one command.
+describe("a request older than the evals protocol", () => {
+  const REPO = "tom.quest";
+
+  /** `requestedAt` is what the cutoff reads; `at` is only the order. */
+  const file = (
+    t: TestConvex<typeof schema>,
+    at: number,
+    sha: string,
+    requestedAt: number,
+    over: Record<string, unknown> = {},
+  ) =>
+    t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at,
+        kind: EVALS_REQUEST,
+        key: `${REPO}@${sha}`,
+        data: {
+          repo: REPO,
+          sha,
+          baseSha: "f5c1fb9",
+          pr: 173,
+          runId: null,
+          paths: ["model-of-tom/**"],
+          changed: ["model-of-tom/intent.md"],
+          prBody: null,
+          unaffected: false,
+          requestedAt,
+          ...over,
+        },
+      });
+    });
+
+  const runsFor = (t: TestConvex<typeof schema>, sha: string) =>
+    t.run(async (ctx) =>
+      await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_RUN).eq("key", `${REPO}@${sha}`))
+        .collect(),
+    );
+
+  it("hands out a pre-protocol request marked for a one-POST answer, ahead of no live head", async () => {
+    const t = convexTest({ schema, modules });
+    // The legacy shape exactly: no run id, and a scored row that named no
+    // request because rows did not carry one yet.
+    await file(t, 1, "legacy0", PROTOCOL_ERA - DAY);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: 2,
+        kind: EVALS_RUN,
+        key: `${REPO}@legacy0`,
+        data: { repo: REPO, sha: "legacy0", regressions: 0, pass: 29, items: 29 },
+      });
+    });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "legacy0",
+      supersededBy: "protocol-2",
+    });
+  });
+
+  // The cutoff is the DATE, never the missing run id. WikiTom's Action sends
+  // none until its copy of the workflow is re-installed, and a request of its
+  // filed today is a live head.
+  it("serves a request filed under the protocol, run id or no run id", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "wikitom", PROTOCOL_ERA + 1_000);
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "wikitom",
+      supersededBy: null,
+    });
+    const t2 = convexTest({ schema, modules });
+    await file(t2, 1, "livehead", PROTOCOL_ERA + 1_000, { runId: 900 });
+    expect(await t2.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "livehead",
+      supersededBy: null,
+    });
+  });
+
+  // ONE COMMAND EMPTIES THE QUEUE. Without it the same answers cost
+  // twenty-five per five-minute pass, and a live head waits behind them.
+  it("drains every standing pre-protocol request, in pages and idempotently", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "legacy0", PROTOCOL_ERA - DAY);
+    await file(t, 2, "legacy1", PROTOCOL_ERA - DAY);
+    // Already answered by the box on an earlier pass: counted, never written
+    // over.
+    await file(t, 3, "legacy2", PROTOCOL_ERA - DAY);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: 4,
+        kind: EVALS_RUN,
+        key: `${REPO}@legacy2`,
+        data: {
+          repo: REPO, sha: "legacy2", superseded: true, supersededBy: "protocol-2",
+          regressions: null, answersRequestAt: PROTOCOL_ERA - DAY,
+        },
+      });
+    });
+    // A live head, which the walk must not touch.
+    await file(t, 5, "livehead", PROTOCOL_ERA + 1_000, { runId: 900 });
+
+    const first = await t.mutation(internal.ttsEvals.internalSupersedeLegacyEvalsRequests, {
+      pageSize: 2,
+    });
+    expect(first).toMatchObject({ done: false, page: { scanned: 2, superseded: 2, answered: 0 } });
+    expect(first.continueCursor).not.toBeNull();
+    const second = await t.mutation(internal.ttsEvals.internalSupersedeLegacyEvalsRequests, {
+      pageSize: 100,
+      cursor: first.continueCursor,
+      totals: first.totals,
+    });
+    expect(second).toMatchObject({
+      done: true,
+      page: { scanned: 2, superseded: 0, answered: 1 },
+      totals: { scanned: 4, superseded: 2, answered: 1 },
+    });
+
+    // The row the drain writes is the row the box writes: it denies, and it
+    // names the request it answered.
+    const [row] = await runsFor(t, "legacy0");
+    expect(row.data).toMatchObject({
+      repo: REPO,
+      sha: "legacy0",
+      superseded: true,
+      supersededBy: "protocol-2",
+      regressions: null,
+      goldenCoverage: null,
+      answersRequestAt: PROTOCOL_ERA - DAY,
+    });
+    expect(String((row.data as { error: string }).error))
+      .toBe("filed before evals protocol 2; re-run this check at the head of the branch");
+
+    // The queue is empty of legacy requests and the live head is what is
+    // served — which is the whole point of the walk.
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "livehead",
+      supersededBy: null,
+    });
+
+    // IDEMPOTENT: a second full walk writes nothing and counts what stands.
+    const again = await t.mutation(internal.ttsEvals.internalSupersedeLegacyEvalsRequests, {
+      pageSize: 100,
+    });
+    expect(again).toMatchObject({ done: true, totals: { scanned: 4, superseded: 0, answered: 3 } });
+    expect(await runsFor(t, "legacy0")).toHaveLength(1);
+    expect(await runsFor(t, "livehead")).toHaveLength(0);
   });
 });

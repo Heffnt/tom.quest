@@ -26,6 +26,13 @@
 // request to Convex and waits; a cron tick here picks it up.
 //
 // roll the box (worker/setup.sh) before or immediately after merging a change to the evals row contract; until it rolls, every evals request is pending and the gate names the protocol gap
+//
+// Then drain the pre-protocol queue once, from the laptop or the box:
+//   npx convex run ttsEvals:internalSupersedeLegacyEvalsRequests '{}'
+// Requests older than EVALS_PROTOCOL_SINCE (jobs/evals-row.mjs) are answered
+// superseded without a model call either way; the drain does them all at once
+// instead of twenty-five per five-minute pass, so a live head files behind an
+// empty queue.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -45,7 +52,12 @@ import {
 } from "./tts-lib.mjs";
 import { cacheRepoDir } from "./tts-code-lib.mjs";
 import { redactSecrets } from "./session-archive.mjs";
-import { EVALS_PROTOCOL, scoredNothing } from "./evals-row.mjs";
+import {
+  EVALS_PROTOCOL,
+  scoredNothing,
+  supersededFields,
+  supersededName,
+} from "./evals-row.mjs";
 // THE AUDIT'S OWN PROMPT, IMPORTED AND NEVER RE-IMPLEMENTED. The planted-fault
 // arm below asks the real auditor the real question about a fixture diff; a
 // second copy of that prompt here would measure a prompt nothing else uses.
@@ -2263,15 +2275,17 @@ export function failedRun({ repo, sha, error, at, answersRequestAt = null }) {
  * open. `error` carries the same sentence for readers older than this field —
  * a copy of scripts/evals-check.mjs that predates the superseded branch still
  * fails the check, and says why.
+ *
+ * `by` IS NOT ALWAYS A SHA. The queue also hands out a request filed before the
+ * evals protocol with the protocol's name in that field (convex/ttsEvals.ts
+ * internalOldestEvalsRequest), which this answers the same way and just as
+ * cheaply. The denying fields are the shared ones, so the row the door writes
+ * when it drains that backlog in bulk and the row this writes are one shape.
  */
 export function supersededRun({ repo, sha, by, at, answersRequestAt = null }) {
   return {
     ...unscoredRun({ repo, sha, at, answersRequestAt }),
-    superseded: true,
-    supersededBy: by,
-    error: `superseded by ${String(by).slice(0, 7)}; re-run this check at the head of the branch`,
-    regressions: null,
-    goldenCoverage: null,
+    ...supersededFields(by),
   };
 }
 
@@ -2745,7 +2759,7 @@ export async function serveRequest(env, io, request, options = {}) {
     if (!dryRun) await postRun(env, data);
     console.log(
       `[evals] ${request.repo}@${request.sha}: superseded by ` +
-        `${request.supersededBy.slice(0, 7)} — answered without a run`,
+        `${supersededName(request.supersededBy)} — answered without a run`,
     );
     return data;
   }

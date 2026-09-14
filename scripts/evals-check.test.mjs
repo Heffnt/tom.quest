@@ -452,6 +452,30 @@ describe("a superseded row", () => {
     expect(report(row(), null, gate(row(), null)).join(" "))
       .not.toContain("the run could not be made");
   });
+
+  // A REQUEST OLDER THAN THE PROTOCOL carries the protocol's name in that
+  // field rather than a sha (worker/jobs/evals-row.mjs PROTOCOL_SUPERSEDED).
+  // It fails the same way and asks for the same thing — a re-run at the head —
+  // and the name is printed whole, because seven characters of it would say
+  // "protoco".
+  const legacy = () => row({
+    supersededBy: "protocol-2",
+    error: "filed before evals protocol 2; re-run this check at the head of the branch",
+  });
+
+  it("fails a pre-protocol request and still asks for a re-run at the head", () => {
+    const verdict = gate(legacy(), null, { changed: ["model-of-tom/intent.md"], prBody: "" });
+    expect(verdict).toMatchObject({
+      ok: false,
+      reason: "filed before the box's evals protocol, re-run at head",
+    });
+    const lines = report(legacy(), null, verdict);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain("filed before the box's evals protocol");
+    expect(lines.join(" ")).not.toContain("protoco.");
+    expect(lines.join(" ")).not.toContain("a later push replaced this head");
+    expect(lines[1]).toContain("Re-run this check at the head of the branch");
+  });
 });
 
 describe("noItemTrailer", () => {

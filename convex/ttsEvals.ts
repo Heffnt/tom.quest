@@ -1,9 +1,17 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
+import { internal } from "./_generated/api";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { DAY_MS, modelOfTomHeadOf } from "./ttsShared";
-import { EVALS_PROTOCOL, scoredNothing } from "../worker/jobs/evals-row.mjs";
+import {
+  EVALS_PROTOCOL,
+  EVALS_PROTOCOL_SINCE,
+  PROTOCOL_SUPERSEDED,
+  predatesEvalsProtocol,
+  scoredNothing,
+  supersededFields,
+} from "../worker/jobs/evals-row.mjs";
 
 export const PRELUDE_DELIVERY = "prelude-delivery";
 export const EVALS_REQUEST = "evals-request";
@@ -47,6 +55,11 @@ export async function evalsProtocolStatus(
  * Omission is the installed pre-version runner and therefore protocol 1.
  *
  * roll the box (worker/setup.sh) before or immediately after merging a change to the evals row contract; until it rolls, every evals request is pending and the gate names the protocol gap
+ *
+ * AND THEN DRAIN THE OLD QUEUE, in the same deploy step:
+ * `npx convex run ttsEvals:internalSupersedeLegacyEvalsRequests '{}'` answers
+ * every request filed before EVALS_PROTOCOL_SINCE at once, so the first pass
+ * after the roll reaches the live heads instead of the backlog.
  *
  * This check cannot be deleted: Convex deploys ahead of manually installed
  * box code, so without the observed version that expected window is
@@ -1042,6 +1055,23 @@ export const internalOldestEvalsRequest = internalQuery({
       if (run === null) {
         const request = requestData(row.data);
         if (request === null) continue;
+        // A REQUEST OLDER THAN THE PROTOCOL IS NEVER SERVED (worker/jobs/
+        // evals-row.mjs EVALS_PROTOCOL_SINCE). Its answer, if it has one, was
+        // written before rows carried `answersRequestAt`, so answeredRun above
+        // cannot see it and reads the sha as unanswered — which, on the deploy
+        // of this contract, is every sha the check ever asked about that is
+        // still in this window. Handed out, each would cost a full run, one per
+        // pass, AHEAD OF EVERY LIVE HEAD.
+        //
+        // It is handed out with the protocol's name in `supersededBy` instead:
+        // the box answers it in one POST and no model (worker/jobs/evals.mjs
+        // serveRequest), the queue advances on the same pass, and the check on
+        // such a sha is told to re-run at the head of its branch. A branch that
+        // still matters re-runs or pushes, and the request that files is dated
+        // now.
+        if (predatesEvalsProtocol(request.requestedAt)) {
+          return { ...request, supersededBy: PROTOCOL_SUPERSEDED };
+        }
         // THE OLDEST UNANSWERED REQUEST IS STILL THE ONE HANDED OUT, superseded
         // or not. The order does not change; what changes is that a superseded
         // one is answered without a run, so the queue behind it advances on the
@@ -1060,6 +1090,115 @@ export const internalOldestEvalsRequest = internalQuery({
       }
     }
     return null;
+  },
+});
+
+/** Request rows per transaction. Each one costs three reads (the row, its run
+ *  and its request) and at most one write, which keeps a page far inside
+ *  Convex's per-transaction limits. */
+export const LEGACY_DRAIN_PAGE = 200;
+
+export type LegacyDrainReport = {
+  done: boolean;
+  /** The cutoff this walk applied, so the numbers below are readable without
+   *  reading the code that produced them. */
+  since: string;
+  page: { scanned: number; superseded: number; answered: number };
+  totals: { scanned: number; superseded: number; answered: number };
+  continueCursor: string | null;
+};
+
+/**
+ * THE POST-DEPLOY STEP: every standing pre-protocol request, answered at once.
+ *
+ *   npx convex run ttsEvals:internalSupersedeLegacyEvalsRequests '{}'
+ *
+ * RUN IT IMMEDIATELY AFTER THE MERGE THAT DEPLOYS PROTOCOL 2, beside rolling
+ * the box (worker/setup.sh). Without it the queue still answers every legacy
+ * request correctly — internalOldestEvalsRequest hands each one out with the
+ * protocol's name and the box answers it in one POST — but it does that at
+ * twenty-five per five-minute pass, and a live head filed behind them waits
+ * out however many passes the backlog takes. This walk empties it in one
+ * command, so the first pass after the deploy reaches the live heads.
+ *
+ * IDEMPOTENT, and it has to be: a re-run is how a walk interrupted halfway is
+ * finished. A request already answered — by this walk, by the box, or by a
+ * scored run — is counted and left alone, and a request dated after the cutoff
+ * is never touched at all. RESUMABLE the same way: each call takes one page
+ * and schedules itself with the continue cursor, so an interrupted chain is
+ * restarted by calling it again from the start.
+ *
+ * It writes the SAME DENYING ROW the box writes (worker/jobs/evals-row.mjs
+ * supersededFields), so nothing downstream can tell the two apart and no gate
+ * opens on a row this wrote. It carries no `boxEvalsVersion`: the box did not
+ * write it, and that field is the door's record of what the box is running.
+ */
+export const internalSupersedeLegacyEvalsRequests = internalMutation({
+  args: {
+    cursor: v.optional(v.union(v.string(), v.null())),
+    pageSize: v.optional(v.number()),
+    /** Running totals carried across the scheduled continuations; never passed
+     *  by a caller. */
+    totals: v.optional(v.object({
+      scanned: v.number(),
+      superseded: v.number(),
+      answered: v.number(),
+    })),
+  },
+  handler: async (ctx, args): Promise<LegacyDrainReport> => {
+    const pageSize = Math.min(
+      LEGACY_DRAIN_PAGE,
+      Math.max(1, Math.floor(args.pageSize ?? LEGACY_DRAIN_PAGE)),
+    );
+    const result = await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_kind_at", (q) => q.eq("kind", EVALS_REQUEST))
+      .paginate({ cursor: args.cursor ?? null, numItems: pageSize });
+    const page = { scanned: 0, superseded: 0, answered: 0 };
+    const at = Date.now();
+    for (const row of result.page) {
+      page.scanned += 1;
+      if (row.key === undefined) continue;
+      const request = requestData(row.data);
+      if (request === null || !predatesEvalsProtocol(request.requestedAt)) continue;
+      if (await answeredRun(ctx, row.key) !== null) {
+        page.answered += 1;
+        continue;
+      }
+      await ctx.db.insert("dtsEvents", {
+        at,
+        kind: EVALS_RUN,
+        key: row.key,
+        data: {
+          repo: request.repo,
+          sha: request.sha,
+          answersRequestAt: request.requestedAt,
+          ...supersededFields(PROTOCOL_SUPERSEDED),
+        },
+      });
+      page.superseded += 1;
+    }
+    const prior = args.totals ?? { scanned: 0, superseded: 0, answered: 0 };
+    const totals = {
+      scanned: prior.scanned + page.scanned,
+      superseded: prior.superseded + page.superseded,
+      answered: prior.answered + page.answered,
+    };
+    if (result.isDone) {
+      return { done: true, since: EVALS_PROTOCOL_SINCE, page, totals, continueCursor: null };
+    }
+    await ctx.scheduler.runAfter(0, internal.ttsEvals.internalSupersedeLegacyEvalsRequests, {
+      cursor: result.continueCursor,
+      pageSize,
+      totals,
+    });
+    return {
+      done: false,
+      since: EVALS_PROTOCOL_SINCE,
+      page,
+      totals,
+      continueCursor: result.continueCursor,
+    };
   },
 });
 
