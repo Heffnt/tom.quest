@@ -98,18 +98,41 @@ const BATCH_TODOS_MAX = 40;
 const SKILLS_MAX = 64;
 const RULINGS_PER_SUBJECT = 5;
 const OUTCOMES_PER_BATCH = 3;
+// The former relevance assembler gave these volatile facts this total room.
+// They still ride the opener, so removing the caps would recreate its large tail.
+export const RULINGS_BYTES = 2048;
+export const OUTCOMES_BYTES = 1536;
+
+function boundedFactText<Row>(rows: Row[], maxBytes: number, render: (row: Row) => string): string[] {
+  const chosen = [];
+  let used = 0;
+  for (const row of rows) {
+    const text = render(row);
+    const bytes = byteLength(text);
+    if (used + bytes > maxBytes) break;
+    chosen.push(text);
+    used += bytes;
+  }
+  return chosen;
+}
 
 /** The grant names published, immutable bodies; this small tail carries the
  * subject's live facts, which have no body a session could load later. */
 function recordFacts(record: ContextRecord): string {
-  const rulings = [...record.rulings]
-    .sort((a, b) => b.ruledAt - a.ruledAt || a.verdict.localeCompare(b.verdict))
-    .slice(0, RULINGS_PER_SUBJECT)
-    .map((ruling) => `${ruling.ruledDay} ${ruling.verdict}${ruling.sentence ? `: ${ruling.sentence}` : ""}`);
-  const outcomes = [...record.sessions]
-    .sort((a, b) => b.statusChangedAt - a.statusChangedAt || a.outcome.localeCompare(b.outcome))
-    .slice(0, OUTCOMES_PER_BATCH)
-    .map((session) => `${session.endedDay} ${session.outcome}${session.outcomeSummary ? `: ${session.outcomeSummary}` : ""}`);
+  const rulings = boundedFactText(
+    [...record.rulings]
+      .sort((a, b) => b.ruledAt - a.ruledAt || a.verdict.localeCompare(b.verdict))
+      .slice(0, RULINGS_PER_SUBJECT),
+    RULINGS_BYTES,
+    (ruling) => `${ruling.ruledDay} ${ruling.verdict}${ruling.sentence ? `: ${ruling.sentence}` : ""}`,
+  );
+  const outcomes = boundedFactText(
+    [...record.sessions]
+      .sort((a, b) => b.statusChangedAt - a.statusChangedAt || a.outcome.localeCompare(b.outcome))
+      .slice(0, OUTCOMES_PER_BATCH),
+    OUTCOMES_BYTES,
+    (session) => `${session.endedDay} ${session.outcome}${session.outcomeSummary ? `: ${session.outcomeSummary}` : ""}`,
+  );
   if (rulings.length === 0 && outcomes.length === 0) return "";
   return [
     ...(rulings.length === 0 ? [] : ["RULINGS ON THIS SUBJECT", ...rulings.map((ruling) => `- ${ruling}`)]),

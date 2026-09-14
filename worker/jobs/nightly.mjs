@@ -335,10 +335,9 @@ const STEPS = ["delivery", "golden-export", "snapshot", "learning", "runs", "rep
 // entry the night it gets a clone.
 export const TOM_QUEST_DIR = process.env.TOM_QUEST_DIR
   || (process.platform === "win32" ? "C:/Users/heffn/Desktop/tom.quest" : "/root/tom.quest");
-export const CMT_DIR = process.env.CMT_DIR
-  || (process.platform === "win32"
-    ? "C:/Users/heffn/Desktop/booleanbackdoor/ComplexMultiTrigger"
-    : "/root/ComplexMultiTrigger");
+export const CMT_DIR = process.platform === "win32"
+  ? "C:/Users/heffn/Desktop/booleanbackdoor/ComplexMultiTrigger"
+  : "/var/cache/tts/ComplexMultiTrigger";
 export const REPO_CHECKOUTS = [
   { repo: "tom.quest", dir: TOM_QUEST_DIR },
   { repo: "WikiTom", dir: WIKITOM_DIR },

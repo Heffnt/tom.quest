@@ -3,7 +3,7 @@
 // disks — and writes one directory per skill under `--out`.
 //
 //   node scripts/publish-skills.mjs --wikitom DIR [--commit REF]
-//        [--repo NAME=DIR]… --out DIR [--dry-run]
+//        [--repo NAME=DIR]… --out DIR [--json] [--dry-run]
 //
 // COMMITTED OBJECTS ONLY. Every body comes from `git show <commit>:<path>`, so
 // a dirty work tree — a half-edited area page, a scratch AGENTS.md — changes
@@ -238,9 +238,16 @@ const VALUE_ARGS = ["--wikitom", "--commit", "--out", "--repo"];
 function parseArgs(argv) {
   const values = {};
   const repos = [];
+  let json = false;
   let dryRun = false;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
+    if (argument === "--json") {
+      // worker/jobs/evals.mjs:publicationFor consumes this result to assemble
+      // the exact pinned catalog a real evaluation can load.
+      json = true;
+      continue;
+    }
     if (argument === "--dry-run") {
       // Publication removes stale tom- directories, so its planned deletions
       // must be inspectable without changing a shared harness directory.
@@ -261,11 +268,16 @@ function parseArgs(argv) {
   }
   if (values.wikitom === undefined) throw new PublishError("--wikitom DIR is required");
   if (values.out === undefined) throw new PublishError("--out DIR is required");
-  return { ...values, repos, dryRun };
+  return { ...values, repos, json, dryRun };
 }
 
 function main(argv) {
-  const result = publishSkills(parseArgs(argv));
+  const { json, ...options } = parseArgs(argv);
+  const result = publishSkills(options);
+  if (json) {
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return;
+  }
   const wrote = result.skills.reduce((total, skill) => total + skill.wrote, 0);
   process.stdout.write(
     `${result.skills.length} skills at ${result.commit.slice(0, 12)} -> ${result.out} (${wrote} files written, ${result.deleted.length} removed)\n`,

@@ -3017,6 +3017,7 @@ describe("the git half", { timeout: 60_000 }, () => {
   it("names the three checkouts whose AGENTS.md ride into Convex", () => {
     expect(REPO_CHECKOUTS.map((entry) => entry.repo)).toEqual(["tom.quest", "WikiTom", "ComplexMultiTrigger"]);
     expect(REPO_CHECKOUTS.map((entry) => entry.dir)).toEqual([TOM_QUEST_DIR, WIKITOM_DIR, CMT_DIR]);
+    if (process.platform !== "win32") expect(CMT_DIR).toBe("/var/cache/tts/ComplexMultiTrigger");
   });
 
   it("posts every repo in the list", async () => {

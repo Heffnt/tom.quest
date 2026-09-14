@@ -39,12 +39,12 @@ export class ContextError extends Error {}
 // the corrections he has already made; a run that may capture for him gets the
 // rule for what becomes a todo. Capture beats judge when a caller is both.
 export const CONTEXT_CALLERS = Object.freeze({
-  opener: Object.freeze({ reachesTom: true, judges: true, captures: false }),
-  planner: Object.freeze({ reachesTom: true, judges: true, captures: false }),
-  "capture-context": Object.freeze({ reachesTom: true, judges: false, captures: true }),
-  "time-notes": Object.freeze({ reachesTom: true, judges: false, captures: false }),
-  "batch-context": Object.freeze({ reachesTom: true, judges: true, captures: false }),
-  "weekly-input": Object.freeze({ reachesTom: true, judges: true, captures: false }),
+  opener: Object.freeze({ judges: true, captures: false }),
+  planner: Object.freeze({ judges: true, captures: false }),
+  "capture-context": Object.freeze({ judges: false, captures: true }),
+  "time-notes": Object.freeze({ judges: false, captures: false }),
+  "batch-context": Object.freeze({ judges: true, captures: false }),
+  "weekly-input": Object.freeze({ judges: true, captures: false }),
   // The weekly simplification pass (worker/jobs/simplify.mjs, through GET
   // /tts/simplify-input). Its OWN row rather than borrowing weekly-input's:
   // the two want the same three booleans today, and a caller that reads
@@ -53,11 +53,11 @@ export const CONTEXT_CALLERS = Object.freeze({
   // to #tts-decisions; `judges` because judging what the fleet can lose is the
   // whole job; `captures` false because the pass files no todo — a LATER run
   // does, once the objection window has closed.
-  "simplify-input": Object.freeze({ reachesTom: true, judges: true, captures: false }),
-  prepare: Object.freeze({ reachesTom: true, judges: true, captures: false }),
-  triage: Object.freeze({ reachesTom: true, judges: false, captures: true }),
-  laptop: Object.freeze({ reachesTom: true, judges: false, captures: false }),
-  cli: Object.freeze({ reachesTom: true, judges: false, captures: false }),
+  "simplify-input": Object.freeze({ judges: true, captures: false }),
+  prepare: Object.freeze({ judges: true, captures: false }),
+  triage: Object.freeze({ judges: false, captures: true }),
+  laptop: Object.freeze({ judges: false, captures: false }),
+  cli: Object.freeze({ judges: false, captures: false }),
 });
 
 export const CONTEXT_CALLER_NAMES = Object.freeze(Object.keys(CONTEXT_CALLERS));
@@ -65,7 +65,7 @@ export const CONTEXT_CALLER_NAMES = Object.freeze(Object.keys(CONTEXT_CALLERS));
 /** The caller's row, or a hard error — a caller nobody declared would silently
  * take the least context, which is the failure this table exists to stop. */
 export function callerRules(caller) {
-  const rules = CONTEXT_CALLERS[caller];
+  const rules = Object.hasOwn(CONTEXT_CALLERS, caller) ? CONTEXT_CALLERS[caller] : undefined;
   if (rules === undefined) {
     throw new ContextError(`unknown caller ${caller} (one of ${CONTEXT_CALLER_NAMES.join(", ")})`);
   }
@@ -84,7 +84,8 @@ export function callerRules(caller) {
 export const INTENT_CALLERS = Object.freeze(["opener", "planner", "prepare", "weekly-input"]);
 
 /**
- * The callers granted `know-week`: the runs that read or write a date.
+ * The callers granted `know-week` without a dated subject: the runs that read
+ * or write the current week.
  *
  * THE DIGEST WRITER BELONGS IN THIS LIST AND IS NOT IN IT. The digest
  * (worker/jobs/write-slack.mjs) reaches context through a caller that has no
@@ -407,7 +408,7 @@ export const NO_BODY = "no published body at this commit";
 //
 // THE WHOLE TABLE, in the order it is applied:
 //
-//   reachesTom                                  write
+//   every declared caller                       write
 //   area:<name>                                 know-<name>
 //   todo whose category matches an area         know-<area>
 //   batch, by its members' categories           know-<area>  ×≤2
@@ -415,7 +416,7 @@ export const NO_BODY = "no published body at this commit";
 //     area (batch repos, a goal's codeRepo,
 //     or the `repo:` subject itself)            know-<area>  ×≤1
 //   judges, or an INTENT_CALLERS caller         know-intent
-//   a WEEK_CALLERS caller                       know-week
+//   a dated todo, or a WEEK_CALLERS caller       know-week
 //   the subject names paths in repo X and
 //     cwd is not inside X's checkout            repo-X
 //   cwd IS inside repo X                        nothing; repoRulesSource native
@@ -483,7 +484,7 @@ export function routeSkills(input) {
   const wanted = [];
 
   // write ────────────────────────────────────────────────────────────────────
-  if (rules.reachesTom) wanted.push("write");
+  wanted.push("write");
 
   // know-<area> ──────────────────────────────────────────────────────────────
   let areaHits = [];
@@ -498,6 +499,7 @@ export function routeSkills(input) {
   // named. Whose LIFE the work belongs to is answerable from the binding alone.
   let areaRepos = [];
   let tokens = [];
+  let dueDays = [];
 
   if (subject.kind === "area") {
     const entry = areaTerms.find((candidate) => candidate.area === subject.area);
@@ -513,6 +515,10 @@ export function routeSkills(input) {
     repos = batch?.repos ?? todo.repos ?? [];
     areaRepos = [...repos, todo.codeRepo];
     tokens = pathTokens(`${todo.brief ?? ""}\n${todo.workDescription ?? ""}\n${todo.entryAction ?? ""}`);
+    if (todo.timingClass === "dated" && typeof todo.dueDay === "string") dueDays.push(todo.dueDay);
+    for (const outcome of todo.dateOutcomes ?? []) {
+      if (typeof outcome?.dueDay === "string" && outcome.dueDay >= String(record.today ?? "")) dueDays.push(outcome.dueDay);
+    }
   } else if (subject.kind === "batch") {
     const batch = batchOf(record, subject.batchId);
     const members = (record.todos ?? []).filter((row) => row.batchId === batch.id);
@@ -548,7 +554,9 @@ export function routeSkills(input) {
   if (rules.judges || rules.captures || INTENT_CALLERS.includes(caller)) wanted.push("know-intent");
 
   // know-week ────────────────────────────────────────────────────────────────
-  if (WEEK_CALLERS.includes(caller)) wanted.push("know-week");
+  // A dated todo needs the schedule for the date it owes, whoever opened it;
+  // the two caller rows additionally need the current week without a subject.
+  if (dueDays.length > 0 || WEEK_CALLERS.includes(caller)) wanted.push("know-week");
 
   // repo-<name> ──────────────────────────────────────────────────────────────
   // The gate is the moved code's rule 9 gate: a brief that named a path, or a

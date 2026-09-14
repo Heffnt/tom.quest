@@ -288,9 +288,9 @@ export function publicationFor(tomquestTree, wikitomTree, run = execFileSync, wo
   ], RUN_OPTIONS));
   const built = {
     commit: result.commit,
-    out: result.out ?? out,
-    published: (result.skills ?? []).map((skill) => skill.name),
-    why: Object.fromEntries((result.refused ?? []).map((entry) => [entry.name, entry.why])),
+    out: result.out,
+    published: result.skills.map((skill) => skill.name),
+    why: Object.fromEntries(result.refused.map((entry) => [entry.name, entry.why])),
   };
   publications.set(key, built);
   return built;
@@ -301,6 +301,8 @@ export function publicationFor(tomquestTree, wikitomTree, run = execFileSync, wo
  *  read is the page; the two generated lines above it are how the harness finds
  *  the file, not part of what it says. */
 export function skillBodyOf(text) {
+  // The publisher is the only writer here, but a partial or corrupt generated
+  // file must fail this evaluation rather than silently score a different prompt.
   const frontmatter = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(text);
   if (frontmatter === null) throw new Error("published SKILL.md has no frontmatter");
   const rest = text.slice(frontmatter[0].length);
@@ -1187,18 +1189,11 @@ export function loadTriggers(tomquestTree) {
     });
 }
 
-/** How many positives and negatives one trigger file carries, whichever way it
- *  writes them: as a `cases` list flagged `negative`, which is the form every
- *  checked-in file uses, or as the lists or counts the first sketch of the
- *  format had. ONE SPELLING of the count, so the rule and the report cannot
- *  come to disagree. */
+/** How many positives and negatives one current-format trigger file carries. */
 export function triggerCounts(trigger) {
-  const count = (value) => (Array.isArray(value) ? value.length : (Number.isFinite(value) ? value : 0));
-  if (Array.isArray(trigger?.cases)) {
-    const negatives = trigger.cases.filter((one) => one?.negative === true).length;
-    return { positives: trigger.cases.length - negatives, negatives };
-  }
-  return { positives: count(trigger?.positives), negatives: count(trigger?.negatives) };
+  if (!Array.isArray(trigger?.cases)) throw new Error("trigger needs a cases list");
+  const negatives = trigger.cases.filter((one) => one?.negative === true).length;
+  return { positives: trigger.cases.length - negatives, negatives };
 }
 
 /**

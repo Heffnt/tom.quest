@@ -27,6 +27,7 @@ function run({ home, wikiTom, tomQuest }) {
       // laptop's skills directory however this machine happens to be set up.
       CLAUDE_CONFIG_DIR: "",
       TTS_SKILLS_DIRS: "",
+      CODEX_HOME: path.join(home, ".codex"),
       CMT_DIR: "",
     },
   });

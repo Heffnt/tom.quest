@@ -223,7 +223,7 @@ export function writeRegistrationClaim({
       envelopeVersion: existing.envelopeVersion ?? ENVELOPE_VERSION,
       token: token ?? existing.token ?? null,
       ...(writer === undefined ? {} : { writer: { ...writer, at: Number.isFinite(writer.at) ? writer.at : now() } }),
-      ...(registration === undefined ? {} : { registration: { ...registration } }),
+      ...(registration === undefined ? {} : { registration: { ...existing.registration, ...registration } }),
       claim: claimValue(claim, runFile, now),
     };
     if (JSON.stringify(existing) !== JSON.stringify(envelope)) atomicJson(file, envelope, fs);
@@ -242,7 +242,10 @@ export function claimRegistration({
 } = {}) {
   const source = spoolPath(spoolDir, token);
   const file = registrationSidecarPath(runFile);
-  return withEnvelopeLock(file, fs, now, () => {
+  // The spool and its sidecar are one move. Taking the spool lock first means
+  // an ask that began before the claim either lands in this envelope or follows
+  // the pointer after it; it cannot disappear between this read and delete.
+  return withEnvelopeLock(source, fs, now, () => withEnvelopeLock(file, fs, now, () => {
     const existing = jsonAt(file, fs);
     // The sidecar is already the durable binding when this token claimed it.
     // A delayed repair must not replace its launcher facts with an older spool.
@@ -256,7 +259,7 @@ export function claimRegistration({
       return { ok: false, reason: "registration spool missing", file, envelope: existing };
     }
     if (spooled.token !== token) return { ok: false, reason: "registration spool token mismatch", file, envelope: existing };
-    if (existing?.token !== undefined && existing.token !== token) {
+    if (existing?.token !== undefined && existing.token !== null && existing.token !== token) {
       return { ok: false, reason: "registration sidecar belongs to another token", file, envelope: existing };
     }
     const envelope = {
@@ -267,7 +270,10 @@ export function claimRegistration({
       envelopeVersion: spooled.envelopeVersion ?? existing?.envelopeVersion ?? ENVELOPE_VERSION,
       token,
       writer: spooled.writer,
-      registration: spooled.registration,
+      // SessionStart's grant receipt is written beside the transcript before a
+      // launcher token can be claimed. It is the actual rendered grant block,
+      // so retain it while the launcher supplies the rest of registration.
+      registration: { ...spooled.registration, ...existing?.registration },
       claim: claimValue(claim, runFile, now),
     };
     const skills = mergeSkillAsks(existing?.skills, spooled.skills);
@@ -283,7 +289,7 @@ export function claimRegistration({
     // a failure to write it costs asks, never the claim.
     writeClaimPointer(spoolDir, token, runFile, fs);
     return { ok: true, claimed: true, file, envelope };
-  });
+  }));
 }
 
 /** Write only the SessionEnd-owned group and preserve registration and claim. */
@@ -328,11 +334,15 @@ export function appendSkillAsk({ runFile, spoolDir, token, ask = {}, fs = fsDefa
     const pointed = jsonAt(claimPointerPath(spoolDir, token), fs);
     if (typeof pointed?.runFile === "string" && pointed.runFile !== "") file = registrationSidecarPath(pointed.runFile);
   }
-  return withEnvelopeLock(file, fs, now, () => {
-    const existing = jsonAt(file, fs);
-    if (existing === null) return { ok: false, reason: "run registration envelope missing", file };
+  const append = (target) => withEnvelopeLock(target, fs, now, () => {
+    const existing = jsonAt(target, fs);
+    // A claim may have removed a spool after this call selected it but before
+    // its lock was acquired. Release that lock, then follow the claim pointer;
+    // taking the sidecar lock here would invert claimRegistration's lock order.
+    if (existing === null && target === spool) return { retryClaimPointer: true };
+    if (existing === null) return { ok: false, reason: "run registration envelope missing", file: target };
     if (token !== undefined && existing.token !== undefined && existing.token !== null && existing.token !== token) {
-      return { ok: false, reason: "registration token mismatch", file, envelope: existing };
+      return { ok: false, reason: "registration token mismatch", file: target, envelope: existing };
     }
     const asked = Array.isArray(existing.skills?.asked) ? existing.skills.asked : [];
     const envelope = {
@@ -340,9 +350,16 @@ export function appendSkillAsk({ runFile, spoolDir, token, ask = {}, fs = fsDefa
       envelopeVersion: existing.envelopeVersion ?? ENVELOPE_VERSION,
       skills: { ...existing.skills, asked: [...asked, skillAskValue(ask, now)].slice(-SKILL_ASK_CAP) },
     };
-    atomicJson(file, envelope, fs);
-    return { ok: true, file, envelope };
+    atomicJson(target, envelope, fs);
+    return { ok: true, file: target, envelope };
   });
+  const result = append(file);
+  if (!result.retryClaimPointer || spool === null) return result;
+  const pointed = jsonAt(claimPointerPath(spoolDir, token), fs);
+  if (typeof pointed?.runFile !== "string" || pointed.runFile === "") {
+    return { ok: false, reason: "run registration envelope missing", file };
+  }
+  return append(registrationSidecarPath(pointed.runFile));
 }
 
 export function readRegistration(runFile, { fs = fsDefault } = {}) {

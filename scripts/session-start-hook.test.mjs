@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { assemblePrelude } from "./prelude.mjs";
 import { renderGrants } from "./skills.mjs";
 import { PULL_TIMEOUT_MS, pullWikiTom } from "./session-start-hook.mjs";
+import { registrationSidecarPath } from "../worker/runs/registration.mjs";
 
 const HOOK = path.resolve("scripts/session-start-hook.mjs");
 const IDENTITY = ["-c", "user.name=test", "-c", "user.email=test@example.com"];
@@ -68,10 +69,10 @@ function fixture({ writing = true } = {}) {
  * configuration cannot reach a test, and `TOM_QUEST_DIR` is pointed at a
  * directory that is not a checkout so the run publishes no repo but WikiTom's.
  */
-function run({ wikitom, skills, tomQuest, env = {} }) {
+function run({ wikitom, skills, tomQuest, env = {}, payload = { hook_event_name: "SessionStart" } }) {
   return spawnSync(process.execPath, [HOOK], {
     encoding: "utf8",
-    input: '{"hook_event_name":"SessionStart"}\n',
+    input: `${JSON.stringify(payload)}\n`,
     env: {
       ...process.env,
       WIKITOM_DIR: wikitom,
@@ -117,6 +118,23 @@ describe("session-start-hook", () => {
     // And neither is the index of what the run could fetch.
     expect(context).not.toContain("MODEL-OF-TOM FETCHABLE");
     expect(context).not.toContain("--layers know");
+  });
+
+  it("hands the actual granted and refused names to run diagnostics", () => {
+    const wikitom = fixture({ writing: false });
+    const skills = temp("session-start-registration-skills-");
+    const transcript = path.join(temp("session-start-registration-run-"), "session.jsonl");
+
+    contextOf(run({
+      wikitom,
+      skills,
+      payload: { hook_event_name: "SessionStart", transcript_path: transcript },
+    }));
+
+    expect(JSON.parse(fs.readFileSync(registrationSidecarPath(transcript), "utf8")).registration).toMatchObject({
+      skillsGranted: [],
+      skillsRefused: ["write"],
+    });
   });
 
   it("stays inside the laptop budget, on the fixture and on the real vault", () => {

@@ -31,17 +31,66 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { assemblePrelude } from "./prelude.mjs";
 import { publishSkills } from "./publish-skills.mjs";
 import { SKILL_PREFIX, renderGrants } from "./skills.mjs";
 import { routeSkills } from "../worker/jobs/skill-router.mjs";
+
+function relativeModulePath(relative) {
+  try { return fileURLToPath(new URL(relative, import.meta.url)); } catch { return null; }
+}
+
+const registrationPath = [
+  relativeModulePath("../worker/runs/registration.mjs"),
+  relativeModulePath("../runs/registration.mjs"),
+  // Vitest gives an imported module a Vite URL, so only its checkout-relative
+  // path is file-shaped there. The direct hook keeps the two installed layouts.
+  path.resolve(process.cwd(), "worker/runs/registration.mjs"),
+].find((candidate) => candidate !== null && existsSync(candidate));
+const registration = registrationPath ? await import(pathToFileURL(registrationPath).href) : null;
 
 const wikitom = process.env.WIKITOM_DIR
   || (process.platform === "win32" ? "C:/Users/heffn/Desktop/WikiTom" : "/root/wikitom");
 
 function oneLine(value) {
   return String(value?.message ?? value).replace(/\s+/g, " ").trim();
+}
+
+function firstString(...values) {
+  return values.find((value) => typeof value === "string" && value.trim() !== "") ?? null;
+}
+
+function sessionRunFile(payload) {
+  const value = firstString(
+    payload?.transcript_path,
+    payload?.transcriptPath,
+    payload?.rollout_path,
+    payload?.rolloutPath,
+    payload?.run_file,
+    payload?.runFile,
+  );
+  return value === null ? null : path.resolve(value);
+}
+
+// The run lifecycle hook never receives this hook's rendered text. Hand the
+// exact lists over through the registration sidecar, so diagnostics match a
+// successful refusal as well as an ordinary grant.
+function recordGrantReceipt(payload, { granted, refused }) {
+  const runFile = sessionRunFile(payload);
+  if (runFile === null || registration === null) return;
+  try {
+    registration.writeRegistrationClaim({
+      runFile,
+      claim: { by: "hook:session-start-grants", runFile },
+      registration: {
+        skillsGranted: [...granted],
+        skillsRefused: refused.map((entry) => entry.name),
+      },
+    });
+  } catch {
+    // A diagnostic receipt must never make the launcher fail.
+  }
 }
 
 // A session start WAITS for this hook, so the refresh is capped: a slow fetch
@@ -113,7 +162,7 @@ export function skillRepoDirs() {
     // A directory that is not a checkout is skipped below, so naming one that
     // may be absent costs nothing.
     ComplexMultiTrigger: process.env.CMT_DIR
-      || (process.platform === "win32" ? "C:/Users/heffn/Desktop/booleanbackdoor/ComplexMultiTrigger" : "/root/ComplexMultiTrigger"),
+      || (process.platform === "win32" ? "C:/Users/heffn/Desktop/booleanbackdoor/ComplexMultiTrigger" : "/var/cache/tts/ComplexMultiTrigger"),
   };
   return dirs;
 }
@@ -188,9 +237,14 @@ export function publishedCatalog(dir) {
 // ── The hook ─────────────────────────────────────────────────────────────────
 
 function main() {
-  // Hooks can send their event JSON on stdin. This hook intentionally has no
-  // event-specific behavior, but draining stdin keeps that protocol harmless.
-  process.stdin.resume();
+  let payload = null;
+  try {
+    const input = readFileSync(0, "utf8");
+    const parsed = JSON.parse(input);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) payload = parsed;
+  } catch {
+    // The context hook has no event-specific output requirement.
+  }
 
   // The box's nightly publishes its skill bodies and posts their commit as one
   // operation. Pulling here would advance only the checkout, then mislabel the
@@ -225,6 +279,7 @@ function main() {
   try {
     const prelude = assemblePrelude({ wikitom, layers: "operate" });
     let grants;
+    let routed;
     try {
       // `subject: { kind: "none" }` because the hook has no `--for` argument to
       // take one from: a session start knows its caller and its cwd and nothing
@@ -233,7 +288,7 @@ function main() {
       // REACHES TOM — so the grant is `write`, and the know layer is a `tts
       // search skills` away rather than a prompt away.
       const catalog = publishedCatalog(destinations[0]);
-      const { granted, refused } = routeSkills({
+      routed = routeSkills({
         subject: { kind: "none" },
         caller: "laptop",
         pages: [],
@@ -247,10 +302,11 @@ function main() {
       // or mixed directory says unknown rather than borrowing a just-pulled
       // checkout commit for bodies it did not read.
       const commit = catalog.commit ?? (catalog.names.size === 0 ? prelude.commit : "unknown");
-      grants = renderGrants({ commit, granted, refused });
+      grants = renderGrants({ commit, granted: routed.granted, refused: routed.refused });
     } catch (error) {
       grants = `SKILLS could not be routed: ${oneLine(error)}`;
     }
+    if (routed !== undefined) recordGrantReceipt(payload, routed);
     additionalContext = `${prelude.text}\n\n${grants}`;
   } catch (error) {
     additionalContext = `model-of-tom context could not be loaded: ${oneLine(error)}`;

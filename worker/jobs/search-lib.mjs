@@ -692,7 +692,9 @@ function skillGroup(name, groups) {
 }
 
 /** renderSkillMd JSON-quotes the description so a `"` or a `:` inside it cannot
- * break the block, and parseFrontmatter parses nothing inside a value. */
+ * break the block, and parseFrontmatter parses nothing inside a value. An
+ * interrupted publish can leave an installed body behind, so search shows its
+ * literal malformed description instead of hiding an inspectable skill. */
 function frontmatterText(value) {
   const raw = String(value ?? "").trim();
   if (raw.startsWith('"') && raw.endsWith('"') && raw.length > 1) {
@@ -720,6 +722,8 @@ export function readSkillCatalog(dir, { prefix, groups }) {
     if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue;
     const skillDir = path.join(dir, entry.name);
     const file = path.join(skillDir, "SKILL.md");
+    // Publication creates a directory before it writes SKILL.md. A process
+    // interrupted between those steps leaves no loadable skill to list.
     if (!fs.existsSync(file)) continue;
     const { fields, body } = parseFrontmatter(fs.readFileSync(file, "utf8"));
     const name = bareSkillName(entry.name, prefix);

@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -179,6 +181,50 @@ describe("run registration", () => {
         { at: 4, name: "know-nothing", result: "refused", why: "not in the catalog" },
       ] },
     });
+  });
+
+  it("keeps an ask that begins while a claim owns the spool lock", async () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
+    const token = "12121212-1212-4121-8121-121212121212";
+    const source = path.join(spoolDir, `${token}.json`);
+    const ready = path.join(dir, "append-ready");
+    const start = path.join(dir, "append-start");
+    const resultFile = path.join(dir, "append-result.json");
+    writeRegistration({ spoolDir, token, writer: { file: "launcher.mjs" }, registration: { host: "box" }, now: () => 1 });
+
+    // A separate process makes this a real interleaving: it is ready to append,
+    // then waits until claimRegistration has acquired the spool lock.
+    const child = spawn(process.execPath, ["--input-type=module", "--eval", [
+      `import fs from "node:fs";`,
+      `import { appendSkillAsk } from ${JSON.stringify(pathToFileURL(path.resolve("worker/runs/registration.mjs")).href)};`,
+      `fs.writeFileSync(${JSON.stringify(ready)}, "ready");`,
+      `while (!fs.existsSync(${JSON.stringify(start)})) await new Promise((resolve) => setTimeout(resolve, 2));`,
+      `const result = appendSkillAsk({ spoolDir: ${JSON.stringify(spoolDir)}, token: ${JSON.stringify(token)}, ask: { name: "know-week", result: "ok" }, now: () => 2 });`,
+      `fs.writeFileSync(${JSON.stringify(resultFile)}, JSON.stringify(result));`,
+    ].join("\n")], { stdio: "ignore" });
+    const exited = new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+    for (let attempt = 0; attempt < 100 && !fs.existsSync(ready); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(fs.existsSync(ready)).toBe(true);
+
+    const coordinatedFs = {
+      ...fs,
+      openSync(file, ...args) {
+        const handle = fs.openSync(file, ...args);
+        if (file === `${source}.lock`) fs.writeFileSync(start, "go");
+        return handle;
+      },
+    };
+    expect(claimRegistration({ spoolDir, token, runFile, claim: { by: "hook:SessionStart" }, fs: coordinatedFs, now: () => 3 }))
+      .toMatchObject({ ok: true, claimed: true });
+    const exitCode = await exited;
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(fs.readFileSync(resultFile, "utf8"))).toMatchObject({ ok: true, file: registrationSidecarPath(runFile) });
+    expect(readRegistration(runFile).skills.asked).toEqual([{ at: 2, name: "know-week", result: "ok" }]);
   });
 
   it("finds the claimed envelope from the token alone, which is all the box gives a child", () => {

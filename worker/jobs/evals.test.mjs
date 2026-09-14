@@ -34,6 +34,7 @@ import {
   parseArgs,
   parseJudge,
   passedIds,
+  publicationFor,
   preludeFrom,
   PR_TRIALS,
   runCase,
@@ -746,6 +747,34 @@ describe("an io with no skill assembler", () => {
 describe("skillsFor", () => {
   const HERE = path.resolve(".");
 
+  function committedWikiTom() {
+    const dir = tree();
+    const write = (relative, body) => {
+      const file = path.join(dir, relative);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, body);
+    };
+    write("AGENTS.md", "# WikiTom\n\nThe vault.\n");
+    write("model-of-tom/agent-rules.md", "# Agent rules\n\n## Map\n\n### Repos\n- tom.quest: the site.\n- WikiTom: the vault.\n");
+    write("model-of-tom/writing.md", "# Writing\n\nUse short sentences.\n");
+    write("model-of-tom/ground.md", "# Ground\n\nKnown facts.\n");
+    write("model-of-tom/intent.md", "# Intent\n\n## Directions\n\n- Ship.\n");
+    write("model-of-tom/priorities.md", "# Priorities\n\n- First things first.\n");
+    write("model-of-tom/schedule.md", "# Schedule\n\n## Week\n\n- Monday — practice.\n");
+    execFileSync("git", ["init", "-q", "-b", "main", dir]);
+    execFileSync("git", ["-C", dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "add", "-A"]);
+    execFileSync("git", ["-C", dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "fixture"]);
+    return dir;
+  }
+
+  it("runs publicationFor through the real publisher's JSON CLI", () => {
+    const work = tree();
+    const wiki = committedWikiTom();
+    const published = publicationFor(HERE, wiki, execFileSync, work);
+    expect(published.published).toContain("write");
+    expect(fs.existsSync(path.join(published.out, "tom-write", "SKILL.md"))).toBe(true);
+  });
+
   function publishingRun(catalogue, refused = []) {
     const calls = [];
     const run = (exe, args, options) => {
@@ -1259,17 +1288,15 @@ describe("the trigger set", () => {
     for (const name of LAYER_SKILL_ALIASES.know) expect(named.has(name)).toBe(true);
   });
 
-  it("never loads a draft, and counts a file written either way", () => {
+  it("never loads a draft and counts the checked-in cases format", () => {
     const dir = tree();
-    writeJson(dir, path.join("evals", "triggers", "hourly.json"), { name: "hourly", kind: "skill", positives: ["a"], negatives: ["b", "c"] });
-    writeJson(dir, path.join("evals", "triggers", "hourly.draft.json"), { positives: ["a", "b"], negatives: [] });
+    writeJson(dir, path.join("evals", "triggers", "hourly.json"), { name: "hourly", kind: "skill", cases: [{ negative: false }, { negative: true }, { negative: true }] });
+    writeJson(dir, path.join("evals", "triggers", "hourly.draft.json"), { cases: [{ negative: false }, { negative: false }] });
     expect(loadTriggers(dir).map((one) => one.file)).toEqual(["hourly.json"]);
     expect(triggerCounts(loadTriggers(dir)[0])).toEqual({ positives: 1, negatives: 2 });
     expect(loadTriggers(tree())).toEqual([]);
-    // The form every checked-in file uses: one `cases` list, each flagged.
-    expect(triggerCounts({ cases: [{ negative: false }, { negative: true }, { negative: true }] }))
-      .toEqual({ positives: 1, negatives: 2 });
     expect(triggerCounts({ cases: [] })).toEqual({ positives: 0, negatives: 0 });
+    expect(() => triggerCounts({ positives: ["a"], negatives: ["b"] })).toThrow("trigger needs a cases list");
   });
 });
 
