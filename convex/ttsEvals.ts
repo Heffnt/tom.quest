@@ -3,11 +3,85 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { DAY_MS, modelOfTomHeadOf } from "./ttsShared";
-import { scoredNothing } from "../worker/jobs/evals-row.mjs";
+import { EVALS_PROTOCOL, scoredNothing } from "../worker/jobs/evals-row.mjs";
 
 export const PRELUDE_DELIVERY = "prelude-delivery";
 export const EVALS_REQUEST = "evals-request";
 export const EVALS_RUN = "evals-run";
+export const EVALS_PROTOCOL_SEEN = "evals-protocol-seen";
+const EVALS_PROTOCOL_SEEN_KEY = "box";
+
+export type EvalsProtocolStatus = {
+  boxEvalsVersion: number;
+  evalsProtocol: number;
+  protocolGap: string | null;
+};
+
+/** The one sentence every reader gives the rollout window. */
+export function evalsProtocolGap(boxEvalsVersion: number): string | null {
+  return boxEvalsVersion < EVALS_PROTOCOL
+    ? `the box's evals runner is at protocol ${boxEvalsVersion}; this door needs ${EVALS_PROTOCOL} — run worker/setup.sh on the box`
+    : null;
+}
+
+/** The newest box version this door observed, with pre-versioned traffic read
+ *  as protocol 1 rather than as a version nobody can name. */
+export async function evalsProtocolStatus(
+  ctx: QueryCtx | MutationCtx,
+): Promise<EvalsProtocolStatus> {
+  const row = await ctx.db
+    .query("dtsEvents")
+    .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_PROTOCOL_SEEN).eq("key", EVALS_PROTOCOL_SEEN_KEY))
+    .unique();
+  const seen = (row?.data as { boxEvalsVersion?: unknown } | undefined)?.boxEvalsVersion;
+  const boxEvalsVersion = typeof seen === "number" && Number.isSafeInteger(seen) && seen > 0 ? seen : 1;
+  return {
+    boxEvalsVersion,
+    evalsProtocol: EVALS_PROTOCOL,
+    protocolGap: evalsProtocolGap(boxEvalsVersion),
+  };
+}
+
+/**
+ * The queue GET and every evals-run POST pass through this singleton writer.
+ * Omission is the installed pre-version runner and therefore protocol 1.
+ *
+ * roll the box (worker/setup.sh) before or immediately after merging a change to the evals row contract; until it rolls, every evals request is pending and the gate names the protocol gap
+ *
+ * This check cannot be deleted: Convex deploys ahead of manually installed
+ * box code, so without the observed version that expected window is
+ * indistinguishable from a runner that silently stopped answering.
+ */
+export const internalObserveBoxEvalsProtocol = internalMutation({
+  args: { boxEvalsVersion: v.optional(v.number()) },
+  handler: async (ctx, { boxEvalsVersion }): Promise<EvalsProtocolStatus> => {
+    const seen = boxEvalsVersion ?? 1;
+    if (!Number.isSafeInteger(seen) || seen <= 0) {
+      throw new Error("boxEvalsVersion must be a positive integer");
+    }
+    const at = Date.now();
+    const existing = await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_PROTOCOL_SEEN).eq("key", EVALS_PROTOCOL_SEEN_KEY))
+      .unique();
+    const data = { boxEvalsVersion: seen };
+    if (existing === null) {
+      await ctx.db.insert("dtsEvents", {
+        at,
+        kind: EVALS_PROTOCOL_SEEN,
+        key: EVALS_PROTOCOL_SEEN_KEY,
+        data,
+      });
+    } else {
+      await ctx.db.patch(existing._id, { at, data });
+    }
+    return {
+      boxEvalsVersion: seen,
+      evalsProtocol: EVALS_PROTOCOL,
+      protocolGap: evalsProtocolGap(seen),
+    };
+  },
+});
 
 /**
  * The coverage answer an UNAFFECTED run carries.
@@ -864,7 +938,11 @@ export const internalEvalsRun = internalQuery({
     // is usable regardless of whether such a request exists. A nonmeasurement
     // still cannot seed a comparison.
     const base = args.baseSha === undefined ? null : await runForKey(ctx, `${args.repo}@${args.baseSha}`);
-    return { run: run?.data ?? null, base: base === null || scoredNothing(base.data) ? null : base.data };
+    return {
+      run: run?.data ?? null,
+      base: base === null || scoredNothing(base.data) ? null : base.data,
+      ...await evalsProtocolStatus(ctx),
+    };
   },
 });
 

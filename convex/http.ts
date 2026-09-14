@@ -2490,15 +2490,35 @@ const ttsEvalsRequest = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
   const params = new URL(request.url).searchParams;
+  const rawBoxEvalsVersion = params.get("boxEvalsVersion");
+  const boxEvalsVersion = rawBoxEvalsVersion === null ? undefined : Number(rawBoxEvalsVersion);
+  if (
+    boxEvalsVersion !== undefined &&
+    (!Number.isSafeInteger(boxEvalsVersion) || boxEvalsVersion <= 0)
+  ) {
+    return jsonResponse(400, { error: "boxEvalsVersion must be a positive integer" });
+  }
+  // A missing value is protocol 1: this is also the path the installed runner
+  // used before the protocol field existed, so the rollout remains observable
+  // while that copy is still polling.
+  const protocol = await ctx.runMutation(internal.ttsEvals.internalObserveBoxEvalsProtocol, {
+    boxEvalsVersion,
+  });
   const repo = params.get("repo");
   const sha = params.get("sha");
   if (repo !== null || sha !== null) {
     if (repo === null || repo === "" || sha === null || sha === "") {
       return jsonResponse(400, { error: "repo and sha required together" });
     }
-    return jsonResponse(200, { request: await ctx.runQuery(internal.ttsEvals.internalEvalsRequest, { repo, sha }) });
+    return jsonResponse(200, {
+      request: await ctx.runQuery(internal.ttsEvals.internalEvalsRequest, { repo, sha }),
+      ...protocol,
+    });
   }
-  return jsonResponse(200, { request: await ctx.runQuery(internal.ttsEvals.internalOldestEvalsRequest, {}) });
+  return jsonResponse(200, {
+    request: await ctx.runQuery(internal.ttsEvals.internalOldestEvalsRequest, {}),
+    ...protocol,
+  });
 });
 
 http.route({ path: "/tts/evals-request", method: "GET", handler: ttsEvalsRequest });
@@ -2716,6 +2736,24 @@ const ttsEvent = httpAction(async (ctx, request) => {
     return jsonResponse(400, { error: "key, when given, is a non-empty string" });
   }
   try {
+    if (b.kind === "evals-run") {
+      const data = (b.data ?? {}) as Record<string, unknown>;
+      const boxEvalsVersion = data.boxEvalsVersion;
+      if (
+        boxEvalsVersion !== undefined &&
+        (typeof boxEvalsVersion !== "number" ||
+          !Number.isSafeInteger(boxEvalsVersion) ||
+          boxEvalsVersion <= 0)
+      ) {
+        return jsonResponse(400, { error: "data.boxEvalsVersion must be a positive integer" });
+      }
+      // Every evals row is another observation of the installed runner. A
+      // pre-versioned row is protocol 1, the same legacy default as its queue
+      // reads, so the singleton always describes the newest box traffic.
+      await ctx.runMutation(internal.ttsEvals.internalObserveBoxEvalsProtocol, {
+        boxEvalsVersion: typeof boxEvalsVersion === "number" ? boxEvalsVersion : undefined,
+      });
+    }
     const id = await ctx.runMutation(internal.ttsNightly.internalRecordWorkerEvent, {
       kind: b.kind,
       data: b.data,

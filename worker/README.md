@@ -75,6 +75,16 @@ code-todo ruling loop"), and the weekly session the Friday job opens.
   needs between batches), exiting early on an unchanged input hash
   (`/var/lib/tts/plan-input-hash`).
 
+## Evals
+
+The five-minute `evals.mjs --serve` cron takes pull-request requests from
+Convex and writes every answer back as an `evals-run` event. The shared
+`EVALS_PROTOCOL` in `jobs/evals-row.mjs` names that row contract; queue reads
+and written rows carry the installed box version so the door can distinguish
+an expected rollout window from a runner that has stopped.
+
+roll the box (worker/setup.sh) before or immediately after merging a change to the evals row contract; until it rolls, every evals request is pending and the gate names the protocol gap
+
 ## The pollers
 
 **poll-gmail** lists new inbox mail and spends ONE headless Claude call per

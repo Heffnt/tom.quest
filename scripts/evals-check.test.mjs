@@ -13,6 +13,7 @@ import {
   report,
   POLL_TIMEOUT_MS,
   unaffectedBy,
+  waitForEvals,
   WATCHED_PATHS,
 } from "./evals-check.mjs";
 
@@ -224,6 +225,37 @@ describe("gate, continued", () => {
     expect(source).toMatch(
       /the Jarvis Box did not answer[\s\S]*node \/opt\/tts\/evals\.mjs --repo \$\{repo\} --sha \$\{sha\} --force/,
     );
+  });
+
+  it("prints a protocol gap and exits non-zero after one poll", async () => {
+    const gap = "the box's evals runner is at protocol 1; this door needs 2 — run worker/setup.sh on the box";
+    const callFn = vi.fn(async () => ({
+      run: null,
+      boxEvalsVersion: 1,
+      evalsProtocol: 2,
+      protocolGap: gap,
+    }));
+    const error = vi.fn();
+    const exit = vi.fn();
+    const sleepFn = vi.fn();
+    const result = await waitForEvals(
+      {
+        site: "https://example.convex.site",
+        key: "key",
+        repo: "tom.quest",
+        sha: "abc1234",
+        baseSha: "base123",
+        deadline: 1_000,
+      },
+      { callFn, error, exit, sleepFn, now: () => 0, log: vi.fn() },
+    );
+    expect(callFn).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalledWith(gap);
+    expect(exit).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(sleepFn).not.toHaveBeenCalled();
+    expect(result.protocolGap).toBe(true);
   });
 });
 

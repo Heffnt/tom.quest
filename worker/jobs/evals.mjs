@@ -24,16 +24,28 @@
 // The box POLLS. It has no inbound door: it talks out to Convex, GitHub and
 // Slack, and nothing talks in but SSH with Tom's key. A GitHub Action posts a
 // request to Convex and waits; a cron tick here picks it up.
+//
+// roll the box (worker/setup.sh) before or immediately after merging a change to the evals row contract; until it rolls, every evals request is pending and the gate names the protocol gap
 
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { convexFetch, extractJsonObject, loadEnv, nyHour, nyUtcOffsetHours, runClaude, serverErrorMessage } from "./tts-lib.mjs";
+import {
+  convexFetch,
+  extractJsonObject,
+  loadEnv,
+  nyHour,
+  nyUtcOffsetHours,
+  reportJobFailed,
+  reportJobOk,
+  runClaude,
+  serverErrorMessage,
+} from "./tts-lib.mjs";
 import { cacheRepoDir } from "./tts-code-lib.mjs";
 import { redactSecrets } from "./session-archive.mjs";
-import { scoredNothing } from "./evals-row.mjs";
+import { EVALS_PROTOCOL, scoredNothing } from "./evals-row.mjs";
 // THE AUDIT'S OWN PROMPT, IMPORTED AND NEVER RE-IMPLEMENTED. The planted-fault
 // arm below asks the real auditor the real question about a fixture diff; a
 // second copy of that prompt here would measure a prompt nothing else uses.
@@ -43,6 +55,8 @@ import { AUDIT_UNAVAILABLE, auditPrompt } from "./audit.mjs";
 
 export const EVALS_RUN = "evals-run";
 export const EVALS_REQUEST = "evals-request";
+export const EVALS_PROTOCOL_FAILURE_KEY = "runs-evals:protocol";
+export const EVALS_JOB = "runs-evals";
 
 export const REGEN_MODEL = process.env.TTS_EVALS_REGEN_MODEL || "haiku";
 export const JUDGE_MODEL = process.env.TTS_EVALS_JUDGE_MODEL || "fable";
@@ -2142,8 +2156,21 @@ function realIo(env) {
   };
 }
 
+/** Every queue read identifies the installed runner before the door answers. */
+export function evalsRequestRoute({ repo, sha } = {}) {
+  const params = new URLSearchParams({ boxEvalsVersion: String(EVALS_PROTOCOL) });
+  if (repo !== undefined) params.set("repo", repo);
+  if (sha !== undefined) params.set("sha", sha);
+  return `/tts/evals-request?${params}`;
+}
+
+/** One writer for every evals row, including cheap and failed answers. */
 async function postRun(env, data) {
-  await convexFetch(env, "/tts/event", { kind: EVALS_RUN, key: `${data.repo}@${data.sha}`, data });
+  await convexFetch(env, "/tts/event", {
+    kind: EVALS_RUN,
+    key: `${data.repo}@${data.sha}`,
+    data: { ...data, boxEvalsVersion: EVALS_PROTOCOL },
+  });
 }
 
 /** The fields of a row that scored nothing — shared by the two rows the box
@@ -2514,7 +2541,7 @@ export async function runAndPost(env, io, {
     // currentness rule leaves the newer request queued and the gate closed.
     const current = await convexFetch(
       env,
-      `/tts/evals-request?repo=${encodeURIComponent(repo)}&sha=${encodeURIComponent(sha)}`,
+      evalsRequestRoute({ repo, sha }),
     );
     if (current?.request?.requestedAt !== answersRequestAt) {
       const stale = failedRun({
@@ -2552,7 +2579,7 @@ export async function runAndPost(env, io, {
 export async function directRequestIdentity(env, { repo, sha }) {
   const { request } = await convexFetch(
     env,
-    `/tts/evals-request?repo=${encodeURIComponent(repo)}&sha=${encodeURIComponent(sha)}`,
+    evalsRequestRoute({ repo, sha }),
   );
   if (request === null || request === undefined) return null;
   return {
@@ -2587,8 +2614,37 @@ function requestClaimsUnaffected(request) {
  * whose answer it did nothing to change — is not visible from serveRequest.
  */
 export async function servePass(env, io, options = {}) {
+  let protocolChecked = false;
   for (let answered = 0; answered < SERVE_SUPERSEDED_LIMIT; answered += 1) {
-    const { request } = await convexFetch(env, "/tts/evals-request");
+    const response = await convexFetch(env, evalsRequestRoute());
+    const doorProtocol = Number.isSafeInteger(response?.evalsProtocol) && response.evalsProtocol > 0
+      ? response.evalsProtocol
+      : null;
+    const seenProtocol = Number.isSafeInteger(response?.boxEvalsVersion) && response.boxEvalsVersion > 0
+      ? response.boxEvalsVersion
+      : EVALS_PROTOCOL;
+    if (doorProtocol !== null && seenProtocol < doorProtocol) {
+      // This guard cannot be deleted: without it an installed old runner keeps
+      // taking work whose answers the deployed door must refuse, once per cron
+      // tick, while every later request waits behind it.
+      const gap = typeof response.protocolGap === "string" && response.protocolGap !== ""
+        ? response.protocolGap
+        : `the box's evals runner is at protocol ${seenProtocol}; this door needs ${doorProtocol} — run worker/setup.sh on the box`;
+      await (options.reportFailed ?? reportJobFailed)(env, {
+        job: EVALS_JOB,
+        key: EVALS_PROTOCOL_FAILURE_KEY,
+        error: gap,
+      });
+      throw new Error(gap);
+    }
+    if (!protocolChecked && options.dryRun !== true) {
+      await (options.reportOk ?? reportJobOk)(env, {
+        job: EVALS_JOB,
+        key: EVALS_PROTOCOL_FAILURE_KEY,
+      });
+      protocolChecked = true;
+    }
+    const { request } = response;
     if (request === null || request === undefined) {
       console.log("[evals] no unanswered request");
       return;

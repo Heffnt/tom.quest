@@ -3,7 +3,13 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { logEvent } from "./tts";
-import { answeredEvalsRun, COVERAGE_NOT_REQUIRED, EVALS_RUN, evalsRequestFor } from "./ttsEvals";
+import {
+  answeredEvalsRun,
+  COVERAGE_NOT_REQUIRED,
+  EVALS_RUN,
+  evalsProtocolStatus,
+  evalsRequestFor,
+} from "./ttsEvals";
 import { redactSecrets } from "../worker/session-host/redact.mjs";
 
 // ── THE MECHANICAL MERGE GATE (Tom, 2026-09-09) ─────────────────────────────
@@ -361,6 +367,7 @@ export async function mergeGateFor(
   const pendingEvalsRequest = evals === null
     ? await evalsRequestFor(ctx, repo, sha)
     : null;
+  const protocol = pendingEvalsRequest === null ? null : await evalsProtocolStatus(ctx);
   const evalsData = (evals?.data ?? {}) as {
     regressions?: unknown;
     goldenCoverage?: unknown;
@@ -407,7 +414,9 @@ export async function mergeGateFor(
     ? evalsData.reason
     : typeof evalsData.error === "string" && evalsData.error !== "" ? evalsData.error : "runner failed";
   const evalsCheck: MergeCheck =
-    pendingEvalsRequest !== null
+    pendingEvalsRequest !== null && protocol !== null && protocol.protocolGap !== null
+      ? { name: "evals", passed: false, why: protocol.protocolGap }
+    : pendingEvalsRequest !== null
       ? { name: "evals", passed: false, why: `the evals are being scored again at ${short}` }
     : evals === null
       ? { name: "evals", passed: false, why: `no evals run scored ${short}` }

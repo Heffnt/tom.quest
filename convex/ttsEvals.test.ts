@@ -1,5 +1,5 @@
 import { convexTest, type TestConvex } from "convex-test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { internal } from "./_generated/api";
 import {
   EVALS_REQUEST,
@@ -9,10 +9,76 @@ import {
   GOLDEN_PER_VERDICT_MAX,
   partitionOf,
 } from "./ttsEvals";
+import { EVALS_PROTOCOL } from "../worker/jobs/evals-row.mjs";
 import schema from "./schema";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 const DAY = 86_400_000;
+
+describe("the box evals protocol", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("reads omitted legacy traffic as protocol 1 and keeps one newest-seen row", async () => {
+    const t = convexTest({ schema, modules });
+    expect(await t.mutation(internal.ttsEvals.internalObserveBoxEvalsProtocol, {}))
+      .toEqual({
+        boxEvalsVersion: 1,
+        evalsProtocol: EVALS_PROTOCOL,
+        protocolGap:
+          `the box's evals runner is at protocol 1; this door needs ${EVALS_PROTOCOL} — run worker/setup.sh on the box`,
+      });
+    expect(await t.mutation(internal.ttsEvals.internalObserveBoxEvalsProtocol, {
+      boxEvalsVersion: EVALS_PROTOCOL + 1,
+    })).toEqual({
+      boxEvalsVersion: EVALS_PROTOCOL + 1,
+      evalsProtocol: EVALS_PROTOCOL,
+      protocolGap: null,
+    });
+    const rows = await t.run(async (ctx) =>
+      await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", "evals-protocol-seen").eq("key", "box"))
+        .collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].data).toEqual({ boxEvalsVersion: EVALS_PROTOCOL + 1 });
+  });
+
+  it("records the protocol carried by an evals row post", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "worker-key");
+    const t = convexTest({ schema, modules });
+    const response = await t.fetch("/tts/event", {
+      method: "POST",
+      headers: { "X-TTS-Key": "worker-key", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: EVALS_RUN,
+        key: "tom.quest@abc1234",
+        data: { repo: "tom.quest", sha: "abc1234", boxEvalsVersion: EVALS_PROTOCOL },
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(await t.query(internal.ttsEvals.internalEvalsRun, {
+      repo: "tom.quest",
+      sha: "missing",
+    })).toMatchObject({ boxEvalsVersion: EVALS_PROTOCOL, protocolGap: null });
+  });
+
+  it("records the protocol carried by a queue read before returning work", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", "worker-key");
+    const t = convexTest({ schema, modules });
+    const response = await t.fetch(`/tts/evals-request?boxEvalsVersion=${EVALS_PROTOCOL}`, {
+      method: "GET",
+      headers: { "X-TTS-Key": "worker-key" },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      request: null,
+      boxEvalsVersion: EVALS_PROTOCOL,
+      evalsProtocol: EVALS_PROTOCOL,
+      protocolGap: null,
+    });
+  });
+});
 
 function prelude(commit: string) {
   return `MODEL-OF-TOM FILES (WikiTom commit ${commit}): model-of-tom/writing.md\nbody`;

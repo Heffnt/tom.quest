@@ -18,6 +18,7 @@ import {
   removalNotesOf,
 } from "./ttsMerge";
 import { COVERAGE_NOT_REQUIRED, EVALS_REQUEST, EVALS_RUN } from "./ttsEvals";
+import { EVALS_PROTOCOL } from "../worker/jobs/evals-row.mjs";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -68,6 +69,8 @@ const approvedAudit = (t: TestConvex<typeof schema>, sha = SHA) =>
  *  not answer, and the arm treats that as a no. */
 const cleanEvals = (t: TestConvex<typeof schema>, sha = SHA) =>
   seedFact(t, EVALS_RUN, { regressions: 0, goldenCoverage: true, pass: 40, items: 40 }, sha);
+const observeEvalsProtocol = (t: TestConvex<typeof schema>, boxEvalsVersion = EVALS_PROTOCOL) =>
+  t.mutation(internal.ttsEvals.internalObserveBoxEvalsProtocol, { boxEvalsVersion });
 
 const mergeReport = (t: TestConvex<typeof schema>, over: Record<string, unknown> = {}) =>
   post(t, "/tts/merge", {
@@ -438,11 +441,38 @@ describe("the evals arm's golden-coverage clause", () => {
       });
     });
     await seedFact(t, EVALS_RUN, { regressions: 0, goldenCoverage: true, pass: 40, items: 40 });
+    await observeEvalsProtocol(t);
     const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
     expect(gate.allowed).toBe(false);
     expect(gate.missing).toEqual(["evals"]);
     expect(gate.checks.find((c: { name: string }) => c.name === "evals").why)
       .toBe(`the evals are being scored again at ${SHA.slice(0, 7)}`);
+  });
+
+  it("names the protocol gap while the installed box is below the door", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    const t = convex();
+    await greenTests(t);
+    await approvedAudit(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: 50,
+        kind: EVALS_REQUEST,
+        key: commitKey(REPO, SHA),
+        data: {
+          repo: REPO, sha: SHA, baseSha: "f5c1fb9", pr: 1, runId: 1,
+          paths: ["model-of-tom/**"], changed: ["model-of-tom/intent.md"], prBody: null,
+          unaffectedClaimed: false, requestedAt: 50,
+        },
+      });
+    });
+    await observeEvalsProtocol(t, EVALS_PROTOCOL - 1);
+    const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
+    expect(gate.allowed).toBe(false);
+    expect(gate.checks.find((c: { name: string }) => c.name === "evals").why).toBe(
+      `the box's evals runner is at protocol ${EVALS_PROTOCOL - 1}; ` +
+        `this door needs ${EVALS_PROTOCOL} — run worker/setup.sh on the box`,
+    );
   });
 
   // "not-required" is the ONE word that opens this way. Anything else on the
@@ -507,6 +537,7 @@ describe("the evals arm's golden-coverage clause", () => {
       });
     });
     await seedFact(t, EVALS_RUN, { unaffected: true, regressions: 0, goldenCoverage: COVERAGE_NOT_REQUIRED, answersRequestAt: 49 });
+    await observeEvalsProtocol(t, EVALS_PROTOCOL + 1);
     const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
     expect(gate.allowed).toBe(false);
     expect(gate.missing).toEqual(["evals"]);

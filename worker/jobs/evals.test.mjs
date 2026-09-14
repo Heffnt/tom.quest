@@ -11,6 +11,9 @@ import {
   DIFF_HISTORY_DEEPEN,
   efficiencyOf,
   efficiencyVerdict,
+  EVALS_JOB,
+  EVALS_PROTOCOL_FAILURE_KEY,
+  evalsRequestRoute,
   failedRun,
   faultAudits,
   faultsMonthly,
@@ -64,6 +67,7 @@ import {
   VERIFIER_CAVEAT,
   verifierScorecard,
 } from "./evals.mjs";
+import { EVALS_PROTOCOL } from "./evals-row.mjs";
 
 const dirs = [];
 afterEach(() => {
@@ -98,6 +102,17 @@ const item = (over = {}) => ({
 
 const MARKER = "LAYER-TEXT-MARKER-DO-NOT-LEAK";
 const layers = { names: ["write", "know"], text: `${MARKER}\nwrite plainly.`, commit: "abc123", files: [] };
+
+describe("the evals protocol rollout", () => {
+  it("states the same deploy order at the door, runner, and operator guide", () => {
+    const sentence =
+      "roll the box (worker/setup.sh) before or immediately after merging a change to the evals row contract; " +
+      "until it rolls, every evals request is pending and the gate names the protocol gap";
+    for (const file of ["convex/ttsEvals.ts", "worker/jobs/evals.mjs", "worker/README.md"]) {
+      expect(fs.readFileSync(file, "utf8")).toContain(sentence);
+    }
+  });
+});
 
 describe("treesFor", () => {
   it("pins the repo under test and takes the other at its default branch", () => {
@@ -1453,6 +1468,7 @@ describe("an unaffected request", () => {
     });
     expect(posted).toHaveLength(1);
     expect(posted[0]).toMatchObject({ kind: "evals-run", key: "tom.quest@2e08b28" });
+    expect(posted[0].data.boxEvalsVersion).toBe(EVALS_PROTOCOL);
   });
 
   it("answers with zeroes when nothing scored the base", async () => {
@@ -1752,6 +1768,36 @@ describe("a superseded request", () => {
     }));
     await servePass(env, noIo, {});
     expect(next).toBe(4);
+  });
+
+  it("reports one keyed failure and exits when the door needs a newer protocol", async () => {
+    const gap =
+      `the box's evals runner is at protocol ${EVALS_PROTOCOL}; ` +
+      `this door needs ${EVALS_PROTOCOL + 1} — run worker/setup.sh on the box`;
+    const calls = [];
+    vi.stubGlobal("fetch", vi.fn(async (url, init) => {
+      calls.push({ url: String(url), body: init?.body === undefined ? null : JSON.parse(init.body) });
+      if (String(url).includes("/tts/evals-request")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            request: request(),
+            boxEvalsVersion: EVALS_PROTOCOL,
+            evalsProtocol: EVALS_PROTOCOL + 1,
+            protocolGap: gap,
+          }),
+        };
+      }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, reported: true }) };
+    }));
+    await expect(servePass(env, noIo)).rejects.toThrow(gap);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].url).toContain(evalsRequestRoute());
+    expect(calls[1]).toMatchObject({
+      url: "https://example.convex.site/tts/job-failed",
+      body: { job: EVALS_JOB, key: EVALS_PROTOCOL_FAILURE_KEY, error: gap },
+    });
   });
 
   it("opens nothing", () => {

@@ -431,6 +431,40 @@ async function call(site, key, route, body) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * Wait for the row, except that a named protocol gap is already a complete
+ * answer: another seventy-five minutes cannot roll the box. The exit hook is
+ * injectable only so the one-poll, non-zero behavior can be pinned without a
+ * child process in the unit test.
+ */
+export async function waitForEvals(
+  { site, key, repo, sha, baseSha, deadline },
+  {
+    callFn = call,
+    sleepFn = sleep,
+    now = () => Date.now(),
+    log = (line) => console.log(line),
+    error = (line) => console.error(line),
+    exit = (code) => process.exit(code),
+  } = {},
+) {
+  let answer = null;
+  while (now() < deadline) {
+    const query = `/tts/evals-run?repo=${encodeURIComponent(repo)}&sha=${encodeURIComponent(sha)}` +
+      (baseSha ? `&base=${encodeURIComponent(baseSha)}` : "");
+    answer = await callFn(site, key, query);
+    if (typeof answer?.protocolGap === "string" && answer.protocolGap !== "") {
+      error(answer.protocolGap);
+      exit(1);
+      return { answer, protocolGap: true };
+    }
+    if (answer?.run) return { answer, protocolGap: false };
+    log(`evals: waiting for the Jarvis Box (${Math.round((deadline - now()) / 1000)}s left)`);
+    await sleepFn(POLL_INTERVAL_MS);
+  }
+  return { answer, protocolGap: false };
+}
+
+/**
  * The paths this pull request touched, read out of the checkout the CI job
  * already has, or null.
  *
@@ -531,15 +565,9 @@ async function main() {
     ...(unaffected ? { unaffected: true } : {}),
   });
   const deadline = Date.now() + POLL_TIMEOUT_MS;
-  let answer = null;
-  while (Date.now() < deadline) {
-    const query = `/tts/evals-run?repo=${encodeURIComponent(repo)}&sha=${encodeURIComponent(sha)}` +
-      (baseSha ? `&base=${encodeURIComponent(baseSha)}` : "");
-    answer = await call(site, key, query);
-    if (answer.run) break;
-    console.log(`evals: waiting for the Jarvis Box (${Math.round((deadline - Date.now()) / 1000)}s left)`);
-    await sleep(POLL_INTERVAL_MS);
-  }
+  const waited = await waitForEvals({ site, key, repo, sha, baseSha, deadline });
+  if (waited.protocolGap) return;
+  const answer = waited.answer;
   // A check that passes on silence proves nothing.
   if (!answer?.run) {
     console.error(

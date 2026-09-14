@@ -9,6 +9,15 @@
  * real measurement with a request-only answer. A fourth kind changes here, so
  * neither runtime can silently disagree about whether a row measured a tree.
  */
+
+/**
+ * The contract between the deployed Convex door and the box runner. Bump this
+ * whenever an evals row gains a field the door needs in order to recognize an
+ * answer. Version 2 is the first contract in which rows carry
+ * `answersRequestAt`.
+ */
+export const EVALS_PROTOCOL = 2;
+
 export function scoredNothing(data) {
   const row = data !== null && typeof data === "object" ? data : {};
   // Historical rows recorded the failure text; newer catastrophic rows carry
