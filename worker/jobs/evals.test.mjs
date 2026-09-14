@@ -1419,12 +1419,32 @@ describe("an unaffected request", () => {
     const seen = [];
     const diff = await trustedRequestDiff(request(), diffIo(base, head), (dir, ...args) => {
       seen.push({ dir, args });
+      if (args[0] === "rev-parse") return "true\n";
       if (args[0] === "merge-base") return "merge000";
       return "model-of-tom/intent.md\0";
     });
     expect(diff).toMatchObject({ base: "base000", changed: ["model-of-tom/intent.md"], unaffected: false, watchedPaths: ["model-of-tom/**"] });
     expect(seen).toEqual([
+      { dir: base, args: ["rev-parse", "--is-shallow-repository"] },
       { dir: base, args: ["fetch", "--deepen", String(DIFF_HISTORY_DEEPEN), "origin", "main", "2e08b28"] },
+      { dir: base, args: ["merge-base", "base000", "2e08b28"] },
+      { dir: base, args: ["diff", "--no-renames", "--name-only", "-z", "merge000..2e08b28"] },
+    ]);
+  });
+
+  it("does not deepen a complete cache clone", async () => {
+    const base = policyTree(["model-of-tom/**"]);
+    const head = policyTree(["worker/**"]);
+    const seen = [];
+    const diff = await trustedRequestDiff(request(), diffIo(base, head), (dir, ...args) => {
+      seen.push({ dir, args });
+      if (args[0] === "rev-parse") return "false\n";
+      if (args[0] === "merge-base") return "merge000";
+      return "worker/jobs/evals.mjs\0";
+    });
+    expect(diff).toMatchObject({ base: "base000", changed: ["worker/jobs/evals.mjs"], unaffected: true, watchedPaths: ["model-of-tom/**"] });
+    expect(seen).toEqual([
+      { dir: base, args: ["rev-parse", "--is-shallow-repository"] },
       { dir: base, args: ["merge-base", "base000", "2e08b28"] },
       { dir: base, args: ["diff", "--no-renames", "--name-only", "-z", "merge000..2e08b28"] },
     ]);
@@ -1462,6 +1482,7 @@ describe("an unaffected request", () => {
     const seen = [];
     const diff = await trustedRequestDiff(request({ repo: "WikiTom", sha: "wikihead" }), io, (dir, ...args) => {
       seen.push({ dir, args });
+      if (args[0] === "rev-parse") return "true\n";
       if (args[0] === "merge-base") return "wikimerge";
       return "model-of-tom/intent.md\0";
     });
@@ -1477,6 +1498,7 @@ describe("an unaffected request", () => {
       watchedPaths: ["model-of-tom/**"],
     });
     expect(seen).toEqual([
+      { dir: wikiBase, args: ["rev-parse", "--is-shallow-repository"] },
       { dir: wikiBase, args: ["fetch", "--deepen", String(DIFF_HISTORY_DEEPEN), "origin", "main", "wikihead"] },
       { dir: wikiBase, args: ["merge-base", "WikiTom-base", "wikihead"] },
       { dir: wikiBase, args: ["diff", "--no-renames", "--name-only", "-z", "wikimerge..wikihead"] },

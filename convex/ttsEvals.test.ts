@@ -742,20 +742,102 @@ describe("a superseded request", () => {
     expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({ sha: "aaaaaaa" });
   });
 
-  it("accepts a scored row from before the box recorded request timestamps", async () => {
+  it("lets a legacy scored row older than a base-only retarget answer", async () => {
     const t = convexTest({ schema, modules });
     await file(t, 1, "aaaaaaa");
+    await t.mutation(internal.ttsEvals.internalRequestEvals, {
+      repo: REPO, sha: "aaaaaaa", baseSha: "6af3eef", pr: 173, runId: 100,
+      paths: ["model-of-tom/**"], changed: ["model-of-tom/intent.md"],
+    });
+    const request = await t.query(internal.ttsEvals.internalEvalsRequest, { repo: REPO, sha: "aaaaaaa" });
     await t.run(async (ctx) => {
       await ctx.db.insert("dtsEvents", {
-        at: 50,
+        at: request!.requestedAt - 1,
         kind: EVALS_RUN,
         key: `${REPO}@aaaaaaa`,
         data: { repo: REPO, sha: "aaaaaaa", regressions: 0, pass: 29, items: 29 },
       });
     });
+    expect(request).toMatchObject({ baseSha: "6af3eef", changed: ["model-of-tom/intent.md"] });
     expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
       .toMatchObject({ run: { regressions: 0, pass: 29, items: 29 } });
     expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
+  });
+
+  it("serves a base-only retarget when an equal or later legacy row arrives after its re-file", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa");
+    await t.mutation(internal.ttsEvals.internalRequestEvals, {
+      repo: REPO, sha: "aaaaaaa", baseSha: "6af3eef", pr: 173, runId: 100,
+      paths: ["model-of-tom/**"], changed: ["model-of-tom/intent.md"],
+    });
+    const request = await t.query(internal.ttsEvals.internalEvalsRequest, { repo: REPO, sha: "aaaaaaa" });
+    for (const offset of [0, 1]) {
+      await t.run(async (ctx) => {
+        await ctx.db.insert("dtsEvents", {
+          at: request!.requestedAt + offset,
+          kind: EVALS_RUN,
+          key: `${REPO}@aaaaaaa`,
+          data: { repo: REPO, sha: "aaaaaaa", regressions: 0, pass: 29, items: 29 },
+        });
+      });
+      expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
+        .toMatchObject({ run: null });
+      expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+        sha: "aaaaaaa",
+        baseSha: "6af3eef",
+        changed: ["model-of-tom/intent.md"],
+      });
+    }
+  });
+
+  it("lets a legacy scored row older than a changed-diff-only re-file answer", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa", { changed: ["worker/setup.sh"] });
+    await t.mutation(internal.ttsEvals.internalRequestEvals, {
+      repo: REPO, sha: "aaaaaaa", baseSha: "f5c1fb9", pr: 173, runId: 100,
+      paths: ["model-of-tom/**"], changed: ["model-of-tom/intent.md"],
+    });
+    const request = await t.query(internal.ttsEvals.internalEvalsRequest, { repo: REPO, sha: "aaaaaaa" });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: request!.requestedAt - 1,
+        kind: EVALS_RUN,
+        key: `${REPO}@aaaaaaa`,
+        data: { repo: REPO, sha: "aaaaaaa", regressions: 0, pass: 29, items: 29 },
+      });
+    });
+    expect(request).toMatchObject({ baseSha: "f5c1fb9", changed: ["model-of-tom/intent.md"] });
+    expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
+      .toMatchObject({ run: { regressions: 0, pass: 29, items: 29 } });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
+  });
+
+  it("serves a changed-diff-only re-file when an equal or later legacy row arrives after it", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa", { changed: ["worker/setup.sh"] });
+    await t.mutation(internal.ttsEvals.internalRequestEvals, {
+      repo: REPO, sha: "aaaaaaa", baseSha: "f5c1fb9", pr: 173, runId: 100,
+      paths: ["model-of-tom/**"], changed: ["model-of-tom/intent.md"],
+    });
+    const request = await t.query(internal.ttsEvals.internalEvalsRequest, { repo: REPO, sha: "aaaaaaa" });
+    for (const offset of [0, 1]) {
+      await t.run(async (ctx) => {
+        await ctx.db.insert("dtsEvents", {
+          at: request!.requestedAt + offset,
+          kind: EVALS_RUN,
+          key: `${REPO}@aaaaaaa`,
+          data: { repo: REPO, sha: "aaaaaaa", regressions: 0, pass: 29, items: 29 },
+        });
+      });
+      expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
+        .toMatchObject({ run: null });
+      expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+        sha: "aaaaaaa",
+        baseSha: "f5c1fb9",
+        changed: ["model-of-tom/intent.md"],
+      });
+    }
   });
 
   it("does not let a scored no-item exemption answer after the trailer is removed", async () => {

@@ -2303,8 +2303,8 @@ export function changedPathsFromGit(out) {
  * policy comes from tom.quest's base too: the request repository supplies the
  * comparison, and no request head supplies the watch.
  *
- * The cache starts at depth one. Deepening the box-fetched main and head tips
- * by a bounded amount lets Git find their merge base; that base names the
+ * A shallow cache needs its box-fetched main and head tips deepened by a
+ * bounded amount before Git can find their merge base; that base names the
  * branch diff while current main remains the evaluation baseline. The request
  * `baseSha` is not used because a request can be stale or retargeted. A
  * two-dot diff intersected with head paths still needs head history, so it
@@ -2327,12 +2327,17 @@ export async function trustedRequestDiff(request, io, run = git) {
       throw new Error("base evals policy is incomplete");
     }
     // This fetch has both tips from the box's cache, never a commit named by
-    // the request. If their bounded history has no common ancestor, the catch
-    // below posts the required failed row rather than scoring a guessed diff.
-    run(
-      baseTree.dir,
-      "fetch", "--deepen", String(DIFF_HISTORY_DEEPEN), "origin", "main", headTree.commit,
-    );
+    // the request. Complete cache clones reject --deepen, so deepen only when
+    // Git says this cache is shallow. If their bounded history has no common
+    // ancestor, the catch below posts the required failed row rather than
+    // scoring a guessed diff.
+    const shallow = run(baseTree.dir, "rev-parse", "--is-shallow-repository").trim() === "true";
+    if (shallow) {
+      run(
+        baseTree.dir,
+        "fetch", "--deepen", String(DIFF_HISTORY_DEEPEN), "origin", "main", headTree.commit,
+      );
+    }
     const mergeBase = run(baseTree.dir, "merge-base", baseTree.commit, headTree.commit).trim();
     if (mergeBase === "") throw new Error("the trusted tips have no merge base within the shallow-history bound");
     const out = run(
