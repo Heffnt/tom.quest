@@ -2313,6 +2313,32 @@ export function changedPathsFromGit(out) {
 }
 
 /**
+ * The base tree's watch policy, or `null` when that tree is older than the
+ * policy — the file absent, or present without the two exports the box reads.
+ *
+ * THIS IS NOT A FALLBACK THAT GUESSES. It answers one question — can this base
+ * say what is watched — and the caller's answer to "no" is to score the whole
+ * evaluation, which is what the box would have done for any watched change.
+ * There is no narrower list to substitute and none is invented here: the head's
+ * own copy is exactly what may not be trusted (see trustedRequestDiff).
+ *
+ * WHY THIS IS NOT A THROW, WHICH IS WHAT IT REPLACED. `unaffectedBy` arrives on
+ * this branch, so between a box rollout and the merge that brings it — the
+ * order worker/README.md documents — every base is a base without it. Throwing
+ * wrote a failed row per request, stamped `answersRequestAt` on it, and those
+ * stamps stay current after the merge: the checks stay red until someone reruns
+ * them by hand. Nothing about a missing shortcut makes a measurement unsafe, so
+ * nothing about it should fail one.
+ */
+export async function basePolicyOf(dir) {
+  const file = path.join(dir, "scripts", "evals-check.mjs");
+  if (!fs.existsSync(file)) return null;
+  const policy = await import(pathToFileURL(file).href);
+  if (!Array.isArray(policy.WATCHED_PATHS) || typeof policy.unaffectedBy !== "function") return null;
+  return policy;
+}
+
+/**
  * The box, rather than the pull-request checkout, decides whether a request
  * is unaffected. Both commits are detached worktrees in the request's cache:
  * the diff is read from that cache and the watch policy is imported from the
@@ -2329,6 +2355,9 @@ export function changedPathsFromGit(out) {
  * `baseSha` is not used because a request can be stale or retargeted. A
  * two-dot diff intersected with head paths still needs head history, so it
  * would add another shallow-history rule instead of establishing the branch.
+ *
+ * `basePolicy` says which base answered: `"present"`, or `"absent"` when the
+ * base is older than the policy — see basePolicyOf.
  */
 export async function trustedRequestDiff(request, io, run = git) {
   let baseTree = null;
@@ -2342,10 +2371,7 @@ export async function trustedRequestDiff(request, io, run = git) {
     policyTree = request.repo === "tom.quest"
       ? baseTree
       : io.worktree("tom.quest", "origin/main");
-    const policy = await import(pathToFileURL(path.join(policyTree.dir, "scripts", "evals-check.mjs")).href);
-    if (!Array.isArray(policy.WATCHED_PATHS) || typeof policy.unaffectedBy !== "function") {
-      throw new Error("base evals policy is incomplete");
-    }
+    const policy = await basePolicyOf(policyTree.dir);
     // This fetch has both tips from the box's cache, never a commit named by
     // the request. Complete cache clones reject --deepen, so deepen only when
     // Git says this cache is shallow. If their bounded history has no common
@@ -2366,9 +2392,22 @@ export async function trustedRequestDiff(request, io, run = git) {
       `${mergeBase}..${headTree.commit}`,
     );
     const changed = changedPathsFromGit(out);
+    // A BASE THAT CANNOT SAY WHAT IS WATCHED HAS EVERYTHING WATCHED. The only
+    // shortcut the policy can authorise is the no-run one, so its absence costs
+    // a full scored run and nothing else: the comparison base, the changed list
+    // and the coverage input are all still the box's own.
+    if (policy === null) {
+      return { base: baseTree.commit, changed, unaffected: false, watchedPaths: null, basePolicy: "absent" };
+    }
     // The list is read from the same base module that supplies its predicate.
     const watchedPaths = [...policy.WATCHED_PATHS];
-    return { base: baseTree.commit, changed, unaffected: policy.unaffectedBy(changed), watchedPaths };
+    return {
+      base: baseTree.commit,
+      changed,
+      unaffected: policy.unaffectedBy(changed),
+      watchedPaths,
+      basePolicy: "present",
+    };
   } catch (error) {
     const reason = redactSecrets(serverErrorMessage(error)).slice(0, 300);
     console.error(`[evals] ${request.repo}@${request.sha}: could not establish the box diff (${reason}); failing the request`);
@@ -2492,6 +2531,7 @@ export async function stampAgainstBase(data, base, diff = {}) {
 export async function runAndPost(env, io, {
   repo, sha, base, limit, jobs, weekly, ablation = false, force, changed, prBody,
   dryRun = false, scorecard = undefined, answersRequestAt = null, unaffectedClaimed = false,
+  basePolicy = null,
 }) {
   const existing = force || dryRun ? null : await convexFetch(env, `/tts/evals-run?repo=${repo}&sha=${sha}`);
   if (existing?.run) {
@@ -2532,6 +2572,12 @@ export async function runAndPost(env, io, {
       ...(unaffectedClaimed ? { unaffectedClaimed: true, unaffected: false } : {}),
     }),
     ...(scorecard === undefined ? {} : { verifierScorecard: scorecard }),
+    // ONLY THE ABSENCE IS RECORDED. A present policy is every ordinary row, and
+    // a field that says "normal" on every row says nothing on any of them; this
+    // one exists so that a full run the box took because its base could not
+    // name a watch is legible as that, rather than as a branch that happened to
+    // touch something watched.
+    ...(basePolicy === "absent" ? { basePolicy: "absent" } : {}),
   };
   if (dryRun) console.log(JSON.stringify(data, null, 2));
   else if (answersRequestAt !== null) {
@@ -2762,6 +2808,7 @@ export async function serveRequest(env, io, request, options = {}) {
       // long run is in flight cannot accept this old measurement as current.
       answersRequestAt: request.requestedAt ?? null,
       unaffectedClaimed,
+      basePolicy: boxDiff.basePolicy ?? null,
       force: options.force,
       dryRun,
     });
@@ -2895,6 +2942,7 @@ async function main() {
     prBody: requestIdentity?.prBody,
     answersRequestAt: requestIdentity?.answersRequestAt ?? null,
     unaffectedClaimed: requestIdentity?.unaffectedClaimed ?? false,
+    basePolicy: boxDiff.basePolicy ?? null,
   });
 }
 

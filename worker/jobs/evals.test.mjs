@@ -1576,6 +1576,93 @@ describe("an unaffected request", () => {
     ]);
   });
 
+  // A BOX ROLLED BEFORE THE MERGE reads a base tree older than its own watch
+  // policy — the order worker/README.md documents. `unaffectedBy` arrives on
+  // this branch, so every base before it is such a base: the box used to write
+  // a failed row per request whose `answersRequestAt` stayed current after the
+  // merge, leaving the checks red until a human reran them.
+  const policyTreeBeforeTheExport = () => {
+    const dir = fs.mkdtempSync(path.join(process.cwd(), ".evals-policy-old-"));
+    dirs.push(dir);
+    const file = path.join(dir, "scripts", "evals-check.mjs");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'export const WATCHED_PATHS = ["model-of-tom/**"];\n');
+    return dir;
+  };
+
+  it("treats a base older than the policy as affected rather than failing the request", async () => {
+    const base = policyTreeBeforeTheExport();
+    const head = policyTree(["worker/**"]);
+    const diff = await trustedRequestDiff(request(), diffIo(base, head), (_dir, ...args) => {
+      if (args[0] === "rev-parse") return "false\n";
+      if (args[0] === "merge-base") return "merge000";
+      // Unwatched by the policy this branch adds: with a base that could say
+      // so, this is the no-run shortcut. With one that cannot, it is a run.
+      return "worker/jobs/evals.mjs\0";
+    });
+    expect(diff).toEqual({
+      base: "base000",
+      changed: ["worker/jobs/evals.mjs"],
+      unaffected: false,
+      watchedPaths: null,
+      basePolicy: "absent",
+    });
+  });
+
+  it("treats a base with no check at all the same way, and a base with the export as now", async () => {
+    const head = policyTree(["worker/**"]);
+    const run = (_dir, ...args) => {
+      if (args[0] === "rev-parse") return "false\n";
+      if (args[0] === "merge-base") return "merge000";
+      return "worker/jobs/evals.mjs\0";
+    };
+    expect(await trustedRequestDiff(request(), diffIo(tree(), head), run))
+      .toMatchObject({ unaffected: false, basePolicy: "absent" });
+    expect(await trustedRequestDiff(request(), diffIo(policyTree(["model-of-tom/**"]), head), run))
+      .toMatchObject({ unaffected: true, basePolicy: "present", watchedPaths: ["model-of-tom/**"] });
+  });
+
+  it("scores the full evaluation on an older base, stamps the reason, and posts no failed row", async () => {
+    const posted = [];
+    const base = policyTreeBeforeTheExport();
+    const head = tree();
+    writeJson(head, path.join("evals", "golden", "runs", "a.json"), runCaseItem({ id: "a" }));
+    const queued = request({ requestedAt: 1, unaffected: false });
+    const io = runIo(["pass"], [], {
+      layers: () => layers,
+      loadModules: async () => ({}),
+      taskRepos: () => [],
+      worktree: (_repo, ref) => ({
+        dir: ref === "origin/main" ? base : head,
+        commit: ref === "origin/main" ? "base000" : ref,
+        remove: () => {},
+      }),
+    });
+    vi.stubGlobal("fetch", vi.fn(async (url, init) => {
+      const href = String(url);
+      if (href.includes("/tts/evals-request?")) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ request: queued }) };
+      }
+      if (href.includes("/tts/evals-run")) {
+        const run = href.includes("sha=base000")
+          ? { repo: "tom.quest", sha: "base000", items: 1, pass: 1, failures: [], scoredIds: ["a"], results: [{ id: "a", judged: "pass" }], tasks: { failures: [] } }
+          : null;
+        return { ok: true, status: 200, text: async () => JSON.stringify({ run, base: null }) };
+      }
+      if (init?.body) posted.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+    const data = await serveRequest(env, io, queued, {
+      diffRun: () => "worker/jobs/evals.mjs\0",
+    });
+    expect(data).toMatchObject({ basePolicy: "absent", items: 1, pass: 1, regressions: 0 });
+    expect(data.error).toBeUndefined();
+    expect(io.calls.regen).toBe(1);
+    expect(posted).toHaveLength(1);
+    expect(posted[0].data).toMatchObject({ basePolicy: "absent", answersRequestAt: 1 });
+    expect(posted[0].data.error).toBeUndefined();
+  });
+
   it("posts a failed row when the box cannot establish the trusted diff", async () => {
     const posted = [];
     vi.stubGlobal("fetch", vi.fn(async (_url, init) => {
@@ -2097,6 +2184,10 @@ describe("parseArgs takes the two new flags", () => {
       .toMatchObject({ repo: "WikiTom", sha: "def", limit: 6, jobs: ["prepare", "run"] });
     expect(parseArgs(["--tasks", "slack"]).tasks).toBe("slack");
     expect(() => parseArgs(["--nope"])).toThrow(/unknown argument/);
+    // `--base` WAS REMOVED ON PURPOSE (72926ee): the box resolves its own base
+    // from origin/main, and a base named on the command line is the one input
+    // that could put a scored row against a comparison nobody trusts. The
+    // option being unknown is the design, not a regression to restore.
     expect(() => parseArgs(["--base", "ghi"])).toThrow(/unknown argument/);
     expect(() => parseArgs(["--serve", "--limit", "0"])).toThrow(/--limit/);
   });

@@ -85,6 +85,12 @@ an expected rollout window from a runner that has stopped.
 
 roll the box (worker/setup.sh) before or immediately after merging a change to the evals row contract; until it rolls, every evals request is pending and the gate names the protocol gap
 
+A box rolled BEFORE the merge reads a base tree older than its own watch
+policy. It scores the whole evaluation rather than failing the request, and the
+row says `basePolicy: "absent"` (`basePolicyOf` in `jobs/evals.mjs`): the
+no-run shortcut is the only thing a base policy authorises, and its absence is
+never a reason to write a failed row a later merge cannot clear.
+
 ## The pollers
 
 **poll-gmail** lists new inbox mail and spends ONE headless Claude call per
