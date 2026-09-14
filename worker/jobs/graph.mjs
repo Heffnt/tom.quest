@@ -258,9 +258,6 @@ export const DEFINES_CAP = 64;
 /** The most node ids a run's context entry carries. */
 export const GRAPH_NODES_CAP = 256;
 
-/** The most nodes one ablation arm removes from a case. */
-export const ABLATION_NODE_CAP = 5;
-
 // ── Areas ────────────────────────────────────────────────────────────────────
 // MOVED FROM scripts/skills.mjs, which now re-exports them from here. The
 // bodies are unchanged; only the home moved, for the reason at the imports.

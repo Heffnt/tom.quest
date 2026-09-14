@@ -4,13 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ABLATION_NODE_CAP } from "./graph.mjs";
 import { bareSkillName, repoSkillName } from "../../scripts/skills.mjs";
 import { NO_BODY, routeSkills } from "./skill-router.mjs";
 import {
   ablationFindings,
   ablationFor,
-  ablationNodes,
   aggregate,
   contentHash,
   AREA_TRIGGER_FILES,
@@ -1400,52 +1398,28 @@ describe("the ablation arm", () => {
   });
 });
 
-// ── The node arm ─────────────────────────────────────────────────────────────
+// ── No node arm ──────────────────────────────────────────────────────────────
+// The arm is not built, because `preludeFrom` cannot drop a node — see the
+// block above `ablationFor` in worker/jobs/evals.mjs. What is tested here is
+// that it stays unbuilt: a case carrying node ids still produces layer and
+// skill rows only, so nothing can post a node to /tts/weekly-decisions as a
+// removal proposal the measurement never earned.
 
-describe("the nodes one case's arm ablates", () => {
-  it("takes the five lowest-cost nodes of a walk, and the first five of a flat list", () => {
-    const walk = [
-      { id: "line:f", cost: 600 },
-      { id: "line:a", cost: 100 },
-      { id: "line:e", cost: 500 },
-      { id: "line:b", cost: 200 },
-      { id: "line:d", cost: 400 },
-      { id: "line:c", cost: 300 },
-    ];
-    expect(ablationNodes(walk)).toEqual(["line:a", "line:b", "line:c", "line:d", "line:e"]);
-    // A tie is broken by the id, so two machines cut the same five.
-    expect(ablationNodes([{ id: "line:z", cost: 1 }, { id: "line:y", cost: 1 }]))
-      .toEqual(["line:y", "line:z"]);
-    // A flat list keeps the prompt's own order and is cut at the cap.
-    const flat = ["page:a", "line:b", "line:c", "line:d", "rule:e", "skill:f", "line:g"];
-    expect(ablationNodes(flat)).toEqual(flat.slice(0, ABLATION_NODE_CAP));
-    expect(ablationNodes(flat)).toHaveLength(ABLATION_NODE_CAP);
-    expect(ablationNodes(undefined)).toEqual([]);
-    expect(ablationNodes([])).toEqual([]);
-  });
-
-  it("runs one trial per node beside the layers, and at most the cap", async () => {
-    // Seven nodes offered, five ablated: three layers plus five nodes is eight
-    // trials, and the judge answers pass for each.
+describe("the ablation arm names no node", () => {
+  it("scores the layers and the skills, and nothing per node, whatever the case carries", async () => {
     const nodes = ["line:a", "line:b", "line:c", "line:d", "line:e", "line:f", "line:g"];
     const item = runCaseItem({ input: { ...runCaseItem().input, preludeNodes: nodes } });
     const io = runIo(Array.from({ length: 8 }, () => "pass"));
     const arm = await ablationFor(item, runContext(), io, true);
-    expect(io.calls.regen).toBe(3 + ABLATION_NODE_CAP);
-    expect(arm.rows.filter((row) => row.kind === "node").map((row) => row.name))
-      .toEqual(nodes.slice(0, ABLATION_NODE_CAP));
-    expect(arm.rows.filter((row) => row.kind === "layer").map((row) => row.name))
-      .toEqual(["operate", "write", "know"]);
-    // A node arm removes the node and NOTHING ELSE: the layers it was given
-    // still assemble. The regenerations are the prompts the judge did not get.
-    const regen = io.calls.prompts.filter((prompt) => !prompt.startsWith("You are judging"));
-    expect(regen.slice(3).every((prompt) => prompt.includes("[operate+write+know]"))).toBe(true);
+    // Three layers, three trials — not three plus a node apiece.
+    expect(io.calls.regen).toBe(3);
+    expect(arm.rows.some((row) => row.kind === "node")).toBe(false);
+    expect(arm.rows.map((row) => row.name)).toEqual(["operate", "write", "know"]);
   });
 
-  it("carries the remaining nodes into the object the assembler is handed", async () => {
-    const nodes = ["line:a", "line:b"];
+  it("hands the assembler no node list, so no trial can turn on one", async () => {
     const item = runCaseItem({
-      input: { ...runCaseItem().input, preludeNames: { layers: [], skills: [] }, preludeNodes: nodes },
+      input: { ...runCaseItem().input, preludeNames: { layers: ["know"], skills: [] }, preludeNodes: ["line:a", "line:b"] },
     });
     const seen = [];
     const context = runContext({
@@ -1454,18 +1428,11 @@ describe("the nodes one case's arm ablates", () => {
         return { names: [], skills: [], text: "P", commit: "w1", files: [] };
       },
     });
-    await ablationFor(item, context, runIo(["pass", "pass"]), true);
-    // One trial asks the assembler twice (runItem resolves the prelude, then
-    // the builder asks for its text), so the DISTINCT selections are what say
-    // one node went per trial.
-    expect([...new Set(seen.map((one) => one.join(",")))]).toEqual(["line:b", "line:a"]);
+    await ablationFor(item, context, runIo(["pass"]), true);
+    expect(seen.every((one) => one === undefined)).toBe(true);
   });
 
-  it("ablates no node on a case that carries none, and skips one replayed verbatim", async () => {
-    const io = runIo(["pass", "pass", "pass"]);
-    const arm = await ablationFor(runCaseItem(), runContext(), io, true);
-    expect(arm.rows.some((row) => row.kind === "node")).toBe(false);
-
+  it("skips a case replayed verbatim, whatever node ids it carries", async () => {
     const replayed = runCaseItem({
       input: { ...runCaseItem().input, preludeKnown: false, prompt: "REPLAYED", preludeNodes: ["line:a"] },
     });

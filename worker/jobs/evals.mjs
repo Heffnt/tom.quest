@@ -32,10 +32,6 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { convexFetch, extractJsonObject, loadEnv, nyHour, nyUtcOffsetHours, runClaude, serverErrorMessage } from "./tts-lib.mjs";
 import { cacheRepoDir } from "./tts-code-lib.mjs";
-// The cap on the node arm, imported rather than re-declared: worker/jobs/graph.mjs
-// owns every number about the graph, and a second copy of this one here would
-// drift the day either moves.
-import { ABLATION_NODE_CAP } from "./graph.mjs";
 import { BOX_WIKITOM_DIR } from "./search-lib.mjs";
 // THE AUDIT'S OWN PROMPT, IMPORTED AND NEVER RE-IMPLEMENTED. The planted-fault
 // arm below asks the real auditor the real question about a fixture diff; a
@@ -1815,35 +1811,23 @@ export async function runCase(item, context, io, { pr = false } = {}) {
 
 // ── The ablation arm ─────────────────────────────────────────────────────────
 
-/**
- * Every node id a case's prompt carried, in the order the arm will ablate them.
- *
- * `input.preludeNodes` is the case's own `context.graphNodes`, and it comes in
- * one of two shapes. A WALK is a list of entries each carrying a `cost` — the
- * least total edge cost from a seed, which worker/jobs/graph.mjs's `walk`
- * computes — and the FIVE LOWEST-COST nodes are taken, because a low cost is a
- * node the walk reached first and therefore the part of the prompt the case's
- * own subject pulls hardest on; ablating the cheapest five asks whether the
- * nodes the walk is most confident about are carrying anything. The id breaks a
- * tie, so two nodes at one cost order the same way on two machines.
- *
- * A FLAT LIST of ids carries no cost, and the first five are taken IN THE
- * LIST'S OWN ORDER — which is the prompt's own order, since `givenNodes` writes
- * the ids in the order the prompt rendered them. There is nothing else to sort
- * a flat list by, and inventing a ranking for it would make the arm's selection
- * a judgement this file is not entitled to make.
- */
-export function ablationNodes(preludeNodes) {
-  const list = Array.isArray(preludeNodes) ? preludeNodes : [];
-  const idOf = (entry) => (typeof entry === "string" ? entry : String(entry?.id ?? ""));
-  const walked = list.every(
-    (entry) => entry !== null && typeof entry === "object" && typeof entry.cost === "number",
-  );
-  const ordered = walked && list.length > 0
-    ? [...list].sort((a, b) => a.cost - b.cost || idOf(a).localeCompare(idOf(b)))
-    : list;
-  return ordered.map(idOf).filter((id) => id !== "").slice(0, ABLATION_NODE_CAP);
-}
+// THERE IS NO NODE ARM, and the reason is that there is no assembler that can
+// drop a node. `preludeFrom` reads `names.layers` and `names.skills` and
+// nothing else, so a trial that removed a node id from the set it is handed
+// would assemble the IDENTICAL prompt and score the same prompt twice. On a
+// sampling model those two runs differ by noise, `ablationFindings` reads a
+// differing pair as `earned: false`, and worker/jobs/weekly.mjs posts every
+// such row to /tts/weekly-decisions as a removal proposal that stands unless
+// somebody objects — a rule line flagged for deletion by a measurement that
+// never deleted it, at a cost of about a thousand trials a week.
+//
+// So the arm is not here rather than gated off: a flag would be a second thing
+// to get wrong, and the selection rule it guarded (the five lowest-cost nodes
+// of a walk, ties by id) is one small function to write again. It comes back in
+// THE SAME COMMIT as the assembler that drops a node, because neither half
+// means anything without the other. `graphVersion` and `graphNodes` on the run
+// row, the walk, `tts search node` and `near` are untouched: those record and
+// read what a prompt carried, which is true whether or not anything ablates it.
 
 /**
  * The same case, assembled without one name.
@@ -1859,17 +1843,10 @@ export function ablationNodes(preludeNodes) {
  * phase; one trial per name over a 200-case weekly set is far more evidence
  * than a removal proposal needs.
  *
- * A NODE IS THE THIRD LIST, beside the layers and the skills. A layer and a
- * skill are names for a set of nodes, so ablating one asks a question about a
- * file; ablating a node asks it about one line, which is the unit a removal
- * proposal is written in. The nodes come off `input.preludeNodes` — the case's
- * own `context.graphNodes`, the ids its prompt actually carried — and a case
- * that has none contributes no node rows.
- *
- * THE CAP IS ABLATION_NODE_CAP AND THE REASON IS ARITHMETIC: a case's prompt
- * admits up to GRAPH_NODES_CAP nodes, and one trial each would be a fortyfold
- * arm on a prompt of forty. Five nodes over a 200-case weekly set is a thousand
- * trials, which is more evidence than a removal proposal needs.
+ * TWO LISTS, NOT THREE: a layer and a skill, each of which `preludeFrom`
+ * actually assembles. A node would be the third and is not here — see the
+ * block above this one for why an arm nothing can assemble without is worse
+ * than no arm.
  *
  * A case whose prelude was not known is SKIPPED and counted: you cannot remove
  * a name from a prompt that was replayed verbatim.
@@ -1882,32 +1859,22 @@ export async function ablationFor(item, context, io, withPass) {
   const job = JOBS[item.job];
   const standard = await loadWritingStandard();
   const deterministic = (fresh) => deterministicFailure(item, job, fresh, standard);
-  const nodes = ablationNodes(item.input?.preludeNodes);
-  const everyNode = Array.isArray(item.input?.preludeNodes)
-    ? item.input.preludeNodes.map((entry) => (typeof entry === "string" ? entry : String(entry?.id ?? "")))
-    : [];
   const rows = [];
   const skipped = [];
-  for (const [kind, list] of [["layer", names.layers ?? []], ["skill", names.skills ?? []], ["node", nodes]]) {
+  for (const [kind, list] of [["layer", names.layers ?? []], ["skill", names.skills ?? []]]) {
     for (const name of list) {
       const without = {
         ...item,
         input: {
           ...item.input,
-          // THE NODE LIST TRAVELS IN preludeNames because that object is the
-          // whole of what the assembler is handed (JOBS.run.build calls
-          // context.prelude(item.input.preludeNames) and reads nothing else), so
-          // a node removed anywhere else would assemble the identical prompt and
-          // score the same run twice. An assembler that does not read `nodes`
-          // yet produces the same prompt either way, and the row then says
-          // withoutPass equals withPass — which is what that assembler did, not
-          // a claim about the node.
+          // preludeNames IS THE WHOLE OF WHAT THE ASSEMBLER IS HANDED —
+          // JOBS.run.build calls context.prelude(item.input.preludeNames) and
+          // reads nothing else — so a name removed anywhere but here would
+          // assemble the identical prompt and score the same run twice.
           preludeNames: {
             layers: (names.layers ?? []).filter((one) => kind !== "layer" || one !== name),
             skills: (names.skills ?? []).filter((one) => kind !== "skill" || one !== name),
-            ...(kind === "node" ? { nodes: everyNode.filter((one) => one !== name) } : {}),
           },
-          ...(kind === "node" ? { preludeNodes: everyNode.filter((one) => one !== name) } : {}),
         },
       };
       const result = await runItem(without, context, io, { deterministic });
