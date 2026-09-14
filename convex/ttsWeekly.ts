@@ -917,7 +917,13 @@ export async function gatherWeeklyFacts(
       verifierCaveat = verifierText(c.caveat);
       scorecardAt = e.at;
     }
-    const regressions = num(d.regressions) ?? 0;
+    const regressions = num(d.regressions);
+    // Null is not zero: a partial runner failure has scored some items but no
+    // trustworthy comparison, and --weekly or a by-hand run with no base has
+    // the same shape. It remains a run above, but cannot be clean or a
+    // regression row. We do not surface a third tally because the existing
+    // weekly facts readers only distinguish clean runs from listed regressions.
+    if (regressions === null) continue;
     if (regressions === 0) {
       evals.clean++;
       continue;

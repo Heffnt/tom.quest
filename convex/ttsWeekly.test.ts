@@ -592,6 +592,18 @@ describe("gatherWeeklyFacts", () => {
     expect(f.efficiency).toEqual({ rises: [{ id: "real", headTokens: 1400, baseTokens: 900 }] });
   });
 
+  it("counts a partial runner failure without calling its comparison clean", async () => {
+    const t = convexTest({ schema, modules });
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await event(ctx, EVALS_RUN, now - DAY, {
+        data: { sha: "partial", pass: 7, items: 10, errored: 3, regressions: null },
+      });
+    });
+    const f = await gather(t, now + 1000);
+    expect(f.evals).toEqual({ runs: 1, clean: 0, regressions: [] });
+  });
+
   // ── The three verifiers ───────────────────────────────────────────────────
   // The judge's and the planted faults' numbers ride on the weekly run row
   // (worker/jobs/evals.mjs --weekly writes `verifierScorecard`); the audit's
