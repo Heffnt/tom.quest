@@ -624,6 +624,46 @@ describe("an identical evals request", () => {
       .toMatchObject({ sha: SHA, supersededBy: null });
   });
 
+  // A PENDING REQUEST KEEPS ITS PLACE ONLY WHILE IT STILL HAS ONE. Found by the
+  // box's audit of this round. The queue serves a TRAILING window of the newest
+  // five hundred request rows, and re-dating is the only thing that ever put a
+  // request back into it — so holding an unanswered one at its old date would
+  // leave the sha unservable for good, its check timing out on every re-run.
+  // That is the exact shape of bug this branch keeps finding, and the rule that
+  // saves a re-run its place in line must not reintroduce it.
+  it("re-dates a pending request that has aged out of the queue's window", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t);
+    // A full window of newer requests files in behind it.
+    await t.run(async (ctx) => {
+      for (let i = 0; i < EVALS_REQUEST_SCAN_LIMIT; i += 1) {
+        const sha = `later${i}`;
+        await ctx.db.insert("dtsEvents", {
+          at: Date.now() + i + 1,
+          kind: EVALS_REQUEST,
+          key: `${REPO}@${sha}`,
+          data: {
+            repo: REPO, sha, baseSha: BASE, pr: 900 + i, runId: i + 1,
+            paths: ["model-of-tom/**"], changed: [], prBody: null,
+            unaffectedClaimed: false, requestedAt: PROTOCOL_ERA + i + 1,
+          },
+        });
+        await ctx.db.insert("dtsEvents", {
+          at: Date.now() + i + 1,
+          kind: EVALS_RUN,
+          key: `${REPO}@${sha}`,
+          data: { repo: REPO, sha, regressions: 0, answersRequestAt: PROTOCOL_ERA + i + 1 },
+        });
+      }
+    });
+    // Out of the window: the queue cannot see it, which is why re-dating is the
+    // only thing that can bring it back.
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
+    expect(await file(t)).toMatchObject({ renewed: true });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {}))
+      .toMatchObject({ sha: SHA });
+  }, 60_000);
+
   // The push order is not the question, and it still has to move: the head map
   // is built on `runId`, so a re-run whose id is higher must be recorded even
   // when nothing else about the request changed.

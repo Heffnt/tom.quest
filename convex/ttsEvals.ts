@@ -847,6 +847,15 @@ export const internalRequestEvals = internalMutation({
     // `edited` so that a trailer ADDED to the body is honoured; every typo
     // fixed in a description fires it too, and those now cost nothing.
     //
+    // WHY ALWAYS RE-DATING CANNOT SIMPLY STAY. It is not a spare check over a
+    // rule that already works — it is the difference between a body edit
+    // costing nothing and costing a fifty-minute run and eighty model calls,
+    // on a queue that serves one request per five-minute pass. Deleting this
+    // block does not restore a simpler correct behaviour; it restores the
+    // defect. What CAN be deleted for it is the `edited` trigger, and that
+    // trade is worse: without it a trailer added to a body is never noticed,
+    // and the escape hatch the golden-coverage rule depends on stops working.
+    //
     // WHAT THE UNCHANGED QUESTION KEEPS. Its `requestedAt`, so a row already
     // stamped with it goes on answering — that is the no-re-score — and its
     // `at`, so a request still waiting in the queue keeps its place in line
@@ -876,7 +885,26 @@ export const internalRequestEvals = internalMutation({
         ? null
         : (answer.data as { answersRequestAt?: unknown }).answersRequestAt;
       const stands = answer !== null && answers === standing.requestedAt;
-      if (!stands || !reopensOnReask(answer!.data)) {
+      // AND A PENDING REQUEST KEEPS ITS PLACE ONLY WHILE IT STILL HAS ONE.
+      //
+      // internalOldestEvalsRequest serves a TRAILING window of the newest
+      // EVALS_REQUEST_SCAN_LIMIT request rows. A request that has fallen out of
+      // it is invisible to the queue, and re-dating was the only thing that
+      // ever put one back — so holding an unanswered request at its old date
+      // would leave a sha unservable for good, its check timing out on every
+      // re-run with nothing but `--force` able to fix it. That is the exact
+      // shape of bug this branch keeps finding, and it must not be reintroduced
+      // by the rule that saves a re-run its place in line.
+      //
+      // The test is exact rather than a guess at an age: take the requests
+      // NEWER than this one, at most a windowful, and if that fills the window
+      // then this one is at or over the edge. One bounded read, in a mutation
+      // that runs once per push or re-run — not on a tick.
+      const inWindow = stands || (await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_at", (q) => q.eq("kind", EVALS_REQUEST).gt("at", existing.at))
+        .take(EVALS_REQUEST_SCAN_LIMIT)).length < EVALS_REQUEST_SCAN_LIMIT;
+      if (inWindow && (!stands || !reopensOnReask(answer!.data))) {
         // The push order is not the question, and it still has to move: the
         // head map is built on `runId` (headShaByPullRequest), so a re-run
         // whose id is higher must be recorded or a live head reads as behind
@@ -889,7 +917,15 @@ export const internalRequestEvals = internalMutation({
         return { existing: true, renewed: false };
       }
     }
-    const requestedAt = Date.now();
+    // STRICTLY LATER THAN THE REQUEST IT REPLACES, and a millisecond will do.
+    //
+    // `requestedAt` is the exact identity a row names in `answersRequestAt`, so
+    // two requests sharing a millisecond are one question to every reader: the
+    // row that answered the first would go on answering the second, which is
+    // the staleness this whole contract exists to prevent. Two re-files inside
+    // one millisecond is a retried POST, not a hypothetical, and the clock is
+    // the only thing standing between that and a wrong answer.
+    const requestedAt = Math.max(Date.now(), (standing?.requestedAt ?? 0) + 1);
     const data = {
       ...payload,
       // MOVES WITH EVERY REQUEST NOT PROVED STALE AND NOT PROVED IDENTICAL, and

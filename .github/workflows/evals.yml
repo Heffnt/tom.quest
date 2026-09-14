@@ -15,9 +15,14 @@ name: Evals
 # So the filter moved INTO the check, where the answer can be recorded, and
 # WATCHED_PATHS is now the single spelling with no copy here to drift from it.
 # The check reads its own diff against that list, and when NOTHING watched
-# changed it posts a request marked `unaffected`, which the Convex door answers
-# at once with an evals-run row saying so. No model runs, the check finishes in
-# seconds, and the gate still has three rows that each say something true.
+# changed it posts a request marked `unaffected`. That is a CLAIM and not the
+# answer: the Convex door writes no row for it (convex/http.ts), because a
+# client saying its diff touched nothing watched is a client deciding what the
+# gate measures. The box recomputes the diff from its own clone, reads
+# WATCHED_PATHS out of the BASE worktree, and writes the unaffected row itself
+# — in one POST, no model, seconds rather than an hour — or scores the branch
+# and records the claim refuted. The gate still has three rows that each say
+# something true, and the third one is the box's answer rather than CI's.
 on:
   pull_request:
     # `edited` reruns when retargeting changes the `BASE...HEAD` watched diff

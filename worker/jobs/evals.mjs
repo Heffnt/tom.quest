@@ -962,6 +962,17 @@ export async function runItem(item, context, io, { deterministic = null, receipt
   // not a guarantee, and one malformed string should not fail an item whose
   // regeneration was fine.
   //
+  // WHY THE PROMPT RULE IS NOT ENOUGH ON ITS OWN, and why the parser is not
+  // the place instead. A prompt rule moves a model's tendency and does not
+  // bound it, and the cost of the residue is not a worse reason but a FAILED
+  // ITEM — a regression on the merge gate, from an item whose regeneration was
+  // fine. A parser taught to tolerate quotes is the other way out and a worse
+  // one: it would have to guess where the JSON string ends, and a judge that
+  // wrote a reason with a comma and a brace in it would be guessed wrong
+  // silently, which turns an unreadable answer into a WRONG one. Deleting this
+  // means choosing between those two. The second ask costs one Fable call on
+  // the rare item that needs it.
+  //
   // IT IS NOT A RETRY OF A VERDICT. A judge that answers `fail` readably is
   // asked once and its answer stands — retrying until the wanted answer
   // arrives is exactly how a measurement becomes a wish. Only unreadability is
