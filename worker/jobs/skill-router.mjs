@@ -384,9 +384,11 @@ function byGrantOrder(a, b) {
 
 /** A published catalog as a set of BARE names. `tom-` is a directory-naming
  * fact only, so a caller that passes directory names gets the same answer as
- * one that passes skill names. */
+ * one that passes skill names. An absent catalog is empty: both production
+ * callers read one before routing, and granting a body we did not inspect
+ * would make this authorization fail open. */
 function publishedSet(published) {
-  if (published === null || published === undefined) return null;
+  if (published === null || published === undefined) return new Set();
   const names = published instanceof Set ? [...published] : [...(published ?? [])];
   return new Set(names.map(bareName));
 }
@@ -541,7 +543,9 @@ export function routeSkills(input) {
   for (const hit of areasForRepos(areaTerms, areaRepoNames).slice(0, REPO_AREA_CAP)) wanted.push(`know-${hit.name}`);
 
   // know-intent ──────────────────────────────────────────────────────────────
-  if (rules.judges || INTENT_CALLERS.includes(caller)) wanted.push("know-intent");
+  // `know-intent` contains priorities.md too. A capture needs its “What
+  // becomes a todo” policy even though it is not judging on Tom's behalf.
+  if (rules.judges || rules.captures || INTENT_CALLERS.includes(caller)) wanted.push("know-intent");
 
   // know-week ────────────────────────────────────────────────────────────────
   if (WEEK_CALLERS.includes(caller)) wanted.push("know-week");
@@ -572,7 +576,7 @@ export function routeSkills(input) {
   const granted = [];
   const refused = [];
   for (const name of [...new Set(wanted)]) {
-    if (catalog === null || catalog.has(name)) granted.push(name);
+    if (catalog.has(name)) granted.push(name);
     else refused.push({ name, why: NO_BODY });
   }
   granted.sort(byGrantOrder);

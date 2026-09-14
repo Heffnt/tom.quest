@@ -2050,7 +2050,7 @@ http.route({ path: "/tts/model-of-tom", method: "POST", handler: ttsModelOfTom }
 // ── POST /tts/skills — the published skill catalog (the unified agent
 // ecosystem, phase 6) ────────────────────────────────────────────────────────
 // Body: { commit, syncedAt, pushed, skills: [{ name, group, description, body,
-// references, sourcePaths, bytes }], refused: [{ name, why }] }.
+// references, sourcePaths }], refused: [{ name, why }] }.
 //
 // A SECOND DOOR, NOT A WIDENED ONE. The base (POST /tts/model-of-tom above) and
 // the catalog are published by two posts so THEY FAIL SEPARATELY: a night whose
@@ -2096,9 +2096,9 @@ const ttsSkillsPost = httpAction(async (ctx, request) => {
   }
   const names = new Set<string>();
   const skills: {
-    name: string; group: string; description: string; body: string;
+    name: string; description: string; body: string;
     references: { name: string; path: string; body: string }[];
-    sourcePaths: string[]; bytes: number;
+    sourcePaths: string[];
   }[] = [];
   for (let i = 0; i < b.skills.length; i++) {
     const s = b.skills[i] as Record<string, unknown> | null;
@@ -2122,12 +2122,11 @@ const ttsSkillsPost = httpAction(async (ctx, request) => {
     if (typeof s.body !== "string" || s.body.trim() === "") {
       return jsonResponse(400, { error: `skills[${i}].body (non-empty string) required` });
     }
-    if (typeof s.bytes !== "number" || !Number.isSafeInteger(s.bytes) || s.bytes < 0) {
-      return jsonResponse(400, { error: `skills[${i}].bytes (nonnegative integer) required` });
-    }
     if (!Array.isArray(s.sourcePaths) || s.sourcePaths.some((path) => typeof path !== "string" || path.trim() === "")) {
       return jsonResponse(400, { error: `skills[${i}].sourcePaths (array of paths) required` });
     }
+    // The first publisher predates references; accepting its otherwise-complete
+    // catalog avoids an all-skill outage while that independently deployed job rolls.
     const rawReferences = s.references === undefined ? [] : s.references;
     if (!Array.isArray(rawReferences)) {
       return jsonResponse(400, { error: `skills[${i}].references, when given, is an array` });
@@ -2146,12 +2145,10 @@ const ttsSkillsPost = httpAction(async (ctx, request) => {
     names.add(s.name);
     skills.push({
       name: s.name,
-      group: s.group,
       description: s.description,
       body: s.body,
       references,
       sourcePaths: s.sourcePaths as string[],
-      bytes: s.bytes,
     });
   }
   try {

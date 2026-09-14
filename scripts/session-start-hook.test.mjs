@@ -68,7 +68,7 @@ function fixture({ writing = true } = {}) {
  * configuration cannot reach a test, and `TOM_QUEST_DIR` is pointed at a
  * directory that is not a checkout so the run publishes no repo but WikiTom's.
  */
-function run({ wikitom, skills, tomQuest }) {
+function run({ wikitom, skills, tomQuest, env = {} }) {
   return spawnSync(process.execPath, [HOOK], {
     encoding: "utf8",
     input: '{"hook_event_name":"SessionStart"}\n',
@@ -79,6 +79,7 @@ function run({ wikitom, skills, tomQuest }) {
       TOM_QUEST_DIR: tomQuest ?? path.join(os.tmpdir(), "no-tom-quest-checkout"),
       CLAUDE_CONFIG_DIR: "",
       CMT_DIR: "",
+      ...env,
     },
   });
 }
@@ -192,6 +193,39 @@ describe("session-start-hook", () => {
     expect(context).toContain("granted: —");
     expect(context).toContain("refused: write — no published body at this commit");
     expect(context).not.toContain("skill catalog may be stale");
+  });
+
+  it("labels box grants with the commit in their existing skill bodies", () => {
+    const wikitom = fixture();
+    const skills = temp("session-start-box-stale-");
+    const oldCommit = git(wikitom, "rev-parse", "HEAD").trim();
+    contextOf(run({ wikitom, skills }));
+
+    write(wikitom, "model-of-tom/writing.md", "# Writing\n\n## Sentences\n\nThe new body.\n");
+    git(wikitom, "add", "-A");
+    git(wikitom, "commit", "-q", "-m", "new body");
+    const newCommit = git(wikitom, "rev-parse", "HEAD").trim();
+
+    const context = contextOf(run({ wikitom, skills, env: { RUN_HOST: "box" } }));
+    expect(context).toContain(`SKILLS (WikiTom commit ${oldCommit})`);
+    expect(context).not.toContain(`SKILLS (WikiTom commit ${newCommit})`);
+    expect(fs.readFileSync(path.join(skills, "tom-write", "SKILL.md"), "utf8")).toContain("Use short sentences.");
+  });
+
+  it("routes the Claude SessionStart grant from Claude's directory only", () => {
+    const wikitom = fixture();
+    const claude = temp("session-start-claude-catalog-");
+    const codex = temp("session-start-codex-catalog-");
+    const commit = git(wikitom, "rev-parse", "HEAD").trim();
+    fs.mkdirSync(path.join(codex, "tom-write"));
+    fs.writeFileSync(
+      path.join(codex, "tom-write", "SKILL.md"),
+      `<!-- generated from WikiTom model-of-tom/writing.md at commit ${commit} — do not edit -->\n`,
+    );
+
+    const context = contextOf(run({ wikitom, skills: [claude, codex], env: { RUN_HOST: "box" } }));
+    expect(context).toContain("granted: —");
+    expect(context).toContain("refused: write — no published body at this commit");
   });
 
   // A session start waits for the pull, so the pull must be capped: without a

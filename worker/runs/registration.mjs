@@ -159,11 +159,15 @@ export function spoolPath(spoolDir, token) {
  * A SEPARATE NAME rather than leaving a stub at the spool path: writeRegistration
  * refuses a token whose file holds different content, and the spool path is its
  * to own. The sweep's spool cleanup ages this file out with everything else in
- * the directory.
+ * the directory; an idempotent claim restores it before a resumed session asks.
  */
 export function claimPointerPath(spoolDir, token) {
   if (!UUID.test(String(token))) throw new Error("invalid run registration token");
   return path.join(path.resolve(String(spoolDir)), `${token}.claimed.json`);
+}
+
+function writeClaimPointer(spoolDir, token, runFile, fs) {
+  try { atomicJson(claimPointerPath(spoolDir, token), { runFile: path.resolve(runFile) }, fs); } catch {}
 }
 
 /** Write the launcher-owned groups before the child can start. */
@@ -243,6 +247,7 @@ export function claimRegistration({
     // The sidecar is already the durable binding when this token claimed it.
     // A delayed repair must not replace its launcher facts with an older spool.
     if (existing?.token === token) {
+      writeClaimPointer(spoolDir, token, runFile, fs);
       return { ok: true, claimed: false, file, envelope: existing };
     }
     const spooled = jsonAt(source, fs);
@@ -276,7 +281,7 @@ export function claimRegistration({
     // the token follows it to this sidecar; see claimPointerPath. It is written
     // after the sidecar, so a reader that finds it finds an envelope there, and
     // a failure to write it costs asks, never the claim.
-    try { atomicJson(claimPointerPath(spoolDir, token), { token, runFile: path.resolve(runFile) }, fs); } catch {}
+    writeClaimPointer(spoolDir, token, runFile, fs);
     return { ok: true, claimed: true, file, envelope };
   });
 }

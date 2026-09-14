@@ -969,7 +969,6 @@ export default defineSchema({
   // its prefix and a grant block whose names are all refused by one line each.
   ttsSkills: defineTable({
     name: v.string(), // "know-research" — the bare name, never the `tom-` directory spelling
-    group: v.string(), // "write" | "know" | "repo" (scripts/skills.mjs SKILL_GROUPS)
     // At most DESCRIPTION_MAX_BYTES (200). A description is a prompt cost every
     // run pays whether or not the skill is loaded, so the cap is checked at the
     // door rather than trusted from the publisher.
@@ -979,11 +978,10 @@ export default defineSchema({
     // each nested AGENTS.md under a `repo-` skill.
     references: v.array(v.object({ name: v.string(), path: v.string(), body: v.string() })),
     sourcePaths: v.array(v.string()), // the WikiTom (or repo) paths the body came from
-    bytes: v.number(),
     commit: v.string(), // WikiTom's commit, or the repository's own for a `repo-` skill
     syncedAt: v.number(), // the commit's time, not the post's
     pushed: v.boolean(), // whether that commit had reached GitHub when it was posted
-  }).index("by_name", ["name"]).index("by_group", ["group", "name"]),
+  }).index("by_name", ["name"]),
 
   // The per-file model-of-tom source facts, MOVED HERE from ttsSkills above
   // with their shape untouched: one row per WikiTom file the nightly job posts
@@ -1000,14 +998,15 @@ export default defineSchema({
     body: v.string(),
     sourcePath: v.string(), // path inside WikiTom, so a row traces to its file
     bytes: v.optional(v.number()), // source bytes reported by the publisher
-    // The WikiTom commit the file was read at. Absent only on a row the
-    // retired six-hourly sync wrote.
+    // The WikiTom commit the file was read at. It remains optional because rows
+    // written by the retired six-hourly sync still have to survive this move.
     commit: v.optional(v.string()),
     syncedAt: v.number(), // the commit's time, not the post's
     // Whether the commit had reached GitHub when it was posted. The job posts
     // local HEAD even when its push was refused, so a prompt names the commit
     // it began with; false is what lets the digest say "not yet pushed".
-    // Absent on a row posted before the flag existed.
+    // It remains optional because rows posted before that flag still inhabit
+    // this table until the next whole replacement.
     pushed: v.optional(v.boolean()),
   }).index("by_name", ["name"]),
 

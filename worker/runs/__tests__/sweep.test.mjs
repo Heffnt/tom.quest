@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { claudeLine, claudeToolResult, claudeUserTurn, jsonl } from "./fixtures.mjs";
+import { claudeLine, claudeToolResult, claudeUserTurn, codexDeveloper, codexMeta, codexSkillsInstructions, codexToolCall, codexTurnContext, jsonl } from "./fixtures.mjs";
 import { writeRegistrationClaim, writeRegistrationEnd } from "../registration.mjs";
 import {
   MAX_ATTEMPTS,
@@ -87,6 +87,27 @@ function largeDiskFs() {
 }
 
 describe("run sweep", () => {
+  it("keeps the first Codex catalog while a later tail reads its skill", async () => {
+    const dir = temp(); const project = path.join(dir, "codex", "project"); fs.mkdirSync(project, { recursive: true });
+    const file = path.join(project, "rollout.jsonl");
+    const catalog = codexSkillsInstructions({ roots: { r0: "C:/skills" }, skills: [{ name: "tom-write", file: "r0/tom-write/SKILL.md" }] });
+    fs.writeFileSync(file, jsonl([codexMeta(), codexTurnContext(), codexDeveloper(catalog)]));
+    let stat = fs.statSync(file);
+    const item = { runtime: "codex", host: "laptop", root: path.dirname(project), project: "project", threadId: "rollout", kind: "root", path: file, mtimeMs: stat.mtimeMs, bytes: stat.size };
+    const ingests = [];
+    const post = async (route, body) => {
+      if (route === "/runs/ingest") ingests.push(body);
+      return route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true };
+    };
+    const stateDir = path.join(dir, "state");
+    await sweepRunFile(item, { stateDir, store: store(), post, now: () => NOW });
+    fs.appendFileSync(file, jsonl([codexToolCall({ args: { path: "C:/skills/tom-write/SKILL.md" } })]));
+    stat = fs.statSync(file); item.mtimeMs = stat.mtimeMs; item.bytes = stat.size;
+    await sweepRunFile(item, { stateDir, store: store(), post, now: () => NOW + 1 });
+
+    expect(ingests.at(-1).run.context).toMatchObject({ skillsOffered: ["tom-write"], skillsUsed: ["tom-write"] });
+  });
+
   it("stores first, pages at 200 rows, and advances only through the delivered page", async () => {
     const dir = temp(); const item = runFile(dir, manyLines(201)); const activeStore = store();
     const ingest = [];

@@ -23,7 +23,7 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { MODEL_OF_TOM_HEADER } from "./ttsShared";
-import { byteLength, DESCRIPTION_MAX_BYTES, SKILL_GROUPS } from "../scripts/skills.mjs";
+import { byteLength, DESCRIPTION_MAX_BYTES } from "../scripts/skills.mjs";
 
 /** The layer names a POST may still name. `write` and `know` stay in the
  * vocabulary because the nightly publisher spells them until it is narrowed;
@@ -270,16 +270,16 @@ export const internalReplaceSkills = internalMutation({
     pushed: v.boolean(),
     skills: v.array(v.object({
       name: v.string(),
-      group: v.string(),
       description: v.string(),
       body: v.string(),
       references: v.array(skillReference),
       sourcePaths: v.array(v.string()),
-      bytes: v.number(),
     })),
   },
   handler: async (ctx, { commit, syncedAt, pushed, skills }) => {
     if (commit.trim() === "") throw new Error("commit is required");
+    // This timestamp orders whole-catalog posts; commit hashes have no ordering
+    // relation, so deleting it would let a delayed publisher roll the catalog back.
     if (!Number.isFinite(syncedAt)) throw new Error("syncedAt must be finite");
     if (skills.length === 0) throw new Error("no skills posted — store left as it was");
     if (skills.length > SKILLS_MAX) throw new Error(`at most ${SKILLS_MAX} skills per post — got ${skills.length}`);
@@ -287,21 +287,22 @@ export const internalReplaceSkills = internalMutation({
     for (const skill of skills) {
       if (skill.name.trim() === "") throw new Error("a skill needs a name");
       if (names.has(skill.name)) throw new Error(`skill posted twice: ${skill.name}`);
-      if (!(SKILL_GROUPS as readonly string[]).includes(skill.group)) {
-        throw new Error(`not a skill group: ${skill.group} (one of ${SKILL_GROUPS.join(", ")})`);
-      }
       if (skill.body.trim() === "") throw new Error(`body for ${skill.name} must be non-empty`);
       if (skill.description.trim() === "") throw new Error(`description for ${skill.name} must be non-empty`);
       const described = byteLength(skill.description);
       if (described > DESCRIPTION_MAX_BYTES) {
         throw new Error(`description for ${skill.name} is ${described} bytes, over the ${DESCRIPTION_MAX_BYTES}-byte cap`);
       }
-      if (!Number.isSafeInteger(skill.bytes) || skill.bytes < 0) {
-        throw new Error(`bytes for ${skill.name} must be a nonnegative integer`);
-      }
       names.add(skill.name);
     }
     const existing = await ctx.db.query("ttsSkills").collect();
+    const currentSyncedAt = existing.reduce<number | null>(
+      (latest, row) => latest === null || row.syncedAt > latest ? row.syncedAt : latest,
+      null,
+    );
+    if (currentSyncedAt !== null && syncedAt < currentSyncedAt) {
+      throw new Error(`the post's commit ${commit.slice(0, 12)} (${new Date(syncedAt).toISOString()}) is older than the stored catalog (${new Date(currentSyncedAt).toISOString()}) — store left as it was`);
+    }
     for (const row of existing) await ctx.db.delete(row._id);
     for (const skill of skills) await ctx.db.insert("ttsSkills", { ...skill, commit, syncedAt, pushed });
     return { skills: skills.length, deleted: existing.length, commit };

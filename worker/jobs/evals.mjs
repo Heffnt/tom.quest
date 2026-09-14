@@ -301,10 +301,12 @@ export function publicationFor(tomquestTree, wikitomTree, run = execFileSync, wo
  *  read is the page; the two generated lines above it are how the harness finds
  *  the file, not part of what it says. */
 export function skillBodyOf(text) {
-  let rest = String(text ?? "");
-  const frontmatter = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(rest);
-  if (frontmatter !== null) rest = rest.slice(frontmatter[0].length);
-  return rest.replace(/^\s*<!--[\s\S]*?-->[ \t]*\r?\n/, "").trim();
+  const frontmatter = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(text);
+  if (frontmatter === null) throw new Error("published SKILL.md has no frontmatter");
+  const rest = text.slice(frontmatter[0].length);
+  const provenance = /^\s*<!--[\s\S]*?-->[ \t]*\r?\n/.exec(rest);
+  if (provenance === null) throw new Error("published SKILL.md has no provenance");
+  return rest.slice(provenance[0].length).trim();
 }
 
 /**
@@ -342,7 +344,8 @@ export function skillsFor(tomquestTree, wikitomTree, names, run = execFileSync, 
   }));
   return {
     names: layerNames,
-    skills: skillNames,
+    skills: asked.granted,
+    skillsRefused: asked.refused.map((entry) => entry.name),
     text: [...(layers === null ? [] : [layers.text]), asked.grants, ...loaded.map((one) => one.body)].join("\n\n"),
     commit: publication.commit,
     // ONE SHAPE for both halves — `{ path, bytes }`, which is what prelude.mjs's
@@ -973,6 +976,7 @@ export async function runItem(item, context, io, { deterministic = null, receipt
         layersGiven: known ? layers.names : [],
         layersDenied: known ? LAYER_NAMES.filter((name) => !layers.names.includes(name)) : [],
         skillsGranted: layers.skills ?? [],
+        skillsRefused: layers.skillsRefused ?? [],
         ...(layers.commit ? { wikitomCommit: layers.commit } : {}),
       },
     });
@@ -1153,13 +1157,18 @@ export const LAYER_SKILL_ALIASES = Object.freeze({
 });
 
 /** The skill names one loaded trigger is about: a `skill` file names its own,
- *  and a `layer` file names the skills that layer became. A file whose name is
- *  in neither table is about nothing nameable, and says so with an empty list
- *  rather than with a guess. */
+ *  and a `layer` file names the skills that layer became. */
 export function triggerSkills(trigger) {
-  if (trigger?.kind === "skill") return typeof trigger.name === "string" && trigger.name !== "" ? [trigger.name] : [];
-  if (trigger?.kind === "layer") return [...(LAYER_SKILL_ALIASES[trigger.name] ?? [])];
-  return [];
+  if (trigger?.kind === "skill") {
+    if (typeof trigger.name !== "string" || trigger.name === "") throw new Error("skill trigger needs a name");
+    return [trigger.name];
+  }
+  if (trigger?.kind === "layer") {
+    const skills = LAYER_SKILL_ALIASES[trigger.name];
+    if (skills === undefined) throw new Error(`unknown layer trigger ${String(trigger.name)}`);
+    return [...skills];
+  }
+  throw new Error(`unknown trigger kind ${String(trigger?.kind)}`);
 }
 
 export function loadTriggers(tomquestTree) {

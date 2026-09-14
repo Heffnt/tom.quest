@@ -99,6 +99,24 @@ const SKILLS_MAX = 64;
 const RULINGS_PER_SUBJECT = 5;
 const OUTCOMES_PER_BATCH = 3;
 
+/** The grant names published, immutable bodies; this small tail carries the
+ * subject's live facts, which have no body a session could load later. */
+function recordFacts(record: ContextRecord): string {
+  const rulings = [...record.rulings]
+    .sort((a, b) => b.ruledAt - a.ruledAt || a.verdict.localeCompare(b.verdict))
+    .slice(0, RULINGS_PER_SUBJECT)
+    .map((ruling) => `${ruling.ruledDay} ${ruling.verdict}${ruling.sentence ? `: ${ruling.sentence}` : ""}`);
+  const outcomes = [...record.sessions]
+    .sort((a, b) => b.statusChangedAt - a.statusChangedAt || a.outcome.localeCompare(b.outcome))
+    .slice(0, OUTCOMES_PER_BATCH)
+    .map((session) => `${session.endedDay} ${session.outcome}${session.outcomeSummary ? `: ${session.outcomeSummary}` : ""}`);
+  if (rulings.length === 0 && outcomes.length === 0) return "";
+  return [
+    ...(rulings.length === 0 ? [] : ["RULINGS ON THIS SUBJECT", ...rulings.map((ruling) => `- ${ruling}`)]),
+    ...(outcomes.length === 0 ? [] : ["RECENT SESSION OUTCOMES", ...outcomes.map((outcome) => `- ${outcome}`)]),
+  ].join("\n");
+}
+
 // ── The record ───────────────────────────────────────────────────────────────
 // Exactly the fields worker/jobs/skill-router.mjs reads, and no more. The
 // `--record FILE` a CLI run passes holds this same shape, which is what lets
@@ -372,7 +390,11 @@ export async function assembleContext(
   // one the BODIES a run is about to load actually came from. With no catalog
   // at all there are no bodies, and the base's commit is the only one there is.
   const commit = catalog[0]?.commit ?? state.commit;
-  const grants = renderGrantBlock({ commit, granted, refused });
+  // A ruling or outcome is live record state, not a published skill body. It
+  // must ride the session that needs it; naming a skill could not recover it.
+  const grants = [renderGrantBlock({ commit, granted, refused }), recordFacts(record)]
+    .filter((part) => part !== "")
+    .join("\n\n");
 
   return {
     prefix,

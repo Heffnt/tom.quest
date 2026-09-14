@@ -194,7 +194,7 @@ describe("run registration", () => {
     claimRegistration({ spoolDir, token, runFile, claim: { by: "hook:SessionStart" }, now: () => 2 });
     expect(fs.existsSync(path.join(spoolDir, `${token}.json`))).toBe(false);
     expect(JSON.parse(fs.readFileSync(claimPointerPath(spoolDir, token), "utf8")))
-      .toEqual({ token, runFile: path.resolve(runFile) });
+      .toEqual({ runFile: path.resolve(runFile) });
 
     expect(appendSkillAsk({ spoolDir, token, ask: { name: "know-research", result: "ok" }, now: () => 3 }))
       .toMatchObject({ ok: true, file: registrationSidecarPath(runFile) });
@@ -203,6 +203,19 @@ describe("run registration", () => {
     // measurable at all.
     expect(mergeRegistration({ parsed: parsed(), host: "box", envelope: readRegistration(runFile) }).run.context.skillsAsked)
       .toEqual(["know-research (ok)"]);
+  });
+
+  it("recreates an expired claim pointer when a resumed session reclaims its token", () => {
+    const dir = temp(); const spoolDir = path.join(dir, "spool"); const runFile = path.join(dir, "run.jsonl");
+    const token = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    writeRegistration({ spoolDir, token, writer: { file: "launcher.mjs" }, registration: { host: "box" }, now: () => 1 });
+    claimRegistration({ spoolDir, token, runFile, claim: { by: "hook:SessionStart" }, now: () => 2 });
+    fs.unlinkSync(claimPointerPath(spoolDir, token));
+
+    expect(claimRegistration({ spoolDir, token, runFile, claim: { by: "resume" }, now: () => 3 }))
+      .toMatchObject({ ok: true, claimed: false });
+    expect(appendSkillAsk({ spoolDir, token, ask: { name: "know-research", result: "ok" }, now: () => 4 }))
+      .toMatchObject({ ok: true, file: registrationSidecarPath(runFile) });
   });
 
   it("writes a brand-new envelope at version 2, from either author", () => {

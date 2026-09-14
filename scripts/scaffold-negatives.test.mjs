@@ -142,13 +142,25 @@ describe("parseArgs", () => {
 describe("evals/triggers", () => {
   const names = fs.readdirSync(TRIGGERS).filter((name) => name.endsWith(".json") && !name.endsWith(".draft.json"));
 
-  // CONTAINMENT, NOT EQUALITY: every source this scaffolder knows about still
-  // has its file, and the directory may hold more. It holds thirteen more —
-  // one per published skill — which this scaffolder does not draft, because a
-  // skill's negatives come from the page it was generated from rather than
-  // from a layer's headings.
-  it("has a file for every layer source", () => {
-    expect(names.sort()).toEqual(expect.arrayContaining(SOURCES.map((source) => `${fileStem(source)}.json`).sort()));
+  it("has exactly one trigger file for every committed layer and skill", () => {
+    expect(names.sort()).toEqual([
+      "layer-know.json",
+      "layer-operate.json",
+      "layer-write.json",
+      "skill-know-admin.json",
+      "skill-know-agent-systems.json",
+      "skill-know-climbing.json",
+      "skill-know-health-and-food.json",
+      "skill-know-intent.json",
+      "skill-know-mental-health.json",
+      "skill-know-money.json",
+      "skill-know-research.json",
+      "skill-know-social.json",
+      "skill-know-week.json",
+      "skill-repo-ComplexMultiTrigger.json",
+      "skill-repo-WikiTom.json",
+      "skill-repo-tom.quest.json",
+    ]);
   });
 
   it.each(names)("%s parses, and its cases are unique and well shaped", (name) => {

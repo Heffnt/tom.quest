@@ -28,7 +28,7 @@
 // grant block and the session carries on with everything else it has.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -71,8 +71,9 @@ export function pullWikiTom(dir, run = execFileSync) {
  *
  * THE TEST SEAM, and the only one: `TTS_SKILLS_DIRS` is a `;`-separated list of
  * destinations that REPLACES both (`;` and not `:` because a Windows path
- * carries a colon). A test points both at one temp directory with it; nothing
- * else in the tree reads it.
+ * carries a colon). When it names two, Claude is first and Codex second, the
+ * same order as the ordinary destinations. A test points both at one temp
+ * directory with it; nothing else in the tree reads it.
  *
  * `CLAUDE_CONFIG_DIR` moves the Claude half, because the harness itself reads
  * its skills from there when it is set, and writing to `~/.claude/skills` would
@@ -92,7 +93,10 @@ export function skillsDestinations() {
   const claude = claudeConfig !== undefined && claudeConfig.trim() !== ""
     ? path.join(claudeConfig, "skills")
     : path.join(home, ".claude", "skills");
-  return [path.resolve(claude), path.resolve(path.join(home, ".codex", "skills"))];
+  const codex = process.env.CODEX_HOME && process.env.CODEX_HOME.trim() !== ""
+    ? process.env.CODEX_HOME
+    : path.join(home, ".codex");
+  return [path.resolve(claude), path.resolve(codex, "skills")];
 }
 
 /** Every repository a `repo-` skill could come from, by the name the map's
@@ -152,26 +156,33 @@ export function refreshSkills({ wikitom: dir = wikitom, dirs = skillsDestination
   return results;
 }
 
-/** The catalog AS IT STANDS ON THE DISK, bare-named. Read back rather than
- * taken from the publish result, because the grant block must name what the run
- * can actually load: a refresh that failed leaves last night's directories, and
- * those are the skills this session has. */
-export function publishedNames(dirs = skillsDestinations()) {
+const WIKITOM_PROVENANCE = /^<!-- generated from WikiTom .+ at commit ([0-9a-f]+) — do not edit -->$/m;
+
+/** The catalog AS IT STANDS ON THE DISK, bare-named and with the WikiTom
+ * commit its bodies name. This is one harness directory, never their union:
+ * SessionStart is a Claude hook, while Codex reads its own directory elsewhere. */
+export function publishedCatalog(dir) {
   const names = new Set();
-  for (const dir of dirs) {
-    let entries;
+  const commits = new Set();
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return { names, commit: null };
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(SKILL_PREFIX)) continue;
     try {
-      entries = readdirSync(dir, { withFileTypes: true });
+      const skill = readFileSync(path.join(dir, entry.name, "SKILL.md"), "utf8");
+      names.add(entry.name.slice(SKILL_PREFIX.length));
+      const provenance = WIKITOM_PROVENANCE.exec(skill);
+      if (provenance !== null) commits.add(provenance[1]);
     } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (entry.isDirectory() && entry.name.startsWith(SKILL_PREFIX)) {
-        names.add(entry.name.slice(SKILL_PREFIX.length));
-      }
+      // A directory without a readable SKILL.md is not a body this hook can
+      // grant, so it stays out of the catalog.
     }
   }
-  return names;
+  return { names, commit: commits.size === 1 ? [...commits][0] : null };
 }
 
 // ── The hook ─────────────────────────────────────────────────────────────────
@@ -181,7 +192,10 @@ function main() {
   // event-specific behavior, but draining stdin keeps that protocol harmless.
   process.stdin.resume();
 
-  pullWikiTom(wikitom);
+  // The box's nightly publishes its skill bodies and posts their commit as one
+  // operation. Pulling here would advance only the checkout, then mislabel the
+  // existing bodies; the laptop has no nightly, so it still refreshes first.
+  if (process.env.RUN_HOST !== "box") pullWikiTom(wikitom);
 
   // A session that cannot write a directory still starts. The whole cost of
   // that failure is the one line below, which says the catalog may be older
@@ -218,6 +232,7 @@ function main() {
       // row of the routing table standing — WRITE GOES WHEN THE RUN'S OUTPUT
       // REACHES TOM — so the grant is `write`, and the know layer is a `tts
       // search skills` away rather than a prompt away.
+      const catalog = publishedCatalog(destinations[0]);
       const { granted, refused } = routeSkills({
         subject: { kind: "none" },
         caller: "laptop",
@@ -225,9 +240,14 @@ function main() {
         record: {},
         cwd: process.cwd(),
         repoDirs: skillRepoDirs(),
-        published: publishedNames(destinations),
+        published: catalog.names,
       });
-      grants = renderGrants({ commit: prelude.commit, granted, refused });
+      // An empty directory has no body to mislabel, so its current checkout is
+      // a useful commit for the all-refused block. Any nonempty unprovenanced
+      // or mixed directory says unknown rather than borrowing a just-pulled
+      // checkout commit for bodies it did not read.
+      const commit = catalog.commit ?? (catalog.names.size === 0 ? prelude.commit : "unknown");
+      grants = renderGrants({ commit, granted, refused });
     } catch (error) {
       grants = `SKILLS could not be routed: ${oneLine(error)}`;
     }

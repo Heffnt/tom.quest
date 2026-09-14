@@ -175,6 +175,22 @@ function context(mod) {
 }
 
 describe("runItem", () => {
+  it("records only published skills as granted and records refusals", async () => {
+    const mod = await import("./plan-graphs.mjs");
+    const registrations = [];
+    await runItem(item(), {
+      modules: { prepare: mod },
+      cmtDir: undefined,
+      layers: () => ({ names: ["write"], skills: ["write"], skillsRefused: ["know-money"], text: "layer text", commit: "w1", files: [] }),
+    }, {
+      runClaude: async (_prompt, options) => {
+        registrations.push(options.registration);
+        return JSON.stringify({ brief: "a", entryAction: "b", workDescription: "c", groundUpExplanation: "d" });
+      },
+    });
+    expect(registrations[0]).toMatchObject({ skillsGranted: ["write"], skillsRefused: ["know-money"] });
+  });
+
   it("turns a thrown regeneration into a fail and does not stop the run", async () => {
     const mod = await import("./plan-graphs.mjs");
     const results = [];
@@ -767,7 +783,7 @@ describe("skillsFor", () => {
     const work = tree();
     const io = publishingRun({ write: "WRITE BODY", "know-research": "RESEARCH BODY" });
     const built = skillsFor(HERE, `${work}-wiki`, { layers: ["write"], skills: ["know-research", "write"] }, io.run, work);
-    expect(built).toMatchObject({ names: ["write"], skills: ["know-research", "write"], commit: "wiki-commit" });
+    expect(built).toMatchObject({ names: ["write"], skills: ["know-research", "write"], skillsRefused: [], commit: "wiki-commit" });
     expect(built.text.startsWith("LAYER TEXT")).toBe(true);
     expect(built.text).toContain("SKILLS (WikiTom commit wiki-commit)");
     expect(built.text).toContain("granted: know-research, write");
@@ -794,6 +810,8 @@ describe("skillsFor", () => {
     expect(built.text).toContain("granted: write");
     expect(built.text).toContain("refused: know-money — model-of-tom/areas/money.md is blank at this commit");
     expect(built.text).toContain("WRITE BODY");
+    expect(built.skills).toEqual(["write"]);
+    expect(built.skillsRefused).toEqual(["know-money"]);
     // No layers asked for, so prelude.mjs is never reached and the text opens
     // with the grant block.
     expect(built.names).toEqual([]);
@@ -810,12 +828,12 @@ describe("skillsFor", () => {
     expect(io.calls.filter((args) => String(args[0]).endsWith("publish-skills.mjs")).length).toBe(1);
   });
 
-  it("strips the generated frontmatter and provenance line, and nothing else", () => {
+  it("strips the generated frontmatter and provenance line, and rejects non-publication text", () => {
     const page = "---\nname: tom-write\ndescription: \"d\"\n---\n\n" +
       "<!-- generated from WikiTom a, b at commit c — do not edit -->\n\n## Heading\n\nbody\n";
     expect(skillBodyOf(page)).toBe("## Heading\n\nbody");
-    expect(skillBodyOf("no frontmatter at all")).toBe("no frontmatter at all");
-    expect(skillBodyOf(undefined)).toBe("");
+    expect(() => skillBodyOf("no frontmatter at all")).toThrow("published SKILL.md has no frontmatter");
+    expect(() => skillBodyOf("---\nname: tom-write\n---\n\nbody")).toThrow("published SKILL.md has no provenance");
   });
 });
 
@@ -859,10 +877,9 @@ describe("the layer names as skill names", () => {
       [],
       ["know-research"],
     ]);
-    // A file whose kind places it nowhere says so with an empty list rather
-    // than with a guess.
-    expect(triggerSkills({ name: "know-research" })).toEqual([]);
-    expect(triggerSkills({ name: "nothing-by-that-name", kind: "layer" })).toEqual([]);
+    expect(() => triggerSkills({ name: "know-research" })).toThrow("unknown trigger kind");
+    expect(() => triggerSkills({ name: "nothing-by-that-name", kind: "layer" })).toThrow("unknown layer trigger");
+    expect(() => triggerSkills({ kind: "skill" })).toThrow("skill trigger needs a name");
   });
 });
 
@@ -1244,7 +1261,7 @@ describe("the trigger set", () => {
 
   it("never loads a draft, and counts a file written either way", () => {
     const dir = tree();
-    writeJson(dir, path.join("evals", "triggers", "hourly.json"), { positives: ["a"], negatives: ["b", "c"] });
+    writeJson(dir, path.join("evals", "triggers", "hourly.json"), { name: "hourly", kind: "skill", positives: ["a"], negatives: ["b", "c"] });
     writeJson(dir, path.join("evals", "triggers", "hourly.draft.json"), { positives: ["a", "b"], negatives: [] });
     expect(loadTriggers(dir).map((one) => one.file)).toEqual(["hourly.json"]);
     expect(triggerCounts(loadTriggers(dir)[0])).toEqual({ positives: 1, negatives: 2 });

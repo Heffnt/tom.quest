@@ -548,7 +548,7 @@ function codexParent(meta) {
   return null;
 }
 
-export function parseCodexFile({ path, text, host, fileVersion, fromLine = 0, baseLine: suppliedBaseLine = fromLine }) {
+export function parseCodexFile({ path, text, contextText = text, host, fileVersion, fromLine = 0, baseLine: suppliedBaseLine = fromLine }) {
   // `baseLine` is the absolute source-line ordinal of text's first supplied
   // line. `fromLine` remains its older spelling for callers that already use
   // it; an explicit baseLine wins when both are present.
@@ -614,14 +614,17 @@ export function parseCodexFile({ path, text, host, fileVersion, fromLine = 0, ba
   // no synthetic context row, and its run facts are intentionally tail-local.
   for (const raw of lines) { try { const entry = JSON.parse(raw); const p = entry.payload ?? {}; if (entry.type === "session_meta") meta = p; if (entry.type === "turn_context") { model ??= p.model; effort ??= p.effort; approvalPolicy ??= p.approval_policy; sandboxPolicy ??= p.sandbox_policy?.type; } } catch {} }
   const id = meta.id ?? meta.session_id ?? "unknown"; runId = `codex:${host}:${id}`; parentId = codexParent(meta);
-  const developer = lines.map((raw) => { try { return JSON.parse(raw); } catch { return null; } }).find((entry) => entry?.type === "response_item" && entry.payload?.type === "message" && entry.payload?.role === "developer");
+  // A catalog and its SKILL.md read can land in different sweep tails, so the
+  // tail alone cannot tell whether that read used an offered skill.
+  const contextLines = fileLines(contextText).lines;
+  const developer = contextLines.map((raw) => { try { return JSON.parse(raw); } catch { return null; } }).find((entry) => entry?.type === "response_item" && entry.payload?.type === "message" && entry.payload?.role === "developer");
   const prompt = (developer?.payload?.content ?? []).map((part) => part.text ?? part.input_text ?? "").join("\n");
   const mot = modelOfTomFromPrompt(prompt);
   const tools = [];
   // The same pass collects what each tool call was ASKED to do, because that
   // text is the only evidence a rollout leaves that a SKILL.md was read.
   const toolCallTexts = [];
-  for (const raw of lines) {
+  for (const raw of contextLines) {
     try {
       const p = JSON.parse(raw).payload ?? {};
       if (!["custom_tool_call", "function_call"].includes(p.type)) continue;

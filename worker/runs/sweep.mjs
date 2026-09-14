@@ -391,9 +391,10 @@ async function parseAndStore(item, { stateDir, store, fs, post, now, markAbandon
   // The parsers read an increment, not a file: `text` is the bytes from the
   // committed cursor on and `baseLine` is that cursor, so provenance keeps
   // naming absolute source lines and the unfinished last line stays unread.
-  const common = { path: item.path, text: textFromLine(storeText(sourceBytes), fromLine), host: item.host, fileVersion: stored.fileVersion, baseLine: fromLine };
+  const sourceText = storeText(sourceBytes);
+  const common = { path: item.path, text: textFromLine(sourceText, fromLine), host: item.host, fileVersion: stored.fileVersion, baseLine: fromLine };
   let parsed;
-  if (item.runtime !== "claude") parsed = parseCodexFile(common);
+  if (item.runtime !== "claude") parsed = parseCodexFile({ ...common, contextText: sourceText });
   else if (item.kind === "subagent") {
     // A child's sidecar carries its depth and its spawning tool-use id, so it
     // is part of the record and gets its own immutable object beside the run.

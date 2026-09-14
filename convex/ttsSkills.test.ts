@@ -152,13 +152,32 @@ describe("model-of-tom publication", () => {
     const t = convexTest({ schema, modules });
     await t.run(async (ctx) => {
       await ctx.db.insert("ttsSkills", {
-        name: "know-research", group: "know", description: "Tom's research.",
+        name: "know-research", description: "Tom's research.",
         body: "the research body", references: [], sourcePaths: ["model-of-tom/areas/research.md"],
-        bytes: 17, commit: COMMIT, syncedAt: COMMITTED_AT, pushed: true,
+        commit: COMMIT, syncedAt: COMMITTED_AT, pushed: true,
       });
     });
     await t.mutation(internal.ttsSkills.internalReplaceModelOfTom, payload());
     expect((await catalog(t)).map((row) => row.name)).toEqual(["know-research"]);
+  });
+
+  it("refuses an older skill catalog post and preserves the newer bodies", async () => {
+    const t = convexTest({ schema, modules });
+    const newer = "b".repeat(40);
+    const older = "a".repeat(40);
+    const skill = {
+      name: "know-research", description: "Tom's research.",
+      references: [], sourcePaths: ["model-of-tom/areas/research.md"],
+    };
+    await t.mutation(internal.ttsSkills.internalReplaceSkills, {
+      commit: newer, syncedAt: COMMITTED_AT + 1, pushed: true,
+      skills: [{ ...skill, body: "new body" }],
+    });
+    await expect(t.mutation(internal.ttsSkills.internalReplaceSkills, {
+      commit: older, syncedAt: COMMITTED_AT, pushed: true,
+      skills: [{ ...skill, body: "old body" }],
+    })).rejects.toThrow(/older than the stored catalog/);
+    expect(await catalog(t)).toEqual([expect.objectContaining({ commit: newer, syncedAt: COMMITTED_AT + 1, body: "new body" })]);
   });
 
   it("fails with the exact missing-layer error rather than a fallback", async () => {

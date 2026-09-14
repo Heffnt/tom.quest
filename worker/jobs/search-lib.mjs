@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import readline from "node:readline";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 import { extractSections, parseFrontmatter } from "./markdown-sections.mjs";
 // session-archive.mjs owns the three-depth resolution for redact.mjs: in a
@@ -621,28 +621,26 @@ export function skillRoots(env = process.env) {
 // specifiers are named rather than guessed, exactly as worker/jobs/tts-lib.mjs
 // names both homes of the registration body. The import is LAZY so a search
 // for a ruling never depends on the skill machinery being installed.
-const SKILLS_MODULE_URLS = [
-  new URL("../../scripts/skills.mjs", import.meta.url),
-  new URL("./scripts/skills.mjs", import.meta.url),
-];
-const REGISTRATION_MODULE_URLS = [
-  new URL("../runs/registration.mjs", import.meta.url),
-  new URL("./runs/registration.mjs", import.meta.url),
-];
+const SKILLS_MODULE_SPECIFIERS = ["../../scripts/skills.mjs", "./scripts/skills.mjs"];
+const REGISTRATION_MODULE_SPECIFIERS = ["../runs/registration.mjs", "./runs/registration.mjs"];
 
-function installedModule(urls, extra) {
-  return [
-    ...urls.flatMap((candidate) => (candidate.protocol === "file:" ? [fileURLToPath(candidate)] : [])),
-    ...extra.map((candidate) => path.resolve(candidate)),
-  ].find((candidate) => fs.existsSync(candidate));
+async function installedModule(specifiers) {
+  for (const specifier of specifiers) {
+    try {
+      return await import(specifier);
+    } catch (error) {
+      if (error?.code !== "ERR_MODULE_NOT_FOUND") throw error;
+      // The checkout and /opt/tts are the only two supported installations.
+    }
+  }
+  return null;
 }
 
 let skillsModule = null;
 async function loadSkillsModule() {
   if (skillsModule === null) {
-    const file = installedModule(SKILLS_MODULE_URLS, ["scripts/skills.mjs"]);
-    if (!file) fail("the skill definitions (scripts/skills.mjs) are not installed");
-    skillsModule = await import(pathToFileURL(file).href);
+    skillsModule = await installedModule(SKILLS_MODULE_SPECIFIERS);
+    if (skillsModule === null) fail("the skill definitions (scripts/skills.mjs) are not installed");
   }
   return skillsModule;
 }
@@ -650,9 +648,7 @@ async function loadSkillsModule() {
 let registrationModule = null;
 async function loadRegistrationModule() {
   if (registrationModule === null) {
-    const file = installedModule(REGISTRATION_MODULE_URLS, ["worker/runs/registration.mjs", "runs/registration.mjs"]);
-    if (!file) return null;
-    registrationModule = await import(pathToFileURL(file).href);
+    registrationModule = await installedModule(REGISTRATION_MODULE_SPECIFIERS);
   }
   return registrationModule;
 }
