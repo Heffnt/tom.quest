@@ -13,6 +13,7 @@ import {
   failedRun,
   faultAudits,
   faultsMonthly,
+  forcedRequestIdentity,
   goldenHash,
   HEAD_TRIALS,
   isFlaky,
@@ -35,6 +36,7 @@ import {
   PR_TRIALS,
   runCase,
   runEvals,
+  runAndPost,
   runItem,
   runnerFailure,
   runTask,
@@ -1148,6 +1150,93 @@ describe("runEvals over a run case", () => {
     expect(data).toMatchObject({ error: "eval request replaced while the runner was measuring it", regressions: null });
     expect(posted).toHaveLength(1);
     expect(posted[0].data).toMatchObject({ answersRequestAt: 1, regressions: null, goldenCoverage: null });
+  });
+
+  it("posts a forced direct recovery run with the live request identity", async () => {
+    const posted = [];
+    const env = { CONVEX_SITE_URL: "https://example.convex.site", TTS_WORKER_KEY: "k" };
+    const request = {
+      repo: "tom.quest",
+      sha: "head000",
+      baseSha: "base000",
+      changed: ["model-of-tom/intent.md"],
+      prBody: "evals: no-item because this recovery changes the runner only",
+      unaffected: false,
+      requestedAt: 42,
+    };
+    vi.stubGlobal("fetch", vi.fn(async (url, init) => {
+      const href = String(url);
+      if (href.includes("/tts/evals-request?")) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ request }) };
+      }
+      if (href.includes("/tts/evals-run")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            run: {
+              repo: "tom.quest",
+              sha: "base000",
+              items: 1,
+              pass: 1,
+              failures: [],
+              scoredIds: ["a"],
+              results: [{ id: "a", judged: "pass" }],
+              tasks: { failures: [] },
+            },
+            base: null,
+          }),
+        };
+      }
+      if (init?.body) posted.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+
+    const identity = await forcedRequestIdentity(env, { repo: "tom.quest", sha: "head000", base: null });
+    const dir = caseDir();
+    const data = await runAndPost(env, runIo(["pass"], [], {
+      layers: () => layers,
+      loadModules: async () => ({}),
+      taskRepos: () => [],
+      worktree: (repo) => ({
+        dir,
+        commit: repo === "WikiTom" ? "wiki1" : "head000",
+        remove: () => {},
+      }),
+    }), {
+      repo: "tom.quest",
+      sha: "head000",
+      base: identity.base,
+      limit: 10,
+      jobs: null,
+      weekly: false,
+      ablation: false,
+      force: true,
+      changed: identity.changed,
+      prBody: identity.prBody,
+      answersRequestAt: identity.answersRequestAt,
+    });
+
+    expect(data).toMatchObject({ regressions: 0, goldenCoverage: true });
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({ kind: "evals-run", key: "tom.quest@head000" });
+    expect(posted[0].data).toMatchObject({
+      answersRequestAt: 42,
+      answersBaseSha: "base000",
+      answersChanged: ["model-of-tom/intent.md"],
+      answersPrBody: "evals: no-item because this recovery changes the runner only",
+    });
+  });
+
+  it("does not attach a live request identity when forced --base disagrees", async () => {
+    const env = { CONVEX_SITE_URL: "https://example.convex.site", TTS_WORKER_KEY: "k" };
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ request: { baseSha: "base000", requestedAt: 42 } }),
+    })));
+    await expect(forcedRequestIdentity(env, { repo: "tom.quest", sha: "head000", base: "otherbase" }))
+      .resolves.toBe(null);
   });
 
   it("takes every trial on a weekly run", async () => {

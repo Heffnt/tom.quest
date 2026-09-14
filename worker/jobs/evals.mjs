@@ -2386,7 +2386,7 @@ export async function stampAgainstBase(data, base, diff = {}) {
  * row, so convex/ttsWeekly.ts reads it with no new field, no new index and no
  * new row kind.
  */
-async function runAndPost(env, io, {
+export async function runAndPost(env, io, {
   repo, sha, base, limit, jobs, weekly, ablation = false, force, changed, prBody,
   dryRun = false, scorecard = undefined, answersRequestAt = null,
 }) {
@@ -2461,6 +2461,27 @@ async function runAndPost(env, io, {
       `(golden ${data.goldenHash})`,
   );
   return data;
+}
+
+export async function forcedRequestIdentity(env, { repo, sha, base }) {
+  const { request } = await convexFetch(
+    env,
+    `/tts/evals-request?repo=${encodeURIComponent(repo)}&sha=${encodeURIComponent(sha)}`,
+  );
+  if (request === null || request === undefined) return null;
+  if (base !== null && base !== undefined && base !== request.baseSha) {
+    console.log(
+      `[evals] ${repo}@${sha}: forced run --base ${base} does not match ` +
+        `live request base ${request.baseSha ?? "none"}; posting without request identity`,
+    );
+    return null;
+  }
+  return {
+    base: request.baseSha ?? null,
+    changed: request.changed ?? null,
+    prBody: request.prBody ?? null,
+    answersRequestAt: request.requestedAt ?? null,
+  };
 }
 
 /**
@@ -2692,16 +2713,23 @@ async function main() {
     return;
   }
 
+  const forcedIdentity = options.force
+    ? await forcedRequestIdentity(env, { repo: options.repo, sha: options.sha, base: options.base })
+    : null;
+
   await runAndPost(env, io, {
     repo: options.repo,
     sha: options.sha,
-    base: options.base,
+    base: forcedIdentity?.base ?? options.base,
     limit: options.limit,
     jobs: options.jobs,
     weekly: false,
     ablation: options.ablation,
     force: options.force,
     dryRun: options.dryRun,
+    changed: forcedIdentity?.changed,
+    prBody: forcedIdentity?.prBody,
+    answersRequestAt: forcedIdentity?.answersRequestAt ?? null,
   });
 }
 
