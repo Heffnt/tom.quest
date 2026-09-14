@@ -42,4 +42,7 @@ regexes = [
   # app/sessions/components/run.test.tsx — a content-addressed store path, not
   # a key. generic-api-key matched it on the field NAME ending in "Key".
   '''storeKey: "runs/claude/box/x/y"''',
+  # worker/jobs/evals.test.mjs — the shape IS the test: the runner-failure
+  # redaction path must remove a real credential-shaped token before it reaches an item.
+  '''ghp_abcdefghijklmnopqrstuvwxyz1234567890''',
 ]

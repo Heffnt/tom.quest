@@ -230,7 +230,7 @@ describe("parseJudge", () => {
   });
 
   it("redacts credentials in a valid judge failure reason before it is stored", () => {
-    const secret = "ghp_abcdefghijklmnopqrstuvwxyz1234567890";
+    const secret = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"; // gitleaks:allow
     const result = parseJudge(JSON.stringify({ verdict: "fail", reason: `judge transport mentioned ${secret}` }));
     expect(result).toMatchObject({ judged: "fail", reason: expect.stringContaining("judge transport mentioned") });
     expect(result.reason).not.toContain(secret);
@@ -354,7 +354,7 @@ describe("repo tasks", () => {
   });
 
   it("turns a thrown task runner into one redacted item error", async () => {
-    const secret = "ghp_abcdefghijklmnopqrstuvwxyz1234567890";
+    const secret = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"; // gitleaks:allow
     const result = await runTask({ id: "t", repo: "slack", kind: "slack" }, {}, {
       runTaskKind: async () => { throw new Error(`Not logged in ${secret}`); },
     });
@@ -504,7 +504,7 @@ describe("the head trials", () => {
   });
 
   it("makes a runner error terminal and redacts it before it reaches the item", async () => {
-    const raw = "Not logged in ghp_abcdefghijklmnopqrstuvwxyz1234567890";
+    const raw = "Not logged in ghp_abcdefghijklmnopqrstuvwxyz1234567890"; // gitleaks:allow
     const calls = { count: 0 };
     const result = await runTrials("a", new Set(["a"]), async () => {
       calls.count += 1;
@@ -512,7 +512,7 @@ describe("the head trials", () => {
     });
     expect(calls.count).toBe(1);
     expect(result).toMatchObject({ judged: "fail", errored: true, reason: expect.stringMatching(/^runner failed: Not logged in/) });
-    expect(result.reason).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
+    expect(result.reason).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890"); // gitleaks:allow
   });
 
   it("reads the base's passing ids off the row, tasks and golden items alike", () => {
