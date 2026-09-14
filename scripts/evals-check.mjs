@@ -157,15 +157,19 @@ function coverageOf(changed, prBody) {
   const paths = changed
     .filter((path) => typeof path === "string")
     .map((path) => path.replace(/\\/g, "/").replace(/^\.\//, ""));
-  if (!paths.some((path) => matchesWatched(path))) return { coverage: true, excuse: null };
+  const watched = paths.filter((path) => matchesWatched(path));
+  if (watched.length === 0) return { coverage: true, excuse: null };
   if (paths.some((path) => ITEM_PREFIXES.some((prefix) => path.startsWith(prefix)))) {
     return { coverage: true, excuse: null };
   }
   // A trigger case directly scores the published skill description or the
   // router. It does not score an arbitrary watched context file, so only those
   // three changes may use a trigger file to satisfy pull-request coverage.
-  if (paths.some((path) => path.startsWith("evals/triggers/")) &&
-    paths.some((path) => TRIGGER_COVERED_SKILL_PATHS.has(path))) {
+  const triggerCoveredOnly = watched.every((path) =>
+    path.startsWith("evals/triggers/") || TRIGGER_COVERED_SKILL_PATHS.has(path));
+  if (triggerCoveredOnly &&
+    watched.some((path) => path.startsWith("evals/triggers/")) &&
+    watched.some((path) => TRIGGER_COVERED_SKILL_PATHS.has(path))) {
     return { coverage: true, excuse: null };
   }
   const excuse = noItemTrailer(prBody);

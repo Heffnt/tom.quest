@@ -96,6 +96,7 @@ function recordGrantReceipt(payload, { granted, refused }) {
 // A session start WAITS for this hook, so the refresh is capped: a slow fetch
 // (one laptop session spent two minutes here) is killed and skipped, and the
 // session goes on with whatever local HEAD WikiTom already has.
+// REMOVAL CHECK: cannot remove; an uncapped fetch blocks the CLI before the session exists.
 export const PULL_TIMEOUT_MS = 15_000;
 
 /** Fast-forward WikiTom when it is present, reachable and quick. Never throws. */
@@ -146,6 +147,33 @@ export function skillsDestinations() {
     ? process.env.CODEX_HOME
     : path.join(home, ".codex");
   return [path.resolve(claude), path.resolve(codex, "skills")];
+}
+
+/** The hook contract names its CLI when it can; the launcher's runtime marker
+ * is the fallback when the two hook payloads use the same event spelling. */
+export function runningCli(payload, env = process.env) {
+  const explicit = firstString(
+    payload?.runner,
+    payload?.runtime,
+    payload?.cli,
+    payload?.cli_name,
+    payload?.client_name,
+    payload?.clientName,
+    env.TTS_CLI,
+    env.TTS_RUNNER,
+  )?.toLowerCase();
+  if (explicit?.includes("codex")) return "codex";
+  if (explicit?.includes("claude")) return "claude";
+  if (firstString(env.CODEX_THREAD_ID) !== null) return "codex";
+  if (firstString(env.CLAUDECODE, env.CLAUDE_CODE_ENTRYPOINT, env.CLAUDE_CONFIG_DIR) !== null) return "claude";
+  if (firstString(env.CODEX_HOME) !== null) return "codex";
+  return "claude";
+}
+
+/** `TTS_SKILLS_DIRS` preserves the documented Claude-then-Codex order. */
+export function destinationForCli(destinations, cli) {
+  if (destinations.length <= 1 || cli === "claude") return destinations[0];
+  return destinations[1];
 }
 
 /** Every repository a `repo-` skill could come from, by the name the map's
@@ -287,7 +315,7 @@ function main() {
       // row of the routing table standing — WRITE GOES WHEN THE RUN'S OUTPUT
       // REACHES TOM — so the grant is `write`, and the know layer is a `tts
       // search skills` away rather than a prompt away.
-      const catalog = publishedCatalog(destinations[0]);
+      const catalog = publishedCatalog(destinationForCli(destinations, runningCli(payload)));
       routed = routeSkills({
         subject: { kind: "none" },
         caller: "laptop",

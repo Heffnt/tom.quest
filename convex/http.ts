@@ -2096,7 +2096,7 @@ const ttsSkillsPost = httpAction(async (ctx, request) => {
   }
   const names = new Set<string>();
   const skills: {
-    name: string; description: string; body: string;
+    name: string; group: "write" | "know" | "repo"; description: string; body: string;
     references: { name: string; path: string; body: string }[];
     sourcePaths: string[];
   }[] = [];
@@ -2145,6 +2145,7 @@ const ttsSkillsPost = httpAction(async (ctx, request) => {
     names.add(s.name);
     skills.push({
       name: s.name,
+      group: s.group as "write" | "know" | "repo",
       description: s.description,
       body: s.body,
       references,

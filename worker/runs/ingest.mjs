@@ -562,9 +562,12 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
   const firstFileTimestamp = lines.map((raw) => { try { return millis(JSON.parse(raw).timestamp); } catch { return 0; } }).find(Boolean) ?? 0;
   const drop = (kind) => { dropped[kind] = (dropped[kind] ?? 0) + 1; };
   let meta = priorMeta && typeof priorMeta === "object" ? { ...priorMeta } : {};
+  const priorOutcome = prior?.outcome && typeof prior.outcome === "object" ? prior.outcome : {};
   let runId = prior?.runId, parentId = codexParent(meta) ?? priorParentId, model = prior?.model, effort = prior?.effort,
     startedAt = prior?.startedAt ?? firstFileTimestamp, lastLineAt = prior?.lastLineAt ?? 0,
-    runtimeVersion = prior?.runtimeVersion, finalTextSeq, toolCalls = 0, approvalPolicy, sandboxPolicy, modelChangeReported = false;
+    runtimeVersion = prior?.runtimeVersion, finalTextSeq = priorOutcome.finalTextSeq,
+    toolCalls = baseLine > 0 ? number(priorOutcome.toolCalls) : 0,
+    approvalPolicy, sandboxPolicy, modelChangeReported = false;
   let currentTurn = 0; const turns = new Map(); let lastTokenCount = null; const usageRecords = []; let taskComplete = null; let lastAssistantText = null;
   const longContextRequestKeys = new Set();
   for (let relativeLine = 0; relativeLine < lines.length; relativeLine += 1) {
@@ -614,7 +617,7 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
         // Only the last completion can supply the synthetic final-text row;
         // earlier completions are folded state and account as dropped.
         if (taskComplete) drop("event_msg/task_complete");
-        taskComplete = { message: payload.last_agent_message, line, turn: currentTurn, timestamp };
+        taskComplete = { message: payload.last_agent_message, reason: payload.reason, line, turn: currentTurn, timestamp };
       }
       else if (!["task_started", "item_completed"].includes(payload.type)) emit("system", { event: payload });
     } else if (entry.type === "token_usage_record") usageRecords.push(payload.usage ?? {});
@@ -673,7 +676,7 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
   if (baseLine === 0) rows.unshift({ seq: 0, turn: 0, kind: "context", content: { ...(model ? { model } : {}), ...context, prompt }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: 0, block: 0, sourceKind: "context" }), createdAt: startedAt });
   if (taskComplete?.message && taskComplete.message !== lastAssistantText) { const row = { seq: sourceSeq(taskComplete.line, 998), turn: taskComplete.turn, kind: "assistant-text", content: { text: taskComplete.message }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: taskComplete.line, block: 998, sourceKind: "event_msg/task_complete" }), createdAt: taskComplete.timestamp }; rows.push(row); finalTextSeq = row.seq; }
   else if (taskComplete) drop("event_msg/task_complete");
-  const totals = lastTokenCount ? totalsOf(lastTokenCount) : usageRecords.map(totalsOf).reduce((sum, item) => ({
+  const tailTotals = lastTokenCount ? totalsOf(lastTokenCount) : usageRecords.map(totalsOf).reduce((sum, item) => ({
     inputTokens: sum.inputTokens + item.inputTokens,
     cacheReadTokens: sum.cacheReadTokens + item.cacheReadTokens,
     cacheWriteTokens: sum.cacheWriteTokens + item.cacheWriteTokens,
@@ -684,11 +687,27 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
     thinkingTokens: sum.thinkingTokens + item.thinkingTokens,
     totalTokens: sum.totalTokens + item.totalTokens,
   }), { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0, cacheWriteBreakdownKnown: true, outputTokens: 0, thinkingTokens: 0, totalTokens: 0 });
-  totals.longContextRequests = longContextRequestKeys.size;
+  const priorTotals = priorOutcome.totals && typeof priorOutcome.totals === "object" ? priorOutcome.totals : null;
+  // REMOVAL CHECK: cannot remove; an incremental tail replaces the stored run, so tail-only totals would erase all usage accepted on earlier sweeps.
+  const totals = baseLine > 0 && lastTokenCount === null && priorTotals !== null ? {
+    inputTokens: number(priorTotals.inputTokens) + tailTotals.inputTokens,
+    cacheReadTokens: number(priorTotals.cacheReadTokens) + tailTotals.cacheReadTokens,
+    cacheWriteTokens: number(priorTotals.cacheWriteTokens) + tailTotals.cacheWriteTokens,
+    cacheWrite5mTokens: number(priorTotals.cacheWrite5mTokens) + tailTotals.cacheWrite5mTokens,
+    cacheWrite1hTokens: number(priorTotals.cacheWrite1hTokens) + tailTotals.cacheWrite1hTokens,
+    cacheWriteBreakdownKnown: priorTotals.cacheWriteBreakdownKnown !== false && tailTotals.cacheWriteBreakdownKnown,
+    outputTokens: number(priorTotals.outputTokens) + tailTotals.outputTokens,
+    thinkingTokens: number(priorTotals.thinkingTokens) + tailTotals.thinkingTokens,
+    totalTokens: number(priorTotals.totalTokens) + tailTotals.totalTokens,
+  } : tailTotals;
+  totals.longContextRequests = number(priorTotals?.longContextRequests) + longContextRequestKeys.size;
   const price = costOf({ model, totals });
   const parentRunId = prior?.parentRunId ?? (parentId ? `codex:${host}:${parentId}` : undefined);
   const rootRunId = prior?.rootRunId ?? parentRunId ?? runId;
-  const run = { runId, ...(parentRunId ? { parentRunId } : {}), rootRunId, depth: parentId ? 1 : 0, linkKnown: !parentId, origin: "unknown", host, runner: "codex", ...(model ? { model } : {}), ...(sessionModelOf(model) ? { sessionModel: sessionModelOf(model) } : {}), ...(effort ? { effort } : {}), ...(runtimeVersion ?? meta.cli_version ? { runtimeVersion: runtimeVersion ?? meta.cli_version } : {}), parserVersion: PARSER_VERSION, kind: parentId ? "codex-child" : "unknown", status: "unknown", startedAt, lastLineAt, context, attachments, outcome: { ...(finalTextSeq !== undefined ? { finalTextSeq } : {}), totals, ...(price === null ? {} : { costUsd: price, priceTableVersion: priceTableVersion() }), turns: Math.max(1, turns.size), toolCalls }, file: { path, sourceHash: sha256(Buffer.from(text)), storedHash: fileVersion, bytes: Buffer.byteLength(text), storedBytes: 0, committedLine: baseLine + lines.length, committedPrefixSha256: prefixHash(lines, lines.length), incompleteTail } };
+  const endedReason = typeof taskComplete?.reason === "string" && taskComplete.reason !== ""
+    ? taskComplete.reason
+    : priorOutcome.endedReason;
+  const run = { runId, ...(parentRunId ? { parentRunId } : {}), rootRunId, depth: parentId ? 1 : 0, linkKnown: !parentId, origin: "unknown", host, runner: "codex", ...(model ? { model } : {}), ...(sessionModelOf(model) ? { sessionModel: sessionModelOf(model) } : {}), ...(effort ? { effort } : {}), ...(runtimeVersion ?? meta.cli_version ? { runtimeVersion: runtimeVersion ?? meta.cli_version } : {}), parserVersion: PARSER_VERSION, kind: parentId ? "codex-child" : "unknown", status: "unknown", startedAt, lastLineAt, context, attachments, outcome: { ...(finalTextSeq !== undefined ? { finalTextSeq } : {}), ...(endedReason !== undefined ? { endedReason } : {}), totals, ...(price === null ? {} : { costUsd: price, priceTableVersion: priceTableVersion() }), turns: Math.max(number(priorOutcome.turns), 1, turns.size), toolCalls }, file: { path, sourceHash: sha256(Buffer.from(text)), storedHash: fileVersion, bytes: Buffer.byteLength(text), storedBytes: 0, committedLine: baseLine + lines.length, committedPrefixSha256: prefixHash(lines, lines.length), incompleteTail } };
   const result = finishResult({ run, rows, children, attachments, lastLine: baseLine + lines.length, incompleteTail, dropped });
   // This is sweep state only, never a Convex run field. It keeps the pieces a
   // later tail needs without copying base_instructions text onto disk again.

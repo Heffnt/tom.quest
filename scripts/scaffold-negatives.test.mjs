@@ -12,6 +12,7 @@ import {
   parseArgs,
   scaffold,
 } from "./scaffold-negatives.mjs";
+import { bareSkillName } from "./skills.mjs";
 
 const TRIGGERS = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", DEFAULT_OUT);
 
@@ -142,20 +143,13 @@ describe("parseArgs", () => {
 describe("evals/triggers", () => {
   const names = fs.readdirSync(TRIGGERS).filter((name) => name.endsWith(".json") && !name.endsWith(".draft.json"));
 
-  it("has exactly one trigger file for every committed layer and skill", () => {
+  // REMOVAL CHECK: cannot remove; this closed public set is the test-level backstop against copying private area trigger cases out of WikiTom.
+  it("keeps the public trigger set to layers and non-area skills", () => {
     expect(names.sort()).toEqual([
       "layer-know.json",
       "layer-operate.json",
       "layer-write.json",
-      "skill-know-admin.json",
-      "skill-know-agent-systems.json",
-      "skill-know-climbing.json",
-      "skill-know-health-and-food.json",
       "skill-know-intent.json",
-      "skill-know-mental-health.json",
-      "skill-know-money.json",
-      "skill-know-research.json",
-      "skill-know-social.json",
       "skill-know-week.json",
       "skill-repo-ComplexMultiTrigger.json",
       "skill-repo-WikiTom.json",
@@ -167,7 +161,8 @@ describe("evals/triggers", () => {
     const file = JSON.parse(fs.readFileSync(path.join(TRIGGERS, name), "utf8"));
     expect(typeof file.name).toBe("string");
     expect(["layer", "skill"]).toContain(file.kind);
-    expect(`${file.kind}-${file.name}.json`).toBe(name);
+    const stem = name.replace(/\.json$/, "").replace(new RegExp(`^${file.kind}-`), "");
+    expect(file.kind === "skill" ? bareSkillName(stem) : stem).toBe(file.name);
     expect(Array.isArray(file.cases)).toBe(true);
     const ids = file.cases.map((one) => one.id);
     expect(new Set(ids).size).toBe(ids.length);

@@ -285,6 +285,11 @@ describe("the golden-item rule", () => {
     expect(goldenItemRule(["model-of-tom/intent.md", "evals/triggers/skill-know-research.json"], "")).toBe(false);
     expect(goldenItemRule(["scripts/publish-skills.mjs", "evals/triggers/a.json"], "")).toBe(true);
     expect(goldenItemRule(["worker/jobs/skill-router.mjs", "evals/triggers/a.json"], "")).toBe(true);
+    expect(goldenItemRule([
+      "scripts/skills.mjs",
+      "evals/triggers/skill-know-research.json",
+      "model-of-tom/intent.md",
+    ], "")).toBe(false);
     expect(goldenItemRule(changed, "Split one description shape in two.\n\nevals: no-item no rule changed, only a comment\n")).toBe(true);
     const head = run();
     const verdict = gate(head, run({ sha: "9f8e7d6c" }), {

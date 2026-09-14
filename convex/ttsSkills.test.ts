@@ -152,7 +152,7 @@ describe("model-of-tom publication", () => {
     const t = convexTest({ schema, modules });
     await t.run(async (ctx) => {
       await ctx.db.insert("ttsSkills", {
-        name: "know-research", description: "Tom's research.",
+        name: "know-research", group: "know", description: "Tom's research.",
         body: "the research body", references: [], sourcePaths: ["model-of-tom/areas/research.md"],
         commit: COMMIT, syncedAt: COMMITTED_AT, pushed: true,
       });
@@ -166,7 +166,7 @@ describe("model-of-tom publication", () => {
     const newer = "b".repeat(40);
     const older = "a".repeat(40);
     const skill = {
-      name: "know-research", description: "Tom's research.",
+      name: "know-research", group: "know" as const, description: "Tom's research.",
       references: [], sourcePaths: ["model-of-tom/areas/research.md"],
     };
     await t.mutation(internal.ttsSkills.internalReplaceSkills, {
@@ -178,6 +178,41 @@ describe("model-of-tom publication", () => {
       skills: [{ ...skill, body: "old body" }],
     })).rejects.toThrow(/older than the stored catalog/);
     expect(await catalog(t)).toEqual([expect.objectContaining({ commit: newer, syncedAt: COMMITTED_AT + 1, body: "new body" })]);
+  });
+
+  it("replaces old per-file rows with the first posted catalog", async () => {
+    const t = convexTest({ schema, modules });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("ttsSkills", {
+        name: "areas/research",
+        body: "old per-file body",
+        sourcePath: "model-of-tom/areas/research.md",
+        bytes: 17,
+        syncedAt: COMMITTED_AT + 100,
+      });
+    });
+    const result = await t.mutation(internal.ttsSkills.internalReplaceSkills, {
+      commit: COMMIT,
+      syncedAt: COMMITTED_AT,
+      pushed: true,
+      skills: [{
+        name: "know-research",
+        group: "know",
+        description: "Tom's research.",
+        body: "new catalog body",
+        references: [],
+        sourcePaths: ["model-of-tom/areas/research.md"],
+      }],
+    });
+    expect(result).toEqual({ skills: 1, deleted: 1, commit: COMMIT });
+    expect(await catalog(t)).toEqual([
+      expect.objectContaining({
+        name: "know-research",
+        group: "know",
+        body: "new catalog body",
+        commit: COMMIT,
+      }),
+    ]);
   });
 
   it("fails with the exact missing-layer error rather than a fallback", async () => {

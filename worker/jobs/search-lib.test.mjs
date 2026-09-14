@@ -574,17 +574,39 @@ describe("installed skills", () => {
     expect(JSON.parse(json[0])).toEqual({ skills: [] });
   });
 
-  it("looks in CLAUDE_CONFIG_DIR first and the Codex root second, on either machine", () => {
-    // The box reaches its per-account root (/root/.claude-accounts/<account>)
-    // ONLY through CLAUDE_CONFIG_DIR; the laptop sets none and falls back.
-    expect(skillRoots({ CLAUDE_CONFIG_DIR: "/root/.claude-accounts/wpi", HOME: "/root" })).toEqual([
+  it("chooses the running CLI's root and honors a custom CODEX_HOME", () => {
+    expect(skillRoots({ TTS_CLI: "Claude Code", CLAUDE_CONFIG_DIR: "/root/.claude-accounts/wpi", HOME: "/root" })).toEqual([
       path.join("/root/.claude-accounts/wpi", "skills"),
-      path.join("/root", ".codex", "skills"),
     ]);
     expect(skillRoots({ HOME: "/home/tom" })).toEqual([
       path.join("/home/tom", ".claude", "skills"),
+    ]);
+    expect(skillRoots({ CODEX_THREAD_ID: "thread", HOME: "/home/tom" })).toEqual([
       path.join("/home/tom", ".codex", "skills"),
     ]);
+    expect(skillRoots({ TTS_CLI: "Codex", CODEX_HOME: "/srv/custom-codex", HOME: "/home/tom" })).toEqual([
+      path.join("/srv/custom-codex", "skills"),
+    ]);
+  });
+
+  it("does not read a stale Claude catalog during a Codex run", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "tts-cli-catalog-"));
+    temporary.push(home);
+    const claude = path.join(home, ".claude", "skills", "tom-write");
+    const codexHome = path.join(home, "custom-codex");
+    const codex = path.join(codexHome, "skills", "tom-write");
+    fs.mkdirSync(claude, { recursive: true });
+    fs.mkdirSync(codex, { recursive: true });
+    fs.writeFileSync(path.join(claude, "SKILL.md"), "---\nname: tom-write\ndescription: stale\n---\n\nSTALE CLAUDE BODY\n");
+    fs.writeFileSync(path.join(codex, "SKILL.md"), "---\nname: tom-write\ndescription: current\n---\n\nCURRENT CODEX BODY\n");
+    const output = [];
+    expect(await runSearchCli(["skills", "write"], {
+      env: { TTS_CLI: "Codex", HOME: home, CODEX_HOME: codexHome },
+      write: (line) => output.push(line),
+      error: () => {},
+    })).toBe(0);
+    expect(output.join("\n")).toContain("CURRENT CODEX BODY");
+    expect(output.join("\n")).not.toContain("STALE CLAUDE BODY");
   });
 
   it("takes only the options that apply to it, and a name instead of a group", () => {

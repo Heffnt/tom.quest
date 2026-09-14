@@ -597,22 +597,28 @@ export function evidenceResults(root, query, limit) {
 // harness would actually load, so it works with no network at all and it can
 // never name a skill that is published but not yet on this machine.
 
-/**
- * The roots a harness resolves a skill directory from, first hit wins:
- *
- *   1. $CLAUDE_CONFIG_DIR/skills, else <home>/.claude/skills
- *   2. <home>/.codex/skills
- *
- * ONE ORDER FOR BOTH MACHINES. The laptop sets no CLAUDE_CONFIG_DIR and falls
- * back to <home>/.claude. The box's per-account roots are
- * /root/.claude-accounts/<account>/skills and are reachable ONLY through
- * CLAUDE_CONFIG_DIR — which its jobs, its cron and its session host all set —
- * so naming the accounts directory here would be a second, staler answer.
- */
+/** The running harness owns exactly one catalog. Explicit launcher identity is
+ * strongest, followed by the CLIs' own environment markers. */
+export function runningCli(env = process.env) {
+  const explicit = String(env.TTS_CLI || env.TTS_RUNNER || "").toLowerCase();
+  if (explicit.includes("codex")) return "codex";
+  if (explicit.includes("claude")) return "claude";
+  if (env.CODEX_THREAD_ID) return "codex";
+  if (env.CLAUDECODE || env.CLAUDE_CODE_ENTRYPOINT || env.CLAUDE_CONFIG_DIR) return "claude";
+  if (env.CODEX_HOME) return "codex";
+  return "claude";
+}
+
+/** The one root the running CLI resolves. `CODEX_HOME` is the Codex config
+ * directory itself, while `CLAUDE_CONFIG_DIR` is Claude's config directory. */
 export function skillRoots(env = process.env) {
   const home = env.HOME || env.USERPROFILE || os.homedir();
+  if (runningCli(env) === "codex") {
+    const codex = env.CODEX_HOME && env.CODEX_HOME !== "" ? env.CODEX_HOME : path.join(home, ".codex");
+    return [path.join(codex, "skills")];
+  }
   const claude = env.CLAUDE_CONFIG_DIR && env.CLAUDE_CONFIG_DIR !== "" ? env.CLAUDE_CONFIG_DIR : path.join(home, ".claude");
-  return [path.join(claude, "skills"), path.join(home, ".codex", "skills")];
+  return [path.join(claude, "skills")];
 }
 
 // scripts/skills.mjs is THE definition of the prefix and the groups, and it
@@ -722,6 +728,7 @@ export function readSkillCatalog(dir, { prefix, groups, bareName }) {
     const { fields, body } = parseFrontmatter(fs.readFileSync(file, "utf8"));
     const name = bareName(entry.name);
     const firstDirectory = directories.get(name);
+    // REMOVAL CHECK: cannot remove; two on-disk spellings can normalize to one load name and make the selected body ambiguous.
     if (firstDirectory !== undefined) {
       throw new Error(`skill directories ${JSON.stringify(firstDirectory)} and ${JSON.stringify(entry.name)} both map to ${name}`);
     }

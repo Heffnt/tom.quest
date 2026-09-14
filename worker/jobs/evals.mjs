@@ -267,6 +267,26 @@ const RUN_OPTIONS = { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], ma
  */
 const publications = new Map();
 
+/** Hash the exact on-disk catalog bytes the pinned publisher produced. */
+export function catalogHashFor(out) {
+  const hash = crypto.createHash("sha256");
+  const visit = (dir, relative = "") => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const childRelative = relative === "" ? entry.name : `${relative}/${entry.name}`;
+      const child = path.join(dir, entry.name);
+      if (entry.isDirectory()) visit(child, childRelative);
+      else if (entry.isFile()) {
+        hash.update(childRelative);
+        hash.update("\0");
+        hash.update(fs.readFileSync(child));
+        hash.update("\0");
+      }
+    }
+  };
+  visit(out);
+  return hash.digest("hex");
+}
+
 export function publicationFor(tomquestTree, wikitomTree, run = execFileSync, workDir = WORK_DIR) {
   const key = `${tomquestTree} ${wikitomTree}`;
   const held = publications.get(key);
@@ -290,6 +310,7 @@ export function publicationFor(tomquestTree, wikitomTree, run = execFileSync, wo
   const built = {
     commit: result.commit,
     out: result.out,
+    catalogHash: catalogHashFor(result.out),
     published: result.skills.map((skill) => skill.name),
     why: Object.fromEntries(result.refused.map((entry) => [entry.name, entry.why])),
   };
@@ -351,6 +372,7 @@ export function skillsFor(tomquestTree, wikitomTree, names, run = execFileSync, 
     skillsRefused: asked.refused.map((entry) => entry.name),
     text: [...(layers === null ? [] : [layers.text]), asked.grants, ...loaded.map((one) => one.body)].join("\n\n"),
     commit: publication.commit,
+    catalogHash: publication.catalogHash,
     // ONE SHAPE for both halves — `{ path, bytes }`, which is what prelude.mjs's
     // --json gives for the layer files — so a reader of this list never has to
     // ask which half an entry came from.
@@ -388,6 +410,7 @@ export function preludeFrom(io, tomquestTree, wikitomTree, names) {
   // refuses an empty --layers.
   if (layers.length === 0 && skills.length === 0) return NO_PRELUDE;
   if (skills.length > 0) {
+    // REMOVAL CHECK: cannot remove; scoring a prompt missing requested skill bodies would turn an assembly fault into an apparent model regression.
     if (typeof io.skills !== "function") throw new SkillsNotAssembledError(SKILL_SEAM_REASON);
     return io.skills(tomquestTree, wikitomTree, names);
   }
@@ -1296,19 +1319,39 @@ export function scoreTriggerRoute(trigger, one, router) {
 
 /** One model-required trigger case. Its checked-in mechanical expectation is
  * the verdict, so there is no second judge call after the one runner call. */
-export async function runTriggerCase(trigger, one, io, router = null) {
+export async function runTriggerCase(trigger, one, io, router = null, publication = null) {
   const method = triggerMethod(one);
   if (method === TRIGGER_METHOD_ROUTER) return scoreTriggerRoute(trigger, one, router);
   const base = triggerBase(trigger, one);
   if (method === TRIGGER_METHOD_SCHEMA) {
     return { ...base, method, judged: "skip", reason: "trigger case needs route or prompt" };
   }
+  const pinReason = publication?.reason ?? (
+    publication === null ||
+    typeof publication.text !== "string" ||
+    typeof publication.expectedCommit !== "string" ||
+    publication.commit !== publication.expectedCommit ||
+    !/^[0-9a-f]{64}$/.test(publication.catalogHash ?? "")
+      ? "the trigger publication could not be pinned to the named WikiTom commit"
+      : null
+  );
+  // REMOVAL CHECK: cannot remove; an unpinned runner result can be stamped with a WikiTom commit whose skill bytes it never saw.
+  if (pinReason !== null) return { ...base, method, judged: "skip", reason: pinReason };
   try {
-    const answer = await io.runClaude(one.prompt, {
+    const answer = await io.runClaude([publication.text, one.prompt].filter((part) => part !== "").join("\n\n"), {
       model: REGEN_MODEL,
       timeoutMs: REGEN_TIMEOUT_MS,
       maxTurns: JOBS.run.opts.maxTurns,
-      registration: { origin: "cron:evals", kind: "trigger", layersKnown: false, layersGiven: [], layersDenied: [] },
+      registration: {
+        origin: "cron:evals",
+        kind: "trigger",
+        layersKnown: true,
+        layersGiven: [],
+        layersDenied: [],
+        skillsGranted: publication.skills ?? [],
+        skillsRefused: publication.skillsRefused ?? [],
+        wikitomCommit: publication.commit,
+      },
     });
     const reason = mechanicalChecks(one.expect, answer);
     return reason === null
@@ -2239,8 +2282,34 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       results.push(await runTrials(item.id, basePassed, () => runItem(item, context, io)));
     }
     const triggerResults = [];
+    let catalogHash = null;
     for (const { trigger, one } of triggerCases) {
-      triggerResults.push(await runTriggerCase(trigger, one, io, router));
+      let pinned = null;
+      if (triggerMethod(one) === TRIGGER_METHOD_RUNNER) {
+        try {
+          const requested = { layers: [], skills: trigger.skills ?? [] };
+          // Even a trigger with no skill names (operate) must pin the catalog
+          // identity; preludeFrom deliberately returns early for an empty set.
+          let assembled;
+          if (requested.skills.length === 0) {
+            if (typeof io.skills !== "function") throw new SkillsNotAssembledError(SKILL_SEAM_REASON);
+            assembled = io.skills(tomquest.dir, wikitom.dir, requested);
+          } else {
+            assembled = context.prelude(requested);
+          }
+          pinned = { ...assembled, expectedCommit: wikitom.commit };
+          if (assembled.commit === wikitom.commit && /^[0-9a-f]{64}$/.test(assembled.catalogHash ?? "")) {
+            if (catalogHash !== null && catalogHash !== assembled.catalogHash) {
+              pinned = { reason: "the pinned trigger catalog changed during the eval run" };
+            } else {
+              catalogHash = assembled.catalogHash;
+            }
+          }
+        } catch (error) {
+          pinned = { reason: `the trigger publication could not be pinned: ${serverErrorMessage(error)}` };
+        }
+      }
+      triggerResults.push(await runTriggerCase(trigger, one, io, router, pinned));
     }
     const tasks = [];
     for (const taskRepo of io.taskRepos?.(tomquest.dir) ?? []) {
@@ -2259,6 +2328,7 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       sha: repo === "WikiTom" ? wikitom.commit : tomquest.commit,
       tomquest: tomquest.commit,
       wikitom: wikitom.commit,
+      catalogHash,
       goldenHash: goldenHash([...all, ...triggerCases.map(({ trigger, one }) => ({ ...one, trigger: trigger.file }))]),
       regenModel: REGEN_MODEL,
       judgeModel: JUDGE_MODEL,

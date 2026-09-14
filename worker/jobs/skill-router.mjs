@@ -564,6 +564,7 @@ export function routeSkills(input) {
       // A run standing in the checkout already has the rules on disk, at the
       // commit it is working on. Granting it last night's published copy is a
       // second answer to a question that has one.
+      // REMOVAL CHECK: cannot remove; the published copy can be stale relative to the checkout the run is editing.
       if (isInsideRepo(input?.cwd, repoDirs[repo])) {
         repoRulesSource = "native";
         continue;

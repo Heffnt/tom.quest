@@ -384,6 +384,7 @@ export function mergeRegistration({ parsed, envelope, host, report = () => {} })
     return { ...result, envelopeApplied: false };
   }
   const registration = envelope.registration;
+  // REMOVAL CHECK: cannot remove; accepting another host's envelope assigns its identity and authority to the wrong run.
   if (registration.host && registration.host !== host) {
     const event = { kind: "runs-envelope-host-mismatch", data: { runId: run.runId, registeredHost: registration.host, sweepHost: host } };
     report(event);

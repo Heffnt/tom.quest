@@ -777,6 +777,7 @@ describe("skillsFor", () => {
     const wiki = committedWikiTom();
     const published = publicationFor(HERE, wiki, execFileSync, work);
     expect(published.published).toContain("write");
+    expect(published.catalogHash).toMatch(/^[0-9a-f]{64}$/);
     expect(fs.existsSync(path.join(published.out, "tom-write", "SKILL.md"))).toBe(true);
   });
 
@@ -818,6 +819,7 @@ describe("skillsFor", () => {
     const io = publishingRun({ write: "WRITE BODY", "know-research": "RESEARCH BODY" });
     const built = skillsFor(HERE, `${work}-wiki`, { layers: ["write"], skills: ["know-research", "write"] }, io.run, work);
     expect(built).toMatchObject({ names: ["write"], skills: ["know-research", "write"], skillsRefused: [], commit: "wiki-commit" });
+    expect(built.catalogHash).toMatch(/^[0-9a-f]{64}$/);
     expect(built.text.startsWith("LAYER TEXT")).toBe(true);
     expect(built.text).toContain("SKILLS (WikiTom commit wiki-commit)");
     expect(built.text).toContain("granted: know-research, write");
@@ -1232,6 +1234,15 @@ describe("the ablation arm", () => {
 describe("runEvals over a run case", () => {
   const runIoFor = (dir, verdicts) => runIo(verdicts, [], {
     layers: () => layers,
+    skills: (_tomquest, _wikitom, names) => ({
+      names: [],
+      skills: names.skills ?? [],
+      skillsRefused: [],
+      text: `PINNED SKILLS: ${(names.skills ?? []).join(", ")}`,
+      commit: "wiki1",
+      catalogHash: "c".repeat(64),
+      files: [],
+    }),
     loadModules: async () => ({}),
     taskRepos: () => [],
     triggerNameMapping: { bareSkillName: (name) => name },
@@ -1291,17 +1302,54 @@ describe("runEvals over a run case", () => {
     const io = runIoFor(dir, ["pass", "pass", "pass"]);
     io.triggerRouter = () => ({ granted: ["write"], refused: [], repoRulesSource: null });
     const weekly = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, io);
-    expect(weekly).toMatchObject({ items: 3, pass: 3, fail: 0, calls: 7 });
+    expect(weekly).toMatchObject({ items: 3, pass: 3, fail: 0, calls: 7, wikitom: "wiki1", catalogHash: "c".repeat(64) });
     expect(weekly.scoredIds).toEqual(["a", "trigger-router-safe", "trigger-runner-safe"]);
     expect(weekly.results).toContainEqual(expect.objectContaining({ id: "trigger-router-safe", method: "router", judged: "pass", passK: true }));
     expect(weekly.results).toContainEqual(expect.objectContaining({ id: "trigger-runner-safe", method: "runner", judged: "pass", passK: true }));
     expect(io.calls.regen).toBe(4);
+    expect(io.calls.prompts.some((prompt) => prompt.includes("PINNED SKILLS: write\n\nsafe runner fixture"))).toBe(true);
 
     const prIo = runIoFor(dir, ["pass"]);
     const pr = await runEvals({ repo: "tom.quest", sha: "head" }, prIo);
     expect(pr.scoredIds).toEqual(["a"]);
     expect(pr.results).toEqual([{ id: "a", judged: "pass", passK: true, tokensMedian: null }]);
     expect(prIo.calls.regen).toBe(1);
+  });
+
+  it("skips a runner trigger when its publication is not the named WikiTom commit", async () => {
+    const dir = caseDir();
+    writeJson(dir, path.join("evals", "triggers", "skill-write.json"), {
+      name: "write",
+      kind: "skill",
+      cases: [{ id: "trigger-runner-unpinned", prompt: "safe runner fixture", expect: { mustName: ["fresh"] } }],
+    });
+    const io = runIoFor(dir, ["pass", "pass", "pass"]);
+    io.skills = (_tomquest, _wikitom, names) => ({
+      names: [], skills: names.skills ?? [], skillsRefused: [], text: "WRONG PUBLICATION",
+      commit: "local-head", catalogHash: "d".repeat(64), files: [],
+    });
+    const weekly = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, io);
+    expect(weekly.catalogHash).toBeNull();
+    expect(weekly.skipped).toContainEqual(expect.objectContaining({
+      id: "trigger-runner-unpinned",
+      method: "runner",
+      reason: "the trigger publication could not be pinned to the named WikiTom commit",
+    }));
+    expect(io.calls.regen).toBe(3);
+  });
+
+  it("pins the catalog for a runner trigger whose mapped skill list is empty", async () => {
+    const dir = caseDir();
+    writeJson(dir, path.join("evals", "triggers", "layer-operate.json"), {
+      name: "operate",
+      kind: "layer",
+      cases: [{ id: "trigger-operate", prompt: "operate fixture", expect: { mustName: ["fresh"] } }],
+    });
+    const io = runIoFor(dir, ["pass", "pass", "pass"]);
+    const weekly = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, io);
+    expect(weekly.catalogHash).toBe("c".repeat(64));
+    expect(weekly.results).toContainEqual(expect.objectContaining({ id: "trigger-operate", judged: "pass" }));
+    expect(io.calls.prompts.some((prompt) => prompt.includes("PINNED SKILLS: \n\noperate fixture"))).toBe(true);
   });
 });
 
@@ -1318,6 +1366,49 @@ describe("trigger case methods", () => {
       },
     }, runIo(), () => ({ granted: ["write"], refused: [], repoRulesSource: null }));
     expect(router).toMatchObject({ method: "router", judged: "pass", trials: { head: 1, headPassed: 1 } });
+  });
+
+  it("runs a prompt case with its pinned published skill text and receipt", async () => {
+    let received;
+    const io = {
+      runClaude: async (prompt, options) => {
+        received = { prompt, options };
+        return "fresh answer";
+      },
+    };
+    const result = await runTriggerCase(
+      { name: "write", skills: ["write"] },
+      { id: "runner-case", prompt: "raw prompt", expect: { mustName: ["fresh"] } },
+      io,
+      null,
+      {
+        text: "PINNED WRITE BODY",
+        commit: "wiki1",
+        expectedCommit: "wiki1",
+        catalogHash: "e".repeat(64),
+        skills: ["write"],
+        skillsRefused: [],
+      },
+    );
+    expect(result).toMatchObject({ method: "runner", judged: "pass" });
+    expect(received.prompt).toBe("PINNED WRITE BODY\n\nraw prompt");
+    expect(received.options.registration).toMatchObject({
+      layersKnown: true,
+      skillsGranted: ["write"],
+      skillsRefused: [],
+      wikitomCommit: "wiki1",
+    });
+  });
+
+  it("skips a prompt case when no pinned publication is supplied", async () => {
+    const io = runIo();
+    const result = await runTriggerCase(
+      { name: "write", skills: ["write"] },
+      { id: "runner-case", prompt: "raw prompt", expect: { mustName: ["fresh"] } },
+      io,
+    );
+    expect(result).toMatchObject({ method: "runner", judged: "skip", reason: expect.stringContaining("could not be pinned") });
+    expect(io.calls.regen).toBe(0);
   });
 
   it("scores the checked-in tom.quest native-repository case without a runner", async () => {

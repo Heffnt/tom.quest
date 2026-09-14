@@ -34,7 +34,7 @@
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
-import { modelOfTomState, modelOfTomText } from "./ttsSkills";
+import { isPublishedSkillRow, modelOfTomState, modelOfTomText } from "./ttsSkills";
 import { nyCalendarDayKey, SESSION_REPO_NAMES } from "./ttsShared";
 import { renderGrants } from "../scripts/skills.mjs";
 import {
@@ -377,7 +377,10 @@ export async function assembleContext(
   if (files.length > MODEL_OF_TOM_FILES_MAX) throw new Error("too many model-of-tom files to assemble context from");
   const pages = files.map((file) => ({ path: file.sourcePath, body: file.body }));
 
-  const catalog = await ctx.db.query("ttsSkills").withIndex("by_name").take(SKILLS_MAX + 1);
+  const storedSkills = await ctx.db.query("ttsSkills").withIndex("by_name").take(SKILLS_MAX + 1);
+  // During the widening deploy, old per-file rows can coexist with the schema.
+  // They are not published skills and therefore count as an empty catalog.
+  const catalog = storedSkills.filter(isPublishedSkillRow);
   if (catalog.length > SKILLS_MAX) throw new Error("too many published skills to assemble context from");
 
   const now = options.now ?? Date.now();

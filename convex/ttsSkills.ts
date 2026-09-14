@@ -21,6 +21,7 @@
 // them) and go unwritten from here on, so `operate` is the only layer any
 // selection can name.
 import { v } from "convex/values";
+import type { Doc } from "./_generated/dataModel";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { MODEL_OF_TOM_HEADER } from "./ttsShared";
 import { byteLength, DESCRIPTION_MAX_BYTES } from "../scripts/skills.mjs";
@@ -252,6 +253,28 @@ export const internalReplaceModelOfTom = internalMutation({
 export const SKILLS_MAX = 64;
 
 const skillReference = v.object({ name: v.string(), path: v.string(), body: v.string() });
+const skillGroup = v.union(v.literal("write"), v.literal("know"), v.literal("repo"));
+
+export type PublishedSkillRow = Doc<"ttsSkills"> & {
+  group: "write" | "know" | "repo";
+  description: string;
+  references: { name: string; path: string; body: string }[];
+  sourcePaths: string[];
+  commit: string;
+  pushed: boolean;
+};
+
+/** Old per-file rows remain schema-valid for the widening deploy, but are not
+ * catalog entries and must be invisible until the first replacement post. */
+export function isPublishedSkillRow(row: Doc<"ttsSkills">): row is PublishedSkillRow {
+  return row.sourcePath === undefined &&
+    (row.group === "write" || row.group === "know" || row.group === "repo") &&
+    typeof row.description === "string" &&
+    Array.isArray(row.references) &&
+    Array.isArray(row.sourcePaths) &&
+    typeof row.commit === "string" &&
+    typeof row.pushed === "boolean";
+}
 
 /**
  * The catalog, replaced whole. Same shape of refusal as
@@ -270,6 +293,7 @@ export const internalReplaceSkills = internalMutation({
     pushed: v.boolean(),
     skills: v.array(v.object({
       name: v.string(),
+      group: skillGroup,
       description: v.string(),
       body: v.string(),
       references: v.array(skillReference),
@@ -296,7 +320,9 @@ export const internalReplaceSkills = internalMutation({
       names.add(skill.name);
     }
     const existing = await ctx.db.query("ttsSkills").collect();
-    const currentSyncedAt = existing.reduce<number | null>(
+    // Old per-file rows are migration input, not a catalog revision; their
+    // timestamps cannot veto the first post that replaces them.
+    const currentSyncedAt = existing.filter(isPublishedSkillRow).reduce<number | null>(
       (latest, row) => latest === null || row.syncedAt > latest ? row.syncedAt : latest,
       null,
     );

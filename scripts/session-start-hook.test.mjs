@@ -69,7 +69,7 @@ function fixture({ writing = true } = {}) {
  * configuration cannot reach a test, and `TOM_QUEST_DIR` is pointed at a
  * directory that is not a checkout so the run publishes no repo but WikiTom's.
  */
-function run({ wikitom, skills, tomQuest, env = {}, payload = { hook_event_name: "SessionStart" } }) {
+function run({ wikitom, skills, tomQuest, env = {}, payload = { hook_event_name: "SessionStart", cli_name: "Claude Code" } }) {
   return spawnSync(process.execPath, [HOOK], {
     encoding: "utf8",
     input: `${JSON.stringify(payload)}\n`,
@@ -196,7 +196,7 @@ describe("session-start-hook", () => {
     for (const dir of [skills, other]) {
       expect(fs.existsSync(path.join(dir, "tom-write", "SKILL.md"))).toBe(true);
       expect(fs.existsSync(path.join(dir, "tom-know-admin", "SKILL.md"))).toBe(true);
-      expect(fs.existsSync(path.join(dir, "tom-repo-WikiTom", "SKILL.md"))).toBe(true);
+      expect(fs.existsSync(path.join(dir, "tom-repo-wikitom", "SKILL.md"))).toBe(true);
     }
     expect(fs.readFileSync(path.join(skills, "graphify", "SKILL.md"), "utf8")).toContain("Not Tom's.");
     expect(fs.readFileSync(path.join(skills, "tom-write", "SKILL.md"), "utf8")).toContain("Use short sentences.");
@@ -242,6 +242,27 @@ describe("session-start-hook", () => {
     );
 
     const context = contextOf(run({ wikitom, skills: [claude, codex], env: { RUN_HOST: "box" } }));
+    expect(context).toContain("granted: —");
+    expect(context).toContain("refused: write — no published body at this commit");
+  });
+
+  it("routes a Codex SessionStart grant from Codex's directory only", () => {
+    const wikitom = fixture();
+    const claude = temp("session-start-claude-catalog-");
+    const codex = temp("session-start-codex-catalog-");
+    const commit = git(wikitom, "rev-parse", "HEAD").trim();
+    fs.mkdirSync(path.join(claude, "tom-write"));
+    fs.writeFileSync(
+      path.join(claude, "tom-write", "SKILL.md"),
+      `<!-- generated from WikiTom model-of-tom/writing.md at commit ${commit} — do not edit -->\n`,
+    );
+
+    const context = contextOf(run({
+      wikitom,
+      skills: [claude, codex],
+      env: { RUN_HOST: "box" },
+      payload: { hook_event_name: "SessionStart", cli_name: "Codex" },
+    }));
     expect(context).toContain("granted: —");
     expect(context).toContain("refused: write — no published body at this commit");
   });

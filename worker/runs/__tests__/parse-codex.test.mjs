@@ -64,6 +64,39 @@ describe("Codex parser", () => {
     expect(result.rows.some((row) => row.kind === "context")).toBe(false);
     expect(result.lastLine).toBe(16);
   });
+  it("carries the prior outcome through a second part with no assistant text", () => {
+    const first = parseCodexFile({
+      path: "/rollout.jsonl",
+      host: "laptop",
+      fileVersion: "v1",
+      text: jsonl([
+        codexMeta(),
+        codexTurnContext({ model: "gpt-5.6-sol" }),
+        codexResponseItem("message", { role: "assistant", content: [{ output_text: "first final answer" }] }),
+        codexTokenCount({ input: 7, cachedInput: 0, cacheWrite: 0, output: 3, reasoning: 0, total: 10 }),
+      ]),
+    });
+    const priorRun = {
+      ...first.run,
+      outcome: { ...first.run.outcome, endedReason: "completed" },
+    };
+    const second = parseCodexFile({
+      path: "/rollout.jsonl",
+      host: "laptop",
+      fileVersion: "v2",
+      baseLine: first.lastLine,
+      text: jsonl([codexToolCall({ name: "read_file", args: {} })]),
+      priorRun,
+      priorMeta: first.codexMeta,
+    });
+    expect(second.rows.some((row) => row.kind === "assistant-text")).toBe(false);
+    expect(second.run.outcome).toMatchObject({
+      finalTextSeq: first.run.outcome.finalTextSeq,
+      endedReason: "completed",
+      totals: first.run.outcome.totals,
+      toolCalls: first.run.outcome.toolCalls + 1,
+    });
+  });
   it("accounts for every zero-row state line while task_complete stays emitted", () => {
     const result = parse([
       codexMeta(),

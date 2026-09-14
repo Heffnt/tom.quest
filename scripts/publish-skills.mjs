@@ -37,6 +37,7 @@ function git(dir, ...args) {
     // of archived session files, and `ls-tree -r` over it is megabytes: at
     // the 1 MB default this failed as "cannot list repository", which reads
     // like a broken checkout rather than a truncated pipe.
+    // REMOVAL CHECK: cannot remove; the default child-process buffer truncates the vault's tracked-file listing.
     maxBuffer: 256 * 1024 * 1024,
   });
 }

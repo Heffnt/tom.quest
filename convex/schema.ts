@@ -953,34 +953,31 @@ export default defineSchema({
   // what scripts/skills.mjs builds: `write`, `know-intent`, `know-week`, one
   // `know-<area>` per area page, and one `repo-<name>` per repository.
   //
-  // A TABLE REPLACEMENT, NOT AN ADDITIVE MIGRATION — the one exception to the
-  // phase-2 rule that a field is added and never narrowed. Three facts make it
-  // safe here and nowhere else: nothing in the record points at a ttsSkills row
-  // (no id, no foreign key, no path), the rows are a CACHE of WikiTom rather
-  // than a record of anything that happened, and the nightly rebuilds them
-  // whole from one immutable commit through POST /tts/skills. Nothing a
-  // replacement drops is anything but last night's copy of a file still in git.
-  //
-  // ONE DEPLOY ORDER, AND IT MATTERS: Convex validates every stored row against
-  // this table on push, and the rows in it today are the OLD per-file shape. So
-  // the old rows are deleted FIRST and this schema pushed after; the night's
-  // POST /tts/skills then fills the table. Between the delete and the post the
-  // catalog is empty, and an empty catalog is not an outage — every run gets
-  // its prefix and a grant block whose names are all refused by one line each.
+  // A WIDEN-MIGRATE-NARROW TABLE REPLACEMENT. Existing production rows use the
+  // old per-file shape (`sourcePath`, optional `bytes`, no catalog fields), so
+  // every field belonging to either side alone remains optional during this
+  // deploy. Readers treat an old-shaped row as absent, and the first successful
+  // POST /tts/skills deletes every old row before writing the new catalog.
+  // Dropping the old fields and requiring the catalog fields belongs in a later
+  // PR, after one clean nightly proves the whole replacement has run in prod.
   ttsSkills: defineTable({
     name: v.string(), // "know-research" — the bare name, never the `tom-` directory spelling
+    group: v.optional(v.union(v.literal("write"), v.literal("know"), v.literal("repo"))),
     // At most DESCRIPTION_MAX_BYTES (200). A description is a prompt cost every
     // run pays whether or not the skill is loaded, so the cap is checked at the
     // door rather than trusted from the publisher.
-    description: v.string(),
+    description: v.optional(v.string()),
     body: v.string(),
     // The extra files a skill carries beside its body: ground.md under `write`,
     // each nested AGENTS.md under a `repo-` skill.
-    references: v.array(v.object({ name: v.string(), path: v.string(), body: v.string() })),
-    sourcePaths: v.array(v.string()), // the WikiTom (or repo) paths the body came from
-    commit: v.string(), // WikiTom's commit, or the repository's own for a `repo-` skill
+    references: v.optional(v.array(v.object({ name: v.string(), path: v.string(), body: v.string() }))),
+    sourcePaths: v.optional(v.array(v.string())), // the WikiTom (or repo) paths the body came from
+    commit: v.optional(v.string()), // WikiTom's commit, or the repository's own for a `repo-` skill
     syncedAt: v.number(), // the commit's time, not the post's
-    pushed: v.boolean(), // whether that commit had reached GitHub when it was posted
+    pushed: v.optional(v.boolean()), // whether that commit had reached GitHub when it was posted
+    // OLD per-file fields. Kept only for the widening deploy described above.
+    sourcePath: v.optional(v.string()),
+    bytes: v.optional(v.number()),
   }).index("by_name", ["name"]),
 
   // The per-file model-of-tom source facts, MOVED HERE from ttsSkills above
