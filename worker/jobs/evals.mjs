@@ -654,6 +654,14 @@ export function runnerFailure(error) {
   return { judged: "fail", errored: true, errorMessage: message, reason: `runner failed: ${message}` };
 }
 
+/** `runClaude` normally throws when its launcher fails. Some runners return the
+ * launcher diagnostic as their answer instead. Catch that form before a
+ * free-form job can hand it to a judge as though it were regenerated prose. */
+function isModelCommandFailure(answer) {
+  return typeof answer === "string" &&
+    /(?:^|\r?\n)(?:Error:\s*)?Command failed:\s+(?:\S+[\\/])?claude(?:\.cmd)?\s+-p(?:\s|$)/.test(answer);
+}
+
 // ── The deterministic checks ─────────────────────────────────────────────────
 // Everything below decides WITHOUT A MODEL, and a failure here is the trial's
 // verdict with the judge never called. A text that broke a rule Tom wrote down
@@ -855,6 +863,7 @@ export async function runItem(item, context, io, { deterministic = null, receipt
         ...(layers.commit ? { wikitomCommit: layers.commit } : {}),
       },
     });
+    if (isModelCommandFailure(answer)) return { ...base, ...runnerFailure(answer) };
     fresh = job.parse(answer, context.modules[item.job]);
   } catch (err) {
     // The skills seam is a SKIP, not a failure: nothing about the tree under
@@ -2256,12 +2265,9 @@ export const COVERAGE_NOT_REQUIRED = "not-required";
 /**
  * The row a branch that touched NOTHING WATCHED gets, with no model run.
  *
- * The Convex door normally writes this itself, in the mutation that files the
- * request (convex/ttsEvals.ts unaffectedRunData), so the check's first poll
- * finds it and the box never sees the request at all. THIS IS THE OTHER HALF:
- * a request filed by a door that did not answer it still reaches `--serve`,
- * and the box must answer it in seconds rather than spend an hour scoring a
- * set this branch cannot have moved.
+ * The box writes this only after it reads its own diff and the base tree's
+ * policy. Convex files the client claim but never stamps the row, so every
+ * request reaches `--serve` and an untrusted head cannot bypass the gate.
  *
  * `regressions: 0` is honest here in a way it would not be on a failed run:
  * nothing was scored because nothing could have regressed. `items` and `pass`
@@ -2278,6 +2284,56 @@ export function unaffectedRun({ repo, sha, changed, base, at, answersRequestAt =
     regressions: 0,
     goldenCoverage: COVERAGE_NOT_REQUIRED,
   };
+}
+
+/** Git's `-z` output is the only safe filename transport: a path may contain
+ * a newline, so line splitting or Git's quoted display format would turn one
+ * changed file into a different list. */
+export function changedPathsFromGit(out) {
+  return String(out).split("\0").filter((entry) => entry !== "");
+}
+
+/**
+ * The box, rather than the pull-request checkout, decides whether a request
+ * is unaffected. Both commits are detached worktrees in the box cache: the
+ * diff is read from that cache and the watch policy is imported from BASE.
+ *
+ * A head may edit scripts/evals-check.mjs to narrow the list, so it is never
+ * imported here. Failure to obtain either worktree, the base policy, or the
+ * diff is deliberately a full-run answer (`unaffected: false`).
+ */
+export async function trustedRequestDiff(request, io, run = git) {
+  if (!request.sha) return { base: null, changed: null, unaffected: false };
+  let baseTree = null;
+  let headTree = null;
+  try {
+    // `baseSha` is a CI hint. The box's own origin/main is the only baseline
+    // that may decide policy, an empty diff, or comparison provenance.
+    baseTree = io.worktree("tom.quest", "origin/main");
+    headTree = io.worktree("tom.quest", request.sha);
+    const policy = typeof io.loadEvalsPolicy === "function"
+      ? await io.loadEvalsPolicy(baseTree.dir)
+      : await import(pathToFileURL(path.join(baseTree.dir, "scripts", "evals-check.mjs")).href);
+    if (!Array.isArray(policy.WATCHED_PATHS) || typeof policy.unaffectedBy !== "function") {
+      throw new Error("base evals policy is incomplete");
+    }
+    const out = run(
+      baseTree.dir,
+      "diff", "--no-renames", "--name-only", "-z",
+      `${baseTree.commit}..${headTree.commit}`,
+    );
+    const changed = changedPathsFromGit(out);
+    // The list is read from the same base module that supplies its predicate.
+    const watchedPaths = [...policy.WATCHED_PATHS];
+    return { base: baseTree.commit, changed, unaffected: policy.unaffectedBy(changed), watchedPaths };
+  } catch (error) {
+    const reason = redactSecrets(serverErrorMessage(error)).slice(0, 300);
+    console.error(`[evals] ${request.repo}@${request.sha}: could not establish the box diff (${reason}); running in full`);
+    return { base: null, changed: null, unaffected: false };
+  } finally {
+    headTree?.remove();
+    baseTree?.remove();
+  }
 }
 
 /**
@@ -2388,7 +2444,7 @@ export async function stampAgainstBase(data, base, diff = {}) {
  */
 export async function runAndPost(env, io, {
   repo, sha, base, limit, jobs, weekly, ablation = false, force, changed, prBody,
-  dryRun = false, scorecard = undefined, answersRequestAt = null,
+  dryRun = false, scorecard = undefined, answersRequestAt = null, unaffectedClaimed = false,
 }) {
   const existing = force || dryRun ? null : await convexFetch(env, `/tts/evals-run?repo=${repo}&sha=${sha}`);
   if (existing?.run) {
@@ -2426,6 +2482,7 @@ export async function runAndPost(env, io, {
       answersBaseSha: base ?? null,
       answersChanged: changed ?? null,
       answersPrBody: prBody ?? null,
+      ...(unaffectedClaimed ? { unaffectedClaimed: true, unaffected: false } : {}),
     }),
     ...(scorecard === undefined ? {} : { verifierScorecard: scorecard }),
   };
@@ -2463,24 +2520,25 @@ export async function runAndPost(env, io, {
   return data;
 }
 
-export async function forcedRequestIdentity(env, { repo, sha, base }) {
+/**
+ * The live question a person is trying to answer with a direct run.
+ *
+ * This is deliberately independent of `--force`: `--force` decides whether an
+ * existing measurement is rerun, while this identity says which standing
+ * request that measurement answers. A plain direct run after a request was
+ * re-filed must carry it too, or Convex correctly leaves the new request
+ * unanswered and the person's work is invisible to the check.
+ */
+export async function directRequestIdentity(env, { repo, sha }) {
   const { request } = await convexFetch(
     env,
     `/tts/evals-request?repo=${encodeURIComponent(repo)}&sha=${encodeURIComponent(sha)}`,
   );
   if (request === null || request === undefined) return null;
-  if (base !== null && base !== undefined && base !== request.baseSha) {
-    console.log(
-      `[evals] ${repo}@${sha}: forced run --base ${base} does not match ` +
-        `live request base ${request.baseSha ?? "none"}; posting without request identity`,
-    );
-    return null;
-  }
   return {
-    base: request.baseSha ?? null,
-    changed: request.changed ?? null,
     prBody: request.prBody ?? null,
     answersRequestAt: request.requestedAt ?? null,
+    unaffectedClaimed: request.unaffectedClaimed === true || request.unaffected === true,
   };
 }
 
@@ -2560,24 +2618,26 @@ export async function serveRequest(env, io, request, options = {}) {
     );
     return data;
   }
-  // NOTHING WATCHED CHANGED. The Convex door usually answers a request like
-  // this as it files it (convex/ttsEvals.ts), so one reaching the queue came
+  // The client must not decide this shortcut.
+  // The box decides from its own diff and base-tree policy.
   // from a door that could not — and the answer is still the same row, written
-  // in seconds. A branch this list does not watch cannot have moved the set,
-  // and an hour spent proving that is an hour of models the gate gets nothing
-  // extra from.
-  if (request.unaffected === true) {
-    const base = request.baseSha
-      ? (await convexFetch(env, `/tts/evals-run?repo=${request.repo}&sha=${request.baseSha}`))?.run ?? null
+  // `changed` and `unaffected` from CI are claims. Only this box-side diff,
+  // judged with the base tree's policy, may take the no-run shortcut.
+  const boxDiff = await trustedRequestDiff(request, io, options.diffRun ?? git);
+  const unaffectedClaimed = request.unaffectedClaimed === true || request.unaffected === true;
+  if (boxDiff.unaffected) {
+    const base = boxDiff.base
+      ? (await convexFetch(env, `/tts/evals-run?repo=${request.repo}&sha=${boxDiff.base}`))?.run ?? null
       : null;
     const data = unaffectedRun({
       repo: request.repo,
       sha: request.sha,
-      changed: request.changed,
+      changed: boxDiff.changed,
       base: nonmeasurement(base) ? null : base,
       at: Date.now(),
       answersRequestAt: request.requestedAt ?? null,
     });
+    if (unaffectedClaimed) data.unaffectedClaimed = true;
     if (!dryRun) await postRun(env, data);
     console.log(
       `[evals] ${request.repo}@${request.sha}: unaffected — no watched path changed, nothing scored`,
@@ -2588,24 +2648,21 @@ export async function serveRequest(env, io, request, options = {}) {
     return await runAndPost(env, io, {
       repo: request.repo,
       sha: request.sha,
-      base: request.baseSha,
+      base: boxDiff.base,
       limit: options.limit,
       jobs: options.jobs,
       weekly: false,
       // A served request IS the pull-request run. The ablation arm never
       // runs here, whatever the command line said.
       ablation: false,
-      // THE CHECK'S OWN DIFF, carried on the request. The box cannot compute
+      // The box's own diff is the coverage input.
       // it — it has a shallow cache clone with no merge base — and a second
-      // list computed here would be a second answer to the same question.
-      // An older request carries neither, and neither is inferred: the
-      // coverage verdict is then null and the merge gate denies, which is
-      // the right answer for a run nobody asked about a diff.
-      changed: request.changed,
+      changed: boxDiff.changed,
       prBody: request.prBody,
       // The same identity cheap rows carry: a request replaced while this
       // long run is in flight cannot accept this old measurement as current.
       answersRequestAt: request.requestedAt ?? null,
+      unaffectedClaimed,
       force: options.force,
       dryRun,
     });
@@ -2713,23 +2770,26 @@ async function main() {
     return;
   }
 
-  const forcedIdentity = options.force
-    ? await forcedRequestIdentity(env, { repo: options.repo, sha: options.sha, base: options.base })
-    : null;
+  const requestIdentity = await directRequestIdentity(
+    env,
+    { repo: options.repo, sha: options.sha },
+  );
+  const boxDiff = await trustedRequestDiff({ repo: options.repo, sha: options.sha }, io);
 
   await runAndPost(env, io, {
     repo: options.repo,
     sha: options.sha,
-    base: forcedIdentity?.base ?? options.base,
+    base: boxDiff.base,
     limit: options.limit,
     jobs: options.jobs,
     weekly: false,
     ablation: options.ablation,
     force: options.force,
     dryRun: options.dryRun,
-    changed: forcedIdentity?.changed,
-    prBody: forcedIdentity?.prBody,
-    answersRequestAt: forcedIdentity?.answersRequestAt ?? null,
+    changed: boxDiff.changed,
+    prBody: requestIdentity?.prBody,
+    answersRequestAt: requestIdentity?.answersRequestAt ?? null,
+    unaffectedClaimed: requestIdentity?.unaffectedClaimed ?? false,
   });
 }
 

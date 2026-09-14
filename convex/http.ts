@@ -2434,22 +2434,17 @@ const evalsRequest = httpAction(async (ctx, request) => {
   if (!Array.isArray(b.paths) || !b.paths.every((path) => typeof path === "string" && path !== "")) {
     return jsonResponse(400, { error: "paths (array of non-empty strings) required" });
   }
-  // `changed` is the branch's own diff and `prBody` the body a `evals: no-item`
-  // trailer would be on — the pull-request check computes both in the checkout
-  // CI already has, and the box stamps the golden coverage verdict from them.
-  // BOTH ARE OPTIONAL AND NEITHER IS INFERRED: an older check sends neither,
-  // and the coverage verdict is then null, which the merge gate denies.
+  // `changed` and `unaffected` are diagnostics-only CI hints. The box computes
+  // the diff and coverage from its own worktrees; `prBody` only carries the
+  // optional no-item explanation for that box-computed diff.
   if (b.changed !== undefined && (!Array.isArray(b.changed) || !b.changed.every((path) => typeof path === "string" && path !== ""))) {
     return jsonResponse(400, { error: "changed, when given, is an array of non-empty strings" });
   }
   if (b.prBody !== undefined && typeof b.prBody !== "string") {
     return jsonResponse(400, { error: "prBody, when given, is a string" });
   }
-  // NOTHING WATCHED CHANGED, as the check decided from its own diff against
-  // scripts/evals-check.mjs's WATCHED_PATHS. The mutation answers a request
-  // like this as it files it — an evals-run row saying so, with no run behind
-  // it — because the merge gate needs a row and a branch with nothing to score
-  // must not wait an hour for one.
+  // This is a client claim only. The box recomputes the diff and imports the
+  // base worktree's WATCHED_PATHS before it may write an unaffected run row.
   if (b.unaffected !== undefined && typeof b.unaffected !== "boolean") {
     return jsonResponse(400, { error: "unaffected, when given, is a boolean" });
   }

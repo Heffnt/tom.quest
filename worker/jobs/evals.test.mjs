@@ -13,7 +13,7 @@ import {
   failedRun,
   faultAudits,
   faultsMonthly,
-  forcedRequestIdentity,
+  directRequestIdentity,
   goldenHash,
   HEAD_TRIALS,
   isFlaky,
@@ -54,6 +54,7 @@ import {
   tokensOf,
   treesFor,
   trialsFor,
+  trustedRequestDiff,
   triggerCounts,
   unaffectedRun,
   TRIALS_CAPABILITY,
@@ -592,6 +593,41 @@ describe("runEvals carries the trial rule end to end", () => {
     const run = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, broken);
     expect(run).toMatchObject({ items: 29, errored: 29, error: true, reason: "runner failed: Not logged in", regressions: null, goldenCoverage: null });
     expect(run.errors).toEqual(["Not logged in", "Not logged in", "Not logged in"]);
+  });
+
+  it("stamps model-command failures as catastrophic even for unconfirmed items", async () => {
+    const dir = tree();
+    for (let index = 0; index < 29; index += 1) {
+      writeJson(dir, path.join("evals", "golden", `${index}.json`), item({
+        id: `item-${index}`,
+        job: "explanation",
+        sentence: LABEL,
+        confirmedByTom: false,
+        input: { topic: "the model launcher", contextLines: [] },
+        output: { explanation: "the old explanation" },
+      }));
+    }
+    const broken = {
+      ...io([], dir),
+      // Free-form jobs would otherwise hand this launcher diagnostic to the
+      // judge, which can call it a normal, unconfirmed failure.
+      runClaude: async (prompt) => (String(prompt).startsWith("You are judging")
+        ? '{"verdict":"fail","reason":"the regeneration did not answer"}'
+        : "Command failed: claude -p --model haiku"),
+    };
+    const run = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, broken);
+    expect(run).toMatchObject({
+      items: 29,
+      pass: 0,
+      fail: 29,
+      errored: 29,
+      error: true,
+      reason: "runner failed: Command failed: claude -p --model haiku",
+      regressions: null,
+      goldenCoverage: null,
+    });
+    expect(run.failures).toHaveLength(29);
+    expect(run.failures.every((failure) => failure.confirmed === false && failure.errored === true)).toBe(true);
   });
 
   it("keeps three runner failures in a twenty-nine-item run as partial errors", async () => {
@@ -1152,7 +1188,7 @@ describe("runEvals over a run case", () => {
     expect(posted[0].data).toMatchObject({ answersRequestAt: 1, regressions: null, goldenCoverage: null });
   });
 
-  it("posts a forced direct recovery run with the live request identity", async () => {
+  it("posts a plain direct recovery run with the live request identity", async () => {
     const posted = [];
     const env = { CONVEX_SITE_URL: "https://example.convex.site", TTS_WORKER_KEY: "k" };
     const request = {
@@ -1168,6 +1204,11 @@ describe("runEvals over a run case", () => {
       const href = String(url);
       if (href.includes("/tts/evals-request?")) {
         return { ok: true, status: 200, text: async () => JSON.stringify({ request }) };
+      }
+      if (href.includes("sha=head000")) {
+        // The sha has an old row, but it answers the previous request rather
+        // than this re-filed one, so the normal lookup properly returns null.
+        return { ok: true, status: 200, text: async () => JSON.stringify({ run: null, base: null }) };
       }
       if (href.includes("/tts/evals-run")) {
         return {
@@ -1192,7 +1233,7 @@ describe("runEvals over a run case", () => {
       return { ok: true, status: 200, text: async () => "{}" };
     }));
 
-    const identity = await forcedRequestIdentity(env, { repo: "tom.quest", sha: "head000", base: null });
+    const identity = await directRequestIdentity(env, { repo: "tom.quest", sha: "head000" });
     const dir = caseDir();
     const data = await runAndPost(env, runIo(["pass"], [], {
       layers: () => layers,
@@ -1206,13 +1247,13 @@ describe("runEvals over a run case", () => {
     }), {
       repo: "tom.quest",
       sha: "head000",
-      base: identity.base,
+      base: "base000",
       limit: 10,
       jobs: null,
       weekly: false,
       ablation: false,
-      force: true,
-      changed: identity.changed,
+      force: false,
+      changed: ["model-of-tom/intent.md"],
       prBody: identity.prBody,
       answersRequestAt: identity.answersRequestAt,
     });
@@ -1228,15 +1269,21 @@ describe("runEvals over a run case", () => {
     });
   });
 
-  it("does not attach a live request identity when forced --base disagrees", async () => {
+  it("looks up request identity for every direct run, not only --force", () => {
+    const source = fs.readFileSync("worker/jobs/evals.mjs", "utf8");
+    expect(source).toContain("const requestIdentity = await directRequestIdentity(");
+    expect(source).not.toContain("options.force\n    ? await directRequestIdentity");
+  });
+
+  it("attaches direct identity without trusting the request base", async () => {
     const env = { CONVEX_SITE_URL: "https://example.convex.site", TTS_WORKER_KEY: "k" };
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: true,
       status: 200,
       text: async () => JSON.stringify({ request: { baseSha: "base000", requestedAt: 42 } }),
     })));
-    await expect(forcedRequestIdentity(env, { repo: "tom.quest", sha: "head000", base: "otherbase" }))
-      .resolves.toBe(null);
+    await expect(directRequestIdentity(env, { repo: "tom.quest", sha: "head000" }))
+      .resolves.toMatchObject({ answersRequestAt: 42 });
   });
 
   it("takes every trial on a weekly run", async () => {
@@ -1297,11 +1344,32 @@ describe("an unaffected request", () => {
 
   const env = { CONVEX_SITE_URL: "https://example.convex.site", TTS_WORKER_KEY: "k" };
 
-  /** An io that fails the test if the runner so much as looks at it: the whole
-   *  claim is that no clone, no worktree and no model happen here. */
-  const noIo = new Proxy({}, {
-    get(_target, name) {
-      throw new Error(`the runner touched io.${String(name)} on an unaffected request`);
+  const policyTree = (watched) => {
+    const dir = tree();
+    const file = path.join(dir, "scripts", "evals-check.mjs");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, [
+      `export const WATCHED_PATHS = ${JSON.stringify(watched)};`,
+      "export function unaffectedBy(changed) {",
+      "  return Array.isArray(changed) && !changed.some((entry) => WATCHED_PATHS.some((pattern) => pattern.endsWith('/**') && entry.startsWith(pattern.slice(0, -2)) || entry === pattern));",
+      "}",
+    ].join("\n"));
+    return dir;
+  };
+
+  const diffIo = (base, head, watched, baseCommit = "base000") => ({
+    worktree: (_repo, ref) => ({
+      dir: ref === "origin/main" ? base : head,
+      commit: ref === "origin/main" ? baseCommit : ref,
+      remove: () => {},
+    }),
+    loadEvalsPolicy: async (dir) => {
+      if (dir !== base) throw new Error("the policy did not come from base");
+      return {
+        WATCHED_PATHS: watched,
+        unaffectedBy: (changed) => !changed.some((entry) => watched.some((pattern) =>
+          pattern.endsWith("/**") ? entry.startsWith(pattern.slice(0, -2)) : entry === pattern)),
+      };
     },
   });
 
@@ -1316,7 +1384,11 @@ describe("an unaffected request", () => {
       posted.push(JSON.parse(init.body));
       return { ok: true, status: 200, text: async () => "{}" };
     }));
-    const data = await serveRequest(env, noIo, request());
+    const base = policyTree(["model-of-tom/**"]);
+    expect(fs.existsSync(path.join(base, "scripts", "evals-check.mjs"))).toBe(true);
+    const data = await serveRequest(env, diffIo(base, tree(), ["model-of-tom/**"]), request(), {
+      diffRun: () => "worker/jobs/evals.mjs\0convex/ttsMerge.ts\0",
+    });
     expect(data).toMatchObject({
       unaffected: true,
       regressions: 0,
@@ -1335,7 +1407,67 @@ describe("an unaffected request", () => {
       String(url).includes("/tts/evals-run")
         ? { ok: true, status: 200, text: async () => JSON.stringify({ run: null, base: null }) }
         : { ok: true, status: 200, text: async () => "{}" }));
-    expect(await serveRequest(env, noIo, request())).toMatchObject({ items: 0, pass: 0, regressions: 0 });
+    const base = policyTree(["model-of-tom/**"]);
+    expect(fs.existsSync(path.join(base, "scripts", "evals-check.mjs"))).toBe(true);
+    expect(await serveRequest(env, diffIo(base, tree(), ["model-of-tom/**"]), request(), {
+      diffRun: () => "worker/jobs/evals.mjs\0",
+    })).toMatchObject({ items: 0, pass: 0, regressions: 0 });
+  });
+
+  it("uses the base tree's policy rather than a changed head policy", async () => {
+    const base = policyTree(["model-of-tom/**"]);
+    const head = policyTree(["worker/**"]);
+    expect(fs.existsSync(path.join(base, "scripts", "evals-check.mjs"))).toBe(true);
+    const seen = [];
+    const diff = await trustedRequestDiff(request(), diffIo(base, head, ["model-of-tom/**"]), (dir, ...args) => {
+      seen.push({ dir, args });
+      return "model-of-tom/intent.md\0";
+    });
+    expect(diff).toMatchObject({ base: "base000", changed: ["model-of-tom/intent.md"], unaffected: false, watchedPaths: ["model-of-tom/**"] });
+    expect(seen).toEqual([{ dir: base, args: ["diff", "--no-renames", "--name-only", "-z", "base000..2e08b28"] }]);
+  });
+
+  it("refutes a head-as-base unaffected claim, records it, and runs the full evaluation", async () => {
+    const posted = [];
+    const base = policyTree(["model-of-tom/**"]);
+    const head = tree();
+    writeJson(head, path.join("evals", "golden", "runs", "a.json"), runCaseItem({ id: "a" }));
+    const queued = request({ baseSha: "2e08b28", requestedAt: 1 });
+    const io = runIo(["pass"], [], {
+      layers: () => layers,
+      loadModules: async () => ({}),
+      taskRepos: () => [],
+      worktree: (repo, ref) => ({
+        dir: repo === "tom.quest" && ref === "origin/main" ? base : head,
+        commit: ref === "origin/main" ? "base000" : ref,
+        remove: () => {},
+      }),
+      loadEvalsPolicy: async (dir) => {
+        if (dir !== base) throw new Error("the policy did not come from base");
+        return { WATCHED_PATHS: ["model-of-tom/**"], unaffectedBy: (changed) => !changed.some((path) => path.startsWith("model-of-tom/")) };
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn(async (url, init) => {
+      const href = String(url);
+      if (href.includes("/tts/evals-request?")) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ request: queued }) };
+      }
+      if (href.includes("/tts/evals-run")) {
+        const run = href.includes("sha=base000")
+          ? { repo: "tom.quest", sha: "base000", items: 1, pass: 1, failures: [], scoredIds: ["a"], results: [{ id: "a", judged: "pass" }], tasks: { failures: [] } }
+          : null;
+        return { ok: true, status: 200, text: async () => JSON.stringify({ run, base: null }) };
+      }
+      if (init?.body) posted.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+    const data = await serveRequest(env, io, queued, {
+      diffRun: () => "model-of-tom/intent.md\0",
+    });
+    expect(data).toMatchObject({ unaffectedClaimed: true, unaffected: false, items: 1, pass: 1 });
+    expect(io.calls.regen).toBe(1);
+    expect(posted).toHaveLength(1);
+    expect(posted[0].data).toMatchObject({ answersBaseSha: "base000", unaffectedClaimed: true, unaffected: false });
   });
 
   it("opens nothing on a row that is not unaffected", () => {

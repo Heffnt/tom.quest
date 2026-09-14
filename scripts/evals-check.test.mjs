@@ -213,6 +213,13 @@ describe("gate, continued", () => {
     // reports a job failure instead of the box's silence.
     expect(jobTimeout).toBeGreaterThan(POLL_TIMEOUT_MS / 60_000);
   });
+
+  it("prints a forced by-hand recovery command after the box times out", () => {
+    const source = readFileSync("scripts/evals-check.mjs", "utf8");
+    expect(source).toMatch(
+      /the Jarvis Box did not answer[\s\S]*node \/opt\/tts\/evals\.mjs --repo \$\{repo\} --sha \$\{sha\} --force/,
+    );
+  });
 });
 
 describe("matchesWatched", () => {

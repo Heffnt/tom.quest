@@ -2,7 +2,6 @@ import { convexTest, type TestConvex } from "convex-test";
 import { describe, expect, it } from "vitest";
 import { internal } from "./_generated/api";
 import {
-  COVERAGE_NOT_REQUIRED,
   EVALS_REQUEST,
   EVALS_REQUEST_SCAN_LIMIT,
   EVALS_RUN,
@@ -252,12 +251,8 @@ describe("internalSearchEvals", () => {
   });
 });
 
-// A pull request that touches nothing the evals watch used to get NO evals
-// row at all — the workflow's `paths:` filter skipped the whole job — and the
-// merge gate denies without one, so a pure-code branch could never merge. The
-// filter now lives in the check, and a request marked `unaffected` is answered
-// by this door in the same mutation that files it: no queue entry for the box
-// to pick up, no model, and a row the gate can read.
+// The client can only FILE an unaffected claim. The box recomputes the diff
+// and reads the base tree's policy before it writes a row that opens the gate.
 describe("an unaffected evals request", () => {
   const REPO = "tom.quest";
   const SHA = "2e08b28e9df5f65bb374151bdcfab7ee0a3d360a";
@@ -282,7 +277,7 @@ describe("an unaffected evals request", () => {
       ...over,
     });
 
-  it("stamps the run row itself, with the base run's standing numbers", async () => {
+  it("files the claim without stamping an evals row", async () => {
     const t = convexTest({ schema, modules });
     await t.run(async (ctx) => {
       await ctx.db.insert("dtsEvents", {
@@ -292,40 +287,16 @@ describe("an unaffected evals request", () => {
         data: { repo: REPO, sha: BASE, items: 40, pass: 38, goldenHash: "h" },
       });
     });
-    expect(await request(t)).toMatchObject({ existing: false, unaffected: true });
+    expect(await request(t)).toMatchObject({ existing: false });
     const rows = await runs(t);
-    expect(rows).toHaveLength(1);
-    expect(rows[0].data).toMatchObject({
-      unaffected: true,
-      regressions: 0,
-      goldenCoverage: COVERAGE_NOT_REQUIRED,
-      flaky: 0,
-      items: 40,
-      pass: 38,
-      // It scored no set of its own, and never says it did.
-      goldenHash: null,
-      changed: ["convex/ttsMerge.ts", "worker/jobs/evals.mjs"],
+    expect(rows).toHaveLength(0);
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: SHA,
+      unaffectedClaimed: true,
     });
   });
 
-  it("answers with zeroes when nothing ever scored the base", async () => {
-    const t = convexTest({ schema, modules });
-    await request(t);
-    expect((await runs(t))[0].data).toMatchObject({ items: 0, pass: 0, regressions: 0 });
-  });
-
-  // The box's queue takes the oldest request with NO run at its key, so a
-  // request answered as it is filed is never handed out and no model runs.
-  it("leaves the box nothing to pick up", async () => {
-    const t = convexTest({ schema, modules });
-    await request(t);
-    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
-  });
-
-  // A check RE-RUN at the same sha finds its request already filed. Returning
-  // early there would leave a head with a request and no row — the shape that
-  // waits seventy-five minutes and then denies.
-  it("answers a re-run whose request was already filed, and only once", async () => {
+  it("re-files the claim as a fresh box question", async () => {
     const t = convexTest({ schema, modules });
     await t.mutation(internal.ttsEvals.internalRequestEvals, {
       repo: REPO,
@@ -335,10 +306,10 @@ describe("an unaffected evals request", () => {
       changed: ["convex/ttsMerge.ts"],
     });
     expect(await runs(t)).toHaveLength(0);
-    expect(await request(t)).toMatchObject({ existing: true, unaffected: true });
-    expect(await runs(t)).toHaveLength(1);
+    expect(await request(t)).toMatchObject({ existing: true });
+    expect(await runs(t)).toHaveLength(0);
     await request(t);
-    expect(await runs(t)).toHaveLength(1);
+    expect(await runs(t)).toHaveLength(0);
   });
 
   // A branch that DID touch a watched path still queues for the box.
@@ -348,7 +319,7 @@ describe("an unaffected evals request", () => {
     expect(await runs(t)).toHaveLength(0);
     expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
       sha: SHA,
-      unaffected: false,
+      unaffectedClaimed: false,
     });
   });
 });
@@ -683,9 +654,8 @@ describe("a superseded request", () => {
       runId: 300,
       changed: ["model-of-tom/intent.md"],
       prBody: "the body as it reads now",
-      // THE ONE THAT OPENS THE GATE. A stale `true` here would answer a diff
-      // that touches a watched path with `no watched path changed`.
-      unaffected: false,
+        // This is a client hint only; it never opens the gate from Convex.
+        unaffectedClaimed: false,
     });
     // AND `at` MOVES WITH IT. That field is what internalOldestEvalsRequest's
     // trailing window is built on, so a renewed request left at its original
@@ -738,7 +708,7 @@ describe("a superseded request", () => {
       .toMatchObject({ run: null });
     expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
       sha: "aaaaaaa",
-      unaffected: false,
+      unaffectedClaimed: false,
     });
   });
 
@@ -811,14 +781,9 @@ describe("a superseded request", () => {
     expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({ sha: "aaaaaaa" });
   });
 
-  // A PLAIN RE-RUN OF AN UNAFFECTED CHECK IS NOT A NEW ANSWER. `requestedAt`
-  // moves, but an unaffected row is dated by the VERDICT and not by the clock:
-  // the row and the request claim the same thing about the same diff. Dating it
-  // by the clock cost either a second identical row on every re-run, or — if
-  // the door declined to write one — a check polling the full seventy-five
-  // minutes against a row its own readers had just decided to ignore. Found by
-  // the box's audit.
-  it("keeps an unaffected row answering a re-run that is still unaffected", async () => {
+  // A prior no-run result never answers a re-filed request. Its predecessor
+  // trusted the client's claim; the next answer must be recomputed by the box.
+  it("queues a re-filed unaffected claim for the box", async () => {
     const t = convexTest({ schema, modules });
     await file(t, 1, "aaaaaaa", { runId: 100, unaffected: true });
     await t.run(async (ctx) => {
@@ -833,12 +798,12 @@ describe("a superseded request", () => {
       repo: REPO, sha: "aaaaaaa", baseSha: "f5c1fb9", pr: 173, runId: 100,
       paths: ["model-of-tom/**"], changed: ["worker/setup.sh"], unaffected: true,
     });
-    // The check's first poll ends here rather than at the deadline...
     expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
-      .toMatchObject({ run: { unaffected: true } });
-    // ...the queue still has nothing to hand out...
-    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
-    // ...and the door wrote no second row.
+      .toMatchObject({ run: null });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({
+      sha: "aaaaaaa",
+      unaffectedClaimed: true,
+    });
     const runs = await t.run(async (ctx) =>
       await ctx.db
         .query("dtsEvents")

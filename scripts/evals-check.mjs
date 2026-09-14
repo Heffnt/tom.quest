@@ -544,7 +544,7 @@ async function main() {
   if (!answer?.run) {
     console.error(
       `evals: the Jarvis Box did not answer within ${POLL_TIMEOUT_MS / 60_000} minutes. Re-run this check, or run it by hand: ` +
-        `node /opt/tts/evals.mjs --repo ${repo} --sha ${sha}`,
+        `node /opt/tts/evals.mjs --repo ${repo} --sha ${sha} --force`,
     );
     process.exit(1);
   }

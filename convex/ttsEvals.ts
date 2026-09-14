@@ -17,9 +17,9 @@ export const EVALS_RUN = "evals-run";
  * The distinction is kept because a gate that wrote `true` on an unscored row
  * would be a row saying something it did not check.
  *
- * ONE WORD, THREE HOMES: here, scripts/evals-check.mjs COVERAGE_NOT_REQUIRED
- * and worker/jobs/evals.mjs unaffectedRun. Neither of the others can import
- * this file, so each spells it and each side's tests pin it.
+ * ONE WORD, THREE READERS: this merge-gate constant, scripts/evals-check.mjs
+ * and worker/jobs/evals.mjs unaffectedRun. The box is the only writer of an
+ * unaffected row; neither of the other runtimes can import it from there.
  */
 export const COVERAGE_NOT_REQUIRED = "not-required";
 
@@ -618,30 +618,15 @@ type EvalsRequest = {
   // fetches this file's sibling and runs it with its own environment.
   runId: number | null;
   paths: string[];
-  // WHAT THIS BRANCH ACTUALLY CHANGED, and the body an escape-hatch trailer
-  // would be on.
-  //
-  // `paths` above is the WATCHED list — the same constant on every request.
-  // These two are the DIFF, computed once by the pull-request check in the
-  // checkout CI already has, and carried here so the box can stamp the golden
-  // coverage verdict onto the run row from the same list the check judged in
-  // its log. The box cannot compute them: it holds a shallow cache clone with
-  // no merge base, and a list it derived itself would be a second answer to a
-  // question already answered.
-  //
-  // NULL IS A VALUE and is never inferred. A request from an older check, or
-  // from a machine whose git could not answer, carries neither; the run's
-  // goldenCoverage is then null, and the merge gate denies — because a merge
-  // always has a diff, so a run nobody asked has not answered.
+  // Client hints from the checkout the pull request runs. The box computes its
+  // own diff and uses it for coverage; these stay only for diagnostics and the
+  // no-item body text. An omitted hint has no effect on the box's decision.
   changed: string[] | null;
   prBody: string | null;
-  // NOTHING THIS BRANCH TOUCHED IS WATCHED, as the check decided from its own
-  // diff and scripts/evals-check.mjs's WATCHED_PATHS. The request is filed for
-  // the record and answered in the same mutation, so the box never sees it —
-  // but worker/jobs/evals.mjs reads this field too, because a request written
-  // by a door that could not answer it is a request the box must still answer
-  // without spending fifty minutes on it.
-  unaffected: boolean;
+  // CI's `changed` and `unaffected` values are hints. The box recomputes the
+  // diff from its own clone and imports WATCHED_PATHS from the base worktree;
+  // retaining the claim only lets its eventual run record a refuted claim.
+  unaffectedClaimed: boolean;
   requestedAt: number;
   // A LATER PUSH TO THE SAME PULL REQUEST already filed its own request, so
   // this sha is not the head of anything any more. The box answers a request
@@ -675,90 +660,13 @@ function requestData(data: unknown): EvalsRequest | null {
         ? (value.changed as string[])
         : null,
       prBody: typeof value.prBody === "string" ? value.prBody : null,
-      unaffected: value.unaffected === true,
+      unaffectedClaimed: value.unaffectedClaimed === true || value.unaffected === true,
       requestedAt: value.requestedAt,
       // The queue decides this, not the row; internalOldestEvalsRequest fills
       // it in on the one request it hands out.
       supersededBy: null,
     }
     : null;
-}
-
-/**
- * The evals-run row an unaffected request is answered with, written by the
- * door in the same mutation that files the request.
- *
- * NOT A RUN, AND IT NEVER PRETENDS TO BE ONE. It scored nothing, so `items`
- * and `pass` are the BASE COMMIT'S numbers when a base run exists — the
- * standing state of the set, restated for whoever reads the row, because this
- * head changed nothing that could move them — and `goldenHash` stays null,
- * since this row hashed no set of its own. `regressions: 0` is honest for the
- * same reason: nothing was scored, so nothing regressed, and the one thing
- * that could have made a regression possible (a change to a watched path) did
- * not happen.
- *
- * ITS TWIN IS worker/jobs/evals.mjs unaffectedRun, which the box posts when it
- * is handed an unaffected request an older door did not answer. The fields the
- * merge gate and the digest read are pinned on both sides.
- */
-export function unaffectedRunData(args: {
-  repo: string;
-  sha: string;
-  changed: string[] | null;
-  base: Record<string, unknown> | null;
-  at: number;
-  answersRequestAt?: number | null;
-}) {
-  const base = args.base ?? {};
-  const items = typeof base.items === "number" ? base.items : 0;
-  const pass = typeof base.pass === "number" ? base.pass : 0;
-  return {
-    repo: args.repo,
-    sha: args.sha,
-    // THE QUESTION THIS ROW ANSWERS — see worker/jobs/evals.mjs unscoredRun,
-    // whose twin this is, and answeredRun below.
-    answersRequestAt: args.answersRequestAt ?? null,
-    // THE FLAG EVERY READER BRANCHES ON: scripts/evals-check.mjs gate() and
-    // report(), and convex/ttsMerge.ts through the coverage field below.
-    unaffected: true,
-    changed: args.changed,
-    tomquest: null,
-    wikitom: null,
-    goldenHash: null,
-    startedAt: args.at,
-    finishedAt: args.at,
-    calls: 0,
-    items,
-    pass,
-    fail: 0,
-    flaky: 0,
-    regressions: 0,
-    stillFailing: 0,
-    goldenCoverage: COVERAGE_NOT_REQUIRED,
-    weekly: false,
-    byPartition: [],
-    byVerdict: { approve: { items: 0, pass: 0 }, revise: { items: 0, pass: 0 } },
-    failures: [],
-    scoredIds: [],
-    skipped: [],
-    results: [],
-    efficiency: { cases: 0, unknown: 0, rises: [] },
-    ablation: [],
-    ablationSkipped: [],
-    // The shape worker/jobs/evals.mjs aggregate([]) returns, spelled out: an
-    // empty repo-task run, so every reader of `tasks` finds the fields it
-    // expects rather than an object missing half of them.
-    tasks: {
-      items: 0,
-      pass: 0,
-      fail: 0,
-      flaky: 0,
-      byPartition: [],
-      byVerdict: { approve: { items: 0, pass: 0 }, revise: { items: 0, pass: 0 } },
-      failures: [],
-    },
-    tasksSkipped: [],
-  };
 }
 
 export const internalRequestEvals = internalMutation({
@@ -821,7 +729,7 @@ export const internalRequestEvals = internalMutation({
       // read as DATA — the only thing anything does with it is look for one
       // anchored `evals: no-item` line.
       prBody: args.prBody ?? null,
-      unaffected: args.unaffected === true,
+      unaffectedClaimed: args.unaffected === true,
       // MOVES EVERY TIME, and that is what un-answers a stale row that scored
       // nothing: answeredRun below reads one written BEFORE the request
       // standing now as the answer to a question nobody is asking any more.
@@ -841,40 +749,6 @@ export const internalRequestEvals = internalMutation({
       // was asked, and `--serve` answers everything cheap ahead of it on the
       // same tick anyway.
       await ctx.db.patch(existing._id, { at: requestedAt, data });
-    }
-    // ANSWERED HERE, IN THE SAME MUTATION THAT ASKED. A branch that touched no
-    // watched path has nothing to score, and the round trip to the box would
-    // produce a row saying exactly this — but only after the box's next cron
-    // tick, a clone and two worktrees. The gate still gets its third row, the
-    // check's first poll finds it, and no model runs.
-    //
-    // The queue is untouched by this: internalOldestEvalsRequest hands out
-    // only requests with no evals-run row at their key, so a request answered
-    // as it is filed is never picked up.
-    //
-    // OUTSIDE THE `existing === null` BRANCH, and that matters: a check re-run
-    // at the same sha finds its request already filed, and returning early
-    // there would leave a head with a request and no row — the exact shape
-    // that waits seventy-five minutes and then denies. Guarded on the RUN
-    // instead, so it is idempotent and it also answers an older unanswered
-    // request that nobody had a shortcut for.
-    if (args.unaffected === true && (await answeredRun(ctx, key)) === null) {
-      const base =
-        args.baseSha === undefined ? null : await answeredRun(ctx, `${args.repo}@${args.baseSha}`);
-      await ctx.db.insert("dtsEvents", {
-        at: requestedAt,
-        kind: EVALS_RUN,
-        key,
-        data: unaffectedRunData({
-          repo: args.repo,
-          sha: args.sha,
-          changed: args.changed ?? null,
-          base: (base === null || scoredNothing(base.data) ? null : base.data) as Record<string, unknown> | null,
-          at: requestedAt,
-          answersRequestAt: requestedAt,
-        }),
-      });
-      return { existing: existing !== null, unaffected: true };
     }
     return { existing: existing !== null };
   },
@@ -968,37 +842,13 @@ async function answeredRun(ctx: QueryCtx | MutationCtx, key: string) {
   // No request row at all: nothing is asking anything, so the row stands.
   if (request === null) return run;
   if (!scoredNothing(run.data)) {
-    // A scored row answers the request whose base supplied the comparison and
-    // whose diff/body supplied golden coverage. Missing facts on a historical
-    // row are not guessed: the next run records them and then stays answered.
+    // The box records its resolved base and diff as provenance. Request fields
+    // are client hints, so only the exact request timestamp can make a scored
+    // row current for the question now standing.
     const data = run.data as {
       answersRequestAt?: unknown;
-      answersBaseSha?: unknown;
-      answersChanged?: unknown;
-      answersPrBody?: unknown;
     };
-    const changed = data.answersChanged;
-    const requestChanged = request.changed;
-    const sameChanged = changed === null && requestChanged === null ||
-      Array.isArray(changed) && Array.isArray(requestChanged) &&
-        changed.every((path) => typeof path === "string") &&
-        changed.length === requestChanged.length &&
-        changed.every((path, index) => path === requestChanged[index]);
-    return data.answersRequestAt === request.requestedAt &&
-      data.answersBaseSha === request.baseSha &&
-      sameChanged && data.answersPrBody === request.prBody
-      ? run
-      : null;
-  }
-  // AN `unaffected` ROW IS DATED BY THE VERDICT, NOT BY THE CLOCK. What it
-  // claims — this diff touches no watched path — is the very thing the request
-  // carries, so the two agree or they do not. Dating it by `requestedAt` would
-  // make a plain RE-RUN of an unaffected check stale its own standing row: the
-  // door would find nothing answering, write a second identical row, and if it
-  // instead declined to write one the check would poll the full seventy-five
-  // minutes against a row its readers had just decided to ignore.
-  if ((run.data as { unaffected?: unknown }).unaffected === true) {
-    return request.unaffected ? run : null;
+    return data.answersRequestAt === request.requestedAt ? run : null;
   }
   // `superseded` AND `error` ARE DATED BY THE QUESTION THEY ANSWER, because what
   // they claim is about a MOMENT and not about the diff: the queue as it stood

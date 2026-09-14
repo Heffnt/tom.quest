@@ -442,11 +442,11 @@ describe("the evals arm's golden-coverage clause", () => {
           repo: REPO, sha: SHA, baseSha: "f5c1fb9", pr: 1, runId: 1,
           paths: ["model-of-tom/**"], changed: ["model-of-tom/intent.md"], prBody: null,
           // The request standing NOW says the diff DOES touch a watched path.
-          unaffected: false, requestedAt: 50,
+          unaffectedClaimed: false, requestedAt: 50,
         },
       });
     });
-    await seedFact(t, EVALS_RUN, { unaffected: true, regressions: 0, goldenCoverage: COVERAGE_NOT_REQUIRED });
+    await seedFact(t, EVALS_RUN, { unaffected: true, regressions: 0, goldenCoverage: COVERAGE_NOT_REQUIRED, answersRequestAt: 49 });
     const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
     expect(gate.allowed).toBe(false);
     expect(gate.missing).toEqual(["evals"]);
@@ -469,11 +469,11 @@ describe("the evals arm's golden-coverage clause", () => {
         data: {
           repo: REPO, sha: SHA, baseSha: "f5c1fb9", pr: 1, runId: 1,
           paths: ["model-of-tom/**"], changed: ["worker/setup.sh"], prBody: null,
-          unaffected: true, requestedAt: 50,
+          unaffectedClaimed: true, requestedAt: 50,
         },
       });
     });
-    await seedFact(t, EVALS_RUN, { unaffected: true, regressions: 0, goldenCoverage: COVERAGE_NOT_REQUIRED });
+    await seedFact(t, EVALS_RUN, { unaffected: true, regressions: 0, goldenCoverage: COVERAGE_NOT_REQUIRED, answersRequestAt: 50 });
     const gate = await (await get(t, `/tts/merge-gate?repo=${REPO}&sha=${SHA}`)).json();
     expect(gate.allowed).toBe(true);
   });
