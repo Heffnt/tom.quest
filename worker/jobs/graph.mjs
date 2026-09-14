@@ -374,12 +374,15 @@ export function kindOf(id) {
 
 // ── Bytes ────────────────────────────────────────────────────────────────────
 
-const ENCODER = typeof TextEncoder === "undefined" ? null : new TextEncoder();
+// TextEncoder is a global in every runtime this file runs in — node, the
+// Convex runtime, a browser — which is what lets the header above say this file
+// touches no Buffer and mean it. There was a `Buffer.byteLength` fallback here
+// for a runtime without one; nothing can reach it, and a fallback that cannot
+// be reached is a second implementation nobody ever tests.
+const ENCODER = new TextEncoder();
 
 export function byteLength(text) {
-  const value = String(text ?? "");
-  if (ENCODER !== null) return ENCODER.encode(value).length;
-  return Buffer.byteLength(value, "utf8");
+  return ENCODER.encode(String(text ?? "")).length;
 }
 
 // ── Reading a page ───────────────────────────────────────────────────────────
@@ -532,6 +535,11 @@ class Builder {
       this.nodes.set(next.id, next);
       return next;
     }
+    // REMOVAL CHECK: cannot remove; what it patches is a minting bug — a caller
+    // pairing one kind's word with another kind's id helper — and the bug it
+    // would otherwise produce is a node whose `kind` field disagrees with the
+    // prefix of its own id, which every reader of `kindOf` then reads wrongly
+    // and no later check can tell from a correct one.
     if (seen.kind !== next.kind) {
       throw new GraphError(`graph: ${next.id} is both a ${seen.kind} and a ${next.kind}`);
     }
@@ -539,6 +547,11 @@ class Builder {
   }
 
   edge(kind, from, to, key, evidence, placement) {
+    // REMOVAL CHECK: cannot remove; a text-born id IS its content hash, so two
+    // byte-identical lines are ONE node, and a `supersedes` whose before and
+    // after normalize alike — or a `mentions` from a line to the page whose
+    // path that line is — arrives here as an edge from a node to itself. The
+    // walk would then spend budget re-reaching a node it is standing on.
     if (from === to) return;
     const id = `${kind} ${from} ${to} ${placement ?? ""}`;
     if (this.edges.has(id)) return;
@@ -675,6 +688,11 @@ export function buildGraph(input = {}) {
     if (before === "" || after === "") continue;
     const from = lineId(after, hash);
     const to = lineId(before, hash);
+    // REMOVAL CHECK: cannot remove; last night's change log names lines by
+    // their text, and a line the nightly has since rewritten again has no node
+    // in tonight's graph. Writing the edge anyway would point it at an id that
+    // is not in `nodes`, which is exactly what G6 refuses and what would make
+    // `near` throw rather than answer.
     if (!b.nodes.has(from)) continue;
     b.edge("supersedes", from, to, "supersedes/line-line", `nightly:${change?.day ?? "unknown"}`);
   }
@@ -852,6 +870,12 @@ function addDefines(b, terms) {
     (row) => (row.kind === "line" || row.kind === "rule" || row.kind === "skill") && typeof row.text === "string",
   );
   for (const term of terms) {
+    // REMOVAL CHECK: cannot remove, and DEFINES_CAP does not cover it. The cap
+    // bounds how many edges one term gets; this bounds whether the term means
+    // anything. A one- or two-character term matches text that is not about it,
+    // so the cap would keep 64 WRONG `defines` edges rather than none. The
+    // shortest term the vocabulary carries today is three characters, so this
+    // states the floor the schema already keeps rather than inventing one.
     if (term.term.length < 3) continue;
     const pattern = termRegex(term.term);
     const hits = carriers.filter((row) => pattern.test(row.text)).sort((a, c) => a.id.localeCompare(c.id));
@@ -890,6 +914,13 @@ function addMentions(b) {
       }
       const directory = token.endsWith("/") ? token : `${token}/`;
       const inside = paths.filter((path) => path.startsWith(directory));
+      // REMOVAL CHECK: cannot remove; without it a line naming a DIRECTORY —
+      // `model-of-tom/`, `worker/jobs/` — mints one `mentions` edge to every
+      // page under it, and those are the two directories prose about this
+      // system names most. The line does not mention twenty pages; it mentions
+      // a directory, and an edge per page would make `near` on any of them
+      // return that line. Above the bound the token is dropped rather than
+      // capped, because there is no principled first eight.
       if (inside.length === 0 || inside.length > 8) continue;
       for (const path of inside) {
         b.edge("mentions", row.id, pageId(path), "mentions/token-rules-file", "rule:pathTokens");
@@ -900,6 +931,11 @@ function addMentions(b) {
 
 /** The record half: ids only, with the edges the rows already state. */
 function addRecord(b, record, pages) {
+  // REMOVAL CHECK: cannot remove; the record holds every todo ever filed and
+  // the graph holds what a run should be able to reach. An archived or done row
+  // is a thing that is over, and putting it in would both make `near` answer
+  // with finished work and put the row count past RECORD_CAPS, which fails the
+  // build. `status === undefined` is an older row, which is active.
   const todos = (record.todos ?? []).filter((row) => row?.status === undefined || row.status === "active");
   const batches = (record.batches ?? []).filter((row) => row?.status === undefined || row.status === "active");
   const rulings = record.rulings ?? [];
@@ -1352,6 +1388,12 @@ export function subgraphOf(graph, id) {
     const row = index.byId.get(edge.from);
     if (row === undefined) continue;
     const placement = parseAt(edge.at);
+    // REMOVAL CHECK: cannot remove; the negative order is written on purpose.
+    // linkPageToSkill gives the PAGE→skill edge `at(key, -1)` so the walk can
+    // reach a skill the moment it reaches that skill's page — the edge P2 moved
+    // to weight 1000 — while the skill's BODY is its lines, not the page node.
+    // Leaving the field off instead would lose the placement's path, which is
+    // what orders one skill's several source files against each other.
     if (placement === null || placement.order < 0) continue;
     entries.push({ node: row, path: placement.path, order: placement.order });
   }
@@ -1427,7 +1469,10 @@ export function renderPlaced(entries, { order: pathOrder } = {}) {
  * ask about a vault skill.
  */
 export function renderSkillBody(graph, skill) {
-  const repo = skill?.group === "repo" || skill?.repo === true ? (skill.origin ?? null) : null;
+  // `group` is the ONE way a skill says it is a repository's. There was a
+  // second test here for a `repo: true` field; nothing in the tree ever wrote
+  // one, so it could only have disagreed with `group`.
+  const repo = skill?.group === "repo" ? (skill.origin ?? null) : null;
   return renderPlaced(subgraphOf(graph, skillId(skill?.name)), {
     order: (skill?.sourcePaths ?? []).map((source) => pageKey(repo, source)),
   });

@@ -22,7 +22,7 @@ import { EDGE_KINDS, NODE_KINDS } from "../worker/jobs/graph.mjs";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "check-vocabulary.mjs");
 const NO_CHECKOUT_LINE =
-  "check-vocabulary: no WikiTom checkout — ran the 9 in-repo checks; the render checks run in the nightly";
+  "check-vocabulary: no WikiTom checkout — ran the 7 in-repo checks; the render checks run in the nightly";
 const VERSION = "0123456789abcdef";
 
 const list = (values) => values.map((value) => `  ${JSON.stringify(value)},`).join("\n");
@@ -213,29 +213,11 @@ describe("check-vocabulary", () => {
     expect(result.stderr).toContain('package.json depends on "faiss-node"');
   });
 
-  it("8: names a schema that gained a table", () => {
-    const schema =
-      'import { defineSchema, defineTable } from "convex/server";\n'
-      + `${Array.from({ length: 45 }, (_, i) => `  table${i}: defineTable({}),`).join("\n")}\n`;
-    const result = run(fixture({ "convex/schema.ts": schema }));
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain("convex/schema.ts defines 45 tables and this check expects 44");
-  });
-
-  it("9: names a second CONTEXT_CALLERS", () => {
-    const result = run(
-      fixture({ "convex/ttsContext.ts": "const CONTEXT_CALLERS = { opener: {} };\nexport default CONTEXT_CALLERS;\n" }),
-    );
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain("CONTEXT_CALLERS is declared 2 time(s) across worker/ and convex/");
-    expect(result.stderr).toContain("convex/ttsContext.ts:1");
-  });
-
-  it("9: names a CONTEXT_CALLERS nobody declares", () => {
-    const result = run(fixture({ "worker/jobs/skill-router.mjs": "export const CALLERS = {};\n" }));
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain("CONTEXT_CALLERS is declared 0 time(s) across worker/ and convex/ (nowhere)");
-  });
+  // THE TABLE-COUNT AND CONTEXT_CALLERS TESTS WENT WITH THEIR CHECKS. The first
+  // pinned convex/schema.ts at 44 tables, which failed every later branch that
+  // added one for any reason; the second asserted a single CONTEXT_CALLERS
+  // declaration that nothing parses and that was never duplicated. See the
+  // block in scripts/check-vocabulary.mjs where they used to be.
 
   it("exempts this script and its test from the word checks", () => {
     // The fixture's own copy of the script's name carries both refused words and

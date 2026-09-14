@@ -2388,11 +2388,11 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       // what keeps this to a handful of prelude.mjs invocations rather than
       // one per trial.
       prelude: (names) => {
-        // THE NODE LIST IS PART OF THE KEY. The node arm asks for the same
-        // layers and the same skills with one node id missing, so a key built
-        // from the two name lists alone would hand every node trial the cached
-        // assembly of the trial before it and score one prompt five times.
-        const key = `${(names?.layers ?? []).join(",")}|${(names?.skills ?? []).join(",")}|${(names?.nodes ?? []).join(",")}`;
+        // The key is the two name lists, which are the whole of what
+        // `preludeFrom` reads. A third part for a node list went with the node
+        // arm: nothing sets `names.nodes`, so it contributed an empty string to
+        // every key and named a caller that does not exist.
+        const key = `${(names?.layers ?? []).join(",")}|${(names?.skills ?? []).join(",")}`;
         if (!preludeCache.has(key)) preludeCache.set(key, preludeFrom(io, tomquest.dir, wikitom.dir, names));
         return preludeCache.get(key);
       },

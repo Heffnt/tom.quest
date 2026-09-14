@@ -1013,6 +1013,10 @@ function readGenerated(root, relativePath, regenerate) {
 async function loadGraph(root) {
   const { missing, value } = readGenerated(root, GRAPH_PATH, "node scripts/graph.mjs --write");
   if (missing) return { missing, graph: null, module: null };
+  // REMOVAL CHECK: cannot remove; readGenerated proves the file is JSON and
+  // nothing more. Without this, `indexOf` reads `.nodes` off an object that has
+  // none and every command answers "not found" for every id — a wrong ANSWER,
+  // where this is a message naming the file and the command that rebuilds it.
   if (!Array.isArray(value?.nodes) || !Array.isArray(value?.edges)) {
     fail(`${path.join(root, GRAPH_PATH)} carries no nodes and edges arrays`);
   }
@@ -1208,6 +1212,12 @@ export function vocabularyResults(root, options) {
     const kinds = [...new Set(terms.map((term) => String(term?.kind ?? "")))].filter(Boolean).sort();
     // The kinds are the file's, not a list written here: a kind the generator
     // stops minting must stop being offered on the same day it stops existing.
+    //
+    // REMOVAL CHECK: cannot remove in favour of an empty list. A typo and a
+    // kind with nothing in it would then read identically — both print nothing
+    // — and the whole use of `--kind` is to narrow, so the answer a reader
+    // acts on is "there are none of those" or "that is not a kind". This says
+    // which, and names the kinds that exist.
     if (!kinds.includes(options.kind)) fail(`--kind must be one of ${kinds.join(", ")}`);
   }
   const selected = terms

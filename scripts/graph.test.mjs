@@ -65,11 +65,11 @@ const AGENT_RULES = [
 const PRIORITIES = "# Priorities\n\nResearch first — always — and the record second · never the reverse.\n";
 
 /**
- * The fixture's schema. It declares the base area page's three categories
- * because G7 fires on an `applies-to` edge to a term the vocabulary does not
- * carry, and every fixture with an area page mints three of those — a base
- * vocabulary that left them out would put a G7 block in the report of every
- * other test in this file.
+ * The fixture's schema. It declares the base area page's three categories so
+ * that every fixture with an area page renders the same terms the real vault
+ * would; the checks read `vocabulary.terms` for the kind lists, and a base that
+ * left them out would make each test's report differ for a reason that has
+ * nothing to do with what that test is about.
  */
 const BASE_VOCABULARY = {
   version: "2026-09-12",
@@ -465,34 +465,6 @@ describe("the disagreement classes", () => {
     expect(fs.existsSync(fixture.graphFile)).toBe(false);
   });
 
-  it("G7 — cannot fire from any input, and the fixture proves the silence rather than faking the block", () => {
-    // THIS TEST FOUND TWO REAL THINGS and neither was fixable by a fixture.
-    //
-    // G7 reads `defines` edges and every `defines` edge is minted from a
-    // `vocabulary.terms` row, so the two sets agree by construction and no
-    // input can separate them. The one gap that existed was a trim mismatch
-    // between G7's set and `termsOf`'s — the checker disagreeing with itself —
-    // which is fixed, and a term with surrounding whitespace now reports
-    // nothing, as it should.
-    //
-    // Widening G7 to `applies-to`, which is what its `fix` line described, was
-    // tried and withdrawn: an area page's `categories:` names a TODO CATEGORY
-    // (`seeds`, `mulch`, `pruning`), not a word of the closed vocabulary, and
-    // the widened check called all fifty-seven of them disagreements on the
-    // real vault. The class stays as a guard for a second source of `defines`
-    // edges, and this test holds it to silence.
-    const trimmed = makeCheckout("g7", {
-      vocabulary: { version: "2026-09-12", terms: [{ term: "  graph  " }, { term: "record" }] },
-    });
-    expect(codesOf(trimmed.run([]).out)).not.toContain("G7");
-
-    const categories = makeCheckout("g7-categories", {
-      vocabulary: { version: "2026-09-12", terms: [{ term: "graph" }] },
-    });
-    expect(codesOf(categories.run([]).out)).not.toContain("G7");
-    expect(categories.run([]).code).toBe(0);
-  });
-
   it("G8 — --check against a file the render does not produce", () => {
     const fixture = makeCheckout("g8");
     expect(fixture.run(["--write"]).code).toBe(0);
@@ -525,7 +497,7 @@ describe("several disagreements at once", () => {
     const result = fixture.run(["--write"]);
     const codes = codesOf(result.out);
     // Three blocks from two classes: two G4 entries naming no line, one G5
-    // collision. G7 is not among them and cannot be — see its own test.
+    // collision, and nothing else.
     expect(codes.length).toBeGreaterThanOrEqual(3);
     expect(new Set(codes)).toEqual(new Set(["G4", "G5"]));
     for (const block of blocksOf(result.out)) expectBlockShape(block, block.slice(13, 15));

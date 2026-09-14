@@ -110,6 +110,10 @@ export const NAME = "graph";
  *  this is the graph's generator. It is imported there, never re-declared. */
 export const MAP_BLOCKS = "candidate";
 
+// REMOVAL CHECK: cannot remove while RECORD_NODES exists. "inline" is not
+// built, so without this a flip would silently keep writing id-only rows —
+// a switch that reads as set and does nothing. The throw is at module load so
+// the flip fails on the commit that makes it rather than on a night.
 if (RECORD_NODES !== "id-only") {
   throw new Error(
     `graph: RECORD_NODES "${RECORD_NODES}" is not built — a second copy of a record row in a generated `
@@ -323,7 +327,11 @@ function readVocabulary(wikitom) {
  * already-read text, and a caller that already holds the vocabulary — the
  * nightly does — passes it in and never loads this.
  */
-export async function vocabularyFor({ wikitom, tomQuest, record }) {
+// `record` is NOT a parameter here. The vocabulary renders from the spec and
+// the code and reads no record row, so a record argument threaded through this
+// function would be accepted and dropped — which is the one thing worse than
+// not taking it.
+export async function vocabularyFor({ wikitom, tomQuest }) {
   const onDisk = readVocabulary(wikitom);
   if (onDisk !== null) return { vocabulary: onDisk, from: VOCABULARY_PATH };
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -336,14 +344,14 @@ export async function vocabularyFor({ wikitom, tomQuest, record }) {
     if (typeof module.generateVocabulary !== "function") {
       return { vocabulary: null, from: "unavailable — scripts/vocabulary.mjs exports no generateVocabulary" };
     }
-    const built = module.generateVocabulary({ wikitom, tomQuest, record, write: false });
+    const built = module.generateVocabulary({ wikitom, tomQuest, write: false });
     return { vocabulary: built.vocabulary, from: "scripts/vocabulary.mjs (in memory; the file is not written)" };
   } catch (error) {
     return { vocabulary: null, from: `unavailable — ${String(error?.message ?? error)}` };
   }
 }
 
-function headCommit(dir) {
+export function headCommit(dir) {
   // Parsed out of .git, never shelled out to: the generator runs in the nightly
   // under a lock and a `git` subprocess there is one more thing that can hang.
   try {
@@ -550,46 +558,14 @@ function disagreementsOf(graph, { vocabulary, bytes, pages, evidence, notes = []
     );
   }
 
-  // G7 — a `defines` edge from a term the vocabulary does not declare.
-  //
-  // IT CANNOT FIRE TODAY, AND THAT IS THE RIGHT SHAPE. Every `defines` edge is
-  // minted from a `vocabulary.terms` row, so the two sets agree by
-  // construction; the class is the guard for the day a second source starts
-  // minting them, and it costs one pass over the edges.
-  //
-  // IT DOES NOT READ `applies-to`, and the brief's `fix` line — "an area page's
-  // `categories:` names a word §12.1 does not" — describes a check this round
-  // tried and withdrew. An area page's `categories:` names a TODO CATEGORY:
-  // `climbing`, `dnd`, `therapy`, `weed`. Those are labels on Tom's life, not
-  // words in the closed vocabulary of TTS, and they were never meant to be —
-  // widening G7 to them reported all fifty-seven of them as disagreements on
-  // the real vault, which is a checker being wrong about a namespace rather
-  // than a vault being wrong about a word. The graph mints one `term` kind from
-  // two namespaces, and telling them apart is a design question for Tom, not
-  // something to decide inside a check.
-  //
-  // TRIMMED THEN LOWERCASED, the order worker/jobs/graph.mjs:termsOf uses: a
-  // row spelled with surrounding whitespace draws its edges from the trimmed
-  // id, and a set built without the trim would report a term the vocabulary
-  // does define.
-  if (vocabulary !== null) {
-    const terms = new Set((vocabulary.terms ?? []).map((row) => `term:${String(row.term).trim().toLowerCase()}`));
-    const undeclared = new Map();
-    for (const edge of graph.edges) {
-      if (edge.kind !== "defines" || terms.has(edge.from)) continue;
-      if (!undeclared.has(edge.from)) undeclared.set(edge.from, []);
-      undeclared.get(edge.from).push(edge);
-    }
-    for (const [term, edges] of [...undeclared.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-      found.push(
-        block("G7", `defines edges from ${term}`, [
-          ["graph", `${edges.length} defines edge(s)`],
-          ["read", [...new Set(edges.map((edge) => edge.evidence))].sort().join(", ")],
-          ["schema", `${VOCABULARY_PATH} has no such term`],
-        ], "a `defines` edge was minted from something other than a vocabulary row — find the second source"),
-      );
-    }
-  }
+  // THERE IS NO G7, and there was. It looked for a `defines` edge whose term
+  // the vocabulary does not declare. Every `defines` edge is minted FROM a
+  // `vocabulary.terms` row (worker/jobs/graph.mjs addDefines), so the two sets
+  // agree by construction and no input could separate them — its own comment
+  // and its own test both said so, and the test asserted its silence. A check
+  // that cannot fire is a check nobody can act on and nobody can trust; the day
+  // a second source starts minting `defines` edges is the day to write it,
+  // against that source.
 
   return found;
 }
@@ -780,6 +756,13 @@ export function generateGraph(options) {
         theirs = null;
       }
       const ours = graph.generatedFrom.repos;
+      // REMOVAL CHECK: cannot remove; the static half's CONTENT depends on which
+      // repositories the run was given — a build with `--repo
+      // ComplexMultiTrigger=<dir>` mints that repo's rule and page nodes and a
+      // build without it does not. Comparing the two and calling the difference
+      // a hand edit is the false failure this skip exists to prevent, and a
+      // false `--check` is worse than no `--check`: the fix it names is to
+      // regenerate, which would overwrite a correct file with a narrower one.
       if (Array.isArray(theirs) && theirs.join(",") !== ours.join(",")) {
         skipped = `the file was built from [${theirs.join(", ")}] and this run reads [${ours.join(", ")}]`;
         graph.notes.push(
@@ -1006,11 +989,7 @@ export async function runCli(argv = process.argv.slice(2), out = console.log, er
     return 3;
   }
   const wikitom = options.wikitom ?? defaultWikitom();
-  const schema = await vocabularyFor({
-    wikitom,
-    tomQuest: options.tomQuest,
-    record: options.record === null ? null : undefined,
-  });
+  const schema = await vocabularyFor({ wikitom, tomQuest: options.tomQuest });
   return main(argv, out, err, { vocabulary: schema.vocabulary });
 }
 

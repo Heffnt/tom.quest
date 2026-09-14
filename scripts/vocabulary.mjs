@@ -56,6 +56,9 @@ import { EDGE_KINDS, NODE_KINDS } from "../worker/jobs/graph.mjs";
 const LAPTOP_WIKITOM_DIR = "C:/Users/heffn/Desktop/WikiTom";
 const BOX_WIKITOM_DIR = "/root/wikitom";
 import { AREAS_DIR, SKILL_SHAPES, parseRepoBullets } from "./skills.mjs";
+// The one HEAD parser (see "Git" below). scripts/graph.mjs imports this file
+// only inside a function, so a static import back to it makes no load cycle.
+import { headCommit } from "./graph.mjs";
 
 export class VocabularyError extends Error {}
 
@@ -210,49 +213,11 @@ function byFirstField(field) {
 }
 
 // ── Git ──────────────────────────────────────────────────────────────────────
-
-/**
- * The HEAD commit of a checkout, read from `.git` as TEXT — no child process, so
- * the box's nightly never shells out and a checkout with no git at all returns
- * null rather than throwing. ABSENT IS A SUPPORTED VALUE: a commit is recorded
- * when it can be read and is never guessed.
- */
-export function headSha(root) {
-  try {
-    const dot = path.join(root, ".git");
-    const stat = fs.statSync(dot);
-    let gitDir = dot;
-    if (stat.isFile()) {
-      const pointer = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(dot, "utf8"));
-      if (pointer === null) return null;
-      gitDir = path.resolve(root, pointer[1].trim());
-    }
-    // A linked worktree keeps its own HEAD but shares refs/ with the common dir.
-    let commonDir = gitDir;
-    try {
-      commonDir = path.resolve(gitDir, fs.readFileSync(path.join(gitDir, "commondir"), "utf8").trim());
-    } catch {
-      commonDir = gitDir;
-    }
-    const head = fs.readFileSync(path.join(gitDir, "HEAD"), "utf8").trim();
-    if (/^[0-9a-f]{40}$/.test(head)) return head;
-    const ref = /^ref:\s*(.+)$/.exec(head);
-    if (ref === null) return null;
-    for (const dir of [gitDir, commonDir]) {
-      try {
-        const value = fs.readFileSync(path.join(dir, ref[1]), "utf8").trim();
-        if (/^[0-9a-f]{40}$/.test(value)) return value;
-      } catch {
-        // The ref may only exist packed; fall through to packed-refs.
-      }
-    }
-    const packed = fs.readFileSync(path.join(commonDir, "packed-refs"), "utf8");
-    const row = new RegExp(`^([0-9a-f]{40}) ${ref[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m").exec(packed);
-    return row === null ? null : row[1];
-  } catch {
-    return null;
-  }
-}
+// THE HEAD COMMIT IS READ IN ONE PLACE. There was a second parser here,
+// `headSha`, doing what scripts/graph.mjs `headCommit` already does: read .git
+// as text, follow a worktree's gitdir pointer, and fall back through the common
+// directory's packed-refs. Two parsers of one format drift, and this one is
+// imported at the top of this file instead.
 
 // ── §12.1 and its two extensions ─────────────────────────────────────────────
 
@@ -444,6 +409,12 @@ export function parseTerms(specText) {
  * carries `codeSymbol: null`, which is honest: most words name a posture or a
  * register and nothing in the code is named after them.
  */
+// REMOVAL CHECK: cannot remove without dropping `codeSymbol`, and dropping it
+// loses the one edge from a word Tom uses to the table that stores it. It is
+// hand-kept because the mapping is a JUDGEMENT — `narrow list` is
+// NARROW_LIST in ttsShared.ts and `session` is the claudeSessions table, and
+// nothing in either file names the term. D2 asserts every entry still resolves
+// to a real symbol, so a rename breaks the build rather than the mapping.
 const TERM_CODE_SYMBOLS = Object.freeze({
   batch: "convex/schema.ts:batches",
   todo: "convex/schema.ts:dtsTodos",
@@ -919,6 +890,12 @@ const CHANNEL_WHAT = Object.freeze({
   broken: "one line per distinct failure",
 });
 
+// REMOVAL CHECK: cannot remove, and it is not a second copy of the register.
+// convex/ttsShared.ts declares each channel as a KIND and an ENV VAR NAME
+// (`TTS_SLACK_TODAY`), never as `#tts-today` — the `#` name lives only in the
+// Slack workspace and in Tom's map. D3 counts these against the kinds parsed
+// out of that block, so a kind added there with no name here throws rather
+// than rendering a channel with no name.
 const CHANNEL_NAME = Object.freeze({
   today: "#tts-today",
   decisions: "#tts-decisions",
@@ -1310,6 +1287,12 @@ export function applySharedBlock(sharedText, block, statement) {
 
 // ── The build ────────────────────────────────────────────────────────────────
 
+// REMOVAL CHECK: cannot remove. AUTHORITY is one of Tom's pending switches, so
+// the constant stays until he rules; what this throw patches is the OTHER
+// setting silently rendering this direction anyway. "file" means the spec
+// section is generated FROM the JSON, which is a different program with a
+// different writer and a different gate — a flip with no throw would keep
+// generating the JSON from the spec while the file claimed the reverse.
 function checkAuthority() {
   if (AUTHORITY !== "spec") {
     throw new VocabularyError(
@@ -1327,9 +1310,8 @@ function checkAuthority() {
  * source text, and the nightly passes its run so a later record-derived section
  * does not change this signature under it.
  */
-export function generateVocabulary({ wikitom, tomQuest, record = null, write = false, check = false } = {}) {
+export function generateVocabulary({ wikitom, tomQuest, write = false, check = false } = {}) {
   checkAuthority();
-  void record;
   if (typeof wikitom !== "string" || wikitom === "") fail("a WikiTom checkout is required (--wikitom DIR)");
   if (typeof tomQuest !== "string" || tomQuest === "") fail("a tom.quest checkout is required (--tom-quest DIR)");
   for (const [root, what] of [[wikitom, "WikiTom"], [tomQuest, "tom.quest"]]) {
@@ -1665,8 +1647,8 @@ export function generateVocabulary({ wikitom, tomQuest, record = null, write = f
   const vocabulary = {
     version: "",
     generatedFrom: {
-      wikitomCommit: headSha(wikitom),
-      tomQuestCommit: headSha(tomQuest),
+      wikitomCommit: headCommit(wikitom),
+      tomQuestCommit: headCommit(tomQuest),
       specSection: "12.1",
       generator: GENERATOR_PATH,
       generatorVersion: GENERATOR_VERSION,
@@ -1799,6 +1781,11 @@ function restoreEndings(originalRaw, text) {
  * and it is the only place `agent-rules.md` is ever a destination.
  */
 function writeMapCandidate({ wikitom, agentRulesRaw, candidate, candidateDiff }) {
+  // REMOVAL CHECK: the "live" branch cannot be deleted while MAP_BLOCKS exists.
+  // It IS the switch: deleting it would leave a constant Tom can set to "live"
+  // that keeps writing the candidate, which is a setting that silently does the
+  // opposite of what it says. The switch and its branch are ratified or deleted
+  // together, and that ruling is phase 10 switch (a).
   const destination = MAP_BLOCKS === "live" ? AGENT_RULES_PATH : CANDIDATE_PATH;
   const body = restoreEndings(agentRulesRaw, candidate.text);
   fs.writeFileSync(path.join(wikitom, destination), body, "utf8");
@@ -1872,7 +1859,15 @@ export function parseArgs(argv) {
 }
 
 /** Exit codes: 0 clean · 2 a disagreement, or --check found the disk out of
- *  date · 3 an input is missing or unreadable. */
+ *  date · 3 THE RUN REFUSED TO STAND BEHIND ITS OUTPUT.
+ *
+ *  3 is not only "an input is missing". It is also `overCap` — the rendered
+ *  file is past VOCABULARY_MAX_BYTES, and nothing at all was written — and
+ *  `candidateOverBudget`, where the vocabulary and convex/ttsShared.ts WERE
+ *  written and only the map candidate was withheld. A caller must not read 3 as
+ *  "nothing happened"; it means read the report, which names which of the three
+ *  it was. The header said "an input is missing" and two of the three cases
+ *  were not that. */
 export async function main(argv, { write = console.log, error = console.error, env = process.env } = {}) {
   let options;
   try {
@@ -1892,6 +1887,11 @@ export async function main(argv, { write = console.log, error = console.error, e
   }
   if (options.json) write(JSON.stringify({ version: result.version, counts: result.counts, bytes: result.bytes, changed: result.changed, disagreements: result.disagreements, mapCandidateChanged: result.mapCandidateChanged }, null, 2));
   else write(result.report);
+  // REMOVAL CHECK: cannot remove. What it patches is a run that printed a
+  // report nobody read and exited 0 — the nightly logs the line and moves on,
+  // so a silent 0 over a file past its cap is how the cap stops meaning
+  // anything. The two cases differ in what was written, and the header above
+  // says so rather than this line pretending they are one.
   if (result.overCap !== null || result.candidateOverBudget !== null) return 3;
   if (result.disagreements.length > 0) return 2;
   if (options.check && (result.changed.length > 0 || result.mapCandidateChanged)) {

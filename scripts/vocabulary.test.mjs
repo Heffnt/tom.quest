@@ -310,7 +310,10 @@ async function withConstant(line, replacement) {
     .readFileSync(path.join(REPO_ROOT, "scripts/vocabulary.mjs"), "utf8")
     .replace(line, replacement)
     .replace(/from "\.\.\/(worker\/[^"]+)"/g, (_, rel) => `from "${pathToFileURL(path.join(REPO_ROOT, rel)).href}"`)
-    .replace(/from "\.\/(skills\.mjs)"/g, (_, rel) => `from "${pathToFileURL(path.join(REPO_ROOT, "scripts", rel)).href}"`);
+    // EVERY scripts/ SIBLING, not skills.mjs alone: the variant is written into
+    // node_modules/, where a relative `./x.mjs` resolves to nothing. graph.mjs
+    // joined skills.mjs here when the HEAD parser moved into it.
+    .replace(/from "\.\/(skills\.mjs|graph\.mjs)"/g, (_, rel) => `from "${pathToFileURL(path.join(REPO_ROOT, "scripts", rel)).href}"`);
   // Inside the project root: the test runner resolves a dynamic import only
   // under the root it was started in.
   const root = path.join(REPO_ROOT, "node_modules", ".vocabulary-variants");

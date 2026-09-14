@@ -256,6 +256,12 @@ cp "$WORKER_DIR"/jobs/markdown-sections.mjs /opt/tts/jobs/markdown-sections.mjs
 # runs them against /root/wikitom to rebuild tts/vocabulary.json and
 # tts/graph.json, and each reaches ./skills.mjs by that relative path, so
 # scripts/ is the one place they can live and still load.
+#
+# THEY ALSO REACH EACH OTHER. scripts/vocabulary.mjs imports `headCommit` from
+# ./graph.mjs — one parser of .git rather than two — so the vocabulary does not
+# load unless graph.mjs is beside it, and graph.mjs in turn needs ./skills.mjs
+# here and ../worker/jobs/graph.mjs above. All three are copied, and dropping
+# any one of these lines breaks the nightly's graph step at module load.
 cp "$WORKER_DIR"/../scripts/graph.mjs      /opt/tts/scripts/graph.mjs
 cp "$WORKER_DIR"/../scripts/vocabulary.mjs /opt/tts/scripts/vocabulary.mjs
 # EVERY .diff IN evals/audit-faults/ HAS TO LAND HERE: auditFaultsRoot() looks in

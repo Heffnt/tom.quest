@@ -85,6 +85,11 @@ export function loadEnv({ path = ENV_PATH, require: required = [] } = {}) {
 const BOX_WIKITOM_DIR = "/root/wikitom";
 const LAPTOP_WIKITOM_DIR = "C:/Users/heffn/Desktop/WikiTom";
 
+// THE OVERRIDE IS REPEATED TOO, and for a reason the constants' does not
+// cover: `check:guardrails` and the graph's own proofs are run against a
+// SECOND WikiTom checkout (WIKITOM_DIR=<...>/WikiTom-uae), so a version read
+// that ignored the variable would stamp a run with the version of a tree that
+// run never read. The two constants are the default, not the answer.
 function wikitomDir() {
   if (process.env.WIKITOM_DIR) return process.env.WIKITOM_DIR;
   return process.platform === "win32" ? LAPTOP_WIKITOM_DIR : BOX_WIKITOM_DIR;
@@ -107,12 +112,10 @@ const versionCache = new Map();
  * everywhere it lands.
  */
 function publishedVersion(file) {
-  let path;
-  try {
-    path = `${wikitomDir()}/tts/${file}`;
-  } catch {
-    return null;
-  }
+  // There was a try/catch around the line below. `wikitomDir()` reads
+  // process.env and joins two strings, so nothing in it can throw, and a catch
+  // around code that cannot throw hides the next thing put inside it.
+  const path = `${wikitomDir()}/tts/${file}`;
   if (versionCache.has(path)) return versionCache.get(path);
   let version = null;
   try {

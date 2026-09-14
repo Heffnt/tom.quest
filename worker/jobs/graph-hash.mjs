@@ -28,14 +28,14 @@ const K = new Uint32Array([
   0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ]);
 
-const ENCODER = typeof TextEncoder === "undefined" ? null : new TextEncoder();
+// TextEncoder is a global in node, in the Convex runtime and in a browser, so
+// the guarded form this replaced — a null ENCODER and a throw for a runtime
+// without one — described a case that cannot arise and could never be tested.
+const ENCODER = new TextEncoder();
 
 /** UTF-8 bytes of a string, without Buffer. */
 function utf8(text) {
-  if (ENCODER !== null) return ENCODER.encode(String(text));
-  // A runtime with no TextEncoder does not exist in this system. The throw is
-  // here so that one appearing is loud rather than silently wrong.
-  throw new Error("graph-hash: this runtime has no TextEncoder");
+  return ENCODER.encode(String(text));
 }
 
 function rotr(value, bits) {

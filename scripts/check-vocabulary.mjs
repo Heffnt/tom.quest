@@ -89,18 +89,6 @@ function switchFourRange(text) {
   return [start, end + "*/".length];
 }
 
-// The schema's table count. THE GRAPH IS A FILE AND A PURE FUNCTION AND ADDS NO
-// TABLE: tts/graph.json lives in WikiTom, worker/jobs/graph.mjs holds the walk,
-// and the only Convex-side fact a run records is a field on a row that already
-// exists. A graph that wanted a table of its own would be a different design,
-// and this number is where that shows up.
-const SCHEMA_TABLES = 44;
-
-// The one home of the caller table (worker/jobs/skill-router.mjs). A second
-// declaration anywhere under worker/ or convex/ is a second answer to "what does
-// this caller get", and the one that answers is whichever file the reader opened.
-const CONTEXT_CALLERS_DECLARATION = /(?:export\s+)?(?:const|let|var)\s+CONTEXT_CALLERS\s*[:=]/;
-
 const SCAN_EXT = /\.(ts|tsx|mjs|cjs|js|jsx)$/;
 const SKIP_DIR = new Set([
   "node_modules",
@@ -179,6 +167,14 @@ if (shared === null) {
   failures.push(`${SHARED_PATH} is not in this checkout — the generated block has nowhere to be`);
 }
 
+// REMOVAL CHECK for 1 and 2 together: cannot remove; what they patch is a
+// HAND EDIT of a generated block. scripts/vocabulary.mjs finds its block by
+// those two markers and replaces what lies between them — so a marker deleted,
+// duplicated or reordered makes the next `--write` overwrite the wrong span of
+// convex/ttsShared.ts, and a version on the marker that disagrees with the one
+// in the block makes `tts search define` answer from a schema whose name it is
+// not. Neither is visible in a diff review: both read as ordinary edits.
+//
 // 1. The markers are both there, in order, exactly once. Checked with the LOOSE
 //    pattern as well as the strict one, so a marker whose version field the
 //    generator stopped writing is a named failure rather than a missing block.
@@ -288,6 +284,13 @@ if (block !== null) {
   }
 }
 
+// REMOVAL CHECK for 5: cannot remove. The key is what the merge gate joins its
+// three rows on, so a second spelling does not fail — it silently reads a
+// DIFFERENT row, and the gate then allows or refuses a merge on another
+// commit's checks. `commitKey` having one home is the fix; this is what keeps
+// the second spelling from coming back, and the cycle that caused it once
+// (ttsMerge imports EVALS_RUN from ttsEvals) is still there.
+//
 // 5. The evals commit key has one home. An inline `${repo}@${sha}` template is a
 //    second spelling of the key rows are stored under, and a row written under
 //    one spelling is invisible to a reader using the other.
@@ -341,6 +344,12 @@ if (block !== null) {
   }
 }
 
+// REMOVAL CHECK for 7: cannot remove; it IS switch 3, which is Tom's and is
+// declared "on". The five rejections are the graph's whole claim to being
+// auditable — an edge whose provenance is a named regex can be checked and one
+// a model wrote cannot — and a rejection enforced only by a comment is a
+// rejection that lasts until the first person who does not read the comment.
+//
 // 7. Switch (3): no model, no network, no vector index. The graph's two halves
 //    read text and compute over it, and an edge whose provenance is a named
 //    regex is auditable where one a model wrote is not. Searched in EXECUTABLE
@@ -394,42 +403,20 @@ if (block !== null) {
   }
 }
 
-// 8. The schema gained no table. See SCHEMA_TABLES above for what that asserts.
-// witness: add a `defineTable` to convex/schema.ts.
-{
-  const schema = read("convex/schema.ts");
-  if (schema === null) {
-    failures.push("convex/schema.ts is not in this checkout");
-  } else {
-    const tables = matches(/defineTable\(/g, schema).length;
-    if (tables !== SCHEMA_TABLES) {
-      failures.push(
-        `convex/schema.ts defines ${tables} tables and this check expects ${SCHEMA_TABLES} — `
-          + "the graph is a file and a pure function and adds no table; if a table was added for another "
-          + "round, move SCHEMA_TABLES in scripts/check-vocabulary.mjs with it",
-      );
-    }
-  }
-}
-
-// 9. CONTEXT_CALLERS has one home.
-// witness: write `export const CONTEXT_CALLERS = {}` in any second file under
-// worker/ or convex/.
-{
-  const declared = [];
-  for (const file of [...sourceFiles("worker"), ...sourceFiles("convex")]) {
-    const text = read(file);
-    if (text === null) continue;
-    const at = text.search(CONTEXT_CALLERS_DECLARATION);
-    if (at !== -1) declared.push(`${file}:${lineOf(text, at)}`);
-  }
-  if (declared.length !== 1) {
-    failures.push(
-      `CONTEXT_CALLERS is declared ${declared.length} time(s) across worker/ and convex/ `
-        + `(${declared.length === 0 ? "nowhere" : declared.join(", ")}) — the one home is worker/jobs/skill-router.mjs`,
-    );
-  }
-}
+// THERE IS NO TABLE-COUNT CHECK AND NO CONTEXT_CALLERS CHECK, and there were.
+//
+// The first pinned convex/schema.ts at 44 `defineTable` calls to assert that
+// the graph adds no table. The graph adding a table is visible in this round's
+// own diff, which the merge gate's audit reads; a pinned count instead fails
+// `check:guardrails` on every LATER branch that adds a table for any reason at
+// all, which is a tax on other people's rounds to restate a fact about this
+// one.
+//
+// The second asserted that CONTEXT_CALLERS is declared exactly once. Nothing
+// parses CONTEXT_CALLERS — not this file, not scripts/vocabulary.mjs — so a
+// second declaration would break nothing this checker could then detect, and
+// no second one ever existed. A check with no reader and no history is a check
+// that only ever fires on a false positive.
 
 // ── The two render checks, when a WikiTom checkout resolves ──────────────────
 // `--wikitom`, else WIKITOM_DIR, else the platform default, resolved off the two
@@ -528,6 +515,12 @@ if (resolved) {
   //     Check 10 is NOT held this way. The graph's own render is clean, and a
   //     disagreement there is a difference between the file on disk and what
   //     the generator produces from the same commit, which is always a fault.
+  //
+  //     REMOVAL CHECK: cannot remove because it cannot fail. What it patches is
+  //     the three findings going UNSEEN — they are Tom's to settle and he
+  //     settles what reaches him, so printing them on every gate run is the
+  //     whole job. Deleting it would not remove a red check; it would remove
+  //     the only place the seven wordings and the two caps are said out loud.
   const vocabulary = read(GENERATOR_PATH);
   if (vocabulary === null) {
     notes.push(`${GENERATOR_PATH} is not in this checkout — its render check did not run`);
@@ -559,7 +552,7 @@ if (failures.length > 0) {
   process.exit(1);
 }
 if (!resolved) {
-  console.log("check-vocabulary: no WikiTom checkout — ran the 9 in-repo checks; the render checks run in the nightly");
+  console.log("check-vocabulary: no WikiTom checkout — ran the 7 in-repo checks; the render checks run in the nightly");
   process.exit(0);
 }
 console.log(`Vocabulary and graph check passed (WikiTom at ${wikitom}).`);
