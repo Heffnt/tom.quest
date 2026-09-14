@@ -132,7 +132,7 @@ describe("box-run stdout contract", () => {
     const stateDir = temp("state");
     const record = path.join(stateDir, "record.json");
     const promptAt = path.join(stateDir, "prompt.txt");
-    const result = run(["--repo", "none", "--model", "opus", "--max-turns", "7"], {
+    const result = run(["--repo", "none", "--model", "opus"], {
       stateDir,
       input: "the exact request\n",
       env: { CLAUDE_BIN: fakeCli("argv"), FAKE_RECORD: record, FAKE_PROMPT_AT: promptAt },
@@ -142,7 +142,9 @@ describe("box-run stdout contract", () => {
     const { argv, cwd } = JSON.parse(fs.readFileSync(record, "utf8"));
     expect(argv).toContain("-p");
     expect(argv[argv.indexOf("--model") + 1]).toBe("opus");
-    expect(argv[argv.indexOf("--max-turns") + 1]).toBe("7");
+    expect(argv[argv.indexOf("--permission-mode") + 1]).toBe("acceptEdits");
+    // The installed CLI has no turn cap: maxTurns is an SDK option, not a flag.
+    expect(argv).not.toContain("--max-turns");
     expect(argv[argv.indexOf("--disallowedTools") + 1]).toBe("AskUserQuestion");
     expect(argv[argv.indexOf("--allowedTools") + 1]).toContain("Task");
     // --repo none is an empty scratch workspace named ws.

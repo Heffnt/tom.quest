@@ -26,7 +26,6 @@
 //   --effort LEVEL          codex only, passed through
 //   --sandbox MODE          codex only, passed through
 //   --schema FILE           codex only, passed through
-//   --max-turns N           claude only                    (default: 200)
 //   --tests                 this run will run a test suite (arms the guard)
 //   --install               pnpm install in the worktree   (implied by --tests)
 //   --parent RUNID          the laptop session's run id
@@ -88,7 +87,6 @@ const TOOLS_ALLOWED = Object.freeze([
 // and nobody is watching this run's stdin.
 const BANNED_TOOLS = Object.freeze(["AskUserQuestion"]);
 
-const DEFAULT_MAX_TURNS = 200;
 const DEFAULT_MAX_PARALLEL = 2;
 const TESTS_MIN_FREE_MB = 2048;
 const SEMAPHORE_RETRY_MS = 5000;
@@ -127,7 +125,6 @@ function parseArgs(argv) {
     effort: null,
     sandbox: null,
     schema: null,
-    maxTurns: DEFAULT_MAX_TURNS,
     tests: false,
     install: false,
     parent: null,
@@ -150,7 +147,6 @@ function parseArgs(argv) {
       case "--effort": opts.effort = next(); break;
       case "--sandbox": opts.sandbox = next(); break;
       case "--schema": opts.schema = next(); break;
-      case "--max-turns": opts.maxTurns = Number(next()); break;
       case "--tests": opts.tests = true; break;
       case "--install": opts.install = true; break;
       case "--parent": opts.parent = next(); break;
@@ -166,7 +162,6 @@ function parseArgs(argv) {
     fail(`unknown repo "${opts.repo}" — expected one of ${Object.keys(REPO_GITHUB).join(", ")}, or "none"`);
   }
   if (opts.repo === REPO_NONE && opts.ref) fail("--ref needs a --repo to resolve it in");
-  if (!Number.isInteger(opts.maxTurns) || opts.maxTurns <= 0) fail("--max-turns must be a positive whole number");
   if (!Number.isFinite(opts.timeout) || opts.timeout < 0) fail("--timeout must be a number of milliseconds, or 0 for no limit");
   if (opts.depth !== null && (!Number.isInteger(opts.depth) || opts.depth < 0)) fail("--depth must be a whole number");
   if (!opts.parent && (opts.root || opts.depth !== null)) fail("--root and --depth need a --parent");
@@ -582,11 +577,16 @@ if (opts.runner === "codex") {
   if (opts.timeout > 0) args.push("--timeout", String(opts.timeout));
 } else {
   bin = claudeBinary(process.env);
+  // THERE IS NO TURN CAP HERE because the CLI has none. The daemon's
+  // AUTO_MAX_TURNS is `maxTurns` on the SDK's query options, which is a
+  // different door; `claude --help` on the box (2.1.270) offers no --max-turns,
+  // and the only budget flag it does offer is --max-budget-usd, for API-key
+  // users rather than the box's account slots. A box run's bound is the model's
+  // own stop, and --timeout is the hard one a caller can set.
   args = [
     "-p",
     "--output-format", "text",
     "--model", opts.model,
-    "--max-turns", String(opts.maxTurns),
     "--allowedTools", TOOLS_ALLOWED.join(","),
     "--disallowedTools", BANNED_TOOLS.join(","),
     "--permission-mode", "acceptEdits",

@@ -20,7 +20,7 @@ BOX_PROMPT_END
 echo "box-agent: shell saw exit $?" >> /tmp/box-k7qz.err
 ```
 
-   **Flags are added only when the request names them.** `--repo <name>` and `--ref <branch>` come from the request (the repos are `tom.quest`, `ComplexMultiTrigger`, `WikiTom`, or `none` for no checkout). Add `--tests` when the request says to run a test suite, `--install` when it says to install dependencies, `--model <name>` when it names a model, `--max-turns <n>` when it caps turns, `--timeout <ms>` when it names a time cap. Never add any of these on your own initiative.
+   **Flags are added only when the request names them.** `--repo <name>` and `--ref <branch>` come from the request (the repos are `tom.quest`, `ComplexMultiTrigger`, `WikiTom`, or `none` for no checkout). Add `--tests` when the request says to run a test suite, `--install` when it says to install dependencies, `--model <name>` when it names a model, `--timeout <ms>` when it names a time cap. Never add any of these on your own initiative.
 
 2. **Wait.** Do nothing until the background command's completion notification arrives. Do not poll, do not start a second run, do not answer in the meantime. There is no deadline; a long run is a working run.
 
