@@ -13,6 +13,7 @@ import {
 const failure = (id, over = {}) => ({ id, partition: "prepare/chores", verdict: "revise", reason: `${id} reason`, confirmed: true, ...over });
 
 const run = (over = {}) => {
+  const scoredIds = over.scoredIds ?? ["one", "two", "three"];
   return {
     repo: "tom.quest",
     sha: "a1b2c3d4e5f6",
@@ -20,7 +21,8 @@ const run = (over = {}) => {
     items: 3,
     pass: 3,
     fail: 0,
-    scoredIds: ["one", "two", "three"],
+    scoredIds,
+    scoredHashes: over.scoredHashes ?? Object.fromEntries(scoredIds.map((id) => [id, `hash-${id}`])),
     failures: [],
     tasks: { items: 0, pass: 0, fail: 0, failures: [] },
     ...over,
@@ -64,37 +66,52 @@ describe("gate, continued", () => {
     });
     const base = run({ sha: "9f8e7d6c" });
     expect(gate(head, base)).toMatchObject({ ok: true, mismatch: false });
+    expect(report(head, base, gate(head, base)).join("\n")).toContain("new scored items: four");
   });
 
-  it("fails when a base-scored item is missing from head", () => {
+  it("reports base-only items as removed without treating them as regressions", () => {
     const head = run({
       scoredIds: ["one", "two"],
     });
     const base = run({ sha: "9f8e7d6c" });
     const verdict = gate(head, base);
-    expect(verdict).toMatchObject({ ok: false, mismatch: true });
-    const lines = report(head, base, verdict).join("\n");
-    expect(lines).toContain("GOLDEN SET MISMATCH");
-    expect(lines).toContain("three");
-    expect(lines).toContain("--repo tom.quest --sha 9f8e7d6c --force");
+    expect(verdict).toMatchObject({ ok: true, mismatch: false, mismatchDetail: { removed: ["three"] } });
+    expect(report(head, base, verdict).join("\n")).toContain("removed scored items: three");
   });
 
-  it("fails when a shared scored item's content changes", () => {
+  it("treats a same-id changed item as new rather than a regression", () => {
     const head = run({
-      goldenHash: "changed-shared-item-hash",
+      pass: 2,
+      fail: 1,
+      scoredHashes: { one: "changed", two: "hash-two", three: "hash-three" },
+      failures: [failure("one")],
     });
     const base = run({ sha: "9f8e7d6c" });
-    expect(gate(head, base)).toMatchObject({ ok: false, mismatch: true, mismatchDetail: {
-      kind: "changed",
+    expect(gate(head, base)).toMatchObject({ ok: true, newFailing: [expect.objectContaining({ id: "one" })], mismatchDetail: {
+      changed: ["one"], new: ["one"], removed: ["one"],
     } });
+    const baseFailure = run({ sha: "9f8e7d6c", pass: 2, fail: 1, failures: [failure("one")] });
+    expect(gate(head, baseFailure)).toMatchObject({
+      stillFailing: [],
+      newFailing: [expect.objectContaining({ id: "one" })],
+    });
   });
 
-  it("fails conservatively when a legacy run lacks scored ids", () => {
+  it("fails as a nonmeasurement when no same-content item intersects", () => {
     const head = run();
-    const base = run({ sha: "9f8e7d6c", scoredIds: undefined });
+    const base = run({ sha: "9f8e7d6c", scoredHashes: { one: "changed", two: "changed", three: "changed" } });
     const verdict = gate(head, base);
-    expect(verdict).toMatchObject({ ok: false, mismatch: true, mismatchDetail: { kind: "legacy" } });
+    expect(verdict).toMatchObject({ ok: false, mismatch: true, mismatchDetail: { kind: "nonmeasurement" } });
     expect(report(head, base, verdict).join("\n")).toContain("re-run the base and head");
+    expect(report(head, base, verdict).join("\n")).toContain("the runs share no scored item with the same content hash");
+  });
+
+  it("fails as a nonmeasurement when a row predates the per-item hashes", () => {
+    const head = run();
+    const base = run({ sha: "9f8e7d6c", scoredHashes: undefined });
+    const verdict = gate(head, base);
+    expect(verdict).toMatchObject({ ok: false, mismatch: true, mismatchDetail: { kind: "nonmeasurement" } });
+    expect(report(head, base, verdict).join("\n")).toContain("one or both runs lack per-item content hashes");
   });
 
   it("prints fixed for an item that fails in base and passes in head", () => {
@@ -313,17 +330,18 @@ describe("the golden-item rule", () => {
   it("lets a trigger cover only a skill description or router change", () => {
     const changed = ["scripts/skills.mjs"];
     expect(goldenItemRule(changed, "Split one description shape in two.")).toBe(false);
-    expect(goldenItemRule([...changed, "evals/triggers/skill-know-research.json"], "")).toBe(true);
+    expect(goldenItemRule([...changed, "evals/triggers/skill-know-research.json"], "")).toBe(false);
+    expect(goldenItemRule([...changed, "evals/triggers/skill-know-research.json"], "", ["skill-know-research.json"])).toBe(true);
     expect(goldenItemRule(["model-of-tom/intent.md", "evals/triggers/skill-know-research.json"], "")).toBe(false);
-    expect(goldenItemRule(["scripts/publish-skills.mjs", "evals/triggers/a.json"], "")).toBe(true);
-    expect(goldenItemRule(["worker/jobs/skill-router.mjs", "evals/triggers/a.json"], "")).toBe(true);
+    expect(goldenItemRule(["scripts/publish-skills.mjs", "evals/triggers/a.json"], "", ["a.json"])).toBe(true);
+    expect(goldenItemRule(["worker/jobs/skill-router.mjs", "evals/triggers/a.json"], "", ["a.json"])).toBe(true);
     expect(goldenItemRule([
       "scripts/skills.mjs",
       "evals/triggers/skill-know-research.json",
       "model-of-tom/intent.md",
-    ], "")).toBe(false);
+    ], "", ["skill-know-research.json"])).toBe(false);
     expect(goldenItemRule(changed, "Split one description shape in two.\n\nevals: no-item no rule changed, only a comment\n")).toBe(true);
-    const head = run();
+    const head = run({ triggerFilesRun: ["skill-know-research.json"] });
     const verdict = gate(head, run({ sha: "9f8e7d6c" }), {
       changed,
       prBody: "evals: no-item no rule changed, only a comment",
@@ -353,7 +371,7 @@ describe("the golden-item rule", () => {
     const lines = report(head, base, verdict);
     expect(lines.join("\n")).toContain("NO GOLDEN ITEM");
     expect(lines.join("\n")).toContain("evals/golden/**");
-    expect(lines.join("\n")).toContain("trigger file also satisfies coverage only");
+    expect(lines.join("\n")).toContain("a trigger file satisfies coverage only after its cases ran in this pull-request run");
     // Zero regressions and still a failure: the summary has to say which.
     expect(lines[lines.length - 1]).toBe(
       "FAILED: a watched context file changed and no golden item shipped with it.",

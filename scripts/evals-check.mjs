@@ -149,7 +149,7 @@ export function noItemTrailer(prBody) {
 
 /** Coverage, and the reason when a trailer is what excused it. The reason
  *  travels on the verdict because report() is given no pull-request body. */
-function coverageOf(changed, prBody) {
+function coverageOf(changed, prBody, triggerFilesRun = []) {
   // NO DIFF, NO VERDICT. A --weekly run and a run by hand supply no changed
   // list, and answering `false` there would fail a run that was never asked
   // about a pull request at all.
@@ -167,8 +167,13 @@ function coverageOf(changed, prBody) {
   // three changes may use a trigger file to satisfy pull-request coverage.
   const triggerCoveredOnly = watched.every((path) =>
     path.startsWith("evals/triggers/") || TRIGGER_COVERED_SKILL_PATHS.has(path));
+  const changedTriggers = paths
+    .filter((path) => path.startsWith("evals/triggers/") && path.endsWith(".json"))
+    .map((path) => path.slice("evals/triggers/".length));
+  const ranTriggers = new Set(Array.isArray(triggerFilesRun) ? triggerFilesRun : []);
   if (triggerCoveredOnly &&
-    watched.some((path) => path.startsWith("evals/triggers/")) &&
+    changedTriggers.length > 0 &&
+    changedTriggers.every((file) => ranTriggers.has(file)) &&
     watched.some((path) => TRIGGER_COVERED_SKILL_PATHS.has(path))) {
     return { coverage: true, excuse: null };
   }
@@ -186,8 +191,8 @@ function coverageOf(changed, prBody) {
  *           a change to Tom's outputs that no one ever looked at.
  *   null  — no diff was supplied, so there is no verdict to give.
  */
-export function goldenItemRule(changed, prBody) {
-  return coverageOf(changed, prBody).coverage;
+export function goldenItemRule(changed, prBody, triggerFilesRun) {
+  return coverageOf(changed, prBody, triggerFilesRun).coverage;
 }
 
 /** Every failure of a run, golden items and repo tasks alike, by id. */
@@ -198,32 +203,47 @@ function failuresOf(run) {
   return map;
 }
 
-/** The ids a run actually scored — the row carries them so the gate can tell a
- *  newly added item apart from one that regressed. */
-function scoredOf(run) {
-  return new Set(run?.scoredIds ?? []);
-}
-
+/**
+ * Two runs compared on the INTERSECTION of what they scored: the ids both ran
+ * with the same content are the only measurement, an id only at head is new,
+ * an id only at base is removed, and an id whose content moved is both. A pair
+ * with no intersection measured nothing, and says so with its reason.
+ */
 function mismatchOf(head, base) {
   if (!base) return null;
-  if (!Array.isArray(head.scoredIds) || !Array.isArray(base.scoredIds)) return { kind: "legacy", missing: [] };
-  const headIds = new Set(head.scoredIds);
-  const baseIds = new Set(base.scoredIds);
-  const missing = [...baseIds].filter((id) => !headIds.has(id)).sort();
-  if (missing.length > 0) return { kind: "missing", missing };
-  // New head-only ids are coverage working: the base could not score them.
-  // A hash can only identify a changed shared body when both runs scored the
-  // same IDs; with a strict superset it necessarily includes new content.
-  if (headIds.size === baseIds.size && head.goldenHash !== base.goldenHash) return { kind: "changed", missing: [] };
-  return null;
+  // Box rows are regenerated under PR #172's protocol, so there is no
+  // scoredIds compatibility path: per-item hashes are the measurement.
+  if (head?.scoredHashes === null || typeof head?.scoredHashes !== "object" ||
+    base?.scoredHashes === null || typeof base?.scoredHashes !== "object") {
+    return { kind: "nonmeasurement", reason: "one or both runs lack per-item content hashes", comparable: [], new: [], removed: [], changed: [] };
+  }
+  const headIds = Object.keys(head.scoredHashes).filter((id) => typeof head.scoredHashes[id] === "string");
+  const baseIds = Object.keys(base.scoredHashes).filter((id) => typeof base.scoredHashes[id] === "string");
+  const baseSet = new Set(baseIds);
+  const headSet = new Set(headIds);
+  const comparable = headIds.filter((id) => baseSet.has(id) && head.scoredHashes[id] === base.scoredHashes[id]).sort();
+  const changed = headIds.filter((id) => baseSet.has(id) && head.scoredHashes[id] !== base.scoredHashes[id]).sort();
+  const added = headIds.filter((id) => !baseSet.has(id)).sort();
+  const removed = baseIds.filter((id) => !headSet.has(id)).sort();
+  const detail = {
+    comparable,
+    // A same-id changed body is new at head and removed at base, so neither
+    // result is evidence that the other body regressed.
+    new: [...added, ...changed].sort(),
+    removed: [...removed, ...changed].sort(),
+    changed,
+  };
+  if (comparable.length === 0) {
+    return { kind: "nonmeasurement", reason: "the runs share no scored item with the same content hash", ...detail };
+  }
+  return detail;
 }
 
 /**
  * The gate. Pure, exported, tested.
  *
- * FAILS: a regression (an item that passes in base and fails in head), a
- * a base-scored item missing from head, a changed equal-ID golden set, a row
- * without scoredIds, or no head run at all.
+ * FAILS: a regression on the equal-id, equal-content intersection, a run with
+ * no such intersection, or no head run at all.
  *
  * REPORTED, does not fail: an item failing in both runs (standing debt, not
  * something this pull request did), an item failing in head that base never
@@ -236,7 +256,7 @@ function mismatchOf(head, base) {
  * call, a run by hand), coverage answers null and gates nothing.
  */
 export function gate(head, base, { changed, prBody } = {}) {
-  const { coverage: goldenCoverage, excuse: goldenExcuse } = coverageOf(changed, prBody);
+  const { coverage: goldenCoverage, excuse: goldenExcuse } = coverageOf(changed, prBody, head?.triggerFilesRun);
   // The early returns carry coverage too, so no caller ever reads `undefined`
   // off a verdict and has to guess whether that meant false or unasked.
   if (!head) {
@@ -251,9 +271,9 @@ export function gate(head, base, { changed, prBody } = {}) {
   }
   const headFailures = failuresOf(head);
   const baseFailures = failuresOf(base);
-  const baseScored = scoredOf(base);
   const mismatchDetail = mismatchOf(head, base);
-  const mismatch = mismatchDetail !== null;
+  const mismatch = mismatchDetail?.kind === "nonmeasurement";
+  const comparable = new Set(mismatchDetail?.comparable ?? []);
   const regressions = [];
   const stillFailing = [];
   const newFailing = [];
@@ -270,11 +290,11 @@ export function gate(head, base, { changed, prBody } = {}) {
   // a label with a lifecycle.
   for (const [id, failure] of headFailures) {
     if (failure.confirmed === false) unconfirmed.push(failure);
+    else if (!base || !comparable.has(id)) newFailing.push(failure);
     else if (baseFailures.has(id)) stillFailing.push(failure);
-    else if (!base || (baseScored.size > 0 && !baseScored.has(id))) newFailing.push(failure);
     else regressions.push(failure);
   }
-  const fixed = [...baseFailures.values()].filter((failure) => !headFailures.has(failure.id));
+  const fixed = [...baseFailures.values()].filter((failure) => comparable.has(failure.id) && !headFailures.has(failure.id));
   // Coverage fails the check on `false` alone. `null` is the absence of a
   // question, not an answer of no, and a run with no diff to read must not
   // fail a check it was never given the input for.
@@ -316,7 +336,8 @@ export function report(head, base, verdict) {
   // hatch used silently is a hatch nobody audits.
   const quiet = verdict.stillFailing.length === 0 && verdict.newFailing.length === 0 &&
     verdict.unconfirmed.length === 0 && verdict.fixed.length === 0 &&
-    !verdict.goldenExcuse;
+    !verdict.goldenExcuse && (verdict.mismatchDetail?.new?.length ?? 0) === 0 &&
+    (verdict.mismatchDetail?.removed?.length ?? 0) === 0;
   if (verdict.ok && quiet) {
     return [`${setLine}: ${head.pass} pass, ${head.fail} fail, ${notes.join(", ")}.`];
   }
@@ -324,21 +345,20 @@ export function report(head, base, verdict) {
   lines.push(`  head: ${head.pass} pass, ${head.fail} fail, ${flaky} flaky` + (base ? `      base: ${base.pass} pass, ${base.fail} fail` : ""));
   if (verdict.noBaseline) lines.push(`  no baseline for the base commit; reporting only`);
   if (verdict.mismatch) {
-    if (verdict.mismatchDetail?.kind === "legacy") {
-      lines.push(`  GOLDEN SET COMPARISON UNAVAILABLE  one or both runs lack scoredIds — re-run the base and head:`);
-    } else {
-      const missing = verdict.mismatchDetail?.missing ?? [];
-      lines.push(verdict.mismatchDetail?.kind === "changed"
-        ? `  GOLDEN SET MISMATCH  both runs scored the same ids but head ${head.goldenHash} differs from base ${base.goldenHash} — re-run the base:`
-        : `  GOLDEN SET MISMATCH  base items missing from head: ${missing.join(", ")} — re-run the base:`);
-    }
+    lines.push(`  GOLDEN SET COMPARISON UNAVAILABLE  ${verdict.mismatchDetail?.reason} — re-run the base and head:`);
     lines.push(`    node /opt/tts/evals.mjs --repo ${head.repo} --sha ${base.sha} --force`);
+  }
+  if (verdict.mismatchDetail?.new?.length > 0) {
+    lines.push(`  new scored items: ${verdict.mismatchDetail.new.join(", ")}`);
+  }
+  if (verdict.mismatchDetail?.removed?.length > 0) {
+    lines.push(`  removed scored items: ${verdict.mismatchDetail.removed.join(", ")}`);
   }
   // Coverage says nothing at all when it is null: a run with no diff was never
   // asked, and a line about a rule that did not apply is noise in every
   // by-hand and weekly log.
   if (verdict.goldenCoverage === false) {
-    lines.push(`  NO GOLDEN ITEM  a watched context file changed and this branch ships no item under evals/golden/** — a trigger file also satisfies coverage only with scripts/skills.mjs, scripts/publish-skills.mjs, or worker/jobs/skill-router.mjs — add one, or put "evals: no-item <reason>" on the pull-request body`);
+    lines.push(`  NO GOLDEN ITEM  a watched context file changed and this branch ships no item under evals/golden/** — a trigger file satisfies coverage only after its cases ran in this pull-request run and only with scripts/skills.mjs, scripts/publish-skills.mjs, or worker/jobs/skill-router.mjs — add one, or put "evals: no-item <reason>" on the pull-request body`);
   } else if (verdict.goldenExcuse) {
     lines.push(`  golden item excused: ${verdict.goldenExcuse}`);
   }
@@ -353,9 +373,7 @@ export function report(head, base, verdict) {
   lines.push((verdict.ok
     ? `PASSED: 0 regressions.`
     : verdict.mismatch
-      ? verdict.mismatchDetail?.kind === "legacy"
-        ? `FAILED: scoredIds are missing; re-run the base and head.`
-        : `FAILED: a base-scored item is missing or a shared item changed.`
+      ? `FAILED: the runs have no comparable scored item.`
       : verdict.regressions.length > 0
         ? `FAILED: ${verdict.regressions.length} regression${verdict.regressions.length === 1 ? "" : "s"}.`
         : `FAILED: a watched context file changed and no golden item shipped with it.`) + unconfirmedNote);

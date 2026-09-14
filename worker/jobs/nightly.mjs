@@ -2412,9 +2412,16 @@ function skillErrorMessage(error) {
 async function stageSkills({ run, commit, publishSkills, checkouts, dirs }) {
   const publish = publishSkills ?? (await loadPublishSkills()).publishSkills;
   const { skillDirName } = await loadSkills();
-  const repos = checkouts
-    .filter(({ dir }) => fs.existsSync(path.join(dir, ".git")))
-    .map(({ repo, dir }) => ({ repo, dir }));
+  // `/tts/skills` replaces the whole catalog and promotion removes every
+  // unproduced tom- directory. A temporarily absent configured checkout must
+  // therefore refuse this entire publication, preserving the existing catalog
+  // and bodies until all configured repositories can be built again.
+  const repos = checkouts.map(({ repo, dir }) => {
+    if (typeof dir !== "string" || !fs.existsSync(path.join(dir, ".git"))) {
+      throw new Error(`skills checkout ${repo} at ${String(dir)} is not a git checkout; refusing to replace the catalog`);
+    }
+    return { repo, dir };
+  });
   const stages = [];
   try {
     let published = null;

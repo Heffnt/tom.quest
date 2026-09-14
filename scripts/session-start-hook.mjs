@@ -61,20 +61,21 @@ function firstString(...values) {
   return values.find((value) => typeof value === "string" && value.trim() !== "") ?? null;
 }
 
-function sessionRunFile(payload) {
-  // Claude supplies transcript_path and Codex supplies rollout_path in hook payloads.
-  const value = firstString(
-    payload?.transcript_path,
-    payload?.rollout_path,
-  );
+function sessionRunFile(payload, cli) {
+  // These are the two SessionStart payload shapes. Do not accept renamed or
+  // launcher-invented aliases: a receipt beside the wrong file is worse than
+  // no receipt because the lifecycle hook would later treat it as evidence.
+  const value = cli === "claude" ? firstString(payload?.transcript_path)
+    : cli === "codex" ? firstString(payload?.rollout_path)
+      : null;
   return value === null ? null : path.resolve(value);
 }
 
 // The run lifecycle hook never receives this hook's rendered text. Hand the
 // exact lists over through the registration sidecar, so diagnostics match a
 // successful refusal as well as an ordinary grant.
-function recordGrantReceipt(payload, { granted, refused }) {
-  const runFile = sessionRunFile(payload);
+function recordGrantReceipt(payload, cli, { granted, refused }) {
+  const runFile = sessionRunFile(payload, cli);
   if (runFile === null || registration === null) return;
   try {
     registration.writeRegistrationReceipt({
@@ -147,25 +148,17 @@ export function skillsDestinations() {
   return [path.resolve(claude), path.resolve(codex, "skills")];
 }
 
-/** The hook contract names its CLI when it can; the launcher's runtime marker
- * is the fallback when the two hook payloads use the same event spelling. */
-export function runningCli(payload, env = process.env) {
-  const explicit = firstString(
-    payload?.runner,
-    payload?.runtime,
-    payload?.cli,
-    payload?.cli_name,
-    payload?.client_name,
-    payload?.clientName,
-    env.TTS_CLI,
-    env.TTS_RUNNER,
-  )?.toLowerCase();
-  if (explicit?.includes("codex")) return "codex";
-  if (explicit?.includes("claude")) return "claude";
-  if (firstString(env.CODEX_THREAD_ID) !== null) return "codex";
-  if (firstString(env.CLAUDECODE, env.CLAUDE_CODE_ENTRYPOINT, env.CLAUDE_CONFIG_DIR) !== null) return "claude";
-  if (firstString(env.CODEX_HOME) !== null) return "codex";
-  return null;
+/**
+ * SessionStart's documented payload identifies its source without consulting
+ * process state: Claude supplies `transcript_path`; the Codex wrapper supplies
+ * `rollout_path`. A payload carrying both shapes is ambiguous and is refused.
+ */
+export function runningCli(payload) {
+  if (payload?.hook_event_name !== "SessionStart") return null;
+  const claude = firstString(payload.transcript_path) !== null;
+  const codex = firstString(payload.rollout_path) !== null;
+  if (claude === codex) return null;
+  return claude ? "claude" : "codex";
 }
 
 /** `TTS_SKILLS_DIRS` preserves the documented Claude-then-Codex order. */
@@ -338,7 +331,7 @@ function main() {
       } catch (error) {
         grants = `SKILLS could not be routed: ${oneLine(error)}`;
       }
-      if (routed !== undefined) recordGrantReceipt(payload, routed);
+      if (routed !== undefined) recordGrantReceipt(payload, cli, routed);
       additionalContext = `${prelude.text}\n\n${grants}`;
     }
   } catch (error) {

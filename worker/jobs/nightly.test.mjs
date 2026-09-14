@@ -2926,6 +2926,30 @@ describe("the git half", { timeout: 60_000 }, () => {
     expect(stagedSiblings(outs[0])).toEqual([]);
   });
 
+  it.each([
+    ["is absent", () => path.join(tmp(), "missing-checkout")],
+    ["is not a git checkout", () => tmp()],
+  ])("refuses a skills publication when a configured checkout %s, preserving the catalog bytes", async (_case, checkoutDir) => {
+    const dir = preludeRepo();
+    const stageRoot = tmp();
+    const out = path.join(stageRoot, "skills");
+    write(out, "tom-write/SKILL.md", "published skill bytes\n");
+    const r = learningRun(dir);
+    const posts = [];
+    const result = await postStep(r, {
+      fetch: recording(posts),
+      checkouts: [{ repo: "tom.quest", dir: checkoutDir() }],
+      skillsDirs: [out],
+    });
+
+    expect(posts.map((post) => post.route)).toEqual(["/tts/model-of-tom", "/tts/event"]);
+    expect(posts[1].body.data.step).toBe("skills");
+    expect(r.failures).toEqual([expect.objectContaining({ step: "skills", error: expect.stringContaining("tom.quest") })]);
+    expect(result.skills).toBeNull();
+    expect(fs.readFileSync(path.join(out, "tom-write", "SKILL.md"), "utf8")).toBe("published skill bytes\n");
+    expect(stagedSiblings(out)).toEqual([]);
+  });
+
   it("removes every owned stage when per-directory catalog generation disagrees", async () => {
     const dir = preludeRepo();
     const stageRoot = tmp();
@@ -3045,9 +3069,10 @@ describe("the git half", { timeout: 60_000 }, () => {
     expect(r.failures).toEqual([expect.objectContaining({ step: "skills" })]);
   });
 
-  // witness: `convex/AGENTS.md` flattens to `convex-AGENTS.md`, and tom.quest
-  // has a `turing-api/` — so unflattening a reference name on its hyphens
-  // invents `turing/api/AGENTS.md`. The path is looked up, never inverted.
+  // witness: `convex/AGENTS.md` is published as `convex__AGENTS.md`, so a
+  // directory boundary no longer becomes a hyphen that tom.quest's own
+  // `turing-api/` already contains. The path is still looked up and never
+  // inverted, and buildSkills refuses a publication whose encoded names collide.
   // ── the repo rules, three checkouts ──────────────────────────────────────
   /** A one-commit repository whose root AGENTS.md is the given body. */
   function rulesRepo(body) {

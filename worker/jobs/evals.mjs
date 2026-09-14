@@ -183,6 +183,12 @@ export function goldenHash(items) {
   return hash.digest("hex").slice(0, 12);
 }
 
+/** The exact bytes of one scored item, retained on the run so the gate compares
+ * only equal-id, equal-content measurements. */
+export function contentHash(item) {
+  return crypto.createHash("sha256").update(JSON.stringify(item)).digest("hex");
+}
+
 /** The newest `count` approve and `count` revise across the whole set, by
  *  ruledAt descending — the set a pull request scores. Items with no ruledAt
  *  (the mined explanations) sort by their day. */
@@ -1275,6 +1281,17 @@ export function triggerCounts(trigger) {
   return { positives: trigger.cases.length - negatives, negatives };
 }
 
+/** The executable trigger filenames changed by a pull request. Drafts and
+ * malformed paths cannot claim coverage because the runner never loads them. */
+export function changedTriggerFiles(changed) {
+  if (!Array.isArray(changed)) return new Set();
+  return new Set(changed
+    .filter((path) => typeof path === "string")
+    .map((path) => path.replace(/\\/g, "/").replace(/^\.\//, ""))
+    .filter((path) => path.startsWith(`${TRIGGERS_DIR}/`) && path.endsWith(".json") && !path.endsWith(".draft.json"))
+    .map((path) => path.slice(`${TRIGGERS_DIR}/`.length)));
+}
+
 /**
  * The two trigger case methods. A `route` case is a complete, generic input to
  * routeSkills: `caller`, `subject`, optional `record`/`cwd`/`repoDirs`, and an
@@ -2247,7 +2264,7 @@ async function triggerRouterFor(tomquestTree, wikitomTree, io) {
  * `io` carries every side effect so the test can drive this with no network
  * and no model.
  */
-export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekly = false, ablation = false, basePassed = new Set() }, io) {
+export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekly = false, ablation = false, basePassed = new Set(), changed = undefined }, io) {
   const startedAt = io.now();
   const trees = treesFor(repo, sha);
   const tomquest = io.worktree("tom.quest", trees.tomquest);
@@ -2256,12 +2273,16 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
     const all = loadGolden(tomquest.dir);
     const wanted = jobs === null ? all : all.filter((item) => jobs.includes(item.job));
     const items = weekly ? wanted : selectItems(wanted, Math.max(1, Math.floor(limit / 2)));
-    // Trigger files are a weekly measurement of the skill router and of the
-    // output behaviour it cannot decide. They are deliberately absent from a
-    // pull-request or --serve run: those runs keep their fixed golden subset
-    // and never turn a context-file edit into extra model work.
-    const triggerNameMapping = weekly ? await triggerNameMappingFor(tomquest.dir, io) : null;
-    const triggers = weekly ? loadTriggers(tomquest.dir, { wikitomDir: wikitom.dir, ...triggerNameMapping }) : [];
+    // Weekly runs take the whole trigger set. A pull-request run takes every
+    // case from exactly the trigger files it changed, so its coverage cannot
+    // be satisfied by a case deferred to the weekly job.
+    const changedTriggers = changedTriggerFiles(changed);
+    const shouldLoadTriggers = weekly || changedTriggers.size > 0;
+    const triggerNameMapping = shouldLoadTriggers ? await triggerNameMappingFor(tomquest.dir, io) : null;
+    const triggers = shouldLoadTriggers
+      ? loadTriggers(tomquest.dir, { wikitomDir: wikitom.dir, ...triggerNameMapping })
+        .filter((trigger) => weekly || changedTriggers.has(trigger.file))
+      : [];
     const triggerCases = triggers.flatMap((trigger) => (trigger.cases ?? []).map((one) => ({ trigger, one })));
     const router = triggerCases.some(({ one }) => triggerMethod(one) === TRIGGER_METHOD_ROUTER)
       ? await triggerRouterFor(tomquest.dir, wikitom.dir, io)
@@ -2339,15 +2360,34 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       }
       triggerResults.push(await runTriggerCase(trigger, one, io, router, pinned));
     }
+    const taskItems = (io.taskRepos?.(tomquest.dir) ?? [])
+      .flatMap((taskRepo) => loadTasks(tomquest.dir, taskRepo));
     const tasks = [];
-    for (const taskRepo of io.taskRepos?.(tomquest.dir) ?? []) {
-      for (const task of loadTasks(tomquest.dir, taskRepo)) {
-        tasks.push(await runTrials(task.id, basePassed, () => runTask(task, trees, io)));
-      }
-    }
+    for (const task of taskItems) tasks.push(await runTrials(task.id, basePassed, () => runTask(task, trees, io)));
     const scored = results.filter((result) => result.judged !== "skip");
     const scoredTriggers = triggerResults.filter((result) => result.judged !== "skip");
+    const scoredTasks = tasks.filter((task) => task.judged !== "skip");
     const scoredAll = [...scored, ...scoredTriggers];
+    const sourceById = new Map();
+    for (const source of [...items, ...triggerCases.map(({ trigger, one }) => ({ ...one, trigger: trigger.file })), ...taskItems]) {
+      if (sourceById.has(source.id)) throw new Error(`duplicate scored item id ${source.id}`);
+      sourceById.set(source.id, source);
+    }
+    const scoredHashes = Object.fromEntries([...scoredAll, ...scoredTasks]
+      .map((result) => {
+        const source = sourceById.get(result.id);
+        if (source === undefined) throw new Error(`scored item ${result.id} has no source`);
+        return [result.id, contentHash(source)];
+      })
+      .sort(([left], [right]) => left.localeCompare(right)));
+    // A file is listed only when EVERY one of its cases ran, so a skipped case
+    // cannot leave a file claiming coverage it did not measure.
+    const ranByFile = new Map();
+    triggerCases.forEach(({ trigger }, index) => {
+      const ran = triggerResults[index]?.judged !== "skip";
+      ranByFile.set(trigger.file, (ranByFile.get(trigger.file) ?? true) && ran);
+    });
+    const triggerFilesRun = [...ranByFile].filter(([, ran]) => ran).map(([file]) => file).sort();
     const summary = aggregate(scoredAll);
     return {
       repo,
@@ -2369,7 +2409,10 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
         scoredTriggers.filter((result) => result.method === TRIGGER_METHOD_RUNNER).length,
       // The ids actually scored, so the gate can tell a newly added item apart
       // from one that regressed without re-deriving the selection.
-      scoredIds: [...scoredAll, ...tasks.filter((task) => task.judged !== "skip")].map((result) => result.id).sort(),
+      scoredIds: [...scoredAll, ...scoredTasks].map((result) => result.id).sort(),
+      scoredHashes,
+      // The coverage gate requires every changed trigger filename to be here.
+      triggerFilesRun,
       skipped: [...results, ...triggerResults].filter((result) => result.judged === "skip").map(({ id, reason, method }) => ({ id, reason, method })),
       // A --weekly run SAYS SO ON THE ROW. The weekly graduation pass
       // (scripts/graduate-golden.mjs) promotes a capability case on this
@@ -2591,6 +2634,8 @@ export function failedRun({ repo, sha, error, at }) {
     byVerdict: { approve: { items: 0, pass: 0 }, revise: { items: 0, pass: 0 } },
     failures: [],
     scoredIds: [],
+    scoredHashes: {},
+    triggerFilesRun: [],
     skipped: [],
     results: [],
     efficiency: { cases: 0, unknown: 0, rises: [] },
@@ -2717,7 +2762,7 @@ async function runAndPost(env, io, {
   // can become a regression, so exactly those are tried again when they fail.
   const data = {
     ...await stampAgainstBase(
-      await runEvals({ repo, sha, limit, jobs, weekly, ablation, basePassed: passedIds(baseData) }, io),
+      await runEvals({ repo, sha, limit, jobs, weekly, ablation, basePassed: passedIds(baseData), changed }, io),
       baseData,
       { changed, prBody },
     ),

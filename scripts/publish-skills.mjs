@@ -22,7 +22,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { AREAS_DIR, SKILL_PREFIX, buildSkills, byteLength, renderSkillMd, skillDirName } from "./skills.mjs";
+import {
+  AREAS_DIR,
+  PUBLISHED_SKILL_METADATA,
+  SKILL_PREFIX,
+  buildSkills,
+  byteLength,
+  renderSkillMd,
+  renderSkillMetadata,
+  skillDirName,
+} from "./skills.mjs";
 
 class PublishError extends Error {}
 
@@ -138,7 +147,10 @@ function readRepo(repo, dir, requested = "HEAD", read = readObject) {
     .filter((name) => name === "AGENTS.md" || name.endsWith("/AGENTS.md"))
     .sort()) {
     const body = read(dir, commit, file);
-    if (body.trim() === "") continue;
+    // An empty rules file is an incomplete repository publication, not an
+    // absent optional reference. Abort before the stale-directory pass so the
+    // previous catalog remains intact until the repository is repaired.
+    if (body.trim() === "") throw new PublishError(`repository ${repo} has empty ${file} at ${commit}`);
     files.push({ path: file, body });
   }
   return { repo, commit, files };
@@ -163,6 +175,7 @@ function sameBytes(target, body) {
 function skillFiles(skill, commit) {
   return [
     { name: "SKILL.md", body: renderSkillMd(skill, commit) },
+    { name: PUBLISHED_SKILL_METADATA, body: renderSkillMetadata(commit) },
     ...skill.references.map((reference) => ({ name: reference.name, body: reference.body })),
   ];
 }

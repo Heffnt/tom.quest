@@ -9,8 +9,10 @@ import {
   ablationFindings,
   ablationFor,
   aggregate,
+  contentHash,
   AREA_TRIGGER_FILES,
   AUDIT_FAULTS_DIR,
+  changedTriggerFiles,
   deterministicFailure,
   efficiencyOf,
   efficiencyVerdict,
@@ -436,8 +438,8 @@ describe("stampAgainstBase", () => {
 
   it("counts the regressions when there is one", async () => {
     const failure = { id: "a", partition: "prepare/chores", verdict: "revise", reason: "r", confirmed: true };
-    const head = { goldenHash: "h", scoredIds: ["a"], failures: [failure], tasks: { failures: [] } };
-    const base = { goldenHash: "h", scoredIds: ["a"], failures: [], tasks: { failures: [] } };
+    const head = { goldenHash: "h", scoredIds: ["a"], scoredHashes: { a: "same" }, failures: [failure], tasks: { failures: [] } };
+    const base = { goldenHash: "h", scoredIds: ["a"], scoredHashes: { a: "same" }, failures: [], tasks: { failures: [] } };
     const stamped = await stampAgainstBase(head, base);
     expect(stamped.regressions).toBe(1);
     expect(stamped.failures[0].regression).toBe(true);
@@ -459,10 +461,10 @@ describe("the head trials", () => {
     };
     return { once, calls };
   };
-  const rowFor = (result) => ({ goldenHash: "h", scoredIds: ["a"], ...aggregate([result]), tasks: aggregate([]) });
-  const basePassing = { goldenHash: "h", scoredIds: ["a"], failures: [], tasks: { failures: [] } };
+  const rowFor = (result) => ({ goldenHash: "h", scoredIds: ["a"], scoredHashes: { a: "same" }, ...aggregate([result]), tasks: aggregate([]) });
+  const basePassing = { goldenHash: "h", scoredIds: ["a"], scoredHashes: { a: "same" }, failures: [], tasks: { failures: [] } };
   const baseFailing = {
-    goldenHash: "h", scoredIds: ["a"], tasks: { failures: [] },
+    goldenHash: "h", scoredIds: ["a"], scoredHashes: { a: "same" }, tasks: { failures: [] },
     failures: [{ id: "a", partition: "prepare/chores", verdict: "revise", reason: "was already bad", confirmed: true }],
   };
 
@@ -1421,7 +1423,7 @@ describe("runEvals over a run case", () => {
     expect(quiet.calls.regen).toBe(1);
   });
 
-  it("adds trigger cases only to weekly accounting, with router cases deterministic", async () => {
+  it("runs every case in exactly the trigger files a pull request changed", async () => {
     const dir = caseDir();
     writeJson(dir, path.join("evals", "triggers", "skill-write.json"), {
       name: "write",
@@ -1438,21 +1440,46 @@ describe("runEvals over a run case", () => {
         { id: "trigger-runner-safe", prompt: "safe runner fixture", expect: { mustName: ["fresh"] } },
       ],
     });
+    writeJson(dir, path.join("evals", "triggers", "skill-unrelated.json"), {
+      name: "write",
+      kind: "skill",
+      cases: [{
+        id: "trigger-unrelated",
+        route: {
+          caller: "cli",
+          subject: { kind: "none" },
+          expected: { granted: ["write"], refused: [], repoRulesSource: null },
+        },
+      }],
+    });
     const io = runIoFor(dir, ["pass", "pass", "pass"]);
     io.triggerRouter = () => ({ granted: ["write"], refused: [], repoRulesSource: null });
     const weekly = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, io);
-    expect(weekly).toMatchObject({ items: 3, pass: 3, fail: 0, calls: 7, wikitom: "wiki1", catalogHash: "c".repeat(64) });
-    expect(weekly.scoredIds).toEqual(["a", "trigger-router-safe", "trigger-runner-safe"]);
+    expect(weekly).toMatchObject({ items: 4, pass: 4, fail: 0, calls: 7, wikitom: "wiki1", catalogHash: "c".repeat(64) });
+    expect(weekly.scoredIds).toEqual(["a", "trigger-router-safe", "trigger-runner-safe", "trigger-unrelated"]);
     expect(weekly.results).toContainEqual(expect.objectContaining({ id: "trigger-router-safe", method: "router", judged: "pass", passK: true }));
     expect(weekly.results).toContainEqual(expect.objectContaining({ id: "trigger-runner-safe", method: "runner", judged: "pass", passK: true }));
     expect(io.calls.regen).toBe(4);
     expect(io.calls.prompts.some((prompt) => prompt.includes("PINNED SKILLS: write\n\nsafe runner fixture"))).toBe(true);
 
-    const prIo = runIoFor(dir, ["pass"]);
-    const pr = await runEvals({ repo: "tom.quest", sha: "head" }, prIo);
-    expect(pr.scoredIds).toEqual(["a"]);
-    expect(pr.results).toEqual([{ id: "a", judged: "pass", passK: true, tokensMedian: null }]);
-    expect(prIo.calls.regen).toBe(1);
+    const prIo = runIoFor(dir, ["pass", "pass"]);
+    prIo.triggerRouter = io.triggerRouter;
+    const pr = await runEvals({
+      repo: "tom.quest",
+      sha: "head",
+      changed: ["evals/triggers/skill-write.json"],
+    }, prIo);
+    expect(pr.scoredIds).toEqual(["a", "trigger-router-safe", "trigger-runner-safe"]);
+    expect(pr.triggerFilesRun).toEqual(["skill-write.json"]);
+    expect(pr.results).toContainEqual(expect.objectContaining({ id: "trigger-router-safe", method: "router", judged: "pass" }));
+    expect(pr.results).toContainEqual(expect.objectContaining({ id: "trigger-runner-safe", method: "runner", judged: "pass" }));
+    expect(pr.results.find((result) => result.id === "trigger-unrelated")).toBeUndefined();
+    expect(pr.scoredHashes).toMatchObject({
+      a: contentHash(runCaseItem({ id: "a" })),
+      "trigger-router-safe": expect.any(String),
+      "trigger-runner-safe": expect.any(String),
+    });
+    expect(prIo.calls.regen).toBe(2);
   });
 
   it("skips a runner trigger when its publication is not the named WikiTom commit", async () => {
@@ -1475,6 +1502,9 @@ describe("runEvals over a run case", () => {
       reason: "the trigger publication could not be pinned to the named WikiTom commit",
     }));
     expect(io.calls.regen).toBe(3);
+    // A file whose only case was skipped never ran, so it cannot satisfy the
+    // pull-request coverage rule that reads this list.
+    expect(weekly.triggerFilesRun).toEqual([]);
   });
 
   it("pins the catalog for a runner trigger whose mapped skill list is empty", async () => {
@@ -1676,6 +1706,20 @@ describe("the trigger set", () => {
     expect(() => loadTriggers(tree(), { wikitomDir: tree() })).toThrow(/skill-know-admin\.json/);
     expect(triggerCounts({ cases: [] })).toEqual({ positives: 0, negatives: 0 });
     expect(() => triggerCounts({ positives: ["a"], negatives: ["b"] })).toThrow("trigger needs a cases list");
+  });
+
+  it("names the changed trigger files a pull-request run must execute, and nothing else", () => {
+    expect([...changedTriggerFiles([
+      "evals/triggers/hourly.json",
+      "evals\\triggers\\skill-write.json",
+      "./evals/triggers/nested/deep.json",
+      // A draft is never loaded, so it can never claim to have run.
+      "evals/triggers/hourly.draft.json",
+      "evals/triggers/README.md",
+      "evals/golden/runs/one.json",
+      "scripts/skills.mjs",
+    ])].sort()).toEqual(["hourly.json", "nested/deep.json", "skill-write.json"]);
+    expect([...changedTriggerFiles(undefined)]).toEqual([]);
   });
 });
 

@@ -307,29 +307,20 @@ if (!prompt.trim()) fail("no prompt on stdin");
 
 const operate = opts.operate ? operateInstructions() : null;
 
-// THE GRANT BLOCK CITES A COMMIT OR IT IS NOT WRITTEN. renderGrants' first line
-// is "SKILLS (WikiTom commit <sha>)", and that commit is the provenance of the
-// skill bodies the run is being told to load. Without an operate read there is
-// no commit this process actually saw, and a caller-supplied one would be an
-// assertion about a tree nobody here read. So the block is omitted and one line
-// says why — the same shape as the missing-operate warning above it.
-//
-// Omitted means NOT GRANTED, and the registration says so too: skillsGranted
-// stays empty, exactly as layersGiven stays empty when the operate file could
-// not be read. An absence is not a refusal, so the names do not move into
-// skillsRefused either.
+// A grant is labeled with the installed catalog's own published commit, never
+// the WikiTom checkout's current HEAD. The checkout is shown separately when
+// it has advanced; a missing checkout therefore cannot relabel a published
+// catalog, and a hand-written SKILL.md has no authority to become a grant.
 let grantBlock = "";
 let granted = opts.granted;
 let refused = opts.refused;
+let skillCatalogCommit = null;
 if (granted.length > 0 || refused.length > 0) {
-  if (!operate?.commit) {
-    process.stderr.write("codex-run: skills named but no WikiTom commit to cite; grant block omitted\n");
-    granted = []; refused = [];
-  } else if (!skillsUrl) {
+  if (!skillsUrl) {
     process.stderr.write("codex-run: skills named but scripts/skills.mjs is not installed; grant block omitted\n");
     granted = []; refused = [];
   } else {
-    const { renderGrants, skillDirName } = await import(skillsUrl.href);
+    const { PUBLISHED_SKILL_METADATA, renderGrants, skillDirName } = await import(skillsUrl.href);
     const codexHome = process.env.CODEX_HOME && process.env.CODEX_HOME.trim() !== ""
       ? process.env.CODEX_HOME
       : join(homedir(), ".codex");
@@ -344,12 +335,42 @@ if (granted.length > 0 || refused.length > 0) {
         unavailable.push({ name, why: "the skill name is not supported by the installed catalog" });
         continue;
       }
-      if (isRegularFile(skillFile)) available.push(name);
-      else unavailable.push({ name, why: "its installed SKILL.md is missing" });
+      if (!isRegularFile(skillFile)) {
+        unavailable.push({ name, why: "its installed SKILL.md is missing" });
+        continue;
+      }
+      let publishedCommit;
+      try {
+        // An installed catalog older than the sidecar has no name to read here
+        // and lands in the same refusal as one whose sidecar is gone: either
+        // way this process never saw the commit those bodies were built at.
+        const metadata = join(installedSkills, skillDirName(name), PUBLISHED_SKILL_METADATA);
+        publishedCommit = JSON.parse(readFileSync(metadata, "utf8")).commit;
+      } catch {
+        unavailable.push({ name, why: "its published catalog metadata is missing or invalid" });
+        continue;
+      }
+      if (typeof publishedCommit !== "string" || !/^[0-9a-f]{7,64}$/i.test(publishedCommit)) {
+        unavailable.push({ name, why: "its published catalog metadata is missing or invalid" });
+        continue;
+      }
+      publishedCommit = publishedCommit.toLowerCase();
+      if (skillCatalogCommit !== null && skillCatalogCommit !== publishedCommit) {
+        unavailable.push({ name, why: `its published catalog is at ${publishedCommit}, unlike ${skillCatalogCommit}` });
+        continue;
+      }
+      skillCatalogCommit = publishedCommit;
+      available.push(name);
     }
     granted = available;
     refused = [...refused, ...unavailable];
-    grantBlock = renderGrants({ commit: operate.commit, granted, refused });
+    const labelCommit = skillCatalogCommit ?? operate?.commit;
+    if (labelCommit) {
+      grantBlock = renderGrants({ commit: labelCommit, checkoutCommit: skillCatalogCommit ? operate?.commit : null, granted, refused });
+    } else {
+      process.stderr.write("codex-run: skills named but no published catalog commit to cite; grant block omitted\n");
+      granted = []; refused = [];
+    }
   }
 }
 
@@ -392,7 +413,7 @@ const spooled = writeRegistration({
     skillsRefused: refused.map(({ name, why }) => `${name} — ${why}`),
     tools: { allowed: null, denied: null },
     hooksConfigured: ["SessionStart", "SessionEnd", "Stop", "SubagentStart", "SubagentStop"],
-    ...(operate ? { wikitomCommit: operate.commit } : {}),
+    ...(skillCatalogCommit || operate ? { wikitomCommit: skillCatalogCommit ?? operate.commit } : {}),
     promptSha256: crypto.createHash("sha256").update(prompt).digest("hex"),
   },
 });
