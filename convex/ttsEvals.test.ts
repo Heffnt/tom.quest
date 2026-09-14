@@ -404,15 +404,31 @@ describe("a superseded request", () => {
       });
     });
 
-  // A REAL run row, the kind that measured the sha. Unlike a superseded row it
-  // answers its key for good, whatever any later request says.
-  const scored = (t: TestConvex<typeof schema>, sha: string) =>
+  // A scored row records the request inputs it measured. An unchanged request
+  // stays answered; a replacement request does not.
+  const scored = async (t: TestConvex<typeof schema>, sha: string) =>
     t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_REQUEST).eq("key", `${REPO}@${sha}`))
+        .first();
+      const request = row!.data as {
+        requestedAt: number;
+        baseSha: string | null;
+        changed: string[] | null;
+        prBody: string | null;
+      };
       await ctx.db.insert("dtsEvents", {
         at: Date.now(),
         kind: EVALS_RUN,
         key: `${REPO}@${sha}`,
-        data: { repo: REPO, sha, regressions: 0 },
+        data: {
+          repo: REPO, sha, regressions: 0,
+          answersRequestAt: request.requestedAt,
+          answersBaseSha: request.baseSha,
+          answersChanged: request.changed,
+          answersPrBody: request.prBody,
+        },
       });
     });
 
@@ -726,25 +742,73 @@ describe("a superseded request", () => {
     });
   });
 
-  // AND A SCORED ROW NEVER GOES STALE. It measured the tree, and no later
-  // request makes that untrue — `--force` is how a measurement is redone.
-  it("keeps a scored row answering however often the sha is asked about", async () => {
+  // A scored row is current only for the request facts it recorded.
+  it("requires a scored row to answer the base and coverage inputs it recorded", async () => {
     const t = convexTest({ schema, modules });
-    await file(t, 1, "aaaaaaa", { runId: 100 });
+    await file(t, 1, "aaaaaaa", { runId: 100, prBody: "evals: no-item wording only" });
     await t.run(async (ctx) => {
       await ctx.db.insert("dtsEvents", {
         at: 50,
         kind: EVALS_RUN,
         key: `${REPO}@aaaaaaa`,
-        data: { repo: REPO, sha: "aaaaaaa", regressions: 0, pass: 29, items: 29 },
+        data: {
+          repo: REPO, sha: "aaaaaaa", regressions: 0, pass: 29, items: 29,
+          answersRequestAt: 1,
+          answersBaseSha: "f5c1fb9",
+          answersChanged: ["model-of-tom/intent.md"],
+          answersPrBody: "evals: no-item wording only",
+        },
       });
-    });
-    await t.mutation(internal.ttsEvals.internalRequestEvals, {
-      repo: REPO, sha: "aaaaaaa", baseSha: "6af3eef", pr: 173, runId: 300, paths: ["model-of-tom/**"],
     });
     expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
       .toMatchObject({ run: { regressions: 0, pass: 29 } });
     expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toBe(null);
+    await t.mutation(internal.ttsEvals.internalRequestEvals, {
+      repo: REPO, sha: "aaaaaaa", baseSha: "6af3eef", pr: 173, runId: 300,
+      paths: ["model-of-tom/**"], changed: ["model-of-tom/intent.md"], prBody: "evals: no-item wording only",
+    });
+    expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
+      .toMatchObject({ run: null });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({ sha: "aaaaaaa" });
+  });
+
+  it("does not let a scored no-item exemption answer after the trailer is removed", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa", { prBody: "evals: no-item wording only" });
+    await scored(t, "aaaaaaa");
+    await t.mutation(internal.ttsEvals.internalRequestEvals, {
+      repo: REPO, sha: "aaaaaaa", baseSha: "f5c1fb9", pr: 173, runId: 100,
+      paths: ["model-of-tom/**"], changed: ["model-of-tom/intent.md"], prBody: "",
+    });
+    expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
+      .toMatchObject({ run: null });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({ sha: "aaaaaaa" });
+  });
+
+  it("refuses a passing scored row posted after its request was replaced", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t, 1, "aaaaaaa", { prBody: "evals: no-item wording only" });
+    await t.mutation(internal.ttsEvals.internalRequestEvals, {
+      repo: REPO, sha: "aaaaaaa", baseSha: "6af3eef", pr: 173, runId: 100,
+      paths: ["model-of-tom/**"], changed: ["model-of-tom/intent.md"], prBody: "",
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: Date.now() + 60_000,
+        kind: EVALS_RUN,
+        key: `${REPO}@aaaaaaa`,
+        data: {
+          repo: REPO, sha: "aaaaaaa", regressions: 0, goldenCoverage: true,
+          answersRequestAt: 1,
+          answersBaseSha: "f5c1fb9",
+          answersChanged: ["model-of-tom/intent.md"],
+          answersPrBody: "evals: no-item wording only",
+        },
+      });
+    });
+    expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "aaaaaaa" }))
+      .toMatchObject({ run: null });
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {})).toMatchObject({ sha: "aaaaaaa" });
   });
 
   // A PLAIN RE-RUN OF AN UNAFFECTED CHECK IS NOT A NEW ANSWER. `requestedAt`
@@ -814,7 +878,13 @@ describe("a superseded request", () => {
           at: i + 1,
           kind: EVALS_RUN,
           key: `${REPO}@${sha}`,
-          data: { repo: REPO, sha, regressions: 0 },
+          data: {
+            repo: REPO, sha, regressions: 0,
+            answersRequestAt: i + 1,
+            answersBaseSha: "f5c1fb9",
+            answersChanged: [],
+            answersPrBody: null,
+          },
         });
       }
     });
@@ -927,7 +997,16 @@ describe("a superseded request", () => {
         at: Date.now() + 1,
         kind: EVALS_RUN,
         key: `${REPO}@head000`,
-        data: { repo: REPO, sha: "head000", regressions: 0, goldenCoverage: true, pass: 29, items: 29 },
+        data: {
+          repo: REPO, sha: "head000", regressions: 0, goldenCoverage: true, pass: 29, items: 29,
+          answersRequestAt: (await ctx.db
+            .query("dtsEvents")
+            .withIndex("by_kind_key", (q) => q.eq("kind", EVALS_REQUEST).eq("key", `${REPO}@head000`))
+            .first())!.data.requestedAt,
+          answersBaseSha: "base000",
+          answersChanged: null,
+          answersPrBody: null,
+        },
       });
     });
     expect(await t.query(internal.ttsEvals.internalEvalsRun, { repo: REPO, sha: "head000" }))

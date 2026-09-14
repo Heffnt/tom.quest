@@ -1124,6 +1124,32 @@ describe("runEvals over a run case", () => {
     expect(run.ablation).toEqual([]);
   });
 
+  it("posts a nonmeasurement when the scored request was replaced mid-run", async () => {
+    const posted = [];
+    const env = { CONVEX_SITE_URL: "https://example.convex.site", TTS_WORKER_KEY: "k" };
+    vi.stubGlobal("fetch", vi.fn(async (url, init) => {
+      if (String(url).includes("/tts/evals-request?")) {
+        // The request the runner captured had requestedAt 1; this is its
+        // replacement, so a passing measurement must not answer it.
+        return { ok: true, status: 200, text: async () => JSON.stringify({ request: { requestedAt: 2 } }) };
+      }
+      if (init?.body) posted.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+    const data = await serveRequest(env, runIoFor(caseDir(), ["pass"]), {
+      repo: "tom.quest",
+      sha: "head",
+      baseSha: null,
+      changed: ["model-of-tom/intent.md"],
+      prBody: "evals: no-item wording only",
+      unaffected: false,
+      requestedAt: 1,
+    });
+    expect(data).toMatchObject({ error: "eval request replaced while the runner was measuring it", regressions: null });
+    expect(posted).toHaveLength(1);
+    expect(posted[0].data).toMatchObject({ answersRequestAt: 1, regressions: null, goldenCoverage: null });
+  });
+
   it("takes every trial on a weekly run", async () => {
     const io = runIoFor(caseDir(), ["pass", "pass", "pass"]);
     await runEvals({ repo: "tom.quest", sha: "origin/main", weekly: true }, io);

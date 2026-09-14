@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   COVERAGE_NOT_REQUIRED,
+  changedPathsFromGit,
   gate,
   goldenItemRule,
   matchesWatched,
@@ -50,12 +51,13 @@ describe("gate", () => {
     expect(report(head, base, verdict).join("\n")).toContain("still failing  one");
   });
 
-  it("fails partial runner errors as still failing, never as regressions", () => {
+  it("fails partial runner errors without also reporting them as still failing", () => {
     const head = run({ pass: 26, fail: 3, items: 29, failures: [failure("one", { errored: true }), failure("two", { errored: true }), failure("three", { errored: true })] });
     const base = run({ sha: "9f8e7d6c", items: 29, pass: 29, scoredIds: Array.from({ length: 29 }, (_, i) => `item-${i}`) });
     const verdict = gate(head, base);
     expect(verdict).toMatchObject({ ok: false, regressions: [] });
-    expect(verdict.stillFailing).toHaveLength(3);
+    expect(verdict.stillFailing).toHaveLength(0);
+    expect(report(head, base, verdict).join("\n")).not.toContain("still failing");
     expect(report(head, base, verdict).at(-1)).toBe("FAILED: 3 errored.");
   });
 
@@ -313,7 +315,13 @@ describe("the changed-path diff", () => {
   // flag is pinned on the source the way the workflow's own facts are.
   it("is the flag the check actually passes", () => {
     const source = readFileSync("scripts/evals-check.mjs", "utf8");
-    expect(source).toContain('execFileSync("git", ["diff", "--no-renames", "--name-only"');
+    expect(source).toContain('execFileSync("git", ["diff", "--no-renames", "--name-only", "-z"');
+  });
+
+  it("keeps a non-ASCII trigger pathname unquoted and affected", () => {
+    const changed = changedPathsFromGit("evals/triggers/skill-know-h\u00e9alth.json\0");
+    expect(changed).toEqual(["evals/triggers/skill-know-h\u00e9alth.json"]);
+    expect(unaffectedBy(changed)).toBe(false);
   });
 
   // The queue tells a pull request's live head from the shas behind it by the

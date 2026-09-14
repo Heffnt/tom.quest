@@ -2494,6 +2494,15 @@ http.route({ path: "/tts/evals-run", method: "GET", handler: evalsRun });
 const ttsEvalsRequest = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
+  const params = new URL(request.url).searchParams;
+  const repo = params.get("repo");
+  const sha = params.get("sha");
+  if (repo !== null || sha !== null) {
+    if (repo === null || repo === "" || sha === null || sha === "") {
+      return jsonResponse(400, { error: "repo and sha required together" });
+    }
+    return jsonResponse(200, { request: await ctx.runQuery(internal.ttsEvals.internalEvalsRequest, { repo, sha }) });
+  }
   return jsonResponse(200, { request: await ctx.runQuery(internal.ttsEvals.internalOldestEvalsRequest, {}) });
 });
 

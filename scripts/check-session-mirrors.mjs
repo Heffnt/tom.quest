@@ -477,8 +477,9 @@ if (sharedBlock) {
 // witness: change one `command` string on one side only.
 failures.push(...narrowListFailures(shared, sessionMjs));
 
-// 8. The static-boundaries inventory: the scripts `pnpm check:guardrails`
-// actually runs and STATIC_BOUNDARY_SCRIPTS in worker/jobs/simplify.mjs are one
+// 8. Simplify runs from /opt/tts without the repository's package.json, so it
+// cannot derive this deployed list. The scripts `pnpm check:guardrails` runs
+// and STATIC_BOUNDARY_SCRIPTS in worker/jobs/simplify.mjs are one
 // fact spelled twice. The simplify job reports the merge bar's contents from
 // that list and cannot read the job's log, so a check missing from it is a
 // check the weekly pass believes does not exist — a silent omission with no

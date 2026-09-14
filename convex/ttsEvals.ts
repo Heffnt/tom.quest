@@ -964,10 +964,32 @@ export function scoredNothing(data: unknown): boolean {
 async function answeredRun(ctx: QueryCtx | MutationCtx, key: string) {
   const run = await runForKey(ctx, key);
   if (run === null) return null;
-  if (!scoredNothing(run.data)) return run;
   const request = requestData((await requestRowFor(ctx, key))?.data);
   // No request row at all: nothing is asking anything, so the row stands.
   if (request === null) return run;
+  if (!scoredNothing(run.data)) {
+    // A scored row answers the request whose base supplied the comparison and
+    // whose diff/body supplied golden coverage. Missing facts on a historical
+    // row are not guessed: the next run records them and then stays answered.
+    const data = run.data as {
+      answersRequestAt?: unknown;
+      answersBaseSha?: unknown;
+      answersChanged?: unknown;
+      answersPrBody?: unknown;
+    };
+    const changed = data.answersChanged;
+    const requestChanged = request.changed;
+    const sameChanged = changed === null && requestChanged === null ||
+      Array.isArray(changed) && Array.isArray(requestChanged) &&
+        changed.every((path) => typeof path === "string") &&
+        changed.length === requestChanged.length &&
+        changed.every((path, index) => path === requestChanged[index]);
+    return data.answersRequestAt === request.requestedAt &&
+      data.answersBaseSha === request.baseSha &&
+      sameChanged && data.answersPrBody === request.prBody
+      ? run
+      : null;
+  }
   // AN `unaffected` ROW IS DATED BY THE VERDICT, NOT BY THE CLOCK. What it
   // claims — this diff touches no watched path — is the very thing the request
   // carries, so the two agree or they do not. Dating it by `requestedAt` would
@@ -1019,6 +1041,15 @@ export const internalEvalsRun = internalQuery({
     // base is comparison evidence, though, and a nonmeasurement cannot seed it.
     return { run: run?.data ?? null, base: base === null || scoredNothing(base.data) ? null : base.data };
   },
+});
+
+// The worker revalidates a request by this same identity just before a long
+// scored run posts. Returning the stored request, rather than the queue head,
+// lets another PR's request be served independently without masking a replace
+// of this sha's own question.
+export const internalEvalsRequest = internalQuery({
+  args: { repo: v.string(), sha: v.string() },
+  handler: async (ctx, args) => requestData((await requestRowFor(ctx, `${args.repo}@${args.sha}`))?.data),
 });
 
 /**

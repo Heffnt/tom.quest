@@ -1,3 +1,5 @@
+// KEPT: cron starts flat /opt/tts jobs, so preserving the worker module tree
+// would require changing every deployed cron command.
 // Guardrail: worker/setup.sh step 7 must copy EVERY file the runs/ modules
 // import from outside runs/, and must do it before step 8 writes the cron.
 //

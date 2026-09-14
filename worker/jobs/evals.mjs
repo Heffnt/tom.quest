@@ -2388,7 +2388,7 @@ export async function stampAgainstBase(data, base, diff = {}) {
  */
 async function runAndPost(env, io, {
   repo, sha, base, limit, jobs, weekly, ablation = false, force, changed, prBody,
-  dryRun = false, scorecard = undefined,
+  dryRun = false, scorecard = undefined, answersRequestAt = null,
 }) {
   const existing = force || dryRun ? null : await convexFetch(env, `/tts/evals-run?repo=${repo}&sha=${sha}`);
   if (existing?.run) {
@@ -2419,10 +2419,39 @@ async function runAndPost(env, io, {
       baseData,
       { changed, prBody },
     ),
+    // A scored row is an answer to this request too. Convex revalidates these
+    // facts before any reader, including the merge gate, accepts the row.
+    ...(answersRequestAt === null ? {} : {
+      answersRequestAt,
+      answersBaseSha: base ?? null,
+      answersChanged: changed ?? null,
+      answersPrBody: prBody ?? null,
+    }),
     ...(scorecard === undefined ? {} : { verifierScorecard: scorecard }),
   };
   if (dryRun) console.log(JSON.stringify(data, null, 2));
-  else await postRun(env, data);
+  else if (answersRequestAt !== null) {
+    // A run can take fifty minutes. Check the request it started for rather
+    // than the queue head, which may be another PR entirely. A replacement
+    // gets a nonmeasurement answer for this old identity, so the shared
+    // currentness rule leaves the newer request queued and the gate closed.
+    const current = await convexFetch(
+      env,
+      `/tts/evals-request?repo=${encodeURIComponent(repo)}&sha=${encodeURIComponent(sha)}`,
+    );
+    if (current?.request?.requestedAt !== answersRequestAt) {
+      const stale = failedRun({
+        repo,
+        sha,
+        error: "eval request replaced while the runner was measuring it",
+        at: Date.now(),
+        answersRequestAt,
+      });
+      await postRun(env, stale);
+      return stale;
+    }
+    await postRun(env, data);
+  } else await postRun(env, data);
   console.log(
     `[evals] ${repo}@${sha}: ${data.pass}/${data.items} pass, ` +
       `${data.regressions === null ? "compared to no base" : `${data.regressions} regression(s)`}, ` +
@@ -2553,6 +2582,9 @@ export async function serveRequest(env, io, request, options = {}) {
       // the right answer for a run nobody asked about a diff.
       changed: request.changed,
       prBody: request.prBody,
+      // The same identity cheap rows carry: a request replaced while this
+      // long run is in flight cannot accept this old measurement as current.
+      answersRequestAt: request.requestedAt ?? null,
       force: options.force,
       dryRun,
     });

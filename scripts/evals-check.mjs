@@ -295,7 +295,6 @@ export function gate(head, base, { changed, prBody } = {}) {
   for (const [id, failure] of headFailures) {
     if (failure.errored === true) {
       errored.push(failure);
-      stillFailing.push(failure);
     } else if (failure.confirmed === false) unconfirmed.push(failure);
     else if (baseFailures.has(id)) stillFailing.push(failure);
     else if (!base || (baseScored.size > 0 && !baseScored.has(id))) newFailing.push(failure);
@@ -449,7 +448,12 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * not SEE the diff would block every merge from a machine without one, and the
  * thing it would be reporting is its own blindness, not a missing item.
  */
-async function changedPaths(baseSha, sha) {
+/** Git's -z output: filenames can contain newlines and must never be quoted. */
+export function changedPathsFromGit(out) {
+  return out.split("\0").filter((path) => path !== "");
+}
+
+export async function changedPaths(baseSha, sha) {
   if (!baseSha || !sha) return null;
   try {
     const { execFileSync } = await import("node:child_process");
@@ -460,11 +464,11 @@ async function changedPaths(baseSha, sha) {
     // context file leaves the tree with no run scoring it — the exact failure the
     // watch list exists to prevent. Off, a rename is a delete and an add, and the
     // delete is watched.
-    const out = execFileSync("git", ["diff", "--no-renames", "--name-only", `${baseSha}...${sha}`], {
+    const out = execFileSync("git", ["diff", "--no-renames", "--name-only", "-z", `${baseSha}...${sha}`], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
-    return out.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
+    return changedPathsFromGit(out);
   } catch (error) {
     console.log(`evals: could not read the diff (${error.message.split("\n")[0]}); golden coverage is unjudged`);
     return null;
