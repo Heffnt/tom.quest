@@ -22,10 +22,16 @@ export const EVALS_PROTOCOL = 2;
  * WHEN PROTOCOL 2 REACHED THE DEPLOYMENT — the cutoff, and the only thing that
  * tells a request filed under this contract from one filed before it.
  *
- * UPDATED AT MERGE to the day this branch deploys. Convex deploys on the push
- * to main, so the merge is the bump: the row answering a request filed before
- * it carries no `answersRequestAt`, and the row answering one filed after it
- * does.
+ * UPDATED AT MERGE to the MOMENT this branch deploys, not the day of it.
+ * Convex deploys on the push to main, so the merge commit's own timestamp is
+ * the bump: the row answering a request filed before it carries no
+ * `answersRequestAt`, and the row answering one filed after it does. A DAY IS
+ * THE WRONG GRANULARITY, in both directions. #172 merged at 01:24Z on
+ * 2026-09-15, so `2026-09-15T00:00:00Z` would read the eighty-four minutes
+ * before it as post-protocol, and the `2026-09-14T00:00:00Z` it actually
+ * merged carrying — written while the branch still expected to land that day —
+ * read a whole day of pre-protocol requests that way, which is the expensive
+ * half of the failure described below.
  *
  * WHY A CUTOFF AT ALL. `answersRequestAt` is the exact identity answeredRun
  * (convex/ttsEvals.ts) matches on, and a row written before this contract
@@ -48,7 +54,7 @@ export const EVALS_PROTOCOL = 2;
  * absence of one would leave that repository's heads unservable for good. The
  * time is exact; the id is a proxy that misfires.
  */
-export const EVALS_PROTOCOL_SINCE = "2026-09-14T00:00:00Z";
+export const EVALS_PROTOCOL_SINCE = "2026-09-15T01:24:01Z";
 export const EVALS_PROTOCOL_SINCE_MS = Date.parse(EVALS_PROTOCOL_SINCE);
 
 /** The `supersededBy` a pre-protocol request is answered with. Not a sha, and
