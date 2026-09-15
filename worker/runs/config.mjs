@@ -135,6 +135,14 @@ export function runConfig({
     // The most box runs the transport may have in flight at once. A typo is a
     // typo, not permission to launch without limit, so it falls back the same
     // way a backlog limit does.
+    //
+    // REMOVAL CHECK: the right number is a fact about the hardware, not about
+    // this repository. Two is what 4 vCPU and 7.7 GB hold when a run may be a
+    // full test suite (about 1.6 GB); 8 vCPU and 16 GB hold four. As a
+    // constant, following the box would mean a commit, a review and a redeploy
+    // of every job on it to change one digit — and the digit would then be
+    // wrong for the laptop, where the same resolver runs. The fallback below
+    // is what keeps a missing or mistyped value from meaning "no limit".
     maxParallel: positive(value("RUN_MAX_PARALLEL"), 2),
     // WHERE scripts/box-agent.mjs SENDS A RUN. THE ADDRESS HAS NO DEFAULT AND
     // IS NOT IN THIS REPOSITORY: tom.quest is public, the Jarvis Box is Tom's

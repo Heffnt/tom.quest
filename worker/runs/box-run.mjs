@@ -747,6 +747,24 @@ child.stderr.pipe(errStream, { end: false });
 child.stdin.on("error", () => {});
 child.stdin.end(prompt);
 
+// REMOVAL CHECK on --timeout: the ruling is that there is no time limit BY
+// DEFAULT, and this flag is off unless a caller names it (opts.timeout is 0,
+// the timer is null, nothing is armed). What it cannot become is nothing at
+// all: a run holds a slot until its CLI child closes, so a child that wedges —
+// waiting on a prompt it will never get, or a command that never returns —
+// holds that slot for ever, and with the subtree rule above it holds it for
+// everything under it too. A caller that knows its work is bounded is the only
+// thing that can free the box short of a human on the box, and the relay is
+// told to pass a `--timeout` straight through when the request names one.
+//
+// REMOVAL CHECK on the win32 branch beside it, and on the `.cmd` branch in the
+// spawn below: this file only ever runs on Linux, and its TESTS only ever run
+// on Tom's Windows laptop and on CI. The fake CLI they spawn cannot be a plain
+// script there — Windows has no shebang, so a Node fake is reachable only
+// through a `.cmd` shim, which Node refuses to spawn without a shell. Deleting
+// the branches deletes the suite's ability to run the real file at all, and
+// `child.kill` on Windows leaves the shim's grandchild alive, which is what
+// taskkill /T is for. The production path takes the else in both.
 let timedOut = false;
 const timer = opts.timeout > 0
   ? setTimeout(() => {

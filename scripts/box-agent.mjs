@@ -169,6 +169,17 @@ function main() {
   // otherwise), which is what the TTS_SSH_BIN seam points at under test. The
   // remote string is one argument either way; cmd.exe sees it double-quoted and
   // the box's own shell sees the single quotes buildArgs put there.
+  //
+  // REMOVAL CHECK on TTS_SSH_BIN and on this branch: between them they are the
+  // only way the ssh half of the transport is proved without a Jarvis Box. The
+  // seam is what lets a test read the exact command line that would have been
+  // sent — the quoting, the keepalives, the parent flags — instead of trusting
+  // it; without it that whole path has no test on any machine but the box, and
+  // it is the path that carries every laptop spawn. The fake cannot be
+  // something that spawns directly either: Windows has no shebang, so a Node
+  // fake is reachable only through a `.cmd`, and Node will not spawn one
+  // without a shell. A run never sets either; the fallbacks are plain `ssh`
+  // and no shell.
   const useShell = process.platform === "win32" && /\.(cmd|bat)$/i.test(bin);
   const quote = (s) => (useShell ? `"${String(s).replace(/\\(?=")/g, "\\\\").replace(/"/g, '""')}"` : s);
   const child = spawn(useShell ? quote(bin) : bin, args.map(quote), {
