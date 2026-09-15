@@ -23,7 +23,6 @@ import { GRAPH_MAX_BYTES } from "../worker/jobs/graph.mjs";
 import {
   GRAPH_PATH,
   RECORD_NODES,
-  REJECTS,
   generateGraph,
   main,
   serializeGraph,
@@ -648,7 +647,12 @@ function code(source) {
     .join("\n");
 }
 
-describe("REJECTS is on: no model, no network, no vector", () => {
+// The rejections are not a setting and there is nothing to assert about a
+// constant: they hold because this test and check 7 of check-vocabulary.mjs
+// enforce them. The `REJECTS` label that used to sit beside them was read by
+// nothing, so "declares the switch on" asserted only that a string said what
+// it said.
+describe("no model, no network, no vector", () => {
   const FORBIDDEN = ["fetch(", "anthropic", "openai", "embedding", "vector"];
 
   for (const relative of ["scripts/graph.mjs", "worker/jobs/graph.mjs"]) {
@@ -661,9 +665,6 @@ describe("REJECTS is on: no model, no network, no vector", () => {
     });
   }
 
-  it("declares the switch on", () => {
-    expect(REJECTS).toBe("on");
-  });
 });
 
 // ── 30. The skill bodies ─────────────────────────────────────────────────────

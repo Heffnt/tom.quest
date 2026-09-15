@@ -86,17 +86,30 @@ export const KIND_AUTHORITY = "vocabulary";
  *  display text rides in the file too. */
 export const RECORD_NODES = "id-only";
 
-/** Tom's, pending (graph switch 3). "on": the five rejections are enforced by
- *  checks — no model-inferred edge, no vector index, no per-field nodes, no
- *  graph database, no hand-edited file. "off": they are advice in this comment
- *  and nothing fails. */
-export const REJECTS = "on";
-
-/** Tom's, pending (graph switch 4). "graph": the file and the walk are "the
- *  graph"; the vocabulary is its schema; "ontology" and "knowledge graph" are
- *  refused words. "map": the whole is called the map, of which today's map
- *  block is the root's rendering. */
-export const NAME = "graph";
+// THERE IS NO `REJECTS` SWITCH AND NO `NAME` SWITCH. Two constants stood here
+// that read like both, and NOTHING EVER READ EITHER: the five rejections are
+// enforced by check 7 of scripts/check-vocabulary.mjs and the name by its check
+// 4, and neither check consults a constant. Setting either to its other value
+// changed nothing at all — the "switch that reads as set and does nothing" that
+// the RECORD_NODES throw below exists to prevent. A label claiming to be a
+// setting is worse than no label, because it invites a ruling that would do
+// nothing, so the labels are gone and what they claimed is written here.
+//
+// <refused-words>
+// THE WHOLE IS CALLED THE GRAPH: the file and the walk are the graph, and the
+// vocabulary is its schema. "ontology" and "knowledge graph" are refused words.
+// Check 4 refuses them everywhere except the few places that must spell them to
+// check or to test them, and this block is one of those places — which is why
+// it is fenced by markers the check can find rather than by its position.
+// </refused-words>
+//
+// THE FIVE REJECTIONS, all enforced and none optional: no model-inferred edge,
+// no vector index, no per-field nodes, no graph database, and no hand-edited
+// file. Check 7 scans the graph's two halves for the first four. The fifth is
+// G8 in this file, which compares the render against the committed bytes — and
+// it can pass now that the comparison no longer reads the commits the render
+// happened to be taken at, without which it refused everything and so enforced
+// nothing.
 
 /** Tom's, pending (phase 10 switch (a)). "candidate": the generator writes
  *  agent-rules.candidate.md and a diff and never touches the live file — the

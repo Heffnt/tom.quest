@@ -191,6 +191,41 @@ describe("check-vocabulary", () => {
     expect(result.stderr).toContain('scripts/graph.mjs:1: "fetch(" in code');
   });
 
+  // THE CARVE-OUT, BOTH WAYS. scripts/graph.mjs is exempt for a RANGE and not
+  // as a file: one fenced block may name the refused words, because the block
+  // that states the rule has to be able to say what it refuses. Everywhere else
+  // in that same file still fails. The range used to be anchored to the doc
+  // comment above `export const NAME =`, a constant nothing read that is now
+  // deleted; these two cases are what say the marker replaced it intact.
+  it("4: lets the fenced block in the graph's generator name the refused words", () => {
+    const fenced = [
+      "// <refused-words>",
+      "// the two words this block exists to refuse, spelled: ontology, knowledge graph.",
+      "// </refused-words>",
+      "export const X = 1;",
+    ].join("\n");
+    const result = run(fixture({ "scripts/graph.mjs": fenced + "\n" }));
+    expect(result.stderr).toBe("");
+    expect(result.code).toBe(0);
+  });
+
+  it("4: still refuses those words elsewhere in that file, and with no fence at all", () => {
+    const outside = [
+      "// <refused-words>",
+      "// nothing to see.",
+      "// </refused-words>",
+      "// the ontology is over here.",
+      "export const X = 1;",
+    ].join("\n");
+    const after = run(fixture({ "scripts/graph.mjs": outside + "\n" }));
+    expect(after.code).toBe(1);
+    expect(after.stderr).toContain("scripts/graph.mjs:4");
+
+    // No fence leaves the WHOLE file unexempt — loud rather than silently wider.
+    const unfenced = "// the ontology.\nexport const X = 1;\n";
+    expect(run(fixture({ "scripts/graph.mjs": unfenced })).code).toBe(1);
+  });
+
   it("7: reads the prose that names the same words as prose", () => {
     // The header of worker/jobs/graph.mjs says it holds no embedding and no
     // vector. The check strips comments, so that sentence is not a breach.

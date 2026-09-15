@@ -47,7 +47,7 @@ const MARKER_CLOSE_RE = /^\/\/ <\/vocabulary generated>\r?$/gm;
 // block; check 3 below is what keeps it there.
 const CLOSED_SENTENCE = "these words mean exactly this and nothing else";
 
-// The two words Tom's switch (4)/(c) refuses: the whole is called the graph, and
+// The two words the graph refuses outright: the whole is called the graph, and
 // these are the names it is not called.
 const REFUSED_WORDS = [/ontology/gi, /knowledge graph/gi];
 
@@ -65,9 +65,9 @@ const EXEMPT_FILES = new Set(["scripts/check-vocabulary.mjs", "scripts/check-voc
 //    `tts search define` prints a refused word AS refused, and a fixture that
 //    could not name the word would be testing nothing.
 //  - scripts/graph.mjs: exempt for a RANGE, not as a file — see
-//    switchFourRange below. Its switch-4 declaration is the line that refuses
-//    these two words, and a declaration that cannot name what it refuses says
-//    nothing; a refused word anywhere else in that file still fails.
+//    refusedWordRange below. One fenced block there states the rule, and a
+//    statement that cannot name what it refuses says nothing; a refused word
+//    anywhere else in that file still fails.
 const REFUSED_WORD_EXEMPT_FILES = new Set([
   "scripts/check-vocabulary.mjs",
   "scripts/check-vocabulary.test.mjs",
@@ -75,18 +75,24 @@ const REFUSED_WORD_EXEMPT_FILES = new Set([
 ]);
 const REFUSED_WORD_RANGE_FILE = "scripts/graph.mjs";
 
-/** The character range of scripts/graph.mjs's switch-4 doc comment: the block
- * comment that ends immediately above `export const NAME =`. `null` when either
- * the declaration or its comment has moved, which leaves the whole file
- * unexempt and the check loud rather than silently wider. */
-function switchFourRange(text) {
-  const at = text.search(/^export const NAME\s*=/m);
-  if (at === -1) return null;
-  const end = text.lastIndexOf("*/", at);
-  if (end === -1) return null;
-  const start = text.lastIndexOf("/**", end);
-  if (start === -1) return null;
-  return [start, end + "*/".length];
+/** The character range of the one block in scripts/graph.mjs that may name the
+ * refused words, fenced by `// <refused-words>` and `// </refused-words>`.
+ *
+ * KEYED ON MARKERS, NOT ON A DECLARATION. It used to find the doc comment above
+ * `export const NAME =` — but that constant was a label nothing read and it is
+ * gone, and a range anchored to a neighbour moves whenever the neighbour does.
+ * A marker is what the block is FOR, so it cannot drift from it.
+ *
+ * `null` when either marker is missing, which leaves the whole file unexempt
+ * and the check loud rather than silently wider. */
+const REFUSED_WORDS_OPEN = "// <refused-words>";
+const REFUSED_WORDS_CLOSE = "// </refused-words>";
+function refusedWordRange(text) {
+  const open = text.indexOf(REFUSED_WORDS_OPEN);
+  if (open === -1) return null;
+  const close = text.indexOf(REFUSED_WORDS_CLOSE, open);
+  if (close === -1) return null;
+  return [open, close + REFUSED_WORDS_CLOSE.length];
 }
 
 const SCAN_EXT = /\.(ts|tsx|mjs|cjs|js|jsx)$/;
@@ -262,7 +268,7 @@ if (block !== null) {
 //    graph" are refused words, in code and in comments alike — the name is what
 //    a reader takes from a file, and a comment is read. Four files may spell
 //    them, each for the reason stated at REFUSED_WORD_EXEMPT_FILES above, and
-//    scripts/graph.mjs only inside its switch-4 doc comment.
+//    scripts/graph.mjs only inside its fenced refused-words block.
 // witness: write "the ontology" in any comment under convex/, worker/, scripts/,
 // app/ or vqc/.
 {
@@ -271,13 +277,13 @@ if (block !== null) {
     if (REFUSED_WORD_EXEMPT_FILES.has(file)) continue;
     const text = read(file);
     if (text === null) continue;
-    const range = file === REFUSED_WORD_RANGE_FILE ? switchFourRange(text) : null;
+    const range = file === REFUSED_WORD_RANGE_FILE ? refusedWordRange(text) : null;
     for (const re of REFUSED_WORDS) {
       for (const { index, match } of matches(re, text)) {
         if (range !== null && index >= range[0] && index < range[1]) continue;
         failures.push(
           `${file}:${lineOf(text, index)}: "${match[0]}" is a refused word — the whole is called the graph `
-            + "(scripts/graph.mjs NAME)",
+            + "(scripts/graph.mjs, the fenced refused-words block)",
         );
       }
     }
@@ -371,7 +377,7 @@ if (block !== null) {
       for (const { index, match } of matches(re, code)) {
         failures.push(
           `${file}:${lineOf(code, index)}: "${match[0]}" in code — the graph holds no model, no network and `
-            + "no vector index (scripts/graph.mjs REJECTS)",
+            + "no vector index (the five rejections, scripts/graph.mjs)",
         );
       }
     }
