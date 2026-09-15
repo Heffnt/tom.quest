@@ -32,6 +32,17 @@
 //   --root RUNID            that run's rootRunId           (default: --parent)
 //   --depth N               the parent's depth + 1         (default: 1)
 //   --keep-worktree         do not reap at exit (debugging)
+//
+//     REMOVAL CHECK on --keep-worktree: the need it meets cannot be met some
+//     other way, because the reap DELETES THE ONLY COPY. A run's report comes
+//     back over the transport and its transcript is ingested, but the tree it
+//     edited exists nowhere else: box.md tells a caller that results come back
+//     as commits, so anything a run changed and did not commit — the half-done
+//     edit, the failing build's output, the file it wrote to the wrong path —
+//     is gone the moment it exits. There is no snapshot, no archive and no
+//     second checkout to look at afterwards, and the log the reap removes with
+//     the tree is the same story. The flag is off by default and the reap is
+//     unconditional without it.
 //   --timeout MS            hard kill                      (default: none)
 //
 // THE PROMPT ARRIVES ON STDIN, never as an argument — the same reason
@@ -192,6 +203,15 @@ function readStdin() {
 // THE GUARD KEYS ON AN EXPLICIT FLAG, NEVER ON READING THE PROMPT. Inferring
 // "this run will compile and test" from prompt text is a guess, and a guess
 // that refuses a run is worse than no guard at all.
+//
+// REMOVAL CHECK: the semaphore cannot take this guard's place, because the two
+// count different things. RUN_MAX_PARALLEL counts RUNS THIS TRANSPORT STARTED,
+// and the memory on a 7.7 GB box is spent by everything else on it as well —
+// the session-host daemon and its sessions, the nightly, the evals server, the
+// graph build. Two slots free says nothing about whether 1.6 GB is. A limit
+// low enough to be safe against every one of those at once would refuse work
+// on an idle box, which is the failure the semaphore exists to avoid. So the
+// semaphore bounds contention and this reads the actual number.
 function refuseIfMemoryIsShort(opts, env) {
   if (!opts.tests) return;
   const file = env.MEMINFO_PATH || "/proc/meminfo";
@@ -224,6 +244,17 @@ function refuseIfMemoryIsShort(opts, env) {
 // and a holder that died does not wedge the box forever. flock(1) is the Linux
 // idiom, but the semaphore is also exercised by vitest on Windows, and a
 // locking mechanism nobody can test is worse than one that is tested.
+//
+// REMOVAL CHECK on the attempt cap: the stale reclaim cannot be the only guard
+// because it only fires on a lock file OLDER than LOCK_STALE_MS, and the
+// holder here is alive and touching it — it holds the lock for the few
+// milliseconds it takes to read and rewrite the slot file, so a live holder is
+// never stale. What the cap catches is the case the reclaim is blind to: a
+// lock directory that cannot be unlinked (a permission change, a full disk),
+// where every attempt raises EEXIST, every stat says fresh, and the loop is
+// infinite. A box run has no time limit, so nothing above would ever end it —
+// the process would sit there holding a slot for ever with nothing on stdout.
+// 2000 attempts at 20 ms is a forty-second ceiling and then a named error.
 function withLock(lockFile, operation) {
   fs.mkdirSync(path.dirname(lockFile), { recursive: true });
   for (let attempt = 0; attempt < 2000; attempt += 1) {
