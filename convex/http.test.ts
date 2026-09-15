@@ -533,7 +533,11 @@ describe("phase 3 run routes", () => {
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ complete: true, daemonRows: 101, fileRows: 101, textMatches: 100, firstDiffSeq: 100, clean: false });
-  });
+    // 202 rows and a two-page comparison over one route: the default 5s budget
+    // is for a test that writes a handful of rows, and it was timing out on a
+    // busy runner. The merge gate writes a commit's tests row ONCE, so a
+    // timeout here bars that head for good.
+  }, 30_000);
 
   it("serves verified store versions as manifest entries", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
@@ -655,7 +659,7 @@ describe("POST /slack/events: a reaction on the morning digest", () => {
   const OTHER = "U0SOMEONEELSE";
   const DIGEST_TS = "1757000000.001200";
   const REACTED_AT = "1757000100.000200";
-  const TOKEN = "8f14e45f-ceea-467a-9a36-dedd4bea2543";
+  const TOKEN = "8f14e45f-ceea-467a-9a36-dedd4bea2543"; // gitleaks:allow
   const RUN_ID = "claude:box:write-slack-run";
 
   function reactionEnv() {

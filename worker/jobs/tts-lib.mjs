@@ -512,6 +512,38 @@ export const MODELS = {
   simplify: "claude-fable-5-1",
 };
 
+/**
+ * The `--output-format json` result envelope out of whatever the CLI printed,
+ * or null when it printed something else (or nothing).
+ *
+ * ONE READER FOR BOTH ENDS. A run that succeeds prints the envelope on stdout;
+ * a run that fails prints it too and then exits non-zero, which makes Node
+ * throw with the same text on `error.stdout`. Reading it in two places is how
+ * the failing end came to read it in none.
+ */
+export function resultEnvelopeOf(stdout) {
+  if (typeof stdout !== "string" || stdout.trim() === "") return null;
+  let envelope;
+  try {
+    envelope = JSON.parse(stdout);
+  } catch (error) {
+    // Not the JSON envelope. Anything other than bad JSON is a real fault.
+    if (error instanceof SyntaxError) return null;
+    throw error;
+  }
+  return envelope && typeof envelope === "object" && envelope.type === "result" ? envelope : null;
+}
+
+/** Every tool an empty `allowedTools` has to deny by name (runClaude). It is
+ *  not a policy — worker/session-host/banned-tools.mjs is that — but the
+ *  spelling of "none", for the one caller that wants a model and no tools at
+ *  all: the evals explanation regeneration, whose whole input is its prompt. */
+export const DENIABLE_TOOLS = [
+  "Task", "Bash", "BashOutput", "KillShell", "Glob", "Grep", "Read", "Edit",
+  "MultiEdit", "Write", "NotebookRead", "NotebookEdit", "WebFetch", "WebSearch",
+  "TodoWrite", "SlashCommand", "Skill", "ExitPlanMode",
+];
+
 // Run headless Claude Code (`claude -p`) and return the model's ANSWER TEXT
 // (the envelope is unwrapped here; parsing the answer is the caller's job —
 // see extractJsonObject below for the JSON-answer case).
@@ -567,6 +599,14 @@ export function runClaude(
       throw new Error("allowedTools must be an array of non-empty strings");
     }
     args.push("--allowedTools", allowedTools.join(","));
+    // AN EMPTY LIST MEANS NO TOOLS, AND THE ALLOW-LIST ALONE DOES NOT SAY SO.
+    // `--allowedTools` pre-approves; it does not withhold, and the default
+    // permission mode hands the model its read tools without asking either way
+    // (see the two modes above). The flag that withholds names its tools, so an
+    // empty allow-list has to name them — this list is that spelling and the
+    // only reason it exists. Names the CLI does not know are ignored, so it
+    // costs nothing to be complete.
+    if (allowedTools.length === 0) args.push("--disallowedTools", DENIABLE_TOOLS.join(","));
   }
   const childEnv = { ...process.env, CLAUDE_CONFIG_DIR };
   let spooled = null;
@@ -613,35 +653,48 @@ export function runClaude(
     // report which run failed needs its token.
     if (receipt !== undefined && receipt !== null) receipt.runToken = spooled.token;
   }
-  const stdout = execFileSync("claude", args, {
-    input: prompt,
-    cwd,
-    env: childEnv,
-    encoding: "utf8",
-    maxBuffer: 32 * 1024 * 1024,
-    timeout: timeoutMs ?? 10 * 60 * 1000,
-  });
+  let stdout;
+  try {
+    stdout = execFileSync("claude", args, {
+      input: prompt,
+      cwd,
+      env: childEnv,
+      encoding: "utf8",
+      maxBuffer: 32 * 1024 * 1024,
+      timeout: timeoutMs ?? 10 * 60 * 1000,
+    });
+  } catch (error) {
+    // THE CLI SAYS WHY ON ITS WAY OUT AND execFileSync THROWS THE SAYING AWAY.
+    // A non-zero exit still prints the envelope — subtype "error_max_turns" is
+    // the one that matters, because it is a BUDGET the caller set and can
+    // change — but Node's error carries only "Command failed", and that is
+    // what reached the evals log for a whole afternoon on 2026-09-14: eighty
+    // items failing with a sentence that named neither the cause nor the knob.
+    // The envelope is on `error.stdout`; this is the only place that can read
+    // it, because nothing above sees the child at all.
+    const failed = resultEnvelopeOf(error?.stdout);
+    const said = [
+      failed?.subtype ? `subtype: ${failed.subtype}` : null,
+      error?.status === null || error?.status === undefined ? null : `exit ${error.status}`,
+      error?.signal ? `signal ${error.signal}` : null,
+    ].filter((part) => part !== null);
+    // The stderr head only when the envelope said nothing — a `claude` that is
+    // not installed, or a config directory it cannot read, prints there and
+    // produces no envelope at all.
+    const stderr = failed !== null || typeof error?.stderr !== "string" ? "" : error.stderr.trim();
+    throw new Error(
+      `claude failed${said.length === 0 ? "" : ` (${said.join(", ")})`}` +
+        `${stderr === "" ? "" : `: ${stderr.split("\n")[0].slice(0, 200)}`}`,
+    );
+  }
 
   // With --output-format json the CLI prints an envelope like
   // {"type":"result","subtype":"success","result":"<the model's text>", ...}.
   // An error envelope (e.g. subtype "error_max_turns") has NO result field —
   // that is a hard failure, not something to brace-extract garbage from
   // (review-caught). If stdout isn't JSON at all, treat it as the raw answer.
-  let answerText = stdout;
-  let resultEnvelope = null;
-  try {
-    const envelope = JSON.parse(stdout);
-    if (envelope && typeof envelope === "object" && envelope.type === "result") {
-      resultEnvelope = envelope;
-      if (typeof envelope.result === "string") answerText = envelope.result;
-    }
-  } catch (err) {
-    if (err instanceof SyntaxError) {
-      // stdout wasn't the JSON envelope — fall through with raw text.
-    } else {
-      throw err;
-    }
-  }
+  const resultEnvelope = resultEnvelopeOf(stdout);
+  const answerText = typeof resultEnvelope?.result === "string" ? resultEnvelope.result : stdout;
   if (spooled && typeof resultEnvelope?.session_id === "string" && resultEnvelope.session_id) {
     const project = path.resolve(cwd ?? process.cwd()).replaceAll("\\", "-").replaceAll("/", "-").replaceAll(":", "-");
     const runFile = path.join(CLAUDE_CONFIG_DIR, "projects", project, `${resultEnvelope.session_id}.jsonl`);
@@ -652,9 +705,11 @@ export function runClaude(
       claim: { by: "launcher:runClaude", threadId: resultEnvelope.session_id, runFile, hookPayloadKeys: [] },
     });
   }
+  // A ZERO EXIT WITH NO RESULT IS THE SAME FAILURE, and it says so in the same
+  // words: one prefix means one thing to grep the cron log for.
   if (resultEnvelope && typeof resultEnvelope.result !== "string") {
     throw new Error(
-      `claude returned an error envelope (subtype: ${resultEnvelope.subtype ?? "?"})`,
+      `claude failed (subtype: ${resultEnvelope.subtype ?? "?"}): the envelope carried no result`,
     );
   }
   return answerText;

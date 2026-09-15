@@ -382,7 +382,15 @@ describe("runs", () => {
   it("continues past 100 rows and never truncates a late mismatch to clean", async () => {
     const t = convexTest(schema, modules);
     const sessionId = await session(t);
-    for (let seq = 0; seq < 101; seq += 1) await daemonRow(t, sessionId, seq, "user", { text: `row-${seq}` });
+    // One transaction, not 101: the per-row helper spent the default 5s budget
+    // on transaction overhead alone whenever the runner was busy, and the
+    // merge gate writes a commit's tests row ONCE — a timeout here bars that
+    // head for good.
+    await t.run(async (ctx) => {
+      for (let seq = 0; seq < 101; seq += 1) await ctx.db.insert("claudeMessages", {
+        sessionId, seq, turn: 0, kind: "user", content: { text: `row-${seq}` }, createdAt: seq + 1,
+      } as never);
+    });
     await t.mutation(internal.runs.internalIngest, ingest(
       run({ sessionId, status: "ended" }),
       Array.from({ length: 101 }, (_, seq) => row(seq, {
@@ -399,7 +407,56 @@ describe("runs", () => {
     const final = await t.mutation(internal.runs.internalShadowCompare, { sessionId, state: first.state } as never);
     expect(final).toMatchObject({ complete: true, daemonRows: 101, fileRows: 101, textRows: 101, textMatches: 100, firstDiffSeq: 100, clean: false });
     expect((await t.run((ctx) => ctx.db.get(sessionId)))?.rowsFrom).toBeUndefined();
-  });
+  }, 30_000);
+
+  // The defect this covers: the comparison used to call `.paginate()` on both
+  // indexes inside one mutation, which the Convex backend refuses (one
+  // paginated query per function), so /runs/compare answered 400 for every
+  // session. convex-test does not enforce that limit, so what this asserts is
+  // the shape that replaced it: bounded `.take()` reads over a seq floor that
+  // still walk three pages a side to a complete, clean verdict.
+  it("walks a 250-row session to completion over bounded reads", async () => {
+    const t = convexTest(schema, modules);
+    const sessionId = await session(t);
+    // The run row comes through the ingest door; its 250 file rows are written
+    // directly because one ingest call accepts at most 200 (`too many rows`),
+    // and what is under test is the read side, not the append fence. All 500
+    // rows land in ONE t.run: a transaction per row is 500 transactions, which
+    // on a loaded runner is the whole of the default 5s test budget.
+    expect(await t.mutation(internal.runs.internalIngest, ingest(
+      run({ sessionId, status: "ended" }), [], [],
+    ) as never)).toMatchObject({ ok: true });
+    await t.run(async (ctx) => {
+      for (let seq = 0; seq < 250; seq += 1) {
+        await ctx.db.insert("claudeMessages", {
+          sessionId, seq, turn: 0, kind: "user", content: { text: `row-${seq}` }, createdAt: seq + 1,
+        } as never);
+        await ctx.db.insert("claudeMessages", {
+          runId: "claude:laptop:root-run", seq, turn: 0, kind: "user", content: { text: `row-${seq}` },
+          digest: seq.toString(16).padStart(16, "0"), depth: 0, createdAt: seq + 1,
+        } as never);
+      }
+    });
+
+    let state: unknown;
+    let result: Awaited<ReturnType<typeof t.mutation>> | undefined;
+    for (let call = 0; call < 20; call += 1) {
+      result = await t.mutation(internal.runs.internalShadowCompare, {
+        sessionId,
+        ...(state === undefined ? {} : { state }),
+      } as never);
+      if (result.complete) break;
+      state = result.state;
+    }
+    expect(result).toMatchObject({
+      complete: true, daemonRows: 250, fileRows: 250, textRows: 250, textMatches: 250, clean: true,
+      byKind: { user: { daemon: 250, file: 250 } },
+    });
+    expect(result).not.toHaveProperty("firstDiffSeq");
+    expect((await t.run((ctx) => ctx.db.get(sessionId)))?.rowsFrom).toBe("runs");
+    // The biggest fixture in this file, and the default 5s is a budget for a
+    // test that writes a handful of rows, not five hundred.
+  }, 30_000);
 
   it("admits only terminal run rows and does not suppress their later transition", async () => {
     const t = convexTest(schema, modules);

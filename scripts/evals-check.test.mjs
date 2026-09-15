@@ -1,12 +1,20 @@
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { noItemTrailer as rowTrailer } from "../worker/jobs/evals-row.mjs";
 import {
+  COVERAGE_NOT_REQUIRED,
+  changedPathsFromGit,
   gate,
   goldenItemRule,
   matchesWatched,
   noItemTrailer,
   report,
   POLL_TIMEOUT_MS,
+  unaffectedBy,
+  waitForEvals,
   WATCHED_PATHS,
 } from "./evals-check.mjs";
 
@@ -47,6 +55,16 @@ describe("gate", () => {
     expect(verdict.ok).toBe(true);
     expect(verdict.stillFailing.map((one) => one.id)).toEqual(["one"]);
     expect(report(head, base, verdict).join("\n")).toContain("still failing  one");
+  });
+
+  it("fails partial runner errors without also reporting them as still failing", () => {
+    const head = run({ pass: 26, fail: 3, items: 29, failures: [failure("one", { errored: true }), failure("two", { errored: true }), failure("three", { errored: true })] });
+    const base = run({ sha: "9f8e7d6c", items: 29, pass: 29, scoredIds: Array.from({ length: 29 }, (_, i) => `item-${i}`) });
+    const verdict = gate(head, base);
+    expect(verdict).toMatchObject({ ok: false, regressions: [] });
+    expect(verdict.stillFailing).toHaveLength(0);
+    expect(report(head, base, verdict).join("\n")).not.toContain("still failing");
+    expect(report(head, base, verdict).at(-1)).toBe("FAILED: 3 errored.");
   });
 
   it("passes with no baseline when the base run is missing", () => {
@@ -147,7 +165,14 @@ describe("gate, continued", () => {
     const head = run({ items: 0, pass: 0, fail: 0, scoredIds: [], error: "could not fetch deadbeef" });
     const verdict = gate(head, null);
     expect(verdict).toMatchObject({ ok: false, reason: "could not fetch deadbeef" });
-    expect(report(head, null, verdict).join("\n")).toContain("FAILED: the run could not be made");
+    expect(report(head, null, verdict).join("\n")).toBe("the evals could not run on the box: could not fetch deadbeef");
+  });
+
+  it("fails the new catastrophic row shape before regressions can open it", () => {
+    const head = run({ error: true, reason: "runner failed: Not logged in", regressions: 0 });
+    const verdict = gate(head, run());
+    expect(verdict.ok).toBe(false);
+    expect(report(head, run(), verdict)).toEqual(["the evals could not run on the box: runner failed: Not logged in"]);
   });
 
   it("counts an item head scored and base never did as new, not as a regression", () => {
@@ -188,6 +213,20 @@ describe("gate, continued", () => {
   it("watches the paths the two workflows fire on", () => {
     expect(WATCHED_PATHS).toContain("model-of-tom/**");
     expect(WATCHED_PATHS).toContain("evals/golden/**");
+  });
+
+  // EVERY DIRECTORY THE SET IS READ FROM IS WATCHED. loadTriggers reads
+  // evals/triggers/*.json into the run, so a trigger-only change moves what the
+  // set measures — and the workflow `paths:` list this constant replaced never
+  // named the directory. That omission failed CLOSED while the filter lived in
+  // the workflow (no job, no row, gate denied for want of one); inside the check
+  // it fails OPEN, writing a passing unaffected row for a change to the set
+  // itself. Found by the box's audit.
+  it("watches every directory the eval set is read from", () => {
+    expect(WATCHED_PATHS).toContain("evals/triggers/**");
+    expect(unaffectedBy(["evals/triggers/layer-know.json"])).toBe(false);
+    expect(unaffectedBy(["evals/tasks/slack.json"])).toBe(false);
+    expect(unaffectedBy(["evals/golden/x.md"])).toBe(false);
   });
 
   // The skill table, its generator, the router that grants them, and the set
@@ -242,6 +281,49 @@ describe("gate, continued", () => {
     // reports a job failure instead of the box's silence.
     expect(jobTimeout).toBeGreaterThan(POLL_TIMEOUT_MS / 60_000);
   });
+
+  it("gives WikiTom requests their GitHub run identity", () => {
+    const workflow = readFileSync("evals/wikitom/evals.yml", "utf8");
+    expect(workflow).toMatch(/\r?\n\s*RUN_ID:\s*\$\{\{ github\.run_id \}\}/);
+  });
+
+  it("prints a forced by-hand recovery command after the box times out", () => {
+    const source = readFileSync("scripts/evals-check.mjs", "utf8");
+    expect(source).toMatch(
+      /the Jarvis Box did not answer[\s\S]*node \/opt\/tts\/evals\.mjs --repo \$\{repo\} --sha \$\{sha\} --force/,
+    );
+  });
+
+  it("prints a protocol gap and exits non-zero after one poll", async () => {
+    const gap = "the box's evals runner is at protocol 1; this door needs 2 — run worker/setup.sh on the box";
+    const callFn = vi.fn(async () => ({
+      run: null,
+      boxEvalsVersion: 1,
+      evalsProtocol: 2,
+      protocolGap: gap,
+    }));
+    const error = vi.fn();
+    const exit = vi.fn();
+    const sleepFn = vi.fn();
+    const result = await waitForEvals(
+      {
+        site: "https://example.convex.site",
+        key: "key",
+        repo: "tom.quest",
+        sha: "abc1234",
+        baseSha: "base123",
+        deadline: 1_000,
+      },
+      { callFn, error, exit, sleepFn, now: () => 0, log: vi.fn() },
+    );
+    expect(callFn).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalledWith(gap);
+    expect(exit).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(sleepFn).not.toHaveBeenCalled();
+    expect(result.protocolGap).toBe(true);
+  });
 });
 
 describe("matchesWatched", () => {
@@ -266,19 +348,200 @@ describe("matchesWatched", () => {
     expect(matchesWatched(12)).toBe(false);
   });
 
-  // The two lists are one fact spelled twice, and they had already drifted:
-  // the workflow fired on paths WATCHED_PATHS had never heard of and missed
-  // one it watched. This is the pin. A generated workflow file would be a file
-  // nobody can read in a pull request; a failing test names the drift in a
-  // line.
-  it("is the same list as the workflow's paths:, in the same order", () => {
+  // The list used to be spelled twice — here and as the workflow's `paths:` —
+  // and the two drifted in both directions before a test pinned them equal.
+  // The copy is GONE now: the workflow fires on every pull request and this
+  // list decides inside the check, where the answer lands on a row. This is
+  // the pin that keeps the second spelling from coming back, because a
+  // workflow that does not run records nothing, and no row denies the merge.
+  it("is the only spelling: the workflow filters no paths of its own", () => {
     // \r? throughout: a Windows checkout hands this file back with CRLF, and a
     // test that only reads LF passes on the box and fails on Tom's laptop.
     const workflow = readFileSync(".github/workflows/evals.yml", "utf8");
-    const block = /\r?\n {4}paths:\r?\n((?:[ \t]+- ".*"\r?\n)+)/.exec(workflow);
-    expect(block).not.toBe(null);
-    const paths = [...block[1].matchAll(/- "([^"]+)"/g)].map((hit) => hit[1]);
-    expect(paths).toEqual(WATCHED_PATHS);
+    expect(/\r?\n {4}paths(-ignore)?:/.test(workflow)).toBe(false);
+    expect(/\r?\non:\r?\n {2}pull_request:\r?\n/.test(workflow)).toBe(true);
+  });
+});
+
+// THE FILTER THAT USED TO BE THE WORKFLOW'S. A pull request touching nothing
+// watched gets a row saying so instead of no row at all — which is what a
+// skipped workflow left behind, and what the merge gate denies on.
+describe("unaffectedBy", () => {
+  it("is true when no changed path is watched", () => {
+    expect(unaffectedBy(["convex/ttsMerge.ts", "worker/jobs/evals.mjs"])).toBe(true);
+    expect(unaffectedBy([])).toBe(true);
+  });
+
+  it("is false when any one of them is", () => {
+    expect(unaffectedBy(["convex/ttsMerge.ts", "model-of-tom/intent.md"])).toBe(false);
+    expect(unaffectedBy(["worker/AGENTS.md"])).toBe(false);
+  });
+
+  // A diff that could not be read is NOT an unaffected branch. Answering
+  // "nothing watched changed" off a list nobody computed would skip the evals
+  // on exactly the runs that lost their diff; those pay for a full run.
+  it("is false when there is no diff at all", () => {
+    expect(unaffectedBy(null)).toBe(false);
+    expect(unaffectedBy(undefined)).toBe(false);
+  });
+});
+
+// THE DIFF THE SHORTCUT IS READ FROM. `git diff --name-only` prints a detected
+// rename as its DESTINATION alone, so moving a watched context file out of a
+// watched directory would reach unaffectedBy() as one unwatched path — and the
+// branch would get a passing row with nothing scored. `--no-renames` makes the
+// move a delete and an add, and the delete is watched.
+describe("the changed-path diff", () => {
+  it("sees a watched file moved out of a watched directory", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "evals-rename-"));
+    const git = (...args) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    try {
+      git("init", "-q", "-b", "main");
+      git("config", "user.email", "t@example.com");
+      git("config", "user.name", "t");
+      mkdirSync(path.join(dir, "model-of-tom"), { recursive: true });
+      writeFileSync(path.join(dir, "model-of-tom", "intent.md"), ["a line", "and another", ""].join("\n"));
+      git("add", "-A");
+      git("commit", "-qm", "base");
+      const base = git("rev-parse", "HEAD").trim();
+      mkdirSync(path.join(dir, "docs"), { recursive: true });
+      git("mv", "model-of-tom/intent.md", "docs/intent.md");
+      git("commit", "-qm", "move it out");
+      const head = git("rev-parse", "HEAD").trim();
+      const paths = (...flags) => git("diff", ...flags, "--name-only", `${base}...${head}`)
+        .split(new RegExp("\\r?\\n"))
+        .filter((line) => line !== "");
+      // The hole, stated: rename detection hides the watched path entirely.
+      expect(paths()).toEqual(["docs/intent.md"]);
+      expect(unaffectedBy(paths())).toBe(true);
+      // And the flag the check passes closes it.
+      expect(paths("--no-renames").sort()).toEqual(["docs/intent.md", "model-of-tom/intent.md"]);
+      expect(unaffectedBy(paths("--no-renames"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The check reads its own diff inside main(), which no test can call, so the
+  // flag is pinned on the source the way the workflow's own facts are.
+  it("is the flag the check actually passes", () => {
+    const source = readFileSync("scripts/evals-check.mjs", "utf8");
+    expect(source).toContain('execFileSync("git", ["diff", "--no-renames", "--name-only", "-z"');
+  });
+
+  it("keeps a non-ASCII trigger pathname unquoted and affected", () => {
+    const changed = changedPathsFromGit("evals/triggers/skill-know-h\u00e9alth.json\0");
+    expect(changed).toEqual(["evals/triggers/skill-know-h\u00e9alth.json"]);
+    expect(unaffectedBy(changed)).toBe(false);
+  });
+
+  // The queue tells a pull request's live head from the shas behind it by the
+  // workflow run's id, and it can only do that if the workflow hands it over.
+  it("is given the push order the queue reads", () => {
+    const workflow = readFileSync(".github/workflows/evals.yml", "utf8");
+    expect(workflow).toMatch(/RUN_ID:\s*\$\{\{\s*github\.run_id\s*\}\}/);
+    expect(readFileSync("scripts/evals-check.mjs", "utf8")).toContain("process.env.RUN_ID");
+  });
+});
+
+describe("an unaffected row", () => {
+  const row = (over = {}) => ({
+    repo: "tom.quest",
+    sha: "2e08b28e9df",
+    unaffected: true,
+    changed: ["convex/ttsMerge.ts", "worker/jobs/evals.mjs"],
+    items: 40,
+    pass: 40,
+    fail: 0,
+    regressions: 0,
+    failures: [],
+    scoredIds: [],
+    tasks: { items: 0, pass: 0, fail: 0, failures: [] },
+    ...over,
+  });
+
+  it("passes the gate and answers coverage not-required", () => {
+    const verdict = gate(row(), null, { changed: ["convex/ttsMerge.ts"], prBody: "" });
+    expect(verdict.ok).toBe(true);
+    expect(verdict.goldenCoverage).toBe(COVERAGE_NOT_REQUIRED);
+    expect(verdict.regressions).toEqual([]);
+  });
+
+  // The same words convex/ttsMerge.ts puts on the gate's `why` and the
+  // #tts-decisions merge line, so all three say one thing about the commit.
+  it("reports one line naming what was looked at", () => {
+    const lines = report(row(), null, gate(row(), null));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("the evals are unaffected — no watched path changed");
+    expect(lines[0]).toContain("2 paths");
+  });
+});
+
+// The row the box posts for a head a later push replaced. It is never a run:
+// nothing was cloned and nothing was scored, and the only sentence worth
+// printing is which sha to look at instead.
+describe("a superseded row", () => {
+  const row = (over = {}) => ({
+    repo: "tom.quest",
+    sha: "2e08b28e9df",
+    superseded: true,
+    supersededBy: "0b1ca1fdeadbeef",
+    error: "superseded by 0b1ca1f; re-run this check at the head of the branch",
+    items: 0,
+    pass: 0,
+    fail: 0,
+    regressions: null,
+    goldenCoverage: null,
+    failures: [],
+    scoredIds: [],
+    tasks: { items: 0, pass: 0, fail: 0, failures: [] },
+    ...over,
+  });
+
+  it("fails, and names the sha to re-run at", () => {
+    const verdict = gate(row(), null, { changed: ["model-of-tom/intent.md"], prBody: "" });
+    expect(verdict).toMatchObject({ ok: false, reason: "superseded by 0b1ca1f, re-run at head" });
+    expect(verdict.regressions).toEqual([]);
+  });
+
+  it("reports two lines and no numbers", () => {
+    const lines = report(row(), null, gate(row(), null));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain("superseded by 0b1ca1f");
+    expect(lines[1]).toContain("Re-run this check at the head of the branch");
+    // No set line: there was no set, no base and nothing compared.
+    expect(lines.join(" ")).not.toContain("golden set");
+  });
+
+  // A row carrying BOTH fields — and every superseded row does — reads as the
+  // supersession, not as a run the box could not make.
+  it("is read before the error a run that failed would carry", () => {
+    expect(report(row(), null, gate(row(), null)).join(" "))
+      .not.toContain("the run could not be made");
+  });
+
+  // A REQUEST OLDER THAN THE PROTOCOL carries the protocol's name in that
+  // field rather than a sha (worker/jobs/evals-row.mjs PROTOCOL_SUPERSEDED).
+  // It fails the same way and asks for the same thing — a re-run at the head —
+  // and the name is printed whole, because seven characters of it would say
+  // "protoco".
+  const legacy = () => row({
+    supersededBy: "protocol-2",
+    error: "filed before evals protocol 2; re-run this check at the head of the branch",
+  });
+
+  it("fails a pre-protocol request and still asks for a re-run at the head", () => {
+    const verdict = gate(legacy(), null, { changed: ["model-of-tom/intent.md"], prBody: "" });
+    expect(verdict).toMatchObject({
+      ok: false,
+      reason: "filed before the box's evals protocol, re-run at head",
+    });
+    const lines = report(legacy(), null, verdict);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain("filed before the box's evals protocol");
+    expect(lines.join(" ")).not.toContain("protoco.");
+    expect(lines.join(" ")).not.toContain("a later push replaced this head");
+    expect(lines[1]).toContain("Re-run this check at the head of the branch");
   });
 });
 
@@ -295,6 +558,32 @@ describe("noItemTrailer", () => {
     expect(noItemTrailer("Put `evals: no-item <reason>` on the body if you owe none.")).toBe(null);
     expect(noItemTrailer("evals: no-item")).toBe(null);
     expect(noItemTrailer(undefined)).toBe(null);
+  });
+
+  // THE SECOND SPELLING, KEPT HONEST. worker/jobs/evals-row.mjs carries this
+  // reader too, because the Convex door needs it to decide whether a re-filed
+  // request is the same question (evalsRequestIdentity) and cannot import this
+  // file: it has zero imports on purpose — WikiTom's Action fetches the single
+  // file and runs it. Two bodies of one rule can only be trusted if something
+  // runs both, so this does.
+  it("agrees with the copy the Convex door reads", () => {
+    const bodies = [
+      "Lands the narrow.\n\nevals: no-item pure deletion, no new behaviour\n",
+      "evals:no-item   a typo fix in a comment  ",
+      "EVALS: NO-ITEM shouting still counts",
+      "Put `evals: no-item <reason>` on the body if you owe none.",
+      "evals: no-item",
+      "\tevals: no-item  leading tab and trailing space \t",
+      "first line\r\nevals: no-item windows line endings\r\nlast line",
+      "an evals: no-item reason mid-sentence does not count",
+      "",
+      undefined,
+      null,
+      42,
+    ];
+    for (const body of bodies) {
+      expect([body, rowTrailer(body)]).toEqual([body, noItemTrailer(body)]);
+    }
   });
 });
 

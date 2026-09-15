@@ -53,6 +53,10 @@ try {
     process.stdout.write(
       "auditor: " + result.model + (result.fallback ? " (" + result.fallback + ")" : "") + "\n",
     );
+    // WHERE THE CLAIM CAME FROM. "Wider than it claims to do" is a refusal the
+    // auditor may write, so whoever reads a refusal has to be able to see what
+    // it was reading as the claim.
+    process.stdout.write("claim: " + (result.claim?.source ?? "none") + "\n");
     process.stdout.write(result.text.trim() + "\n");
     if (result.verdict !== "APPROVED") process.exitCode = 4;
   }

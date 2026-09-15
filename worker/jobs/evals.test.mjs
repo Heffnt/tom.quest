@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { bareSkillName, repoSkillName } from "../../scripts/skills.mjs";
 import { NO_BODY, routeSkills } from "./skill-router.mjs";
 import {
@@ -15,11 +15,16 @@ import {
   AUDIT_FAULTS_DIR,
   changedTriggerFiles,
   deterministicFailure,
+  DIFF_HISTORY_DEEPEN,
   efficiencyOf,
   efficiencyVerdict,
+  EVALS_JOB,
+  EVALS_PROTOCOL_FAILURE_KEY,
+  evalsRequestRoute,
   failedRun,
   faultAudits,
   faultsMonthly,
+  directRequestIdentity,
   goldenHash,
   HEAD_TRIALS,
   isFlaky,
@@ -45,10 +50,13 @@ import {
   PR_TRIALS,
   runCase,
   runEvals,
+  runAndPost,
   runItem,
+  runnerFailure,
   runTask,
   runTriggerCase,
   runTrials,
+  serveRequest,
   scoreLearning,
   selectItems,
   SKILL_SEAM_REASON,
@@ -57,20 +65,25 @@ import {
   skillsFor,
   stampAgainstBase,
   standardRulesFor,
+  servePass,
+  supersededRun,
   TASK_BRANCHES,
   tokensOf,
   treesFor,
   trialsFor,
+  trustedRequestDiff,
   triggerCounts,
   triggerBase,
   triggerMethod,
   triggerSkills,
+  unaffectedRun,
   TRIALS_CAPABILITY,
   TRIALS_REGRESSION,
   verdictOf,
   VERIFIER_CAVEAT,
   verifierScorecard,
 } from "./evals.mjs";
+import { EVALS_PROTOCOL } from "./evals-row.mjs";
 
 const dirs = [];
 afterEach(() => {
@@ -110,6 +123,17 @@ const item = (over = {}) => ({
 
 const MARKER = "LAYER-TEXT-MARKER-DO-NOT-LEAK";
 const layers = { names: ["write", "know"], text: `${MARKER}\nwrite plainly.`, commit: "abc123", files: [] };
+
+describe("the evals protocol rollout", () => {
+  it("states the same deploy order at the door, runner, and operator guide", () => {
+    const sentence =
+      "roll the box (worker/setup.sh) before or immediately after merging a change to the evals row contract; " +
+      "until it rolls, every evals request is pending and the gate names the protocol gap";
+    for (const file of ["convex/ttsEvals.ts", "worker/jobs/evals.mjs", "worker/README.md"]) {
+      expect(fs.readFileSync(file, "utf8")).toContain(sentence);
+    }
+  });
+});
 
 describe("treesFor", () => {
   it("pins the repo under test and takes the other at its default branch", () => {
@@ -224,7 +248,7 @@ describe("runItem", () => {
         },
       }));
     }
-    expect(results[0]).toMatchObject({ judged: "fail", reason: expect.stringMatching(/^regeneration failed/) });
+    expect(results[0]).toMatchObject({ judged: "fail", errored: true, reason: expect.stringMatching(/^runner failed/) });
     expect(results[1].judged).toBe("pass");
   });
 
@@ -239,7 +263,7 @@ describe("runItem", () => {
           : "I think it is probably fine, honestly";
       },
     });
-    expect(result).toMatchObject({ judged: "fail", reason: expect.stringMatching(/^judge answer unreadable/) });
+    expect(result).toMatchObject({ judged: "fail", errored: true, reason: expect.stringMatching(/^runner failed: judge answer unreadable/) });
   });
 
   it("refuses to score an item whose label sentence reached the prompt", async () => {
@@ -261,9 +285,16 @@ describe("parseJudge", () => {
     expect(parseJudge('```json\n{"verdict":"fail","reason":"still restates the statement"}\n```').judged).toBe("fail");
   });
 
+  it("redacts credentials in a valid judge failure reason before it is stored", () => {
+    const secret = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"; // gitleaks:allow
+    const result = parseJudge(JSON.stringify({ verdict: "fail", reason: `judge transport mentioned ${secret}` }));
+    expect(result).toMatchObject({ judged: "fail", reason: expect.stringContaining("judge transport mentioned") });
+    expect(result.reason).not.toContain(secret);
+  });
+
   it("rejects a verdict that is not pass or fail, and an empty reason", () => {
-    expect(parseJudge('{"verdict":"maybe","reason":"x"}').reason).toMatch(/^judge answer unreadable/);
-    expect(parseJudge('{"verdict":"pass","reason":"  "}').reason).toMatch(/^judge answer unreadable/);
+    expect(parseJudge('{"verdict":"maybe","reason":"x"}').reason).toMatch(/^runner failed: judge answer unreadable/);
+    expect(parseJudge('{"verdict":"pass","reason":"  "}').reason).toMatch(/^runner failed: judge answer unreadable/);
   });
 });
 
@@ -285,9 +316,35 @@ describe("aggregate", () => {
   });
 });
 
+/**
+ * A fixture worktree, INSIDE THE PROJECT ROOT and not in the system temp
+ * directory.
+ *
+ * The code under test IMPORTS OUT OF THIS TREE — basePolicyOf loads the base
+ * worktree's scripts/evals-check.mjs, and triggerNameMappingFor loads its
+ * scripts/skills.mjs — and under vitest a dynamic import resolves through
+ * Vite, which serves nothing outside the project root. A tree in os.tmpdir()
+ * therefore fails those imports with "Cannot find module" while fs.existsSync
+ * on the same path answers true, which is as confusing a failure as this file
+ * has. The dot prefix keeps it out of every glob; afterEach removes it.
+ */
 function tree() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "evals-tree-"));
+  const dir = fs.mkdtempSync(path.join(process.cwd(), ".evals-tree-"));
   dirs.push(dir);
+  return dir;
+}
+
+/**
+ * The area trigger files, seeded empty. loadTriggers requires every one of
+ * AREA_TRIGGER_FILES to exist in the pinned tree, so any fixture a WEEKLY run
+ * is made against needs them — a weekly run takes the whole trigger set. They
+ * carry no cases, because a fixture about something else must not also pay for
+ * trigger cases.
+ */
+function writeAreaTriggers(dir) {
+  for (const file of AREA_TRIGGER_FILES) {
+    writeJson(dir, path.join("evals", "triggers", file), { name: file.replace(/^skill-/, "").replace(/.json$/, ""), kind: "skill", cases: [] });
+  }
   return dir;
 }
 
@@ -378,6 +435,15 @@ describe("repo tasks", () => {
     expect(result.judged).toBe("pass");
   });
 
+  it("turns a thrown task runner into one redacted item error", async () => {
+    const secret = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"; // gitleaks:allow
+    const result = await runTask({ id: "t", repo: "slack", kind: "slack" }, {}, {
+      runTaskKind: async () => { throw new Error(`Not logged in ${secret}`); },
+    });
+    expect(result).toMatchObject({ judged: "fail", errored: true, reason: expect.stringMatching(/^runner failed: Not logged in/) });
+    expect(result.reason).not.toContain(secret);
+  });
+
   it("fails an unknown task kind rather than silently passing it", async () => {
     expect(await runTask({ id: "x", repo: "tom.quest", kind: "invent" }, {}, {})).toMatchObject({ judged: "fail" });
   });
@@ -450,6 +516,22 @@ describe("stampAgainstBase", () => {
     expect(stamped.regressions).toBe(1);
     expect(stamped.failures[0].regression).toBe(true);
   });
+
+  it("does not stamp three errored items out of twenty-nine as zero regressions", async () => {
+    const scoredIds = Array.from({ length: 29 }, (_value, index) => `item-${index}`);
+    const failures = scoredIds.slice(0, 3).map((id) => ({
+      id, partition: "prepare/chores", verdict: "revise", reason: "runner failed", confirmed: true, errored: true,
+    }));
+    const head = {
+      goldenHash: "h", scoredIds, failures, errored: 3, items: 29, results: [], tasks: { failures: [] },
+    };
+    const base = {
+      goldenHash: "h", scoredIds, failures: [], errored: 0, items: 29, results: [], tasks: { failures: [] },
+    };
+
+    const stamped = await stampAgainstBase(head, base);
+    expect(stamped).toMatchObject({ regressions: null, errored: 3 });
+  });
 });
 
 // Every item is a live model call, so one trial is a sample and not a
@@ -519,6 +601,18 @@ describe("the head trials", () => {
     expect(calls.count).toBe(1);
   });
 
+  it("makes a runner error terminal and redacts it before it reaches the item", async () => {
+    const raw = "Not logged in ghp_abcdefghijklmnopqrstuvwxyz1234567890"; // gitleaks:allow
+    const calls = { count: 0 };
+    const result = await runTrials("a", new Set(["a"]), async () => {
+      calls.count += 1;
+      return { id: "a", partition: "prepare/chores", verdict: "revise", confirmed: true, ...runnerFailure(raw) };
+    });
+    expect(calls.count).toBe(1);
+    expect(result).toMatchObject({ judged: "fail", errored: true, reason: expect.stringMatching(/^runner failed: Not logged in/) });
+    expect(result.reason).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890"); // gitleaks:allow
+  });
+
   it("reads the base's passing ids off the row, tasks and golden items alike", () => {
     const base = {
       scoredIds: ["a", "b", "task-1"],
@@ -527,6 +621,7 @@ describe("the head trials", () => {
     };
     expect([...passedIds(base)]).toEqual(["a"]);
     expect(passedIds(null).size).toBe(0);
+    expect(passedIds({ error: true, scoredIds: ["a"] }).size).toBe(0);
   });
 });
 
@@ -538,6 +633,11 @@ describe("runEvals carries the trial rule end to end", () => {
     layers: () => layers,
     loadModules: async () => ({ prepare: { preparePrompt: () => "PROMPT WITH NO LABEL IN IT" } }),
     taskRepos: () => [],
+    // A weekly run takes the whole trigger set, and the mapping is imported
+    // from the pinned tree unless the io supplies it. These fixtures pin no
+    // scripts/skills.mjs, and what they are about is what a broken RUNNER does
+    // to a run's numbers — not what the trigger arm reads.
+    triggerNameMapping: NAMES,
     worktree: (repo) => ({ dir, commit: repo === "WikiTom" ? "wiki1" : "tq1", remove: () => {} }),
   });
   const regen = '{"brief":"b","entryAction":"e","workDescription":"w","groundUpExplanation":"g"}';
@@ -563,6 +663,78 @@ describe("runEvals carries the trial rule end to end", () => {
     const run = await runEvals({ repo: "tom.quest", sha: "head" }, io(answers, dir));
     expect(run).toMatchObject({ items: 1, pass: 0, fail: 1, flaky: 0, calls: 2 });
     expect(answers.length).toBe(2);
+  });
+
+  it("records an all-runner-failure set as a catastrophic nonmeasurement", async () => {
+    const dir = writeAreaTriggers(tree());
+    for (let index = 0; index < 29; index += 1) {
+      writeJson(dir, path.join("evals", "golden", `${index}.json`), item({ id: `item-${index}`, sentence: LABEL }));
+    }
+    const broken = {
+      ...io([], dir),
+      runClaude: async () => { throw new Error("Not logged in"); },
+    };
+    const run = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, broken);
+    expect(run).toMatchObject({ items: 29, errored: 29, error: true, reason: "runner failed: Not logged in", regressions: null, goldenCoverage: null });
+    expect(run.errors).toEqual(["Not logged in", "Not logged in", "Not logged in"]);
+  });
+
+  it("stamps thrown model-launcher failures as catastrophic even for unconfirmed items", async () => {
+    const dir = writeAreaTriggers(tree());
+    for (let index = 0; index < 29; index += 1) {
+      writeJson(dir, path.join("evals", "golden", `${index}.json`), item({
+        id: `item-${index}`,
+        job: "explanation",
+        sentence: LABEL,
+        confirmedByTom: false,
+        input: { topic: "the model launcher", contextLines: [] },
+        output: { explanation: "the old explanation" },
+      }));
+    }
+    const broken = {
+      ...io([], dir),
+      // The real launcher throws on a failed command, so the eval records it
+      // as an error before a free-form job can hand it to the judge.
+      runClaude: async () => { throw new Error("Command failed: claude -p --model haiku"); },
+    };
+    const run = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, broken);
+    expect(run).toMatchObject({
+      items: 29,
+      pass: 0,
+      fail: 29,
+      errored: 29,
+      error: true,
+      reason: "runner failed: Command failed: claude -p --model haiku",
+      regressions: null,
+      goldenCoverage: null,
+    });
+    expect(run.failures).toHaveLength(29);
+    expect(run.failures.every((failure) => failure.confirmed === false && failure.errored === true)).toBe(true);
+  });
+
+  it("keeps three runner failures in a twenty-nine-item run as partial errors", async () => {
+    const dir = writeAreaTriggers(tree());
+    for (let index = 0; index < 29; index += 1) {
+      writeJson(dir, path.join("evals", "golden", `${index}.json`), item({ id: `item-${index}`, sentence: LABEL }));
+    }
+    let errors = 0;
+    let successfulCalls = 0;
+    const partial = {
+      ...io([], dir),
+      runClaude: async () => {
+        if (errors < 3) {
+          errors += 1;
+          throw new Error("Not logged in");
+        }
+        successfulCalls += 1;
+        return successfulCalls % 2 === 1 ? regen : '{"verdict":"pass","reason":"yes"}';
+      },
+    };
+    const run = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, partial);
+    expect(run).toMatchObject({ items: 29, pass: 26, fail: 3, errored: 3 });
+    expect(run.error).toBeUndefined();
+    expect(run.failures).toHaveLength(3);
+    expect(run.failures.every((failure) => failure.errored === true)).toBe(true);
   });
 });
 
@@ -1399,11 +1571,11 @@ describe("runEvals over a run case", () => {
     worktree: (repo) => ({ dir, commit: repo === "WikiTom" ? "wiki1" : "tq1", remove: () => {} }),
   });
   const caseDir = (over) => {
-    const dir = tree();
-    for (const file of AREA_TRIGGER_FILES) {
-      writeJson(dir, path.join("evals", "triggers", file), { name: file.replace(/^skill-/, "").replace(/\.json$/, ""), kind: "skill", cases: [] });
-    }
+    const dir = writeAreaTriggers(tree());
     writeJson(dir, path.join("evals", "golden", "runs", "a.json"), runCaseItem({ id: "a", ...over }));
+    const policy = path.join(dir, "scripts", "evals-check.mjs");
+    fs.mkdirSync(path.dirname(policy), { recursive: true });
+    fs.copyFileSync(path.join("scripts", "evals-check.mjs"), policy);
     return dir;
   };
 
@@ -1415,6 +1587,187 @@ describe("runEvals over a run case", () => {
     expect(io.calls.regen).toBe(1);
     expect(run.results).toEqual([{ id: "a", judged: "pass", passK: true, tokensMedian: null }]);
     expect(run.ablation).toEqual([]);
+  });
+
+  it("posts a nonmeasurement when the scored request was replaced mid-run", async () => {
+    const posted = [];
+    const env = { CONVEX_SITE_URL: "https://example.convex.site", TTS_WORKER_KEY: "k" };
+    vi.stubGlobal("fetch", vi.fn(async (url, init) => {
+      if (String(url).includes("/tts/evals-request?")) {
+        // The request the runner captured had requestedAt 1; this is its
+        // replacement, so a passing measurement must not answer it.
+        return { ok: true, status: 200, text: async () => JSON.stringify({ request: { requestedAt: 2 } }) };
+      }
+      if (init?.body) posted.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+    const data = await serveRequest(env, runIoFor(caseDir(), ["pass"]), {
+      repo: "tom.quest",
+      sha: "head",
+      baseSha: null,
+      changed: ["model-of-tom/intent.md"],
+      prBody: "evals: no-item wording only",
+      unaffected: false,
+      requestedAt: 1,
+    }, { diffRun: () => "model-of-tom/intent.md\0" });
+    expect(data).toMatchObject({ error: "eval request replaced while the runner was measuring it", regressions: null });
+    // The missing base is measured first; the head's stale answer remains the
+    // last row and is the only row that can answer this request.
+    expect(posted).toHaveLength(2);
+    expect(posted.at(-1).data).toMatchObject({ answersRequestAt: 1, regressions: null, goldenCoverage: null });
+  });
+
+  it("posts a plain direct recovery run with the live request identity", async () => {
+    const posted = [];
+    const env = { CONVEX_SITE_URL: "https://example.convex.site", TTS_WORKER_KEY: "k" };
+    const request = {
+      repo: "tom.quest",
+      sha: "head000",
+      baseSha: "base000",
+      changed: ["model-of-tom/intent.md"],
+      prBody: "evals: no-item because this recovery changes the runner only",
+      unaffected: false,
+      requestedAt: 42,
+    };
+    vi.stubGlobal("fetch", vi.fn(async (url, init) => {
+      const href = String(url);
+      if (href.includes("/tts/evals-request?")) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ request }) };
+      }
+      if (href.includes("sha=head000")) {
+        // The sha has an old row, but it answers the previous request rather
+        // than this re-filed one, so the normal lookup properly returns null.
+        return { ok: true, status: 200, text: async () => JSON.stringify({ run: null, base: null }) };
+      }
+      if (href.includes("/tts/evals-run")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            run: {
+              repo: "tom.quest",
+              sha: "base000",
+              items: 1,
+              pass: 1,
+              failures: [],
+              scoredIds: ["a"],
+              results: [{ id: "a", judged: "pass" }],
+              tasks: { failures: [] },
+            },
+            base: null,
+          }),
+        };
+      }
+      if (init?.body) posted.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+
+    const identity = await directRequestIdentity(env, { repo: "tom.quest", sha: "head000" });
+    const dir = caseDir();
+    const data = await runAndPost(env, runIo(["pass"], [], {
+      layers: () => layers,
+      loadModules: async () => ({}),
+      taskRepos: () => [],
+      worktree: (repo) => ({
+        dir,
+        commit: repo === "WikiTom" ? "wiki1" : "head000",
+        remove: () => {},
+      }),
+    }), {
+      repo: "tom.quest",
+      sha: "head000",
+      base: "base000",
+      limit: 10,
+      jobs: null,
+      weekly: false,
+      ablation: false,
+      force: false,
+      changed: ["model-of-tom/intent.md"],
+      prBody: identity.prBody,
+      answersRequestAt: identity.answersRequestAt,
+    });
+
+    expect(data).toMatchObject({ regressions: 0, goldenCoverage: true });
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({ kind: "evals-run", key: "tom.quest@head000" });
+    expect(posted[0].data).toMatchObject({
+      answersRequestAt: 42,
+      answersBaseSha: "base000",
+      answersChanged: ["model-of-tom/intent.md"],
+      answersPrBody: "evals: no-item because this recovery changes the runner only",
+    });
+  });
+
+  it("remakes an unaffected or superseded stored base before comparing the head", async () => {
+    const posted = [];
+    let storedBase;
+    const env = { CONVEX_SITE_URL: "https://example.convex.site", TTS_WORKER_KEY: "k" };
+    vi.stubGlobal("fetch", vi.fn(async (url, init) => {
+      const href = String(url);
+      if (href.includes("sha=head000")) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ run: null, base: null }) };
+      }
+      if (href.includes("sha=base000")) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ run: storedBase, base: null }) };
+      }
+      if (init?.body) posted.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+
+    for (const [kind, row] of [
+      ["unaffected", { unaffected: true }],
+      ["superseded", { superseded: true }],
+    ]) {
+      posted.length = 0;
+      storedBase = { items: 0, pass: 0, regressions: 0, ...row };
+      const dir = caseDir();
+      const io = runIo(["pass", "pass"], [], {
+        layers: () => layers,
+        loadModules: async () => ({}),
+        taskRepos: () => [],
+        worktree: (repo, ref) => ({
+          dir,
+          commit: repo === "WikiTom" ? "wiki1" : ref,
+          remove: () => {},
+        }),
+      });
+
+      const data = await runAndPost(env, io, {
+        repo: "tom.quest",
+        sha: "head000",
+        base: "base000",
+        limit: 10,
+        jobs: null,
+        weekly: false,
+        force: false,
+        changed: [],
+      });
+
+      // The stored zero-row was discarded: the box made a real base first,
+      // then compared the head to that evidence rather than accepting its 0.
+      expect(io.calls.judge).toBe(2);
+      expect(posted).toHaveLength(2);
+      expect(posted[0].data).toMatchObject({ sha: "base000", items: 1, pass: 1, regressions: null });
+      expect(posted[0].data).not.toHaveProperty(kind, true);
+      expect(data).toMatchObject({ items: 1, pass: 1, regressions: 0 });
+    }
+  });
+
+  it("looks up request identity for every direct run, not only --force", () => {
+    const source = fs.readFileSync("worker/jobs/evals.mjs", "utf8");
+    expect(source).toContain("const requestIdentity = await directRequestIdentity(");
+    expect(source).not.toContain("options.force\n    ? await directRequestIdentity");
+  });
+
+  it("attaches direct identity without trusting the request base", async () => {
+    const env = { CONVEX_SITE_URL: "https://example.convex.site", TTS_WORKER_KEY: "k" };
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ request: { baseSha: "base000", requestedAt: 42 } }),
+    })));
+    await expect(directRequestIdentity(env, { repo: "tom.quest", sha: "head000" }))
+      .resolves.toMatchObject({ answersRequestAt: 42 });
   });
 
   it("takes every trial on a weekly run", async () => {
@@ -1736,6 +2089,526 @@ describe("the trigger set", () => {
   });
 });
 
+// A request the Convex door could not answer still reaches the queue, and the
+// box must answer it in seconds rather than clone the repo and spend an hour
+// scoring a set the branch cannot have moved.
+describe("an unaffected request", () => {
+  const request = (over = {}) => ({
+    repo: "tom.quest",
+    sha: "2e08b28",
+    baseSha: "f5c1fb9",
+    changed: ["convex/ttsMerge.ts", "worker/jobs/evals.mjs"],
+    prBody: null,
+    unaffected: true,
+    ...over,
+  });
+
+  const env = { CONVEX_SITE_URL: "https://example.convex.site", TTS_WORKER_KEY: "k" };
+
+  const policyTree = (watched) => {
+    const dir = fs.mkdtempSync(path.join(process.cwd(), ".evals-policy-"));
+    dirs.push(dir);
+    const file = path.join(dir, "scripts", "evals-check.mjs");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, [
+      `export const WATCHED_PATHS = ${JSON.stringify(watched)};`,
+      "export function unaffectedBy(changed) {",
+      "  return Array.isArray(changed) && !changed.some((entry) => WATCHED_PATHS.some((pattern) => pattern.endsWith('/**') && entry.startsWith(pattern.slice(0, -2)) || entry === pattern));",
+      "}",
+    ].join("\n"));
+    return dir;
+  };
+
+  const diffIo = (base, head, baseCommit = "base000") => ({
+    worktree: (_repo, ref) => ({
+      dir: ref === "origin/main" ? base : head,
+      commit: ref === "origin/main" ? baseCommit : ref,
+      remove: () => {},
+    }),
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("posts the row and never reaches the runner", async () => {
+    const posted = [];
+    vi.stubGlobal("fetch", vi.fn(async (url, init) => {
+      if (String(url).includes("/tts/evals-run")) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ run: { items: 40, pass: 38 }, base: null }) };
+      }
+      posted.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+    const base = policyTree(["model-of-tom/**"]);
+    expect(fs.existsSync(path.join(base, "scripts", "evals-check.mjs"))).toBe(true);
+    const data = await serveRequest(env, diffIo(base, tree()), request(), {
+      diffRun: () => "worker/jobs/evals.mjs\0convex/ttsMerge.ts\0",
+    });
+    expect(data).toMatchObject({
+      unaffected: true,
+      regressions: 0,
+      goldenCoverage: "not-required",
+      flaky: 0,
+      items: 40,
+      pass: 38,
+      goldenHash: null,
+    });
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({ kind: "evals-run", key: "tom.quest@2e08b28" });
+    expect(posted[0].data.boxEvalsVersion).toBe(EVALS_PROTOCOL);
+  });
+
+  it("answers with zeroes when nothing scored the base", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url) =>
+      String(url).includes("/tts/evals-run")
+        ? { ok: true, status: 200, text: async () => JSON.stringify({ run: null, base: null }) }
+        : { ok: true, status: 200, text: async () => "{}" }));
+    const base = policyTree(["model-of-tom/**"]);
+    expect(fs.existsSync(path.join(base, "scripts", "evals-check.mjs"))).toBe(true);
+    expect(await serveRequest(env, diffIo(base, tree()), request(), {
+      diffRun: () => "worker/jobs/evals.mjs\0",
+    })).toMatchObject({ items: 0, pass: 0, regressions: 0 });
+  });
+
+  it("uses the base tree's policy rather than a changed head policy", async () => {
+    const base = policyTree(["model-of-tom/**"]);
+    const head = policyTree(["worker/**"]);
+    expect(fs.existsSync(path.join(base, "scripts", "evals-check.mjs"))).toBe(true);
+    const seen = [];
+    const diff = await trustedRequestDiff(request(), diffIo(base, head), (dir, ...args) => {
+      seen.push({ dir, args });
+      if (args[0] === "rev-parse") return "true\n";
+      if (args[0] === "merge-base") return "merge000";
+      return "model-of-tom/intent.md\0";
+    });
+    expect(diff).toMatchObject({ base: "base000", changed: ["model-of-tom/intent.md"], unaffected: false, watchedPaths: ["model-of-tom/**"] });
+    expect(seen).toEqual([
+      { dir: base, args: ["rev-parse", "--is-shallow-repository"] },
+      { dir: base, args: ["fetch", "--deepen", String(DIFF_HISTORY_DEEPEN), "origin", "main", "2e08b28"] },
+      { dir: base, args: ["merge-base", "base000", "2e08b28"] },
+      { dir: base, args: ["diff", "--no-renames", "--name-only", "-z", "merge000..2e08b28"] },
+    ]);
+  });
+
+  it("does not deepen a complete cache clone", async () => {
+    const base = policyTree(["model-of-tom/**"]);
+    const head = policyTree(["worker/**"]);
+    const seen = [];
+    const diff = await trustedRequestDiff(request(), diffIo(base, head), (dir, ...args) => {
+      seen.push({ dir, args });
+      if (args[0] === "rev-parse") return "false\n";
+      if (args[0] === "merge-base") return "merge000";
+      return "worker/jobs/evals.mjs\0";
+    });
+    expect(diff).toMatchObject({ base: "base000", changed: ["worker/jobs/evals.mjs"], unaffected: true, watchedPaths: ["model-of-tom/**"] });
+    expect(seen).toEqual([
+      { dir: base, args: ["rev-parse", "--is-shallow-repository"] },
+      { dir: base, args: ["merge-base", "base000", "2e08b28"] },
+      { dir: base, args: ["diff", "--no-renames", "--name-only", "-z", "merge000..2e08b28"] },
+    ]);
+  });
+
+  it("excludes a watched path main changed after the branch base", async () => {
+    const base = policyTree(["model-of-tom/**"]);
+    const head = policyTree(["worker/**"]);
+    const mainOnlyWatched = "model-of-tom/intent.md";
+    const branchChanged = "worker/jobs/evals.mjs";
+    const diff = await trustedRequestDiff(request(), diffIo(base, head), (_dir, ...args) => {
+      if (args[0] === "merge-base") return "branch-base";
+      if (args[0] === "diff" && args.at(-1) === "base000..2e08b28") return `${mainOnlyWatched}\0${branchChanged}\0`;
+      if (args[0] === "diff" && args.at(-1) === "branch-base..2e08b28") return `${branchChanged}\0`;
+      return "";
+    });
+    expect(diff.changed).toEqual([branchChanged]);
+    expect(diff.changed).not.toContain(mainOnlyWatched);
+  });
+
+  it("uses WikiTom's trusted commits with tom.quest's trusted policy", async () => {
+    const wikiBase = tree();
+    const wikiHead = tree();
+    const tomquestBase = policyTree(["model-of-tom/**"]);
+    const worktrees = [];
+    const io = {
+      worktree: (repo, ref) => {
+        worktrees.push([repo, ref]);
+        const dir = repo === "WikiTom"
+          ? (ref === "origin/main" ? wikiBase : wikiHead)
+          : tomquestBase;
+        return { dir, commit: ref === "origin/main" ? `${repo}-base` : ref, remove: () => {} };
+      },
+    };
+    const seen = [];
+    const diff = await trustedRequestDiff(request({ repo: "WikiTom", sha: "wikihead" }), io, (dir, ...args) => {
+      seen.push({ dir, args });
+      if (args[0] === "rev-parse") return "true\n";
+      if (args[0] === "merge-base") return "wikimerge";
+      return "model-of-tom/intent.md\0";
+    });
+    expect(worktrees).toEqual([
+      ["WikiTom", "origin/main"],
+      ["WikiTom", "wikihead"],
+      ["tom.quest", "origin/main"],
+    ]);
+    expect(diff).toMatchObject({
+      base: "WikiTom-base",
+      changed: ["model-of-tom/intent.md"],
+      unaffected: false,
+      watchedPaths: ["model-of-tom/**"],
+    });
+    expect(seen).toEqual([
+      { dir: wikiBase, args: ["rev-parse", "--is-shallow-repository"] },
+      { dir: wikiBase, args: ["fetch", "--deepen", String(DIFF_HISTORY_DEEPEN), "origin", "main", "wikihead"] },
+      { dir: wikiBase, args: ["merge-base", "WikiTom-base", "wikihead"] },
+      { dir: wikiBase, args: ["diff", "--no-renames", "--name-only", "-z", "wikimerge..wikihead"] },
+    ]);
+  });
+
+  // A BOX ROLLED BEFORE THE MERGE reads a base tree older than its own watch
+  // policy — the order worker/README.md documents. `unaffectedBy` arrives on
+  // this branch, so every base before it is such a base: the box used to write
+  // a failed row per request whose `answersRequestAt` stayed current after the
+  // merge, leaving the checks red until a human reran them.
+  const policyTreeBeforeTheExport = () => {
+    const dir = fs.mkdtempSync(path.join(process.cwd(), ".evals-policy-old-"));
+    dirs.push(dir);
+    const file = path.join(dir, "scripts", "evals-check.mjs");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'export const WATCHED_PATHS = ["model-of-tom/**"];\n');
+    return dir;
+  };
+
+  it("treats a base older than the policy as affected rather than failing the request", async () => {
+    const base = policyTreeBeforeTheExport();
+    const head = policyTree(["worker/**"]);
+    const diff = await trustedRequestDiff(request(), diffIo(base, head), (_dir, ...args) => {
+      if (args[0] === "rev-parse") return "false\n";
+      if (args[0] === "merge-base") return "merge000";
+      // Unwatched by the policy this branch adds: with a base that could say
+      // so, this is the no-run shortcut. With one that cannot, it is a run.
+      return "worker/jobs/evals.mjs\0";
+    });
+    expect(diff).toEqual({
+      base: "base000",
+      changed: ["worker/jobs/evals.mjs"],
+      unaffected: false,
+      watchedPaths: null,
+      basePolicy: "absent",
+    });
+  });
+
+  it("treats a base with no check at all the same way, and a base with the export as now", async () => {
+    const head = policyTree(["worker/**"]);
+    const run = (_dir, ...args) => {
+      if (args[0] === "rev-parse") return "false\n";
+      if (args[0] === "merge-base") return "merge000";
+      return "worker/jobs/evals.mjs\0";
+    };
+    expect(await trustedRequestDiff(request(), diffIo(tree(), head), run))
+      .toMatchObject({ unaffected: false, basePolicy: "absent" });
+    expect(await trustedRequestDiff(request(), diffIo(policyTree(["model-of-tom/**"]), head), run))
+      .toMatchObject({ unaffected: true, basePolicy: "present", watchedPaths: ["model-of-tom/**"] });
+  });
+
+  it("scores the full evaluation on an older base, stamps the reason, and posts no failed row", async () => {
+    const posted = [];
+    const base = policyTreeBeforeTheExport();
+    const head = tree();
+    writeJson(head, path.join("evals", "golden", "runs", "a.json"), runCaseItem({ id: "a" }));
+    const queued = request({ requestedAt: 1, unaffected: false });
+    const io = runIo(["pass"], [], {
+      layers: () => layers,
+      loadModules: async () => ({}),
+      taskRepos: () => [],
+      worktree: (_repo, ref) => ({
+        dir: ref === "origin/main" ? base : head,
+        commit: ref === "origin/main" ? "base000" : ref,
+        remove: () => {},
+      }),
+    });
+    vi.stubGlobal("fetch", vi.fn(async (url, init) => {
+      const href = String(url);
+      if (href.includes("/tts/evals-request?")) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ request: queued }) };
+      }
+      if (href.includes("/tts/evals-run")) {
+        const run = href.includes("sha=base000")
+          ? { repo: "tom.quest", sha: "base000", items: 1, pass: 1, failures: [], scoredIds: ["a"], results: [{ id: "a", judged: "pass" }], tasks: { failures: [] } }
+          : null;
+        return { ok: true, status: 200, text: async () => JSON.stringify({ run, base: null }) };
+      }
+      if (init?.body) posted.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+    const data = await serveRequest(env, io, queued, {
+      diffRun: () => "worker/jobs/evals.mjs\0",
+    });
+    expect(data).toMatchObject({ basePolicy: "absent", items: 1, pass: 1, regressions: 0 });
+    expect(data.error).toBeUndefined();
+    expect(io.calls.regen).toBe(1);
+    expect(posted).toHaveLength(1);
+    expect(posted[0].data).toMatchObject({ basePolicy: "absent", answersRequestAt: 1 });
+    expect(posted[0].data.error).toBeUndefined();
+  });
+
+  it("posts a failed row when the box cannot establish the trusted diff", async () => {
+    const posted = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url, init) => {
+      posted.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+    const data = await serveRequest(env, {
+      worktree: () => { throw new Error("the cache is unavailable"); },
+    }, request({ requestedAt: 7 }));
+    expect(data).toMatchObject({
+      error: "the cache is unavailable",
+      regressions: null,
+      goldenCoverage: null,
+    });
+    expect(posted).toHaveLength(1);
+    expect(posted[0].data).toMatchObject({
+      error: "the cache is unavailable",
+      answersRequestAt: 7,
+      regressions: null,
+      goldenCoverage: null,
+    });
+  });
+
+  it("refutes a head-as-base unaffected claim, records it, and runs the full evaluation", async () => {
+    const posted = [];
+    const base = policyTree(["model-of-tom/**"]);
+    const head = tree();
+    writeJson(head, path.join("evals", "golden", "runs", "a.json"), runCaseItem({ id: "a" }));
+    const queued = request({ baseSha: "2e08b28", requestedAt: 1 });
+    const io = runIo(["pass"], [], {
+      layers: () => layers,
+      loadModules: async () => ({}),
+      taskRepos: () => [],
+      worktree: (repo, ref) => ({
+        dir: repo === "tom.quest" && ref === "origin/main" ? base : head,
+        commit: ref === "origin/main" ? "base000" : ref,
+        remove: () => {},
+      }),
+    });
+    vi.stubGlobal("fetch", vi.fn(async (url, init) => {
+      const href = String(url);
+      if (href.includes("/tts/evals-request?")) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ request: queued }) };
+      }
+      if (href.includes("/tts/evals-run")) {
+        const run = href.includes("sha=base000")
+          ? { repo: "tom.quest", sha: "base000", items: 1, pass: 1, failures: [], scoredIds: ["a"], results: [{ id: "a", judged: "pass" }], tasks: { failures: [] } }
+          : null;
+        return { ok: true, status: 200, text: async () => JSON.stringify({ run, base: null }) };
+      }
+      if (init?.body) posted.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+    const data = await serveRequest(env, io, queued, {
+      diffRun: () => "model-of-tom/intent.md\0",
+    });
+    expect(data).toMatchObject({ unaffectedClaimed: true, unaffected: false, items: 1, pass: 1 });
+    expect(io.calls.regen).toBe(1);
+    expect(posted).toHaveLength(1);
+    expect(posted[0].data).toMatchObject({ answersBaseSha: "base000", unaffectedClaimed: true, unaffected: false });
+  });
+
+  it("opens nothing on a row that is not unaffected", () => {
+    // The shape is the pin: `regressions: 0` and `not-required` together are
+    // what convex/ttsMerge.ts opens the evals arm on, and only this row says
+    // both while having scored nothing.
+    const row = unaffectedRun({ repo: "tom.quest", sha: "abc1234", changed: [], base: null, at: 1 });
+    expect(row.failures).toEqual([]);
+    expect(row.scoredIds).toEqual([]);
+    expect(row.error).toBe(undefined);
+    expect(row.weekly).toBe(false);
+    expect(failedRun({ repo: "tom.quest", sha: "abc1234", error: "no such commit", at: 1 }).unaffected)
+      .toBe(undefined);
+  });
+});
+
+// A morning of four pushes to one branch queued four requests behind each
+// other on 2026-09-12, and the check on the live head of #173 timed out after
+// seventy-five minutes waiting for three runs of shas nobody would merge. The
+// queue now names the head (convex/ttsEvals.ts), and the three dead ones cost
+// one POST each.
+describe("a superseded request", () => {
+  const env = { CONVEX_SITE_URL: "https://example.convex.site", TTS_WORKER_KEY: "k" };
+
+  /** The same proxy the unaffected suite uses: the whole claim is that no
+   *  clone, no worktree and no model happen here. */
+  const noIo = new Proxy({}, {
+    get(_target, name) {
+      throw new Error(`the runner touched io.${String(name)} on a superseded request`);
+    },
+  });
+
+  const request = (over = {}) => ({
+    repo: "tom.quest",
+    sha: "2e08b28",
+    baseSha: "f5c1fb9",
+    changed: ["model-of-tom/intent.md"],
+    prBody: null,
+    unaffected: false,
+    supersededBy: "0b1ca1f",
+    ...over,
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("posts the row and never reaches the runner", async () => {
+    const posted = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url, init) => {
+      posted.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+    const data = await serveRequest(env, noIo, request());
+    expect(data).toMatchObject({ superseded: true, supersededBy: "0b1ca1f" });
+    // ONE POST, and no read of the base run either.
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({ kind: "evals-run", key: "tom.quest@2e08b28" });
+  });
+
+  // The supersession wins over every other shortcut: a sha nobody will merge
+  // is not worth an unaffected row's round trip to the base run.
+  it("is answered before the unaffected shortcut", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, text: async () => "{}" })));
+    expect(await serveRequest(env, noIo, request({ unaffected: true })))
+      .toMatchObject({ superseded: true });
+  });
+
+  // A request the queue did not mark, and one marked with its own sha, are
+  // ordinary requests — the branch must not swallow a live head.
+  it("does not fire on a request that is the head", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url) =>
+      String(url).includes("/tts/evals-run")
+        ? { ok: true, status: 200, text: async () => JSON.stringify({ run: null, base: null }) }
+        : { ok: true, status: 200, text: async () => "{}" }));
+    expect(await serveRequest(env, noIo, request({ supersededBy: null, unaffected: true })).then((d) => d.superseded))
+      .toBe(undefined);
+    expect(await serveRequest(env, noIo, request({ supersededBy: "2e08b28", unaffected: true })).then((d) => d.superseded))
+      .toBe(undefined);
+  });
+
+  // A DRY RUN WRITES NOTHING ON THIS ARM EITHER. --dry-run exists so a change
+  // to this file can be read before it lands in the record, and the cheap arms
+  // write a row exactly as a scored run does. A posted rehearsal would both
+  // enter the record the digest and the merge gate read and ANSWER the
+  // request, taking it out of the queue the next real tick was going to serve.
+  it("posts nothing on a dry run", async () => {
+    const posted = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url, init) => {
+      posted.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+    expect(await serveRequest(env, noIo, request(), { dryRun: true }))
+      .toMatchObject({ superseded: true, supersededBy: "0b1ca1f" });
+    expect(posted).toEqual([]);
+  });
+
+  // THE PASS STOPS WHEN IT ANSWERED NOTHING. A dry run posts no row, so the
+  // queue hands back the same request on every turn: without this the loop ran
+  // the full twenty-five and then printed that twenty-five requests had been
+  // answered. Found by the box's audit.
+  it("takes one request and stops on a dry run", async () => {
+    const asked = [];
+    vi.stubGlobal("fetch", vi.fn(async (url, init) => {
+      if (String(url).includes("/tts/evals-request")) {
+        asked.push(1);
+        return { ok: true, status: 200, text: async () => JSON.stringify({ request: request() }) };
+      }
+      if (init) throw new Error("a dry run posted a row");
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+    await servePass(env, noIo, { dryRun: true });
+    expect(asked).toHaveLength(1);
+  });
+
+  // And without it, the pass keeps draining: each superseded request IS
+  // answered, so the door hands back the next one.
+  it("keeps draining superseded requests when it is answering them", async () => {
+    const shas = ["1111111", "2222222", "3333333"];
+    let next = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url) => {
+      if (String(url).includes("/tts/evals-request")) {
+        const sha = shas[next];
+        next += 1;
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ request: sha === undefined ? null : request({ sha }) }),
+        };
+      }
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+    await servePass(env, noIo, {});
+    expect(next).toBe(4);
+  });
+
+  it("reports one keyed failure and exits when the door needs a newer protocol", async () => {
+    const gap =
+      `the box's evals runner is at protocol ${EVALS_PROTOCOL}; ` +
+      `this door needs ${EVALS_PROTOCOL + 1} — run worker/setup.sh on the box`;
+    const calls = [];
+    vi.stubGlobal("fetch", vi.fn(async (url, init) => {
+      calls.push({ url: String(url), body: init?.body === undefined ? null : JSON.parse(init.body) });
+      if (String(url).includes("/tts/evals-request")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            request: request(),
+            boxEvalsVersion: EVALS_PROTOCOL,
+            evalsProtocol: EVALS_PROTOCOL + 1,
+            protocolGap: gap,
+          }),
+        };
+      }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, reported: true }) };
+    }));
+    await expect(servePass(env, noIo)).rejects.toThrow(gap);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].url).toContain(evalsRequestRoute());
+    expect(calls[1]).toMatchObject({
+      url: "https://example.convex.site/tts/job-failed",
+      body: { job: EVALS_JOB, key: EVALS_PROTOCOL_FAILURE_KEY, error: gap },
+    });
+  });
+
+  // THE PRE-PROTOCOL BACKLOG, answered the same way and just as cheaply. The
+  // queue marks a request filed before EVALS_PROTOCOL_SINCE with the
+  // protocol's name instead of a sha (convex/ttsEvals.ts
+  // internalOldestEvalsRequest), so the box answers it in one POST with no
+  // clone, no worktree and no model — which is what keeps a deploy's worth of
+  // legacy requests from being re-run ahead of every live head.
+  it("answers a request older than the protocol without a run", async () => {
+    const posted = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url, init) => {
+      posted.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => "{}" };
+    }));
+    const data = await serveRequest(env, noIo, request({ supersededBy: "protocol-2" }));
+    expect(data).toMatchObject({ superseded: true, supersededBy: "protocol-2" });
+    // The name is not a sha and is never shortened into one.
+    expect(data.error).toBe(
+      "filed before evals protocol 2; re-run this check at the head of the branch",
+    );
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({ kind: "evals-run", key: "tom.quest@2e08b28" });
+  });
+
+  it("opens nothing", () => {
+    // `regressions: null` and `goldenCoverage: null` are what convex/
+    // ttsMerge.ts denies on: a stale sha can never carry a gate open.
+    const row = supersededRun({ repo: "tom.quest", sha: "2e08b28", by: "0b1ca1fdeadbeef", at: 1 });
+    expect(row.regressions).toBe(null);
+    expect(row.goldenCoverage).toBe(null);
+    expect(row.unaffected).toBe(undefined);
+    expect(row.failures).toEqual([]);
+    // And it carries `error` too, so a copy of scripts/evals-check.mjs older
+    // than the superseded branch still fails the check and still says why.
+    expect(row.error).toContain("superseded by 0b1ca1f");
+  });
+});
+
 // ── The verifiers, measured ─────────────────────────────────────────────────
 // Every measure here REPORTS AND GATES NOTHING, and every test below runs with
 // no model and no network: the label door, the judge and the auditor are all
@@ -2008,17 +2881,116 @@ describe("parseArgs takes the two new flags", () => {
 
   it("leaves every pre-existing flag parsing exactly as it did", () => {
     expect(parseArgs(["--serve"])).toEqual({
-      repo: null, sha: null, base: null, limit: 40, jobs: null,
+      repo: null, sha: null, limit: 40, jobs: null,
       force: false, serve: true, weekly: false, ablation: false, tasks: null,
       faultsOnly: false, dryRun: false,
     });
     expect(parseArgs(["--weekly", "--force"])).toMatchObject({ weekly: true, force: true, ablation: true });
     expect(parseArgs(["--repo", "tom.quest", "--sha", "abc", "--ablation"]))
       .toMatchObject({ repo: "tom.quest", sha: "abc", ablation: true, faultsOnly: false, dryRun: false });
-    expect(parseArgs(["--repo=WikiTom", "--sha=def", "--base=ghi", "--limit=6", "--jobs=prepare,run"]))
-      .toMatchObject({ repo: "WikiTom", sha: "def", base: "ghi", limit: 6, jobs: ["prepare", "run"] });
+    expect(parseArgs(["--repo=WikiTom", "--sha=def", "--limit=6", "--jobs=prepare,run"]))
+      .toMatchObject({ repo: "WikiTom", sha: "def", limit: 6, jobs: ["prepare", "run"] });
     expect(parseArgs(["--tasks", "slack"]).tasks).toBe("slack");
     expect(() => parseArgs(["--nope"])).toThrow(/unknown argument/);
+    // `--base` WAS REMOVED ON PURPOSE (72926ee): the box resolves its own base
+    // from origin/main, and a base named on the command line is the one input
+    // that could put a scored row against a comparison nobody trusts. The
+    // option being unknown is the design, not a regression to restore.
+    expect(() => parseArgs(["--base", "ghi"])).toThrow(/unknown argument/);
     expect(() => parseArgs(["--serve", "--limit", "0"])).toThrow(/--limit/);
+  });
+});
+
+// THE JUDGE KEPT QUOTING, AND A QUOTE INSIDE A JSON STRING IS AN UNREADABLE
+// ANSWER. The rule asks for three or four words of the output and the judge
+// supplied them in quotation marks, unescaped, so the object would not parse
+// and the item was scored `judge answer unreadable` — a failed item whose
+// regeneration was fine. The prompt now forbids the quotes and the runner asks
+// once more when one slips through anyway.
+describe("the judge's unreadable answers", () => {
+  const regenerated = JSON.stringify({
+    brief: "a", entryAction: "b", workDescription: "c", groundUpExplanation: "d",
+  });
+
+  /** An io whose judge answers the given texts in order. */
+  const judgeSaying = (...answers) => {
+    const said = [];
+    return {
+      said,
+      io: {
+        runClaude: async (prompt) => {
+          if (!prompt.startsWith("You are judging")) return regenerated;
+          said.push(prompt);
+          return answers[said.length - 1] ?? answers[answers.length - 1];
+        },
+      },
+    };
+  };
+
+  it("forbids quotation marks in the reason, in the prompt itself", () => {
+    const prompt = judgePrompt(item(), { brief: "b" }, ["brief"]);
+    expect(prompt).toContain("PUT NO QUOTATION MARKS IN THE REASON");
+  });
+
+  it("marks an unreadable answer so the runner can tell it from a verdict", () => {
+    expect(parseJudge("I think it is probably fine").judgeUnreadable).toBe(true);
+    expect(parseJudge('{"verdict":"fail","reason":"restates the statement"}').judgeUnreadable)
+      .toBeUndefined();
+  });
+
+  it("asks once more and keeps the second answer", async () => {
+    const mod = await import("./plan-graphs.mjs");
+    const judge = judgeSaying(
+      '{"verdict":"pass","reason":"names the "D-lock barrel" plainly"}',
+      '{"verdict":"pass","reason":"names the D-lock barrel plainly"}',
+    );
+    const result = await runItem(item(), context(mod), judge.io);
+    expect(judge.said).toHaveLength(2);
+    expect(result).toMatchObject({ judged: "pass", judgeRetries: 1 });
+    expect(result.errored).toBeUndefined();
+  });
+
+  it("asks once more and no more, and the item fails with the answer's head", async () => {
+    const mod = await import("./plan-graphs.mjs");
+    const judge = judgeSaying("not JSON at all", "still not JSON");
+    const result = await runItem(item(), context(mod), judge.io);
+    expect(judge.said).toHaveLength(2);
+    expect(result).toMatchObject({
+      judged: "fail",
+      errored: true,
+      judgeRetries: 1,
+      reason: expect.stringMatching(/^runner failed: judge answer unreadable/),
+    });
+  });
+
+  // NOT A RETRY OF A VERDICT. A judge that says `fail` readably is asked once
+  // and its answer stands; retrying until the wanted answer arrives is how a
+  // measurement becomes a wish.
+  it("never asks again about a readable fail", async () => {
+    const mod = await import("./plan-graphs.mjs");
+    const judge = judgeSaying('{"verdict":"fail","reason":"still restates the statement"}');
+    const result = await runItem(item(), context(mod), judge.io);
+    expect(judge.said).toHaveLength(1);
+    expect(result).toMatchObject({ judged: "fail", judgeRetries: 0 });
+  });
+});
+
+// Every explanation item failed `error_max_turns` on the box on 2026-09-14:
+// two turns, and the model spent both reading the tree. The regeneration has
+// everything it is meant to have in its prompt, so it asks for no tools.
+describe("the explanation job's tools", () => {
+  it("regenerates with an empty allow-list and the budget it had", () => {
+    expect(JOBS.explanation.opts).toEqual({ maxTurns: 2, allowedTools: [] });
+  });
+});
+
+describe("the judge-retry count on the aggregate", () => {
+  it("sums what the items paid, and says zero when nothing was re-asked", () => {
+    const one = (id, over = {}) => ({
+      id, partition: "prepare/chores", verdict: "approve", judged: "pass", ...over,
+    });
+    expect(aggregate([one("a"), one("b")]).judgeRetries).toBe(0);
+    expect(aggregate([one("a", { judgeRetries: 1 }), one("b", { judgeRetries: 1 }), one("c")])
+      .judgeRetries).toBe(2);
   });
 });

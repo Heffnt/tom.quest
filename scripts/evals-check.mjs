@@ -36,19 +36,18 @@ export const POLL_TIMEOUT_MS = 75 * 60 * 1000;
 /**
  * The paths that make an evals run worth asking for, in either repo.
  *
- * THIS LIST AND .github/workflows/evals.yml's `paths:` ARE ONE FACT SPELLED
- * TWICE, and they had already drifted: the workflow fired on the `**` forms of
- * AGENTS.md and CLAUDE.md, convex/ttsCompose.ts, convex/ttsDigest.ts,
- * worker/jobs/delegate.mjs and worker/bin/tts-ask, which this list had never
- * heard of, while this list watched model-of-tom/**, which the workflow did
- * not fire on. They are reconciled here to the UNION of the two, in one order,
- * and scripts/evals-check.test.mjs pins them equal — so the next divergence is
- * a red test naming the path, not a run nobody noticed was missing.
+ * THE ONLY SPELLING OF THAT LIST. It used to be spelled twice — here and in
+ * .github/workflows/evals.yml's `paths:` — and the two drifted apart in both
+ * directions before they were reconciled to their union. The workflow's copy
+ * is now GONE: it fires on every pull request, and this list is what decides,
+ * inside the check, whether a branch is affected at all. A list that exists
+ * once cannot drift, and the answer is recorded on a row instead of being a
+ * workflow that silently did not run.
  *
- * UNION IS THE SAFE DIRECTION. A watched path that fires an unnecessary run
- * costs one run. An unwatched path that changes the context Tom's jobs read
- * changes his outputs with nothing scoring them, which is the exact failure
- * the whole gate exists to prevent.
+ * UNION IS THE SAFE DIRECTION, and the reconciliation stands. A watched path
+ * that fires an unnecessary run costs one run. An unwatched path that changes
+ * the context Tom's jobs read changes his outputs with nothing scoring them,
+ * which is the exact failure the whole gate exists to prevent.
  *
  * FOUR PATHS WERE ADDED WHEN THE SKILLS LANDED, and each is a context file in
  * exactly the sense this list means — a file whose content reaches a run's
@@ -76,8 +75,24 @@ export const WATCHED_PATHS = [
   "**/CLAUDE.md",
   "model-of-tom/**",
   "scripts/prelude.mjs",
+  // WHAT scripts/prelude.mjs READS. The eval runner executes the pinned
+  // prelude, and skills.mjs and markdown-sections.mjs are its transitive
+  // relative imports — change either one alone and the prompt every scored
+  // item is built from changes while the file named above does not.
+  // scripts/check-setup-imports.mjs walks the import graph and fails when
+  // this list and that graph disagree, so a new import lands here by being
+  // added rather than by being remembered. Phase 6 is why the graph moved:
+  // the layers became skills, prelude-layers.mjs is gone, and skills.mjs is
+  // what the prelude reads now.
   "scripts/skills.mjs",
+  // NOT IN THE PRELUDE GRAPH, AND WATCHED ANYWAY. publish-skills.mjs writes
+  // the catalog the prelude reads and context-relevance.mjs is what a brief
+  // is cut with; neither is imported by prelude.mjs, and both decide what a
+  // run is given. The fence asks only that the graph be a SUBSET of this
+  // list, so a file that earns its place by a second route keeps it.
   "scripts/publish-skills.mjs",
+  "worker/jobs/context-relevance.mjs",
+  "worker/jobs/markdown-sections.mjs",
   "convex/ttsShared.ts",
   "convex/claudeSessions.ts",
   "convex/ttsSkills.ts",
@@ -90,6 +105,15 @@ export const WATCHED_PATHS = [
   "worker/bin/tts-ask",
   "evals/golden/**",
   "evals/tasks/**",
+  // THE TRIGGER FILES ARE PART OF THE SET, and this line was missing from the
+  // workflow's `paths:` list before it moved here. `loadTriggers` reads
+  // evals/triggers/*.json into the run, and ITEM_PREFIXES below already names
+  // the directory as a place a golden item lives — so a trigger-only change
+  // moves what the set measures. While the filter lived in the workflow that
+  // omission failed CLOSED: the job did not run, no row was written, and the
+  // gate denied for want of one. Inside the check it fails OPEN — the check
+  // runs, finds nothing watched, and writes a passing unaffected row for a
+  // change to the set itself.
   "evals/triggers/**",
 ];
 
@@ -125,6 +149,58 @@ export function matchesWatched(path) {
   if (typeof path !== "string" || path === "") return false;
   const normalised = path.replace(/\\/g, "/").replace(/^\.\//, "");
   return WATCHED_PATHS.some((pattern) => matchesPattern(normalised, pattern));
+}
+
+/**
+ * What an UNAFFECTED run answers the coverage question with.
+ *
+ * A STRING, NOT `true`, because it is a different fact and the merge gate's
+ * sentence about it is a different sentence: `true` means a watched file
+ * changed and this branch paid for it, while this means the question never
+ * arose. Both open the gate; only one of them was earned by a run.
+ *
+ * THREE HOMES, one fact, the same three homes gate() has: this file, the box
+ * runner (worker/jobs/evals.mjs unaffectedRun) and the Convex door
+ * (convex/ttsEvals.ts COVERAGE_NOT_REQUIRED, which convex/ttsMerge.ts reads).
+ * Neither of those can import this one — the box loads it by path at runtime,
+ * and Convex runs it nowhere — so the word is written out in each and the
+ * tests on both sides pin it.
+ */
+export const COVERAGE_NOT_REQUIRED = "not-required";
+
+/**
+ * The `supersededBy` on a request the queue refused because it was filed
+ * before the box's current evals row contract (worker/jobs/evals-row.mjs
+ * PROTOCOL_SUPERSEDED, the one place it is defined; this file imports nothing,
+ * so the word is written out here too and the tests on both sides pin it).
+ *
+ * The ANSWER IS THE SAME as for a head a later push replaced — nothing ran,
+ * re-run at the head — and only the sentence differs, because "a later push
+ * replaced this head" would be false about a sha nobody pushed over.
+ */
+export const PROTOCOL_SUPERSEDED = "protocol-2";
+
+/** A sha is shown short; the protocol's name is shown whole. */
+function supersededName(by) {
+  if (typeof by !== "string" || by === "") return "a later push";
+  return /^[0-9a-f]{7,40}$/i.test(by) ? by.slice(0, 7) : by;
+}
+
+/**
+ * Does this branch need an evals run at all?
+ *
+ * TRUE ONLY ON A DIFF THAT WAS ACTUALLY READ. `null` — no checkout, a shallow
+ * clone, a sha git could not find — is NOT an unaffected branch: it is a
+ * branch nobody looked at, and answering "nothing watched changed" from a list
+ * that was never computed would skip the evals on exactly the runs that lost
+ * their diff. Those pay for a full run instead, which is the safe direction.
+ *
+ * An EMPTY diff is unaffected: a branch that changed no file changed no
+ * watched file.
+ */
+export function unaffectedBy(changed) {
+  if (!Array.isArray(changed)) return false;
+  return !changed.some((path) => matchesWatched(path));
 }
 
 /**
@@ -262,12 +338,35 @@ export function gate(head, base, { changed, prBody } = {}) {
   if (!head) {
     return { ok: false, reason: "no head run", regressions: [], stillFailing: [], newFailing: [], fixed: [], unconfirmed: [], mismatch: false, goldenCoverage, goldenExcuse };
   }
+  // AN UNAFFECTED ROW IS AN ANSWER, not a run: no watched path changed, so
+  // nothing was scored and nothing could have regressed. It passes, and its
+  // coverage is `not-required` rather than `true` — the question never arose,
+  // and convex/ttsMerge.ts says so in its own words. Read off the ROW, not
+  // re-derived from the diff here, so what the gate opens on and what the log
+  // prints are the one fact the door recorded.
+  // A LATER PUSH REPLACED THIS HEAD, and the box answered the request without
+  // running anything (worker/jobs/evals.mjs supersededRun). Before the `error`
+  // branch, which the same row also carries for readers that predate this one:
+  // both fail, and this one says the thing that can be acted on.
+  if (head.superseded === true) {
+    const by = supersededName(head.supersededBy);
+    const reason = head.supersededBy === PROTOCOL_SUPERSEDED
+      ? "filed before the box's evals protocol, re-run at head"
+      : `superseded by ${by}, re-run at head`;
+    return { ok: false, reason, regressions: [], stillFailing: [], newFailing: [], fixed: [], unconfirmed: [], mismatch: false, goldenCoverage, goldenExcuse };
+  }
   // A run the box could not make at all (a sha it could not fetch or check
   // out) is posted as a row carrying `error`, so the request queue advances.
   // A row like that scored nothing, and a gate that reads "no failures" off it
   // would open on a run that never happened.
-  if (typeof head.error === "string" && head.error !== "") {
-    return { ok: false, reason: head.error, regressions: [], stillFailing: [], newFailing: [], fixed: [], unconfirmed: [], mismatch: false, goldenCoverage, goldenExcuse };
+  if (head.error === true || (typeof head.error === "string" && head.error !== "")) {
+    const reason = typeof head.reason === "string" && head.reason !== ""
+      ? head.reason
+      : typeof head.error === "string" && head.error !== "" ? head.error : "runner failed";
+    return { ok: false, reason, errored: [], regressions: [], stillFailing: [], newFailing: [], fixed: [], unconfirmed: [], mismatch: false, goldenCoverage, goldenExcuse };
+  }
+  if (head.unaffected === true) {
+    return { ok: true, errored: [], regressions: [], stillFailing: [], newFailing: [], fixed: [], unconfirmed: [], mismatch: false, noBaseline: !base, goldenCoverage: COVERAGE_NOT_REQUIRED, goldenExcuse: null };
   }
   const headFailures = failuresOf(head);
   const baseFailures = failuresOf(base);
@@ -275,6 +374,7 @@ export function gate(head, base, { changed, prBody } = {}) {
   const mismatch = mismatchDetail?.kind === "nonmeasurement";
   const comparable = new Set(mismatchDetail?.comparable ?? []);
   const regressions = [];
+  const errored = [];
   const stillFailing = [];
   const newFailing = [];
   const unconfirmed = [];
@@ -289,7 +389,11 @@ export function gate(head, base, { changed, prBody } = {}) {
   // the base run did is a fact about this commit; what an item calls itself is
   // a label with a lifecycle.
   for (const [id, failure] of headFailures) {
-    if (failure.confirmed === false) unconfirmed.push(failure);
+    // A RUNNER FAILURE IS NOT A FAILING ITEM. It is an item that was never
+    // measured, so it belongs in neither the regression bucket nor the
+    // new-failing one, and it is read first for that reason.
+    if (failure.errored === true) errored.push(failure);
+    else if (failure.confirmed === false) unconfirmed.push(failure);
     else if (!base || !comparable.has(id)) newFailing.push(failure);
     else if (baseFailures.has(id)) stillFailing.push(failure);
     else regressions.push(failure);
@@ -298,15 +402,50 @@ export function gate(head, base, { changed, prBody } = {}) {
   // Coverage fails the check on `false` alone. `null` is the absence of a
   // question, not an answer of no, and a run with no diff to read must not
   // fail a check it was never given the input for.
-  const ok = regressions.length === 0 && !mismatch && goldenCoverage !== false;
+  const ok = errored.length === 0 && regressions.length === 0 && !mismatch && goldenCoverage !== false;
   return {
-    ok, mismatch, mismatchDetail, regressions, stillFailing, newFailing, fixed,
+    ok, mismatch, mismatchDetail, errored, regressions, stillFailing, newFailing, fixed,
     unconfirmed, noBaseline: !base, goldenCoverage, goldenExcuse,
   };
 }
 
 /** What Tom sees in the check's log. A clean check is one line. */
 export function report(head, base, verdict) {
+  if (head.superseded !== true && (head.error === true || (typeof head.error === "string" && head.error !== ""))) {
+    const reason = typeof head.reason === "string" && head.reason !== ""
+      ? head.reason
+      : typeof head.error === "string" && head.error !== "" ? head.error : "runner failed";
+    return [`the evals could not run on the box: ${reason}`];
+  }
+  // ONE LINE, and it names the sha and the count, because the whole content of
+  // an unaffected check is "we looked at the diff and it touched nothing the
+  // evals watch". THE SAME WORDS the merge gate's `why` uses (convex/
+  // ttsMerge.ts), so the CI log and the #tts-decisions merge line say the same
+  // thing about the same commit.
+  if (head.unaffected === true) {
+    const changed = Array.isArray(head.changed) ? head.changed.length : null;
+    return [
+      `evals — ${head.repo} ${String(head.sha).slice(0, 7)}: the evals are unaffected — no watched path changed` +
+        (changed === null ? "." : ` in the ${changed} path${changed === 1 ? "" : "s"} this branch touched.`),
+    ];
+  }
+  // A STALE SHA'S CHECK, in two lines and no numbers. This run never happened
+  // — the branch moved on before the box reached it — so there is no set, no
+  // base and nothing to compare, and the only useful sentence is which sha to
+  // look at instead.
+  if (head.superseded === true) {
+    const by = supersededName(head.supersededBy);
+    if (head.supersededBy === PROTOCOL_SUPERSEDED) {
+      return [
+        `evals — ${head.repo} ${String(head.sha).slice(0, 7)}: filed before the box's evals protocol.`,
+        `FAILED: this request predates the evals row contract the box now writes, so it was never run. Re-run this check at the head of the branch.`,
+      ];
+    }
+    return [
+      `evals — ${head.repo} ${String(head.sha).slice(0, 7)}: superseded by ${by}.`,
+      `FAILED: a later push replaced this head before the box reached it — nothing was run. Re-run this check at the head of the branch.`,
+    ];
+  }
   const setLine = `evals — ${head.repo} ${String(head.sha).slice(0, 7)} vs base ` +
     `${base ? String(base.sha).slice(0, 7) : "none"} (golden set ${head.goldenHash}, ${head.items} items)`;
   const lines = [];
@@ -328,6 +467,7 @@ export function report(head, base, verdict) {
   const notes = [
     verdict.regressions.length === 0 ? "0 regressions" : null,
     `${flaky} flaky`,
+    verdict.errored.length > 0 ? `${verdict.errored.length} errored` : null,
     verdict.stillFailing.length > 0 ? `${verdict.stillFailing.length} still failing` : null,
     verdict.unconfirmed.length > 0 ? `${verdict.unconfirmed.length} failing but not confirmed by Tom` : null,
   ].filter((note) => note !== null);
@@ -363,6 +503,7 @@ export function report(head, base, verdict) {
     lines.push(`  golden item excused: ${verdict.goldenExcuse}`);
   }
   const say = (label, failure) => `  ${label}  ${failure.id} (${failure.partition}, ${failure.verdict}) — ${failure.reason}`;
+  for (const failure of verdict.errored) lines.push(say("errored", failure));
   for (const failure of verdict.regressions) lines.push(say("REGRESSION", failure));
   for (const failure of verdict.stillFailing) lines.push(say("still failing", failure));
   for (const failure of verdict.newFailing) lines.push(say("new, failing", failure));
@@ -372,7 +513,9 @@ export function report(head, base, verdict) {
   // regressions, and "FAILED: 0 regressions." is a sentence no one can act on.
   lines.push((verdict.ok
     ? `PASSED: 0 regressions.`
-    : verdict.mismatch
+    : verdict.errored.length > 0
+      ? `FAILED: ${verdict.errored.length} errored.`
+      : verdict.mismatch
       ? `FAILED: the runs have no comparable scored item.`
       : verdict.regressions.length > 0
         ? `FAILED: ${verdict.regressions.length} regression${verdict.regressions.length === 1 ? "" : "s"}.`
@@ -402,6 +545,40 @@ async function call(site, key, route, body) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * Wait for the row, except that a named protocol gap is already a complete
+ * answer: another seventy-five minutes cannot roll the box. The exit hook is
+ * injectable only so the one-poll, non-zero behavior can be pinned without a
+ * child process in the unit test.
+ */
+export async function waitForEvals(
+  { site, key, repo, sha, baseSha, deadline },
+  {
+    callFn = call,
+    sleepFn = sleep,
+    now = () => Date.now(),
+    log = (line) => console.log(line),
+    error = (line) => console.error(line),
+    exit = (code) => process.exit(code),
+  } = {},
+) {
+  let answer = null;
+  while (now() < deadline) {
+    const query = `/tts/evals-run?repo=${encodeURIComponent(repo)}&sha=${encodeURIComponent(sha)}` +
+      (baseSha ? `&base=${encodeURIComponent(baseSha)}` : "");
+    answer = await callFn(site, key, query);
+    if (typeof answer?.protocolGap === "string" && answer.protocolGap !== "") {
+      error(answer.protocolGap);
+      exit(1);
+      return { answer, protocolGap: true };
+    }
+    if (answer?.run) return { answer, protocolGap: false };
+    log(`evals: waiting for the Jarvis Box (${Math.round((deadline - now()) / 1000)}s left)`);
+    await sleepFn(POLL_INTERVAL_MS);
+  }
+  return { answer, protocolGap: false };
+}
+
+/**
  * The paths this pull request touched, read out of the checkout the CI job
  * already has, or null.
  *
@@ -419,15 +596,27 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * not SEE the diff would block every merge from a machine without one, and the
  * thing it would be reporting is its own blindness, not a missing item.
  */
-async function changedPaths(baseSha, sha) {
+/** Git's -z output: filenames can contain newlines and must never be quoted. */
+export function changedPathsFromGit(out) {
+  return out.split("\0").filter((path) => path !== "");
+}
+
+export async function changedPaths(baseSha, sha) {
   if (!baseSha || !sha) return null;
   try {
     const { execFileSync } = await import("node:child_process");
-    const out = execFileSync("git", ["diff", "--name-only", `${baseSha}...${sha}`], {
+    // `--no-renames` IS LOAD-BEARING, not tidiness. With rename detection on,
+    // `--name-only` prints a rename as its DESTINATION alone: move
+    // `model-of-tom/intent.md` to `docs/intent.md` and the only path this list
+    // carries is the unwatched one, so `unaffectedBy` answers true and a watched
+    // context file leaves the tree with no run scoring it — the exact failure the
+    // watch list exists to prevent. Off, a rename is a delete and an add, and the
+    // delete is watched.
+    const out = execFileSync("git", ["diff", "--no-renames", "--name-only", "-z", `${baseSha}...${sha}`], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
-    return out.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
+    return changedPathsFromGit(out);
   } catch (error) {
     console.log(`evals: could not read the diff (${error.message.split("\n")[0]}); golden coverage is unjudged`);
     return null;
@@ -442,7 +631,36 @@ async function main() {
   const baseSha = process.env.BASE_SHA || null;
   const pr = process.env.PR ? Number(process.env.PR) : undefined;
   const prBody = process.env.PR_BODY || undefined;
+  // WHICH PUSH CAME FIRST, and the only fact on hand that answers it.
+  //
+  // GitHub creates one workflow run per push event, in the order the events
+  // arrive, and stamps each with an increasing id. The queue needs that order
+  // to tell a pull request's live head from the shas behind it (convex/
+  // ttsEvals.ts), and it cannot use the order the REQUESTS arrive in: two
+  // pushes a minute apart start two jobs that each spend twenty to forty
+  // seconds on checkout and node before reaching this line, so the newer
+  // push's request can be filed first — and a queue that read arrival order
+  // would then answer the LIVE head away as superseded, permanently, since
+  // the row it writes is what stops the box picking that sha up again.
+  //
+  // A re-run keeps its run's id, so re-running an old sha's check never makes
+  // that sha look like the newest. A force-push back to an earlier commit gets
+  // a NEW run with a HIGHER id, which is right: that commit is the head now.
+  const runIdRaw = Number(process.env.RUN_ID);
+  const runId = Number.isSafeInteger(runIdRaw) && runIdRaw > 0 ? runIdRaw : undefined;
   const changed = await changedPaths(baseSha, sha);
+  // THE FILTER THAT USED TO BE THE WORKFLOW'S. It lives here now because a
+  // workflow that does not run records nothing, and the merge gate needs a row
+  // (convex/ttsMerge.ts denies without one). An unaffected request is answered
+  // by the door itself, in the same breath it is filed, so the poll below ends
+  // on its first pass and no model is spent.
+  const unaffected = unaffectedBy(changed);
+  if (unaffected) {
+    console.log(
+      `evals: no watched path changed in the ${changed.length} path${changed.length === 1 ? "" : "s"} ` +
+        `this branch touched — asking for an unaffected row, not a run.`,
+    );
+  }
 
   // `changed` rides the request so the box's row and this log read the same
   // list. It is OMITTED rather than sent as null when git could not answer: an
@@ -454,25 +672,21 @@ async function main() {
     sha,
     baseSha: baseSha ?? undefined,
     pr,
+    ...(runId === undefined ? {} : { runId }),
     paths: WATCHED_PATHS,
     ...(changed === null ? {} : { changed }),
     ...(prBody === undefined ? {} : { prBody }),
+    ...(unaffected ? { unaffected: true } : {}),
   });
   const deadline = Date.now() + POLL_TIMEOUT_MS;
-  let answer = null;
-  while (Date.now() < deadline) {
-    const query = `/tts/evals-run?repo=${encodeURIComponent(repo)}&sha=${encodeURIComponent(sha)}` +
-      (baseSha ? `&base=${encodeURIComponent(baseSha)}` : "");
-    answer = await call(site, key, query);
-    if (answer.run) break;
-    console.log(`evals: waiting for the Jarvis Box (${Math.round((deadline - Date.now()) / 1000)}s left)`);
-    await sleep(POLL_INTERVAL_MS);
-  }
+  const waited = await waitForEvals({ site, key, repo, sha, baseSha, deadline });
+  if (waited.protocolGap) return;
+  const answer = waited.answer;
   // A check that passes on silence proves nothing.
   if (!answer?.run) {
     console.error(
       `evals: the Jarvis Box did not answer within ${POLL_TIMEOUT_MS / 60_000} minutes. Re-run this check, or run it by hand: ` +
-        `node /opt/tts/evals.mjs --repo ${repo} --sha ${sha}`,
+        `node /opt/tts/evals.mjs --repo ${repo} --sha ${sha} --force`,
     );
     process.exit(1);
   }
