@@ -913,20 +913,30 @@ describe("blastRows", () => {
 // the node ids its prompt carried, and a rule's row counts the runs whose list
 // holds its node id. The working-directory proxy stays as the fallback, and the
 // row says which of the two it used.
+//
+// THE CHOICE IS PER NODE KIND, and the fixture below is built out of the ids
+// production actually writes. Only two launchers record `graphNodes`, both over
+// the operate page, so `givenNodes` emits `page:`, `heading:`, `line:` and
+// `skill:` and never `rule:`. An AGENTS.md rule is a `rule:` node, so no run
+// can ever carry one — and this fixture must not pretend otherwise. It did:
+// it hand-placed a `rule:` id, which made these tests pass over a pass that had
+// stopped working, every repository rule reading an exact-looking zero it could
+// never raise.
 
 const OPERATE_RULE = "- Commit with a full message before every stop.";
 const WORKER_RULE = "- The worker jobs never import a npm dependency.";
 
-/** Twenty sampled runs with known node lists: twelve carried the worker rule,
- *  five carried the operate line, three recorded no list at all. Every run has
- *  words in its bag, so the proxy's own floor is not what decides anything
- *  below. */
+/** Twenty sampled runs carrying only the ids a launcher really records: twelve
+ *  carried the operate line, five carried the operate page without that line,
+ *  three recorded no list at all. NOTHING HERE CARRIES A `rule:` ID, because
+ *  nothing in production does. Every run has words in its bag, so the proxy's
+ *  own floor is not what decides anything below. */
 function nodeSample({ withNodes = true } = {}) {
-  const worker = `rule:${ruleId(WORKER_RULE)}`;
+  const page = `page:${OPERATE_FILE}`;
   const operate = `line:${ruleId(OPERATE_RULE)}`;
   const runs = [];
   for (let i = 0; i < 20; i += 1) {
-    const nodes = i < 12 ? [worker, "page:worker/AGENTS.md"] : i < 17 ? [operate] : null;
+    const nodes = i < 12 ? [operate, page] : i < 17 ? [page] : null;
     runs.push({
       runId: `node-run-${i}`,
       startedAt: NOW - i * 1_000,
@@ -957,25 +967,31 @@ const nodeTable = (sample) =>
   });
 
 describe("loaded, counted off the node ids the prompts carried", () => {
-  it("counts the runs given each node and says the count is the given one", () => {
+  it("counts the runs given a line node, and leaves a rule node on its proxy", () => {
     const rows = nodeTable(nodeSample()).rows;
     const worker = rowFor(rows, WORKER_RULE);
     const operate = rowFor(rows, OPERATE_RULE);
-    expect(worker.loaded).toBe(12);
-    expect(worker.loadedSource).toBe("given");
-    expect(operate.loaded).toBe(5);
+    // The operate line IS a kind the launchers record, so it gets the exact
+    // answer and not the 100 its file's proxy would have said.
+    expect(operate.loaded).toBe(12);
     expect(operate.loadedSource).toBe("given");
-    // Neither row reads the proxy's number for its file.
-    expect(worker.loaded).not.toBe(40);
     expect(operate.loaded).not.toBe(100);
+    // The worker rule is a `rule:` node and NO launcher writes one, so the
+    // sample says nothing about it and its row keeps the proxy's own number
+    // rather than an exact-looking zero.
+    expect(worker.loadedSource).toBe("cwd-proxy");
+    expect(worker.loaded).toBe(40);
+    expect(worker.loaded).not.toBe(0);
   });
 
   it("counts the runs with no node list at all, and never folds them in", () => {
     const rows = nodeTable(nodeSample()).rows;
-    expect(rowFor(rows, WORKER_RULE).loadedUnknown).toBe(3);
     expect(rowFor(rows, OPERATE_RULE).loadedUnknown).toBe(3);
     // 12 + 5 + 3 is the whole sample: an absent list is a value, not a zero.
     expect(12 + 5 + 3).toBe(20);
+    // A proxied row reports the proxy's own absence, not the node list's: a run
+    // with no working directory and a run with no node list are not one run.
+    expect(rowFor(rows, WORKER_RULE).loadedUnknown).toBe(25);
   });
 
   // A rules file's lines are `rule:` nodes and a synthesis page's are `line:`
@@ -1003,32 +1019,54 @@ describe("loaded, counted off the node ids the prompts carried", () => {
     expect(operate.loadedUnknown).toBe(0);
   });
 
-  // One run with a list is enough: the exact answer is available for every
-  // rule the moment any prompt writes one down, and the rules no run carried
-  // read zero, which is what they are.
-  it("takes the given count as soon as one sampled run carries a list", () => {
+  // ONE RUN OF A KIND IS ENOUGH FOR THAT KIND, AND SAYS NOTHING ABOUT ANOTHER.
+  // A `line:` node the sample has seen can honestly read zero for a line no run
+  // carried — the sample had the chance to carry it and did not. A `rule:` node
+  // cannot: no writer emits one, so a zero there would mean "never measured",
+  // and printing it as the exact answer is what this pass must not do.
+  it("takes the given count for a kind a run recorded, and only for that kind", () => {
     const sample = nodeSample({ withNodes: false });
-    sample[0] = { ...sample[0], graphNodes: [`rule:${ruleId(WORKER_RULE)}`] };
+    sample[0] = { ...sample[0], graphNodes: [`line:${ruleId(OPERATE_RULE)}`] };
     const rows = nodeTable(sample).rows;
-    expect(rowFor(rows, WORKER_RULE)).toMatchObject({ loaded: 1, loadedUnknown: 19, loadedSource: "given" });
-    expect(rowFor(rows, OPERATE_RULE)).toMatchObject({ loaded: 0, loadedUnknown: 19, loadedSource: "given" });
+    expect(rowFor(rows, OPERATE_RULE)).toMatchObject({ loaded: 1, loadedUnknown: 19, loadedSource: "given" });
+    expect(rowFor(rows, WORKER_RULE)).toMatchObject({ loaded: 40, loadedUnknown: 25, loadedSource: "cwd-proxy" });
+  });
+
+  // THE REGRESSION THIS FIXES, HELD DOWN. Under one global flag a single run
+  // carrying any list flipped every row to `given`, so an AGENTS.md rule read
+  // an exact 0 no run could ever raise and MIN_LOADED (20) forced `keep` on it
+  // for good — the pass could never again propose removing a repository rule.
+  it("never reports a rule node as an exact zero, however much the sample carries", () => {
+    const sample = nodeSample();
+    const rows = nodeTable(sample).rows;
+    const worker = rowFor(rows, WORKER_RULE);
+    expect(worker.loadedSource).toBe("cwd-proxy");
+    expect(worker.loaded).toBeGreaterThan(0);
+    // And with a rule node genuinely present, the kind becomes known on its own
+    // with no edit here — which is what the switch being per kind buys.
+    const withRule = [...sample];
+    withRule[0] = { ...withRule[0], graphNodes: [`rule:${ruleId(WORKER_RULE)}`] };
+    expect(rowFor(nodeTable(withRule).rows, WORKER_RULE)).toMatchObject({ loaded: 1, loadedSource: "given" });
   });
 
   it("prints the source and what was absent in the evidence sentence", () => {
     const rows = nodeTable(nodeSample()).rows;
-    const worker = rowFor(rows, WORKER_RULE);
-    expect(worker.evidence).toBe(
-      `Loaded on 12 run(s) (given); 3 run(s) recorded no node list; ${worker.proxy.mattered} of ${worker.proxy.sample} sampled runs carry its words.`,
+    const operate = rowFor(rows, OPERATE_RULE);
+    expect(operate.evidence).toBe(
+      `Loaded on 12 run(s) (given); 3 run(s) recorded no node list; ${operate.proxy.mattered} of ${operate.proxy.sample} sampled runs carry its words.`,
     );
-    expect(evidenceFor(worker)).toBe(worker.evidence);
+    expect(evidenceFor(operate)).toBe(operate.evidence);
 
-    const proxied = rowFor(nodeTable(nodeSample({ withNodes: false })).rows, WORKER_RULE);
+    // THE SAME SAMPLE, THE OTHER SOURCE. The worker rule is proxied even here,
+    // because its kind is one no launcher records — so one report carries both
+    // sentences at once and each says which number it is.
+    const proxied = rowFor(rows, WORKER_RULE);
     expect(proxied.evidence).toContain("(cwd-proxy)");
     expect(proxied.evidence).toContain("recorded no working directory");
 
     // A line with too few subject words has no proxy and still says where its
     // `loaded` came from.
-    const thin = { ...worker, loaded: 12, loadedUnknown: 3, proxy: { ...worker.proxy, mattered: null } };
+    const thin = { ...operate, loaded: 12, loadedUnknown: 3, proxy: { ...operate.proxy, mattered: null } };
     expect(evidenceFor(thin)).toBe(
       "Loaded on 12 run(s) (given); 3 run(s) recorded no node list; it yields too few subject words to measure against a transcript.",
     );

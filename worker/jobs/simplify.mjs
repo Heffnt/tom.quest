@@ -508,20 +508,53 @@ export function nodeIdFor(where, id) {
  * once in `unknown` and never folded into a count, for the same reason a run
  * with no working directory is not.
  *
- * `known` is false when NOT ONE sampled run carried a list, which is the
- * condition the rule rows fall back to the working-directory proxy on.
+ * KNOWN IS PER NODE KIND, AND THAT IS THE WHOLE POINT. It used to be one flag
+ * for the sample — true the moment any single run carried any list — and that
+ * was wrong in a way that quietly disabled this pass for repository rules.
+ * Only two launchers write `graphNodes` (convex/ttsContext.ts and
+ * scripts/codex-run.mjs), both over the operate page alone, so `givenNodes`
+ * emits `page:`, `heading:`, `line:` and `skill:` ids and NEVER a `rule:` one.
+ * An AGENTS.md rule is keyed `rule:` (nodeIdFor), so under one global flag
+ * every such rule read `loaded: 0` labelled `given` — an exact-looking zero
+ * that no run could ever raise — and MIN_LOADED then forced `keep` on every
+ * one of them, for good.
+ *
+ * So a kind is known only when some run actually recorded a node of THAT kind.
+ * A kind no writer emits is never known, and its rows keep the proxy and say
+ * so. The day a launcher starts recording rule nodes, that kind becomes known
+ * on its own with no edit here.
  */
 export function givenCounts(sample) {
+  // A node id is `<kind>:<rest>`. An entry with no colon is not a node id at
+  // all, and it registers NO kind: counting it as one would make every other
+  // malformed id read as a known kind, which is the same class of mistake this
+  // function was just fixed for, one level down.
+  const kindOf = (id) => {
+    const at = String(id).indexOf(":");
+    return at === -1 ? null : String(id).slice(0, at + 1);
+  };
   const counts = new Map();
+  const kinds = new Set();
   let withList = 0;
   for (const run of sample ?? []) {
     if (!Array.isArray(run?.graphNodes)) continue;
     withList += 1;
     for (const id of new Set(run.graphNodes.map((one) => String(one)))) {
       counts.set(id, (counts.get(id) ?? 0) + 1);
+      const kind = kindOf(id);
+      if (kind !== null) kinds.add(kind);
     }
   }
-  return { counts, known: withList > 0, unknown: (sample ?? []).length - withList };
+  return {
+    counts,
+    kinds,
+    /** Whether any sampled run recorded a node of this id's kind. */
+    knows: (id) => {
+      const kind = kindOf(id);
+      return kind !== null && kinds.has(kind);
+    },
+    unknown: (sample ?? []).length - withList,
+  };
 }
 
 // ── (d) Checks ───────────────────────────────────────────────────────────────
@@ -797,14 +830,20 @@ export function blastRows({ input, fields, ruleFiles, checks, hisWordsLines, rep
   // working-directory match below it is a path suffix, documented as a lower
   // bound, that cannot see a rule a run was handed from another directory.
   //
-  // THE PROXY STAYS AS THE FALLBACK, AND EVERY ROW SAYS WHICH IT USED. On the
-  // day this ships no run has ever written `graphNodes`, so an exact count would
-  // read zero for every rule, every candidate would be `keep` by MIN_LOADED, and
-  // the pass would propose nothing for weeks. That is the safe direction and
-  // would be acceptable — but a row that silently reads zero and a row that
-  // honestly says "this is the old estimate" are different facts, and only the
-  // second is readable months later. So the fallback is taken only when NOT ONE
-  // sampled run carried a list, and `loadedSource` names the answer's origin.
+  // THE PROXY STAYS AS THE FALLBACK, AND EVERY ROW SAYS WHICH IT USED. A row
+  // that silently reads zero and a row that honestly says "this is the old
+  // estimate" are different facts, and only the second is readable months
+  // later, so `loadedSource` names the answer's origin on every row.
+  //
+  // THE FALLBACK IS CHOSEN PER NODE KIND, NOT ONCE FOR THE SAMPLE. The earlier
+  // rule — fall back only when not one sampled run carried a list — read as a
+  // statement about how new the feature was, and the zero it produced was
+  // described here as temporary. It is not temporary for an AGENTS.md rule: no
+  // launcher writes a `rule:` node and none is planned in this round, so that
+  // kind would have read an exact zero for ever and MIN_LOADED would have kept
+  // every repository rule unremovable. `given.knows(id)` asks whether any run
+  // recorded a node of THAT kind, which is the question the choice actually
+  // turns on.
   const given = givenCounts(sample);
   const rows = [];
   const seen = new Set();
@@ -833,9 +872,15 @@ export function blastRows({ input, fields, ruleFiles, checks, hisWordsLines, rep
         class: "rule",
         where: file.where,
         text: line.text,
-        loaded: given.known ? (given.counts.get(nodeIdFor(file.where, id)) ?? 0) : file.loaded,
-        loadedUnknown: given.known ? given.unknown : file.loadedUnknown,
-        loadedSource: given.known ? "given" : "cwd-proxy",
+        ...(() => {
+          // One decision, three fields, so the count and the label cannot come
+          // apart: a row reporting `given` reports the given numbers, and a row
+          // reporting `cwd-proxy` reports the file's.
+          const node = nodeIdFor(file.where, id);
+          return given.knows(node)
+            ? { loaded: given.counts.get(node) ?? 0, loadedUnknown: given.unknown, loadedSource: "given" }
+            : { loaded: file.loaded, loadedUnknown: file.loadedUnknown, loadedSource: "cwd-proxy" };
+        })(),
         proxy: {
           nouns: mattered === null ? [] : nouns,
           mattered,
