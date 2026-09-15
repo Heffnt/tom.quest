@@ -515,7 +515,26 @@ const limit = Number.isInteger(config.maxParallel) && config.maxParallel > 0 ? c
 const id = crypto.randomUUID().slice(0, 8);
 const workDir = path.join(stateDir, "work", id);
 
-const release = takeSlot({
+// A RUN INSIDE A RUN TAKES NO SECOND SLOT, and without this rule the transport
+// deadlocks on its ordinary path. A box run holds its slot for the whole life
+// of its CLI child; that child has Task, a tom.quest worktree, and agent files
+// that now send `box` and `codex` through scripts/box-agent.mjs, which on the
+// box runs tts-run right here. So the child asks for a slot its own parent is
+// still holding. At the default limit of 2, two box runs that each delegate —
+// which "mechanical work runs on Codex" makes the normal thing, not the exotic
+// one — leave both children queued behind two live parents for ever, and the
+// relay is told `queued behind` is not an error. At limit 1 a single run that
+// asks Codex anything hangs itself.
+//
+// The semaphore counts the WORK THE LAPTOP SENT, which is what it was sized
+// for: one full test suite is about 1.6 GB and the box holds two of those. A
+// subagent inside a run is part of that run's budget, not a new one, and the
+// run above it is the thing that has to finish before the slot comes back.
+// TTS_RUN_SLOT_HELD is set on every child this file spawns, so the whole
+// subtree under one slot inherits it however deep the delegation goes.
+const inheritedSlot = process.env.TTS_RUN_SLOT_HELD === "1";
+if (inheritedSlot) note("running under the parent run's slot; not queueing");
+const release = inheritedSlot ? () => {} : takeSlot({
   id,
   counterFile: path.join(stateDir, "semaphore.json"),
   lockFile: path.join(stateDir, "semaphore.lock"),
@@ -658,6 +677,12 @@ const childEnv = {
   TTS_RUN_REG_SPOOL: process.env.TTS_RUN_REG_SPOOL || path.join(stateDir, "registration"),
   RUN_HOST: "box",
   GIT_LFS_SKIP_SMUDGE: "1",
+  // THE SLOT THIS RUN HOLDS COVERS EVERYTHING UNDER IT. See the semaphore
+  // block above: a `box` or `codex` subagent inside this child reaches
+  // box-run.mjs again through scripts/box-agent.mjs, and asking for a second
+  // slot while its own parent holds one is the deadlock. Inherited, not
+  // recomputed, so it survives however many levels the delegation goes.
+  TTS_RUN_SLOT_HELD: "1",
 };
 // THE PARENT GOES TO WHICHEVER WRITER OWNS THE ENVELOPE, and never to both.
 // For Claude the envelope above already carries it, so the variable is cleared:

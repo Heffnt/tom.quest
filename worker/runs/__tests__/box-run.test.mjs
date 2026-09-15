@@ -33,7 +33,7 @@ function fakeCli(tag) {
     // The two registration variables are recorded beside argv because they are
     // the whole of what box-run.mjs hands a child about the record it belongs
     // to, and the child is the only place they can be observed.
-    'const seen = () => ({ argv: process.argv.slice(2), cwd: process.cwd(), regToken: process.env.TTS_RUN_REG_TOKEN ?? null, parent: process.env.TTS_RUN_PARENT_RUN_ID ?? null });',
+    'const seen = () => ({ argv: process.argv.slice(2), cwd: process.cwd(), regToken: process.env.TTS_RUN_REG_TOKEN ?? null, parent: process.env.TTS_RUN_PARENT_RUN_ID ?? null, slotHeld: process.env.TTS_RUN_SLOT_HELD ?? null });',
     'if (process.env.FAKE_RECORD) fs.writeFileSync(process.env.FAKE_RECORD, JSON.stringify({ ...seen(), started }));',
     'let stdin = "";',
     'try { stdin = fs.readFileSync(0, "utf8"); } catch {}',
@@ -87,6 +87,10 @@ function baseEnv(stateDir, extra = {}) {
     RUN_ENV_FILE: path.join(stateDir, "no-such-env"),
     TTS_RUN_REG_SPOOL: path.join(stateDir, "registration"),
     RUN_SEMAPHORE_RETRY_MS: "50",
+    // Cleared rather than inherited: a suite run from inside a box run would
+    // otherwise see the parent's slot and every semaphore case would pass for
+    // the wrong reason.
+    TTS_RUN_SLOT_HELD: "",
     ...extra,
   };
 }
@@ -386,6 +390,42 @@ describe("box-run semaphore", () => {
     const runs = records.map((file) => JSON.parse(fs.readFileSync(file, "utf8"))).sort((a, b) => a.started - b.started);
     expect(runs[1].started).toBeGreaterThanOrEqual(runs[0].ended);
   }, 30_000);
+
+  // witness: a run's CLI child has Task and a tom.quest worktree whose agent
+  // files send `box` and `codex` through box-agent.mjs, which on the box starts
+  // box-run.mjs again. Asking for a second slot while the parent still holds
+  // one deadlocks the pair — the parent is alive, so nothing reclaims it, and
+  // the relay is told `queued behind` is not an error.
+  it("takes no second slot for a run started inside a run, even with the box full", () => {
+    const stateDir = temp("state");
+    fs.mkdirSync(stateDir, { recursive: true });
+    // A live holder: this process. The counter says the box is full and the
+    // holder is not reclaimable, so a top-level run here would wait for ever.
+    const holder = { id: "parentrn", pid: process.pid, at: Date.now() };
+    fs.writeFileSync(path.join(stateDir, "semaphore.json"), `${JSON.stringify({ count: 1, holders: [holder] })}\n`);
+    const result = run(["--repo", "none"], {
+      stateDir,
+      env: { CLAUDE_BIN: fakeCli("nested"), RUN_MAX_PARALLEL: "1", TTS_RUN_SLOT_HELD: "1" },
+    });
+    expect(result.status).toBe(0);
+    expect(result.stderr).not.toContain("queued behind");
+    expect(result.stderr).toContain("running under the parent run's slot");
+    // The parent's holder is untouched: this run neither took a slot nor
+    // released one that was not its own.
+    const counter = JSON.parse(fs.readFileSync(path.join(stateDir, "semaphore.json"), "utf8"));
+    expect(counter.holders).toEqual([holder]);
+  });
+
+  it("passes the held slot down to the run it starts, so the whole subtree shares one", () => {
+    const stateDir = temp("state");
+    const record = path.join(stateDir, "record.json");
+    const result = run(["--repo", "none"], {
+      stateDir,
+      env: { CLAUDE_BIN: fakeCli("slot-down"), FAKE_RECORD: record },
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(fs.readFileSync(record, "utf8")).slotHeld).toBe("1");
+  });
 
   it("reclaims a holder whose process is gone", () => {
     const stateDir = temp("state");
