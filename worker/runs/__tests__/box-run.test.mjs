@@ -180,6 +180,17 @@ describe("box-run stdout contract", () => {
   });
 });
 
+// EVERY TEST HERE THAT CALLS localMirror CARRIES AN EXPLICIT 30s TIMEOUT, and
+// the default 5s is the reason. localMirror is eight real git processes — init
+// bare, init, add, commit, remote add, push, rev-parse — and the run under test
+// then clones and adds a worktree off that mirror, so one case is a dozen
+// process spawns before an assertion runs. Five seconds is a budget for a test
+// that touches files, not one that starts a dozen processes on a loaded runner:
+// these three passed alone and timed out inside the full suite. The merge gate
+// writes a commit's tests row ONCE, so a timeout here bars that head for good —
+// the same call worker/runs, convex/runs.test.ts made for its 250-row fixture.
+const GIT_FIXTURE_MS = 30_000;
+
 describe("box-run worktrees", () => {
   it("makes a worktree off the mirror at the ref it was given, and reaps it", () => {
     const stateDir = temp("state");
@@ -194,7 +205,7 @@ describe("box-run worktrees", () => {
     expect(path.basename(cwd)).toBe("tom.quest");
     expect(fs.existsSync(path.join(cwd, "README.md"))).toBe(false); // already reaped
     expect(fs.readdirSync(path.join(stateDir, "work"))).toEqual([]);
-  });
+  }, GIT_FIXTURE_MS);
 
   it("reaps the work directory after a failing run too", () => {
     const stateDir = temp("state");
@@ -206,7 +217,7 @@ describe("box-run worktrees", () => {
     expect(result.status).toBe(3);
     expect(statusLine(result.stdout)).toMatch(/runner claude exit 3 after \d+s$/);
     expect(fs.readdirSync(path.join(stateDir, "work"))).toEqual([]);
-  });
+  }, GIT_FIXTURE_MS);
 
   it("keeps the work directory with --keep-worktree", () => {
     const stateDir = temp("state");
@@ -229,7 +240,7 @@ describe("box-run worktrees", () => {
     expect(result.stderr).toContain("no-such-branch");
     expect(result.stdout).toBe("");
     expect(fs.readdirSync(path.join(stateDir, "work"))).toEqual([]);
-  });
+  }, GIT_FIXTURE_MS);
 
   it("refuses an unknown repo before doing any work", () => {
     const stateDir = temp("state");
