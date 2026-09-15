@@ -46,4 +46,4 @@ cat /tmp/box-k7qz.err; echo '=== ANSWER ==='; cat /tmp/box-k7qz.out; rm -f /tmp/
 - If the request contains the text `BOX_PROMPT_END`, change the delimiter to `BOX_PROMPT_END_2` on both lines.
 - **If stderr says `refused — free memory`, report that line and stop.** Do not retry, and do not run the work on the laptop instead.
 - **If stderr says `queued behind`, that is not an error.** The run is waiting for a slot on the box; keep waiting.
-- An exit code of 255 is ssh's, not the box's: the connection failed and no run started. Report it as such.
+- An exit code of 255 is never the box's: no run started, because the connection failed or the box's address is not configured. Report the stderr line as it stands.

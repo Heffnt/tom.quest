@@ -67,6 +67,12 @@ function run({ stateDir, cwd, args = ["--repo", "tom.quest"], env = {}, input = 
     env: {
       ...process.env,
       RUN_SWEEP_STATE_DIR: stateDir,
+      // The env file is pinned at a path that does not exist, so no machine's
+      // /etc/tts/worker.env or ~/.tts/env can decide a case here — this suite
+      // has to run the same on a laptop, on CI and on the box itself.
+      RUN_ENV_FILE: path.join(stateDir, "no-such-env"),
+      RUN_HOST: "laptop",
+      TTS_BOX_HOST: "box.test",
       TTS_SSH_BIN: fakeSsh("run"),
       FAKE_SSH_ARGV: argvFile,
       ...env,
@@ -84,9 +90,11 @@ describe("box-agent parent resolution", () => {
     const result = run({ stateDir, cwd });
     expect(result.status).toBe(0);
     const remote = result.sent.argv[result.sent.argv.length - 1];
-    expect(remote).toContain(`--parent '${RUN_ID}'`);
-    expect(remote).toContain(`--root '${RUN_ID}'`);
-    expect(remote).toContain("--depth '1'");
+    // Every remote token is quoted, the parent flags included: one rule for
+    // the whole line rather than two, so no argument is ever the shell's.
+    expect(remote).toContain(`'--parent' '${RUN_ID}'`);
+    expect(remote).toContain(`'--root' '${RUN_ID}'`);
+    expect(remote).toContain("'--depth' '1'");
     expect(result.stderr).not.toContain("recorded as a root");
   });
 
@@ -114,7 +122,7 @@ describe("box-agent parent resolution", () => {
     const cwd = temp("cwd");
     writePointer(stateDir, cwd, { depth: 2 });
     const result = run({ stateDir, cwd });
-    expect(result.sent.argv[result.sent.argv.length - 1]).toContain("--depth '3'");
+    expect(result.sent.argv[result.sent.argv.length - 1]).toContain("'--depth' '3'");
   });
 });
 
@@ -163,5 +171,37 @@ describe("box-agent as a pipe", () => {
     const result = run({ stateDir, cwd, args: ["--ref", "a; rm -rf /"] });
     const remote = result.sent.argv[result.sent.argv.length - 1];
     expect(remote).toContain("'a; rm -rf /'");
+  });
+});
+
+describe("box-agent on the box", () => {
+  // witness: the box holds a tom.quest checkout at /root/tom.quest and another
+  // in every worktree box-run.mjs makes, so ".claude/agents/codex.md says run
+  // this when the file exists" fires there too. Sending the run over ssh from
+  // the box is the box dialling itself with a key it does not hold.
+  it("runs the command here instead of sending it, when RUN_HOST is box", () => {
+    const stateDir = temp("state");
+    const cwd = temp("cwd");
+    writePointer(stateDir, cwd);
+    const result = run({
+      stateDir,
+      cwd,
+      env: { RUN_HOST: "box", TTS_BOX_CMD: fakeSsh("local"), TTS_SSH_BIN: path.join(temp("unused"), "never-run") },
+    });
+    expect(result.status).toBe(0);
+    // Unquoted, because no shell stands between this process and box-run.mjs.
+    expect(result.sent.argv).toEqual(["--repo", "tom.quest", "--parent", RUN_ID, "--root", RUN_ID, "--depth", "1"]);
+    expect(result.sent.stdin).toBe("the request\n");
+  });
+
+  it("refuses with 255 and names the variable when no box address is set", () => {
+    const stateDir = temp("state");
+    const cwd = temp("cwd");
+    const result = run({ stateDir, cwd, env: { TTS_BOX_HOST: "" } });
+    expect(result.status).toBe(255);
+    expect(result.stderr).toContain("TTS_BOX_HOST");
+    expect(result.stderr).toContain("no run was started");
+    // Nothing was spawned: a guessed address is worse than a refusal.
+    expect(result.sent).toBeNull();
   });
 });

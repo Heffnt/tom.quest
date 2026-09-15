@@ -20,7 +20,7 @@ CODEX_PROMPT_END
 echo "codex-run: shell saw exit $?" >> /tmp/codex-k7qz.err
 ```
 
-   **Which command:** run `node scripts/box-agent.mjs --runner codex` from the repo root when that file exists. It sends the run to the Jarvis Box, where `tts-codex` executes it in a git worktree of the repo and ref you name. **Codex never runs on the laptop.** On the box itself, where there is nothing to send anywhere, run `tts-codex` directly. Both reach the same program with the same flags and the same stdin.
+   **Which command:** run `node scripts/box-agent.mjs --runner codex` from the repo root — on either machine, with no test of your own. From the laptop it sends the run to the Jarvis Box; on the box, where there is nothing to send anywhere, it runs the same program right there. Either way `tts-codex` executes it in a git worktree of the repo and ref you name, with the same flags and the same stdin. **Codex never runs on the laptop.**
 
    `--repo` and `--ref` name what Codex reads (the repos are `tom.quest`, `ComplexMultiTrigger`, `WikiTom`, or `none` for no checkout); take them from the request.
 
@@ -49,5 +49,5 @@ cat /tmp/codex-k7qz.err; echo '=== ANSWER ==='; cat /tmp/codex-k7qz.out; rm -f /
 - If the command fails, report the exit code and the wrapper's stderr lines. Do not attempt to answer the request from your own knowledge.
 - If the request contains the text `CODEX_PROMPT_END`, change the delimiter to `CODEX_PROMPT_END_2` on both lines.
 - If stderr says `queued behind`, that is not an error: the run is waiting for a slot on the box. Keep waiting.
-- An exit code of 255 is ssh's, not Codex's: the connection to the box failed and no run started. Report it as such.
+- An exit code of 255 is never Codex's: no run started, because the connection to the box failed or the box's address is not configured. Report the stderr line as it stands.
 - A weekly-cap message from Codex is Codex's own answer, not a transport failure. Relay it as the answer.

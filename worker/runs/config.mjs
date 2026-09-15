@@ -36,6 +36,10 @@ export const RUN_ENV_NAMES = Object.freeze([
   "CONVEX_SITE_URL",
   "SESSIONS_WORKER_KEY",
   "TTS_WORKER_KEY",
+  "TTS_BOX_HOST",
+  "TTS_BOX_USER",
+  "TTS_BOX_KEY",
+  "TTS_BOX_CMD",
 ]);
 
 const enabled = (value) => /^(1|true|yes|on)$/i.test(String(value ?? ""));
@@ -132,6 +136,20 @@ export function runConfig({
     // typo, not permission to launch without limit, so it falls back the same
     // way a backlog limit does.
     maxParallel: positive(value("RUN_MAX_PARALLEL"), 2),
+    // WHERE scripts/box-agent.mjs SENDS A RUN. THE ADDRESS HAS NO DEFAULT AND
+    // IS NOT IN THIS REPOSITORY: tom.quest is public, the Jarvis Box is Tom's
+    // one machine, and the rest of the repo already writes the address as a
+    // placeholder (`root@<jarvis-box>` in worker/jobs/gmail-auth.mjs,
+    // `root@<this box>` in worker/setup.sh). It is named in the env file, which
+    // is why it is resolved here rather than by a second reader of that file:
+    // a key PATH and a user name say nothing about where the box is, so those
+    // two keep their defaults.
+    box: {
+      host: value("TTS_BOX_HOST") || null,
+      user: value("TTS_BOX_USER") || "root",
+      key: value("TTS_BOX_KEY") || null,
+      command: value("TTS_BOX_CMD") || "tts-run",
+    },
     convexSiteUrl: value("CONVEX_SITE_URL") || null,
     sessionsKey: value("SESSIONS_WORKER_KEY") || null,
     ttsKey: value("TTS_WORKER_KEY") || null,
