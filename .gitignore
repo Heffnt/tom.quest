@@ -72,3 +72,10 @@ evals/triggers/*.draft.json
 evals/triggers/skill-know-*.json
 !evals/triggers/skill-know-intent.json
 !evals/triggers/skill-know-week.json
+
+# Fixture worktrees the evals suite builds. They live INSIDE the project root
+# because the code under test imports out of them and vitest resolves a
+# dynamic import through Vite, which serves nothing outside the root
+# (worker/jobs/evals.test.mjs tree()). afterEach removes them; this line is
+# for the run that was killed before it could.
+.evals-tree-*/

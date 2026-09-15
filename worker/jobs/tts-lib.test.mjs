@@ -15,6 +15,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   runClaude,
+  resultEnvelopeOf,
+  DENIABLE_TOOLS,
   captureContext,
   clip,
   convexFetch,
@@ -408,4 +410,88 @@ describe("runClaude receipt", () => {
     }
     expect(receipt.runToken).toBeUndefined();
   }, SPAWN_TIMEOUT_MS);
+});
+
+// THE CLI SAYS WHY ON ITS WAY OUT, and execFileSync used to throw the saying
+// away: a non-zero exit reached the caller as "Command failed", so eighty
+// evals items failed on 2026-09-14 with a sentence naming neither the cause
+// nor the knob. The envelope rides `error.stdout` and nothing above runClaude
+// can see it.
+describe("resultEnvelopeOf", () => {
+  it("reads the result envelope off whatever the CLI printed", () => {
+    expect(resultEnvelopeOf('{"type":"result","subtype":"success","result":"hello"}'))
+      .toMatchObject({ subtype: "success", result: "hello" });
+    // The failure envelope: a subtype and NO result. This is the shape the
+    // re-thrown message is built out of.
+    expect(resultEnvelopeOf('{"type":"result","subtype":"error_max_turns","is_error":true}'))
+      .toMatchObject({ subtype: "error_max_turns" });
+  });
+
+  it("answers null for anything that is not one", () => {
+    expect(resultEnvelopeOf("not json at all")).toBe(null);
+    expect(resultEnvelopeOf('{"type":"assistant"}')).toBe(null);
+    expect(resultEnvelopeOf("")).toBe(null);
+    expect(resultEnvelopeOf(undefined)).toBe(null);
+    expect(resultEnvelopeOf(null)).toBe(null);
+  });
+});
+
+describe("runClaude on a failing child", () => {
+  // A `claude` that is not on PATH prints no envelope, so the message falls
+  // back to the head of stderr rather than saying nothing at all.
+  it("names the failure instead of Command failed", () => {
+    const previous = process.env.PATH;
+    process.env.PATH = path.join(os.tmpdir(), "tts-lib-no-claude-here");
+    let thrown = null;
+    try {
+      runClaude("p", { model: "haiku", timeoutMs: 1000 });
+    } catch (error) {
+      thrown = error;
+    } finally {
+      process.env.PATH = previous;
+    }
+    expect(thrown).not.toBe(null);
+    expect(thrown.message).toMatch(/^claude failed/);
+    expect(thrown.message).not.toBe("Command failed");
+  }, SPAWN_TIMEOUT_MS);
+
+  // The shape the message takes when the envelope IS there, asserted off the
+  // one function that builds it — spawning a `claude` that exits non-zero is
+  // not something this suite can arrange on every machine.
+  it("carries the envelope's subtype and the exit code", () => {
+    const error = Object.assign(new Error("Command failed"), {
+      status: 1,
+      stdout: '{"type":"result","subtype":"error_max_turns","is_error":true}',
+      stderr: "",
+    });
+    const failed = resultEnvelopeOf(error.stdout);
+    expect(failed.subtype).toBe("error_max_turns");
+    expect(`claude failed (subtype: ${failed.subtype}, exit ${error.status})`)
+      .toBe("claude failed (subtype: error_max_turns, exit 1)");
+  });
+});
+
+// An EMPTY allow-list is a real answer and not a malformed one: the evals
+// explanation regeneration asks for no tools at all, because everything it is
+// meant to read is in its prompt.
+describe("runClaude with no tools", () => {
+  it("accepts an empty allow-list", () => {
+    let thrown = null;
+    try {
+      runClaude("p", { model: "haiku", timeoutMs: 1, allowedTools: [] });
+    } catch (error) {
+      thrown = error;
+    }
+    // It reached the spawn — the validation above it did not refuse the list.
+    expect(String(thrown?.message ?? "")).not.toMatch(/allowedTools/);
+  }, SPAWN_TIMEOUT_MS);
+
+  // The allow-list PRE-APPROVES and does not withhold, and the default
+  // permission mode hands the model its read tools either way — which is how
+  // an explanation regeneration with a two-turn budget spent both turns
+  // reading the tree. "None" has to be spelled out to be denied.
+  it("names the tools it is denying, because the flag denies by name", () => {
+    expect(DENIABLE_TOOLS).toEqual(expect.arrayContaining(["Read", "Glob", "Grep", "Bash", "Write"]));
+    expect(DENIABLE_TOOLS.every((tool) => typeof tool === "string" && tool !== "")).toBe(true);
+  });
 });

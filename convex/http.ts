@@ -2561,28 +2561,41 @@ const evalsRequest = httpAction(async (ctx, request) => {
   if (b.pr !== undefined && (!Number.isInteger(b.pr) || (b.pr as number) <= 0)) {
     return jsonResponse(400, { error: "pr, when given, is a positive integer" });
   }
+  // The workflow run's id — GitHub's own push order, which the queue reads to
+  // tell a pull request's live head from the shas behind it. OPTIONAL AND
+  // NEVER INFERRED: a check that does not send it supersedes nothing and is
+  // superseded by nothing, which is the safe answer for a request whose place
+  // in the push order is unknown.
+  if (b.runId !== undefined && (!Number.isInteger(b.runId) || (b.runId as number) <= 0)) {
+    return jsonResponse(400, { error: "runId, when given, is a positive integer" });
+  }
   if (!Array.isArray(b.paths) || !b.paths.every((path) => typeof path === "string" && path !== "")) {
     return jsonResponse(400, { error: "paths (array of non-empty strings) required" });
   }
-  // `changed` is the branch's own diff and `prBody` the body a `evals: no-item`
-  // trailer would be on — the pull-request check computes both in the checkout
-  // CI already has, and the box stamps the golden coverage verdict from them.
-  // BOTH ARE OPTIONAL AND NEITHER IS INFERRED: an older check sends neither,
-  // and the coverage verdict is then null, which the merge gate denies.
+  // `changed` and `unaffected` are diagnostics-only CI hints. The box computes
+  // the diff and coverage from its own worktrees; `prBody` only carries the
+  // optional no-item explanation for that box-computed diff.
   if (b.changed !== undefined && (!Array.isArray(b.changed) || !b.changed.every((path) => typeof path === "string" && path !== ""))) {
     return jsonResponse(400, { error: "changed, when given, is an array of non-empty strings" });
   }
   if (b.prBody !== undefined && typeof b.prBody !== "string") {
     return jsonResponse(400, { error: "prBody, when given, is a string" });
   }
+  // This is a client claim only. The box recomputes the diff and imports the
+  // base worktree's WATCHED_PATHS before it may write an unaffected run row.
+  if (b.unaffected !== undefined && typeof b.unaffected !== "boolean") {
+    return jsonResponse(400, { error: "unaffected, when given, is a boolean" });
+  }
   const result = await ctx.runMutation(internal.ttsEvals.internalRequestEvals, {
     repo: b.repo,
     sha: b.sha,
     baseSha: typeof b.baseSha === "string" ? b.baseSha : undefined,
     pr: typeof b.pr === "number" ? b.pr : undefined,
+    runId: typeof b.runId === "number" ? b.runId : undefined,
     paths: b.paths,
     changed: Array.isArray(b.changed) ? (b.changed as string[]) : undefined,
     prBody: typeof b.prBody === "string" ? b.prBody : undefined,
+    unaffected: b.unaffected === true ? true : undefined,
   });
   return jsonResponse(200, { ok: true, ...result });
 });
@@ -2614,7 +2627,36 @@ http.route({ path: "/tts/evals-run", method: "GET", handler: evalsRun });
 const ttsEvalsRequest = httpAction(async (ctx, request) => {
   const denied = ttsAuth(request);
   if (denied) return denied;
-  return jsonResponse(200, { request: await ctx.runQuery(internal.ttsEvals.internalOldestEvalsRequest, {}) });
+  const params = new URL(request.url).searchParams;
+  const rawBoxEvalsVersion = params.get("boxEvalsVersion");
+  const boxEvalsVersion = rawBoxEvalsVersion === null ? undefined : Number(rawBoxEvalsVersion);
+  if (
+    boxEvalsVersion !== undefined &&
+    (!Number.isSafeInteger(boxEvalsVersion) || boxEvalsVersion <= 0)
+  ) {
+    return jsonResponse(400, { error: "boxEvalsVersion must be a positive integer" });
+  }
+  // A missing value is protocol 1: this is also the path the installed runner
+  // used before the protocol field existed, so the rollout remains observable
+  // while that copy is still polling.
+  const protocol = await ctx.runMutation(internal.ttsEvals.internalObserveBoxEvalsProtocol, {
+    boxEvalsVersion,
+  });
+  const repo = params.get("repo");
+  const sha = params.get("sha");
+  if (repo !== null || sha !== null) {
+    if (repo === null || repo === "" || sha === null || sha === "") {
+      return jsonResponse(400, { error: "repo and sha required together" });
+    }
+    return jsonResponse(200, {
+      request: await ctx.runQuery(internal.ttsEvals.internalEvalsRequest, { repo, sha }),
+      ...protocol,
+    });
+  }
+  return jsonResponse(200, {
+    request: await ctx.runQuery(internal.ttsEvals.internalOldestEvalsRequest, {}),
+    ...protocol,
+  });
 });
 
 http.route({ path: "/tts/evals-request", method: "GET", handler: ttsEvalsRequest });
@@ -2832,6 +2874,24 @@ const ttsEvent = httpAction(async (ctx, request) => {
     return jsonResponse(400, { error: "key, when given, is a non-empty string" });
   }
   try {
+    if (b.kind === "evals-run") {
+      const data = (b.data ?? {}) as Record<string, unknown>;
+      const boxEvalsVersion = data.boxEvalsVersion;
+      if (
+        boxEvalsVersion !== undefined &&
+        (typeof boxEvalsVersion !== "number" ||
+          !Number.isSafeInteger(boxEvalsVersion) ||
+          boxEvalsVersion <= 0)
+      ) {
+        return jsonResponse(400, { error: "data.boxEvalsVersion must be a positive integer" });
+      }
+      // Every evals row is another observation of the installed runner. A
+      // pre-versioned row is protocol 1, the same legacy default as its queue
+      // reads, so the singleton always describes the newest box traffic.
+      await ctx.runMutation(internal.ttsEvals.internalObserveBoxEvalsProtocol, {
+        boxEvalsVersion: typeof boxEvalsVersion === "number" ? boxEvalsVersion : undefined,
+      });
+    }
     const id = await ctx.runMutation(internal.ttsNightly.internalRecordWorkerEvent, {
       kind: b.kind,
       data: b.data,
@@ -3480,8 +3540,10 @@ const runsCompare = httpAction(async (ctx, request) => {
       }
     }
     return jsonResponse(200, { comparisons });
-  } catch {
-    return jsonResponse(400, { error: "run comparison rejected" });
+  } catch (error) {
+    // The reason, not a phrase. An opaque "run comparison rejected" is what
+    // hid a thrown Convex limit behind an hourly HTTP 400 in the cron log.
+    return jsonResponse(400, { error: error instanceof Error ? error.message : String(error) });
   }
 });
 http.route({ path: "/runs/compare", method: "POST", handler: runsCompare });

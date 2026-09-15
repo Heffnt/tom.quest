@@ -196,16 +196,29 @@ export const GREP_EXCLUDES = [
 export const GATE_CHECKS = ["tests", "audit", "evals"];
 /** The three jobs of .github/workflows/guardrails.yml. */
 export const GUARDRAILS_JOBS = ["static-boundaries", "secret-scan", "tests"];
-/** The five scripts `pnpm check:guardrails` runs inside static-boundaries.
+/** The eight scripts `pnpm check:guardrails` runs inside static-boundaries.
  *  Their pass/fail history is inside that job's log, and this job does not
  *  parse logs — so each row says `failuresKnown: false` and is forced to
- *  keep. */
+ *  keep. ADD A SCRIPT TO package.json's check:guardrails AND IT NEEDS A LINE
+ *  HERE; check 8 of scripts/check-session-mirrors.mjs is what says so. */
 export const STATIC_BOUNDARY_SCRIPTS = [
   "check-auth-boundary",
   "check-agents-md",
   "check-heavy-libs",
   "check-session-mirrors",
+  "check-setup-imports",
   "check-large-files",
+  // Phase 6 arrived with a seventh: nothing from model-of-tom may enter this
+  // public repository, and a check enforces it. It is here because the weekly
+  // pass cannot read the static-boundaries log — a check missing from this
+  // list is a check the pass believes does not exist.
+  "check-private-paths",
+  // Phase 10's eighth: the vocabulary is the graph's schema, and this checks
+  // that the generated block in convex/ttsShared.ts still matches what
+  // scripts/vocabulary.mjs renders. It joined check:guardrails with the graph
+  // and had no line here until check 8 of scripts/check-session-mirrors.mjs
+  // asked for one, which is the whole point of that check.
+  "check-vocabulary",
 ];
 
 /** The directory walk's skip list, taken from scripts/check-agents-md.mjs so
@@ -613,7 +626,11 @@ export function checkRows(gate, io, { dir }) {
     rows.push({
       id: hash8(`check|static-boundaries|${name}`),
       where: "scripts/, inside the static-boundaries job",
-      text: `scripts/${name}.mjs, one of the five pnpm check:guardrails runs`,
+      // THE COUNT IS READ, NEVER SPELLED. It said "five" while the list held
+      // six, so the weekly pass was handed facts that contradicted themselves
+      // — the same drift check 8 of scripts/check-session-mirrors.mjs fences
+      // the list itself against, one line further on.
+      text: `scripts/${name}.mjs, one of the ${STATIC_BOUNDARY_SCRIPTS.length} pnpm check:guardrails runs`,
       failed: 0,
       heads: 0,
       known: false,

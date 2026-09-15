@@ -12,8 +12,8 @@
 # a branch's history, not the working tree. An inline `// gitleaks:allow` fixes
 # the line from the commit that adds it onward — the commit that first
 # introduced the fixture keeps failing forever, and the only ways out are
-# rewriting history or this. The four lines carry the inline directive as well,
-# for whoever reads them; these three regexes are what lets the history pass.
+# rewriting history or this. The lines carry the inline directive as well, for
+# whoever reads them; these regexes are what lets the history pass.
 #
 # Each entry names the file it is for and why the value has to look like a
 # credential. An entry whose fixture is deleted should be deleted with it.
@@ -42,4 +42,28 @@ regexes = [
   # app/sessions/components/run.test.tsx — a content-addressed store path, not
   # a key. generic-api-key matched it on the field NAME ending in "Key".
   '''storeKey: "runs/claude/box/x/y"''',
+  # worker/jobs/evals.test.mjs — the shape IS the test: the runner-failure
+  # redaction path must remove a real credential-shaped token before it reaches an item.
+  '''ghp_abcdefghijklmnopqrstuvwxyz1234567890''',
+  # convex/http.test.ts — a SECOND run-registration token fixture, the reaction
+  # door suite's. Same reason as the UUID above: GET /tts/run-trace checks the
+  # token's shape before the indexed lookup, so a shapeless placeholder would
+  # not exercise the path that suite exists for. gitleaks reads it as
+  # generic-api-key on entropy, and every push to main whose range includes
+  # f5c1fb9 failed the scan over it.
+  #
+  # BY VALUE AND NOT BY PATH, RELUCTANTLY. This value is a plain UUID with no
+  # prefix, so a file-scoped allowance would be the better fit — and gitleaks
+  # has no way to write one that is safe to deploy here. `paths` on this table
+  # would exempt the whole file for every value, which this file's header
+  # refuses; the narrow form needs a second `[[allowlists]]` table, and gitleaks
+  # takes no config carrying both spellings: before 8.25 it ignores the plural
+  # one (so the entry does nothing and the scan stays red) and from 8.25 it
+  # refuses the file outright (so the scan goes red on EVERY commit and the
+  # merge gate blocks everything). The action pins no version. Converting all
+  # of these to the plural form is the real fix and it cannot be verified from
+  # a machine with no gitleaks on it; guessing wrong costs every merge. So the
+  # value stands alone, as the five above it do, until someone can run both
+  # forms. What it hides is one literal string — the canonical example UUID.
+  '''8f14e45f-ceea-467a-9a36-dedd4bea2543''',
 ]

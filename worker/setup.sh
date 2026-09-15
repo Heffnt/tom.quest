@@ -183,6 +183,15 @@ cp "$WORKER_DIR"/runs/*.mjs /opt/tts/runs/
 # session-archive.mjs.
 cp "$WORKER_DIR"/jobs/worker-env.mjs /opt/tts/jobs/worker-env.mjs
 cp "$WORKER_DIR"/jobs/session-archive.mjs /opt/tts/jobs/session-archive.mjs
+# The complete session-host deployment lands before cron: runs/ imports its
+# modules at load, so a fresh install cannot wait for the daemon step below.
+# worker-env.mjs in this glob is a SYMLINK to ../jobs/worker-env.mjs (the one
+# env-file reader, shared with the cron jobs). Plain `cp` follows it, so the
+# install dir gets a real file at a path the daemon's "./worker-env.mjs"
+# import resolves.
+mkdir -p /opt/tts/session-host
+cp "$WORKER_DIR"/session-host/*.mjs "$WORKER_DIR"/session-host/package.json \
+  /opt/tts/session-host/
 mkdir -p /opt/tts/scripts /opt/tts/worker/jobs
 cp "$WORKER_DIR"/../scripts/session-start-hook.mjs /opt/tts/scripts/session-start-hook.mjs
 cp "$WORKER_DIR"/../scripts/run-hook.mjs /opt/tts/scripts/run-hook.mjs
@@ -542,12 +551,27 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Evals. The box POLLS: it has no inbound door, so a GitHub Action posts a
 # request to Convex and this tick picks up the oldest unanswered one and runs
 # it. One request per pass, so a tick is bounded.
-*/5 * * * * root /usr/bin/flock -n /var/lock/tts-evals.lock /usr/bin/node /opt/tts/evals.mjs --serve >> /var/log/tts/evals.log 2>&1
+#
+# NO `flock -n` WRAPPER ON THESE TWO LINES, AND IT IS THE ONE EXCEPTION IN THIS
+# FILE. evals.mjs takes /var/lock/tts-evals.lock ITSELF now (worker/jobs/
+# evals-lock.mjs), because the collision that actually happened was one the
+# crontab could never have covered: a run started BY HAND while the tick was
+# mid-run. Both computed the same worktree path, and worktreeFor clears the
+# directory on its way in, so each deleted the other's checkout and both runs
+# died saying the tree could not be read (twice, 2026-09-14).
+#
+# DO NOT PUT THE WRAPPER BACK. The program's lock is a pid file on that same
+# path — Node has no flock(2), and an exclusive create is the atomic primitive
+# it does have — so a `flock` holding the same file would leave a holder the
+# program cannot read and the program would clear it. One mechanism, one owner,
+# one path. Every other job here keeps the wrapper: they are cron-only.
+*/5 * * * * root /usr/bin/node /opt/tts/evals.mjs --serve >> /var/log/tts/evals.log 2>&1
 
 # The full golden set against both repos' main, Saturday, so it does not
 # contend with Friday's weekly agenda job. Two slots for the same NY hour, as
-# the nightly and weekly lines do.
-0 8,9 * * 6 root /usr/bin/flock -n /var/lock/tts-evals.lock /usr/bin/node /opt/tts/evals.mjs --weekly >> /var/log/tts/evals.log 2>&1
+# the nightly and weekly lines do. Same lock, taken the same way, so the
+# Saturday run and a five-minute tick cannot overlap either.
+0 8,9 * * 6 root /usr/bin/node /opt/tts/evals.mjs --weekly >> /var/log/tts/evals.log 2>&1
 
 # CODE-TODO RULING LOOP (CMT's vqc/todos.yaml -> briefs -> Tom rules -> a
 # worker mission): the BRIEFS are the planner's second pass (below, every 30
@@ -630,17 +654,9 @@ echo "== [9/10] session-host daemon =="
 # them into Convex (worker/session-host/README.md). Unlike the cron jobs it
 # carries the Jarvis Box's ONE sanctioned npm dependency (@anthropic-ai/
 # claude-agent-sdk — pinned in its package.json), so this step also runs
-# npm install in its install dir. Everything here is idempotent: cp + install
-# + unit rewrite + restart is exactly how updated daemon code rolls out after
-# a git pull.
-mkdir -p /opt/tts/session-host
-# worker-env.mjs in this glob is a SYMLINK to ../jobs/worker-env.mjs (the one
-# env-file reader, shared with the cron jobs). Plain `cp` follows it, so the
-# install dir gets a real file at a path the daemon's "./worker-env.mjs"
-# import resolves — which a spelled-out ../jobs import could not, since jobs
-# land flat in /opt/tts and this daemon lives one level down.
-cp "$WORKER_DIR"/session-host/*.mjs "$WORKER_DIR"/session-host/package.json \
-  /opt/tts/session-host/
+# npm install in its install dir. The files arrived before cron so runs/ can
+# import their shared modules on a fresh install; install + unit rewrite +
+# restart is how updated daemon code rolls out after a git pull.
 (cd /opt/tts/session-host && npm install --omit=dev)
 
 cat > /etc/systemd/system/tts-session-host.service <<'UNIT'

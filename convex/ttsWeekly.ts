@@ -39,6 +39,7 @@ import { NEEDS_TOM, SLACK_REPLY_FAILED } from "./ttsSlack";
 import { DAY_MS, MODEL_OF_TOM_AREAS_DIR, isPrepared } from "./ttsShared";
 import { isModelOfTomPath, modelOfTomFilesWithLegacyFallback, MODEL_OF_TOM_LAYER_NAMES } from "./ttsSkills";
 import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
+import { scoredNothing } from "../worker/jobs/evals-row.mjs";
 import { AUDIT_APPROVED, AUDIT_VERDICT, MERGE, commitKey, mergeKey } from "./ttsMerge";
 import { DELEGATE_OBJECTION } from "./ttsAsk";
 import { isIsoDay, parseFrontmatter } from "../worker/jobs/markdown-sections.mjs";
@@ -894,6 +895,18 @@ export async function gatherWeeklyFacts(
   let scorecardAt = -1;
   for (const e of await eventsOfKind(EVALS_RUN)) {
     const d = (e.data ?? {}) as Record<string, unknown>;
+    // A ROW IS NOT A RUN. Counting the three rows that score nothing said three
+    // untrue things at once — they were runs the week did, they were CLEAN runs
+    // (`regressions: null` fell through `?? 0` to zero), and, being the newest
+    // rows, their empty `ablation: []` and `efficiency.rises: []` replaced the
+    // real measurement off the last run that actually scored the set. The
+    // superseded row is the frequent one and is what made this visible, but the
+    // other two were already doing it.
+    //
+    // The shared helper is also what Convex uses for merge evidence and the box
+    // uses for baselines: a second spelling here could count a row either side
+    // had already refused.
+    if (scoredNothing(d)) continue;
     evals.runs++;
     if (Array.isArray(d.ablation) && e.at > ablationAt) {
       ablation = ablationFindings(d.ablation);
@@ -923,7 +936,13 @@ export async function gatherWeeklyFacts(
       verifierCaveat = verifierText(c.caveat);
       scorecardAt = e.at;
     }
-    const regressions = num(d.regressions) ?? 0;
+    const regressions = num(d.regressions);
+    // Null is not zero: a partial runner failure has scored some items but no
+    // trustworthy comparison, and --weekly or a by-hand run with no base has
+    // the same shape. It remains a run above, but cannot be clean or a
+    // regression row. We do not surface a third tally because the existing
+    // weekly facts readers only distinguish clean runs from listed regressions.
+    if (regressions === null) continue;
     if (regressions === 0) {
       evals.clean++;
       continue;
