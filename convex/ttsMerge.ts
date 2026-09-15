@@ -10,6 +10,7 @@ import {
   evalsProtocolStatus,
   evalsRequestFor,
 } from "./ttsEvals";
+import { commitKey, mergeKey } from "./ttsShared";
 import { redactSecrets } from "../worker/session-host/redact.mjs";
 
 // ── THE MECHANICAL MERGE GATE (Tom, 2026-09-09) ─────────────────────────────
@@ -76,14 +77,10 @@ export const AUDIT_REMOVAL_NOTE_MAX_CHARS = 300;
 /** The key every fact ABOUT ONE COMMIT is filed under — the spelling
  *  convex/ttsEvals.ts already uses for an evals run, so all three checks are
  *  the same lookup. */
-export function commitKey(repo: string, sha: string): string {
-  return `${repo}@${sha}`;
-}
-
-/** The merge event's own key, which predates this file. */
-export function mergeKey(repo: string, sha: string): string {
-  return `${repo}:${sha}`;
-}
+// Both keys moved to ./ttsShared, which convex/ttsEvals.ts already imports;
+// they are re-exported here so every existing reader of this module keeps
+// working and there is still exactly one definition.
+export { commitKey, mergeKey } from "./ttsShared";
 
 /**
  * The audit step's one machine-readable line. The audit itself is prose from

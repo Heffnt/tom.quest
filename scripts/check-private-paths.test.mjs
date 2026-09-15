@@ -3,6 +3,10 @@ import {
   BOX_WIKITOM_DIR,
   LAPTOP_WIKITOM_DIR,
   categoryContentFindings,
+  OPERATE_LINE_MIN,
+  operateContentFindings,
+  operateWindows,
+  OPERATE_WINDOW_STEP,
   checkPrivatePaths,
   privatePathFindings,
   wikiTomCategoryLines,
@@ -107,13 +111,97 @@ describe("private path guardrail", () => {
     expect(wikiTomRoot({ env: {}, platform: "linux", exists: () => false })).toBeNull();
   });
 
+  // THE OPERATE RULE. Its lines are invented here for the same reason the
+  // category ones are: a test for a copy must not be the copy. A real line is
+  // matched as a SUBSTRING, because the ways it leaks are inside a string
+  // literal, a template or a comment — which is how three of them survived a
+  // sweep that compared whole lines.
+  const OPERATE = [
+    "- a sentence of the operate page long enough to be nobody else" + String.fromCharCode(39) + "s.",
+    "- a second such sentence, also past the forty-character floor.",
+  ];
+
+  const OPERATE_AS_WINDOWS = OPERATE.flatMap((line) => {
+    const out = [];
+    for (let at = 0; at + OPERATE_LINE_MIN <= line.length; at += OPERATE_WINDOW_STEP) out.push(line.slice(at, at + OPERATE_LINE_MIN));
+    out.push(line.slice(-OPERATE_LINE_MIN));
+    return out;
+  });
+
+  const operateFor = (bodies) => operateContentFindings(Object.keys(bodies), OPERATE_AS_WINDOWS, {
+    readFile: (file) => {
+      const body = bodies[file.replaceAll(String.fromCharCode(92), "/").slice("C:/public/".length)];
+      if (body === undefined) throw new Error("ENOENT");
+      return body;
+    },
+    cwd: "C:/public",
+  });
+
+  it("rejects an operate line however it is embedded, and leaves other prose alone", () => {
+    expect(operateFor({
+      "whole.md": OPERATE[0],
+      "in-a-string.mjs": `const fixture = "${OPERATE[1]}";`,
+      "in-a-comment.mjs": `// ${OPERATE[0]}`,
+      "indented.md": `  ${OPERATE[1]}  `,
+      "innocent.mjs": "- a line this repository wrote for itself, of a similar length.",
+      "shape-only.md": "### Repos",
+    }).map(({ file }) => file)).toEqual(["in-a-comment.mjs", "in-a-string.mjs", "indented.md", "whole.md"]);
+  });
+
+  it("cuts each long line into windows and reads nothing when the page is absent", () => {
+    const page = [
+      "# Agent rules",
+      "### Repos",
+      "- short one.",
+      OPERATE[0],
+    ].join("\n");
+    const windows = operateWindows("C:/vault", { exists: () => true, readFile: () => page });
+    // Only the long line contributes, and every window is exactly the floor.
+    for (const w of windows) expect(w.length).toBe(OPERATE_LINE_MIN);
+    expect(windows).toContain(OPERATE[0].slice(0, OPERATE_LINE_MIN));
+    expect(windows).toContain(OPERATE[0].slice(-OPERATE_LINE_MIN));
+    // Step of eight over a line of this length, plus the tail.
+    expect(windows.length).toBeLessThanOrEqual(
+      Math.ceil((OPERATE[0].length - OPERATE_LINE_MIN) / OPERATE_WINDOW_STEP) + 2,
+    );
+    expect(operateWindows("C:/vault", { exists: () => false, readFile: () => page })).toBeNull();
+  });
+
+  // THE CASE THE WHOLE-LINE VERSION MISSED, which is why this is a window and
+  // not a line: a fixture that truncates a real rule to fit shares a long
+  // FRAGMENT and no whole line at all. On the real tree this was ten copies
+  // across six files that the first version reported as clean.
+  it("catches a long fragment of a line, and still catches the whole line", () => {
+    const page = [OPERATE[0], OPERATE[1]].join("\n");
+    const windows = operateWindows("C:/vault", { exists: () => true, readFile: () => page });
+    const fragment = OPERATE[0].slice(0, 44);
+    expect(fragment.length).toBe(44);
+    // The fragment is not a line of the page - it is 44 of its characters.
+    expect(page.split("\n")).not.toContain(fragment);
+    const hits = operateContentFindings(["truncated.mjs", "whole.mjs", "clean.mjs"], windows, {
+      readFile: (file) => {
+        if (file.endsWith("truncated.mjs")) return `const RULE = "${fragment}";`;
+        if (file.endsWith("whole.mjs")) return `// ${OPERATE[1]}`;
+        return "// a line of this repository, written here for itself alone.";
+      },
+      cwd: "C:/public",
+    });
+    expect(hits.map(({ file }) => file)).toEqual(["truncated.mjs", "whole.mjs"]);
+  });
+
   it("keeps path checks active and emits a deterministic notice without a checkout", () => {
     const notes = [];
     const run = () => "evals/triggers/skill-know-research.json\0";
     expect(checkPrivatePaths(run, { root: null, notice: (line) => notes.push(line) })).toEqual([
       { file: "evals/triggers/skill-know-research.json", rule: "private know-area trigger" },
     ]);
-    expect(notes).toEqual(["private-paths: WikiTom checkout unavailable; area-category content check skipped\n"]);
+    // BOTH CONTENT CHECKS SAY SO SEPARATELY. A check with nothing to compare
+    // must name itself, or a reader counting green checks counts one that
+    // never ran.
+    expect(notes).toEqual([
+      "private-paths: WikiTom checkout unavailable; area-category content check skipped\n",
+      "private-paths: WikiTom checkout unavailable; operate content check skipped\n",
+    ]);
 
     // A checkout whose area directory holds no page is the same absence.
     const empty = [];
@@ -122,6 +210,9 @@ describe("private path guardrail", () => {
       fs: { exists: () => true, readdir: () => [], readFile: () => "" },
       notice: (line) => empty.push(line),
     });
-    expect(empty).toEqual(["private-paths: WikiTom checkout unavailable; area-category content check skipped\n"]);
+    expect(empty).toEqual([
+      "private-paths: WikiTom checkout unavailable; area-category content check skipped\n",
+      "private-paths: WikiTom checkout unavailable; operate content check skipped\n",
+    ]);
   });
 });

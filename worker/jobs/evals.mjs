@@ -1983,6 +1983,24 @@ export async function runCase(item, context, io, { pr = false } = {}) {
 
 // ── The ablation arm ─────────────────────────────────────────────────────────
 
+// THERE IS NO NODE ARM, and the reason is that there is no assembler that can
+// drop a node. `preludeFrom` reads `names.layers` and `names.skills` and
+// nothing else, so a trial that removed a node id from the set it is handed
+// would assemble the IDENTICAL prompt and score the same prompt twice. On a
+// sampling model those two runs differ by noise, `ablationFindings` reads a
+// differing pair as `earned: false`, and worker/jobs/weekly.mjs posts every
+// such row to /tts/weekly-decisions as a removal proposal that stands unless
+// somebody objects — a rule line flagged for deletion by a measurement that
+// never deleted it, at a cost of about a thousand trials a week.
+//
+// So the arm is not here rather than gated off: a flag would be a second thing
+// to get wrong, and the selection rule it guarded (the five lowest-cost nodes
+// of a walk, ties by id) is one small function to write again. It comes back in
+// THE SAME COMMIT as the assembler that drops a node, because neither half
+// means anything without the other. `graphVersion` and `graphNodes` on the run
+// row, the walk, `tts search node` and `near` are untouched: those record and
+// read what a prompt carried, which is true whether or not anything ablates it.
+
 /**
  * The same case, assembled without one name.
  *
@@ -1996,6 +2014,11 @@ export async function runCase(item, context, io, { pr = false } = {}) {
  * REPORTED AND NEVER GATED, and n x trials x names is the whole cost of this
  * phase; one trial per name over a 200-case weekly set is far more evidence
  * than a removal proposal needs.
+ *
+ * TWO LISTS, NOT THREE: a layer and a skill, each of which `preludeFrom`
+ * actually assembles. A node would be the third and is not here — see the
+ * block above this one for why an arm nothing can assemble without is worse
+ * than no arm.
  *
  * A case whose prelude was not known is SKIPPED and counted: you cannot remove
  * a name from a prompt that was replayed verbatim.
@@ -2016,6 +2039,10 @@ export async function ablationFor(item, context, io, withPass) {
         ...item,
         input: {
           ...item.input,
+          // preludeNames IS THE WHOLE OF WHAT THE ASSEMBLER IS HANDED —
+          // JOBS.run.build calls context.prelude(item.input.preludeNames) and
+          // reads nothing else — so a name removed anywhere but here would
+          // assemble the identical prompt and score the same run twice.
           preludeNames: {
             layers: (names.layers ?? []).filter((one) => kind !== "layer" || one !== name),
             skills: (names.skills ?? []).filter((one) => kind !== "skill" || one !== name),
@@ -2054,11 +2081,20 @@ export const MIN_ABLATION_CASES = 5;
 export function ablationFindings(ablation) {
   const byName = new Map();
   for (const row of ablation ?? []) {
-    const entry = byName.get(row.name) ?? { name: row.name, cases: 0, withPass: 0, withoutPass: 0 };
+    // KEYED ON THE KIND AND THE NAME TOGETHER, AND THE KIND DOES NOT TRAVEL.
+    // A layer and a skill can carry one name — `write` was a layer and is now a
+    // skill — and one key would add the two counts together and report a
+    // finding about neither, so the kind belongs in the key. It does NOT belong
+    // on the finding: the twin of this function in convex/ttsWeekly.ts feeds
+    // POST /tts/weekly-decisions, whose argument check is an exact object, and
+    // Convex refuses a field that check does not list. The two copies emit the
+    // same shape so that neither can teach the other a field the route rejects.
+    const key = `${String(row.kind ?? "")}|${row.name}`;
+    const entry = byName.get(key) ?? { name: row.name, cases: 0, withPass: 0, withoutPass: 0 };
     entry.cases += 1;
     if (row.withPass) entry.withPass += 1;
     if (row.withoutPass) entry.withoutPass += 1;
-    byName.set(row.name, entry);
+    byName.set(key, entry);
   }
   return [...byName.values()]
     .filter((entry) => entry.cases >= MIN_ABLATION_CASES)
@@ -2524,6 +2560,10 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       // what keeps this to a handful of prelude.mjs invocations rather than
       // one per trial.
       prelude: (names) => {
+        // The key is the two name lists, which are the whole of what
+        // `preludeFrom` reads. A third part for a node list went with the node
+        // arm: nothing sets `names.nodes`, so it contributed an empty string to
+        // every key and named a caller that does not exist.
         const key = `${(names?.layers ?? []).join(",")}|${(names?.skills ?? []).join(",")}`;
         if (!preludeCache.has(key)) preludeCache.set(key, preludeFrom(io, tomquest.dir, wikitom.dir, names));
         return preludeCache.get(key);

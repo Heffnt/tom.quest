@@ -1539,8 +1539,8 @@ describe("the ablation arm", () => {
   // The finding is computed over the whole weekly set and never per case, and
   // a name with too little behind it is not reported at all.
   it("needs MIN_ABLATION_CASES behind a name before it reports one", () => {
-    const rows = (name, count, withPass, withoutPass) => Array.from({ length: count }, (_, index) => ({
-      id: `c${index}`, name, kind: "layer", withPass, withoutPass,
+    const rows = (name, count, withPass, withoutPass, kind = "layer") => Array.from({ length: count }, (_, index) => ({
+      id: `c${index}`, name, kind, withPass, withoutPass,
     }));
     expect(ablationFindings(rows("know", MIN_ABLATION_CASES - 1, true, true))).toEqual([]);
     expect(ablationFindings(rows("know", 5, true, true))).toEqual([
@@ -1550,6 +1550,79 @@ describe("the ablation arm", () => {
       { name: "write", cases: 5, withPass: 5, withoutPass: 0, earned: true },
     ]);
     expect(ablationFindings([])).toEqual([]);
+  });
+
+  // `write` was a layer and is now a skill, so the two kinds really do share a
+  // name; the kind keeps their counts apart. It is a KEY AND NOT A FIELD: the
+  // twin of this function feeds POST /tts/weekly-decisions, whose argument
+  // check is an exact object that does not list `kind`, and Convex refuses a
+  // field a check does not list.
+  it("keeps a layer and a skill of one name apart, and puts the kind on neither", () => {
+    const rows = (name, count, kind, withoutPass) => Array.from({ length: count }, (_, index) => ({
+      id: `c${index}`, name, kind, withPass: true, withoutPass,
+    }));
+    const found = ablationFindings([
+      ...rows("write", 5, "skill", false),
+      ...rows("write", 5, "layer", true),
+    ]);
+    // Two findings of one name, not one of ten cases: the skill's (which the
+    // set never passed without) and the layer's (which it always did).
+    expect(found).toEqual([
+      { name: "write", cases: 5, withPass: 5, withoutPass: 0, earned: true },
+      { name: "write", cases: 5, withPass: 5, withoutPass: 5, earned: false },
+    ]);
+    // The shape the route accepts, exactly: no `kind` on any finding.
+    for (const one of found) {
+      expect(Object.keys(one).sort()).toEqual(["cases", "earned", "name", "withPass", "withoutPass"]);
+    }
+  });
+});
+
+// ── No node arm ──────────────────────────────────────────────────────────────
+// The arm is not built, because `preludeFrom` cannot drop a node — see the
+// block above `ablationFor` in worker/jobs/evals.mjs. What is tested here is
+// that it stays unbuilt: a case carrying node ids still produces layer and
+// skill rows only, so nothing can post a node to /tts/weekly-decisions as a
+// removal proposal the measurement never earned.
+
+describe("the ablation arm names no node", () => {
+  it("scores the layers and the skills, and nothing per node, whatever the case carries", async () => {
+    const nodes = ["line:a", "line:b", "line:c", "line:d", "line:e", "line:f", "line:g"];
+    const item = runCaseItem({ input: { ...runCaseItem().input, preludeNodes: nodes } });
+    const io = runIo(Array.from({ length: 8 }, () => "pass"));
+    const arm = await ablationFor(item, runContext(), io, true);
+    // Three layers, three trials — not three plus a node apiece.
+    expect(io.calls.regen).toBe(3);
+    expect(arm.rows.some((row) => row.kind === "node")).toBe(false);
+    expect(arm.rows.map((row) => row.name)).toEqual(["operate", "write", "know"]);
+  });
+
+  it("hands the assembler no node list, so no trial can turn on one", async () => {
+    const item = runCaseItem({
+      input: { ...runCaseItem().input, preludeNames: { layers: ["know"], skills: [] }, preludeNodes: ["line:a", "line:b"] },
+    });
+    const seen = [];
+    const context = runContext({
+      prelude: (names) => {
+        seen.push(names.nodes);
+        return { names: [], skills: [], text: "P", commit: "w1", files: [] };
+      },
+    });
+    await ablationFor(item, context, runIo(["pass"]), true);
+    expect(seen.every((one) => one === undefined)).toBe(true);
+  });
+
+  it("skips a case replayed verbatim, whatever node ids it carries", async () => {
+    const replayed = runCaseItem({
+      input: { ...runCaseItem().input, preludeKnown: false, prompt: "REPLAYED", preludeNodes: ["line:a"] },
+    });
+    const quiet = runIo();
+    const skippedArm = await ablationFor(replayed, runContext(), quiet, true);
+    expect(skippedArm.rows).toEqual([]);
+    expect(skippedArm.skipped).toEqual([
+      { id: replayed.id, reason: "the prompt was replayed verbatim; there is no name to remove" },
+    ]);
+    expect(quiet.calls.regen).toBe(0);
   });
 });
 

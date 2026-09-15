@@ -2005,6 +2005,18 @@ const ttsModelOfTom = httpAction(async (ctx, request) => {
     }
     headers.push({ layers: header.layers as (typeof MODEL_OF_TOM_LAYER_NAMES)[number][], header: header.header });
   }
+  // THE GRAPH VERSION THE BASE WAS PUBLISHED FROM. The nightly generates the
+  // graph and posts the base in the same step off the same commit, so this
+  // names the object a run row's own `graphVersion` names. Optional, because a
+  // box whose graph step failed still has a base worth posting; absent stores
+  // nothing rather than an empty string.
+  if (b.graphVersion !== undefined && b.graphVersion !== null
+    && (typeof b.graphVersion !== "string" || b.graphVersion.trim() === "")) {
+    return jsonResponse(400, { error: "graphVersion, when given, is a non-empty string" });
+  }
+  const graphVersion = typeof b.graphVersion === "string" && b.graphVersion.trim() !== ""
+    ? b.graphVersion
+    : undefined;
   if (!Array.isArray(b.files)) {
     return jsonResponse(400, { error: "files (array) required" });
   }
@@ -2035,7 +2047,7 @@ const ttsModelOfTom = httpAction(async (ctx, request) => {
   try {
     const result = await ctx.runMutation(
       internal.ttsSkills.internalReplaceModelOfTom,
-        { commit: b.commit, committedAt: b.committedAt, pushed: b.pushed, force: b.force, layers, headers, files },
+        { commit: b.commit, committedAt: b.committedAt, pushed: b.pushed, force: b.force, layers, headers, files, graphVersion },
     );
     return jsonResponse(200, { ok: true, commit: b.commit, ...result });
   } catch (e) {

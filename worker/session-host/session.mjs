@@ -30,6 +30,7 @@ import {
   SESSIONS_ROOT,
   ERROR_TEXT_LIMIT,
   scrubbedEnv,
+  graphVersion,
 } from "./lib.mjs";
 import { BANNED_TOOLS, bannedToolDenial } from "./banned-tools.mjs";
 import {
@@ -1065,6 +1066,13 @@ export class Session {
           skillsRefused: [],
           tools: { allowed: null, denied: spec.family === "claude" ? [...BANNED_TOOLS] : null },
           hooksConfigured: ["SessionStart", "SessionEnd", "Stop", "SubagentStart", "SubagentStop"],
+          // WHICH GRAPH THIS RUN RAN UNDER, and no claim about its nodes: the
+          // daemon assembles no prompt here — the session's context arrives
+          // through the SessionStart hook — so it holds no page bodies and no
+          // node list. No graphNodes key, for the same reason layersKnown is
+          // false above: an empty array would claim the prompt carried nothing
+          // rather than that this launcher does not know.
+          graphVersion: graphVersion() ?? undefined,
         },
       });
     }

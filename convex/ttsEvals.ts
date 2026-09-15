@@ -3,7 +3,12 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
-import { DAY_MS, modelOfTomHeadOf } from "./ttsShared";
+// `commitKey` is the ONE spelling of `<repo>@<sha>`, and it lives in
+// convex/ttsShared.ts so that this module and convex/ttsMerge.ts can both read
+// it without becoming a cycle. Two spellings index two different sets of rows:
+// a row written under one is invisible to a reader using the other, and
+// scripts/check-vocabulary.mjs check 5 refuses the template written inline here.
+import { DAY_MS, commitKey, modelOfTomHeadOf } from "./ttsShared";
 import {
   EVALS_PROTOCOL,
   EVALS_PROTOCOL_SINCE,
@@ -772,7 +777,7 @@ export const internalRequestEvals = internalMutation({
     unaffected: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
-    const key = `${args.repo}@${args.sha}`;
+    const key = commitKey(args.repo, args.sha);
     const existing = await requestRowFor(ctx, key);
     const standing = existing === null ? null : requestData(existing.data);
     const currentRunId = standing?.runId ?? null;
@@ -1032,26 +1037,26 @@ async function answeredRun(ctx: QueryCtx | MutationCtx, key: string) {
  * it mattered most for, and it was the one that did not.
  */
 export async function answeredEvalsRun(ctx: QueryCtx | MutationCtx, repo: string, sha: string) {
-  return await answeredRun(ctx, `${repo}@${sha}`);
+  return await answeredRun(ctx, commitKey(repo, sha));
 }
 
 /** The request currently standing for a sha, if there is one. Readers that
  *  must distinguish historical rows from a run still being served use this
  *  alongside answeredEvalsRun. */
 export async function evalsRequestFor(ctx: QueryCtx | MutationCtx, repo: string, sha: string) {
-  return requestData((await requestRowFor(ctx, `${repo}@${sha}`))?.data);
+  return requestData((await requestRowFor(ctx, commitKey(repo, sha)))?.data);
 }
 
 export const internalEvalsRun = internalQuery({
   args: { repo: v.string(), sha: v.string(), baseSha: v.optional(v.string()) },
   handler: async (ctx, args) => {
-    const run = await answeredRun(ctx, `${args.repo}@${args.sha}`);
+    const run = await answeredRun(ctx, commitKey(args.repo, args.sha));
     // The requested head answers the request standing for it, so it uses the
     // exact identity check above. A base is comparison evidence about a tree,
     // not an answer to the request standing for that base sha: its newest row
     // is usable regardless of whether such a request exists. A nonmeasurement
     // still cannot seed a comparison.
-    const base = args.baseSha === undefined ? null : await runForKey(ctx, `${args.repo}@${args.baseSha}`);
+    const base = args.baseSha === undefined ? null : await runForKey(ctx, commitKey(args.repo, args.baseSha));
     return {
       run: run?.data ?? null,
       base: base === null || scoredNothing(base.data) ? null : base.data,

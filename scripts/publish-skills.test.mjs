@@ -46,7 +46,7 @@ const AGENT_RULES = [
   "",
   "### Repos",
   "- tom.quest: site, Convex record, box jobs; AGENTS.md in app/, convex/.",
-  "- ComplexMultiTrigger (CMT): his research code.",
+  "- ComplexMultiTrigger (CMT): the experiment harness.",
   "",
   "### TTS",
   "- todos and rulings.",
