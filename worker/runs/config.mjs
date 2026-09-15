@@ -148,6 +148,11 @@ export function runConfig({
       host: value("TTS_BOX_HOST") || null,
       user: value("TTS_BOX_USER") || "root",
       key: value("TTS_BOX_KEY") || null,
+      // REMOVAL CHECK on TTS_BOX_CMD: it is the seam the transport's own tests
+      // run through. box-agent.mjs's ssh path is testable because TTS_SSH_BIN
+      // points at a fake, and its on-the-box path — where there is no ssh at
+      // all — has only this one. Without it the branch that runs the command
+      // where it stands could be proved on no machine but the box itself.
       command: value("TTS_BOX_CMD") || "tts-run",
     },
     convexSiteUrl: value("CONVEX_SITE_URL") || null,

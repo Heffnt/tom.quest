@@ -45,9 +45,12 @@ echo "node: $(node -v)"
 
 # pnpm is what a box run's --install and --tests flags shell out to
 # (worker/runs/box-run.mjs) to install a checked-out worktree's node_modules.
-# NON-FATAL: everything else this script installs works with no pnpm at all,
-# so a missing pnpm is reported and setup continues rather than aborting.
-command -v pnpm >/dev/null 2>&1 || echo "  pnpm is NOT on PATH — see NEXT STEPS below"
+# INSTALLED HERE RATHER THAN CHECKED FOR. A probe plus a manual step in NEXT
+# STEPS is two things to keep true where one will do, and this script already
+# installs the two CLIs the same way; `npm -g install` is idempotent, so a
+# re-run upgrades and a fresh box is complete when the script ends.
+npm install -g pnpm
+echo "pnpm: $(pnpm --version || true)"
 
 echo "== [3/10] Claude Code CLI =="
 # npm -g install is idempotent (re-running upgrades to latest).
@@ -782,11 +785,6 @@ NEXT STEPS (manual, in order):
   6. Check the session-host daemon (once SESSIONS_WORKER_KEY is set):
        systemctl status tts-session-host
        journalctl -u tts-session-host -f
-
-  7. If step 2 reported pnpm missing, install it — a run started with
-     --install or --tests (worker/runs/box-run.mjs, tts-run) needs pnpm on
-     PATH to install the worktree's node_modules:
-       npm install -g pnpm
 
 Cron is already installed (/etc/cron.d/tts); logs land in /var/log/tts/.
 Re-running this script at any time is safe and is also how you roll out

@@ -175,6 +175,15 @@ function parseArgs(argv) {
   if (opts.repo === REPO_NONE && opts.ref) fail("--ref needs a --repo to resolve it in");
   if (!Number.isFinite(opts.timeout) || opts.timeout < 0) fail("--timeout must be a number of milliseconds, or 0 for no limit");
   if (opts.depth !== null && (!Number.isInteger(opts.depth) || opts.depth < 0)) fail("--depth must be a whole number");
+  // REMOVAL CHECK: this cannot go, because the two branches below are what it
+  // protects. `--root` and `--depth` without a `--parent` describe a position
+  // in a tree with no edge leading to it, and the registration writer spreads
+  // all three or none — so the pair would be dropped on the floor and the run
+  // would record a root of itself at depth 0 while its caller believed it had
+  // said otherwise. Silently ignoring two flags a caller passed is the shape
+  // this refuses; accepting them without a parent would put a run at a depth
+  // its own rootRunId contradicts, which convex/runs.ts then refuses anyway,
+  // 400 and dead-lettered instead of one line of stderr.
   if (!opts.parent && (opts.root || opts.depth !== null)) fail("--root and --depth need a --parent");
   // The model default depends on the runner, so it cannot be a constant above.
   // gpt-5.6-sol IS THE FLEET DEFAULT and the only right answer here: it is
@@ -184,6 +193,13 @@ function parseArgs(argv) {
   // .claude/agents/codex.md's "the defaults are already the strongest model"
   // false for every run that went through the box, which is now all of them.
   if (!opts.model) opts.model = opts.runner === "codex" ? "gpt-5.6-sol" : "opus";
+  // REMOVAL CHECK on --install as its own flag: --tests implies it, but the
+  // reverse is not true and folding them together would arm the memory guard
+  // for work that does not need it. A run that builds, lints, typechecks or
+  // reads a dependency's source needs node_modules and costs nothing like a
+  // test suite; with one flag it would be refused on a box that is merely busy
+  // (exit 75), and the alternative — one flag that never arms the guard —
+  // deletes the guard instead of this.
   if (opts.tests) opts.install = true;
   if (opts.parent) {
     if (opts.root === null) opts.root = opts.parent;
@@ -214,6 +230,11 @@ function readStdin() {
 // semaphore bounds contention and this reads the actual number.
 function refuseIfMemoryIsShort(opts, env) {
   if (!opts.tests) return;
+  // REMOVAL CHECK on MEMINFO_PATH: without it this guard has no test at all.
+  // /proc/meminfo is Linux's and read-only — it does not exist on the Windows
+  // laptop this suite also runs on, and no machine can be made to report 300
+  // MB free on demand. The seam is read once, here, and the only writer of it
+  // is the test; a run never sets it, and the fallback is the real file.
   const file = env.MEMINFO_PATH || "/proc/meminfo";
   let availableMb = null;
   try {
@@ -424,7 +445,11 @@ function ensureMirror(repo, reposDir, env) {
 }
 
 function resolveRef(mirror, ref, env, onFail) {
-  const candidates = ref ? [ref, `refs/heads/${ref}`, `refs/tags/${ref}`, `origin/${ref}`] : ["HEAD"];
+  // NO `origin/<ref>` CANDIDATE. A mirror fetches with +refs/*:refs/*, so a
+  // branch lands at refs/heads/<name> and there is no refs/remotes/origin/*
+  // namespace in the repository at all — the candidate could never match, and
+  // a candidate that cannot match reads as a fallback that exists.
+  const candidates = ref ? [ref, `refs/heads/${ref}`, `refs/tags/${ref}`] : ["HEAD"];
   for (const candidate of candidates) {
     const result = git(["-C", mirror, "rev-parse", "--verify", "--quiet", `${candidate}^{commit}`], { env });
     const sha = String(result.stdout ?? "").trim();
@@ -495,6 +520,12 @@ const release = takeSlot({
   counterFile: path.join(stateDir, "semaphore.json"),
   lockFile: path.join(stateDir, "semaphore.lock"),
   limit,
+  // REMOVAL CHECK on RUN_SEMAPHORE_RETRY_MS: the queue's proof is that a
+  // second run waits and then goes, and at the real retry interval that test
+  // would take the interval itself to run, once per case, for ever. The seam
+  // shortens the sleep and nothing else — the limit, the slot file and the
+  // stale reclaim are untouched — so what the test exercises is the same code
+  // a run takes. Deleting it leaves the queue with no test.
   sleepMs: Number(process.env.RUN_SEMAPHORE_RETRY_MS) > 0 ? Number(process.env.RUN_SEMAPHORE_RETRY_MS) : SEMAPHORE_RETRY_MS,
 });
 
