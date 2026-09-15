@@ -93,37 +93,46 @@ Bounded, near, interactive.
 - **file version** — one immutable snapshot of a run file.
 `;
 
+/**
+ * SYNTHETIC, AND DELIBERATELY SO. The heading forms and bullet shapes are the
+ * ones parseRepoBullets and the map-candidate renderer key on, and the three
+ * repository NAMES are public facts this repository states everywhere. Every
+ * word of prose after them is invented: nothing from
+ * model-of-tom/agent-rules.md may enter this public repository, and the Never
+ * list has no carve-out for a line that happens to read as generic. An earlier
+ * fixture copied and truncated real lines, which is how they got here.
+ */
 const AGENT_RULES = `# Agent rules
 
-You work for Tom.
+You answer to Tom.
 
 ## Map
 
 ### Skills
-- operate: this file.
+- base: the page you are reading now.
 
 ### Repos
-- tom.quest: site, Convex record, box jobs.
-- WikiTom: the vault.
-- ComplexMultiTrigger (CMT): his research code.
+- tom.quest: the public site and the work it schedules.
+- WikiTom: the private notes tree.
+- ComplexMultiTrigger (CMT): the experiment harness.
 
 ### TTS
-- todos, batches, rulings.
+- the three row kinds the record holds.
 
 ### Search
-- \`tts search\` (rulings, sessions): read-only, no model, box and laptop.
-- Open repository-rule proposals: \`tts search proposals --repo <repo>\`.
+- \`tts search\` (two corpora): answers without a model, on either machine.
+- Pending rule suggestions: \`tts search proposals --repo <repo>\`.
 
 ### Jobs
-- Box (New York): nightly 04:00.
-- The digest: a Fable run writes it.
-- In Convex: repeats 04:30.
+- Box (New York): the overnight pass at 04:00.
+- The morning line: one run composes it.
+- In Convex: the repeat minter at 04:30.
 
 ### Tools
-- Box: tts-search.
+- Box: the one search binary.
 
 ### Never
-- Invent anything about him.
+- Guess at a fact nobody wrote down.
 `;
 
 /** The prompt constant, written so that every one of the seven words states the
@@ -571,7 +580,7 @@ describe("the disagreement check", () => {
   it("D5 — two lists of one set", () => {
     const result = run(makeCheckouts({ shared: sharedTs().replace('  WikiTom: "Heffnt/WikiTom",\n', "") }));
     expect(codes(result)).toEqual([]);
-    const missing = run(makeCheckouts({ agentRules: AGENT_RULES.replace("- WikiTom: the vault.\n", "") }));
+    const missing = run(makeCheckouts({ agentRules: AGENT_RULES.replace("- WikiTom: the private notes tree.\n", "") }));
     expect(codes(missing)).toEqual(["D5"]);
     expect(missing.disagreements[0].subject).toBe('repository "WikiTom"');
   });
@@ -626,10 +635,10 @@ describe("the map candidate", () => {
       convexJobs: ["- In Convex: repeats."],
       tools: ["- Box: tts-search."],
     });
-    expect(rendered.text).toContain("- The digest: a Fable run writes it.");
-    expect(rendered.text).toContain("- Open repository-rule proposals: `tts search proposals --repo <repo>`.");
-    expect(rendered.text).toContain("- Invent anything about him.");
-    expect(rendered.text).not.toContain("- WikiTom: the vault.");
+    expect(rendered.text).toContain("- The morning line: one run composes it.");
+    expect(rendered.text).toContain("- Pending rule suggestions: `tts search proposals --repo <repo>`.");
+    expect(rendered.text).toContain("- Guess at a fact nobody wrote down.");
+    expect(rendered.text).not.toContain("- WikiTom: the private notes tree.");
   });
 
   it("writes the four blocks in place under MAP_BLOCKS = live, and nothing else moves", async () => {
@@ -638,13 +647,13 @@ describe("the map candidate", () => {
     variant.generateVocabulary({ wikitom: checkouts.wikitom, tomQuest: checkouts.tomQuest, write: true });
     const after = fs.readFileSync(path.join(checkouts.wikitom, "model-of-tom/agent-rules.md"), "utf8");
     expect(after).not.toBe(AGENT_RULES);
-    expect(after).toContain("### Never\n- Invent anything about him.");
-    expect(after).toContain("- The digest: a Fable run writes it.");
+    expect(after).toContain("### Never\n- Guess at a fact nobody wrote down.");
+    expect(after).toContain("- The morning line: one run composes it.");
     expect(fs.existsSync(path.join(checkouts.wikitom, "model-of-tom/agent-rules.candidate.md"))).toBe(false);
   });
 
   it("counts the candidate on LF bytes and fails naming the blocks that grew", () => {
-    const fat = AGENT_RULES.replace("You work for Tom.", `You work for Tom. ${"padding ".repeat(880)}`);
+    const fat = AGENT_RULES.replace("You answer to Tom.", `You answer to Tom. ${"padding ".repeat(880)}`);
     const checkouts = makeCheckouts({ agentRules: fat });
     const result = run(checkouts, { write: true });
     expect(result.candidateOverBudget).toMatch(

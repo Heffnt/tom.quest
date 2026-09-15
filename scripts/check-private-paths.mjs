@@ -149,6 +149,42 @@ export function categoryContentFindings(tracked, categoryLines, { readFile = rea
   return findings.sort((a, b) => a.file.localeCompare(b.file));
 }
 
+/** The operate page's own sentences, long enough that a match is a copy rather
+ * than a coincidence. 40 characters is the floor: shorter lines are headings
+ * and list stubs ("### Repos") that any fixture of the same SHAPE will
+ * legitimately share. The lines are read from WikiTom and never written
+ * anywhere — only the offending file name is ever printed. */
+export const OPERATE_LINE_MIN = 40;
+export function operateLines(root, { exists = existsSync, readFile = readFileSync } = {}) {
+  const file = path.join(root, "model-of-tom", "agent-rules.md");
+  if (!exists(file)) return null;
+  return readFile(file, "utf8")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length >= OPERATE_LINE_MIN);
+}
+
+/** Every tracked file carrying a line of the operate page verbatim. The Never
+ * list has no carve-out for a line that reads as generic, so neither does this:
+ * a fixture wanting that shape writes its own words. */
+export function operateContentFindings(tracked, lines, { readFile = readFileSync, cwd = process.cwd() } = {}) {
+  const findings = [];
+  for (const raw of tracked) {
+    const file = normalizeTrackedPath(raw);
+    if (BINARY.test(file)) continue;
+    let text;
+    try {
+      text = readFile(path.resolve(cwd, file), "utf8");
+    } catch {
+      continue;
+    }
+    if (typeof text === "string" && lines.some((line) => text.includes(line))) {
+      findings.push({ file, rule: "model-of-tom operate content" });
+    }
+  }
+  return findings.sort((a, b) => a.file.localeCompare(b.file));
+}
+
 export function wikiTomRoot({ env = process.env, platform = process.platform, exists = existsSync } = {}) {
   const root = env.WIKITOM_DIR || (platform === "win32" ? LAPTOP_WIKITOM_DIR : BOX_WIKITOM_DIR);
   return exists(path.join(root, "model-of-tom", "areas")) ? root : null;
@@ -160,12 +196,22 @@ export function checkPrivatePaths(run = execFileSync, { notice = () => {}, root 
   // A checkout with no area page carries no line to compare, and a check with
   // nothing to compare must say so rather than pass silently.
   const categoryLines = root === null ? null : wikiTomCategoryLines(root, fs);
+  const operate = root === null ? null : operateLines(root, fs);
   if (categoryLines === null || categoryLines.length === 0) {
     notice("private-paths: WikiTom checkout unavailable; area-category content check skipped\n");
-    return findings;
   }
-  return [...findings, ...categoryContentFindings(tracked, categoryLines, { ...fs, cwd })]
-    .sort((a, b) => a.file.localeCompare(b.file) || a.rule.localeCompare(b.rule));
+  if (operate === null || operate.length === 0) {
+    notice("private-paths: WikiTom checkout unavailable; operate content check skipped\n");
+  }
+  return [
+    ...findings,
+    ...(categoryLines !== null && categoryLines.length > 0
+      ? categoryContentFindings(tracked, categoryLines, { ...fs, cwd })
+      : []),
+    ...(operate !== null && operate.length > 0
+      ? operateContentFindings(tracked, operate, { ...fs, cwd })
+      : []),
+  ].sort((a, b) => a.file.localeCompare(b.file) || a.rule.localeCompare(b.rule));
 }
 
 function main() {

@@ -1003,9 +1003,10 @@ function blockRange(lines, heading) {
 /**
  * ONE BULLET PER LINE, NOT PER REPOSITORY, and the map's own order.
  *
- * A `### Repos` bullet may name several repositories at once — the map's
- * `- Overleaf (the paper), Byobu, THMM, BioEng: AGENTS.md where it exists.`
- * names four — and `repos[]` carries one row per repository, each holding the
+ * A `### Repos` bullet may name several repositories at once — one of the
+ * map's names four, in the shape `- Atlas (the almanac), Kiln, Mesa, Quill:
+ * rules files where they exist.` — and `repos[]` carries one row per
+ * repository, each holding the
  * whole bullet it came from. Mapping rows to bullets therefore printed that
  * line four times and lost the block's order, which made the candidate diff
  * unreadable exactly where Tom would be reading it to rule switch (a).

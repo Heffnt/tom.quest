@@ -446,11 +446,17 @@ export function serializeGraph(graph) {
  *
  * Done by substitution rather than a JSON round-trip so everything else stays
  * byte-for-byte: a hand edit that only moved whitespace is still a difference.
+ *
+ * `null` IS ONE OF THE VALUES. `headCommit` returns null when it cannot read a
+ * HEAD — a worktree whose branch ref is packed is the case that exists — and
+ * that null is written into the file unquoted. Matching only a quoted value
+ * left a run that resolved the commit differing from one that did not, which is
+ * the same false G8 by another route.
  */
 function blankCommits(text) {
   return text
-    .replace(/^( *"(?:wikitomCommit|tomQuestCommit)": )"[^"]*"/gm, '$1""')
-    .replace(/^( {4,}"version": )"[^"]*"/gm, '$1""');
+    .replace(/^( *"(?:wikitomCommit|tomQuestCommit)": )("[^"]*"|null)/gm, '$1""')
+    .replace(/^( {4,}"version": )("[^"]*"|null)/gm, '$1""');
 }
 
 /** A serialized graph with every record-kind node and every edge touching one
@@ -519,7 +525,7 @@ function block(code, subject, rows, fix) {
  * here, because it has to keep working with the graph absent and a generator
  * re-implementing it would be a second authority on what an entry is.
  */
-function disagreementsOf(graph, { vocabulary, bytes, pages, evidence, notes = [] }) {
+function disagreementsOf(graph, { vocabulary, vocabularySource, bytes, pages, evidence, notes = [] }) {
   const found = [];
 
   // G1 / G2 — a kind nothing declares.
@@ -528,9 +534,17 @@ function disagreementsOf(graph, { vocabulary, bytes, pages, evidence, notes = []
   const declaredEdge = fromVocabulary ? vocabularyKinds(vocabulary, "edge") : [];
   const usingVocabulary = declaredNode.length > 0 && declaredEdge.length > 0;
   if (!usingVocabulary) {
+    // WHY THERE IS NO SCHEMA, not only that there is none. `vocabularyFor`
+    // knows which of four things happened — the file was read off disk, it was
+    // built in memory, scripts/vocabulary.mjs is not installed beside this
+    // file, or importing it threw — and its sentence used to be dropped on the
+    // floor by runCli. A run then fell back to the generator's own kind lists
+    // and said only that it had, which reads as a vocabulary with no kinds in
+    // it rather than as a generator that failed to load.
     notes.push(
       `KIND_AUTHORITY is "${KIND_AUTHORITY}" but ${VOCABULARY_PATH} declares no node or edge kinds — `
-        + "G1 and G2 checked against worker/jobs/graph.mjs's own lists instead",
+        + "G1 and G2 checked against worker/jobs/graph.mjs's own lists instead"
+        + (vocabularySource ? ` (schema from: ${vocabularySource})` : ""),
     );
   }
   const declaredNodeKinds = usingVocabulary ? new Set(declaredNode) : new Set(NODE_KINDS);
@@ -767,7 +781,7 @@ export function generateGraph(options) {
 
   const rendered = serializeGraph(graph);
   const bytes = Buffer.byteLength(rendered, "utf8");
-  const disagreements = disagreementsOf(graph, { vocabulary, bytes, pages, evidence, notes: graph.notes });
+  const disagreements = disagreementsOf(graph, { vocabulary, vocabularySource: options.vocabularySource, bytes, pages, evidence, notes: graph.notes });
 
   const file = path.join(wikitom, GRAPH_PATH);
   const onDisk = readIfPresent(file);
@@ -1046,7 +1060,7 @@ export async function runCli(argv = process.argv.slice(2), out = console.log, er
   }
   const wikitom = options.wikitom ?? defaultWikitom();
   const schema = await vocabularyFor({ wikitom, tomQuest: options.tomQuest });
-  return main(argv, out, err, { vocabulary: schema.vocabulary });
+  return main(argv, out, err, { vocabulary: schema.vocabulary, vocabularySource: schema.from });
 }
 
 if (invoked) {

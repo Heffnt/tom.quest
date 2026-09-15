@@ -47,16 +47,24 @@ afterAll(() => {
 const WIKITOM_COMMIT = "a".repeat(40);
 const TOM_QUEST_COMMIT = "b".repeat(40);
 
+/**
+ * SYNTHETIC, AND DELIBERATELY SO. The headings and bullet shapes are the ones
+ * the parser keys on; every word after them is invented. Nothing from
+ * model-of-tom/agent-rules.md may enter this public repository — the Never list
+ * has no carve-out for a line that reads as generic — and a fixture that copied
+ * the real wording would put it here permanently, in a file whose whole job is
+ * to be checked in.
+ */
 const AGENT_RULES = [
   "# Agent rules",
   "",
   "## Map",
   "",
   "### Repos",
-  "- tom.quest: site, Convex record, box jobs; AGENTS.md at the root.",
+  "- tom.quest: the public site and the work it schedules; rules files throughout.",
   "",
   "### Never",
-  "- Invent anything about him.",
+  "- Guess at a fact nobody wrote down.",
   "",
 ].join("\n");
 

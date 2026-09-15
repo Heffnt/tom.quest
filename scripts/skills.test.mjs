@@ -393,10 +393,10 @@ describe("skills: the map's Repos block", () => {
 
   it("takes four names off one bullet", () => {
     const bullets = parseRepoBullets(
-      "### Repos\n- Overleaf (the paper), Byobu, THMM, BioEng: AGENTS.md where it exists.\n",
+      "### Repos\n- Atlas (the almanac), Kiln, Mesa, Quill: rules files where they exist.\n",
     );
-    expect(bullets[0].names).toEqual(["Overleaf", "Byobu", "THMM", "BioEng"]);
-    expect(bullets[0].aliases).toEqual({ Overleaf: "the paper" });
+    expect(bullets[0].names).toEqual(["Atlas", "Kiln", "Mesa", "Quill"]);
+    expect(bullets[0].aliases).toEqual({ Atlas: "the almanac" });
   });
 
   it("throws with the bullet quoted when it has no colon", () => {

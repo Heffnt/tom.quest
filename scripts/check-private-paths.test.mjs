@@ -3,6 +3,9 @@ import {
   BOX_WIKITOM_DIR,
   LAPTOP_WIKITOM_DIR,
   categoryContentFindings,
+  OPERATE_LINE_MIN,
+  operateContentFindings,
+  operateLines,
   checkPrivatePaths,
   privatePathFindings,
   wikiTomCategoryLines,
@@ -107,13 +110,62 @@ describe("private path guardrail", () => {
     expect(wikiTomRoot({ env: {}, platform: "linux", exists: () => false })).toBeNull();
   });
 
+  // THE OPERATE RULE. Its lines are invented here for the same reason the
+  // category ones are: a test for a copy must not be the copy. A real line is
+  // matched as a SUBSTRING, because the ways it leaks are inside a string
+  // literal, a template or a comment — which is how three of them survived a
+  // sweep that compared whole lines.
+  const OPERATE = [
+    "- a sentence of the operate page long enough to be nobody else" + String.fromCharCode(39) + "s.",
+    "- a second such sentence, also past the forty-character floor.",
+  ];
+
+  const operateFor = (bodies) => operateContentFindings(Object.keys(bodies), OPERATE, {
+    readFile: (file) => {
+      const body = bodies[file.replaceAll(String.fromCharCode(92), "/").slice("C:/public/".length)];
+      if (body === undefined) throw new Error("ENOENT");
+      return body;
+    },
+    cwd: "C:/public",
+  });
+
+  it("rejects an operate line however it is embedded, and leaves other prose alone", () => {
+    expect(operateFor({
+      "whole.md": OPERATE[0],
+      "in-a-string.mjs": `const fixture = "${OPERATE[1]}";`,
+      "in-a-comment.mjs": `// ${OPERATE[0]}`,
+      "indented.md": `  ${OPERATE[1]}  `,
+      "innocent.mjs": "- a line this repository wrote for itself, of a similar length.",
+      "shape-only.md": "### Repos",
+    }).map(({ file }) => file)).toEqual(["in-a-comment.mjs", "in-a-string.mjs", "indented.md", "whole.md"]);
+  });
+
+  it("reads only the operate lines past the floor, and nothing when the page is absent", () => {
+    const page = [
+      "# Agent rules",
+      "### Repos",
+      "- short one.",
+      "- a sentence of the operate page long enough to be nobody else" + String.fromCharCode(39) + "s.",
+    ].join("\n");
+    const lines = operateLines("C:/vault", { exists: () => true, readFile: () => page });
+    expect(lines).toEqual([OPERATE[0]]);
+    for (const line of lines) expect(line.length).toBeGreaterThanOrEqual(OPERATE_LINE_MIN);
+    expect(operateLines("C:/vault", { exists: () => false, readFile: () => page })).toBeNull();
+  });
+
   it("keeps path checks active and emits a deterministic notice without a checkout", () => {
     const notes = [];
     const run = () => "evals/triggers/skill-know-research.json\0";
     expect(checkPrivatePaths(run, { root: null, notice: (line) => notes.push(line) })).toEqual([
       { file: "evals/triggers/skill-know-research.json", rule: "private know-area trigger" },
     ]);
-    expect(notes).toEqual(["private-paths: WikiTom checkout unavailable; area-category content check skipped\n"]);
+    // BOTH CONTENT CHECKS SAY SO SEPARATELY. A check with nothing to compare
+    // must name itself, or a reader counting green checks counts one that
+    // never ran.
+    expect(notes).toEqual([
+      "private-paths: WikiTom checkout unavailable; area-category content check skipped\n",
+      "private-paths: WikiTom checkout unavailable; operate content check skipped\n",
+    ]);
 
     // A checkout whose area directory holds no page is the same absence.
     const empty = [];
@@ -122,6 +174,9 @@ describe("private path guardrail", () => {
       fs: { exists: () => true, readdir: () => [], readFile: () => "" },
       notice: (line) => empty.push(line),
     });
-    expect(empty).toEqual(["private-paths: WikiTom checkout unavailable; area-category content check skipped\n"]);
+    expect(empty).toEqual([
+      "private-paths: WikiTom checkout unavailable; area-category content check skipped\n",
+      "private-paths: WikiTom checkout unavailable; operate content check skipped\n",
+    ]);
   });
 });
