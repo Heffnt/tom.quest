@@ -166,7 +166,13 @@ function parseArgs(argv) {
   if (opts.depth !== null && (!Number.isInteger(opts.depth) || opts.depth < 0)) fail("--depth must be a whole number");
   if (!opts.parent && (opts.root || opts.depth !== null)) fail("--root and --depth need a --parent");
   // The model default depends on the runner, so it cannot be a constant above.
-  if (!opts.model) opts.model = opts.runner === "codex" ? "gpt-5.6-terra" : "opus";
+  // gpt-5.6-sol IS THE FLEET DEFAULT and the only right answer here: it is
+  // scripts/codex-run.mjs's DEFAULT_MODEL, so the two ways of reaching Codex
+  // agree, and a box run is a run of its own rather than a Codex child (a
+  // child is the one thing named gpt-5.6-terra). Naming terra here also made
+  // .claude/agents/codex.md's "the defaults are already the strongest model"
+  // false for every run that went through the box, which is now all of them.
+  if (!opts.model) opts.model = opts.runner === "codex" ? "gpt-5.6-sol" : "opus";
   if (opts.tests) opts.install = true;
   if (opts.parent) {
     if (opts.root === null) opts.root = opts.parent;

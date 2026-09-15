@@ -151,6 +151,25 @@ describe("box-run stdout contract", () => {
     expect(path.basename(cwd)).toBe("ws");
   });
 
+  // witness: this used to pass gpt-5.6-terra, which is the name reserved for a
+  // Codex CHILD. A box run is a run of its own, and now that every Codex run
+  // goes through the box, a different default here would silently mean the
+  // fleet default is not what scripts/codex-run.mjs and .claude/agents/codex.md
+  // both say it is.
+  it("gives a Codex run the fleet default model, the same one codex-run.mjs names", () => {
+    const stateDir = temp("state");
+    const record = path.join(stateDir, "record.json");
+    const result = run(["--repo", "none", "--runner", "codex"], {
+      stateDir,
+      env: { TTS_CODEX_BIN: fakeCli("codex-model"), FAKE_RECORD: record },
+    });
+    expect(result.status).toBe(0);
+    const { argv } = JSON.parse(fs.readFileSync(record, "utf8"));
+    expect(argv[argv.indexOf("--model") + 1]).toBe("gpt-5.6-sol");
+    const codexRun = fs.readFileSync(path.resolve("scripts/codex-run.mjs"), "utf8");
+    expect(codexRun).toContain('const DEFAULT_MODEL = "gpt-5.6-sol"');
+  });
+
   it("writes a registration envelope naming the parent, the root and the depth", () => {
     const stateDir = temp("state");
     const parent = "claude:laptop:11111111-2222-4333-8444-555555555555";
