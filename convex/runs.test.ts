@@ -199,6 +199,31 @@ describe("runs", () => {
     expect(stored?.context?.graphNodes).toBeUndefined();
   });
 
+  // witness: worker/runs/box-run.mjs names the laptop session that launched a
+  // box run as that run's parent, so a parent edge now crosses hosts. The
+  // placeholder used to take its host and runner from the child that revealed
+  // it, which recorded a laptop session as a box run — a false fact the
+  // sessions view would have shown Tom.
+  it("lands box children under the laptop session that launched them, under one laptop stub", async () => {
+    const t = convexTest(schema, modules);
+    const boxChild = (name: string) => run({
+      runId: `claude:box:${name}`, host: "box", kind: "session", linkKnown: false,
+      parentRunId: "claude:laptop:orchestrator", rootRunId: "claude:laptop:orchestrator", depth: 1,
+      file: { ...run().file, path: `C:/${name}.jsonl` },
+    });
+    expect(await t.mutation(internal.runs.internalIngest, ingest(boxChild("box-child-one"), [row(0, { depth: 1 })]) as never))
+      .toMatchObject({ ok: true, inserted: 1 });
+    expect(await t.mutation(internal.runs.internalIngest, ingest(boxChild("box-child-two"), [row(0, { depth: 1 })]) as never))
+      .toMatchObject({ ok: true, inserted: 1 });
+
+    const parent = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:orchestrator")).unique());
+    expect(parent).toMatchObject({ host: "laptop", runner: "claude", kind: "unknown", depth: 0, rootRunId: "claude:laptop:orchestrator" });
+
+    const children = await t.run((ctx) => ctx.db.query("runs").withIndex("by_parent", (q) => q.eq("parentRunId", "claude:laptop:orchestrator")).collect());
+    expect(children.map((entry) => entry.runId).sort()).toEqual(["claude:box:box-child-one", "claude:box:box-child-two"]);
+    expect(children.every((entry) => entry.host === "box" && entry.depth === 1)).toBe(true);
+  });
+
   it("stores mode only for session runs", async () => {
     const t = convexTest(schema, modules);
     expect(await t.mutation(internal.runs.internalIngest, ingest(run({ mode: "interactive" })) as never)).toMatchObject({ ok: true });

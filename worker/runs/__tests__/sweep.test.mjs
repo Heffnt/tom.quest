@@ -462,4 +462,23 @@ describe("run sweep", () => {
     expect(acquireSweepLock(stateDir, { now: () => NOW + 1 }).acquired).toBe(false);
     expect(acquireSweepLock(stateDir, { now: () => NOW + 16 * 60_000 }).staleBroken).toBe(true);
   });
+
+  // The exclusive create and the pid write are two steps. A process killed
+  // between them, or a write that failed for want of disk, leaves a lock with
+  // no startedAt to read. On the box that file wedged the sweep for twenty-two
+  // hours, because the staleness rule read only the contents.
+  it("breaks a lock whose contents cannot be read, once it is old enough", () => {
+    const dir = temp(); const stateDir = path.join(dir, "state");
+    fs.mkdirSync(stateDir, { recursive: true });
+    const file = path.join(stateDir, "lock");
+    fs.writeFileSync(file, "");
+    const old = new Date(NOW);
+    fs.utimesSync(file, old, old);
+    expect(acquireSweepLock(stateDir, { now: () => NOW + 60_000 }).acquired).toBe(false);
+    const broken = acquireSweepLock(stateDir, { now: () => NOW + 16 * 60_000 });
+    expect(broken.staleBroken).toBe(true);
+    expect(broken.acquired).toBe(true);
+    broken.release();
+    expect(fs.existsSync(file)).toBe(false);
+  });
 });

@@ -121,11 +121,25 @@ export function acquireSweepLock(stateDir, { fs = fsDefault, now = Date.now } = 
       try { fs.unlinkSync(file); } catch {}
     };
   };
+  // THE AGE OF A LOCK IS A FACT ABOUT THE FILE, not only about what is inside
+  // it. The exclusive create and the write of the pid are two steps, so a
+  // process killed between them — or a write that failed for want of disk,
+  // which is what happened on the box on 2026-09-13 — leaves an empty lock
+  // whose startedAt cannot be read. Judging staleness from the contents alone
+  // made that file unbreakable, and the sweep refused for twenty-two hours
+  // while every run on the box went unrecorded. This is not a new case bolted
+  // on: it completes the existing staleness rule, because an unreadable lock
+  // still has an mtime and the mtime is when it was created.
+  const startedAt = () => {
+    const landed = readJson(file, fs);
+    if (Number.isFinite(landed?.startedAt)) return landed.startedAt;
+    try { return fs.statSync(file).mtimeMs; } catch { return null; }
+  };
   try { return { acquired: true, release: take(), staleBroken: false }; }
   catch (error) {
     if (error?.code !== "EEXIST") throw error;
-    const landed = readJson(file, fs);
-    if (Number.isFinite(landed?.startedAt) && now() - landed.startedAt > STALE_LOCK_MS) {
+    const at = startedAt();
+    if (at !== null && now() - at > STALE_LOCK_MS) {
       try { fs.unlinkSync(file); } catch {}
       try { return { acquired: true, release: take(), staleBroken: true }; }
       catch (retry) { if (retry?.code !== "EEXIST") throw retry; }

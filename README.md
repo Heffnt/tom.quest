@@ -66,6 +66,8 @@ pnpm test:e2e         # Playwright E2E tests
 pnpm lint             # ESLint
 ```
 
+Heavy work — tests, builds, audits, long reads and edits — goes to the `box` agent (`.claude/agents/box.md`), which runs it on the Jarvis Box instead of the laptop.
+
 ## Deployment
 
 Vercel is connected to the `main` branch. The build command is overridden to:

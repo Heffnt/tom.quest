@@ -1,6 +1,7 @@
 // NO SHEBANG LINE. Tests import this module, and the installed hook invokes it
 // through Node. The hook must never keep either CLI waiting on sweep work.
 
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -164,6 +165,58 @@ function hookRegistration(payload, event, runFile, env) {
   };
 }
 
+function sha1(value) {
+  return createHash("sha1").update(value).digest("hex");
+}
+
+// The box transport needs the laptop session's run id, and no ambient
+// environment variable carries it. This is the hook handing that one fact to
+// scripts/box-agent.mjs, keyed by the cwd the session runs in. It is a
+// pointer, not a fact about the run: the envelope beside the run file is
+// still the record.
+export function currentRunPointerPath(stateDir, cwd) {
+  return path.join(stateDir, "current", `${sha1(path.resolve(cwd))}.json`);
+}
+
+// KNOWN LIMITATION, STATED RATHER THAN ENGINEERED AWAY: the key is the cwd, so
+// two sessions in one directory means last writer wins and box-agent.mjs reads
+// whichever started most recently. scripts/box-agent.mjs's 24-hour staleness
+// check is the only other guard. No registry of live sessions is built for it.
+//
+// A HOOK MUST NEVER FAIL A SESSION START, so every path here is swallowed and
+// recorded in the hook log instead.
+function writeCurrentRunPointer(payload, runFile, env, stateDir) {
+  try {
+    const runner = runnerOf(payload, runFile, env);
+    const sessionId = firstString(payload.session_id, payload.sessionId);
+    const cwd = firstString(payload.cwd);
+    if (runner !== "claude" || !sessionId || !cwd) return;
+    const host = env.RUN_HOST === "box" || env.RUN_HOST === "laptop" ? env.RUN_HOST : null;
+    const runId = `${runner}:${host ?? "laptop"}:${sessionId}`;
+    const file = currentRunPointerPath(stateDir, cwd);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const temporary = `${file}.tmp-${process.pid}`;
+    try {
+      fs.writeFileSync(temporary, `${JSON.stringify({ runId, rootRunId: runId, depth: 0, sessionId, runFile, at: Date.now() })}\n`, { mode: 0o600 });
+      fs.renameSync(temporary, file);
+    } finally {
+      try { fs.unlinkSync(temporary); } catch {}
+    }
+  } catch (error) {
+    hookLog(stateDir, `SessionStart could not record its current-run pointer: ${error?.message ?? error}`);
+  }
+}
+
+function removeCurrentRunPointer(payload, runFile, env, stateDir) {
+  try {
+    const cwd = firstString(payload.cwd);
+    if (runnerOf(payload, runFile, env) !== "claude" || !cwd) return;
+    fs.rmSync(currentRunPointerPath(stateDir, cwd), { force: true });
+  } catch (error) {
+    hookLog(stateDir, `SessionEnd could not remove its current-run pointer: ${error?.message ?? error}`);
+  }
+}
+
 function failedReason(reason) {
   return /(?:fail|error|crash|abort|exception)/i.test(String(reason ?? ""));
 }
@@ -214,6 +267,7 @@ export function handleHook(payload, { event, env = process.env, spawnImpl = spaw
       hookLog(stateDir, `${hookEvent} claim lost its pre-existing grant receipt`);
     }
     if (!result.ok) hookLog(stateDir, `${hookEvent} could not claim its registration: ${result.reason}`);
+    writeCurrentRunPointer(payload, runFile, env, stateDir);
     return { handled: true, file: result.file };
   }
   if (hookEvent === "SubagentStart") {
@@ -229,6 +283,7 @@ export function handleHook(payload, { event, env = process.env, spawnImpl = spaw
     return { handled: true, file: result.file };
   }
   if (hookEvent === "SessionEnd" || hookEvent === "SubagentStop") {
+    if (hookEvent === "SessionEnd") removeCurrentRunPointer(payload, runFile, env, stateDir);
     const reason = firstString(payload.reason) ?? "";
     writeRegistrationEnd({
       runFile,

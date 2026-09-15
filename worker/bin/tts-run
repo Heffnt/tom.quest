@@ -1,0 +1,21 @@
+#!/bin/sh
+# tts-run — run one agent on the Jarvis Box from anywhere, including over ssh.
+#
+# WHY THIS EXISTS: the laptop's transport (scripts/box-agent.mjs) sends one ssh
+# line and nothing else. That line has to name a command on the box's PATH,
+# because the laptop knows no path inside /opt/tts and must not learn one.
+#
+# It is a two-line forwarder ON PURPOSE, exactly like tts-codex beside it.
+# setup.sh copies worker/runs/*.mjs to /opt/tts/runs/, and everything that
+# matters — the flags, the semaphore, the worktree, the registration envelope,
+# the redaction, the clean-stdout contract — lives in that one file, so the two
+# ways of reaching a box run can never drift apart.
+#
+#   tts-run [flags] < prompt.txt
+#
+# Flags: --runner claude|codex, --repo NAME, --ref REF, --model NAME,
+# --effort LEVEL, --sandbox MODE, --schema FILE, --max-turns N, --tests,
+# --install, --parent RUNID, --root RUNID, --depth N, --keep-worktree,
+# --timeout MS. The prompt arrives on stdin; only the run's report and one
+# status line come back on stdout.
+exec node /opt/tts/runs/box-run.mjs "$@"

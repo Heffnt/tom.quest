@@ -164,10 +164,22 @@ function event(ctx: MutationCtx, kind: string, data: Record<string, unknown>) {
   return ctx.db.insert("dtsEvents", { at: Date.now(), kind, data });
 }
 
-function stub(run: { runId: string; parentRunId?: string; rootRunId: string; depth: number; spawnedByToolUseId?: string; linkKnown: boolean }, parent: { host: "laptop" | "box"; runner: "claude" | "codex"; parserVersion: string; lastLineAt: number }, kind: "subagent" | "codex-child" | "unknown") {
+// A PLACEHOLDER'S HOST AND RUNNER COME FROM THE ID IT IS STUBBING, never from
+// the run that revealed it. A cross-host parent link is ordinary now — the
+// laptop orchestrator spawns box runs through worker/runs/box-run.mjs, which
+// names the laptop session as the box run's parent — so taking them from the
+// revealing run would record a laptop session as a box run, and the sessions
+// view would show Tom that false fact. runIdMatches already requires a run id
+// to name its own host and runner, so the id is the honest source and both
+// call sites (a parent stub and a child stub) are right by the same rule.
+// parserVersion and the timestamps stay with the revealing run: it is the only
+// evidence of when the placeholder's run was alive.
+function stub(run: { runId: string; parentRunId?: string; rootRunId: string; depth: number; spawnedByToolUseId?: string; linkKnown: boolean }, evidence: { parserVersion: string; lastLineAt: number }, kind: "subagent" | "codex-child" | "unknown") {
+  const host: "laptop" | "box" = run.runId.startsWith("claude:laptop:") || run.runId.startsWith("codex:laptop:") ? "laptop" : "box";
+  const runner: "claude" | "codex" = run.runId.startsWith("codex:") ? "codex" : "claude";
   return {
-    ...run, host: parent.host, runner: parent.runner, kind, status: "unknown" as const, origin: "unknown", parserVersion: parent.parserVersion,
-    startedAt: parent.lastLineAt, lastLineAt: parent.lastLineAt, attachments: [],
+    ...run, host, runner, kind, status: "unknown" as const, origin: "unknown", parserVersion: evidence.parserVersion,
+    startedAt: evidence.lastLineAt, lastLineAt: evidence.lastLineAt, attachments: [],
     file: { path: "", sourceHash: "", storedHash: "", bytes: 0, storedBytes: 0, committedLine: 0, committedPrefixSha256: "" }, ingestedAt: Date.now(),
   };
 }
@@ -195,8 +207,14 @@ function validOutcome(outcome: {
 function validRunPayload(run: {
   runId: string; parentRunId?: string; rootRunId: string; depth: number; spawnedByToolUseId?: string; linkKnown: boolean; origin: string; continuesRunId?: string; host: "laptop" | "box"; runner: "claude" | "codex"; kind: string; mode?: "interactive" | "autonomous"; startedAt: number; lastLineAt: number; context?: { baseInstructionsHash?: string; contextWindow?: number }; outcome?: Parameters<typeof validOutcome>[0]; attachments: { file: string; bytes: number; sha256: string }[]; file: Parameters<typeof validFile>[0];
 }) {
-  if (!validRunId(run.runId) || !validRunId(run.rootRunId) || !runIdMatches(run.runId, run.runner, run.host) || !runIdMatches(run.rootRunId, run.runner, run.host)) return false;
-  if (run.parentRunId !== undefined && (!validRunId(run.parentRunId) || !runIdMatches(run.parentRunId, run.runner, run.host))) return false;
+  // ONLY A RUN'S OWN ID MUST NAME ITS OWN HOST AND RUNNER. The edge ids may
+  // name another: worker/runs/box-run.mjs makes a laptop session the parent of
+  // a box run, so that run's parentRunId and rootRunId are laptop ids and
+  // holding them to the child's host would refuse the whole record. They are
+  // still checked as ids, and the root rule below — a run with no parent must
+  // be its own root — keeps a root's own id and its rootRunId in agreement.
+  if (!validRunId(run.runId) || !validRunId(run.rootRunId) || !runIdMatches(run.runId, run.runner, run.host)) return false;
+  if (run.parentRunId !== undefined && !validRunId(run.parentRunId)) return false;
   if (run.continuesRunId !== undefined && !validRunId(run.continuesRunId)) return false;
   if (run.mode !== undefined && run.kind !== "session") return false;
   if (!nonNegativeInteger(run.depth) || !nonNegativeInteger(run.startedAt) || !nonNegativeInteger(run.lastLineAt) || !validFile(run.file)) return false;

@@ -14,13 +14,15 @@ A Codex run has no time limit and can take far longer than a foreground Bash cal
 1. **Start the run.** Pick a short unique tag — four random lowercase letters or digits, `k7qz` say — and use that same tag in every path below. Make this Bash call with `run_in_background: true` and **no `timeout` parameter at all**. Put the request you received, word for word, between the two delimiter lines. Do not rewrite, shorten, or "improve" it.
 
 ```bash
-node scripts/codex-run.mjs > /tmp/codex-k7qz.out 2> /tmp/codex-k7qz.err <<'CODEX_PROMPT_END'
+node scripts/box-agent.mjs --runner codex --repo tom.quest --ref <branch> > /tmp/codex-k7qz.out 2> /tmp/codex-k7qz.err <<'CODEX_PROMPT_END'
 <the request, verbatim>
 CODEX_PROMPT_END
 echo "codex-run: shell saw exit $?" >> /tmp/codex-k7qz.err
 ```
 
-   **Which command:** run `node scripts/codex-run.mjs` from the repo root when that file exists; otherwise run `tts-codex`. They are the same program and take the same flags and the same stdin.
+   **Which command:** run `node scripts/box-agent.mjs --runner codex` from the repo root — on either machine, with no test of your own. From the laptop it sends the run to the Jarvis Box; on the box, where there is nothing to send anywhere, it runs the same program right there. Either way `tts-codex` executes it in a git worktree of the repo and ref you name, with the same flags and the same stdin. **Codex never runs on the laptop.**
+
+   `--repo` and `--ref` name what Codex reads (the repos are `tom.quest`, `ComplexMultiTrigger`, `WikiTom`, or `none` for no checkout); take them from the request.
 
    The defaults are already the strongest model at the highest effort, no time limit, and Codex may edit files under the working directory. Add a flag only when the request names it: `--sandbox read-only` if the request says Codex must not edit (a diff review, for instance), `--model <name>` or `--effort <level>` if the request names a model or an effort level, `--timeout <ms>` if it names a time cap, `--schema <file>` if it asks for JSON matching a schema file it names. Never add any of these on your own initiative.
 
@@ -32,10 +34,10 @@ echo "codex-run: shell saw exit $?" >> /tmp/codex-k7qz.err
 cat /tmp/codex-k7qz.err; echo '=== ANSWER ==='; cat /tmp/codex-k7qz.out; rm -f /tmp/codex-k7qz.out /tmp/codex-k7qz.err
 ```
 
-   The `.err` side carries the wrapper's one-line exit-and-timing report (`codex-run: exit 0 after 412s`); everything after `=== ANSWER ===` is Codex's answer.
+   The `.err` side carries the transport's progress lines; everything after `=== ANSWER ===` is Codex's answer, and its **last line** is the box's status line.
 
 4. Reply with exactly two parts and nothing else:
-   - One status line of the form `codex: exit <code>, <seconds>s`, read off the wrapper's stderr report.
+   - The status line, read off the last line of the output: `box-run: run <id> host box runner codex exit <code> after <s>s`.
    - Codex's answer, in full, inside a fenced block.
 
 ## Rules
@@ -46,3 +48,6 @@ cat /tmp/codex-k7qz.err; echo '=== ANSWER ==='; cat /tmp/codex-k7qz.out; rm -f /
 - Do not put a time limit on the run — not on the Bash call, not with `--timeout`, unless the request itself named one.
 - If the command fails, report the exit code and the wrapper's stderr lines. Do not attempt to answer the request from your own knowledge.
 - If the request contains the text `CODEX_PROMPT_END`, change the delimiter to `CODEX_PROMPT_END_2` on both lines.
+- If stderr says `queued behind`, that is not an error: the run is waiting for a slot on the box. Keep waiting.
+- An exit code of 255 is never Codex's: no run started, because the connection to the box failed or the box's address is not configured. Report the stderr line as it stands.
+- A weekly-cap message from Codex is Codex's own answer, not a transport failure. Relay it as the answer.

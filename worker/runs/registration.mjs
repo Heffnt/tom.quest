@@ -42,6 +42,11 @@ export const ENVELOPE_VERSION = 2;
  * because what a reader of the run wants is its most recent asks. */
 export const SKILL_ASK_CAP = 50;
 
+// Launchers trusted to name a run's parent. A launcher not on this list may
+// write parentRunId into its envelope and it is ignored: the field assigns a
+// position in the tree, and a wrong edge is worse than a missing one.
+export const PARENT_LINK_LAUNCHERS = Object.freeze(["codex-run.mjs", "box-run.mjs"]);
+
 function jsonAt(file, fs) {
   try {
     const value = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -525,8 +530,37 @@ export function mergeRegistration({ parsed, envelope, host, report = () => {} })
   if (!run.context.wikitomCommit && typeof registration.wikitomCommit === "string") run.context.wikitomCommit = registration.wikitomCommit;
 
   const launcher = String(envelope.writer?.file ?? "").replaceAll("\\", "/");
-  if (typeof registration.parentRunId === "string" && registration.parentRunId && launcher.endsWith("codex-run.mjs")) {
+  if (typeof registration.parentRunId === "string" && registration.parentRunId
+    && PARENT_LINK_LAUNCHERS.some((name) => launcher.endsWith(name))) {
+    // A ROOT THAT GAINS A PARENT MUST STOP CALLING ITSELF A ROOT, and the
+    // promotion has to happen here because nothing downstream can do it.
+    //
+    // worker/runs/ingest.mjs parses a Claude ROOT file with linkKnown: true,
+    // and convex/runs.ts:197 (validRunPayload) refuses a run where
+    // `linkKnown && parentRunId !== undefined && !spawnedByToolUseId`. A box
+    // run launched by worker/runs/box-run.mjs is exactly that shape — a root
+    // transcript whose envelope names a laptop session as its parent — so
+    // without dropping linkKnown the whole run is dead-lettered on a permanent
+    // 400. The tool-use id, when the hook supplied one, is the evidence that
+    // makes the link known; absent it the edge is registered but unproven.
+    //
+    // convex/runs.ts `internalIngest` also refuses a row whose depth does not
+    // equal the run's, so every row moves with the run. Rows are digested over
+    // the run id, seq, kind and content — not depth — so this does not
+    // invalidate a digest.
+    const wasRoot = run.rootRunId === run.runId && run.depth === 0;
     run.parentRunId = registration.parentRunId;
+    if (wasRoot) {
+      // Only a root is repositioned. A Codex child already arrives with its
+      // parent, root and depth read off its own rollout, and re-rooting it
+      // from an envelope would overwrite a truer fact with a coarser one.
+      run.rootRunId = typeof registration.rootRunId === "string" && registration.rootRunId
+        ? registration.rootRunId
+        : registration.parentRunId;
+      run.depth = Number.isInteger(registration.depth) ? registration.depth : 1;
+      if (typeof run.spawnedByToolUseId !== "string" || !run.spawnedByToolUseId) run.linkKnown = false;
+      if (Array.isArray(result.rows)) for (const row of result.rows) row.depth = run.depth;
+    }
   }
   const hookKeys = Array.isArray(envelope.claim?.hookPayloadKeys) ? envelope.claim.hookPayloadKeys : [];
   const toolUseCarried = ["tool_use_id", "toolUseId", "parent_tool_use_id", "parentToolUseId"]

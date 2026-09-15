@@ -646,9 +646,19 @@ describe("RECORD_NODES is id-only", () => {
 // ── 29. Switch 3: the five rejections ────────────────────────────────────────
 
 /** A source with its comments removed, so a sentence ABOUT a vector index is not
- * read as one. Block comments first, then whole-line and trailing `//`. */
+ * read as one. Block comments first, then whole-line and trailing `//`.
+ *
+ * THE CARRIAGE RETURNS GO FIRST, and without that line this check silently
+ * stops working on a laptop. A Windows checkout hands back CRLF, `split("\n")`
+ * leaves a `\r` at the end of every line, and in a JavaScript regex `\r` is a
+ * line terminator: `.` will not match it and `$` will not pass it, so
+ * `/(^|\s)\/\/.*$/` matches nothing and EVERY comment survives the strip. The
+ * check then reads the prose that says "no vector index" as code and refuses a
+ * file that is fine — which is how it failed, on the laptop only, while CI on
+ * LF saw nothing. */
 function code(source) {
   return source
+    .replaceAll("\r\n", "\n")
     .replace(/\/\*[\s\S]*?\*\//g, "\n")
     .split("\n")
     .map((line) => line.replace(/(^|\s)\/\/.*$/, "$1"))

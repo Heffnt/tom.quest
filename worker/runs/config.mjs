@@ -20,6 +20,7 @@ export const RUN_ENV_NAMES = Object.freeze([
   "RUN_BACKLOG_PASS_MS",
   "RUN_BACKLOG_MAX_FILE_BYTES",
   "RUN_BACKLOG_ALLOW_LOCAL_STORE",
+  "RUN_MAX_PARALLEL",
   "WIKITOM_DIR",
   "WIKITOM_SESSIONS_DIR",
   "RUN_FILES_DELETE_AFTER_UPLOAD",
@@ -35,6 +36,10 @@ export const RUN_ENV_NAMES = Object.freeze([
   "CONVEX_SITE_URL",
   "SESSIONS_WORKER_KEY",
   "TTS_WORKER_KEY",
+  "TTS_BOX_HOST",
+  "TTS_BOX_USER",
+  "TTS_BOX_KEY",
+  "TTS_BOX_CMD",
 ]);
 
 const enabled = (value) => /^(1|true|yes|on)$/i.test(String(value ?? ""));
@@ -127,6 +132,37 @@ export function runConfig({
     host,
     stateDir,
     storeConfig,
+    // The most box runs the transport may have in flight at once. A typo is a
+    // typo, not permission to launch without limit, so it falls back the same
+    // way a backlog limit does.
+    //
+    // REMOVAL CHECK: the right number is a fact about the hardware, not about
+    // this repository. Two is what 4 vCPU and 7.7 GB hold when a run may be a
+    // full test suite (about 1.6 GB); 8 vCPU and 16 GB hold four. As a
+    // constant, following the box would mean a commit, a review and a redeploy
+    // of every job on it to change one digit — and the digit would then be
+    // wrong for the laptop, where the same resolver runs. The fallback below
+    // is what keeps a missing or mistyped value from meaning "no limit".
+    maxParallel: positive(value("RUN_MAX_PARALLEL"), 2),
+    // WHERE scripts/box-agent.mjs SENDS A RUN. THE ADDRESS HAS NO DEFAULT AND
+    // IS NOT IN THIS REPOSITORY: tom.quest is public, the Jarvis Box is Tom's
+    // one machine, and the rest of the repo already writes the address as a
+    // placeholder (`root@<jarvis-box>` in worker/jobs/gmail-auth.mjs,
+    // `root@<this box>` in worker/setup.sh). It is named in the env file, which
+    // is why it is resolved here rather than by a second reader of that file:
+    // a key PATH and a user name say nothing about where the box is, so those
+    // two keep their defaults.
+    box: {
+      host: value("TTS_BOX_HOST") || null,
+      user: value("TTS_BOX_USER") || "root",
+      key: value("TTS_BOX_KEY") || null,
+      // REMOVAL CHECK on TTS_BOX_CMD: it is the seam the transport's own tests
+      // run through. box-agent.mjs's ssh path is testable because TTS_SSH_BIN
+      // points at a fake, and its on-the-box path — where there is no ssh at
+      // all — has only this one. Without it the branch that runs the command
+      // where it stands could be proved on no machine but the box itself.
+      command: value("TTS_BOX_CMD") || "tts-run",
+    },
     convexSiteUrl: value("CONVEX_SITE_URL") || null,
     sessionsKey: value("SESSIONS_WORKER_KEY") || null,
     ttsKey: value("TTS_WORKER_KEY") || null,
