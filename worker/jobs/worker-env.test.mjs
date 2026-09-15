@@ -83,10 +83,26 @@ describe("published versions", () => {
     expect(vocabularyVersion()).toBeNull();
   });
 
-  it("caches per resolved path, so a second call does not re-read the file", () => {
+  // THE OPPOSITE OF WHAT THIS ONCE ASSERTED. It used to pin a per-process cache
+  // -- "a second call does not re-read the file" -- and that made the stale
+  // answer the required behaviour. One of the three callers is the
+  // tts-session-host daemon, which nobody may restart, while the nightly
+  // rewrites this file every night: the cache meant every session after the
+  // first nightly was stamped with the version of a graph it did not run under.
+  it("re-reads the file, so a version written after the first call is the one returned", () => {
     const dir = wikitom({ "graph.json": JSON.stringify({ version: "first" }) });
     expect(graphVersion()).toBe("first");
+
     fs.writeFileSync(path.join(dir, "tts", "graph.json"), JSON.stringify({ version: "second" }));
-    expect(graphVersion()).toBe("first");
+    expect(graphVersion()).toBe("second");
+
+    // And a file that goes away answers null rather than the last thing it said
+    // -- the null was cached too, in both directions.
+    fs.rmSync(path.join(dir, "tts", "graph.json"));
+    expect(graphVersion()).toBeNull();
+
+    // Then back again, which a cached null could never do.
+    fs.writeFileSync(path.join(dir, "tts", "graph.json"), JSON.stringify({ version: "third" }));
+    expect(graphVersion()).toBe("third");
   });
 });

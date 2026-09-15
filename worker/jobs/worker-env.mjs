@@ -95,13 +95,6 @@ function wikitomDir() {
   return process.platform === "win32" ? LAPTOP_WIKITOM_DIR : BOX_WIKITOM_DIR;
 }
 
-// Per-process cache, KEYED ON THE RESOLVED PATH rather than on the file name,
-// so a process that moves WIKITOM_DIR reads the new tree instead of the old
-// tree's answer. THE NULL IS CACHED TOO: a launcher with no WikiTom checkout
-// would otherwise re-stat a missing file on every run it registers, and the
-// answer cannot change under one path inside one process.
-const versionCache = new Map();
-
 /**
  * The `version` field of one published JSON file under <WikiTom>/tts/.
  *
@@ -116,16 +109,22 @@ function publishedVersion(file) {
   // process.env and joins two strings, so nothing in it can throw, and a catch
   // around code that cannot throw hides the next thing put inside it.
   const path = `${wikitomDir()}/tts/${file}`;
-  if (versionCache.has(path)) return versionCache.get(path);
-  let version = null;
+  // NO CACHE: the file is read on every call, because one of the three callers
+  // is a daemon nobody may restart (worker/session-host/session.mjs, and
+  // "restart or stop tts-session-host" is on the Never list) while the nightly
+  // rewrites this file every night — so a per-process answer stamped every
+  // session after the first nightly with the version of a graph it did not run
+  // under, and a daemon started before the file existed stamped nothing for
+  // ever. A cache that saves one small JSON read and buys a wrong record is
+  // the guard the removal rule is about.
   try {
     const parsed = JSON.parse(fs.readFileSync(path, "utf8"));
-    if (parsed && typeof parsed.version === "string" && parsed.version !== "") version = parsed.version;
+    if (parsed && typeof parsed.version === "string" && parsed.version !== "") return parsed.version;
   } catch {
-    version = null;
+    // Fall through: a missing checkout, an unreadable file and malformed JSON
+    // are all "no version", which is a supported value everywhere this lands.
   }
-  versionCache.set(path, version);
-  return version;
+  return null;
 }
 
 /** The published vocabulary's version, or null. */
