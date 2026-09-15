@@ -58,6 +58,11 @@ function localMirror(stateDir, repo) {
   const mirror = path.join(stateDir, "repos", `${repo}.git`);
   fs.mkdirSync(path.dirname(mirror), { recursive: true });
   execFileSync("git", ["init", "--bare", "-q", "-b", "main", mirror]);
+  // What `git clone --mirror` leaves behind, set by hand because this fixture
+  // is built locally rather than cloned: with it on, every push from a run's
+  // worktree is a force-push of every ref plus a delete of every branch this
+  // repository has not fetched.
+  execFileSync("git", ["-C", mirror, "config", "remote.origin.mirror", "true"]);
   const work = temp("seed");
   execFileSync("git", ["init", "-q", "-b", "main", work]);
   fs.writeFileSync(path.join(work, "README.md"), "seed\n");
@@ -224,6 +229,26 @@ describe("box-run worktrees", () => {
     expect(path.basename(cwd)).toBe("tom.quest");
     expect(fs.existsSync(path.join(cwd, "README.md"))).toBe(false); // already reaped
     expect(fs.readdirSync(path.join(stateDir, "work"))).toEqual([]);
+  }, GIT_FIXTURE_MS);
+
+  // witness: leave remote.origin.mirror set and a run's ordinary `git push`
+  // force-updates every ref on GitHub to this mirror's copy and deletes every
+  // branch the mirror has not fetched — main moving backwards is a deploy.
+  it("takes the mirror flag off the repository a run's worktree pushes from", () => {
+    const stateDir = temp("state");
+    const { mirror, sha } = localMirror(stateDir, "tom.quest");
+    expect(git(mirror, "config", "--get", "remote.origin.mirror").trim()).toBe("true");
+    const result = run(["--repo", "tom.quest", "--ref", sha], {
+      stateDir,
+      env: { CLAUDE_BIN: fakeCli("mirror-flag") },
+    });
+    expect(result.status).toBe(0);
+    // `config --get` on a key that is gone exits 1 and prints nothing, which is
+    // the whole assertion; spawnSync rather than execFileSync because that
+    // exit code is the expected one and must not throw.
+    const after = spawnSync("git", ["-C", mirror, "config", "--get", "remote.origin.mirror"], { encoding: "utf8" });
+    expect(after.stdout.trim()).toBe("");
+    expect(after.status).toBe(1);
   }, GIT_FIXTURE_MS);
 
   it("reaps the work directory after a failing run too", () => {

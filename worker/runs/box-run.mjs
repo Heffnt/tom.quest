@@ -398,6 +398,28 @@ function ensureMirror(repo, reposDir, env) {
     // Refusing here would turn a network blip into a refused run.
     note(`could not update the ${repo} mirror; using what is already there`);
   }
+  // THE MIRROR FLAG COMES OFF, EVERY TIME, AND THIS IS NOT COSMETIC.
+  // `clone --mirror` is `--bare` plus the fetch refspec plus
+  // `remote.origin.mirror = true`, and that last one means "every push from
+  // this repository behaves as though --mirror were on the command line". A
+  // run's worktree is added off this repository and shares its config, so the
+  // ordinary thing a run does when it is finished — `git push`, or
+  // `git push origin HEAD:branch` — would FORCE every ref on GitHub to this
+  // mirror's copy and DELETE every branch the mirror has not fetched. The
+  // mirror is only as fresh as the last `remote update`, and the branch above
+  // carries on when that update fails. main moving backwards is a Vercel
+  // deploy of an older tree, and a branch pushed since the last update is gone
+  // with nothing in git to restore it from. Bash is in TOOLS_ALLOWED and
+  // .claude/agents/box.md tells a caller results come back as commits, so this
+  // is the normal path, not an exotic one.
+  //
+  // Unsetting it leaves the `+refs/*:refs/*` fetch refspec alone, so
+  // `remote update --prune` still mirrors everything IN; only the push side
+  // goes back to git's ordinary fast-forward-only behaviour. It runs on every
+  // call rather than only after a clone, because the box already holds mirrors
+  // cloned before this line existed. `--unset` exits 5 on a key that is not
+  // there, which is why it is not gitOrFail.
+  git(["-C", mirror, "config", "--unset", "remote.origin.mirror"], { env: gitEnv });
   return mirror;
 }
 
