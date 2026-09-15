@@ -16,9 +16,10 @@ import { graphVersion, vocabularyVersion } from "./worker-env.mjs";
 const original = process.env.WIKITOM_DIR;
 const made = [];
 
-/** A WikiTom directory whose tts/ holds exactly the given file bodies. The
- * cache inside worker-env.mjs is keyed on the resolved PATH, so each case gets
- * a fresh directory and therefore a fresh read. */
+/** A WikiTom directory whose tts/ holds exactly the given file bodies. Each
+ * case gets a fresh directory so that the case before it cannot be what a
+ * reader sees; worker-env.mjs holds no cache to defeat, it reads the file on
+ * every call. */
 function wikitom(files) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "worker-env-wikitom-"));
   made.push(dir);
