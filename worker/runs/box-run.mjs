@@ -478,6 +478,14 @@ function pnpmBinary(env) {
   return onPath(env, process.platform === "win32" ? ["pnpm.cmd", "pnpm.exe", "pnpm"] : ["pnpm"]);
 }
 
+// REMOVAL CHECK on CLAUDE_BIN and TTS_CODEX_BIN: without them every test in
+// this file would start a real Claude or Codex run — an account, a model, a
+// bill and an answer nobody can predict — which is not a test. They are the
+// one seam by which the whole body (the worktree, the semaphore, the envelope,
+// the redaction, the status line) is exercised against a child that does what
+// the case told it to. A run never sets either: the fallbacks are `claude` on
+// PATH and the installed /usr/local/bin/tts-codex, and a CLAUDE_BIN that does
+// not exist is refused rather than silently falling through to the real one.
 function claudeBinary(env) {
   if (env.CLAUDE_BIN) {
     if (!fs.existsSync(env.CLAUDE_BIN)) fail(`CLAUDE_BIN=${env.CLAUDE_BIN} does not exist`);
