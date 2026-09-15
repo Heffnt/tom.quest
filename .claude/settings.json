@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(node scripts/codex-run.mjs:*)",
-      "Bash(tts-codex:*)"
+      "Bash(tts-codex:*)",
+      "Bash(node scripts/box-agent.mjs:*)",
+      "Bash(tts-run:*)"
     ]
   }
 }

@@ -38,17 +38,17 @@ cat /tmp/box-k7qz.err; echo '=== ANSWER ==='; cat /tmp/box-k7qz.out; rm -f /tmp/
 
 ## What Tom sets up once
 
-These are his to place, not this agent's or any run's — nothing here edits a permission file.
+The address is his to place. The permission entries travel with the repository now.
 
 - The box's address, in the laptop's env file `~/.tts/env`: `TTS_BOX_HOST=<the box>`. Without it `scripts/box-agent.mjs` refuses with exit 255 and says so, because tom.quest is public and the address is not written in it.
-- Two `permissions.allow` entries, so the relay is not stopped at a prompt on every run. They sit beside the two the `codex` agent already has in `.claude/settings.json`:
+- Two `permissions.allow` entries, so the relay is not stopped at a prompt on every run. Since this commit the project's own `.claude/settings.json` carries them, beside the two the `codex` agent already had:
 
 ```
 "Bash(node scripts/box-agent.mjs:*)",
 "Bash(tts-run:*)"
 ```
 
-  The first is the laptop half; the second is the same program reached directly on the box, where a run delegates to another run.
+  The first is the laptop half; the second is the same program reached directly on the box, where a run delegates to another run. A machine whose Claude Code reads a different settings file than this one needs the same two entries there.
 
 ## Rules
 
