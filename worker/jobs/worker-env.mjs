@@ -62,3 +62,77 @@ export function loadEnv({ path = ENV_PATH, require: required = [] } = {}) {
   }
   return env;
 }
+
+// ---------------------------------------------------------------------------
+// The two published versions a launcher stamps on a run
+// ---------------------------------------------------------------------------
+//
+// WHY THEY LIVE HERE. This file is already copied to BOTH install depths by
+// setup.sh (flat with the jobs at /opt/tts/, and again at
+// /opt/tts/session-host/ through the checked-in symlink), and it is already
+// every job's and the daemon's environment module. So a version reader put
+// here costs no new `cp` line and introduces no second resolution of the
+// WikiTom directory — which is exactly what the three launchers need, since
+// they sit at three different depths and one of them is the daemon.
+//
+// THE CANONICAL SPELLING OF THE WIKITOM PATH IS worker/jobs/search-lib.mjs
+// (BOX_WIKITOM_DIR and LAPTOP_WIKITOM_DIR). It is repeated rather than
+// imported because a static `./search-lib.mjs` import DANGLES in the
+// session-host copy of this file: search-lib.mjs lands flat at
+// /opt/tts/search-lib.mjs while this body is also installed one directory
+// down, and Node resolves a static import at module load — the daemon would
+// fail to start. Keep the two spellings in step; nothing else reads them.
+const BOX_WIKITOM_DIR = "/root/wikitom";
+const LAPTOP_WIKITOM_DIR = "C:/Users/heffn/Desktop/WikiTom";
+
+// THE OVERRIDE IS REPEATED TOO, and for a reason the constants' does not
+// cover: `check:guardrails` and the graph's own proofs are run against a
+// SECOND WikiTom checkout (WIKITOM_DIR=<...>/WikiTom-uae), so a version read
+// that ignored the variable would stamp a run with the version of a tree that
+// run never read. The two constants are the default, not the answer.
+function wikitomDir() {
+  if (process.env.WIKITOM_DIR) return process.env.WIKITOM_DIR;
+  return process.platform === "win32" ? LAPTOP_WIKITOM_DIR : BOX_WIKITOM_DIR;
+}
+
+/**
+ * The `version` field of one published JSON file under <WikiTom>/tts/.
+ *
+ * NEVER THROWS AND RETURNS null ON ANY FAILURE — a missing checkout, an
+ * unreadable file, malformed JSON, or a file with no string `version`. This is
+ * a stamp on a run row, not a precondition of the run: a launcher that cannot
+ * name the version must still launch, and absent is a supported value
+ * everywhere it lands.
+ */
+function publishedVersion(file) {
+  // There was a try/catch around the line below. `wikitomDir()` reads
+  // process.env and joins two strings, so nothing in it can throw, and a catch
+  // around code that cannot throw hides the next thing put inside it.
+  const path = `${wikitomDir()}/tts/${file}`;
+  // NO CACHE: the file is read on every call, because one of the three callers
+  // is a daemon nobody may restart (worker/session-host/session.mjs, and
+  // "restart or stop tts-session-host" is on the Never list) while the nightly
+  // rewrites this file every night — so a per-process answer stamped every
+  // session after the first nightly with the version of a graph it did not run
+  // under, and a daemon started before the file existed stamped nothing for
+  // ever. A cache that saves one small JSON read and buys a wrong record is
+  // the guard the removal rule is about.
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path, "utf8"));
+    if (parsed && typeof parsed.version === "string" && parsed.version !== "") return parsed.version;
+  } catch {
+    // Fall through: a missing checkout, an unreadable file and malformed JSON
+    // are all "no version", which is a supported value everywhere this lands.
+  }
+  return null;
+}
+
+/** The published vocabulary's version, or null. */
+export function vocabularyVersion() {
+  return publishedVersion("vocabulary.json");
+}
+
+/** The published graph's version, or null. */
+export function graphVersion() {
+  return publishedVersion("graph.json");
+}

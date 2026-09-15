@@ -3,7 +3,14 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { logEvent } from "./tts";
-import { EVALS_RUN } from "./ttsEvals";
+import {
+  answeredEvalsRun,
+  COVERAGE_NOT_REQUIRED,
+  EVALS_RUN,
+  evalsProtocolStatus,
+  evalsRequestFor,
+} from "./ttsEvals";
+import { commitKey, mergeKey } from "./ttsShared";
 import { redactSecrets } from "../worker/session-host/redact.mjs";
 
 // ── THE MECHANICAL MERGE GATE (Tom, 2026-09-09) ─────────────────────────────
@@ -70,14 +77,10 @@ export const AUDIT_REMOVAL_NOTE_MAX_CHARS = 300;
 /** The key every fact ABOUT ONE COMMIT is filed under — the spelling
  *  convex/ttsEvals.ts already uses for an evals run, so all three checks are
  *  the same lookup. */
-export function commitKey(repo: string, sha: string): string {
-  return `${repo}@${sha}`;
-}
-
-/** The merge event's own key, which predates this file. */
-export function mergeKey(repo: string, sha: string): string {
-  return `${repo}:${sha}`;
-}
+// Both keys moved to ./ttsShared, which convex/ttsEvals.ts already imports;
+// they are re-exported here so every existing reader of this module keeps
+// working and there is still exactly one definition.
+export { commitKey, mergeKey } from "./ttsShared";
 
 /**
  * The audit step's one machine-readable line. The audit itself is prose from
@@ -353,14 +356,28 @@ export async function mergeGateFor(
             why: `the audit answered ${verdict ?? "nothing readable"} at ${short}${byWhom}, not ${AUDIT_APPROVED}${auditDetail}`,
           };
 
-  const evals = await rowFor(ctx, EVALS_RUN, key);
+  // THROUGH THE STALENESS RULE, not straight off the newest row. A row that
+  // scored nothing answers only the request it was written for (convex/
+  // ttsEvals.ts answeredRun), and this is the reader where getting that wrong
+  // opens the gate instead of merely delaying a run.
+  const evals = await answeredEvalsRun(ctx, repo, sha);
+  const pendingEvalsRequest = evals === null
+    ? await evalsRequestFor(ctx, repo, sha)
+    : null;
+  const protocol = pendingEvalsRequest === null ? null : await evalsProtocolStatus(ctx);
   const evalsData = (evals?.data ?? {}) as {
     regressions?: unknown;
     goldenCoverage?: unknown;
     items?: unknown;
     pass?: unknown;
+    error?: unknown;
+    reason?: unknown;
+    errored?: unknown;
   };
   const regressions = typeof evalsData.regressions === "number" ? evalsData.regressions : null;
+  const errored = typeof evalsData.errored === "number" && evalsData.errored > 0
+    ? evalsData.errored
+    : null;
   // STILL THREE HEAD ROWS. Golden coverage is not a fourth check and has no
   // row of its own: it is a field of the evals run, so the evals arm asks two
   // questions of one fact and GET /tts/merge-gate's shape does not move.
@@ -371,17 +388,43 @@ export async function mergeGateFor(
   // ship what it owed" — and a gate that opened on "we did not check" is
   // precisely the failure the `regressions: null` rule above was written to
   // prevent (worker/jobs/evals.mjs failedRun).
+  //
+  // `not-required` IS AN ANSWER AND OPENS. It is the row an unaffected branch
+  // gets: the check read its own diff, nothing in it was a watched path, and
+  // the door recorded that instead of asking for a fifty-minute run of a set
+  // this change cannot move. The distinction from `true` is kept because the
+  // two are different facts — one says the branch paid for a context change,
+  // the other says there was none — and the `why` below says which.
   const coverage =
-    typeof evalsData.goldenCoverage === "boolean" || evalsData.goldenCoverage === null
+    typeof evalsData.goldenCoverage === "boolean" ||
+    evalsData.goldenCoverage === null ||
+    evalsData.goldenCoverage === COVERAGE_NOT_REQUIRED
       ? evalsData.goldenCoverage
       : undefined;
   const scored =
     typeof evalsData.pass === "number" && typeof evalsData.items === "number"
       ? ` (${evalsData.pass} of ${evalsData.items} pass)`
       : "";
+  const evalsUnavailable = evalsData.error === true ||
+    (typeof evalsData.error === "string" && evalsData.error !== "");
+  const evalsReason = typeof evalsData.reason === "string" && evalsData.reason !== ""
+    ? evalsData.reason
+    : typeof evalsData.error === "string" && evalsData.error !== "" ? evalsData.error : "runner failed";
   const evalsCheck: MergeCheck =
-    evals === null
+    pendingEvalsRequest !== null && protocol !== null && protocol.protocolGap !== null
+      ? { name: "evals", passed: false, why: protocol.protocolGap }
+    : pendingEvalsRequest !== null
+      ? { name: "evals", passed: false, why: `the evals are being scored again at ${short}` }
+    : evals === null
       ? { name: "evals", passed: false, why: `no evals run scored ${short}` }
+      : evalsUnavailable
+        ? { name: "evals", passed: false, why: `the evals could not run at ${short}: ${evalsReason}` }
+      : errored !== null
+        ? {
+            name: "evals",
+            passed: false,
+            why: `the evals run at ${short} had ${errored} runner error${errored === 1 ? "" : "s"}`,
+          }
       // `regressions !== 0` spelled with the one predicate the gate and
       // convex/ttsSimplify.ts share: a second copy is how the two come apart.
       : !checkRowPassed(EVALS_RUN, evalsData)
@@ -392,7 +435,17 @@ export async function mergeGateFor(
               regressions === 1 ? "" : "s"
             } at ${short}`,
           }
-        : coverage === true
+        : coverage === COVERAGE_NOT_REQUIRED
+          ? {
+              name: "evals",
+              passed: true,
+              // THE SAME WORDS the check's own log prints (scripts/
+              // evals-check.mjs report()), and the #tts-decisions merge line
+              // joins these whys — so the CI log, the gate and Tom's Slack all
+              // say one thing about this commit.
+              why: `the evals are unaffected at ${short}: no watched path changed`,
+            }
+          : coverage === true
           ? { name: "evals", passed: true, why: `the evals scored ${short} with no regression${scored}` }
           : coverage === false
             ? {

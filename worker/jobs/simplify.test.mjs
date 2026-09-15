@@ -14,6 +14,7 @@
 // Importing the job module is safe: it only calls main() when node was pointed
 // at the file (the `invokedDirectly` guard at the bottom of it).
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -32,14 +33,18 @@ import {
   blastRows,
   candidateFor,
   decisionPreview,
+  evidenceFor,
   factsBlock,
   factsText,
   grepCounts,
+  hash8,
   jaccard,
+  nodeIdFor,
   nounsOf,
   parseProposals,
   proposalId,
   proxyMattered,
+  rowNumbers,
   ruleId,
   ruleLines,
   runSimplify,
@@ -77,8 +82,8 @@ function write(dir, rel, content) {
 const RULES_FIXTURE = [
   "# Agent rules",
   "",
-  "- Commit with a full message before every stop.",
-  "- The orchestrator implements nothing; subagents do the work.",
+  "- Stamp every push with the reason for it.",
+  "- The planner ships nothing; the builders do the work.",
   "- Ask in prose.",
 ].join("\n");
 
@@ -102,7 +107,7 @@ const SCHEMA_FIXTURE = [
 
 /** Twenty-four sampled runs, all with a readable transcript — above MIN_LOADED,
  *  which is the floor on the proxy's DENOMINATOR as well as on `loaded`, so
- *  these rules are measurable at all. Two carry the orchestrator rule's words;
+ *  these rules are measurable at all. Two carry the planner rule's words;
  *  none carries the commit rule's pair, so that rule scores zero against a
  *  generous proxy. */
 function sample() {
@@ -112,7 +117,7 @@ function sample() {
       runId: `run-${i}`,
       startedAt: NOW - i * 3_600_000,
       depth: 0,
-      tokens: i < 2 ? ["orchestrator", "subagents", "convex"] : ["convex", "planner"],
+      tokens: i < 2 ? ["planner", "builders", "convex"] : ["convex", "records"],
     });
   }
   return runs;
@@ -158,7 +163,7 @@ function checkouts() {
   write(repoDir, "worker/AGENTS.md", WORKER_AGENTS);
   write(repoDir, "node_modules/AGENTS.md", "- this one is skipped");
   write(wiki, OPERATE_FILE, RULES_FIXTURE);
-  write(wiki, "model-of-tom/intent.md", "- The orchestrator implements nothing; subagents do the work.");
+  write(wiki, "model-of-tom/intent.md", "- The planner ships nothing; the builders do the work.");
   return { repoDir, wiki };
 }
 
@@ -260,18 +265,18 @@ describe("the measurement on a fixture with known counts", () => {
 
     // Rules of the operate layer: loaded is runs.total, because the base layer
     // is on every run.
-    const commit = rowFor(rows, "- Commit with a full message before every stop.");
+    const commit = rowFor(rows, "- Stamp every push with the reason for it.");
     expect(commit.loaded).toBe(100);
     expect(commit.loadedUnknown).toBe(0);
     expect(commit.proxy.mattered).toBe(0);
     expect(commit.candidate).toBe("remove");
 
-    const orchestrator = rowFor(rows, "- The orchestrator implements nothing; subagents do the work.");
-    expect(orchestrator.loaded).toBe(100);
-    expect(orchestrator.proxy.mattered).toBe(2);
-    expect(orchestrator.candidate).toBe("keep");
+    const planner = rowFor(rows, "- The planner ships nothing; the builders do the work.");
+    expect(planner.loaded).toBe(100);
+    expect(planner.proxy.mattered).toBe(2);
+    expect(planner.candidate).toBe("keep");
     // Its words are a line of intent.md, so it is his to change either way.
-    expect(orchestrator.needsHisWords).toBe(true);
+    expect(planner.needsHisWords).toBe(true);
 
     // The root AGENTS.md: every cwd inside a directory named like the checkout.
     const rootRule = rowFor(rows, "- Every change lands through the merge gate.");
@@ -325,9 +330,9 @@ describe("the proxy counts assistant text, not tool results", () => {
   it("scores zero on a bag built without the tool-result words and one with them", () => {
     // The token bag skips tool-result rows, which is the input route's job, so
     // the seam is asserted here: the same nouns decide the count.
-    const nouns = nounsOf("The orchestrator implements nothing; subagents do the work.");
+    const nouns = nounsOf("The planner ships nothing; the builders do the work.");
     const withoutToolResult = [{ tokens: ["convex", "planner", "digest"] }];
-    const withToolResult = [{ tokens: ["convex", "orchestrator", "subagents"] }];
+    const withToolResult = [{ tokens: ["convex", "planner", "builders"] }];
     expect(proxyMattered(nouns, withoutToolResult)).toBe(0);
     expect(proxyMattered(nouns, withToolResult)).toBe(1);
   });
@@ -787,17 +792,17 @@ describe("schemaFields", () => {
 
 describe("ruleId", () => {
   it("is stable across a bullet marker, case and whitespace, and differs for another line", () => {
-    const base = ruleId("Commit with a full message before every stop.");
-    expect(ruleId("- Commit with a full message before every stop.")).toBe(base);
-    expect(ruleId("  *   COMMIT   with a full   message before every stop.")).toBe(base);
-    expect(ruleId("1. commit with a full message before every stop.")).toBe(base);
-    expect(ruleId("Commit with a full message before every push.")).not.toBe(base);
+    const base = ruleId("Stamp every push with the reason for it.");
+    expect(ruleId("- Stamp every push with the reason for it.")).toBe(base);
+    expect(ruleId("  *   STAMP   every push   with the reason for it.")).toBe(base);
+    expect(ruleId("1. stamp every push with the reason for it.")).toBe(base);
+    expect(ruleId("Stamp every push with the reason for them.")).not.toBe(base);
   });
 
   it("is a hash and not a line number, so a line above it can go", () => {
     const file = ruleLines(RULES_FIXTURE);
     const before = ruleId(file[1].text);
-    const after = ruleLines(RULES_FIXTURE.replace("- Commit with a full message before every stop.\n", ""));
+    const after = ruleLines(RULES_FIXTURE.replace("- Stamp every push with the reason for it.\n", ""));
     expect(ruleId(after[0].text)).toBe(before);
   });
 });
@@ -899,5 +904,220 @@ describe("blastRows", () => {
     expect(longer.candidate).toBe("collapse");
     expect(longer.collapseInto).toBe(shorter.id);
     expect(map.get(shorter.id).candidate).not.toBe("collapse");
+  });
+});
+
+// ── 14. `loaded` is a count of the prompts that carried the rule ─────────────
+//
+// The measurement's one exact number about a rule. A run's context entry names
+// the node ids its prompt carried, and a rule's row counts the runs whose list
+// holds its node id. The working-directory proxy stays as the fallback, and the
+// row says which of the two it used.
+//
+// THE CHOICE IS PER NODE KIND, and the fixture below is built out of the ids
+// production actually writes. Only two launchers record `graphNodes`, both over
+// the operate page, so `givenNodes` emits `page:`, `heading:`, `line:` and
+// `skill:` and never `rule:`. An AGENTS.md rule is a `rule:` node, so no run
+// can ever carry one — and this fixture must not pretend otherwise. It did:
+// it hand-placed a `rule:` id, which made these tests pass over a pass that had
+// stopped working, every repository rule reading an exact-looking zero it could
+// never raise.
+
+const OPERATE_RULE = "- Stamp every push with the reason for it.";
+const WORKER_RULE = "- The worker jobs never import a npm dependency.";
+
+/** Twenty sampled runs carrying only the ids a launcher really records: twelve
+ *  carried the operate line, five carried the operate page without that line,
+ *  three recorded no list at all. NOTHING HERE CARRIES A `rule:` ID, because
+ *  nothing in production does. Every run has words in its bag, so the proxy's
+ *  own floor is not what decides anything below. */
+function nodeSample({ withNodes = true } = {}) {
+  const page = `page:${OPERATE_FILE}`;
+  const operate = `line:${ruleId(OPERATE_RULE)}`;
+  const runs = [];
+  for (let i = 0; i < 20; i += 1) {
+    const nodes = i < 12 ? [operate, page] : i < 17 ? [page] : null;
+    runs.push({
+      runId: `node-run-${i}`,
+      startedAt: NOW - i * 1_000,
+      depth: 0,
+      tokens: ["convex", "planner"],
+      ...(withNodes && nodes !== null ? { graphNodes: nodes } : {}),
+    });
+  }
+  return runs;
+}
+
+/** The two rule files the rows below come from, with the cwd proxy's own
+ *  answers on them — 100 and 40 — so a row reading either of those numbers is
+ *  visibly the fallback. */
+const ruleFilesFixture = () => [
+  { where: OPERATE_FILE, loaded: 100, loadedUnknown: 0, lines: [{ line: 1, text: OPERATE_RULE }] },
+  { where: "worker/AGENTS.md", loaded: 40, loadedUnknown: 25, lines: [{ line: 1, text: WORKER_RULE }] },
+];
+
+const nodeTable = (sample) =>
+  blastRows({
+    input: { runs: { total: 100 }, sample, skills: [], cwds: [] },
+    fields: [],
+    checks: [],
+    hisWordsLines: [],
+    repoName: "tomquest",
+    ruleFiles: ruleFilesFixture(),
+  });
+
+describe("loaded, counted off the node ids the prompts carried", () => {
+  it("counts the runs given a line node, and leaves a rule node on its proxy", () => {
+    const rows = nodeTable(nodeSample()).rows;
+    const worker = rowFor(rows, WORKER_RULE);
+    const operate = rowFor(rows, OPERATE_RULE);
+    // The operate line IS a kind the launchers record, so it gets the exact
+    // answer and not the 100 its file's proxy would have said.
+    expect(operate.loaded).toBe(12);
+    expect(operate.loadedSource).toBe("given");
+    expect(operate.loaded).not.toBe(100);
+    // The worker rule is a `rule:` node and NO launcher writes one, so the
+    // sample says nothing about it and its row keeps the proxy's own number
+    // rather than an exact-looking zero.
+    expect(worker.loadedSource).toBe("cwd-proxy");
+    expect(worker.loaded).toBe(40);
+    expect(worker.loaded).not.toBe(0);
+  });
+
+  it("counts the runs with no node list at all, and never folds them in", () => {
+    const rows = nodeTable(nodeSample()).rows;
+    expect(rowFor(rows, OPERATE_RULE).loadedUnknown).toBe(3);
+    // 12 + 5 + 3 is the whole sample: an absent list is a value, not a zero.
+    expect(12 + 5 + 3).toBe(20);
+    // A proxied row reports the proxy's own absence, not the node list's: a run
+    // with no working directory and a run with no node list are not one run.
+    expect(rowFor(rows, WORKER_RULE).loadedUnknown).toBe(25);
+  });
+
+  // A rules file's lines are `rule:` nodes and a synthesis page's are `line:`
+  // nodes, which is what worker/jobs/graph.mjs mints. A row that looked its
+  // node up under the other prefix would count zero runs for every rule.
+  it("names a repository rule and a synthesis line by their own node kinds", () => {
+    expect(nodeIdFor("worker/AGENTS.md", "1a2b3c4d")).toBe("rule:1a2b3c4d");
+    expect(nodeIdFor("AGENTS.md", "1a2b3c4d")).toBe("rule:1a2b3c4d");
+    expect(nodeIdFor(OPERATE_FILE, "1a2b3c4d")).toBe("line:1a2b3c4d");
+  });
+
+  // THE FALLBACK, AND WHY IT IS ONE. On the day this ships no run has ever
+  // written a node list, so an exact count would read zero for every rule and
+  // the pass would propose nothing for weeks. The proxy answers instead, and
+  // the row says so rather than printing a zero that reads like a measurement.
+  it("falls back to the working-directory proxy when not one run carried a list", () => {
+    const rows = nodeTable(nodeSample({ withNodes: false })).rows;
+    const worker = rowFor(rows, WORKER_RULE);
+    const operate = rowFor(rows, OPERATE_RULE);
+    expect(worker.loadedSource).toBe("cwd-proxy");
+    expect(worker.loaded).toBe(40);
+    expect(worker.loadedUnknown).toBe(25);
+    expect(operate.loadedSource).toBe("cwd-proxy");
+    expect(operate.loaded).toBe(100);
+    expect(operate.loadedUnknown).toBe(0);
+  });
+
+  // ONE RUN OF A KIND IS ENOUGH FOR THAT KIND, AND SAYS NOTHING ABOUT ANOTHER.
+  // A `line:` node the sample has seen can honestly read zero for a line no run
+  // carried — the sample had the chance to carry it and did not. A `rule:` node
+  // cannot: no writer emits one, so a zero there would mean "never measured",
+  // and printing it as the exact answer is what this pass must not do.
+  it("takes the given count for a kind a run recorded, and only for that kind", () => {
+    const sample = nodeSample({ withNodes: false });
+    sample[0] = { ...sample[0], graphNodes: [`line:${ruleId(OPERATE_RULE)}`] };
+    const rows = nodeTable(sample).rows;
+    expect(rowFor(rows, OPERATE_RULE)).toMatchObject({ loaded: 1, loadedUnknown: 19, loadedSource: "given" });
+    expect(rowFor(rows, WORKER_RULE)).toMatchObject({ loaded: 40, loadedUnknown: 25, loadedSource: "cwd-proxy" });
+  });
+
+  // THE REGRESSION THIS FIXES, HELD DOWN. Under one global flag a single run
+  // carrying any list flipped every row to `given`, so an AGENTS.md rule read
+  // an exact 0 no run could ever raise and MIN_LOADED (20) forced `keep` on it
+  // for good — the pass could never again propose removing a repository rule.
+  it("never reports a rule node as an exact zero, however much the sample carries", () => {
+    const sample = nodeSample();
+    const rows = nodeTable(sample).rows;
+    const worker = rowFor(rows, WORKER_RULE);
+    expect(worker.loadedSource).toBe("cwd-proxy");
+    expect(worker.loaded).toBeGreaterThan(0);
+    // And with a rule node genuinely present, the kind becomes known on its own
+    // with no edit here — which is what the switch being per kind buys.
+    const withRule = [...sample];
+    withRule[0] = { ...withRule[0], graphNodes: [`rule:${ruleId(WORKER_RULE)}`] };
+    expect(rowFor(nodeTable(withRule).rows, WORKER_RULE)).toMatchObject({ loaded: 1, loadedSource: "given" });
+  });
+
+  it("prints the source and what was absent in the evidence sentence", () => {
+    const rows = nodeTable(nodeSample()).rows;
+    const operate = rowFor(rows, OPERATE_RULE);
+    expect(operate.evidence).toBe(
+      `Loaded on 12 run(s) (given); 3 run(s) recorded no node list; ${operate.proxy.mattered} of ${operate.proxy.sample} sampled runs carry its words.`,
+    );
+    expect(evidenceFor(operate)).toBe(operate.evidence);
+
+    // THE SAME SAMPLE, THE OTHER SOURCE. The worker rule is proxied even here,
+    // because its kind is one no launcher records — so one report carries both
+    // sentences at once and each says which number it is.
+    const proxied = rowFor(rows, WORKER_RULE);
+    expect(proxied.evidence).toContain("(cwd-proxy)");
+    expect(proxied.evidence).toContain("recorded no working directory");
+
+    // A line with too few subject words has no proxy and still says where its
+    // `loaded` came from.
+    const thin = { ...operate, loaded: 12, loadedUnknown: 3, proxy: { ...operate.proxy, mattered: null } };
+    expect(evidenceFor(thin)).toBe(
+      "Loaded on 12 run(s) (given); 3 run(s) recorded no node list; it yields too few subject words to measure against a transcript.",
+    );
+  });
+
+  // THE PARSER'S ONE MECHANICAL TEST is that every integer in the model's
+  // evidence is one of the row's own. `loadedUnknown` is now a number the row's
+  // own sentence prints, so it has to be in that set — otherwise a model
+  // quoting the row verbatim would be refused for inventing a number.
+  it("keeps every integer of the row's own sentence inside rowNumbers", () => {
+    for (const row of nodeTable(nodeSample()).rows) {
+      const mine = rowNumbers(row);
+      for (const n of row.evidence.match(/\d+/g) ?? []) {
+        expect(mine.has(Number.parseInt(n, 10))).toBe(true);
+      }
+      expect(mine.has(row.loadedUnknown)).toBe(true);
+      expect(mine.has(row.loaded)).toBe(true);
+    }
+  });
+
+  it("says the source on the table line the model reads", () => {
+    const table = nodeTable(nodeSample());
+    const facts = factsBlock({ day: DAY, input: input(), table, repoReadable: true, failures: [] });
+    const text = factsText(facts);
+    expect(text).toContain(`#${rowFor(table.rows, WORKER_RULE).id} rule worker/AGENTS.md`);
+    expect(text).toContain("| loaded 12 (given) |");
+  });
+});
+
+// ── 15. the hash the graph and this file share ───────────────────────────────
+
+describe("hash8 after the move to graph-hash.mjs", () => {
+  // The one thing the move could break silently: a rule's row and its node in
+  // the graph are the same eight characters only while the two spellings of
+  // SHA-256 agree, and one of them is plain JavaScript.
+  it("is byte-for-byte node:crypto's answer", () => {
+    const sha8 = (text) => crypto.createHash("sha256").update(String(text)).digest("hex").slice(0, 8);
+    expect(hash8("abc")).toBe(sha8("abc"));
+    expect(hash8("abc")).toBe("ba7816bf");
+    expect(hash8("")).toBe(sha8(""));
+    for (const text of [
+      OPERATE_RULE,
+      WORKER_RULE,
+      "a line with a — dash and an é",
+      "x".repeat(1000),
+      "check|merge-gate|tests",
+    ]) {
+      expect(hash8(text)).toBe(sha8(text));
+    }
+    // And the id the graph names a line by is that hash over the same
+    // normalization, which is what makes `rule:<id>` and this row one thing.
+    expect(ruleId(WORKER_RULE)).toBe(sha8("the worker jobs never import a npm dependency."));
   });
 });

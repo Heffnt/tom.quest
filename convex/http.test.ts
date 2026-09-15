@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHmac } from "node:crypto";
 import { internal } from "./_generated/api";
 import schema from "./schema";
+import { ablationFindings, MIN_ABLATION_CASES } from "./ttsWeekly";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -533,7 +534,11 @@ describe("phase 3 run routes", () => {
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ complete: true, daemonRows: 101, fileRows: 101, textMatches: 100, firstDiffSeq: 100, clean: false });
-  });
+    // 202 rows and a two-page comparison over one route: the default 5s budget
+    // is for a test that writes a handful of rows, and it was timing out on a
+    // busy runner. The merge gate writes a commit's tests row ONCE, so a
+    // timeout here bars that head for good.
+  }, 30_000);
 
   it("serves verified store versions as manifest entries", async () => {
     vi.stubEnv("SESSIONS_WORKER_KEY", "right");
@@ -655,7 +660,7 @@ describe("POST /slack/events: a reaction on the morning digest", () => {
   const OTHER = "U0SOMEONEELSE";
   const DIGEST_TS = "1757000000.001200";
   const REACTED_AT = "1757000100.000200";
-  const TOKEN = "8f14e45f-ceea-467a-9a36-dedd4bea2543";
+  const TOKEN = "8f14e45f-ceea-467a-9a36-dedd4bea2543"; // gitleaks:allow
   const RUN_ID = "claude:box:write-slack-run";
 
   function reactionEnv() {
@@ -886,6 +891,30 @@ describe("POST /slack/events: a reaction on the morning digest", () => {
       expect(blank.status).toBe(400);
       const absent = await post(t, { ablation: [] });
       expect(absent.status).toBe(400);
+    });
+
+    // THE ROUTE IS THE SHAPE ablationFindings MUST EMIT. Its argument check is
+    // an exact object, so a finding carrying one extra field takes the whole
+    // request down — the unearned names AND the graduated cases, which ride
+    // together — and #tts-decisions hears nothing that week. The gather keys on
+    // the kind and deliberately does not put it on the finding; this is the
+    // test that says so from the route's side.
+    it("refuses a finding carrying a field the check does not list", async () => {
+      vi.stubEnv("TTS_WORKER_KEY", "s3cret");
+      const t = convexTest(schema, modules);
+      const withKind = await post(t, {
+        isoWeek: "2026-W37",
+        ablation: [{ name: "know", kind: "layer", cases: 7, withPass: 5, withoutPass: 6, earned: false }],
+      });
+      expect(withKind.status).toBe(400);
+      // And exactly what ablationFindings emits goes through.
+      const asEmitted = await post(t, {
+        isoWeek: "2026-W37",
+        ablation: ablationFindings(Array.from({ length: MIN_ABLATION_CASES }, (_, i) => (
+          { id: `c${i}`, name: "know", kind: "layer", withPass: true, withoutPass: false }
+        ))),
+      });
+      expect(asEmitted.status).toBe(200);
     });
 
     it("is behind the worker key like every other pen", async () => {

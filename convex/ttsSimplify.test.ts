@@ -211,6 +211,33 @@ describe("the token bag", () => {
   });
 });
 
+// ── 2b. The node ids each sampled run's prompt carried ───────────────────────
+//
+// The job counts a rule's `loaded` off these lists, so what the door must do is
+// pass them through exactly — including the absence, which is a different fact
+// from an empty list and not the same run at all.
+
+describe("the sample's node lists", () => {
+  it("carries each run's graphNodes through, and leaves a run with none undefined", async () => {
+    const t = convex();
+    const nodes = ["rule:1a2b3c4d", "line:5e6f7a8b", "skill:write"];
+    await seedRun(t, { runId: "with-nodes", startedAt: NOW - DAY, context: { graphNodes: nodes } });
+    await seedRun(t, { runId: "empty-list", startedAt: NOW - DAY - 1_000, context: { graphNodes: [] } });
+    await seedRun(t, { runId: "no-list", startedAt: NOW - DAY - 2_000 });
+    await seedRun(t, { runId: "no-context", startedAt: NOW - DAY - 3_000, context: null });
+
+    const { sample } = await gather(t);
+    const by = new Map(sample.map((row) => [row.runId, row]));
+    expect(by.get("with-nodes")?.graphNodes).toEqual(nodes);
+    // An empty list is a run that was given nothing, and it is not undefined.
+    expect(by.get("empty-list")?.graphNodes).toEqual([]);
+    expect(by.get("no-list")?.graphNodes).toBeUndefined();
+    expect(by.get("no-context")?.graphNodes).toBeUndefined();
+    // The fields the pass already read are untouched beside the new one.
+    expect(by.get("with-nodes")).toMatchObject({ runId: "with-nodes", depth: 0, tokens: [] });
+  });
+});
+
 // ── 3. The gate's failure history ────────────────────────────────────────────
 
 describe("the gate history", () => {

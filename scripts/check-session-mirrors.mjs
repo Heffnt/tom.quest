@@ -405,6 +405,20 @@ const REPO_LIST_ALLOWED = new Set([
   // tom.quest tree it scores and the pinned WikiTom tree it scores against.
   // That pair is a run's definition, not a list of repos sessions may work.
   "worker/jobs/evals.mjs",
+  // THE TWO GENERATORS, for the same reason as evals.mjs and explanations.ts
+  // together. Each takes the two checkouts it reads as parameters — `wikitom`
+  // and `tomQuest` — and every hit in either file is one of two shapes: the
+  // argument check that says which of the two is missing, or a PROVENANCE
+  // STRING inside a template literal naming which checkout a disagreement's
+  // two halves were read from ("WikiTom tts/spec.md §12.1" against
+  // "tom.quest convex/ttsShared.ts"). A disagreement report that could not name
+  // the checkout a row came from would not say where to go and fix it. Neither
+  // file enumerates the repos a session may work: the list of other
+  // repositories scripts/graph.mjs walks is handed in by its caller, which is
+  // worker/jobs/nightly.mjs, already on this list and deriving it from the one
+  // home. The comment strip cannot reach any of this because it is code.
+  "scripts/graph.mjs",
+  "scripts/vocabulary.mjs",
 ]);
 const REPO_NAME_WINDOW = 300;
 const SCAN_EXT = /\.(ts|tsx|mjs|cjs|js|jsx)$/;
@@ -498,6 +512,35 @@ if (sharedBlock) {
 // unit-tested without running this whole script.
 // witness: change one `command` string on one side only.
 failures.push(...narrowListFailures(shared, sessionMjs));
+
+// 8. Simplify runs from /opt/tts without the repository's package.json, so it
+// cannot derive this deployed list. The scripts `pnpm check:guardrails` runs
+// and STATIC_BOUNDARY_SCRIPTS in worker/jobs/simplify.mjs are one
+// fact spelled twice. The simplify job reports the merge bar's contents from
+// that list and cannot read the job's log, so a check missing from it is a
+// check the weekly pass believes does not exist — a silent omission with no
+// red anywhere. Found by the audit at f145d91, where a sixth check had just
+// been added to package.json and the list still said five.
+// witness: add a script to check:guardrails without naming it in simplify.mjs.
+const guardrailsScript =
+  JSON.parse(readFileSync("package.json", "utf8")).scripts?.["check:guardrails"] ?? "";
+const ranScripts = [...guardrailsScript.matchAll(/scripts\/(check-[\w-]+)\.mjs/g)].map((m) => m[1]);
+const simplifyMjs = readFileSync("worker/jobs/simplify.mjs", "utf8");
+const inventoryBlock = simplifyMjs.match(/STATIC_BOUNDARY_SCRIPTS = \[([^\]]+)\]/);
+if (ranScripts.length === 0) {
+  failures.push("package.json: no scripts/check-*.mjs parsed out of check:guardrails — the fence cannot run");
+}
+if (!inventoryBlock) failures.push("simplify.mjs: STATIC_BOUNDARY_SCRIPTS not found");
+if (ranScripts.length > 0 && inventoryBlock) {
+  const listed = [...inventoryBlock[1].matchAll(/"([\w-]+)"/g)].map((m) => m[1]);
+  const a = [...ranScripts].sort().join("|");
+  const b = [...listed].sort().join("|");
+  if (a !== b) {
+    failures.push(
+      `the static-boundaries inventory drifted:\n  check:guardrails runs:     ${a}\n  simplify.mjs reports:      ${b}`,
+    );
+  }
+}
 
 if (failures.length > 0) {
   console.error("Session-mirror check FAILED:");

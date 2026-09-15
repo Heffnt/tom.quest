@@ -14,7 +14,7 @@
 // Plain Node ESM, ZERO npm dependencies — tts-lib.mjs's rule; this file lands
 // in /opt/tts/ with the rest through worker/setup.sh.
 //
-//   node /opt/tts/evals.mjs --repo tom.quest --sha <sha> [--base <sha>] [--limit N] [--jobs prepare,code-brief] [--ablation] [--force]
+//   node /opt/tts/evals.mjs --repo tom.quest --sha <sha> [--limit N] [--jobs prepare,code-brief] [--ablation] [--force]
 //   node /opt/tts/evals.mjs --serve     # one polling pass over the request queue
 //   node /opt/tts/evals.mjs --weekly    # the full set against both repos' main
 //   node /opt/tts/evals.mjs --tasks <repo>
@@ -24,14 +24,40 @@
 // The box POLLS. It has no inbound door: it talks out to Convex, GitHub and
 // Slack, and nothing talks in but SSH with Tom's key. A GitHub Action posts a
 // request to Convex and waits; a cron tick here picks it up.
+//
+// roll the box (worker/setup.sh) before or immediately after merging a change to the evals row contract; until it rolls, every evals request is pending and the gate names the protocol gap
+//
+// Then drain the pre-protocol queue once, from the laptop or the box:
+//   npx convex run ttsEvals:internalSupersedeLegacyEvalsRequests '{}'
+// Requests older than EVALS_PROTOCOL_SINCE (jobs/evals-row.mjs) are answered
+// superseded without a model call either way; the drain does them all at once
+// instead of twenty-five per five-minute pass, so a live head files behind an
+// empty queue.
 
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { convexFetch, extractJsonObject, loadEnv, nyHour, nyUtcOffsetHours, runClaude, serverErrorMessage } from "./tts-lib.mjs";
+import {
+  convexFetch,
+  extractJsonObject,
+  loadEnv,
+  nyHour,
+  nyUtcOffsetHours,
+  reportJobFailed,
+  reportJobOk,
+  runClaude,
+  serverErrorMessage,
+} from "./tts-lib.mjs";
 import { cacheRepoDir } from "./tts-code-lib.mjs";
+import { redactSecrets } from "./session-archive.mjs";
+import {
+  EVALS_PROTOCOL,
+  scoredNothing,
+  supersededFields,
+  supersededName,
+} from "./evals-row.mjs";
 import { BOX_WIKITOM_DIR } from "./search-lib.mjs";
 // THE AUDIT'S OWN PROMPT, IMPORTED AND NEVER RE-IMPLEMENTED. The planted-fault
 // arm below asks the real auditor the real question about a fixture diff; a
@@ -39,18 +65,39 @@ import { BOX_WIKITOM_DIR } from "./search-lib.mjs";
 // Only the two stable exports are taken, so a change to how audit.mjs chunks or
 // runs a diff lands here with no edit.
 import { AUDIT_UNAVAILABLE, auditPrompt } from "./audit.mjs";
+import { pruneStaleWorktrees, takeEvalsLock } from "./evals-lock.mjs";
 
 export const EVALS_RUN = "evals-run";
 export const EVALS_REQUEST = "evals-request";
+export const EVALS_PROTOCOL_FAILURE_KEY = "runs-evals:protocol";
+export const EVALS_JOB = "runs-evals";
 
 export const REGEN_MODEL = process.env.TTS_EVALS_REGEN_MODEL || "haiku";
 export const JUDGE_MODEL = process.env.TTS_EVALS_JUDGE_MODEL || "fable";
 export const REGEN_TIMEOUT_MS = 5 * 60 * 1000;
 export const JUDGE_TIMEOUT_MS = 3 * 60 * 1000;
 
+/** How many times an UNREADABLE judge answer is asked again. One: a malformed
+ *  JSON string is a slip of the sampling and the second draw fixes it, and a
+ *  judge that cannot write the object twice is telling the run something the
+ *  run should record rather than paper over. A readable verdict is never
+ *  retried at any count. */
+export const JUDGE_RETRIES = 1;
+
 /** The on-commit set: the newest 20 approve and 20 revise across the whole
  *  golden set, by ruledAt. The weekly run uses everything. */
 export const PR_ITEMS = 40;
+
+/** How many superseded requests one `--serve` pass will answer before leaving
+ *  the rest to the next tick. Each costs one POST and no model, so this is a
+ *  stop against a door that kept handing back the same request, not a budget
+ *  against cost. */
+export const SERVE_SUPERSEDED_LIMIT = 25;
+
+/** A shallow cache needs this much history from each trusted tip before Git
+ * can name their merge base. A deeper unbounded fetch would make a polling
+ * pass depend on the whole repository history. */
+export const DIFF_HISTORY_DEEPEN = 256;
 
 /**
  * How many times an item is tried at the head commit before one failure of it
@@ -544,7 +591,15 @@ export const JOBS = {
     ].join("\n"),
     parse: (answer) => ({ explanation: String(answer ?? "").trim() }),
     fields: ["explanation"],
-    opts: { maxTurns: 2 },
+    // NO TOOLS, AND THAT IS WHY TWO TURNS IS ENOUGH. Every one of these items
+    // failed `error_max_turns` on the box on 2026-09-14: the prompt carries
+    // the topic, its context lines and the layers, and the model went reading
+    // the tree anyway — one turn to Read, one to Grep, and the budget was
+    // gone before a word was written. The regeneration has everything it is
+    // meant to have IN THE PROMPT; a file it goes and finds is a file the
+    // original never saw, so the tools were not a budget problem to widen but
+    // an input the item does not want. The empty allow-list is the ask.
+    opts: { maxTurns: 2, allowedTools: [] },
   },
   // One REGISTERED RUN, replayed. The case is mined out of a runLabels row
   // rather than out of snapshot text, so what it carries is the run's own
@@ -774,7 +829,10 @@ export function judgePrompt(item, fresh, fields, { hideVerdict = false } = {}) {
     `- You are checking one thing. Never judge on style preference, on which output you find better`,
     `  written, or on anything Tom did not rule on.`,
     `- The reason is one sentence, under 30 words, and names the specific text that decided it —`,
-    `  quote three or four words of the NEW output. "It is worse" is not a reason.`,
+    `  give three or four words of the NEW output. Saying it is worse is not a reason.`,
+    `- PUT NO QUOTATION MARKS IN THE REASON, of any kind. The reason is a JSON string value and one`,
+    `  unescaped quote makes the whole answer unreadable — which is scored as a failed item, not as`,
+    `  the verdict you reached. Name the words plainly, without quoting them.`,
     `- Answer with ONE JSON object and nothing else, no code fence:`,
     `{"verdict":"pass","reason":"<one sentence>"}`,
     ``,
@@ -798,6 +856,23 @@ export function judgePrompt(item, fresh, fields, { hideVerdict = false } = {}) {
 }
 
 /**
+ * An unreadable judge answer is MARKED, not merely worded.
+ *
+ * runItem asks the judge a second time when it sees this flag, and "did the
+ * reason happen to start with these words" is not a thing to branch on. The
+ * flag never reaches a row: aggregate's failure list names the fields it
+ * carries, and this is not one of them.
+ */
+export const JUDGE_UNREADABLE = "judge answer unreadable";
+
+function judgeUnreadable(answer) {
+  return {
+    ...runnerFailure(`${JUDGE_UNREADABLE}: ${String(answer ?? "").slice(0, 120)}`),
+    judgeUnreadable: true,
+  };
+}
+
+/**
  * A judge answer that is not {verdict: pass|fail, reason: <non-empty>} is a
  * FAIL with the answer's head in the reason — the same treatment a failed
  * regeneration gets, and for the same reason: a call that cannot produce a
@@ -809,14 +884,23 @@ export function parseJudge(answer) {
   try {
     parsed = extractJsonObject(answer);
   } catch {
-    return { judged: "fail", reason: `judge answer unreadable: ${String(answer ?? "").slice(0, 120)}` };
+    return judgeUnreadable(answer);
   }
   const verdict = parsed?.verdict;
   const reason = parsed?.reason;
   if ((verdict !== "pass" && verdict !== "fail") || typeof reason !== "string" || reason.trim() === "") {
-    return { judged: "fail", reason: `judge answer unreadable: ${String(answer ?? "").slice(0, 120)}` };
+    return judgeUnreadable(answer);
   }
-  return { judged: verdict, reason: reason.trim() };
+  // Judge output is untrusted text which reaches the persisted failure record
+  // and CI report. Keep its diagnostic content, but never its credentials.
+  return { judged: verdict, reason: redactSecrets(reason.trim()) };
+}
+
+/** A model/transport failure is not a negative measurement. Redact it before it
+ * can become an item reason, aggregate error, persisted row, or log line. */
+export function runnerFailure(error) {
+  const message = redactSecrets(String(error ?? "runner failed")).slice(0, 300);
+  return { judged: "fail", errored: true, errorMessage: message, reason: `runner failed: ${message}` };
 }
 
 // ── The deterministic checks ─────────────────────────────────────────────────
@@ -1028,7 +1112,7 @@ export async function runItem(item, context, io, { deterministic = null, receipt
     // merge over a gap in the harness. realIo wires one, so a real run never
     // reaches this; a test io or a caller that built its own still can.
     if (err instanceof SkillsNotAssembledError) return { ...base, judged: "skip", reason: err.message };
-    return { ...base, judged: "fail", reason: `regeneration failed: ${serverErrorMessage(err)}` };
+    return { ...base, ...runnerFailure(serverErrorMessage(err)) };
   }
   if (deterministic !== null) {
     // A check that throws is a failed check, reported as one. runItem never
@@ -1048,27 +1132,60 @@ export async function runItem(item, context, io, { deterministic = null, receipt
     try {
       return { ...base, ...job.score(item, fresh, context.modules[item.job]) };
     } catch (err) {
-      return { ...base, judged: "fail", reason: `scoring failed: ${serverErrorMessage(err)}` };
+      return { ...base, ...runnerFailure(serverErrorMessage(err)) };
     }
   }
-  let answer;
-  try {
-    answer = await io.runClaude(judgePrompt(item, fresh, job.fields), {
-      model: JUDGE_MODEL,
-      timeoutMs: JUDGE_TIMEOUT_MS,
-      maxTurns: 1,
-      registration: {
-        origin: "cron:evals",
-        kind: "job",
-        layersKnown: false,
-        layersGiven: [],
-        layersDenied: [],
-      },
-    });
-  } catch (err) {
-    return { ...base, judged: "fail", reason: `judge answer unreadable: ${serverErrorMessage(err)}` };
+  // ONE RETRY, AND ONLY FOR AN ANSWER THAT COULD NOT BE READ.
+  //
+  // The judge writes a JSON object with the reason inside it, and the rule
+  // above asks it for three or four words of the output — which it kept
+  // supplying in quotation marks, unescaped, so the object would not parse and
+  // the item scored `judge answer unreadable`. The prompt now forbids the
+  // quotes; this is the second half, because a prompt rule is a tendency and
+  // not a guarantee, and one malformed string should not fail an item whose
+  // regeneration was fine.
+  //
+  // WHY THE PROMPT RULE IS NOT ENOUGH ON ITS OWN, and why the parser is not
+  // the place instead. A prompt rule moves a model's tendency and does not
+  // bound it, and the cost of the residue is not a worse reason but a FAILED
+  // ITEM — a regression on the merge gate, from an item whose regeneration was
+  // fine. A parser taught to tolerate quotes is the other way out and a worse
+  // one: it would have to guess where the JSON string ends, and a judge that
+  // wrote a reason with a comma and a brace in it would be guessed wrong
+  // silently, which turns an unreadable answer into a WRONG one. Deleting this
+  // means choosing between those two. The second ask costs one Fable call on
+  // the rare item that needs it.
+  //
+  // IT IS NOT A RETRY OF A VERDICT. A judge that answers `fail` readably is
+  // asked once and its answer stands — retrying until the wanted answer
+  // arrives is exactly how a measurement becomes a wish. Only unreadability is
+  // retried, and only once; a second failure is a failed item with the
+  // answer's head in the reason, as before.
+  let verdict;
+  let judgeRetries = 0;
+  for (;;) {
+    let answer;
+    try {
+      answer = await io.runClaude(judgePrompt(item, fresh, job.fields), {
+        model: JUDGE_MODEL,
+        timeoutMs: JUDGE_TIMEOUT_MS,
+        maxTurns: 1,
+        registration: {
+          origin: "cron:evals",
+          kind: "job",
+          layersKnown: false,
+          layersGiven: [],
+          layersDenied: [],
+        },
+      });
+    } catch (err) {
+      return { ...base, ...runnerFailure(serverErrorMessage(err)), judgeRetries };
+    }
+    verdict = parseJudge(answer);
+    if (verdict.judgeUnreadable !== true || judgeRetries >= JUDGE_RETRIES) break;
+    judgeRetries += 1;
   }
-  return { ...base, ...parseJudge(answer) };
+  return { ...base, ...verdict, judgeRetries };
 }
 
 /**
@@ -1092,6 +1209,12 @@ export function aggregate(results) {
   const byVerdict = { approve: { items: 0, pass: 0 }, revise: { items: 0, pass: 0 } };
   let pass = 0;
   let flaky = 0;
+  let errored = 0;
+  // How often the judge had to be asked twice because its first answer was not
+  // readable JSON. A DIAGNOSTIC, never a gate: the merge arm reads regressions.
+  // A number climbing here says the judge prompt is drifting back towards
+  // quoting, which is a thing to fix in the prompt and not in the parser.
+  let judgeRetries = 0;
   for (const result of results) {
     if (isFlaky(result)) flaky += 1;
     const row = byPartition.get(result.partition) ?? { partition: result.partition, items: 0, pass: 0, fail: 0 };
@@ -1104,6 +1227,8 @@ export function aggregate(results) {
       if (result.judged === "pass") verdict.pass += 1;
     }
     if (result.judged === "pass") pass += 1;
+    if (result.errored === true) errored += 1;
+    if (Number.isInteger(result.judgeRetries)) judgeRetries += result.judgeRetries;
   }
   return {
     items: results.length,
@@ -1112,12 +1237,15 @@ export function aggregate(results) {
     // Passed once, failed once. NEVER a regression and never folded into the
     // fail count: it is the noise in the measurement, said out loud.
     flaky,
+    errored,
+    judgeRetries,
     byPartition: [...byPartition.values()].sort((a, b) => a.partition.localeCompare(b.partition)),
     byVerdict,
     failures: results
       .filter((result) => result.judged !== "pass")
-      .map(({ id, partition, verdict, reason, confirmed, trials, method }) => ({
+      .map(({ id, partition, verdict, reason, confirmed, trials, errored, method }) => ({
         id, partition, verdict, reason, confirmed,
+        ...(errored === true ? { errored: true } : {}),
         ...(method === undefined ? {} : { method }),
         // The failure carries its own trial count, so a row read later says
         // whether this id failed once or failed every time it was tried.
@@ -1490,7 +1618,18 @@ export async function runTask(task, trees, io) {
   if (typeof io?.runTaskKind !== "function") {
     return { ...base, judged: "skip", reason: `no runner wired for task kind ${task.kind}` };
   }
-  const produced = await io.runTaskKind(task, trees);
+  let produced;
+  try {
+    produced = await io.runTaskKind(task, trees);
+  } catch (error) {
+    return { ...base, ...runnerFailure(serverErrorMessage(error)) };
+  }
+  // Task runners are separate wiring seams. Their output cannot be trusted to
+  // have this shape: deleting the guard would let a broken runner become a
+  // persisted measurement with no verdict instead of an explicit failed item.
+  if (produced === null || typeof produced !== "object" || (produced.judged !== "pass" && produced.judged !== "fail" && produced.judged !== "skip")) {
+    return { ...base, ...runnerFailure("task runner returned no usable answer") };
+  }
   // THE MECHANICAL HALF DECIDES FIRST. mustName and mustNotName are read off
   // the answer's own text with no model in the loop, and a violation is the
   // item's score — the kind runner's own verdict, and any judge behind it, is
@@ -1547,8 +1686,22 @@ export function ensureRef(repoDir, ref, run = git) {
  * touching a checkout somebody else owns — the nightly job owns /root/wikitom's
  * working tree, and this must never reset --hard it.
  */
-export function worktreeFor(repoDir, repo, ref) {
-  const dir = path.join(WORK_DIR, repo, `${ref}`.replace(/[^A-Za-z0-9]/g, "-").slice(0, 24));
+export function worktreeFor(repoDir, repo, ref, { pid = process.pid } = {}) {
+  // THE PATH CARRIES THE PROCESS THAT MADE IT, and the rmSync on the next line
+  // is why it has to. This built its name out of the repo and the ref alone,
+  // so a run started by hand and the five-minute `--serve` cron, asked about
+  // the same head, computed the same directory — and each one began by
+  // deleting the other's checkout. The head worktree disappeared under a
+  // regeneration, the run died somewhere unrelated to the cause, and the row
+  // it posted said the tree could not be read (twice, 2026-09-14).
+  //
+  // The lock in main() is the real answer: two runs do not start. This is what
+  // makes the two-runs case merely wasteful rather than corrupting, for the
+  // paths around the lock — a run under a different lock file, a debug run —
+  // and it is what lets pruneStaleWorktrees tell a dead run's debris from a
+  // live run's tree (worker/jobs/evals-lock.mjs).
+  const slug = `${ref}`.replace(/[^A-Za-z0-9]/g, "-").slice(0, 24);
+  const dir = path.join(WORK_DIR, repo, `${slug}.${pid}`);
   fs.mkdirSync(path.dirname(dir), { recursive: true });
   fs.rmSync(dir, { recursive: true, force: true });
   git(repoDir, "worktree", "prune");
@@ -1593,7 +1746,7 @@ export async function loadModules(tomquestTree, items) {
  * regression.
  */
 export function passedIds(run) {
-  if (run === null || run === undefined) return new Set();
+  if (run === null || run === undefined || scoredNothing(run)) return new Set();
   const failed = new Set([...(run.failures ?? []), ...(run.tasks?.failures ?? [])].map((failure) => failure.id));
   return new Set((run.scoredIds ?? []).filter((id) => !failed.has(id)));
 }
@@ -1613,6 +1766,9 @@ export function passedIds(run) {
 export async function runTrials(id, basePassed, once) {
   const first = await once();
   if (first.judged === "skip") return first;
+  // A runner failure is terminal evidence for this item. Retrying a failed
+  // transport until it happens to work would turn an outage into a pass.
+  if (first.errored === true) return { ...first, trials: { head: 1, headPassed: 0 } };
   if (first.judged === "pass" || !basePassed.has(id)) {
     return { ...first, trials: { head: 1, headPassed: first.judged === "pass" ? 1 : 0 } };
   }
@@ -1620,6 +1776,9 @@ export async function runTrials(id, basePassed, once) {
   while (results.length < HEAD_TRIALS) {
     const next = await once();
     results.push(next);
+    if (next.errored === true) {
+      return { ...next, trials: { head: results.length, headPassed: results.filter((result) => result.judged === "pass").length } };
+    }
     if (next.judged === "pass") break;
   }
   const passing = results.find((result) => result.judged === "pass");
@@ -1792,6 +1951,19 @@ export async function runCase(item, context, io, { pr = false } = {}) {
     if (result.judged === "skip") return { ...base, judged: "skip", reason: result.reason };
     const record = await runRecordFor(io, receipt.runToken);
     perTrial.push({ judged: result.judged, reason: result.reason, tokens: record.tokens, turns: record.turns });
+    if (result.errored === true) {
+      return {
+        ...base,
+        ...result,
+        trialCount: perTrial.length,
+        passed: 0,
+        passK: false,
+        passAtK: false,
+        trials: { head: perTrial.length, headPassed: 0 },
+        tokensMedian: medianTokens(perTrial),
+        perTrial,
+      };
+    }
   }
   const passed = perTrial.filter((trial) => trial.judged === "pass").length;
   const failing = perTrial.find((trial) => trial.judged !== "pass");
@@ -1811,6 +1983,24 @@ export async function runCase(item, context, io, { pr = false } = {}) {
 
 // ── The ablation arm ─────────────────────────────────────────────────────────
 
+// THERE IS NO NODE ARM, and the reason is that there is no assembler that can
+// drop a node. `preludeFrom` reads `names.layers` and `names.skills` and
+// nothing else, so a trial that removed a node id from the set it is handed
+// would assemble the IDENTICAL prompt and score the same prompt twice. On a
+// sampling model those two runs differ by noise, `ablationFindings` reads a
+// differing pair as `earned: false`, and worker/jobs/weekly.mjs posts every
+// such row to /tts/weekly-decisions as a removal proposal that stands unless
+// somebody objects — a rule line flagged for deletion by a measurement that
+// never deleted it, at a cost of about a thousand trials a week.
+//
+// So the arm is not here rather than gated off: a flag would be a second thing
+// to get wrong, and the selection rule it guarded (the five lowest-cost nodes
+// of a walk, ties by id) is one small function to write again. It comes back in
+// THE SAME COMMIT as the assembler that drops a node, because neither half
+// means anything without the other. `graphVersion` and `graphNodes` on the run
+// row, the walk, `tts search node` and `near` are untouched: those record and
+// read what a prompt carried, which is true whether or not anything ablates it.
+
 /**
  * The same case, assembled without one name.
  *
@@ -1824,6 +2014,11 @@ export async function runCase(item, context, io, { pr = false } = {}) {
  * REPORTED AND NEVER GATED, and n x trials x names is the whole cost of this
  * phase; one trial per name over a 200-case weekly set is far more evidence
  * than a removal proposal needs.
+ *
+ * TWO LISTS, NOT THREE: a layer and a skill, each of which `preludeFrom`
+ * actually assembles. A node would be the third and is not here — see the
+ * block above this one for why an arm nothing can assemble without is worse
+ * than no arm.
  *
  * A case whose prelude was not known is SKIPPED and counted: you cannot remove
  * a name from a prompt that was replayed verbatim.
@@ -1844,6 +2039,10 @@ export async function ablationFor(item, context, io, withPass) {
         ...item,
         input: {
           ...item.input,
+          // preludeNames IS THE WHOLE OF WHAT THE ASSEMBLER IS HANDED —
+          // JOBS.run.build calls context.prelude(item.input.preludeNames) and
+          // reads nothing else — so a name removed anywhere but here would
+          // assemble the identical prompt and score the same run twice.
           preludeNames: {
             layers: (names.layers ?? []).filter((one) => kind !== "layer" || one !== name),
             skills: (names.skills ?? []).filter((one) => kind !== "skill" || one !== name),
@@ -1882,11 +2081,20 @@ export const MIN_ABLATION_CASES = 5;
 export function ablationFindings(ablation) {
   const byName = new Map();
   for (const row of ablation ?? []) {
-    const entry = byName.get(row.name) ?? { name: row.name, cases: 0, withPass: 0, withoutPass: 0 };
+    // KEYED ON THE KIND AND THE NAME TOGETHER, AND THE KIND DOES NOT TRAVEL.
+    // A layer and a skill can carry one name — `write` was a layer and is now a
+    // skill — and one key would add the two counts together and report a
+    // finding about neither, so the kind belongs in the key. It does NOT belong
+    // on the finding: the twin of this function in convex/ttsWeekly.ts feeds
+    // POST /tts/weekly-decisions, whose argument check is an exact object, and
+    // Convex refuses a field that check does not list. The two copies emit the
+    // same shape so that neither can teach the other a field the route rejects.
+    const key = `${String(row.kind ?? "")}|${row.name}`;
+    const entry = byName.get(key) ?? { name: row.name, cases: 0, withPass: 0, withoutPass: 0 };
     entry.cases += 1;
     if (row.withPass) entry.withPass += 1;
     if (row.withoutPass) entry.withoutPass += 1;
-    byName.set(row.name, entry);
+    byName.set(key, entry);
   }
   return [...byName.values()]
     .filter((entry) => entry.cases >= MIN_ABLATION_CASES)
@@ -2352,6 +2560,10 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       // what keeps this to a handful of prelude.mjs invocations rather than
       // one per trial.
       prelude: (names) => {
+        // The key is the two name lists, which are the whole of what
+        // `preludeFrom` reads. A third part for a node list went with the node
+        // arm: nothing sets `names.nodes`, so it contributed an empty string to
+        // every key and named a caller that does not exist.
         const key = `${(names?.layers ?? []).join(",")}|${(names?.skills ?? []).join(",")}`;
         if (!preludeCache.has(key)) preludeCache.set(key, preludeFrom(io, tomquest.dir, wikitom.dir, names));
         return preludeCache.get(key);
@@ -2409,7 +2621,12 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       }
       triggerResults.push(await runTriggerCase(trigger, one, io, router, pinned));
     }
-    const taskItems = (io.taskRepos?.(tomquest.dir) ?? [])
+    // SORTED, so the repo order a run scores its tasks in is the same on every
+    // box. `scoredIds` and `scoredHashes` are sorted downstream, but the ORDER
+    // OF EXECUTION decides which task reaches a rate limit first, and a run
+    // that fails a different task each time is a run whose failures cannot be
+    // compared with the last one's.
+    const taskItems = [...(io.taskRepos?.(tomquest.dir) ?? [])].sort()
       .flatMap((taskRepo) => loadTasks(tomquest.dir, taskRepo));
     const tasks = [];
     for (const task of taskItems) tasks.push(await runTrials(task.id, basePassed, () => runTask(task, trees, io)));
@@ -2438,6 +2655,22 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
     });
     const triggerFilesRun = [...ranByFile].filter(([, ran]) => ran).map(([file]) => file).sort();
     const summary = aggregate(scoredAll);
+    const taskSummary = aggregate(scoredTasks);
+    const errors = [...scoredAll, ...scoredTasks]
+      .filter((result) => result.errored === true)
+      .map((result) => result.errorMessage ?? String(result.reason ?? "runner failed").replace(/^runner failed: /, ""))
+      .slice(0, 3);
+    const errored = summary.errored + taskSummary.errored;
+    // EVERY MEASURED CASE COUNTS, TRIGGERS INCLUDED. The trigger cases are
+    // scored items like any other since phase 6, so a run whose runner died
+    // must weigh them the same way — counting only the golden items would let
+    // a broken box look survivable in proportion to how many triggers it also
+    // failed to score.
+    const scoredItems = scoredAll.length + scoredTasks.length;
+    // A run is catastrophic when at least one item was scored and
+    // errored * 2 >= scoredItems: exactly half is runner failed because less
+    // than half of expected evidence remains trustworthy. All-error is included.
+    const catastrophic = scoredItems > 0 && errored * 2 >= scoredItems;
     return {
       repo,
       // The RESOLVED commit of whichever repo this run pins, so a run named
@@ -2486,6 +2719,7 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       results: scoredAll.map((result) => ({
         id: result.id,
         judged: result.judged,
+        ...(result.errored === true ? { errored: true } : {}),
         ...(result.method === undefined ? {} : { method: result.method }),
         passK: result.passK ?? (result.trials === undefined
           ? result.judged === "pass"
@@ -2495,7 +2729,12 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       ablation: ablationRows,
       ablationSkipped,
       ...summary,
-      tasks: aggregate(tasks.filter((task) => task.judged !== "skip")),
+      errored,
+      errors,
+      ...(catastrophic
+        ? { error: true, reason: `runner failed: ${errors[0] ?? "runner failed"}`, regressions: null, goldenCoverage: null }
+        : {}),
+      tasks: taskSummary,
       tasksSkipped: tasks.filter((task) => task.judged === "skip").map(({ id, reason }) => ({ id, reason })),
     };
   } finally {
@@ -2505,7 +2744,7 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
 }
 
 const FLAGS = new Set(["--serve", "--weekly", "--force", "--ablation", "--faults-only", "--dry-run"]);
-const VALUED = new Set(["--repo", "--sha", "--base", "--tasks", "--limit", "--jobs"]);
+const VALUED = new Set(["--repo", "--sha", "--tasks", "--limit", "--jobs"]);
 
 /**
  * The option key of a flag whose own name is not its key.
@@ -2520,7 +2759,7 @@ const FLAG_KEYS = { "--faults-only": "faultsOnly", "--dry-run": "dryRun" };
 
 export function parseArgs(argv) {
   const options = {
-    repo: null, sha: null, base: null, limit: PR_ITEMS,
+    repo: null, sha: null, limit: PR_ITEMS,
     jobs: null, force: false, serve: false, weekly: false, ablation: false, tasks: null,
     faultsOnly: false, dryRun: false,
   };
@@ -2640,25 +2879,46 @@ function realIo(env) {
   };
 }
 
-async function postRun(env, data) {
-  await convexFetch(env, "/tts/event", { kind: EVALS_RUN, key: `${data.repo}@${data.sha}`, data });
+/** Every queue read identifies the installed runner before the door answers. */
+export function evalsRequestRoute({ repo, sha } = {}) {
+  const params = new URLSearchParams({ boxEvalsVersion: String(EVALS_PROTOCOL) });
+  if (repo !== undefined) params.set("repo", repo);
+  if (sha !== undefined) params.set("sha", sha);
+  return `/tts/evals-request?${params}`;
 }
 
+/** One writer for every evals row, including cheap and failed answers. */
+async function postRun(env, data) {
+  await convexFetch(env, "/tts/event", {
+    kind: EVALS_RUN,
+    key: `${data.repo}@${data.sha}`,
+    data: { ...data, boxEvalsVersion: EVALS_PROTOCOL },
+  });
+}
+
+/** The fields of a row that scored nothing — shared by the two rows the box
+ *  posts without running anything, so the pair cannot drift in the fields
+ *  every reader of an evals run expects to find. */
 /**
- * The row a run that could not be made posts anyway.
+ * `answersRequestAt` IS THE QUESTION THIS ROW ANSWERS, and it is what makes a
+ * row that scored nothing datable at all.
  *
- * THE QUEUE IS DRAINED BY ANSWERS, NOT BY ATTEMPTS: `--serve` takes the OLDEST
- * request with no evals-run row at its key, so one sha the box cannot fetch or
- * check out is picked again on every tick and every later request waits behind
- * it forever. A recorded failure is the answer — it says what happened, and it
- * opens nothing: `regressions: null` denies the merge gate's evals arm, and
- * `error` makes scripts/evals-check.mjs's gate() fail rather than read "no
- * failures" off a run that scored nothing.
+ * These rows are not measurements of a commit: `superseded` says a later push
+ * had already replaced this head when the queue looked, and an `error` row says
+ * the tree could not be read that time. convex/ttsEvals.ts answeredRun has to
+ * be able to tell such a row apart from one answering a question since
+ * withdrawn, and comparing WRITE TIMES cannot do it. The box reads the request
+ * and then posts, seconds later: if the sha becomes the live head again in
+ * between, the row lands stamped AFTER the replacement request and a clock
+ * comparison accepts the stale supersession — failing the live head until yet
+ * another re-run. Carrying the request's own `requestedAt` makes the match
+ * exact instead of racy.
  */
-export function failedRun({ repo, sha, error, at }) {
+function unscoredRun({ repo, sha, at, answersRequestAt = null }) {
   return {
     repo,
     sha,
+    answersRequestAt,
     tomquest: null,
     wikitom: null,
     goldenHash: null,
@@ -2667,17 +2927,11 @@ export function failedRun({ repo, sha, error, at }) {
     startedAt: at,
     finishedAt: at,
     calls: 0,
-    error,
     items: 0,
     pass: 0,
     fail: 0,
     flaky: 0,
-    regressions: null,
     stillFailing: 0,
-    // A run that could not be made checked no diff either, so the coverage
-    // field says so rather than saying "satisfied". The merge gate denies on
-    // null, which is what a row carrying `error` must do on every arm.
-    goldenCoverage: null,
     weekly: false,
     byPartition: [],
     byVerdict: { approve: { items: 0, pass: 0 }, revise: { items: 0, pass: 0 } },
@@ -2693,6 +2947,203 @@ export function failedRun({ repo, sha, error, at }) {
     tasks: aggregate([]),
     tasksSkipped: [],
   };
+}
+
+/**
+ * The row a run that could not be made posts anyway.
+ *
+ * THE QUEUE IS DRAINED BY ANSWERS, NOT BY ATTEMPTS: `--serve` takes the OLDEST
+ * request with no evals-run row at its key, so one sha the box cannot fetch or
+ * check out is picked again on every tick and every later request waits behind
+ * it forever. A recorded failure is the answer — it says what happened, and it
+ * opens nothing: `regressions: null` denies the merge gate's evals arm, and
+ * `error` makes scripts/evals-check.mjs's gate() fail rather than read "no
+ * failures" off a run that scored nothing.
+ */
+export function failedRun({ repo, sha, error, at, answersRequestAt = null }) {
+  return {
+    ...unscoredRun({ repo, sha, at, answersRequestAt }),
+    error: redactSecrets(String(error ?? "runner failed")).slice(0, 300),
+    regressions: null,
+    // A run that could not be made checked no diff either, so the coverage
+    // field says so rather than saying "satisfied". The merge gate denies on
+    // null, which is what a row carrying `error` must do on every arm.
+    goldenCoverage: null,
+  };
+}
+
+/**
+ * The row a head A LATER PUSH REPLACED is answered with, with no model run.
+ *
+ * Four pushes to one branch in a morning file four requests. The box serves
+ * the oldest unanswered one per pass and a pass is about thirty-five minutes,
+ * so the check on the fourth sha waits out three runs of shas nobody will ever
+ * merge and then fails on its own seventy-five-minute deadline — which is what
+ * happened to #172 and #173 on 2026-09-12. The queue names the head of each
+ * pull request (convex/ttsEvals.ts internalOldestEvalsRequest), and every sha
+ * that is not it is answered here in one POST.
+ *
+ * IT DENIES, and it must: `regressions: null` and `goldenCoverage: null` are
+ * what convex/ttsMerge.ts refuses on, so a stale sha can never carry a gate
+ * open. `error` carries the same sentence for readers older than this field —
+ * a copy of scripts/evals-check.mjs that predates the superseded branch still
+ * fails the check, and says why.
+ *
+ * `by` IS NOT ALWAYS A SHA. The queue also hands out a request filed before the
+ * evals protocol with the protocol's name in that field (convex/ttsEvals.ts
+ * internalOldestEvalsRequest), which this answers the same way and just as
+ * cheaply. The denying fields are the shared ones, so the row the door writes
+ * when it drains that backlog in bulk and the row this writes are one shape.
+ */
+export function supersededRun({ repo, sha, by, at, answersRequestAt = null }) {
+  return {
+    ...unscoredRun({ repo, sha, at, answersRequestAt }),
+    ...supersededFields(by),
+  };
+}
+
+/** The word an unaffected row answers golden coverage with. One fact, three
+ *  homes — scripts/evals-check.mjs COVERAGE_NOT_REQUIRED and convex/
+ *  ttsEvals.ts's constant of the same name are the other two, and neither can
+ *  be imported here (the gate module is loaded by path, Convex not at all). */
+export const COVERAGE_NOT_REQUIRED = "not-required";
+
+/**
+ * The row a branch that touched NOTHING WATCHED gets, with no model run.
+ *
+ * The box writes this only after it reads its own diff and the base tree's
+ * policy. Convex files the client claim but never stamps the row, so every
+ * request reaches `--serve` and an untrusted head cannot bypass the gate.
+ *
+ * `regressions: 0` is honest here in a way it would not be on a failed run:
+ * nothing was scored because nothing could have regressed. `items` and `pass`
+ * restate the base commit's numbers when a base run exists; `goldenHash` stays
+ * null, because this row hashed no set of its own.
+ */
+export function unaffectedRun({ repo, sha, changed, base, at, answersRequestAt = null }) {
+  return {
+    ...unscoredRun({ repo, sha, at, answersRequestAt }),
+    unaffected: true,
+    changed: changed ?? null,
+    items: typeof base?.items === "number" ? base.items : 0,
+    pass: typeof base?.pass === "number" ? base.pass : 0,
+    regressions: 0,
+    goldenCoverage: COVERAGE_NOT_REQUIRED,
+  };
+}
+
+/** Git's `-z` output is the only safe filename transport: a path may contain
+ * a newline, so line splitting or Git's quoted display format would turn one
+ * changed file into a different list. */
+export function changedPathsFromGit(out) {
+  return String(out).split("\0").filter((entry) => entry !== "");
+}
+
+/**
+ * The base tree's watch policy, or `null` when that tree is older than the
+ * policy — the file absent, or present without the two exports the box reads.
+ *
+ * THIS IS NOT A FALLBACK THAT GUESSES. It answers one question — can this base
+ * say what is watched — and the caller's answer to "no" is to score the whole
+ * evaluation, which is what the box would have done for any watched change.
+ * There is no narrower list to substitute and none is invented here: the head's
+ * own copy is exactly what may not be trusted (see trustedRequestDiff).
+ *
+ * WHY THIS IS NOT A THROW, WHICH IS WHAT IT REPLACED. `unaffectedBy` arrives on
+ * this branch, so between a box rollout and the merge that brings it — the
+ * order worker/README.md documents — every base is a base without it. Throwing
+ * wrote a failed row per request, stamped `answersRequestAt` on it, and those
+ * stamps stay current after the merge: the checks stay red until someone reruns
+ * them by hand. Nothing about a missing shortcut makes a measurement unsafe, so
+ * nothing about it should fail one.
+ */
+export async function basePolicyOf(dir) {
+  const file = path.join(dir, "scripts", "evals-check.mjs");
+  if (!fs.existsSync(file)) return null;
+  const policy = await import(pathToFileURL(file).href);
+  if (!Array.isArray(policy.WATCHED_PATHS) || typeof policy.unaffectedBy !== "function") return null;
+  return policy;
+}
+
+/**
+ * The box, rather than the pull-request checkout, decides whether a request
+ * is unaffected. Both commits are detached worktrees in the request's cache:
+ * the diff is read from that cache and the watch policy is imported from the
+ * trusted tom.quest base.
+ *
+ * A head may edit scripts/evals-check.mjs to narrow the list, so it is never
+ * imported here. WikiTom's Action fetches this check from tom.quest, so its
+ * policy comes from tom.quest's base too: the request repository supplies the
+ * comparison, and no request head supplies the watch.
+ *
+ * A shallow cache needs its box-fetched main and head tips deepened by a
+ * bounded amount before Git can find their merge base; that base names the
+ * branch diff while current main remains the evaluation baseline. The request
+ * `baseSha` is not used because a request can be stale or retargeted. A
+ * two-dot diff intersected with head paths still needs head history, so it
+ * would add another shallow-history rule instead of establishing the branch.
+ *
+ * `basePolicy` says which base answered: `"present"`, or `"absent"` when the
+ * base is older than the policy — see basePolicyOf.
+ */
+export async function trustedRequestDiff(request, io, run = git) {
+  let baseTree = null;
+  let headTree = null;
+  let policyTree = null;
+  try {
+    // `baseSha` is a CI hint. The box's own origin/main is the only baseline
+    // that may decide policy, an empty diff, or comparison provenance.
+    baseTree = io.worktree(request.repo, "origin/main");
+    headTree = io.worktree(request.repo, request.sha);
+    policyTree = request.repo === "tom.quest"
+      ? baseTree
+      : io.worktree("tom.quest", "origin/main");
+    const policy = await basePolicyOf(policyTree.dir);
+    // This fetch has both tips from the box's cache, never a commit named by
+    // the request. Complete cache clones reject --deepen, so deepen only when
+    // Git says this cache is shallow. If their bounded history has no common
+    // ancestor, the catch below posts the required failed row rather than
+    // scoring a guessed diff.
+    const shallow = run(baseTree.dir, "rev-parse", "--is-shallow-repository").trim() === "true";
+    if (shallow) {
+      run(
+        baseTree.dir,
+        "fetch", "--deepen", String(DIFF_HISTORY_DEEPEN), "origin", "main", headTree.commit,
+      );
+    }
+    const mergeBase = run(baseTree.dir, "merge-base", baseTree.commit, headTree.commit).trim();
+    if (mergeBase === "") throw new Error("the trusted tips have no merge base within the shallow-history bound");
+    const out = run(
+      baseTree.dir,
+      "diff", "--no-renames", "--name-only", "-z",
+      `${mergeBase}..${headTree.commit}`,
+    );
+    const changed = changedPathsFromGit(out);
+    // A BASE THAT CANNOT SAY WHAT IS WATCHED HAS EVERYTHING WATCHED. The only
+    // shortcut the policy can authorise is the no-run one, so its absence costs
+    // a full scored run and nothing else: the comparison base, the changed list
+    // and the coverage input are all still the box's own.
+    if (policy === null) {
+      return { base: baseTree.commit, changed, unaffected: false, watchedPaths: null, basePolicy: "absent" };
+    }
+    // The list is read from the same base module that supplies its predicate.
+    const watchedPaths = [...policy.WATCHED_PATHS];
+    return {
+      base: baseTree.commit,
+      changed,
+      unaffected: policy.unaffectedBy(changed),
+      watchedPaths,
+      basePolicy: "present",
+    };
+  } catch (error) {
+    const reason = redactSecrets(serverErrorMessage(error)).slice(0, 300);
+    console.error(`[evals] ${request.repo}@${request.sha}: could not establish the box diff (${reason}); failing the request`);
+    return { base: null, changed: null, unaffected: false, error: reason };
+  } finally {
+    if (policyTree !== baseTree) policyTree?.remove();
+    headTree?.remove();
+    baseTree?.remove();
+  }
 }
 
 /**
@@ -2736,7 +3187,24 @@ export async function stampAgainstBase(data, base, diff = {}) {
   const goldenCoverage = gateModule === null
     ? null
     : gateModule.goldenItemRule(diff.changed, diff.prBody);
-  if (gateModule === null || base === null || base === undefined) {
+  // A head that scored nothing is not a comparison, and neither is a base
+  // that scored nothing. The shared helper includes request-only rows too:
+  // normal unaffected and superseded requests bypass this path, but they fail
+  // closed if one reaches stamping unexpectedly.
+  // A run is catastrophic when at least one item was scored and
+  // errored * 2 >= scoredItems: exactly half is runner failed because less than
+  // half of expected evidence remains trustworthy. All-error is included.
+  if (scoredNothing(data)) {
+    return {
+      ...data,
+      regressions: null,
+      stillFailing: 0,
+      goldenCoverage: null,
+      efficiency: efficiencyOf(data.results, null),
+      failures: data.failures.map((failure) => ({ ...failure, regression: false })),
+    };
+  }
+  if (gateModule === null || base === null || base === undefined || scoredNothing(base)) {
     // NULL, NOT ZERO. A run compared to nothing has no number of regressions,
     // and the merge gate opens its evals arm on exactly `regressions === 0`
     // (convex/ttsMerge.ts) — stamping 0 here would let a head that was never
@@ -2761,7 +3229,11 @@ export async function stampAgainstBase(data, base, diff = {}) {
   const regressed = new Set(verdict.regressions.map((failure) => failure.id));
   return {
     ...data,
-    regressions: verdict.regressions.length,
+    // An errored item leaves no trustworthy comparison number: `0` would open
+    // the merge gate even though the eval gate refused this run. Keep the count
+    // so the gate's denial says what the runner did not answer.
+    regressions: verdict.errored.length > 0 ? null : verdict.regressions.length,
+    errored: verdict.errored.length,
     stillFailing: verdict.stillFailing.length,
     // From the gate's own verdict rather than from the rule called twice: one
     // body decides what coverage is, here and in the check's log alike.
@@ -2783,9 +3255,10 @@ export async function stampAgainstBase(data, base, diff = {}) {
  * row, so convex/ttsWeekly.ts reads it with no new field, no new index and no
  * new row kind.
  */
-async function runAndPost(env, io, {
+export async function runAndPost(env, io, {
   repo, sha, base, limit, jobs, weekly, ablation = false, force, changed, prBody,
-  dryRun = false, scorecard = undefined,
+  dryRun = false, scorecard = undefined, answersRequestAt = null, unaffectedClaimed = false,
+  basePolicy = null,
 }) {
   const existing = force || dryRun ? null : await convexFetch(env, `/tts/evals-run?repo=${repo}&sha=${sha}`);
   if (existing?.run) {
@@ -2801,6 +3274,7 @@ async function runAndPost(env, io, {
   if (base) {
     const baseRun = await convexFetch(env, `/tts/evals-run?repo=${repo}&sha=${base}`);
     baseData = baseRun?.run ?? null;
+    if (scoredNothing(baseData)) baseData = null;
     if (baseData === null) {
       baseData = await stampAgainstBase(await runEvals({ repo, sha: base, limit, jobs, weekly }, io), null);
       if (!dryRun) await postRun(env, baseData);
@@ -2815,10 +3289,46 @@ async function runAndPost(env, io, {
       baseData,
       { changed, prBody },
     ),
+    // A scored row is an answer to this request too. Convex revalidates these
+    // facts before any reader, including the merge gate, accepts the row.
+    ...(answersRequestAt === null ? {} : {
+      answersRequestAt,
+      answersBaseSha: base ?? null,
+      answersChanged: changed ?? null,
+      answersPrBody: prBody ?? null,
+      ...(unaffectedClaimed ? { unaffectedClaimed: true, unaffected: false } : {}),
+    }),
     ...(scorecard === undefined ? {} : { verifierScorecard: scorecard }),
+    // ONLY THE ABSENCE IS RECORDED. A present policy is every ordinary row, and
+    // a field that says "normal" on every row says nothing on any of them; this
+    // one exists so that a full run the box took because its base could not
+    // name a watch is legible as that, rather than as a branch that happened to
+    // touch something watched.
+    ...(basePolicy === "absent" ? { basePolicy: "absent" } : {}),
   };
   if (dryRun) console.log(JSON.stringify(data, null, 2));
-  else await postRun(env, data);
+  else if (answersRequestAt !== null) {
+    // A run can take fifty minutes. Check the request it started for rather
+    // than the queue head, which may be another PR entirely. A replacement
+    // gets a nonmeasurement answer for this old identity, so the shared
+    // currentness rule leaves the newer request queued and the gate closed.
+    const current = await convexFetch(
+      env,
+      evalsRequestRoute({ repo, sha }),
+    );
+    if (current?.request?.requestedAt !== answersRequestAt) {
+      const stale = failedRun({
+        repo,
+        sha,
+        error: "eval request replaced while the runner was measuring it",
+        at: Date.now(),
+        answersRequestAt,
+      });
+      await postRun(env, stale);
+      return stale;
+    }
+    await postRun(env, data);
+  } else await postRun(env, data);
   console.log(
     `[evals] ${repo}@${sha}: ${data.pass}/${data.items} pass, ` +
       `${data.regressions === null ? "compared to no base" : `${data.regressions} regression(s)`}, ` +
@@ -2830,8 +3340,255 @@ async function runAndPost(env, io, {
   return data;
 }
 
+/**
+ * The live question a person is trying to answer with a direct run.
+ *
+ * This is deliberately independent of `--force`: `--force` decides whether an
+ * existing measurement is rerun, while this identity says which standing
+ * request that measurement answers. A plain direct run after a request was
+ * re-filed must carry it too, or Convex correctly leaves the new request
+ * unanswered and the person's work is invisible to the check.
+ */
+export async function directRequestIdentity(env, { repo, sha }) {
+  const { request } = await convexFetch(
+    env,
+    evalsRequestRoute({ repo, sha }),
+  );
+  if (request === null || request === undefined) return null;
+  return {
+    prBody: request.prBody ?? null,
+    answersRequestAt: request.requestedAt ?? null,
+    unaffectedClaimed: requestClaimsUnaffected(request),
+  };
+}
+
+/** Requests filed before `unaffected` became `unaffectedClaimed` can still be
+ * waiting when this deploys. Like `answersRequestAt`, keep their old spelling
+ * through that rollout window; remove it after no pre-rename request can stand
+ * in the queue. */
+function requestClaimsUnaffected(request) {
+  return request.unaffectedClaimed === true || request.unaffected === true;
+}
+
+/**
+ * One polling pass over the request queue.
+ *
+ * ONE SCORED REQUEST PER PASS, so a cron tick is bounded — and that is the only
+ * thing bounded, because it is the only thing that costs anything. A superseded
+ * request is one POST and no model, so the pass keeps taking them: a queue four
+ * dead pushes deep drains on THIS tick and the live head is served on it too,
+ * rather than one dead sha every five minutes. The count is a stop, not a
+ * budget: a door that kept handing back the same request would otherwise spin
+ * here forever. The bound cannot be deleted: repeated delivery after an answer
+ * is a queue failure, and one cron pass must stop instead of spinning on it.
+ *
+ * Exported so that stop can be tested. It is reached only through `--serve`,
+ * and the shape of the bug it guards against — a loop that keeps asking a door
+ * whose answer it did nothing to change — is not visible from serveRequest.
+ */
+export async function servePass(env, io, options = {}) {
+  let protocolChecked = false;
+  for (let answered = 0; answered < SERVE_SUPERSEDED_LIMIT; answered += 1) {
+    const response = await convexFetch(env, evalsRequestRoute());
+    const doorProtocol = Number.isSafeInteger(response?.evalsProtocol) && response.evalsProtocol > 0
+      ? response.evalsProtocol
+      : null;
+    const seenProtocol = Number.isSafeInteger(response?.boxEvalsVersion) && response.boxEvalsVersion > 0
+      ? response.boxEvalsVersion
+      : EVALS_PROTOCOL;
+    if (doorProtocol !== null && seenProtocol < doorProtocol) {
+      // This guard cannot be deleted: without it an installed old runner keeps
+      // taking work whose answers the deployed door must refuse, once per cron
+      // tick, while every later request waits behind it.
+      const gap = typeof response.protocolGap === "string" && response.protocolGap !== ""
+        ? response.protocolGap
+        : `the box's evals runner is at protocol ${seenProtocol}; this door needs ${doorProtocol} — run worker/setup.sh on the box`;
+      await (options.reportFailed ?? reportJobFailed)(env, {
+        job: EVALS_JOB,
+        key: EVALS_PROTOCOL_FAILURE_KEY,
+        error: gap,
+      });
+      throw new Error(gap);
+    }
+    if (!protocolChecked && options.dryRun !== true) {
+      await (options.reportOk ?? reportJobOk)(env, {
+        job: EVALS_JOB,
+        key: EVALS_PROTOCOL_FAILURE_KEY,
+      });
+      protocolChecked = true;
+    }
+    const { request } = response;
+    if (request === null || request === undefined) {
+      console.log("[evals] no unanswered request");
+      return;
+    }
+    const data = await serveRequest(env, io, request, options);
+    // A DRY RUN ANSWERS NOTHING — that is the whole point of it — so there is
+    // nothing behind this request to move on to: the door would hand back the
+    // same request on every turn of this loop, twenty-five times, and then
+    // print that twenty-five requests had been answered. One request, and the
+    // pass is over.
+    if (options.dryRun === true || data?.superseded !== true) return;
+  }
+  console.log(
+    `[evals] ${SERVE_SUPERSEDED_LIMIT} superseded requests answered this pass; ` +
+      `the rest wait for the next tick`,
+  );
+}
+
+/**
+ * One queued request, answered.
+ *
+ * Exported so the two paths out of it can be tested without a command line:
+ * an UNAFFECTED request is answered from the request alone, with `io` never
+ * touched — no clone, no worktree, no model — and every other request goes to
+ * the runner as before.
+ *
+ * `options.dryRun` WRITES NOTHING, on every arm and not only the scored one.
+ * A dry run exists so a change to this file can be read before it lands in the
+ * record, and the three cheap arms below — superseded, unaffected, failed —
+ * each write a row exactly as a scored run does. A dry run that posted one
+ * would put a rehearsal into the record the digest and the merge gate read,
+ * and would ANSWER the request besides, taking it out of the queue the next
+ * real tick was going to serve.
+ */
+export async function serveRequest(env, io, request, options = {}) {
+  const dryRun = options.dryRun === true;
+  // A LATER PUSH ALREADY REPLACED THIS HEAD, as the queue read it (convex/
+  // ttsEvals.ts internalOldestEvalsRequest). FIRST, before every other branch:
+  // it is the cheapest answer there is, and nothing else about a sha nobody
+  // will merge is worth learning.
+  if (
+    typeof request.supersededBy === "string" && request.supersededBy !== "" &&
+    request.supersededBy !== request.sha
+  ) {
+    const data = supersededRun({
+      repo: request.repo,
+      sha: request.sha,
+      by: request.supersededBy,
+      at: Date.now(),
+      answersRequestAt: request.requestedAt ?? null,
+    });
+    if (!dryRun) await postRun(env, data);
+    console.log(
+      `[evals] ${request.repo}@${request.sha}: superseded by ` +
+        `${supersededName(request.supersededBy)} — answered without a run`,
+    );
+    return data;
+  }
+  // The client must not decide this shortcut.
+  // The box decides from its own diff and base-tree policy.
+  // from a door that could not — and the answer is still the same row, written
+  // `changed` and `unaffected` from CI are claims. Only this box-side diff,
+  // judged with the base tree's policy, may take the no-run shortcut.
+  const boxDiff = await trustedRequestDiff(request, io, options.diffRun ?? git);
+  const unaffectedClaimed = requestClaimsUnaffected(request);
+  if (typeof boxDiff.error === "string" && boxDiff.error !== "") {
+    // A box diff is the evidence for both a baseline and the no-run shortcut.
+    // Without it, a scored row would look like a valid no-baseline run and
+    // could downgrade a regression to a new failure.
+    const data = failedRun({
+      repo: request.repo,
+      sha: request.sha,
+      error: boxDiff.error,
+      at: Date.now(),
+      answersRequestAt: request.requestedAt ?? null,
+    });
+    if (!dryRun) await postRun(env, data);
+    return data;
+  }
+  if (boxDiff.unaffected) {
+    const base = boxDiff.base
+      ? (await convexFetch(env, `/tts/evals-run?repo=${request.repo}&sha=${boxDiff.base}`))?.run ?? null
+      : null;
+    const data = unaffectedRun({
+      repo: request.repo,
+      sha: request.sha,
+      changed: boxDiff.changed,
+      base: scoredNothing(base) ? null : base,
+      at: Date.now(),
+      answersRequestAt: request.requestedAt ?? null,
+    });
+    if (unaffectedClaimed) data.unaffectedClaimed = true;
+    if (!dryRun) await postRun(env, data);
+    console.log(
+      `[evals] ${request.repo}@${request.sha}: unaffected — no watched path changed, nothing scored`,
+    );
+    return data;
+  }
+  try {
+    return await runAndPost(env, io, {
+      repo: request.repo,
+      sha: request.sha,
+      base: boxDiff.base,
+      limit: options.limit,
+      jobs: options.jobs,
+      weekly: false,
+      // A served request IS the pull-request run. The ablation arm never
+      // runs here, whatever the command line said.
+      ablation: false,
+      // The box's own diff is the coverage input.
+      // it — it has a shallow cache clone with no merge base — and a second
+      changed: boxDiff.changed,
+      prBody: request.prBody,
+      // The same identity cheap rows carry: a request replaced while this
+      // long run is in flight cannot accept this old measurement as current.
+      answersRequestAt: request.requestedAt ?? null,
+      unaffectedClaimed,
+      basePolicy: boxDiff.basePolicy ?? null,
+      force: options.force,
+      dryRun,
+    });
+  } catch (error) {
+    // A run that threw still has to be ANSWERED, or this request is taken
+    // again on every tick and nothing behind it is ever served.
+    const reason = redactSecrets(serverErrorMessage(error)).slice(0, 300);
+    console.error(`[evals] ${request.repo}@${request.sha} could not be run: ${reason}`);
+    const data = failedRun({
+      repo: request.repo,
+      sha: request.sha,
+      error: reason,
+      at: Date.now(),
+      answersRequestAt: request.requestedAt ?? null,
+    });
+    if (!dryRun) await postRun(env, data);
+    return data;
+  }
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  // ONE EVALS RUN ON THIS BOX AT A TIME, TAKEN HERE AND NOT IN THE CRON LINE.
+  //
+  // The cron was the only thing that had ever started this file, so nothing
+  // guarded the case that actually happened: a run started by hand while the
+  // five-minute `--serve` tick was mid-run. Both cleared the same worktrees
+  // and both posted rows. A lock in the crontab would still not have covered
+  // it — the hand-run does not go through the crontab — so it is taken by the
+  // program itself, where every caller passes.
+  //
+  // REFUSING IS NOT FAILING. A held lock is the normal state of a job that
+  // runs every five minutes and sometimes takes fifty minutes; the next tick
+  // takes it. The line says who holds it, and the exit is clean so the tick
+  // does not read as a broken job.
+  const lock = takeEvalsLock({ what: process.argv.slice(2).join(" ") || "evals" });
+  if (!lock.held) {
+    console.log(`[evals] another evals run is already going — ${lock.why}; this one is doing nothing`);
+    return;
+  }
+  try {
+    await runMain(options);
+  } finally {
+    lock.release();
+  }
+}
+
+async function runMain(options) {
+  // The debris of runs that were killed, cleared before this one adds its own.
+  // Worktrees name the process that made them, so this takes only what no live
+  // run owns (worker/jobs/evals-lock.mjs).
+  const pruned = pruneStaleWorktrees(WORK_DIR);
+  if (pruned.length > 0) console.log(`[evals] cleared ${pruned.length} worktree(s) left by runs that died`);
   const env = loadEnv({ require: ["CONVEX_SITE_URL", "TTS_WORKER_KEY"] });
   const io = realIo(env);
 
@@ -2873,45 +3630,7 @@ async function main() {
   }
 
   if (options.serve) {
-    // One request per pass, so a cron tick is bounded.
-    const { request } = await convexFetch(env, "/tts/evals-request");
-    if (request === null || request === undefined) {
-      console.log("[evals] no unanswered request");
-      return;
-    }
-    try {
-      await runAndPost(env, io, {
-        repo: request.repo,
-        sha: request.sha,
-        base: request.baseSha,
-        limit: options.limit,
-        jobs: options.jobs,
-        weekly: false,
-        // A served request IS the pull-request run. The ablation arm never
-        // runs here, whatever the command line said.
-        ablation: false,
-        // THE CHECK'S OWN DIFF, carried on the request. The box cannot compute
-        // it — it has a shallow cache clone with no merge base — and a second
-        // list computed here would be a second answer to the same question.
-        // An older request carries neither, and neither is inferred: the
-        // coverage verdict is then null and the merge gate denies, which is
-        // the right answer for a run nobody asked about a diff.
-        changed: request.changed,
-        prBody: request.prBody,
-        force: options.force,
-        dryRun: options.dryRun,
-      });
-    } catch (error) {
-      // A run that threw still has to be ANSWERED, or this request is taken
-      // again on every tick and nothing behind it is ever served. A DRY RUN
-      // answers nothing, on purpose: it wrote no row for the run either, so the
-      // request is simply still unanswered and the next real tick takes it.
-      const reason = serverErrorMessage(error);
-      console.error(`[evals] ${request.repo}@${request.sha} could not be run: ${reason}`);
-      if (!options.dryRun) {
-        await postRun(env, failedRun({ repo: request.repo, sha: request.sha, error: reason, at: Date.now() }));
-      }
-    }
+    await servePass(env, io, options);
     return;
   }
 
@@ -2955,16 +3674,33 @@ async function main() {
     return;
   }
 
+  const requestIdentity = await directRequestIdentity(
+    env,
+    { repo: options.repo, sha: options.sha },
+  );
+  const boxDiff = await trustedRequestDiff({ repo: options.repo, sha: options.sha }, io);
+  // A direct run has no served request to receive failedRun. It cannot score
+  // without the trusted comparison: a null base would hide a broken box as a
+  // valid no-baseline measurement.
+  if (typeof boxDiff.error === "string" && boxDiff.error !== "") {
+    throw new Error(`could not establish the trusted diff: ${boxDiff.error}`);
+  }
+
   await runAndPost(env, io, {
     repo: options.repo,
     sha: options.sha,
-    base: options.base,
+    base: boxDiff.base,
     limit: options.limit,
     jobs: options.jobs,
     weekly: false,
     ablation: options.ablation,
     force: options.force,
     dryRun: options.dryRun,
+    changed: boxDiff.changed,
+    prBody: requestIdentity?.prBody,
+    answersRequestAt: requestIdentity?.answersRequestAt ?? null,
+    unaffectedClaimed: requestIdentity?.unaffectedClaimed ?? false,
+    basePolicy: boxDiff.basePolicy ?? null,
   });
 }
 

@@ -197,6 +197,15 @@ cp "$WORKER_DIR"/runs/*.mjs /opt/tts/runs/
 # session-archive.mjs.
 cp "$WORKER_DIR"/jobs/worker-env.mjs /opt/tts/jobs/worker-env.mjs
 cp "$WORKER_DIR"/jobs/session-archive.mjs /opt/tts/jobs/session-archive.mjs
+# The complete session-host deployment lands before cron: runs/ imports its
+# modules at load, so a fresh install cannot wait for the daemon step below.
+# worker-env.mjs in this glob is a SYMLINK to ../jobs/worker-env.mjs (the one
+# env-file reader, shared with the cron jobs). Plain `cp` follows it, so the
+# install dir gets a real file at a path the daemon's "./worker-env.mjs"
+# import resolves.
+mkdir -p /opt/tts/session-host
+cp "$WORKER_DIR"/session-host/*.mjs "$WORKER_DIR"/session-host/package.json \
+  /opt/tts/session-host/
 mkdir -p /opt/tts/scripts /opt/tts/worker/jobs
 cp "$WORKER_DIR"/../scripts/session-start-hook.mjs /opt/tts/scripts/session-start-hook.mjs
 cp "$WORKER_DIR"/../scripts/run-hook.mjs /opt/tts/scripts/run-hook.mjs
@@ -238,6 +247,46 @@ cp "$WORKER_DIR"/../scripts/evals-check.mjs /opt/tts/evals-check.mjs
 # are node builtins, so one file is the whole of it.
 cp "$WORKER_DIR"/../scripts/check-writing-standard.mjs /opt/tts/check-writing-standard.mjs
 cp "$WORKER_DIR"/jobs/markdown-sections.mjs /opt/tts/worker/jobs/markdown-sections.mjs
+# THE GRAPH, in all three homes it is reached from.
+#
+# worker/jobs/graph.mjs imports NOTHING outside its own directory — only
+# ./graph-hash.mjs and ./markdown-sections.mjs — and that is exactly so it can
+# be copied to more than one place. Three callers reach it by three different
+# relative paths and every one of them has to resolve:
+#
+#   /opt/tts/graph.mjs             the flat wildcard copy, for a job beside it
+#   /opt/tts/worker/jobs/graph.mjs scripts/skills.mjs, by ../worker/jobs/
+#   /opt/tts/jobs/graph.mjs        worker/runs/registration.mjs, by ../jobs/
+#
+# The last one is the rule stated at the top of this block: EVERY ../jobs/<file>
+# a runs/ module imports needs a line here, because runs modules land in
+# /opt/tts/runs/ while jobs land flat. registration.mjs imports GRAPH_NODES_CAP,
+# so graph.mjs and the two modules it imports need that home too.
+cp "$WORKER_DIR"/jobs/graph.mjs             /opt/tts/worker/jobs/graph.mjs
+cp "$WORKER_DIR"/jobs/graph-hash.mjs        /opt/tts/worker/jobs/graph-hash.mjs
+cp "$WORKER_DIR"/jobs/graph.mjs             /opt/tts/jobs/graph.mjs
+cp "$WORKER_DIR"/jobs/graph-hash.mjs        /opt/tts/jobs/graph-hash.mjs
+cp "$WORKER_DIR"/jobs/markdown-sections.mjs /opt/tts/jobs/markdown-sections.mjs
+# NEITHER GENERATOR NEEDS A NESTED search-lib.mjs, and that is why there is no
+# cp line for one here. They used to import it for the two WikiTom directory
+# constants; search-lib.mjs imports ./session-archive.mjs, which imports
+# ../session-host/redact.mjs, so a nested copy of it needs a nested copy of
+# everything beneath it, and each of those needs its own line in this file
+# forever. Both generators spell the two constants themselves instead, naming
+# search-lib.mjs as the canonical spelling in a comment — the same call
+# worker/jobs/worker-env.mjs makes, for the same install-layout reason.
+# The disk halves, beside prelude.mjs and skills.mjs: the nightly's graph step
+# runs them against /root/wikitom to rebuild tts/vocabulary.json and
+# tts/graph.json, and each reaches ./skills.mjs by that relative path, so
+# scripts/ is the one place they can live and still load.
+#
+# THEY ALSO REACH EACH OTHER. scripts/vocabulary.mjs imports `headCommit` from
+# ./graph.mjs — one parser of .git rather than two — so the vocabulary does not
+# load unless graph.mjs is beside it, and graph.mjs in turn needs ./skills.mjs
+# here and ../worker/jobs/graph.mjs above. All three are copied, and dropping
+# any one of these lines breaks the nightly's graph step at module load.
+cp "$WORKER_DIR"/../scripts/graph.mjs      /opt/tts/scripts/graph.mjs
+cp "$WORKER_DIR"/../scripts/vocabulary.mjs /opt/tts/scripts/vocabulary.mjs
 # EVERY .diff IN evals/audit-faults/ HAS TO LAND HERE: auditFaultsRoot() looks in
 # /opt/tts/audit-faults (beside evals.mjs) before the repo-relative path, and the
 # box holds no checkout at run time — so with no copy the weekly scorecard's
@@ -516,12 +565,27 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Evals. The box POLLS: it has no inbound door, so a GitHub Action posts a
 # request to Convex and this tick picks up the oldest unanswered one and runs
 # it. One request per pass, so a tick is bounded.
-*/5 * * * * root /usr/bin/flock -n /var/lock/tts-evals.lock /usr/bin/node /opt/tts/evals.mjs --serve >> /var/log/tts/evals.log 2>&1
+#
+# NO `flock -n` WRAPPER ON THESE TWO LINES, AND IT IS THE ONE EXCEPTION IN THIS
+# FILE. evals.mjs takes /var/lock/tts-evals.lock ITSELF now (worker/jobs/
+# evals-lock.mjs), because the collision that actually happened was one the
+# crontab could never have covered: a run started BY HAND while the tick was
+# mid-run. Both computed the same worktree path, and worktreeFor clears the
+# directory on its way in, so each deleted the other's checkout and both runs
+# died saying the tree could not be read (twice, 2026-09-14).
+#
+# DO NOT PUT THE WRAPPER BACK. The program's lock is a pid file on that same
+# path — Node has no flock(2), and an exclusive create is the atomic primitive
+# it does have — so a `flock` holding the same file would leave a holder the
+# program cannot read and the program would clear it. One mechanism, one owner,
+# one path. Every other job here keeps the wrapper: they are cron-only.
+*/5 * * * * root /usr/bin/node /opt/tts/evals.mjs --serve >> /var/log/tts/evals.log 2>&1
 
 # The full golden set against both repos' main, Saturday, so it does not
 # contend with Friday's weekly agenda job. Two slots for the same NY hour, as
-# the nightly and weekly lines do.
-0 8,9 * * 6 root /usr/bin/flock -n /var/lock/tts-evals.lock /usr/bin/node /opt/tts/evals.mjs --weekly >> /var/log/tts/evals.log 2>&1
+# the nightly and weekly lines do. Same lock, taken the same way, so the
+# Saturday run and a five-minute tick cannot overlap either.
+0 8,9 * * 6 root /usr/bin/node /opt/tts/evals.mjs --weekly >> /var/log/tts/evals.log 2>&1
 
 # CODE-TODO RULING LOOP (CMT's vqc/todos.yaml -> briefs -> Tom rules -> a
 # worker mission): the BRIEFS are the planner's second pass (below, every 30
@@ -604,17 +668,9 @@ echo "== [9/10] session-host daemon =="
 # them into Convex (worker/session-host/README.md). Unlike the cron jobs it
 # carries the Jarvis Box's ONE sanctioned npm dependency (@anthropic-ai/
 # claude-agent-sdk — pinned in its package.json), so this step also runs
-# npm install in its install dir. Everything here is idempotent: cp + install
-# + unit rewrite + restart is exactly how updated daemon code rolls out after
-# a git pull.
-mkdir -p /opt/tts/session-host
-# worker-env.mjs in this glob is a SYMLINK to ../jobs/worker-env.mjs (the one
-# env-file reader, shared with the cron jobs). Plain `cp` follows it, so the
-# install dir gets a real file at a path the daemon's "./worker-env.mjs"
-# import resolves — which a spelled-out ../jobs import could not, since jobs
-# land flat in /opt/tts and this daemon lives one level down.
-cp "$WORKER_DIR"/session-host/*.mjs "$WORKER_DIR"/session-host/package.json \
-  /opt/tts/session-host/
+# npm install in its install dir. The files arrived before cron so runs/ can
+# import their shared modules on a fresh install; install + unit rewrite +
+# restart is how updated daemon code rolls out after a git pull.
 (cd /opt/tts/session-host && npm install --omit=dev)
 
 cat > /etc/systemd/system/tts-session-host.service <<'UNIT'

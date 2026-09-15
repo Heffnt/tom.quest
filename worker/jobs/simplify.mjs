@@ -64,7 +64,6 @@
 // no model, no git, no gh and no network. Never prints TTS_WORKER_KEY.
 
 import { execFileSync } from "node:child_process";
-import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -82,6 +81,7 @@ import {
   runClaude,
 } from "./tts-lib.mjs";
 import { cacheRepoDir } from "./tts-code-lib.mjs";
+import { hash8, ruleId } from "./graph-hash.mjs";
 import { WIKITOM_DIR, utcDay } from "./session-archive.mjs";
 
 // ── The numbers, and the one reason each is that number ──────────────────────
@@ -196,16 +196,29 @@ export const GREP_EXCLUDES = [
 export const GATE_CHECKS = ["tests", "audit", "evals"];
 /** The three jobs of .github/workflows/guardrails.yml. */
 export const GUARDRAILS_JOBS = ["static-boundaries", "secret-scan", "tests"];
-/** The five scripts `pnpm check:guardrails` runs inside static-boundaries.
+/** The eight scripts `pnpm check:guardrails` runs inside static-boundaries.
  *  Their pass/fail history is inside that job's log, and this job does not
  *  parse logs — so each row says `failuresKnown: false` and is forced to
- *  keep. */
+ *  keep. ADD A SCRIPT TO package.json's check:guardrails AND IT NEEDS A LINE
+ *  HERE; check 8 of scripts/check-session-mirrors.mjs is what says so. */
 export const STATIC_BOUNDARY_SCRIPTS = [
   "check-auth-boundary",
   "check-agents-md",
   "check-heavy-libs",
   "check-session-mirrors",
+  "check-setup-imports",
   "check-large-files",
+  // Phase 6 arrived with a seventh: nothing from model-of-tom may enter this
+  // public repository, and a check enforces it. It is here because the weekly
+  // pass cannot read the static-boundaries log — a check missing from this
+  // list is a check the pass believes does not exist.
+  "check-private-paths",
+  // Phase 10's eighth: the vocabulary is the graph's schema, and this checks
+  // that the generated block in convex/ttsShared.ts still matches what
+  // scripts/vocabulary.mjs renders. It joined check:guardrails with the graph
+  // and had no line here until check 8 of scripts/check-session-mirrors.mjs
+  // asked for one, which is the whole point of that check.
+  "check-vocabulary",
 ];
 
 /** The directory walk's skip list, taken from scripts/check-agents-md.mjs so
@@ -253,24 +266,23 @@ export const PROXY_CAVEAT =
 
 // ── Small pure helpers ───────────────────────────────────────────────────────
 
-/** Eight hex characters of sha256. Short enough to say aloud in Slack, long
- *  enough that two rows of a few hundred do not collide. */
-export function hash8(text) {
-  return crypto.createHash("sha256").update(String(text)).digest("hex").slice(0, 8);
-}
-
-/** One rule line's identity: the hash of its normalized text, NOT its line
- *  number. Line numbers move when a line above them is deleted, which is
- *  precisely what this job proposes; a hash names the same rule across weeks
- *  and across a re-ordering of the file. */
-export function ruleId(line) {
-  const normalized = String(line)
-    .toLowerCase()
-    .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  return hash8(normalized);
-}
+/**
+ * `hash8` — eight hex characters of SHA-256 — and `ruleId` — the hash of a
+ * line's normalized text — MOVED TO worker/jobs/graph-hash.mjs AND IMPORTED
+ * BACK, so that every caller here reads exactly as it did.
+ *
+ * WHY THEY MOVED. The graph names a rule line by exactly this hash:
+ * `rule:<hash8 of the normalized line>` for a repository rule and
+ * `line:<the same>` for a synthesis line, and `loaded` below now counts the
+ * runs whose prompt carried that node id. The graph is built on the box, on the
+ * laptop and inside the Convex runtime, and the Convex runtime has no
+ * node:crypto and cannot await a Web Crypto digest from the synchronous places
+ * that mint these ids. Two spellings of one identity would put a rule's row and
+ * its node one hash apart, so the one spelling moved to a pure module and this
+ * file imports it; graph-hash.mjs's own test asserts it equal to node:crypto's
+ * answer, and so does this file's.
+ */
+export { hash8, ruleId };
 
 /** Every line of a rules file that is a rule: not a heading, not blank. */
 export function ruleLines(text) {
@@ -427,7 +439,12 @@ export function findAgentsFiles(root, io) {
 }
 
 /**
- * The runs that loaded one AGENTS.md.
+ * The runs that loaded one AGENTS.md, BY THE WORKING-DIRECTORY PROXY.
+ *
+ * THIS IS THE FALLBACK NOW, not the answer. `blastRows` counts a rule's runs off
+ * the node ids their prompts actually carried, and falls back to this only when
+ * not one sampled run recorded a node list — the row then reads
+ * `loadedSource: "cwd-proxy"` and says so in its evidence sentence.
  *
  * A recorded cwd is a path on the machine that ran (`/root/tomquest/worker`)
  * and this checkout is somewhere else entirely, so the two cannot be compared
@@ -464,6 +481,80 @@ export function loadedForAgentsFile(relDir, cwds, { repoName }) {
     if (cwd === needle || cwd.endsWith(`/${needle}`) || cwd.includes(`/${needle}/`)) loaded += runs;
   }
   return { loaded, loadedUnknown };
+}
+
+/**
+ * THE NODE ID of a rule row, which is what a run's `context.graphNodes` names.
+ *
+ * worker/jobs/graph.mjs mints a repository rules file's lines as `rule:` nodes
+ * and a synthesis page's lines as `line:` nodes (its `addPage`, `lineKind`), and
+ * the eight characters after the colon are `ruleId(text)` in both — the same
+ * function this file's rows are keyed by, which is why it moved to
+ * graph-hash.mjs. A rules file is one named AGENTS.md, in this repository and in
+ * any other; everything else here is a synthesis page.
+ */
+export function nodeIdFor(where, id) {
+  const rules = String(where ?? "") === "AGENTS.md" || String(where ?? "").endsWith("/AGENTS.md");
+  return `${rules ? "rule" : "line"}:${id}`;
+}
+
+/**
+ * How many sampled runs were GIVEN each node, and how many recorded no node
+ * list at all.
+ *
+ * `context.graphNodes` is the exact set of node ids a run's prompt carried — the
+ * `given` edges, written by the launcher that assembled the prompt. A run that
+ * carries the list is counted for every id in it; a run with no list is counted
+ * once in `unknown` and never folded into a count, for the same reason a run
+ * with no working directory is not.
+ *
+ * KNOWN IS PER NODE KIND, AND THAT IS THE WHOLE POINT. It used to be one flag
+ * for the sample — true the moment any single run carried any list — and that
+ * was wrong in a way that quietly disabled this pass for repository rules.
+ * Only two launchers write `graphNodes` (convex/ttsContext.ts and
+ * scripts/codex-run.mjs), both over the operate page alone, so `givenNodes`
+ * emits `page:`, `heading:`, `line:` and `skill:` ids and NEVER a `rule:` one.
+ * An AGENTS.md rule is keyed `rule:` (nodeIdFor), so under one global flag
+ * every such rule read `loaded: 0` labelled `given` — an exact-looking zero
+ * that no run could ever raise — and MIN_LOADED then forced `keep` on every
+ * one of them, for good.
+ *
+ * So a kind is known only when some run actually recorded a node of THAT kind.
+ * A kind no writer emits is never known, and its rows keep the proxy and say
+ * so. The day a launcher starts recording rule nodes, that kind becomes known
+ * on its own with no edit here.
+ */
+export function givenCounts(sample) {
+  // A node id is `<kind>:<rest>`. An entry with no colon is not a node id at
+  // all, and it registers NO kind: counting it as one would make every other
+  // malformed id read as a known kind, which is the same class of mistake this
+  // function was just fixed for, one level down.
+  const kindOf = (id) => {
+    const at = String(id).indexOf(":");
+    return at === -1 ? null : String(id).slice(0, at + 1);
+  };
+  const counts = new Map();
+  const kinds = new Set();
+  let withList = 0;
+  for (const run of sample ?? []) {
+    if (!Array.isArray(run?.graphNodes)) continue;
+    withList += 1;
+    for (const id of new Set(run.graphNodes.map((one) => String(one)))) {
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+      const kind = kindOf(id);
+      if (kind !== null) kinds.add(kind);
+    }
+  }
+  return {
+    counts,
+    kinds,
+    /** Whether any sampled run recorded a node of this id's kind. */
+    knows: (id) => {
+      const kind = kindOf(id);
+      return kind !== null && kinds.has(kind);
+    },
+    unknown: (sample ?? []).length - withList,
+  };
 }
 
 // ── (d) Checks ───────────────────────────────────────────────────────────────
@@ -568,7 +659,11 @@ export function checkRows(gate, io, { dir }) {
     rows.push({
       id: hash8(`check|static-boundaries|${name}`),
       where: "scripts/, inside the static-boundaries job",
-      text: `scripts/${name}.mjs, one of the five pnpm check:guardrails runs`,
+      // THE COUNT IS READ, NEVER SPELLED. It said "five" while the list held
+      // six, so the weekly pass was handed facts that contradicted themselves
+      // — the same drift check 8 of scripts/check-session-mirrors.mjs fences
+      // the list itself against, one line further on.
+      text: `scripts/${name}.mjs, one of the ${STATIC_BOUNDARY_SCRIPTS.length} pnpm check:guardrails runs`,
       failed: 0,
       heads: 0,
       known: false,
@@ -678,9 +773,18 @@ export function evidenceFor(row) {
   if (row.class === "skill") {
     return `Offered on ${row.loaded} run(s), used on ${row.proxy.mattered} of ${row.proxy.sample}.`;
   }
+  // A RULE ROW SAYS WHERE ITS `loaded` CAME FROM, in the sentence itself.
+  // "given" is a count of the runs whose prompt carried this rule's node id;
+  // "cwd-proxy" is the working-directory suffix match, which is a lower bound.
+  // The two are different claims and a reader months from now has nothing else
+  // to tell them apart by, so the word rides in the evidence rather than only in
+  // the row. What is absent differs with the source for the same reason: a run
+  // with no node list and a run with no working directory are not the same run.
+  const source = row.loadedSource ?? "cwd-proxy";
+  const absent = source === "given" ? "recorded no node list" : "recorded no working directory";
   return row.proxy.mattered === null
-    ? `Loaded on ${row.loaded} run(s); ${row.loadedUnknown} run(s) recorded no working directory; it yields too few subject words to measure against a transcript.`
-    : `Loaded on ${row.loaded} run(s); ${row.loadedUnknown} run(s) recorded no working directory; ${row.proxy.mattered} of ${row.proxy.sample} sampled runs carry its words.`;
+    ? `Loaded on ${row.loaded} run(s) (${source}); ${row.loadedUnknown} run(s) ${absent}; it yields too few subject words to measure against a transcript.`
+    : `Loaded on ${row.loaded} run(s) (${source}); ${row.loadedUnknown} run(s) ${absent}; ${row.proxy.mattered} of ${row.proxy.sample} sampled runs carry its words.`;
 }
 
 /** Every integer a row's own numbers contain. The parser checks the model's
@@ -720,6 +824,27 @@ export function blastRows({ input, fields, ruleFiles, checks, hisWordsLines, rep
   // This is the denominator every rule row reports and the floor candidateFor
   // applies, so a week that read nothing proposes nothing.
   const readable = sample.filter((run) => (run?.tokens ?? []).length > 0).length;
+  // THE EXACT ANSWER, AND THE PROXY BEHIND IT. `given` is the number of sampled
+  // runs whose prompt carried this rule's node id, which is the question
+  // `loaded` has always been asking and never been able to answer: the
+  // working-directory match below it is a path suffix, documented as a lower
+  // bound, that cannot see a rule a run was handed from another directory.
+  //
+  // THE PROXY STAYS AS THE FALLBACK, AND EVERY ROW SAYS WHICH IT USED. A row
+  // that silently reads zero and a row that honestly says "this is the old
+  // estimate" are different facts, and only the second is readable months
+  // later, so `loadedSource` names the answer's origin on every row.
+  //
+  // THE FALLBACK IS CHOSEN PER NODE KIND, NOT ONCE FOR THE SAMPLE. The earlier
+  // rule — fall back only when not one sampled run carried a list — read as a
+  // statement about how new the feature was, and the zero it produced was
+  // described here as temporary. It is not temporary for an AGENTS.md rule: no
+  // launcher writes a `rule:` node and none is planned in this round, so that
+  // kind would have read an exact zero for ever and MIN_LOADED would have kept
+  // every repository rule unremovable. `given.knows(id)` asks whether any run
+  // recorded a node of THAT kind, which is the question the choice actually
+  // turns on.
+  const given = givenCounts(sample);
   const rows = [];
   const seen = new Set();
   let duplicateRuleLines = 0;
@@ -741,13 +866,21 @@ export function blastRows({ input, fields, ruleFiles, checks, hisWordsLines, rep
     for (const line of file.lines) {
       const nouns = nounsOf(line.text);
       const mattered = proxyMattered(nouns, sample);
+      const id = ruleId(line.text);
       push({
-        id: ruleId(line.text),
+        id,
         class: "rule",
         where: file.where,
         text: line.text,
-        loaded: file.loaded,
-        loadedUnknown: file.loadedUnknown,
+        ...(() => {
+          // One decision, three fields, so the count and the label cannot come
+          // apart: a row reporting `given` reports the given numbers, and a row
+          // reporting `cwd-proxy` reports the file's.
+          const node = nodeIdFor(file.where, id);
+          return given.knows(node)
+            ? { loaded: given.counts.get(node) ?? 0, loadedUnknown: given.unknown, loadedSource: "given" }
+            : { loaded: file.loaded, loadedUnknown: file.loadedUnknown, loadedSource: "cwd-proxy" };
+        })(),
         proxy: {
           nouns: mattered === null ? [] : nouns,
           mattered,
@@ -864,7 +997,12 @@ export function factsRowLine(row) {
   const grep = row.grep === null ? "" : ` | grep ${row.grep.count} (upper bound)`;
   const into = row.collapseInto === null ? "" : ` into ${row.collapseInto}`;
   const his = row.needsHisWords ? " | NEEDS HIS WORDS" : "";
-  return `#${row.id} ${row.class} ${row.where} — ${row.text} | loaded ${row.loaded} | ${proxy} | ${failures}${grep} | candidate ${row.candidate}${into}${his}`;
+  // The source rides beside the number for the reason blastRows states: a rule
+  // whose `loaded` is the working-directory estimate and one whose `loaded` is a
+  // count of the prompts that carried it are two different facts, and the model
+  // writes its evidence from this line.
+  const source = row.loadedSource === undefined ? "" : ` (${row.loadedSource})`;
+  return `#${row.id} ${row.class} ${row.where} — ${row.text} | loaded ${row.loaded}${source} | ${proxy} | ${failures}${grep} | candidate ${row.candidate}${into}${his}`;
 }
 
 /**

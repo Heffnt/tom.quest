@@ -49,6 +49,12 @@ const CONTEXT = v.object({
   // it. Same field as convex/schema.ts runs.context; a run carrying it is
   // refused at store time without it here.
   skillsAsked: v.optional(v.array(v.string())),
+  // The graph version a run ran under, and the exact node ids its prompt
+  // carried — the `given` edges. ABSENT IS A SUPPORTED VALUE, as it is for
+  // wikitomCommit and regToken: an unregistered run, and a run whose launcher
+  // could not build a graph, carry nothing, and nothing is inferred from that.
+  graphVersion: v.optional(v.string()),
+  graphNodes: v.optional(v.array(v.string())),
 });
 const OUTCOME = v.object({
   endedReason: v.optional(v.string()), finalTextSeq: v.optional(v.number()),
@@ -504,6 +510,7 @@ export const internalStampOverflow = internalMutation({
   },
 });
 
+const SHADOW_PAGE_ROWS = 100;
 const SHADOW_IGNORED_KINDS = new Set(["context", "child-run"]);
 const SHADOW_TEXT_KINDS = new Set(["user", "assistant-text", "thinking"]);
 
@@ -524,8 +531,14 @@ type ShadowCount = { kind: string; daemon: number; file: number };
 type ShadowState = {
   sessionId: Id<"claudeSessions">;
   runLastLineAt: number;
-  daemonCursor: string | null;
-  fileCursor: string | null;
+  // The seq of the last row read from each side — a floor, not a pagination
+  // cursor. Convex allows ONE paginated query per function call and this
+  // comparison reads two indexes, so both sides are bounded `.take()` reads
+  // over an explicit seq floor. (sessionId, seq) and (runId, seq) are each
+  // unique — the seq floor on both writers — so `gt("seq", …)` neither skips
+  // a row nor returns one twice.
+  daemonAfterSeq: number | null;
+  fileAfterSeq: number | null;
   daemonDone: boolean;
   fileDone: boolean;
   daemonPending: ShadowDigestRow[];
@@ -544,8 +557,8 @@ type ShadowState = {
 const SHADOW_STATE = v.object({
   sessionId: v.id("claudeSessions"),
   runLastLineAt: v.number(),
-  daemonCursor: v.union(v.string(), v.null()),
-  fileCursor: v.union(v.string(), v.null()),
+  daemonAfterSeq: v.union(v.number(), v.null()),
+  fileAfterSeq: v.union(v.number(), v.null()),
   daemonDone: v.boolean(),
   fileDone: v.boolean(),
   daemonPending: v.array(v.object({ seq: v.number(), kind: v.string(), digest: v.string() })),
@@ -661,8 +674,8 @@ export const internalShadowCompare = internalMutation({
       : {
           sessionId,
           runLastLineAt: run.lastLineAt,
-          daemonCursor: null,
-          fileCursor: null,
+          daemonAfterSeq: null,
+          fileAfterSeq: null,
           daemonDone: false,
           fileDone: false,
           daemonPending: [],
@@ -679,25 +692,36 @@ export const internalShadowCompare = internalMutation({
 
     // Each invocation reads at most one 100-row page from each source. The
     // unmatched boundary rows are hashes only and stay bounded by one page.
+    // Both reads are `.take()` over a seq floor, never `.paginate()`: a single
+    // Convex function may run only one paginated query, and this one reads two
+    // indexes — the second `.paginate()` threw, which is what answered every
+    // /runs/compare call with HTTP 400.
     if (state.daemonPending.length === 0 && !state.daemonDone) {
-      const page = await ctx.db
+      const rows = await ctx.db
         .query("claudeMessages")
-        .withIndex("by_session_seq", (q) => q.eq("sessionId", sessionId))
+        .withIndex("by_session_seq", (q) => {
+          const scoped = q.eq("sessionId", sessionId);
+          return state.daemonAfterSeq === null ? scoped : scoped.gt("seq", state.daemonAfterSeq);
+        })
         .order("asc")
-        .paginate({ cursor: state.daemonCursor, numItems: 100 });
-      await addShadowPage(state, "daemon", page.page);
-      state.daemonDone = page.isDone;
-      state.daemonCursor = page.isDone ? null : page.continueCursor;
+        .take(SHADOW_PAGE_ROWS);
+      await addShadowPage(state, "daemon", rows);
+      state.daemonDone = rows.length < SHADOW_PAGE_ROWS;
+      if (rows.length > 0) state.daemonAfterSeq = rows[rows.length - 1].seq;
     }
     if (state.filePending.length === 0 && !state.fileDone) {
-      const page = await ctx.db
+      const runId = session.runId;
+      const rows = await ctx.db
         .query("claudeMessages")
-        .withIndex("by_run_seq", (q) => q.eq("runId", session.runId))
+        .withIndex("by_run_seq", (q) => {
+          const scoped = q.eq("runId", runId);
+          return state.fileAfterSeq === null ? scoped : scoped.gt("seq", state.fileAfterSeq);
+        })
         .order("asc")
-        .paginate({ cursor: state.fileCursor, numItems: 100 });
-      await addShadowPage(state, "file", page.page);
-      state.fileDone = page.isDone;
-      state.fileCursor = page.isDone ? null : page.continueCursor;
+        .take(SHADOW_PAGE_ROWS);
+      await addShadowPage(state, "file", rows);
+      state.fileDone = rows.length < SHADOW_PAGE_ROWS;
+      if (rows.length > 0) state.fileAfterSeq = rows[rows.length - 1].seq;
     }
 
     while (state.daemonPending.length > 0 && state.filePending.length > 0) {

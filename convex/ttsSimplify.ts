@@ -146,7 +146,12 @@ export type SimplifyFacts = {
   /** Distinct working directories, plus ONE row with `cwd: null` counting the
    *  runs that reported none. */
   cwds: { cwd: string | null; runs: number }[];
-  sample: { runId: string; startedAt: number; depth: number; tokens: string[] }[];
+  /** One row per sampled run. `graphNodes` is the exact set of node ids that
+   *  run's prompt carried — the `given` edges off its context entry — and the
+   *  job counts a rule's `loaded` from it. UNDEFINED IS A VALUE: a run that
+   *  recorded no node list is not a run that was given no nodes, and the job
+   *  counts those separately rather than reading absence as zero. */
+  sample: { runId: string; startedAt: number; depth: number; tokens: string[]; graphNodes: string[] | undefined }[];
   /** The three checks of the mechanical merge gate, by the names the deny
    *  message and the morning line already use. */
   gate: { tests: SimplifyGateCheck; audit: SimplifyGateCheck; evals: SimplifyGateCheck };
@@ -407,6 +412,11 @@ export const internalSimplifyInput = internalQuery({
         startedAt: run.startedAt,
         depth: run.depth,
         tokens: tokenBag(rows.map(rowText)),
+        // Passed through exactly as the run wrote it, absence included. The
+        // job's rule rows count how many of these lists hold a rule's node id;
+        // a run with no list at all goes to `loadedUnknown` and is never folded
+        // into a count, for the same reason a run with no cwd is not.
+        graphNodes: run.context?.graphNodes,
       });
     }
 
