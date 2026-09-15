@@ -30,13 +30,17 @@ function fakeCli(tag) {
   fs.writeFileSync(script, [
     'import fs from "node:fs";',
     'const started = Date.now();',
-    'if (process.env.FAKE_RECORD) fs.writeFileSync(process.env.FAKE_RECORD, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), started }));',
+    // The two registration variables are recorded beside argv because they are
+    // the whole of what box-run.mjs hands a child about the record it belongs
+    // to, and the child is the only place they can be observed.
+    'const seen = () => ({ argv: process.argv.slice(2), cwd: process.cwd(), regToken: process.env.TTS_RUN_REG_TOKEN ?? null, parent: process.env.TTS_RUN_PARENT_RUN_ID ?? null });',
+    'if (process.env.FAKE_RECORD) fs.writeFileSync(process.env.FAKE_RECORD, JSON.stringify({ ...seen(), started }));',
     'let stdin = "";',
     'try { stdin = fs.readFileSync(0, "utf8"); } catch {}',
     'if (process.env.FAKE_PROMPT_AT) fs.writeFileSync(process.env.FAKE_PROMPT_AT, stdin);',
     'const sleepMs = Number(process.env.FAKE_SLEEP_MS ?? 0);',
     'if (sleepMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, sleepMs);',
-    'if (process.env.FAKE_RECORD) fs.writeFileSync(process.env.FAKE_RECORD, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), started, ended: Date.now() }));',
+    'if (process.env.FAKE_RECORD) fs.writeFileSync(process.env.FAKE_RECORD, JSON.stringify({ ...seen(), started, ended: Date.now() }));',
     'process.stderr.write("fake-cli: chatter that must not reach stdout\\n");',
     'process.stdout.write(process.env.FAKE_ANSWER ?? "fake answer\\n");',
     'process.exit(Number(process.env.FAKE_EXIT ?? 0));',
@@ -173,6 +177,28 @@ describe("box-run stdout contract", () => {
     expect(argv[argv.indexOf("--model") + 1]).toBe("gpt-5.6-sol");
     const codexRun = fs.readFileSync(path.resolve("scripts/codex-run.mjs"), "utf8");
     expect(codexRun).toContain('const DEFAULT_MODEL = "gpt-5.6-sol"');
+  });
+
+  // witness: box-run.mjs used to write its own envelope for a Codex run and
+  // delete TTS_RUN_PARENT_RUN_ID. codex-run.mjs mints its own token and never
+  // reads box-run's, so that envelope was never claimed and the Codex run
+  // landed as an unparented `job` — the tree edge lost, quietly.
+  it("hands a Codex run its parent instead of writing a second envelope for it", () => {
+    const stateDir = temp("state");
+    const record = path.join(stateDir, "record.json");
+    const parent = "claude:laptop:11111111-2222-4333-8444-555555555555";
+    const result = run(["--repo", "none", "--runner", "codex", "--parent", parent], {
+      stateDir,
+      env: { TTS_CODEX_BIN: fakeCli("codex-parent"), FAKE_RECORD: record },
+    });
+    expect(result.status).toBe(0);
+    const seen = JSON.parse(fs.readFileSync(record, "utf8"));
+    expect(seen.parent).toBe(parent);
+    // No token, because there is no envelope here for one to claim.
+    expect(seen.regToken).toBeNull();
+    const spoolDir = path.join(stateDir, "registration");
+    const spooled = fs.existsSync(spoolDir) ? fs.readdirSync(spoolDir).filter((n) => n.endsWith(".json")) : [];
+    expect(spooled).toEqual([]);
   });
 
   it("writes a registration envelope naming the parent, the root and the depth", () => {

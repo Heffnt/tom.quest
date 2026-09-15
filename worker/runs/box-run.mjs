@@ -609,7 +609,17 @@ try {
 // rootRunId and depth travel WITH the parent: a run whose parent nobody has
 // swept yet keeps the root and depth its own sidecar gave it, and a Claude root
 // file parses at depth 0 — which convex/runs.ts refuses against a parent.
-const spooled = writeRegistration({
+//
+// ONE RUN, ONE AUTHOR OF ITS ENVELOPE. scripts/codex-run.mjs registers the run
+// it starts itself — its own prompt hash, its own skills, its own graph
+// version — under a token it mints, and it never reads TTS_RUN_REG_TOKEN. So
+// for the Codex runner a second envelope written here is an orphan: codex-run's
+// is the one the sweep claims, this one is never claimed, and the spool holds
+// it until cleanup deletes it. Worse, the parent went with it — the run landed
+// as an unparented `job` and the tree edge this whole transport exists to
+// record was lost. This file therefore writes nothing for Codex and hands over
+// the one fact codex-run cannot know: the parent, below.
+const spooled = opts.runner === "codex" ? null : writeRegistration({
   spoolDir: process.env.TTS_RUN_REG_SPOOL || path.join(stateDir, "registration"),
   writer: { file: "worker/runs/box-run.mjs", job: "box-run" },
   registration: {
@@ -644,15 +654,21 @@ const childEnv = {
   ...scrubbedEnv({ keepTtsKey: true }),
   CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || "/root/.claude-accounts/active",
   WIKITOM_DIR: process.env.WIKITOM_DIR || "/root/wikitom",
-  TTS_RUN_REG_TOKEN: spooled.token,
+  ...(spooled ? { TTS_RUN_REG_TOKEN: spooled.token } : {}),
   TTS_RUN_REG_SPOOL: process.env.TTS_RUN_REG_SPOOL || path.join(stateDir, "registration"),
   RUN_HOST: "box",
   GIT_LFS_SKIP_SMUDGE: "1",
 };
-// This envelope already carries the parent. Two writers for one field is the
-// bug registration.mjs's header warns about, so the variable codex-run.mjs
-// would otherwise read is cleared rather than passed on.
-delete childEnv.TTS_RUN_PARENT_RUN_ID;
+// THE PARENT GOES TO WHICHEVER WRITER OWNS THE ENVELOPE, and never to both.
+// For Claude the envelope above already carries it, so the variable is cleared:
+// two writers for one field is the bug registration.mjs's header warns about.
+// For Codex there is no envelope from here at all, and this variable is the
+// only way the edge reaches codex-run.mjs's own — it is what turns that run
+// from an unparented `job` into a `codex-child` under the session that asked
+// for it. mergeRegistration fills the root and the depth from the parent when
+// the launcher names neither, which is this case.
+if (opts.runner === "codex" && opts.parent) childEnv.TTS_RUN_PARENT_RUN_ID = opts.parent;
+else delete childEnv.TTS_RUN_PARENT_RUN_ID;
 
 let bin;
 let args;
