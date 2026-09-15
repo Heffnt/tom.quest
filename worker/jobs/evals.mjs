@@ -591,15 +591,32 @@ export const JOBS = {
     ].join("\n"),
     parse: (answer) => ({ explanation: String(answer ?? "").trim() }),
     fields: ["explanation"],
-    // NO TOOLS, AND THAT IS WHY TWO TURNS IS ENOUGH. Every one of these items
-    // failed `error_max_turns` on the box on 2026-09-14: the prompt carries
-    // the topic, its context lines and the layers, and the model went reading
-    // the tree anyway — one turn to Read, one to Grep, and the budget was
-    // gone before a word was written. The regeneration has everything it is
-    // meant to have IN THE PROMPT; a file it goes and finds is a file the
-    // original never saw, so the tools were not a budget problem to widen but
-    // an input the item does not want. The empty allow-list is the ask.
-    opts: { maxTurns: 2, allowedTools: [] },
+    // NO TOOLS, AND A BUDGET THAT DOES NOT DEPEND ON THAT HOLDING. Every one
+    // of these items failed `error_max_turns` on the box on 2026-09-14: the
+    // prompt carries the topic and its context lines, and the model went
+    // reading the tree anyway — one turn to Read, one to Grep, and the budget
+    // was gone before a word was written. The empty allow-list was the answer
+    // to that.
+    //
+    // IT DID NOT CLOSE THE HOLE, because an allow-list is not what withholds
+    // and DENIABLE_TOOLS was only the file-and-shell half of the CLI's set.
+    // Eight of the twelve evals runs recorded between 2026-09-13 and
+    // 2026-09-15 carried a runner error; all seventeen of those errors were
+    // explanation items, fifteen at `error_max_turns` and two an unreadable
+    // judge answer, and a different handful each run — which is why it read as
+    // flake rather than as a fault. A runner error denies the merge fail-closed
+    // (convex/ttsMerge.ts), so one of twenty-seven items burning two turns held
+    // the gate shut for the whole branch. The probe in DENIABLE_TOOLS' header
+    // found the cause: this job was still being handed sixteen tools.
+    //
+    // BOTH HALVES, because either alone is a guess. The list now denies the
+    // whole built-in set, so there is nothing left to spend a turn on; and the
+    // budget goes to eight — runClaude's own non-agentic default, chosen there
+    // for exactly this reason — so a job with no tools is never one stray call
+    // from a runner error again. The turns cost tokens and nothing else: with
+    // no tools there is no tree to read and no command to run, and an answer
+    // that arrives on turn one still ends on turn one.
+    opts: { maxTurns: 8, allowedTools: [] },
   },
   // One REGISTERED RUN, replayed. The case is mined out of a runLabels row
   // rather than out of snapshot text, so what it carries is the run's own

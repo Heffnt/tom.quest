@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   runClaude,
+  claudeArgs,
   resultEnvelopeOf,
   DENIABLE_TOOLS,
   captureContext,
@@ -367,6 +368,46 @@ describe("runClaude allowedTools", () => {
   });
 });
 
+// THE COMMAND LINE ITSELF, read rather than run. Every other runClaude case in
+// this file spawns, and a spawn cannot show what it was asked for — which is
+// how a job that asked for no tools kept sixteen of them without any test
+// noticing. claudeArgs is the same call runClaude makes, so these assertions
+// are about what the CLI is actually handed.
+describe("claudeArgs", () => {
+  const valueAfter = (args, flag) => args[args.indexOf(flag) + 1];
+
+  it("names every deniable tool when the allow-list is empty", () => {
+    const args = claudeArgs({ model: "haiku", allowedTools: [] });
+    expect(args).toContain("--disallowedTools");
+    // The whole list, in its own order — not a subset that merely holds the
+    // few names some older assertion happened to check.
+    expect(valueAfter(args, "--disallowedTools").split(",")).toEqual(DENIABLE_TOOLS);
+    // The four kinds a tool-free job could still reach before this round: an
+    // agent spawner, a scheduler, a network reader, and the schema fetcher
+    // whose whole purpose is re-opening the tools the CLI deferred.
+    for (const tool of ["Task", "ScheduleWakeup", "WebFetch", "ToolSearch"]) {
+      expect(valueAfter(args, "--disallowedTools").split(",")).toContain(tool);
+    }
+    // Both flags or neither: the allow-list alone leaves the default
+    // permission mode handing over its read tools.
+    expect(valueAfter(args, "--allowedTools")).toBe("");
+  });
+
+  it("denies nothing when the caller named tools", () => {
+    const args = claudeArgs({ model: "haiku", allowedTools: ["Read", "Glob", "Grep"] });
+    expect(args).not.toContain("--disallowedTools");
+    expect(valueAfter(args, "--allowedTools")).toBe("Read,Glob,Grep");
+  });
+
+  // The budget the explanation regeneration now runs on, and the default it
+  // takes it from.
+  it("carries the turn budget it was given, and eight when it was given none", () => {
+    expect(valueAfter(claudeArgs({ maxTurns: 8 }), "--max-turns")).toBe("8");
+    expect(valueAfter(claudeArgs({}), "--max-turns")).toBe("8");
+    expect(valueAfter(claudeArgs({ agentic: true }), "--max-turns")).toBe("200");
+  });
+});
+
 // The token of the CHILD run a call spawns, handed back to the caller. It is
 // what a door stamps on the row it stores as producedByRunToken, and it is the
 // one edge convex/runLabels.ts turns into a label's runId. The job's own
@@ -490,8 +531,19 @@ describe("runClaude with no tools", () => {
   // permission mode hands the model its read tools either way — which is how
   // an explanation regeneration with a two-turn budget spent both turns
   // reading the tree. "None" has to be spelled out to be denied.
+  //
+  // AND SPELLED WHOLE. The file-and-shell names below are not the CLI's set:
+  // with only those denied, the box's installed CLI still handed the model an
+  // agent spawner, a scheduler, a cron trio and ToolSearch, which fetches the
+  // schemas of everything else. The list is asserted here by kind rather than
+  // by length, because a new built-in must be added to it and a test that
+  // counted would only say that the number changed.
   it("names the tools it is denying, because the flag denies by name", () => {
     expect(DENIABLE_TOOLS).toEqual(expect.arrayContaining(["Read", "Glob", "Grep", "Bash", "Write"]));
+    expect(DENIABLE_TOOLS).toEqual(expect.arrayContaining(["Task", "ToolSearch", "Workflow", "ScheduleWakeup"]));
     expect(DENIABLE_TOOLS.every((tool) => typeof tool === "string" && tool !== "")).toBe(true);
+    // Denying the same name twice is harmless to the CLI and a sign the list
+    // was edited without being read.
+    expect(new Set(DENIABLE_TOOLS).size).toBe(DENIABLE_TOOLS.length);
   });
 });
