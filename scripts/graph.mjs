@@ -406,6 +406,40 @@ export function serializeGraph(graph) {
   return `${JSON.stringify(body, null, 2)}\n`;
 }
 
+/**
+ * EVERY COMMIT THE RENDER READ, BLANKED FOR A COMPARISON ONLY.
+ *
+ * A commit appears in three places: `generatedFrom.wikitomCommit`,
+ * `generatedFrom.tomQuestCommit`, and the `version` field of every page and
+ * skill node, which is the commit that node's text came from.
+ *
+ * NONE OF THEM CAN EVER MATCH ON A COMMITTED FILE. Writing tts/graph.json and
+ * committing it produces a commit AFTER the one the generator read, so the file
+ * records a commit it cannot itself be in; WikiTom's HEAD moves again on the
+ * next night, and every tom.quest merge moves the other. Left in the comparison
+ * they made `--check` report G8 forever on a file nobody had touched, and the
+ * only fix it named — regenerate — moved HEAD once more. A check that cannot go
+ * green cannot tell a hand edit from an ordinary night, which is all it is for.
+ *
+ * THIS IS THE RULE `canonical` ALREADY USES, and that is the point: it strips
+ * each node's `version` before hashing, for the reason written above it, so the
+ * graph's own version does not move when only a commit did. The byte comparison
+ * now agrees with the hash about what "the same graph" means. The two were
+ * written apart and only one of them had the rule.
+ *
+ * THE GRAPH'S OWN `version` IS NOT BLANKED. It sits at indent 2 and is the
+ * content hash of everything here — the one field whose difference always means
+ * the graph differs. A node's `version` is at indent 6, inside the nodes array.
+ *
+ * Done by substitution rather than a JSON round-trip so everything else stays
+ * byte-for-byte: a hand edit that only moved whitespace is still a difference.
+ */
+function blankCommits(text) {
+  return text
+    .replace(/^( *"(?:wikitomCommit|tomQuestCommit)": )"[^"]*"/gm, '$1""')
+    .replace(/^( {4,}"version": )"[^"]*"/gm, '$1""');
+}
+
 /** A serialized graph with every record-kind node and every edge touching one
  * removed, re-serialized the same way. Used only by `--check --no-record`. */
 function staticOnly(text) {
@@ -738,8 +772,17 @@ export function generateGraph(options) {
     // LINE-ENDING BLIND, for the reason `hash16` gives: one commit is CRLF on
     // the laptop and LF on the box, and a check that failed on every laptop is
     // a check nobody obeys.
+    //
+    // AND BLIND TO THE TWO COMMIT FIELDS, for the reason blankCommits gives:
+    // a committed file records a commit it cannot be in, so comparing them made
+    // this check fail forever on a file nobody edited. WHAT IS COMPARED, then,
+    // is every node, every edge, both kind lists, the version, the repository
+    // set and the generator — everything the render decides — and not the two
+    // HEADs it happened to read.
     const endings = (text) => text.split(CRLF).join(LF);
-    const comparable = recordDir === null ? (text) => endings(staticOnly(text)) : endings;
+    const comparable = recordDir === null
+      ? (text) => blankCommits(endings(staticOnly(text)))
+      : (text) => blankCommits(endings(text));
     const left = onDisk === null ? null : comparable(onDisk);
     const right = comparable(rendered);
     // A DIFFERENT REPOSITORY SET IS A SKIP, NOT A DIFFERENCE. The file names

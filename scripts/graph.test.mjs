@@ -553,6 +553,42 @@ describe("--check", () => {
     expect(block).toContain('-  "version": "0000000000000000",');
   });
 
+  // THE CASE THAT USED TO BE PERMANENTLY RED. Writing tts/graph.json and
+  // committing it produces a commit AFTER the one the generator read, so the
+  // file records a WikiTom commit it cannot itself be in, and the next night
+  // moves HEAD again. While the two commit fields were compared, G8 fired
+  // forever on a file nobody had touched — and the fix it named, regenerate,
+  // moved HEAD once more. A check that cannot go green cannot tell a hand edit
+  // from an ordinary night, which is the whole of what it is for.
+  //
+  // The fixture's `.git/HEAD` is a literal sha, so writing a new one into it IS
+  // the commit that lands the file.
+  it("stays green when the commit that lands the file moves HEAD, and still catches a hand edit", () => {
+    const fixture = makeCheckout("check-head-moved");
+    expect(fixture.run(["--write"]).code).toBe(0);
+
+    // The commit that carries tts/graph.json, and a later tom.quest merge.
+    fixture.write(".git/HEAD", `${"c".repeat(40)}
+`);
+    fs.writeFileSync(
+      path.join(fixture.tomQuest, ".git", "HEAD"),
+      `${"d".repeat(40)}
+`,
+      "utf8",
+    );
+    const moved = fixture.run(["--check"]);
+    expect(moved.code).toBe(0);
+    expect(codesOf(moved.out)).not.toContain("G8");
+
+    // And the check still does its job: one byte by hand is still refused,
+    // with HEAD left where the commit above put it.
+    const onDisk = fs.readFileSync(fixture.graphFile, "utf8");
+    fixture.write(GRAPH_PATH, onDisk.replace('"nodeKinds"', '"nodeKindz"'));
+    const edited = fixture.run(["--check"]);
+    expect(edited.code).toBe(2);
+    expect(onlyBlock(edited, "G8")).toContain('-  "nodeKindz": [');
+  });
+
   it("exits 2 and says so when the file is absent", () => {
     const fixture = makeCheckout("check-absent");
     const result = fixture.run(["--check"]);
