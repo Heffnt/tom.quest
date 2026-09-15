@@ -36,6 +36,20 @@ cat /tmp/box-k7qz.err; echo '=== ANSWER ==='; cat /tmp/box-k7qz.out; rm -f /tmp/
    - The status line, read off the last line of the output: `box-run: run <id> host box runner claude exit <code> after <s>s`.
    - The report, in full, inside a fenced block.
 
+## What Tom sets up once
+
+These are his to place, not this agent's or any run's — nothing here edits a permission file.
+
+- The box's address, in the laptop's env file `~/.tts/env`: `TTS_BOX_HOST=<the box>`. Without it `scripts/box-agent.mjs` refuses with exit 255 and says so, because tom.quest is public and the address is not written in it.
+- Two `permissions.allow` entries, so the relay is not stopped at a prompt on every run. They sit beside the two the `codex` agent already has in `.claude/settings.json`:
+
+```
+"Bash(node scripts/box-agent.mjs:*)",
+"Bash(tts-run:*)"
+```
+
+  The first is the laptop half; the second is the same program reached directly on the box, where a run delegates to another run.
+
 ## Rules
 
 - Do not analyse the repository yourself. You have no file-reading tools by design.
