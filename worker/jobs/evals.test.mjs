@@ -84,6 +84,7 @@ import {
   verifierScorecard,
 } from "./evals.mjs";
 import { EVALS_PROTOCOL } from "./evals-row.mjs";
+import { DENIABLE_TOOLS } from "./tts-lib.mjs";
 
 const dirs = [];
 afterEach(() => {
@@ -3050,10 +3051,30 @@ describe("the judge's unreadable answers", () => {
 
 // Every explanation item failed `error_max_turns` on the box on 2026-09-14:
 // two turns, and the model spent both reading the tree. The regeneration has
-// everything it is meant to have in its prompt, so it asks for no tools.
+// everything it is meant to have in its prompt, so it asks for no tools — and
+// then kept erroring anyway, because an empty allow-list denies only the names
+// DENIABLE_TOOLS spells. Seventeen runner errors over eight of twelve recorded
+// runs, every one of them an explanation item, and every one of them holding
+// the merge gate shut fail-closed.
 describe("the explanation job's tools", () => {
-  it("regenerates with an empty allow-list and the budget it had", () => {
-    expect(JOBS.explanation.opts).toEqual({ maxTurns: 2, allowedTools: [] });
+  it("regenerates with an empty allow-list and a budget no stray call can eat", () => {
+    expect(JOBS.explanation.opts).toEqual({ maxTurns: 8, allowedTools: [] });
+  });
+
+  // The empty list is only as good as what it denies. The job asks for no
+  // tools, so nothing the CLI ships may be reachable through it — the two
+  // halves are one fact and a test that checked the list alone would pass
+  // while the job still had sixteen tools.
+  it("leaves no built-in tool reachable", () => {
+    expect(JOBS.explanation.opts.allowedTools).toEqual([]);
+    for (const tool of [
+      "Read", "Grep", "Glob", "Bash", "Write", "Edit", "Task", "WebFetch", "WebSearch",
+      "ToolSearch", "Workflow", "ScheduleWakeup", "SendMessage", "ListAgents",
+      "ReportFindings", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate",
+      "EnterWorktree", "ExitWorktree", "DesignSync", "CronCreate", "CronDelete", "CronList",
+    ]) {
+      expect(DENIABLE_TOOLS).toContain(tool);
+    }
   });
 });
 

@@ -537,12 +537,68 @@ export function resultEnvelopeOf(stdout) {
 /** Every tool an empty `allowedTools` has to deny by name (runClaude). It is
  *  not a policy — worker/session-host/banned-tools.mjs is that — but the
  *  spelling of "none", for the one caller that wants a model and no tools at
- *  all: the evals explanation regeneration, whose whole input is its prompt. */
+ *  all: the evals explanation regeneration, whose whole input is its prompt.
+ *
+ *  IT HAS TO BE THE WHOLE BUILT-IN SET, AND THE FILE-AND-SHELL HALF IS NOT IT.
+ *  Measured on the box against the installed CLI (2.1.272) by reading the
+ *  `init` envelope of `--output-format stream-json --verbose`, which lists the
+ *  tools the model is actually handed: an empty allow-list plus the eighteen
+ *  names this list used to hold still left SIXTEEN reachable — CronCreate,
+ *  CronDelete, CronList, DesignSync, EnterWorktree, ExitWorktree, ListAgents,
+ *  ReportFindings, ScheduleWakeup, SendMessage, TaskCreate, TaskGet, TaskList,
+ *  TaskUpdate, ToolSearch, Workflow. A job that asked for no tools had sixteen,
+ *  and ToolSearch is the worst of them: its whole purpose is to fetch the
+ *  schemas of tools that were deferred, which re-opens the set this flag just
+ *  closed. With the names below the same probe reports zero tools.
+ *
+ *  Names the CLI does not know are IGNORED, so the retired spellings stay:
+ *  being complete costs nothing and falling behind costs a run. */
 export const DENIABLE_TOOLS = [
-  "Task", "Bash", "BashOutput", "KillShell", "Glob", "Grep", "Read", "Edit",
+  "Task", "TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate",
+  "Bash", "BashOutput", "KillShell", "KillBash", "Glob", "Grep", "Read", "Edit",
   "MultiEdit", "Write", "NotebookRead", "NotebookEdit", "WebFetch", "WebSearch",
-  "TodoWrite", "SlashCommand", "Skill", "ExitPlanMode",
+  "TodoWrite", "SlashCommand", "Skill", "ExitPlanMode", "AskUserQuestion",
+  "ToolSearch", "Workflow", "ListAgents", "ReportFindings", "ScheduleWakeup",
+  "SendMessage", "EnterWorktree", "ExitWorktree", "DesignSync",
+  "CronCreate", "CronDelete", "CronList",
+  "ListMcpResourcesTool", "ReadMcpResourceTool",
 ];
+
+/**
+ * The command line `claude -p` is given, as data.
+ *
+ * SPLIT OUT OF runClaude SO IT CAN BE READ WITHOUT BEING RUN. What the flags
+ * come to is the whole of what a job's tool and turn settings mean, and inside
+ * runClaude the only way to see them was to spawn a child and watch what it
+ * did — which is no way to find out that a job asking for no tools was being
+ * handed sixteen. Every argument is decided here and nothing else here touches
+ * the process, the environment or the registration.
+ */
+export function claudeArgs({ agentic = false, maxTurns, model, allowedTools } = {}) {
+  const turns = maxTurns ?? (agentic ? 200 : 8);
+  const args = ["-p", "--output-format", "json", "--max-turns", String(turns)];
+  if (model) args.push("--model", model);
+  if (agentic) args.push("--permission-mode", "bypassPermissions");
+  // Agentic mode makes Claude's tools usable. A caller that also supplies an
+  // allow-list is responsible for putting it in a disposable workspace: the
+  // allow-list keeps this run read-only, while the throwaway workspace makes
+  // bypassPermissions harmless if a future CLI version interprets a tool more
+  // broadly than we expect.
+  if (allowedTools !== undefined) {
+    if (!Array.isArray(allowedTools) || allowedTools.some((tool) => typeof tool !== "string" || tool === "")) {
+      throw new Error("allowedTools must be an array of non-empty strings");
+    }
+    args.push("--allowedTools", allowedTools.join(","));
+    // AN EMPTY LIST MEANS NO TOOLS, AND THE ALLOW-LIST ALONE DOES NOT SAY SO.
+    // `--allowedTools` pre-approves; it does not withhold, and the default
+    // permission mode hands the model its read tools without asking either way
+    // (see the two modes above). The flag that withholds names its tools, so an
+    // empty allow-list has to name them — DENIABLE_TOOLS is that spelling and
+    // the only reason it exists.
+    if (allowedTools.length === 0) args.push("--disallowedTools", DENIABLE_TOOLS.join(","));
+  }
+  return args;
+}
 
 // Run headless Claude Code (`claude -p`) and return the model's ANSWER TEXT
 // (the envelope is unwrapped here; parsing the answer is the caller's job —
@@ -585,29 +641,7 @@ export function runClaude(
   prompt,
   { cwd, timeoutMs, agentic = false, maxTurns, model, allowedTools, registration, receipt } = {},
 ) {
-  const turns = maxTurns ?? (agentic ? 200 : 8);
-  const args = ["-p", "--output-format", "json", "--max-turns", String(turns)];
-  if (model) args.push("--model", model);
-  if (agentic) args.push("--permission-mode", "bypassPermissions");
-  // Agentic mode makes Claude's tools usable. A caller that also supplies an
-  // allow-list is responsible for putting it in a disposable workspace: the
-  // allow-list keeps this run read-only, while the throwaway workspace makes
-  // bypassPermissions harmless if a future CLI version interprets a tool more
-  // broadly than we expect.
-  if (allowedTools !== undefined) {
-    if (!Array.isArray(allowedTools) || allowedTools.some((tool) => typeof tool !== "string" || tool === "")) {
-      throw new Error("allowedTools must be an array of non-empty strings");
-    }
-    args.push("--allowedTools", allowedTools.join(","));
-    // AN EMPTY LIST MEANS NO TOOLS, AND THE ALLOW-LIST ALONE DOES NOT SAY SO.
-    // `--allowedTools` pre-approves; it does not withhold, and the default
-    // permission mode hands the model its read tools without asking either way
-    // (see the two modes above). The flag that withholds names its tools, so an
-    // empty allow-list has to name them — this list is that spelling and the
-    // only reason it exists. Names the CLI does not know are ignored, so it
-    // costs nothing to be complete.
-    if (allowedTools.length === 0) args.push("--disallowedTools", DENIABLE_TOOLS.join(","));
-  }
+  const args = claudeArgs({ agentic, maxTurns, model, allowedTools });
   const childEnv = { ...process.env, CLAUDE_CONFIG_DIR };
   let spooled = null;
   if (registration !== undefined) {
