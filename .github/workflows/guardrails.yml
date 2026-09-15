@@ -22,6 +22,10 @@ jobs:
       - run: pnpm check:guardrails
 
   secret-scan:
+    # Private since 2026-09-15: the default token no longer carries pull-request read, which gitleaks needs.
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
