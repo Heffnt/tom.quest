@@ -5,7 +5,8 @@ import {
   categoryContentFindings,
   OPERATE_LINE_MIN,
   operateContentFindings,
-  operateLines,
+  operateWindows,
+  OPERATE_WINDOW_STEP,
   checkPrivatePaths,
   privatePathFindings,
   wikiTomCategoryLines,
@@ -120,7 +121,14 @@ describe("private path guardrail", () => {
     "- a second such sentence, also past the forty-character floor.",
   ];
 
-  const operateFor = (bodies) => operateContentFindings(Object.keys(bodies), OPERATE, {
+  const OPERATE_AS_WINDOWS = OPERATE.flatMap((line) => {
+    const out = [];
+    for (let at = 0; at + OPERATE_LINE_MIN <= line.length; at += OPERATE_WINDOW_STEP) out.push(line.slice(at, at + OPERATE_LINE_MIN));
+    out.push(line.slice(-OPERATE_LINE_MIN));
+    return out;
+  });
+
+  const operateFor = (bodies) => operateContentFindings(Object.keys(bodies), OPERATE_AS_WINDOWS, {
     readFile: (file) => {
       const body = bodies[file.replaceAll(String.fromCharCode(92), "/").slice("C:/public/".length)];
       if (body === undefined) throw new Error("ENOENT");
@@ -140,17 +148,45 @@ describe("private path guardrail", () => {
     }).map(({ file }) => file)).toEqual(["in-a-comment.mjs", "in-a-string.mjs", "indented.md", "whole.md"]);
   });
 
-  it("reads only the operate lines past the floor, and nothing when the page is absent", () => {
+  it("cuts each long line into windows and reads nothing when the page is absent", () => {
     const page = [
       "# Agent rules",
       "### Repos",
       "- short one.",
-      "- a sentence of the operate page long enough to be nobody else" + String.fromCharCode(39) + "s.",
+      OPERATE[0],
     ].join("\n");
-    const lines = operateLines("C:/vault", { exists: () => true, readFile: () => page });
-    expect(lines).toEqual([OPERATE[0]]);
-    for (const line of lines) expect(line.length).toBeGreaterThanOrEqual(OPERATE_LINE_MIN);
-    expect(operateLines("C:/vault", { exists: () => false, readFile: () => page })).toBeNull();
+    const windows = operateWindows("C:/vault", { exists: () => true, readFile: () => page });
+    // Only the long line contributes, and every window is exactly the floor.
+    for (const w of windows) expect(w.length).toBe(OPERATE_LINE_MIN);
+    expect(windows).toContain(OPERATE[0].slice(0, OPERATE_LINE_MIN));
+    expect(windows).toContain(OPERATE[0].slice(-OPERATE_LINE_MIN));
+    // Step of eight over a line of this length, plus the tail.
+    expect(windows.length).toBeLessThanOrEqual(
+      Math.ceil((OPERATE[0].length - OPERATE_LINE_MIN) / OPERATE_WINDOW_STEP) + 2,
+    );
+    expect(operateWindows("C:/vault", { exists: () => false, readFile: () => page })).toBeNull();
+  });
+
+  // THE CASE THE WHOLE-LINE VERSION MISSED, which is why this is a window and
+  // not a line: a fixture that truncates a real rule to fit shares a long
+  // FRAGMENT and no whole line at all. On the real tree this was ten copies
+  // across six files that the first version reported as clean.
+  it("catches a long fragment of a line, and still catches the whole line", () => {
+    const page = [OPERATE[0], OPERATE[1]].join("\n");
+    const windows = operateWindows("C:/vault", { exists: () => true, readFile: () => page });
+    const fragment = OPERATE[0].slice(0, 44);
+    expect(fragment.length).toBe(44);
+    // The fragment is not a line of the page - it is 44 of its characters.
+    expect(page.split("\n")).not.toContain(fragment);
+    const hits = operateContentFindings(["truncated.mjs", "whole.mjs", "clean.mjs"], windows, {
+      readFile: (file) => {
+        if (file.endsWith("truncated.mjs")) return `const RULE = "${fragment}";`;
+        if (file.endsWith("whole.mjs")) return `// ${OPERATE[1]}`;
+        return "// a line of this repository, written here for itself alone.";
+      },
+      cwd: "C:/public",
+    });
+    expect(hits.map(({ file }) => file)).toEqual(["truncated.mjs", "whole.mjs"]);
   });
 
   it("keeps path checks active and emits a deterministic notice without a checkout", () => {

@@ -133,7 +133,7 @@ function makeCheckout(name, overrides = {}) {
     }
   }
 
-  q("AGENTS.md", overrides.rootRules ?? "# tom.quest\n\n## Rules\n\n- Commit with a full message before every stop.\n");
+  q("AGENTS.md", overrides.rootRules ?? "# tom.quest\n\n## Rules\n\n- Stamp every push with the reason for it.\n");
   q("convex/AGENTS.md", "# convex\n\n- The record is the one home for a per-run fact.\n");
 
   return {
@@ -700,8 +700,8 @@ describe("every skill's subgraph renders what buildSkills publishes", () => {
     // `pageKey` is what tells `tom.quest/AGENTS.md` from any other AGENTS.md.
     const result = makeCheckout("skill-bodies-repo").build();
     const bodies = Object.fromEntries(skillBodies(result).map((row) => [row.name, row.rendered]));
-    expect(bodies["repo-tom-quest"]).toContain("Commit with a full message before every stop.");
-    expect(bodies.write).not.toContain("Commit with a full message");
-    expect(bodies["know-garden"]).not.toContain("Commit with a full message");
+    expect(bodies["repo-tom-quest"]).toContain("Stamp every push with the reason for it.");
+    expect(bodies.write).not.toContain("Stamp every push");
+    expect(bodies["know-garden"]).not.toContain("Stamp every push");
   });
 });

@@ -82,8 +82,8 @@ function write(dir, rel, content) {
 const RULES_FIXTURE = [
   "# Agent rules",
   "",
-  "- Commit with a full message before every stop.",
-  "- The orchestrator implements nothing; subagents do the work.",
+  "- Stamp every push with the reason for it.",
+  "- The planner ships nothing; the builders do the work.",
   "- Ask in prose.",
 ].join("\n");
 
@@ -107,7 +107,7 @@ const SCHEMA_FIXTURE = [
 
 /** Twenty-four sampled runs, all with a readable transcript — above MIN_LOADED,
  *  which is the floor on the proxy's DENOMINATOR as well as on `loaded`, so
- *  these rules are measurable at all. Two carry the orchestrator rule's words;
+ *  these rules are measurable at all. Two carry the planner rule's words;
  *  none carries the commit rule's pair, so that rule scores zero against a
  *  generous proxy. */
 function sample() {
@@ -117,7 +117,7 @@ function sample() {
       runId: `run-${i}`,
       startedAt: NOW - i * 3_600_000,
       depth: 0,
-      tokens: i < 2 ? ["orchestrator", "subagents", "convex"] : ["convex", "planner"],
+      tokens: i < 2 ? ["planner", "builders", "convex"] : ["convex", "records"],
     });
   }
   return runs;
@@ -163,7 +163,7 @@ function checkouts() {
   write(repoDir, "worker/AGENTS.md", WORKER_AGENTS);
   write(repoDir, "node_modules/AGENTS.md", "- this one is skipped");
   write(wiki, OPERATE_FILE, RULES_FIXTURE);
-  write(wiki, "model-of-tom/intent.md", "- The orchestrator implements nothing; subagents do the work.");
+  write(wiki, "model-of-tom/intent.md", "- The planner ships nothing; the builders do the work.");
   return { repoDir, wiki };
 }
 
@@ -265,18 +265,18 @@ describe("the measurement on a fixture with known counts", () => {
 
     // Rules of the operate layer: loaded is runs.total, because the base layer
     // is on every run.
-    const commit = rowFor(rows, "- Commit with a full message before every stop.");
+    const commit = rowFor(rows, "- Stamp every push with the reason for it.");
     expect(commit.loaded).toBe(100);
     expect(commit.loadedUnknown).toBe(0);
     expect(commit.proxy.mattered).toBe(0);
     expect(commit.candidate).toBe("remove");
 
-    const orchestrator = rowFor(rows, "- The orchestrator implements nothing; subagents do the work.");
-    expect(orchestrator.loaded).toBe(100);
-    expect(orchestrator.proxy.mattered).toBe(2);
-    expect(orchestrator.candidate).toBe("keep");
+    const planner = rowFor(rows, "- The planner ships nothing; the builders do the work.");
+    expect(planner.loaded).toBe(100);
+    expect(planner.proxy.mattered).toBe(2);
+    expect(planner.candidate).toBe("keep");
     // Its words are a line of intent.md, so it is his to change either way.
-    expect(orchestrator.needsHisWords).toBe(true);
+    expect(planner.needsHisWords).toBe(true);
 
     // The root AGENTS.md: every cwd inside a directory named like the checkout.
     const rootRule = rowFor(rows, "- Every change lands through the merge gate.");
@@ -330,9 +330,9 @@ describe("the proxy counts assistant text, not tool results", () => {
   it("scores zero on a bag built without the tool-result words and one with them", () => {
     // The token bag skips tool-result rows, which is the input route's job, so
     // the seam is asserted here: the same nouns decide the count.
-    const nouns = nounsOf("The orchestrator implements nothing; subagents do the work.");
+    const nouns = nounsOf("The planner ships nothing; the builders do the work.");
     const withoutToolResult = [{ tokens: ["convex", "planner", "digest"] }];
-    const withToolResult = [{ tokens: ["convex", "orchestrator", "subagents"] }];
+    const withToolResult = [{ tokens: ["convex", "planner", "builders"] }];
     expect(proxyMattered(nouns, withoutToolResult)).toBe(0);
     expect(proxyMattered(nouns, withToolResult)).toBe(1);
   });
@@ -792,17 +792,17 @@ describe("schemaFields", () => {
 
 describe("ruleId", () => {
   it("is stable across a bullet marker, case and whitespace, and differs for another line", () => {
-    const base = ruleId("Commit with a full message before every stop.");
-    expect(ruleId("- Commit with a full message before every stop.")).toBe(base);
-    expect(ruleId("  *   COMMIT   with a full   message before every stop.")).toBe(base);
-    expect(ruleId("1. commit with a full message before every stop.")).toBe(base);
-    expect(ruleId("Commit with a full message before every push.")).not.toBe(base);
+    const base = ruleId("Stamp every push with the reason for it.");
+    expect(ruleId("- Stamp every push with the reason for it.")).toBe(base);
+    expect(ruleId("  *   STAMP   every push   with the reason for it.")).toBe(base);
+    expect(ruleId("1. stamp every push with the reason for it.")).toBe(base);
+    expect(ruleId("Stamp every push with the reason for them.")).not.toBe(base);
   });
 
   it("is a hash and not a line number, so a line above it can go", () => {
     const file = ruleLines(RULES_FIXTURE);
     const before = ruleId(file[1].text);
-    const after = ruleLines(RULES_FIXTURE.replace("- Commit with a full message before every stop.\n", ""));
+    const after = ruleLines(RULES_FIXTURE.replace("- Stamp every push with the reason for it.\n", ""));
     expect(ruleId(after[0].text)).toBe(before);
   });
 });
@@ -923,7 +923,7 @@ describe("blastRows", () => {
 // stopped working, every repository rule reading an exact-looking zero it could
 // never raise.
 
-const OPERATE_RULE = "- Commit with a full message before every stop.";
+const OPERATE_RULE = "- Stamp every push with the reason for it.";
 const WORKER_RULE = "- The worker jobs never import a npm dependency.";
 
 /** Twenty sampled runs carrying only the ids a launcher really records: twelve

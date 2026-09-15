@@ -172,7 +172,7 @@ describe("sha256Hex is node:crypto's answer", () => {
         .digest("hex")
         .slice(0, 8);
     for (const line of [
-      "- Commit with a full message before every stop.",
+      "- Stamp every push with the reason for it.",
       "* A star bullet.",
       "+ A plus bullet.",
       "1. A numbered bullet.",
@@ -637,7 +637,7 @@ describe("seedsFor", () => {
 // ── 19. Two repositories, two AGENTS.md ──────────────────────────────────────
 
 describe("pageKey keeps two repositories' AGENTS.md apart", () => {
-  const QUEST = "# tom.quest\n\n## Rules\n\n- Commit with a full message.\n";
+  const QUEST = "# tom.quest\n\n## Rules\n\n- Stamp every push with its reason.\n";
   const CMT = "# ComplexMultiTrigger\n\n## Rules\n\n- A live campaign ships its fix unapproved.\n";
   const graph = buildGraph({
     repoRules: [

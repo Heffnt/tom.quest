@@ -34,8 +34,8 @@
 //
 // A MECHANICAL CODEX CHILD GETS THE BASE AND NOTHING ELSE. Both skill options
 // default to empty, and with neither the prompt carries no grant block at all.
-// That is the map's own division of labour — "Mechanical work runs on Codex:
-// reading, searching, edits, tests, audits" (agent-rules.md, How you work). A
+// That is the map's own division of labour — the operate page assigns the
+// mechanical work - reading, changing and checking code - to Codex. A
 // run doing mechanical work needs the operate layer and its prompt, not the
 // write or know layers, so nothing is granted until its spawner names one. A
 // named skill is granted only after its installed SKILL.md is found; otherwise

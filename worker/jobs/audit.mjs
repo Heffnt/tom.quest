@@ -116,8 +116,9 @@ export const AUDIT_MODEL = "codex";
 
 // ── THE CODEX CAP, AND THE SAME-FAMILY FALLBACK ─────────────────────────────
 //
-// Tom's standing model rule (WikiTom model-of-tom/agent-rules.md, Codex): "a
-// box session defaults to gpt-5.6-sol, Opus at the Codex weekly cap". The
+// Tom's standing model rule (WikiTom model-of-tom/agent-rules.md, Codex) gives
+// a box run a Codex default and names Opus as what it falls back to once the
+// Codex weekly cap is reached. The
 // audit is a box job like any other, so it takes the same fallback — but the
 // audit's WHOLE POINT is a second opinion from the family that did not write
 // the code, and an Opus audit of Claude's own branch is same-family. So the
@@ -271,8 +272,8 @@ export function auditPrompt({ repo, sha, base, subject, diff, truncated, chunk =
     // to account for, which makes the thing it measures worse. The two checks
     // that are real are a model reading the actual diff, which can tell an
     // answer from a ritual, and the operate rule the agent reads before it
-    // writes ("Adding a case, flag or check: say why what it patches cannot be
-    // deleted instead", model-of-tom/agent-rules.md).
+    // writes, which requires every added case, flag or check to say why the
+    // thing it patches could not be deleted instead (model-of-tom/agent-rules.md).
     "THE REMOVAL CHECK. For every case, flag, branch or check this diff ADDS: does",
     "the change say why the thing it patches cannot be deleted instead? Name each",
     "addition that does not say.",

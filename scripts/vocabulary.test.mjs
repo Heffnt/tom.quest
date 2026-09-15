@@ -121,7 +121,7 @@ You answer to Tom.
 
 ### Search
 - \`tts search\` (two corpora): answers without a model, on either machine.
-- Pending rule suggestions: \`tts search proposals --repo <repo>\`.
+- Pending rule suggestions: run the proposals query for one repo.
 
 ### Jobs
 - Box (New York): the overnight pass at 04:00.
@@ -636,7 +636,7 @@ describe("the map candidate", () => {
       tools: ["- Box: tts-search."],
     });
     expect(rendered.text).toContain("- The morning line: one run composes it.");
-    expect(rendered.text).toContain("- Pending rule suggestions: `tts search proposals --repo <repo>`.");
+    expect(rendered.text).toContain("- Pending rule suggestions: run the proposals query for one repo.");
     expect(rendered.text).toContain("- Guess at a fact nobody wrote down.");
     expect(rendered.text).not.toContain("- WikiTom: the private notes tree.");
   });

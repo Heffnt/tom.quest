@@ -33,7 +33,7 @@ const AGENT_RULES = [
   "### Repos",
   "- tom.quest: site, Convex record, box jobs; AGENTS.md in app/, convex/.",
   "- WikiTom: the vault. model-of-tom/, sources/, tom-text/.",
-  "- ComplexMultiTrigger (CMT): his research code; AGENTS.md in cmt/engine.",
+  "- ComplexMultiTrigger (CMT): the experiment harness; rules under cmt/engine.",
   "",
   "### TTS",
   "- todos, batches, rulings.",
