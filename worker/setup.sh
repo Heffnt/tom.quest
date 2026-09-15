@@ -45,11 +45,10 @@ echo "node: $(node -v)"
 
 # pnpm is what a box run's --install and --tests flags shell out to
 # (worker/runs/box-run.mjs) to install a checked-out worktree's node_modules.
-# INSTALLED HERE RATHER THAN CHECKED FOR. A probe plus a manual step in NEXT
-# STEPS is two things to keep true where one will do, and this script already
-# installs the two CLIs the same way; `npm -g install` is idempotent, so a
-# re-run upgrades and a fresh box is complete when the script ends.
-npm install -g pnpm
+# The guard cannot be deleted: npm refuses to overwrite a pnpm another
+# installer placed, and the box has one at /usr/bin/pnpm — bare, the line
+# dies with EEXIST and `set -e` ends the script before step 3.
+command -v pnpm >/dev/null || npm install -g pnpm
 echo "pnpm: $(pnpm --version || true)"
 
 echo "== [3/10] Claude Code CLI =="
