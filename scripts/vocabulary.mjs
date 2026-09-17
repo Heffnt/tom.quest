@@ -915,10 +915,15 @@ const CHANNEL_WHAT = Object.freeze({
 // REMOVAL CHECK: cannot remove, and it is not a second copy of the register.
 // convex/ttsShared.ts declares each channel as a KIND and an ENV VAR NAME
 // (`TTS_SLACK_TODAY`), never as `#tts-today` — the `#` name lives only in the
-// Slack workspace and in Tom's map. An assertCount beside the channel rows
+// Slack workspace and in Tom's map. The assertCount beside the channel rows
 // counts these against the kinds parsed out of that block, so a kind added
 // there with no name here throws rather than rendering a channel with no name.
-// (It is an assertion, not a D-coded disagreement; the note used to say "D3".)
+//
+// THE NOTE SAID THAT BEFORE IT WAS TRUE. It read "D3 counts these": there is no
+// D3 here — the code is an assertion, not a disagreement — and what it counted
+// was CHANNEL_WHAT alone, so a kind with a purpose and no name rendered `name:
+// undefined` in the published vocabulary, which is exactly what this paragraph
+// claimed could not happen. The assertion now requires both.
 const CHANNEL_NAME = Object.freeze({
   today: "#tts-today",
   decisions: "#tts-decisions",
@@ -1639,22 +1644,22 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
   // ── Channels ──────────────────────────────────────────────────────────────
   const channelRows = parseChannelEnv(sharedText);
   assertCount(
-    "convex/ttsShared.ts CHANNEL_ENV purposes",
+    "convex/ttsShared.ts CHANNEL_ENV purposes and names",
     channelRows.length,
-    channelRows.filter((row) => CHANNEL_WHAT[row.kind] !== undefined).length,
-    `a channel kind ${GENERATOR_PATH} has no purpose line for`,
+    channelRows.filter((row) => CHANNEL_WHAT[row.kind] !== undefined && CHANNEL_NAME[row.kind] !== undefined).length,
+    `a channel kind ${GENERATOR_PATH} has no purpose line or no # name for`,
   );
   const channels = channelRows
     .map((row) => ({ name: CHANNEL_NAME[row.kind], kind: row.kind, env: row.env, what: CHANNEL_WHAT[row.kind] }))
     .sort(byFirstField("name"));
 
   // ── Skills ────────────────────────────────────────────────────────────────
-  // REMOVAL CHECK on the shape comparison: `buildSkillRows` naming the shapes
-  // and `SKILL_SHAPES` declaring them are the two sides, and they are in two
-  // repositories' worth of distance from each other — this generator here, and
-  // tom.quest scripts/skills.mjs, which is what actually publishes a skill. A
-  // shape renamed there and not here publishes a skill no router can place, and
-  // this is the one line that notices.
+  // REMOVAL CHECK on the shape comparison: the two sides are this generator's
+  // `buildSkillRows`, which names a shape per skill, and scripts/skills.mjs's
+  // SKILL_SHAPES, which declares the set and is what the publisher and the
+  // router read. Nothing joins them — this is the join. A shape renamed there
+  // and not here publishes a skill no router can place, and the vocabulary goes
+  // on naming the shape that is gone.
   const shapes = parseSkillShapes(skillsText);
   const skills = buildSkillRows(wikitom, repos.filter((repo) => repo.github !== null)).sort(byFirstField("name"));
   for (const skill of skills) {
