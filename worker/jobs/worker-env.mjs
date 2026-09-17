@@ -64,7 +64,7 @@ export function loadEnv({ path = ENV_PATH, require: required = [] } = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// The two published versions a launcher stamps on a run
+// The published version a launcher stamps on a run
 // ---------------------------------------------------------------------------
 //
 // WHY THEY LIVE HERE. This file is already copied to BOTH install depths by
@@ -96,7 +96,14 @@ function wikitomDir() {
 }
 
 /**
- * The `version` field of one published JSON file under <WikiTom>/tts/.
+ * The `version` field of <WikiTom>/tts/graph.json, or null.
+ *
+ * ONE READER, NOT A FAMILY. This was `publishedVersion(file)` with two
+ * wrappers over it, and the second — `vocabularyVersion()` — had no caller
+ * outside its own tests: the vocabulary's version reaches a row through
+ * scripts/graph.mjs, which reads the file it just built rather than asking a
+ * box module for it. A parameter with one argument is a shape that invites a
+ * third wrapper nobody needs, so the parameter goes with the caller.
  *
  * NEVER THROWS AND RETURNS null ON ANY FAILURE — a missing checkout, an
  * unreadable file, malformed JSON, or a file with no string `version`. This is
@@ -104,11 +111,11 @@ function wikitomDir() {
  * name the version must still launch, and absent is a supported value
  * everywhere it lands.
  */
-function publishedVersion(file) {
+export function graphVersion() {
   // There was a try/catch around the line below. `wikitomDir()` reads
   // process.env and joins two strings, so nothing in it can throw, and a catch
   // around code that cannot throw hides the next thing put inside it.
-  const path = `${wikitomDir()}/tts/${file}`;
+  const path = `${wikitomDir()}/tts/graph.json`;
   // NO CACHE: the file is read on every call, because one of the three callers
   // is a daemon nobody may restart (worker/session-host/session.mjs, and
   // "restart or stop tts-session-host" is on the Never list) while the nightly
@@ -125,14 +132,4 @@ function publishedVersion(file) {
     // are all "no version", which is a supported value everywhere this lands.
   }
   return null;
-}
-
-/** The published vocabulary's version, or null. */
-export function vocabularyVersion() {
-  return publishedVersion("vocabulary.json");
-}
-
-/** The published graph's version, or null. */
-export function graphVersion() {
-  return publishedVersion("graph.json");
 }

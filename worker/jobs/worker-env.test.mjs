@@ -1,17 +1,17 @@
-// worker-env.test.mjs — the two published-version readers.
+// worker-env.test.mjs — the published-version reader.
 //
-// THE WHOLE POINT OF THESE TESTS IS THAT NOTHING THROWS. `graphVersion()` and
-// `vocabularyVersion()` are stamps on a run row, not preconditions of the run:
-// a launcher on a machine with no WikiTom checkout, or one whose nightly wrote
-// a half file, must still launch and simply not name a version. Every failure
-// mode below is a real one seen on a laptop or a fresh box.
+// THE WHOLE POINT OF THESE TESTS IS THAT NOTHING THROWS. `graphVersion()` is a
+// stamp on a run row, not a precondition of the run: a launcher on a machine
+// with no WikiTom checkout, or one whose nightly wrote a half file, must still
+// launch and simply not name a version. Every failure mode below is a real one
+// seen on a laptop or a fresh box.
 
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { graphVersion, vocabularyVersion } from "./worker-env.mjs";
+import { graphVersion } from "./worker-env.mjs";
 
 const original = process.env.WIKITOM_DIR;
 const made = [];
@@ -34,54 +34,48 @@ afterEach(() => {
   else process.env.WIKITOM_DIR = original;
 });
 
-describe("published versions", () => {
-  it("reads the version out of each file", () => {
-    wikitom({
-      "graph.json": JSON.stringify({ version: "0123456789abcdef", nodes: [] }),
-      "vocabulary.json": JSON.stringify({ version: "vocab-1", terms: [] }),
-    });
+describe("the published graph version", () => {
+  it("reads the version out of the file", () => {
+    wikitom({ "graph.json": JSON.stringify({ version: "0123456789abcdef", nodes: [] }) });
     expect(graphVersion()).toBe("0123456789abcdef");
-    expect(vocabularyVersion()).toBe("vocab-1");
   });
 
   it("answers null for a missing file rather than throwing", () => {
-    wikitom({}); // a checkout with no tts/graph.json and no tts/vocabulary.json
+    wikitom({}); // a checkout with no tts/graph.json
     expect(graphVersion()).toBeNull();
-    expect(vocabularyVersion()).toBeNull();
   });
 
   it("answers null for a missing directory entirely", () => {
     const dir = wikitom({});
     process.env.WIKITOM_DIR = path.join(dir, "no-such-checkout");
     expect(graphVersion()).toBeNull();
-    expect(vocabularyVersion()).toBeNull();
   });
 
   it("answers null for an empty file", () => {
-    wikitom({ "graph.json": "", "vocabulary.json": "" });
+    wikitom({ "graph.json": "" });
     expect(graphVersion()).toBeNull();
-    expect(vocabularyVersion()).toBeNull();
   });
 
   it("answers null for malformed JSON", () => {
-    wikitom({ "graph.json": "{ not json", "vocabulary.json": "[1, 2," });
+    wikitom({ "graph.json": "{ not json" });
     expect(graphVersion()).toBeNull();
-    expect(vocabularyVersion()).toBeNull();
   });
 
   it("answers null for well-formed JSON with no usable version", () => {
-    // A truncated nightly write and a pre-version file both land here. An
-    // empty string is not a version either — it would name a graph nobody can
-    // find, which is worse than saying nothing.
-    wikitom({ "graph.json": JSON.stringify({ nodes: [] }), "vocabulary.json": JSON.stringify({ version: "" }) });
+    // A truncated nightly write and a pre-version file both land here.
+    wikitom({ "graph.json": JSON.stringify({ nodes: [] }) });
     expect(graphVersion()).toBeNull();
-    expect(vocabularyVersion()).toBeNull();
+    // An empty string is not a version either — it would name a graph nobody
+    // can find, which is worse than saying nothing.
+    wikitom({ "graph.json": JSON.stringify({ version: "" }) });
+    expect(graphVersion()).toBeNull();
   });
 
   it("answers null for a JSON document that is not an object", () => {
-    wikitom({ "graph.json": "null", "vocabulary.json": "\"vocab-1\"" });
+    wikitom({ "graph.json": "null" });
     expect(graphVersion()).toBeNull();
-    expect(vocabularyVersion()).toBeNull();
+    wikitom({ "graph.json": "\"0123456789abcdef\"" });
+    expect(graphVersion()).toBeNull();
   });
 
   // THE OPPOSITE OF WHAT THIS ONCE ASSERTED. It used to pin a per-process cache

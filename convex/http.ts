@@ -2010,6 +2010,13 @@ const ttsModelOfTom = httpAction(async (ctx, request) => {
   // names the object a run row's own `graphVersion` names. Optional, because a
   // box whose graph step failed still has a base worth posting; absent stores
   // nothing rather than an empty string.
+  //
+  // REMOVAL CHECK: sent-but-blank and absent are different facts, and treating
+  // the first as the second is what this refuses. Absence is a box whose graph
+  // step did not run — nothing to say, and nothing stored. A blank or a number
+  // is a CALLER BUG: something computed a version and got "" or 7, and storing
+  // that as "no version" hides the bug in a field the merge gate and the run
+  // row both read. The 400 is how the caller finds out.
   if (b.graphVersion !== undefined && b.graphVersion !== null
     && (typeof b.graphVersion !== "string" || b.graphVersion.trim() === "")) {
     return jsonResponse(400, { error: "graphVersion, when given, is a non-empty string" });

@@ -79,10 +79,16 @@ async function sendJson(url, init, route, {
       }
       // A chain that names nothing still has to say so: "fetch failed ()" in
       // the log would read as a truncation rather than as what it is.
+      //
+      // THE MESSAGE IS THE WHOLE INTERFACE. The give-up error also carried
+      // `transport: true` and `tries`, and nothing ever read either: every
+      // caller logs the message and gives up its pass, and both facts are
+      // already in the sentence. `cause` stays, because it is the chain
+      // `causeChain` walks and the one thing a reader can go deeper into.
       const chain = causeChain(error);
       throw Object.assign(
         new Error(`${route} could not reach the site in ${tries} tries: ${String(error?.message ?? error)} (${chain || "cause unnamed"})`),
-        { transport: true, tries, cause: error },
+        { cause: error },
       );
     }
     if (!response.ok) throw Object.assign(new Error(`${route} failed with HTTP ${response.status}`), { status: response.status });

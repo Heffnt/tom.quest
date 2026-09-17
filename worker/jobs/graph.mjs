@@ -665,6 +665,13 @@ export function buildGraph(input = {}) {
       const page = repo === null
         ? pages.find((candidate) => candidate.path === source)
         : repoFiles.find((candidate) => candidate.repo === repo && candidate.path === source);
+      // REMOVAL CHECK: the skill set and the checkout are two inputs, and this
+      // is where they are allowed to disagree. `skill.sourcePaths` is declared
+      // by scripts/skills.mjs; a repository skill's AGENTS.md is present only
+      // when that repository was cloned for this build, and the nightly builds
+      // from whichever checkouts it has. Without this, one absent page throws
+      // on `page.body` and takes the whole graph down — a graph nobody gets is
+      // worse than a skill with one source page fewer.
       if (page === undefined) continue;
       linkPageToSkill(b, pageKey(repo, source), source, page.body, skillId(skill.name));
     }
@@ -685,14 +692,20 @@ export function buildGraph(input = {}) {
   for (const change of input.changes ?? []) {
     const before = String(change?.before ?? "").trim();
     const after = String(change?.after ?? "").trim();
+    // REMOVAL CHECK: the change log is written by last night's run and read by
+    // tonight's, so a half-written entry is a thing this side has to survive.
+    // `lineId("")` is a perfectly good id for the empty string, which is why
+    // this cannot be left to the `nodes.has` guard below: a blank `after` would
+    // mint an edge FROM the empty line rather than be refused by it.
     if (before === "" || after === "") continue;
     const from = lineId(after, hash);
     const to = lineId(before, hash);
     // REMOVAL CHECK: cannot remove; last night's change log names lines by
     // their text, and a line the nightly has since rewritten again has no node
     // in tonight's graph. Writing the edge anyway would point it at an id that
-    // is not in `nodes`, which is exactly what G6 refuses and what would make
-    // `near` throw rather than answer.
+    // is not in `nodes`, which is exactly what G3 refuses and what would make
+    // `near` throw rather than answer. (G3 is the dangling-end class; this note
+    // used to say G6, which is the byte cap.)
     if (!b.nodes.has(from)) continue;
     b.edge("supersedes", from, to, "supersedes/line-line", `nightly:${change?.day ?? "unknown"}`);
   }
@@ -824,6 +837,13 @@ function addEvidence(b, file, hash) {
     const entry = EVIDENCE_ENTRY.exec(lines[index]);
     if (entry !== null) {
       const text = entry[1].trim();
+      // REMOVAL CHECK: leaving this to check-evidence.mjs would leave it
+      // unhandled HERE, and this loop is stateful. A headless entry that is not
+      // skipped leaves `current` pointing at the entry BEFORE it, so every
+      // `said:` and `read:` under the blank one attaches to the wrong entry —
+      // a wrong edge, which is worse than a missing one and which no checker
+      // downstream can see. Clearing `current` is the whole point; the note is
+      // how the malformed row still reaches a reader.
       if (text === "") {
         current = null;
         b.note(`${file.path}:${index + 1} — a \`- line:\` entry with no text`);
@@ -848,6 +868,9 @@ function addEvidence(b, file, hash) {
     const field = EVIDENCE_FIELD.exec(lines[index]);
     if (field === null || current === null) continue;
     const value = field[2].trim();
+    // And a field with no value mints `sourceId(field[1], "", hash8)` — a
+    // `source` node with a title and no text, which every reader renders as a
+    // blank citation.
     if (value === "") continue;
     const id = sourceId(field[1], value, hash8);
     b.node(node("source", id, { title: field[1], text: value, path: file.path, order: index }));
@@ -939,6 +962,13 @@ function addRecord(b, record, pages) {
   const todos = (record.todos ?? []).filter((row) => row?.status === undefined || row.status === "active");
   const batches = (record.batches ?? []).filter((row) => row?.status === undefined || row.status === "active");
   const rulings = record.rulings ?? [];
+  // REMOVAL CHECK on the cap itself, not on the message. A record half with no
+  // ceiling is a graph that grows past GRAPH_MAX_BYTES and is then truncated or
+  // refused as a whole — so the choice is not "cap or no cap", it is "a cap
+  // that names the table that grew, or a byte cap that names nothing". The
+  // record outliving its own shape is a thing that wants a pass, and a build
+  // that stops is how that gets noticed rather than a `near` that quietly
+  // stopped reaching half the work.
   for (const [table, rows] of [["todos", todos], ["batches", batches], ["rulings", rulings]]) {
     if (rows.length > RECORD_CAPS[table]) {
       throw new GraphError(
@@ -980,6 +1010,16 @@ function addRecord(b, record, pages) {
           "convex:dtsTodos.category",
         );
       } else {
+        // REMOVAL CHECK: `dtsTodos.category` is free text, and only some of what
+        // Tom writes there is an area page's filename. The exact branch above
+        // catches those; this catches a category that is one of the area's own
+        // declared TERMS ("seeds" under garden.md), which is most of them.
+        // Delete it and those todos carry no `member-of` edge at all, so `tts
+        // search near area:X` answers without the work filed under it — a
+        // silently short answer, which is the failure `near` exists to avoid.
+        // The weight says which route was taken (940 against the exact 1000),
+        // and there is no `break`: a category may be a term of several areas,
+        // which the exact branch cannot express.
         for (const entry of areaTerms) {
           if (!entry.terms.some((term) => termRegex(term).test(category))) continue;
           b.edge(
@@ -1260,6 +1300,13 @@ export function nodeBytes(row) {
 export function walk(graph, startNodes, budgetBytes, weights = null, options = {}) {
   const index = indexOf(graph);
   const exclude = options.exclude ?? new Set();
+  // REMOVAL CHECK on both defaults: they are not belt and braces over the byte
+  // budget, they are what makes the walk terminate at all. `hop >= undefined`
+  // and `visited < undefined` are both false, so a walk with either one absent
+  // stops on its first pop and answers nothing. worker/jobs/search-lib.mjs
+  // passes `maxHops` and NOT `maxVisit`, so the 4,000 here is what bounds every
+  // `tts search near` in production — and the byte budget cannot stand in for
+  // it: a graph with many small nodes exhausts neither quickly.
   const maxHops = options.maxHops ?? 3;
   const maxVisit = options.maxVisit ?? 4_000;
   const only = options.kinds === undefined ? null : new Set(options.kinds);
@@ -1282,6 +1329,12 @@ export function walk(graph, startNodes, budgetBytes, weights = null, options = {
         : a.id < c.id,
   );
 
+  // REMOVAL CHECK on the seed guard: refusing in the caller is one caller's
+  // job, and there are several. `startNodes` is a public argument taking bare
+  // strings — `seedsFor`, search-lib's resolved node, and anything a job hands
+  // it — so an id that is not in the graph reaches `index.byId.get(id).kind`
+  // two lines down and throws. Dropping a seed the graph does not hold is the
+  // right answer for a read-only walk: the other seeds still answer.
   for (const seed of startNodes ?? []) {
     const id = typeof seed === "string" ? seed : seed?.id;
     if (typeof id !== "string" || !index.byId.has(id)) continue;
@@ -1306,6 +1359,13 @@ export function walk(graph, startNodes, budgetBytes, weights = null, options = {
     const neighbours = [...(index.out.get(top.id) ?? []), ...(index.into.get(top.id) ?? [])];
     for (const edge of neighbours) {
       const next = edge.from === top.id ? edge.to : edge.from;
+      // REMOVAL CHECK: a dangling end is not hypothetical, and it is not
+      // written by accident. The `supersedes` loop in buildGraph guards its
+      // `from` and NOT its `to` on purpose — last night's change log names the
+      // line a rewrite replaced, and that line has no node in tonight's graph —
+      // so the one edge kind that can point at a missing id is minted by
+      // design. Without this, `index.byId.get(next).kind` below throws and
+      // `tts search near` dies rather than answering.
       if (!index.byId.has(next)) continue;
       const cost = top.cost + costOf(edge);
       if (best.has(next) && best.get(next) <= cost) continue;

@@ -3128,8 +3128,27 @@ export async function trustedRequestDiff(request, io, run = git) {
         "fetch", "--deepen", String(DIFF_HISTORY_DEEPEN), "origin", "main", headTree.commit,
       );
     }
-    const mergeBase = run(baseTree.dir, "merge-base", baseTree.commit, headTree.commit).trim();
-    if (mergeBase === "") throw new Error("the trusted tips have no merge base within the shallow-history bound");
+    // `git merge-base` SAYS "NO COMMON ANCESTOR" BY EXITING 1, not by printing
+    // an empty line — and `run` throws on a non-zero exit. The empty-string
+    // test that used to stand here could therefore never fire, and the row read
+    // a bare `Command failed: git … merge-base …` instead (seen for the purged
+    // shas 5c2178c, e9d750d, 04ad3c8, af3ce9d, 98882ab). The catch is what the
+    // dead branch is replaced by, and it cannot itself be deleted: without it
+    // the one failure a purged mirror actually produces is the one the row
+    // cannot name.
+    //
+    // EXIT 1 IS THE ONLY CODE THAT MEANS THIS. A missing repository, an
+    // unreadable object or a bad argument exits 128, and those are rethrown
+    // unchanged so the row goes on naming what git said.
+    let mergeBase;
+    try {
+      mergeBase = run(baseTree.dir, "merge-base", baseTree.commit, headTree.commit).trim();
+    } catch (error) {
+      if (error?.status !== 1) throw error;
+      throw new Error(
+        `no common ancestor between ${baseTree.commit} and ${headTree.commit} in the box's mirror`,
+      );
+    }
     const out = run(
       baseTree.dir,
       "diff", "--no-renames", "--name-only", "-z",

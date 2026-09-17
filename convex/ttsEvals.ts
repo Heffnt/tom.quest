@@ -866,14 +866,15 @@ export const internalRequestEvals = internalMutation({
     // `at`, so a request still waiting in the queue keeps its place in line
     // rather than going to the back of it on every re-run of the check.
     //
-    // AND THE ONE ANSWER THAT DOES NOT SURVIVE A RE-ASK. `superseded` and
-    // `error` rows are facts about a moment, not about the trees (evals-row.mjs
-    // reopensOnReask): a branch force-pushed back to an earlier sha makes that
-    // sha the head again, and leaving the superseded row standing is exactly
-    // the permanent-unmergeable bug this door was opened to fix. Those re-date
-    // even when the question is word for word the same. A scored row and an
-    // `unaffected` row both stand: what they say is decided by the identity
-    // above, so an identical question cannot have a different answer.
+    // AND THE ANSWERS THAT DO NOT SURVIVE A RE-ASK. `superseded` rows, `error`
+    // rows and rows carrying a runner-error count are facts about a moment, not
+    // about the trees (evals-row.mjs reopensOnReask): a branch force-pushed
+    // back to an earlier sha makes that sha the head again, and leaving the
+    // superseded row standing is exactly the permanent-unmergeable bug this
+    // door was opened to fix. Those re-date even when the question is word for
+    // word the same. A CLEANLY scored row and an `unaffected` row both stand:
+    // what they say is decided by the identity above, so an identical question
+    // cannot have a different answer.
     //
     // NOR DOES A REQUEST OLDER THAN THE PROTOCOL KEEP ITS DATE. Such a request
     // is never served (evals-row.mjs EVALS_PROTOCOL_SINCE) — the queue hands it

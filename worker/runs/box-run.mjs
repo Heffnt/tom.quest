@@ -172,7 +172,22 @@ function parseArgs(argv) {
   if (opts.repo !== REPO_NONE && !REPO_GITHUB[opts.repo]) {
     fail(`unknown repo "${opts.repo}" — expected one of ${Object.keys(REPO_GITHUB).join(", ")}, or "none"`);
   }
+  // REMOVAL CHECK: ignoring the `--ref` instead is the one thing this must not
+  // do. `--repo none` gives the run no checkout at all — it works in an empty
+  // directory — so a caller who named a ref and was answered silently would get
+  // a run that never saw that commit and a report that names it anyway. That is
+  // the same shape the `--root and --depth need a --parent` refusal below
+  // spells out at length: a flag a caller passed is either honoured or refused,
+  // never dropped on the floor.
   if (opts.repo === REPO_NONE && opts.ref) fail("--ref needs a --repo to resolve it in");
+  // REMOVAL CHECK on both range tests: the record cannot refuse what never
+  // reaches it. `--timeout` is read HERE and nowhere else — it arms the kill
+  // timer below, whose `opts.timeout > 0` is false for NaN, so `--timeout abc`
+  // without this line means a caller asked for a hard limit and silently got
+  // none. `--depth` does reach the record, as JSON, where a NaN serialises to
+  // null: convex/runs.ts then refuses the payload with a 400 and dead-letters
+  // it AFTER the run has spent its model calls, which is the trade the
+  // `--root and --depth` refusal below already argues one line of stderr beats.
   if (!Number.isFinite(opts.timeout) || opts.timeout < 0) fail("--timeout must be a number of milliseconds, or 0 for no limit");
   if (opts.depth !== null && (!Number.isInteger(opts.depth) || opts.depth < 0)) fail("--depth must be a whole number");
   // REMOVAL CHECK: this cannot go, because the two branches below are what it
@@ -576,6 +591,15 @@ function reap() {
   release();
 }
 
+// REMOVAL CHECK: the slot reclaim covers HALF of what a signalled run leaves,
+// and the other half has no cleanup anywhere. takeSlot filters holders by
+// `alive(holder.pid)`, so a killed run's slot is indeed reclaimed — by the NEXT
+// run, which is soon enough. Its worktree is not: nothing else on the box runs
+// `git worktree remove` or prunes <stateDir>/work/<id>, so without these
+// handlers every Ctrl-C and every `systemctl stop` leaves a full detached
+// checkout of tom.quest or ComplexMultiTrigger on disk for good, and the
+// mirror's worktree list grows an entry per kill. `--keep-worktree` is the way
+// to ask for that deliberately; reap() honours it either way.
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
     reap();

@@ -2281,6 +2281,44 @@ describe("an unaffected request", () => {
     ]);
   });
 
+  // `git merge-base` ANSWERS "NO COMMON ANCESTOR" WITH EXIT 1, and `git` throws
+  // on a non-zero exit — so the empty-string test this replaced was unreachable
+  // and the row read a bare `Command failed: git … merge-base …`. Seen for the
+  // purged shas 5c2178c, e9d750d, 04ad3c8, af3ce9d and 98882ab.
+  it("names the missing common ancestor when merge-base exits 1", async () => {
+    const base = policyTree(["model-of-tom/**"]);
+    const head = policyTree(["worker/**"]);
+    const diff = await trustedRequestDiff(request(), diffIo(base, head), (_dir, ...args) => {
+      if (args[0] === "rev-parse") return "false\n";
+      if (args[0] === "merge-base") {
+        throw Object.assign(new Error("Command failed: git -C /root/mirrors merge-base base000 2e08b28"), { status: 1 });
+      }
+      return "";
+    });
+    expect(diff).toEqual({
+      base: null,
+      changed: null,
+      unaffected: false,
+      error: "no common ancestor between base000 and 2e08b28 in the box's mirror",
+    });
+  });
+
+  // Exit 1 is the only code that means it. Anything else git says — a missing
+  // repository, an unreadable object, a bad argument, all of which exit 128 —
+  // goes on the row in git's own words rather than being relabelled.
+  it("leaves a merge-base failure that is not exit 1 saying what git said", async () => {
+    const base = policyTree(["model-of-tom/**"]);
+    const head = policyTree(["worker/**"]);
+    const diff = await trustedRequestDiff(request(), diffIo(base, head), (_dir, ...args) => {
+      if (args[0] === "rev-parse") return "false\n";
+      if (args[0] === "merge-base") {
+        throw Object.assign(new Error("fatal: not a git repository"), { status: 128 });
+      }
+      return "";
+    });
+    expect(diff).toMatchObject({ base: null, changed: null, error: "fatal: not a git repository" });
+  });
+
   it("excludes a watched path main changed after the branch base", async () => {
     const base = policyTree(["model-of-tom/**"]);
     const head = policyTree(["worker/**"]);
