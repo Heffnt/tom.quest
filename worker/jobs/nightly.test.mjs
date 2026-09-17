@@ -1921,21 +1921,49 @@ describe("writeTableFiles", () => {
 
   // The heap the job died on was the copies this no longer makes: the whole
   // table joined into one string, a Buffer of that string, and every part's
-  // compressed bytes held until the last part was planned. A file handle and
-  // one part is the whole cost now, whatever the table's size.
-  it("holds no whole copy of the table: a table far over the limit stays near one part", () => {
+  // compressed bytes held until the last part was planned. Asserted as what
+  // reaches the disk rather than as a heap reading — a heapUsed delta depends
+  // on when the scavenger ran and would flake in the gate's tests job.
+  it("holds no whole copy of the table: every write is one part, never the table", () => {
     const limit = 64 * 1024;
     const big = "x".repeat(4096);
     const lines = linesOf(Array.from({ length: 2000 }, (_, i) => ({ _id: String(i), body: big })));
-    const dir = tmp();
-    global.gc?.();
-    const before = process.memoryUsage().heapUsed;
-    const names = writeTableFiles(dir, "spill", lines, limit);
-    const grew = process.memoryUsage().heapUsed - before;
-    expect(names.length).toBeGreaterThan(50); // ~8 MB of lines over a 64 KB limit
-    // Room for one part and its buffers, nowhere near the 8 MB the whole
-    // table would cost if it were joined or its parts kept.
-    expect(grew).toBeLessThan(4 * 1024 * 1024);
+    const whole = lines.reduce((n, l) => n + Buffer.byteLength(l), 0);
+    const written = [];
+    const spy = vi.spyOn(fs, "writeFileSync").mockImplementation((_p, bytes) => {
+      written.push(bytes.length);
+    });
+    let names;
+    try {
+      names = writeTableFiles(tmp(), "spill", lines, limit);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(whole).toBeGreaterThan(100 * limit); // a table 100+ parts long
+    expect(names.length).toBeGreaterThan(50);
+    // One write per part and nothing else: the table never goes out in one
+    // piece, and no single write is even the size of one raw part.
+    expect(written).toHaveLength(names.length);
+    for (const size of written) expect(size).toBeLessThanOrEqual(limit);
+  });
+
+  // The plain path's half of the same property: the file is appended a line
+  // at a time, so `lines.join("")` and a Buffer of it are never built.
+  it("writes the plain file a line at a time, never one joined string", () => {
+    const lines = linesOf(Array.from({ length: 50 }, (_, i) => ({ _id: String(i) })));
+    const pieces = [];
+    const spy = vi.spyOn(fs, "writeSync").mockImplementation((_fd, piece) => {
+      pieces.push(piece);
+      return piece.length;
+    });
+    try {
+      expect(writeTableFiles(tmp(), "small", lines)).toEqual(["small.jsonl"]);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(pieces).toHaveLength(50);
+    expect(pieces[0]).toContain('"_id": "49"'); // newest first, one line per write
+    expect(pieces[49]).toContain('"_id": "0"');
   });
 
   it("knows which snapshot names belong to a table", () => {
