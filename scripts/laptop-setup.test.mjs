@@ -4,6 +4,8 @@ import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
+import { RUNS_SWEEP_TASK_NAME, runsSweepTaskArgs, runsSweepTaskXml } from "./laptop-setup.mjs";
+
 const SCRIPT = path.resolve("scripts/laptop-setup.mjs");
 
 function write(file, contents) {
@@ -270,6 +272,55 @@ describe("laptop setup", () => {
     expect(fs.readFileSync(path.join(home, ".claude", "CLAUDE.md"), "utf8")).toBe(
       `${claudeRulesImport(wikiTom)}\n\n`,
     );
+  });
+
+  // THE CONDITION THAT REFUSED, pinned. The Scheduled Task last exited
+  // 2147946720 (0x800710E0, "the operator or administrator has refused the
+  // request"), which is Task Scheduler saying a CONDITION would not let it
+  // start. `schtasks /Query /TN "TTS runs sweep" /XML` named it: both battery
+  // settings true, which is what `/Create /SC DAILY` writes and what no flag
+  // can turn off. A laptop is on batteries most of the time.
+  describe("the runs sweep Scheduled Task", () => {
+    const xml = () => runsSweepTaskXml({
+      sweep: "C:\\Users\\heffn\\Desktop\\tom.quest\\worker\\runs\\sweep.mjs",
+      at: new Date(2026, 8, 17, 15, 7, 0),
+    });
+
+    it("runs on battery and is not stopped when the charger is pulled", () => {
+      expect(xml()).toContain("<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>");
+      expect(xml()).toContain("<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>");
+    });
+
+    // The sweep reads Tom's own profile — ~/.tts/env, ~/.claude/projects and
+    // %LOCALAPPDATA%\tts\runs — so it is his session or nothing. The principal
+    // names no account, so registration uses whoever runs setup.
+    it("keeps the interactive token and names no account", () => {
+      expect(xml()).toContain("<LogonType>InteractiveToken</LogonType>");
+      expect(xml()).not.toContain("<UserId>");
+      expect(xml()).not.toContain("S4U");
+      expect(xml()).not.toContain("SYSTEM");
+    });
+
+    // Nothing else moves: still daily, still from the moment setup runs, still
+    // IgnoreNew, and still the same command line.
+    it("keeps the daily trigger, the instance policy and the command", () => {
+      expect(xml()).toContain("<StartBoundary>2026-09-17T15:07:00</StartBoundary>");
+      expect(xml()).toContain("<DaysInterval>1</DaysInterval>");
+      expect(xml()).toContain("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>");
+      expect(xml()).toContain(
+        '<Arguments>"C:\\Users\\heffn\\Desktop\\tom.quest\\worker\\runs\\sweep.mjs" --full</Arguments>',
+      );
+      // Not added, and deliberately: a pass missed while the laptop slept is a
+      // different condition from the one that refused.
+      expect(xml()).not.toContain("StartWhenAvailable");
+    });
+
+    it("registers the definition, and forces only over a task that is there", () => {
+      expect(runsSweepTaskArgs({ xmlFile: "C:\\Temp\\t.xml", found: false }))
+        .toEqual(["/Create", "/TN", RUNS_SWEEP_TASK_NAME, "/XML", "C:\\Temp\\t.xml"]);
+      expect(runsSweepTaskArgs({ xmlFile: "C:\\Temp\\t.xml", found: true }))
+        .toEqual(["/Create", "/TN", RUNS_SWEEP_TASK_NAME, "/XML", "C:\\Temp\\t.xml", "/F"]);
+    });
   });
 
   it("keeps the box account setup aligned with the installed hook", () => {

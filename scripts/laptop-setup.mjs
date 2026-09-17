@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { refreshSkills } from "./session-start-hook.mjs";
 
 const home = path.resolve(process.env.HOME || process.env.USERPROFILE || os.homedir());
@@ -133,6 +134,89 @@ function updateRunHookConfig(file, command) {
   writeIfChanged(file, `${JSON.stringify(settings, null, 2)}\n`);
 }
 
+export const RUNS_SWEEP_TASK_NAME = "TTS runs sweep";
+
+/** Task Scheduler's own local-time stamp: no zone, no milliseconds. */
+function taskTime(at) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
+    + `T${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`;
+}
+
+/**
+ * THE TASK AS A DEFINITION, because `schtasks /Create /SC DAILY` cannot say the
+ * one thing this task needs said.
+ *
+ * WHAT WAS WRONG. The task installed by the flag form last exited 2147946720
+ * (0x800710E0, "the operator or administrator has refused the request") — which
+ * is not an error from the sweep at all but Task Scheduler reporting that a
+ * CONDITION refused to start it. `schtasks /Query /TN "TTS runs sweep" /XML`
+ * named the condition: `DisallowStartIfOnBatteries` and `StopIfGoingOnBatteries`
+ * both true, which is what the flag form writes and has no flag to turn off. A
+ * laptop is on batteries most of the time, so the daily pass simply did not run.
+ * Both are false here. There is no `/Create` flag for either, so the definition
+ * is written out and handed to `/XML` — the one form that can say it.
+ *
+ * THE LOGON REQUIREMENT STAYS, and that is not an oversight. The sweep reads
+ * Tom's own profile — `%USERPROFILE%\\.tts\\env`, `%USERPROFILE%\\.claude\\projects`
+ * and `%LOCALAPPDATA%\\tts\\runs` (worker/runs/config.mjs) — so it is his session
+ * or nothing: SYSTEM would read another profile's empty versions, and S4U would
+ * need a privilege this machine cannot be assumed to grant. `<Principal>` names
+ * no account, so registration uses whoever runs setup, which is the same person.
+ *
+ * EVERY ELEMENT BELOW IS ONE THIS MACHINE'S OWN SCHEDULER ALREADY WROTE, read
+ * back with `schtasks /Query /TN "TTS runs sweep" /XML`. The definition is a
+ * strict subset of that export — RegistrationInfo, IdleSettings and the
+ * principal's `UserId` are dropped, all three optional, and the last on purpose:
+ * a SID is Tom's and this repository is public. Registration uses whoever runs
+ * setup, which is the same account the export named.
+ *
+ * NOTHING ELSE MOVES. The trigger is still daily from the moment setup runs, and
+ * the instance policy is still the flag form's. A task that missed its window
+ * while the laptop slept still waits for tomorrow — `StartWhenAvailable` would
+ * change that, and it is a different condition from the one that refused.
+ */
+export function runsSweepTaskXml({ sweep, at = new Date() }) {
+  return [
+    '<?xml version="1.0" encoding="UTF-16"?>',
+    '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
+    "  <Principals>",
+    '    <Principal id="Author">',
+    "      <LogonType>InteractiveToken</LogonType>",
+    "    </Principal>",
+    "  </Principals>",
+    "  <Settings>",
+    "    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>",
+    "    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>",
+    "    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>",
+    "  </Settings>",
+    "  <Triggers>",
+    "    <CalendarTrigger>",
+    `      <StartBoundary>${taskTime(at)}</StartBoundary>`,
+    "      <ScheduleByDay>",
+    "        <DaysInterval>1</DaysInterval>",
+    "      </ScheduleByDay>",
+    "    </CalendarTrigger>",
+    "  </Triggers>",
+    '  <Actions Context="Author">',
+    "    <Exec>",
+    "      <Command>node</Command>",
+    `      <Arguments>"${sweep}" --full</Arguments>`,
+    "    </Exec>",
+    "  </Actions>",
+    "</Task>",
+    "",
+  ].join("\r\n");
+}
+
+/** The `schtasks` arguments that register that definition. `/F` only when the
+ *  task is already there, exactly as the flag form did. */
+export function runsSweepTaskArgs({ xmlFile, found, taskName = RUNS_SWEEP_TASK_NAME }) {
+  const args = ["/Create", "/TN", taskName, "/XML", xmlFile];
+  if (found) args.push("/F");
+  return args;
+}
+
 function installRunsSweepTask() {
   if (process.platform !== "win32") {
     console.log("skipped TTS runs sweep Scheduled Task (Windows only)");
@@ -142,14 +226,21 @@ function installRunsSweepTask() {
     console.log("skipped TTS runs sweep Scheduled Task (TTS_SKIP_RUNS_TASK=1)");
     return;
   }
-  const taskName = "TTS runs sweep";
+  const taskName = RUNS_SWEEP_TASK_NAME;
   const sweep = path.join(tomQuest, "worker", "runs", "sweep.mjs");
   const schtasks = process.env.SCHTASKS_BIN || "schtasks.exe";
   const found = spawnSync(schtasks, ["/Query", "/TN", taskName], { stdio: "ignore" }).status === 0;
-  const args = ["/Create", "/SC", "DAILY", "/TN", taskName, "/TR", `node "${sweep}" --full`];
-  if (found) args.push("/F");
-  const created = spawnSync(schtasks, args, { encoding: "utf8" });
-  if (created.status !== 0) throw new Error(`could not install ${taskName} Scheduled Task`);
+  // UTF-16 WITH A BOM, which is what `/XML` reads and what the declaration
+  // above claims. A UTF-8 file is accepted by some builds and refused by
+  // others, and a refusal here is a task that silently stays as it was.
+  const xmlFile = path.join(os.tmpdir(), `tts-runs-sweep-${process.pid}.xml`);
+  fs.writeFileSync(xmlFile, `\uFEFF${runsSweepTaskXml({ sweep })}`, "utf16le");
+  try {
+    const created = spawnSync(schtasks, runsSweepTaskArgs({ xmlFile, found, taskName }), { encoding: "utf8" });
+    if (created.status !== 0) throw new Error(`could not install ${taskName} Scheduled Task`);
+  } finally {
+    fs.rmSync(xmlFile, { force: true });
+  }
   console.log(`${found ? "updated" : "created"} ${taskName} Scheduled Task`);
 }
 
@@ -196,14 +287,21 @@ function reportMissingLaptopEnv() {
   }
 }
 
-const claudeDir = path.join(home, ".claude");
-updateClaudeMd(path.join(claudeDir, "CLAUDE.md"));
-updateHookConfig(path.join(claudeDir, "settings.json"), hookCommand);
-updateInstructionsLoadedConfig(path.join(claudeDir, "settings.json"), instructionsLoadedCommand);
-removeHookConfig(path.join(home, ".codex", "hooks.json"), hookCommand);
-updateRunHookConfig(path.join(claudeDir, "settings.json"), runHookCommand);
-updateRunHookConfig(path.join(home, ".codex", "hooks.json"), runHookCommand);
-installSkills();
-installRunsSweepTask();
-reportMissingLaptopEnv();
-console.log("bare codex sessions carry no context; use the wrapper or /codex");
+// SETUP RUNS WHEN THIS FILE IS THE PROGRAM, not when it is imported. The two
+// builders above are pure and the test reads them directly; without this guard,
+// importing them would rewrite the importing machine's CLAUDE.md and hooks.
+// Same device as scripts/session-start-hook.mjs and scripts/publish-skills.mjs.
+const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (invokedDirectly) {
+  const claudeDir = path.join(home, ".claude");
+  updateClaudeMd(path.join(claudeDir, "CLAUDE.md"));
+  updateHookConfig(path.join(claudeDir, "settings.json"), hookCommand);
+  updateInstructionsLoadedConfig(path.join(claudeDir, "settings.json"), instructionsLoadedCommand);
+  removeHookConfig(path.join(home, ".codex", "hooks.json"), hookCommand);
+  updateRunHookConfig(path.join(claudeDir, "settings.json"), runHookCommand);
+  updateRunHookConfig(path.join(home, ".codex", "hooks.json"), runHookCommand);
+  installSkills();
+  installRunsSweepTask();
+  reportMissingLaptopEnv();
+  console.log("bare codex sessions carry no context; use the wrapper or /codex");
+}
