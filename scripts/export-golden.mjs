@@ -109,7 +109,7 @@ export function isTableFile(table, name) {
 
 /**
  * Every row of one table at one snapshot commit, keyed by _id. Handles both
- * forms planTableFiles writes: the plain .jsonl and the gzipped .partNN parts.
+ * forms writeTableFiles writes: the plain .jsonl and the gzipped .partNN parts.
  */
 export function snapshotRows(dir, sha, table) {
   const names = git(dir, "ls-tree", "--name-only", sha, "--", `${SNAPSHOT_DIR}/`)

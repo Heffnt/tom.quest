@@ -16,7 +16,8 @@
 //      window nothing can reopen. It writes no WikiTom file and takes no lock,
 //      and it NEVER pushes main from this box — see goldenExportStep for the
 //      landing seam.
-//   3. snapshot — copies every Convex table (the six auth tables excepted)
+//   3. snapshot — copies every Convex table (the six auth tables and the
+//      four run-record tables excepted — see RECORD_TABLES)
 //      into the WikiTom checkout at tts/snapshot/, one JSON-lines file per
 //      table, deterministic, written only where the bytes changed, every
 //      string value through the credential filter first (redactRow). A
@@ -272,6 +273,23 @@ export const SNAPSHOT_DIR = "tts/snapshot";
 export const SNAPSHOT_STAGING_DIR = "/var/cache/tts/snapshot-staging";
 export const EXPORT_PAGE = 200;
 
+// THE RUN RECORD IS NOT COPIED HERE. These four tables are the transcript
+// record, and the sweep's own durable order — local bytes → verified store
+// object → Convex — already gives every byte in them a copy this step did not
+// write: the object store holds the file versions, and WikiTom's runs/
+// manifest (step 6, below) holds the index into it. Copying them into git made
+// one more copy of the same bytes, and the only one with no retention window:
+// it reached 2 GB of heap at claudeMessages on 2026-09-16 and twice on
+// 2026-09-17 and killed the job there, so the graph, learning, the push and
+// the layers stopped running at all. What is dropped here is reachable; what
+// was lost each of those nights was everything after it.
+export const RECORD_TABLES = new Set([
+  "runs",
+  "runFileVersions",
+  "claudeMessages",
+  "claudeMessageOverflow",
+]);
+
 /** The job's failure row (convex/ttsNightly.ts NIGHTLY_FAILURE by name). */
 export const NIGHTLY_FAILURE = "nightly-failure";
 
@@ -433,36 +451,53 @@ export function redactRow(value) {
 }
 
 /**
- * The file (or gzipped parts) one table becomes. Rows arrive oldest first
- * from the export and are written newest first (phase 1's order). A table
- * whose lines exceed SPLIT_BYTES becomes `<table>.partNN.jsonl.gz`, each
- * part's raw slice under the limit and gzipped on its own so any part reads
- * alone; a smaller table is one plain `<table>.jsonl`.
+ * The file (or gzipped parts) one table becomes, written into `dir` and named
+ * back. Lines arrive oldest first from the export and are written newest
+ * first (phase 1's order). A table whose lines exceed SPLIT_BYTES becomes
+ * `<table>.partNN.jsonl.gz`, each part's raw slice under the limit and
+ * gzipped on its own so any part reads alone; a smaller table is one plain
+ * `<table>.jsonl`.
+ *
+ * NOTHING WHOLE IS HELD BESIDE THE LINES: the plain file is appended line by
+ * line, and a part is gzipped and on disk before the next one is started. The
+ * old shape built `lines.join("")` and a Buffer of it, and kept every part's
+ * compressed bytes until the last part was planned — three more copies of the
+ * table at once, on top of the parsed rows it was still holding. The bytes
+ * written are the same ones.
  */
-export function planTableFiles(table, rows, limit = SPLIT_BYTES) {
-  const lines = rows.map((row) => `${serializeRow(row)}\n`).reverse();
-  const total = lines.reduce((n, l) => n + Buffer.byteLength(l), 0);
+export function writeTableFiles(dir, table, lines, limit = SPLIT_BYTES) {
+  let total = 0;
+  for (const line of lines) total += Buffer.byteLength(line);
   if (total <= limit) {
-    return [{ name: `${table}.jsonl`, bytes: Buffer.from(lines.join("")) }];
+    const name = `${table}.jsonl`;
+    const handle = fs.openSync(path.join(dir, name), "w");
+    try {
+      for (let i = lines.length - 1; i >= 0; i -= 1) fs.writeSync(handle, lines[i]);
+    } finally {
+      fs.closeSync(handle);
+    }
+    return [name];
   }
-  const files = [];
+  const names = [];
   let chunk = [];
   let chunkBytes = 0;
   const flush = () => {
     if (chunk.length === 0) return;
-    const name = `${table}.part${String(files.length).padStart(2, "0")}.jsonl.gz`;
-    files.push({ name, bytes: gzip(Buffer.from(chunk.join(""))) });
+    const name = `${table}.part${String(names.length).padStart(2, "0")}.jsonl.gz`;
+    fs.writeFileSync(path.join(dir, name), gzip(Buffer.from(chunk.join(""))));
+    names.push(name);
     chunk = [];
     chunkBytes = 0;
   };
-  for (const line of lines) {
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i];
     const size = Buffer.byteLength(line);
     if (chunkBytes + size > limit) flush();
     chunk.push(line);
     chunkBytes += size;
   }
   flush();
-  return files;
+  return names;
 }
 
 /** Whether a snapshot file name belongs to `table` (its whole file or a part). */
@@ -489,14 +524,15 @@ async function recordFailure(run, step, err, { fetch = convexFetch } = {}) {
 
 // ── 1. snapshot ──────────────────────────────────────────────────────────────
 /**
- * Every row of one table, paged out of GET /tts/export against one boundary
- * instant, EACH ONE THROUGH THE CREDENTIAL FILTER (redactRow, every string
- * value at every depth). This is the only way a row reaches the snapshot, so
- * "the vault holds no key" is a property of the read itself rather than a
- * line somebody has to remember to keep next to the write.
+ * Every row of one table as its finished snapshot line, oldest first, paged
+ * out of GET /tts/export against one boundary instant, EACH ONE THROUGH THE
+ * CREDENTIAL FILTER (redactRow, every string value at every depth). This is
+ * the only way a row reaches the snapshot, so "the vault holds no key" is a
+ * property of the read itself rather than a line somebody has to remember to
+ * keep next to the write.
  */
-export async function exportTableRows({ env, table, boundary, fetch = convexFetch }) {
-  const rows = [];
+export async function exportTableLines({ env, table, boundary, fetch = convexFetch }) {
+  const lines = [];
   let cursor = null;
   for (;;) {
     const params = new URLSearchParams({
@@ -506,18 +542,21 @@ export async function exportTableRows({ env, table, boundary, fetch = convexFetc
     });
     if (cursor !== null) params.set("cursor", cursor);
     const page = await fetch(env, `/tts/export?${params}`);
-    for (const row of page.rows) rows.push(redactRow(row));
+    // Serialized as it arrives: a page's parsed rows are garbage the moment
+    // their line exists, so the table's cost here is its text and not the
+    // object graph behind it — which is what the whole-table array cost.
+    for (const row of page.rows) lines.push(`${serializeRow(redactRow(row))}\n`);
     if (page.isDone) break;
     // EXPORT_PAGE is a ceiling, not a promise: the server ends a page at its
     // byte budget too (a table of 256KB rows would otherwise ask for more
     // than one query may read), so a page can be one row. The cursor must
     // move every time — a server that stopped advancing it would spin here.
     if (page.continueCursor === cursor) {
-      throw new Error(`/tts/export did not advance its cursor for ${table} — stopped at ${rows.length} rows`);
+      throw new Error(`/tts/export did not advance its cursor for ${table} — stopped at ${lines.length} rows`);
     }
     cursor = page.continueCursor;
   }
-  return rows;
+  return lines;
 }
 
 async function snapshotStep(run) {
@@ -529,30 +568,36 @@ async function snapshotStep(run) {
   }
   fs.rmSync(SNAPSHOT_STAGING_DIR, { recursive: true, force: true });
   fs.mkdirSync(SNAPSHOT_STAGING_DIR, { recursive: true });
+  const copied = tables.filter((table) => !RECORD_TABLES.has(table));
   const counts = {};
   // Every table is fetched and assembled in the staging dir first; only a
   // complete set replaces the checkout's, so a failure part-way leaves last
   // night's copy whole rather than a mix of two nights.
-  for (const table of tables) {
-    const rows = await exportTableRows({ env, table, boundary });
-    counts[table] = rows.length;
-    for (const f of planTableFiles(table, rows)) {
-      fs.writeFileSync(path.join(SNAPSHOT_STAGING_DIR, f.name), f.bytes);
-    }
+  for (const table of copied) {
+    const lines = await exportTableLines({ env, table, boundary });
+    counts[table] = lines.length;
+    writeTableFiles(SNAPSHOT_STAGING_DIR, table, lines);
   }
+  // syncSnapshot is handed EVERY table rather than the copied ones: a record
+  // table's files from an earlier night then match a table it knows and no
+  // staged file, which is its rule for removing one. So the first run of this
+  // shape takes them out of the checkout instead of leaving them there for
+  // good.
   const changed = syncSnapshot(path.join(run.dir, SNAPSHOT_DIR), SNAPSHOT_STAGING_DIR, tables);
   fs.rmSync(SNAPSHOT_STAGING_DIR, { recursive: true, force: true });
   const rowTotal = Object.values(counts).reduce((a, b) => a + b, 0);
+  const skipped = tables.length - copied.length;
   console.log(
-    `[nightly] snapshot: ${tables.length} tables, ${rowTotal} rows, ${changed.length} file(s) changed`,
+    `[nightly] snapshot: ${copied.length} tables, ${rowTotal} rows, ${changed.length} file(s) changed`
+      + `, ${skipped} record table(s) not copied`,
   );
   if (changed.length > 0) {
     run.commits.push({
       paths: [SNAPSHOT_DIR],
-      message: `snapshot: ${run.day} — ${tables.length} tables, ${rowTotal} rows, ${changed.length} file${changed.length === 1 ? "" : "s"} changed`,
+      message: `snapshot: ${run.day} — ${copied.length} tables, ${rowTotal} rows, ${changed.length} file${changed.length === 1 ? "" : "s"} changed`,
     });
   }
-  return { tables: tables.length, rows: rowTotal, changed, counts };
+  return { tables: copied.length, rows: rowTotal, changed, counts, skipped };
 }
 
 /**
