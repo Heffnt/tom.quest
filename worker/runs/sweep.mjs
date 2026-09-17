@@ -195,7 +195,11 @@ function queueItem(stateDir, item, fs) {
 // letter can say why it is there — "HTTP 400" was this sweep's own invention,
 // written for an answer that was a 200, and it named nothing — and the cursor
 // so a sweep whose state was lost can find its way back instead of stranding
-// that run for good.
+// that run for good. The cursor's two fields are checked here rather than
+// forwarded unconditionally, because every other refusal reason carries no
+// cursor: without the check each of those errors would hold a cursor-shaped
+// object naming nothing, and the heal below would rest on undefined instead of
+// on a field being there.
 function refusal(response, what) {
   return Object.assign(new Error(`${what} refused: ${response.reason ?? "unknown"}`), {
     status: 400,
@@ -219,7 +223,7 @@ function errorLabel(error) {
 // change, the refusal stands, and the page is dead-lettered as before.
 function healFromHeldCursor(error, { stateDir, runId, run, sourceBytes, fs, now }) {
   const cursor = error?.heldCursor;
-  if (error?.refusal !== "file rewritten" || !cursor || !sourceBytes) return false;
+  if (error?.refusal !== "file rewritten" || !cursor) return false;
   if (prefixSha256(sourceBytes, cursor.committedLine) !== cursor.committedPrefixSha256) return false;
   writeState(stateDir, runId, {
     runId,
