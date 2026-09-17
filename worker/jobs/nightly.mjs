@@ -586,6 +586,10 @@ async function snapshotStep(run) {
   const changed = syncSnapshot(path.join(run.dir, SNAPSHOT_DIR), SNAPSHOT_STAGING_DIR, tables);
   fs.rmSync(SNAPSHOT_STAGING_DIR, { recursive: true, force: true });
   const rowTotal = Object.values(counts).reduce((a, b) => a + b, 0);
+  // Counted off the export rather than taken from RECORD_TABLES.size, and in
+  // the log rather than on the return: it is the night's own evidence that the
+  // exclusion ran, and it would read 3 rather than 4 if a record table left
+  // the schema. Nothing reads it back, so nothing carries it.
   const skipped = tables.length - copied.length;
   console.log(
     `[nightly] snapshot: ${copied.length} tables, ${rowTotal} rows, ${changed.length} file(s) changed`
@@ -597,7 +601,7 @@ async function snapshotStep(run) {
       message: `snapshot: ${run.day} — ${copied.length} tables, ${rowTotal} rows, ${changed.length} file${changed.length === 1 ? "" : "s"} changed`,
     });
   }
-  return { tables: copied.length, rows: rowTotal, changed, counts, skipped };
+  return { tables: copied.length, rows: rowTotal, changed, counts };
 }
 
 /**
