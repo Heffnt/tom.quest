@@ -23,6 +23,7 @@ import { pathToFileURL } from "node:url";
 import { PARSER_VERSION, parseClaudeFile, parseCodexFile } from "./ingest.mjs";
 import { runConfig } from "./config.mjs";
 import { openStore } from "./store.mjs";
+import { getJson, postJson } from "./transport.mjs";
 import { prefixSha256, storeText, textFromLine } from "./sweep.mjs";
 
 // §2.5: the cap is about mutation size, not about what Tom asked for. The
@@ -482,26 +483,6 @@ function makeLog(stateDir, fs, now) {
   };
 }
 
-// The sweeper's transport, which it does not export. The key is chosen by the
-// route and never named in an error.
-async function defaultPost(config, route, body) {
-  if (!config.convexSiteUrl || !config.sessionsKey) throw new Error(`missing variables for ${route}`);
-  const response = await fetch(`${config.convexSiteUrl.replace(/\/+$/, "")}${route}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Sessions-Key": config.sessionsKey },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) throw Object.assign(new Error(`${route} failed with HTTP ${response.status}`), { status: response.status });
-  return await response.json();
-}
-
-async function defaultGet(config, route) {
-  if (!config.convexSiteUrl || !config.sessionsKey) throw new Error(`missing variables for ${route}`);
-  const response = await fetch(`${config.convexSiteUrl.replace(/\/+$/, "")}${route}`, { headers: { "X-Sessions-Key": config.sessionsKey } });
-  if (!response.ok) throw Object.assign(new Error(`${route} failed with HTTP ${response.status}`), { status: response.status });
-  return await response.json();
-}
-
 export async function serveMaterialize({
   config = runConfig(),
   runId = null,
@@ -517,8 +498,8 @@ export async function serveMaterialize({
   maxSlices = MAX_SLICES,
 } = {}) {
   const say = log ?? (dryRun ? () => {} : makeLog(config.stateDir, fs, now));
-  const send = post ?? ((route, body) => defaultPost(config, route, body));
-  const fetchJson = get ?? ((route) => defaultGet(config, route));
+  const send = post ?? ((route, body) => postJson(config, route, body));
+  const fetchJson = get ?? ((route) => getJson(config, route));
   // The backlog block is another agent's addition to runConfig; until it lands
   // the cap is the same 128 MB the brief fixes.
   const configured = config?.backlog?.maxFileBytes;
