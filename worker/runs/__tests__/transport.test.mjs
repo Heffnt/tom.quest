@@ -47,6 +47,22 @@ describe("run transport", () => {
     expect(sleep.mock.calls.flat()).toEqual([transportBackoffMs(0), transportBackoffMs(1)]);
   });
 
+  // THE MESSAGE IS THE WHOLE INTERFACE, and the cause chain is what is left to
+  // go deeper into. The give-up error used to carry `transport: true` and
+  // `tries` as well; no caller read either, and both facts are already in the
+  // sentence, so this pins that the chain survived the removal and that the
+  // two unread properties did not come back.
+  it("keeps the cause chain on the give-up error and carries nothing else", async () => {
+    const original = fetchFailed("UND_ERR_SOCKET", "ECONNRESET");
+    const fetchImpl = vi.fn().mockRejectedValue(original);
+
+    const thrown = await postJson(config, "/tts/job-ok", {}, options(fetchImpl)).catch((error) => error);
+
+    expect(thrown.cause).toBe(original);
+    expect(causeChain(original)).toBe("UND_ERR_SOCKET <- ECONNRESET");
+    expect(Object.keys(thrown)).toEqual(["cause"]);
+  });
+
   it("names every code in a nested cause chain and says so when there is none", async () => {
     expect(causeChain(fetchFailed("UND_ERR_SOCKET", "ECONNRESET"))).toBe("UND_ERR_SOCKET <- ECONNRESET");
     expect(causeChain(new TypeError("fetch failed"))).toBe("");
