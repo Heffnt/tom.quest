@@ -56,13 +56,13 @@ describe("run transport", () => {
       .rejects.toThrow(/fetch failed \(cause unnamed\)/);
   });
 
-  it("does not loop on a circular cause chain", () => {
+  it("stops at a bounded depth rather than looping on a circular cause chain", () => {
     const error = new TypeError("fetch failed");
     const cause = Object.assign(new Error("reset"), { code: "ECONNRESET" });
     cause.cause = cause;
     error.cause = cause;
 
-    expect(causeChain(error)).toBe("ECONNRESET");
+    expect(causeChain(error)).toBe(Array(4).fill("ECONNRESET").join(" <- "));
   });
 
   it("never retries an HTTP answer, however bad, and keeps its status", async () => {

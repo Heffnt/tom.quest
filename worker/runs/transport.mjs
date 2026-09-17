@@ -41,10 +41,7 @@ export function causeChain(error) {
   let cause = error?.cause;
   for (let depth = 0; cause && depth < 4; depth += 1) {
     const label = cause.code ?? cause.errno ?? cause.name;
-    if (label !== undefined && label !== null) {
-      const text = String(label);
-      if (text && !labels.includes(text)) labels.push(text);
-    }
+    if (label) labels.push(String(label));
     cause = cause.cause;
   }
   return labels.join(" <- ");
