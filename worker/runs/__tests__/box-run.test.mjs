@@ -323,6 +323,39 @@ describe("box-run worktrees", () => {
     expect(result.stderr).toContain("unknown repo");
     expect(fs.existsSync(path.join(stateDir, "work"))).toBe(false);
   });
+
+  // THE THREE ARGUMENT REFUSALS, each pinned because the alternative to each is
+  // silence. A `--ref` under `--repo none` would run in an empty directory and
+  // report a commit it never saw; a bad `--timeout` is read nowhere but the
+  // kill timer, whose `> 0` test is false for NaN, so the caller would ask for
+  // a hard limit and get none; a bad `--depth` serialises to null in the
+  // registration and is refused by the record after the run has been paid for.
+  it("refuses a --ref with no repo to resolve it in", () => {
+    const stateDir = temp("state");
+    const result = run(["--ref", "main"], { stateDir, env: { CLAUDE_BIN: fakeCli("refnorepo") } });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("--ref needs a --repo");
+    expect(fs.existsSync(path.join(stateDir, "work"))).toBe(false);
+  });
+
+  it("refuses a --timeout that is not a number of milliseconds", () => {
+    const stateDir = temp("state");
+    const result = run(["--timeout", "soon"], { stateDir, env: { CLAUDE_BIN: fakeCli("badtimeout") } });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("--timeout must be a number of milliseconds");
+    expect(fs.existsSync(path.join(stateDir, "work"))).toBe(false);
+  });
+
+  it("refuses a --depth that is not a whole number", () => {
+    const stateDir = temp("state");
+    const result = run(["--parent", "run_parent", "--depth", "deep"], {
+      stateDir,
+      env: { CLAUDE_BIN: fakeCli("baddepth") },
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("--depth must be a whole number");
+    expect(fs.existsSync(path.join(stateDir, "work"))).toBe(false);
+  });
 });
 
 describe("box-run memory guard", () => {
