@@ -18,6 +18,7 @@ import { runConfig } from "./config.mjs";
 import { describeRunFile, discoverRunFiles } from "./discover.mjs";
 import { findCodexRegistration, mergeRegistration, readRegistration } from "./registration.mjs";
 import { openStore } from "./store.mjs";
+import { postJson } from "./transport.mjs";
 
 export const MAX_ATTEMPTS = 8;
 export const STALE_LOCK_MS = 15 * 60_000;
@@ -569,18 +570,6 @@ function diskLow(roots, fs) {
   return null;
 }
 
-async function defaultPost(config, route, body) {
-  const key = route.startsWith("/runs/") ? config.sessionsKey : config.ttsKey;
-  if (!config.convexSiteUrl || !key) throw new Error(`missing variables for ${route.startsWith("/runs/") ? "run ingest" : "TTS event"}`);
-  const response = await fetch(`${config.convexSiteUrl.replace(/\/+$/, "")}${route}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", [route.startsWith("/runs/") ? "X-Sessions-Key" : "X-TTS-Key"]: key },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) throw Object.assign(new Error(`${route} failed with HTTP ${response.status}`), { status: response.status });
-  return await response.json();
-}
-
 export async function sweepRuns({
   config = runConfig(),
   file,
@@ -595,7 +584,7 @@ export async function sweepRuns({
   backoffMs = sweepBackoffMs,
 } = {}) {
   const say = log ?? (dryRun ? () => {} : makeLog(config.stateDir, fs, now));
-  const send = post ?? ((route, body) => defaultPost(config, route, body));
+  const send = post ?? ((route, body) => postJson(config, route, body));
   if (!config.host || !config.stateDir) {
     say("runs-sweep refused: RUN_HOST and RUN_SWEEP_STATE_DIR are required");
     if ((config.ttsKey && config.convexSiteUrl) || post) await send("/tts/job-failed", { job: "runs-sweep", key: "runs-sweep:no-host", error: "RUN_HOST is missing; the sweep refused to invent a host id." });

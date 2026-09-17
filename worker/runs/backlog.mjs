@@ -37,6 +37,7 @@ import { runConfig, BACKLOG_DEFAULTS } from "./config.mjs";
 import { AGENT_FILE, AGENT_SIDECAR, discoverRunFiles, workflowIdOf } from "./discover.mjs";
 import { discoverChildren, parseClaudeFile, parseCodexFile } from "./ingest.mjs";
 import { openStore } from "./store.mjs";
+import { postJson } from "./transport.mjs";
 import {
   LOW_DISK_BYTES,
   STALE_LOCK_MS,
@@ -897,18 +898,6 @@ function budgetFor(stateDir, fs, now, bytesPerHour) {
 
 // ── One pass ─────────────────────────────────────────────────────────────────
 
-async function defaultPost(config, route, body) {
-  const key = route.startsWith("/runs/") ? config.sessionsKey : config.ttsKey;
-  if (!config.convexSiteUrl || !key) throw new Error(`missing variables for ${route.startsWith("/runs/") ? "run ingest" : "TTS event"}`);
-  const response = await fetch(`${config.convexSiteUrl.replace(/\/+$/, "")}${route}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", [route.startsWith("/runs/") ? "X-Sessions-Key" : "X-TTS-Key"]: key },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) throw Object.assign(new Error(`${route} failed with HTTP ${response.status}`), { status: response.status });
-  return await response.json();
-}
-
 const emptyCounts = () => ({
   imported: 0, alreadyImported: 0, duplicates: 0, accountSplits: 0, failed: 0,
   skippedTooLarge: 0, sourceBytes: 0, storedBytes: 0, runs: 0,
@@ -1073,7 +1062,7 @@ export async function runBacklogPass({
   gitTracked = isGitTracked,
 } = {}) {
   const say = log ?? (dryRun ? () => {} : makeBacklogLog(config.stateDir, fs, now));
-  const send = post ?? ((route, body) => defaultPost(config, route, body));
+  const send = post ?? ((route, body) => postJson(config, route, body));
   if (!config.host || !config.stateDir) {
     say("runs-backlog refused: RUN_HOST and RUN_SWEEP_STATE_DIR are required");
     return { started: false, reason: "host or state directory missing" };
