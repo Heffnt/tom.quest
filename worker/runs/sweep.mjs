@@ -63,8 +63,20 @@ export function stateFileFor(stateDir, runId) {
   return path.join(stateDir, "state", `${sha1(runId)}.json`);
 }
 
+// A CURSOR YOU CANNOT READ IS NOT A CURSOR OF ZERO. readJson answers null both
+// for a state file that is not there and for one that is there and will not
+// read — a half-written file from a killed pass, a sharing violation, a bad
+// sector — and the second answer sent the sweep back to line 0 of a file the
+// record had already committed. The record then refused the whole re-ingest as
+// a rewrite, correctly, and every page of that run went to the dead letter,
+// which blocks that run from being swept ever again. So an existing state file
+// that will not read stops this run's pass — the caller logs it and the next
+// pass tries again — instead of resetting its cursor.
 function readState(stateDir, runId, fs) {
-  return readJson(stateFileFor(stateDir, runId), fs);
+  const file = stateFileFor(stateDir, runId);
+  const landed = readJson(file, fs);
+  if (landed === null && fs.existsSync(file)) throw new Error(`run state for ${runId} exists and could not be read`);
+  return landed;
 }
 
 function writeState(stateDir, runId, value, fs) {
@@ -178,19 +190,82 @@ function queueItem(stateDir, item, fs) {
   return file;
 }
 
+// The record answers a refusal with a fixed reason and, for a rewrite, with
+// the cursor it holds. Both ride the thrown error: the reason so the dead
+// letter can say why it is there — "HTTP 400" was this sweep's own invention,
+// written for an answer that was a 200, and it named nothing — and the cursor
+// so a sweep whose state was lost can find its way back instead of stranding
+// that run for good.
+function refusal(response, what) {
+  return Object.assign(new Error(`${what} refused: ${response.reason ?? "unknown"}`), {
+    status: 400,
+    refusal: response.reason ?? "unknown",
+    ...(Number.isInteger(response?.committedLine) && typeof response?.committedPrefixSha256 === "string"
+      ? { heldCursor: { committedLine: response.committedLine, committedPrefixSha256: response.committedPrefixSha256 } }
+      : {}),
+  });
+}
+
+function errorLabel(error) {
+  if (typeof error?.refusal === "string") return `refused: ${error.refusal}`;
+  return typeof error?.status === "number" ? `HTTP ${error.status}` : "network error";
+}
+
+// The record is ahead of this sweep's state, or the file's old lines really did
+// change, and only the local bytes tell the two apart. If the file still hashes
+// to the cursor the record named, nothing below that cursor changed: the file
+// grew and it is the STATE that is wrong, so adopt the record's cursor and let
+// the next pass append from it. If it does not hash, the lines already read did
+// change, the refusal stands, and the page is dead-lettered as before.
+function healFromHeldCursor(error, { stateDir, runId, run, sourceBytes, fs, now }) {
+  const cursor = error?.heldCursor;
+  if (error?.refusal !== "file rewritten" || !cursor || !sourceBytes) return false;
+  if (prefixSha256(sourceBytes, cursor.committedLine) !== cursor.committedPrefixSha256) return false;
+  writeState(stateDir, runId, {
+    runId,
+    path: run.file.path,
+    committedLine: cursor.committedLine,
+    committedPrefixSha256: cursor.committedPrefixSha256,
+    sourceHash: run.file.sourceHash,
+    bytes: run.file.bytes,
+    storedHash: run.file.storedHash,
+    storeKey: run.file.storeKey,
+    // The cursor was read off the record, not proved by an upload of this
+    // pass, so the run is not deletable until a pass verifies it again.
+    verified: false,
+    lastLineAt: run.lastLineAt,
+    lastSweptAt: now(),
+    deferred: false,
+    endSeen: false,
+    reportedAbandoned: false,
+    envelopeMtimeMs: 0,
+  }, fs);
+  return true;
+}
+
+// The queued page carries the run's file facts but not its bytes; a file that
+// is gone cannot prove anything, so that page is refused the ordinary way.
+function healQueuedPage(error, item, { stateDir, fs, now }) {
+  const run = item.payload?.run;
+  if (!run?.file?.path) return false;
+  let sourceBytes;
+  try { sourceBytes = fs.readFileSync(run.file.path); } catch { return false; }
+  return healFromHeldCursor(error, { stateDir, runId: item.runId, run, sourceBytes, fs, now });
+}
+
 // The page comes first: Convex refuses a chunk whose run is not yet recorded
 // and a stamp whose message row is not yet there, so the order that survives a
 // replay is page, then chunks, then the stamp that makes them readable. Every
 // step is idempotent, so a failure anywhere replays the whole page.
 async function deliver(item, post) {
   const response = await post("/runs/ingest", item.payload);
-  if (response?.ok === false) throw Object.assign(new Error(`run ingest refused: ${response.reason ?? "unknown"}`), { status: 400 });
+  if (response?.ok === false) throw refusal(response, "run ingest");
   for (const overflow of item.overflows ?? []) {
     for (let index = 0; index < overflow.chunks.length; index += 1) {
       await post("/runs/overflow", { runId: item.runId, seq: overflow.seq, index, chunkCount: overflow.chunks.length, text: overflow.chunks[index] });
     }
     const stamped = await post("/runs/overflow/stamp", { runId: item.runId, seq: overflow.seq, sha256: overflow.sha256, byteLength: overflow.byteLength, chunkCount: overflow.chunks.length });
-    if (stamped?.ok === false) throw Object.assign(new Error(`run overflow stamp refused: ${stamped.reason ?? "unknown"}`), { status: 400 });
+    if (stamped?.ok === false) throw refusal(stamped, "run overflow stamp");
   }
   return response;
 }
@@ -262,7 +337,7 @@ export async function drainQueue({
   items.sort((a, b) => a.item.createdAt - b.item.createdAt || (a.item.runId === b.item.runId ? a.item.page - b.item.page : a.item.runId.localeCompare(b.item.runId)));
   const blocked = new Set();
   const movedToDead = new Set();
-  let delivered = 0, kept = 0, dead = 0;
+  let delivered = 0, kept = 0, dead = 0, healed = 0;
   for (const entry of items) {
     const { file, item } = entry;
     if (movedToDead.has(file)) continue;
@@ -273,9 +348,18 @@ export async function drainQueue({
       fs.unlinkSync(file);
       delivered += 1;
     } catch (error) {
+      // Not blocked afterwards: every later page of the run is stale for the
+      // same reason and heals to the same cursor, so the whole run clears in
+      // this drain rather than one page per pass.
+      if (healQueuedPage(error, item, { stateDir, fs, now })) {
+        fs.unlinkSync(file);
+        healed += 1;
+        log(`runs-sweep queue healed run=${item.runId} page=${item.page} cursor=${error.heldCursor.committedLine}`);
+        continue;
+      }
       const permanent = isPermanentStatus(error?.status);
       item.attempts = permanent ? MAX_ATTEMPTS : Number(item.attempts ?? 0) + 1;
-      item.lastError = typeof error?.status === "number" ? `HTTP ${error.status}` : "network error";
+      item.lastError = errorLabel(error);
       if (item.attempts >= MAX_ATTEMPTS) {
         await deadLetter(file, item, { stateDir, post, fs });
         dead += 1;
@@ -300,7 +384,7 @@ export async function drainQueue({
     ...queueFiles(stateDir, fs).map((file) => readJson(file, fs)?.runId).filter(Boolean),
     ...deadLetterRunIds(stateDir, fs),
   ])];
-  return { files: items.length, delivered, kept, dead, pendingRunIds };
+  return { files: items.length, delivered, kept, dead, healed, pendingRunIds };
 }
 
 function envelopeMtime(runFile, fs) {
@@ -472,13 +556,16 @@ export async function sweepRunFile(item, {
       const response = await deliver(page, post);
       if (index === pages.length - 1) writeState(stateDir, runId, stateAfterDelivery({ ...page, markAbandoned }, response, now), fs);
     } catch (error) {
+      if (healFromHeldCursor(error, { stateDir, runId, run: page.payload.run, sourceBytes: prepared.sourceBytes, fs, now })) {
+        return { healed: error.heldCursor.committedLine, runId };
+      }
       const permanent = isPermanentStatus(error?.status);
       for (let pending = index; pending < pages.length; pending += 1) {
         const itemToQueue = pages[pending];
         const file = queueItem(stateDir, itemToQueue, fs);
         if (permanent) {
           itemToQueue.attempts = MAX_ATTEMPTS;
-          itemToQueue.lastError = `HTTP ${error.status}`;
+          itemToQueue.lastError = errorLabel(error);
           await deadLetter(file, itemToQueue, { stateDir, post, fs });
         }
       }
@@ -631,22 +718,26 @@ export async function sweepRuns({
     const items = file
       ? [describeRunFile(file, { roots: config.roots, host: config.host, fs })].filter(Boolean)
       : discoverRunFiles({ roots: config.roots, since, host: config.host, fs });
-    let deferred = 0, ingested = 0, queued = 0, refused = 0;
+    let deferred = 0, ingested = 0, queued = 0, refused = 0, healed = queue.healed ?? 0;
     for (const item of items) {
       if (item.kind === "attachment") continue;
       const runId = runIdOf(item);
       if (pendingRunIds.has(runId)) { queued += 1; continue; }
-      const state = readState(config.stateDir, runId, fs);
-      if (!file && !config.flags.backlog && ((firstSweep && item.mtimeMs < watermark) || (state?.deferred && item.mtimeMs <= watermark))) {
-        writeState(config.stateDir, runId, { runId, path: item.path, committedLine: 0, committedPrefixSha256: sha256(Buffer.alloc(0)), sourceHash: "", bytes: item.bytes, storedHash: "", lastLineAt: item.mtimeMs, lastSweptAt: now(), deferred: true, endSeen: false, reportedAbandoned: false }, fs);
-        deferred += 1;
-        continue;
-      }
+      // The state read is inside the per-file try: an unreadable cursor is one
+      // run's problem, and it must not end the pass for the other twenty
+      // thousand files behind it.
       try {
+        const state = readState(config.stateDir, runId, fs);
+        if (!file && !config.flags.backlog && ((firstSweep && item.mtimeMs < watermark) || (state?.deferred && item.mtimeMs <= watermark))) {
+          writeState(config.stateDir, runId, { runId, path: item.path, committedLine: 0, committedPrefixSha256: sha256(Buffer.alloc(0)), sourceHash: "", bytes: item.bytes, storedHash: "", lastLineAt: item.mtimeMs, lastSweptAt: now(), deferred: true, endSeen: false, reportedAbandoned: false }, fs);
+          deferred += 1;
+          continue;
+        }
         const result = await sweepRunFile(item, { stateDir: config.stateDir, store: activeStore, post: send, fs, now, onStoreVerified });
         if (result.ingested) ingested += 1;
         if (result.queued) queued += result.queued;
         if (result.refused) refused += 1;
+        if (result.healed !== undefined) healed += 1;
       } catch (error) {
         say(`runs-sweep kept run=${runId} stage=file reason=${String(error?.message ?? error).slice(0, 200)}`);
       }
@@ -669,8 +760,8 @@ export async function sweepRuns({
         }
       }
     } catch {}
-    say(`runs-sweep files=${items.length} ingested=${ingested} queued=${queued} deferred=${deferred} refused=${refused} staleSpool=${staleSpool} deletable=${deletableFiles} bytes=${deletableBytes}`);
-    return { started: true, files: items.length, ingested, queued, deferred, refused, staleSpool, deletable: deletableFiles, deletableBytes, queue };
+    say(`runs-sweep files=${items.length} ingested=${ingested} queued=${queued} deferred=${deferred} refused=${refused} healed=${healed} staleSpool=${staleSpool} deletable=${deletableFiles} bytes=${deletableBytes}`);
+    return { started: true, files: items.length, ingested, queued, deferred, refused, healed, staleSpool, deletable: deletableFiles, deletableBytes, queue };
   } finally {
     lock.release();
   }
