@@ -38,7 +38,7 @@ import {
   LEARNING_TURN_CHARS,
   expectedBodyBlobs,
   expectedEvidenceBlobs,
-  exportTableRows,
+  exportTableLines,
   gitBlobId,
   goldenExportStep,
   indexManifests,
@@ -53,7 +53,7 @@ import {
   modelOfTomCommit,
   pageBodyBlob,
   parseLearningAnswer,
-  planTableFiles,
+  RECORD_TABLES,
   postStep,
   promoteStagedSkills,
   parseArgs,
@@ -75,6 +75,7 @@ import {
   sha256,
   syncRemote,
   syncSnapshot,
+  writeTableFiles,
   utcDay,
   writeArchived,
 } from "./nightly.mjs";
@@ -1810,7 +1811,7 @@ describe("redactRow", () => {
       { rows: [{ _id: "b", settings: { keys: [slack] } }], isDone: true, continueCursor: "c2" },
     ];
     const asked = [];
-    const rows = await exportTableRows({
+    const lines = await exportTableLines({
       env: {},
       table: "claudeInbound",
       boundary: 1757000000000,
@@ -1821,11 +1822,15 @@ describe("redactRow", () => {
     });
     expect(asked[0]).toContain("table=claudeInbound&boundary=1757000000000");
     expect(asked[1]).toContain("cursor=c1"); // the second page, not the first again
-    expect(rows).toEqual([
-      { _id: "a", text: "push with [redacted:github]" },
-      { _id: "b", settings: { keys: ["[redacted:slack]"] } },
+    // Lines, not rows: the redaction has already happened by the time the
+    // step holds anything, which is the point of serializing in the loop.
+    expect(lines).toEqual([
+      '{ "_id": "a", "text": "push with [redacted:github]" }\n',
+      '{ "_id": "b", "settings": { "keys": ["[redacted:slack]"] } }\n',
     ]);
-    const bytes = planTableFiles("claudeInbound", rows)[0].bytes.toString();
+    const dir = tmp();
+    writeTableFiles(dir, "claudeInbound", lines);
+    const bytes = fs.readFileSync(path.join(dir, "claudeInbound.jsonl"), "utf8");
     expect(bytes).not.toContain(token);
     expect(bytes).not.toContain(slack);
     expect(bytes).toContain('"text": "push with [redacted:github]"');
@@ -1833,7 +1838,7 @@ describe("redactRow", () => {
 
   it("stops rather than spins when the server does not advance its cursor", async () => {
     await expect(
-      exportTableRows({
+      exportTableLines({
         env: {},
         table: "dtsTodos",
         boundary: 1,
@@ -1860,22 +1865,27 @@ describe("serializeRow", () => {
   });
 });
 
-describe("planTableFiles", () => {
+describe("writeTableFiles", () => {
+  // The lines this takes are what exportTableLines returns: oldest first,
+  // one row each, newline included.
+  const linesOf = (rows) => rows.map((row) => `${serializeRow(row)}\n`);
+
   it("writes a small table as one plain file, newest row first", () => {
-    const files = planTableFiles("dtsTodos", [
+    const dir = tmp();
+    const names = writeTableFiles(dir, "dtsTodos", linesOf([
       { _id: "a", _creationTime: 1 },
       { _id: "b", _creationTime: 2 },
-    ]);
-    expect(files.map((f) => f.name)).toEqual(["dtsTodos.jsonl"]);
-    expect(files[0].bytes.toString("utf8")).toBe(
+    ]));
+    expect(names).toEqual(["dtsTodos.jsonl"]);
+    expect(fs.readFileSync(path.join(dir, "dtsTodos.jsonl"), "utf8")).toBe(
       '{ "_creationTime": 2, "_id": "b" }\n{ "_creationTime": 1, "_id": "a" }\n',
     );
   });
 
   it("writes an empty table as an empty file", () => {
-    const [f] = planTableFiles("empty", []);
-    expect(f.name).toBe("empty.jsonl");
-    expect(f.bytes.length).toBe(0);
+    const dir = tmp();
+    expect(writeTableFiles(dir, "empty", [])).toEqual(["empty.jsonl"]);
+    expect(fs.statSync(path.join(dir, "empty.jsonl")).size).toBe(0);
   });
 
   // The split: raw slices under the limit, each gzipped alone so any part
@@ -1885,24 +1895,75 @@ describe("planTableFiles", () => {
     // arithmetic on more bytes): rows of ~1 KB, 200 of them, a 10 KB limit.
     const limit = 10 * 1024;
     const big = "x".repeat(1024);
-    const rows = Array.from({ length: 200 }, (_, i) => ({ _id: String(i), body: big }));
-    const files = planTableFiles("claudeMessages", rows, limit);
-    expect(files.length).toBeGreaterThan(1);
-    expect(files.map((f) => f.name)).toEqual(
-      files.map((_, i) => `claudeMessages.part${String(i).padStart(2, "0")}.jsonl.gz`),
+    const lines = linesOf(Array.from({ length: 200 }, (_, i) => ({ _id: String(i), body: big })));
+    const dir = tmp();
+    const names = writeTableFiles(dir, "claudeMessages", lines, limit);
+    expect(names.length).toBeGreaterThan(1);
+    expect(names).toEqual(
+      names.map((_, i) => `claudeMessages.part${String(i).padStart(2, "0")}.jsonl.gz`),
     );
-    const raws = files.map((f) => zlib.gunzipSync(f.bytes));
+    const raws = names.map((n) => zlib.gunzipSync(fs.readFileSync(path.join(dir, n))));
     for (const r of raws) expect(r.length).toBeLessThanOrEqual(limit);
     const whole = Buffer.concat(raws).toString("utf8");
-    const lines = whole.split("\n").filter(Boolean);
-    expect(lines).toHaveLength(200);
-    expect(lines[0]).toContain('"_id": "199"'); // newest first
-    expect(lines[199]).toContain('"_id": "0"');
-    // Deterministic: the same rows give the same part bytes.
-    const again = planTableFiles("claudeMessages", rows, limit);
-    expect(sha256(again[0].bytes)).toBe(sha256(files[0].bytes));
+    const back = whole.split("\n").filter(Boolean);
+    expect(back).toHaveLength(200);
+    expect(back[0]).toContain('"_id": "199"'); // newest first
+    expect(back[199]).toContain('"_id": "0"');
+    // Deterministic: the same lines give the same part bytes.
+    const again = tmp();
+    writeTableFiles(again, "claudeMessages", lines, limit);
+    expect(sha256(fs.readFileSync(path.join(again, names[0])))).toBe(
+      sha256(fs.readFileSync(path.join(dir, names[0]))),
+    );
     // The real limit is phase 1's: under GitHub's 100 MB refusal.
     expect(SPLIT_BYTES).toBe(90 * 1024 * 1024);
+  });
+
+  // The heap the job died on was the copies this no longer makes: the whole
+  // table joined into one string, a Buffer of that string, and every part's
+  // compressed bytes held until the last part was planned. Asserted as what
+  // reaches the disk rather than as a heap reading — a heapUsed delta depends
+  // on when the scavenger ran and would flake in the gate's tests job.
+  it("holds no whole copy of the table: every write is one part, never the table", () => {
+    const limit = 64 * 1024;
+    const big = "x".repeat(4096);
+    const lines = linesOf(Array.from({ length: 2000 }, (_, i) => ({ _id: String(i), body: big })));
+    const whole = lines.reduce((n, l) => n + Buffer.byteLength(l), 0);
+    const written = [];
+    const spy = vi.spyOn(fs, "writeFileSync").mockImplementation((_p, bytes) => {
+      written.push(bytes.length);
+    });
+    let names;
+    try {
+      names = writeTableFiles(tmp(), "spill", lines, limit);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(whole).toBeGreaterThan(100 * limit); // a table 100+ parts long
+    expect(names.length).toBeGreaterThan(50);
+    // One write per part and nothing else: the table never goes out in one
+    // piece, and no single write is even the size of one raw part.
+    expect(written).toHaveLength(names.length);
+    for (const size of written) expect(size).toBeLessThanOrEqual(limit);
+  });
+
+  // The plain path's half of the same property: the file is appended a line
+  // at a time, so `lines.join("")` and a Buffer of it are never built.
+  it("writes the plain file a line at a time, never one joined string", () => {
+    const lines = linesOf(Array.from({ length: 50 }, (_, i) => ({ _id: String(i) })));
+    const pieces = [];
+    const spy = vi.spyOn(fs, "writeSync").mockImplementation((_fd, piece) => {
+      pieces.push(piece);
+      return piece.length;
+    });
+    try {
+      expect(writeTableFiles(tmp(), "small", lines)).toEqual(["small.jsonl"]);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(pieces).toHaveLength(50);
+    expect(pieces[0]).toContain('"_id": "49"'); // newest first, one line per write
+    expect(pieces[49]).toContain('"_id": "0"');
   });
 
   it("knows which snapshot names belong to a table", () => {
@@ -1910,6 +1971,46 @@ describe("planTableFiles", () => {
     expect(isTableFile("claudeMessages", "claudeMessages.part02.jsonl.gz")).toBe(true);
     expect(isTableFile("dtsTodos", "dtsTodosX.jsonl")).toBe(false);
     expect(isTableFile("dtsTodos", "README.md")).toBe(false);
+  });
+});
+
+describe("RECORD_TABLES", () => {
+  // Named, not inferred from a size: these four are the run record, and the
+  // sweep already wrote every byte of them to the object store with WikiTom's
+  // runs/ manifest as the index. Everything else Convex has is copied.
+  it("is the run record and nothing else", () => {
+    expect([...RECORD_TABLES].sort()).toEqual([
+      "claudeMessageOverflow",
+      "claudeMessages",
+      "runFileVersions",
+      "runs",
+    ]);
+  });
+
+  // Tom's own writing is NOT in it: runLabels is his judgment of a run, born
+  // in Convex, and the copy here is the only one in git.
+  it("keeps the tables whose only copy this is", () => {
+    for (const table of ["runLabels", "dtsTodos", "dtsRulings", "batches", "claudeInbound"]) {
+      expect(RECORD_TABLES.has(table)).toBe(false);
+    }
+  });
+
+  // What the step does with that set: the record tables are never fetched,
+  // and syncSnapshot still knows their names, so last night's files for them
+  // are removed from the checkout rather than left behind for good.
+  it("drops a record table's files from the checkout on the first run of this shape", () => {
+    const snapshot = tmp();
+    const staging = tmp();
+    write(snapshot, "claudeMessages.part00.jsonl.gz", "gz0");
+    write(snapshot, "runs.jsonl", "old\n");
+    write(snapshot, "dtsTodos.jsonl", "a\n");
+    write(staging, "dtsTodos.jsonl", "a\n");
+    const tables = ["claudeMessages", "runs", "dtsTodos"];
+    const changed = syncSnapshot(snapshot, staging, tables);
+    expect(changed).toEqual(["claudeMessages.part00.jsonl.gz", "runs.jsonl"]);
+    expect(fs.existsSync(path.join(snapshot, "claudeMessages.part00.jsonl.gz"))).toBe(false);
+    expect(fs.existsSync(path.join(snapshot, "runs.jsonl"))).toBe(false);
+    expect(fs.readFileSync(path.join(snapshot, "dtsTodos.jsonl"), "utf8")).toBe("a\n");
   });
 });
 

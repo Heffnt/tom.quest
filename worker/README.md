@@ -213,10 +213,16 @@ the lock every writer of the checkout takes — taken around all four together,
 never around the commit alone, and step 5 runs under the same hold, reading
 the `HEAD` the four left:
 
-1. **snapshot** — every Convex table except the six `auth*` ones, read by
+1. **snapshot** — every Convex table except the six `auth*` ones and the four
+   run-record ones (`RECORD_TABLES`: `runs`, `runFileVersions`,
+   `claudeMessages`, `claudeMessageOverflow` — the object store holds their
+   bytes and `runs/` the index into them, so a copy here was a fourth copy of
+   the same thing and 93% of the copy's size), read by
    pages from `GET /tts/export` against one boundary instant, into
    `tts/snapshot/`: one JSON-lines file per table, keys sorted, newest row
    first, a table over 90 MB as gzipped parts (`<table>.partNN.jsonl.gz`).
+   A table is never held whole: rows are serialized as their page arrives and
+   each part is on disk before the next is started.
    The set is assembled in `/var/cache/tts/snapshot-staging/` first and a
    file is written only where its hash changed, so a night with no change
    to a table makes no commit for it. **A nightly copy, not a point-in-time
