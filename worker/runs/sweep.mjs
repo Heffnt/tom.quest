@@ -718,7 +718,7 @@ export async function sweepRuns({
     const items = file
       ? [describeRunFile(file, { roots: config.roots, host: config.host, fs })].filter(Boolean)
       : discoverRunFiles({ roots: config.roots, since, host: config.host, fs });
-    let deferred = 0, ingested = 0, queued = 0, refused = 0, healed = queue.healed ?? 0;
+    let deferred = 0, ingested = 0, queued = 0, refused = 0;
     for (const item of items) {
       if (item.kind === "attachment") continue;
       const runId = runIdOf(item);
@@ -737,7 +737,11 @@ export async function sweepRuns({
         if (result.ingested) ingested += 1;
         if (result.queued) queued += result.queued;
         if (result.refused) refused += 1;
-        if (result.healed !== undefined) healed += 1;
+        // A heal is said where it happens, with the run and the cursor it
+        // adopted. It is not counted into the summary line: the drain's heals
+        // are pages and these are runs, and one number covering both would
+        // mean neither.
+        if (result.healed !== undefined) say(`runs-sweep healed run=${runId} cursor=${result.healed}`);
       } catch (error) {
         say(`runs-sweep kept run=${runId} stage=file reason=${String(error?.message ?? error).slice(0, 200)}`);
       }
@@ -760,8 +764,8 @@ export async function sweepRuns({
         }
       }
     } catch {}
-    say(`runs-sweep files=${items.length} ingested=${ingested} queued=${queued} deferred=${deferred} refused=${refused} healed=${healed} staleSpool=${staleSpool} deletable=${deletableFiles} bytes=${deletableBytes}`);
-    return { started: true, files: items.length, ingested, queued, deferred, refused, healed, staleSpool, deletable: deletableFiles, deletableBytes, queue };
+    say(`runs-sweep files=${items.length} ingested=${ingested} queued=${queued} deferred=${deferred} refused=${refused} staleSpool=${staleSpool} deletable=${deletableFiles} bytes=${deletableBytes}`);
+    return { started: true, files: items.length, ingested, queued, deferred, refused, staleSpool, deletable: deletableFiles, deletableBytes, queue };
   } finally {
     lock.release();
   }
