@@ -114,19 +114,33 @@ export function scoredNothing(data) {
  * wrong. `error` is a fact about one attempt: the box could not fetch the tree
  * that time, and asking again is the whole point of asking again.
  *
+ * A POSITIVE `errored` COUNT IS THE SAME KIND OF FACT, and leaving it out of
+ * this set was a bug. A row with runner errors is one where the box reached
+ * the trees and some ITEMS were never measured — the model call failed, the
+ * tool call died — and it carries no `error` field at all, because the run
+ * itself did not fail. Both gates deny on it (scripts/evals-check.mjs gate()
+ * on `verdict.errored`, convex/ttsMerge.ts with "had N runner errors"), so
+ * without this clause the row stood, an identical re-ask kept its
+ * `requestedAt`, and the standing row went on answering. Seen on PR #177 on
+ * 2026-09-15: the runner fix rolled, `gh run rerun` of the evals workflow read
+ * the standing errored row and failed at once, and only `evals.mjs --force`
+ * could produce a new row. A runner error is a fact about one attempt, exactly
+ * as `error` is, and asking again is the whole point of asking again.
+ *
  * `unaffected` is NOT in this set, and that is the distinction the identity
  * rule below turns on. What an unaffected row says — this diff touched no
  * watched path — is decided entirely by the base sha and the changed paths,
  * which are two thirds of the request's identity. Ask the same question and
  * the answer cannot have changed; change either one and the identity changes
- * and the row stops answering anyway. A scored row is likewise a measurement
- * of a tree against a base, and re-asking the same question of the same trees
- * is what this round exists to stop paying for.
+ * and the row stops answering anyway. A CLEANLY scored row is likewise a
+ * measurement of a tree against a base, and re-asking the same question of the
+ * same trees is what this round exists to stop paying for.
  */
 export function reopensOnReask(data) {
   const row = data !== null && typeof data === "object" ? data : {};
   return row.superseded === true || row.error === true ||
-    (typeof row.error === "string" && row.error !== "");
+    (typeof row.error === "string" && row.error !== "") ||
+    (typeof row.errored === "number" && row.errored > 0);
 }
 
 /**

@@ -584,6 +584,39 @@ describe("an identical evals request", () => {
     expect(await scoredRun(t)).toMatchObject({ run: null });
   });
 
+  // PR #177, 2026-09-15, AND THE REASON THIS CASE EXISTS. A row can carry a
+  // runner-error COUNT without carrying `error` at all: the box reached the
+  // trees and ran the set, and some items were never measured because their
+  // model or tool call died. Both gates deny on that row, and before the count
+  // joined reopensOnReask the row stood — so after the runner fix rolled, a
+  // re-run of the evals workflow read the standing errored row and failed at
+  // once, with only `evals.mjs --force` able to produce a new one. The re-ask
+  // must re-date the request and leave the check waiting for a fresh run.
+  it("re-serves a sha whose run scored with runner errors", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t);
+    const before = await standingRequestedAt(t);
+    await row(t, { errored: 2, regressions: null, goldenCoverage: true, pass: 27, items: 29 });
+    expect(await scoredRun(t)).toMatchObject({ run: { errored: 2 } });
+    expect(await file(t)).toMatchObject({ renewed: true });
+    // The old row no longer answers the question standing now, so the check
+    // waits rather than reading it again, and the queue has the sha to serve.
+    expect(await scoredRun(t)).toMatchObject({ run: null });
+    expect(await standingRequestedAt(t)).toBeGreaterThan(before);
+    expect(await t.query(internal.ttsEvals.internalOldestEvalsRequest, {}))
+      .toMatchObject({ sha: SHA });
+  });
+
+  // The other side of the same line: a clean scored row has `errored: 0`, and
+  // zero is not a fact about one attempt — it is the measurement itself.
+  it("answers an identical re-run out of a scored row with no runner errors", async () => {
+    const t = convexTest({ schema, modules });
+    await file(t);
+    await row(t, { errored: 0, regressions: 0, goldenCoverage: true });
+    expect(await file(t)).toMatchObject({ renewed: false });
+    expect(await scoredRun(t)).toMatchObject({ run: { regressions: 0 } });
+  });
+
   // An UNAFFECTED row is decided by the base sha and the changed paths, which
   // are two thirds of the identity: ask the same question and the answer
   // cannot have changed, so the row stands and the re-run costs nothing.
