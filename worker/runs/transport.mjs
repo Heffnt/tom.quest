@@ -35,7 +35,10 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // undici nests the real error one or two levels down, and a dual-stack attempt
 // nests one per address family. The depth is bounded because a cause chain may
-// be circular.
+// be circular, and the truthiness test stays because a cause node carrying
+// none of the three fields would otherwise put the word "undefined" in the log
+// where the code belongs — worse to read than the short chain it is dropped
+// from.
 export function causeChain(error) {
   const labels = [];
   let cause = error?.cause;
@@ -74,6 +77,8 @@ async function sendJson(url, init, route, {
         await sleep(backoffMs(attempt));
         continue;
       }
+      // A chain that names nothing still has to say so: "fetch failed ()" in
+      // the log would read as a truncation rather than as what it is.
       const chain = causeChain(error);
       throw Object.assign(
         new Error(`${route} could not reach the site in ${tries} tries: ${String(error?.message ?? error)} (${chain || "cause unnamed"})`),
