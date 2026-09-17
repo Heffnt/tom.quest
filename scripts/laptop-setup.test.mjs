@@ -315,6 +315,18 @@ describe("laptop setup", () => {
       expect(xml()).not.toContain("StartWhenAvailable");
     });
 
+    // The path lands inside an element now, where the `/TR` form put it on a
+    // command line: a checkout under a directory with an `&` in its name would
+    // otherwise make the document malformed and `/XML` would refuse it.
+    it("escapes a path that would make the document malformed", () => {
+      const xml = runsSweepTaskXml({
+        sweep: "C:\Users\A&B\<tom.quest>\sweep.mjs",
+        at: new Date(2026, 8, 17, 15, 7, 0),
+      });
+      expect(xml).toContain('<Arguments>"C:\Users\A&amp;B\&lt;tom.quest&gt;\sweep.mjs" --full</Arguments>');
+      expect(xml).not.toContain("A&B");
+    });
+
     it("registers the definition, and forces only over a task that is there", () => {
       expect(runsSweepTaskArgs({ xmlFile: "C:\\Temp\\t.xml", found: false }))
         .toEqual(["/Create", "/TN", RUNS_SWEEP_TASK_NAME, "/XML", "C:\\Temp\\t.xml"]);

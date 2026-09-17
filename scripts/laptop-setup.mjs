@@ -136,6 +136,14 @@ function updateRunHookConfig(file, command) {
 
 export const RUNS_SWEEP_TASK_NAME = "TTS runs sweep";
 
+/** The path goes into an XML element now, where it did not before: a checkout
+ *  under a directory with an `&` in its name would make the document malformed
+ *  and `/XML` would refuse it, which the `/TR` form it replaces could not do.
+ *  Three characters, because an element's text is all this ever holds. */
+function xmlText(value) {
+  return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
 /** Task Scheduler's own local-time stamp: no zone, no milliseconds. */
 function taskTime(at) {
   const pad = (value) => String(value).padStart(2, "0");
@@ -201,7 +209,7 @@ export function runsSweepTaskXml({ sweep, at = new Date() }) {
     '  <Actions Context="Author">',
     "    <Exec>",
     "      <Command>node</Command>",
-    `      <Arguments>"${sweep}" --full</Arguments>`,
+    `      <Arguments>"${xmlText(sweep)}" --full</Arguments>`,
     "    </Exec>",
     "  </Actions>",
     "</Task>",
