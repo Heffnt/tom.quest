@@ -153,17 +153,18 @@ const SYNTHESIS = Object.freeze([
 const AREAS_DIRECTORY = "model-of-tom/areas";
 const EVIDENCE_DIRECTORY = "model-of-tom/evidence";
 
-/** The directories a repository's rules are never looked for in. */
+/** The directories a repository's rules are never looked for in — the ones a
+ *  DOT does not already cover. `.git`, `.claude`, `.next`, `.vercel` and
+ *  `.turbo` were listed here as well and are gone: the walk skips every
+ *  dot-prefixed directory on the same line, so each was a second spelling of
+ *  the same skip. Neither half subsumes the other — the dot rule does not
+ *  reach `node_modules`, and no list reaches a dotted directory nobody has
+ *  thought of yet — so both stay, and this one holds only what it earns. */
 const SKIP_DIRECTORIES = new Set([
-  ".git",
-  ".claude",
-  ".next",
   "node_modules",
   "dist",
   "build",
   "coverage",
-  ".vercel",
-  ".turbo",
 ]);
 
 /** The record tables the file's record half is built from, and the field each
@@ -278,7 +279,13 @@ export function readRecord(dir) {
       } catch {
         throw new InputError(`graph: ${file} has a line that is not JSON`);
       }
-      const id = row._id ?? row.id;
+      // REMOVAL CHECK on the skip: a `.jsonl` on disk is arbitrary input, and a
+      // row with no id would otherwise mint `recordId("todo", undefined)` — a
+      // `todo:undefined` node that G3 cannot refuse because it IS in `nodes`.
+      // The `?? row.id` fallback beside it is GONE: the only writer of these
+      // files is the nightly's snapshot step, which streams Convex export rows
+      // carrying `_id`, and nothing in the tree has ever written a plain `id`.
+      const id = row._id;
       if (typeof id !== "string") continue;
       record[key].push({
         id,
@@ -385,6 +392,13 @@ export function headCommit(dir) {
     }
     // A worktree's HEAD lives in the worktree's own gitdir, whose commondir
     // holds the packed refs; one more hop rather than a wrong answer.
+    //
+    // REMOVAL CHECK: null is not a good enough answer here, and a worktree is
+    // not an edge case. A worktree's gitdir has no refs/heads and no
+    // packed-refs of its own, so without this hop `headCommit` returns null for
+    // EVERY branch built in one — and `blankCommits` fails the build on a null
+    // rather than publishing a graph whose `generatedFrom` names no commit. The
+    // branch this very line is being read on is that shape.
     const common = readIfPresent(path.join(root, "commondir"));
     if (common !== null) {
       const shared = path.resolve(root, common.trim());
@@ -550,8 +564,7 @@ function disagreementsOf(graph, { vocabulary, vocabularySource, bytes, pages, ev
   const declaredNodeKinds = usingVocabulary ? new Set(declaredNode) : new Set(NODE_KINDS);
   const declaredEdgeKinds = usingVocabulary ? new Set(declaredEdge) : new Set(EDGE_KINDS);
   for (const kind of [...new Set(graph.nodes.map((row) => row.kind))].sort()) {
-    if (declaredNodeKinds.size > 0 && declaredNodeKinds.has(kind)) continue;
-    if (declaredNodeKinds.size === 0) break;
+    if (declaredNodeKinds.has(kind)) continue;
     found.push(
       block("G1", `node kind "${kind}"`, [
         ["graph", `${graph.counts.byNodeKind[kind]} node(s) of this kind`],
@@ -560,8 +573,7 @@ function disagreementsOf(graph, { vocabulary, vocabularySource, bytes, pages, ev
     );
   }
   for (const kind of [...new Set(graph.edges.map((row) => row.kind))].sort()) {
-    if (declaredEdgeKinds.size > 0 && declaredEdgeKinds.has(kind)) continue;
-    if (declaredEdgeKinds.size === 0) break;
+    if (declaredEdgeKinds.has(kind)) continue;
     found.push(
       block("G2", `edge kind "${kind}"`, [
         ["graph", `${graph.counts.byEdgeKind[kind]} edge(s) of this kind`],
@@ -597,6 +609,13 @@ function disagreementsOf(graph, { vocabulary, vocabularySource, bytes, pages, ev
   for (const row of evidenceDisagreements(graph, pages, evidence)) found.push(row);
 
   // G5 — two different texts hashing alike.
+  //
+  // REMOVAL CHECK: widening the id is the alternative, and it is not one. Node
+  // ids are hash8 over a few thousand lines, and a collision has actually been
+  // found (scripts/graph.test.mjs pins line:0adf80f7). Widening every id would
+  // make the collision rarer, not impossible, and would cost bytes on a file
+  // that already has a cap; this names the two texts and asks for one of them
+  // to change, which is the fix a reader can make.
   for (const clash of graph.collisions ?? []) {
     found.push(
       block("G5", `node id ${clash.id}`, [
@@ -682,6 +701,12 @@ function evidenceDisagreements(graph, pages, evidence) {
       const rule = byId.get(ruleNodeId(row.text));
       return line === undefined && rule === undefined;
     });
+    // REMOVAL CHECK on the cap: it bounds the OUTPUT, not the check. An
+    // evidence file that drifted wholesale — a synthesis page rewritten with
+    // its entries left behind — orphans every entry it holds, and without the
+    // cap G4 alone would push hundreds of blocks into a nightly report whose
+    // whole value is that Tom reads it. The count below is the part that must
+    // not be truncated, and it is not.
     for (const orphan of orphans.slice(0, 12)) {
       out.push(
         block("G4", `${file.path} entry ${orphan.id}`, [
@@ -904,6 +929,14 @@ function firstDifference(a, b, budget = 2_000) {
   return "(the files differ only in length)";
 }
 
+// REMOVAL CHECK: the header's rule against environment overrides is about the
+// SWITCHES — KIND_AUTHORITY and the rest, which decide what the file says and
+// must read the same on the box and the laptop. This is not a switch, it is
+// WHICH CHECKOUT, and the same variable is honoured by worker/jobs/nightly.mjs,
+// worker/jobs/weekly.mjs, scripts/vocabulary.mjs, scripts/session-start-hook.mjs
+// and scripts/laptop-setup.mjs. Deleting it here alone would leave the two
+// generators disagreeing about which tom.quest they are reading, which is the
+// one failure a shared override exists to prevent.
 function defaultTomQuest() {
   if (typeof process.env.TOM_QUEST_DIR === "string" && process.env.TOM_QUEST_DIR !== "") {
     return process.env.TOM_QUEST_DIR;
@@ -921,14 +954,13 @@ export function defaultWikitom(env = process.env) {
 
 export function parseArgs(argv) {
   const options = {
-    write: false, check: false, json: false,
+    write: false, check: false,
     record: undefined, wikitom: undefined, tomQuest: undefined, repos: undefined,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--write") options.write = true;
     else if (arg === "--check") options.check = true;
-    else if (arg === "--json") options.json = true;
     else if (arg === "--no-record") options.record = null;
     else if (arg === "--wikitom") options.wikitom = argv[++index];
     else if (arg === "--tom-quest") options.tomQuest = argv[++index];
@@ -1005,20 +1037,7 @@ export function main(argv = process.argv.slice(2), out = console.log, err = cons
     err(String(error.message ?? error));
     return 3;
   }
-  if (options.json) {
-    out(JSON.stringify({
-      version: result.version,
-      recordVersion: result.recordVersion,
-      counts: result.counts,
-      bytes: result.bytes,
-      cap: result.cap,
-      changed: result.changed,
-      notes: result.notes,
-      disagreements: result.disagreements,
-    }, null, 2));
-  } else {
-    out(report(result));
-  }
+  out(report(result));
   // THE CAP'S CODE WINS OVER THE DISAGREEMENT'S. Over the cap is both a G6
   // disagreement and an unusable render, and the two codes mean different
   // things: 2 is "something disagrees, fix it"; 3 is "an input is wrong, or the

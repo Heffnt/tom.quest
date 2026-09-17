@@ -1056,7 +1056,13 @@ function resolveNode(module, graph, wanted) {
   // `node term:batch` on a graph with no such term is asking about the WORD
   // batch, and searching for the literal "term:batch" would find nothing by
   // construction.
-  const kinds = Array.isArray(graph.nodeKinds) ? graph.nodeKinds : [];
+  // The `Array.isArray(...) ? ... : []` that stood here is GONE. `buildGraph`
+  // sets `nodeKinds` from a frozen constant and `serializeGraph` always writes
+  // it, so no graph.json that has ever been published lacks the key — and
+  // `loadGraph` above, which IS this file's trust boundary, deliberately
+  // validates `nodes` and `edges` and not this. A file so truncated that it has
+  // no kinds should say so loudly rather than quietly stop stripping prefixes.
+  const kinds = graph.nodeKinds;
   const kind = module.kindOf(asked);
   const needle = (kinds.includes(kind) ? asked.slice(kind.length + 1) : asked).toLocaleLowerCase();
   const candidates = needle === "" ? [] : graph.nodes

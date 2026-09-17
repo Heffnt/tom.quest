@@ -454,6 +454,13 @@ function symbolDefined(text, symbol) {
  * an expression that already exists in the code, the CONSTANT to quote it from —
  * the register never carries a copy of a regex, it carries the source text of
  * the one that is already there.
+ *
+ * REMOVAL CHECK: there is no other statement of how the nine ids are shaped.
+ * Each is minted by one template in one file and validated by one expression in
+ * another, and nothing in the tree joins the two — so a run id whose prefix is
+ * renamed in the minting file goes on passing the validator that no longer
+ * matches it, silently, until a row will not parse. D4 is what turns the
+ * register from a comment into a claim the build can refuse.
  */
 const ENTITY_SPECS = Object.freeze([
   {
@@ -699,7 +706,15 @@ export function parseBoxJobs(setupText) {
 }
 
 /** The event kinds a box job writes, read from the job's own source. A job whose
- *  file is not in the checkout carries an empty list rather than a guess. */
+ *  file is not in the checkout carries an empty list rather than a guess.
+ *
+ *  REMOVAL CHECK on the two returns, which answer different questions. `file
+ *  === null` is the NORMAL path for at least one real job: parseBoxJobs mints a
+ *  maintenance job for a cron line that runs a shell command and no /opt/tts
+ *  script, and there is no source to read. `text === null` is a cron line that
+ *  DOES name a script the checkout does not hold — a failure in the making, but
+ *  not one this generator may decide, because the box's crontab is installed
+ *  from setup.sh and may legitimately run ahead of the tree being read. */
 function eventKindsWritten(tomQuest, file, kinds) {
   if (file === null) return [];
   const text = readOptional(tomQuest, file);
@@ -881,7 +896,14 @@ function parseChannelEnv(sharedText) {
 
 /** Each channel's one-line purpose, declared here and asserted to cover exactly
  *  the kinds `CHANNEL_ENV` holds — the purposes exist only in the prose comment
- *  above that constant, which is not a parseable register. */
+ *  above that constant, which is not a parseable register.
+ *
+ *  REMOVAL CHECK, the same one `CHANNEL_NAME` below carries and for the same
+ *  reason: convex/ttsShared.ts declares a channel as a KIND and an ENV VAR
+ *  NAME, never as a purpose. Delete this and `channels[].what` is `undefined`
+ *  in the published vocabulary — a channel list that cannot say what any
+ *  channel is for. The count beside it is what stops a kind added there from
+ *  rendering with a blank purpose instead of failing. */
 const CHANNEL_WHAT = Object.freeze({
   today: "the digest",
   decisions: "each delegate decision and merge, for objection",
@@ -893,9 +915,10 @@ const CHANNEL_WHAT = Object.freeze({
 // REMOVAL CHECK: cannot remove, and it is not a second copy of the register.
 // convex/ttsShared.ts declares each channel as a KIND and an ENV VAR NAME
 // (`TTS_SLACK_TODAY`), never as `#tts-today` — the `#` name lives only in the
-// Slack workspace and in Tom's map. D3 counts these against the kinds parsed
-// out of that block, so a kind added there with no name here throws rather
-// than rendering a channel with no name.
+// Slack workspace and in Tom's map. An assertCount beside the channel rows
+// counts these against the kinds parsed out of that block, so a kind added
+// there with no name here throws rather than rendering a channel with no name.
+// (It is an assertion, not a D-coded disagreement; the note used to say "D3".)
 const CHANNEL_NAME = Object.freeze({
   today: "#tts-today",
   decisions: "#tts-decisions",
@@ -1376,6 +1399,12 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
   }
 
   // D3 — a term's spec section does not exist.
+  //
+  // REMOVAL CHECK: the two sides are not one source. `specHeadings` is what the
+  // spec's headings ARE; `term.specSection` is what a definition's own
+  // cross-reference SAYS it is, written by hand in the definition's text. A
+  // section renumbered in the spec leaves every term pointing at a heading that
+  // is gone, and the published vocabulary then sends a reader to nothing.
   for (const term of terms) {
     if (specHeadings.has(term.specSection)) continue;
     disagreements.push(
@@ -1384,7 +1413,7 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
         subject: `term "${term.term}"`,
         rows: [
           { label: "spec", where: `WikiTom tts/spec.md §${term.specSection}`, text: "no heading of that number exists" },
-          { label: "code", where: `WikiTom tts/spec.md §${term.specSection === "12.1" ? "12.1" : "12.1"}`, text: term.definition },
+          { label: "code", where: "WikiTom tts/spec.md §12.1", text: term.definition },
         ],
         fix: "point the definition's cross-reference at a section that exists",
       }),
@@ -1428,6 +1457,13 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
 
   // ── Entities ──────────────────────────────────────────────────────────────
   const eventKinds = parseEventKinds(schemaText);
+  // REMOVAL CHECK on both assertions below, and they are not one assertion
+  // twice. The count catches a kind added to the schema comment and to no
+  // spelling; the loop catches a kind SWAPPED for another, which keeps the
+  // count and changes the set. Neither can be deleted for the other, and the
+  // table they check cannot be deleted at all: `dtsEvents.key` has no machine
+  // register anywhere — convex/schema.ts carries a prose comment — so this is
+  // the only place the key's SHAPE per kind is written down.
   const declaredEventKinds = EVENT_KEY_SPELLINGS.flatMap((row) => row.kinds).sort((a, b) => a.localeCompare(b));
   assertCount(
     "convex/schema.ts dtsEvents.key spellings",
@@ -1462,6 +1498,11 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
         }),
       );
     }
+    // REMOVAL CHECK on the example check: the example is what the published
+    // vocabulary SHOWS a reader, and the regex is what the code accepts. They
+    // are written in different files by different hands, so an example that no
+    // longer matches is a vocabulary teaching a shape the system refuses — the
+    // worst kind of wrong, because it reads as authoritative.
     if (regex !== null && spec.example !== null) {
       const body = /^\/(.*)\/([a-z]*)$/.exec(regex);
       const test = body === null ? null : new RegExp(body[1], body[2]);
@@ -1538,20 +1579,21 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
   // `context-relevance.mjs SEARCH_QUESTIONS` against `SEARCH_COMMANDS` is GONE:
   // phase 6 deleted that constant, so there is no second list of the search
   // questions to disagree with and no KNOWN_ABSENT exception table to keep.
+  // The `for … of [ <one element> ]` that held this is GONE with the pair it
+  // used to iterate: a loop over a one-element literal is a shape that reads as
+  // a list and is not one.
   const commandSet = [...database, ...local].sort((a, b) => a.localeCompare(b));
-  for (const [left, right, leftWhere, rightWhere, fix] of [
-    [commandSet, parseHelpCommands(searchLibText), "worker/jobs/search-lib.mjs DATABASE_COMMANDS + LOCAL_COMMANDS", "worker/jobs/search-lib.mjs HELP", "every corpus the grammar accepts has a HELP paragraph, and every HELP paragraph names a corpus"],
-  ]) {
-    if (left.join(",") === right.join(",")) continue;
+  const helpCommands = parseHelpCommands(searchLibText);
+  if (commandSet.join(",") !== helpCommands.join(",")) {
     disagreements.push(
       disagreement({
         code: "D5",
         subject: "search commands",
         rows: [
-          { label: "spec", where: `tom.quest ${leftWhere}`, text: left.join(", ") },
-          { label: "code", where: `tom.quest ${rightWhere}`, text: right.join(", ") },
+          { label: "spec", where: "tom.quest worker/jobs/search-lib.mjs DATABASE_COMMANDS + LOCAL_COMMANDS", text: commandSet.join(", ") },
+          { label: "code", where: "tom.quest worker/jobs/search-lib.mjs HELP", text: helpCommands.join(", ") },
         ],
-        fix,
+        fix: "every corpus the grammar accepts has a HELP paragraph, and every HELP paragraph names a corpus",
       }),
     );
   }
@@ -1607,6 +1649,12 @@ export function generateVocabulary({ wikitom, tomQuest, write = false, check = f
     .sort(byFirstField("name"));
 
   // ── Skills ────────────────────────────────────────────────────────────────
+  // REMOVAL CHECK on the shape comparison: `buildSkillRows` naming the shapes
+  // and `SKILL_SHAPES` declaring them are the two sides, and they are in two
+  // repositories' worth of distance from each other — this generator here, and
+  // tom.quest scripts/skills.mjs, which is what actually publishes a skill. A
+  // shape renamed there and not here publishes a skill no router can place, and
+  // this is the one line that notices.
   const shapes = parseSkillShapes(skillsText);
   const skills = buildSkillRows(wikitom, repos.filter((repo) => repo.github !== null)).sort(byFirstField("name"));
   for (const skill of skills) {
@@ -1810,6 +1858,11 @@ function writeMapCandidate({ wikitom, agentRulesRaw, candidate, candidateDiff })
 function candidateDay(wikitom) {
   const evidence = readOptional(wikitom, "model-of-tom/evidence/agent-rules.md");
   const days = evidence === null ? [] : [...evidence.matchAll(/read:\s*(\d{4}-\d{2}-\d{2})/g)].map((hit) => hit[1]);
+  // REMOVAL CHECK on the sentinel: failing here would take the drift check and
+  // the whole vocabulary down over the CANDIDATE, which is the inert side of
+  // switch (a) and which nothing reads — the same trade candidateOverBudget
+  // argues below. An impossible date is also the loudest thing a well-formed
+  // date field can say; a missing evidence file is the one way to reach it.
   return days.sort((a, b) => a.localeCompare(b)).at(-1) ?? "0000-00-00";
 }
 
@@ -1845,6 +1898,13 @@ export function resolveWikitom(argvValue, env = process.env) {
   return process.platform === "win32" ? LAPTOP_WIKITOM_DIR : BOX_WIKITOM_DIR;
 }
 
+// REMOVAL CHECK on `--json`: no job reads it — worker/jobs/nightly.mjs imports
+// generateVocabulary directly — and scripts/graph.mjs's twin was deleted for
+// exactly that. This one stays because it is the only way to read the result
+// OBJECT, disagreements and all, without the report's formatting in the way,
+// and scripts/vocabulary.test.mjs pins that shape. Deleting it would delete a
+// test of the thing the generator returns, which is not the same as deleting
+// an unused flag.
 export function parseArgs(argv) {
   const options = { write: false, check: false, json: false };
   for (let index = 0; index < argv.length; index += 1) {
