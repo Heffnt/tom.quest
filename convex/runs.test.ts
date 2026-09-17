@@ -91,7 +91,10 @@ describe("runs", () => {
     // A rewrite plus append cannot bypass the fence just because its new cursor
     // is greater than the stored cursor.
     const rewrittenAppend = run({ file: { ...run().file, bytes: 30, committedLine: 3, committedPrefixSha256: "f".repeat(64) } });
-    expect(await t.mutation(internal.runs.internalIngest, ingest(rewrittenAppend, [row(2000, { digest: "2222222222222222" })], [], 2, "0".repeat(64)) as never)).toEqual({ ok: false, reason: "file rewritten" });
+    // The refusal names the cursor the record holds. Without it a sweeper that
+    // lost its own cursor has no way back: it re-presents line 0 of a file the
+    // record already committed, is refused for ever, and strands the run.
+    expect(await t.mutation(internal.runs.internalIngest, ingest(rewrittenAppend, [row(2000, { digest: "2222222222222222" })], [], 2, "0".repeat(64)) as never)).toEqual({ ok: false, reason: "file rewritten", committedLine: 2, committedPrefixSha256: GROWN_PREFIX_HASH });
     const landed = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique());
     expect(landed?.file.committedLine).toBe(2);
     expect((await t.run((ctx) => ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", "claude:laptop:root-run")).collect())).map((entry) => entry.seq)).toEqual([0, 1000]);

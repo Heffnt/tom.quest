@@ -139,6 +139,21 @@ function runIdMatches(runId: string, runner: "claude" | "codex", host: "laptop" 
 function isStubFile(file: { path: string; sourceHash: string; storedHash: string; bytes: number; storedBytes: number; committedLine: number; committedPrefixSha256: string }) {
   return file.path === "" && file.sourceHash === "" && file.storedHash === "" && file.bytes === 0 && file.storedBytes === 0 && file.committedLine === 0 && file.committedPrefixSha256 === "";
 }
+/**
+ * What the record holds for a file, said out loud on a refusal.
+ *
+ * A rewrite refusal is the record telling a sweeper that the prefix it
+ * presented is not the prefix the record committed. Until this field existed
+ * the sweeper was told only THAT, never WHERE the record stands, so a sweeper
+ * whose own cursor had gone missing had no way back: it presented line 0 of a
+ * file the record had already committed, was refused — correctly — and
+ * dead-lettered every page of that run for good. The cursor is a fact about
+ * the caller's own file and the caller is already authenticated to write it,
+ * so naming it costs nothing and is the only thing that can end the stall.
+ */
+function heldCursor(file: { committedLine: number; committedPrefixSha256: string }) {
+  return { committedLine: file.committedLine, committedPrefixSha256: file.committedPrefixSha256 };
+}
 function validFile(file: {
   path: string; sourceHash: string; storedHash: string; bytes: number; storedBytes: number; committedLine: number; committedPrefixSha256: string; sidecarStoredHash?: string;
 }) {
@@ -336,7 +351,7 @@ export const internalIngest = internalMutation({
     if (existing && !isStubFile(existing.file)) {
       if (args.previousCommittedLine !== existing.file.committedLine || args.previousPrefixSha256 !== existing.file.committedPrefixSha256) {
         await event(ctx, "runs-file-rewritten", { runId: run.runId, storedPrefixHash: existing.file.committedPrefixSha256, presentedPrefixHash: args.previousPrefixSha256, storedVersion: existing.file.storedHash, presentedVersion: run.file.storedHash });
-        return { ok: false as const, reason: "file rewritten" };
+        return { ok: false as const, reason: "file rewritten", ...heldCursor(existing.file) };
       }
       if (run.file.bytes < existing.file.bytes) {
         await event(ctx, "runs-file-shrank", { runId: run.runId, storedBytes: existing.file.bytes, presentedBytes: run.file.bytes, path: run.file.path });
@@ -345,7 +360,7 @@ export const internalIngest = internalMutation({
       if (run.file.committedLine < existing.file.committedLine) return { ok: false as const, reason: "committed cursor regressed" };
       if (run.file.committedLine === existing.file.committedLine && run.file.committedPrefixSha256 !== existing.file.committedPrefixSha256) {
         await event(ctx, "runs-file-rewritten", { runId: run.runId, storedPrefixHash: existing.file.committedPrefixSha256, presentedPrefixHash: run.file.committedPrefixSha256, storedVersion: existing.file.storedHash, presentedVersion: run.file.storedHash });
-        return { ok: false as const, reason: "file rewritten" };
+        return { ok: false as const, reason: "file rewritten", ...heldCursor(existing.file) };
       }
     }
 

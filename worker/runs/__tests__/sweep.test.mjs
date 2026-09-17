@@ -247,6 +247,75 @@ describe("run sweep", () => {
     expect(blocked.pendingRunIds).toEqual(["claude:laptop:session"]);
   });
 
+  // witness: the laptop's full pass on 2026-09-17 re-swept three live sessions
+  // from line 0 because their state files did not read, presented
+  // previousCommittedLine 0 for files the record had already committed to
+  // lines 1775, 1987 and 7858, and dead-lettered all 32 pages — which then
+  // blocked those runs from every later pass. The files had only grown; the
+  // record's refusal was right and the sweep's claim was false.
+  it("stops a run whose state file exists and will not read, instead of re-ingesting it from line 0", async () => {
+    const dir = temp(); const item = runFile(dir, manyLines(3)); const stateDir = path.join(dir, "state");
+    fs.mkdirSync(path.dirname(stateFileFor(stateDir, "claude:laptop:session")), { recursive: true });
+    fs.writeFileSync(stateFileFor(stateDir, "claude:laptop:session"), "{ half-written");
+    const ingests = []; const lines = [];
+    const cfg = config(dir, item); cfg.stateDir = stateDir;
+    const result = await sweepRuns({
+      config: cfg, file: item.path, store: store(), fs: largeDiskFs(), now: () => NOW, log: (line) => lines.push(line),
+      post: async (route, body) => { if (route === "/runs/ingest") ingests.push(body); return { ok: true, committedLine: body?.run?.file?.committedLine }; },
+    });
+    expect(ingests).toEqual([]);
+    expect(result.files).toBe(1);
+    expect(lines.some((line) => line.includes("kept run=claude:laptop:session") && line.includes("could not be read"))).toBe(true);
+  });
+
+  it("adopts the cursor a rewrite refusal names when the file still hashes to it, and queues nothing", async () => {
+    const dir = temp(); const item = runFile(dir, manyLines(3)); const stateDir = path.join(dir, "state");
+    const held = { committedLine: 2, committedPrefixSha256: prefixSha256(fs.readFileSync(item.path), 2) };
+    const result = await sweepRunFile(item, {
+      stateDir, store: store(), now: () => NOW,
+      post: async (route) => (route === "/runs/ingest" ? { ok: false, reason: "file rewritten", ...held } : { ok: true }),
+    });
+    expect(result).toMatchObject({ healed: 2 });
+    expect(JSON.parse(fs.readFileSync(stateFileFor(stateDir, "claude:laptop:session"), "utf8")))
+      .toMatchObject({ committedLine: 2, committedPrefixSha256: held.committedPrefixSha256, verified: false, deferred: false });
+    expect(fs.existsSync(path.join(stateDir, "deadletter"))).toBe(false);
+    expect(fs.existsSync(path.join(stateDir, "queue")) ? fs.readdirSync(path.join(stateDir, "queue")).filter((name) => name.endsWith(".json")) : []).toHaveLength(0);
+
+    // And the adopted cursor is what the next pass appends from.
+    const ingests = [];
+    await sweepRunFile(item, {
+      stateDir, store: store(), now: () => NOW + 1,
+      post: async (route, body) => { if (route === "/runs/ingest") ingests.push(body); return { ok: true, committedLine: body.run.file.committedLine }; },
+    });
+    expect(ingests[0]).toMatchObject({ previousCommittedLine: 2, previousPrefixSha256: held.committedPrefixSha256 });
+  });
+
+  it("dead-letters a rewrite the file does not hash to, and the dead letter names the record's reason", async () => {
+    const dir = temp(); const item = runFile(dir, manyLines(3)); const stateDir = path.join(dir, "state");
+    const result = await sweepRunFile(item, {
+      stateDir, store: store(), now: () => NOW,
+      post: async (route) => (route === "/runs/ingest" ? { ok: false, reason: "file rewritten", committedLine: 2, committedPrefixSha256: "f".repeat(64) } : { ok: true }),
+    });
+    expect(result).toMatchObject({ dead: 1, permanent: true });
+    const [name] = fs.readdirSync(path.join(stateDir, "deadletter")).filter((entry) => entry.endsWith(".json"));
+    // "HTTP 400" was this sweep's own invention for a 200 that said ok:false.
+    expect(JSON.parse(fs.readFileSync(path.join(stateDir, "deadletter", name), "utf8")).lastError).toBe("refused: file rewritten");
+  });
+
+  it("heals a queued page the record refuses against a cursor the file still matches, and clears the run", async () => {
+    const dir = temp(); const item = runFile(dir, manyLines(201)); const stateDir = path.join(dir, "state");
+    await sweepRunFile(item, { stateDir, store: store(), now: () => NOW, post: async (route) => { if (route === "/runs/ingest") throw new Error("offline"); return { ok: true }; } });
+    expect(fs.readdirSync(path.join(stateDir, "queue")).filter((name) => name.endsWith(".json"))).toHaveLength(2);
+    const held = { committedLine: 150, committedPrefixSha256: prefixSha256(fs.readFileSync(item.path), 150) };
+    const drained = await drainQueue({
+      stateDir, now: () => NOW + 1,
+      post: async (route) => (route === "/runs/ingest" ? { ok: false, reason: "file rewritten", ...held } : { ok: true }),
+    });
+    expect(drained).toMatchObject({ healed: 2, dead: 0, delivered: 0, pendingRunIds: [] });
+    expect(JSON.parse(fs.readFileSync(stateFileFor(stateDir, "claude:laptop:session"), "utf8")).committedLine).toBe(150);
+    expect(fs.readdirSync(path.join(stateDir, "queue")).filter((name) => name.endsWith(".json"))).toHaveLength(0);
+  });
+
   it("dead-letters after eight deliveries and re-arms the keyed report when emptied", async () => {
     const dir = temp(); const item = runFile(dir); const stateDir = path.join(dir, "state"); const posts = [];
     const fail = async (route, body) => {
