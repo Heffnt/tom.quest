@@ -73,9 +73,8 @@ const OUTCOME = v.object({
 const RUN = v.object({
   runId: v.string(), parentRunId: v.optional(v.string()), rootRunId: v.string(), depth: v.number(), spawnedByToolUseId: v.optional(v.string()), linkKnown: v.boolean(),
   origin: v.string(), continuesRunId: v.optional(v.string()), host: v.union(v.literal("laptop"), v.literal("box")),
-  // The CLI family the run ran under. `runner` is its old name, accepted until
-  // every writer says `cli`; a payload must carry one of them.
-  cli: v.optional(RUN_CLI), runner: v.optional(RUN_CLI),
+  // The CLI family the run ran under.
+  cli: RUN_CLI,
   environment: v.optional(RUN_ENVIRONMENT),
   model: v.optional(v.string()), sessionModel: v.optional(SESSION_MODEL), effort: v.optional(v.string()), runtimeVersion: v.optional(v.string()), parserVersion: v.string(), kind: RUN_KIND, status: RUN_STATUS,
   mode: v.optional(RUN_MODE), startedAt: v.number(), lastLineAt: v.number(), context: v.optional(CONTEXT), outcome: v.optional(OUTCOME), attachments: v.array(ATTACHMENT),
@@ -200,12 +199,12 @@ function event(ctx: MutationCtx, kind: string, data: Record<string, unknown>) {
 // evidence of when the placeholder's run was alive. The environment stays with
 // it too, for the same reason: no id names one, and a child runs where its
 // parent runs until an envelope of its own says otherwise.
-function stub(run: { runId: string; parentRunId?: string; rootRunId: string; depth: number; spawnedByToolUseId?: string; linkKnown: boolean }, evidence: { parserVersion: string; lastLineAt: number; environment?: RunEnvironment }, kind: "subagent" | "codex-child" | "unknown") {
+function stub(run: { runId: string; parentRunId?: string; rootRunId: string; depth: number; spawnedByToolUseId?: string; linkKnown: boolean }, evidence: { parserVersion: string; lastLineAt: number; environment: RunEnvironment }, kind: "subagent" | "codex-child" | "unknown") {
   const host: "laptop" | "box" = run.runId.startsWith("claude:laptop:") || run.runId.startsWith("codex:laptop:") ? "laptop" : "box";
   const cli: RunCli = run.runId.startsWith("codex:") ? "codex" : "claude";
   return {
     ...run, host, cli, kind, status: "unknown" as const, origin: "unknown", parserVersion: evidence.parserVersion,
-    ...(evidence.environment ? { environment: evidence.environment } : {}),
+    environment: evidence.environment,
     startedAt: evidence.lastLineAt, lastLineAt: evidence.lastLineAt, attachments: [],
     file: { path: "", sourceHash: "", storedHash: "", bytes: 0, storedBytes: 0, committedLine: 0, committedPrefixSha256: "" }, ingestedAt: Date.now(),
   };
@@ -234,7 +233,7 @@ function validOutcome(outcome: {
 }
 
 function validRunPayload(run: {
-  runId: string; parentRunId?: string; rootRunId: string; depth: number; spawnedByToolUseId?: string; linkKnown: boolean; origin: string; continuesRunId?: string; host: "laptop" | "box"; cli?: RunCli; runner?: RunCli; kind: string; mode?: "interactive" | "autonomous"; startedAt: number; lastLineAt: number; context?: { baseInstructionsHash?: string; contextWindow?: number }; outcome?: Parameters<typeof validOutcome>[0]; attachments: { file: string; bytes: number; sha256: string }[]; file: Parameters<typeof validFile>[0];
+  runId: string; parentRunId?: string; rootRunId: string; depth: number; spawnedByToolUseId?: string; linkKnown: boolean; origin: string; continuesRunId?: string; host: "laptop" | "box"; cli?: RunCli; kind: string; mode?: "interactive" | "autonomous"; startedAt: number; lastLineAt: number; context?: { baseInstructionsHash?: string; contextWindow?: number }; outcome?: Parameters<typeof validOutcome>[0]; attachments: { file: string; bytes: number; sha256: string }[]; file: Parameters<typeof validFile>[0];
 }) {
   // ONLY A RUN'S OWN ID MUST NAME ITS OWN HOST AND CLI. The edge ids may
   // name another: worker/runs/box-run.mjs makes a laptop session the parent of
@@ -242,7 +241,7 @@ function validRunPayload(run: {
   // holding them to the child's host would refuse the whole record. They are
   // still checked as ids, and the root rule below — a run with no parent must
   // be its own root — keeps a root's own id and its rootRunId in agreement.
-  const cli = run.cli ?? run.runner;
+  const cli = run.cli;
   if (cli === undefined || !validRunId(run.runId) || !validRunId(run.rootRunId) || !runIdMatches(run.runId, cli, run.host)) return false;
   if (run.parentRunId !== undefined && !validRunId(run.parentRunId)) return false;
   if (run.continuesRunId !== undefined && !validRunId(run.continuesRunId)) return false;
@@ -321,11 +320,7 @@ export const internalIngest = internalMutation({
     // Only then is it a worker, and that guess is counted below.
     const environment: RunEnvironment = args.run.environment ?? knownParent?.environment ?? existing?.environment ?? "worker";
     const environmentDefaulted = args.run.environment === undefined && knownParent?.environment === undefined && existing?.environment === undefined;
-    // Read once, under its new name: every line below says `cli`, and a row
-    // this ingest writes carries only that spelling.
-    const { runner: legacyCli, ...named } = args.run;
-    const cli: RunCli = named.cli ?? legacyCli!;
-    let run = { ...named, cli, rootRunId, depth, environment };
+    let run = { ...args.run, rootRunId, depth, environment };
     // A box Claude root has the same CLI id as its live session. Resolve that
     // exact join in the ingest transaction so a missed daemon stamp repairs
     // itself without a second worker round trip.
@@ -849,9 +844,7 @@ export const internalManifest = internalQuery({
         .filter((version) => !hasCompositeCheckpoint || version.at > since || version.runId > afterRunId || (version.runId === afterRunId && version.fileVersion > afterFileVersion))
         .map((version) => ({
           run_id: version.runId,
-          // The manifest is append-only: lines written before the rename say
-          // `runner`, lines written after say `cli`.
-          cli: version.cli ?? version.runner,
+          cli: version.cli,
           host: version.host,
           thread_id: version.threadId,
           depth: version.depth,
@@ -1089,7 +1082,7 @@ export const internalNextMaterialize = internalQuery({
     // still answerable: it comes back with `storeKey: null` so the job writes
     // `failed` and the queue drains. Skipping it would park it at the head of
     // the queue forever — the queue is drained by answers, not by attempts.
-    const cli = run ? (run.cli ?? run.runner) : undefined;
+    const cli = run?.cli;
     const prefix = run ? `${cli}:${run.host}:` : `${request.runId.split(":").slice(0, 2).join(":")}:`;
     const file = run
       ? {
@@ -1111,9 +1104,7 @@ export const internalNextMaterialize = internalQuery({
       request: {
         requestId: request._id, runId: request.runId, slice: request.slice,
         requestedBy: request.requestedBy, requestedAt: request.requestedAt,
-        // Both spellings for one release: a box not yet rolled reads `runner`.
         cli: cli ?? request.runId.split(":")[0],
-        runner: cli ?? request.runId.split(":")[0],
         host: run?.host ?? request.runId.split(":")[1],
         threadId: request.runId.startsWith(prefix) ? request.runId.slice(prefix.length) : request.runId,
         depth: run?.depth ?? 0,
@@ -1437,97 +1428,24 @@ export const internalBackfillRunIds = internalMutation({
 });
 
 /**
- * Gives every run row the launchers never named an environment. A run joined
- * to a session is a worker when that session ran unattended and a session
- * otherwise. A run with no session row but kind `session` is a laptop chat
- * Tom talked to, which the run hook now names a session too. Everything else
- * was started by a job, and is a worker. A row that already names one is left
- * alone.
+ * Clears the old `runner` field the cli backfill left beside `cli`, one page of
+ * one table at a time. Nothing reads it; it only keeps the schema from
+ * dropping the field, because a deploy refuses rows carrying undeclared ones.
  */
-export const internalBackfillRunEnvironment = internalMutation({
-  args: { cursor: v.optional(v.string()), limit: v.optional(v.number()) },
+export const internalUnsetRunner = internalMutation({
+  args: { table: v.union(v.literal("runs"), v.literal("runFileVersions")), cursor: v.optional(v.string()), limit: v.optional(v.number()) },
   handler: async (ctx, args) => {
-    const page = await ctx.db.query("runs").withIndex("by_ingested_at_and_run_id").order("asc").paginate({ cursor: args.cursor ?? null, numItems: backfillLimit(args.limit) });
+    const limit = args.limit ?? 200;
+    if (!positiveInteger(limit) || limit > 500) throw new Error("backfill limit must be an integer from 1 to 500");
+    const page = args.table === "runs"
+      ? await ctx.db.query("runs").withIndex("by_ingested_at_and_run_id").order("asc").paginate({ cursor: args.cursor ?? null, numItems: limit })
+      : await ctx.db.query("runFileVersions").withIndex("by_at_and_run_id_and_file_version").order("asc").paginate({ cursor: args.cursor ?? null, numItems: limit });
     let patched = 0;
-    for (const run of page.page) {
-      if (run.environment !== undefined) continue;
-      const session = run.sessionId ? await ctx.db.get(run.sessionId) : null;
-      const environment: RunEnvironment = session ? (session.mode === "autonomous" ? "worker" : "session") : run.kind === "session" ? "session" : "worker";
-      await ctx.db.patch(run._id, { environment });
+    for (const row of page.page) {
+      if (row.runner === undefined) continue;
+      await ctx.db.patch(row._id, { runner: undefined });
       patched += 1;
     }
     return { scanned: page.page.length, patched, cursor: page.isDone ? null : page.continueCursor };
-  },
-});
-
-function backfillLimit(limit: number | undefined) {
-  const value = limit ?? 200;
-  if (!positiveInteger(value) || value > 500) throw new Error("backfill limit must be an integer from 1 to 500");
-  return value;
-}
-
-/**
- * Copies each run row's old `runner` into `cli`, so the schema can make `cli`
- * required and delete `runner`. A row with neither cannot be ingested, so one
- * is counted apart as `unnamed` and left for a person, not guessed from its id.
- */
-export const internalBackfillRunCli = internalMutation({
-  args: { cursor: v.optional(v.string()), limit: v.optional(v.number()) },
-  handler: async (ctx, args) => {
-    const page = await ctx.db.query("runs").withIndex("by_ingested_at_and_run_id").order("asc").paginate({ cursor: args.cursor ?? null, numItems: backfillLimit(args.limit) });
-    let patched = 0;
-    const unnamed: string[] = [];
-    for (const run of page.page) {
-      if (run.cli !== undefined) continue;
-      if (run.runner === undefined) { unnamed.push(run.runId); continue; }
-      await ctx.db.patch(run._id, { cli: run.runner });
-      patched += 1;
-    }
-    return { scanned: page.page.length, patched, unnamed, cursor: page.isDone ? null : page.continueCursor };
-  },
-});
-
-/** The same copy over the immutable file versions, which carry the same pair. */
-export const internalBackfillFileVersionCli = internalMutation({
-  args: { cursor: v.optional(v.string()), limit: v.optional(v.number()) },
-  handler: async (ctx, args) => {
-    const page = await ctx.db.query("runFileVersions").withIndex("by_at_and_run_id_and_file_version").order("asc").paginate({ cursor: args.cursor ?? null, numItems: backfillLimit(args.limit) });
-    let patched = 0;
-    const unnamed: string[] = [];
-    for (const version of page.page) {
-      if (version.cli !== undefined) continue;
-      if (version.runner === undefined) { unnamed.push(`${version.runId}@${version.fileVersion}`); continue; }
-      await ctx.db.patch(version._id, { cli: version.runner });
-      patched += 1;
-    }
-    return { scanned: page.page.length, patched, unnamed, cursor: page.isDone ? null : page.continueCursor };
-  },
-});
-
-// The counts that must all sum to zero before the schema narrows. Each reads
-// one page, since a single read over every run row exceeds the query read limit.
-const countArgs = { cursor: v.optional(v.string()), limit: v.optional(v.number()) };
-
-export const internalCountRunsMissingCli = internalQuery({
-  args: countArgs,
-  handler: async (ctx, args) => {
-    const page = await ctx.db.query("runs").withIndex("by_ingested_at_and_run_id").order("asc").paginate({ cursor: args.cursor ?? null, numItems: backfillLimit(args.limit) });
-    return { scanned: page.page.length, missing: page.page.filter((run) => run.cli === undefined).length, cursor: page.isDone ? null : page.continueCursor };
-  },
-});
-
-export const internalCountRunsMissingEnvironment = internalQuery({
-  args: countArgs,
-  handler: async (ctx, args) => {
-    const page = await ctx.db.query("runs").withIndex("by_ingested_at_and_run_id").order("asc").paginate({ cursor: args.cursor ?? null, numItems: backfillLimit(args.limit) });
-    return { scanned: page.page.length, missing: page.page.filter((run) => run.environment === undefined).length, cursor: page.isDone ? null : page.continueCursor };
-  },
-});
-
-export const internalCountFileVersionsMissingCli = internalQuery({
-  args: countArgs,
-  handler: async (ctx, args) => {
-    const page = await ctx.db.query("runFileVersions").withIndex("by_at_and_run_id_and_file_version").order("asc").paginate({ cursor: args.cursor ?? null, numItems: backfillLimit(args.limit) });
-    return { scanned: page.page.length, missing: page.page.filter((version) => version.cli === undefined).length, cursor: page.isDone ? null : page.continueCursor };
   },
 });

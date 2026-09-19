@@ -183,16 +183,10 @@ describe("box-run stdout contract", () => {
     expect(codexRun).toContain('const DEFAULT_MODEL = "gpt-5.6-sol"');
   });
 
-  it("still takes --runner for one release, and warns that the flag is --cli", () => {
-    const stateDir = temp("state");
-    const record = path.join(stateDir, "record.json");
-    const result = run(["--repo", "none", "--runner", "codex"], {
-      stateDir,
-      env: { TTS_CODEX_BIN: fakeCli("codex-old-flag"), FAKE_RECORD: record },
-    });
-    expect(result.status).toBe(0);
-    expect(result.stderr).toContain("--runner is the old spelling of --cli");
-    expect(result.stdout).toMatch(/host box cli codex exit 0 after \d+s\n$/);
+  it("refuses --runner, the flag's old spelling", () => {
+    const result = run(["--repo", "none", "--runner", "codex"], { stateDir: temp("state") });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("unknown option --runner");
   });
 
   // witness: box-run.mjs used to write its own envelope for a Codex run and

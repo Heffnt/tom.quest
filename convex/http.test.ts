@@ -122,7 +122,7 @@ describe("GET /tts/run-trace", () => {
     await t.run(async (ctx) => {
       await ctx.db.insert("runs", {
         runId: RUN_ID, rootRunId: RUN_ID, depth: 0, linkKnown: true, origin: "job:audit",
-        host: "box", cli: "codex", parserVersion: "runs-parser-1", kind: "job", status: "ended",
+        host: "box", cli: "codex", environment: "worker", parserVersion: "runs-parser-1", kind: "job", status: "ended",
         startedAt: 1, lastLineAt: 2, attachments: [], regToken: TOKEN,
         outcome: {
           turns: 12, toolCalls: 3,
@@ -602,7 +602,7 @@ describe("/runs/materialize*: the queue the box drains", () => {
     const handed = await t.fetch("/runs/materialize-request", { headers: { "X-Sessions-Key": "right" } });
     expect(handed.status).toBe(200);
     const { request } = await handed.json();
-    expect(request).toMatchObject({ runId: "claude:laptop:http-run", cli: "claude", runner: "claude", host: "laptop", threadId: "http-run", slice: 1, requestedBy: "worker", hasRows: false, fromLine: 0, file: { storeKey: "runs/claude/laptop/http-run/stored.jsonl.gz", totalLines: 4000 } });
+    expect(request).toMatchObject({ runId: "claude:laptop:http-run", cli: "claude", host: "laptop", threadId: "http-run", slice: 1, requestedBy: "worker", hasRows: false, fromLine: 0, file: { storeKey: "runs/claude/laptop/http-run/stored.jsonl.gz", totalLines: 4000 } });
 
     const answer = await t.fetch("/runs/materialize-answer", {
       method: "POST", headers: KEY,
@@ -722,7 +722,7 @@ describe("POST /slack/events: a reaction on the morning digest", () => {
       });
       await ctx.db.insert("runs", {
         runId: RUN_ID, rootRunId: RUN_ID, depth: 0, linkKnown: true, origin: "cron:write-slack",
-        host: "box", cli: "claude", parserVersion: "runs-parser-1", kind: "job", status: "ended",
+        host: "box", cli: "claude", environment: "worker", parserVersion: "runs-parser-1", kind: "job", status: "ended",
         startedAt: 1_756_999_000_000, lastLineAt: 1_757_000_000_000, attachments: [],
         model: "claude-fable", regToken: TOKEN,
         outcome: {

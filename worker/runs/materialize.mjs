@@ -97,8 +97,7 @@ export function normalizeRequest(raw) {
   const requestId = text(raw.requestId);
   if (!requestId) return null;
   const runId = text(raw.runId);
-  // `runner` is the door's old spelling, still sent for one release.
-  const cli = (raw.cli ?? raw.runner) === "codex" ? "codex" : "claude";
+  const cli = raw.cli === "codex" ? "codex" : "claude";
   const host = raw.host === "box" ? "box" : "laptop";
   const source = raw.file && typeof raw.file === "object" ? raw.file : {};
   const prefix = `${cli}:${host}:`;

@@ -356,7 +356,7 @@ complexity smell into one pull request, and keeps only one open at a time.
 2026-09-19 while Codex was at its weekly cap. The run's real deliverable is
 the pull-request body, a ground-up explanation Tom reads, which is Opus's
 work; the deletion itself, against a hand-written after-state, is mechanical
-and would suit `--runner codex --model gpt-5.6-terra`. The switch waits for one
+and would suit `--cli codex --model gpt-5.6-terra`. The switch waits for one
 Opus body on record and one Codex body written for the same kind of
 violation, compared side by side; `ACTUATOR_RUNNER` and `ACTUATOR_MODEL` at
 the top of the job are the two lines that change.

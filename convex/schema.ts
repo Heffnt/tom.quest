@@ -1373,12 +1373,13 @@ export default defineSchema({
     continuesRunId: v.optional(v.string()),
     host: v.union(v.literal("laptop"), v.literal("box")),
     // Where the run ran: a session Tom talks to, an unattended worker, or a
-    // runner. Absent only on rows ingested before launchers named it.
-    environment: v.optional(v.union(v.literal("session"), v.literal("worker"), v.literal("runner"))),
-    // The CLI family. `runner` is its old name, written by every row ingested
-    // before the rename; both are optional until a backfill and a later change
-    // make `cli` required and delete `runner`.
-    cli: v.optional(v.union(v.literal("claude"), v.literal("codex"))),
+    // runner.
+    environment: v.union(v.literal("session"), v.literal("worker"), v.literal("runner")),
+    // The CLI family the run ran under.
+    cli: v.union(v.literal("claude"), v.literal("codex")),
+    // The old name of `cli`, still stored on rows ingested before the rename
+    // and read by nothing. runs:internalUnsetRunner clears it; only then can
+    // it leave the schema, since a deploy refuses rows with undeclared fields.
     runner: v.optional(v.union(v.literal("claude"), v.literal("codex"))),
     model: v.optional(v.string()),
     sessionModel: v.optional(SESSION_MODEL),
@@ -1665,8 +1666,8 @@ export default defineSchema({
   // cannot be the manifest's source without losing those intermediate facts.
   runFileVersions: defineTable({
     runId: v.string(),
-    // Same pair as runs: `cli` from the rename on, `runner` on older versions.
-    cli: v.optional(v.union(v.literal("claude"), v.literal("codex"))),
+    // The CLI family, as on the run row; `runner` is its old name, left as on runs.
+    cli: v.union(v.literal("claude"), v.literal("codex")),
     runner: v.optional(v.union(v.literal("claude"), v.literal("codex"))),
     host: v.union(v.literal("laptop"), v.literal("box")), threadId: v.string(),
     depth: v.number(), parentRunId: v.optional(v.string()),

@@ -29,8 +29,6 @@
 //   node /opt/tts/runs/box-run.mjs [options] < prompt.txt
 //
 //   --cli claude|codex      which CLI runs                 (default: claude)
-//                           (--runner is the old spelling, accepted for one
-//                           release with a warning)
 //   --repo NAME             tom.quest | ComplexMultiTrigger | WikiTom | none
 //   --ref REF               branch, tag or sha to check out
 //   --cwd DIR               run in this existing absolute directory instead
@@ -238,7 +236,6 @@ function parseArgs(argv) {
     };
     switch (arg) {
       case "--cli": opts.cli = next(); break;
-      case "--runner": note("--runner is the old spelling of --cli; say --cli"); opts.cli = next(); break;
       case "--repo": opts.repo = next(); break;
       case "--ref": opts.ref = next(); break;
       case "--cwd": opts.cwd = next(); break;

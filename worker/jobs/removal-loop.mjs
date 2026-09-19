@@ -14,7 +14,7 @@
 //      rules (sg/rules, via ast-grep) and picks the SMALLEST violation in the
 //      committed baseline, by deterministic code. Violations Tom refused, and
 //      ones a run already declined, are excluded.
-//   2. the actuator — one box run, `tts-run --runner claude --model opus`,
+//   2. the actuator — one box run, `tts-run --cli claude --model opus`,
 //      given the violation, the hand-written after-state for its rule
 //      (sg/goldens/<rule>.md), Tom's past corrections to this loop
 //      (vqc/steering.yaml), and the response template. It removes the one
@@ -129,7 +129,7 @@ const STEERING_PREFIX = "removal-loop-";
 const STEERING_ALWAYS = ["ground-up-explanations"];
 
 /** The line box-run.mjs appends to a run's report, which is not the report. */
-const STATUS_LINE_RE = /^box-run: run \S+ host \S+ runner \S+ exit .*$/m;
+const STATUS_LINE_RE = /^box-run: run \S+ host \S+ cli \S+ exit .*$/m;
 
 // ── Small pure pieces ────────────────────────────────────────────────────────
 
@@ -469,7 +469,7 @@ async function mergePass({ io, env, state, pr, base, day, note }) {
     });
     const prompt = iteratePrompt({ pr: pr.number, branch: pr.headRefName, diff, body: pr.body ?? "", words, steeringBlock: block });
     const ran = io.boxRun(
-      ["--runner", ACTUATOR_RUNNER, "--model", ACTUATOR_MODEL, "--repo", REPO, "--ref", pr.headRefName, "--install", "--tests"],
+      ["--cli", ACTUATOR_RUNNER, "--model", ACTUATOR_MODEL, "--repo", REPO, "--ref", pr.headRefName, "--install", "--tests"],
       prompt,
     );
     const report = parseReport(ran.stdout);
@@ -617,7 +617,7 @@ export async function runRemovalLoop({ force = false, dryRun = false, base = "ma
 
     // 2. THE ACTUATOR.
     const ran = io.boxRun(
-      ["--runner", ACTUATOR_RUNNER, "--model", ACTUATOR_MODEL, "--repo", REPO, "--ref", base, "--install", "--tests"],
+      ["--cli", ACTUATOR_RUNNER, "--model", ACTUATOR_MODEL, "--repo", REPO, "--ref", base, "--install", "--tests"],
       fullPrompt,
     );
     const report = parseReport(ran.stdout);
