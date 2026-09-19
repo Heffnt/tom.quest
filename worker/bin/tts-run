@@ -13,7 +13,7 @@
 #
 #   tts-run [flags] < prompt.txt
 #
-# Flags: --runner claude|codex, --repo NAME, --ref REF, --model NAME,
+# Flags: --cli claude|codex (--runner, the old spelling, warns), --repo NAME, --ref REF, --model NAME,
 # --effort LEVEL, --sandbox MODE, --schema FILE, --max-turns N, --tests,
 # --install, --parent RUNID, --root RUNID, --depth N, --keep-worktree,
 # --timeout MS. The prompt arrives on stdin; only the run's report and one

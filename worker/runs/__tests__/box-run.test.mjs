@@ -123,7 +123,7 @@ describe("box-run stdout contract", () => {
       env: { CLAUDE_BIN: fakeCli("stdout"), FAKE_RECORD: record, FAKE_ANSWER: "the report\n" },
     });
     expect(result.status).toBe(0);
-    expect(result.stdout).toMatch(/^the report\nbox-run: run [0-9a-f]{8} host box runner claude exit 0 after \d+s\n$/);
+    expect(result.stdout).toMatch(/^the report\nbox-run: run [0-9a-f]{8} host box cli claude exit 0 after \d+s\n$/);
     // The child's own chatter went to the log, not to the block the laptop relays.
     expect(result.stdout).not.toContain("chatter");
     expect(result.stderr).toContain("box-run: exit 0");
@@ -172,7 +172,7 @@ describe("box-run stdout contract", () => {
   it("gives a Codex run the fleet default model, the same one codex-run.mjs names", () => {
     const stateDir = temp("state");
     const record = path.join(stateDir, "record.json");
-    const result = run(["--repo", "none", "--runner", "codex"], {
+    const result = run(["--repo", "none", "--cli", "codex"], {
       stateDir,
       env: { TTS_CODEX_BIN: fakeCli("codex-model"), FAKE_RECORD: record },
     });
@@ -183,6 +183,18 @@ describe("box-run stdout contract", () => {
     expect(codexRun).toContain('const DEFAULT_MODEL = "gpt-5.6-sol"');
   });
 
+  it("still takes --runner for one release, and warns that the flag is --cli", () => {
+    const stateDir = temp("state");
+    const record = path.join(stateDir, "record.json");
+    const result = run(["--repo", "none", "--runner", "codex"], {
+      stateDir,
+      env: { TTS_CODEX_BIN: fakeCli("codex-old-flag"), FAKE_RECORD: record },
+    });
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("--runner is the old spelling of --cli");
+    expect(result.stdout).toMatch(/host box cli codex exit 0 after \d+s\n$/);
+  });
+
   // witness: box-run.mjs used to write its own envelope for a Codex run and
   // delete TTS_RUN_PARENT_RUN_ID. codex-run.mjs mints its own token and never
   // reads box-run's, so that envelope was never claimed and the Codex run
@@ -191,7 +203,7 @@ describe("box-run stdout contract", () => {
     const stateDir = temp("state");
     const record = path.join(stateDir, "record.json");
     const parent = "claude:laptop:11111111-2222-4333-8444-555555555555";
-    const result = run(["--repo", "none", "--runner", "codex", "--parent", parent], {
+    const result = run(["--repo", "none", "--cli", "codex", "--parent", parent], {
       stateDir,
       env: { TTS_CODEX_BIN: fakeCli("codex-parent"), FAKE_RECORD: record },
     });
@@ -257,7 +269,7 @@ describe("box-run stdout contract", () => {
     const seenWith = (env) => {
       const stateDir = temp("state");
       const record = path.join(stateDir, "record.json");
-      const result = run(["--repo", "none", "--runner", "codex"], { stateDir, env: { TTS_CODEX_BIN: fakeCli("codex-environment"), FAKE_RECORD: record, ...env } });
+      const result = run(["--repo", "none", "--cli", "codex"], { stateDir, env: { TTS_CODEX_BIN: fakeCli("codex-environment"), FAKE_RECORD: record, ...env } });
       expect(result.status).toBe(0);
       return JSON.parse(fs.readFileSync(record, "utf8"));
     };
@@ -321,7 +333,7 @@ describe("box-run worktrees", () => {
       env: { CLAUDE_BIN: fakeCli("fail"), FAKE_EXIT: "3" },
     });
     expect(result.status).toBe(3);
-    expect(statusLine(result.stdout)).toMatch(/runner claude exit 3 after \d+s$/);
+    expect(statusLine(result.stdout)).toMatch(/cli claude exit 3 after \d+s$/);
     expect(fs.readdirSync(path.join(stateDir, "work"))).toEqual([]);
   }, GIT_FIXTURE_MS);
 

@@ -130,7 +130,7 @@ describe("box-agent as a pipe", () => {
   it("relays stdout byte for byte and exits with ssh's code", () => {
     const stateDir = temp("state");
     const cwd = temp("cwd");
-    const answer = "line one\nline two\nbox-run: run abcd1234 host box runner claude exit 0 after 12s\n";
+    const answer = "line one\nline two\nbox-run: run abcd1234 host box cli claude exit 0 after 12s\n";
     const result = run({ stateDir, cwd, env: { FAKE_SSH_OUT: answer, FAKE_SSH_EXIT: "7" } });
     expect(result.stdout).toBe(answer);
     expect(result.status).toBe(7);
@@ -142,12 +142,12 @@ describe("box-agent as a pipe", () => {
     const result = run({
       stateDir,
       cwd,
-      args: ["--runner", "codex", "--repo", "tom.quest", "--ref", "uae/box", "--sandbox", "read-only"],
+      args: ["--cli", "codex", "--repo", "tom.quest", "--ref", "uae/box", "--sandbox", "read-only"],
       input: "review this\n",
     });
     expect(result.sent.stdin).toBe("review this\n");
     const remote = result.sent.argv[result.sent.argv.length - 1];
-    expect(remote.startsWith("tts-run '--runner' 'codex' '--repo' 'tom.quest' '--ref' 'uae/box' '--sandbox' 'read-only'")).toBe(true);
+    expect(remote.startsWith("tts-run '--cli' 'codex' '--repo' 'tom.quest' '--ref' 'uae/box' '--sandbox' 'read-only'")).toBe(true);
   });
 
   it("builds the ssh line from the host, user and key seams", () => {
