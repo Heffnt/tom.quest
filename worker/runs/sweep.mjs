@@ -846,17 +846,23 @@ export async function refreshClaudeHeaders({
     let refreshed = 0, left = 0, gone = 0, failed = 0;
     for (const name of names) {
       const state = readJson(path.join(config.stateDir, "state", name), fs);
-      // A backlog run is recorded at cursor 0 with no rows by design, and its
-      // header was read off the whole file when it was imported; sweeping it
-      // here would ingest its whole transcript instead.
-      if (!state?.runId?.startsWith("claude:") || state.deferred || state.backlog || !(state.committedLine > 0)) continue;
-      if (!state.verified || state.wholeFileHeader || pending.has(state.runId)) continue;
+      // A run at cursor 0 was never swept in pieces: it is deferred to the
+      // backlog importer, or that importer recorded it with no rows and read
+      // its header off the whole file. Sweeping it here would ingest its whole
+      // transcript instead.
+      if (!state?.runId?.startsWith("claude:") || !(state.committedLine > 0)) continue;
+      // A run with a page still queued or parked is skipped for the reason the
+      // sweep skips it: its state is behind the record until that page lands,
+      // and a page built from it would be refused as a rewrite.
+      if (state.wholeFileHeader || pending.has(state.runId)) continue;
       if (refreshed >= limit) { left += 1; continue; }
       const described = state.path ? describeRunFile(state.path, { roots: config.roots, host: config.host, fs }) : null;
       if (!described) { gone += 1; continue; }
       try {
         const result = await sweepRunFile(described, { stateDir: config.stateDir, store: activeStore, post: send, fs, now, refreshHeader: true, markAbandoned: Boolean(state.reportedAbandoned) });
-        if (result.ingested || result.healed !== undefined) refreshed += 1;
+        // Only a delivery sends the header. A heal adopts the record's cursor
+        // and sends nothing, so that run stays unmarked for the next batch.
+        if (result.ingested) refreshed += 1;
         else { failed += 1; say(`runs-sweep refresh kept run=${state.runId} result=${Object.keys(result).join(",")}`); }
       } catch (error) {
         failed += 1;

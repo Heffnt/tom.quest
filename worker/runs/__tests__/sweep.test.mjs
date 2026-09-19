@@ -349,6 +349,28 @@ describe("run sweep", () => {
     expect(ingests).toHaveLength(2);
   });
 
+  it("counts a healed cursor as not refreshed, so the next batch sends that run's header", async () => {
+    const dir = temp(); const stateDir = path.join(dir, "state");
+    const item = runFile(dir, [claudeUserTurn({ text: "first" }), claudeUserTurn({ text: "second" })]);
+    const ingests = [];
+    const accept = async (route, body) => {
+      if (route === "/runs/ingest") ingests.push(body);
+      return route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true };
+    };
+    await sweepRunFile(item, { stateDir, store: store(), post: accept, now: () => NOW });
+    const stateFile = stateFileFor(stateDir, "claude:laptop:session");
+    const { wholeFileHeader: _mark, ...unmarked } = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    fs.writeFileSync(stateFile, JSON.stringify(unmarked));
+    const cfg = config(dir, item);
+    const held = { committedLine: 2, committedPrefixSha256: prefixSha256(fs.readFileSync(item.path), 2) };
+    const heal = async (route) => (route === "/runs/ingest" ? { ok: false, reason: "file rewritten", ...held } : { ok: true });
+    const first = await refreshClaudeHeaders({ config: cfg, store: store(), post: heal, now: () => NOW + 1, log: () => {} });
+    expect(first).toMatchObject({ refreshed: 0, failed: 1 });
+    const second = await refreshClaudeHeaders({ config: cfg, store: store(), post: accept, now: () => NOW + 2, log: () => {} });
+    expect(second).toMatchObject({ refreshed: 1, failed: 0 });
+    expect(JSON.parse(fs.readFileSync(stateFile, "utf8")).wholeFileHeader).toBe(true);
+  });
+
   it("leaves a run unmarked when the page that lands was queued by the older parser", async () => {
     const dir = temp(); const stateDir = path.join(dir, "state");
     const item = runFile(dir, [claudeUserTurn({ text: "first" })]);
