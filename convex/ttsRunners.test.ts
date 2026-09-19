@@ -317,6 +317,7 @@ describe("the step prompt", () => {
     const contract = prompt.slice(prompt.indexOf("## The check-in"), prompt.indexOf("The asking rubric"));
     expect(contract).toContain(`Call this runner "${seed().title}" every time you name it, never "this runner"`);
     expect(contract).toContain("with no number");
+    expect(contract).toContain("`tts-search skills write` prints it");
     expect(contract).toContain("describe the thing instead");
     expect(contract).toContain("exit code or an HTTP status in words");
     expect(contract).toContain("what the next step will do if he does not answer, and when, as a clock time");
