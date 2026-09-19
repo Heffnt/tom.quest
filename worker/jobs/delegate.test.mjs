@@ -1,6 +1,7 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   DELEGATE_LAYERS,
@@ -9,6 +10,7 @@ import {
   delegatePrompt,
   parseAnswer,
 } from "./delegate.mjs";
+import { runClaude } from "./tts-lib.mjs";
 
 // The narrow list as GET /tts/state serves it (convex/ttsShared.ts NARROW_LIST).
 const NARROW_LIST = [
@@ -323,7 +325,6 @@ describe("askDelegate", () => {
     });
     await askDelegate(ask(), io);
     expect(options).toMatchObject({
-      agentic: true,
       allowedTools: ["Read", "Glob", "Grep"],
       timeoutMs: 90_000,
       slotWaitMs: 90_000,
@@ -331,6 +332,47 @@ describe("askDelegate", () => {
     expect(options.cwd).toContain(ask().askId);
     expect(options.registration).toMatchObject({ origin: "cron:delegate", kind: "delegate" });
   });
+
+  // THE BOX RUNS AS ROOT, AND THE CLI REFUSES ITS FULL-ACCESS MODE UNDER
+  // ROOT: "--dangerously-skip-permissions cannot be used with root/sudo
+  // privileges". From 2026-09-09 until this test, every unattended ask ran in
+  // that mode, exited 1 and was recorded as silence. This runs the options the
+  // delegate actually passes through the real launcher against a fake CLI and
+  // reads the command line the child was given.
+  it("launches without the full-access mode, its three reading tools pre-approved", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "delegate-launch-"));
+    try {
+      const record = join(dir, "argv.json");
+      const fake = join(dir, "claude");
+      writeFileSync(fake, [
+        "#!/usr/bin/env node",
+        'import fs from "node:fs";',
+        'try { fs.readFileSync(0, "utf8"); } catch {}',
+        "fs.writeFileSync(process.env.FAKE_RECORD, JSON.stringify(process.argv.slice(2)));",
+        `process.stdout.write(${JSON.stringify(JSON.stringify({ type: "result", subtype: "success", result: '{"decision":"Move it.","reason":"He asked.","refused":false,"refusedBecause":null}' }))});`,
+      ].join("\n"));
+      chmodSync(fake, 0o755);
+      vi.stubEnv("CLAUDE_BIN", fake);
+      vi.stubEnv("FAKE_RECORD", record);
+      vi.stubEnv("RUN_SWEEP_STATE_DIR", dir);
+      vi.stubEnv("RUN_ENV_FILE", join(dir, "no-such-env"));
+      vi.stubEnv("TTS_RUN_REG_SPOOL", join(dir, "spool"));
+      vi.stubEnv("TTS_RUN_SLOT_HELD", "");
+      // The worktree the launcher runs in has to exist; git is faked.
+      mkdirSync(join(dir, "launch01"));
+      const { io, calls } = harness({ io: { runClaude, workDir: dir } });
+      const result = await askDelegate(ask({ askId: "launch01" }), io);
+      expect(calls.posted.reason).not.toMatch(/unreadable/);
+      expect(result.decision).toBe("Move it.");
+      const argv = JSON.parse(readFileSync(record, "utf8"));
+      expect(argv).not.toContain("--dangerously-skip-permissions");
+      expect(argv).not.toContain("--permission-mode");
+      expect(argv[argv.indexOf("--allowedTools") + 1]).toBe("Read,Glob,Grep");
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it("records a busy box as silence with the same ask row, so the caller takes its fallback", async () => {
     const { io, calls } = harness({

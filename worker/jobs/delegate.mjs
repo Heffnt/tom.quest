@@ -343,10 +343,10 @@ export async function askDelegate(ask, suppliedIo = {}) {
               io.runClaude(prompt, {
                 model: DELEGATE_MODEL,
                 cwd: worktree,
-                // agentic makes the tools usable at all (bypassPermissions);
-                // the throwaway worktree is what makes that safe, and the tool
-                // list is what keeps the run read-only.
-                agentic: true,
+                // The three reading tools are pre-approved by name, which is
+                // all the run needs. No full-access mode: the box runs as
+                // root, the CLI refuses that mode under root, and every ask
+                // that asked for it was silence (tts-lib.test.mjs holds it).
                 maxTurns: state.delegate?.maxTurns ?? DELEGATE_MAX_TURNS,
                 timeoutMs,
                 slotWaitMs: timeoutMs,

@@ -634,7 +634,7 @@ export async function prepareLifeTodos(
 // cron line's flock turns an overrun into skipped ticks, never a second run.
 export const BRIEF_MAX_PER_RUN = 8;
 export const BRIEF_TIMEOUT_MS = 10 * 60 * 1000;
-// Briefing gets a real exploration budget (vs the non-agentic default of 8):
+// Briefing gets a real exploration budget (vs runClaude's default of 8):
 // the model must open cited ledger/constitution/code files to judge whether a
 // plan still matches the tree, and each file read is a turn.
 export const BRIEF_MAX_TURNS = 40;

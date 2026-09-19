@@ -611,7 +611,7 @@ export const JOBS = {
     //
     // BOTH HALVES, because either alone is a guess. The list now denies the
     // whole built-in set, so there is nothing left to spend a turn on; and the
-    // budget goes to eight — runClaude's own non-agentic default, chosen there
+    // budget goes to eight — runClaude's own default, chosen there
     // for exactly this reason — so a job with no tools is never one stray call
     // from a runner error again. The turns cost tokens and nothing else: with
     // no tools there is no tree to read and no command to run, and an answer

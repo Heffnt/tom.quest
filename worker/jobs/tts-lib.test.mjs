@@ -373,7 +373,7 @@ describe("JSON_ONLY_ANSWER", () => {
   });
 });
 
-// runClaude's allowedTools is what keeps the delegate's agentic run read-only
+// runClaude's allowedTools is what pre-approves the delegate's reading tools
 // (worker/jobs/delegate.mjs passes Read, Glob and Grep). A malformed list must
 // fail before the process is spawned rather than quietly widening the run to
 // every tool the CLI has.
@@ -591,23 +591,12 @@ describe("runClaude through the box launcher", () => {
     expect(envelope.registration).toMatchObject({ origin: "cron:poll-gmail", kind: "job", environment: "worker", host: null, cli: "claude", modelRequested: "haiku" });
     const seen = JSON.parse(fs.readFileSync(record, "utf8"));
     // The same flags runClaude always handed the CLI: JSON out, eight turns
-    // for a non-agentic call, the model, and nothing else.
+    // by default, the model, and nothing else.
     expect(seen.argv).toEqual(["-p", "--output-format", "json", "--max-turns", "8", "--model", "haiku"]);
     // Every job call runs under the active account, and holds a slot the
     // subtree under it shares.
     expect(seen.config).toBe("/root/.claude-accounts/active");
     expect(seen.slotHeld).toBe("1");
-  }, SPAWN_TIMEOUT_MS);
-
-  it("gives an agentic call bypassPermissions, its tool list and two hundred turns", () => {
-    const record = path.join(runState, "record.json");
-    vi.stubEnv("FAKE_RECORD", record);
-    vi.stubEnv("CLAUDE_BIN", fakeClaude(JSON.stringify({ type: "result", subtype: "success", result: "ok" })));
-    runClaude("p", { model: "fable", agentic: true, allowedTools: ["Read", "Glob", "Grep"] });
-    const { argv } = JSON.parse(fs.readFileSync(record, "utf8"));
-    expect(argv[argv.indexOf("--max-turns") + 1]).toBe("200");
-    expect(argv[argv.indexOf("--permission-mode") + 1]).toBe("bypassPermissions");
-    expect(argv[argv.indexOf("--allowedTools") + 1]).toBe("Read,Glob,Grep");
   }, SPAWN_TIMEOUT_MS);
 
   it("names the subtype and the exit code when the CLI fails with an envelope", () => {

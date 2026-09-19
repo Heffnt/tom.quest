@@ -532,19 +532,21 @@ export const resultEnvelopeOf = boxRunModule.resultEnvelopeOf;
 // job's own (`cron:<job>`), so the record says which job asked and which
 // program launched it.
 //
-// Two modes:
-//   non-agentic (default) — the read-only default permission mode: the model
-//       may read files under `cwd` with its tools but cannot edit or run
-//       commands. Default --max-turns 8, not 1: with tools enabled, a single
-//       stray tool call would consume a 1-turn budget and end the run with an
-//       error envelope (review-caught on prepare-queue).
-//   agentic (agentic: true) — --permission-mode bypassPermissions and a
-//       --max-turns default of 200: the executor mode, where the model edits
-//       files and runs tests inside a throwaway clone. NEVER point agentic
-//       mode at a directory whose damage you can't discard.
+// One mode: the CLI's default permission mode. The model may read files under
+// `cwd` with its tools but cannot edit or run commands. Default --max-turns 8,
+// not 1: with tools enabled, a single stray tool call would consume a 1-turn
+// budget and end the run with an error envelope (review-caught on
+// prepare-queue).
 //
-// An `allowedTools` list keeps an agentic run read-only; an empty one means no
-// tools at all, and box-run's claudeArgs spells that out by name.
+// NO FULL-ACCESS MODE. There was one (`agentic`: bypassPermissions), and the
+// delegate was its only caller. The box runs every job as root, and the CLI
+// refuses that mode under root, so from the delegate's first day each of its
+// asks exited 1 and was recorded as silence. The mode is gone rather than
+// guarded: an `allowedTools` list pre-approves what a run needs, and nothing
+// here may ask for more.
+//
+// An `allowedTools` list pre-approves those tools; an empty one means no tools
+// at all, and box-run's claudeArgs spells that out by name.
 //
 // The prompt goes over STDIN, not argv: Linux caps a single argv element at
 // ~128 KiB and embedded todo/ledger JSON will eventually exceed that
@@ -574,7 +576,7 @@ export const resultEnvelopeOf = boxRunModule.resultEnvelopeOf;
 // that wrote the text.
 export function runClaude(
   prompt,
-  { cwd, timeoutMs, agentic = false, maxTurns, model, allowedTools, registration, receipt, slotWaitMs } = {},
+  { cwd, timeoutMs, maxTurns, model, allowedTools, registration, receipt, slotWaitMs } = {},
 ) {
   // Refused before anything is spooled or started: a malformed list must not
   // quietly widen the run to every tool the CLI has.
@@ -626,8 +628,7 @@ export function runClaude(
       model,
       cwd: runCwd,
       outputFormat: "json",
-      maxTurns: maxTurns ?? (agentic ? 200 : 8),
-      ...(agentic ? { permissionMode: "bypassPermissions" } : {}),
+      maxTurns: maxTurns ?? 8,
       allowedTools,
       timeoutMs: timeoutMs ?? 10 * 60 * 1000,
       slotWaitMs,

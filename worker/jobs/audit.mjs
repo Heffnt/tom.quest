@@ -167,7 +167,7 @@ export const AUDIT_FALLBACK_TIMEOUT_MS = 15 * 60 * 1000;
  *  anything else. This is the Claude-side spelling of AUDIT_SANDBOX. */
 export const AUDIT_FALLBACK_TOOLS = ["Read", "Grep", "Glob"];
 
-/** How many turns the fallback gets. runClaude's non-agentic default is 8 and
+/** How many turns the fallback gets. runClaude's default is 8 and
  *  THE FIRST REAL FALLBACK RUN DIED ON IT (2026-09-11, this commit's own
  *  parent): the model read a few of the files the diff touched, hit
  *  `max_turns_reached` at turn 9, and the CLI exited non-zero — recorded as
