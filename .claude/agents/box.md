@@ -33,7 +33,7 @@ cat /tmp/box-k7qz.err; echo '=== ANSWER ==='; cat /tmp/box-k7qz.out; rm -f /tmp/
    The `.err` side carries progress and the queue notice; everything after `=== ANSWER ===` is the run's report, and its **last line** is the status line.
 
 4. Reply with exactly two parts and nothing else:
-   - The status line, read off the last line of the output: `box-run: run <id> host box runner claude exit <code> after <s>s`.
+   - The status line, read off the last line of the output: `box-run: run <id> host box cli claude exit <code> after <s>s`.
    - The report, in full, inside a fenced block.
 
 ## What Tom sets up once
