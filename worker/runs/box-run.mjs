@@ -7,6 +7,14 @@
 // which is `tts-run`, which is this file. The pair is the whole transport:
 // there is no daemon in it, no queue service, and no new key.
 //
+// IT IS ALSO THE BOX'S ONE LAUNCHER. The cron jobs and the delegate reach the
+// same body in process: worker/jobs/tts-lib.mjs's runClaude calls boxRunSync
+// below instead of building a `claude` command line of its own. So every
+// unattended run on the box takes a slot from the same semaphore, runs under
+// the same scrubbed environment and writes its envelope under this file's
+// name. The session daemon is the one exception, and stays one: it drives the
+// Agent SDK for streaming input and interrupts (worker/session-host/README.md).
+//
 // Vocabulary, once, because these are tom.quest's words and not English's:
 //   run       — one CLI thread: one assembled prompt, its turns, its tool
 //               calls, its children, its ending.
@@ -24,10 +32,18 @@
 //                           release with a warning)
 //   --repo NAME             tom.quest | ComplexMultiTrigger | WikiTom | none
 //   --ref REF               branch, tag or sha to check out
+//   --cwd DIR               run in this existing absolute directory instead
+//                           of a worktree or a scratch one (needs --repo none)
 //   --model NAME            model for the run
 //   --effort LEVEL          codex only, passed through
 //   --sandbox MODE          codex only, passed through
 //   --schema FILE           codex only, passed through
+//   --allowed-tools A,B     claude only                    (default: TOOLS_ALLOWED)
+//                           an empty value means no tools, and denies them by name
+//   --disallowed-tools A,B  claude only                    (default: BANNED_TOOLS)
+//   --permission-mode MODE  claude only                    (default: acceptEdits)
+//   --max-turns N           claude only                    (default: no cap)
+//   --output-format FMT     claude only, text or json      (default: text)
 //   --tests                 this run will run a test suite (arms the guard)
 //   --install               pnpm install in the worktree   (implied by --tests)
 //   --parent RUNID          the laptop session's run id
@@ -61,8 +77,10 @@
 // throws away everything it had done.
 //
 // Exit codes: the CLI's own code on completion; 124 on timeout when a
-// --timeout was given; 75 (EX_TEMPFAIL) when the memory guard refuses; 2 for
-// bad arguments, an unresolvable ref, or a missing binary.
+// --timeout was given; 75 (EX_TEMPFAIL) when the memory guard refuses or a
+// caller's slot wait runs out; 2 for bad arguments, an unresolvable ref, or a
+// missing binary. In process these are the `exitCode` of a thrown
+// BoxRunError; only main() turns one into an exit.
 
 import crypto from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
@@ -71,7 +89,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { runConfig } from "./config.mjs";
-import { writeRegistration } from "./registration.mjs";
+import { claimRegistration, writeRegistration } from "./registration.mjs";
 
 // MIRROR of REPO_GITHUB in worker/session-host/session.mjs and SESSION_REPOS
 // in convex/ttsShared.ts. Restated rather than imported: session.mjs pulls the
@@ -90,7 +108,7 @@ const REPO_NONE = "none";
 // What a box run may do. `Task` is in it BECAUSE a box run may spawn its own
 // children on the box, which is the point of moving the work here. Reading and
 // writing are in it because a run that cannot edit cannot land work.
-const TOOLS_ALLOWED = Object.freeze([
+export const TOOLS_ALLOWED = Object.freeze([
   "Read", "Write", "Edit", "MultiEdit", "NotebookEdit",
   "Glob", "Grep", "Bash", "TodoWrite", "WebFetch", "WebSearch", "Task",
 ]);
@@ -98,16 +116,72 @@ const TOOLS_ALLOWED = Object.freeze([
 // MIRROR of BANNED_TOOLS in worker/session-host. A box child has no surface to
 // ask a question on: the laptop agent that started it is a transport relay,
 // and nobody is watching this run's stdin.
-const BANNED_TOOLS = Object.freeze(["AskUserQuestion"]);
+export const BANNED_TOOLS = Object.freeze(["AskUserQuestion"]);
+
+/** Every tool an empty `allowedTools` has to deny by name (claudeArgs). It is
+ *  not a policy — worker/session-host/banned-tools.mjs is that — but the
+ *  spelling of "none", for a caller that wants a model and no tools at all:
+ *  the evals explanation regeneration, whose whole input is its prompt.
+ *
+ *  IT HAS TO BE THE WHOLE BUILT-IN SET, AND THE FILE-AND-SHELL HALF IS NOT IT.
+ *  Measured on the box against the installed CLI (2.1.272) by reading the
+ *  `init` envelope of `--output-format stream-json --verbose`, which lists the
+ *  tools the model is actually handed: an empty allow-list plus the eighteen
+ *  names this list used to hold still left SIXTEEN reachable — CronCreate,
+ *  CronDelete, CronList, DesignSync, EnterWorktree, ExitWorktree, ListAgents,
+ *  ReportFindings, ScheduleWakeup, SendMessage, TaskCreate, TaskGet, TaskList,
+ *  TaskUpdate, ToolSearch, Workflow. A job that asked for no tools had sixteen,
+ *  and ToolSearch is the worst of them: its whole purpose is to fetch the
+ *  schemas of tools that were deferred, which re-opens the set this flag just
+ *  closed. With the names below the same probe reports zero tools.
+ *
+ *  Names the CLI does not know are IGNORED, so the retired spellings stay:
+ *  being complete costs nothing and falling behind costs a run.
+ *
+ *  worker/jobs/tts-lib.mjs re-exports this name for the callers that always
+ *  imported it from there; it is a forward, never a copy. */
+export const DENIABLE_TOOLS = Object.freeze([
+  "Task", "TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate",
+  "Bash", "BashOutput", "KillShell", "KillBash", "Glob", "Grep", "Read", "Edit",
+  "MultiEdit", "Write", "NotebookRead", "NotebookEdit", "WebFetch", "WebSearch",
+  "TodoWrite", "SlashCommand", "Skill", "ExitPlanMode", "AskUserQuestion",
+  "ToolSearch", "Workflow", "ListAgents", "ReportFindings", "ScheduleWakeup",
+  "SendMessage", "EnterWorktree", "ExitWorktree", "DesignSync",
+  "CronCreate", "CronDelete", "CronList",
+  "ListMcpResourcesTool", "ReadMcpResourceTool",
+]);
 
 const DEFAULT_MAX_PARALLEL = 2;
 const TESTS_MIN_FREE_MB = 2048;
 const SEMAPHORE_RETRY_MS = 5000;
 const LOCK_STALE_MS = 30_000;
+const DEFAULT_CLAUDE_CONFIG_DIR = "/root/.claude-accounts/active";
+// What an in-process caller's child may print before the call gives up on it.
+// runClaude's execFileSync used the same number.
+const SYNC_MAX_BUFFER = 32 * 1024 * 1024;
 
-function fail(message, code = 2) {
-  process.stderr.write(`box-run: ${message}\n`);
-  process.exit(code);
+/**
+ * Every refusal and every failure before the child exits. The command line
+ * turns one into a line of stderr and its exit code; an in-process caller
+ * catches it. Nothing in this file calls process.exit outside main(), because
+ * the cron jobs and the test suite call it in their own process.
+ *
+ * `reason` is "busy" when a caller's slot wait ran out, so a caller with a
+ * fallback can tell a full box from a broken one. `runToken` is set when the
+ * envelope was already spooled, so a caller can still name the run.
+ */
+export class BoxRunError extends Error {
+  constructor(message, exitCode = 2, reason = null) {
+    super(message);
+    this.name = "BoxRunError";
+    this.exitCode = exitCode;
+    this.reason = reason;
+    this.runToken = null;
+  }
+}
+
+function fail(message, code = 2, reason = null) {
+  throw new BoxRunError(message, code, reason);
 }
 
 function note(message) {
@@ -121,7 +195,7 @@ function note(message) {
 // let unredacted bytes reach stdout.
 function moduleUrl(relative, installed) {
   const candidates = [new URL(relative, import.meta.url), new URL(`file://${installed}`)];
-  const found = candidates.find((candidate) => fs.existsSync(fileURLToPath(candidate)));
+  const found = candidates.find((candidate) => candidate.protocol === "file:" && fs.existsSync(fileURLToPath(candidate)));
   if (!found) throw new Error(`box-run: ${relative} is not installed`);
   return found.href;
 }
@@ -129,22 +203,31 @@ function moduleUrl(relative, installed) {
 const { redactSecrets } = await import(moduleUrl("../session-host/redact.mjs", "/opt/tts/session-host/redact.mjs"));
 const { scrubbedEnv } = await import(moduleUrl("../session-host/env-scrub.mjs", "/opt/tts/session-host/env-scrub.mjs"));
 
+/** A comma list off the command line; an empty value is an empty list. */
+const commaList = (value) => value.split(",").map((name) => name.trim()).filter((name) => name !== "");
+
 function parseArgs(argv) {
   const opts = {
     cli: "claude",
     repo: REPO_NONE,
     ref: null,
+    cwd: null,
     model: null,
     effort: null,
     sandbox: null,
     schema: null,
+    allowedTools: undefined,
+    deniedTools: undefined,
+    permissionMode: undefined,
+    maxTurns: undefined,
+    outputFormat: "text",
     tests: false,
     install: false,
     parent: null,
     root: null,
     depth: null,
     keepWorktree: false,
-    timeout: 0,
+    timeoutMs: 0,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -157,20 +240,52 @@ function parseArgs(argv) {
       case "--runner": note("--runner is the old spelling of --cli; say --cli"); opts.cli = next(); break;
       case "--repo": opts.repo = next(); break;
       case "--ref": opts.ref = next(); break;
+      case "--cwd": opts.cwd = next(); break;
       case "--model": opts.model = next(); break;
       case "--effort": opts.effort = next(); break;
       case "--sandbox": opts.sandbox = next(); break;
       case "--schema": opts.schema = next(); break;
+      case "--allowed-tools": opts.allowedTools = commaList(next()); break;
+      case "--disallowed-tools": opts.deniedTools = commaList(next()); break;
+      case "--permission-mode": opts.permissionMode = next(); break;
+      case "--max-turns": opts.maxTurns = Number(next()); break;
+      case "--output-format": opts.outputFormat = next(); break;
       case "--tests": opts.tests = true; break;
       case "--install": opts.install = true; break;
       case "--parent": opts.parent = next(); break;
       case "--root": opts.root = next(); break;
       case "--depth": opts.depth = Number(next()); break;
       case "--keep-worktree": opts.keepWorktree = true; break;
-      case "--timeout": opts.timeout = Number(next()); break;
+      case "--timeout": opts.timeoutMs = Number(next()); break;
       default: fail(`unknown option ${arg}`);
     }
   }
+  // THE COMMAND LINE'S OWN DEFAULTS, and only the command line's. A run a
+  // session sends here gets the box run's tool set and edits without asking;
+  // an in-process caller that names nothing gets nothing added, which is what
+  // runClaude always handed the CLI.
+  if (opts.cli === "claude") {
+    if (opts.allowedTools === undefined) opts.allowedTools = [...TOOLS_ALLOWED];
+    if (opts.deniedTools === undefined) opts.deniedTools = [...BANNED_TOOLS];
+    if (opts.permissionMode === undefined) opts.permissionMode = "acceptEdits";
+  }
+  return opts;
+}
+
+/**
+ * The options a run is performed with, checked and completed. Both entries
+ * take this, so a flag on the command line and the same option in process
+ * are refused or honoured alike.
+ */
+function normalize(input) {
+  const opts = {
+    cli: "claude", repo: REPO_NONE, ref: null, cwd: null, model: null, effort: null, sandbox: null, schema: null,
+    outputFormat: "text", tests: false, install: false, parent: null, root: null, depth: null,
+    keepWorktree: false, timeoutMs: 0, registration: null, slotWaitMs: undefined, env: process.env,
+    ...Object.fromEntries(Object.entries(input ?? {}).filter(([, value]) => value !== undefined)),
+  };
+  opts.depth = opts.depth ?? null;
+  if (typeof opts.prompt !== "string" || !opts.prompt.trim()) fail("no prompt on stdin");
   if (opts.cli !== "claude" && opts.cli !== "codex") fail("--cli must be claude or codex");
   if (opts.repo !== REPO_NONE && !REPO_GITHUB[opts.repo]) {
     fail(`unknown repo "${opts.repo}" — expected one of ${Object.keys(REPO_GITHUB).join(", ")}, or "none"`);
@@ -183,16 +298,43 @@ function parseArgs(argv) {
   // spells out at length: a flag a caller passed is either honoured or refused,
   // never dropped on the floor.
   if (opts.repo === REPO_NONE && opts.ref) fail("--ref needs a --repo to resolve it in");
+  // The same rule for a directory the caller owns: a worktree and a caller's
+  // directory are two answers to one question, and either would silently lose.
+  if (opts.cwd !== null) {
+    if (opts.repo !== REPO_NONE) fail("--cwd names the directory itself; it cannot be given with a --repo");
+    if (typeof opts.cwd !== "string" || !path.isAbsolute(opts.cwd)) fail("--cwd must be an absolute directory");
+    let isDir = false;
+    try { isDir = fs.statSync(opts.cwd).isDirectory(); } catch {}
+    if (!isDir) fail(`--cwd ${opts.cwd} is not a directory`);
+  }
   // REMOVAL CHECK on both range tests: the record cannot refuse what never
   // reaches it. `--timeout` is read HERE and nowhere else — it arms the kill
-  // timer below, whose `opts.timeout > 0` is false for NaN, so `--timeout abc`
+  // timer below, whose `opts.timeoutMs > 0` is false for NaN, so `--timeout abc`
   // without this line means a caller asked for a hard limit and silently got
   // none. `--depth` does reach the record, as JSON, where a NaN serialises to
   // null: convex/runs.ts then refuses the payload with a 400 and dead-letters
   // it AFTER the run has spent its model calls, which is the trade the
   // `--root and --depth` refusal below already argues one line of stderr beats.
-  if (!Number.isFinite(opts.timeout) || opts.timeout < 0) fail("--timeout must be a number of milliseconds, or 0 for no limit");
+  if (!Number.isFinite(opts.timeoutMs) || opts.timeoutMs < 0) fail("--timeout must be a number of milliseconds, or 0 for no limit");
   if (opts.depth !== null && (!Number.isInteger(opts.depth) || opts.depth < 0)) fail("--depth must be a whole number");
+  if (opts.maxTurns !== undefined && (!Number.isInteger(opts.maxTurns) || opts.maxTurns < 1)) fail("--max-turns must be a whole number of turns");
+  if (opts.slotWaitMs !== undefined && (!Number.isFinite(opts.slotWaitMs) || opts.slotWaitMs < 0)) fail("slotWaitMs must be a number of milliseconds");
+  if (opts.outputFormat !== "text" && opts.outputFormat !== "json") fail("--output-format must be text or json");
+  for (const key of ["allowedTools", "deniedTools"]) {
+    const list = opts[key];
+    if (list !== undefined && (!Array.isArray(list) || list.some((tool) => typeof tool !== "string" || tool === ""))) {
+      fail(`${key} must be an array of non-empty strings`);
+    }
+  }
+  // THE CLAUDE-ONLY FLAGS ARE REFUSED FOR CODEX, not dropped: tts-codex has
+  // no door for a tool list, a permission mode or a turn cap, and a caller who
+  // named one would otherwise believe the run was bounded by it.
+  if (opts.cli === "codex") {
+    const named = ["allowedTools", "deniedTools", "permissionMode", "maxTurns"].filter((key) => opts[key] !== undefined);
+    if (named.length > 0 || opts.outputFormat !== "text") fail(`a Codex run takes no ${named[0] ?? "outputFormat"}; those flags are claude only`);
+    // ONE RUN, ONE AUTHOR OF ITS ENVELOPE — see the registration block below.
+    if (opts.registration) fail("a Codex run registers itself through codex-run.mjs; pass no registration");
+  }
   // REMOVAL CHECK: this cannot go, because the two branches below are what it
   // protects. `--root` and `--depth` without a `--parent` describe a position
   // in a tree with no edge leading to it, and the registration writer spreads
@@ -224,6 +366,67 @@ function parseArgs(argv) {
     if (opts.depth === null) opts.depth = 1;
   }
   return opts;
+}
+
+/**
+ * The command line `claude -p` is given, as data.
+ *
+ * SPLIT OUT SO IT CAN BE READ WITHOUT BEING RUN. What the flags come to is the
+ * whole of what a caller's tool and turn settings mean, and inside a run the
+ * only way to see them was to spawn a child and watch what it did — which is
+ * no way to find out that a job asking for no tools was being handed sixteen.
+ * Every argument is decided here and nothing here touches the process, the
+ * environment or the registration. A setting the caller left out is left out
+ * of the command line: the defaults are the caller's (parseArgs has the
+ * command line's), never this function's.
+ */
+export function claudeArgs({ model, outputFormat = "text", maxTurns, allowedTools, deniedTools, permissionMode } = {}) {
+  const args = ["-p", "--output-format", outputFormat];
+  // THE CLI HONOURS --max-turns. `claude --help` does not list it, which is
+  // what this file's older comment went by, but a job run on the box that ran
+  // out of turns comes back as an `error_max_turns` result envelope, and the
+  // audit fallback died at eight turns before audit.mjs gave it forty — both
+  // observed on the box. It is passed only when a caller names a budget; the
+  // command line names none by default, so a session's box run is bounded by
+  // the model's own stop and by --timeout, as before.
+  if (maxTurns !== undefined) args.push("--max-turns", String(maxTurns));
+  if (model) args.push("--model", model);
+  if (permissionMode) args.push("--permission-mode", permissionMode);
+  if (allowedTools !== undefined) {
+    if (!Array.isArray(allowedTools) || allowedTools.some((tool) => typeof tool !== "string" || tool === "")) {
+      throw new BoxRunError("allowedTools must be an array of non-empty strings");
+    }
+    args.push("--allowedTools", allowedTools.join(","));
+  }
+  // AN EMPTY LIST MEANS NO TOOLS, AND THE ALLOW-LIST ALONE DOES NOT SAY SO.
+  // `--allowedTools` pre-approves; it does not withhold, and the default
+  // permission mode hands the model its read tools without asking either way.
+  // The flag that withholds names its tools, so an empty allow-list has to
+  // name them — DENIABLE_TOOLS is that spelling and the only reason it exists.
+  const denied = [...(deniedTools ?? []), ...(Array.isArray(allowedTools) && allowedTools.length === 0 ? DENIABLE_TOOLS : [])];
+  if (denied.length > 0) args.push("--disallowedTools", [...new Set(denied)].join(","));
+  return args;
+}
+
+/**
+ * The `--output-format json` result envelope out of whatever the CLI printed,
+ * or null when it printed something else (or nothing).
+ *
+ * ONE READER FOR BOTH ENDS. A run that succeeds prints the envelope on stdout;
+ * a run that fails prints it too and then exits non-zero. Reading it in two
+ * places is how the failing end came to read it in none.
+ */
+export function resultEnvelopeOf(stdout) {
+  if (typeof stdout !== "string" || stdout.trim() === "") return null;
+  let envelope;
+  try {
+    envelope = JSON.parse(stdout);
+  } catch (error) {
+    // Not the JSON envelope. Anything other than bad JSON is a real fault.
+    if (error instanceof SyntaxError) return null;
+    throw error;
+  }
+  return envelope && typeof envelope === "object" && envelope.type === "result" ? envelope : null;
 }
 
 function readStdin() {
@@ -270,10 +473,7 @@ function refuseIfMemoryIsShort(opts, env) {
     return;
   }
   if (availableMb < TESTS_MIN_FREE_MB) {
-    process.stderr.write(
-      `box-run: refused — free memory is ${availableMb} MB, a test run needs ${TESTS_MIN_FREE_MB} MB; nothing was started\n`,
-    );
-    process.exit(75);
+    fail(`refused — free memory is ${availableMb} MB, a test run needs ${TESTS_MIN_FREE_MB} MB; nothing was started`, 75);
   }
 }
 
@@ -358,13 +558,20 @@ function writeCounter(file, holders) {
  * A COUNTING LOCK, not N slot files. A slot-file scheme makes a queued run wait
  * on one specific slot; a counter with a retry loop lets it take whichever
  * frees first, which is what "queue beyond N" means. There is no cap on the
- * waiting: a queued run is a working run.
+ * waiting by default: a queued run is a working run.
+ *
+ * `waitMs` is the one exception, for a caller that is standing still with a
+ * fallback of its own — the delegate, whose asker takes its stated default,
+ * and the evals serve pass, which runs every five minutes without a flock.
+ * Past it the wait ends in a BoxRunError whose reason is "busy".
  *
  * Returns a release function. Every exit path must call it.
  */
-function takeSlot({ id, counterFile, lockFile, limit, sleepMs = SEMAPHORE_RETRY_MS, announce = note }) {
+function takeSlot({ id, counterFile, lockFile, limit, sleepMs = SEMAPHORE_RETRY_MS, announce = note, waitMs }) {
   let announced = false;
+  const started = Date.now();
   for (;;) {
+    let busy = 0;
     const taken = withLock(lockFile, () => {
       const holders = readCounter(counterFile).filter((holder) => alive(holder?.pid));
       if (holders.length < limit) {
@@ -372,6 +579,7 @@ function takeSlot({ id, counterFile, lockFile, limit, sleepMs = SEMAPHORE_RETRY_
         return true;
       }
       writeCounter(counterFile, holders);
+      busy = holders.length;
       if (!announced) {
         // THE FIRST REFUSAL ONLY. A line every five seconds would bury the
         // report the laptop agent is waiting to relay.
@@ -381,7 +589,10 @@ function takeSlot({ id, counterFile, lockFile, limit, sleepMs = SEMAPHORE_RETRY_
       return false;
     });
     if (taken) break;
-    sleep(sleepMs);
+    if (waitMs !== undefined && Date.now() - started >= waitMs) {
+      fail(`the box is busy: ${busy} runs hold all ${limit} slots, and this caller waits ${waitMs} ms at most; nothing was started`, 75, "busy");
+    }
+    sleep(waitMs === undefined ? sleepMs : Math.max(1, Math.min(sleepMs, waitMs - (Date.now() - started))));
   }
   let released = false;
   return () => {
@@ -404,10 +615,9 @@ function git(args, { cwd, env } = {}) {
   return result;
 }
 
-function gitOrFail(args, what, { cwd, env, before } = {}) {
+function gitOrFail(args, what, { cwd, env } = {}) {
   const result = git(args, { cwd, env });
   if (result.status !== 0) {
-    if (before) before();
     fail(`${what}: ${String(result.stderr ?? "").trim().split("\n").slice(-3).join("; ")}`);
   }
   return result;
@@ -462,7 +672,7 @@ function ensureMirror(repo, reposDir, env) {
   return mirror;
 }
 
-function resolveRef(mirror, ref, env, onFail) {
+function resolveRef(mirror, ref, env) {
   // NO `origin/<ref>` CANDIDATE. A mirror fetches with +refs/*:refs/*, so a
   // branch lands at refs/heads/<name> and there is no refs/remotes/origin/*
   // namespace in the repository at all — the candidate could never match, and
@@ -476,7 +686,6 @@ function resolveRef(mirror, ref, env, onFail) {
   // FETCH FIRST, FAIL LOUDLY, NEVER FALL BACK TO THE DEFAULT BRANCH. A run that
   // silently worked on main instead of the branch it was given would report
   // results about code nobody asked about.
-  if (onFail) onFail();
   fail(`--ref ${ref} does not resolve in the ${path.basename(mirror, ".git")} mirror`);
   return null;
 }
@@ -521,177 +730,423 @@ function codexBinary(env) {
 }
 
 // ---------------------------------------------------------------------------
-// The run itself. Everything above is testable in isolation; this is the body
-// tts-run forwards to.
+// The run itself: prepare, spawn, finish. Everything above is testable in
+// isolation. prepareRun and finishRun are the one body; boxRun (the command
+// line's) and boxRunSync (runClaude's) differ only in how they wait for the
+// child.
 // ---------------------------------------------------------------------------
 
-const opts = parseArgs(process.argv.slice(2));
-const prompt = readStdin();
-if (!prompt.trim()) fail("no prompt on stdin");
+/**
+ * Everything before the child starts: the memory guard, the slot, the work
+ * directory, the registration envelope and the command line. Returns a handle
+ * the spawn and finishRun take. On a throw, whatever was taken is given back.
+ */
+function prepareRun(options) {
+  const opts = normalize(options);
+  const env = opts.env;
 
-// BEFORE THE SEMAPHORE AND BEFORE ANY WORK: a refused run must start nothing,
-// take no slot, and clone nothing.
-refuseIfMemoryIsShort(opts, process.env);
+  // BEFORE THE SEMAPHORE AND BEFORE ANY WORK: a refused run must start nothing,
+  // take no slot, and clone nothing.
+  refuseIfMemoryIsShort(opts, env);
 
-const config = runConfig();
-const stateDir = config.stateDir;
-const pnpmStore = path.join(path.dirname(stateDir), "pnpm-store");
-const limit = Number.isInteger(config.maxParallel) && config.maxParallel > 0 ? config.maxParallel : DEFAULT_MAX_PARALLEL;
+  const config = runConfig({ env });
+  const stateDir = config.stateDir;
+  const pnpmStore = path.join(path.dirname(stateDir), "pnpm-store");
+  const limit = Number.isInteger(config.maxParallel) && config.maxParallel > 0 ? config.maxParallel : DEFAULT_MAX_PARALLEL;
 
-const id = crypto.randomUUID().slice(0, 8);
-const workDir = path.join(stateDir, "work", id);
+  const id = crypto.randomUUID().slice(0, 8);
+  const workDir = path.join(stateDir, "work", id);
 
-// A RUN INSIDE A RUN TAKES NO SECOND SLOT, and without this rule the transport
-// deadlocks on its ordinary path. A box run holds its slot for the whole life
-// of its CLI child; that child has Task, a tom.quest worktree, and agent files
-// that now send `box` and `codex` through scripts/box-agent.mjs, which on the
-// box runs tts-run right here. So the child asks for a slot its own parent is
-// still holding. At the default limit of 2, two box runs that each delegate —
-// which "mechanical work runs on Codex" makes the normal thing, not the exotic
-// one — leave both children queued behind two live parents for ever, and the
-// relay is told `queued behind` is not an error. At limit 1 a single run that
-// asks Codex anything hangs itself.
-//
-// The semaphore counts the WORK THE LAPTOP SENT, which is what it was sized
-// for: one full test suite is about 1.6 GB and the box holds two of those. A
-// subagent inside a run is part of that run's budget, not a new one, and the
-// run above it is the thing that has to finish before the slot comes back.
-// TTS_RUN_SLOT_HELD is set on every child this file spawns, so the whole
-// subtree under one slot inherits it however deep the delegation goes.
-const inheritedSlot = process.env.TTS_RUN_SLOT_HELD === "1";
-if (inheritedSlot) note("running under the parent run's slot; not queueing");
-const release = inheritedSlot ? () => {} : takeSlot({
-  id,
-  counterFile: path.join(stateDir, "semaphore.json"),
-  lockFile: path.join(stateDir, "semaphore.lock"),
-  limit,
-  // REMOVAL CHECK on RUN_SEMAPHORE_RETRY_MS: the queue's proof is that a
-  // second run waits and then goes, and at the real retry interval that test
-  // would take the interval itself to run, once per case, for ever. The seam
-  // shortens the sleep and nothing else — the limit, the slot file and the
-  // stale reclaim are untouched — so what the test exercises is the same code
-  // a run takes. Deleting it leaves the queue with no test.
-  sleepMs: Number(process.env.RUN_SEMAPHORE_RETRY_MS) > 0 ? Number(process.env.RUN_SEMAPHORE_RETRY_MS) : SEMAPHORE_RETRY_MS,
-});
+  // A RUN INSIDE A RUN TAKES NO SECOND SLOT, and without this rule the transport
+  // deadlocks on its ordinary path. A box run holds its slot for the whole life
+  // of its CLI child; that child has Task, a tom.quest worktree, and agent files
+  // that now send `box` and `codex` through scripts/box-agent.mjs, which on the
+  // box runs tts-run right here. So the child asks for a slot its own parent is
+  // still holding. At the default limit of 2, two box runs that each delegate —
+  // which "mechanical work runs on Codex" makes the normal thing, not the exotic
+  // one — leave both children queued behind two live parents for ever, and the
+  // relay is told `queued behind` is not an error. At limit 1 a single run that
+  // asks Codex anything hangs itself.
+  //
+  // The semaphore counts the WORK THE BOX IS ASKED FOR, which is what it was
+  // sized for: one full test suite is about 1.6 GB and the box holds two of
+  // those. A subagent inside a run is part of that run's budget, not a new
+  // one, and the run above it is the thing that has to finish before the slot
+  // comes back. TTS_RUN_SLOT_HELD is set on every child this file spawns, so
+  // the whole subtree under one slot inherits it however deep the delegation
+  // goes — including a cron job a box run starts by hand.
+  const inheritedSlot = env.TTS_RUN_SLOT_HELD === "1";
+  if (inheritedSlot) note("running under the parent run's slot; not queueing");
+  const release = inheritedSlot ? () => {} : takeSlot({
+    id,
+    counterFile: path.join(stateDir, "semaphore.json"),
+    lockFile: path.join(stateDir, "semaphore.lock"),
+    limit,
+    waitMs: opts.slotWaitMs,
+    // REMOVAL CHECK on RUN_SEMAPHORE_RETRY_MS: the queue's proof is that a
+    // second run waits and then goes, and at the real retry interval that test
+    // would take the interval itself to run, once per case, for ever. The seam
+    // shortens the sleep and nothing else — the limit, the slot file and the
+    // stale reclaim are untouched — so what the test exercises is the same code
+    // a run takes. Deleting it leaves the queue with no test.
+    sleepMs: Number(env.RUN_SEMAPHORE_RETRY_MS) > 0 ? Number(env.RUN_SEMAPHORE_RETRY_MS) : SEMAPHORE_RETRY_MS,
+  });
 
-let mirror = null;
-let checkout = null;
-let reaped = false;
-
-function reap() {
-  if (reaped) return;
-  reaped = true;
-  try {
-    if (!opts.keepWorktree) {
-      if (mirror && checkout) git(["-C", mirror, "worktree", "remove", "--force", checkout]);
-      if (mirror) git(["-C", mirror, "worktree", "prune"]);
-      fs.rmSync(workDir, { recursive: true, force: true });
+  let mirror = null;
+  let checkout = null;
+  let reaped = false;
+  const reap = () => {
+    if (reaped) return;
+    reaped = true;
+    try {
+      if (!opts.keepWorktree) {
+        if (mirror && checkout) git(["-C", mirror, "worktree", "remove", "--force", checkout]);
+        if (mirror) git(["-C", mirror, "worktree", "prune"]);
+        fs.rmSync(workDir, { recursive: true, force: true });
+      }
+    } catch {
+      // A work tree that will not reap costs disk, not correctness. The release
+      // below is the part that must always happen.
     }
-  } catch {
-    // A work tree that will not reap costs disk, not correctness. The release
-    // below is the part that must always happen.
+    release();
+  };
+  // The command line reaps on a signal; it has to know the reap as soon as
+  // there is something to reap.
+  opts.onReap?.(reap);
+
+  let spooled = null;
+  try {
+    let cwd;
+    fs.mkdirSync(workDir, { recursive: true });
+    if (opts.cwd !== null) {
+      // A DIRECTORY THE CALLER OWNS is used as it is and never reaped: the
+      // delegate's WikiTom worktree, the CMT cache clone, a job's tmpdir. Only
+      // the work directory with the child's stderr log is this run's.
+      cwd = opts.cwd;
+    } else if (opts.repo === REPO_NONE) {
+      cwd = path.join(workDir, "ws");
+      fs.mkdirSync(cwd, { recursive: true });
+    } else {
+      mirror = ensureMirror(opts.repo, path.join(stateDir, "repos"), env);
+      const sha = resolveRef(mirror, opts.ref, env);
+      checkout = path.join(workDir, opts.repo);
+      gitOrFail(["-C", mirror, "worktree", "add", "--detach", checkout, sha], `could not make a worktree at ${sha}`, {
+        env: { ...env, GIT_LFS_SKIP_SMUDGE: "1" },
+      });
+      cwd = checkout;
+      if (opts.install) {
+        const pnpm = pnpmBinary(env);
+        if (!pnpm) fail("pnpm is not installed on the box");
+        note(`pnpm install in ${opts.repo}`);
+        const installed = spawnSync(pnpm, ["install", "--frozen-lockfile", "--store-dir", pnpmStore], {
+          cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], shell: process.platform === "win32",
+        });
+        if (installed.status !== 0) {
+          process.stderr.write(`${String(installed.stderr ?? "").trim().split("\n").slice(-10).join("\n")}\n`);
+          fail("pnpm install failed in the worktree");
+        }
+      }
+    }
+
+    // REGISTRATION IS WRITTEN BEFORE THE CHILD CAN START, so the record holds
+    // the envelope even when the run dies in its first turn. The envelope is
+    // the caller's — the command line's is sessionRegistration below, a job's
+    // is composed by runClaude — and this file is always its writer, which is
+    // what the record takes as the run's launcher (registration.mjs). A caller
+    // that named no directory gets the one the run actually ran in.
+    //
+    // ONE RUN, ONE AUTHOR OF ITS ENVELOPE. scripts/codex-run.mjs registers the
+    // run it starts itself — its own prompt hash, its own skills, its own graph
+    // version — under a token it mints, and it never reads TTS_RUN_REG_TOKEN.
+    // So for the Codex runner a second envelope written here is an orphan:
+    // codex-run's is the one the sweep claims, this one is never claimed, and
+    // the spool holds it until cleanup deletes it. Worse, the parent went with
+    // it — the run landed as an unparented `job` and the tree edge this whole
+    // transport exists to record was lost. normalize() therefore refuses a
+    // registration for Codex, and this hands over the one fact codex-run
+    // cannot know: the parent, below.
+    const spoolDir = env.TTS_RUN_REG_SPOOL || path.join(stateDir, "registration");
+    if (opts.registration) {
+      spooled = writeRegistration({
+        spoolDir,
+        writer: { file: "worker/runs/box-run.mjs", job: "box-run" },
+        registration: { cwd, ...opts.registration },
+      });
+    }
+
+    const namedEnvironment = namedEnvironmentOf(env);
+    const childEnv = {
+      ...scrubbedEnv({ keepTtsKey: true, source: env }),
+      CLAUDE_CONFIG_DIR: env.CLAUDE_CONFIG_DIR || DEFAULT_CLAUDE_CONFIG_DIR,
+      WIKITOM_DIR: env.WIKITOM_DIR || "/root/wikitom",
+      ...(spooled ? { TTS_RUN_REG_TOKEN: spooled.token } : {}),
+      TTS_RUN_REG_SPOOL: spoolDir,
+      RUN_HOST: "box",
+      GIT_LFS_SKIP_SMUDGE: "1",
+      // THE SLOT THIS RUN HOLDS COVERS EVERYTHING UNDER IT. See the semaphore
+      // block above: a `box` or `codex` subagent inside this child reaches
+      // box-run.mjs again through scripts/box-agent.mjs, and asking for a second
+      // slot while its own parent holds one is the deadlock. Inherited, not
+      // recomputed, so it survives however many levels the delegation goes.
+      TTS_RUN_SLOT_HELD: "1",
+    };
+    // A token the caller's own process was started under is not this child's.
+    if (!spooled) delete childEnv.TTS_RUN_REG_TOKEN;
+    // THE PARENT GOES TO WHICHEVER WRITER OWNS THE ENVELOPE, and never to both.
+    // For Claude the envelope above already carries it, so the variable is
+    // cleared: two writers for one field is the bug registration.mjs's header
+    // warns about. For Codex there is no envelope from here at all, and this
+    // variable is the only way the edge reaches codex-run.mjs's own — it is
+    // what turns that run from an unparented `job` into a `codex-child` under
+    // the session that asked for it. mergeRegistration fills the root and the
+    // depth from the parent when the launcher names neither, which is this case.
+    if (opts.cli === "codex" && opts.parent) childEnv.TTS_RUN_PARENT_RUN_ID = opts.parent;
+    else delete childEnv.TTS_RUN_PARENT_RUN_ID;
+    // The environment follows the same one-writer rule: codex-run.mjs names it
+    // in the only Codex envelope, so only the Codex child is told.
+    if (opts.cli === "codex" && namedEnvironment) childEnv.TTS_RUN_ENVIRONMENT = namedEnvironment;
+    else delete childEnv.TTS_RUN_ENVIRONMENT;
+
+    let bin;
+    let args;
+    if (opts.cli === "codex") {
+      // A CODEX WEEKLY-CAP ERROR IS A LEGITIMATE OUTCOME, not a transport
+      // failure: tts-codex's own message and exit code come back unaltered.
+      bin = codexBinary(env);
+      args = ["--cwd", cwd, "--model", opts.model];
+      if (opts.effort) args.push("--effort", opts.effort);
+      if (opts.sandbox) args.push("--sandbox", opts.sandbox);
+      if (opts.schema) args.push("--schema", opts.schema);
+      if (opts.timeoutMs > 0) args.push("--timeout", String(opts.timeoutMs));
+    } else {
+      bin = claudeBinary(env);
+      args = claudeArgs(opts);
+    }
+
+    const useShell = process.platform === "win32" && bin.toLowerCase().endsWith(".cmd");
+    const quote = (s) => (useShell ? `"${String(s).replace(/\\(?=")/g, "\\\\").replace(/"/g, '""')}"` : s);
+    return {
+      id, opts, cwd, workDir, reap, spooled,
+      errLog: path.join(workDir, "stderr.log"),
+      configDir: childEnv.CLAUDE_CONFIG_DIR,
+      command: useShell ? quote(bin) : bin,
+      args: args.map(quote),
+      spawnOptions: { cwd, env: childEnv, shell: useShell, windowsHide: true },
+    };
+  } catch (error) {
+    reap();
+    if (error instanceof BoxRunError && spooled) error.runToken = spooled.token;
+    if (error instanceof BoxRunError) throw error;
+    const wrapped = new BoxRunError(error?.message ?? String(error));
+    if (spooled) wrapped.runToken = spooled.token;
+    throw wrapped;
   }
-  release();
 }
 
-// REMOVAL CHECK: the slot reclaim covers HALF of what a signalled run leaves,
-// and the other half has no cleanup anywhere. takeSlot filters holders by
-// `alive(holder.pid)`, so a killed run's slot is indeed reclaimed — by the NEXT
-// run, which is soon enough. Its worktree is not: nothing else on the box runs
-// `git worktree remove` or prunes <stateDir>/work/<id>, so without these
-// handlers every Ctrl-C and every `systemctl stop` leaves a full detached
-// checkout of tom.quest or ComplexMultiTrigger on disk for good, and the
-// mirror's worktree list grows an entry per kill. `--keep-worktree` is the way
-// to ask for that deliberately; reap() honours it either way.
-for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => {
-    reap();
-    process.exit(130);
+function namedEnvironmentOf(env) {
+  return ["session", "worker", "runner"].includes(env.TTS_RUN_ENVIRONMENT) ? env.TTS_RUN_ENVIRONMENT : null;
+}
+
+/**
+ * After the child: the answer, the claim, the reap. `stdout` is everything the
+ * child printed; with --output-format json the answer is the envelope's
+ * `result`, and the envelope itself comes back for a caller that reads its
+ * subtype.
+ */
+function finishRun(run, { stdout, code, signal, timedOut }) {
+  const { opts } = run;
+  const envelope = opts.outputFormat === "json" ? resultEnvelopeOf(stdout) : null;
+  const text = typeof envelope?.result === "string" ? envelope.result : stdout;
+  // THE CLAIM IS MADE WHERE THE CHILD RAN. The run file lives under the config
+  // directory the child was actually given, keyed by its cwd, so this is the
+  // one place both are known; a caller that guessed the directory would claim
+  // a file under another account slot.
+  if (run.spooled && typeof envelope?.session_id === "string" && envelope.session_id) {
+    const project = path.resolve(run.cwd).replaceAll("\\", "-").replaceAll("/", "-").replaceAll(":", "-");
+    const runFile = path.join(run.configDir, "projects", project, `${envelope.session_id}.jsonl`);
+    try {
+      claimRegistration({
+        spoolDir: path.dirname(run.spooled.file),
+        token: run.spooled.token,
+        runFile,
+        claim: { by: "launcher:box-run", threadId: envelope.session_id, runFile, hookPayloadKeys: [] },
+      });
+    } catch (error) {
+      // The SessionStart hook claims the same envelope; a claim that fails here
+      // leaves it to the hook and the sweep, and never loses the answer.
+      note(`could not claim the envelope: ${error?.message ?? error}`);
+    }
+  }
+  // THE TAIL, NOT THE PATH. The reap below deletes the work directory, so
+  // naming the log file would hand the caller an address that no longer
+  // resolves — and the one case this matters most is the one where the CLI
+  // wrote no answer at all, which is exactly where a Codex weekly-cap message
+  // lives. --keep-worktree is what keeps the whole log.
+  let stderrTail = "";
+  if (code !== 0 || timedOut) {
+    try { stderrTail = redactSecrets(fs.readFileSync(run.errLog, "utf8")).trim().split("\n").slice(-5).join("\n"); } catch {}
+  }
+  run.reap();
+  return {
+    id: run.id,
+    seconds: Math.round((Date.now() - run.startedAt) / 1000),
+    text,
+    exitCode: timedOut ? 124 : (code ?? 1),
+    signal: signal ?? null,
+    timedOut,
+    envelope,
+    runToken: run.spooled?.token ?? null,
+    stderrTail,
+    workDir: run.workDir,
+    errLog: run.errLog,
+  };
+}
+
+/**
+ * Perform one run and wait for it without blocking the event loop. This is the
+ * command line's entry; it streams nothing, so its answer and main()'s output
+ * are the same bytes they always were.
+ *
+ * Takes: prompt, cli, model, effort, sandbox, schema, cwd or repo/ref,
+ * allowedTools, deniedTools, permissionMode, maxTurns, timeoutMs, outputFormat,
+ * registration (an envelope object, or null for none), slotWaitMs,
+ * tests/install, parent/root/depth, keepWorktree, env (default process.env),
+ * onReap (handed the reap as soon as there is one).
+ *
+ * Returns { text, exitCode, envelope, runToken, ... }. Throws a BoxRunError
+ * for everything that happens before the child exits.
+ */
+export async function boxRun(options) {
+  const run = prepareRun(options);
+  fs.mkdirSync(path.dirname(run.errLog), { recursive: true });
+  const errStream = fs.createWriteStream(run.errLog);
+  let child;
+  run.startedAt = Date.now();
+  try {
+    child = spawn(run.command, run.args, { ...run.spawnOptions, stdio: ["pipe", "pipe", "pipe"] });
+  } catch (error) {
+    errStream.end();
+    run.reap();
+    throw Object.assign(new BoxRunError(`could not start ${run.command}: ${error.message}`), { runToken: run.spooled?.token ?? null });
+  }
+  let stdout = "";
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  // THE CHILD'S STDERR NEVER REACHES OUR STDOUT. It carries progress, tool
+  // chatter and whatever a failing command printed; the laptop relays stdout
+  // whole, so one stray line there becomes a sentence Tom reads as the report.
+  child.stderr.pipe(errStream, { end: false });
+  child.stdin.on("error", () => {});
+  child.stdin.end(run.opts.prompt);
+
+  // REMOVAL CHECK on --timeout: the ruling is that there is no time limit BY
+  // DEFAULT, and this flag is off unless a caller names it (timeoutMs is 0,
+  // the timer is null, nothing is armed). What it cannot become is nothing at
+  // all: a run holds a slot until its CLI child closes, so a child that wedges —
+  // waiting on a prompt it will never get, or a command that never returns —
+  // holds that slot for ever, and with the subtree rule above it holds it for
+  // everything under it too. A caller that knows its work is bounded is the only
+  // thing that can free the box short of a human on the box, and the relay is
+  // told to pass a `--timeout` straight through when the request names one.
+  //
+  // REMOVAL CHECK on the win32 branch beside it, and on the `.cmd` branch in the
+  // spawn: this file only ever runs on Linux, and its TESTS also run on Tom's
+  // Windows laptop. The fake CLI they spawn cannot be a plain script there —
+  // Windows has no shebang, so a Node fake is reachable only through a `.cmd`
+  // shim, which Node refuses to spawn without a shell. Deleting the branches
+  // deletes the suite's ability to run the real file at all, and `child.kill`
+  // on Windows leaves the shim's grandchild alive, which is what taskkill /T is
+  // for. The production path takes the else in both.
+  let timedOut = false;
+  const timer = run.opts.timeoutMs > 0
+    ? setTimeout(() => {
+        timedOut = true;
+        if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+        else child.kill("SIGKILL");
+      }, run.opts.timeoutMs)
+    : null;
+
+  return new Promise((resolve, reject) => {
+    child.on("error", (error) => {
+      if (timer) clearTimeout(timer);
+      errStream.end();
+      run.reap();
+      reject(Object.assign(new BoxRunError(`could not start ${run.command}: ${error.message}`), { runToken: run.spooled?.token ?? null }));
+    });
+    child.on("close", (code, signal) => {
+      if (timer) clearTimeout(timer);
+      // The log is read back by finishRun, so it has to be flushed first.
+      errStream.end(() => resolve(finishRun(run, { stdout, code, signal, timedOut })));
+    });
   });
 }
 
-let cwd;
-try {
-  fs.mkdirSync(workDir, { recursive: true });
-  if (opts.repo === REPO_NONE) {
-    cwd = path.join(workDir, "ws");
-    fs.mkdirSync(cwd, { recursive: true });
-  } else {
-    mirror = ensureMirror(opts.repo, path.join(stateDir, "repos"), process.env);
-    const sha = resolveRef(mirror, opts.ref, process.env, reap);
-    checkout = path.join(workDir, opts.repo);
-    gitOrFail(["-C", mirror, "worktree", "add", "--detach", checkout, sha], `could not make a worktree at ${sha}`, {
-      env: { ...process.env, GIT_LFS_SKIP_SMUDGE: "1" },
-      before: reap,
-    });
-    cwd = checkout;
-    if (opts.install) {
-      const pnpm = pnpmBinary(process.env);
-      if (!pnpm) { reap(); fail("pnpm is not installed on the box"); }
-      note(`pnpm install in ${opts.repo}`);
-      const installed = spawnSync(pnpm, ["install", "--frozen-lockfile", "--store-dir", pnpmStore], {
-        cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], shell: process.platform === "win32",
-      });
-      if (installed.status !== 0) {
-        process.stderr.write(`${String(installed.stderr ?? "").trim().split("\n").slice(-10).join("\n")}\n`);
-        reap();
-        fail("pnpm install failed in the worktree");
-      }
-    }
+/**
+ * The same run, waited for synchronously. runClaude has always been a
+ * synchronous call whose answer its callers use as a string on the next line,
+ * and a job's model call has nothing else to do while it waits; so this is
+ * that call's shape, over the same prepareRun and finishRun as boxRun.
+ *
+ * A timeout here is spawnSync's: the child gets SIGTERM, as execFileSync gave
+ * it, and the result says timedOut with exit 124.
+ */
+export function boxRunSync(options) {
+  const run = prepareRun(options);
+  run.startedAt = Date.now();
+  const result = spawnSync(run.command, run.args, {
+    ...run.spawnOptions,
+    input: run.opts.prompt,
+    encoding: "utf8",
+    maxBuffer: SYNC_MAX_BUFFER,
+    ...(run.opts.timeoutMs > 0 ? { timeout: run.opts.timeoutMs } : {}),
+  });
+  try { fs.writeFileSync(run.errLog, result.stderr ?? ""); } catch {}
+  const timedOut = result.error?.code === "ETIMEDOUT";
+  if (result.error && !timedOut) {
+    run.reap();
+    throw Object.assign(new BoxRunError(`could not start ${run.command}: ${result.error.message}`), { runToken: run.spooled?.token ?? null });
   }
-} catch (error) {
-  reap();
-  fail(error?.message ?? String(error));
+  return finishRun(run, { stdout: result.stdout ?? "", code: result.status, signal: result.signal, timedOut });
 }
 
-// REGISTRATION IS WRITTEN BEFORE THE CHILD CAN START, so the record holds the
-// envelope even when the run dies in its first turn.
-//
-// origin is `session`: `laptop-orchestrator` is not in convex/runs.ts's
-// validOrigin, origin names what STARTED a run — a session did — and
-// host: "box" already records where it ran.
-//
-// kind is `subagent`: it is a run a session spawned by a tool call. Left to the
-// Claude parser, a `-p` run with a user line reads as a session, and a second
-// session in the tree is a false fact.
-//
-// linkKnown is false WITH a parent: convex/runs.ts's validRunPayload refuses a
-// run where linkKnown and a parentRunId meet without a spawnedByToolUseId, and
-// the Bash tool call that launched this run does not expose its id to the
-// command line. An unknown link is recorded unknown.
-//
-// rootRunId and depth travel WITH the parent: a run whose parent nobody has
-// swept yet keeps the root and depth its own sidecar gave it, and a Claude root
-// file parses at depth 0 — which convex/runs.ts refuses against a parent.
-//
-// ONE RUN, ONE AUTHOR OF ITS ENVELOPE. scripts/codex-run.mjs registers the run
-// it starts itself — its own prompt hash, its own skills, its own graph
-// version — under a token it mints, and it never reads TTS_RUN_REG_TOKEN. So
-// for the Codex runner a second envelope written here is an orphan: codex-run's
-// is the one the sweep claims, this one is never claimed, and the spool holds
-// it until cleanup deletes it. Worse, the parent went with it — the run landed
-// as an unparented `job` and the tree edge this whole transport exists to
-// record was lost. This file therefore writes nothing for Codex and hands over
-// the one fact codex-run cannot know: the parent, below.
-// WHERE THE RUN STARTS is named only for a run nobody launched from a parent:
-// with --parent the record gives the run its parent's environment, and a word
-// here would overrule that with a guess. A launcher that knows better says so
-// in TTS_RUN_ENVIRONMENT, which wins over both.
-const namedEnvironment = ["session", "worker", "runner"].includes(process.env.TTS_RUN_ENVIRONMENT) ? process.env.TTS_RUN_ENVIRONMENT : null;
-const spooled = opts.cli === "codex" ? null : writeRegistration({
-  spoolDir: process.env.TTS_RUN_REG_SPOOL || path.join(stateDir, "registration"),
-  writer: { file: "worker/runs/box-run.mjs", job: "box-run" },
-  registration: {
+/**
+ * The envelope of a run a session sent over the transport. The command line's
+ * and nobody else's: a job composes its own (runClaude).
+ *
+ * origin is `session`: `laptop-orchestrator` is not in convex/runs.ts's
+ * validOrigin, origin names what STARTED a run — a session did — and
+ * host: "box" already records where it ran.
+ *
+ * kind is `subagent`: it is a run a session spawned by a tool call. Left to the
+ * Claude parser, a `-p` run with a user line reads as a session, and a second
+ * session in the tree is a false fact.
+ *
+ * linkKnown is false WITH a parent: convex/runs.ts's validRunPayload refuses a
+ * run where linkKnown and a parentRunId meet without a spawnedByToolUseId, and
+ * the Bash tool call that launched this run does not expose its id to the
+ * command line. An unknown link is recorded unknown.
+ *
+ * rootRunId and depth travel WITH the parent: a run whose parent nobody has
+ * swept yet keeps the root and depth its own sidecar gave it, and a Claude root
+ * file parses at depth 0 — which convex/runs.ts refuses against a parent.
+ *
+ * WHERE THE RUN STARTS is named only for a run nobody launched from a parent:
+ * with --parent the record gives the run its parent's environment, and a word
+ * here would overrule that with a guess. A launcher that knows better says so
+ * in TTS_RUN_ENVIRONMENT, which wins over both.
+ */
+function sessionRegistration(opts, prompt, env) {
+  const namedEnvironment = namedEnvironmentOf(env);
+  return {
     host: "box",
     cli: opts.cli,
     origin: "session",
     kind: "subagent",
     ...(namedEnvironment ? { environment: namedEnvironment } : opts.parent ? {} : { environment: "worker" }),
-    modelRequested: opts.model,
+    modelRequested: opts.model ?? "opus",
     ...(opts.effort ? { effortRequested: opts.effort } : {}),
-    cwd,
     ...(opts.parent
-      ? { parentRunId: opts.parent, rootRunId: opts.root, depth: opts.depth, linkKnown: false }
+      ? { parentRunId: opts.parent, rootRunId: opts.root ?? opts.parent, depth: opts.depth ?? 1, linkKnown: false }
       : {}),
     spawnedByToolUseId: null,
     continuesRunId: null,
@@ -704,157 +1159,70 @@ const spooled = opts.cli === "codex" ? null : writeRegistration({
     layersDenied: [],
     skillsGranted: [],
     skillsRefused: [],
-    tools: { allowed: [...TOOLS_ALLOWED], denied: [...BANNED_TOOLS] },
+    tools: { allowed: [...(opts.allowedTools ?? [])], denied: [...(opts.deniedTools ?? [])] },
     hooksConfigured: ["SessionStart", "SessionEnd", "Stop", "SubagentStart", "SubagentStop"],
     promptSha256: crypto.createHash("sha256").update(prompt).digest("hex"),
-  },
-});
-
-const childEnv = {
-  ...scrubbedEnv({ keepTtsKey: true }),
-  CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || "/root/.claude-accounts/active",
-  WIKITOM_DIR: process.env.WIKITOM_DIR || "/root/wikitom",
-  ...(spooled ? { TTS_RUN_REG_TOKEN: spooled.token } : {}),
-  TTS_RUN_REG_SPOOL: process.env.TTS_RUN_REG_SPOOL || path.join(stateDir, "registration"),
-  RUN_HOST: "box",
-  GIT_LFS_SKIP_SMUDGE: "1",
-  // THE SLOT THIS RUN HOLDS COVERS EVERYTHING UNDER IT. See the semaphore
-  // block above: a `box` or `codex` subagent inside this child reaches
-  // box-run.mjs again through scripts/box-agent.mjs, and asking for a second
-  // slot while its own parent holds one is the deadlock. Inherited, not
-  // recomputed, so it survives however many levels the delegation goes.
-  TTS_RUN_SLOT_HELD: "1",
-};
-// THE PARENT GOES TO WHICHEVER WRITER OWNS THE ENVELOPE, and never to both.
-// For Claude the envelope above already carries it, so the variable is cleared:
-// two writers for one field is the bug registration.mjs's header warns about.
-// For Codex there is no envelope from here at all, and this variable is the
-// only way the edge reaches codex-run.mjs's own — it is what turns that run
-// from an unparented `job` into a `codex-child` under the session that asked
-// for it. mergeRegistration fills the root and the depth from the parent when
-// the launcher names neither, which is this case.
-if (opts.cli === "codex" && opts.parent) childEnv.TTS_RUN_PARENT_RUN_ID = opts.parent;
-else delete childEnv.TTS_RUN_PARENT_RUN_ID;
-// The environment follows the same one-writer rule: codex-run.mjs names it in
-// the only Codex envelope, so only the Codex child is told.
-if (opts.cli === "codex" && namedEnvironment) childEnv.TTS_RUN_ENVIRONMENT = namedEnvironment;
-else delete childEnv.TTS_RUN_ENVIRONMENT;
-
-let bin;
-let args;
-if (opts.cli === "codex") {
-  // A CODEX WEEKLY-CAP ERROR IS A LEGITIMATE OUTCOME, not a transport failure:
-  // tts-codex's own message and exit code come back unaltered below.
-  bin = codexBinary(process.env);
-  args = ["--cwd", cwd, "--model", opts.model];
-  if (opts.effort) args.push("--effort", opts.effort);
-  if (opts.sandbox) args.push("--sandbox", opts.sandbox);
-  if (opts.schema) args.push("--schema", opts.schema);
-  if (opts.timeout > 0) args.push("--timeout", String(opts.timeout));
-} else {
-  bin = claudeBinary(process.env);
-  // THERE IS NO TURN CAP HERE because the CLI has none. The daemon's
-  // AUTO_MAX_TURNS is `maxTurns` on the SDK's query options, which is a
-  // different door; `claude --help` on the box (2.1.270) offers no --max-turns,
-  // and the only budget flag it does offer is --max-budget-usd, for API-key
-  // users rather than the box's account slots. A box run's bound is the model's
-  // own stop, and --timeout is the hard one a caller can set.
-  args = [
-    "-p",
-    "--output-format", "text",
-    "--model", opts.model,
-    "--allowedTools", TOOLS_ALLOWED.join(","),
-    "--disallowedTools", BANNED_TOOLS.join(","),
-    "--permission-mode", "acceptEdits",
-  ];
+  };
 }
 
-const errLog = path.join(workDir, "stderr.log");
-const errStream = fs.createWriteStream(errLog);
-const useShell = process.platform === "win32" && bin.toLowerCase().endsWith(".cmd");
-const quote = (s) => (useShell ? `"${String(s).replace(/\\(?=")/g, "\\\\").replace(/"/g, '""')}"` : s);
-
-const child = spawn(useShell ? quote(bin) : bin, args.map(quote), {
-  cwd,
-  env: childEnv,
-  shell: useShell,
-  stdio: ["pipe", "pipe", "pipe"],
-  windowsHide: true,
-});
-
-let answer = "";
-child.stdout.setEncoding("utf8");
-child.stdout.on("data", (chunk) => { answer += chunk; });
-// THE CHILD'S STDERR NEVER REACHES OUR STDOUT. It carries progress, tool
-// chatter and whatever a failing command printed; the laptop relays stdout
-// whole, so one stray line there becomes a sentence Tom reads as the report.
-child.stderr.pipe(errStream, { end: false });
-child.stdin.on("error", () => {});
-child.stdin.end(prompt);
-
-// REMOVAL CHECK on --timeout: the ruling is that there is no time limit BY
-// DEFAULT, and this flag is off unless a caller names it (opts.timeout is 0,
-// the timer is null, nothing is armed). What it cannot become is nothing at
-// all: a run holds a slot until its CLI child closes, so a child that wedges —
-// waiting on a prompt it will never get, or a command that never returns —
-// holds that slot for ever, and with the subtree rule above it holds it for
-// everything under it too. A caller that knows its work is bounded is the only
-// thing that can free the box short of a human on the box, and the relay is
-// told to pass a `--timeout` straight through when the request names one.
-//
-// REMOVAL CHECK on the win32 branch beside it, and on the `.cmd` branch in the
-// spawn below: this file only ever runs on Linux, and its TESTS only ever run
-// on Tom's Windows laptop and on CI. The fake CLI they spawn cannot be a plain
-// script there — Windows has no shebang, so a Node fake is reachable only
-// through a `.cmd` shim, which Node refuses to spawn without a shell. Deleting
-// the branches deletes the suite's ability to run the real file at all, and
-// `child.kill` on Windows leaves the shim's grandchild alive, which is what
-// taskkill /T is for. The production path takes the else in both.
-let timedOut = false;
-const timer = opts.timeout > 0
-  ? setTimeout(() => {
-      timedOut = true;
-      if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
-      else child.kill("SIGKILL");
-    }, opts.timeout)
-  : null;
-
-const started = Date.now();
-
-child.on("error", (error) => {
-  if (timer) clearTimeout(timer);
-  errStream.end();
-  reap();
-  fail(`could not start ${bin}: ${error.message}`);
-});
-
-child.on("close", (code) => {
-  if (timer) clearTimeout(timer);
-  errStream.end();
-  const seconds = Math.round((Date.now() - started) / 1000);
-  const exit = timedOut ? 124 : (code ?? 1);
+/** The command line: flags and stdin in, the report and one status line out. */
+async function main() {
+  let reap = () => {};
+  // REMOVAL CHECK: the slot reclaim covers HALF of what a signalled run leaves,
+  // and the other half has no cleanup anywhere. takeSlot filters holders by
+  // `alive(holder.pid)`, so a killed run's slot is indeed reclaimed — by the NEXT
+  // run, which is soon enough. Its worktree is not: nothing else on the box runs
+  // `git worktree remove` or prunes <stateDir>/work/<id>, so without these
+  // handlers every Ctrl-C and every `systemctl stop` leaves a full detached
+  // checkout of tom.quest or ComplexMultiTrigger on disk for good, and the
+  // mirror's worktree list grows an entry per kill. `--keep-worktree` is the way
+  // to ask for that deliberately; reap() honours it either way.
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.on(signal, () => {
+      reap();
+      process.exit(130);
+    });
+  }
+  let opts;
+  let result;
+  try {
+    opts = parseArgs(process.argv.slice(2));
+    const prompt = readStdin();
+    if (!prompt.trim()) fail("no prompt on stdin");
+    result = await boxRun({
+      ...opts,
+      prompt,
+      registration: opts.cli === "codex" ? null : sessionRegistration(opts, prompt, process.env),
+      onReap: (fn) => { reap = fn; },
+    });
+  } catch (error) {
+    process.stderr.write(`box-run: ${error?.message ?? error}\n`);
+    process.exit(error instanceof BoxRunError ? error.exitCode : 2);
+  }
   // Redaction is a choke point, not a courtesy: the sweep redacts again on
   // every byte that reaches the store, and this is that same function applied
   // before a single byte reaches the laptop's transcript.
-  const report = redactSecrets(answer);
+  const report = redactSecrets(result.text);
   process.stdout.write(report);
   if (report && !report.endsWith("\n")) process.stdout.write("\n");
   // THE STATUS LINE IS LAST AND ON STDOUT, so the laptop agent reads it off the
   // final line of the one block it relays.
-  process.stdout.write(`box-run: run ${id} host box cli ${opts.cli} exit ${exit} after ${seconds}s\n`);
-  if (timedOut) note(`timed out after ${seconds}s (limit ${opts.timeout} ms)`);
-  else if (code !== 0) {
-    note(`${opts.cli} exited ${code} after ${seconds}s`);
-    // THE TAIL, NOT THE PATH. The reap below deletes the work directory, so
-    // naming the log file would hand the laptop an address that no longer
-    // resolves — and the one case this matters most is the one where the CLI
-    // wrote no answer at all, which is exactly where a Codex weekly-cap
-    // message lives. --keep-worktree is what keeps the whole log.
-    let tail = "";
-    try { tail = redactSecrets(fs.readFileSync(errLog, "utf8")).trim().split("\n").slice(-5).join("\n"); } catch {}
-    if (tail) process.stderr.write(`${tail}\n`);
+  const { seconds } = result;
+  process.stdout.write(`box-run: run ${result.id} host box cli ${opts.cli} exit ${result.exitCode} after ${seconds}s\n`);
+  if (result.timedOut) note(`timed out after ${seconds}s (limit ${opts.timeoutMs} ms)`);
+  else if (result.exitCode !== 0) {
+    note(`${opts.cli} exited ${result.exitCode} after ${seconds}s`);
+    if (result.stderrTail) process.stderr.write(`${result.stderrTail}\n`);
   } else note(`exit 0 after ${seconds}s`);
-  if (opts.keepWorktree) note(`work dir kept at ${workDir}, log at ${errLog}`);
-  reap();
-  process.exit(exit);
-});
+  if (opts.keepWorktree) note(`work dir kept at ${result.workDir}, log at ${result.errLog}`);
+  process.exit(result.exitCode);
+}
+
+// ONLY AS THE ENTRY SCRIPT. worker/jobs/tts-lib.mjs imports this file for
+// boxRunSync, and an import that parsed the job's argv and read its stdin
+// would launch a run nobody asked for.
+// argv[1] is resolved through links because Node loads the main module by its
+// real path, which is what import.meta.url names.
+let entry = "";
+try { entry = process.argv[1] ? fs.realpathSync(process.argv[1]) : ""; } catch {}
+if (entry && fileURLToPath(import.meta.url) === entry) await main();

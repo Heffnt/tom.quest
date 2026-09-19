@@ -521,3 +521,165 @@ describe("box-run semaphore", () => {
     expect(counter.holders).toEqual([]);
   });
 });
+
+// THE SAME BODY, CALLED IN PROCESS. worker/jobs/tts-lib.mjs's runClaude calls
+// boxRunSync instead of spawning this file, so every case below runs in the
+// test's own process against the same fake CLI — which is also the proof that
+// importing the file launches nothing and that a refusal is a throw, not an
+// exit that would take the test runner down with it.
+const entry = await import("../box-run.mjs");
+
+function inProcess(tag, extra = {}) {
+  const stateDir = temp("state");
+  const record = path.join(stateDir, "record.json");
+  const env = baseEnv(stateDir, { CLAUDE_BIN: fakeCli(tag), FAKE_RECORD: record, CLAUDE_CONFIG_DIR: path.join(stateDir, "account"), ...extra });
+  return { stateDir, record, env, seen: () => JSON.parse(fs.readFileSync(record, "utf8")) };
+}
+
+describe("claudeArgs", () => {
+  const valueAfter = (args, flag) => args[args.indexOf(flag) + 1];
+
+  it("names every deniable tool when the allow-list is empty", () => {
+    const args = entry.claudeArgs({ model: "haiku", allowedTools: [] });
+    expect(args).toContain("--disallowedTools");
+    // The whole list, in its own order — not a subset that merely holds the
+    // few names some older assertion happened to check.
+    expect(valueAfter(args, "--disallowedTools").split(",")).toEqual([...entry.DENIABLE_TOOLS]);
+    // The four kinds a tool-free job could still reach before this list was
+    // whole: an agent spawner, a scheduler, a network reader, and the schema
+    // fetcher whose whole purpose is re-opening the tools the CLI deferred.
+    for (const tool of ["Task", "ScheduleWakeup", "WebFetch", "ToolSearch"]) {
+      expect(valueAfter(args, "--disallowedTools").split(",")).toContain(tool);
+    }
+    // Both flags or neither: the allow-list alone leaves the default
+    // permission mode handing over its read tools.
+    expect(valueAfter(args, "--allowedTools")).toBe("");
+  });
+
+  it("denies nothing when the caller named tools", () => {
+    const args = entry.claudeArgs({ model: "haiku", allowedTools: ["Read", "Glob", "Grep"] });
+    expect(args).not.toContain("--disallowedTools");
+    expect(valueAfter(args, "--allowedTools")).toBe("Read,Glob,Grep");
+  });
+
+  it("carries a turn budget only when it was given one", () => {
+    expect(valueAfter(entry.claudeArgs({ maxTurns: 8 }), "--max-turns")).toBe("8");
+    expect(entry.claudeArgs({})).not.toContain("--max-turns");
+  });
+
+  it("refuses a tool list that is not non-empty strings", () => {
+    expect(() => entry.claudeArgs({ allowedTools: "Read" })).toThrow(/allowedTools/);
+    expect(() => entry.claudeArgs({ allowedTools: ["Read", ""] })).toThrow(/allowedTools/);
+  });
+});
+
+describe("box-run in process", () => {
+  it("builds the command line from its options and adds nothing the caller did not name", () => {
+    const { env, seen } = inProcess("inproc-argv");
+    const result = entry.boxRunSync({
+      prompt: "p", env, model: "haiku", outputFormat: "json", maxTurns: 3,
+      permissionMode: "bypassPermissions", allowedTools: ["Read", "Glob", "Grep"], registration: null,
+    });
+    expect(result.exitCode).toBe(0);
+    const { argv } = seen();
+    expect(argv).toEqual([
+      "-p", "--output-format", "json", "--max-turns", "3", "--model", "haiku",
+      "--permission-mode", "bypassPermissions", "--allowedTools", "Read,Glob,Grep",
+    ]);
+  });
+
+  it("denies every tool by name for an empty allow-list", () => {
+    const { env, seen } = inProcess("inproc-none");
+    entry.boxRunSync({ prompt: "p", env, allowedTools: [], registration: null });
+    const { argv } = seen();
+    expect(argv[argv.indexOf("--disallowedTools") + 1].split(",")).toEqual([...entry.DENIABLE_TOOLS]);
+  });
+
+  it("runs in the directory the caller owns and leaves it in place", () => {
+    const own = temp("own-cwd");
+    const { env, seen } = inProcess("inproc-cwd");
+    entry.boxRunSync({ prompt: "p", env, cwd: own, registration: null });
+    expect(fs.realpathSync(seen().cwd)).toBe(fs.realpathSync(own));
+    expect(fs.existsSync(own)).toBe(true);
+  });
+
+  it("throws a refusal with its exit code instead of exiting", () => {
+    const { env, stateDir } = inProcess("inproc-refuse", { MEMINFO_PATH: "" });
+    env.MEMINFO_PATH = meminfo(stateDir, 300 * 1024);
+    let thrown = null;
+    try { entry.boxRunSync({ prompt: "p", env, tests: true }); } catch (error) { thrown = error; }
+    expect(thrown).toBeInstanceOf(entry.BoxRunError);
+    expect(thrown.exitCode).toBe(75);
+    expect(thrown.message).toMatch(/free memory is 300 MB/);
+    expect(() => entry.boxRunSync({ prompt: "p", env, repo: "none", ref: "main" })).toThrow(/--ref needs a --repo/);
+    expect(() => entry.boxRunSync({ prompt: "p", env, cli: "codex", maxTurns: 2 })).toThrow(/claude only/);
+  });
+
+  it("unwraps the JSON envelope, hands back its token, and claims the run where the child ran", () => {
+    const sessionId = "0f0e0d0c-0b0a-4908-8706-050403020100";
+    const { env, stateDir } = inProcess("inproc-json", {
+      FAKE_ANSWER: JSON.stringify({ type: "result", subtype: "success", result: "the answer", session_id: sessionId }),
+    });
+    const own = temp("claim-cwd");
+    const result = entry.boxRunSync({
+      prompt: "p", env, cwd: own, outputFormat: "json",
+      registration: { host: null, cli: "claude", origin: "cron:poll-gmail", kind: "job", environment: "worker" },
+    });
+    expect(result.text).toBe("the answer");
+    expect(result.envelope.subtype).toBe("success");
+    expect(typeof result.runToken).toBe("string");
+    const project = path.resolve(own).replaceAll("\\", "-").replaceAll("/", "-").replaceAll(":", "-");
+    const sidecar = path.join(stateDir, "account", "projects", project, `${sessionId}.registration.json`);
+    const claimed = JSON.parse(fs.readFileSync(sidecar, "utf8"));
+    expect(claimed.token).toBe(result.runToken);
+    // The launcher the record takes from writer.file is this file, while the
+    // origin stays the job's own.
+    expect(claimed.writer.file).toBe("worker/runs/box-run.mjs");
+    expect(claimed.registration.origin).toBe("cron:poll-gmail");
+    expect(claimed.registration.cwd).toBe(own);
+  });
+
+  it("gives up on a full box after the caller's wait, starts nothing, and says the box is busy", () => {
+    const { env, stateDir, record } = inProcess("inproc-busy", { RUN_MAX_PARALLEL: "1" });
+    const holder = { id: "holder01", pid: process.pid, at: Date.now() };
+    fs.writeFileSync(path.join(stateDir, "semaphore.json"), `${JSON.stringify({ count: 1, holders: [holder] })}\n`);
+    let thrown = null;
+    try { entry.boxRunSync({ prompt: "p", env, slotWaitMs: 120, registration: null }); } catch (error) { thrown = error; }
+    expect(thrown).toBeInstanceOf(entry.BoxRunError);
+    expect(thrown.reason).toBe("busy");
+    expect(thrown.exitCode).toBe(75);
+    expect(fs.existsSync(record)).toBe(false);
+  });
+
+  it("waits for the child without blocking in the command line's entry", async () => {
+    const { env } = inProcess("inproc-async", { FAKE_ANSWER: "async answer\n" });
+    const result = await entry.boxRun({ prompt: "p", env, registration: null });
+    expect(result.text).toBe("async answer\n");
+    expect(result.exitCode).toBe(0);
+  });
+});
+
+describe("box-run command line flags for parity", () => {
+  it("passes --max-turns, --allowed-tools and --cwd through, and refuses a turn cap for codex", () => {
+    const own = temp("flag-cwd");
+    const stateDir = temp("state");
+    const record = path.join(stateDir, "record.json");
+    const result = run(["--cwd", own, "--max-turns", "4", "--allowed-tools", "", "--output-format", "json"], {
+      stateDir,
+      env: { CLAUDE_BIN: fakeCli("flags"), FAKE_RECORD: record },
+    });
+    expect(result.status).toBe(0);
+    const { argv, cwd } = JSON.parse(fs.readFileSync(record, "utf8"));
+    expect(argv[argv.indexOf("--max-turns") + 1]).toBe("4");
+    expect(argv[argv.indexOf("--output-format") + 1]).toBe("json");
+    expect(argv[argv.indexOf("--allowedTools") + 1]).toBe("");
+    expect(argv[argv.indexOf("--disallowedTools") + 1].split(",")).toContain("ToolSearch");
+    expect(fs.realpathSync(cwd)).toBe(fs.realpathSync(own));
+    const refused = run(["--cli", "codex", "--max-turns", "4"], { stateDir: temp("state"), env: { TTS_CODEX_BIN: fakeCli("codex-turns") } });
+    expect(refused.status).toBe(2);
+    expect(refused.stderr).toMatch(/claude only/);
+    const repoAndCwd = run(["--cwd", own, "--repo", "tom.quest"], { stateDir: temp("state"), env: { CLAUDE_BIN: fakeCli("cwd-repo") } });
+    expect(repoAndCwd.status).toBe(2);
+    expect(repoAndCwd.stderr).toMatch(/--cwd/);
+  });
+});
