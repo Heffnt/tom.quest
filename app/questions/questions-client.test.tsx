@@ -74,6 +74,15 @@ describe("QuestionsClient", () => {
     expect(screen.getByText(/^1 of 53/)).toBeTruthy();
   });
 
+  it("leaves the question and settings unchanged when a disabled step is clicked", () => {
+    renderQuestions();
+
+    fireEvent.click(screen.getByRole("button", { name: "prev" }));
+
+    expect(screen.getByText(BANK[0].text)).toBeTruthy();
+    expect(settingsMock.storeSettings).not.toHaveBeenCalled();
+  });
+
   it("moves next to the second question, enables prev, and stores the left id", () => {
     renderQuestions();
 
@@ -200,6 +209,18 @@ describe("QuestionsClient", () => {
     const { dialog } = openDrawer("options");
 
     expect(dialog.firstElementChild?.classList.contains("touch-none")).toBe(true);
+  });
+
+  it("opens the first kind info panel below its control inside the drawer", () => {
+    renderQuestions();
+    const { dialog } = openDrawer("options");
+    const firstKindInfo = within(dialog).getAllByRole("button", { name: "what this does" })[0];
+
+    fireEvent.click(firstKindInfo);
+
+    const panel = within(dialog).getByRole("note");
+    expect(panel.classList.contains("top-full")).toBe(true);
+    expect(panel.classList.contains("bottom-full")).toBe(false);
   });
 
   it("selects a list row and closes the drawer", () => {

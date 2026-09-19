@@ -19,7 +19,8 @@
 // Three properties the ratified UI rules require, each load-bearing here:
 //   - TAP, not hover. `open` is state, flipped by a click.
 //   - NO LAYOUT SHIFT. The panel is absolutely positioned, so opening it never
-//     moves the control the reader was aiming at.
+//     moves the control the reader was aiming at. It opens above by default,
+//     or below a control inside a scroll container.
 //   - VISIBLY CLICKABLE. The ⓘ changes on hover and again while open; it is a
 //     control, not decoration, and accent alone would not say so.
 //
@@ -58,6 +59,7 @@ export default function Info({
   children,
   explanation,
   explanationTitle,
+  side = "above",
 }: {
   /** The exact backend call the neighbouring control fires (UI = code). */
   call?: string;
@@ -72,6 +74,8 @@ export default function Info({
   explanation?: string;
   /** The line at the top of the fullscreen view. Defaults to the call. */
   explanationTitle?: string;
+  /** Below is for controls inside a scroll container, where upward overflow is clipped and downward overflow can be scrolled to. */
+  side?: "above" | "below";
 }) {
   const [open, setOpen] = useState(false);
   const [full, setFull] = useState(false);
@@ -133,13 +137,14 @@ export default function Info({
         ⓘ
       </button>
       {open && (
-        // Absolutely positioned, so nothing below it moves. Opens ABOVE the
-        // control, left-aligned to it, and clamped to a readable width — a
-        // panel as wide as its longest line is unreadable at these sizes.
+        // Absolutely positioned, so nothing below it moves. It opens on the
+        // requested side, left-aligned to the control, and clamped to a
+        // readable width — a panel as wide as its longest line is unreadable
+        // at these sizes.
         <span
           role="note"
           onClick={(e) => e.stopPropagation()}
-          className="absolute bottom-full left-0 mb-1.5 z-40 w-64 max-w-[80vw] rounded-md border border-border bg-surface shadow-lg p-2.5 text-left"
+          className={`absolute ${side === "below" ? "top-full mt-1.5" : "bottom-full mb-1.5"} left-0 z-40 w-64 max-w-[80vw] rounded-md border border-border bg-surface shadow-lg p-2.5 text-left`}
         >
           {children && (
             <span className="block text-xs leading-relaxed text-text">

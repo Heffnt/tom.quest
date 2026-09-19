@@ -107,7 +107,7 @@ function kindInfo(kind: KindFilter) {
   };
   const callValue = kind === null ? "null" : kind === "lighter" ? '"lighter"' : String(kind);
   return (
-    <Info call={`matches(BANK, { ...filters, kind: ${callValue} })`}>
+    <Info side="below" call={`matches(BANK, { ...filters, kind: ${callValue} })`}>
       {kind === null
         ? "Admits every question, the lighter ones included; kind no longer narrows the list."
         : details[kind]}
@@ -124,7 +124,7 @@ function frameInfo(frame: FrameFilter) {
   };
   const callValue = frame === null ? "null" : `"${frame}"`;
   return (
-    <Info call={`matches(BANK, { ...filters, frame: ${callValue} })`}>
+    <Info side="below" call={`matches(BANK, { ...filters, frame: ${callValue} })`}>
       {frame === null ? "Admits every frame; frame no longer narrows the list." : details[frame]}
     </Info>
   );
@@ -161,13 +161,12 @@ function Questions() {
   });
 
   useEffect(() => {
-    if (!hydrated) return;
     if (seeded.current === null || view.seen === seeded.current) {
-      // Covers the render after hydration and before the seed's setView has applied, when view.seen is still empty.
+      // A null seed covers pre-hydration; its identity then excludes the seeded view.
       return;
     }
     storeSettings({ seen: [...view.seen] });
-  }, [hydrated, storeSettings, view.seen]);
+  }, [storeSettings, view.seen]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -177,7 +176,6 @@ function Questions() {
   const step = (direction: 1 | -1) => {
     setView((previous) => {
       const result = stepped(list, previous.index, previous.seen, direction);
-      if (result.seen === previous.seen) return previous;
       return { ...previous, ...result };
     });
   };
@@ -196,7 +194,6 @@ function Questions() {
 
   const selectListIndex = (index: number) => {
     setView((previous) => {
-      if (previous.index === index) return previous;
       return { ...previous, index };
     });
     setDrawerContent(null);
@@ -244,7 +241,7 @@ function Questions() {
             label={
               <span className="inline-flex w-14 shrink-0 items-center gap-0.5 text-sm text-text-faint">
                 topic
-                <Info call="matches(BANK, { ...filters, topic })">
+                <Info side="below" call="matches(BANK, { ...filters, topic })">
                   Pins the list to the questions tagged with one topic; a topic is the plain word the bank files a
                   question under. any lifts the pin.
                 </Info>
@@ -266,7 +263,7 @@ function Questions() {
               >
                 reset seen
               </button>
-              <Info call="storeSettings({ seen: [] })">
+              <Info side="below" call="storeSettings({ seen: [] })">
                 Empties the seen set stored under the questions settings key, so every question reads as unseen again;
                 the question on screen stays.
               </Info>
@@ -276,7 +273,7 @@ function Questions() {
       ) : list.length === 0 ? (
         <p className="px-4 py-3 text-sm text-text-muted">Nothing matches.</p>
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div>
           <ul className="divide-y divide-border">
             {list.map((question, index) => (
               <li key={question.id}>

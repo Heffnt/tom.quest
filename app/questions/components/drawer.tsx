@@ -135,29 +135,31 @@ export default function Drawer({
           <span aria-hidden="true" className="h-1 w-10 rounded-full bg-border" />
         </div>
 
-        <div className="flex min-h-11 items-center gap-2 px-4">
-          <Segment
-            label="options"
-            selected={content === "options"}
-            onSelect={() => onContentChange("options")}
-            buttonRef={optionsRef}
-          />
-          <Segment
-            label={`list ${listLength}`}
-            selected={content === "list"}
-            onSelect={() => onContentChange("list")}
-            buttonRef={listRef}
-          />
-          <button
-            type="button"
-            onClick={onClose}
-            className="ml-auto inline-flex min-h-11 items-center py-2 text-sm text-text-muted underline underline-offset-4 transition-colors hover:text-accent"
-          >
-            close
-          </button>
-        </div>
+        <div data-testid="questions-drawer-scroll" className="overflow-y-auto min-h-0 flex-1">
+          <div className="flex min-h-11 items-center gap-2 px-4">
+            <Segment
+              label="options"
+              selected={content === "options"}
+              onSelect={() => onContentChange("options")}
+              buttonRef={optionsRef}
+            />
+            <Segment
+              label={`list ${listLength}`}
+              selected={content === "list"}
+              onSelect={() => onContentChange("list")}
+              buttonRef={listRef}
+            />
+            <button
+              type="button"
+              onClick={onClose}
+              className="ml-auto inline-flex min-h-11 items-center py-2 text-sm text-text-muted underline underline-offset-4 transition-colors hover:text-accent"
+            >
+              close
+            </button>
+          </div>
 
-        {children}
+          {children}
+        </div>
       </div>
     </div>,
     document.body,
