@@ -31,7 +31,7 @@ function usage(message) {
     "                       --check-in-file <path> | --check-in <text>\n" +
     "                       --document <path>\n" +
     "                       [--ask 'routine|plan|setup|yes|no|<question>'] (repeatable)\n" +
-    "                       [--act 'launch|cancel|<job id>|<what it was for and how it was verified>'] (repeatable)\n" +
+    "                       [--act 'launch|<job id>|<what it was for and how it was verified>'] (repeatable; cancel in place of launch)\n" +
     "                       [--next-step-ms <n>]\n",
   );
   process.exitCode = 2;

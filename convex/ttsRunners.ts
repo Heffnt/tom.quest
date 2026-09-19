@@ -492,6 +492,10 @@ export const internalClaimRunnerStep = internalMutation({
       admitted: true as const,
       stepRunId,
       runnerId: runner._id,
+      // The box hands the step the runner key only when this is true, so a step
+      // told to change nothing cannot act on the cluster and then find its
+      // check-in refused, which would leave the act out of the record.
+      actsOnCluster: mayActOnCluster(runner, (await openBlockingAsks(ctx, runner._id)).length),
       repo: runner.repo,
       ...(runner.ref !== undefined ? { ref: runner.ref } : {}),
       model: runner.model ?? DEFAULT_RUNNER_MODEL,
@@ -682,6 +686,14 @@ function checkInContract(runner: Pick<Doc<"runners">, "title" | "stepMs">): stri
   ].join("\n");
 }
 
+/** Whether a step may launch and cancel jobs on the cluster: its experiment
+ *  runs on Turing and no blocking question of Tom's is open. The one predicate
+ *  the prompt, the claim (whether the box hands the step the runner key) and
+ *  the record (whether it takes the step's acts) all read. */
+function mayActOnCluster(runner: Pick<Doc<"runners">, "experimentHost">, openBlockingAsks: number): boolean {
+  return runner.experimentHost === "turing" && openBlockingAsks === 0;
+}
+
 function stepBranch(runnerId: Id<"runners">): string {
   return `runner/${runnerId}`;
 }
@@ -734,7 +746,7 @@ async function buildRunnerStepPrompt(
   const decisions = observeOnly ? "continue or ask" : "continue, change, ask, hand-off or finish";
   // A runner on a Turing experiment may launch and cancel its own jobs there,
   // through tts-turing-act; an observe-only step may not act at all.
-  const actsOnCluster = runner.experimentHost === "turing" && !observeOnly;
+  const actsOnCluster = mayActOnCluster(runner, blocking.length);
   const act = observeOnly
     ? `ACT: change nothing. Tom has not answered ${blocking.length === 1 ? "the blocking question" : `${blocking.length} blocking questions`} this runner asked (${blocking.map((ask) => `"${ask.text ?? ""}"`).join("; ")}), so this step observes and checks in, and does not act on the experiment, the checkout or the document's plan.`
     : `ACT on the decision. A change is the smallest one the document asks for, and the check-in says what it changed and how to undo it. Files you change in the checkout are committed on the branch ${stepBranch(runner._id)}, pushed with \`git push origin HEAD:refs/heads/${stepBranch(runner._id)}\`, and never merged or pushed to master; the checkout is deleted when this step ends, so an unpushed commit is lost.${actsOnCluster ? " On the cluster you may launch jobs for this experiment and cancel the ones this runner launched, with `tts-turing-act` (under Tools), inside the runner's GPU-hour budget; each launch or cancel is recorded with the pen's `--act` and verified in the queue." : ""}`;
@@ -851,12 +863,14 @@ export const internalRecordStep = internalMutation({
     }
     if (args.decision === "ask" && args.asks.length === 0) throw new Error("A decision of ask carries at least one question.");
     const acts = args.acts ?? [];
-    if (blocking.length > 0 && acts.length > 0) {
-      throw new Error("While Tom has not answered a blocking question, a step changes nothing, so it records no launch or cancel.");
+    if (acts.length > 0 && !mayActOnCluster(runner, blocking.length)) {
+      throw new Error(blocking.length > 0
+        ? "While Tom has not answered a blocking question, a step changes nothing, so it records no launch or cancel."
+        : "This runner's experiment is not on the cluster, so its steps record no launch or cancel there.");
     }
     if (acts.length > RUNNER_ACTS_MAX) throw new Error(`A step records at most ${RUNNER_ACTS_MAX} launches and cancels.`);
     for (const act of acts) {
-      if (act.jobId.trim() === "") throw new Error("Each launch or cancel names its job.");
+      if (!/^\d+$/.test(act.jobId.trim())) throw new Error("Each launch or cancel names its job by its cluster job number.");
       if (act.text.trim() === "" || act.text.length > RUNNER_ACT_MAX_CHARS) throw new Error(`Each launch or cancel is said in one to ${RUNNER_ACT_MAX_CHARS} characters.`);
     }
 

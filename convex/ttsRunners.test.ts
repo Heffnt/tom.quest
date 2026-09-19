@@ -335,6 +335,7 @@ describe("the step prompt", () => {
     expect(prompt).toContain("--act 'launch|<job id>|");
     expect(prompt).toContain("On the cluster you may launch jobs for this experiment");
     expect(contract).toContain("Name at most two this way and count the rest");
+    expect(claimed.actsOnCluster).toBe(true);
   });
 
   it("tells a runner whose experiment is on the box nothing about acting on the cluster", async () => {
@@ -343,7 +344,9 @@ describe("the step prompt", () => {
     await publish(t);
     const { internal } = await import("./_generated/api");
     await t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed({ experimentHost: "box" }) });
-    const prompt = (await claimedPrompt(t)).prompt;
+    const boxClaim = await claimedPrompt(t);
+    const prompt = boxClaim.prompt;
+    expect(boxClaim.actsOnCluster).toBe(false);
     expect(prompt).not.toContain("tts-turing-act");
     expect(prompt).not.toContain("--act '");
     // What sessions are told about the read-only command is unchanged.
@@ -357,7 +360,9 @@ describe("the step prompt", () => {
     const { internal } = await import("./_generated/api");
     const runnerId = await t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed({ delegateAllowed: true }) });
     const askId = await t.run((ctx) => ctx.db.insert("runnerEvents", { runnerId, at: Date.now(), kind: "ask", tier: "plan", blocking: true, text: "Should the next stage skip pythia?" }));
-    const blocked = (await claimedPrompt(t)).prompt;
+    const blockedClaim = await claimedPrompt(t);
+    const blocked = blockedClaim.prompt;
+    expect(blockedClaim.actsOnCluster).toBe(false);
     expect(blocked).toContain("ACT: change nothing.");
     expect(blocked).not.toContain("tts-turing-act");
     expect(blocked).toContain("Should the next stage skip pythia?");
@@ -455,10 +460,19 @@ describe("the check-in", () => {
     await expect(t.mutation(internal.ttsRunners.internalRecordStep, { ...base, acts: Array(11).fill(act) })).rejects.toThrow(/at most 10/);
     await expect(t.mutation(internal.ttsRunners.internalRecordStep, { ...base, acts: [{ ...act, text: " " }] })).rejects.toThrow(/one to 300 characters/);
     await expect(t.mutation(internal.ttsRunners.internalRecordStep, { ...base, acts: [{ ...act, text: "x".repeat(301) }] })).rejects.toThrow(/one to 300 characters/);
+    await expect(t.mutation(internal.ttsRunners.internalRecordStep, { ...base, acts: [{ ...act, jobId: "not-a-job" }] })).rejects.toThrow(/cluster job number/);
     await t.run((ctx) => ctx.db.insert("runnerEvents", { runnerId, at: Date.now(), kind: "ask", tier: "plan", blocking: true, text: "Skip pythia?" }));
     await expect(t.mutation(internal.ttsRunners.internalRecordStep, { ...base, acts: [act] })).rejects.toThrow(/records no launch or cancel/);
     const events = await t.run((ctx) => ctx.db.query("runnerEvents").withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runnerId).eq("kind", "act")).collect());
     expect(events).toEqual([]);
+  });
+
+  it("refuses acts from a runner whose experiment is on the box", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { runnerId, stepRunId, internal } = await claimed(t, { experimentHost: "box" });
+    const act = { verb: "launch" as const, jobId: "4101", text: "Launched a probe; seen in the queue by name." };
+    await expect(t.mutation(internal.ttsRunners.internalRecordStep, { runnerId, stepRunId, decision: "change", checkIn: GOOD, document: "d", asks: [], acts: [act], graded: PASS })).rejects.toThrow(/not on the cluster/);
   });
 
   it("marks a forged pass on a malformed check-in as failed", async () => {
