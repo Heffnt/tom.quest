@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import TomGate from "@/app/components/tom-gate";
 import { usePersistedSettings } from "@/app/lib/hooks/use-persisted-settings";
 import Info from "@/app/tts/components/info";
@@ -150,17 +150,29 @@ function Questions() {
 
   // The seed's identity distinguishes hydration from an activation: it is
   // never mirrored back into settings.
+  const seedFromSettings = useEffectEvent(() => {
+    const seen = new Set(stored.seen);
+    seeded.current = seen;
+    setView((previous) => ({
+      ...previous,
+      seen,
+      index: startIndex(matches(BANK, previous.filters), seen, null),
+    }));
+  });
+
   useEffect(() => {
     if (!hydrated) return;
-    if (seeded.current === null) {
-      const seen = new Set(stored.seen);
-      seeded.current = seen;
-      setView((previous) => ({ ...previous, seen, index: startIndex(list, seen, null) }));
+    if (seeded.current === null || view.seen === seeded.current) {
+      // Covers the render after hydration and before the seed's setView has applied, when view.seen is still empty.
       return;
     }
-    if (view.seen === seeded.current) return;
     storeSettings({ seen: [...view.seen] });
-  }, [hydrated, list, stored.seen, storeSettings, view.seen]);
+  }, [hydrated, storeSettings, view.seen]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    seedFromSettings();
+  }, [hydrated]);
 
   const step = (direction: 1 | -1) => {
     setView((previous) => {

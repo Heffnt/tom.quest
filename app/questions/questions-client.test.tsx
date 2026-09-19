@@ -1,26 +1,45 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { useEffect, useState } from "react";
 import { BANK } from "./data/types";
 import QuestionsClient from "./questions-client";
 import { matches, type Filters } from "./lib/pick";
 
 const settingsMock = vi.hoisted(() => ({
-  seen: [] as string[],
+  stored: { seen: [] as string[] },
+  rerender: null as (() => void) | null,
   storeSettings: vi.fn(),
 }));
 
 vi.mock("@/app/lib/hooks/use-persisted-settings", () => ({
-  usePersistedSettings: () => [{ seen: settingsMock.seen }, settingsMock.storeSettings, true],
+  usePersistedSettings: () => [settingsMock.stored, settingsMock.storeSettings, true],
 }));
 
 vi.mock("@/app/components/tom-gate", () => ({
   default: ({ children }: { children: React.ReactNode }) => children,
 }));
 
+function StatefulQuestions() {
+  const [, setVersion] = useState(0);
+
+  useEffect(() => {
+    settingsMock.rerender = () => setVersion((version) => version + 1);
+    return () => {
+      settingsMock.rerender = null;
+    };
+  }, []);
+
+  return <QuestionsClient />;
+}
+
 function renderQuestions(seen: string[] = []) {
-  settingsMock.seen = seen;
+  settingsMock.stored = { seen };
   settingsMock.storeSettings.mockReset();
-  return render(<QuestionsClient />);
+  settingsMock.storeSettings.mockImplementation((patch: { seen?: string[] }) => {
+    settingsMock.stored = { ...settingsMock.stored, ...patch };
+    settingsMock.rerender?.();
+  });
+  return render(<StatefulQuestions />);
 }
 
 function rowFor(question: (typeof BANK)[number]) {
@@ -40,7 +59,8 @@ function openDrawer(content: "options" | "list") {
 afterEach(cleanup);
 
 beforeEach(() => {
-  settingsMock.seen = [];
+  settingsMock.stored = { seen: [] };
+  settingsMock.rerender = null;
   settingsMock.storeSettings.mockReset();
 });
 
@@ -72,6 +92,23 @@ describe("QuestionsClient", () => {
 
     expect(screen.getByText(BANK[0].text)).toBeTruthy();
     expect(settingsMock.storeSettings).toHaveBeenLastCalledWith({ seen: [BANK[0].id, BANK[1].id] });
+  });
+
+  it("mirrors each seen change once despite persisted-state rerenders and leaves filter changes alone", () => {
+    renderQuestions();
+
+    fireEvent.click(screen.getByRole("button", { name: "next" }));
+    expect(settingsMock.storeSettings).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "prev" }));
+    expect(settingsMock.storeSettings).toHaveBeenCalledTimes(2);
+
+    const { dialog } = openDrawer("options");
+    fireEvent.click(within(dialog).getByRole("button", { name: "reset seen" }));
+    expect(settingsMock.storeSettings).toHaveBeenCalledTimes(3);
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "1" }));
+    expect(settingsMock.storeSettings).toHaveBeenCalledTimes(3);
   });
 
   it("marks the final bank question seen when leaving it with prev", () => {
