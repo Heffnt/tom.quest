@@ -439,6 +439,63 @@ describe("runs", () => {
     await expect(t.mutation(internal.runs.internalBackfillRunEnvironment, { limit: 501 })).rejects.toThrow("1 to 500");
   });
 
+  it("backfills cli from runner on runs and file versions, counts what is missing, and names a row with neither", async () => {
+    const t = convexTest(schema, modules);
+    const drain = async (fn: (args: { cursor?: string; limit: number }) => Promise<{ cursor: string | null } & Record<string, unknown>>, key: string) => {
+      let cursor: string | undefined;
+      let total = 0;
+      const unnamed: string[] = [];
+      for (;;) {
+        const page = await fn({ cursor, limit: 2 });
+        total += page[key] as number;
+        if (Array.isArray(page.unnamed)) unnamed.push(...(page.unnamed as string[]));
+        if (page.cursor === null) break;
+        cursor = page.cursor;
+      }
+      return { total, unnamed };
+    };
+    const legacy: Array<[string, "claude" | "codex"]> = [["claude:laptop:legacy-claude", "claude"], ["codex:laptop:legacy-codex", "codex"]];
+    for (const [runId, cli] of legacy) {
+      await t.mutation(internal.runs.internalIngest, ingest(run({ runId, rootRunId: runId, cli, environment: "worker", file: { ...run().file, path: `C:/${cli}.jsonl`, storeKey: `runs/${cli}` } }), []) as never);
+      await t.run(async (ctx) => {
+        const stored = await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique();
+        await ctx.db.patch(stored!._id, { cli: undefined, runner: cli });
+        for (const version of await ctx.db.query("runFileVersions").withIndex("by_run_id_and_file_version", (q) => q.eq("runId", runId)).collect()) {
+          await ctx.db.patch(version._id, { cli: undefined, runner: cli });
+        }
+      });
+    }
+    const current = "claude:laptop:current-run";
+    await t.mutation(internal.runs.internalIngest, ingest(run({ runId: current, rootRunId: current, environment: "session", file: { ...run().file, path: "C:/current.jsonl", storeKey: "runs/current" } }), []) as never);
+    const nameless = "claude:laptop:nameless-run";
+    await t.mutation(internal.runs.internalIngest, ingest(run({ runId: nameless, rootRunId: nameless, file: { ...run().file, path: "C:/nameless.jsonl" } }), []) as never);
+    await t.run(async (ctx) => {
+      const stored = await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", nameless)).unique();
+      await ctx.db.patch(stored!._id, { cli: undefined, environment: undefined });
+    });
+
+    expect((await drain((a) => t.query(internal.runs.internalCountRunsMissingCli, a), "missing")).total).toBe(3);
+    expect((await drain((a) => t.query(internal.runs.internalCountRunsMissingEnvironment, a), "missing")).total).toBe(1);
+    expect((await drain((a) => t.query(internal.runs.internalCountFileVersionsMissingCli, a), "missing")).total).toBe(2);
+
+    const runs = await drain((a) => t.mutation(internal.runs.internalBackfillRunCli, a), "patched");
+    expect(runs).toEqual({ total: 2, unnamed: [nameless] });
+    expect(await drain((a) => t.mutation(internal.runs.internalBackfillFileVersionCli, a), "patched")).toEqual({ total: 2, unnamed: [] });
+    for (const [runId, cli] of legacy) {
+      const stored = await t.run(async (ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique());
+      expect(stored?.cli).toBe(cli);
+      const versions = await t.run(async (ctx) => ctx.db.query("runFileVersions").withIndex("by_run_id_and_file_version", (q) => q.eq("runId", runId)).collect());
+      expect(versions.map((version) => version.cli)).toEqual([cli]);
+    }
+
+    // Only the nameless row is left, and a second pass changes nothing.
+    expect((await drain((a) => t.query(internal.runs.internalCountRunsMissingCli, a), "missing")).total).toBe(1);
+    expect((await drain((a) => t.query(internal.runs.internalCountFileVersionsMissingCli, a), "missing")).total).toBe(0);
+    expect((await drain((a) => t.mutation(internal.runs.internalBackfillRunCli, a), "patched")).total).toBe(0);
+    await expect(t.mutation(internal.runs.internalBackfillRunCli, { limit: 501 })).rejects.toThrow("1 to 500");
+    await expect(t.query(internal.runs.internalCountRunsMissingCli, { limit: 0 })).rejects.toThrow("1 to 500");
+  });
+
   it("switches getMessages from daemon rows to the same run-row page shape", async () => {
     const t = convexTest(schema, modules);
     const sessionId = await session(t, { status: "running" });

@@ -1447,9 +1447,7 @@ export const internalBackfillRunIds = internalMutation({
 export const internalBackfillRunEnvironment = internalMutation({
   args: { cursor: v.optional(v.string()), limit: v.optional(v.number()) },
   handler: async (ctx, args) => {
-    const limit = args.limit ?? 200;
-    if (!positiveInteger(limit) || limit > 500) throw new Error("backfill limit must be an integer from 1 to 500");
-    const page = await ctx.db.query("runs").withIndex("by_ingested_at_and_run_id").order("asc").paginate({ cursor: args.cursor ?? null, numItems: limit });
+    const page = await ctx.db.query("runs").withIndex("by_ingested_at_and_run_id").order("asc").paginate({ cursor: args.cursor ?? null, numItems: backfillLimit(args.limit) });
     let patched = 0;
     for (const run of page.page) {
       if (run.environment !== undefined) continue;
@@ -1459,5 +1457,77 @@ export const internalBackfillRunEnvironment = internalMutation({
       patched += 1;
     }
     return { scanned: page.page.length, patched, cursor: page.isDone ? null : page.continueCursor };
+  },
+});
+
+function backfillLimit(limit: number | undefined) {
+  const value = limit ?? 200;
+  if (!positiveInteger(value) || value > 500) throw new Error("backfill limit must be an integer from 1 to 500");
+  return value;
+}
+
+/**
+ * Copies each run row's old `runner` into `cli`, so the schema can make `cli`
+ * required and delete `runner`. A row with neither cannot be ingested, so one
+ * is counted apart as `unnamed` and left for a person, not guessed from its id.
+ */
+export const internalBackfillRunCli = internalMutation({
+  args: { cursor: v.optional(v.string()), limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const page = await ctx.db.query("runs").withIndex("by_ingested_at_and_run_id").order("asc").paginate({ cursor: args.cursor ?? null, numItems: backfillLimit(args.limit) });
+    let patched = 0;
+    const unnamed: string[] = [];
+    for (const run of page.page) {
+      if (run.cli !== undefined) continue;
+      if (run.runner === undefined) { unnamed.push(run.runId); continue; }
+      await ctx.db.patch(run._id, { cli: run.runner });
+      patched += 1;
+    }
+    return { scanned: page.page.length, patched, unnamed, cursor: page.isDone ? null : page.continueCursor };
+  },
+});
+
+/** The same copy over the immutable file versions, which carry the same pair. */
+export const internalBackfillFileVersionCli = internalMutation({
+  args: { cursor: v.optional(v.string()), limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const page = await ctx.db.query("runFileVersions").withIndex("by_at_and_run_id_and_file_version").order("asc").paginate({ cursor: args.cursor ?? null, numItems: backfillLimit(args.limit) });
+    let patched = 0;
+    const unnamed: string[] = [];
+    for (const version of page.page) {
+      if (version.cli !== undefined) continue;
+      if (version.runner === undefined) { unnamed.push(`${version.runId}@${version.fileVersion}`); continue; }
+      await ctx.db.patch(version._id, { cli: version.runner });
+      patched += 1;
+    }
+    return { scanned: page.page.length, patched, unnamed, cursor: page.isDone ? null : page.continueCursor };
+  },
+});
+
+// The counts that must all sum to zero before the schema narrows. Each reads
+// one page, since a single read over every run row exceeds the query read limit.
+const countArgs = { cursor: v.optional(v.string()), limit: v.optional(v.number()) };
+
+export const internalCountRunsMissingCli = internalQuery({
+  args: countArgs,
+  handler: async (ctx, args) => {
+    const page = await ctx.db.query("runs").withIndex("by_ingested_at_and_run_id").order("asc").paginate({ cursor: args.cursor ?? null, numItems: backfillLimit(args.limit) });
+    return { scanned: page.page.length, missing: page.page.filter((run) => run.cli === undefined).length, cursor: page.isDone ? null : page.continueCursor };
+  },
+});
+
+export const internalCountRunsMissingEnvironment = internalQuery({
+  args: countArgs,
+  handler: async (ctx, args) => {
+    const page = await ctx.db.query("runs").withIndex("by_ingested_at_and_run_id").order("asc").paginate({ cursor: args.cursor ?? null, numItems: backfillLimit(args.limit) });
+    return { scanned: page.page.length, missing: page.page.filter((run) => run.environment === undefined).length, cursor: page.isDone ? null : page.continueCursor };
+  },
+});
+
+export const internalCountFileVersionsMissingCli = internalQuery({
+  args: countArgs,
+  handler: async (ctx, args) => {
+    const page = await ctx.db.query("runFileVersions").withIndex("by_at_and_run_id_and_file_version").order("asc").paginate({ cursor: args.cursor ?? null, numItems: backfillLimit(args.limit) });
+    return { scanned: page.page.length, missing: page.page.filter((version) => version.cli === undefined).length, cursor: page.isDone ? null : page.continueCursor };
   },
 });
