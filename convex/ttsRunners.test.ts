@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import schema from "./schema";
 import { answererFor, runnerStatus, type RunnerSeed } from "./ttsRunners";
 import type { RunnerTier } from "./ttsShared";
+import type { Id } from "./_generated/dataModel";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -91,7 +92,7 @@ describe("the create door", () => {
     const t = convexTest(schema, modules);
     const response = await post(t, seed());
     expect(response.status).toBe(200);
-    const { runnerId } = await response.json();
+    const { runnerId } = (await response.json()) as { runnerId: Id<"runners"> };
     const state = await t.run(async (ctx) => ({
       runner: await ctx.db.get(runnerId),
       events: await ctx.db.query("runnerEvents").collect(),
@@ -111,7 +112,7 @@ describe("the create door", () => {
     const t = convexTest(schema, modules);
     const first = (await (await post(t, seed())).json()).runnerId;
     const second = await post(t, seed({ title: "TRAIN25 follow-up", from: { kind: "handoff", runnerId: first } }));
-    const { runnerId } = await second.json();
+    const { runnerId } = (await second.json()) as { runnerId: Id<"runners"> };
     const runner = await t.run((ctx) => ctx.db.get(runnerId));
     expect(runner?.document.startsWith("## Handed off from TRAIN25 campaign")).toBe(true);
     expect(runner?.document).toContain("Watch the sweep.");
@@ -260,7 +261,7 @@ describe("the step prompt", () => {
       await ctx.db.insert("modelOfTomPublication", {
         key: "current", commit: COMMIT, committedAt: 1, pushed: true,
         operate: publication.layers.operate,
-        headers: publication.headers.filter((header: { layers: string[] }) => header.layers.join(",") === "operate"),
+        headers: publication.headers.filter((header: { layers: string[] }) => header.layers.join(",") === "operate") as never,
       });
       for (const file of publication.files) {
         const body = file.path === "model-of-tom/areas/research.md" ? RESEARCH : file.body;
@@ -362,7 +363,7 @@ describe("the check-in", () => {
     const t = convexTest(schema, modules);
     const { runnerId, stepRunId, stepId, internal } = await claimed(t);
     const result = await t.mutation(internal.ttsRunners.internalRecordStep, { runnerId, stepRunId, decision: "continue", checkIn: GOOD, document: "# TRAIN25\n\nVersion two.\n", asks: [], graded: PASS });
-    expect(result.nextStepAt).toBe(Date.now() + TEN_MINUTES);
+    expect("nextStepAt" in result && result.nextStepAt).toBe(Date.now() + TEN_MINUTES);
     const state = await t.run(async (ctx) => ({
       runner: await ctx.db.get(runnerId),
       step: await ctx.db.get(stepId),
