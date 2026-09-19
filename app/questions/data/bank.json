@@ -1,0 +1,622 @@
+[
+  {
+    "id": "q001",
+    "text": "If you could have dinner tonight with anyone at all, living or dead, who would you pick and what would you want to talk about?",
+    "depth": 1,
+    "frame": "hypothetical",
+    "topic": "taste",
+    "release": false,
+    "source": "aron-1",
+    "why": "Reveals whom she admires and what she wants from them; the natural follow-up is what first drew her to that person."
+  },
+  {
+    "id": "q002",
+    "text": "What would a perfect day look like for you, from waking up to going to bed?",
+    "depth": 1,
+    "frame": "hypothetical",
+    "topic": "taste",
+    "release": false,
+    "source": "aron-4",
+    "why": "Reveals how she wants to spend time and who is in the day; the follow-up is which part of it she already has."
+  },
+  {
+    "id": "q003",
+    "text": "If you could be well known for one thing, what would you want it to be?",
+    "depth": 1,
+    "frame": "hypothetical",
+    "topic": "ambition",
+    "release": false,
+    "source": "aron-2",
+    "why": "Reveals what she would want credit for; the follow-up is whether she is doing any of it now."
+  },
+  {
+    "id": "q004",
+    "text": "If you woke up tomorrow with one new ability or quality, what would you want it to be?",
+    "depth": 1,
+    "frame": "hypothetical",
+    "topic": "self-knowledge",
+    "release": false,
+    "source": "aron-12",
+    "why": "Reveals the gap she feels in herself; the follow-up is what she would do first with it."
+  },
+  {
+    "id": "q005",
+    "text": "If you could live to ninety and keep either the mind or the body of a thirty-year-old for the last sixty years, which would you keep?",
+    "depth": 1,
+    "frame": "hypothetical",
+    "topic": "self-knowledge",
+    "release": true,
+    "source": "aron-6",
+    "why": "Reveals which part of herself she counts as herself; the follow-up is what she imagines losing with the other."
+  },
+  {
+    "id": "q006",
+    "text": "If you could give everyone you love the same gift this year, what would you give them?",
+    "depth": 1,
+    "frame": "hypothetical",
+    "topic": "people-she-loves",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals what she thinks the people around her are short of; the follow-up is who she thought of first."
+  },
+  {
+    "id": "q007",
+    "text": "When did you last sing to yourself, and what was it?",
+    "depth": 1,
+    "frame": "observation",
+    "topic": "humour",
+    "release": true,
+    "source": "aron-5",
+    "why": "Reveals a private, unguarded habit; the follow-up is what puts her in that mood."
+  },
+  {
+    "id": "q008",
+    "text": "What is something small you do most days purely because you like it?",
+    "depth": 1,
+    "frame": "observation",
+    "topic": "taste",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals what she protects in an ordinary day; the follow-up is how long it has been in her routine."
+  },
+  {
+    "id": "q009",
+    "text": "What do you find yourself reading about or watching when nobody has asked you to?",
+    "depth": 1,
+    "frame": "observation",
+    "topic": "ambition",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals unpaid curiosity rather than credentials; the follow-up is where the interest started."
+  },
+  {
+    "id": "q010",
+    "text": "What time of day do you feel most like yourself, and what are you usually doing then?",
+    "depth": 1,
+    "frame": "observation",
+    "topic": "self-knowledge",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals the conditions under which she feels most herself; the follow-up is what the rest of the day costs her."
+  },
+  {
+    "id": "q011",
+    "text": "What is something in your home that nobody else would notice, but that you would notice if it were gone?",
+    "depth": 1,
+    "frame": "observation",
+    "topic": "attachments",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals a private attachment to an ordinary object; the follow-up is how it got there."
+  },
+  {
+    "id": "q012",
+    "text": "What song or smell drops you straight back into a particular time in your life?",
+    "depth": 1,
+    "frame": "observation",
+    "topic": "memory",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals a period that still has a hold on her; the follow-up is what that time was like."
+  },
+  {
+    "id": "q013",
+    "text": "What have you been enjoying lately that you did not expect to enjoy?",
+    "depth": 1,
+    "frame": "appraisal",
+    "topic": "taste",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals a taste in motion and her willingness to be surprised; the follow-up is what she expected instead."
+  },
+  {
+    "id": "q014",
+    "text": "What is something you like doing enough that you are happy to keep doing it badly?",
+    "depth": 1,
+    "frame": "appraisal",
+    "topic": "self-knowledge",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals where she is free of wanting to be good at something; the follow-up is how bad she actually is."
+  },
+  {
+    "id": "q015",
+    "text": "Which place you have spent time in do you miss, and what is it you miss about it?",
+    "depth": 1,
+    "frame": "appraisal",
+    "topic": "attachments",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals what a place gives her that she is without now; the follow-up is whether she would go back."
+  },
+  {
+    "id": "q016",
+    "text": "What is a small moment from the last year or so that you still think about?",
+    "depth": 1,
+    "frame": "appraisal",
+    "topic": "memory",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals what registers with her at ordinary scale; the follow-up is why that one stuck."
+  },
+  {
+    "id": "q017",
+    "text": "What kind of humour gets you every time?",
+    "depth": 1,
+    "frame": "appraisal",
+    "topic": "humour",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals the shape of her humour rather than a list of favourites; the follow-up is an example."
+  },
+  {
+    "id": "q018",
+    "text": "What is something a friend of yours does that you have quietly started copying?",
+    "depth": 1,
+    "frame": "appraisal",
+    "topic": "people-she-loves",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals what she admires closely enough to take on; the follow-up is what that friend is like."
+  },
+  {
+    "id": "q019",
+    "text": "If a crystal ball could tell you one true thing about yourself, your life or your future, what would you ask it?",
+    "depth": 2,
+    "frame": "hypothetical",
+    "topic": "self-knowledge",
+    "release": false,
+    "source": "aron-13",
+    "why": "Reveals the open question she is carrying; the follow-up is whether she would actually want the answer."
+  },
+  {
+    "id": "q020",
+    "text": "If your home caught fire and everyone in it was already safe, what one object would you go back for?",
+    "depth": 2,
+    "frame": "hypothetical",
+    "topic": "attachments",
+    "release": false,
+    "source": "aron-34",
+    "why": "Reveals which object carries meaning rather than value; the follow-up is the story attached to it."
+  },
+  {
+    "id": "q021",
+    "text": "If you were handed a year with no obligations in it, what would you actually do with it?",
+    "depth": 2,
+    "frame": "hypothetical",
+    "topic": "ambition",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals what she wants when nothing is required of her; the follow-up is what makes it impossible now."
+  },
+  {
+    "id": "q022",
+    "text": "If you could make one person understand exactly how you feel about them without having to explain it, who would you pick, and what would they finally understand?",
+    "depth": 2,
+    "frame": "hypothetical",
+    "topic": "love-and-affection",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals an unsaid feeling and who it is aimed at; the follow-up is why it has stayed unsaid."
+  },
+  {
+    "id": "q023",
+    "text": "If you had to keep one kind of humour for the rest of your life and lose the rest, which would you keep?",
+    "depth": 2,
+    "frame": "hypothetical",
+    "topic": "humour",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals which register she would not give up; the follow-up is which one she would miss least."
+  },
+  {
+    "id": "q024",
+    "text": "If you could arrange for someone you love to get something they want but would never ask for, what would you arrange?",
+    "depth": 2,
+    "frame": "hypothetical",
+    "topic": "people-she-loves",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals how closely she reads the people around her; the follow-up is how she knows they want it."
+  },
+  {
+    "id": "q025",
+    "text": "What is something you have wanted to do for a long time and not done, and what has stopped you?",
+    "depth": 2,
+    "frame": "appraisal",
+    "topic": "ambition",
+    "release": false,
+    "source": "aron-14",
+    "why": "Reveals a live want and the obstacle she names for it; the follow-up is what would have to change."
+  },
+  {
+    "id": "q026",
+    "text": "What are you most grateful for in your life as it is now?",
+    "depth": 2,
+    "frame": "appraisal",
+    "topic": "people-she-loves",
+    "release": false,
+    "source": "aron-9",
+    "why": "Reveals what she counts as good fortune; the follow-up is how it came about."
+  },
+  {
+    "id": "q027",
+    "text": "What is your most treasured memory?",
+    "depth": 2,
+    "frame": "appraisal",
+    "topic": "memory",
+    "release": false,
+    "source": "aron-17",
+    "why": "Reveals a scene she has chosen to keep; the follow-up is who else was there."
+  },
+  {
+    "id": "q028",
+    "text": "What is something you have changed your mind about, where you can still remember what changed it?",
+    "depth": 2,
+    "frame": "appraisal",
+    "topic": "self-knowledge",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals how she updates and what moves her; the follow-up is what she thought before."
+  },
+  {
+    "id": "q029",
+    "text": "How do you usually show someone you care about them when you are not saying it out loud?",
+    "depth": 2,
+    "frame": "appraisal",
+    "topic": "love-and-affection",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals her actual affectionate behaviour rather than a label for it; the follow-up is whether people notice."
+  },
+  {
+    "id": "q030",
+    "text": "What is a running joke between you and someone in your life that you would struggle to explain to anyone else?",
+    "depth": 2,
+    "frame": "appraisal",
+    "topic": "humour",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals a close relationship through the humour inside it; the follow-up is how the joke started."
+  },
+  {
+    "id": "q031",
+    "text": "What do you value most in a friendship?",
+    "depth": 2,
+    "frame": "value",
+    "topic": "people-she-loves",
+    "release": false,
+    "source": "aron-16",
+    "why": "Reveals the standard she holds people to; the follow-up is a friendship that has it."
+  },
+  {
+    "id": "q032",
+    "text": "What is too serious to be joked about?",
+    "depth": 2,
+    "frame": "value",
+    "topic": "humour",
+    "release": false,
+    "source": "aron-32",
+    "why": "Reveals where her humour stops and why; the follow-up is whether the line has moved."
+  },
+  {
+    "id": "q033",
+    "text": "What is a rule you have made for yourself that you actually keep?",
+    "depth": 2,
+    "frame": "value",
+    "topic": "self-knowledge",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals a value she has turned into behaviour; the follow-up is what made her make the rule."
+  },
+  {
+    "id": "q034",
+    "text": "When you have a choice between doing something well and doing something new, which way do you lean?",
+    "depth": 2,
+    "frame": "value",
+    "topic": "ambition",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals what she optimises for when the two pull apart; the follow-up is a time she went the other way."
+  },
+  {
+    "id": "q035",
+    "text": "What do you think deserves more attention than it gets?",
+    "depth": 2,
+    "frame": "value",
+    "topic": "taste",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals what she thinks is undervalued and why; the follow-up is how she came to notice it."
+  },
+  {
+    "id": "q036",
+    "text": "What makes somewhere feel like home to you?",
+    "depth": 2,
+    "frame": "value",
+    "topic": "attachments",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals the conditions she needs to settle; the follow-up is where she has had them."
+  },
+  {
+    "id": "q037",
+    "text": "If you knew you had a year left and everything else carried on as normal, would you change how you are living, and what would you change?",
+    "depth": 3,
+    "frame": "hypothetical",
+    "topic": "self-knowledge",
+    "release": false,
+    "source": "aron-19",
+    "why": "Reveals the distance between how she lives and how she wants to; the follow-up is what is holding the current shape in place."
+  },
+  {
+    "id": "q038",
+    "text": "If you could set one condition that had to hold in every close relationship in your life, what would you set?",
+    "depth": 3,
+    "frame": "hypothetical",
+    "topic": "love-and-affection",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals the non-negotiable she brings to closeness; the follow-up is what taught her to want it."
+  },
+  {
+    "id": "q039",
+    "text": "If you could pass one thing you believe on to someone you love and know they would take it on, what would you pass on?",
+    "depth": 3,
+    "frame": "hypothetical",
+    "topic": "people-she-loves",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals a belief she holds strongly enough to want inherited; the follow-up is who she pictured."
+  },
+  {
+    "id": "q040",
+    "text": "If you had to keep the memories from one stretch of your life and let the rest blur, which stretch would you keep?",
+    "depth": 3,
+    "frame": "hypothetical",
+    "topic": "memory",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals which period she counts as the important one; the follow-up is what was happening then."
+  },
+  {
+    "id": "q041",
+    "text": "If you could guarantee one thing about how the next ten years go for you, what would you guarantee?",
+    "depth": 3,
+    "frame": "hypothetical",
+    "topic": "ambition",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals what she most wants secured; the follow-up is what she is prepared to leave to chance."
+  },
+  {
+    "id": "q042",
+    "text": "If you had to hand someone one thing to watch or read so that they understood your sense of humour, what would you hand them?",
+    "depth": 3,
+    "frame": "hypothetical",
+    "topic": "humour",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals her humour through a concrete choice; the follow-up is which part of it is most her."
+  },
+  {
+    "id": "q043",
+    "text": "How close and warm are the people you count as family?",
+    "depth": 3,
+    "frame": "appraisal",
+    "topic": "people-she-loves",
+    "release": false,
+    "source": "aron-23",
+    "why": "Reveals how she experiences her closest ties; the follow-up is what keeps them that way."
+  },
+  {
+    "id": "q044",
+    "text": "What do you find easy to give the people close to you, whether that is time, attention or honesty, and what do you find harder?",
+    "depth": 3,
+    "frame": "appraisal",
+    "topic": "love-and-affection",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals both her strength and her limit in close relationships; the follow-up is what makes the harder one hard."
+  },
+  {
+    "id": "q045",
+    "text": "What is something about yourself you have come to accept rather than try to fix?",
+    "depth": 3,
+    "frame": "appraisal",
+    "topic": "self-knowledge",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals a settled self-assessment without asking for a flaw confession; the follow-up is when she stopped fighting it."
+  },
+  {
+    "id": "q046",
+    "text": "Which earlier version of yourself do you feel most fondly about?",
+    "depth": 3,
+    "frame": "appraisal",
+    "topic": "memory",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals what she values in herself across time; the follow-up is what that version had that she misses."
+  },
+  {
+    "id": "q047",
+    "text": "What are you putting real effort into at the moment because you want to, rather than because you have to?",
+    "depth": 3,
+    "frame": "appraisal",
+    "topic": "ambition",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals chosen effort rather than obligations; the follow-up is what she wants out of it."
+  },
+  {
+    "id": "q048",
+    "text": "What part does laughing play in how you get through things?",
+    "depth": 3,
+    "frame": "appraisal",
+    "topic": "humour",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals humour as a working part of her life rather than a taste; the follow-up is who she laughs with."
+  },
+  {
+    "id": "q049",
+    "text": "What part do love and affection play in your life?",
+    "depth": 3,
+    "frame": "value",
+    "topic": "love-and-affection",
+    "release": false,
+    "source": "aron-21",
+    "why": "Reveals the weight she puts on being close to people; the follow-up is whether that has changed."
+  },
+  {
+    "id": "q050",
+    "text": "If we became close friends, what is the thing you would want me to know about you?",
+    "depth": 3,
+    "frame": "value",
+    "topic": "love-and-affection",
+    "release": false,
+    "source": "aron-27",
+    "why": "Reveals what she thinks is most necessary to understand her; the follow-up is what people usually miss."
+  },
+  {
+    "id": "q051",
+    "text": "What are three things you think we already have in common?",
+    "depth": 3,
+    "frame": "value",
+    "topic": "love-and-affection",
+    "release": false,
+    "source": "aron-8",
+    "why": "Reveals what she has noticed and chosen to name; the single 'we' item in the bank, kept as a closer at the end of a run."
+  },
+  {
+    "id": "q052",
+    "text": "What do you think people owe the people they are close to?",
+    "depth": 3,
+    "frame": "value",
+    "topic": "people-she-loves",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals her sense of obligation inside relationships; the follow-up is where she thinks it ends."
+  },
+  {
+    "id": "q053",
+    "text": "What do you think is worth being fussy about, even when it annoys people?",
+    "depth": 3,
+    "frame": "value",
+    "topic": "taste",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals a standard she will defend; the follow-up is the last time she insisted on it."
+  },
+  {
+    "id": "q054",
+    "text": "What do you think a good life has to have in it?",
+    "depth": 3,
+    "frame": "value",
+    "topic": "self-knowledge",
+    "release": false,
+    "source": "generated",
+    "why": "Reveals her working definition of a life worth having; the follow-up is which parts she already has."
+  },
+  {
+    "id": "q055",
+    "text": "What is the most embarrassing thing that has happened to you?",
+    "depth": 1,
+    "frame": "observation",
+    "topic": "humour",
+    "release": true,
+    "source": "aron-29",
+    "why": "Reveals how she tells a story against herself; the follow-up is what she did next."
+  },
+  {
+    "id": "q056",
+    "text": "What is the most useless skill you have, and how did you end up with it?",
+    "depth": 1,
+    "frame": "observation",
+    "topic": "humour",
+    "release": true,
+    "source": "generated",
+    "why": "Reveals an odd corner of her history; the follow-up is whether she can demonstrate it."
+  },
+  {
+    "id": "q057",
+    "text": "If you had to eat the same meal every day for a month, what would you pick, and how long before you cracked?",
+    "depth": 1,
+    "frame": "hypothetical",
+    "topic": "taste",
+    "release": true,
+    "source": "generated",
+    "why": "Reveals a plain taste and how seriously she takes food; the follow-up is where she eats it."
+  },
+  {
+    "id": "q058",
+    "text": "What were you intensely into as a kid that you would still defend now?",
+    "depth": 1,
+    "frame": "observation",
+    "topic": "memory",
+    "release": true,
+    "source": "generated",
+    "why": "Reveals an early enthusiasm she has not disowned; the follow-up is what she saw in it."
+  },
+  {
+    "id": "q059",
+    "text": "If you had to give a ten-minute talk tomorrow with no preparation, what would you talk about?",
+    "depth": 1,
+    "frame": "hypothetical",
+    "topic": "self-knowledge",
+    "release": true,
+    "source": "generated",
+    "why": "Reveals what she carries ready-made in her head; the follow-up is how she knows so much about it."
+  },
+  {
+    "id": "q060",
+    "text": "What is the last thing you did purely because it seemed funny at the time?",
+    "depth": 1,
+    "frame": "observation",
+    "topic": "humour",
+    "release": true,
+    "source": "generated",
+    "why": "Reveals her appetite for a silly idea; the follow-up is whether it was worth it."
+  },
+  {
+    "id": "q061",
+    "text": "If someone filmed an ordinary week of your life, what would the best scene be?",
+    "depth": 1,
+    "frame": "hypothetical",
+    "topic": "taste",
+    "release": true,
+    "source": "generated",
+    "why": "Reveals what she likes about her ordinary days; the follow-up is who else is in the scene."
+  },
+  {
+    "id": "q062",
+    "text": "What are you unreasonably competitive about?",
+    "depth": 1,
+    "frame": "observation",
+    "topic": "self-knowledge",
+    "release": true,
+    "source": "generated",
+    "why": "Reveals where her pride sits, at a safe scale; the follow-up is her record at it."
+  }
+]
