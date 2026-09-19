@@ -129,7 +129,7 @@ export const SIMPLIFY_MODEL = MODELS.simplify;
 /** Fifteen minutes, the same budget the weekly agenda's one model call takes:
  *  a single non-agentic completion over a large prompt. */
 export const SIMPLIFY_TIMEOUT_MS = 15 * 60 * 1000;
-/** The non-agentic default (tts-lib runClaude). The facts block carries every
+/** The default (tts-lib runClaude). The facts block carries every
  *  rule line verbatim, so the run needs no tool call at all; the turns are
  *  headroom for a stray one, not a budget to work in. */
 export const SIMPLIFY_MAX_TURNS = 8;

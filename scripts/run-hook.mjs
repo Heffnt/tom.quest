@@ -46,7 +46,7 @@ function hookLog(stateDir, message, fsImpl = fs) {
   }
 }
 
-export function cliOf(payload, runFile, env = process.env) {
+function cliOf(payload, runFile, env = process.env) {
   const explicit = firstString(payload.runner, payload.runtime, payload.cli, payload.cli_name);
   if (explicit === "claude" || explicit === "codex") return explicit;
   const normalized = String(runFile ?? "").replaceAll("\\", "/").toLowerCase();

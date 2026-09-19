@@ -55,6 +55,7 @@ import {
   runnerFailure,
   runTask,
   runTriggerCase,
+  realIo,
   runTrials,
   serveRequest,
   scoreLearning,
@@ -2015,6 +2016,12 @@ describe("trigger case methods", () => {
       skillsRefused: [],
       wikitomCommit: "wiki1",
     });
+    // The record refuses a kind outside RUN_KIND and the ingest sets the run
+    // aside, so the kind is checked against the schema's own list.
+    const schema = fs.readFileSync(path.resolve("convex/runs.ts"), "utf8");
+    const union = schema.match(/const RUN_KIND = v\.union\(([\s\S]*?)\);/)[1];
+    const accepted = [...union.matchAll(/v\.literal\("([^"]+)"\)/g)].map((match) => match[1]);
+    expect(accepted).toContain(received.options.registration.kind);
   });
 
   it("skips a prompt case when no pinned publication is supplied", async () => {
@@ -3125,4 +3132,25 @@ describe("the judge-retry count on the aggregate", () => {
     expect(aggregate([one("a", { judgeRetries: 1 }), one("b", { judgeRetries: 1 }), one("c")])
       .judgeRetries).toBe(2);
   });
+});
+
+// A --serve pass has no flock on its cron line, so its model calls must not
+// wait for a box slot without end: two passes queued behind a busy box would
+// overlap. Past its own model timeout the call fails, which is the runner
+// failure a regeneration already records.
+describe("the serve pass on a full box", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("gives up on the slot after the call's own timeout instead of waiting", async () => {
+    const state = fs.mkdtempSync(path.join(os.tmpdir(), "evals-serve-slot-"));
+    vi.stubEnv("RUN_SWEEP_STATE_DIR", state);
+    vi.stubEnv("RUN_ENV_FILE", path.join(state, "no-such-env"));
+    vi.stubEnv("TTS_RUN_SLOT_HELD", "");
+    vi.stubEnv("RUN_MAX_PARALLEL", "1");
+    vi.stubEnv("CLAUDE_BIN", process.execPath);
+    fs.writeFileSync(path.join(state, "semaphore.json"), JSON.stringify({ count: 1, holders: [{ id: "busy0001", pid: process.pid, at: Date.now() }] }));
+    const io = realIo({}, { serve: true });
+    await expect(io.runClaude("p", { model: "haiku", timeoutMs: 150 })).rejects.toMatchObject({ reason: "busy" });
+    fs.rmSync(state, { recursive: true, force: true });
+  }, 30_000);
 });

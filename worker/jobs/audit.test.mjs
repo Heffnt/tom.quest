@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   AUDIT_CHUNK_MAX_CHARS,
@@ -979,4 +983,62 @@ describe("the Codex cap's same-family fallback", () => {
     expect(posted[0].model).toBe(AUDIT_MODEL);
     expect(posted[0].fallback).toBeUndefined();
   });
+});
+
+// THE FALLBACK RUNS THROUGH THE BOX'S ONE LAUNCHER. Every other case here
+// stubs auditFallback; this one keeps the real one, so the Opus call goes
+// through runClaude and box-run.mjs to a fake `claude`, and what the CLI was
+// handed and what the record will be told are read back.
+describe("the fallback auditor through box-run", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("runs read-only with forty turns, in the checkout, and registers under box-run with its merge key", async () => {
+    const state = fs.mkdtempSync(path.join(os.tmpdir(), "audit-fallback-"));
+    const checkout = fs.mkdtempSync(path.join(os.tmpdir(), "audit-fallback-dir-"));
+    const record = path.join(state, "record.json");
+    const fake = path.join(state, "fake.mjs");
+    const answer = JSON.stringify({ type: "result", subtype: "success", result: `${AUDIT_VERDICT_LINE}\n\nIt does what it says.` });
+    fs.writeFileSync(fake, [
+      "#!/usr/bin/env node",
+      'import fs from "node:fs";',
+      'try { fs.readFileSync(0, "utf8"); } catch {}',
+      `fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }));`,
+      `process.stdout.write(${JSON.stringify(answer)});`,
+    ].join("\n"));
+    fs.chmodSync(fake, 0o755);
+    let bin = fake;
+    if (process.platform === "win32") {
+      bin = path.join(state, "claude.cmd");
+      fs.writeFileSync(bin, `@echo off\r\n"${process.execPath}" "${fake}" %*\r\n`);
+    }
+    vi.stubEnv("CLAUDE_BIN", bin);
+    vi.stubEnv("RUN_SWEEP_STATE_DIR", state);
+    vi.stubEnv("RUN_ENV_FILE", path.join(state, "no-such-env"));
+    vi.stubEnv("TTS_RUN_REG_SPOOL", path.join(state, "registration"));
+    vi.stubEnv("TTS_RUN_SLOT_HELD", "");
+    const { io: fakeIo, posted } = io({
+      audit: () => {
+        throw new Error("You've hit your usage limit. Try again later.");
+      },
+      // The record's two doors, answered here so the case reaches no network.
+      runTrace: async () => ({ runId: "run_1", turns: 1, tokens: 10, toolCalls: [] }),
+      mergeGate: async () => ({ checks: [] }),
+    });
+    const result = await auditCommit({ repo: "tom.quest", sha: "a1b2c3d", dir: checkout }, fakeIo);
+    expect(result.verdict).toBe("APPROVED");
+    expect(posted[0].fallback).toBe(AUDIT_FALLBACK_REASON);
+    const { argv, cwd } = JSON.parse(fs.readFileSync(record, "utf8"));
+    expect(argv[argv.indexOf("--max-turns") + 1]).toBe(String(AUDIT_FALLBACK_MAX_TURNS));
+    expect(argv[argv.indexOf("--allowedTools") + 1]).toBe(AUDIT_FALLBACK_TOOLS.join(","));
+    expect(argv).not.toContain("--permission-mode");
+    expect(fs.realpathSync(cwd)).toBe(fs.realpathSync(checkout));
+    const spool = path.join(state, "registration");
+    const [envelope] = fs.readdirSync(spool).filter((name) => name.endsWith(".json"))
+      .map((name) => JSON.parse(fs.readFileSync(path.join(spool, name), "utf8")));
+    expect(envelope.writer.file).toBe("worker/runs/box-run.mjs");
+    expect(envelope.registration.origin).toBe("cron:audit");
+    expect(envelope.registration.mergeKey).toMatch(/a1b2c3d/);
+    fs.rmSync(state, { recursive: true, force: true });
+    fs.rmSync(checkout, { recursive: true, force: true });
+  }, 30_000);
 });

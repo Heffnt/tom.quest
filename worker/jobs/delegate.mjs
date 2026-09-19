@@ -332,17 +332,24 @@ export async function askDelegate(ask, suppliedIo = {}) {
           );
           const promptSha256 = crypto.createHash("sha256").update(prompt).digest("hex");
           const started = io.now();
+          const timeoutMs = state.delegate?.timeoutMs ?? DELEGATE_TIMEOUT_MS;
           try {
             answer = parseAnswer(
+              // THE BOX'S ONE LAUNCHER. runClaude hands this to box-run.mjs,
+              // which runs it in the worktree above and takes a slot on the
+              // box's semaphore. The caller is standing still with a stated
+              // fallback, so the slot wait is bounded by the ask's own
+              // timeout; a full box past it is silence, below.
               io.runClaude(prompt, {
                 model: DELEGATE_MODEL,
                 cwd: worktree,
-                // agentic makes the tools usable at all (bypassPermissions);
-                // the throwaway worktree is what makes that safe, and the tool
-                // list is what keeps the run read-only.
-                agentic: true,
+                // The three reading tools are pre-approved by name, which is
+                // all the run needs. No full-access mode: the box runs as
+                // root, the CLI refuses that mode under root, and every ask
+                // that asked for it was silence (tts-lib.test.mjs holds it).
                 maxTurns: state.delegate?.maxTurns ?? DELEGATE_MAX_TURNS,
-                timeoutMs: state.delegate?.timeoutMs ?? DELEGATE_TIMEOUT_MS,
+                timeoutMs,
+                slotWaitMs: timeoutMs,
                 allowedTools: ["Read", "Glob", "Grep"],
                 registration: {
                   origin: "cron:delegate",
@@ -358,7 +365,11 @@ export async function askDelegate(ask, suppliedIo = {}) {
               }),
             );
           } catch (error) {
-            answer = unreadable(error?.message ?? error);
+            // A busy box is not an unreadable answer: nothing was asked. The
+            // row says so, and the caller takes its fallback either way.
+            answer = error?.reason === "busy"
+              ? silence("box-busy: " + String(error?.message ?? error).slice(0, 200))
+              : unreadable(error?.message ?? error);
           }
           ms = Math.max(0, io.now() - started);
           promptSha = fallback

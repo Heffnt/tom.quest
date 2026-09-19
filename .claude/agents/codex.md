@@ -14,13 +14,13 @@ A Codex run has no time limit and can take far longer than a foreground Bash cal
 1. **Start the run.** Pick a short unique tag — four random lowercase letters or digits, `k7qz` say — and use that same tag in every path below. Make this Bash call with `run_in_background: true` and **no `timeout` parameter at all**. Put the request you received, word for word, between the two delimiter lines. Do not rewrite, shorten, or "improve" it.
 
 ```bash
-node scripts/box-agent.mjs --runner codex --repo tom.quest --ref <branch> > /tmp/codex-k7qz.out 2> /tmp/codex-k7qz.err <<'CODEX_PROMPT_END'
+node scripts/box-agent.mjs --cli codex --repo tom.quest --ref <branch> > /tmp/codex-k7qz.out 2> /tmp/codex-k7qz.err <<'CODEX_PROMPT_END'
 <the request, verbatim>
 CODEX_PROMPT_END
 echo "codex-run: shell saw exit $?" >> /tmp/codex-k7qz.err
 ```
 
-   **Which command:** run `node scripts/box-agent.mjs --runner codex` from the repo root — on either machine, with no test of your own. From the laptop it sends the run to the Jarvis Box; on the box, where there is nothing to send anywhere, it runs the same program right there. Either way `tts-codex` executes it in a git worktree of the repo and ref you name, with the same flags and the same stdin. **Codex never runs on the laptop.**
+   **Which command:** run `node scripts/box-agent.mjs --cli codex` from the repo root — on either machine, with no test of your own. From the laptop it sends the run to the Jarvis Box; on the box, where there is nothing to send anywhere, it runs the same program right there. Either way `tts-codex` executes it in a git worktree of the repo and ref you name, with the same flags and the same stdin. **Codex never runs on the laptop.**
 
    `--repo` and `--ref` name what Codex reads (the repos are `tom.quest`, `ComplexMultiTrigger`, `WikiTom`, or `none` for no checkout); take them from the request.
 
@@ -37,7 +37,7 @@ cat /tmp/codex-k7qz.err; echo '=== ANSWER ==='; cat /tmp/codex-k7qz.out; rm -f /
    The `.err` side carries the transport's progress lines; everything after `=== ANSWER ===` is Codex's answer, and its **last line** is the box's status line.
 
 4. Reply with exactly two parts and nothing else:
-   - The status line, read off the last line of the output: `box-run: run <id> host box runner codex exit <code> after <s>s`.
+   - The status line, read off the last line of the output: `box-run: run <id> host box cli codex exit <code> after <s>s`.
    - Codex's answer, in full, inside a fenced block.
 
 ## Rules
