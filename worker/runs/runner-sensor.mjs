@@ -77,6 +77,15 @@ export const defaultDeps = {
   now: () => Date.now(),
 };
 
+/** Why a tts-turing read failed. Its first line names the cause (no read key,
+ *  the status the API answered, the tunnel down); the lines after it are advice,
+ *  and the last of them read alone said "every other verb is a 401" when the box
+ *  simply had no key. */
+function turingBecause(error) {
+  const first = String(error?.stderr ?? "").split("\n").find((line) => line.startsWith("tts-turing: "));
+  return first ? first.slice("tts-turing: ".length).trim().slice(0, 200) : because(error);
+}
+
 function because(error) {
   const text = String(error?.stderr || error?.message || error).trim().split("\n").pop() ?? "";
   return text.slice(0, 200) || "no reason given";
@@ -123,7 +132,7 @@ async function jobsFact(deps) {
       raw: jobs,
     };
   } catch (error) {
-    return { unavailable: because(error) };
+    return { unavailable: turingBecause(error) };
   }
 }
 
@@ -134,7 +143,7 @@ async function gpusFact(deps) {
     if (!free || typeof free !== "object") return { unavailable: "the GPU report had no free summary" };
     return { freeByType: free };
   } catch (error) {
-    return { unavailable: because(error) };
+    return { unavailable: turingBecause(error) };
   }
 }
 

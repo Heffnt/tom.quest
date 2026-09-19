@@ -74,6 +74,15 @@ describe("sense", () => {
     expect(facts.jobs.unavailable).toMatch(/not set/);
     expect(facts.gpus.unavailable).toMatch(/not set/);
     expect(facts.frontier).toEqual({ unavailable: "this runner names no sweep specs" });
+    // Regression: the reason is tts-turing's first line, not its last line of
+    // advice, which said "every other verb is a 401" when there was no key.
+    const noKey = await sense({ runnerId: "r3", cwd: "/checkout", specs: [], failures: [], cacheDir }, deps({
+      async turing() {
+        throw Object.assign(new Error("exit 3"), { stderr: "tts-turing: TURING_READ_KEY is not set in this environment.\n\nIt belongs in /etc/tts/worker.env on this box.\n`tts-turing health` still works and every other verb is a 401.\n" });
+      },
+    }));
+    expect(noKey.jobs.unavailable).toBe("TURING_READ_KEY is not set in this environment.");
+    expect(noKey.gpus.unavailable).toBe("TURING_READ_KEY is not set in this environment.");
     const text = renderFacts(facts);
     expect(text.split("\n").map((line) => line.split(":")[0])).toEqual(["Jobs", "Free GPUs", "Frontier", "Step failures since the last check-in", "GPU-hours seen on running jobs since this runner began"]);
   });
