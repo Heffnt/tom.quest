@@ -3,7 +3,7 @@ import { internalMutation, internalQuery, mutation, query } from "./_generated/s
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
-import { requireTom } from "./authRoles";
+import { requireTom, requireTomOrAgent } from "./authRoles";
 import { redactSecrets } from "../worker/session-host/redact.mjs";
 import { CHECKIN_RULES, checkInFailures } from "../scripts/checkin-rules.mjs";
 import { assembleContext, type ContextSubject } from "./ttsContext";
@@ -1093,5 +1093,81 @@ export const runnerTitle = query({
     if (!runner) return null;
     const blocking = await openBlockingAsks(ctx, runner._id);
     return { title: runner.title, status: runnerStatus({ runner, openBlockingAsks: blocking.length }) };
+  },
+});
+
+/** How many runners the batches tab lists, live and ended together. */
+const PAGE_RUNNERS = 50;
+/** How many check-ins and asks one expanded row shows. */
+const PAGE_EVENTS = 50;
+
+/** Every runner, newest first, as the batches tab lists it. Status is
+ *  runnerStatus's; the page derives none of its own. */
+export const listRunners = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireTomOrAgent(ctx, "TTS");
+    const runners = await ctx.db.query("runners").withIndex("by_created").order("desc").take(PAGE_RUNNERS);
+    return Promise.all(
+      runners.map(async (runner) => {
+        const open = await openAsks(ctx, runner._id);
+        const blocking = open.filter((ask) => ask.blocking === true).length;
+        const checkIn = await lastCheckIn(ctx, runner._id);
+        return {
+          runnerId: runner._id,
+          title: runner.title,
+          type: runner.type,
+          experimentHost: runner.experimentHost,
+          stepMs: runner.stepMs,
+          nextStepAt: runner.nextStepAt,
+          createdAt: runner.createdAt,
+          endedAt: runner.endedAt ?? null,
+          status: runnerStatus({ runner, openBlockingAsks: blocking }),
+          openBlockingAsks: blocking,
+          lastCheckIn: checkIn === null ? null : { at: checkIn.at, line: checkInFirstLine(checkIn.text) },
+          stepRunId: (await lastStepRunId(ctx, runner._id)) ?? null,
+        };
+      }),
+    );
+  },
+});
+
+/** One runner's document, its check-ins and the questions it asked, newest
+ *  first, for its expanded row on the batches tab. */
+export const runnerDetail = query({
+  args: { runnerId: v.id("runners") },
+  handler: async (ctx, { runnerId }) => {
+    await requireTomOrAgent(ctx, "TTS");
+    const runner = await ctx.db.get(runnerId);
+    if (!runner) return null;
+    const ofKind = (kind: "check-in" | "ask") =>
+      ctx.db
+        .query("runnerEvents")
+        .withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runnerId).eq("kind", kind))
+        .order("desc")
+        .take(PAGE_EVENTS);
+    const [checkIns, asks] = await Promise.all([ofKind("check-in"), ofKind("ask")]);
+    return {
+      document: runner.document,
+      documentVersion: runner.documentVersion,
+      checkIns: checkIns.map((event) => ({
+        id: event._id,
+        at: event.at,
+        stepRunId: event.stepRunId ?? null,
+        decision: event.decision ?? null,
+        verdict: event.graded?.verdict ?? null,
+        text: event.text ?? "",
+      })),
+      asks: asks.map((event) => ({
+        id: event._id,
+        at: event.at,
+        stepRunId: event.stepRunId ?? null,
+        tier: event.tier ?? null,
+        blocking: event.blocking === true,
+        answeredAt: event.answeredAt ?? null,
+        answerText: event.answerText ?? null,
+        text: event.text ?? "",
+      })),
+    };
   },
 });
