@@ -910,6 +910,7 @@ const CHANNEL_WHAT = Object.freeze({
   needsYou: "a thread per todo only Tom can settle",
   hourly: "the hourly line",
   broken: "one line per distinct failure",
+  simplify: "the removal loop's one open pull request, for objection",
   runners: "a thread per runner, a check-in every step",
 });
 
@@ -931,6 +932,7 @@ const CHANNEL_NAME = Object.freeze({
   needsYou: "#tts-needs-you",
   hourly: "#tts-hourly",
   broken: "#tts-broken",
+  simplify: "#tts-simplify",
   runners: "#tts-runners",
 });
 

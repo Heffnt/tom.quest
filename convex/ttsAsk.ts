@@ -4,7 +4,7 @@ import type { Doc } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { DAY_MS } from "./ttsShared";
 import { MERGE } from "./ttsMerge";
-import { SIMPLIFY_PROPOSAL } from "./ttsSimplify";
+import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { logEvent } from "./tts";
 
 export const DELEGATE_DECISION = "delegate-decision";
@@ -255,7 +255,9 @@ export const internalRecordDelegateObjection = internalMutation({
     // own `<repo>:<sha>` key. A simplification proposal is the third for the
     // same reason — the weekly pass reports each line it means to remove in
     // that channel and gives it a thread — and its askId is its own
-    // `simplify:<id>` key (convex/ttsNightly.ts).
+    // `simplify:<id>` key (convex/ttsNightly.ts). A removal-loop pull request
+    // is the fourth: its #tts-simplify thread is keyed `loop:<number>`, and a
+    // reply there is what the loop rewrites the branch from.
     const subject =
       (await ctx.db
         .query("dtsEvents")
@@ -268,6 +270,10 @@ export const internalRecordDelegateObjection = internalMutation({
       (await ctx.db
         .query("dtsEvents")
         .withIndex("by_kind_key", (q) => q.eq("kind", SIMPLIFY_PROPOSAL).eq("key", args.askId))
+        .first()) ??
+      (await ctx.db
+        .query("dtsEvents")
+        .withIndex("by_kind_key", (q) => q.eq("kind", REMOVAL_LOOP_PR).eq("key", args.askId))
         .first());
     if (!subject) throw new Error(`Delegate decision not found: ${args.askId}`);
     const eventId = await logEvent(ctx, DELEGATE_OBJECTION, subject.todoId, args, args.askId);

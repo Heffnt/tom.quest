@@ -108,7 +108,7 @@ const REPO_NONE = "none";
 // What a box run may do. `Task` is in it BECAUSE a box run may spawn its own
 // children on the box, which is the point of moving the work here. Reading and
 // writing are in it because a run that cannot edit cannot land work.
-export const TOOLS_ALLOWED = Object.freeze([
+const TOOLS_ALLOWED = Object.freeze([
   "Read", "Write", "Edit", "MultiEdit", "NotebookEdit",
   "Glob", "Grep", "Bash", "TodoWrite", "WebFetch", "WebSearch", "Task",
 ]);

@@ -1,0 +1,9 @@
+id: flag-not-deletion
+valid:
+  - "function f({ limit = 3 } = {}) {}"
+  - "if (data.dryRun === true) go();"
+  - "const { force = false } = parsed;"
+invalid:
+  - "function f({ force = false } = {}) {}"
+  - "const g = ({ quiet = true }) => quiet;"
+  - "if (options.dryRun === true) go();"

@@ -1,0 +1,12 @@
+id: check-not-deletion
+valid:
+  - "const ok = a && b;"
+  - "if (a) { step(); if (a) again(); }"
+  - "if (a) log(); if (a) again();"
+invalid:
+  - "const same = a && a;"
+  - "const same = a || a;"
+  - "const same = a ? a : a;"
+  - "if (a) { if (a) again(); }"
+  - "function f(a) { if (a) return 1; if (a) again(); }"
+  - "function f(a) { if (a) throw new Error(); if (a) again(); }"

@@ -1,0 +1,30 @@
+id: check-not-deletion
+language: tsx
+severity: info
+ignores:
+  - "**/*.test.*"
+  - "**/__tests__/**"
+  - "**/*.d.ts"
+  - "convex/_generated/**"
+message: a guard an enclosing guard already settled
+rule:
+  any:
+    - pattern: $A && $A
+    - pattern: $A || $A
+    - pattern: if ($COND) $INNER
+      nthChild:
+        position: 1
+        ofRule:
+          not:
+            kind: comment
+      inside:
+        kind: statement_block
+        inside:
+          pattern: if ($COND) $OUTER
+          field: consequence
+    - pattern: "$A ? $A : $A"
+    - pattern: if ($COND) $SECOND
+      follows:
+        any:
+          - pattern: if ($COND) return $$$RET;
+          - pattern: if ($COND) throw $ERR;

@@ -1,0 +1,24 @@
+id: flag-not-deletion
+language: tsx
+severity: info
+ignores:
+  - "**/*.test.*"
+  - "**/__tests__/**"
+  - "**/*.d.ts"
+  - "convex/_generated/**"
+message: a boolean option
+rule:
+  any:
+    - kind: object_assignment_pattern
+      has:
+        field: right
+        any:
+          - kind: "true"
+          - kind: "false"
+      inside:
+        kind: formal_parameters
+        stopBy: end
+    - pattern: $OPTIONS.$NAME === true
+constraints:
+  OPTIONS:
+    regex: ^(options|opts|flags)$
