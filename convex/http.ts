@@ -802,6 +802,10 @@ function slackReplyChannels(): Set<string> {
       process.env.SLACK_TTS_DECISIONS_CHANNEL_ID,
       process.env.SLACK_TTS_NEEDS_YOU_CHANNEL_ID,
       process.env.SLACK_TTS_BROKEN_CHANNEL_ID,
+      // The removal loop's room: a reply in a pull request's thread is his
+      // objection to it (convex/ttsSync.ts sendRemoval). Without this line
+      // the thread would look answerable and every reply would be dropped.
+      process.env.SLACK_TTS_SIMPLIFY_CHANNEL_ID,
     ].filter((id): id is string => typeof id === "string" && id !== ""),
   );
 }

@@ -621,6 +621,11 @@ Both go into `secrets/convex.env` under those names, then `pnpm secrets:sync`.
 `TOM_SLACK_USER_ID` is the one Slack user whose threaded replies the events
 route acts on. The token is never printed.
 
+The same run creates `#tts-simplify`, the removal loop's channel, and prints
+`SLACK_TTS_SIMPLIFY_CHANNEL_ID=C…` beside the hourly line; it goes into
+`secrets/convex.env` the same way. Until it is set the loop still opens its
+pull request, and the send logs one line and posts nothing.
+
 ## Switching Claude accounts
 
 Jobs run under `CLAUDE_CONFIG_DIR=/root/.claude-accounts/active`, a symlink:
