@@ -290,7 +290,7 @@ function claudeChildFacts(agentMeta, parentSessionId) {
  * `contextText` is the whole text the increment ends; given with a cursor
  * past line 0, the header is read off it.
  */
-export function parseClaudeFile({ contextText, ...args }) {
+export function parseClaudeFile({ contextText = /** @type {string | undefined} */ (undefined), ...args }) {
   const part = parseClaudeLines(args);
   const baseLine = args.baseLine ?? args.fromLine ?? 0;
   if (!(baseLine > 0) || typeof contextText !== "string") return part;
