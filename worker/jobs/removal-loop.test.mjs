@@ -219,6 +219,22 @@ describe("a day with a loop pull request open", () => {
     expect(w.calls.gh.some((a) => a[1] === "merge")).toBe(false);
   });
 
+  it("rewrites the branch from any other reply, with his words verbatim, and restarts the window", async () => {
+    const words = "keep the export: e2e/plot.spec.ts reads it by name";
+    const w = world({ open: [OPEN_PR], removals: [row({ objection: { at: NOW - 3_600_000, text: words, revert: false } })] });
+    const result = await run(w);
+    expect(result.action).toBe("rewritten");
+    expect(w.calls.boxRun).toHaveLength(1);
+    const { args, prompt } = w.calls.boxRun[0];
+    expect(args).toEqual(expect.arrayContaining(["--ref", OPEN_PR.headRefName]));
+    expect(prompt).toContain(words);
+    expect(prompt).toContain("-export type A = 1;");
+    expect(prompt).toContain("- id: removal-loop-dead-export-2");
+    expect(w.calls.gh.find((a) => a[1] === "edit")).toEqual(expect.arrayContaining(["--body-file", "/tmp/body.md"]));
+    expect(events(w.calls, REMOVAL_LOOP_PR)).toEqual([
+      expect.objectContaining({ key: "loop:42", data: expect.objectContaining({ round: 1, sha: "beef2" }) }),
+    ]);
+  });
 });
 
 describe("the pure pieces", () => {

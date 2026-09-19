@@ -39,7 +39,10 @@
 //   - a reply opening with "revert": the pull request is closed with his
 //     words quoted, and never reopened. Words beyond "revert" become a
 //     correction in vqc/steering.yaml, carried in by the next pull request.
-//   - any other reply: held, until the rewrite path lands.
+//   - any other reply: one box run on the SAME branch with the diff, the body
+//     and his words verbatim. It fixes the branch, appends his words as a
+//     vqc/steering.yaml entry in the same commit, and writes the new body.
+//     The job posts the rewritten round, which restarts his day to object.
 //
 // THIS JOB IS NOT A SESSION AND MERGES DIRECTLY. The session daemon's merge
 // fence (worker/session-host/merge-gate.mjs) stands between a
@@ -273,6 +276,46 @@ If the removal cannot be right — the after-state names the cases — decline i
 ${RESPONSE_TEMPLATE}`;
 }
 
+/** The prompt for a rewrite after Tom's reply. */
+function iteratePrompt({ pr, branch, diff, body, words, steeringBlock }) {
+  return `You are revising pull request ${pr} of tom.Quest, the removal loop's one open pull request, after Tom replied to it. You are checked out at the tip of its branch, ${branch}. First load two skills with the Skill tool: tom-repo-tom-quest and tom-write.
+
+## Tom's reply, verbatim
+
+${words}
+
+## The pull request's diff now
+
+\`\`\`diff
+${diff}
+\`\`\`
+
+## Its body now
+
+${body}
+
+## What to do
+
+1. \`git switch -C ${branch}\`
+2. Change the branch so it does what his reply says. Ordinary commits on top; never force-push, never rewrite what is there.
+3. Append this entry to the END of vqc/steering.yaml exactly as written — his words are the correction and are not edited:
+
+\`\`\`yaml
+${steeringBlock.trim()}
+\`\`\`
+
+4. \`node scripts/removal-sensor.mjs --write-baseline\`, then \`npx tsc --noEmit -p tsconfig.json\`, \`pnpm check:guardrails\`, and the tests of every file you touched. All must pass.
+5. Commit the fix and the steering entry together. Subject lowercase, naming the area and the world after the change; body in full sentences; the last line, exactly:
+   ${COMMIT_TRAILER}
+6. \`git push origin HEAD:refs/heads/${branch}\`. Never push main.
+
+## Your final message
+
+The whole new body, which replaces the old one. It must say what changed because of his reply.
+
+${RESPONSE_TEMPLATE}`;
+}
+
 /** The comment a closed pull request carries: his words, quoted. */
 export function closeComment(words) {
   const quoted = String(words ?? "").trim().split(/\r?\n/).map((line) => `> ${line}`).join("\n");
@@ -410,8 +453,51 @@ async function mergePass({ io, env, state, pr, base, day, note }) {
       }
       return { action: "closed", reason: `Tom replied "${words.slice(0, 200)}"` };
     }
-    // Any other reply waits for the rewrite path, which is the next change.
-    return { action: "held", reason: "Tom replied and the rewrite from his words is not built yet" };
+    // A rewrite from his words, on the same branch.
+    const diff = must(io.gh(["pr", "diff", String(pr.number), "--repo", REPO_SLUG]), "reading the diff").stdout;
+    must(io.git(["-C", CLONE_DIR, "fetch", "--no-tags", "origin", `refs/heads/${pr.headRefName}:refs/remotes/origin/${pr.headRefName}`]), "fetching the branch");
+    const onBranch = must(io.git(["-C", CLONE_DIR, "show", `origin/${pr.headRefName}:vqc/steering.yaml`]), "reading the branch's steering").stdout;
+    const steeringFile = io.tempFile("steering.yaml", onBranch);
+    const ruleId = pr.headRefName.replace(/^loop\/removals\//, "").replace(/-[0-9a-f]{8}$/, "");
+    const block = steeringEntry({
+      id: nextSteeringId(steeringEntries(io, steeringFile), ruleId),
+      ruleId,
+      where: `branch ${pr.headRefName}`,
+      pr: pr.number,
+      words,
+      day,
+    });
+    const prompt = iteratePrompt({ pr: pr.number, branch: pr.headRefName, diff, body: pr.body ?? "", words, steeringBlock: block });
+    const ran = io.boxRun(
+      ["--runner", ACTUATOR_RUNNER, "--model", ACTUATOR_MODEL, "--repo", REPO, "--ref", pr.headRefName, "--install", "--tests"],
+      prompt,
+    );
+    const report = parseReport(ran.stdout);
+    if (!ran.ok || report.subject === null) {
+      note(`the rewrite of pull request ${pr.number} did not finish: exit ${ran.status}; ${report.unusable ?? report.declined ?? ran.stderr}`.slice(0, 500));
+      return { action: "rewrite-failed", reason: "the run did not return a body" };
+    }
+    const view = ghJson(io, ["pr", "view", String(pr.number), "--repo", REPO_SLUG, "--json", "headRefOid"]);
+    if (view?.headRefOid === head) {
+      note(`the rewrite of pull request ${pr.number} pushed nothing`);
+      return { action: "rewrite-failed", reason: "the branch did not move" };
+    }
+    must(io.gh(["pr", "edit", String(pr.number), "--repo", REPO_SLUG, "--body-file", io.tempFile("body.md", report.body)]), "rewriting the body");
+    await io.fetch(env, "/tts/event", {
+      kind: REMOVAL_LOOP_PR,
+      key: askId,
+      data: {
+        pr: pr.number,
+        url: pr.url,
+        subject: pr.title,
+        round: (row.round ?? 0) + 1,
+        sha: view.headRefOid,
+        objectionAt: row.objection.at,
+        dryRun: false,
+      },
+    });
+    auditHead(io, state, { sha: view.headRefOid, branch: pr.headRefName, base, subject: pr.title, note });
+    return { action: "rewritten", reason: `rewritten from Tom's reply, round ${(row.round ?? 0) + 1}` };
   }
 
   if (!row.windowClosed) {
