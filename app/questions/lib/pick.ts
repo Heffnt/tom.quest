@@ -18,9 +18,9 @@ import type { Depth, Frame, Question } from "../data/types";
  * release ones. A release question therefore has no depth to be selected by,
  * which is what makes "lighter" a kind rather than a fourth depth.
  */
-export type KindFilter = Depth | "lighter" | null;
+type KindFilter = Depth | "lighter" | null;
 /** null admits every frame; anything else pins it to that frame. */
-export type FrameFilter = Frame | null;
+type FrameFilter = Frame | null;
 /** null admits every topic; anything else pins it to that topic. */
 export type TopicFilter = string | null;
 
