@@ -87,7 +87,7 @@ export const CHECKIN_RULES = Object.freeze([
   {
     id: "checkin-label",
     on: "document",
-    why: "no coined label standing in for a sentence",
+    why: "no coined label standing in for a sentence: no line opens with a capitalised phrase of at most 31 characters followed by a colon",
     fails: (s) => lines(s).some((line) => !HEADING.test(line) && LABEL.test(line)),
   },
   {

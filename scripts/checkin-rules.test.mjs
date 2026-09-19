@@ -25,6 +25,8 @@ describe("the check-in form rules", () => {
     expect(ids("It ran.\n\n1. A numbered line outside the heading.")).toEqual(["checkin-numbered"]);
     expect(ids("Status: green.")).toEqual(["checkin-label"]);
     expect(ids("- **Next step:** look again.")).toEqual(["checkin-label"]);
+    // The pattern the rule's reason names, which a step reads in its prompt.
+    expect(ids("I could not see the experiment: the cluster refused.")).toEqual(["checkin-label"]);
     expect(ids(`${"A long sentence. ".repeat(100)}`)).toEqual(["checkin-length"]);
     expect(ids("  ")).toEqual(["checkin-empty"]);
     expect(CHECKIN_MAX_CHARS).toBe(1500);
