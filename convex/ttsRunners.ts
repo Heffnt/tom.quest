@@ -5,7 +5,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { requireTom } from "./authRoles";
 import { redactSecrets } from "../worker/session-host/redact.mjs";
-import { checkInFailures } from "../scripts/checkin-rules.mjs";
+import { CHECKIN_RULES, checkInFailures } from "../scripts/checkin-rules.mjs";
 import { assembleContext, type ContextSubject } from "./ttsContext";
 import {
   BOX_TOOLS_PARAGRAPH,
@@ -667,6 +667,7 @@ function checkInContract(runner: Pick<Doc<"runners">, "title" | "stepMs">): stri
   return [
     "## The check-in",
     "Tom reads the check-in on his phone, with no memory of this prompt or the document, and a judge reads it against his writing standard before he does. Read that standard before you write: `tts-search skills write` prints it, and the ground.md it names beside it lists the terms he already knows. The judge fails a check-in on any line of it. Every check-in also keeps these promises:",
+    `- It passes the pen's form rules, which run before the judge: ${CHECKIN_RULES.map((rule) => rule.why).join("; ")}.`,
     `- Call this runner "${runner.title}" every time you name it, never "this runner", "the runner", "the agent" or "the watch", and say at first mention that it is an agent that checks the experiment in steps.`,
     "- Define at first use, inline, every term this prompt or the document introduces: the experiment's short name with what the experiment is, a percentage with what it is a share of, and the document as the runner's notes for its next step. A label that serves only this prompt, such as a tier name, is not his: describe the thing instead (a question that changes what the experiment is), and leave out any word you cannot define in a clause.",
     "- Name only what Tom needs to know where the experiment stands or to answer a question. The document is written in the code's words: a script, a log, a stop condition or a stage you mention is described by what it does, in words, or left out. Never ask him to type a command.",

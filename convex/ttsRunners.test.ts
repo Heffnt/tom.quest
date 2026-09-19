@@ -319,6 +319,7 @@ describe("the step prompt", () => {
     expect(contract).toContain("with no number");
     expect(contract).toContain("`tts-search skills write` prints it");
     expect(contract).toContain("Never ask him to type a command.");
+    for (const rule of (await import("../scripts/checkin-rules.mjs")).CHECKIN_RULES) expect(contract).toContain(rule.why);
     expect(contract).toContain("describe the thing instead");
     expect(contract).toContain("exit code or an HTTP status in words");
     expect(contract).toContain("what the next step will do if he does not answer, and when, as a clock time");
