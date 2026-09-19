@@ -629,21 +629,30 @@ export function objectionLine(o: ObjectionFact, n: number): { text: string; url:
 }
 
 /** One live runner in one statement: its title, what it is doing, whether a
- *  question of its is open, and the first line of its last check-in, in that
- *  order, so `statement` cuts the check-in before the question. It names no
- *  tier and no decision value. */
+ *  question of its is open, and the first line of its last check-in. It names
+ *  no tier and no decision value.
+ *
+ *  The check-in's words are what gives when the line is too long: they are cut
+ *  at a word to fit, and dropped whole when too little room is left. A clause
+ *  cut by `statement` would print "its last check-in reads." with nothing
+ *  after it. */
 export function runnerLine(r: RunnerFact): string {
   const doing =
     r.status === "waiting-on-tom"
-      ? "is waiting on you, and its steps change nothing until you answer"
+      ? "is waiting on your answer"
       : r.openQuestion
-        ? "is running, and a question of its is open for you"
-        : "is running, and no question of its is open";
-  const said =
-    r.lastCheckIn === null
-      ? "; it has not checked in yet"
-      : `; its last check-in reads: ${stripStop(r.lastCheckIn)}`;
-  return statement(`${stripStop(r.title)} ${doing}${said}`);
+        ? "is running with a question open for you"
+        : "is running with no question open";
+  const head = `${stripStop(r.title)} ${doing}`;
+  if (r.lastCheckIn === null) return statement(`${head}; it has not checked in yet`);
+  const lead = `${head}; its last check-in reads: `;
+  const room = LINE_CHARS - lead.length - 1;
+  let said = stripStop(r.lastCheckIn);
+  if (said.length > room) {
+    const cut = said.slice(0, Math.max(0, room));
+    said = stripStop(cut.slice(0, Math.max(0, cut.lastIndexOf(" "))).replace(/[\s,;:—-]+$/, ""));
+  }
+  return statement(said.length < 12 ? head : `${lead}${said}`);
 }
 
 /** The runners run's lead: how many are live, and how many wait on him. */

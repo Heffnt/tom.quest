@@ -636,26 +636,36 @@ const WAITING_RUNNER: RunnerFact = {
 describe("the runners run", () => {
   it("says a running runner is running, with its last check-in's first line", () => {
     expect(runnerLine(RUNNING_RUNNER)).toBe(
-      "The train25 campaign is running, and no question of its is open; its last check-in reads: 14 of 20 jobs running, 212 of 400 results done.",
+      "The train25 campaign is running with no question open; its last check-in reads: 14 of 20 jobs running, 212 of 400 results done.",
     );
     expect(runnerLine({ ...RUNNING_RUNNER, openQuestion: true })).toContain(
-      "is running, and a question of its is open for you",
+      "is running with a question open for you",
     );
   });
 
   it("says a runner waiting on Tom is waiting on him, and names no tier or decision value", () => {
     const line = runnerLine(WAITING_RUNNER);
     expect(line).toBe(
-      "The seed-variance probe is waiting on you, and its steps change nothing until you answer; its last check-in reads: 0 of 4 jobs running.",
+      "The seed-variance probe is waiting on your answer; its last check-in reads: 0 of 4 jobs running.",
     );
     for (const word of ["routine", "plan", "setup", "continue", "hand-off", "finish", "waiting-on-tom"]) {
       expect(line).not.toContain(word);
     }
   });
 
+  it("cuts a long check-in at a word to fit, never leaving the clause empty", () => {
+    const long = runnerLine({ ...WAITING_RUNNER, lastCheckIn: "14 of 20 jobs are running and 212 of 400 results are done, with the rest of the queue due to drain by the morning" });
+    expect(long.length).toBeLessThanOrEqual(LINE_CHARS);
+    expect(long).toMatch(/its last check-in reads: 14 of 20 jobs are running and \d+ of \d+ results/);
+    const title = "A runner whose title alone takes up nearly all of the room one Slack line has on a phone";
+    const crowded = runnerLine({ ...WAITING_RUNNER, title });
+    expect(crowded.startsWith(`${title} is waiting on you`)).toBe(true);
+    expect(crowded).not.toContain("check-in");
+  });
+
   it("invents no check-in for a runner that has never checked in", () => {
     expect(runnerLine({ ...RUNNING_RUNNER, lastCheckIn: null })).toBe(
-      "The train25 campaign is running, and no question of its is open; it has not checked in yet.",
+      "The train25 campaign is running with no question open; it has not checked in yet.",
     );
   });
 
