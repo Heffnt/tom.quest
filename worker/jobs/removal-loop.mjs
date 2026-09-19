@@ -138,11 +138,11 @@ function askIdFor(pr) {
 }
 
 /** A closed-unmerged loop pull request's branch names the violation Tom
- *  refused: `loop/removals/<rule>-<fingerprint>`, the key --exclude takes. */
+ *  refused: `removals/<rule>-<fingerprint>`, the key --exclude takes. */
 export function refusedKeys(closed) {
   return (closed ?? [])
     .filter((pr) => !pr?.mergedAt && typeof pr?.headRefName === "string")
-    .map((pr) => pr.headRefName.replace(/^loop\/removals\//, ""))
+    .map((pr) => pr.headRefName.replace(/^removals\//, ""))
     .filter((key) => key !== "")
     .sort();
 }
@@ -458,7 +458,7 @@ async function mergePass({ io, env, state, pr, base, day, note }) {
     must(io.git(["-C", CLONE_DIR, "fetch", "--no-tags", "origin", `refs/heads/${pr.headRefName}:refs/remotes/origin/${pr.headRefName}`]), "fetching the branch");
     const onBranch = must(io.git(["-C", CLONE_DIR, "show", `origin/${pr.headRefName}:vqc/steering.yaml`]), "reading the branch's steering").stdout;
     const steeringFile = io.tempFile("steering.yaml", onBranch);
-    const ruleId = pr.headRefName.replace(/^loop\/removals\//, "").replace(/-[0-9a-f]{8}$/, "");
+    const ruleId = pr.headRefName.replace(/^removals\//, "").replace(/-[0-9a-f]{8}$/, "");
     const block = steeringEntry({
       id: nextSteeringId(steeringEntries(io, steeringFile), ruleId),
       ruleId,
@@ -585,7 +585,7 @@ export async function runRemovalLoop({ force = false, dryRun = false, base = "ma
       await record({ action: "nothing", reason: result.reason, baselineSha: baseSha });
       return result;
     }
-    const branch = `loop/removals/${violation.ruleId}-${violation.fingerprint}`;
+    const branch = `removals/${violation.ruleId}-${violation.fingerprint}`;
     const golden = io.readFile(path.join(CLONE_DIR, "sg", "goldens", `${violation.ruleId}.md`));
     const entries = steeringEntries(io, path.join(CLONE_DIR, "vqc", "steering.yaml"));
     const prompt = actuatorPrompt({ violation, golden, feedback: feedbackText(entries), branch, base, baseSha });
@@ -599,7 +599,7 @@ export async function runRemovalLoop({ force = false, dryRun = false, base = "ma
       let counted = entries;
       const blocks = [];
       for (const item of pending) {
-        const ruleId = String(item.branch ?? "").replace(/^loop\/removals\//, "").replace(/-[0-9a-f]{8}$/, "") || "loop";
+        const ruleId = String(item.branch ?? "").replace(/^removals\//, "").replace(/-[0-9a-f]{8}$/, "") || "loop";
         const id = nextSteeringId(counted, ruleId);
         counted = [...counted, { id }];
         blocks.push(steeringEntry({ id, ruleId, where: `branch ${item.branch}`, pr: item.pr, words: item.words, day: item.day }));

@@ -30,6 +30,6 @@ describe("the removal loop's controller", () => {
   });
 
   it("names the branch by rule and fingerprint", () => {
-    expect(branchFor(big)).toBe("loop/removals/duplicated-helper-aaaaaaaa");
+    expect(branchFor(big)).toBe("removals/duplicated-helper-aaaaaaaa");
   });
 });

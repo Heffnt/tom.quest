@@ -98,7 +98,7 @@ const events = (calls, kind) => calls.fetch.filter((c) => c.route === "/tts/even
 const OPEN_PR = {
   number: 42,
   headRefOid: "beef1",
-  headRefName: "loop/removals/dead-export-223ba4a3",
+  headRefName: "removals/dead-export-223ba4a3",
   title: "boolback: the facet panel type is local to the plot",
   url: "https://github.com/Heffnt/tom.quest/pull/42",
   body: BODY,
@@ -115,7 +115,7 @@ describe("a day with no loop pull request open", () => {
     ]);
     const prompt = w.calls.boxRun[0].prompt;
     expect(prompt).toContain("app/boolback/components/group-plot.tsx");
-    expect(prompt).toContain("git switch -c loop/removals/dead-export-223ba4a3");
+    expect(prompt).toContain("git switch -c removals/dead-export-223ba4a3");
     expect(prompt).toContain("# dead-export — the after-state");
     expect(prompt).toContain("Do: Explain ground-up.");
     expect(prompt).toContain("Do: keep types a test reads");
@@ -134,8 +134,8 @@ describe("a day with no loop pull request open", () => {
   it("excludes what Tom closed and what a run declined", async () => {
     const w = world({
       closed: [
-        { headRefName: "loop/removals/dead-export-11111111", mergedAt: null },
-        { headRefName: "loop/removals/dead-export-22222222", mergedAt: "2026-09-10T00:00:00Z" },
+        { headRefName: "removals/dead-export-11111111", mergedAt: null },
+        { headRefName: "removals/dead-export-22222222", mergedAt: "2026-09-10T00:00:00Z" },
       ],
       state: { declined: { "flag-not-deletion-33333333": { why: "a spread passes it" } } },
     });
@@ -268,7 +268,7 @@ describe("the pure pieces", () => {
   });
 
   it("reads a closed branch as a refusal only when it was not merged", () => {
-    expect(refusedKeys([{ headRefName: "loop/removals/a-1", mergedAt: null }, { headRefName: "loop/removals/b-2", mergedAt: "x" }])).toEqual(["a-1"]);
+    expect(refusedKeys([{ headRefName: "removals/a-1", mergedAt: null }, { headRefName: "removals/b-2", mergedAt: "x" }])).toEqual(["a-1"]);
   });
 
   it("tells a bare revert from one with words", () => {

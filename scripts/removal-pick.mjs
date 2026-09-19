@@ -31,9 +31,14 @@ import { fileURLToPath } from "node:url";
 import { BASELINE_PATH, byteCompare, collect, keyOf, parseBaseline, realIo } from "./removal-sensor.mjs";
 
 /** The branch a violation's pull request is cut on. Rule and fingerprint, not
- *  the path: two copies of one helper are one removal. */
+ *  the path: two copies of one helper are one removal.
+ *
+ *  NOT UNDER loop/. Git stores a branch name as a path, so while any branch
+ *  named `loop/removals` exists no branch can be created under
+ *  `loop/removals/` — the first live run was refused by GitHub with exactly
+ *  that conflict, because the loop was being built on a branch of that name. */
 export function branchFor(violation) {
-  return `loop/removals/${violation.ruleId}-${violation.fingerprint}`;
+  return `removals/${violation.ruleId}-${violation.fingerprint}`;
 }
 
 /** What `--exclude` and a closed pull request's branch name both spell. */
