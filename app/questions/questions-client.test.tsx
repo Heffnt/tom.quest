@@ -195,6 +195,13 @@ describe("QuestionsClient", () => {
     expect(list.dialog).toBeTruthy();
   });
 
+  it("disables native touch scrolling on the drawer grab area", () => {
+    renderQuestions();
+    const { dialog } = openDrawer("options");
+
+    expect(dialog.firstElementChild?.classList.contains("touch-none")).toBe(true);
+  });
+
   it("selects a list row and closes the drawer", () => {
     renderQuestions();
     openDrawer("list");

@@ -113,8 +113,9 @@ export default function Drawer({
         onKeyDown={trapFocus}
         className="mx-auto mt-auto flex max-h-[85dvh] w-full max-w-[40rem] flex-col rounded-t-2xl border-t border-border bg-surface pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl"
       >
+        {/* Without touch-none, a phone's native scroll claims the downward swipe and cancels the pointer before pointerup. */}
         <div
-          className="flex h-8 shrink-0 items-center justify-center"
+          className="flex h-8 shrink-0 touch-none items-center justify-center"
           onPointerDown={(event) => {
             grabStartY.current = event.clientY;
             grabCurrentY.current = event.clientY;
