@@ -7,28 +7,33 @@
 
 import type { Depth, Frame, Question } from "../data/types";
 
+// No filter is null throughout, never a reserved string: a topic is whatever
+// the bank calls it, so a sentinel drawn from the same alphabet would collide
+// with a topic named after it. The chip for null is labelled "any" on screen,
+// and that label exists only there.
+
 /**
- * "any" admits everything, release questions included; a number admits the
+ * null admits everything, release questions included; a number admits the
  * questions at that depth that are not release; "lighter" admits exactly the
  * release ones. A release question therefore has no depth to be selected by,
  * which is what makes "lighter" a kind rather than a fourth depth.
  */
-export type KindFilter = "any" | Depth | "lighter";
-/** "any" admits every frame; anything else pins it to that frame. */
-export type FrameFilter = "any" | Frame;
-/** "any" admits every topic; anything else pins it to that topic. */
-export type TopicFilter = "any" | string;
+export type KindFilter = Depth | "lighter" | null;
+/** null admits every frame; anything else pins it to that frame. */
+export type FrameFilter = Frame | null;
+/** null admits every topic; anything else pins it to that topic. */
+export type TopicFilter = string | null;
 
 export type Filters = { kind: KindFilter; frame: FrameFilter; topic: TopicFilter };
 
 /** Injectable Math.random, so a test can pin every choice this module makes. */
 export type Rng = () => number;
 
-export const KINDS: readonly KindFilter[] = ["any", 1, 2, 3, "lighter"];
+export const KINDS: readonly KindFilter[] = [null, 1, 2, 3, "lighter"];
 
-export const FRAMES: readonly FrameFilter[] = ["any", "hypothetical", "observation", "appraisal", "value"];
+export const FRAMES: readonly FrameFilter[] = [null, "hypothetical", "observation", "appraisal", "value"];
 
-export const INITIAL_FILTERS: Filters = { kind: "any", frame: "any", topic: "any" };
+export const INITIAL_FILTERS: Filters = { kind: null, frame: null, topic: null };
 
 function choose<T>(items: readonly T[], random: Rng): T {
   const index = Math.floor(random() * items.length);
@@ -44,14 +49,27 @@ function unique<T>(values: readonly T[]): T[] {
 function admits(question: Question, filters: Filters): boolean {
   if (filters.kind === "lighter" && !question.release) return false;
   if (typeof filters.kind === "number" && (question.release || question.depth !== filters.kind)) return false;
-  if (filters.frame !== "any" && question.frame !== filters.frame) return false;
-  if (filters.topic !== "any" && question.topic !== filters.topic) return false;
+  if (filters.frame !== null && question.frame !== filters.frame) return false;
+  if (filters.topic !== null && question.topic !== filters.topic) return false;
   return true;
 }
 
 /** Every question all three filters admit, in bank order — the list, and the pool `next` draws from. */
 export function matches(bank: readonly Question[], filters: Filters): Question[] {
   return bank.filter((question) => admits(question, filters));
+}
+
+/**
+ * The filters a patch produces, or the very object passed in when the patch
+ * selects what is already selected. The page leans on that identity: a tap on
+ * the chip that is already lit changes nothing, so it must not spend a draw
+ * and swap the question out from under the reader.
+ */
+export function refined(filters: Filters, patch: Partial<Filters>): Filters {
+  const updated = { ...filters, ...patch };
+  const unchanged =
+    updated.kind === filters.kind && updated.frame === filters.frame && updated.topic === filters.topic;
+  return unchanged ? filters : updated;
 }
 
 /**
@@ -71,10 +89,9 @@ export function next(
   const pool = matches(bank, filters);
   if (pool.length === 0) return null;
 
-  const fresh = pool.filter((question) => question.id !== currentId && !seen.has(question.id));
-  if (fresh.length > 0) return choose(fresh, random);
-
   const others = pool.filter((question) => question.id !== currentId);
+  const fresh = others.filter((question) => !seen.has(question.id));
+  if (fresh.length > 0) return choose(fresh, random);
   if (others.length > 0) return choose(others, random);
 
   // One match, and it is the question already on screen: hold it there rather

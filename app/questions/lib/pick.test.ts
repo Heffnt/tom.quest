@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Question } from "../data/types";
 import { BANK } from "../data/types";
-import { INITIAL_FILTERS, matches, next, topicsOf, type Filters, type Rng } from "./pick";
+import { FRAMES, INITIAL_FILTERS, KINDS, matches, next, refined, topicsOf, type Filters, type Rng } from "./pick";
 
 const question = (over: Partial<Question> & { id: string }): Question => ({
   text: `question ${over.id}`,
@@ -24,6 +24,38 @@ const filters = (over: Partial<Filters> = {}): Filters => ({ ...INITIAL_FILTERS,
 const ids = (questions: readonly Question[]): string[] => questions.map((entry) => entry.id);
 
 const none = new Set<string>();
+
+describe("the no-filter sentinel", () => {
+  it("is null on every filter, and opens every chip row", () => {
+    expect(INITIAL_FILTERS).toEqual({ kind: null, frame: null, topic: null });
+    expect(KINDS[0]).toBeNull();
+    expect(FRAMES[0]).toBeNull();
+  });
+
+  it("never collides with a topic the bank calls any", () => {
+    const bank = [question({ id: "named", topic: "any" }), question({ id: "other", topic: "taste" })];
+    expect(ids(matches(bank, filters({ topic: null })))).toEqual(["named", "other"]);
+    expect(ids(matches(bank, filters({ topic: "any" })))).toEqual(["named"]);
+  });
+});
+
+describe("refined", () => {
+  it("returns the filters it was given when the patch selects what is already selected", () => {
+    const current = filters({ kind: 2, topic: "taste" });
+    expect(refined(current, { topic: "taste" })).toBe(current);
+    expect(refined(current, { kind: 2 })).toBe(current);
+    expect(refined(current, { frame: null })).toBe(current);
+    expect(refined(current, {})).toBe(current);
+  });
+
+  it("returns new filters when the patch changes one", () => {
+    const current = filters({ topic: "taste" });
+    const updated = refined(current, { topic: "memory" });
+    expect(updated).not.toBe(current);
+    expect(updated).toEqual({ kind: null, frame: null, topic: "memory" });
+    expect(refined(current, { topic: null })).not.toBe(current);
+  });
+});
 
 describe("matches", () => {
   const bank = [
@@ -95,6 +127,14 @@ describe("next", () => {
     const seen = new Set(["a", "b", "c"]);
     expect(next(bank, filters(), seen, "a", first)?.id).toBe("b");
     expect(next(bank, filters(), seen, "a", last)?.id).toBe("c");
+  });
+
+  it("serves an already-seen question rather than emptying the page", () => {
+    const bank = [question({ id: "a" }), question({ id: "b" })];
+    const seen = new Set(["a", "b"]);
+    const served = next(bank, filters(), seen, "a", first);
+    expect(served).not.toBeNull();
+    expect(seen.has(served?.id ?? "")).toBe(true);
   });
 
   it("draws only from the match set the filters describe", () => {
