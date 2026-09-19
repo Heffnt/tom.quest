@@ -138,6 +138,12 @@ async function gpusFact(deps) {
   }
 }
 
+/** tts-turing prints "answered 404" when the results tree has no such
+ *  directory (turing-api's /cmt-node). */
+function notFound(error) {
+  return /answered 404\b/.test(String(error?.stderr ?? error?.message ?? ""));
+}
+
 /** Whether each node is done, top-down, within the budget. `known` is the
  *  cached done set; returns the newly learned done nodes and how many were
  *  left unchecked. */
@@ -162,9 +168,17 @@ export async function checkDone(nodes, known, deps, budget = CHECK_BUDGET) {
       const value = { dirs: new Set(listing.dirs ?? []), files: new Set((listing.files ?? []).map((file) => file.name)) };
       listed.set(dir, value);
       return value;
-    } catch {
-      listed.set(dir, null);
-      return null;
+    } catch (error) {
+      // ONLY A 404 SAYS THE DIRECTORY IS ABSENT. Any other failure (no read
+      // key, a 401, the tunnel down) says nothing about the tree; counting it
+      // absent reported every node not done and none unchecked. The budget is
+      // spent so the rest of this step's nodes are counted unchecked too.
+      if (notFound(error)) {
+        listed.set(dir, null);
+        return null;
+      }
+      calls = budget;
+      return undefined;
     }
   };
   let unchecked = 0;

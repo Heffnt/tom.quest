@@ -15,7 +15,7 @@ function tree(doneNodes, existing) {
   // A fake results tree: `existing` directories, `doneNodes` holding done.json.
   return async ([verb, dir]) => {
     if (verb !== "node") throw new Error("unexpected verb");
-    if (!existing.has(dir)) throw new Error("404");
+    if (!existing.has(dir)) throw Object.assign(new Error("exit 4"), { stderr: `tts-turing: https://turing.tom.quest/cmt-node?path=${dir} answered 404` });
     const prefix = `${dir}/`;
     const dirs = [...existing].filter((d) => d.startsWith(prefix) && !d.slice(prefix.length).includes("/")).map((d) => d.slice(prefix.length));
     return { dirs, files: doneNodes.has(dir) ? [{ name: "done.json", size: 2 }] : [] };
@@ -86,6 +86,22 @@ describe("checkDone", () => {
     expect(result.calls).toBe(4);
     expect(result.done).toHaveLength(4);
     expect(result.unchecked).toBe(6);
+  });
+
+  it("counts a refused read unchecked, never absent", async () => {
+    // Regression: with no read key every read failed, each node was taken for
+    // an absent directory, and the facts said 261 remaining with 0 unchecked.
+    let asked = 0;
+    const refused = async () => {
+      asked += 1;
+      throw Object.assign(new Error("exit 4"), { stderr: "tts-turing: https://turing.tom.quest/cmt-node?path=n0 answered 401" });
+    };
+    const nodes = Array.from({ length: 50 }, (_, i) => `n${i}`);
+    const result = await checkDone(nodes, [], { turing: refused });
+    expect(result.done).toEqual([]);
+    expect(result.unchecked).toBe(50);
+    // The first refusal ends the reading; only the reads already in flight run.
+    expect(asked).toBeLessThan(50);
   });
 });
 
