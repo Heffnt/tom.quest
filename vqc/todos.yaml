@@ -494,6 +494,35 @@
     work, not this todo's landed code. First real Slack post pending the
     next qualifying transition in prod.
 
+- id: questions-page
+  readiness: prepared
+  status: done
+  created: 2026-09-18
+  cites: [C7]
+  statement: >-
+    A Tom-only page at /questions serving one first-date conversation
+    question at a time from a pre-written bank, so Tom can pick a kind of
+    question at the table instead of drifting into small talk. The rules the
+    bank obeys come from the closeness and self-disclosure literature; his
+    taste supersedes them where they conflict.
+  completion_condition: >-
+    The page is registered with visibility tom, serves a question matching
+    the chosen kind, frame and topic, lists every match on request, and the
+    bank holds only questions that passed the ten rules and an independent
+    audit.
+  plan: >-
+    Bank written by one Opus run against ten rules, audited by a second run
+    that had not seen the first, then cut and re-filed on that audit; page
+    built around pure picking logic under test; every merge through the
+    three-verifier gate.
+  resolution: >-
+    Landed in two pull requests on 2026-09-18. The first shipped the page
+    with a depth walk (stay, deeper, lighten) and merged before its audit
+    ran; the audit was run afterwards against the true parent and approved.
+    Tom removed the walk the same evening, and the second pull request ships
+    properties, one question, next, and the list of matches. Tom's own cuts
+    to the bank remain open and land as data commits.
+
 # Tree-facts (discovered debt) live in vqc/ledger.yaml, not here (a todo is
 # a CHOICE; a ledger entry is KNOWLEDGE — VQC D28). Since the 2026-08-29
 # agent-created-todos ruling, any agent may add entries here directly.
