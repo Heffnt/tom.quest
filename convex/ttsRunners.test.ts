@@ -464,6 +464,36 @@ describe("composeCheckIn", () => {
     expect(line).toContain("two steps were skipped because the one before was still running");
   });
 
+  it("renders the facts table in Slack as one line per row, what was counted then what this step found", async () => {
+    const { checkInBody } = await import("./ttsCompose");
+    const checkIn = [
+      "The first column names what was counted, the second what this step found.",
+      "",
+      "| What was counted | This step |",
+      "| --- | --- |",
+      "| Jobs of the experiment running on the cluster | 11 |",
+      "| GPUs free on the cluster | 3 |",
+      "| Units of work the sweep files ask for | 21081 |",
+      "| Units known finished | 20412 |",
+      "| My steps that failed since the last check-in | 0 |",
+      "| GPU-hours the experiment's jobs used since I began | not read: the accounting call timed out |",
+      "",
+      "Nothing changed.",
+    ].join("\n");
+    expect(checkInBody({ ...base, checkIn })).toBe([
+      "The first column names what was counted, the second what this step found.",
+      "",
+      "Jobs of the experiment running on the cluster: 11",
+      "GPUs free on the cluster: 3",
+      "Units of work the sweep files ask for: 21081",
+      "Units known finished: 20412",
+      "My steps that failed since the last check-in: 0",
+      "GPU-hours the experiment's jobs used since I began: not read: the accounting call timed out",
+      "",
+      "Nothing changed.",
+    ].join("\n"));
+  });
+
   it("posts a check-in that failed its grade marked", async () => {
     const { checkInBody } = await import("./ttsCompose");
     const body = checkInBody({ ...base, graded: { verdict: "fail", complaints: ["The word grinder is coined."] } });

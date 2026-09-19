@@ -1004,10 +1004,33 @@ export function composeCheckIn(f: CheckInFacts): Message {
   };
 }
 
-/** The step's own words, and the mark when they did not pass the writing
- *  check. */
+/** A Markdown table's rows as lines, "first cell: the rest", because Slack
+ *  renders no tables. The header row and the dashes under it are dropped: each
+ *  line already names what was counted. Text outside a table is untouched. */
+function tablesAsLines(text: string): string {
+  const lines = text.split("\n");
+  const isRow = (line: string) => line.trim().startsWith("|");
+  const isRule = (line: string) => /^\|?[\s:|-]+\|?$/.test(line.trim()) && line.includes("-");
+  const cells = (line: string) => line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!isRow(line)) {
+      out.push(line);
+      continue;
+    }
+    if (isRule(line)) continue;
+    if (i + 1 < lines.length && isRule(lines[i + 1])) continue;
+    const [what, ...found] = cells(line);
+    out.push(`${what}: ${found.join(", ")}`);
+  }
+  return out.join("\n");
+}
+
+/** The step's own words for Slack, its table as lines, and the mark when they
+ *  did not pass the writing check. The record and the page keep the table. */
 export function checkInBody(f: CheckInFacts): string {
-  const body = f.checkIn.trim();
+  const body = tablesAsLines(f.checkIn.trim());
   if (f.graded.verdict === "pass") return body;
   const why = f.graded.complaints.length > 0 ? ` ${f.graded.complaints.join(" ")}` : "";
   return `This check-in did not pass the writing check.${why}\n\n${body}`;
