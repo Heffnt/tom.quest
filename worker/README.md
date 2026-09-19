@@ -690,6 +690,8 @@ node /opt/tts/runs/materialize.mjs --serve    # serve one open-from-store reques
 node /opt/tts/runs/materialize.mjs --run <id> # rebuild one run's rows from the store
 node /opt/tts/weekly.mjs --force          # the weekly job, now (refuses a rerun)
 node /opt/tts/weekly.mjs --force --overwrite   # rerun the same day on purpose
+node /opt/tts/removal-loop.mjs --force --dry-run   # pick today's violation, print the prompt, spawn nothing
+node /opt/tts/removal-loop.mjs --force    # the removal loop's tick, now
 ```
 
 The nightly job's `--force` skips its 4-a.m.-New-York hour guard (cron fires
@@ -699,6 +701,6 @@ it at both 08:00 and 09:00 UTC and the guard keeps exactly the slot that is
 ## Logs
 
 Cron output: one `/var/log/tts/<job>.log` per job (poll-dump, poll-gmail,
-poll-canvas, apply-time-notes, plan-graphs, nightly, weekly,
+poll-canvas, apply-time-notes, plan-graphs, nightly, weekly, removal-loop,
 reingest-overflow, runs-sweep, runs-compare, runs-backlog, runs-materialize),
 truncated monthly by cron — they are convenience, not state.
