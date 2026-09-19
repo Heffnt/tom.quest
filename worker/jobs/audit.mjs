@@ -955,8 +955,11 @@ export function claimOf({ dir, sha, base, subject = "" }, run = defaultRun) {
       run("gh", ["api", CLAIM_PR_ENDPOINT(sha)], { cwd: dir, timeout: AUDIT_CLAIM_TIMEOUT_MS }),
     );
     // The commit can belong to several pull requests (a branch merged into a
-    // branch). The OPEN one is the claim being made now; absent that, the first.
-    const pull = pulls.find((one) => one?.state === "open") ?? pulls[0];
+    // branch). The open one whose HEAD is this commit is the claim being made
+    // now: a pull request stacked on this branch contains the commit too, and
+    // GitHub may list it first. Then any open one; absent that, the first.
+    const open = pulls.filter((one) => one?.state === "open");
+    const pull = open.find((one) => one?.head?.sha === sha) ?? open[0] ?? pulls[0];
     if (pull?.title) {
       const head = `pull request #${pull.number} — ${pull.title}`;
       const body = String(pull.body ?? "").trim();

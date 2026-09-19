@@ -229,6 +229,19 @@ describe("claimOf", () => {
     expect(claimOf({ dir: "/w", sha: "sha", base: "base" }, run).text).toContain("#2 — the one open now");
   });
 
+  it("prefers the open pull request whose head IS the commit over one stacked on it", () => {
+    // #189 was cut from loop/removals and targets it, so loop/removals' head
+    // is inside #189 too, and GitHub listed #189 first: the audit of #190
+    // judged the whole loop against #189's one-word claim and refused it.
+    const { run } = runner({
+      gh: JSON.stringify([
+        { number: 189, title: "the stacked removal", state: "open", head: { sha: "other" } },
+        { number: 190, title: "the branch itself", state: "open", head: { sha: "sha" } },
+      ]),
+    });
+    expect(claimOf({ dir: "/w", sha: "sha", base: "base" }, run).text).toContain("#190 — the branch itself");
+  });
+
   it("falls back to EVERY commit subject in the range, oldest first — never the head alone", () => {
     const { seen, run } = runner({
       // No `gh` on this box: the commit subjects are the branch's own account
