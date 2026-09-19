@@ -67,9 +67,10 @@ describe("the judge's answer", () => {
 describe("the golden check-ins", () => {
   const items = loadGolden(path.join(here, "..", "..")).filter((item) => item.job === "checkin");
 
-  it("are four, each under the checkin job, each passing the form rules", async () => {
+  it("are six, each under the checkin job, each passing the form rules", async () => {
     expect(items.map((item) => item.id).sort()).toEqual([
-      "checkin-coined-jargon-fail", "checkin-plain-numbers-pass", "checkin-ruling-requested-pass", "checkin-self-grading-fail",
+      "checkin-coined-jargon-fail", "checkin-contract-table-pass", "checkin-plain-numbers-pass",
+      "checkin-ruling-requested-pass", "checkin-self-grading-fail", "checkin-undefined-tier-fail",
     ]);
     expect(JOBS.checkin.module).toBe("worker/jobs/runner-checkin.mjs");
     const { checkInFailures } = await import("../../scripts/checkin-rules.mjs");
