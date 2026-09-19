@@ -1,0 +1,228 @@
+#!/usr/bin/env node
+// tts-turing-act — a runner step launches and cancels its own jobs on Turing.
+//
+// WHY THIS EXISTS: Tom ruled on 2026-09-18 that runners may write to the
+// cluster "with monitoring and restrictions". tts-turing stays read-only and
+// keeps its promise of no write verb; acting lives here, on a different key.
+// TURING_RUNNER_KEY (turing-api's verify_launch_key) opens POST /allocate and
+// DELETE /jobs/{id} for jobs named runner:<runner id>:<label>, and only a
+// runner step's process holds it (box-run.mjs puts it back for that envelope
+// alone). A session has no such key, and this command tells it so.
+//
+//   tts-turing-act launch --runner <id> --label <label> --gpu-type <t>
+//                         --minutes <n> [--memory-mb <n>] [--count <n>]
+//                         --command <c> (repeatable) [--project-dir <p>]
+//   tts-turing-act cancel --runner <id> --job <job id>
+//
+// THE BUDGET IS CHECKED HERE, BEFORE ANYTHING IS SENT. The runner's GPU-hour
+// budget is read from the sensor's cache (/var/lib/tts/runners/<id>.json),
+// which the daemon writes from the record before the step's model starts; it
+// is never taken from this command line. Spent hours are the sensor's own sum
+// over `tts-turing jobs`; the time still booked on this runner's live jobs
+// counts too. No budget recorded, or a job list that cannot be read, refuses.
+// turing-api's own ceilings bound a request that skips this command.
+//
+// THE READ-BACK IS THE VERIFICATION. After a launch the queue is read again and
+// the job is looked for by name; after a cancel, the job is looked for gone.
+// What was seen is printed, and the check-in names it.
+//
+// Exit codes: 0 done · 2 usage · 3 no TURING_RUNNER_KEY in the environment ·
+//             4 the API refused or failed (its status and reason printed) ·
+//             6 the budget refused the launch before it was sent.
+import { execFile as execFileCb } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+
+const execFile = promisify(execFileCb);
+const BASE = (process.env.TURING_BASE_URL || "https://turing.tom.quest").replace(/\/+$/, "");
+const RUNNER_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const LABEL = /^[A-Za-z0-9_.-]{1,40}$/;
+
+// The sensor's module, from the repo when run from a checkout and from the
+// installed copy (setup.sh copies worker/runs/ to /opt/tts/runs/) otherwise.
+function sensorUrl() {
+  const jobsDir = process.env.TTS_JOBS_DIR ?? "/opt/tts";
+  const candidates = [new URL("../runs/runner-sensor.mjs", import.meta.url), new URL(`file://${path.join(jobsDir, "runs", "runner-sensor.mjs")}`)];
+  const found = candidates.find((candidate) => fs.existsSync(fileURLToPath(candidate)));
+  if (!found) throw new Error("runner-sensor.mjs is not installed");
+  return found.href;
+}
+
+class Exit extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
+
+const USAGE = `usage:
+  tts-turing-act launch --runner <id> --label <label> --gpu-type <t> --minutes <n>
+                        [--memory-mb <n>] [--count <n>] --command <c> (repeatable)
+                        [--project-dir <p>]
+  tts-turing-act cancel --runner <id> --job <job id>
+
+Launches a job named runner:<id>:<label> whose commands run files inside the
+CMT checkout on Turing, or cancels one of this runner's jobs. Reads
+TURING_RUNNER_KEY from the environment; only a runner step has it.`;
+
+function parse(argv) {
+  const [verb, ...rest] = argv;
+  if (!verb || verb === "-h" || verb === "--help") throw new Exit(2, USAGE);
+  const flags = {
+    launch: ["--runner", "--label", "--gpu-type", "--minutes", "--memory-mb", "--count", "--command", "--project-dir"],
+    cancel: ["--runner", "--job"],
+  }[verb];
+  if (!flags) throw new Exit(2, `tts-turing-act: unknown verb '${verb}'\n${USAGE}`);
+  const out = { verb, commands: [] };
+  for (let i = 0; i < rest.length; i += 2) {
+    const [flag, value] = [rest[i], rest[i + 1]];
+    if (!flags.includes(flag)) throw new Exit(2, `tts-turing-act: unknown flag ${flag}\n${USAGE}`);
+    if (value === undefined) throw new Exit(2, `tts-turing-act: ${flag} needs a value`);
+    if (flag === "--command") out.commands.push(value);
+    else out[flag.slice(2)] = value;
+  }
+  const need = (name) => {
+    if (!out[name]) throw new Exit(2, `tts-turing-act: --${name} is required\n${USAGE}`);
+  };
+  const whole = (name, fallback) => {
+    const text = out[name] ?? fallback;
+    if (!/^\d+$/.test(String(text)) || Number(text) < 1) throw new Exit(2, `tts-turing-act: --${name} must be a whole number above zero, got '${text}'`);
+    return Number(text);
+  };
+  need("runner");
+  if (!RUNNER_ID.test(out.runner)) throw new Exit(2, `tts-turing-act: '${out.runner}' is not a runner id`);
+  if (verb === "cancel") {
+    need("job");
+    if (!/^\d+$/.test(out.job)) throw new Exit(2, `tts-turing-act: '${out.job}' is not a SLURM job id`);
+    return out;
+  }
+  need("label");
+  need("gpu-type");
+  if (!LABEL.test(out.label)) throw new Exit(2, "tts-turing-act: --label is letters, digits, dot, dash and underscore, at most 40");
+  if (out.commands.length === 0) throw new Exit(2, "tts-turing-act: a launch needs at least one --command");
+  out.minutes = whole("minutes");
+  out.count = whole("count", 1);
+  out["memory-mb"] = whole("memory-mb", 64000);
+  return out;
+}
+
+function key() {
+  const value = process.env.TURING_RUNNER_KEY;
+  if (value) return value;
+  throw new Exit(3, `tts-turing-act: TURING_RUNNER_KEY is not set in this environment.
+
+Only a runner step's process holds it; a session never does. On a runner step
+its absence means the box has not been given the key yet: it belongs in
+/etc/tts/worker.env (see worker/worker.env.example), and the value is minted by
+Tom, who also puts it in turing-api/.env on the cluster login nodes. Until
+then this runner can observe and cannot launch or cancel; say so in the
+check-in.`);
+}
+
+async function readJobs() {
+  const { stdout } = await execFile("tts-turing", ["jobs", "--raw"], { timeout: 90_000, maxBuffer: 16 * 1024 * 1024 });
+  const jobs = JSON.parse(stdout);
+  if (!Array.isArray(jobs)) throw new Error("the job list was not a list");
+  return jobs;
+}
+
+async function send(method, route, runnerId, body) {
+  let response;
+  try {
+    response = await fetch(`${BASE}${route}`, {
+      method,
+      headers: {
+        "X-API-Key": key(),
+        "X-Runner-Id": runnerId,
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(120_000),
+    });
+  } catch (error) {
+    throw new Exit(4, `tts-turing-act: could not reach ${BASE} (${error?.message ?? error}); try: tts-turing health`);
+  }
+  const text = await response.text();
+  let parsed = null;
+  try { parsed = JSON.parse(text); } catch { /* a plain-text answer is printed as it came */ }
+  if (!response.ok) {
+    const detail = parsed?.detail ?? text;
+    const why = {
+      401: "the cluster did not accept the runner key: the box's key does not match turing-api/.env, or turing-api has no runner key set yet",
+      403: "the cluster refused the request under its runner rules",
+    }[response.status] ?? "the cluster refused or failed the request";
+    throw new Exit(4, `tts-turing-act: ${method} ${route} answered ${response.status}: ${why}.\n  ${typeof detail === "string" ? detail : JSON.stringify(detail)}`);
+  }
+  return parsed;
+}
+
+async function launch(opts) {
+  key();
+  const { launchVerdict, readCache, DEFAULT_CACHE_DIR } = await import(sensorUrl());
+  const cacheFile = path.join(process.env.TTS_RUNNER_CACHE_DIR ?? DEFAULT_CACHE_DIR, `${opts.runner}.json`);
+  const cache = fs.existsSync(cacheFile) ? readCache(cacheFile) : null;
+  let jobs = null;
+  try { jobs = await readJobs(); } catch { jobs = null; }
+  const verdict = launchVerdict({ cache, jobs, runnerId: opts.runner, gpus: opts.count, minutes: opts.minutes, now: Date.now() });
+  if (!verdict.ok) {
+    throw new Exit(6, `tts-turing-act: refused before sending: ${verdict.reason}.
+Nothing was launched. Raise this as a setup-tier question for Tom, saying what
+the launch was for and how many GPU-hours it needs, and say in the check-in
+what this runner will do if he does not answer.`);
+  }
+  const jobName = `runner:${opts.runner}:${opts.label}`;
+  const answer = await send("POST", "/allocate", opts.runner, {
+    gpu_type: opts["gpu-type"],
+    time_mins: opts.minutes,
+    memory_mb: opts["memory-mb"],
+    count: opts.count,
+    commands: opts.commands,
+    project_dir: opts["project-dir"] ?? "",
+    job_name: jobName,
+  });
+  const ids = answer?.job_ids ?? [];
+  const lines = [`Launched ${ids.length} job(s) named ${jobName}: ${ids.join(", ") || "none"} (budget: ${verdict.spent} spent, ${verdict.committed} booked, ${verdict.request} asked, of ${verdict.budget}).`];
+  for (const error of answer?.errors ?? []) lines.push(`The cluster reported: ${error}`);
+  lines.push(await readBack((after) => ids.map((id) => {
+    const job = after.find((row) => String(row.job_id) === String(id));
+    return job ? `job ${id} is in the queue as ${job.job_name}, ${job.status}` : `job ${id} is not in the queue`;
+  })));
+  process.stdout.write(`${lines.join("\n")}\n`);
+  if (ids.length === 0) throw new Exit(4, "tts-turing-act: the cluster launched nothing.");
+}
+
+async function cancel(opts) {
+  key();
+  await send("DELETE", `/jobs/${encodeURIComponent(opts.job)}`, opts.runner);
+  const line = await readBack((after) => {
+    const job = after.find((row) => String(row.job_id) === opts.job);
+    return [job ? `job ${opts.job} is still in the queue as ${job.status}` : `job ${opts.job} is gone from the queue`];
+  });
+  process.stdout.write(`Cancelled job ${opts.job}.\n${line}\n`);
+}
+
+/** Read the queue once more and say what it shows; a read that fails says so
+ *  rather than claiming a verification that did not happen. */
+async function readBack(describe) {
+  try {
+    const after = await readJobs();
+    return `Read back: ${describe(after).join("; ")}.`;
+  } catch (error) {
+    return `Read back: the queue could not be read (${String(error?.message ?? error).split("\n")[0]}), so this is not verified.`;
+  }
+}
+
+try {
+  const opts = parse(process.argv.slice(2));
+  if (opts.verb === "launch") await launch(opts);
+  else await cancel(opts);
+} catch (error) {
+  if (!(error instanceof Exit)) {
+    process.stderr.write(`tts-turing-act: ${error?.message ?? error}\n`);
+    process.exit(4);
+  }
+  process.stderr.write(`${error.message}\n`);
+  process.exit(error.code);
+}

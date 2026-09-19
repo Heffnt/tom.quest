@@ -7,7 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { checkDone, gpusInGres, renderFacts, sense } from "../runner-sensor.mjs";
+import { checkDone, gpusInGres, launchVerdict, readCache, renderFacts, sense } from "../runner-sensor.mjs";
 
 const NOW = Date.parse("2026-09-19T12:00:00Z");
 
@@ -64,6 +64,10 @@ describe("sense", () => {
     expect(again.calls).not.toContain("node artifacts/a");
     expect(second.frontier.done).toBe(1);
     expect(second.gpuHours.spent).toBe(4);
+    // The budget rides the cache for tts-turing-act, with the time it was read.
+    expect(readCache(path.join(cacheDir, "r1.json"))).toMatchObject({ budgetGpuHours: 100, readAt: NOW + 3_600_000 });
+    await sense({ runnerId: "r1", cwd: "/checkout", specs: ["x"], failures: [], cacheDir }, again);
+    expect(readCache(path.join(cacheDir, "r1.json"))).not.toHaveProperty("budgetGpuHours");
   });
 
   it("says in its own field what it could not read, and keeps every field", async () => {
@@ -119,5 +123,44 @@ describe("gpusInGres", () => {
     expect(gpusInGres("gpu:a100:2")).toBe(2);
     expect(gpusInGres("gpu:1")).toBe(1);
     expect(gpusInGres("(null)")).toBe(0);
+  });
+});
+
+describe("launchVerdict", () => {
+  // One running job of this runner, started an hour ago with half an hour left,
+  // and one of someone else's: 2 GPU-hours spent on the account, 0.5 booked.
+  const jobs = [
+    { job_id: "7", job_name: "runner:r1:train", status: "RUNNING", gpu_type: "a100", start_time: "2026-09-19T11:00:00Z", time_remaining_seconds: 1800 },
+    { job_id: "8", job_name: "gpupool:a100:ff", status: "RUNNING", gpu_type: "a100", start_time: "2026-09-19T11:00:00Z", time_remaining_seconds: 7200 },
+  ];
+  const verdict = (over) => launchVerdict({ cache: { jobs: {}, budgetGpuHours: 4 }, jobs, runnerId: "r1", gpus: 1, minutes: 60, now: NOW, ...over });
+
+  it("lets a launch under the budget through", () => {
+    expect(verdict({})).toEqual({ ok: true, spent: 2, committed: 0.5, request: 1, budget: 4 });
+  });
+
+  it("lets a launch that lands exactly on the budget through", () => {
+    expect(verdict({ minutes: 90 }).ok).toBe(true);
+  });
+
+  it("refuses a launch over the budget with the numbers", () => {
+    const refused = verdict({ minutes: 91 });
+    expect(refused.ok).toBe(false);
+    expect(refused.reason).toMatch(/would cross the 4-hour budget/);
+  });
+
+  it("counts hours the cache saw on jobs that have since ended", () => {
+    expect(verdict({ cache: { jobs: { 5: { gpuHours: 1 } }, budgetGpuHours: 4 } }).ok).toBe(false);
+  });
+
+  it("refuses when no budget is recorded", () => {
+    expect(verdict({ cache: { jobs: {} } }).reason).toMatch(/no GPU-hour budget/);
+    expect(verdict({ cache: null }).reason).toMatch(/no GPU-hour budget/);
+  });
+
+  it("refuses when the job list is unreadable, never assuming zero", () => {
+    const refused = verdict({ jobs: null });
+    expect(refused.ok).toBe(false);
+    expect(refused.reason).toMatch(/could not be read/);
   });
 });
