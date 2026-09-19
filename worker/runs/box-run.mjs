@@ -10,10 +10,11 @@
 // IT IS ALSO THE BOX'S ONE LAUNCHER. The cron jobs and the delegate reach the
 // same body in process: worker/jobs/tts-lib.mjs's runClaude calls boxRunSync
 // below instead of building a `claude` command line of its own. So every
-// unattended run on the box takes a slot from the same semaphore, runs under
-// the same scrubbed environment and writes its envelope under this file's
-// name. The session daemon is the one exception, and stays one: it drives the
-// Agent SDK for streaming input and interrupts (worker/session-host/README.md).
+// unattended run on the box runs under the same scrubbed environment and
+// writes its envelope under this file's name. Only the command line's runs
+// take a slot from the semaphore; a job's call does not (see prepareRun). The
+// session daemon is the one exception, and stays one: it drives the Agent SDK
+// for streaming input and interrupts (worker/session-host/README.md).
 //
 // Vocabulary, once, because these are tom.quest's words and not English's:
 //   run       — one CLI thread: one assembled prompt, its turns, its tool
@@ -569,8 +570,7 @@ function writeCounter(file, holders) {
  * waiting by default: a queued run is a working run.
  *
  * `waitMs` is the one exception, for a caller that is standing still with a
- * fallback of its own — the delegate, whose asker takes its stated default,
- * and the evals serve pass, which runs every five minutes without a flock.
+ * fallback of its own — a runner step (worker/session-host/runner-step.mjs).
  * Past it the wait ends in a BoxRunError whose reason is "busy".
  *
  * Returns a release function. Every exit path must call it.
@@ -740,16 +740,77 @@ function codexBinary(env) {
 // ---------------------------------------------------------------------------
 // The run itself: prepare, spawn, finish. Everything above is testable in
 // isolation. prepareRun and finishRun are the one body; boxRun (the command
-// line's) and boxRunSync (runClaude's) differ only in how they wait for the
-// child.
+// line's) and boxRunSync (runClaude's) differ in how they wait for the child
+// and in the slot: boxRun queues for one, boxRunSync takes none.
 // ---------------------------------------------------------------------------
 
 /**
- * Everything before the child starts: the memory guard, the slot, the work
- * directory, the registration envelope and the command line. Returns a handle
- * the spawn and finishRun take. On a throw, whatever was taken is given back.
+ * The command line's slot: queue on the semaphore, return the release.
+ *
+ * A RUN INSIDE A RUN TAKES NO SECOND SLOT, and without this rule the transport
+ * deadlocks on its ordinary path. A box run holds its slot for the whole life
+ * of its CLI child; that child has Task, a tom.quest worktree, and agent files
+ * that now send `box` and `codex` through scripts/box-agent.mjs, which on the
+ * box runs tts-run right here. So the child asks for a slot its own parent is
+ * still holding. At the default limit of 2, two box runs that each delegate —
+ * which "mechanical work runs on Codex" makes the normal thing, not the exotic
+ * one — leave both children queued behind two live parents for ever, and the
+ * relay is told `queued behind` is not an error. At limit 1 a single run that
+ * asks Codex anything hangs itself.
+ *
+ * The semaphore counts the WORK THE BOX IS ASKED FOR, which is what it was
+ * sized for: one full test suite is about 1.6 GB and the box holds two of
+ * those. A subagent inside a run is part of that run's budget, not a new
+ * one, and the run above it is the thing that has to finish before the slot
+ * comes back. TTS_RUN_SLOT_HELD is set on every child this file spawns, so
+ * the whole subtree under one slot inherits it however deep the delegation
+ * goes.
  */
-function prepareRun(options) {
+function queueForSlot({ id, opts, env, config }) {
+  if (env.TTS_RUN_SLOT_HELD === "1") {
+    note("running under the parent run's slot; not queueing");
+    return () => {};
+  }
+  return takeSlot({
+    id,
+    counterFile: path.join(config.stateDir, "semaphore.json"),
+    lockFile: path.join(config.stateDir, "semaphore.lock"),
+    limit: Number.isInteger(config.maxParallel) && config.maxParallel > 0 ? config.maxParallel : DEFAULT_MAX_PARALLEL,
+    waitMs: opts.slotWaitMs,
+    // REMOVAL CHECK on RUN_SEMAPHORE_RETRY_MS: the queue's proof is that a
+    // second run waits and then goes, and at the real retry interval that test
+    // would take the interval itself to run, once per case, for ever. The seam
+    // shortens the sleep and nothing else — the limit, the slot file and the
+    // stale reclaim are untouched — so what the test exercises is the same code
+    // a run takes. Deleting it leaves the queue with no test.
+    sleepMs: Number(env.RUN_SEMAPHORE_RETRY_MS) > 0 ? Number(env.RUN_SEMAPHORE_RETRY_MS) : SEMAPHORE_RETRY_MS,
+  });
+}
+
+/**
+ * A job's slot: none. A JOB'S MODEL CALL (boxRunSync, through runClaude)
+ * TAKES NO SLOT, because the semaphore cannot simply apply to everything: it
+ * deadlocked the box on 2026-09-19. Two box runs, each holding one of the two
+ * slots, sat waiting for their pull requests' evals; the evals `--serve` pass
+ * makes its model calls through this path, so it queued for a slot behind the
+ * very runs waiting on its answer, and nobody finished. The same wait sits
+ * under every job whose output a run might be waiting on. A job needs no slot
+ * for its own protection either: each cron line runs under `flock -n` and the
+ * evals pass under its own lock (worker/jobs/evals-lock.mjs), so a job cannot
+ * pile up on itself, and its call is one short model turn, not the test suite
+ * the slots were sized for.
+ */
+function noSlot() {
+  return () => {};
+}
+
+/**
+ * Everything before the child starts: the memory guard, the slot (`slot`, the
+ * entry's way of getting one), the work directory, the registration envelope
+ * and the command line. Returns a handle the spawn and finishRun take. On a
+ * throw, whatever was taken is given back.
+ */
+function prepareRun(options, slot = noSlot) {
   const opts = normalize(options);
   const env = opts.env;
 
@@ -760,45 +821,10 @@ function prepareRun(options) {
   const config = runConfig({ env });
   const stateDir = config.stateDir;
   const pnpmStore = path.join(path.dirname(stateDir), "pnpm-store");
-  const limit = Number.isInteger(config.maxParallel) && config.maxParallel > 0 ? config.maxParallel : DEFAULT_MAX_PARALLEL;
 
   const id = crypto.randomUUID().slice(0, 8);
   const workDir = path.join(stateDir, "work", id);
-
-  // A RUN INSIDE A RUN TAKES NO SECOND SLOT, and without this rule the transport
-  // deadlocks on its ordinary path. A box run holds its slot for the whole life
-  // of its CLI child; that child has Task, a tom.quest worktree, and agent files
-  // that now send `box` and `codex` through scripts/box-agent.mjs, which on the
-  // box runs tts-run right here. So the child asks for a slot its own parent is
-  // still holding. At the default limit of 2, two box runs that each delegate —
-  // which "mechanical work runs on Codex" makes the normal thing, not the exotic
-  // one — leave both children queued behind two live parents for ever, and the
-  // relay is told `queued behind` is not an error. At limit 1 a single run that
-  // asks Codex anything hangs itself.
-  //
-  // The semaphore counts the WORK THE BOX IS ASKED FOR, which is what it was
-  // sized for: one full test suite is about 1.6 GB and the box holds two of
-  // those. A subagent inside a run is part of that run's budget, not a new
-  // one, and the run above it is the thing that has to finish before the slot
-  // comes back. TTS_RUN_SLOT_HELD is set on every child this file spawns, so
-  // the whole subtree under one slot inherits it however deep the delegation
-  // goes — including a cron job a box run starts by hand.
-  const inheritedSlot = env.TTS_RUN_SLOT_HELD === "1";
-  if (inheritedSlot) note("running under the parent run's slot; not queueing");
-  const release = inheritedSlot ? () => {} : takeSlot({
-    id,
-    counterFile: path.join(stateDir, "semaphore.json"),
-    lockFile: path.join(stateDir, "semaphore.lock"),
-    limit,
-    waitMs: opts.slotWaitMs,
-    // REMOVAL CHECK on RUN_SEMAPHORE_RETRY_MS: the queue's proof is that a
-    // second run waits and then goes, and at the real retry interval that test
-    // would take the interval itself to run, once per case, for ever. The seam
-    // shortens the sleep and nothing else — the limit, the slot file and the
-    // stale reclaim are untouched — so what the test exercises is the same code
-    // a run takes. Deleting it leaves the queue with no test.
-    sleepMs: Number(env.RUN_SEMAPHORE_RETRY_MS) > 0 ? Number(env.RUN_SEMAPHORE_RETRY_MS) : SEMAPHORE_RETRY_MS,
-  });
+  const release = slot({ id, opts, env, config });
 
   let mirror = null;
   let checkout = null;
@@ -1043,7 +1069,7 @@ function finishRun(run, { stdout, code, signal, timedOut }) {
  * for everything that happens before the child exits.
  */
 export async function boxRun(options) {
-  const run = prepareRun(options);
+  const run = prepareRun(options, queueForSlot);
   // A caller's last word on the prompt, once the checkout exists and before
   // the child starts: a runner step's sensor reads the experiment in the
   // step's own worktree and writes its facts into the prompt here, so the
@@ -1129,6 +1155,8 @@ export async function boxRun(options) {
  *
  * A timeout here is spawnSync's: the child gets SIGTERM, as execFileSync gave
  * it, and the result says timedOut with exit 124.
+ *
+ * It takes no slot: noSlot above says why.
  */
 export function boxRunSync(options) {
   const run = prepareRun(options);

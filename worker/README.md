@@ -67,17 +67,26 @@ the record that the session daemon claims, or a process that hands `tts-run` a
 prompt and reads the report. No job spawns its own `claude`: a job's model
 call goes through `runClaude` in `worker/jobs/tts-lib.mjs`, which composes
 the job's registration and calls box-run's `boxRunSync` in the same process.
-So a job's call takes one of the box's `RUN_MAX_PARALLEL` slots (default 2)
-like any other run, its child gets the scrubbed environment, and its envelope
-names box-run as the launcher while its `origin` still says `cron:<job>`. The
-delegate's ask is the same call, with `origin` `cron:delegate`.
+So a job's call gets the scrubbed environment like any other run, and its
+envelope names box-run as the launcher while its `origin` still says
+`cron:<job>`. The delegate's ask is the same call, with `origin`
+`cron:delegate`.
 
-A cron line is under `flock -n`, so a call that waits for a slot costs a
-skipped tick and never a pile-up. The two callers that must not wait without
-end bound it: the delegate by its ask's timeout, after which the ask is
-recorded as silence, and the evals `--serve` pass, which has no flock, by each
-call's own model timeout. `RUN_MAX_PARALLEL` is an env value, so the number
-can be raised on the box without a deploy.
+A job's call takes no slot. The box's `RUN_MAX_PARALLEL` slots (default 2)
+are for the runs the command line starts: `tts-run`, the box children a
+session spawns, and runner steps. They were sized for two full test suites at
+once. When job calls took slots too, the box deadlocked on 2026-09-19: two
+box runs held both slots while they waited for their pull requests' evals,
+the evals `--serve` pass queued for a slot behind them, and nobody finished.
+A job needs no slot to keep it from piling up: every cron line runs under
+`flock -n`, and the evals pass takes its own lock
+(`worker/jobs/evals-lock.mjs`). `RUN_MAX_PARALLEL` is an env value, so the
+number can be raised on the box without a deploy.
+
+A job loads `/opt/tts/runs/box-run.mjs` afresh on every tick, so a change to
+which calls take a slot is live as soon as the job files are rolled; the
+session daemon needs no restart for it, since its runner steps take a slot
+either way.
 
 The session daemon is the one thing that does not go through box-run: it
 drives the Agent SDK, whose streaming input and interrupts a `claude -p`

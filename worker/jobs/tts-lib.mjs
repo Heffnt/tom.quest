@@ -526,9 +526,11 @@ export const resultEnvelopeOf = boxRunModule.resultEnvelopeOf;
 // the caller's job — see extractJsonObject below for the JSON-answer case).
 //
 // NO JOB BUILDS A CLAUDE COMMAND LINE. This composes the job's registration and
-// its settings and hands them to boxRunSync, which takes a slot on the box's
-// semaphore, scrubs the child's environment, writes the envelope under
-// box-run.mjs's name, runs the CLI and claims the run. The origin is still the
+// its settings and hands them to boxRunSync, which scrubs the child's
+// environment, writes the envelope under box-run.mjs's name, runs the CLI and
+// claims the run. It takes NO SLOT on the box's semaphore: a job's flock is
+// its concurrency guard, and a slot here is what let the evals pass starve
+// behind the runs waiting on it (box-run.mjs's noSlot says how). The origin is still the
 // job's own (`cron:<job>`), so the record says which job asked and which
 // program launched it.
 //
@@ -554,10 +556,6 @@ export const resultEnvelopeOf = boxRunModule.resultEnvelopeOf;
 // `model` maps to --model. EVERY CALLER PASSES ONE, from the MODELS table
 // above — omit it and the run silently takes the active account's default,
 // which is a fleet-wide setting no job should be tiered by.
-// `slotWaitMs` bounds the wait for a free slot, for a caller with a fallback of
-// its own; past it the call throws with `reason` "busy". Without it the call
-// waits as long as the box is full, and the cron line's flock turns that into
-// skipped ticks rather than a pile-up.
 // `receipt` is an OUT-PARAMETER, and the one thing this function tells a
 // caller besides the answer text: pass `receipt: {}` alongside a registration
 // and the token this call spooled is written into it as `receipt.runToken`.
@@ -576,7 +574,7 @@ export const resultEnvelopeOf = boxRunModule.resultEnvelopeOf;
 // that wrote the text.
 export function runClaude(
   prompt,
-  { cwd, timeoutMs, maxTurns, model, allowedTools, registration, receipt, slotWaitMs } = {},
+  { cwd, timeoutMs, maxTurns, model, allowedTools, registration, receipt } = {},
 ) {
   // Refused before anything is spooled or started: a malformed list must not
   // quietly widen the run to every tool the CLI has.
@@ -631,7 +629,6 @@ export function runClaude(
       maxTurns: maxTurns ?? 8,
       allowedTools,
       timeoutMs: timeoutMs ?? 10 * 60 * 1000,
-      slotWaitMs,
       registration: envelope,
       // Every headless Claude invocation on the box runs under the `active`
       // account, whatever the calling process happens to carry.
@@ -643,7 +640,6 @@ export function runClaude(
     if (receipt !== undefined && receipt !== null && error?.runToken) receipt.runToken = error.runToken;
     throw Object.assign(new Error(`claude failed: ${error?.message ?? error}`), {
       exitCode: error?.exitCode ?? null,
-      reason: error?.reason ?? null,
       runToken: error?.runToken ?? null,
     });
   }
@@ -666,7 +662,7 @@ export function runClaude(
     throw Object.assign(new Error(
       `claude failed (${said.join(", ")})` +
         `${stderr === "" ? "" : `: ${stderr.split("\n")[0].slice(0, 200)}`}`,
-    ), { exitCode: result.exitCode, reason: null, runToken: result.runToken });
+    ), { exitCode: result.exitCode, runToken: result.runToken });
   }
   // With --output-format json the CLI prints an envelope like
   // {"type":"result","subtype":"success","result":"<the model's text>", ...}.

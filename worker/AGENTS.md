@@ -18,6 +18,7 @@
 - `tts-codex` on the box's PATH is `scripts/codex-run.mjs` installed: the same flags, the same stdin, the same defaults. Every Codex door on the box runs it.
 - `tts-run` sits beside it on the box's PATH: it is `worker/runs/box-run.mjs` installed, it is the one line the laptop's `scripts/box-agent.mjs` sends over ssh, and it is how every spawn from a laptop session actually runs.
 - `box-run.mjs` is the box's one launcher. The cron jobs and the delegate call its `boxRunSync` in process through `runClaude` in `worker/jobs/tts-lib.mjs`; no job builds a `claude` command line. The session daemon's Agent SDK path is the one exception.
+- Only the command line's runs take a semaphore slot. A job's call takes none: its flock is its guard, and a slot there let the evals pass starve behind the runs waiting on it.
 - A Codex session spawns a child with `spawn_agent`: type `explorer` reads and searches, type `worker` changes and runs. Four children run at once per session.
 - The tom.quest transcript shows that a child was spawned and what it returned, not its inner steps; the child's full record is a file under `/root/.codex/sessions/`.
 - Children draw on the parent's ChatGPT usage windows; the saving is per-token price, not a separate allowance.
