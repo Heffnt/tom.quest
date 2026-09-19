@@ -13,7 +13,8 @@
 - `TURING_API_KEY` (`verify_api_key`) opens the whole surface, `POST /sessions/{name}/run` included, which is arbitrary shell on the cluster.
 - `TURING_READ_KEY` (`verify_read_key`) opens only `GET /gpu-report`, `GET /jobs`, `GET /sessions/{name}/output` and the artifact tree's three reads, `GET /cmt-dirs`, `GET /cmt-node` and `GET /cmt-file`; it accepts either key, and an unset read key fails closed to the full key.
 - The three artifact reads are jailed to `$BOOLEAN_BACKDOOR_OUTPUT`, so the read key sees the experiment results tree and nothing else of the filesystem; `/dirs` and `/file` stay on the full key.
-- A caller that looks but never acts holds the read key alone.
+- `TURING_RUNNER_KEY` (`verify_launch_key`) opens only `POST /allocate` and `DELETE /jobs/{id}`, with an `X-Runner-Id` header, for jobs named `runner:<runner id>:<label>`; `runner_key.py` holds its rules: every command runs a file inside the CMT checkout, one request stays under fixed ceilings, and a cancel needs the live job list to show the job under that runner's name. It fails closed when unset, and the full key keeps its whole reach on both routes.
+- A caller that looks but never acts holds the read key alone; a TTS runner step holds the runner key as well, and a session never does.
 - A new endpoint defaults to `verify_api_key`; moving one to the read door widens what every read-key holder sees.
 
 ## tunnel

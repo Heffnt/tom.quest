@@ -505,6 +505,37 @@ that ambiguity spelled out. An unset `TURING_READ_KEY` on the API side is the
 fail-closed state: the read door does not exist and the three endpoints stay
 full-key-only.
 
+## The cluster, for a runner step
+
+Tom ruled on 2026-09-18 that runners may write to the cluster "with monitoring
+and restrictions". A **third credential**, `TURING_RUNNER_KEY`
+(`verify_launch_key` in `turing-api/main.py`, rules in
+`turing-api/runner_key.py`), opens `POST /allocate` and `DELETE /jobs/{id}`
+and nothing else, and only for jobs named `runner:<runner id>:<label>`. Every
+command it launches must run a file inside the CMT checkout; one request is
+capped in GPUs, minutes and memory; a cancel is refused unless the live job
+list shows the job under that runner's name. turing-api logs every call with
+the runner id.
+
+**Only a runner step holds it.** `env-scrub.mjs` removes it from every spawn,
+like the full key, and `box-run.mjs` puts it back for a run whose envelope is
+a runner step's. A session never has it, and neither does a subagent the step
+spawns. The step spends it through one command:
+
+```
+tts-turing-act launch --runner <id> --label <l> --gpu-type <t> --minutes <n> --command <c> ...
+tts-turing-act cancel --runner <id> --job <job id>
+```
+
+Before a launch the command reads the runner's GPU-hour budget from the
+sensor's cache (`/var/lib/tts/runners/<id>.json`), never from its own command
+line, and refuses a launch that would cross it; a runner with no budget
+recorded cannot launch at all. After a launch or cancel it reads the queue
+back and prints what it saw, which is the verification the check-in names.
+
+Without the key, `tts-turing-act` exits 3 and the step says so in its
+check-in; everything else runs as before.
+
 ## The no-state rule
 
 **The Jarvis Box owns no durable state.** Convex holds the run index and the

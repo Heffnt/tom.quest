@@ -7,7 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { checkDone, gpusInGres, renderFacts, sense } from "../runner-sensor.mjs";
+import { checkDone, gpusInGres, launchVerdict, readCache, renderFacts, sense } from "../runner-sensor.mjs";
 
 const NOW = Date.parse("2026-09-19T12:00:00Z");
 
@@ -32,7 +32,12 @@ function deps(over = {}) {
     now: () => NOW,
     async turing(args) {
       calls.push(args.join(" "));
-      if (args[0] === "jobs") return [{ job_id: "7", job_name: "cmt-train25", status: "RUNNING", gpu_type: "a100", gres: "gpu:a100:2", start_time: "2026-09-19T11:00:00Z" }];
+      if (args[0] === "jobs") return [
+        { job_id: "7", job_name: "runner:r1:train25", status: "RUNNING", gpu_type: "a100", gres: "gpu:a100:2", start_time: "2026-09-19T11:00:00Z" },
+        // Tom's own job and a pool job: on the account, never on r1's budget.
+        { job_id: "9", job_name: "cmt-train25", status: "RUNNING", gpu_type: "a100", gres: "gpu:a100:4", start_time: "2026-09-19T10:00:00Z" },
+        { job_id: "10", job_name: "gpupool:a100:ff", status: "RUNNING", gpu_type: "a100", gres: "gpu:a100:1", start_time: "2026-09-19T10:00:00Z" },
+      ];
       if (args[0] === "gpus") return { summary: { free: { a100: 3, h100: 0 } } };
       return listing(args);
     },
@@ -49,7 +54,7 @@ describe("sense", () => {
     const d = deps();
     const facts = await sense({ runnerId: "r1", cwd: "/checkout", specs: ["sweeps/train/train25_*.yaml"], budgetGpuHours: 100, failures: [{ at: 1, text: "the step ended without checking in (exit 1)" }], cacheDir }, d);
     expect(Object.keys(facts)).toEqual(["version", "at", "jobs", "gpus", "frontier", "failures", "gpuHours"]);
-    expect(facts.jobs).toMatchObject({ live: 1, running: 1 });
+    expect(facts.jobs).toMatchObject({ live: 3, running: 3 });
     expect(facts.gpus).toEqual({ freeByType: { a100: 3, h100: 0 } });
     // a is done; a/b exists but is not done; a/b/c and x (and so x/y) are absent.
     expect(facts.frontier).toEqual({ specs: 1, size: 5, done: 1, remaining: 4, unchecked: 0 });
@@ -64,6 +69,10 @@ describe("sense", () => {
     expect(again.calls).not.toContain("node artifacts/a");
     expect(second.frontier.done).toBe(1);
     expect(second.gpuHours.spent).toBe(4);
+    // The budget rides the cache for tts-turing-act, with the time it was read.
+    expect(readCache(path.join(cacheDir, "r1.json"))).toMatchObject({ budgetGpuHours: 100, readAt: NOW + 3_600_000 });
+    await sense({ runnerId: "r1", cwd: "/checkout", specs: ["x"], failures: [], cacheDir }, again);
+    expect(readCache(path.join(cacheDir, "r1.json"))).not.toHaveProperty("budgetGpuHours");
   });
 
   it("says in its own field what it could not read, and keeps every field", async () => {
@@ -84,7 +93,7 @@ describe("sense", () => {
     expect(noKey.jobs.unavailable).toBe("TURING_READ_KEY is not set in this environment.");
     expect(noKey.gpus.unavailable).toBe("TURING_READ_KEY is not set in this environment.");
     const text = renderFacts(facts);
-    expect(text.split("\n").map((line) => line.split(":")[0])).toEqual(["Jobs", "Free GPUs", "Frontier", "Step failures since the last check-in", "GPU-hours seen on running jobs since this runner began"]);
+    expect(text.split("\n").map((line) => line.split(":")[0])).toEqual(["Jobs", "Free GPUs", "Frontier", "Step failures since the last check-in", "GPU-hours seen on this runner's running jobs since it began"]);
   });
 });
 
@@ -119,5 +128,56 @@ describe("gpusInGres", () => {
     expect(gpusInGres("gpu:a100:2")).toBe(2);
     expect(gpusInGres("gpu:1")).toBe(1);
     expect(gpusInGres("(null)")).toBe(0);
+  });
+});
+
+describe("launchVerdict", () => {
+  // One running job of this runner, started an hour ago with half an hour left
+  // (1 GPU-hour spent, 0.5 booked), and on the same account a pool job and one
+  // of Tom's, which spend nothing of r1's budget: under it, 1 + 0.5 + a 1-hour
+  // launch is 2.5 of 4.
+  const jobs = [
+    { job_id: "7", job_name: "runner:r1:train", status: "RUNNING", gpu_type: "a100", start_time: "2026-09-19T11:00:00Z", time_remaining_seconds: 1800 },
+    { job_id: "8", job_name: "gpupool:a100:ff", status: "RUNNING", gpu_type: "a100", gres: "gpu:a100:4", start_time: "2026-09-19T08:00:00Z", time_remaining_seconds: 7200 },
+    { job_id: "9", job_name: "cmt-train25", status: "RUNNING", gpu_type: "a100", gres: "gpu:a100:2", start_time: "2026-09-19T10:00:00Z", time_remaining_seconds: 7200 },
+    { job_id: "11", job_name: "runner:r10:train", status: "RUNNING", gpu_type: "a100", start_time: "2026-09-19T09:00:00Z", time_remaining_seconds: 7200 },
+  ];
+  const verdict = (over) => launchVerdict({ cache: { jobs: {}, budgetGpuHours: 4 }, jobs, runnerId: "r1", gpus: 1, minutes: 60, now: NOW, ...over });
+
+  it("lets a launch under the budget through, counting only this runner's jobs", () => {
+    expect(verdict({})).toEqual({ ok: true, spent: 1, committed: 0.5, request: 1, budget: 4 });
+  });
+
+  it("lets a launch that lands exactly on the budget through", () => {
+    expect(verdict({ minutes: 150 }).ok).toBe(true);
+  });
+
+  it("refuses a launch over the budget with the numbers", () => {
+    const refused = verdict({ minutes: 151 });
+    expect(refused.ok).toBe(false);
+    expect(refused).toMatchObject({ spent: 1, committed: 0.5 });
+    expect(refused.reason).toMatch(/would cross the 4-hour budget/);
+  });
+
+  it("counts hours the cache saw on this runner's jobs that have since ended", () => {
+    expect(verdict({ cache: { jobs: { 5: { gpuHours: 2, name: "runner:r1:old" } }, budgetGpuHours: 4 } }).ok).toBe(false);
+  });
+
+  it("drops cached hours of other jobs on the account", () => {
+    // What an earlier sensor cached for every job on the account: no name, or
+    // another runner's.
+    const cache = { jobs: { 8: { gpuHours: 12 }, 11: { gpuHours: 3, name: "runner:r10:train" } }, budgetGpuHours: 4 };
+    expect(verdict({ cache })).toMatchObject({ ok: true, spent: 1 });
+  });
+
+  it("refuses when no budget is recorded", () => {
+    expect(verdict({ cache: { jobs: {} } }).reason).toMatch(/no GPU-hour budget/);
+    expect(verdict({ cache: null }).reason).toMatch(/no GPU-hour budget/);
+  });
+
+  it("refuses when the job list is unreadable, never assuming zero", () => {
+    const refused = verdict({ jobs: null });
+    expect(refused.ok).toBe(false);
+    expect(refused.reason).toMatch(/could not be read/);
   });
 });

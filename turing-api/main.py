@@ -3,6 +3,7 @@ import logging
 import os
 import shlex
 import signal
+from pathlib import Path
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
@@ -25,6 +26,7 @@ from dirs import list_directory, get_home_dir, resolve_within_root, PathNotAllow
 from fastapi.responses import FileResponse
 import boolback_snapshot
 import forge
+import runner_key
 from ws import router as ws_router
 
 load_dotenv()
@@ -38,6 +40,13 @@ API_KEY = os.environ.get("TURING_API_KEY", "")
 # that cannot act on it. Unset means the read door does not exist: only the
 # full key opens anything.
 READ_KEY = os.environ.get("TURING_READ_KEY", "")
+# The THIRD credential. TURING_RUNNER_KEY opens exactly two write verbs, POST
+# /allocate and DELETE /jobs/{id}, and only for jobs named for the runner that
+# presents it (runner_key.py): a TTS runner step on the worker box can launch a
+# script from the CMT checkout and cancel its own jobs, and cannot type into a
+# session, read a file, or touch the GPU pool's jobs. Unset means the runner
+# door does not exist: those two stay full-key-only.
+RUNNER_KEY = os.environ.get("TURING_RUNNER_KEY", "")
 LOG_PATH = "turing-api.log"
 # Upper bound on a single /allocate request. Guards against a typo (or a
 # declarative caller) asking for far more GPUs than the partition holds.
@@ -105,6 +114,37 @@ async def verify_read_key(x_api_key: str = Header(None)):
     if _matches(x_api_key, API_KEY) or _matches(x_api_key, READ_KEY):
         return True
     raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+async def verify_launch_key(x_api_key: str = Header(None), x_runner_id: str = Header(None)) -> str | None:
+    """The LAUNCH door: POST /allocate and DELETE /jobs/{id}.
+
+    Returns None for the full key, which keeps its whole reach on both routes,
+    and the runner id for TURING_RUNNER_KEY, which the route then holds to the
+    rules in runner_key.py. The runner id comes from the X-Runner-Id header and
+    must be well formed; it names whose jobs the call may launch and cancel.
+
+    FAIL CLOSED exactly as verify_read_key: an unset TURING_RUNNER_KEY never
+    matches, so both routes behave as they did before this door existed. The
+    read key opens neither.
+    """
+    if not API_KEY:
+        return None
+    if _matches(x_api_key, API_KEY):
+        return None
+    if _matches(x_api_key, RUNNER_KEY):
+        if not runner_key.valid_runner_id(x_runner_id):
+            raise HTTPException(status_code=401, detail="The runner key needs a well-formed X-Runner-Id header")
+        return x_runner_id
+    raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+runner_log = logging.getLogger("turing-api.runner")
+
+
+def _runner_refused(runner_id: str, verb: str, fault: str) -> HTTPException:
+    runner_log.warning("runner %s %s refused: %s", runner_id, verb, fault)
+    return HTTPException(status_code=403, detail=fault)
 
 
 app.include_router(ws_router)
@@ -235,6 +275,11 @@ async def transformer_trace(path: str, request: Request) -> Response:
 # $BOOLEAN_BACKDOOR_OUTPUT through resolve_within_root(..., root=root): the key
 # gains the experiment results tree and nothing else. /dirs and /file, which
 # reach the home directory, stay on the full key.
+#
+# THE LAUNCH DOOR (two routes, marked by Depends(verify_launch_key)): POST
+# /allocate and DELETE /jobs/{id}. The full key keeps its whole reach on both;
+# the runner key is held there to runner_key.py's rules. No other write verb
+# takes the runner key.
 @app.get("/gpu-report")
 def gpu_report(auth: bool = Depends(verify_read_key)) -> dict:
     try:
@@ -386,7 +431,7 @@ def boolback_snapshot_blob(dir: str = "", auth: bool = Depends(verify_api_key)) 
 
 
 @app.post("/allocate", response_model=AllocationResponse)
-def allocate(request: AllocationRequest, auth: bool = Depends(verify_api_key)) -> AllocationResponse:
+def allocate(request: AllocationRequest, runner_id: str | None = Depends(verify_launch_key)) -> AllocationResponse:
     if not request.gpu_type:
         raise HTTPException(status_code=400, detail="GPU type is required")
     if request.count < 1:
@@ -396,6 +441,10 @@ def allocate(request: AllocationRequest, auth: bool = Depends(verify_api_key)) -
             status_code=400,
             detail=f"Count cannot exceed {MAX_ALLOCATION_COUNT}",
         )
+    if runner_id is not None:
+        fault = runner_key.allocation_fault(request, runner_id, Path(forge.FORGE_REPO_DIR).expanduser().resolve())
+        if fault:
+            raise _runner_refused(runner_id, "allocate", fault)
     requested_count = request.count
     if request.time_mins < 1:
         raise HTTPException(status_code=400, detail="Time must be at least 1 minute")
@@ -423,6 +472,12 @@ def allocate(request: AllocationRequest, auth: bool = Depends(verify_api_key)) -
                 errors.append(error or f"Failed to allocate GPU {i+1}")
         except Exception as e:
             errors.append(f"GPU {i+1}: {str(e)}")
+    if runner_id is not None:
+        runner_log.info(
+            "runner %s allocate %s: %s gpu(s) %s for %s min, jobs %s, errors %d",
+            runner_id, request.job_name, requested_count, request.gpu_type,
+            request.time_mins, ",".join(job_ids) or "none", len(errors),
+        )
     return AllocationResponse(
         success=len(job_ids) > 0,
         job_ids=job_ids,
@@ -455,8 +510,16 @@ def list_jobs(auth: bool = Depends(verify_read_key)) -> list[JobResponse]:
     ]
 
 @app.delete("/jobs/{job_id}")
-def delete_job(job_id: str, auth: bool = Depends(verify_api_key)) -> dict[str, object]:
+def delete_job(job_id: str, runner_id: str | None = Depends(verify_launch_key)) -> dict[str, object]:
+    if runner_id is not None:
+        # Ownership is read from the live job list, not taken from the caller:
+        # the name squeue reports is the one salloc was given.
+        fault = runner_key.cancel_fault(job_id, get_user_jobs(), runner_id)
+        if fault:
+            raise _runner_refused(runner_id, "cancel", fault)
     success, error = cancel_job(job_id)
+    if runner_id is not None:
+        runner_log.info("runner %s cancel %s: %s", runner_id, job_id, "done" if success else f"failed ({error})")
     if success:
         screen_name = get_screen_name(job_id)
         cleanup_session(screen_name)
@@ -504,6 +567,10 @@ if __name__ == "__main__":
     print(
         "Read door (/gpu-report, /jobs, /sessions/{name}/output): "
         + ("TURING_READ_KEY configured" if READ_KEY else "TURING_READ_KEY unset — full key only")
+    )
+    print(
+        "Runner door (POST /allocate, DELETE /jobs/{id}, runner-named jobs only): "
+        + ("TURING_RUNNER_KEY configured" if RUNNER_KEY else "TURING_RUNNER_KEY unset — full key only")
     )
     print("Bound to localhost: reachable only through the co-located cloudflared tunnel, not the shared cluster LAN.\n")
     uvicorn.run(app, host="127.0.0.1", port=API_PORT, access_log=True, log_config=None)

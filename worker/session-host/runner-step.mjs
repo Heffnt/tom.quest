@@ -35,6 +35,16 @@ export function slotWaitFor(stepMs) {
 /** Where Convex left room for the facts block (convex/ttsRunners.ts). */
 export const FACTS_PLACEHOLDER = "@@RUNNER_FACTS@@";
 
+/** The environment a step is launched from. The runner key stays in it only
+ *  when the record says this step may act on the cluster; box-run.mjs then
+ *  hands it to the step's own process and nothing else. */
+function stepEnv(admitted, env) {
+  if (admitted.actsOnCluster === true) return env;
+  const withheld = { ...env };
+  delete withheld.TURING_RUNNER_KEY;
+  return withheld;
+}
+
 /** The envelope a step's run is registered under.
  *
  *  NO promptSha256. The envelope is written when the checkout is made, and the
@@ -119,7 +129,7 @@ export function launchRunnerStep(steps, row, deps) {
           }
         },
         slotWaitMs: slotWaitFor(row.stepMs ?? 10 * 60_000),
-        env: deps.env,
+        env: stepEnv(admitted, deps.env ?? process.env),
       });
       launched = true;
       exitCode = result.exitCode;

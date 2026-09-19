@@ -21,6 +21,12 @@
 // read key, this inheritance is what makes it a session capability — that
 // widening is a decision, not a refactor.
 //
+// TURING_RUNNER_KEY, the cluster API's launch-and-cancel credential for runner
+// steps, IS scrubbed, exactly like the full key: no session, no Codex run, no
+// classifier gets it. One caller puts it back: box-run.mjs, for the process of
+// a runner step and nothing else (keyed on that run's registration). That is
+// where acting on the cluster lives; tts-turing itself keeps no write verb.
+//
 // TTS_WORKER_KEY is the one key that MAY enter a session shell (its write
 // surface — capture, prep, briefs, batches, session-outcome — is the same one
 // the cron jobs' agentic runs already expose to a model); `keepTtsKey: true`
@@ -38,6 +44,7 @@ export const SCRUBBED_SECRET_NAMES = Object.freeze([
   "TOMQUEST_AGENT_USERNAME",
   "TOMQUEST_AGENT_PASSWORD",
   "TURING_API_KEY",
+  "TURING_RUNNER_KEY",
   "CODEX_API_KEY",
   "OPENAI_API_KEY",
 ]);

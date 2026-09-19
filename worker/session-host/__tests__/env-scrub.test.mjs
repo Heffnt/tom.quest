@@ -27,6 +27,7 @@ const SECRETS = [
   "TOMQUEST_AGENT_USERNAME",
   "TOMQUEST_AGENT_PASSWORD",
   "TURING_API_KEY",
+  "TURING_RUNNER_KEY",
   "CODEX_API_KEY",
   "OPENAI_API_KEY",
 ];
@@ -124,6 +125,17 @@ describe("wiring: every spawn goes through scrubbedEnv", () => {
     expect(hostSource).toMatch(/const codexEnv = \(\) => scrubbedEnv\(\);/);
     expect(hostSource).toMatch(/spawnCodex\(args, \{[\s\S]*?env: codexEnv\(\)/);
     expect(hostSource).toMatch(/spawnCodex\(\["app-server"\], \{[\s\S]*?env: codexEnv\(\)/);
+  });
+
+  it("box-run puts the runner key back for a runner step's own envelope only", () => {
+    const boxRunSource = fs.readFileSync(path.join(here, "..", "..", "runs", "box-run.mjs"), "utf8");
+    expect(boxRunSource).toMatch(
+      /if \(isRunnerStep\(opts\.registration\) && env\.TURING_RUNNER_KEY\) childEnv\.TURING_RUNNER_KEY = env\.TURING_RUNNER_KEY;\s*else delete childEnv\.TURING_RUNNER_KEY;/,
+    );
+    expect(boxRunSource).toMatch(/registration\?\.environment === "runner" && registration\?\.kind === "runner-step"/);
+    // The step's registration is the one that names both.
+    const stepSource = read("runner-step.mjs");
+    expect(stepSource).toMatch(/kind: "runner-step",\s*environment: "runner",/);
   });
 
   it("no hand-written copy of the list survives in the daemon", () => {

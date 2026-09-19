@@ -41,20 +41,31 @@ tom.Quest never needs to signal, drain, or inspect it — only to choose how man
 FastAPI on login-03, bound `127.0.0.1`, reached only via the named cloudflared tunnel
 `turing.tom.quest`. Refuses to start without `TURING_API_KEY`; CORS `*`; SIGHUP ignored.
 
-- **Auth:** one `X-API-Key` header, checked by **two** dependencies over **two** keys.
+- **Auth:** one `X-API-Key` header, checked by **three** dependencies over **three** keys.
   `verify_api_key` (`TURING_API_KEY`) is the default and guards every non-WS endpoint —
   the whole surface, write verbs included. `verify_read_key` (`TURING_READ_KEY`) guards
-  exactly three: `GET /gpu-report`, `GET /jobs`, `GET /sessions/{name}/output`. It accepts
+  exactly six: `GET /gpu-report`, `GET /jobs`, `GET /sessions/{name}/output` and the artifact
+  tree's three reads, `GET /cmt-dirs`, `GET /cmt-node`, `GET /cmt-file`. It accepts
   **either** key, so full-key callers (the Next proxy, the Convex reconciler) are unaffected,
   while a read-key holder can look at the cluster and cannot act on it. Both compares are
   constant-time over bytes. **Fail closed:** an unset `TURING_READ_KEY` means the read door
-  does not exist and those three go back to full-key-only — a blank env var never becomes a
+  does not exist and those six go back to full-key-only — a blank env var never becomes a
   blank password. The split exists because `POST /sessions/{name}/run` is arbitrary shell as
   `ntheffernan`, so "read the GPU report" and "run anything on the cluster" must not be the
   same credential; the read key is what TTS sessions on the Jarvis Box hold
   (`worker/bin/tts-turing`). The terminal WebSocket is under neither dependency; it
   authenticates with a short-lived HMAC token signed with the **same** full `API_KEY`
   (`ws.py:27`, `ws.py:124`) — the read key signs nothing.
+  `verify_launch_key` (`TURING_RUNNER_KEY`) guards exactly two write verbs, `POST /allocate`
+  and `DELETE /jobs/{id}`. It accepts the full key unchanged and the runner key with an
+  `X-Runner-Id` header, and holds a runner-key call to `runner_key.py`: the job name must
+  be `runner:<runner id>:<label>` for that id, every command must run a file inside the CMT
+  checkout (`BOOLEAN_BACKDOOR_REPO`) with no shell metacharacter, one request is capped
+  below the full key's limits, and a cancel is refused unless the live job list shows the
+  job under this runner's name. Refusals are 403 with the reason, and every call is logged
+  with the runner id and never the key. It is what a TTS runner step holds
+  (`worker/bin/tts-turing-act`), never a session; unset, it fails closed like the read key.
+  The read key opens neither verb, and the runner key signs nothing.
 - **Allocation model:** `POST /allocate` loops `count` times, one **single-GPU**
   `salloc --no-shell --gres=gpu:<type>:1 --time=<mins> --mem=<mb> --job-name=<name>` per
   GPU (`slurm.py:123`). **No `--partition` is ever passed** → everything lands on the
@@ -447,7 +458,8 @@ on workers for free.
 
 Sync-`def` for every blocking/FS endpoint (§1.1). The `gpupool:` reserved name and
 name-authoritative ownership (§4.2). Separate narrow agent key, never `TURING_API_KEY`, with
-command authoring admin-only (§7). Whole-GPU single-GPU workers; `desiredCount` clamped to
+command authoring admin-only (§7). The runner key's `runner:` names never collide with
+`gpupool:`, so neither owner can cancel the other's jobs (§1.1). Whole-GPU single-GPU workers; `desiredCount` clamped to
 `[0, 16]`, with SLURM `DenyOnLimit` (12 on `short`) the hard backstop and the real-QOS
 shared-budget clamp deferred (§4.5, §13). Convex: durable writes through mutations; HTTP
 endpoints in `convex/http.ts`; adding fields needs no `_generated` hand-edit. Confinement through
@@ -502,17 +514,19 @@ which of the two committed templates declares it today — `secrets/turing-api.e
 
 ### 14.1 Names read by the service process
 
-**Sixteen** names, all read via `os.environ.get` / `os.getenv` at import time except the two
+**Eighteen** names, all read via `os.environ.get` / `os.getenv` at import time except the two
 marked *call time*. "Declared in" is the state as of this census; `—` means neither template
 lists the name.
 
 | Name | Read at | Default when unset | What it controls | Declared in |
 | --- | --- | --- | --- | --- |
-| `TURING_API_KEY` | `main.py:31` | `""` (service refuses to start) | Shared `X-API-Key` for every non-WS endpoint, and the HMAC key the terminal token is verified with (`ws.py:27`) | `secrets/turing-api.env.example` |
-| `API_PORT` | `main.py:30` | `8000` | Port uvicorn binds on `127.0.0.1` | `secrets/turing-api.env.example` (commented) |
+| `TURING_API_KEY` | `main.py:34` | `""` (service refuses to start) | Shared `X-API-Key` for every non-WS endpoint, and the HMAC key the terminal token is verified with (`ws.py:27`) | `secrets/turing-api.env.example` |
+| `TURING_READ_KEY` | `main.py:42` | `""` (read door closed; full key only) | Key that opens the six read endpoints (§1.1) | `secrets/turing-api.env.example` |
+| `TURING_RUNNER_KEY` | `main.py:49` | `""` (runner door closed; full key only) | Key that opens `POST /allocate` and `DELETE /jobs/{id}` for runner-named jobs only (§1.1) | `secrets/turing-api.env.example` |
+| `API_PORT` | `main.py:33` | `8000` | Port uvicorn binds on `127.0.0.1` | `secrets/turing-api.env.example` (commented) |
 | `TURING_FILE_ROOT` | `dirs.py:10` | `Path.home()` | Root that `GET /file` and `GET /dirs` are confined to | — |
 | `BOOLEAN_BACKDOOR_OUTPUT` | `forge.py:105`, `boolback_snapshot.py:49` (*call time*) | none — raises `RuntimeError` | Artifact-tree root. Forge run dirs live under `<root>/forge/`; snapshot dirs resolve under `<root>` | `turing-api/forge.env.example` (commented) |
-| `BOOLEAN_BACKDOOR_REPO` | `forge.py:51` | `~/booleanbackdoors/ComplexMultiTrigger` | CMT checkout the Forge train/serve jobs are submitted from (`cwd=` at `forge.py:211`, `:367`) and passed to as argv | `turing-api/forge.env.example` |
+| `BOOLEAN_BACKDOOR_REPO` | `forge.py:51` | `~/booleanbackdoors/ComplexMultiTrigger` | CMT checkout the Forge train/serve jobs are submitted from (`cwd=` at `forge.py:211`, `:367`) and passed to as argv; also the root every runner-key command must run a file inside (`main.py` `allocate`) | `turing-api/forge.env.example` |
 | `BOOLBACK_BUILDER_REPO_DIR` | `boolback_snapshot.py:32` | `~/booleanbackdoors/ComplexMultiTrigger` | CMT checkout the boolback build job is submitted from (`cwd=` at `boolback_snapshot.py:238`) | — |
 | `BOOLBACK_BUILDER_CONDA_ENV` | `boolback_snapshot.py:31` | `boolback` | Conda env the Forge sbatch wrappers activate. **Read into a Python name that nothing in Python uses** — the real consumers are `forge_scripts/forge_train.sbatch:43` and `forge_serve.sbatch:43`, which read the inherited variable directly | `turing-api/forge.env.example` (commented) |
 | `BOOLBACK_CACHE_DIR` | `boolback_snapshot.py:38` | `~/.cache/boolback-snapshots` | Where built `.gz` snapshots and per-dir submit markers live | — |
