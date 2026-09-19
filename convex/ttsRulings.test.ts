@@ -1477,7 +1477,7 @@ async function seedRunWithToken(
       linkKnown: true,
       origin: "cron:planner",
       host: "box",
-      runner: "claude",
+      cli: "claude",
       parserVersion: "runs-parser-1",
       kind: "job",
       status: "ended",

@@ -86,7 +86,7 @@ export function parseAnswer(text) {
   }
 }
 
-const callerName = (ask) => (ask.sessionId ? "an autonomous session" : "the " + ask.job + " job");
+const callerName = (ask) => (ask.sessionId ? "a worker" : "the " + ask.job + " job");
 const todoStatement = (ask) =>
   typeof ask.subject === "string" && ask.subject.trim()
     ? ask.subject.trim()
@@ -347,6 +347,7 @@ export async function askDelegate(ask, suppliedIo = {}) {
                 registration: {
                   origin: "cron:delegate",
                   kind: "delegate",
+                  environment: "worker",
                   ...(typeof ask.todoId === "string" ? { todoId: ask.todoId } : {}),
                   layersKnown: !fallback,
                   layersGiven: fallback ? [] : [...DELEGATE_LAYERS],

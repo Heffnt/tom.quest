@@ -124,6 +124,9 @@ export type SimplifyRunCounts = {
   total: number;
   capped: boolean;
   byOrigin: Record<string, number>;
+  byCli: Record<string, number>;
+  /** The same counts under their old name, for one release: a box not yet
+   *  rolled reads this key. */
   byRunner: Record<string, number>;
   byHost: Record<string, number>;
   byKind: Record<string, number>;
@@ -350,6 +353,7 @@ export const internalSimplifyInput = internalQuery({
       total: runs.length,
       capped: runs.length >= RUN_SCAN,
       byOrigin: {},
+      byCli: {},
       byRunner: {},
       byHost: {},
       byKind: {},
@@ -376,7 +380,8 @@ export const internalSimplifyInput = internalQuery({
 
     for (const run of runs) {
       bump(counts.byOrigin, run.origin);
-      bump(counts.byRunner, run.runner);
+      const cli = run.cli ?? run.runner;
+      if (cli !== undefined) { bump(counts.byCli, cli); bump(counts.byRunner, cli); }
       bump(counts.byHost, run.host);
       bump(counts.byKind, run.kind);
       const context = run.context;

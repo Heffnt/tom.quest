@@ -125,7 +125,7 @@ export async function backlogProof({
     const run = body.run;
     const totals = run.outcome?.totals ?? {};
     say([
-      `run=${run.runner}/${run.kind}`,
+      `run=${run.cli}/${run.kind}`,
       `host=${run.host}`,
       `depth=${run.depth}`,
       `workflow=${run.context?.workflowId ?? "-"}`,

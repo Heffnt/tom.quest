@@ -1200,6 +1200,10 @@ export default defineSchema({
     // The run this session's CLI file is recorded as (§23). One session is one
     // run; absent until the sweep or backfill writes the derivable CLI id.
     runId: v.optional(v.string()),
+    // The run this session continues: the old session's run after a reopen,
+    // the forked session's run after a "reopen as". The run the ingest records
+    // for this session takes it as its own continuesRunId.
+    continuesRunId: v.optional(v.string()),
     // The finalized-row source is switched per session only after its shadow
     // comparison is clean. Absent is the legacy daemon path.
     rowsFrom: v.optional(
@@ -1363,13 +1367,20 @@ export default defineSchema({
     origin: v.string(),
     continuesRunId: v.optional(v.string()),
     host: v.union(v.literal("laptop"), v.literal("box")),
-    runner: v.union(v.literal("claude"), v.literal("codex")),
+    // Where the run ran: a session Tom talks to, an unattended worker, or a
+    // runner. Absent only on rows ingested before launchers named it.
+    environment: v.optional(v.union(v.literal("session"), v.literal("worker"), v.literal("runner"))),
+    // The CLI family. `runner` is its old name, written by every row ingested
+    // before the rename; both are optional until a backfill and a later change
+    // make `cli` required and delete `runner`.
+    cli: v.optional(v.union(v.literal("claude"), v.literal("codex"))),
+    runner: v.optional(v.union(v.literal("claude"), v.literal("codex"))),
     model: v.optional(v.string()),
     sessionModel: v.optional(SESSION_MODEL),
     effort: v.optional(v.string()),
     runtimeVersion: v.optional(v.string()),
     parserVersion: v.string(),
-    kind: v.union(v.literal("session"), v.literal("worker"), v.literal("code"), v.literal("prospect"), v.literal("job"), v.literal("delegate"), v.literal("subagent"), v.literal("codex-child"), v.literal("unknown")),
+    kind: v.union(v.literal("session"), v.literal("job"), v.literal("delegate"), v.literal("subagent"), v.literal("codex-child"), v.literal("unknown")),
     status: v.union(v.literal("running"), v.literal("ended"), v.literal("failed"), v.literal("abandoned"), v.literal("unknown")),
     mode: v.optional(v.union(v.literal("interactive"), v.literal("autonomous"))),
     startedAt: v.number(),
@@ -1522,7 +1533,10 @@ export default defineSchema({
   // several versions between nightly writes, so the mutable runs.file field
   // cannot be the manifest's source without losing those intermediate facts.
   runFileVersions: defineTable({
-    runId: v.string(), runner: v.union(v.literal("claude"), v.literal("codex")),
+    runId: v.string(),
+    // Same pair as runs: `cli` from the rename on, `runner` on older versions.
+    cli: v.optional(v.union(v.literal("claude"), v.literal("codex"))),
+    runner: v.optional(v.union(v.literal("claude"), v.literal("codex"))),
     host: v.union(v.literal("laptop"), v.literal("box")), threadId: v.string(),
     depth: v.number(), parentRunId: v.optional(v.string()),
     fileVersion: v.string(), storeKey: v.string(), sourceHash: v.string(),

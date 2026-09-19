@@ -139,6 +139,16 @@ describe("run registration", () => {
     expect(result.run.context).toMatchObject({ registered: true, modelRequested: "requested", layersGiven: ["operate"], wikitomCommit: "file-commit", tools: ["seen"] });
   });
 
+  it("copies a named environment and ignores a word that is not one", () => {
+    const envelope = (environment) => ({ registration: { host: "laptop", environment, layersKnown: false } });
+    expect(mergeRegistration({ parsed: parsed(), host: "laptop", envelope: envelope("session") }).run.environment).toBe("session");
+    expect(mergeRegistration({ parsed: parsed(), host: "laptop", envelope: envelope("runner") }).run.environment).toBe("runner");
+    expect(mergeRegistration({ parsed: parsed(), host: "laptop", envelope: envelope("autonomous") }).run).not.toHaveProperty("environment");
+    // A subagent's envelope is silent; silence keeps what the run already had.
+    const named = { ...parsed(), run: { ...parsed().run, environment: "worker" } };
+    expect(mergeRegistration({ parsed: named, host: "laptop", envelope: envelope(undefined) }).run.environment).toBe("worker");
+  });
+
   it("uses the rendered receipt over legacy registration grant arrays", () => {
     const result = mergeRegistration({
       parsed: parsed(),

@@ -658,9 +658,10 @@ export function runClaude(
       registration: {
         ...registration,
         host: process.env.RUN_HOST === "box" || process.env.RUN_HOST === "laptop" ? process.env.RUN_HOST : null,
-        runner: "claude",
+        cli: "claude",
         origin: registration.origin ?? `cron:${job}`,
         kind: registration.kind ?? "job",
+        environment: registration.environment ?? "worker",
         modelRequested: model ?? null,
         effortRequested: null,
         cwd: path.resolve(cwd ?? process.cwd()),

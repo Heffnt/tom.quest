@@ -116,7 +116,7 @@ describe.skipIf(!source || !codexSource)("runs proof", () => {
     expect(children.items.some((entry) => entry.runId === parsedChild.run.runId)).toBe(true);
     const childRun = await viewer.query(api.runs.get, { runId: parsedChild.run.runId });
     expect(childRun).toMatchObject({ parentRunId: parent.run.runId, rootRunId: parent.run.runId, depth: 1 });
-    expect((await viewer.query(api.runs.get, { runId: codex.run.runId }))?.runner).toBe("codex");
+    expect((await viewer.query(api.runs.get, { runId: codex.run.runId }))?.cli).toBe("codex");
 
     const page = await viewer.query(api.runs.rows, { runId: parent.run.runId, paginationOpts: { cursor: null, numItems: 200 } });
     const entry = page.page.find((candidate) => candidate.provenance?.sourceKind !== "context");

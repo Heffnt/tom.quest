@@ -156,7 +156,7 @@ describe("codex-run registration", () => {
       writer: { file: "scripts/codex-run.mjs", job: "audit" },
       registration: {
         host: "box",
-        runner: "codex",
+        cli: "codex",
         origin: "cron:audit",
         kind: "codex-child",
         parentRunId: "claude:box:parent-session",
@@ -165,6 +165,8 @@ describe("codex-run registration", () => {
         layersDenied: [],
       },
     });
+    // A child with a parent names no environment: it runs where its parent runs.
+    expect(envelope.registration).not.toHaveProperty("environment");
     expect(envelope.registration.wikitomCommit).toMatch(/^[0-9a-f]{7,40}$/);
     expect(envelope.registration.promptSha256).toMatch(/^[0-9a-f]{64}$/);
   });
@@ -190,11 +192,24 @@ describe("codex-run registration", () => {
     expect(envelope.registration).toMatchObject({
       origin: "job",
       kind: "job",
+      environment: "worker",
       layersKnown: true,
       layersGiven: [],
       layersDenied: ["operate"],
     });
     expect(envelope.registration.parentRunId).toBe(null);
+  });
+
+  it("takes a launcher's named environment over both defaults, and ignores a word that is not one", () => {
+    const environmentWith = (env) => {
+      const argsFile = path.join(os.tmpdir(), `codex-run-args-${Date.now()}-${Math.random()}-environment.json`);
+      const result = run([], { CODEX_BIN: fakeCodex(), WIKITOM_DIR: wikitomFixture(), FAKE_CODEX_ARGS: argsFile, ...env });
+      expect(result.status).toBe(0);
+      return spooledEnvelope(result.state).envelope.registration.environment;
+    };
+    expect(environmentWith({ TTS_RUN_ENVIRONMENT: "runner" })).toBe("runner");
+    expect(environmentWith({ TTS_RUN_ENVIRONMENT: "session", TTS_RUN_PARENT_RUN_ID: "claude:box:parent-session" })).toBe("session");
+    expect(environmentWith({ TTS_RUN_ENVIRONMENT: "autonomous" })).toBe("worker");
   });
 });
 

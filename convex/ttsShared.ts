@@ -49,11 +49,11 @@ export function isNarrowListId(value: unknown): value is NarrowListItem["id"] {
 }
 
 /**
- * The opening contract for every unattended TTS mission. The autonomous
- * prompt builders share it instead of carrying synchronized copies.
+ * The opening contract for every unattended TTS mission. The worker prompt
+ * builders share it instead of carrying synchronized copies.
  */
-export const AUTONOMOUS_SESSION_CONTRACT =
-  "You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.";
+export const WORKER_CONTRACT =
+  "You are working inside TTS (Toms Todo System) as a WORKER — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.";
 
 /** The closed TTS vocabulary, defined before a worker mission uses its terms. */
 /**
@@ -756,7 +756,7 @@ export const SESSION_REPO_NAMES = Object.keys(
 // Rules Tom set:
 //   - He can always choose the model for his own sessions, at creation and
 //     mid-session (setSessionModel; a cross-family change is a "reopen as").
-//   - Autonomous sessions use a todo's tagged model if it has one, else the
+//   - Workers use a todo's tagged model if it has one, else the
 //     fleet default (claudeAutoConfig.defaultModel), which starts at the
 //     strongest Codex model.
 //   - When Codex's WEEKLY usage is at or past CODEX_WEEKLY_CAP_PERCENT, the

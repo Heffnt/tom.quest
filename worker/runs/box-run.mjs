@@ -19,7 +19,9 @@
 // Usage:
 //   node /opt/tts/runs/box-run.mjs [options] < prompt.txt
 //
-//   --runner claude|codex   which CLI runs                 (default: claude)
+//   --cli claude|codex      which CLI runs                 (default: claude)
+//                           (--runner is the old spelling, accepted for one
+//                           release with a warning)
 //   --repo NAME             tom.quest | ComplexMultiTrigger | WikiTom | none
 //   --ref REF               branch, tag or sha to check out
 //   --model NAME            model for the run
@@ -129,7 +131,7 @@ const { scrubbedEnv } = await import(moduleUrl("../session-host/env-scrub.mjs", 
 
 function parseArgs(argv) {
   const opts = {
-    runner: "claude",
+    cli: "claude",
     repo: REPO_NONE,
     ref: null,
     model: null,
@@ -151,7 +153,8 @@ function parseArgs(argv) {
       return argv[++i];
     };
     switch (arg) {
-      case "--runner": opts.runner = next(); break;
+      case "--cli": opts.cli = next(); break;
+      case "--runner": note("--runner is the old spelling of --cli; say --cli"); opts.cli = next(); break;
       case "--repo": opts.repo = next(); break;
       case "--ref": opts.ref = next(); break;
       case "--model": opts.model = next(); break;
@@ -168,7 +171,7 @@ function parseArgs(argv) {
       default: fail(`unknown option ${arg}`);
     }
   }
-  if (opts.runner !== "claude" && opts.runner !== "codex") fail("--runner must be claude or codex");
+  if (opts.cli !== "claude" && opts.cli !== "codex") fail("--cli must be claude or codex");
   if (opts.repo !== REPO_NONE && !REPO_GITHUB[opts.repo]) {
     fail(`unknown repo "${opts.repo}" — expected one of ${Object.keys(REPO_GITHUB).join(", ")}, or "none"`);
   }
@@ -200,14 +203,14 @@ function parseArgs(argv) {
   // its own rootRunId contradicts, which convex/runs.ts then refuses anyway,
   // 400 and dead-lettered instead of one line of stderr.
   if (!opts.parent && (opts.root || opts.depth !== null)) fail("--root and --depth need a --parent");
-  // The model default depends on the runner, so it cannot be a constant above.
+  // The model default depends on the CLI, so it cannot be a constant above.
   // gpt-5.6-sol IS THE FLEET DEFAULT and the only right answer here: it is
   // scripts/codex-run.mjs's DEFAULT_MODEL, so the two ways of reaching Codex
   // agree, and a box run is a run of its own rather than a Codex child (a
   // child is the one thing named gpt-5.6-terra). Naming terra here also made
   // .claude/agents/codex.md's "the defaults are already the strongest model"
   // false for every run that went through the box, which is now all of them.
-  if (!opts.model) opts.model = opts.runner === "codex" ? "gpt-5.6-sol" : "opus";
+  if (!opts.model) opts.model = opts.cli === "codex" ? "gpt-5.6-sol" : "opus";
   // REMOVAL CHECK on --install as its own flag: --tests implies it, but the
   // reverse is not true and folding them together would arm the memory guard
   // for work that does not need it. A run that builds, lints, typechecks or
@@ -670,14 +673,20 @@ try {
 // as an unparented `job` and the tree edge this whole transport exists to
 // record was lost. This file therefore writes nothing for Codex and hands over
 // the one fact codex-run cannot know: the parent, below.
-const spooled = opts.runner === "codex" ? null : writeRegistration({
+// WHERE THE RUN STARTS is named only for a run nobody launched from a parent:
+// with --parent the record gives the run its parent's environment, and a word
+// here would overrule that with a guess. A launcher that knows better says so
+// in TTS_RUN_ENVIRONMENT, which wins over both.
+const namedEnvironment = ["session", "worker", "runner"].includes(process.env.TTS_RUN_ENVIRONMENT) ? process.env.TTS_RUN_ENVIRONMENT : null;
+const spooled = opts.cli === "codex" ? null : writeRegistration({
   spoolDir: process.env.TTS_RUN_REG_SPOOL || path.join(stateDir, "registration"),
   writer: { file: "worker/runs/box-run.mjs", job: "box-run" },
   registration: {
     host: "box",
-    runner: opts.runner,
+    cli: opts.cli,
     origin: "session",
     kind: "subagent",
+    ...(namedEnvironment ? { environment: namedEnvironment } : opts.parent ? {} : { environment: "worker" }),
     modelRequested: opts.model,
     ...(opts.effort ? { effortRequested: opts.effort } : {}),
     cwd,
@@ -724,12 +733,16 @@ const childEnv = {
 // from an unparented `job` into a `codex-child` under the session that asked
 // for it. mergeRegistration fills the root and the depth from the parent when
 // the launcher names neither, which is this case.
-if (opts.runner === "codex" && opts.parent) childEnv.TTS_RUN_PARENT_RUN_ID = opts.parent;
+if (opts.cli === "codex" && opts.parent) childEnv.TTS_RUN_PARENT_RUN_ID = opts.parent;
 else delete childEnv.TTS_RUN_PARENT_RUN_ID;
+// The environment follows the same one-writer rule: codex-run.mjs names it in
+// the only Codex envelope, so only the Codex child is told.
+if (opts.cli === "codex" && namedEnvironment) childEnv.TTS_RUN_ENVIRONMENT = namedEnvironment;
+else delete childEnv.TTS_RUN_ENVIRONMENT;
 
 let bin;
 let args;
-if (opts.runner === "codex") {
+if (opts.cli === "codex") {
   // A CODEX WEEKLY-CAP ERROR IS A LEGITIMATE OUTCOME, not a transport failure:
   // tts-codex's own message and exit code come back unaltered below.
   bin = codexBinary(process.env);
@@ -828,10 +841,10 @@ child.on("close", (code) => {
   if (report && !report.endsWith("\n")) process.stdout.write("\n");
   // THE STATUS LINE IS LAST AND ON STDOUT, so the laptop agent reads it off the
   // final line of the one block it relays.
-  process.stdout.write(`box-run: run ${id} host box runner ${opts.runner} exit ${exit} after ${seconds}s\n`);
+  process.stdout.write(`box-run: run ${id} host box cli ${opts.cli} exit ${exit} after ${seconds}s\n`);
   if (timedOut) note(`timed out after ${seconds}s (limit ${opts.timeout} ms)`);
   else if (code !== 0) {
-    note(`${opts.runner} exited ${code} after ${seconds}s`);
+    note(`${opts.cli} exited ${code} after ${seconds}s`);
     // THE TAIL, NOT THE PATH. The reap below deletes the work directory, so
     // naming the log file would hand the laptop an address that no longer
     // resolves — and the one case this matters most is the one where the CLI

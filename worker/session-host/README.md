@@ -125,9 +125,9 @@ differences: the SDK query gets `maxTurns: 200`; a 90-minute wall-clock cap
 per turn interrupts and ends the session errored ("autonomous time cap");
 and after the mission's result the daemon ends the session itself
 (endedReason "autonomous run complete") — nobody would ever send stop. An
-abnormal turn end (SDK error) or a daemon restart also ENDS an autonomous
-session, errored — the interactive park-idle recovery assumes Tom will send
-the next turn, and autonomous sessions have no Tom; the scheduler's backoff
+abnormal turn end (SDK error) or a daemon restart also ENDS a worker,
+errored — the interactive park-idle recovery assumes Tom will send
+the next turn, and workers have no Tom; the scheduler's backoff
 owns retries. The agent records its own outcome via the key-authed pen
 `POST $CONVEX_SITE_URL/tts/session-outcome` (X-TTS-Key), writes prep
 via `POST $CONVEX_SITE_URL/tts/prepare-todo` (X-TTS-Key), and writes a
@@ -186,7 +186,7 @@ surfaces the decision in the PR, rather than stopping to wait.
   the model reads when it tries. One member: `AskUserQuestion`, whose whole
   purpose is a multiple-choice picker a human clicks. tom.quest's transcript
   renders every tool call as a name plus an input preview and has no picker,
-  and an autonomous session has no human at all — so under the auto-allow
+  and a worker has no human at all — so under the auto-allow
   posture the call did not park and wait, it returned with no chosen option
   and the model carried on as if it had consulted someone. The daemon passes
   the list to the SDK as `disallowedTools` (removed from the model's context)

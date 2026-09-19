@@ -9,10 +9,15 @@ import { LIVE_STATUSES, SESSION_MODEL, nyLocalHour } from "./ttsShared";
 import { redactSecrets } from "../worker/session-host/redact.mjs";
 
 const RUN_KIND = v.union(
-  v.literal("session"), v.literal("worker"), v.literal("code"),
-  v.literal("prospect"), v.literal("job"), v.literal("delegate"),
+  v.literal("session"), v.literal("job"), v.literal("delegate"),
   v.literal("subagent"), v.literal("codex-child"), v.literal("unknown"),
 );
+// Where a run ran: a session Tom talks to, a worker nobody watches, or a
+// runner. Named by the launcher's envelope, else inherited from the parent row.
+const RUN_ENVIRONMENT = v.union(v.literal("session"), v.literal("worker"), v.literal("runner"));
+type RunEnvironment = "session" | "worker" | "runner";
+const RUN_CLI = v.union(v.literal("claude"), v.literal("codex"));
+type RunCli = "claude" | "codex";
 const RUN_STATUS = v.union(v.literal("running"), v.literal("ended"), v.literal("failed"), v.literal("abandoned"), v.literal("unknown"));
 const RUN_MODE = v.union(v.literal("interactive"), v.literal("autonomous"));
 const ROW_KIND = v.union(
@@ -67,7 +72,11 @@ const OUTCOME = v.object({
 });
 const RUN = v.object({
   runId: v.string(), parentRunId: v.optional(v.string()), rootRunId: v.string(), depth: v.number(), spawnedByToolUseId: v.optional(v.string()), linkKnown: v.boolean(),
-  origin: v.string(), continuesRunId: v.optional(v.string()), host: v.union(v.literal("laptop"), v.literal("box")), runner: v.union(v.literal("claude"), v.literal("codex")),
+  origin: v.string(), continuesRunId: v.optional(v.string()), host: v.union(v.literal("laptop"), v.literal("box")),
+  // The CLI family the run ran under. `runner` is its old name, accepted until
+  // every writer says `cli`; a payload must carry one of them.
+  cli: v.optional(RUN_CLI), runner: v.optional(RUN_CLI),
+  environment: v.optional(RUN_ENVIRONMENT),
   model: v.optional(v.string()), sessionModel: v.optional(SESSION_MODEL), effort: v.optional(v.string()), runtimeVersion: v.optional(v.string()), parserVersion: v.string(), kind: RUN_KIND, status: RUN_STATUS,
   mode: v.optional(RUN_MODE), startedAt: v.number(), lastLineAt: v.number(), context: v.optional(CONTEXT), outcome: v.optional(OUTCOME), attachments: v.array(ATTACHMENT),
   todoId: v.optional(v.id("dtsTodos")), batchId: v.optional(v.id("batches")), mergeKey: v.optional(v.string()), sessionId: v.optional(v.id("claudeSessions")),
@@ -133,8 +142,8 @@ function validHash(value: unknown): value is string {
 function validRunId(runId: unknown): runId is string {
   return typeof runId === "string" && RUN_ID.test(runId);
 }
-function runIdMatches(runId: string, runner: "claude" | "codex", host: "laptop" | "box") {
-  return runId.startsWith(`${runner}:${host}:`);
+function runIdMatches(runId: string, cli: RunCli, host: "laptop" | "box") {
+  return runId.startsWith(`${cli}:${host}:`);
 }
 function isStubFile(file: { path: string; sourceHash: string; storedHash: string; bytes: number; storedBytes: number; committedLine: number; committedPrefixSha256: string }) {
   return file.path === "" && file.sourceHash === "" && file.storedHash === "" && file.bytes === 0 && file.storedBytes === 0 && file.committedLine === 0 && file.committedPrefixSha256 === "";
@@ -179,28 +188,31 @@ function event(ctx: MutationCtx, kind: string, data: Record<string, unknown>) {
   return ctx.db.insert("dtsEvents", { at: Date.now(), kind, data });
 }
 
-// A PLACEHOLDER'S HOST AND RUNNER COME FROM THE ID IT IS STUBBING, never from
+// A PLACEHOLDER'S HOST AND CLI COME FROM THE ID IT IS STUBBING, never from
 // the run that revealed it. A cross-host parent link is ordinary now — the
 // laptop orchestrator spawns box runs through worker/runs/box-run.mjs, which
 // names the laptop session as the box run's parent — so taking them from the
 // revealing run would record a laptop session as a box run, and the sessions
 // view would show Tom that false fact. runIdMatches already requires a run id
-// to name its own host and runner, so the id is the honest source and both
+// to name its own host and CLI, so the id is the honest source and both
 // call sites (a parent stub and a child stub) are right by the same rule.
 // parserVersion and the timestamps stay with the revealing run: it is the only
-// evidence of when the placeholder's run was alive.
-function stub(run: { runId: string; parentRunId?: string; rootRunId: string; depth: number; spawnedByToolUseId?: string; linkKnown: boolean }, evidence: { parserVersion: string; lastLineAt: number }, kind: "subagent" | "codex-child" | "unknown") {
+// evidence of when the placeholder's run was alive. The environment stays with
+// it too, for the same reason: no id names one, and a child runs where its
+// parent runs until an envelope of its own says otherwise.
+function stub(run: { runId: string; parentRunId?: string; rootRunId: string; depth: number; spawnedByToolUseId?: string; linkKnown: boolean }, evidence: { parserVersion: string; lastLineAt: number; environment?: RunEnvironment }, kind: "subagent" | "codex-child" | "unknown") {
   const host: "laptop" | "box" = run.runId.startsWith("claude:laptop:") || run.runId.startsWith("codex:laptop:") ? "laptop" : "box";
-  const runner: "claude" | "codex" = run.runId.startsWith("codex:") ? "codex" : "claude";
+  const cli: RunCli = run.runId.startsWith("codex:") ? "codex" : "claude";
   return {
-    ...run, host, runner, kind, status: "unknown" as const, origin: "unknown", parserVersion: evidence.parserVersion,
+    ...run, host, cli, kind, status: "unknown" as const, origin: "unknown", parserVersion: evidence.parserVersion,
+    ...(evidence.environment ? { environment: evidence.environment } : {}),
     startedAt: evidence.lastLineAt, lastLineAt: evidence.lastLineAt, attachments: [],
     file: { path: "", sourceHash: "", storedHash: "", bytes: 0, storedBytes: 0, committedLine: 0, committedPrefixSha256: "" }, ingestedAt: Date.now(),
   };
 }
 
 function validOrigin(origin: string) {
-  return ["session", "planner", "worker", "nightly", "weekly", "delegate", "job", "daemon", "hook", "laptop", "workflow", "unknown"].includes(origin) || /^cron:[\w.-]{1,64}$/.test(origin);
+  return ["session", "planner", "nightly", "weekly", "delegate", "job", "daemon", "hook", "laptop", "workflow", "unknown"].includes(origin) || /^cron:[\w.-]{1,64}$/.test(origin);
 }
 async function fileVersionAt(ctx: MutationCtx, runId: string, fileVersion: string) {
   return await ctx.db
@@ -220,15 +232,16 @@ function validOutcome(outcome: {
 }
 
 function validRunPayload(run: {
-  runId: string; parentRunId?: string; rootRunId: string; depth: number; spawnedByToolUseId?: string; linkKnown: boolean; origin: string; continuesRunId?: string; host: "laptop" | "box"; runner: "claude" | "codex"; kind: string; mode?: "interactive" | "autonomous"; startedAt: number; lastLineAt: number; context?: { baseInstructionsHash?: string; contextWindow?: number }; outcome?: Parameters<typeof validOutcome>[0]; attachments: { file: string; bytes: number; sha256: string }[]; file: Parameters<typeof validFile>[0];
+  runId: string; parentRunId?: string; rootRunId: string; depth: number; spawnedByToolUseId?: string; linkKnown: boolean; origin: string; continuesRunId?: string; host: "laptop" | "box"; cli?: RunCli; runner?: RunCli; kind: string; mode?: "interactive" | "autonomous"; startedAt: number; lastLineAt: number; context?: { baseInstructionsHash?: string; contextWindow?: number }; outcome?: Parameters<typeof validOutcome>[0]; attachments: { file: string; bytes: number; sha256: string }[]; file: Parameters<typeof validFile>[0];
 }) {
-  // ONLY A RUN'S OWN ID MUST NAME ITS OWN HOST AND RUNNER. The edge ids may
+  // ONLY A RUN'S OWN ID MUST NAME ITS OWN HOST AND CLI. The edge ids may
   // name another: worker/runs/box-run.mjs makes a laptop session the parent of
   // a box run, so that run's parentRunId and rootRunId are laptop ids and
   // holding them to the child's host would refuse the whole record. They are
   // still checked as ids, and the root rule below — a run with no parent must
   // be its own root — keeps a root's own id and its rootRunId in agreement.
-  if (!validRunId(run.runId) || !validRunId(run.rootRunId) || !runIdMatches(run.runId, run.runner, run.host)) return false;
+  const cli = run.cli ?? run.runner;
+  if (cli === undefined || !validRunId(run.runId) || !validRunId(run.rootRunId) || !runIdMatches(run.runId, cli, run.host)) return false;
   if (run.parentRunId !== undefined && !validRunId(run.parentRunId)) return false;
   if (run.continuesRunId !== undefined && !validRunId(run.continuesRunId)) return false;
   if (run.mode !== undefined && run.kind !== "session") return false;
@@ -301,11 +314,20 @@ export const internalIngest = internalMutation({
     // position from a parent that is not there yet made every row of a deeper
     // run fail the row-depth check below, which dead-lettered the whole run on
     // a permanent 400.
-    let run = { ...args.run, rootRunId, depth };
+    // The envelope names the environment; a run without one runs where its
+    // parent ran; failing both, a row already in the record keeps its own.
+    // Only then is it a worker, and that guess is counted below.
+    const environment: RunEnvironment = args.run.environment ?? knownParent?.environment ?? existing?.environment ?? "worker";
+    const environmentDefaulted = args.run.environment === undefined && knownParent?.environment === undefined && existing?.environment === undefined;
+    // Read once, under its new name: every line below says `cli`, and a row
+    // this ingest writes carries only that spelling.
+    const { runner: legacyCli, ...named } = args.run;
+    const cli: RunCli = named.cli ?? legacyCli!;
+    let run = { ...named, cli, rootRunId, depth, environment };
     // A box Claude root has the same CLI id as its live session. Resolve that
     // exact join in the ingest transaction so a missed daemon stamp repairs
     // itself without a second worker round trip.
-    if (run.sessionId === undefined && run.runner === "claude" && run.host === "box" && run.depth === 0) {
+    if (run.sessionId === undefined && run.cli === "claude" && run.host === "box" && run.depth === 0) {
       const sdkSessionId = run.runId.slice("claude:box:".length);
       if (run.runId.startsWith("claude:box:") && sdkSessionId !== "" && !sdkSessionId.includes("/")) {
         const session = await ctx.db
@@ -314,6 +336,13 @@ export const internalIngest = internalMutation({
           .unique();
         if (session) run = { ...run, sessionId: session._id };
       }
+    }
+    // A reopened or forked session names the run it continues. Its next run
+    // takes that link; the run it names never does, so a late page of the old
+    // run cannot link to itself.
+    if (run.sessionId !== undefined && run.continuesRunId === undefined) {
+      const session = await ctx.db.get(run.sessionId);
+      if (session?.continuesRunId !== undefined && session.continuesRunId !== run.runId) run = { ...run, continuesRunId: session.continuesRunId };
     }
 
     let previous = -1;
@@ -388,6 +417,7 @@ export const internalIngest = internalMutation({
     }
     if (!existing) {
       await ctx.db.insert("runs", { ...run, ingestedAt });
+      if (environmentDefaulted) await event(ctx, "runs-environment-defaulted", { runId: run.runId, launcher: run.context?.launcher });
     } else {
       const advances = run.file.committedLine > existing.file.committedLine;
       const patch: Record<string, unknown> = { ingestedAt };
@@ -401,12 +431,12 @@ export const internalIngest = internalMutation({
       // the repair page is the only thing that can give it one. Without that
       // every label about a run whose first page beat its envelope would be
       // unlinked forever.
-      for (const key of ["status", "outcome", "mode", "lastLineAt", "model", "sessionModel", "effort", "context", "runtimeVersion", "parserVersion", "continuesRunId", "todoId", "batchId", "mergeKey", "regToken", "envelopeKey", "abandonedAt"] as const) if (run[key] !== undefined) patch[key] = run[key];
+      for (const key of ["status", "outcome", "mode", "lastLineAt", "model", "sessionModel", "effort", "context", "runtimeVersion", "parserVersion", "environment", "continuesRunId", "todoId", "batchId", "mergeKey", "regToken", "envelopeKey", "abandonedAt"] as const) if (run[key] !== undefined) patch[key] = run[key];
       if (run.sessionId !== undefined && existing.sessionId === undefined) patch.sessionId = run.sessionId;
       if (existing.kind === "unknown") patch.kind = run.kind;
       if (existing.origin === "unknown") patch.origin = run.origin;
       if (!existing.linkKnown && run.linkKnown && run.spawnedByToolUseId) { patch.linkKnown = true; patch.spawnedByToolUseId = run.spawnedByToolUseId; }
-      if (isStubFile(existing.file)) Object.assign(patch, { parentRunId: run.parentRunId, rootRunId: run.rootRunId, depth: run.depth, host: run.host, runner: run.runner, startedAt: run.startedAt });
+      if (isStubFile(existing.file)) Object.assign(patch, { parentRunId: run.parentRunId, rootRunId: run.rootRunId, depth: run.depth, host: run.host, cli: run.cli, environment: run.environment, startedAt: run.startedAt });
       await ctx.db.patch(existing._id, patch);
     }
 
@@ -414,10 +444,10 @@ export const internalIngest = internalMutation({
     // keeps every verified version the nightly manifest must write exactly
     // once, including versions created in the same millisecond.
     if (!isStubFile(run.file) && run.file.storeKey !== undefined && !(await fileVersionAt(ctx, run.runId, run.file.storedHash))) {
-      const prefix = `${run.runner}:${run.host}:`;
+      const prefix = `${run.cli}:${run.host}:`;
       await ctx.db.insert("runFileVersions", {
         runId: run.runId,
-        runner: run.runner,
+        cli: run.cli,
         host: run.host,
         threadId: run.runId.startsWith(prefix) ? run.runId.slice(prefix.length) : run.runId,
         depth: run.depth,
@@ -817,7 +847,9 @@ export const internalManifest = internalQuery({
         .filter((version) => !hasCompositeCheckpoint || version.at > since || version.runId > afterRunId || (version.runId === afterRunId && version.fileVersion > afterFileVersion))
         .map((version) => ({
           run_id: version.runId,
-          runner: version.runner,
+          // The manifest is append-only: lines written before the rename say
+          // `runner`, lines written after say `cli`.
+          cli: version.cli ?? version.runner,
           host: version.host,
           thread_id: version.threadId,
           depth: version.depth,
@@ -1055,7 +1087,8 @@ export const internalNextMaterialize = internalQuery({
     // still answerable: it comes back with `storeKey: null` so the job writes
     // `failed` and the queue drains. Skipping it would park it at the head of
     // the queue forever — the queue is drained by answers, not by attempts.
-    const prefix = run ? `${run.runner}:${run.host}:` : `${request.runId.split(":").slice(0, 2).join(":")}:`;
+    const cli = run ? (run.cli ?? run.runner) : undefined;
+    const prefix = run ? `${cli}:${run.host}:` : `${request.runId.split(":").slice(0, 2).join(":")}:`;
     const file = run
       ? {
           path: run.file.path, sourceHash: run.file.sourceHash, storedHash: run.file.storedHash,
@@ -1076,7 +1109,9 @@ export const internalNextMaterialize = internalQuery({
       request: {
         requestId: request._id, runId: request.runId, slice: request.slice,
         requestedBy: request.requestedBy, requestedAt: request.requestedAt,
-        runner: run?.runner ?? request.runId.split(":")[0],
+        // Both spellings for one release: a box not yet rolled reads `runner`.
+        cli: cli ?? request.runId.split(":")[0],
+        runner: cli ?? request.runId.split(":")[0],
         host: run?.host ?? request.runId.split(":")[1],
         threadId: request.runId.startsWith(prefix) ? request.runId.slice(prefix.length) : request.runId,
         depth: run?.depth ?? 0,
@@ -1394,6 +1429,32 @@ export const internalBackfillRunIds = internalMutation({
     for (const session of page.page) {
       const runId = session.sdkSessionId ? `claude:box:${session.sdkSessionId}` : undefined;
       if (runId && !session.runId && validRunId(runId)) { await ctx.db.patch(session._id, { runId }); patched += 1; }
+    }
+    return { scanned: page.page.length, patched, cursor: page.isDone ? null : page.continueCursor };
+  },
+});
+
+/**
+ * Gives every run row the launchers never named an environment. A run joined
+ * to a session is a worker when that session ran unattended and a session
+ * otherwise. A run with no session row but kind `session` is a laptop chat
+ * Tom talked to, which the run hook now names a session too. Everything else
+ * was started by a job, and is a worker. A row that already names one is left
+ * alone.
+ */
+export const internalBackfillRunEnvironment = internalMutation({
+  args: { cursor: v.optional(v.string()), limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const limit = args.limit ?? 200;
+    if (!positiveInteger(limit) || limit > 500) throw new Error("backfill limit must be an integer from 1 to 500");
+    const page = await ctx.db.query("runs").withIndex("by_ingested_at_and_run_id").order("asc").paginate({ cursor: args.cursor ?? null, numItems: limit });
+    let patched = 0;
+    for (const run of page.page) {
+      if (run.environment !== undefined) continue;
+      const session = run.sessionId ? await ctx.db.get(run.sessionId) : null;
+      const environment: RunEnvironment = session ? (session.mode === "autonomous" ? "worker" : "session") : run.kind === "session" ? "session" : "worker";
+      await ctx.db.patch(run._id, { environment });
+      patched += 1;
     }
     return { scanned: page.page.length, patched, cursor: page.isDone ? null : page.continueCursor };
   },

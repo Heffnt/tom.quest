@@ -3183,9 +3183,9 @@ const ttsSession = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/session", method: "POST", handler: ttsSession });
 
-// POST /tts/session-outcome — an autonomous session's outcome pen. Body:
+// POST /tts/session-outcome — a worker's outcome pen. Body:
 // { sessionId, outcome: "completed"|"errored", summary?, planRepair? }. It lives under the
-// TTS key ON PURPOSE: an autonomous session's environment carries ONLY
+// TTS key ON PURPOSE: a worker's environment carries ONLY
 // CONVEX_SITE_URL + TTS_WORKER_KEY — SESSIONS_WORKER_KEY never enters a
 // model-reachable shell (the auth-clobber lesson: the ingest key would let a
 // prompt-injected session forge poll/ingest traffic for every session), so

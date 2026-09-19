@@ -100,7 +100,7 @@ function AutoFleetStrip() {
         >
           auto {config.enabled ? "on" : "off"}
         </span>
-        {/* The model an autonomous session runs on when the todo it claimed
+        {/* The model a worker runs on when the todo it claimed
             named none of its own — a fact of the fleet, beside the switch. */}
         <span className={MODEL_CHIP_CLASS}>{config.defaultModel}</span>
         {load && (

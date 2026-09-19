@@ -46,7 +46,7 @@ function hookLog(stateDir, message, fsImpl = fs) {
   }
 }
 
-export function runnerOf(payload, runFile, env = process.env) {
+export function cliOf(payload, runFile, env = process.env) {
   const explicit = firstString(payload.runner, payload.runtime, payload.cli, payload.cli_name);
   if (explicit === "claude" || explicit === "codex") return explicit;
   const normalized = String(runFile ?? "").replaceAll("\\", "/").toLowerCase();
@@ -133,7 +133,7 @@ export const LAPTOP_SESSION_LAYERS = Object.freeze(["operate"]);
 
 function hookRegistration(payload, event, runFile, env) {
   const host = env.RUN_HOST === "box" || env.RUN_HOST === "laptop" ? env.RUN_HOST : null;
-  const runner = runnerOf(payload, runFile, env);
+  const cli = cliOf(payload, runFile, env);
   const parentThread = firstString(payload.session_id, payload.sessionId, payload.thread_id, payload.threadId);
   const toolUseId = firstString(
     payload.tool_use_id,
@@ -147,15 +147,19 @@ function hookRegistration(payload, event, runFile, env) {
   const laptop = host === "laptop"
     || (host === null && normalizedFile.includes("/.claude/") && !normalizedFile.includes("/.claude-accounts/"));
   const subagent = event.startsWith("Subagent");
-  const layersKnown = laptop && !subagent && runner === "claude";
+  const layersKnown = laptop && !subagent && cli === "claude";
   return {
     host,
-    ...(runner ? { runner } : {}),
+    ...(cli ? { cli } : {}),
     origin: laptop ? "laptop" : firstString(env.TTS_RUN_ORIGIN) ?? "unknown",
     kind: subagent ? "subagent" : "session",
+    // Only the laptop's own chat is named a session here. A subagent says
+    // nothing and inherits its parent's; on the box the launcher's envelope
+    // names it, and a word from this hook would overrule the launcher's.
+    ...(laptop && !subagent ? { environment: "session" } : {}),
     cwd: firstString(payload.cwd),
-    ...(subagent && runner && host && parentThread
-      ? { parentRunId: `${runner}:${host}:${parentThread}` }
+    ...(subagent && cli && host && parentThread
+      ? { parentRunId: `${cli}:${host}:${parentThread}` }
       : {}),
     ...(subagent && toolUseId ? { spawnedByToolUseId: toolUseId } : {}),
     layersKnown,
@@ -187,12 +191,12 @@ export function currentRunPointerPath(stateDir, cwd) {
 // recorded in the hook log instead.
 function writeCurrentRunPointer(payload, runFile, env, stateDir) {
   try {
-    const runner = runnerOf(payload, runFile, env);
+    const cli = cliOf(payload, runFile, env);
     const sessionId = firstString(payload.session_id, payload.sessionId);
     const cwd = firstString(payload.cwd);
-    if (runner !== "claude" || !sessionId || !cwd) return;
+    if (cli !== "claude" || !sessionId || !cwd) return;
     const host = env.RUN_HOST === "box" || env.RUN_HOST === "laptop" ? env.RUN_HOST : null;
-    const runId = `${runner}:${host ?? "laptop"}:${sessionId}`;
+    const runId = `${cli}:${host ?? "laptop"}:${sessionId}`;
     const file = currentRunPointerPath(stateDir, cwd);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const temporary = `${file}.tmp-${process.pid}`;
@@ -210,7 +214,7 @@ function writeCurrentRunPointer(payload, runFile, env, stateDir) {
 function removeCurrentRunPointer(payload, runFile, env, stateDir) {
   try {
     const cwd = firstString(payload.cwd);
-    if (runnerOf(payload, runFile, env) !== "claude" || !cwd) return;
+    if (cliOf(payload, runFile, env) !== "claude" || !cwd) return;
     fs.rmSync(currentRunPointerPath(stateDir, cwd), { force: true });
   } catch (error) {
     hookLog(stateDir, `SessionEnd could not remove its current-run pointer: ${error?.message ?? error}`);

@@ -439,9 +439,14 @@ const spooled = writeRegistration({
   },
   registration: {
     host: process.env.RUN_HOST === "box" || process.env.RUN_HOST === "laptop" ? process.env.RUN_HOST : null,
-    runner: "codex",
+    cli: "codex",
     origin: process.env.TTS_RUN_ORIGIN || "job",
     kind: process.env.TTS_RUN_PARENT_RUN_ID ? "codex-child" : "job",
+    // A launcher's word wins; a child with a parent says nothing and runs where
+    // its parent runs; a run with neither is a worker.
+    ...(["session", "worker", "runner"].includes(process.env.TTS_RUN_ENVIRONMENT)
+      ? { environment: process.env.TTS_RUN_ENVIRONMENT }
+      : process.env.TTS_RUN_PARENT_RUN_ID ? {} : { environment: "worker" }),
     modelRequested: opts.model,
     effortRequested: opts.effort,
     cwd: opts.cwd,

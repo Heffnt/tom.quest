@@ -137,9 +137,9 @@ function runDoc(over: Record<string, unknown>) {
     linkKnown: true,
     origin: "nightly-learning",
     host: "box",
-    runner: "claude",
+    cli: "claude",
     parserVersion: "claude/1",
-    kind: "worker",
+    kind: "job",
     status: "ended",
     model: "opus",
     startedAt: NOW - 600_000,
@@ -200,7 +200,7 @@ const bash = (id: string, command: string) => ({
  */
 function loadTree() {
   convex.runs = {
-    "run-root": runDoc({ runId: "run-root", kind: "worker", depth: 0 }),
+    "run-root": runDoc({ runId: "run-root", kind: "job", depth: 0 }),
     "run-a": runDoc({
       _id: "runs|a",
       runId: "run-a",
@@ -606,7 +606,7 @@ describe("the edges of the recursion", () => {
 
     // title = kind · origin, and the two facts beside it are chips, not
     // controls: nothing on a finished run's header changes the run.
-    expect(within(header).getByText("worker · nightly-learning")).toBeTruthy();
+    expect(within(header).getByText("job · nightly-learning")).toBeTruthy();
     expect(within(header).getByText("ended").tagName).toBe("SPAN");
     expect(within(header).getByText("opus").tagName).toBe("SPAN");
     expect(header.querySelector("select")).toBeNull();

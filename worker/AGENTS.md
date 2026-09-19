@@ -11,7 +11,7 @@
 
 - A session's `model` selects its runner: `opus`, `sonnet` and `fable` run Claude Code; `gpt-5.6-sol` and `gpt-5.6-terra` run Codex. It is set on the create form or the select in the session header.
 - A model change within one family takes effect on the next turn. A change across families ends the session and opens a new one on the other runner, seeded with the whole transcript.
-- An autonomous session takes the todo's `model` tag if the planner set one, else the fleet default in the fleet strip. At `CODEX_WEEKLY_CAP_PERCENT` of weekly Codex usage, untagged work falls to `opus` and Codex-tagged work waits.
+- A worker takes the todo's `model` tag if the planner set one, else the fleet default in the fleet strip. At `CODEX_WEEKLY_CAP_PERCENT` of weekly Codex usage, untagged work falls to `opus` and Codex-tagged work waits.
 
 ## codex
 

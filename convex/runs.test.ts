@@ -34,7 +34,7 @@ async function withTom(t: ReturnType<typeof convexTest>) {
 function run(overrides: Record<string, unknown> = {}) {
   return {
     runId: "claude:laptop:root-run", rootRunId: "claude:laptop:root-run", depth: 0, linkKnown: true,
-    origin: "unknown", host: "laptop", runner: "claude", parserVersion: "runs-parser-1", kind: "session", status: "unknown", startedAt: 1, lastLineAt: 2,
+    origin: "unknown", host: "laptop", cli: "claude", parserVersion: "runs-parser-1", kind: "session", status: "unknown", startedAt: 1, lastLineAt: 2,
     attachments: [],
     file: { path: "C:/root.jsonl", sourceHash: SOURCE_HASH, storedHash: STORED_HASH, bytes: 10, storedBytes: 8, committedLine: 1, committedPrefixSha256: PREFIX_HASH },
     ...overrides,
@@ -220,11 +220,86 @@ describe("runs", () => {
       .toMatchObject({ ok: true, inserted: 1 });
 
     const parent = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:orchestrator")).unique());
-    expect(parent).toMatchObject({ host: "laptop", runner: "claude", kind: "unknown", depth: 0, rootRunId: "claude:laptop:orchestrator" });
+    expect(parent).toMatchObject({ host: "laptop", cli: "claude", kind: "unknown", depth: 0, rootRunId: "claude:laptop:orchestrator" });
 
     const children = await t.run((ctx) => ctx.db.query("runs").withIndex("by_parent", (q) => q.eq("parentRunId", "claude:laptop:orchestrator")).collect());
     expect(children.map((entry) => entry.runId).sort()).toEqual(["claude:box:box-child-one", "claude:box:box-child-two"]);
     expect(children.every((entry) => entry.host === "box" && entry.depth === 1)).toBe(true);
+  });
+
+  describe("environment", () => {
+    const at = (t: SchemaTest, runId: string) =>
+      t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique());
+    const defaulted = (t: SchemaTest) =>
+      t.run(async (ctx) => (await ctx.db.query("dtsEvents").collect()).filter((entry) => entry.kind === "runs-environment-defaulted"));
+    const childRun = (name: string, overrides: Record<string, unknown> = {}) => run({
+      runId: `claude:laptop:${name}`, parentRunId: "claude:laptop:root-run", rootRunId: "claude:laptop:root-run", depth: 1, linkKnown: false, kind: "subagent",
+      file: { ...run().file, path: `C:/${name}.jsonl` }, ...overrides,
+    });
+
+    it("takes the envelope's word first and counts no guess", async () => {
+      const t = convexTest(schema, modules);
+      expect(await t.mutation(internal.runs.internalIngest, ingest(run({ environment: "session" })) as never)).toMatchObject({ ok: true });
+      expect((await at(t, "claude:laptop:root-run"))?.environment).toBe("session");
+      expect(await defaulted(t)).toEqual([]);
+    });
+
+    it("gives a silent child its parent's environment", async () => {
+      const t = convexTest(schema, modules);
+      await t.mutation(internal.runs.internalIngest, ingest(run({ environment: "session" })) as never);
+      expect(await t.mutation(internal.runs.internalIngest, ingest(childRun("silent-child"), [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
+      expect((await at(t, "claude:laptop:silent-child"))?.environment).toBe("session");
+      expect(await defaulted(t)).toEqual([]);
+    });
+
+    it("keeps a row's own environment when neither envelope nor parent names one", async () => {
+      const t = convexTest(schema, modules);
+      await t.mutation(internal.runs.internalIngest, ingest(run({ environment: "runner" })) as never);
+      expect(await t.mutation(internal.runs.internalIngest, retry(run({ file: { ...run().file, committedLine: 2, committedPrefixSha256: GROWN_PREFIX_HASH } }), [row(1)]) as never)).toMatchObject({ ok: true });
+      expect((await at(t, "claude:laptop:root-run"))?.environment).toBe("runner");
+    });
+
+    it("calls a run nothing named a worker, once, and says so", async () => {
+      const t = convexTest(schema, modules);
+      await t.mutation(internal.runs.internalIngest, ingest(run({ context: { layersKnown: false, layersGiven: [], layersDenied: [], skillsOffered: [], skillsUsed: [], tools: [], hooks: [], launcher: "worker/jobs/example.mjs" } })) as never);
+      expect((await at(t, "claude:laptop:root-run"))?.environment).toBe("worker");
+      expect((await defaulted(t)).map((entry) => entry.data)).toEqual([{ runId: "claude:laptop:root-run", launcher: "worker/jobs/example.mjs" }]);
+      // A later page is a repair, never a second count.
+      await t.mutation(internal.runs.internalIngest, retry(run({ file: { ...run().file, committedLine: 2, committedPrefixSha256: GROWN_PREFIX_HASH } }), [row(1)]) as never);
+      expect(await defaulted(t)).toHaveLength(1);
+    });
+
+    it("repairs a row ingested before its envelope, when a later page names one", async () => {
+      const t = convexTest(schema, modules);
+      await t.mutation(internal.runs.internalIngest, ingest(run()) as never);
+      expect((await at(t, "claude:laptop:root-run"))?.environment).toBe("worker");
+      await t.mutation(internal.runs.internalIngest, retry(run({ environment: "session", file: { ...run().file, committedLine: 2, committedPrefixSha256: GROWN_PREFIX_HASH } }), [row(1)]) as never);
+      expect((await at(t, "claude:laptop:root-run"))?.environment).toBe("session");
+    });
+
+    it("gives a placeholder the environment of the run that revealed it, and its own run repairs it", async () => {
+      const t = convexTest(schema, modules);
+      await t.mutation(internal.runs.internalIngest, ingest(run({ environment: "session" }), [row()], [child("claude:laptop:stubbed-child", "claude:laptop:root-run", "claude:laptop:root-run", 1)]) as never);
+      expect(await at(t, "claude:laptop:stubbed-child")).toMatchObject({ kind: "subagent", environment: "session" });
+      expect(await t.mutation(internal.runs.internalIngest, ingest(childRun("orphaned-child", { parentRunId: "claude:laptop:unseen-parent", rootRunId: "claude:laptop:unseen-parent", environment: "runner" }), [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
+      expect(await at(t, "claude:laptop:unseen-parent")).toMatchObject({ kind: "unknown", environment: "runner" });
+      await t.mutation(internal.runs.internalIngest, ingest(childRun("stubbed-child", { environment: "worker", linkKnown: true, spawnedByToolUseId: "exact-tool-use" }), [row(0, { depth: 1 })]) as never);
+      expect((await at(t, "claude:laptop:stubbed-child"))?.environment).toBe("worker");
+    });
+  });
+
+  it("takes the CLI under either spelling, stores it as cli, and refuses a run naming neither", async () => {
+    const t = convexTest(schema, modules);
+    const legacy: Record<string, unknown> = run({ runner: "claude" });
+    delete legacy.cli;
+    expect(await t.mutation(internal.runs.internalIngest, ingest(legacy as never) as never)).toMatchObject({ ok: true });
+    const stored = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique());
+    expect(stored).toMatchObject({ cli: "claude" });
+    expect(stored).not.toHaveProperty("runner");
+    const nameless: Record<string, unknown> = run({ runId: "claude:laptop:nameless-run", rootRunId: "claude:laptop:nameless-run" });
+    delete nameless.cli;
+    expect(await t.mutation(internal.runs.internalIngest, ingest(nameless as never) as never)).toEqual({ ok: false, reason: "invalid run record" });
+    expect(await t.mutation(internal.runs.internalIngest, ingest(run({ runId: "claude:laptop:mismatched-run", rootRunId: "claude:laptop:mismatched-run", cli: "codex" })) as never)).toEqual({ ok: false, reason: "invalid run record" });
   });
 
   it("stores mode only for session runs", async () => {
@@ -232,8 +307,8 @@ describe("runs", () => {
     expect(await t.mutation(internal.runs.internalIngest, ingest(run({ mode: "interactive" })) as never)).toMatchObject({ ok: true });
     const autonomous = run({ runId: "claude:laptop:auto-session", rootRunId: "claude:laptop:auto-session", mode: "autonomous" });
     expect(await t.mutation(internal.runs.internalIngest, ingest(autonomous) as never)).toMatchObject({ ok: true });
-    const worker = run({ runId: "claude:laptop:worker-run", rootRunId: "claude:laptop:worker-run", kind: "worker", mode: "interactive" });
-    expect(await t.mutation(internal.runs.internalIngest, ingest(worker) as never)).toEqual({ ok: false, reason: "invalid run record" });
+    const job = run({ runId: "claude:laptop:cron-job-run", rootRunId: "claude:laptop:cron-job-run", kind: "job", mode: "interactive" });
+    expect(await t.mutation(internal.runs.internalIngest, ingest(job) as never)).toEqual({ ok: false, reason: "invalid run record" });
   });
 
   it("keeps chunks immutable and stamps only a complete, verified reassembly", async () => {
@@ -252,33 +327,33 @@ describe("runs", () => {
     expect((await viewer.query(api.runs.rows, { runId: "claude:laptop:root-run", paginationOpts: { cursor: null, numItems: 1 } })).page[0]).toMatchObject({ hasOverflow: true, fullByteLength: 11 });
   });
 
-  for (const runner of ["claude", "codex"] as const) {
-    it(`derives a three-level ${runner} tree parent-first`, async () => {
+  for (const cli of ["claude", "codex"] as const) {
+    it(`derives a three-level ${cli} tree parent-first`, async () => {
       const t = convexTest(schema, modules);
-      const parent = `${runner}:laptop:parent-run`;
-      const first = `${runner}:laptop:first-child`;
-      const second = `${runner}:laptop:second-child`;
-      const parentRun = run({ runId: parent, rootRunId: parent, runner, kind: runner === "claude" ? "session" : "unknown" });
-      expect(await t.mutation(internal.runs.internalIngest, ingest(parentRun, [], [child(first, parent, parent, 1, runner === "claude")]) as never)).toMatchObject({ ok: true });
-      const firstRun = run({ runId: first, parentRunId: parent, rootRunId: parent, depth: 1, runner, kind: runner === "claude" ? "subagent" : "codex-child", linkKnown: runner === "claude", ...(runner === "claude" ? { spawnedByToolUseId: "exact-tool-use" } : {}) });
-      const firstResponse = await t.mutation(internal.runs.internalIngest, ingest(firstRun, [row(0, { depth: 1 })], [child(second, first, parent, 2, runner === "claude")]) as never);
+      const parent = `${cli}:laptop:parent-run`;
+      const first = `${cli}:laptop:first-child`;
+      const second = `${cli}:laptop:second-child`;
+      const parentRun = run({ runId: parent, rootRunId: parent, cli, kind: cli === "claude" ? "session" : "unknown" });
+      expect(await t.mutation(internal.runs.internalIngest, ingest(parentRun, [], [child(first, parent, parent, 1, cli === "claude")]) as never)).toMatchObject({ ok: true });
+      const firstRun = run({ runId: first, parentRunId: parent, rootRunId: parent, depth: 1, cli, kind: cli === "claude" ? "subagent" : "codex-child", linkKnown: cli === "claude", ...(cli === "claude" ? { spawnedByToolUseId: "exact-tool-use" } : {}) });
+      const firstResponse = await t.mutation(internal.runs.internalIngest, ingest(firstRun, [row(0, { depth: 1 })], [child(second, first, parent, 2, cli === "claude")]) as never);
       expect(firstResponse, JSON.stringify(firstResponse)).toMatchObject({ ok: true });
-      const secondRun = run({ runId: second, parentRunId: first, rootRunId: parent, depth: 2, runner, kind: runner === "claude" ? "subagent" : "codex-child", linkKnown: runner === "claude", ...(runner === "claude" ? { spawnedByToolUseId: "exact-tool-use" } : {}) });
+      const secondRun = run({ runId: second, parentRunId: first, rootRunId: parent, depth: 2, cli, kind: cli === "claude" ? "subagent" : "codex-child", linkKnown: cli === "claude", ...(cli === "claude" ? { spawnedByToolUseId: "exact-tool-use" } : {}) });
       expect(await t.mutation(internal.runs.internalIngest, ingest(secondRun, [row(0, { depth: 2 })]) as never)).toMatchObject({ ok: true });
       const tree = await t.run((ctx) => ctx.db.query("runs").withIndex("by_root_depth", (q) => q.eq("rootRunId", parent)).collect());
       expect(tree.map((entry) => [entry.runId, entry.depth])).toEqual(expect.arrayContaining([[parent, 0], [first, 1], [second, 2]]));
     });
 
-    it(`repairs a three-level ${runner} tree when children arrive first`, async () => {
+    it(`repairs a three-level ${cli} tree when children arrive first`, async () => {
       const t = convexTest(schema, modules);
-      const parent = `${runner}:laptop:parent-run`;
-      const first = `${runner}:laptop:first-child`;
-      const second = `${runner}:laptop:second-child`;
-      const secondRun = run({ runId: second, parentRunId: first, rootRunId: first, depth: 1, runner, kind: runner === "claude" ? "subagent" : "codex-child", linkKnown: runner === "claude", ...(runner === "claude" ? { spawnedByToolUseId: "exact-tool-use" } : {}) });
+      const parent = `${cli}:laptop:parent-run`;
+      const first = `${cli}:laptop:first-child`;
+      const second = `${cli}:laptop:second-child`;
+      const secondRun = run({ runId: second, parentRunId: first, rootRunId: first, depth: 1, cli, kind: cli === "claude" ? "subagent" : "codex-child", linkKnown: cli === "claude", ...(cli === "claude" ? { spawnedByToolUseId: "exact-tool-use" } : {}) });
       expect(await t.mutation(internal.runs.internalIngest, ingest(secondRun, [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
-      const firstRun = run({ runId: first, parentRunId: parent, rootRunId: parent, depth: 1, runner, kind: runner === "claude" ? "subagent" : "codex-child", linkKnown: runner === "claude", ...(runner === "claude" ? { spawnedByToolUseId: "exact-tool-use" } : {}) });
+      const firstRun = run({ runId: first, parentRunId: parent, rootRunId: parent, depth: 1, cli, kind: cli === "claude" ? "subagent" : "codex-child", linkKnown: cli === "claude", ...(cli === "claude" ? { spawnedByToolUseId: "exact-tool-use" } : {}) });
       expect(await t.mutation(internal.runs.internalIngest, ingest(firstRun, [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
-      const parentRun = run({ runId: parent, rootRunId: parent, runner, kind: runner === "claude" ? "session" : "unknown" });
+      const parentRun = run({ runId: parent, rootRunId: parent, cli, kind: cli === "claude" ? "session" : "unknown" });
       expect(await t.mutation(internal.runs.internalIngest, ingest(parentRun, []) as never)).toMatchObject({ ok: true });
       const tree = await t.run((ctx) => ctx.db.query("runs").withIndex("by_root_depth", (q) => q.eq("rootRunId", parent)).collect());
       expect(tree.map((entry) => [entry.runId, entry.depth])).toEqual(expect.arrayContaining([[parent, 0], [first, 1], [second, 2]]));
@@ -322,6 +397,46 @@ describe("runs", () => {
     expect((await t.run(async (ctx) => ctx.db.get(second)))?.runId).toBeUndefined();
     await expect(t.mutation(internal.runs.internalBackfillRunIds, { limit: 0 })).rejects.toThrow();
     await expect(t.mutation(internal.runs.internalBackfillRunIds, { limit: 501 })).rejects.toThrow();
+  });
+
+  it("backfills the environment from the session, then the kind, and leaves a named one alone", async () => {
+    const t = convexTest(schema, modules);
+    const unattended = await session(t, { mode: "autonomous" });
+    const talkedTo = await session(t, { mode: "interactive" });
+    const seed = async (name: string, overrides: Record<string, unknown>, environment?: string) => {
+      const runId = `claude:laptop:${name}`;
+      await t.mutation(internal.runs.internalIngest, ingest(run({ runId, rootRunId: runId, file: { ...run().file, path: `C:/${name}.jsonl` }, ...overrides }), []) as never);
+      await t.run(async (ctx) => {
+        const stored = await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique();
+        await ctx.db.patch(stored!._id, { environment: environment as never });
+      });
+      return runId;
+    };
+    const ids = {
+      unattended: await seed("unattended-session", { sessionId: unattended, kind: "job" }),
+      talkedTo: await seed("talked-to-session", { sessionId: talkedTo }),
+      laptopChat: await seed("laptop-terminal-chat", { kind: "session" }),
+      job: await seed("cron-started-job", { kind: "job" }),
+      named: await seed("already-named-run", { kind: "job" }, "runner"),
+    };
+    let cursor: string | undefined;
+    let patched = 0;
+    for (;;) {
+      const page = await t.mutation(internal.runs.internalBackfillRunEnvironment, { cursor, limit: 2 });
+      patched += page.patched;
+      if (page.cursor === null) break;
+      cursor = page.cursor;
+    }
+    expect(patched).toBe(4);
+    const environmentOf = (runId: string) => t.run(async (ctx) => (await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique())?.environment);
+    expect(await environmentOf(ids.unattended)).toBe("worker");
+    expect(await environmentOf(ids.talkedTo)).toBe("session");
+    expect(await environmentOf(ids.laptopChat)).toBe("session");
+    expect(await environmentOf(ids.job)).toBe("worker");
+    expect(await environmentOf(ids.named)).toBe("runner");
+    // A second pass finds nothing left to do.
+    expect(await t.mutation(internal.runs.internalBackfillRunEnvironment, { limit: 500 })).toMatchObject({ scanned: 5, patched: 0, cursor: null });
+    await expect(t.mutation(internal.runs.internalBackfillRunEnvironment, { limit: 501 })).rejects.toThrow("1 to 500");
   });
 
   it("switches getMessages from daemon rows to the same run-row page shape", async () => {
@@ -375,6 +490,17 @@ describe("runs", () => {
     ]);
     expect(storedRun?.sessionId).toBe(sessionId);
     expect(storedSession?.runId).toBe("claude:box:sdk-root");
+  });
+
+  it("gives a session's next run the run it continues, and never links the old run to itself", async () => {
+    const t = convexTest(schema, modules);
+    const sessionId = await session(t, { sdkSessionId: "sdk-after-reopen", continuesRunId: "claude:box:sdk-before-reopen" });
+    const at = (runId: string) => t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique());
+    await t.mutation(internal.runs.internalIngest, ingest(run({ runId: "claude:box:sdk-after-reopen", rootRunId: "claude:box:sdk-after-reopen", host: "box" }), [], []) as never);
+    expect(await at("claude:box:sdk-after-reopen")).toMatchObject({ sessionId, continuesRunId: "claude:box:sdk-before-reopen" });
+    // A late page of the old run, carrying the same session, stays unlinked.
+    await t.mutation(internal.runs.internalIngest, ingest(run({ runId: "claude:box:sdk-before-reopen", rootRunId: "claude:box:sdk-before-reopen", host: "box", sessionId }), [], []) as never);
+    expect((await at("claude:box:sdk-before-reopen"))?.continuesRunId).toBeUndefined();
   });
 
   it("compares row sets without recording text and cuts over a clean terminal run", async () => {
@@ -562,7 +688,7 @@ describe("runs", () => {
     expect(stored).toMatchObject({ status: "abandoned", abandonedAt: 123, origin: "job" });
     const manifest = await t.query(internal.runs.internalManifest, { since: 0 });
     expect(manifest.entries).toEqual([expect.objectContaining({
-      run_id: "claude:laptop:root-run", thread_id: "root-run", file_version: STORED_HASH,
+      run_id: "claude:laptop:root-run", cli: "claude", thread_id: "root-run", file_version: STORED_HASH,
       store_key: "runs/claude/laptop/root/stored.jsonl.gz", parent_run_id: null,
     })]);
     expect((await t.query(internal.runs.internalManifest, { since: manifest.entries[0].at, afterRunId: manifest.entries[0].run_id, afterFileVersion: manifest.entries[0].file_version })).entries).toEqual([]);
@@ -674,7 +800,7 @@ describe("runs: materialize requests", () => {
 
     const oldest = await t.query(internal.runs.internalNextMaterialize, {});
     expect(oldest.request).toMatchObject({
-      requestId: orphan, runId: "codex:box:vanished-thread", runner: "codex", host: "box",
+      requestId: orphan, runId: "codex:box:vanished-thread", cli: "codex", runner: "codex", host: "box",
       threadId: "vanished-thread", depth: 0, parentRunId: null, hasRows: false, fromLine: 0,
       file: { storeKey: null, sidecarStoredHash: null, totalLines: null },
     });
@@ -683,7 +809,7 @@ describe("runs: materialize requests", () => {
     // A backlog run has no rows, so the parse starts at line 0.
     const backlog = await t.query(internal.runs.internalNextMaterialize, {});
     expect(backlog.request).toMatchObject({
-      runId: "claude:laptop:root-run", runner: "claude", host: "laptop", threadId: "root-run",
+      runId: "claude:laptop:root-run", cli: "claude", runner: "claude", host: "laptop", threadId: "root-run",
       hasRows: false, fromLine: 0, file: { storeKey: STORE_KEY, totalLines: 4000, committedLine: 0 },
     });
 

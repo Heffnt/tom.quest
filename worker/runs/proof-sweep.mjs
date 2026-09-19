@@ -223,9 +223,9 @@ export async function runSweepProof({
   const sample = proofRows.find((row) => row.provenance?.sourceKind !== "context" && byId.has(row.runId));
   if (!sample) throw new Error("proof has no source row to inspect");
   const sampleRun = byId.get(sample.runId);
-  const prefix = `${sampleRun.runner}:${sampleRun.host}:`;
+  const prefix = `${sampleRun.cli}:${sampleRun.host}:`;
   const threadId = sampleRun.runId.startsWith(prefix) ? sampleRun.runId.slice(prefix.length) : sampleRun.runId;
-  const stored = localStore.get({ runtime: sampleRun.runner, host: sampleRun.host, threadId, fileVersion: sample.provenance.fileVersion });
+  const stored = localStore.get({ runtime: sampleRun.cli, host: sampleRun.host, threadId, fileVersion: sample.provenance.fileVersion });
   const raw = stored.toString("utf8").split("\n")[sample.provenance.lineStart];
   let exact = false;
   try { exact = sourceKind(JSON.parse(raw)) === sample.provenance.sourceKind; } catch {}
