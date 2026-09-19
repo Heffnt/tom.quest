@@ -316,7 +316,7 @@ describe("the step prompt", () => {
     // run's check-ins carried to Tom undefined.
     const contract = prompt.slice(prompt.indexOf("## The check-in"), prompt.indexOf("The asking rubric"));
     expect(contract).toContain(`by its title in Tom's record, "${seed().title}"`);
-    expect(contract).toContain(`steps of ${seed().title} that failed since the last check-in`);
+    expect(contract).toContain("units of work the sweep files ask for");
     expect(contract).toContain("with no number");
     expect(contract).toContain("`tts-search skills write` prints it");
     expect(contract).toContain("Never ask him to type a command.");
