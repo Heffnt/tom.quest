@@ -48,6 +48,7 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // insertSession below; ttsSkills keeps only the header parser it strips with.
 import { withoutModelOfTomPrelude } from "./ttsSkills";
 import { assembleContext, type ContextSubject } from "./ttsContext";
+import { dueRunnerSteps } from "./ttsRunners";
 import { briefForPrompt } from "../worker/jobs/context-relevance.mjs";
 import {
   WORKER_CONTRACT,
@@ -1600,7 +1601,11 @@ export const internalPoll = internalMutation({
         });
       }
     }
-    return { now, sessions };
+    // Runner steps ride the same poll: one more array on this payload, one
+    // more branch in the daemon's walk, no second loop and no second key. A
+    // step is not a session and writes no session row (convex/ttsRunners.ts).
+    const runnerSteps = await dueRunnerSteps(ctx, now);
+    return { now, sessions, runnerSteps };
   },
 });
 

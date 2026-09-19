@@ -164,3 +164,85 @@ describe("known away", () => {
     expect(blocked).toEqual({ away: true, because: "a calendar block covers now" });
   });
 });
+
+describe("the step lease", () => {
+  async function runnerWithStep(t: TestConvex<typeof schema>) {
+    const { internal } = await import("./_generated/api");
+    const runnerId = await t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed() });
+    const step = await t.run(async (ctx) => (await ctx.db.query("runnerSteps").collect())[0]);
+    return { runnerId, stepId: step._id, internal };
+  }
+
+  it("admits one claim, and a held lease refuses the next", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { runnerId, stepId, internal } = await runnerWithStep(t);
+    const first = await t.mutation(internal.ttsRunners.internalClaimRunnerStep, { stepId });
+    expect(first.admitted).toBe(true);
+    if (!first.admitted) throw new Error("unreachable");
+    expect(first.stepRunId).toMatch(/^claude:box:[0-9a-f-]{36}$/);
+    const runner = await t.run((ctx) => ctx.db.get(runnerId));
+    expect(runner?.lease?.stepRunId).toBe(first.stepRunId);
+    expect(runner!.lease!.deadline - runner!.lease!.takenAt).toBe(4 * TEN_MINUTES);
+    // A second request slipped in while the lease is held.
+    const second = await t.run((ctx) => ctx.db.insert("runnerSteps", { runnerId, environment: "runner", dueAt: Date.now(), status: "requested" }));
+    const refused = await t.mutation(internal.ttsRunners.internalClaimRunnerStep, { stepId: second });
+    expect(refused).toEqual({ admitted: false, reason: "deferred: the step before it was still running" });
+    const row = await t.run((ctx) => ctx.db.get(second));
+    expect(row?.status).toBe("failed");
+  });
+
+  it("expires a lease past its deadline: a failed-step event, a free runner, the next step scheduled", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("SLACK_TTS_BROKEN_CHANNEL_ID", "");
+    const t = convexTest(schema, modules);
+    const { runnerId, stepId, internal } = await runnerWithStep(t);
+    const claimed = await t.mutation(internal.ttsRunners.internalClaimRunnerStep, { stepId });
+    if (!claimed.admitted) throw new Error("unreachable");
+    // The daemon restarted; the step's process is gone and no check-in came.
+    vi.advanceTimersByTime(4 * TEN_MINUTES + 1);
+    await t.mutation(internal.ttsRunners.internalRunnerSweep, {});
+    const state = await t.run(async (ctx) => ({
+      runner: await ctx.db.get(runnerId),
+      events: await ctx.db.query("runnerEvents").withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runnerId).eq("kind", "step-failed")).collect(),
+      step: await ctx.db.get(stepId),
+    }));
+    expect(state.runner?.lease).toBeUndefined();
+    expect(state.events).toHaveLength(1);
+    expect(state.events[0].text).toBe("the box's daemon restarted while this step was running");
+    expect(state.events[0].stepRunId).toBe(claimed.stepRunId);
+    expect(state.step?.status).toBe("failed");
+    expect(state.runner!.nextStepAt).toBe(Date.now() + TEN_MINUTES);
+    // The chain continues: when the next step comes due, it names the dead
+    // step as the one it continues.
+    vi.advanceTimersByTime(TEN_MINUTES);
+    await t.mutation(internal.ttsRunners.internalRunnerSweep, {});
+    const next = await t.run(async (ctx) => (await ctx.db.query("runnerSteps").collect()).filter((s) => s.status === "requested"));
+    expect(next).toHaveLength(1);
+    expect(next[0].previousStepRunId).toBe(claimed.stepRunId);
+  });
+
+  it("fails a step that exited without checking in, once", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { runnerId, stepId, internal } = await runnerWithStep(t);
+    await t.mutation(internal.ttsRunners.internalClaimRunnerStep, { stepId });
+    await t.mutation(internal.ttsRunners.internalFinishRunnerStep, { stepId, exitCode: 1, launched: true });
+    await t.mutation(internal.ttsRunners.internalFinishRunnerStep, { stepId, exitCode: 1, launched: true });
+    const failed = await t.run((ctx) => ctx.db.query("runnerEvents").withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runnerId).eq("kind", "step-failed")).collect());
+    expect(failed).toHaveLength(1);
+    expect(failed[0].text).toBe("the step ended without checking in (exit 1)");
+    expect((await t.run((ctx) => ctx.db.get(runnerId)))?.lease).toBeUndefined();
+  });
+
+  it("lists a due step on the daemon's poll and nothing about sessions changes", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { runnerId, stepId, internal } = await runnerWithStep(t);
+    const polled = await t.mutation(internal.claudeSessions.internalPoll, { version: "t", daemonStartedAt: 1 });
+    expect(polled.sessions).toEqual([]);
+    expect(polled.runnerSteps).toEqual([expect.objectContaining({ stepId, runnerId, model: "opus", repo: "ComplexMultiTrigger" })]);
+    const sessions = await t.run((ctx) => ctx.db.query("claudeSessions").collect());
+    expect(sessions).toEqual([]);
+  });
+});

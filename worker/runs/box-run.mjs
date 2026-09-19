@@ -345,6 +345,10 @@ function normalize(input) {
   // its own rootRunId contradicts, which convex/runs.ts then refuses anyway,
   // 400 and dead-lettered instead of one line of stderr.
   if (!opts.parent && (opts.root || opts.depth !== null)) fail("--root and --depth need a --parent");
+  if (opts.sessionId !== undefined && opts.sessionId !== null) {
+    if (opts.cli !== "claude") fail("a session id is a Claude run's; Codex takes none");
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(opts.sessionId))) fail("sessionId must be a UUID");
+  }
   // The model default depends on the CLI, so it cannot be a constant above.
   // gpt-5.6-sol IS THE FLEET DEFAULT and the only right answer here: it is
   // scripts/codex-run.mjs's DEFAULT_MODEL, so the two ways of reaching Codex
@@ -380,8 +384,12 @@ function normalize(input) {
  * of the command line: the defaults are the caller's (parseArgs has the
  * command line's), never this function's.
  */
-export function claudeArgs({ model, outputFormat = "text", maxTurns, allowedTools, deniedTools, permissionMode } = {}) {
+export function claudeArgs({ model, outputFormat = "text", maxTurns, allowedTools, deniedTools, permissionMode, sessionId } = {}) {
   const args = ["-p", "--output-format", outputFormat];
+  // A caller that must know the run's id before it starts names the session
+  // id itself: a runner step's id is minted at its claim, so the next step's
+  // continuesRunId can name it exactly (convex/ttsRunners.ts). In process only.
+  if (sessionId) args.push("--session-id", sessionId);
   // THE CLI HONOURS --max-turns. `claude --help` does not list it, which is
   // what this file's older comment went by, but a job run on the box that ran
   // out of turns comes back as an `error_max_turns` result envelope, and the
@@ -1009,7 +1017,8 @@ function finishRun(run, { stdout, code, signal, timedOut }) {
  *
  * Takes: prompt, cli, model, effort, sandbox, schema, cwd or repo/ref,
  * allowedTools, deniedTools, permissionMode, maxTurns, timeoutMs, outputFormat,
- * registration (an envelope object, or null for none), slotWaitMs,
+ * registration (an envelope object, or null for none), slotWaitMs, sessionId
+ * (claude only: the CLI session id to start the run under),
  * tests/install, parent/root/depth, keepWorktree, env (default process.env),
  * onReap (handed the reap as soon as there is one).
  *

@@ -2,7 +2,9 @@ import { v, type Infer } from "convex/values";
 import { internalMutation, internalQuery, mutation } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
+import { internal } from "./_generated/api";
 import { requireTom } from "./authRoles";
+import { redactSecrets } from "../worker/session-host/redact.mjs";
 import {
   RUNNER_ANSWERER,
   RUNNER_TIER,
@@ -387,3 +389,193 @@ export const internalOpenStep = internalMutation({
     return openStep(ctx, runnerId, Date.now());
   },
 });
+
+// ── The claim ────────────────────────────────────────────────────────────────
+
+/** How long a step may hold its runner: four step lengths, at most two hours.
+ *  A step alive past this is a step whose process died, and the sweep frees
+ *  the runner for the next. */
+export function leaseMs(stepMs: number): number {
+  return Math.min(4 * stepMs, 2 * 60 * 60_000);
+}
+
+/** The run record's link to one run, the one spelling a check-in carries. */
+export function runLink(runId: string): string {
+  return `https://www.tom.quest/sessions?run=${encodeURIComponent(runId)}`;
+}
+
+/** A step run's id: a Claude run on the box, under a session id minted here.
+ *  The box starts the CLI with that session id, so the run record's own id for
+ *  the step is known before the step exists, and the next step's
+ *  continuesRunId names it exactly. */
+export function mintStepRunId(): string {
+  return `claude:box:${crypto.randomUUID()}`;
+}
+
+export const STEP_FAILED = {
+  restarted: "the box's daemon restarted while this step was running",
+  noCheckIn: "the step ended without checking in",
+  notLaunched: "the box could not launch the step",
+} as const;
+
+/** The step requests the box should launch now, for the poll payload. */
+export async function dueRunnerSteps(ctx: QueryCtx, now: number) {
+  const due = await ctx.db
+    .query("runnerSteps")
+    .withIndex("by_status_due", (q) => q.eq("status", "requested").lte("dueAt", now))
+    .take(20);
+  const out = [];
+  for (const step of due) {
+    const runner = await ctx.db.get(step.runnerId);
+    if (!runner) continue;
+    out.push({
+      stepId: step._id,
+      runnerId: runner._id,
+      title: runner.title,
+      repo: runner.repo,
+      ...(runner.ref !== undefined ? { ref: runner.ref } : {}),
+      model: runner.model ?? DEFAULT_RUNNER_MODEL,
+      ...(step.previousStepRunId !== undefined ? { previousStepRunId: step.previousStepRunId } : {}),
+      stepMs: runner.stepMs,
+    });
+  }
+  return out;
+}
+
+/**
+ * ADMISSION, in one transaction. The step is admitted only when the runner's
+ * lease is free or past its deadline; Convex serializes two claimers, so two
+ * daemons cannot both hold it. Admission mints the step run's id, takes the
+ * lease, marks the request claimed and returns the prompt. A refusal is an
+ * answer too: the request is written failed with a fixed reason, so the queue
+ * drains.
+ */
+export const internalClaimRunnerStep = internalMutation({
+  args: { stepId: v.id("runnerSteps") },
+  handler: async (ctx, { stepId }) => {
+    const now = Date.now();
+    const step = await ctx.db.get(stepId);
+    if (!step || step.status !== "requested") return { admitted: false as const, reason: "the step is no longer requested" };
+    const runner = await ctx.db.get(step.runnerId);
+    if (!runner || runner.endedAt !== undefined) {
+      await ctx.db.patch(stepId, { status: "failed", finishedAt: now, reason: "the runner has ended" });
+      return { admitted: false as const, reason: "the runner has ended" };
+    }
+    if (runner.lease && runner.lease.deadline >= now) {
+      await ctx.db.patch(stepId, { status: "failed", finishedAt: now, reason: STEP_DEFERRED_REASON });
+      return { admitted: false as const, reason: STEP_DEFERRED_REASON };
+    }
+    // A lease past its deadline is a dead step the sweep has not reached yet.
+    if (runner.lease) await expireLease(ctx, runner, now);
+    const stepRunId = mintStepRunId();
+    await ctx.db.patch(runner._id, { lease: { stepRunId, deadline: now + leaseMs(runner.stepMs), takenAt: now } });
+    await ctx.db.patch(stepId, { status: "claimed", claimedAt: now, stepRunId });
+    const prompt = await buildStepPrompt(ctx, (await ctx.db.get(runner._id))!, stepRunId, now);
+    return {
+      admitted: true as const,
+      stepRunId,
+      runnerId: runner._id,
+      repo: runner.repo,
+      ...(runner.ref !== undefined ? { ref: runner.ref } : {}),
+      model: runner.model ?? DEFAULT_RUNNER_MODEL,
+      ...(step.previousStepRunId !== undefined ? { previousStepRunId: step.previousStepRunId } : {}),
+      prompt,
+    };
+  },
+});
+
+/**
+ * The box's word that a step's process has exited. A step that checked in is
+ * already done and this changes nothing. One that did not failed: the lease it
+ * held is freed, a step-failed event says why, the next step is scheduled a
+ * step length on, and #tts-broken hears once.
+ */
+export const internalFinishRunnerStep = internalMutation({
+  args: { stepId: v.id("runnerSteps"), exitCode: v.number(), launched: v.boolean() },
+  handler: async (ctx, { stepId, exitCode, launched }) => {
+    const now = Date.now();
+    const step = await ctx.db.get(stepId);
+    if (!step) return { recorded: false };
+    if (step.status !== "claimed") return { recorded: false };
+    const reason = launched ? STEP_FAILED.noCheckIn : STEP_FAILED.notLaunched;
+    await ctx.db.patch(stepId, { status: "failed", finishedAt: now, reason });
+    const runner = await ctx.db.get(step.runnerId);
+    if (!runner) return { recorded: true };
+    await failStep(ctx, runner, step.stepRunId, `${reason} (exit ${exitCode})`, now);
+    return { recorded: true };
+  },
+});
+
+/** One step died: its event, the lease freed if it was this step's, the next
+ *  step scheduled, one #tts-broken line per runner per day. */
+async function failStep(ctx: MutationCtx, runner: Doc<"runners">, stepRunId: string | undefined, reason: string, now: number) {
+  await ctx.db.insert("runnerEvents", {
+    runnerId: runner._id,
+    at: now,
+    kind: "step-failed",
+    ...(stepRunId !== undefined ? { stepRunId } : {}),
+    text: reason,
+  });
+  const patch: Partial<Doc<"runners">> = {};
+  if (runner.lease && (stepRunId === undefined || runner.lease.stepRunId === stepRunId)) patch.lease = undefined;
+  if (runner.endedAt === undefined) {
+    const nextStepAt = now + runner.stepMs;
+    patch.nextStepAt = nextStepAt;
+    await ctx.scheduler.runAt(nextStepAt, internal.ttsRunners.internalOpenStep, { runnerId: runner._id });
+  }
+  await ctx.db.patch(runner._id, patch);
+  await ctx.scheduler.runAfter(0, internal.ttsSync.sendBroken, {
+    job: `runner:${runner._id}`,
+    statement: "A runner's step stopped before it checked in, so that step's look at the experiment was lost; the next step runs on schedule.",
+    detail: redactSecrets(`${runner.title}: ${reason}`),
+    ...(stepRunId !== undefined ? { url: runLink(stepRunId) } : {}),
+  });
+}
+
+/** A lease past its deadline: the step that held it is dead. Its request row
+ *  is failed and failStep does the rest. */
+async function expireLease(ctx: MutationCtx, runner: Doc<"runners">, now: number) {
+  const stepRunId = runner.lease?.stepRunId;
+  const recent = await ctx.db
+    .query("runnerSteps")
+    .withIndex("by_runner_due", (q) => q.eq("runnerId", runner._id))
+    .order("desc")
+    .take(20);
+  const held = recent.find((step) => step.stepRunId === stepRunId && step.status === "claimed");
+  if (held) await ctx.db.patch(held._id, { status: "failed", finishedAt: now, reason: STEP_FAILED.restarted });
+  await failStep(ctx, runner, stepRunId, STEP_FAILED.restarted, now);
+}
+
+/**
+ * The backstop, every minute. nextStepAt is the truth about the schedule and
+ * the scheduled call is only its prompt, so this opens a step for any live
+ * runner that is due with none waiting or running, and expires any lease past
+ * its deadline. Nothing else recovers a lost schedule.
+ */
+export const internalRunnerSweep = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const now = Date.now();
+    const live = await ctx.db
+      .query("runners")
+      .withIndex("by_ended", (q) => q.eq("endedAt", undefined))
+      .take(100);
+    for (const runner of live) {
+      if (runner.lease && runner.lease.deadline < now) {
+        await expireLease(ctx, runner, now);
+        continue;
+      }
+      if (runner.nextStepAt <= now) await openStep(ctx, runner._id, now);
+    }
+  },
+});
+
+// ── The step prompt ──────────────────────────────────────────────────────────
+
+async function buildStepPrompt(ctx: QueryCtx, runner: Doc<"runners">, stepRunId: string, _now: number): Promise<string> {
+  return [
+    `You are one step of the runner "${runner.title}". Your step run id is ${stepRunId}.`,
+    "## The document",
+    runner.document,
+  ].join("\n\n");
+}

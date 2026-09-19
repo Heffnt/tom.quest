@@ -3392,6 +3392,59 @@ const sessionsPoll = httpAction(async (ctx, request) => {
 
 http.route({ path: "/sessions/poll", method: "POST", handler: sessionsPoll });
 
+// POST /runner-steps/claim — the daemon asks to launch one runner step it saw
+// on the poll. Body { stepId }. Admission is the mutation's, in one
+// transaction (convex/ttsRunners.ts internalClaimRunnerStep): the answer is
+// { admitted: true, stepRunId, prompt, ... } or { admitted: false, reason }.
+const runnerStepClaim = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.stepId !== "string" || b.stepId === "") return jsonResponse(400, { error: "stepId required" });
+  try {
+    return jsonResponse(200, await ctx.runMutation(internal.ttsRunners.internalClaimRunnerStep, { stepId: b.stepId as Id<"runnerSteps"> }));
+  } catch (e) {
+    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+http.route({ path: "/runner-steps/claim", method: "POST", handler: runnerStepClaim });
+
+// POST /runner-steps/finish — the daemon's word that a step's process exited.
+// Body { stepId, exitCode, launched }. A step that already checked in is done
+// and this changes nothing; one that did not is a failed step.
+const runnerStepFinish = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.stepId !== "string" || b.stepId === "") return jsonResponse(400, { error: "stepId required" });
+  if (typeof b.exitCode !== "number" || !Number.isInteger(b.exitCode)) return jsonResponse(400, { error: "exitCode (a whole number) required" });
+  if (typeof b.launched !== "boolean") return jsonResponse(400, { error: "launched (true or false) required" });
+  try {
+    return jsonResponse(200, await ctx.runMutation(internal.ttsRunners.internalFinishRunnerStep, {
+      stepId: b.stepId as Id<"runnerSteps">,
+      exitCode: b.exitCode,
+      launched: b.launched,
+    }));
+  } catch (e) {
+    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+http.route({ path: "/runner-steps/finish", method: "POST", handler: runnerStepFinish });
+
 const sessionsIngest = httpAction(async (ctx, request) => {
   const denied = sessionsAuth(request);
   if (denied) return denied;
