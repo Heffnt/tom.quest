@@ -912,10 +912,10 @@ describe("internalComposeToday", () => {
     );
     // Never checked in: said so, and no number invented for it.
     const silentFact = facts.facts.find((f: { id: string }) => f.id === `runner:${silent}`);
-    expect(silentFact.text).toBe(
+    expect(silentFact?.text).toBe(
       "The seed-variance probe is running with no question open; it has not checked in yet.",
     );
-    expect(silentFact.numbers).toEqual([]);
+    expect(silentFact?.numbers).toEqual([]);
     expect(text).not.toContain("The finished probe");
     // Waiting on Tom first.
     expect(text.indexOf("The train25 campaign")).toBeLessThan(text.indexOf("The seed-variance probe"));
