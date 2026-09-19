@@ -39,7 +39,10 @@ function Segment({
       ref={buttonRef}
       type="button"
       aria-pressed={selected}
-      onClick={onSelect}
+      onClick={() => {
+        // A selected segment stays focusable, but tapping it does not change drawer content.
+        if (!selected) onSelect();
+      }}
       className={`min-h-9 rounded-full border px-3 py-2 text-sm transition-colors ${
         selected
           ? "border-accent bg-accent-dim text-accent"
@@ -62,8 +65,8 @@ export default function Drawer({
 }: DrawerProps) {
   const optionsRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLButtonElement>(null);
-  const grabStartY = useRef<number | null>(null);
-  const grabCurrentY = useRef<number | null>(null);
+  const grabStartY = useRef(0);
+  const grabCurrentY = useRef(0);
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -85,7 +88,6 @@ export default function Drawer({
   const trapFocus = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "Tab") return;
     const focusable = [...event.currentTarget.querySelectorAll<HTMLElement>(FOCUSABLE)];
-    if (focusable.length === 0) return;
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
     if (event.shiftKey && document.activeElement === first) {
@@ -96,8 +98,6 @@ export default function Drawer({
       first.focus();
     }
   };
-
-  if (typeof document === "undefined") return null;
 
   return createPortal(
     <div
@@ -118,18 +118,16 @@ export default function Drawer({
           onPointerDown={(event) => {
             grabStartY.current = event.clientY;
             grabCurrentY.current = event.clientY;
+            // Capture keeps pointerup on this small handle after the pointer leaves it.
             event.currentTarget.setPointerCapture(event.pointerId);
           }}
           onPointerMove={(event) => {
             grabCurrentY.current = event.clientY;
           }}
-          onPointerUp={(event) => {
-            const moved = (grabCurrentY.current ?? event.clientY) - (grabStartY.current ?? event.clientY);
-            grabStartY.current = null;
-            grabCurrentY.current = null;
-            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-              event.currentTarget.releasePointerCapture(event.pointerId);
-            }
+          onPointerUp={() => {
+            const moved = grabCurrentY.current - grabStartY.current;
+            grabStartY.current = 0;
+            grabCurrentY.current = 0;
             if (moved >= 64) onClose();
           }}
         >
@@ -140,17 +138,13 @@ export default function Drawer({
           <Segment
             label="options"
             selected={content === "options"}
-            onSelect={() => {
-              if (content !== "options") onContentChange("options");
-            }}
+            onSelect={() => onContentChange("options")}
             buttonRef={optionsRef}
           />
           <Segment
             label={`list ${listLength}`}
             selected={content === "list"}
-            onSelect={() => {
-              if (content !== "list") onContentChange("list");
-            }}
+            onSelect={() => onContentChange("list")}
             buttonRef={listRef}
           />
           <button

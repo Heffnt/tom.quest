@@ -64,18 +64,17 @@ describe("QuestionsClient", () => {
     expect(settingsMock.storeSettings).toHaveBeenLastCalledWith({ seen: [BANK[0].id] });
   });
 
-  it("moves prev without making another settings write", () => {
+  it("moves prev and stores the question it left", () => {
     renderQuestions();
     fireEvent.click(screen.getByRole("button", { name: "next" }));
-    const writesAfterNext = settingsMock.storeSettings.mock.calls.length;
 
     fireEvent.click(screen.getByRole("button", { name: "prev" }));
 
     expect(screen.getByText(BANK[0].text)).toBeTruthy();
-    expect(settingsMock.storeSettings.mock.calls).toHaveLength(writesAfterNext);
+    expect(settingsMock.storeSettings).toHaveBeenLastCalledWith({ seen: [BANK[0].id, BANK[1].id] });
   });
 
-  it("keeps next rendered and disabled at the last index", () => {
+  it("marks the final bank question seen when leaving it with prev", () => {
     renderQuestions();
 
     for (let index = 1; index < BANK.length; index += 1) {
@@ -86,6 +85,10 @@ describe("QuestionsClient", () => {
     expect(screen.getByText(BANK.at(-1)?.text ?? "")).toBeTruthy();
     expect(next).toBeTruthy();
     expect(next.hasAttribute("disabled")).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "prev" }));
+
+    expect(settingsMock.storeSettings).toHaveBeenLastCalledWith({ seen: BANK.map((question) => question.id) });
   });
 
   it("starts at the fourth question when the first three ids are seen", () => {

@@ -82,8 +82,9 @@ export function startIndex(list: readonly Question[], seen: ReadonlySet<string>,
 }
 
 /**
- * One step through the list. Forward steps spend the question being left;
- * backwards steps are a review and do not alter the seen set.
+ * One step through the list spends the question being left, in either
+ * direction. A one-question list never leaves its only question, so it never
+ * marks it seen; that is accepted because there is nowhere to walk to.
  */
 export function stepped(
   list: readonly Question[],
@@ -92,8 +93,7 @@ export function stepped(
   direction: 1 | -1,
 ): { index: number; seen: ReadonlySet<string> } {
   const nextIndex = index + direction;
-  if (list.length === 0 || nextIndex < 0 || nextIndex >= list.length) return { index, seen };
-  if (direction === -1) return { index: nextIndex, seen };
+  if (nextIndex < 0 || nextIndex >= list.length) return { index, seen };
   return { index: nextIndex, seen: new Set(seen).add(list[index].id) };
 }
 

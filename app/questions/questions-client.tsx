@@ -143,39 +143,30 @@ function Questions() {
   const [drawerContent, setDrawerContent] = useState<DrawerContent | null>(null);
   const drawerOpenerRef = useRef<HTMLButtonElement>(null);
   const seeded = useRef<ReadonlySet<string> | null>(null);
-  const seeding = useRef(false);
   const topicOptions = useMemo<readonly TopicFilter[]>(() => [null, ...topicsOf(BANK)], []);
   const list = useMemo(() => matches(BANK, view.filters), [view.filters]);
   const current = hydrated ? list[view.index] ?? null : null;
   const seenInList = list.filter((question) => view.seen.has(question.id)).length;
 
-  // Seed around persisted ids only after settings hydrate. It is kept by
-  // identity so the persistence effect never writes the seed back to storage.
+  // The seed's identity distinguishes hydration from an activation: it is
+  // never mirrored back into settings.
   useEffect(() => {
-    if (!hydrated || seeded.current !== null) return;
-    const seen = new Set(stored.seen);
-    seeded.current = seen;
-    seeding.current = true;
-    setView((previous) => {
-      return { ...previous, seen, index: startIndex(list, seen, null) };
-    });
-  }, [hydrated, list, stored.seen]);
-
-  useEffect(() => {
-    if (seeded.current === null || seeding.current) {
-      if (view.seen === seeded.current) seeding.current = false;
+    if (!hydrated) return;
+    if (seeded.current === null) {
+      const seen = new Set(stored.seen);
+      seeded.current = seen;
+      setView((previous) => ({ ...previous, seen, index: startIndex(list, seen, null) }));
       return;
     }
     if (view.seen === seeded.current) return;
     storeSettings({ seen: [...view.seen] });
-  }, [storeSettings, view.seen]);
+  }, [hydrated, list, stored.seen, storeSettings, view.seen]);
 
   const step = (direction: 1 | -1) => {
     setView((previous) => {
       const result = stepped(list, previous.index, previous.seen, direction);
-      return result.index === previous.index && result.seen === previous.seen
-        ? previous
-        : { ...previous, ...result };
+      if (result.seen === previous.seen) return previous;
+      return { ...previous, ...result };
     });
   };
 
@@ -192,7 +183,10 @@ function Questions() {
   const resetSeen = () => setView((previous) => ({ ...previous, seen: new Set<string>() }));
 
   const selectListIndex = (index: number) => {
-    setView((previous) => (previous.index === index ? previous : { ...previous, index }));
+    setView((previous) => {
+      if (previous.index === index) return previous;
+      return { ...previous, index };
+    });
     setDrawerContent(null);
   };
 

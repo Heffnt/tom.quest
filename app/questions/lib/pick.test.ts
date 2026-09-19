@@ -178,14 +178,16 @@ describe("stepped", () => {
     expect(result.seen).toBe(seen);
   });
 
-  it("moves back from the middle and returns the identical set", () => {
-    const seen = new Set<string>();
+  it("moves back from the middle and returns a new set with the left question and every input id", () => {
+    const seen = new Set(["already-seen"]);
     const result = stepped(list, 1, seen, -1);
     expect(result.index).toBe(0);
-    expect(result.seen).toBe(seen);
+    expect(result.seen).not.toBe(seen);
+    expect([...result.seen]).toEqual(["already-seen", "second"]);
+    expect([...seen]).toEqual(["already-seen"]);
   });
 
-  it("returns the same index and identical set when moving back at index 0", () => {
+  it("returns the same index and identical set when no question is left at index 0", () => {
     const seen = new Set<string>();
     const result = stepped(list, 0, seen, -1);
     expect(result.index).toBe(0);
