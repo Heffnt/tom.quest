@@ -737,6 +737,28 @@ export const SESSION_REPOS = {
 
 /** The sentinel repo value meaning "no checkout, an empty scratch workspace".
  * Written into claudeSessions.repo when a session holds no repos at all. */
+// ── Runners (convex/ttsRunners.ts) ───────────────────────────────────────────
+// The stored vocabulary of a runner, here because the schema and the runner
+// module both need it and the schema cannot import a module with functions.
+//
+// `type` picks the column of the asking rubric: a campaign spends and waits on
+// Tom for its plan; a probe is small and asks the delegate. `tier` is the row:
+// routine (inside the plan), plan (changes what the experiment is), setup
+// (changes what it costs or where it runs).
+export const RUNNER_TYPE = v.union(v.literal("campaign"), v.literal("probe"));
+export const RUNNER_TIER = v.union(v.literal("routine"), v.literal("plan"), v.literal("setup"));
+export const RUNNER_ANSWERER = v.union(v.literal("tom"), v.literal("delegate"), v.literal("self"));
+export const RUNNER_DECISION = v.union(
+  v.literal("continue"), v.literal("change"), v.literal("ask"), v.literal("hand-off"), v.literal("finish"),
+);
+export const RUNNER_ENDED_REASON = v.union(v.literal("finish"), v.literal("hand-off"), v.literal("failed"));
+export type RunnerType = Infer<typeof RUNNER_TYPE>;
+export type RunnerTier = Infer<typeof RUNNER_TIER>;
+export type RunnerAnswerer = Infer<typeof RUNNER_ANSWERER>;
+export type RunnerDecision = Infer<typeof RUNNER_DECISION>;
+export const RUNNER_TIERS: readonly RunnerTier[] = ["routine", "plan", "setup"];
+export const RUNNER_DECISIONS: readonly RunnerDecision[] = ["continue", "change", "ask", "hand-off", "finish"];
+
 export const NO_REPO = "none";
 
 /** Every repo name a session may hold, in declaration order. THE list — the
