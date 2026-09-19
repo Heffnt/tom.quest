@@ -574,3 +574,81 @@ describe("a question for Tom", () => {
     await expect(t.mutation(internal.ttsAsk.internalRecordAsk, { ...ask(9), runnerId: "nonsense" })).rejects.toThrow(/Unknown runner id/);
   });
 });
+
+describe("the page", () => {
+  const PASS = { verdict: "pass" as const, complaints: [], attempts: 1, judgeModel: "fable" };
+  const ASKING = "The sweep has 12 jobs running.\n\nOne question is open for Tom.";
+
+  async function asUser(t: TestConvex<typeof schema>, role: "tom" | "agent" | "user") {
+    const userId = await t.run((ctx) => ctx.db.insert("users", { name: role, email: `${role}@tom.quest`, role }));
+    return t.withIdentity({ subject: userId });
+  }
+
+  /** A runner whose one step checked in and asked Tom a blocking question,
+   *  and a second that ended before it ever stepped. */
+  async function seeded(t: TestConvex<typeof schema>) {
+    const { internal } = await import("./_generated/api");
+    vi.useFakeTimers();
+    const runnerId = await t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed() });
+    const step = await t.run(async (ctx) => (await ctx.db.query("runnerSteps").collect())[0]);
+    const claim = await t.mutation(internal.ttsRunners.internalClaimRunnerStep, { stepId: step._id });
+    if (!claim.admitted) throw new Error(claim.reason);
+    await t.mutation(internal.ttsRunners.internalRecordStep, {
+      runnerId, stepRunId: claim.stepRunId, decision: "ask", checkIn: ASKING, document: "# TRAIN25\n\nVersion two.\n",
+      asks: [{ tier: "plan", blocking: true, text: "Should I skip pythia?" }], graded: PASS,
+    });
+    vi.advanceTimersByTime(1000);
+    const ended = await t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed({ title: "An ended probe" }) });
+    await t.run((ctx) => ctx.db.patch(ended, { endedAt: Date.now(), endedReason: "finish" }));
+    return { runnerId, ended, stepRunId: claim.stepRunId };
+  }
+
+  it("lists every runner newest first, with its derived status, its last check-in and its newest step run", async () => {
+    const t = convexTest(schema, modules);
+    const { api } = await import("./_generated/api");
+    const { runnerId, ended, stepRunId } = await seeded(t);
+    const tom = await asUser(t, "tom");
+    const rows = await tom.query(api.ttsRunners.listRunners, {});
+    expect(rows.map((r) => r.runnerId)).toEqual([ended, runnerId]);
+    const live = rows[1];
+    expect(live).toMatchObject({
+      title: "TRAIN25 campaign",
+      type: "probe",
+      experimentHost: "turing",
+      stepMs: TEN_MINUTES,
+      endedAt: null,
+      status: "waiting-on-tom",
+      openBlockingAsks: 1,
+      stepRunId,
+    });
+    expect(live.lastCheckIn?.line).toBe("The sweep has 12 jobs running.");
+    expect(rows[0]).toMatchObject({ status: "done", lastCheckIn: null });
+  });
+
+  it("gives one runner's document, check-ins and questions, newest first", async () => {
+    const t = convexTest(schema, modules);
+    const { api } = await import("./_generated/api");
+    const { runnerId, stepRunId } = await seeded(t);
+    const tom = await asUser(t, "tom");
+    const detail = await tom.query(api.ttsRunners.runnerDetail, { runnerId });
+    expect(detail?.document).toContain("Version two.");
+    expect(detail?.documentVersion).toBe(2);
+    expect(detail?.checkIns).toHaveLength(1);
+    expect(detail?.checkIns[0]).toMatchObject({ stepRunId, decision: "ask", verdict: "pass", text: ASKING });
+    expect(detail?.asks).toHaveLength(1);
+    expect(detail?.asks[0]).toMatchObject({ tier: "plan", blocking: true, answeredAt: null, answerText: null, text: "Should I skip pythia?" });
+  });
+
+  it("lets the agent account read both, and refuses anyone else", async () => {
+    const t = convexTest(schema, modules);
+    const { api } = await import("./_generated/api");
+    const { runnerId } = await seeded(t);
+    const agent = await asUser(t, "agent");
+    expect(await agent.query(api.ttsRunners.listRunners, {})).toHaveLength(2);
+    expect(await agent.query(api.ttsRunners.runnerDetail, { runnerId })).not.toBeNull();
+    const user = await asUser(t, "user");
+    await expect(user.query(api.ttsRunners.listRunners, {})).rejects.toThrow(/restricted to Tom/);
+    await expect(user.query(api.ttsRunners.runnerDetail, { runnerId })).rejects.toThrow(/restricted to Tom/);
+    await expect(t.query(api.ttsRunners.listRunners, {})).rejects.toThrow();
+  });
+});

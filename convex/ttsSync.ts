@@ -797,6 +797,7 @@ export const sendHourlyUpdate = internalAction({
         start: since,
         end: now,
       }),
+      runners: await ctx.runQuery(internal.ttsHourly.internalLiveRunners, {}),
     };
 
     // ── THE SILENCE RULE (slack-design.md §4.4) ─────────────────────────────

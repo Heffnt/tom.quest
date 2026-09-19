@@ -2,6 +2,7 @@
 // All persisted dates are epoch-ms numbers (convex/schema.ts dtsTodos).
 
 import type { Doc } from "@/convex/_generated/dataModel";
+import type { runnerStatus } from "@/convex/ttsRunners";
 
 export type Todo = Doc<"dtsTodos">;
 export type Batch = Doc<"batches">;
@@ -280,6 +281,15 @@ export function selectToday(
   return { overdue, due, scheduled, ready, waking, entries };
 }
 
+/** A runner's status in words, the same on the batches tab and the run view. */
+export const RUNNER_STATUS_WORDS: Record<ReturnType<typeof runnerStatus>, string> = {
+  running: "running",
+  "waiting-on-tom": "waiting on Tom",
+  done: "done",
+  failed: "failed",
+  "handed-off": "handed off",
+};
+
 export function errMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
@@ -316,6 +326,19 @@ export function ageText(ms: number, now: number): string {
   const days = Math.floor(hours / 24);
   if (days === 1) return "1 day ago";
   return `${days} days ago`;
+}
+
+/** Descriptive time until: "due now", "in 7 min", "in 3 h", "in 2 days". The
+ *  minute-grained counterpart of ageText, for a runner's next step; the
+ *  day-grained countdownText would read "today" for every one of them. */
+export function untilText(ms: number, now: number): string {
+  const mins = Math.ceil((ms - now) / 60_000);
+  if (mins < 1) return "due now";
+  if (mins < 60) return `in ${mins} min`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `in ${hours} h`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? "in 1 day" : `in ${days} days`;
 }
 
 // ── Ground-up explanation teasers ────────────────────────────────────────────

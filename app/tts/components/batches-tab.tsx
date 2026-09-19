@@ -46,6 +46,8 @@ import BatchCard, {
   type GraphTask,
 } from "./batch-card";
 import DetailDialog, { type DetailItem } from "./detail-dialog";
+import RunnersBlock from "./runners-block";
+import SectionHeader from "./section-header";
 import GroundUpView from "./ground-up-view";
 import TimeNoteField, {
   groupTimeNotes,
@@ -68,14 +70,6 @@ import {
 
 const chipCls =
   "text-xs text-text-faint border border-border rounded px-1 py-px";
-
-function SectionHeader({ title, count }: { title: string; count: number }) {
-  return (
-    <div className="text-xs text-text-faint">
-      {title} <span className="text-text-muted">{count}</span>
-    </div>
-  );
-}
 
 // ── Live data → the card's graph model ──────────────────────────────────────
 // tasks: every non-goal todo pointing at the batch. A row with no `kind` is a
@@ -548,6 +542,7 @@ export default function BatchesTab() {
 
   return (
     <div className="space-y-6">
+      <RunnersBlock now={now} />
       <section className="space-y-2">
         <div className="flex flex-col gap-1.5">
           {cards.map(({ batch, graph }) => (

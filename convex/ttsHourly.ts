@@ -6,8 +6,10 @@ import {
   type BatchWorked,
   type Change,
   type ChangeKind,
+  type RunnerFact,
   type RunningSession,
 } from "./ttsCompose";
+import { liveRunnerFacts } from "./ttsRunners";
 import { LIVE_STATUSES, TTS_BATCHES_LINK, ttsItemLink, ttsSessionLink } from "./ttsShared";
 
 // The hourly update's FACTS. The SEND lives in convex/ttsSync.ts (a Node
@@ -169,6 +171,13 @@ export const internalRunningNow = internalQuery({
       }),
     );
   },
+});
+
+/** Every live runner, for the hourly line. The same read the digest makes
+ *  (liveRunnerFacts); the hourly names them only in an hour that speaks. */
+export const internalLiveRunners = internalQuery({
+  args: {},
+  handler: async (ctx): Promise<RunnerFact[]> => liveRunnerFacts(ctx),
 });
 
 // ── (2) Batches worked in the window ────────────────────────────────────────

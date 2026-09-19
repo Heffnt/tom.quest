@@ -16,6 +16,7 @@ import { DELEGATE_DECISION, objectionRank, stripNarrowListId } from "./ttsAsk";
 import { MERGE } from "./ttsMerge";
 import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
+import { liveRunnerFacts } from "./ttsRunners";
 import {
   DAY_MS,
   LIVE_STATUSES,
@@ -782,6 +783,11 @@ export async function gatherTodayFacts(
       merged: o.merged === true,
     }));
 
+  // 7. Every live runner: what it is doing, whether a question of its is
+  //    open, and the first line of its last check-in. Status comes from
+  //    runnerStatus, the one home; nothing here counts or guesses a number.
+  const runners = await liveRunnerFacts(ctx);
+
   const overnight = [...outcomes.values()];
   return {
     day,
@@ -796,6 +802,7 @@ export async function gatherTodayFacts(
     // Counted over the WHOLE list, printed and beyond, because the lead's
     // count is the whole list's.
     objectionMerges: objections.filter((o) => o.merged).length,
+    runners,
     overnight,
     batchesPlanned: overnight.length,
     batchesFinished: overnight.filter((o) => o.finished > 0).length,

@@ -3,10 +3,11 @@ import { internalMutation, internalQuery, mutation, query } from "./_generated/s
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
-import { requireTom } from "./authRoles";
+import { requireTom, requireTomOrAgent } from "./authRoles";
 import { redactSecrets } from "../worker/session-host/redact.mjs";
 import { CHECKIN_RULES, checkInFailures } from "../scripts/checkin-rules.mjs";
 import { assembleContext, type ContextSubject } from "./ttsContext";
+import type { RunnerFact } from "./ttsCompose";
 import {
   BOX_TOOLS_PARAGRAPH,
   DAEMON_RESTART_SENTENCE,
@@ -74,13 +75,17 @@ export function runnerStatus({
   return openBlockingAsks > 0 ? "waiting-on-tom" : "running";
 }
 
-/** This runner's asks Tom has not answered that hold its steps to observing. */
-export async function openBlockingAsks(ctx: QueryCtx, runnerId: Id<"runners">) {
-  const open = await ctx.db
+/** This runner's asks nobody has answered, blocking or not. */
+async function openAsks(ctx: QueryCtx, runnerId: Id<"runners">) {
+  return ctx.db
     .query("runnerEvents")
     .withIndex("by_open_ask", (q) => q.eq("runnerId", runnerId).eq("kind", "ask").eq("answeredAt", undefined))
     .take(50);
-  return open.filter((ask) => ask.blocking === true);
+}
+
+/** This runner's asks Tom has not answered that hold its steps to observing. */
+export async function openBlockingAsks(ctx: QueryCtx, runnerId: Id<"runners">) {
+  return (await openAsks(ctx, runnerId)).filter((ask) => ask.blocking === true);
 }
 
 // ── The asking rubric ────────────────────────────────────────────────────────
@@ -1015,6 +1020,70 @@ export async function recordRunnerReply(ctx: MutationCtx, runnerId: Id<"runners"
 
 // ── The page ─────────────────────────────────────────────────────────────────
 
+/** How much of a check-in's first line the digest and the page print. */
+const CHECK_IN_LINE_CHARS = 120;
+
+/** A check-in's first line of prose: the first line that is neither blank, a
+ *  heading nor a table row, cut at a word boundary with no ellipsis. Null for
+ *  no check-in. The digest's runner line and the page's row both print it.
+ *  A check-in is markdown written to the writing standard, which puts
+ *  enumerable facts in tables and may open on a heading; neither reads as
+ *  a sentence when printed alone on one line. */
+function checkInFirstLine(text: string | undefined): string | null {
+  if (text === undefined) return null;
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
+  const line = lines.find((l) => !/^#{1,6}\s/.test(l) && !/^\|.*\|$/.test(l)) ?? lines[0];
+  if (line === undefined) return null;
+  if (line.length <= CHECK_IN_LINE_CHARS) return line;
+  const cut = line.slice(0, CHECK_IN_LINE_CHARS);
+  const space = cut.lastIndexOf(" ");
+  return (space > 0 ? cut.slice(0, space) : cut).replace(/[\s,;:—-]+$/, "");
+}
+
+/** The newest check-in of a runner, or null. */
+async function lastCheckIn(ctx: QueryCtx, runnerId: Id<"runners">) {
+  return ctx.db
+    .query("runnerEvents")
+    .withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runnerId).eq("kind", "check-in"))
+    .order("desc")
+    .first();
+}
+
+/** Every live runner as the morning message and the hourly update state it,
+ *  the ones waiting on Tom first, then newest first. The same read the sweep
+ *  makes, capped lower: this is a list for him, not a schedule. */
+export async function liveRunnerFacts(ctx: QueryCtx): Promise<RunnerFact[]> {
+  const live = await ctx.db
+    .query("runners")
+    .withIndex("by_ended", (q) => q.eq("endedAt", undefined))
+    .take(20);
+  const rows = await Promise.all(
+    live.map(async (runner) => {
+      const open = await openAsks(ctx, runner._id);
+      const status = runnerStatus({ runner, openBlockingAsks: open.filter((ask) => ask.blocking === true).length });
+      const checkIn = await lastCheckIn(ctx, runner._id);
+      return {
+        createdAt: runner.createdAt,
+        fact: {
+          runnerId: runner._id as string,
+          title: runner.title,
+          // A live runner's status is one of these two (runnerStatus).
+          status: status === "waiting-on-tom" ? ("waiting-on-tom" as const) : ("running" as const),
+          lastCheckIn: checkInFirstLine(checkIn?.text),
+          openQuestion: open.length > 0,
+        },
+      };
+    }),
+  );
+  return rows
+    .sort(
+      (a, b) =>
+        Number(b.fact.status === "waiting-on-tom") - Number(a.fact.status === "waiting-on-tom") ||
+        b.createdAt - a.createdAt,
+    )
+    .map((row) => row.fact);
+}
+
 /** The runner a step run belongs to, by the id in its `runner:<id>` origin:
  *  its title and its derived status, for the sessions page's run view. Behind
  *  the same gate as the run record it sits beside. */
@@ -1027,5 +1096,81 @@ export const runnerTitle = query({
     if (!runner) return null;
     const blocking = await openBlockingAsks(ctx, runner._id);
     return { title: runner.title, status: runnerStatus({ runner, openBlockingAsks: blocking.length }) };
+  },
+});
+
+/** How many runners the batches tab lists, live and ended together. */
+const PAGE_RUNNERS = 50;
+/** How many check-ins and asks one expanded row shows. */
+const PAGE_EVENTS = 50;
+
+/** Every runner, newest first, as the batches tab lists it. Status is
+ *  runnerStatus's; the page derives none of its own. */
+export const listRunners = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireTomOrAgent(ctx, "TTS");
+    const runners = await ctx.db.query("runners").withIndex("by_created").order("desc").take(PAGE_RUNNERS);
+    return Promise.all(
+      runners.map(async (runner) => {
+        const open = await openAsks(ctx, runner._id);
+        const blocking = open.filter((ask) => ask.blocking === true).length;
+        const checkIn = await lastCheckIn(ctx, runner._id);
+        return {
+          runnerId: runner._id,
+          title: runner.title,
+          type: runner.type,
+          experimentHost: runner.experimentHost,
+          stepMs: runner.stepMs,
+          nextStepAt: runner.nextStepAt,
+          createdAt: runner.createdAt,
+          endedAt: runner.endedAt ?? null,
+          status: runnerStatus({ runner, openBlockingAsks: blocking }),
+          openBlockingAsks: blocking,
+          lastCheckIn: checkIn === null ? null : { at: checkIn.at, line: checkInFirstLine(checkIn.text) },
+          stepRunId: (await lastStepRunId(ctx, runner._id)) ?? null,
+        };
+      }),
+    );
+  },
+});
+
+/** One runner's document, its check-ins and the questions it asked, newest
+ *  first, for its expanded row on the batches tab. */
+export const runnerDetail = query({
+  args: { runnerId: v.id("runners") },
+  handler: async (ctx, { runnerId }) => {
+    await requireTomOrAgent(ctx, "TTS");
+    const runner = await ctx.db.get(runnerId);
+    if (!runner) return null;
+    const ofKind = (kind: "check-in" | "ask") =>
+      ctx.db
+        .query("runnerEvents")
+        .withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runnerId).eq("kind", kind))
+        .order("desc")
+        .take(PAGE_EVENTS);
+    const [checkIns, asks] = await Promise.all([ofKind("check-in"), ofKind("ask")]);
+    return {
+      document: runner.document,
+      documentVersion: runner.documentVersion,
+      checkIns: checkIns.map((event) => ({
+        id: event._id,
+        at: event.at,
+        stepRunId: event.stepRunId ?? null,
+        decision: event.decision ?? null,
+        verdict: event.graded?.verdict ?? null,
+        text: event.text ?? "",
+      })),
+      asks: asks.map((event) => ({
+        id: event._id,
+        at: event.at,
+        stepRunId: event.stepRunId ?? null,
+        tier: event.tier ?? null,
+        blocking: event.blocking === true,
+        answeredAt: event.answeredAt ?? null,
+        answerText: event.answerText ?? null,
+        text: event.text ?? "",
+      })),
+    };
   },
 });
