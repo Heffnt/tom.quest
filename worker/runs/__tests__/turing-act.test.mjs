@@ -73,6 +73,15 @@ describe("tts-turing-act", () => {
     expect(result.stderr).toMatch(/could not reach/);
   });
 
+  it("spends none of the budget on the account's other jobs", () => {
+    // A pool job running 8 GPUs for 10 hours: 80 GPU-hours on the account.
+    const start = new Date(Date.now() - 10 * 3_600_000).toISOString();
+    const jobs = [{ job_id: "8", job_name: "gpupool:a100:ff", status: "RUNNING", gres: "gpu:a100:8", start_time: start, time_remaining_seconds: 36000 }];
+    const result = act(LAUNCH, { jobs, cache: { jobs: {}, budgetGpuHours: 1 } });
+    expect(result.status).toBe(4);
+    expect(result.stderr).toMatch(/could not reach/);
+  });
+
   it("refuses bad usage", () => {
     expect(act(["launch", "--runner", "r1"]).status).toBe(2);
     expect(act([...LAUNCH.slice(0, 3), "--label", "bad label", ...LAUNCH.slice(5)]).status).toBe(2);

@@ -17,8 +17,9 @@
 //             checkout (_build_frontier(expand_specs(specs))), the nodes
 //             known done on Turing, and the remainder
 //   failures  step failures since the last check-in (handed in by the claim)
-//   gpuHours  GPU-hours seen on the account's running jobs since this runner
-//             began, against its budget
+//   gpuHours  GPU-hours seen on this runner's own running jobs (named
+//             runner:<id>:) since it began, against its budget; the pool's
+//             jobs and Tom's own never count against it
 //
 // DONE-NESS IS READ ON TURING, AND IT IS BUDGETED. The results tree is on the
 // cluster, not the box, and the read key opens one directory listing per call,
@@ -255,17 +256,29 @@ function jobGpuHours(job, now) {
   return ((now - started) / 3_600_000) * (gpusInGres(job.gres) || 1);
 }
 
+/** Whether a job from the job list is this runner's: tts-turing-act names
+ *  every job it launches runner:<id>:<label>. */
+function ownJob(job, runnerId) {
+  return String(job.job_name ?? "").startsWith(`runner:${runnerId}:`);
+}
+
 /** Fold a job list into the cache's per-job hours (a job's hours only ever
- *  grow) and return the total. The ONE spend sum: the sensor's facts row and
- *  tts-turing-act's budget check both read it. `cacheJobs` is changed in place. */
-function spentGpuHours(cacheJobs, jobs, now) {
+ *  grow) and return the total. Only this runner's jobs count, and a cached
+ *  entry counts only if it carries this runner's job name, so hours an
+ *  earlier sensor cached for other jobs on the account drop out. The ONE spend
+ *  sum: the sensor's facts row and tts-turing-act's budget check both read it.
+ *  `cacheJobs` is changed in place. */
+function spentGpuHours(cacheJobs, jobs, runnerId, now) {
   for (const job of jobs ?? []) {
+    if (!ownJob(job, runnerId)) continue;
     const hours = jobGpuHours(job, now);
     if (hours === null) continue;
     const seen = cacheJobs[job.job_id]?.gpuHours ?? 0;
-    cacheJobs[job.job_id] = { gpuHours: Math.max(seen, hours) };
+    cacheJobs[job.job_id] = { gpuHours: Math.max(seen, hours), name: String(job.job_name) };
   }
-  return Object.values(cacheJobs).reduce((sum, job) => sum + job.gpuHours, 0);
+  return Object.values(cacheJobs)
+    .filter((job) => ownJob({ job_name: job.name }, runnerId))
+    .reduce((sum, job) => sum + job.gpuHours, 0);
 }
 
 /**
@@ -277,7 +290,7 @@ function spentGpuHours(cacheJobs, jobs, now) {
  * returns { ok: true, spent, committed, request, budget } or
  *         { ok: false, reason } with the sentence the step raises.
  *
- * Spent is the sensor's own sum. Committed is the time still left on this
+ * Spent is the sensor's own sum over this runner's jobs. Committed is the time still left on this
  * runner's live jobs, so two launches in one step cannot each pass against the
  * same spend. The job list must be readable: a launch is refused rather than
  * counted against a spend of zero that nobody saw.
@@ -290,10 +303,9 @@ export function launchVerdict({ cache, jobs, runnerId, gpus, minutes, now }) {
   if (!Array.isArray(jobs)) {
     return { ok: false, reason: "the cluster's job list could not be read, so the spend is unknown and the launch is refused rather than assumed free" };
   }
-  const spent = spentGpuHours({ ...(cache.jobs ?? {}) }, jobs, now);
-  const prefix = `runner:${runnerId}:`;
+  const spent = spentGpuHours({ ...(cache.jobs ?? {}) }, jobs, runnerId, now);
   const committed = jobs
-    .filter((job) => String(job.job_name ?? "").startsWith(prefix))
+    .filter((job) => ownJob(job, runnerId))
     .reduce((sum, job) => sum + (Math.max(0, Number(job.time_remaining_seconds) || 0) / 3600) * (gpusInGres(job.gres) || 1), 0);
   const request = (gpus * minutes) / 60;
   const total = spent + committed + request;
@@ -308,12 +320,12 @@ export function launchVerdict({ cache, jobs, runnerId, gpus, minutes, now }) {
   return { ok: true, ...numbers };
 }
 
-function gpuHoursFact(jobs, cache, budget, now) {
+function gpuHoursFact(jobs, cache, runnerId, budget, now) {
   if (jobs.unavailable) {
-    const spent = spentGpuHours(cache.jobs, [], now);
+    const spent = spentGpuHours(cache.jobs, [], runnerId, now);
     return { spent: round(spent), ...(budget !== undefined ? { budget } : {}), note: "no jobs read this step; the total is as last seen" };
   }
-  const spent = spentGpuHours(cache.jobs, jobs.raw, now);
+  const spent = spentGpuHours(cache.jobs, jobs.raw, runnerId, now);
   return { spent: round(spent), ...(budget !== undefined ? { budget } : {}) };
 }
 
@@ -336,7 +348,7 @@ export async function sense(input, deps = defaultDeps) {
     cwd: input.cwd, specs: input.specs, cache, deps,
     scratchRoot: path.join(cacheDir, "scratch-output"),
   });
-  const gpuHours = gpuHoursFact(jobs, cache, input.budgetGpuHours, now);
+  const gpuHours = gpuHoursFact(jobs, cache, input.runnerId, input.budgetGpuHours, now);
   // THE BUDGET RIDES THE CACHE, written here from the claim, so tts-turing-act
   // reads it from the record's own copy and never from its command line. A
   // runner with no budget leaves none, and cannot launch.
@@ -373,6 +385,6 @@ export function renderFacts(facts) {
   lines.push(`Step failures since the last check-in: ${facts.failures.sinceLastStep}.`);
   for (const line of facts.failures.lines) lines.push(`- ${line}`);
   const h = facts.gpuHours;
-  lines.push(`GPU-hours seen on running jobs since this runner began: ${h.spent}${h.budget !== undefined ? ` of a ${h.budget}-hour budget` : ", no budget set"}${h.note ? ` (${h.note})` : ""}.`);
+  lines.push(`GPU-hours seen on this runner's running jobs since it began: ${h.spent}${h.budget !== undefined ? ` of a ${h.budget}-hour budget` : ", no budget set"}${h.note ? ` (${h.note})` : ""}.`);
   return lines.join("\n");
 }

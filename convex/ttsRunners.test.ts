@@ -542,7 +542,7 @@ describe("composeCheckIn", () => {
       "| Units of work the sweep files ask for | 21081 |",
       "| Units known finished | 20412 |",
       "| My steps that failed since the last check-in | 0 |",
-      "| GPU-hours the experiment's jobs used since I began | not read: the accounting call timed out |",
+      "| GPU-hours this runner's jobs used since I began | not read: the accounting call timed out |",
       "",
       "Nothing changed.",
     ].join("\n");
@@ -554,7 +554,7 @@ describe("composeCheckIn", () => {
       "Units of work the sweep files ask for: 21081",
       "Units known finished: 20412",
       "My steps that failed since the last check-in: 0",
-      "GPU-hours the experiment's jobs used since I began: not read: the accounting call timed out",
+      "GPU-hours this runner's jobs used since I began: not read: the accounting call timed out",
       "",
       "Nothing changed.",
     ].join("\n"));

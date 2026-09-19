@@ -18,8 +18,9 @@
 // budget is read from the sensor's cache (/var/lib/tts/runners/<id>.json),
 // which the daemon writes from the record before the step's model starts; it
 // is never taken from this command line. Spent hours are the sensor's own sum
-// over `tts-turing jobs`; the time still booked on this runner's live jobs
-// counts too. No budget recorded, or a job list that cannot be read, refuses.
+// over this runner's jobs in `tts-turing jobs` (named runner:<id>:, so the
+// pool's jobs and Tom's own never spend a runner's budget); the time still
+// booked on this runner's live jobs counts too. No budget recorded, or a job list that cannot be read, refuses.
 // turing-api's own ceilings bound a request that skips this command.
 //
 // THE READ-BACK IS THE VERIFICATION. After a launch the queue is read again and
