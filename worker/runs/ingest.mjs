@@ -276,7 +276,32 @@ function claudeChildFacts(agentMeta, parentSessionId) {
   return { isSubagent: true, depth, errors, parentAgentId, toolUseId, workflowId };
 }
 
-export function parseClaudeFile({ path, text, host, fileVersion, fromLine = 0, baseLine: suppliedBaseLine = fromLine, agentMeta = null, parentSessionId = null, sidecar = null, attachments: suppliedAttachments = /** @type {Array<{file: string, bytes: number, sha256: string}>} */ ([]) }) {
+/**
+ * A Claude run's rows come from the lines past its cursor; its header comes
+ * from the whole file.
+ *
+ * THE HEADER IS THE FILE'S, NOT THE INCREMENT'S (spec §23.3.1: turns, tool
+ * calls and token totals have the CLI file as their authority). The record
+ * replaces a run's outcome and context with each page it is sent, and the
+ * sweep sends a long run in many pieces, so a header read off one piece left
+ * the record holding that piece's tokens alone: on 2026-09-19 box runs of
+ * 0.78M to 15.1M tokens showed 57K to 1.5M. Summing pieces is not the fix,
+ * because one message's usage can straddle a cursor and would count twice.
+ * `contextText` is the whole text the increment ends; given with a cursor
+ * past line 0, the header is read off it.
+ */
+export function parseClaudeFile({ contextText = /** @type {string | undefined} */ (undefined), ...args }) {
+  const part = parseClaudeLines(args);
+  const baseLine = args.baseLine ?? args.fromLine ?? 0;
+  if (!(baseLine > 0) || typeof contextText !== "string") return part;
+  const whole = parseClaudeLines({ ...args, text: contextText, fromLine: 0, baseLine: 0 });
+  // With no line past the cursor there is nothing new to record: the only row
+  // such a parse makes is a subagent's sidecar complaint, already sent with the
+  // piece that ended at that cursor.
+  return { ...part, run: { ...whole.run, file: part.run.file }, ...(part.lastLine === baseLine ? { rows: [] } : {}) };
+}
+
+function parseClaudeLines({ path, text, host, fileVersion, fromLine = 0, baseLine: suppliedBaseLine = fromLine, agentMeta = null, parentSessionId = null, sidecar = null, attachments: suppliedAttachments = /** @type {Array<{file: string, bytes: number, sha256: string}>} */ ([]) }) {
   // `baseLine` is the absolute source-line ordinal of text's first supplied
   // line. `fromLine` remains its older spelling for callers that already use
   // it; an explicit baseLine wins when both are present.
@@ -652,6 +677,14 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
   let usageTotals = recoveredMeta?.usageTotals && typeof recoveredMeta.usageTotals === "object"
     ? recoveredMeta.usageTotals
     : emptyTotals();
+  // CONTEXT_WINDOW IS NOT A SIZE. Codex 0.153.3's session_meta writes
+  // `context_window` as an object naming a window id, and the record's
+  // contextWindow is a number of tokens, so passing the header through
+  // refused every box Codex run from that version on (285 dead-letter pages
+  // by 2026-09-19). The size is `model_context_window` on each token_count
+  // event, the only place it is read; it is kept in sweep state because a
+  // tail may carry none.
+  let modelContextWindow = Number.isFinite(recoveredMeta?.modelContextWindow) ? recoveredMeta.modelContextWindow : undefined;
   let taskComplete = null;
   let lastAssistantText = null;
   // Store only the redacted-text hash in sweep state: it is enough to join an
@@ -706,6 +739,7 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
     } else if (entry.type === "event_msg") {
       if (payload.type === "token_count") {
         lastTokenCount = payload.info?.total_token_usage ?? null;
+        if (Number.isFinite(payload.info?.model_context_window)) modelContextWindow = payload.info.model_context_window;
         const lastUsage = payload.info?.last_token_usage;
         if (number(lastUsage?.input_tokens) > 272_000) {
           // Rollouts normally emit one token_count per response. Prefer a
@@ -772,7 +806,7 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
     ...(meta.base_instructions?.text ? { baseInstructionsHash: sha256(meta.base_instructions.text) } : {}),
     ...(meta.baseInstructionsHash ? { baseInstructionsHash: meta.baseInstructionsHash } : {}),
     ...(meta.originator ? { originator: meta.originator } : {}),
-    ...(meta.context_window ? { contextWindow: meta.context_window } : {}),
+    ...(Number.isFinite(modelContextWindow) ? { contextWindow: modelContextWindow } : {}),
     ...(permissionMode ? { permissionMode } : {}),
   };
   if (baseLine === 0) rows.unshift({ seq: 0, turn: 0, kind: "context", content: { ...(model ? { model } : {}), ...context, prompt }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: 0, block: 0, sourceKind: "context" }), createdAt: startedAt });
@@ -796,6 +830,15 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
     ? taskComplete.reason
     : priorOutcome.endedReason;
   const run = { runId, ...(parentRunId ? { parentRunId } : {}), rootRunId, depth: parentId ? 1 : 0, linkKnown: !parentId, origin: "unknown", host, cli: "codex", ...(model ? { model } : {}), ...(sessionModelOf(model) ? { sessionModel: sessionModelOf(model) } : {}), ...(effort ? { effort } : {}), ...(runtimeVersion ?? meta.cli_version ? { runtimeVersion: runtimeVersion ?? meta.cli_version } : {}), parserVersion: PARSER_VERSION, kind: parentId ? "codex-child" : "unknown", status: "unknown", startedAt, lastLineAt, context, attachments, outcome: { ...(finalTextSeq !== undefined ? { finalTextSeq } : {}), ...(endedReason !== undefined ? { endedReason } : {}), totals, ...(price === null ? {} : { costUsd: price, priceTableVersion: priceTableVersion() }), turns: Math.max(number(priorOutcome.turns), 1, turns.size), toolCalls }, file: { path, sourceHash: sha256(Buffer.from(text)), storedHash: fileVersion, bytes: Buffer.byteLength(text), storedBytes: 0, committedLine: baseLine + lines.length, committedPrefixSha256: prefixHash(lines, lines.length), incompleteTail } };
+  // A ROW SITS AT ITS RUN'S DEPTH, and the record refuses one that does not.
+  // The field cannot go: the record stores it on every row and the transcript
+  // view draws a row as nested by it, for Claude subagents as for Codex
+  // children. The rows are emitted as the lines are read, and a line need not
+  // come after the session_meta that makes this run a child, so the depth is
+  // settled here once the whole parse knows it. Before this, every spawn_agent
+  // child's rows said depth 0 under a depth-1 run and the whole child was
+  // refused.
+  for (const row of rows) row.depth = run.depth;
   const result = finishResult({ run, rows, children, attachments, lastLine: baseLine + lines.length, incompleteTail, dropped });
   // This is sweep state only, never a Convex run field. It keeps the pieces a
   // later tail needs without copying base_instructions text onto disk again.
@@ -807,6 +850,7 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
     ...(meta.git ? { git: meta.git } : {}),
     ...(meta.originator ? { originator: meta.originator } : {}),
     ...(meta.context_window ? { context_window: meta.context_window } : {}),
+    ...(Number.isFinite(modelContextWindow) ? { modelContextWindow } : {}),
     ...(context.baseInstructionsHash ? { baseInstructionsHash: context.baseInstructionsHash } : {}),
     turnIds: [...turns.keys()],
     currentTurn,

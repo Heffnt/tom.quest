@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { claudeAssistant, claudeLine, claudeToolResult, claudeUserTurn, codexDeveloper, codexMeta, codexResponseItem, codexSkillsInstructions, codexTokenCount, codexToolCall, codexTurnContext, jsonl } from "./fixtures.mjs";
+import { claudeAssistant, claudeLine, claudeToolUseBlock, claudeToolResult, claudeUserTurn, codexDeveloper, codexMeta, codexResponseItem, codexSkillsInstructions, codexTokenCount, codexToolCall, codexTurnContext, jsonl } from "./fixtures.mjs";
 import { writeRegistrationClaim, writeRegistrationEnd } from "../registration.mjs";
 import {
   MAX_ATTEMPTS,
@@ -12,6 +12,7 @@ import {
   deletable,
   drainQueue,
   prefixSha256,
+  refreshClaudeHeaders,
   stateFileFor,
   storeText,
   sweepRunFile,
@@ -134,8 +135,9 @@ describe("run sweep", () => {
     const file = path.join(project, "rollout.jsonl");
     const catalog = codexSkillsInstructions({ roots: { r0: "C:/skills" }, skills: [{ name: "tom-write", file: "r0/tom-write/SKILL.md" }] });
     fs.writeFileSync(file, jsonl([
-      codexMeta({ id: "child", parent: "parent", cwd: "C:/work", cliVersion: "0.153.3", git: { branch: "main", commit_hash: "a".repeat(40) }, baseInstructions: "original instructions", contextWindow: 272_000 }),
+      codexMeta({ id: "child", parent: "parent", cwd: "C:/work", cliVersion: "0.153.3", git: { branch: "main", commit_hash: "a".repeat(40) }, baseInstructions: "original instructions" }),
       codexTurnContext({ model: "gpt-5.6-terra", effort: "xhigh" }),
+      codexTokenCount({ modelContextWindow: 272_000 }),
       codexDeveloper(catalog),
     ]));
     let stat = fs.statSync(file);
@@ -278,6 +280,147 @@ describe("run sweep", () => {
     expect(abandoned.rows).toEqual([]);
     expect(abandoned.previousCommittedLine).toBe(2);
     expect(JSON.parse(fs.readFileSync(stateFileFor(stateDir, "claude:laptop:session"), "utf8")).reportedAbandoned).toBe(true);
+  });
+
+  // witness: on 2026-09-19 box runs the sweep sent in 4 to 14 pieces showed
+  // only their last piece in the record — 174,166 tokens for a run whose file
+  // holds 13,276,248 — because the record replaces the outcome with each page
+  // and the header was read off the piece.
+  it("sends a Claude run's totals, turns and tool calls over the whole file when it arrives in pieces", async () => {
+    const dir = temp(); const stateDir = path.join(dir, "state");
+    const item = runFile(dir, [
+      claudeUserTurn({ text: "first" }),
+      claudeAssistant({ requestId: "r1", blocks: [claudeToolUseBlock({ id: "t1" })], usage: { input_tokens: 5, output_tokens: 7 } }),
+    ]);
+    const ingests = [];
+    const post = async (route, body) => {
+      if (route === "/runs/ingest") ingests.push(body);
+      return route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true };
+    };
+    await sweepRunFile(item, { stateDir, store: store(), post, now: () => NOW });
+    fs.appendFileSync(item.path, jsonl([
+      claudeUserTurn({ text: "second" }),
+      claudeAssistant({ requestId: "r2", blocks: [claudeToolUseBlock({ id: "t2" })], usage: { input_tokens: 11, output_tokens: 13 } }),
+    ]));
+    const grown = { ...item, mtimeMs: fs.statSync(item.path).mtimeMs, bytes: fs.statSync(item.path).size };
+    await sweepRunFile(grown, { stateDir, store: store(), post, now: () => NOW + 1 });
+    const second = ingests.at(-1);
+    expect(ingests).toHaveLength(2);
+    expect(second.previousCommittedLine).toBe(2);
+    expect(second.rows.every((row) => row.provenance.lineStart >= 2)).toBe(true);
+    expect(second.run.outcome).toMatchObject({ totals: { inputTokens: 16, outputTokens: 20, totalTokens: 36 }, turns: 2, toolCalls: 2 });
+    expect(second.run.file.committedLine).toBe(4);
+  });
+
+  it("re-sends an unmarked Claude run once with no rows and its whole file's totals, then leaves it alone", async () => {
+    const dir = temp(); const stateDir = path.join(dir, "state");
+    const item = runFile(dir, [
+      claudeUserTurn({ text: "first" }),
+      claudeAssistant({ requestId: "r1", usage: { input_tokens: 5, output_tokens: 7 } }),
+      claudeUserTurn({ text: "second" }),
+      claudeAssistant({ requestId: "r2", usage: { input_tokens: 11, output_tokens: 13 } }),
+    ]);
+    const ingests = [];
+    const post = async (route, body) => {
+      if (route === "/runs/ingest") ingests.push(body);
+      return route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true };
+    };
+    await sweepRunFile(item, { stateDir, store: store(), post, now: () => NOW });
+    // A state written before the fix carries no mark.
+    const stateFile = stateFileFor(stateDir, "claude:laptop:session");
+    const { wholeFileHeader: _mark, ...unmarked } = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    fs.writeFileSync(stateFile, JSON.stringify(unmarked));
+    const cfg = config(dir, item);
+    const first = await refreshClaudeHeaders({ config: cfg, store: store(), post, now: () => NOW + 1, log: () => {} });
+    expect(first).toMatchObject({ refreshed: 1, failed: 0, left: 0 });
+    const resent = ingests.at(-1);
+    expect(resent.rows).toEqual([]);
+    expect(resent.previousCommittedLine).toBe(4);
+    expect(resent.run.outcome).toMatchObject({ totals: { inputTokens: 16, outputTokens: 20 }, turns: 2 });
+    expect(JSON.parse(fs.readFileSync(stateFile, "utf8")).wholeFileHeader).toBe(true);
+    const second = await refreshClaudeHeaders({ config: cfg, store: store(), post, now: () => NOW + 2, log: () => {} });
+    expect(second).toMatchObject({ refreshed: 0, left: 0 });
+    expect(ingests).toHaveLength(2);
+    // A backlog run is recorded at cursor 0 with no rows by design; the
+    // refresh must not sweep its whole transcript in.
+    fs.writeFileSync(stateFile, JSON.stringify({ ...unmarked, committedLine: 0, backlog: true }));
+    const third = await refreshClaudeHeaders({ config: cfg, store: store(), post, now: () => NOW + 3, log: () => {} });
+    expect(third).toMatchObject({ refreshed: 0, left: 0 });
+    expect(ingests).toHaveLength(2);
+  });
+
+  it("counts a healed cursor as not refreshed, so the next batch sends that run's header", async () => {
+    const dir = temp(); const stateDir = path.join(dir, "state");
+    const item = runFile(dir, [claudeUserTurn({ text: "first" }), claudeUserTurn({ text: "second" })]);
+    const ingests = [];
+    const accept = async (route, body) => {
+      if (route === "/runs/ingest") ingests.push(body);
+      return route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true };
+    };
+    await sweepRunFile(item, { stateDir, store: store(), post: accept, now: () => NOW });
+    const stateFile = stateFileFor(stateDir, "claude:laptop:session");
+    const { wholeFileHeader: _mark, ...unmarked } = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    fs.writeFileSync(stateFile, JSON.stringify(unmarked));
+    const cfg = config(dir, item);
+    const held = { committedLine: 2, committedPrefixSha256: prefixSha256(fs.readFileSync(item.path), 2) };
+    const heal = async (route) => (route === "/runs/ingest" ? { ok: false, reason: "file rewritten", ...held } : { ok: true });
+    const first = await refreshClaudeHeaders({ config: cfg, store: store(), post: heal, now: () => NOW + 1, log: () => {} });
+    expect(first).toMatchObject({ refreshed: 0, failed: 1 });
+    const second = await refreshClaudeHeaders({ config: cfg, store: store(), post: accept, now: () => NOW + 2, log: () => {} });
+    expect(second).toMatchObject({ refreshed: 1, failed: 0 });
+    expect(JSON.parse(fs.readFileSync(stateFile, "utf8")).wholeFileHeader).toBe(true);
+  });
+
+  it("leaves a run unmarked when the page that lands was queued by the older parser", async () => {
+    const dir = temp(); const stateDir = path.join(dir, "state");
+    const item = runFile(dir, [claudeUserTurn({ text: "first" })]);
+    await sweepRunFile(item, { stateDir, store: store(), post: async (route) => { if (route === "/runs/ingest") throw Object.assign(new Error("down"), { status: 503 }); return { ok: true }; }, now: () => NOW });
+    const queued = fs.readdirSync(path.join(stateDir, "queue")).map((name) => path.join(stateDir, "queue", name));
+    expect(queued).toHaveLength(1);
+    const { wholeFileHeader: _mark, ...older } = JSON.parse(fs.readFileSync(queued[0], "utf8"));
+    fs.writeFileSync(queued[0], JSON.stringify(older));
+    await drainQueue({ stateDir, post: async (route, body) => (route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true }), now: () => NOW + 1 });
+    const state = JSON.parse(fs.readFileSync(stateFileFor(stateDir, "claude:laptop:session"), "utf8"));
+    expect(state.committedLine).toBe(1);
+    expect(state.wholeFileHeader).toBeUndefined();
+  });
+
+  it("caps a batch at its limit counting failures, and never retries a refused file", async () => {
+    const dir = temp(); const stateDir = path.join(dir, "state");
+    const item = runFile(dir, [claudeUserTurn({ text: "first" })]);
+    const other = { ...item, threadId: "other", path: path.join(path.dirname(item.path), "other.jsonl") };
+    fs.copyFileSync(item.path, other.path);
+    const accept = async (route, body) => (route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true });
+    await sweepRunFile(item, { stateDir, store: store(), post: accept, now: () => NOW });
+    await sweepRunFile(other, { stateDir, store: store(), post: accept, now: () => NOW });
+    for (const runId of ["claude:laptop:session", "claude:laptop:other"]) {
+      const file = stateFileFor(stateDir, runId);
+      const { wholeFileHeader: _mark, ...unmarked } = JSON.parse(fs.readFileSync(file, "utf8"));
+      fs.writeFileSync(file, JSON.stringify(unmarked));
+    }
+    const down = async (route) => { if (route === "/runs/ingest") throw Object.assign(new Error("down"), { status: 503 }); return { ok: true }; };
+    const capped = await refreshClaudeHeaders({ config: config(dir, item), store: store(), post: down, limit: 1, now: () => NOW + 1, log: () => {} });
+    expect(capped).toMatchObject({ refreshed: 0, failed: 1, left: 1 });
+    const refusedFile = stateFileFor(stateDir, "claude:laptop:other");
+    fs.writeFileSync(refusedFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(refusedFile, "utf8")), refused: { kind: "runs-file-rewritten" } }));
+    fs.rmSync(path.join(stateDir, "queue"), { recursive: true, force: true });
+    const next = await refreshClaudeHeaders({ config: config(dir, item), store: store(), post: accept, now: () => NOW + 2, log: () => {} });
+    expect(next).toMatchObject({ refreshed: 1, failed: 0, refused: 1, left: 0 });
+  });
+
+  it("counts a run whose page is still queued as left, not done", async () => {
+    const dir = temp(); const stateDir = path.join(dir, "state");
+    const item = runFile(dir, [claudeUserTurn({ text: "first" })]);
+    await sweepRunFile(item, { stateDir, store: store(), post: async (route, body) => (route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true }), now: () => NOW });
+    const stateFile = stateFileFor(stateDir, "claude:laptop:session");
+    const { wholeFileHeader: _mark, ...unmarked } = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    fs.writeFileSync(stateFile, JSON.stringify(unmarked));
+    fs.mkdirSync(path.join(stateDir, "queue"), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, "queue", "1-page.json"), JSON.stringify({ runId: "claude:laptop:session", page: 0, pages: 1, payload: {} }));
+    const posts = [];
+    const result = await refreshClaudeHeaders({ config: config(dir, item), store: store(), post: async (route) => { posts.push(route); return { ok: true }; }, now: () => NOW + 1, log: () => {} });
+    expect(result).toMatchObject({ refreshed: 0, left: 1 });
+    expect(posts).not.toContain("/runs/ingest");
   });
 
   it("drops a dead-letter page that names no run and keeps the rest", async () => {

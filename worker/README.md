@@ -48,6 +48,14 @@ nightly eviction removes the rows of runs outside the 30-day window that Tom
 has not opened, and never the index row, never a label, never a byte in the
 store.
 
+A page the record refuses outright goes to `deadletter/` under the state
+directory, and its run is not swept again while any page of it is there: the
+page is a frozen payload, and replaying it would be refused the same way. So
+once the cause is fixed and the new code is on the host, a parked run is
+released by moving its pages out of `deadletter/` and sweeping its file with
+`sweep.mjs --file <path>`; the file, not the page, is the source. A page that
+names no run is the one kind the drain drops by itself.
+
 Neither program deletes a local file, and `RUN_FILES_DELETE_AFTER_UPLOAD` stays
 off: a backlog file is the only copy of a run that predates the store and has
 no rows in the record by design, so `deletable()` refuses it outright whatever
@@ -746,6 +754,7 @@ node /opt/tts/plan-graphs.mjs             # prepare, brief, plan — now
 node /opt/tts/plan-graphs.mjs --force     # also re-prepare and re-brief EVERYTHING
 node /opt/tts/nightly.mjs --force         # the nightly job, every step, now
 node /opt/tts/runs/sweep.mjs --full       # recover every changed run file
+node /opt/tts/runs/sweep.mjs --refresh-claude-headers 200  # re-send up to 200 Claude runs' whole-file totals; repeat until left=0 and failed=0
 node /opt/tts/runs-compare.mjs            # compare eligible shadow sessions
 node /opt/tts/runs/backlog.mjs --build-list    # the one expensive walk; writes the work list
 node /opt/tts/runs/backlog.mjs --status       # counts, remaining bytes, budget; writes nothing
