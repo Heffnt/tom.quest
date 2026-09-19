@@ -1363,6 +1363,9 @@ export default defineSchema({
     origin: v.string(),
     continuesRunId: v.optional(v.string()),
     host: v.union(v.literal("laptop"), v.literal("box")),
+    // Where the run ran: a session Tom talks to, an unattended worker, or a
+    // runner. Absent only on rows ingested before launchers named it.
+    environment: v.optional(v.union(v.literal("session"), v.literal("worker"), v.literal("runner"))),
     runner: v.union(v.literal("claude"), v.literal("codex")),
     model: v.optional(v.string()),
     sessionModel: v.optional(SESSION_MODEL),

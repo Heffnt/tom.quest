@@ -448,6 +448,8 @@ export function readRegistration(runFile, { fs = fsDefault } = {}) {
   return jsonAt(registrationSidecarPath(runFile), fs);
 }
 
+const ENVIRONMENTS = new Set(["session", "worker", "runner"]);
+
 function setOptional(target, key, value) {
   if (value === null || value === undefined || value === "") delete target[key];
   else target[key] = value;
@@ -479,6 +481,10 @@ export function mergeRegistration({ parsed, envelope, host, report = () => {} })
 
   if (typeof registration.origin === "string" && registration.origin) run.origin = registration.origin;
   if (typeof registration.kind === "string" && registration.kind) run.kind = registration.kind;
+  // Assigned only when named: a subagent's envelope says nothing about where it
+  // runs, and the record then takes the parent's word — deleting the key here
+  // would erase that silence into a guess.
+  if (ENVIRONMENTS.has(registration.environment)) run.environment = registration.environment;
   for (const key of ["todoId", "batchId", "mergeKey", "continuesRunId"]) setOptional(run, key, registration[key]);
 
   run.context.registered = true;

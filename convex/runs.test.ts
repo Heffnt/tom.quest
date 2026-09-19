@@ -227,6 +227,67 @@ describe("runs", () => {
     expect(children.every((entry) => entry.host === "box" && entry.depth === 1)).toBe(true);
   });
 
+  describe("environment", () => {
+    const at = (t: SchemaTest, runId: string) =>
+      t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique());
+    const defaulted = (t: SchemaTest) =>
+      t.run(async (ctx) => (await ctx.db.query("dtsEvents").collect()).filter((entry) => entry.kind === "runs-environment-defaulted"));
+    const childRun = (name: string, overrides: Record<string, unknown> = {}) => run({
+      runId: `claude:laptop:${name}`, parentRunId: "claude:laptop:root-run", rootRunId: "claude:laptop:root-run", depth: 1, linkKnown: false, kind: "subagent",
+      file: { ...run().file, path: `C:/${name}.jsonl` }, ...overrides,
+    });
+
+    it("takes the envelope's word first and counts no guess", async () => {
+      const t = convexTest(schema, modules);
+      expect(await t.mutation(internal.runs.internalIngest, ingest(run({ environment: "session" })) as never)).toMatchObject({ ok: true });
+      expect((await at(t, "claude:laptop:root-run"))?.environment).toBe("session");
+      expect(await defaulted(t)).toEqual([]);
+    });
+
+    it("gives a silent child its parent's environment", async () => {
+      const t = convexTest(schema, modules);
+      await t.mutation(internal.runs.internalIngest, ingest(run({ environment: "session" })) as never);
+      expect(await t.mutation(internal.runs.internalIngest, ingest(childRun("silent-child"), [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
+      expect((await at(t, "claude:laptop:silent-child"))?.environment).toBe("session");
+      expect(await defaulted(t)).toEqual([]);
+    });
+
+    it("keeps a row's own environment when neither envelope nor parent names one", async () => {
+      const t = convexTest(schema, modules);
+      await t.mutation(internal.runs.internalIngest, ingest(run({ environment: "runner" })) as never);
+      expect(await t.mutation(internal.runs.internalIngest, retry(run({ file: { ...run().file, committedLine: 2, committedPrefixSha256: GROWN_PREFIX_HASH } }), [row(1)]) as never)).toMatchObject({ ok: true });
+      expect((await at(t, "claude:laptop:root-run"))?.environment).toBe("runner");
+    });
+
+    it("calls a run nothing named a worker, once, and says so", async () => {
+      const t = convexTest(schema, modules);
+      await t.mutation(internal.runs.internalIngest, ingest(run({ context: { layersKnown: false, layersGiven: [], layersDenied: [], skillsOffered: [], skillsUsed: [], tools: [], hooks: [], launcher: "worker/jobs/example.mjs" } })) as never);
+      expect((await at(t, "claude:laptop:root-run"))?.environment).toBe("worker");
+      expect((await defaulted(t)).map((entry) => entry.data)).toEqual([{ runId: "claude:laptop:root-run", launcher: "worker/jobs/example.mjs" }]);
+      // A later page is a repair, never a second count.
+      await t.mutation(internal.runs.internalIngest, retry(run({ file: { ...run().file, committedLine: 2, committedPrefixSha256: GROWN_PREFIX_HASH } }), [row(1)]) as never);
+      expect(await defaulted(t)).toHaveLength(1);
+    });
+
+    it("repairs a row ingested before its envelope, when a later page names one", async () => {
+      const t = convexTest(schema, modules);
+      await t.mutation(internal.runs.internalIngest, ingest(run()) as never);
+      expect((await at(t, "claude:laptop:root-run"))?.environment).toBe("worker");
+      await t.mutation(internal.runs.internalIngest, retry(run({ environment: "session", file: { ...run().file, committedLine: 2, committedPrefixSha256: GROWN_PREFIX_HASH } }), [row(1)]) as never);
+      expect((await at(t, "claude:laptop:root-run"))?.environment).toBe("session");
+    });
+
+    it("gives a placeholder the environment of the run that revealed it, and its own run repairs it", async () => {
+      const t = convexTest(schema, modules);
+      await t.mutation(internal.runs.internalIngest, ingest(run({ environment: "session" }), [row()], [child("claude:laptop:stubbed-child", "claude:laptop:root-run", "claude:laptop:root-run", 1)]) as never);
+      expect(await at(t, "claude:laptop:stubbed-child")).toMatchObject({ kind: "subagent", environment: "session" });
+      expect(await t.mutation(internal.runs.internalIngest, ingest(childRun("orphaned-child", { parentRunId: "claude:laptop:unseen-parent", rootRunId: "claude:laptop:unseen-parent", environment: "runner" }), [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
+      expect(await at(t, "claude:laptop:unseen-parent")).toMatchObject({ kind: "unknown", environment: "runner" });
+      await t.mutation(internal.runs.internalIngest, ingest(childRun("stubbed-child", { environment: "worker", linkKnown: true, spawnedByToolUseId: "exact-tool-use" }), [row(0, { depth: 1 })]) as never);
+      expect((await at(t, "claude:laptop:stubbed-child"))?.environment).toBe("worker");
+    });
+  });
+
   it("stores mode only for session runs", async () => {
     const t = convexTest(schema, modules);
     expect(await t.mutation(internal.runs.internalIngest, ingest(run({ mode: "interactive" })) as never)).toMatchObject({ ok: true });
