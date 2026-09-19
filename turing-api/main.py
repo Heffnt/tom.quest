@@ -224,11 +224,17 @@ async def transformer_trace(path: str, request: Request) -> Response:
 # freezes the event loop and starves every other request, including /health.
 # That starvation took down the whole API during the June 2026 outage.
 
-# THE READ DOOR (three endpoints, marked by Depends(verify_read_key)):
-# /gpu-report, /jobs, /sessions/{name}/output. Adding a fourth means widening
-# what every TURING_READ_KEY holder can see — including TTS sessions on the
-# worker box — so the dependency is chosen per endpoint, deliberately, and the
-# default for anything new stays verify_api_key.
+# THE READ DOOR (six endpoints, marked by Depends(verify_read_key)):
+# /gpu-report, /jobs, /sessions/{name}/output, and the artifact tree's three
+# reads /cmt-dirs, /cmt-node, /cmt-file. Adding another means widening what
+# every TURING_READ_KEY holder can see — including TTS sessions and runner
+# steps on the worker box — so the dependency is chosen per endpoint,
+# deliberately, and the default for anything new stays verify_api_key.
+#
+# The three artifact reads are safe on the read key because each is jailed to
+# $BOOLEAN_BACKDOOR_OUTPUT through resolve_within_root(..., root=root): the key
+# gains the experiment results tree and nothing else. /dirs and /file, which
+# reach the home directory, stay on the full key.
 @app.get("/gpu-report")
 def gpu_report(auth: bool = Depends(verify_read_key)) -> dict:
     try:
@@ -267,7 +273,7 @@ def get_file(path: str, auth: bool = Depends(verify_api_key)) -> dict[str, str]:
 # route. All three are sync `def` for the same event-loop reason as above.
 
 @app.get("/cmt-dirs")
-def cmt_dirs(path: str = "", auth: bool = Depends(verify_api_key)) -> dict:
+def cmt_dirs(path: str = "", auth: bool = Depends(verify_read_key)) -> dict:
     """List child dirs of a CMT output location for the snapshot dir-picker.
     Pinned to $BOOLEAN_BACKDOOR_OUTPUT (not the /dirs $HOME root)."""
     try:
@@ -292,7 +298,7 @@ def cmt_dirs(path: str = "", auth: bool = Depends(verify_api_key)) -> dict:
 
 
 @app.get("/cmt-node")
-def cmt_node(path: str = "", auth: bool = Depends(verify_api_key)) -> dict:
+def cmt_node(path: str = "", auth: bool = Depends(verify_read_key)) -> dict:
     """List one artifact-tree dir (child dirs + files with sizes) for the boolback
     raw-artifact browser. Read-only, jailed to $BOOLEAN_BACKDOOR_OUTPUT."""
     try:
@@ -309,7 +315,7 @@ def cmt_node(path: str = "", auth: bool = Depends(verify_api_key)) -> dict:
 
 
 @app.get("/cmt-file")
-def cmt_file(path: str, max_bytes: int = 65536, auth: bool = Depends(verify_api_key)) -> dict:
+def cmt_file(path: str, max_bytes: int = 65536, auth: bool = Depends(verify_read_key)) -> dict:
     """Preview one artifact file (utf-8 text, size-capped; known-binary extensions
     return metadata only). Read-only, jailed to $BOOLEAN_BACKDOOR_OUTPUT."""
     try:

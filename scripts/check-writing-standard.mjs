@@ -183,9 +183,10 @@ const RULES = [
 // Separately, even where it does resolve, tts-lib.mjs is not a clean import:
 // it runs a top-level dynamic `await import()` of a runs/registration.mjs
 // module and THROWS if that file is not found, a real side effect at module
-// load. setup.sh's own comment on this file's copy says "its only imports are
-// node builtins, so one file is the whole of it" — that invariant is why the
-// box can run this rung with nothing installed but the copy, and a worker
+// load. setup.sh's own comment on this file's copy says its imports are node
+// builtins and the dependency-free checkin-rules.mjs copied beside it — that
+// invariant is why the box can run this rung with nothing installed but the
+// two copies, and a worker
 // import would break it even where the path resolved. If tts-lib.mjs is ever
 // copied whole to a location this file can reach without a side-effecting
 // import graph, re-derive this constant from it instead of maintaining the
@@ -327,6 +328,13 @@ export function failuresFor(html, rules = RULES) {
   };
   return rules.filter((r) => r.fails(views[r.on ?? "document"])).map((r) => r.id);
 }
+
+// A runner's check-in has its own form rules, a second array beside
+// BRIEF_RULES rather than a widening of it: a check-in that requests a ruling
+// carries a heading and a numbered list, which brief-markup refuses. They live
+// in checkin-rules.mjs because the Convex record runs them too and cannot
+// import this file; setup.sh copies that file beside this one on the box.
+export { CHECKIN_RULES, CHECKIN_MAX_CHARS } from "./checkin-rules.mjs";
 
 export { RULES, BRIEF_RULES, proseView, styleView };
 export { MAX_BRIEF_CHARS };

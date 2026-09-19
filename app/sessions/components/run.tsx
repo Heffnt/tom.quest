@@ -618,6 +618,10 @@ function Lead({
   onOpenRun: (runId: string) => void;
   onOpenSession: (sessionId: Id<"claudeSessions">) => void;
 }) {
+  // A runner's step names the runner in its origin (`runner:<id>`), so the
+  // chain below reads as one experiment's steps rather than bare run ids.
+  const runnerId = run?.origin?.startsWith("runner:") ? run.origin.slice("runner:".length) : undefined;
+  const runner = useQuery(api.ttsRunners.runnerTitle, runnerId !== undefined ? { runnerId } : "skip");
   const outcome = run?.outcome;
   const errored = session?.outcome === "errored" || run?.status === "failed";
   const totals = outcome?.totals;
@@ -716,6 +720,11 @@ function Lead({
           >
             linked batch
           </Link>
+        )}
+        {runner && (
+          <span className="text-text-muted">
+            a step of the runner {runner.title}, which is {runner.status}
+          </span>
         )}
         {continues !== undefined && (
           <button

@@ -266,9 +266,12 @@ cp "$WORKER_DIR"/../scripts/evals-check.mjs /opt/tts/evals-check.mjs
 # and the judge is the expensive half. Without this copy the box silently ran
 # no rules at all and the run still said "pass" — the runner treats an absent
 # file as "no rules ran" so a checkout without it is not a failure, which is
-# exactly why the copy has to be here rather than assumed. Its only imports
-# are node builtins, so one file is the whole of it.
+# exactly why the copy has to be here rather than assumed. Its imports are
+# node builtins and checkin-rules.mjs, copied beside it below.
 cp "$WORKER_DIR"/../scripts/check-writing-standard.mjs /opt/tts/check-writing-standard.mjs
+# Its check-in rules, which it re-exports (and which worker/jobs/runner-checkin.mjs
+# reads): a separate file because the Convex record imports it too.
+cp "$WORKER_DIR"/../scripts/checkin-rules.mjs /opt/tts/checkin-rules.mjs
 cp "$WORKER_DIR"/jobs/markdown-sections.mjs /opt/tts/worker/jobs/markdown-sections.mjs
 # THE GRAPH, in all three homes it is reached from.
 #
@@ -375,7 +378,7 @@ cp "$WORKER_DIR"/bin/* /usr/local/bin/
 chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
   /usr/local/bin/tts-turing /usr/local/bin/tts-git-credential \
   /usr/local/bin/tts-codex /usr/local/bin/tts-run /usr/local/bin/tts-search \
-  /usr/local/bin/tts-ask /usr/local/bin/tts-audit
+  /usr/local/bin/tts-ask /usr/local/bin/tts-audit /usr/local/bin/tts-runner-step
 
 # GitHub credentials for sessions (ledger graduation sessions-cannot-open-prs,
 # 2026-08-31). Two consumers, one source of truth (GH_TOKEN in worker.env):

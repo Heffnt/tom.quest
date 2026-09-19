@@ -737,6 +737,48 @@ export const SESSION_REPOS = {
 
 /** The sentinel repo value meaning "no checkout, an empty scratch workspace".
  * Written into claudeSessions.repo when a session holds no repos at all. */
+// ── The box's prompt sentences ──────────────────────────────────────────────
+// Read by the mission prompts in convex/claudeSessions.ts and the runner's step
+// prompt in convex/ttsRunners.ts; here so neither module imports the other.
+
+// The box's two read-only commands, named in every autonomous mission prompt.
+// An installed command no prompt names is not access: tts-browse sat on the
+// box unmentioned while sessions that changed a page still ended by asking
+// Tom to go and look (found 2026-08-30, salvaged from unmerged commit
+// 703f526 when #33 superseded that branch).
+export const BOX_TOOLS_PARAGRAPH = [
+  "Two read-only commands exist on this box:",
+  "- `tts-browse <url> [--login] [--out /tmp/page.png]` opens a real browser on a page and prints its console errors and failed requests, then writes a screenshot you can read back. `--login` signs in with the agent account — every /turing and /tts page is role-gated, so an anonymous 200 can hide 401s underneath. LOOK at any page you changed instead of asking Tom to.",
+  "- `tts-turing health|gpus|jobs|output <name>` reads the WPI Turing cluster through the API's read-only key, and `tts-turing tree [path]|node [path]|read <path>` reads the experiment results tree (a path is relative to its root). It cannot allocate, cancel, run, or read files outside the results tree — those need Tom. A verb answering 401 means the read key is not installed yet, or turing-api has not been redeployed with the results tree on that key; record that in your outcome instead of retrying.",
+].join("\n");
+
+// The daemon that runs THIS session runs every other live session on the box
+// too, so an agent that restarts it to pick up its own change kills itself
+// mid-turn and takes the rest of the fleet with it. Named in every prompt
+// shape — checkout or empty scratch, autonomous or interactive — because the
+// one shape that goes unsaid is the one that does it.
+export const DAEMON_RESTART_SENTENCE =
+  "Never restart, stop, or kill `tts-session-host` — it is the daemon running this session and every other live session on this box; if a change needs a restart, say so in your outcome and the supervisor restarts it.";
+
+// ── Runners (convex/ttsRunners.ts) ───────────────────────────────────────────
+// The stored vocabulary of a runner, here because the schema and the runner
+// module both need it and the schema cannot import a module with functions.
+//
+// `type` picks the column of the asking rubric: a campaign spends and waits on
+// Tom for its plan; a probe is small and asks the delegate. `tier` is the row:
+// routine (inside the plan), plan (changes what the experiment is), setup
+// (changes what it costs or where it runs).
+export const RUNNER_TYPE = v.union(v.literal("campaign"), v.literal("probe"));
+export const RUNNER_TIER = v.union(v.literal("routine"), v.literal("plan"), v.literal("setup"));
+export const RUNNER_ANSWERER = v.union(v.literal("tom"), v.literal("delegate"), v.literal("self"));
+export const RUNNER_DECISION = v.union(
+  v.literal("continue"), v.literal("change"), v.literal("ask"), v.literal("hand-off"), v.literal("finish"),
+);
+export const RUNNER_ENDED_REASON = v.union(v.literal("finish"), v.literal("hand-off"), v.literal("failed"));
+export type RunnerTier = Infer<typeof RUNNER_TIER>;
+export type RunnerAnswerer = Infer<typeof RUNNER_ANSWERER>;
+export const RUNNER_TIERS: readonly RunnerTier[] = ["routine", "plan", "setup"];
+
 export const NO_REPO = "none";
 
 /** Every repo name a session may hold, in declaration order. THE list — the
@@ -957,6 +999,11 @@ export const SLACK_SUBJECT = v.union(
   // thread is an objection to that one decision.
   v.object({ kind: v.literal("ask"), id: v.string() }),
   v.object({ kind: v.literal("job"), id: v.string() }),
+  // A RUNNER (convex/ttsRunners.ts): its check-in thread in #tts-runners and
+  // its questions in #tts-needs-you. It names its producer for the reason the
+  // two above do; a reply in either thread is an answer to that runner's
+  // newest open question.
+  v.object({ kind: v.literal("runner"), id: v.id("runners") }),
 );
 export type SlackSubject = Infer<typeof SLACK_SUBJECT>;
 
@@ -972,17 +1019,19 @@ export function slackHourKey(utcMs: number): string {
   return `${nyCalendarDayKey(utcMs)}T${String(nyLocalHour(utcMs)).padStart(2, "0")}`;
 }
 
-// ── The seven channels (slack-design.md §1) ──────────────────────────────────
-// Seven rooms, each with one purpose and one cadence: #tts-today (the morning
+// ── The eight channels (slack-design.md §1) ──────────────────────────────────
+// Eight rooms, each with one purpose and one cadence: #tts-today (the morning
 // message), #tts-decisions (object, or let it stand), #tts-needs-you (settle
 // it), #tts-hourly (glance), #tts-broken (the box is failing), #tts-simplify
 // (the removal loop's one open pull request, to object to), #dump (capture).
+// An eighth, #tts-runners, holds one thread per runner, its root the runner's
+// first check-in (convex/ttsRunners.ts).
 // Tom's steps to create them and set these ids are slack-design.md §5.1.
 //
 // This lives here rather than in convex/ttsSync.ts, which owns the Slack door,
 // because that file is "use node" and convex/http.ts — the route that opens a
 // needs-you thread — is a plain-runtime module that cannot import it.
-export type SlackChannelKind = "today" | "decisions" | "needsYou" | "hourly" | "broken" | "simplify";
+export type SlackChannelKind = "today" | "decisions" | "needsYou" | "hourly" | "broken" | "simplify" | "runners";
 
 const CHANNEL_ENV: Record<SlackChannelKind, string> = {
   today: "SLACK_TTS_TODAY_CHANNEL_ID",
@@ -991,6 +1040,7 @@ const CHANNEL_ENV: Record<SlackChannelKind, string> = {
   hourly: "SLACK_TTS_HOURLY_CHANNEL_ID",
   broken: "SLACK_TTS_BROKEN_CHANNEL_ID",
   simplify: "SLACK_TTS_SIMPLIFY_CHANNEL_ID",
+  runners: "SLACK_TTS_RUNNERS_CHANNEL_ID",
 };
 
 /** Each channel, or null when its variable is unset. Missing = log once and do

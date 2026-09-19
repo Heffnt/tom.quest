@@ -15,6 +15,16 @@ crons.interval(
   internal.gpuPool.reconcile,
 );
 
+// The runners' backstop (convex/ttsRunners.ts): opens a step for any runner
+// whose nextStepAt has passed with none waiting or running, and frees any lease
+// past its deadline. A runner's schedule is a field, not this cron; this is
+// what recovers a scheduled call that was lost.
+crons.interval(
+  "runner sweep",
+  { seconds: 60 },
+  internal.ttsRunners.internalRunnerSweep,
+);
+
 // ── TTS (spec: WikiTom tts/spec.md §7) ──────────────────────────────────────
 // The TTS day anchors at 5 a.m. America/New_York. Convex crons are UTC-only, so
 // each job fires at both possible UTC times (EDT/EST) and the handler's

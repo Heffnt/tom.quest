@@ -671,7 +671,32 @@ export const JOBS = {
     fields: [],
     opts: { maxTurns: 2 },
   },
+  // The runner check-in judge (worker/jobs/runner-checkin.mjs), scored against
+  // evals/golden/checkins/. The regeneration IS the judge's call: the item holds
+  // a fixed check-in and the verdict the judge must reach on it, so a change to
+  // the judge's prompt or to the writing standard that flips a verdict is a
+  // regression here. Scored without a second judge, by comparing verdicts.
+  checkin: {
+    layers: ["write"],
+    module: "worker/jobs/runner-checkin.mjs",
+    build: (item, layers, mod) => mod.checkInJudgePrompt(item.input.checkIn, layers.text),
+    parse: (answer, mod) => mod.parseCheckInVerdict(answer),
+    score: (item, fresh) => scoreCheckIn(item, fresh),
+    fields: [],
+    opts: { maxTurns: 1 },
+  },
 };
+
+/** One golden check-in: the judge's fresh verdict against the one the item
+ *  says it must reach. An unreadable answer is a failed item, never a pass. */
+export function scoreCheckIn(item, fresh) {
+  const wanted = item.expected?.verdict;
+  if (fresh?.unreadable) return { judged: "fail", reason: `the judge's answer could not be read: ${fresh.head ?? ""}` };
+  if (fresh?.verdict === wanted) {
+    return { judged: "pass", reason: wanted === "fail" ? `failed it, as required: ${(fresh.complaints ?? []).join(" ")}`.trim() : "passed it, as required" };
+  }
+  return { judged: "fail", reason: `the judge said ${fresh?.verdict ?? "nothing"}, the item requires ${wanted}${fresh?.complaints?.length ? `: ${fresh.complaints.join(" ")}` : ""}` };
+}
 
 /**
  * A golden learning item's `input` as the nightly step's own input object: the

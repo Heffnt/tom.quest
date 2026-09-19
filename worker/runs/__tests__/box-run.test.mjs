@@ -567,6 +567,12 @@ describe("claudeArgs", () => {
     expect(entry.claudeArgs({})).not.toContain("--max-turns");
   });
 
+  it("starts the run under a session id only when a caller names one", () => {
+    const id = "0f8fad5b-d9cb-469f-a165-70867728950e";
+    expect(valueAfter(entry.claudeArgs({ sessionId: id }), "--session-id")).toBe(id);
+    expect(entry.claudeArgs({})).not.toContain("--session-id");
+  });
+
   it("refuses a tool list that is not non-empty strings", () => {
     expect(() => entry.claudeArgs({ allowedTools: "Read" })).toThrow(/allowedTools/);
     expect(() => entry.claudeArgs({ allowedTools: ["Read", ""] })).toThrow(/allowedTools/);

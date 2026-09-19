@@ -48,6 +48,8 @@ async function requireTomId(ctx: QueryCtx | MutationCtx): Promise<Id<"users">> {
 // insertSession below; ttsSkills keeps only the header parser it strips with.
 import { withoutModelOfTomPrelude } from "./ttsSkills";
 import { assembleContext, type ContextSubject } from "./ttsContext";
+import { dueRunnerSteps } from "./ttsRunners";
+import { BOX_TOOLS_PARAGRAPH, DAEMON_RESTART_SENTENCE } from "./ttsShared";
 import { briefForPrompt } from "../worker/jobs/context-relevance.mjs";
 import {
   WORKER_CONTRACT,
@@ -1600,7 +1602,11 @@ export const internalPoll = internalMutation({
         });
       }
     }
-    return { now, sessions };
+    // Runner steps ride the same poll: one more array on this payload, one
+    // more branch in the daemon's walk, no second loop and no second key. A
+    // step is not a session and writes no session row (convex/ttsRunners.ts).
+    const runnerSteps = await dueRunnerSteps(ctx, now);
+    return { now, sessions, runnerSteps };
   },
 });
 
@@ -2681,24 +2687,8 @@ function promptFact(label: string, value: string | undefined): string | null {
  * per-caller because a groundwork mission and a worker mission mean different
  * things by "implement".
  */
-// The box's two read-only commands, named in every autonomous mission prompt.
-// An installed command no prompt names is not access: tts-browse sat on the
-// box unmentioned while sessions that changed a page still ended by asking
-// Tom to go and look (found 2026-08-30, salvaged from unmerged commit
-// 703f526 when #33 superseded that branch).
-const BOX_TOOLS_PARAGRAPH = [
-  "Two read-only commands exist on this box:",
-  "- `tts-browse <url> [--login] [--out /tmp/page.png]` opens a real browser on a page and prints its console errors and failed requests, then writes a screenshot you can read back. `--login` signs in with the agent account — every /turing and /tts page is role-gated, so an anonymous 200 can hide 401s underneath. LOOK at any page you changed instead of asking Tom to.",
-  "- `tts-turing health|gpus|jobs|output <name>` reads the WPI Turing cluster through the API's read-only key. It cannot allocate, cancel, run, or read files — those need Tom. A verb answering 401 means the read key is not installed yet; record that in your outcome instead of retrying.",
-].join("\n");
-
-// The daemon that runs THIS session runs every other live session on the box
-// too, so an agent that restarts it to pick up its own change kills itself
-// mid-turn and takes the rest of the fleet with it. Named in every prompt
-// shape — checkout or empty scratch, autonomous or interactive — because the
-// one shape that goes unsaid is the one that does it.
-const DAEMON_RESTART_SENTENCE =
-  "Never restart, stop, or kill `tts-session-host` — it is the daemon running this session and every other live session on this box; if a change needs a restart, say so in your outcome and the supervisor restarts it.";
+// BOX_TOOLS_PARAGRAPH and DAEMON_RESTART_SENTENCE live in ttsShared.ts, which
+// the runner's step prompt (convex/ttsRunners.ts) reads too.
 
 function workspaceParagraph(
   repos: string[],

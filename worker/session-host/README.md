@@ -144,7 +144,8 @@ curls work. Those two are the only keys passed EXPLICITLY; the rest of the
 daemon's env is inherited minus the `env-scrub.mjs` list (`SESSIONS_WORKER_KEY`,
 `GH_TOKEN`, the `TOMQUEST_AGENT_*` pair, `TURING_API_KEY`, `CODEX_API_KEY`,
 `OPENAI_API_KEY`), so a session also sees `TURING_READ_KEY` when the box has one — the cluster API's
-read-only credential behind `tts-turing` (three GETs, no write verb; the full
+read-only credential behind `tts-turing` (six GETs, three of them the jailed
+experiment results tree; no write verb; the full
 `TURING_API_KEY` is not on this box at all). A daemon-stamped outcome (time
 cap, turn failure, restart)
 never overwrites an agent-recorded one — the server ignores it when an
@@ -196,6 +197,9 @@ surfaces the decision in the PR, rather than stopping to wait.
   file so the repo's vitest can execute the rule
   (`__tests__/banned-tools.test.mjs`) — `session.mjs` cannot be imported
   there, since the SDK is installed only on the box.
+- `runner-step.mjs` — how one runner step is claimed, launched through
+  `box-run.mjs` and reported; dependency-free so
+  `__tests__/runner-step.test.mjs` can drive it. See "Runner steps" below.
 - `lib.mjs` — env parsing, `sessionsFetch` / `sessionsGet`, backoff, 32KB
   truncation (`truncated`) and the same cut with the complete payload beside
   it (`cutWithOverflow`).
@@ -312,6 +316,31 @@ failed — logged once, then retried with doubling backoff capped at 30
 minutes). The Claude account auto-switch fires
 for family `claude` only — a Codex cap has no second account to switch to;
 the scheduler's breaker reads it from the error text keyed on family.
+
+## Runner steps
+
+A runner (`convex/ttsRunners.ts`) is one experiment watched by a chain of short
+step runs. A step is not a session: it writes no `claudeSessions` row, never
+goes through the Agent SDK, and never counts against the fleet's caps. The
+poll payload carries due steps as a `runnerSteps` array, and the walk launches
+each through `runner-step.mjs`, after the session loop:
+
+- `POST /runner-steps/claim` admits the step in one Convex transaction, taking
+  the runner's lease, or refuses and writes the request off.
+- The step runs through `box-run.mjs` in process, under the session id the
+  claim minted, in a worktree of the runner's repo, with an envelope naming it
+  (`environment: runner`, `kind: runner-step`, `origin: runner:<id>`, and the
+  step before it as `continuesRunId`).
+- Once the worktree exists and before the model starts, the sensor
+  (`worker/runs/runner-sensor.mjs`) reads the facts block; the daemon posts it
+  to `POST /runner-steps/facts` and writes it into the prompt.
+- On exit, `POST /runner-steps/finish` reports the code. A step that never
+  checked in is a failed step.
+
+A restart kills a running step with the daemon's cgroup. Nothing is recovered
+here: the lease outlives the process in Convex, and the one-minute sweep there
+frees it, records the failure and schedules the next step. A change to this
+path needs `tts-session-host` restarted, which is the supervisor's to do.
 
 ## The no-state rule, as applied here
 

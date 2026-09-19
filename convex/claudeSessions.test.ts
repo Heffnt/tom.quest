@@ -20,7 +20,7 @@ import type { SessionModel } from "./ttsShared";
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
 // The distinctive half of the one sentence every session prompt carries about
-// the daemon that runs it (DAEMON_RESTART_SENTENCE in convex/claudeSessions.ts).
+// the daemon that runs it (DAEMON_RESTART_SENTENCE in convex/ttsShared.ts).
 // Written out here rather than imported: a hard-coded expectation that goes red
 // when the prompt changes is the alarm working.
 const DAEMON_SENTENCE = "Never restart, stop, or kill `tts-session-host`";

@@ -911,6 +911,7 @@ const CHANNEL_WHAT = Object.freeze({
   hourly: "the hourly line",
   broken: "one line per distinct failure",
   simplify: "the removal loop's one open pull request, for objection",
+  runners: "a thread per runner, a check-in every step",
 });
 
 // REMOVAL CHECK: cannot remove, and it is not a second copy of the register.
@@ -932,6 +933,7 @@ const CHANNEL_NAME = Object.freeze({
   hourly: "#tts-hourly",
   broken: "#tts-broken",
   simplify: "#tts-simplify",
+  runners: "#tts-runners",
 });
 
 // ── D1: two statements of one term ───────────────────────────────────────────

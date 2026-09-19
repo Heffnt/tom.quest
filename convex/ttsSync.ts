@@ -34,6 +34,8 @@ import {
   type RemovalFact,
   type HourlyFacts,
   type Message,
+  checkInBody,
+  composeCheckIn,
 } from "./ttsCompose";
 
 // TTS actions that reach outside Convex: the 5 a.m. Slack digest, the hourly
@@ -621,6 +623,32 @@ export const sendBroken = internalAction({
       channel,
     });
     return posted.ok ? { sent: true } : { sent: false, error: posted.error };
+  },
+});
+
+// ── A runner's check-in (convex/ttsRunners.ts) ───────────────────────────────
+// One thread per runner in #tts-runners: the first check-in is the root and
+// every later one replies under it. The numbers go through the form like every
+// message; the step's own words follow verbatim, having passed their own form
+// rules and a judge. Quiet while SLACK_TTS_RUNNERS_CHANNEL_ID is unset, which
+// channelFor logs.
+export const sendRunnerCheckIn = internalAction({
+  args: { checkInId: v.id("runnerEvents") },
+  handler: async (ctx, { checkInId }): Promise<{ sent: boolean; reason?: string; error?: string }> => {
+    const read = await ctx.runQuery(internal.ttsRunners.internalCheckInFacts, { checkInId });
+    if (read === null) return { sent: false, reason: "no such check-in" };
+    const channel = channelFor("runners");
+    if (channel === null) return { sent: false, reason: "not configured" };
+    const text = `${renderChecked(composeCheckIn(read.facts), false, "runner check-in")}\n\n${checkInBody(read.facts)}`;
+    const posted = await postSlack(ctx, {
+      text,
+      subject: { kind: "runner", id: read.runnerId },
+      channel,
+      ...(read.threadTs !== undefined ? { threadTs: read.threadTs } : {}),
+    });
+    if (!posted.ok) return { sent: false, error: posted.error };
+    await ctx.runMutation(internal.ttsRunners.internalCheckInPosted, { checkInId, ts: posted.ts });
+    return { sent: true };
   },
 });
 

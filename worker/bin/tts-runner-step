@@ -1,0 +1,126 @@
+#!/usr/bin/env node
+// tts-runner-step — a runner step's pen: check the check-in, then record it.
+//
+// A runner step (convex/ttsRunners.ts) ends by calling this once. It runs the
+// check-in's form rules, then one cold judge run against Tom's writing
+// standard (worker/jobs/runner-checkin.mjs). On a failure it prints what
+// failed and exits 5 WITHOUT RECORDING: the step rewrites once and calls again.
+// The second failure is recorded with the failed grade, and its Slack line is
+// marked as having failed the writing check. On a pass it posts
+// POST /tts/runner-step, which records the check-in, the document and any asks,
+// posts the check-in to the runner's thread, schedules the next step and frees
+// the lease, in one transaction.
+//
+// Exit codes: 0 recorded · 2 usage · 4 the record refused or was unreachable ·
+//             5 the check-in failed its check and was not recorded.
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+const jobsDir = process.env.TTS_JOBS_DIR ?? "/opt/tts";
+const DECISIONS = ["continue", "change", "ask", "hand-off", "finish"];
+const TIERS = ["routine", "plan", "setup"];
+
+function usage(message) {
+  if (message) process.stderr.write(`tts-runner-step: ${message}\n`);
+  process.stderr.write(
+    "usage: tts-runner-step --runner <id> --step-run <id>\n" +
+    "                       --decision continue|change|ask|hand-off|finish\n" +
+    "                       --check-in-file <path> | --check-in <text>\n" +
+    "                       --document <path>\n" +
+    "                       [--ask 'routine|plan|setup|yes|no|<question>'] (repeatable)\n" +
+    "                       [--next-step-ms <n>]\n",
+  );
+  process.exitCode = 2;
+}
+
+function parse(argv) {
+  const out = { asks: [] };
+  const flags = ["--runner", "--step-run", "--decision", "--check-in", "--check-in-file", "--document", "--ask", "--next-step-ms"];
+  for (let i = 0; i < argv.length; i += 1) {
+    const flag = argv[i];
+    if (flag === "--help" || flag === "-h") return { help: true };
+    if (!flags.includes(flag)) throw new Error(`unknown flag ${flag}`);
+    const value = argv[i + 1];
+    if (value === undefined) throw new Error(`${flag} needs a value`);
+    i += 1;
+    if (flag === "--runner") out.runnerId = value;
+    if (flag === "--step-run") out.stepRunId = value;
+    if (flag === "--decision") out.decision = value;
+    if (flag === "--check-in") out.checkIn = value;
+    if (flag === "--check-in-file") out.checkIn = fs.readFileSync(value, "utf8");
+    if (flag === "--document") out.document = fs.readFileSync(value, "utf8");
+    if (flag === "--next-step-ms") out.nextStepMs = Number(value);
+    if (flag === "--ask") {
+      const [tier, blocking, ...rest] = value.split("|");
+      const text = rest.join("|").trim();
+      if (!TIERS.includes(tier)) throw new Error(`--ask tier must be one of ${TIERS.join(", ")}`);
+      if (blocking !== "yes" && blocking !== "no") throw new Error("--ask blocking must be yes or no");
+      if (!text) throw new Error("--ask needs its question after the second |");
+      out.asks.push({ tier, blocking: blocking === "yes", text });
+    }
+  }
+  if (!out.runnerId) throw new Error("--runner is required");
+  if (!out.stepRunId) throw new Error("--step-run is required");
+  if (!DECISIONS.includes(out.decision)) throw new Error(`--decision must be one of ${DECISIONS.join(", ")}`);
+  if (typeof out.checkIn !== "string" || !out.checkIn.trim()) throw new Error("a check-in is required (--check-in-file or --check-in)");
+  if (typeof out.document !== "string" || !out.document.trim()) throw new Error("--document is required: the rewritten document");
+  if (out.nextStepMs !== undefined && (!Number.isInteger(out.nextStepMs) || out.nextStepMs <= 0)) throw new Error("--next-step-ms must be a whole number of milliseconds");
+  if (out.decision === "ask" && out.asks.length === 0) throw new Error("a decision of ask needs at least one --ask");
+  return out;
+}
+
+// The first failed attempt is remembered per step run, so the second call is
+// recognised as the retry the step was told it gets. A temp file, not state of
+// record: losing it costs one extra rewrite.
+function attemptFile(stepRunId) {
+  return path.join(os.tmpdir(), `tts-runner-step-${stepRunId.replace(/[^\w.-]/g, "_")}.failed`);
+}
+
+let args;
+try {
+  args = parse(process.argv.slice(2));
+} catch (error) {
+  usage(error.message);
+}
+if (args?.help) usage();
+else if (args) {
+  const { checkCheckIn } = await import(`${jobsDir}/runner-checkin.mjs`);
+  const { convexFetch, loadEnv } = await import(`${jobsDir}/tts-lib.mjs`);
+  const graded = await checkCheckIn(args.checkIn);
+  const marker = attemptFile(args.stepRunId);
+  const priorFailure = fs.existsSync(marker);
+  if (graded.verdict === "fail" && !priorFailure) {
+    fs.writeFileSync(marker, JSON.stringify({ at: Date.now(), complaints: graded.complaints }));
+    process.stdout.write(`CHECK-IN NOT RECORDED: it failed the ${graded.stage === "form" ? "form rules" : "writing judge"}.\n`);
+    for (const complaint of graded.complaints) process.stdout.write(`- ${complaint}\n`);
+    process.stdout.write("Rewrite the check-in once to fix these and call tts-runner-step again. A second failure is recorded and posted marked.\n");
+    process.exitCode = 5;
+  } else {
+    try {
+      const env = loadEnv();
+      const result = await convexFetch(env, "/tts/runner-step", {
+        runnerId: args.runnerId,
+        stepRunId: args.stepRunId,
+        decision: args.decision,
+        checkIn: args.checkIn.trim(),
+        document: args.document,
+        asks: args.asks,
+        ...(args.nextStepMs !== undefined ? { nextStepMs: args.nextStepMs } : {}),
+        graded: {
+          verdict: graded.verdict,
+          complaints: graded.complaints,
+          attempts: priorFailure ? 2 : 1,
+          judgeModel: graded.judgeModel,
+        },
+      });
+      try { fs.rmSync(marker, { force: true }); } catch {}
+      process.stdout.write(`RECORDED check-in for step ${args.stepRunId}${graded.verdict === "fail" ? " (marked: it did not pass the writing check)" : ""}.\n`);
+      if (result?.nextStepAt) process.stdout.write(`next step at ${new Date(result.nextStepAt).toISOString()}\n`);
+      process.stdout.write("Your step is done; stop now.\n");
+    } catch (error) {
+      process.stderr.write(`tts-runner-step: the record refused the check-in: ${String(error?.message ?? error).slice(0, 400)}\n`);
+      process.exitCode = 4;
+    }
+  }
+}

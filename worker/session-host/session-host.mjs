@@ -38,6 +38,7 @@ import {
 import { Session, gitErrorText } from "./session.mjs";
 import { CODEX_BIN, codexArgs, resolveCodexBin, spawnCodex } from "./codex-bin.mjs";
 import { planRow } from "./poll-plan.mjs";
+import { launchRunnerStep } from "./runner-step.mjs";
 
 const VERSION = "0.3.0";
 // Identifies THIS process lifetime to the server (claudeDaemonHealth) — a
@@ -497,6 +498,36 @@ function adoptSession(env, sessions, row) {
   s.processServerState(row);
 }
 
+// ── runner steps: launched through the box's one launcher ────────────────────
+// A runner step is not a session (runner-step.mjs says what it is). It runs
+// through box-run.mjs, imported on first use so a daemon on a box whose
+// /opt/tts/runs is missing still runs every session. `../runs/box-run.mjs`
+// resolves to worker/runs in a checkout and to /opt/tts/runs installed.
+let boxRunModule = null;
+async function boxRunner() {
+  boxRunModule ??= await import("../runs/box-run.mjs");
+  return boxRunModule;
+}
+let sensorModule = null;
+async function sensor() {
+  sensorModule ??= await import("../runs/runner-sensor.mjs");
+  return sensorModule;
+}
+
+function launchStep(env, steps, row) {
+  return launchRunnerStep(steps, row, {
+    post: (route, body) => sessionsFetch(env, route, body),
+    run: async (options) => {
+      const { boxRun, TOOLS_ALLOWED, BANNED_TOOLS } = await boxRunner();
+      return boxRun({ ...options, allowedTools: [...TOOLS_ALLOWED], deniedTools: [...BANNED_TOOLS] });
+    },
+    log,
+    sense: async (input) => (await sensor()).sense(input),
+    renderFacts: (facts) => sensorModule.renderFacts(facts),
+    env: process.env,
+  });
+}
+
 // ── the main loop ────────────────────────────────────────────────────────────
 
 async function main() {
@@ -506,6 +537,7 @@ async function main() {
   // wait on Codex); Codex claims await codexReady instead — see warmUpCodex.
   codexReady = warmUpCodex();
   const sessions = new Map(); // sessionId -> Session
+  const runnerSteps = new Map(); // runnerSteps id -> the launch in flight
   let pollAttempt = 0;
   // Rows the walk could not act on, logged once each (a fork whose source is
   // still live; a row this daemon cannot construct a Session for) — cleared
@@ -643,6 +675,17 @@ async function main() {
     }
     for (const id of notedRows) {
       if (!listed.has(id)) notedRows.delete(id);
+    }
+
+    // Runner steps due now: one more array on the same payload, one more
+    // branch in the same walk. Each launch is fenced like a session row: one
+    // step this daemon cannot handle never takes the loop down.
+    for (const row of data.runnerSteps ?? []) {
+      try {
+        launchStep(env, runnerSteps, row);
+      } catch (err) {
+        log(`runner step ${row.stepId}: could not be launched:`, String(err?.message ?? err));
+      }
     }
 
     // Locals the server no longer lists are terminal server-side: either our

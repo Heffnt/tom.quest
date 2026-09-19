@@ -21,7 +21,7 @@
 // id, and the morning will move into a room with no history in it.
 //
 // What it does, in order, with the TTS Slack app's bot token:
-//   1. conversations.list / conversations.create — the six public outbound
+//   1. conversations.list / conversations.create — the seven public outbound
 //      TTS channels exist afterwards. The list INCLUDES archived channels: an
 //      archived channel is unarchived and reused, because creating over it
 //      fails name_taken and the run is meant to be repeatable. A newly created
@@ -44,7 +44,7 @@
 // and Slack sends nothing until reaction_added / reaction_removed are
 // subscribed and reactions:read is granted.
 //
-// It prints exactly seven lines to standard output, nothing else:
+// It prints exactly eight lines to standard output, nothing else:
 //
 //   SLACK_TTS_TODAY_CHANNEL_ID=C…
 //   SLACK_TTS_DECISIONS_CHANNEL_ID=C…
@@ -52,11 +52,12 @@
 //   SLACK_TTS_HOURLY_CHANNEL_ID=C…
 //   SLACK_TTS_BROKEN_CHANNEL_ID=C…
 //   SLACK_TTS_SIMPLIFY_CHANNEL_ID=C…
+//   SLACK_TTS_RUNNERS_CHANNEL_ID=C…
 //   TOM_SLACK_USER_ID=U…
 //
 // #tts-simplify is the removal loop's (worker/jobs/removal-loop.mjs): one
 // thread per pull request it opens, where a reply is an objection. A re-run
-// on a workspace that already has the other five finds them and creates only
+// on a workspace that already has the other six finds them and creates only
 // the one that is missing.
 //
 // Both go into the Convex deployment's env (secrets/convex.env, then
@@ -84,9 +85,11 @@ const CHANNELS = [
   ["SLACK_TTS_HOURLY_CHANNEL_ID", "tts-hourly"],
   ["SLACK_TTS_BROKEN_CHANNEL_ID", "tts-broken"],
   ["SLACK_TTS_SIMPLIFY_CHANNEL_ID", "tts-simplify"],
+  // One thread per runner (convex/ttsRunners.ts): its check-ins, every step.
+  ["SLACK_TTS_RUNNERS_CHANNEL_ID", "tts-runners"],
 ];
 // What Tom sets by hand at api.slack.com/apps, printed by every run that gets
-// as far as the seven lines. These are NOT channels and this script does not
+// as far as the eight lines. These are NOT channels and this script does not
 // create them: Slack
 // exposes no bot-token door onto an app's own event subscriptions or scopes,
 // so the one action is his either way and the script's job is to say exactly
@@ -332,8 +335,8 @@ async function main() {
       process.stdout.write(`${envName}=${channel}\n`);
     }
     process.stdout.write(`TOM_SLACK_USER_ID=${tomId}\n`);
-    // Standard error, not standard output: the seven lines above are parsed into
-    // the Convex env and an eighth kind of line there would break whatever
+    // Standard error, not standard output: the eight lines above are parsed into
+    // the Convex env and a ninth kind of line there would break whatever
     // reads them. This is an instruction to a person.
     printAppConfiguration();
   } catch (err) {
