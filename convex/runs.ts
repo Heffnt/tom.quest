@@ -1426,3 +1426,26 @@ export const internalBackfillRunIds = internalMutation({
     return { scanned: page.page.length, patched, cursor: page.isDone ? null : page.continueCursor };
   },
 });
+
+/**
+ * Clears the old `runner` field the cli backfill left beside `cli`, one page of
+ * one table at a time. Nothing reads it; it only keeps the schema from
+ * dropping the field, because a deploy refuses rows carrying undeclared ones.
+ */
+export const internalUnsetRunner = internalMutation({
+  args: { table: v.union(v.literal("runs"), v.literal("runFileVersions")), cursor: v.optional(v.string()), limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const limit = args.limit ?? 200;
+    if (!positiveInteger(limit) || limit > 500) throw new Error("backfill limit must be an integer from 1 to 500");
+    const page = args.table === "runs"
+      ? await ctx.db.query("runs").withIndex("by_ingested_at_and_run_id").order("asc").paginate({ cursor: args.cursor ?? null, numItems: limit })
+      : await ctx.db.query("runFileVersions").withIndex("by_at_and_run_id_and_file_version").order("asc").paginate({ cursor: args.cursor ?? null, numItems: limit });
+    let patched = 0;
+    for (const row of page.page) {
+      if (row.runner === undefined) continue;
+      await ctx.db.patch(row._id, { runner: undefined });
+      patched += 1;
+    }
+    return { scanned: page.page.length, patched, cursor: page.isDone ? null : page.continueCursor };
+  },
+});

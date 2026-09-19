@@ -111,7 +111,7 @@ describe("a day with no loop pull request open", () => {
     expect(result).toMatchObject({ action: "opened", pr: 42 });
     expect(w.calls.boxRun).toHaveLength(1);
     expect(w.calls.boxRun[0].args).toEqual([
-      "--runner", "claude", "--model", "opus", "--repo", "tom.quest", "--ref", "main", "--install", "--tests",
+      "--cli", "claude", "--model", "opus", "--repo", "tom.quest", "--ref", "main", "--install", "--tests",
     ]);
     const prompt = w.calls.boxRun[0].prompt;
     expect(prompt).toContain("app/boolback/components/group-plot.tsx");

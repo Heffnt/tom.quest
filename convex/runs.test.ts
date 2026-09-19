@@ -396,6 +396,36 @@ describe("runs", () => {
     await expect(t.mutation(internal.runs.internalBackfillRunIds, { limit: 501 })).rejects.toThrow();
   });
 
+  it("clears the old runner field from runs and file versions and leaves cli alone", async () => {
+    const t = convexTest(schema, modules);
+    for (const name of ["first-run", "second-run", "third-run"]) {
+      const runId = `claude:laptop:${name}`;
+      await t.mutation(internal.runs.internalIngest, ingest(run({ runId, rootRunId: runId, file: { ...run().file, path: `C:/${name}.jsonl`, storeKey: `runs/${name}` } }), []) as never);
+      if (name === "third-run") continue;
+      await t.run(async (ctx) => {
+        const stored = await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique();
+        await ctx.db.patch(stored!._id, { runner: "claude" });
+        for (const version of await ctx.db.query("runFileVersions").withIndex("by_run_id_and_file_version", (q) => q.eq("runId", runId)).collect()) {
+          await ctx.db.patch(version._id, { runner: "claude" });
+        }
+      });
+    }
+    for (const table of ["runs", "runFileVersions"] as const) {
+      let cursor: string | undefined;
+      let patched = 0;
+      for (;;) {
+        const page = await t.mutation(internal.runs.internalUnsetRunner, { table, cursor, limit: 2 });
+        patched += page.patched;
+        if (page.cursor === null) break;
+        cursor = page.cursor;
+      }
+      expect(patched).toBe(2);
+      const rows = await t.run(async (ctx) => ctx.db.query(table).collect());
+      expect(rows.every((row) => !("runner" in row) && row.cli === "claude")).toBe(true);
+    }
+    await expect(t.mutation(internal.runs.internalUnsetRunner, { table: "runs", limit: 501 })).rejects.toThrow("1 to 500");
+  });
+
   it("switches getMessages from daemon rows to the same run-row page shape", async () => {
     const t = convexTest(schema, modules);
     const sessionId = await session(t, { status: "running" });
