@@ -349,7 +349,7 @@ describe("laptop setup", () => {
     expect(setup).toContain('const events = ["SessionStart", "SubagentStart", "Stop", "SessionEnd", "SubagentStop"]');
     expect(setup).toContain('/opt/tts/runs/sweep.mjs --full');
     expect(setup).toContain('/opt/tts/runs-compare.mjs');
-    expect(ttsLib).toContain('new URL("./runs/registration.mjs", import.meta.url)');
+    expect(ttsLib).toContain('new URL("./runs/box-run.mjs", import.meta.url)');
     expect(runHook).toContain('new URL("../runs/registration.mjs", import.meta.url)');
     expect(codexRun).toContain('new URL("./runs/registration.mjs", import.meta.url)');
     expect(setup).toContain("@/root/wikitom/model-of-tom/agent-rules.md");

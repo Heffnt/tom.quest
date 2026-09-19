@@ -1,38 +1,40 @@
 // tts-lib.mjs — shared helpers for the TTS worker jobs (the pollers, the
 // planner plan-graphs.mjs, apply-time-notes.mjs, nightly.mjs). Plain Node
-// ESM, ZERO npm dependencies: node:fs, node:child_process and the global
-// fetch (Node >= 18, the Jarvis Box runs Node 22) are all we use.
+// ESM, ZERO npm dependencies: node's own modules, the global fetch (Node >=
+// 18, the Jarvis Box runs Node 22) and the run machinery in worker/runs/ are
+// all we use.
 //
 // WHY no dependencies: the Jarvis Box owns no state and must be rebuildable by one
 // script with nothing but Node itself. No node_modules means no lockfile, no
 // install step, no supply-chain surface — setup.sh just copies these files
 // into /opt/tts/ and cron runs them.
 
-import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import { existsSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ENV_PATH, graphVersion, loadEnv as loadWorkerEnv } from "./worker-env.mjs";
 
 // Jobs run from worker/jobs in a checkout and are copied flat into /opt/tts on
-// the box. Keep one installed registration body at /opt/tts/runs while making
-// both import graphs explicit and deterministic.
-const registrationUrls = [
-  new URL("../runs/registration.mjs", import.meta.url),
-  new URL("./runs/registration.mjs", import.meta.url),
+// the box, while the run machinery is installed once at /opt/tts/runs. So the
+// launcher is found by candidate: ../runs/ from a checkout, ./runs/ from the
+// flat install. scripts/check-setup-imports.mjs fences runs/ importing jobs/,
+// not this direction, so worker/jobs/tts-lib.test.mjs proves both layouts.
+const launcherUrls = [
+  new URL("../runs/box-run.mjs", import.meta.url),
+  new URL("./runs/box-run.mjs", import.meta.url),
 ];
 // Vitest's ESM transform can give a dependency a non-file import.meta URL.
 // The cwd candidates cover that test runner; ordinary Node always resolves
 // through the module-relative URLs above, independent of its cwd.
-const registrationFile = [
-  ...registrationUrls.flatMap((candidate) => candidate.protocol === "file:" ? [fileURLToPath(candidate)] : []),
-  path.resolve("worker/runs/registration.mjs"),
-  path.resolve("runs/registration.mjs"),
+const launcherFile = [
+  ...launcherUrls.flatMap((candidate) => candidate.protocol === "file:" ? [fileURLToPath(candidate)] : []),
+  path.resolve("worker/runs/box-run.mjs"),
+  path.resolve("runs/box-run.mjs"),
 ].find((candidate) => existsSync(candidate));
-if (!registrationFile) throw new Error("run registration module is not installed");
-const { claimRegistration, writeRegistration } = await import(pathToFileURL(registrationFile).href);
+if (!launcherFile) throw new Error("the box launcher (runs/box-run.mjs) is not installed");
+const boxRunModule = await import(pathToFileURL(launcherFile).href);
+const { boxRunSync } = boxRunModule;
 
 export { ENV_PATH };
 
@@ -512,97 +514,23 @@ export const MODELS = {
   simplify: "claude-fable-5-1",
 };
 
-/**
- * The `--output-format json` result envelope out of whatever the CLI printed,
- * or null when it printed something else (or nothing).
- *
- * ONE READER FOR BOTH ENDS. A run that succeeds prints the envelope on stdout;
- * a run that fails prints it too and then exits non-zero, which makes Node
- * throw with the same text on `error.stdout`. Reading it in two places is how
- * the failing end came to read it in none.
- */
-export function resultEnvelopeOf(stdout) {
-  if (typeof stdout !== "string" || stdout.trim() === "") return null;
-  let envelope;
-  try {
-    envelope = JSON.parse(stdout);
-  } catch (error) {
-    // Not the JSON envelope. Anything other than bad JSON is a real fault.
-    if (error instanceof SyntaxError) return null;
-    throw error;
-  }
-  return envelope && typeof envelope === "object" && envelope.type === "result" ? envelope : null;
-}
+// THE ARGV, THE TOOL LISTS AND THE ENVELOPE READER LIVE IN box-run.mjs, the
+// box's one launcher, because that is where a command line is built now.
+// These are forwards, never copies, for the callers that always imported the
+// names from here (worker/jobs/evals.test.mjs reads DENIABLE_TOOLS).
+export const DENIABLE_TOOLS = boxRunModule.DENIABLE_TOOLS;
+export const resultEnvelopeOf = boxRunModule.resultEnvelopeOf;
 
-/** Every tool an empty `allowedTools` has to deny by name (runClaude). It is
- *  not a policy — worker/session-host/banned-tools.mjs is that — but the
- *  spelling of "none", for the one caller that wants a model and no tools at
- *  all: the evals explanation regeneration, whose whole input is its prompt.
- *
- *  IT HAS TO BE THE WHOLE BUILT-IN SET, AND THE FILE-AND-SHELL HALF IS NOT IT.
- *  Measured on the box against the installed CLI (2.1.272) by reading the
- *  `init` envelope of `--output-format stream-json --verbose`, which lists the
- *  tools the model is actually handed: an empty allow-list plus the eighteen
- *  names this list used to hold still left SIXTEEN reachable — CronCreate,
- *  CronDelete, CronList, DesignSync, EnterWorktree, ExitWorktree, ListAgents,
- *  ReportFindings, ScheduleWakeup, SendMessage, TaskCreate, TaskGet, TaskList,
- *  TaskUpdate, ToolSearch, Workflow. A job that asked for no tools had sixteen,
- *  and ToolSearch is the worst of them: its whole purpose is to fetch the
- *  schemas of tools that were deferred, which re-opens the set this flag just
- *  closed. With the names below the same probe reports zero tools.
- *
- *  Names the CLI does not know are IGNORED, so the retired spellings stay:
- *  being complete costs nothing and falling behind costs a run. */
-export const DENIABLE_TOOLS = [
-  "Task", "TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate",
-  "Bash", "BashOutput", "KillShell", "KillBash", "Glob", "Grep", "Read", "Edit",
-  "MultiEdit", "Write", "NotebookRead", "NotebookEdit", "WebFetch", "WebSearch",
-  "TodoWrite", "SlashCommand", "Skill", "ExitPlanMode", "AskUserQuestion",
-  "ToolSearch", "Workflow", "ListAgents", "ReportFindings", "ScheduleWakeup",
-  "SendMessage", "EnterWorktree", "ExitWorktree", "DesignSync",
-  "CronCreate", "CronDelete", "CronList",
-  "ListMcpResourcesTool", "ReadMcpResourceTool",
-];
-
-/**
- * The command line `claude -p` is given, as data.
- *
- * SPLIT OUT OF runClaude SO IT CAN BE READ WITHOUT BEING RUN. What the flags
- * come to is the whole of what a job's tool and turn settings mean, and inside
- * runClaude the only way to see them was to spawn a child and watch what it
- * did — which is no way to find out that a job asking for no tools was being
- * handed sixteen. Every argument is decided here and nothing else here touches
- * the process, the environment or the registration.
- */
-export function claudeArgs({ agentic = false, maxTurns, model, allowedTools } = {}) {
-  const turns = maxTurns ?? (agentic ? 200 : 8);
-  const args = ["-p", "--output-format", "json", "--max-turns", String(turns)];
-  if (model) args.push("--model", model);
-  if (agentic) args.push("--permission-mode", "bypassPermissions");
-  // Agentic mode makes Claude's tools usable. A caller that also supplies an
-  // allow-list is responsible for putting it in a disposable workspace: the
-  // allow-list keeps this run read-only, while the throwaway workspace makes
-  // bypassPermissions harmless if a future CLI version interprets a tool more
-  // broadly than we expect.
-  if (allowedTools !== undefined) {
-    if (!Array.isArray(allowedTools) || allowedTools.some((tool) => typeof tool !== "string" || tool === "")) {
-      throw new Error("allowedTools must be an array of non-empty strings");
-    }
-    args.push("--allowedTools", allowedTools.join(","));
-    // AN EMPTY LIST MEANS NO TOOLS, AND THE ALLOW-LIST ALONE DOES NOT SAY SO.
-    // `--allowedTools` pre-approves; it does not withhold, and the default
-    // permission mode hands the model its read tools without asking either way
-    // (see the two modes above). The flag that withholds names its tools, so an
-    // empty allow-list has to name them — DENIABLE_TOOLS is that spelling and
-    // the only reason it exists.
-    if (allowedTools.length === 0) args.push("--disallowedTools", DENIABLE_TOOLS.join(","));
-  }
-  return args;
-}
-
-// Run headless Claude Code (`claude -p`) and return the model's ANSWER TEXT
-// (the envelope is unwrapped here; parsing the answer is the caller's job —
-// see extractJsonObject below for the JSON-answer case).
+// Run headless Claude Code (`claude -p`) through box-run.mjs and return the
+// model's ANSWER TEXT (the envelope is unwrapped there; parsing the answer is
+// the caller's job — see extractJsonObject below for the JSON-answer case).
+//
+// NO JOB BUILDS A CLAUDE COMMAND LINE. This composes the job's registration and
+// its settings and hands them to boxRunSync, which takes a slot on the box's
+// semaphore, scrubs the child's environment, writes the envelope under
+// box-run.mjs's name, runs the CLI and claims the run. The origin is still the
+// job's own (`cron:<job>`), so the record says which job asked and which
+// program launched it.
 //
 // Two modes:
 //   non-agentic (default) — the read-only default permission mode: the model
@@ -615,12 +543,19 @@ export function claudeArgs({ agentic = false, maxTurns, model, allowedTools } = 
 //       files and runs tests inside a throwaway clone. NEVER point agentic
 //       mode at a directory whose damage you can't discard.
 //
+// An `allowedTools` list keeps an agentic run read-only; an empty one means no
+// tools at all, and box-run's claudeArgs spells that out by name.
+//
 // The prompt goes over STDIN, not argv: Linux caps a single argv element at
 // ~128 KiB and embedded todo/ledger JSON will eventually exceed that
 // (review-caught on prepare-queue).
 // `model` maps to --model. EVERY CALLER PASSES ONE, from the MODELS table
 // above — omit it and the run silently takes the active account's default,
 // which is a fleet-wide setting no job should be tiered by.
+// `slotWaitMs` bounds the wait for a free slot, for a caller with a fallback of
+// its own; past it the call throws with `reason` "busy". Without it the call
+// waits as long as the box is full, and the cron line's flock turns that into
+// skipped ticks rather than a pile-up.
 // `receipt` is an OUT-PARAMETER, and the one thing this function tells a
 // caller besides the answer text: pass `receipt: {}` alongside a registration
 // and the token this call spooled is written into it as `receipt.runToken`.
@@ -639,121 +574,112 @@ export function claudeArgs({ agentic = false, maxTurns, model, allowedTools } = 
 // that wrote the text.
 export function runClaude(
   prompt,
-  { cwd, timeoutMs, agentic = false, maxTurns, model, allowedTools, registration, receipt } = {},
+  { cwd, timeoutMs, agentic = false, maxTurns, model, allowedTools, registration, receipt, slotWaitMs } = {},
 ) {
-  const args = claudeArgs({ agentic, maxTurns, model, allowedTools });
-  const childEnv = { ...process.env, CLAUDE_CONFIG_DIR };
-  let spooled = null;
-  if (registration !== undefined) {
-    const script = path.basename(process.argv[1] ?? "unknown.mjs");
-    const job = script.replace(/\.mjs$/i, "");
-    const stateDir = process.env.RUN_SWEEP_STATE_DIR
-      || (process.platform === "win32"
-        ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "tts", "runs")
-        : "/var/cache/tts/runs");
-    const layersKnown = registration.layersKnown === true;
-    spooled = writeRegistration({
-      spoolDir: process.env.TTS_RUN_REG_SPOOL || path.join(stateDir, "registration"),
-      writer: { file: `worker/jobs/${script}`, job },
-      registration: {
-        ...registration,
-        host: process.env.RUN_HOST === "box" || process.env.RUN_HOST === "laptop" ? process.env.RUN_HOST : null,
-        cli: "claude",
-        origin: registration.origin ?? `cron:${job}`,
-        kind: registration.kind ?? "job",
-        environment: registration.environment ?? "worker",
-        modelRequested: model ?? null,
-        effortRequested: null,
-        cwd: path.resolve(cwd ?? process.cwd()),
-        todoId: registration.todoId ?? null,
-        batchId: registration.batchId ?? null,
-        mergeKey: registration.mergeKey ?? null,
-        parentRunId: registration.parentRunId ?? process.env.TTS_RUN_PARENT_RUN_ID ?? null,
-        spawnedByToolUseId: registration.spawnedByToolUseId ?? null,
-        continuesRunId: registration.continuesRunId ?? null,
-        layersKnown,
-        layersGiven: layersKnown && Array.isArray(registration.layersGiven) ? registration.layersGiven : [],
-        layersDenied: layersKnown && Array.isArray(registration.layersDenied) ? registration.layersDenied : [],
-        skillsGranted: Array.isArray(registration.skillsGranted) ? registration.skillsGranted : [],
-        skillsRefused: Array.isArray(registration.skillsRefused) ? registration.skillsRefused : [],
-        tools: { allowed: allowedTools ?? null, denied: null },
-        hooksConfigured: ["SessionStart", "SessionEnd", "Stop", "SubagentStart", "SubagentStop"],
-        promptSha256: crypto.createHash("sha256").update(String(prompt)).digest("hex"),
-        // WHICH GRAPH THIS RUN RAN UNDER, and nothing about which of its nodes
-        // the prompt carried: a cron job assembles no node list here, and an
-        // empty array would claim it carried none rather than that this
-        // launcher does not know. So no graphNodes key at all, and `undefined`
-        // when there is no published graph to name.
-        graphVersion: graphVersion() ?? undefined,
-      },
-    });
-    childEnv.TTS_RUN_REG_TOKEN = spooled.token;
-    childEnv.TTS_RUN_REG_SPOOL = path.dirname(spooled.file);
-    // Filled BEFORE the child runs, not after it returns: a call that times out
-    // or throws still produced a registered run, and a caller that wants to
-    // report which run failed needs its token.
-    if (receipt !== undefined && receipt !== null) receipt.runToken = spooled.token;
+  // Refused before anything is spooled or started: a malformed list must not
+  // quietly widen the run to every tool the CLI has.
+  if (allowedTools !== undefined && (!Array.isArray(allowedTools) || allowedTools.some((tool) => typeof tool !== "string" || tool === ""))) {
+    throw new Error("allowedTools must be an array of non-empty strings");
   }
-  let stdout;
+  const runCwd = path.resolve(cwd ?? process.cwd());
+  let envelope = null;
+  if (registration !== undefined) {
+    const job = path.basename(process.argv[1] ?? "unknown.mjs").replace(/\.mjs$/i, "");
+    const layersKnown = registration.layersKnown === true;
+    envelope = {
+      ...registration,
+      host: process.env.RUN_HOST === "box" || process.env.RUN_HOST === "laptop" ? process.env.RUN_HOST : null,
+      cli: "claude",
+      origin: registration.origin ?? `cron:${job}`,
+      kind: registration.kind ?? "job",
+      environment: registration.environment ?? "worker",
+      modelRequested: model ?? null,
+      effortRequested: null,
+      cwd: runCwd,
+      todoId: registration.todoId ?? null,
+      batchId: registration.batchId ?? null,
+      mergeKey: registration.mergeKey ?? null,
+      parentRunId: registration.parentRunId ?? process.env.TTS_RUN_PARENT_RUN_ID ?? null,
+      spawnedByToolUseId: registration.spawnedByToolUseId ?? null,
+      continuesRunId: registration.continuesRunId ?? null,
+      layersKnown,
+      layersGiven: layersKnown && Array.isArray(registration.layersGiven) ? registration.layersGiven : [],
+      layersDenied: layersKnown && Array.isArray(registration.layersDenied) ? registration.layersDenied : [],
+      skillsGranted: Array.isArray(registration.skillsGranted) ? registration.skillsGranted : [],
+      skillsRefused: Array.isArray(registration.skillsRefused) ? registration.skillsRefused : [],
+      tools: { allowed: allowedTools ?? null, denied: null },
+      hooksConfigured: ["SessionStart", "SessionEnd", "Stop", "SubagentStart", "SubagentStop"],
+      promptSha256: crypto.createHash("sha256").update(String(prompt)).digest("hex"),
+      // WHICH GRAPH THIS RUN RAN UNDER, and nothing about which of its nodes
+      // the prompt carried: a cron job assembles no node list here, and an
+      // empty array would claim it carried none rather than that this
+      // launcher does not know. So no graphNodes key at all, and `undefined`
+      // when there is no published graph to name.
+      graphVersion: graphVersion() ?? undefined,
+    };
+  }
+  let result;
   try {
-    stdout = execFileSync("claude", args, {
-      input: prompt,
-      cwd,
-      env: childEnv,
-      encoding: "utf8",
-      maxBuffer: 32 * 1024 * 1024,
-      timeout: timeoutMs ?? 10 * 60 * 1000,
+    result = boxRunSync({
+      prompt: String(prompt),
+      cli: "claude",
+      model,
+      cwd: runCwd,
+      outputFormat: "json",
+      maxTurns: maxTurns ?? (agentic ? 200 : 8),
+      ...(agentic ? { permissionMode: "bypassPermissions" } : {}),
+      allowedTools,
+      timeoutMs: timeoutMs ?? 10 * 60 * 1000,
+      slotWaitMs,
+      registration: envelope,
+      // Every headless Claude invocation on the box runs under the `active`
+      // account, whatever the calling process happens to carry.
+      env: { ...process.env, CLAUDE_CONFIG_DIR },
     });
   } catch (error) {
-    // THE CLI SAYS WHY ON ITS WAY OUT AND execFileSync THROWS THE SAYING AWAY.
-    // A non-zero exit still prints the envelope — subtype "error_max_turns" is
-    // the one that matters, because it is a BUDGET the caller set and can
-    // change — but Node's error carries only "Command failed", and that is
-    // what reached the evals log for a whole afternoon on 2026-09-14: eighty
-    // items failing with a sentence that named neither the cause nor the knob.
-    // The envelope is on `error.stdout`; this is the only place that can read
-    // it, because nothing above sees the child at all.
-    const failed = resultEnvelopeOf(error?.stdout);
+    // Filled even for a call that never reached its child: a caller that
+    // wants to report which run failed needs its token.
+    if (receipt !== undefined && receipt !== null && error?.runToken) receipt.runToken = error.runToken;
+    throw Object.assign(new Error(`claude failed: ${error?.message ?? error}`), {
+      exitCode: error?.exitCode ?? null,
+      reason: error?.reason ?? null,
+      runToken: error?.runToken ?? null,
+    });
+  }
+  if (receipt !== undefined && receipt !== null && result.runToken) receipt.runToken = result.runToken;
+
+  if (result.exitCode !== 0) {
+    // THE CLI SAYS WHY ON ITS WAY OUT. A non-zero exit still prints the
+    // envelope — subtype "error_max_turns" is the one that matters, because it
+    // is a BUDGET the caller set and can change. "Command failed" is what
+    // reached the evals log for a whole afternoon on 2026-09-14: eighty items
+    // failing with a sentence that named neither the cause nor the knob.
+    const failed = result.envelope;
     const said = [
       failed?.subtype ? `subtype: ${failed.subtype}` : null,
-      error?.status === null || error?.status === undefined ? null : `exit ${error.status}`,
-      error?.signal ? `signal ${error.signal}` : null,
+      result.signal ? `signal ${result.signal}` : `exit ${result.exitCode}`,
     ].filter((part) => part !== null);
-    // The stderr head only when the envelope said nothing — a `claude` that is
-    // not installed, or a config directory it cannot read, prints there and
-    // produces no envelope at all.
-    const stderr = failed !== null || typeof error?.stderr !== "string" ? "" : error.stderr.trim();
-    throw new Error(
-      `claude failed${said.length === 0 ? "" : ` (${said.join(", ")})`}` +
+    // The stderr head only when the envelope said nothing — a config directory
+    // the CLI cannot read prints there and produces no envelope at all.
+    const stderr = failed !== null ? "" : result.stderrTail.trim();
+    throw Object.assign(new Error(
+      `claude failed (${said.join(", ")})` +
         `${stderr === "" ? "" : `: ${stderr.split("\n")[0].slice(0, 200)}`}`,
-    );
+    ), { exitCode: result.exitCode, reason: null, runToken: result.runToken });
   }
-
   // With --output-format json the CLI prints an envelope like
   // {"type":"result","subtype":"success","result":"<the model's text>", ...}.
   // An error envelope (e.g. subtype "error_max_turns") has NO result field —
   // that is a hard failure, not something to brace-extract garbage from
-  // (review-caught). If stdout isn't JSON at all, treat it as the raw answer.
-  const resultEnvelope = resultEnvelopeOf(stdout);
-  const answerText = typeof resultEnvelope?.result === "string" ? resultEnvelope.result : stdout;
-  if (spooled && typeof resultEnvelope?.session_id === "string" && resultEnvelope.session_id) {
-    const project = path.resolve(cwd ?? process.cwd()).replaceAll("\\", "-").replaceAll("/", "-").replaceAll(":", "-");
-    const runFile = path.join(CLAUDE_CONFIG_DIR, "projects", project, `${resultEnvelope.session_id}.jsonl`);
-    claimRegistration({
-      spoolDir: path.dirname(spooled.file),
-      token: spooled.token,
-      runFile,
-      claim: { by: "launcher:runClaude", threadId: resultEnvelope.session_id, runFile, hookPayloadKeys: [] },
-    });
-  }
+  // (review-caught). If stdout isn't JSON at all, the raw text is the answer.
   // A ZERO EXIT WITH NO RESULT IS THE SAME FAILURE, and it says so in the same
   // words: one prefix means one thing to grep the cron log for.
-  if (resultEnvelope && typeof resultEnvelope.result !== "string") {
+  if (result.envelope && typeof result.envelope.result !== "string") {
     throw new Error(
-      `claude failed (subtype: ${resultEnvelope.subtype ?? "?"}): the envelope carried no result`,
+      `claude failed (subtype: ${result.envelope.subtype ?? "?"}): the envelope carried no result`,
     );
   }
-  return answerText;
+  return result.text;
 }
 
 // ---------------------------------------------------------------------------

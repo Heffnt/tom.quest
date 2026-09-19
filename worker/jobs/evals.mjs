@@ -2817,11 +2817,20 @@ export function parseArgs(argv) {
 }
 
 /** The io a real run uses. Everything that touches the network, git, the disk
- *  or a model lives here, so the test drives runEvals with none of them. */
-function realIo(env) {
+ *  or a model lives here, so the test drives runEvals with none of them.
+ *
+ *  A `--serve` pass waits for a box slot no longer than the call's own model
+ *  timeout. It runs every five minutes with no flock on its cron line, so two
+ *  passes that each waited without end could overlap behind a busy box; past
+ *  the wait the call throws, and that is the runner failure a regeneration
+ *  already records. */
+export function realIo(env, { serve = false } = {}) {
+  const bounded = (options = {}) => serve
+    ? { ...options, slotWaitMs: options.slotWaitMs ?? options.timeoutMs ?? REGEN_TIMEOUT_MS }
+    : options;
   return {
     now: () => Date.now(),
-    runClaude: async (prompt, options) => runClaude(prompt, options),
+    runClaude: async (prompt, options) => runClaude(prompt, bounded(options)),
     layers: (tomquestTree, wikitomTree, names) => layersFor(tomquestTree, wikitomTree, names),
     // The skill half of a name set, assembled by running the PINNED tree's own
     // scripts/publish-skills.mjs against the PINNED WikiTom tree and reading
@@ -2859,7 +2868,7 @@ function realIo(env) {
     // that one posts to /tts/audit and would write an audit row for a commit
     // that does not exist — and it gates nothing, so the second family's
     // opinion is not what is being bought here.
-    audit: async (prompt) => runClaude(prompt, {
+    audit: async (prompt) => runClaude(prompt, bounded({
       model: FAULT_AUDIT_MODEL,
       timeoutMs: FAULT_AUDIT_TIMEOUT_MS,
       maxTurns: FAULT_AUDIT_MAX_TURNS,
@@ -2870,7 +2879,7 @@ function realIo(env) {
         layersGiven: [],
         layersDenied: [],
       },
-    }),
+    })),
     loadModules,
     cmtDir: () => cacheRepoDir(env, { name: "ComplexMultiTrigger", owner: "Heffnt", branch: "master" }),
     taskRepos: (tomquestTree) => {
@@ -3626,7 +3635,7 @@ async function runMain(options) {
   const pruned = pruneStaleWorktrees(WORK_DIR);
   if (pruned.length > 0) console.log(`[evals] cleared ${pruned.length} worktree(s) left by runs that died`);
   const env = loadEnv({ require: ["CONVEX_SITE_URL", "TTS_WORKER_KEY"] });
-  const io = realIo(env);
+  const io = realIo(env, { serve: options.serve });
 
   // --faults-only ANSWERS ONE QUESTION AND SCORES NO EVAL SET: does the auditor
   // still refuse the three changes it must refuse. It runs the fixtures
