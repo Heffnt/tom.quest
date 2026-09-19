@@ -307,8 +307,8 @@ describe("runs", () => {
     expect(await t.mutation(internal.runs.internalIngest, ingest(run({ mode: "interactive" })) as never)).toMatchObject({ ok: true });
     const autonomous = run({ runId: "claude:laptop:auto-session", rootRunId: "claude:laptop:auto-session", mode: "autonomous" });
     expect(await t.mutation(internal.runs.internalIngest, ingest(autonomous) as never)).toMatchObject({ ok: true });
-    const worker = run({ runId: "claude:laptop:worker-run", rootRunId: "claude:laptop:worker-run", kind: "worker", mode: "interactive" });
-    expect(await t.mutation(internal.runs.internalIngest, ingest(worker) as never)).toEqual({ ok: false, reason: "invalid run record" });
+    const job = run({ runId: "claude:laptop:cron-job-run", rootRunId: "claude:laptop:cron-job-run", kind: "job", mode: "interactive" });
+    expect(await t.mutation(internal.runs.internalIngest, ingest(job) as never)).toEqual({ ok: false, reason: "invalid run record" });
   });
 
   it("keeps chunks immutable and stamps only a complete, verified reassembly", async () => {

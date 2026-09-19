@@ -1376,7 +1376,7 @@ export default defineSchema({
     effort: v.optional(v.string()),
     runtimeVersion: v.optional(v.string()),
     parserVersion: v.string(),
-    kind: v.union(v.literal("session"), v.literal("worker"), v.literal("code"), v.literal("prospect"), v.literal("job"), v.literal("delegate"), v.literal("subagent"), v.literal("codex-child"), v.literal("unknown")),
+    kind: v.union(v.literal("session"), v.literal("job"), v.literal("delegate"), v.literal("subagent"), v.literal("codex-child"), v.literal("unknown")),
     status: v.union(v.literal("running"), v.literal("ended"), v.literal("failed"), v.literal("abandoned"), v.literal("unknown")),
     mode: v.optional(v.union(v.literal("interactive"), v.literal("autonomous"))),
     startedAt: v.number(),

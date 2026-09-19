@@ -9,8 +9,7 @@ import { LIVE_STATUSES, SESSION_MODEL, nyLocalHour } from "./ttsShared";
 import { redactSecrets } from "../worker/session-host/redact.mjs";
 
 const RUN_KIND = v.union(
-  v.literal("session"), v.literal("worker"), v.literal("code"),
-  v.literal("prospect"), v.literal("job"), v.literal("delegate"),
+  v.literal("session"), v.literal("job"), v.literal("delegate"),
   v.literal("subagent"), v.literal("codex-child"), v.literal("unknown"),
 );
 // Where a run ran: a session Tom talks to, a worker nobody watches, or a
@@ -213,7 +212,7 @@ function stub(run: { runId: string; parentRunId?: string; rootRunId: string; dep
 }
 
 function validOrigin(origin: string) {
-  return ["session", "planner", "worker", "nightly", "weekly", "delegate", "job", "daemon", "hook", "laptop", "workflow", "unknown"].includes(origin) || /^cron:[\w.-]{1,64}$/.test(origin);
+  return ["session", "planner", "nightly", "weekly", "delegate", "job", "daemon", "hook", "laptop", "workflow", "unknown"].includes(origin) || /^cron:[\w.-]{1,64}$/.test(origin);
 }
 async function fileVersionAt(ctx: MutationCtx, runId: string, fileVersion: string) {
   return await ctx.db

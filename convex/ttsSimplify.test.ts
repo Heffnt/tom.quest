@@ -33,7 +33,7 @@ type RunOver = {
   origin?: string;
   host?: "laptop" | "box";
   cli?: "claude" | "codex";
-  kind?: "session" | "worker" | "code" | "prospect" | "job" | "delegate" | "subagent" | "codex-child" | "unknown";
+  kind?: "session" | "job" | "delegate" | "subagent" | "codex-child" | "unknown";
   context?: Record<string, unknown> | null;
 };
 
@@ -132,7 +132,7 @@ describe("internalSimplifyInput — the counts off the runs in the window", () =
     await seedRun(t, {
       host: "laptop",
       cli: "codex",
-      kind: "code",
+      kind: "job",
       origin: "codex-cli",
       context: { cwd: "C:/repo/CMT", tools: ["Bash"], layersDenied: [] },
     });
@@ -149,7 +149,7 @@ describe("internalSimplifyInput — the counts off the runs in the window", () =
     expect(facts.runs.byHost).toEqual({ box: 4, laptop: 1 });
     expect(facts.runs.byCli).toEqual({ claude: 4, codex: 1 });
     expect(facts.runs.byRunner).toEqual({ claude: 4, codex: 1 });
-    expect(facts.runs.byKind).toEqual({ session: 4, code: 1 });
+    expect(facts.runs.byKind).toEqual({ session: 4, job: 1 });
     expect(facts.runs.byOrigin).toEqual({ cli: 4, "codex-cli": 1 });
 
     expect(facts.layers).toEqual([

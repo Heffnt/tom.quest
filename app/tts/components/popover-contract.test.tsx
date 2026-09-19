@@ -339,7 +339,7 @@ const RUN = {
   host: "box",
   cli: "claude",
   parserVersion: "runs-parser-1",
-  kind: "worker",
+  kind: "job",
   status: "ended",
   model: "opus",
   startedAt: NOW,

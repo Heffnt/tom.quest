@@ -224,7 +224,7 @@ const label = (over = {}) => ({
   run: {
     runId: "run-1",
     origin: "planner",
-    kind: "worker",
+    kind: "job",
     model: "sonnet",
     context: {
       layersKnown: true,
@@ -317,7 +317,7 @@ describe("buildRunCase", () => {
     expect(item.input.preludeNames).toEqual({ layers: ["operate", "write"], skills: [] });
     expect(item.input.contextRowSeq).toBe(0);
     expect(item.input.spanSeqs).toEqual([412, 412]);
-    expect(item.intentKey).toBe("life ph79|planner:worker");
+    expect(item.intentKey).toBe("life ph79|planner:job");
     expect(item.output.text).toBe("The old lock is seized.");
   });
 
@@ -381,9 +381,9 @@ describe("buildRunCase", () => {
 
 describe("dedupeByIntent", () => {
   it("keeps the newest label on one intent and counts the rest", () => {
-    const older = { id: "a", intentKey: "life ph79|planner:worker", at: T1 };
-    const newer = { id: "b", intentKey: "life ph79|planner:worker", at: T2 };
-    const other = { id: "c", intentKey: "life ph80|planner:worker", at: T1 };
+    const older = { id: "a", intentKey: "life ph79|planner:job", at: T1 };
+    const newer = { id: "b", intentKey: "life ph79|planner:job", at: T2 };
+    const other = { id: "c", intentKey: "life ph80|planner:job", at: T1 };
     const { items, superseded } = dedupeByIntent([older, newer, other]);
     expect(items.map((item) => item.id).sort()).toEqual(["b", "c"]);
     expect(superseded).toBe(1);
