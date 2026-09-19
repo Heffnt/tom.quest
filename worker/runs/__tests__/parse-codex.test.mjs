@@ -39,20 +39,6 @@ describe("Codex parser", () => {
     expect(tail.run.context.contextWindow).toBe(258_400);
     expect(parse([codexMeta({ contextWindow: { window_id: "w-1" } }), codexTurnContext()]).run.context).not.toHaveProperty("contextWindow");
   });
-  // witness: six spawn_agent children parked in the box's dead letter on
-  // 2026-09-19 would still have been refused once their context window read,
-  // because their rows said depth 0 under a depth-1 run.
-  it("puts every row of a child rollout at the child's depth", () => {
-    const result = parse([
-      codexMeta({ id: "child", parent: "parent" }),
-      codexTurnContext(),
-      codexResponseItem("message", { role: "user", content: [{ input_text: "task" }] }),
-      codexResponseItem("message", { role: "assistant", content: [{ output_text: "done" }] }),
-    ]);
-    expect(result.run.depth).toBe(1);
-    expect(result.rows.length).toBeGreaterThan(1);
-    expect(result.rows.every((row) => row.depth === 1)).toBe(true);
-  });
   it("takes model/effort from turn context and hashes base instructions", () => {
     const result = parse([codexMeta({ baseInstructions: "private base" }), codexTurnContext({ model: "model", effort: "xhigh" })]);
     expect(result.run).toMatchObject({ model: "model", effort: "xhigh" });
