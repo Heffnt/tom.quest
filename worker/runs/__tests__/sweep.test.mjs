@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { claudeLine, claudeToolResult, claudeUserTurn, codexDeveloper, codexMeta, codexResponseItem, codexSkillsInstructions, codexTokenCount, codexToolCall, codexTurnContext, jsonl } from "./fixtures.mjs";
+import { claudeAssistant, claudeLine, claudeToolResult, claudeUserTurn, codexDeveloper, codexMeta, codexResponseItem, codexSkillsInstructions, codexTokenCount, codexToolCall, codexTurnContext, jsonl } from "./fixtures.mjs";
 import { writeRegistrationClaim, writeRegistrationEnd } from "../registration.mjs";
 import {
   MAX_ATTEMPTS,
@@ -245,6 +245,53 @@ describe("run sweep", () => {
     expect(fs.existsSync(path.join(dir, "state", "queue")) ? fs.readdirSync(path.join(dir, "state", "queue")).filter((name) => name.endsWith(".json")) : []).toHaveLength(0);
     const blocked = await drainQueue({ stateDir: path.join(dir, "state"), post: async () => ({ ok: true }), now: () => NOW + 1 });
     expect(blocked.pendingRunIds).toEqual(["claude:laptop:session"]);
+  });
+
+  // witness: on 2026-09-18 the box's abandonment pass sent two finished daemon
+  // sessions as `claude:box:unknown` with zero totals every two minutes, and
+  // the record's refusals parked 728 pages in the dead letter.
+  it("names a finished Claude run and keeps its totals on a pass with no new line", async () => {
+    const dir = temp(); const stateDir = path.join(dir, "state");
+    const item = runFile(dir, [
+      claudeUserTurn({ text: "hello" }),
+      claudeAssistant({ usage: { input_tokens: 5, output_tokens: 7 } }),
+    ]);
+    const ingests = [];
+    const post = async (route, body) => {
+      if (route === "/runs/ingest") ingests.push(body);
+      return route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true };
+    };
+    await sweepRunFile(item, { stateDir, store: store(), post, now: () => NOW });
+    const first = ingests.at(-1);
+    await sweepRunFile(item, { stateDir, store: store(), post, now: () => NOW + 1, markAbandoned: true });
+    const abandoned = ingests.at(-1);
+    expect(ingests).toHaveLength(2);
+    expect(abandoned.run).toMatchObject({
+      runId: "claude:laptop:session",
+      status: "abandoned",
+      startedAt: first.run.startedAt,
+      lastLineAt: first.run.lastLineAt,
+      outcome: { totals: first.run.outcome.totals },
+      file: { committedLine: 2 },
+    });
+    expect(first.run.outcome.totals.outputTokens).toBe(7);
+    expect(abandoned.rows).toEqual([]);
+    expect(abandoned.previousCommittedLine).toBe(2);
+    expect(JSON.parse(fs.readFileSync(stateFileFor(stateDir, "claude:laptop:session"), "utf8")).reportedAbandoned).toBe(true);
+  });
+
+  it("drops a dead-letter page that names no run and keeps the rest", async () => {
+    const dir = temp(); const stateDir = path.join(dir, "state"); const deadDir = path.join(stateDir, "deadletter");
+    fs.mkdirSync(deadDir, { recursive: true });
+    const park = (name, runId) => fs.writeFileSync(path.join(deadDir, name), JSON.stringify({ runId, page: 0, pages: 1, payload: {} }));
+    park("1-unnamed.json", "claude:box:unknown");
+    park("2-unnamed-agent.json", "claude:box:0123456789abcdef/unknown");
+    park("3-named.json", "codex:box:01a09445-f229-7b03-8665-b99b92707a07");
+    const lines = [];
+    const drained = await drainQueue({ stateDir, post: async () => ({ ok: true }), now: () => NOW, log: (line) => lines.push(line) });
+    expect(fs.readdirSync(deadDir).sort()).toEqual(["3-named.json"]);
+    expect(drained.pendingRunIds).toEqual(["codex:box:01a09445-f229-7b03-8665-b99b92707a07"]);
+    expect(lines).toContain("runs-sweep deadletter dropped=2 reason=page names no run");
   });
 
   // witness: the laptop's full pass on 2026-09-17 re-swept three live sessions
