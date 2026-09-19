@@ -3183,6 +3183,103 @@ const ttsSession = httpAction(async (ctx, request) => {
 
 http.route({ path: "/tts/session", method: "POST", handler: ttsSession });
 
+// POST /tts/runner — open a runner (convex/ttsRunners.ts). Body: { title,
+// type, experimentHost, repo, ref?, stepMs, model?, delegateAllowed?,
+// budgetGpuHours?, askOverrides?, subject?, from, runId? }, where `from` is
+// { kind: "prompt", text } | { kind: "handoff", runnerId } | { kind:
+// "document", text }. A `document` is taken as given: that is how a CMT
+// dev/handoff file becomes a runner, the calling run having read the file.
+// `runId` names the run that opened it; absent, the runner is Tom's.
+//
+// The shape is checked here and refused in named sentences; the seed's meaning
+// (repo, step length, model family, overrides) is checked once, by
+// runnerSeedFaults inside the insert, whose transaction writes all or nothing.
+const ttsRunner = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  const fault = runnerBodyFault(b);
+  if (fault) return jsonResponse(400, { error: fault });
+  const from = b.from as Record<string, unknown>;
+  const subject = b.subject as Record<string, unknown> | undefined;
+  try {
+    const seed = {
+      title: b.title as string,
+      type: b.type as "campaign" | "probe",
+      experimentHost: b.experimentHost as "turing" | "box",
+      repo: b.repo as string,
+      ...(b.ref !== undefined ? { ref: b.ref as string } : {}),
+      stepMs: b.stepMs as number,
+      ...(b.model !== undefined ? { model: b.model as never } : {}),
+      ...(b.delegateAllowed !== undefined ? { delegateAllowed: b.delegateAllowed as boolean } : {}),
+      ...(b.budgetGpuHours !== undefined ? { budgetGpuHours: b.budgetGpuHours as number } : {}),
+      ...(b.askOverrides !== undefined ? { askOverrides: b.askOverrides as never } : {}),
+      ...(subject !== undefined
+        ? {
+            subject: subject.kind === "todo"
+              ? { kind: "todo" as const, todoId: subject.todoId as Id<"dtsTodos"> }
+              : { kind: "batch" as const, batchId: subject.batchId as Id<"batches"> },
+          }
+        : {}),
+      from: from.kind === "handoff"
+        ? { kind: "handoff" as const, runnerId: from.runnerId as Id<"runners"> }
+        : { kind: from.kind as "prompt" | "document", text: from.text as string },
+    };
+    const runnerId = await ctx.runMutation(internal.ttsRunners.internalCreateRunner, {
+      seed,
+      ...(typeof b.runId === "string" ? { createdBy: { kind: "run" as const, runId: b.runId } } : {}),
+    });
+    return jsonResponse(200, { ok: true, runnerId });
+  } catch (e) {
+    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+/** The first shape fault in a POST /tts/runner body, as a sentence, or null. */
+function runnerBodyFault(b: Record<string, unknown>): string | null {
+  if (typeof b.title !== "string") return "title (a one-line string) is required.";
+  if (b.type !== "campaign" && b.type !== "probe") return 'type must be "campaign" or "probe".';
+  if (b.experimentHost !== "turing" && b.experimentHost !== "box") return 'experimentHost must be "turing" or "box".';
+  if (typeof b.repo !== "string") return `repo must be one of ${SESSION_REPO_NAMES.join(", ")}, or "none".`;
+  if (b.ref !== undefined && typeof b.ref !== "string") return "ref must be a string.";
+  if (typeof b.stepMs !== "number") return "stepMs (a number of milliseconds) is required.";
+  if (b.model !== undefined && !isSessionModel(b.model)) return "model is not a session model.";
+  if (b.delegateAllowed !== undefined && typeof b.delegateAllowed !== "boolean") return "delegateAllowed must be true or false.";
+  if (b.budgetGpuHours !== undefined && typeof b.budgetGpuHours !== "number") return "budgetGpuHours must be a number.";
+  if (b.runId !== undefined && !validRunId(b.runId)) return "runId is not a run id.";
+  if (b.askOverrides !== undefined) {
+    const cells = b.askOverrides;
+    const tiers = ["routine", "plan", "setup"];
+    const answerers = ["tom", "delegate", "self"];
+    if (!Array.isArray(cells) || !cells.every((c) => typeof c === "object" && c !== null && tiers.includes((c as { tier?: unknown }).tier as string) && answerers.includes((c as { answerer?: unknown }).answerer as string) && Object.keys(c).length === 2)) {
+      return "askOverrides must be a list of { tier: routine|plan|setup, answerer: tom|delegate|self }.";
+    }
+  }
+  if (b.subject !== undefined) {
+    const s = b.subject as Record<string, unknown> | null;
+    const ok = s !== null && typeof s === "object" && ((s.kind === "todo" && typeof s.todoId === "string") || (s.kind === "batch" && typeof s.batchId === "string"));
+    if (!ok) return 'subject must be { kind: "todo", todoId } or { kind: "batch", batchId }.';
+  }
+  const from = b.from as Record<string, unknown> | null | undefined;
+  if (from === null || typeof from !== "object") return "from is required: a prompt, a handoff or a document.";
+  if (from.kind === "handoff") {
+    if (typeof from.runnerId !== "string") return "a handoff names the runnerId it continues.";
+  } else if (from.kind === "prompt" || from.kind === "document") {
+    if (typeof from.text !== "string") return `a ${from.kind} carries its text.`;
+  } else {
+    return 'from.kind must be "prompt", "handoff" or "document".';
+  }
+  return null;
+}
+
+http.route({ path: "/tts/runner", method: "POST", handler: ttsRunner });
+
 // POST /tts/session-outcome — a worker's outcome pen. Body:
 // { sessionId, outcome: "completed"|"errored", summary?, planRepair? }. It lives under the
 // TTS key ON PURPOSE: a worker's environment carries ONLY
