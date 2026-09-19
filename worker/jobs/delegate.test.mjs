@@ -71,7 +71,7 @@ describe("delegatePrompt", () => {
   });
 
   it("names the caller, the subject and the numbered options", () => {
-    expect(prompt()).toContain("who: an autonomous session");
+    expect(prompt()).toContain("who: a worker");
     expect(prompt()).toContain("working on: renew passport");
     expect(prompt()).toContain("1. Move it to Thursday morning.");
     expect(prompt()).toContain("2. Leave it Wednesday and warn him it may be shut.");

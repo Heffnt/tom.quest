@@ -269,8 +269,8 @@ ${WHAT_TTS_IS}
 <div class="flow">
   <div class="box">Tom presses approve on a code todo. <span class="muted">The ruling row is stored, unapplied.</span></div>
   <div class="arrow">↓ <span class="muted">within five minutes, when the Jarvis Box has headroom</span></div>
-  <div class="box">The picker that starts agent sessions takes the single oldest unapplied approve (or archive) on a code todo and starts one autonomous session on a fresh checkout of that repository, on a branch named for the session. One code mission runs at a time; the ruling is marked applied with the session's id at that moment.</div>
-  <div class="arrow">↓ <span class="muted">one autonomous session</span></div>
+  <div class="box">The picker that starts agent sessions takes the single oldest unapplied approve (or archive) on a code todo and starts one worker on a fresh checkout of that repository, on a branch named for the session. One code mission runs at a time; the ruling is marked applied with the session's id at that moment.</div>
+  <div class="arrow">↓ <span class="muted">one worker</span></div>
   <div class="box">It implements the plan (or, for archive, only closes the entry in the repository's todo file), runs that file's own guard test, pushes the branch and opens a pull request whose body begins with a change report.</div>
   <div class="arrow">↓</div>
   <div class="box">Merging the pull request is Tom's, and nothing automates it. A session that fails is not retried by the picker; ruling again is the retry.</div>

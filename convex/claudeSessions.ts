@@ -50,7 +50,7 @@ import { withoutModelOfTomPrelude } from "./ttsSkills";
 import { assembleContext, type ContextSubject } from "./ttsContext";
 import { briefForPrompt } from "../worker/jobs/context-relevance.mjs";
 import {
-  AUTONOMOUS_SESSION_CONTRACT,
+  WORKER_CONTRACT,
   CODEX_FALLBACK_MODEL,
   CODEX_USAGE_STALE_MS,
   CODEX_WEEKLY_CAP_PERCENT,
@@ -1095,7 +1095,7 @@ async function reopenSessionFrom(
   await ctx.db.patch(sessionId, {
     status: "idle",
     statusChangedAt: now,
-    // Reopening an autonomous session IS taking it over: Tom is now in the
+    // Reopening a worker IS taking it over: Tom is now in the
     // conversation, so the posture becomes interactive. Left as
     // "autonomous", the daemon would re-apply the auto-end path (end the
     // session after the agent's next final turn, under a wall-clock cap) and
@@ -2777,7 +2777,7 @@ function buildAutoMissionPrompt(
     promptFact("brief", todo.brief === undefined ? undefined : briefForPrompt(todo.brief).text),
   ];
   const lines: (string | null)[] = [
-    AUTONOMOUS_SESSION_CONTRACT,
+    WORKER_CONTRACT,
     "",
     `The goal: do the groundwork this item needs — research, draft, gather — and write what you produce into the item via the prepare pen below. Set readiness to "prepared" when the write-up is complete — and only then; a prepared item that is active, awake and unblocked is what TTS shows Tom as ready.`,
     "",
@@ -2946,7 +2946,7 @@ function buildWorkerPrompt(args: {
     ...siblings.map(neighborLine),
   ];
   const lines: (string | null)[] = [
-    AUTONOMOUS_SESSION_CONTRACT,
+    WORKER_CONTRACT,
     "",
     "Everything you write into TTS obeys the writing standard in the model-of-tom files this prompt begins with, verbatim.",
     "",
@@ -3079,7 +3079,7 @@ function buildCodeMissionPrompt(args: {
     brief,
   ];
   const lines: (string | null)[] = [
-    AUTONOMOUS_SESSION_CONTRACT,
+    WORKER_CONTRACT,
     "",
     delegateDoctrine(sessionId),
     "",
@@ -3280,7 +3280,7 @@ async function admitCodeMissions(
 
 // ── The prospecting lane ─────────────────────────────────────────────────────
 // Tom's directive (2026-08-29): "review the CMT and tom.quest repos for issues
-// to make more to-dos." A PROSPECTING MISSION is an autonomous session that
+// to make more to-dos." A PROSPECTING MISSION is a worker that
 // works no todo: it reads one repo's fresh checkout, looks for concrete issues,
 // and captures each new one as an unprepared item.
 //
@@ -3342,7 +3342,7 @@ function buildProspectMissionPrompt(
     `The mission: this session PROSPECTS — it works no todo item. TTS had session capacity left over after handing out its real todo work this tick, and spends it here. Your working directory is a fresh checkout of ${repo}. Read it for actionable issues worth carrying as items in Tom's todo system, and capture each NEW one with the capture pen below. This mission only READS and CAPTURES — no code changes, no commits, no pushes, no pull requests.`,
   ];
   const lines: string[] = [
-    AUTONOMOUS_SESSION_CONTRACT,
+    WORKER_CONTRACT,
     "",
     "What counts as a finding:",
     "- a failing or skipped test — name the test and the file it lives in",
@@ -3469,7 +3469,7 @@ async function admitProspectMission(
   liveSessions: Doc<"claudeSessions">[],
   fleet: FleetModelContext,
 ): Promise<string | undefined> {
-  // At most PROSPECT_MAX_LIVE prospectors alive at once. An autonomous session
+  // At most PROSPECT_MAX_LIVE prospectors alive at once. A worker
   // with NO todoId and NO code subject is what a prospecting mission looks
   // like — a mission for real work always carries the todo it works, and a
   // code mission the code todo, so this needs no extra field to key off.
@@ -3585,7 +3585,7 @@ const AUTO_CIRCUIT_WINDOW_MS = 3 * 60 * 60 * 1000;
 // (which reads "the session finished, and the row did not change" as "settled"
 // — true of a task, and the opposite of true of a goal).
 const AUTO_GOAL_RECHECK_MS = 24 * 60 * 60 * 1000;
-// How many autonomous sessions one todo may ever consume. The completed-run
+// How many workers one todo may ever consume. The completed-run
 // rule below re-admits a todo whenever a session actually advanced its row, so
 // a task that genuinely takes four sessions gets four. This is the far bound on
 // the other case: a task that keeps recording progress and never finishes would
@@ -3800,8 +3800,8 @@ export const internalAutoSchedule = internalMutation({
       // not a per-candidate by_todo query.
       if (liveSessions.some((s) => s.todoId === t._id)) return true;
       // A live (unapplied) ruling means Tom already spoke — do not race it;
-      // a live "session" verdict must not be silently consumed by an
-      // autonomous session (a real conversation was asked for).
+      // a live "session" verdict must not be silently consumed by a
+      // worker (a real conversation was asked for).
       const rulings = await ctx.db
         .query("dtsRulings")
         .withIndex("by_todo", (q) => q.eq("todoId", t._id))
@@ -3812,7 +3812,7 @@ export const internalAutoSchedule = internalMutation({
       if (live && (live.appliedAt === undefined || live.verdict === "session")) {
         return true;
       }
-      // Backoff from autonomous session history (do not redo settled work) —
+      // Backoff from worker history (do not redo settled work) —
       // the ONE remaining by_todo collect: backoff needs the terminal history
       // the liveSessions array cannot carry.
       const history = await ctx.db

@@ -86,7 +86,7 @@ export function parseAnswer(text) {
   }
 }
 
-const callerName = (ask) => (ask.sessionId ? "an autonomous session" : "the " + ask.job + " job");
+const callerName = (ask) => (ask.sessionId ? "a worker" : "the " + ask.job + " job");
 const todoStatement = (ask) =>
   typeof ask.subject === "string" && ask.subject.trim()
     ? ask.subject.trim()

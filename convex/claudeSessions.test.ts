@@ -9,7 +9,7 @@ import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { modelOfTomPrelude } from "./ttsSkills";
 import {
-  AUTONOMOUS_SESSION_CONTRACT,
+  WORKER_CONTRACT,
   CODEX_USAGE_STALE_MS,
   CODEX_WEEKLY_CAP_PERCENT,
   DEFAULT_SESSION_MODEL,
@@ -207,8 +207,8 @@ async function insertPastAutoSession(
 
 describe("claude sessions", () => {
   it("keeps the autonomous opener to the unattended-session boundary", () => {
-    expect(AUTONOMOUS_SESSION_CONTRACT).toBe(
-      "You are working inside TTS (Toms Todo System) in an AUTONOMOUS session — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.",
+    expect(WORKER_CONTRACT).toBe(
+      "You are working inside TTS (Toms Todo System) as a WORKER — no one is watching this transcript live, and nothing you write in chat reaches anyone unless a pen (a command below) records it.",
     );
   });
 
@@ -3413,7 +3413,7 @@ describe("autonomous session scheduler", () => {
     const inbound = await tom.query(api.claudeSessions.getPendingInbound, {
       sessionId: sessions[0]._id,
     });
-    expect(inbound[0].text).toContain(AUTONOMOUS_SESSION_CONTRACT);
+    expect(inbound[0].text).toContain(WORKER_CONTRACT);
     // The repo variant names the checkout, its branch, the delegate, and the
     // three checks that make a merge mechanical and reportable.
     expect(inbound[0].text).toContain("fresh checkout of ComplexMultiTrigger");
@@ -3623,7 +3623,7 @@ describe("the code lane", () => {
     expect(text).toContain("python3 -m pytest tests/guards/test_bb_todos.py -q");
     expect(text).toContain("gh pr create");
     expect(text).toContain("CHANGE REPORT:");
-    expect(text).toContain(AUTONOMOUS_SESSION_CONTRACT);
+    expect(text).toContain(WORKER_CONTRACT);
     expect(text).not.toContain("define every term on first use");
     expect(text).toContain("/tts/session-outcome");
     expect(text).toContain("the tests are green, an audit approved it");
@@ -3631,7 +3631,7 @@ describe("the code lane", () => {
     expect(text).toContain(DAEMON_SENTENCE);
     expect(text).not.toContain("SESSIONS_WORKER_KEY");
     expect(text.indexOf(TEST_PRELUDE_LAYERS.know)).toBeLessThan(
-      text.indexOf(AUTONOMOUS_SESSION_CONTRACT),
+      text.indexOf(WORKER_CONTRACT),
     );
     expect(text.indexOf("Ending: record the outcome")).toBeLessThan(
       text.indexOf('TOM RULED "approve"'),
@@ -4072,7 +4072,7 @@ describe("prospecting lane", () => {
       text.indexOf("/tts/capture"),
     );
     expect(text).toContain('"source": "prospecting"');
-    expect(text).toContain(AUTONOMOUS_SESSION_CONTRACT);
+    expect(text).toContain(WORKER_CONTRACT);
     expect(text).not.toContain("Follow the ground-up contract");
     // At most eight captures, said in the prompt because the capture route is
     // the agent's own pen and enforces no cap of its own.
@@ -4096,7 +4096,7 @@ describe("prospecting lane", () => {
     expect(text).toContain("TTS_WORKER_KEY");
     expect(text).not.toContain("SESSIONS_WORKER_KEY");
     expect(text.indexOf(TEST_PRELUDE_LAYERS.know)).toBeLessThan(
-      text.indexOf(AUTONOMOUS_SESSION_CONTRACT),
+      text.indexOf(WORKER_CONTRACT),
     );
     expect(text.indexOf("What counts as a finding:")).toBeLessThan(
       text.indexOf("The mission: this session PROSPECTS"),
@@ -4638,7 +4638,7 @@ describe("frontier scheduler", () => {
     expect(text).toContain("do the groundwork this item needs");
     expect(text).not.toContain("YOU HAVE CLAIMED ONE TODO");
     expect(text.indexOf(TEST_PRELUDE_LAYERS.know)).toBeLessThan(
-      text.indexOf(AUTONOMOUS_SESSION_CONTRACT),
+      text.indexOf(WORKER_CONTRACT),
     );
     expect(text.indexOf("The goal:")).toBeLessThan(
       text.indexOf("The item (\"draft the reading list\")"),
@@ -5339,7 +5339,7 @@ describe("frontier scheduler", () => {
     // grant it loads by name.
     expect(text).toContain(TEST_PRELUDE_LAYERS.operate);
     expect(text).not.toContain(TEST_PRELUDE_LAYERS.write);
-    expect(text).toContain(AUTONOMOUS_SESSION_CONTRACT);
+    expect(text).toContain(WORKER_CONTRACT);
     expect(text).not.toContain("The vocabulary, which is closed");
     expect(text).not.toContain("<!DOCTYPE html>");
     expect(text).not.toContain("Palette #0a0e17");
@@ -5358,7 +5358,7 @@ describe("frontier scheduler", () => {
     expect(text).toContain("TTS_WORKER_KEY");
     expect(text).not.toContain("SESSIONS_WORKER_KEY");
     expect(text.indexOf(TEST_PRELUDE_LAYERS.know)).toBeLessThan(
-      text.indexOf(AUTONOMOUS_SESSION_CONTRACT),
+      text.indexOf(WORKER_CONTRACT),
     );
     expect(text.indexOf("Everything you write into TTS obeys")).toBeLessThan(
       text.indexOf("/tts/prepare-todo"),
