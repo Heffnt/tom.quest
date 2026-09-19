@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { claudeAssistant, claudeLine, claudeToolResult, claudeUserTurn, codexDeveloper, codexMeta, codexResponseItem, codexSkillsInstructions, codexTokenCount, codexToolCall, codexTurnContext, jsonl } from "./fixtures.mjs";
+import { claudeAssistant, claudeLine, claudeToolUseBlock, claudeToolResult, claudeUserTurn, codexDeveloper, codexMeta, codexResponseItem, codexSkillsInstructions, codexTokenCount, codexToolCall, codexTurnContext, jsonl } from "./fixtures.mjs";
 import { writeRegistrationClaim, writeRegistrationEnd } from "../registration.mjs";
 import {
   MAX_ATTEMPTS,
@@ -12,6 +12,7 @@ import {
   deletable,
   drainQueue,
   prefixSha256,
+  refreshClaudeHeaders,
   stateFileFor,
   storeText,
   sweepRunFile,
@@ -278,6 +279,67 @@ describe("run sweep", () => {
     expect(abandoned.rows).toEqual([]);
     expect(abandoned.previousCommittedLine).toBe(2);
     expect(JSON.parse(fs.readFileSync(stateFileFor(stateDir, "claude:laptop:session"), "utf8")).reportedAbandoned).toBe(true);
+  });
+
+  // witness: on 2026-09-19 box runs the sweep sent in 4 to 14 pieces showed
+  // only their last piece in the record — 174,166 tokens for a run whose file
+  // holds 13,276,248 — because the record replaces the outcome with each page
+  // and the header was read off the piece.
+  it("sends a Claude run's totals, turns and tool calls over the whole file when it arrives in pieces", async () => {
+    const dir = temp(); const stateDir = path.join(dir, "state");
+    const item = runFile(dir, [
+      claudeUserTurn({ text: "first" }),
+      claudeAssistant({ requestId: "r1", blocks: [claudeToolUseBlock({ id: "t1" })], usage: { input_tokens: 5, output_tokens: 7 } }),
+    ]);
+    const ingests = [];
+    const post = async (route, body) => {
+      if (route === "/runs/ingest") ingests.push(body);
+      return route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true };
+    };
+    await sweepRunFile(item, { stateDir, store: store(), post, now: () => NOW });
+    fs.appendFileSync(item.path, jsonl([
+      claudeUserTurn({ text: "second" }),
+      claudeAssistant({ requestId: "r2", blocks: [claudeToolUseBlock({ id: "t2" })], usage: { input_tokens: 11, output_tokens: 13 } }),
+    ]));
+    const grown = { ...item, mtimeMs: fs.statSync(item.path).mtimeMs, bytes: fs.statSync(item.path).size };
+    await sweepRunFile(grown, { stateDir, store: store(), post, now: () => NOW + 1 });
+    const second = ingests.at(-1);
+    expect(ingests).toHaveLength(2);
+    expect(second.previousCommittedLine).toBe(2);
+    expect(second.rows.every((row) => row.provenance.lineStart >= 2)).toBe(true);
+    expect(second.run.outcome).toMatchObject({ totals: { inputTokens: 16, outputTokens: 20, totalTokens: 36 }, turns: 2, toolCalls: 2 });
+    expect(second.run.file.committedLine).toBe(4);
+  });
+
+  it("re-sends an unmarked Claude run once with no rows and its whole file's totals, then leaves it alone", async () => {
+    const dir = temp(); const stateDir = path.join(dir, "state");
+    const item = runFile(dir, [
+      claudeUserTurn({ text: "first" }),
+      claudeAssistant({ requestId: "r1", usage: { input_tokens: 5, output_tokens: 7 } }),
+      claudeUserTurn({ text: "second" }),
+      claudeAssistant({ requestId: "r2", usage: { input_tokens: 11, output_tokens: 13 } }),
+    ]);
+    const ingests = [];
+    const post = async (route, body) => {
+      if (route === "/runs/ingest") ingests.push(body);
+      return route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true };
+    };
+    await sweepRunFile(item, { stateDir, store: store(), post, now: () => NOW });
+    // A state written before the fix carries no mark.
+    const stateFile = stateFileFor(stateDir, "claude:laptop:session");
+    const { wholeFileHeader: _mark, ...unmarked } = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    fs.writeFileSync(stateFile, JSON.stringify(unmarked));
+    const cfg = config(dir, item);
+    const first = await refreshClaudeHeaders({ config: cfg, store: store(), post, now: () => NOW + 1, log: () => {} });
+    expect(first).toMatchObject({ refreshed: 1, failed: 0, left: 0 });
+    const resent = ingests.at(-1);
+    expect(resent.rows).toEqual([]);
+    expect(resent.previousCommittedLine).toBe(4);
+    expect(resent.run.outcome).toMatchObject({ totals: { inputTokens: 16, outputTokens: 20 }, turns: 2 });
+    expect(JSON.parse(fs.readFileSync(stateFile, "utf8")).wholeFileHeader).toBe(true);
+    const second = await refreshClaudeHeaders({ config: cfg, store: store(), post, now: () => NOW + 2, log: () => {} });
+    expect(second).toMatchObject({ refreshed: 0, left: 0 });
+    expect(ingests).toHaveLength(2);
   });
 
   it("drops a dead-letter page that names no run and keeps the rest", async () => {

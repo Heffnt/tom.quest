@@ -295,6 +295,9 @@ function stateAfterDelivery(item, response, now) {
     endSeen: item.endSeen,
     reportedAbandoned: item.markAbandoned || false,
     envelopeMtimeMs: item.envelopeMtimeMs ?? 0,
+    // The record now holds this run's header as read off the whole file; see
+    // refreshClaudeHeaders, the one reader of this mark.
+    wholeFileHeader: true,
     // A Codex tail often starts after session_meta. Retain the accepted run
     // and its safe meta facts so that tail has the same identity and context.
     ...((item.payload.run.cli ?? item.payload.run.runner) === "codex" ? { run: item.payload.run, codexMeta: item.codexMeta } : {}),
@@ -532,20 +535,13 @@ async function parseAndStore(item, { stateDir, store, fs, post, now, markAbandon
     const facts = item.kind === "subagent"
       ? { agentMeta: agentMeta(item, fs), parentSessionId: item.threadId.split("/")[0], sidecar, attachments: sidecar?.pointer ? [sidecar.pointer] : [] }
       : { attachments: discoverChildren(item.path, { fs }).toolResults };
-    parsed = parseClaudeFile({ ...common, ...facts });
-    // A CLAUDE RUN'S HEADER LIVES ONLY IN ITS LINES. The session id, the times
-    // and the totals are read off the lines the parser is handed, so a pass
-    // with no line past the cursor — the abandonment pass over a finished
-    // file, or a registration that landed after the last line — named its run
-    // `claude:<host>:unknown` with zero totals. The record refused that id,
-    // and the abandonment pass, never marked done, re-sent it every two
-    // minutes into the dead letter: 728 pages on 2026-09-18 from two daemon
-    // sessions. A subagent's id survives (its sidecar names it), so its page
-    // is accepted and would zero its outcome instead. Codex recovers its header
-    // from the saved run; a Claude cursor saves none, so such a pass reads its
-    // header off the whole file and carries no rows, since every row it
-    // could carry is already committed.
-    if (fromLine > 0 && parsed.lastLine === fromLine) parsed = { ...parseClaudeFile({ ...common, ...facts, text: sourceText, baseLine: 0 }), rows: [] };
+    // A CLAUDE RUN'S HEADER LIVES ONLY IN ITS LINES, and the record replaces
+    // it with every page. Read off the increment, a pass with no line past the
+    // cursor — the abandonment pass over a finished file — named its run
+    // `claude:<host>:unknown` with zero totals (728 dead-letter pages on
+    // 2026-09-18), and a run sent in pieces kept only its last piece's tokens.
+    // So the header is read off the whole text; the rows stay the increment's.
+    parsed = parseClaudeFile({ ...common, ...facts, contextText: sourceText });
   }
   Object.assign(parsed.run.file, { sourceHash: stored.sourceHash, storedHash: stored.storedHash, bytes: stored.bytes, storedBytes: stored.storedBytes, storeKey: stored.key, committedLine: parsed.lastLine });
   const merged = mergeRegistration({ parsed, envelope, host: item.host });
@@ -573,6 +569,7 @@ export async function sweepRunFile(item, {
   fs = fsDefault,
   now = Date.now,
   markAbandoned = false,
+  refreshHeader = false,
   onStoreVerified,
 } = {}) {
   const runId = runIdOf(item);
@@ -584,7 +581,7 @@ export async function sweepRunFile(item, {
     return refuseChangedFile(item, state, sourceBytes, { stateDir, post, fs, now, kind: "runs-file-rewritten" });
   }
   const registrationMtime = envelopeMtime(item.path, fs);
-  if (!markAbandoned && state && !state.deferred
+  if (!markAbandoned && !refreshHeader && state && !state.deferred
     && sourceBytes.length === state.bytes
     && state.committedLine === completeLines(sourceBytes).length
     && registrationMtime <= (state.envelopeMtimeMs ?? 0)) return { skipped: "unchanged" };
@@ -812,6 +809,60 @@ export async function sweepRuns({
   }
 }
 
+// THE REPAIR FOR THE PIECEWISE HEADERS. Before the header was read off the
+// whole file, a Claude run the sweep sent in several pieces kept only its last
+// piece's totals, turns and tool calls in the record. Convex holds no reader
+// for the store, so it cannot recount them; the host that has the file sends
+// the run once more, with no new rows and the whole file's header, and the
+// record replaces the outcome as it does for every page. Each delivery since
+// the fix marks its state `wholeFileHeader`, so this walks only the runs still
+// unmarked and resumes where a batch stopped. It and the mark can both be
+// deleted once a pass on each host finds none left.
+export async function refreshClaudeHeaders({
+  config = runConfig(),
+  limit = 200,
+  fs = fsDefault,
+  now = Date.now,
+  post,
+  store,
+  log,
+} = {}) {
+  const say = log ?? makeLog(config.stateDir, fs, now);
+  const send = post ?? ((route, body) => postJson(config, route, body));
+  if (!config.host || !config.stateDir) return { started: false, reason: "host or state directory missing" };
+  const lock = acquireSweepLock(config.stateDir, { fs, now });
+  if (!lock.acquired) return { started: true, locked: true };
+  try {
+    const activeStore = store ?? openStore(config.storeConfig);
+    const pending = new Set([
+      ...queueFiles(config.stateDir, fs).map((file) => readJson(file, fs)?.runId).filter(Boolean),
+      ...deadLetterRunIds(config.stateDir, fs),
+    ]);
+    let names = [];
+    try { names = fs.readdirSync(path.join(config.stateDir, "state")).filter((name) => name.endsWith(".json")).sort(); } catch {}
+    let refreshed = 0, left = 0, gone = 0, failed = 0;
+    for (const name of names) {
+      const state = readJson(path.join(config.stateDir, "state", name), fs);
+      if (!state?.runId?.startsWith("claude:") || state.deferred || !state.verified || state.wholeFileHeader || pending.has(state.runId)) continue;
+      if (refreshed >= limit) { left += 1; continue; }
+      const described = state.path ? describeRunFile(state.path, { roots: config.roots, host: config.host, fs }) : null;
+      if (!described) { gone += 1; continue; }
+      try {
+        const result = await sweepRunFile(described, { stateDir: config.stateDir, store: activeStore, post: send, fs, now, refreshHeader: true, markAbandoned: Boolean(state.reportedAbandoned) });
+        if (result.ingested || result.healed !== undefined) refreshed += 1;
+        else { failed += 1; say(`runs-sweep refresh kept run=${state.runId} result=${Object.keys(result).join(",")}`); }
+      } catch (error) {
+        failed += 1;
+        say(`runs-sweep refresh kept run=${state.runId} reason=${String(error?.message ?? error).slice(0, 200)}`);
+      }
+    }
+    say(`runs-sweep refresh refreshed=${refreshed} failed=${failed} gone=${gone} left=${left}`);
+    return { started: true, refreshed, failed, gone, left };
+  } finally {
+    lock.release();
+  }
+}
+
 function argsOf(argv) {
   const options = {};
   for (let index = 0; index < argv.length; index += 1) {
@@ -819,12 +870,18 @@ function argsOf(argv) {
     else if (argv[index] === "--full") options.full = true;
     else if (argv[index] === "--urgent") options.urgent = true;
     else if (argv[index] === "--dry-run") options.dryRun = true;
+    else if (argv[index] === "--refresh-claude-headers") {
+      options.refresh = true;
+      if (/^\d+$/.test(argv[index + 1] ?? "")) options.limit = Number(argv[++index]);
+    }
   }
   return options;
 }
 
 async function main() {
-  const result = await sweepRuns(argsOf(process.argv.slice(2)));
+  const options = argsOf(process.argv.slice(2));
+  const result = options.refresh ? await refreshClaudeHeaders({ limit: options.limit }) : await sweepRuns(options);
+  if (options.refresh) console.log(JSON.stringify(result));
   if (!result.started) process.exitCode = 1;
 }
 

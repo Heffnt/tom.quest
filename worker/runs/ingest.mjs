@@ -276,7 +276,32 @@ function claudeChildFacts(agentMeta, parentSessionId) {
   return { isSubagent: true, depth, errors, parentAgentId, toolUseId, workflowId };
 }
 
-export function parseClaudeFile({ path, text, host, fileVersion, fromLine = 0, baseLine: suppliedBaseLine = fromLine, agentMeta = null, parentSessionId = null, sidecar = null, attachments: suppliedAttachments = /** @type {Array<{file: string, bytes: number, sha256: string}>} */ ([]) }) {
+/**
+ * A Claude run's rows come from the lines past its cursor; its header comes
+ * from the whole file.
+ *
+ * THE HEADER IS THE FILE'S, NOT THE INCREMENT'S (spec §23.3.1: turns, tool
+ * calls and token totals have the CLI file as their authority). The record
+ * replaces a run's outcome and context with each page it is sent, and the
+ * sweep sends a long run in many pieces, so a header read off one piece left
+ * the record holding that piece's tokens alone: on 2026-09-19 box runs of
+ * 0.78M to 15.1M tokens showed 57K to 1.5M. Summing pieces is not the fix,
+ * because one message's usage can straddle a cursor and would count twice.
+ * `contextText` is the whole text the increment ends; given with a cursor
+ * past line 0, the header is read off it.
+ */
+export function parseClaudeFile({ contextText, ...args }) {
+  const part = parseClaudeLines(args);
+  const baseLine = args.baseLine ?? args.fromLine ?? 0;
+  if (!(baseLine > 0) || typeof contextText !== "string") return part;
+  const whole = parseClaudeLines({ ...args, text: contextText, fromLine: 0, baseLine: 0 });
+  // With no line past the cursor there is nothing new to record: the only row
+  // such a parse makes is a subagent's sidecar complaint, already sent with the
+  // piece that ended at that cursor.
+  return { ...part, run: { ...whole.run, file: part.run.file }, ...(part.lastLine === baseLine ? { rows: [] } : {}) };
+}
+
+function parseClaudeLines({ path, text, host, fileVersion, fromLine = 0, baseLine: suppliedBaseLine = fromLine, agentMeta = null, parentSessionId = null, sidecar = null, attachments: suppliedAttachments = /** @type {Array<{file: string, bytes: number, sha256: string}>} */ ([]) }) {
   // `baseLine` is the absolute source-line ordinal of text's first supplied
   // line. `fromLine` remains its older spelling for callers that already use
   // it; an explicit baseLine wins when both are present.

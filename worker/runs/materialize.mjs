@@ -342,9 +342,13 @@ export async function materializeOnce(request, {
     // The parse reads the STORE's redacted bytes from the request's line on,
     // with `baseLine` the same, so every seq and every provenance line number
     // is the source's own and a second materialize produces identical rows.
+    // The whole text rides beside it, because a later slice's page replaces
+    // the run's header in the record and the header is the whole file's.
+    const wholeText = storeText(storeBytes);
     const common = {
       path: file.path,
-      text: textFromLine(storeText(storeBytes), request.fromLine),
+      text: textFromLine(wholeText, request.fromLine),
+      contextText: wholeText,
       host: request.host,
       fileVersion: file.storedHash,
       baseLine: request.fromLine,
