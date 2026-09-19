@@ -23,6 +23,9 @@ import {
   objectionsLead,
   overnightLine,
   renderSlack,
+  runnerLine,
+  runnerTierWords,
+  runnersLead,
   sessionUrl,
   statement,
   verifyDraft,
@@ -31,9 +34,10 @@ import {
   type HourlyFacts,
   type Line,
   type Message,
+  type RunnerFact,
   type TodayFacts,
 } from "./ttsCompose";
-import { ttsItemLink, ttsSessionLink, ttsTabLink } from "./ttsShared";
+import { RUNNER_TIERS, ttsItemLink, ttsSessionLink, ttsTabLink } from "./ttsShared";
 
 // The composer is PURE and imports nothing (its header says why), so every
 // test here calls it with literals — no Convex harness, no clock, no network.
@@ -318,6 +322,7 @@ function sept9(overrides: Partial<TodayFacts> = {}): TodayFacts {
     ],
     calendarLead: "Your day is committed from 16:00 to 23:00.",
     objections: [],
+    runners: [],
     overnight: [
       {
         batchId: "b1",
@@ -385,6 +390,7 @@ describe("composeToday", () => {
         objections: [
           { askId: "a1", todoId: "ph79", decision: "moved the passport appointment to Thursday", reason: "the consulate shuts on Wednesdays this month" },
         ],
+        runners: [WAITING_RUNNER],
         broken: [
           {
             statement: "Nothing has been captured from email since 02:10.",
@@ -397,7 +403,7 @@ describe("composeToday", () => {
       { canReply: false },
     );
     const order = withAll.lines.filter((l) => l.role === "lead").map((l) => l.section);
-    expect(order).toEqual(["today", "objections", "calendar", "overnight", "broken"]);
+    expect(order).toEqual(["today", "objections", "runners", "calendar", "overnight", "broken"]);
     // The four ranked sections keep the design's order among themselves.
     expect(order.filter((s) => (SECTION_ORDER as readonly string[]).includes(s as string))).toEqual([
       ...SECTION_ORDER,
@@ -607,6 +613,120 @@ describe("objectionsLead", () => {
     );
     expect(both.lines.find((l) => l.role === "lead" && l.section === "objections")?.text).toBe(
       "The delegate decided one thing while you were asleep and four merges landed on their own; silence means they stand.",
+    );
+  });
+});
+
+// ── The runners run ─────────────────────────────────────────────────────────
+const RUNNING_RUNNER: RunnerFact = {
+  runnerId: "r1",
+  title: "The train25 campaign",
+  status: "running",
+  lastCheckIn: "14 of 20 jobs running, 212 of 400 results done",
+  openQuestion: false,
+};
+const WAITING_RUNNER: RunnerFact = {
+  runnerId: "r2",
+  title: "The seed-variance probe",
+  status: "waiting-on-tom",
+  lastCheckIn: "0 of 4 jobs running",
+  openQuestion: true,
+};
+
+describe("the runners run", () => {
+  it("says a running runner is running, with its last check-in's first line", () => {
+    expect(runnerLine(RUNNING_RUNNER)).toBe(
+      "The train25 campaign is running, and no question of its is open; its last check-in reads: 14 of 20 jobs running, 212 of 400 results done.",
+    );
+    expect(runnerLine({ ...RUNNING_RUNNER, openQuestion: true })).toContain(
+      "is running, and a question of its is open for you",
+    );
+  });
+
+  it("says a runner waiting on Tom is waiting on him, and names no tier or decision value", () => {
+    const line = runnerLine(WAITING_RUNNER);
+    expect(line).toBe(
+      "The seed-variance probe is waiting on you, and its steps change nothing until you answer; its last check-in reads: 0 of 4 jobs running.",
+    );
+    for (const word of ["routine", "plan", "setup", "continue", "hand-off", "finish", "waiting-on-tom"]) {
+      expect(line).not.toContain(word);
+    }
+  });
+
+  it("invents no check-in for a runner that has never checked in", () => {
+    expect(runnerLine({ ...RUNNING_RUNNER, lastCheckIn: null })).toBe(
+      "The train25 campaign is running, and no question of its is open; it has not checked in yet.",
+    );
+  });
+
+  it("counts the live runners and the ones waiting on him", () => {
+    expect(runnersLead(1, 0)).toBe("One runner is live on the box.");
+    expect(runnersLead(1, 1)).toBe("One runner is live on the box, and it waits on you.");
+    expect(runnersLead(3, 1)).toBe("Three runners are live on the box, and one of them waits on you.");
+  });
+
+  it("prints the runners after the objection list and before the calendar, each linking the batches tab", () => {
+    const message = composeToday(
+      sept9({
+        objections: [{ askId: "a1", decision: "moved the passport appointment to Thursday" }],
+        runners: [WAITING_RUNNER, RUNNING_RUNNER],
+      }),
+      { canReply: false },
+    );
+    const sections = message.lines.filter((l) => l.role === "lead").map((l) => l.section);
+    expect(sections.indexOf("runners")).toBe(sections.indexOf("objections") + 1);
+    expect(sections.indexOf("calendar")).toBe(sections.indexOf("runners") + 1);
+    const items = message.lines.filter((l) => l.section === "runners" && l.role === "item");
+    expect(items.map((l) => l.text)).toEqual([runnerLine(WAITING_RUNNER), runnerLine(RUNNING_RUNNER)]);
+    expect(items.every((l) => l.role === "item" && l.url === TAB_BATCHES)).toBe(true);
+    expect(message.lines.some((l) => l.section === "runners" && l.role === "note")).toBe(false);
+  });
+
+  it("prints no runners run and adds no fact on a day with no live runner", () => {
+    const message = composeToday(sept9(), { canReply: true });
+    expect(message.lines.some((l) => l.section === "runners")).toBe(false);
+    expect(todayFactsBlock(sept9(), true).facts.some((f) => f.id.startsWith("runner:"))).toBe(false);
+  });
+
+  it("offers one fact per live runner, after the objection facts", () => {
+    const block = todayFactsBlock(
+      sept9({ objections: [{ askId: "a1", decision: "moved it" }], runners: [RUNNING_RUNNER] }),
+      false,
+    );
+    const ids = block.facts.map((f) => f.id);
+    expect(ids.indexOf("runner:r1")).toBe(ids.indexOf("ask:a1") + 1);
+    const runner = block.facts.find((f) => f.id === "runner:r1");
+    expect(runner?.urls).toEqual([TAB_BATCHES]);
+    expect(runner?.numbers).toEqual(expect.arrayContaining(["14", "20", "212", "400"]));
+  });
+
+  it("has one tier-in-words phrase for every tier the record stores", () => {
+    expect(Object.keys(runnerTierWords).sort()).toEqual([...RUNNER_TIERS].sort());
+  });
+
+  const runnerBlock = todayFactsBlock(sept9({ runners: [RUNNING_RUNNER] }), false);
+  const runnerDraft = (sources: string[]): Draft => ({
+    firstLine: "Three things carry a date you have passed, the oldest by ten days.",
+    firstLineSources: ["today:count"],
+    lines: [
+      { role: "lead", section: "runners", text: "One runner is live on the box.", sources: [] },
+      {
+        role: "item",
+        section: "runners",
+        text: "The train25 campaign is running: 212 of 400 results are done.",
+        url: TAB_BATCHES,
+        sources,
+      },
+    ],
+  });
+
+  it("accepts a draft whose runner line cites its runner fact", () => {
+    expect(verifyDraft(runnerDraft(["runner:r1"]), runnerBlock)).toEqual([]);
+  });
+
+  it("refuses a draft that prints a runner with no cited fact", () => {
+    expect(verifyDraft(runnerDraft([]), runnerBlock).join(" ")).toContain(
+      "carries a link or a number and cites no fact",
     );
   });
 });
