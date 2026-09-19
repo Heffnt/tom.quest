@@ -55,7 +55,7 @@ export function checkInJudgePrompt(checkIn, standard) {
   return [
     "You are checking one message before Tom reads it. Tom is one person; an agent that watches an experiment for him writes him a short check-in every few minutes, in a Slack thread, and he reads it on his phone.",
     "",
-    "Read the check-in against his writing standard, below. The form has already been checked by a script (every line a sentence, no ellipsis, no code, one allowed heading, no labels, a length cap); judge what a script cannot:",
+    "Read the check-in against his writing standard, below. The form has already been checked by a script (every line a sentence or a table row, no ellipsis, no code, one allowed heading, no labels, a length cap); judge what a script cannot:",
     "- a term he would not know is defined where it is first used, or not used;",
     "- no name is coined for a thing, and no jargon of the agent's own making appears;",
     "- it says what was seen and what was done, plainly, and does not grade its own work;",

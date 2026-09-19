@@ -10,6 +10,12 @@ describe("the check-in form rules", () => {
     expect(ids("Two cells are stuck.\n\n## Rulings requested\n\n1. Should I stop them? If you do not answer, I keep going.")).toEqual([]);
   });
 
+  it("pass a table of numbers, which the writing standard asks for, and still refuse a stray unfinished line beside it", () => {
+    const table = "The first column names what was counted, the second the number read this step.\n\n| What was counted | Number |\n| --- | --- |\n| Jobs running | 12 |";
+    expect(ids(table)).toEqual([]);
+    expect(ids(`${table}\n\nThe sweep is running`)).toEqual(["checkin-sentences"]);
+  });
+
   it("refuse each malformed shape by its own rule", () => {
     expect(ids("The sweep is running")).toEqual(["checkin-sentences"]);
     expect(ids("The sweep is running and then...")).toContain("checkin-ellipsis");

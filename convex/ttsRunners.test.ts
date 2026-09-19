@@ -312,6 +312,15 @@ describe("the step prompt", () => {
     expect(prompt).toContain(`tts-runner-step --runner ${runnerId} --step-run ${claimed.stepRunId}`);
     expect(prompt).toContain("tts-turing tree|node|read <path>");
     expect(prompt).toContain("Never restart, stop, or kill `tts-session-host`");
+    // The check-in contract names the prompt's own words, which the proof
+    // run's check-ins carried to Tom undefined.
+    const contract = prompt.slice(prompt.indexOf("## The check-in"), prompt.indexOf("The asking rubric"));
+    expect(contract).toContain(`Call this runner "${seed().title}", never "this runner"`);
+    expect(contract).toContain("describe the thing instead");
+    expect(contract).toContain("exit code or an HTTP status in words");
+    expect(contract).toContain("what the next step will do if he does not answer, and when, as a clock time");
+    expect(contract).toContain("one short Markdown table, one row per quantity");
+    expect(prompt).not.toContain("name the tier you judged in the check-in");
     expect(claimed.sensor).toEqual({ specs: ["sweeps/train/train25_*.yaml"], budgetGpuHours: 500, failures: [] });
   });
 

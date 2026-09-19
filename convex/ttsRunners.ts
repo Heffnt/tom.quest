@@ -639,7 +639,7 @@ const ANSWERER_WORDS: Record<RunnerAnswerer, string> = {
 /** The rubric column for this runner, overrides applied, as the step reads it. */
 export function renderRubric(runner: Pick<Doc<"runners">, "type" | "delegateAllowed" | "askOverrides">, knownAwayNow: { away: boolean; because: string }): string {
   const lines = [
-    `The asking rubric for this runner (a ${runner.type}). Before you ask anything, judge its tier, and name the tier you judged in the check-in:`,
+    `The asking rubric for this runner (a ${runner.type}). Before you ask anything, judge its tier. The tier names are this prompt's words, not Tom's: a check-in describes the kind of question in plain words and never names its tier.`,
   ];
   for (const tier of RUNNER_TIERS) {
     const now = answererFor(runner, tier, { knownAway: knownAwayNow.away });
@@ -652,6 +652,28 @@ export function renderRubric(runner: Pick<Doc<"runners">, "type" | "delegateAllo
   lines.push(`Tom is ${knownAwayNow.away ? "known to be away" : "taken to be present"} right now: ${knownAwayNow.because}.`);
   if (!runner.delegateAllowed) lines.push("This runner may never call the delegate; every question that is not yours to decide is Tom's.");
   return lines.join("\n");
+}
+
+/**
+ * What every check-in promises, beside the form rules the pen runs. Tom's
+ * writing standard defines every term outside his known list at first use,
+ * and a label invented inside a prompt is the likeliest to reach him
+ * undefined: the proof run's three check-ins each failed the judge twice on
+ * this prompt's own words (a tier name, "this runner", an exit code) and on a
+ * question with no default. So the prompt names those words here.
+ */
+function checkInContract(runner: Pick<Doc<"runners">, "title" | "stepMs">): string {
+  const minutes = Math.round(runner.stepMs / 60_000);
+  return [
+    "## The check-in",
+    "Tom reads the check-in on his phone, with no memory of this prompt or the document, and a judge reads it against his writing standard before he does. Every check-in keeps these promises:",
+    `- Call this runner "${runner.title}", never "this runner" or "the runner", and say at first mention that it is an agent that checks the experiment every ${minutes} minutes, each check a step.`,
+    "- Define at first use, inline, every term this prompt or the document introduces: the experiment's short name with what the experiment is, a percentage with what it is a share of, and the document as the runner's notes for its next step. A label that serves only this prompt, such as a tier name, is not his: describe the thing instead (a question that changes what the experiment is), and leave out any word you cannot define in a clause.",
+    "- Describe a process's exit code or an HTTP status in words: say the step's process was stopped by a signal, or the cluster refused the request as unauthorized, never the bare number.",
+    `- For every question open for Tom, new or still unanswered, say what the next step will do if he does not answer, and when, as a clock time: the next step runs about ${minutes} minutes after this check-in is recorded, unless you move it with --next-step-ms. A new question goes under the one "Rulings requested" heading, numbered, each one paragraph: what is gained and lost each way, the one you recommend and why, and that default.`,
+    "- Put the numbers from the facts block in one short Markdown table, one row per quantity, and say in the sentence before it what each column holds. A quantity the box could not read is a row that says it was not read and why, in words.",
+    "- Say what was seen and what was done; never grade your own work.",
+  ].join("\n");
 }
 
 function stepBranch(runnerId: Id<"runners">): string {
@@ -736,6 +758,7 @@ export async function buildRunnerStepPrompt(
       "VERIFY every act on a channel other than the one that acted: a job submitted is seen in the queue, a file written is read back, a post is seen by its stored timestamp. The check-in names the verification for each act.",
       "CHECK IN through the pen below, with the document rewritten so the next step can start cold from it: what the experiment is, where it stands, what this step saw and did, and what the next step should look at first.",
     ].join("\n\n"),
+    checkInContract(runner),
     renderRubric(runner, away),
     `## Never, in any cell of the rubric\n\nThese are Tom's alone. The delegate refuses them and so do you; a step that reaches one checks in with an ask for Tom and changes nothing:\n${narrow}`,
     `## Tools\n\n${BOX_TOOLS_PARAGRAPH}\n\n${DAEMON_RESTART_SENTENCE}`,

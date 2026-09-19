@@ -23,6 +23,9 @@ export const CHECKIN_MAX_CHARS = 1500;
 export const RULINGS_HEADING = "Rulings requested";
 
 const HEADING = /^ {0,3}#{1,6}\s+(.*?)\s*#*\s*$/;
+// A Markdown table row. His writing standard puts enumerable facts in tables,
+// and a row is not a sentence, so the sentence rule reads past it.
+const TABLE_ROW = /^\s*\|.*\|\s*$/;
 const NUMBERED = /^ {0,3}\d+[.)]\s/;
 // A line ends as a sentence when its last word is followed by a terminator,
 // allowing closing quotes, brackets and emphasis after it.
@@ -43,8 +46,8 @@ export const CHECKIN_RULES = Object.freeze([
   {
     id: "checkin-sentences",
     on: "document",
-    why: "every line ends as a sentence",
-    fails: (s) => lines(s).some((line) => line.trim() !== "" && !HEADING.test(line) && !SENTENCE_END.test(line.trim())),
+    why: "every line ends as a sentence, except a heading or a table row",
+    fails: (s) => lines(s).some((line) => line.trim() !== "" && !HEADING.test(line) && !TABLE_ROW.test(line) && !SENTENCE_END.test(line.trim())),
   },
   {
     id: "checkin-ellipsis",
