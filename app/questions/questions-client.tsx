@@ -107,7 +107,7 @@ function kindInfo(kind: KindFilter) {
   };
   const callValue = kind === null ? "null" : kind === "lighter" ? '"lighter"' : String(kind);
   return (
-    <Info call={`matches(BANK, { ...filters, kind: ${callValue} })`}>
+    <Info side="below" call={`matches(BANK, { ...filters, kind: ${callValue} })`}>
       {kind === null
         ? "Admits every question, the lighter ones included; kind no longer narrows the list."
         : details[kind]}
@@ -124,7 +124,7 @@ function frameInfo(frame: FrameFilter) {
   };
   const callValue = frame === null ? "null" : `"${frame}"`;
   return (
-    <Info call={`matches(BANK, { ...filters, frame: ${callValue} })`}>
+    <Info side="below" call={`matches(BANK, { ...filters, frame: ${callValue} })`}>
       {frame === null ? "Admits every frame; frame no longer narrows the list." : details[frame]}
     </Info>
   );
@@ -241,7 +241,7 @@ function Questions() {
             label={
               <span className="inline-flex w-14 shrink-0 items-center gap-0.5 text-sm text-text-faint">
                 topic
-                <Info call="matches(BANK, { ...filters, topic })">
+                <Info side="below" call="matches(BANK, { ...filters, topic })">
                   Pins the list to the questions tagged with one topic; a topic is the plain word the bank files a
                   question under. any lifts the pin.
                 </Info>
@@ -263,7 +263,7 @@ function Questions() {
               >
                 reset seen
               </button>
-              <Info call="storeSettings({ seen: [] })">
+              <Info side="below" call="storeSettings({ seen: [] })">
                 Empties the seen set stored under the questions settings key, so every question reads as unseen again;
                 the question on screen stays.
               </Info>

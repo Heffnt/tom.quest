@@ -211,15 +211,16 @@ describe("QuestionsClient", () => {
     expect(dialog.firstElementChild?.classList.contains("touch-none")).toBe(true);
   });
 
-  it("puts drawer segments and options content in the shared scroll container", () => {
+  it("opens the first kind info panel below its control inside the drawer", () => {
     renderQuestions();
     const { dialog } = openDrawer("options");
-    const scrollContainer = screen.getByTestId("questions-drawer-scroll");
+    const firstKindInfo = within(dialog).getAllByRole("button", { name: "what this does" })[0];
 
-    expect(scrollContainer.classList.contains("overflow-y-auto")).toBe(true);
-    expect(scrollContainer.contains(within(dialog).getByRole("button", { name: "options" }))).toBe(true);
-    expect(scrollContainer.contains(within(dialog).getByRole("button", { name: `list ${BANK.length}` }))).toBe(true);
-    expect(scrollContainer.contains(within(dialog).getByRole("button", { name: "reset seen" }))).toBe(true);
+    fireEvent.click(firstKindInfo);
+
+    const panel = within(dialog).getByRole("note");
+    expect(panel.classList.contains("top-full")).toBe(true);
+    expect(panel.classList.contains("bottom-full")).toBe(false);
   });
 
   it("selects a list row and closes the drawer", () => {
