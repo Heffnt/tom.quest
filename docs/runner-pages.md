@@ -6,7 +6,7 @@ A runner is a chain of short step runs on the Jarvis Box that watches one experi
 
 The batches tab at tom.quest/tts, the tab the page opens on, now lists the box's runners above the batch cards. Each live runner is one row, newest first. The row shows the runner's title, the host its experiment runs on (Turing or the box), whether it is a campaign or a probe, its step length, when it last checked in with the first line of that check-in, when its next step is due, and its status in words: running, waiting on Tom, done, failed or handed off. A runner with a blocking question Tom has not answered carries the words "waiting on Tom" in a bordered marker, not just a colour.
 
-A runner's title is a link to its newest step run on tom.quest/sessions. That opens the run view the sessions page already has. The view names the runner the step belongs to, and its "continues" link opens the step before it, so the whole chain of steps can be walked back from there. The run view itself is unchanged.
+A runner's title is a link to its newest step run on tom.quest/sessions. That opens the run view the sessions page already has. The view names the runner the step belongs to, and its "continues" link opens the step before it, so the whole chain of steps can be walked back from there. The run view is otherwise unchanged; the runner's status there reads in the same words as on the batches tab, so a runner held by a question reads "waiting on Tom".
 
 The arrow at the start of a row expands it in place, showing three things:
 
