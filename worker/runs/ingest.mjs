@@ -830,15 +830,6 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
     ? taskComplete.reason
     : priorOutcome.endedReason;
   const run = { runId, ...(parentRunId ? { parentRunId } : {}), rootRunId, depth: parentId ? 1 : 0, linkKnown: !parentId, origin: "unknown", host, cli: "codex", ...(model ? { model } : {}), ...(sessionModelOf(model) ? { sessionModel: sessionModelOf(model) } : {}), ...(effort ? { effort } : {}), ...(runtimeVersion ?? meta.cli_version ? { runtimeVersion: runtimeVersion ?? meta.cli_version } : {}), parserVersion: PARSER_VERSION, kind: parentId ? "codex-child" : "unknown", status: "unknown", startedAt, lastLineAt, context, attachments, outcome: { ...(finalTextSeq !== undefined ? { finalTextSeq } : {}), ...(endedReason !== undefined ? { endedReason } : {}), totals, ...(price === null ? {} : { costUsd: price, priceTableVersion: priceTableVersion() }), turns: Math.max(number(priorOutcome.turns), 1, turns.size), toolCalls }, file: { path, sourceHash: sha256(Buffer.from(text)), storedHash: fileVersion, bytes: Buffer.byteLength(text), storedBytes: 0, committedLine: baseLine + lines.length, committedPrefixSha256: prefixHash(lines, lines.length), incompleteTail } };
-  // A ROW SITS AT ITS RUN'S DEPTH, and the record refuses one that does not.
-  // The field cannot go: the record stores it on every row and the transcript
-  // view draws a row as nested by it, for Claude subagents as for Codex
-  // children. The rows are emitted as the lines are read, and a line need not
-  // come after the session_meta that makes this run a child, so the depth is
-  // settled here once the whole parse knows it. Before this, every spawn_agent
-  // child's rows said depth 0 under a depth-1 run and the whole child was
-  // refused.
-  for (const row of rows) row.depth = run.depth;
   const result = finishResult({ run, rows, children, attachments, lastLine: baseLine + lines.length, incompleteTail, dropped });
   // This is sweep state only, never a Convex run field. It keeps the pieces a
   // later tail needs without copying base_instructions text onto disk again.

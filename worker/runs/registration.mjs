@@ -549,11 +549,7 @@ export function mergeRegistration({ parsed, envelope, host, report = () => {} })
     // without dropping linkKnown the whole run is dead-lettered on a permanent
     // 400. The tool-use id, when the hook supplied one, is the evidence that
     // makes the link known; absent it the edge is registered but unproven.
-    //
-    // convex/runs.ts `internalIngest` also refuses a row whose depth does not
-    // equal the run's, so every row moves with the run. Rows are digested over
-    // the run id, seq, kind and content — not depth — so this does not
-    // invalidate a digest.
+
     const wasRoot = run.rootRunId === run.runId && run.depth === 0;
     run.parentRunId = registration.parentRunId;
     if (wasRoot) {
@@ -565,7 +561,6 @@ export function mergeRegistration({ parsed, envelope, host, report = () => {} })
         : registration.parentRunId;
       run.depth = Number.isInteger(registration.depth) ? registration.depth : 1;
       if (typeof run.spawnedByToolUseId !== "string" || !run.spawnedByToolUseId) run.linkKnown = false;
-      if (Array.isArray(result.rows)) for (const row of result.rows) row.depth = run.depth;
     }
   }
   const hookKeys = Array.isArray(envelope.claim?.hookPayloadKeys) ? envelope.claim.hookPayloadKeys : [];

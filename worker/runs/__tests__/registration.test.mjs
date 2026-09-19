@@ -203,7 +203,7 @@ describe("run registration", () => {
     expect(withId.run).toMatchObject({ linkKnown: true, spawnedByToolUseId: "tool-1" });
   });
 
-  it("promotes a root the box launcher gave a parent, and moves every row with it", () => {
+  it("promotes a root the box launcher gave a parent", () => {
     const root = () => ({
       run: {
         runId: "claude:box:box-session", rootRunId: "claude:box:box-session", depth: 0,
@@ -224,15 +224,14 @@ describe("run registration", () => {
     const promoted = mergeRegistration({ parsed: root(), host: "box", envelope: envelope("worker/runs/box-run.mjs") });
     // linkKnown drops because convex/runs.ts validRunPayload refuses a run that
     // claims a known link to a parent with no tool-use id behind it, and
-    // ingest.mjs parses a Claude ROOT file as linkKnown. Every row's depth
-    // moves too: internalIngest refuses a row whose depth is not the run's.
+    // ingest.mjs parses a Claude ROOT file as linkKnown. The rows keep the
+    // page's depth: internalIngest stores each at the depth it gives the run.
     expect(promoted.run).toMatchObject({
       parentRunId: "claude:laptop:orchestrator",
       rootRunId: "claude:laptop:orchestrator",
       depth: 1,
       linkKnown: false,
     });
-    expect(promoted.rows.map((entry) => entry.depth)).toEqual([1, 1]);
 
     // A launcher off PARENT_LINK_LAUNCHERS names no parent at all: a wrong
     // position in the tree is worse than a missing one.

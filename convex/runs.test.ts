@@ -144,6 +144,29 @@ describe("runs", () => {
     }
   });
 
+  // witness: six spawn_agent children of a Codex run that a Claude box run
+  // launched were refused as "invalid run row" on 2026-09-19: the record put
+  // them at depth 2 under their depth-1 parent, and their pages said 1.
+  it("stores a child's rows at the depth the record gives the run, not the page's", async () => {
+    const t = convexTest(schema, modules);
+    const parent = run({
+      runId: "codex:box:parent-thread", rootRunId: "claude:box:launcher-run", parentRunId: "claude:box:launcher-run",
+      depth: 1, linkKnown: false, host: "box", cli: "codex", kind: "unknown",
+      file: { ...run().file, path: "/parent.jsonl" },
+    });
+    expect(await t.mutation(internal.runs.internalIngest, ingest(parent, [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
+    const child = run({
+      runId: "codex:box:child-thread", rootRunId: "codex:box:parent-thread", parentRunId: "codex:box:parent-thread",
+      depth: 1, linkKnown: false, host: "box", cli: "codex", kind: "codex-child",
+      file: { ...run().file, path: "/child.jsonl" },
+    });
+    expect(await t.mutation(internal.runs.internalIngest, ingest(child, [row(0, { depth: 1 }), row(1000, { depth: 1 })]) as never)).toMatchObject({ ok: true, inserted: 2 });
+    const landed = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "codex:box:child-thread")).unique());
+    expect(landed).toMatchObject({ depth: 2, rootRunId: "claude:box:launcher-run" });
+    const rows = await t.run((ctx) => ctx.db.query("claudeMessages").withIndex("by_run_seq", (q) => q.eq("runId", "codex:box:child-thread")).collect());
+    expect(rows.map((entry) => entry.depth)).toEqual([2, 2]);
+  });
+
   it("refuses malformed identifiers, numeric facts, and child edges before writes", async () => {
     const t = convexTest(schema, modules);
     expect(await t.mutation(internal.runs.internalIngest, ingest(run({ runId: "not-a-run" })) as never)).toEqual({ ok: false, reason: "invalid run record" });

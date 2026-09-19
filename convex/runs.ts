@@ -313,8 +313,15 @@ export const internalIngest = internalMutation({
     // root the CLI's own sidecar gave this run. The sweep reaches a grandchild
     // before its parent whenever the file names sort that way, and deriving a
     // position from a parent that is not there yet made every row of a deeper
-    // run fail the row-depth check below, which dead-lettered the whole run on
-    // a permanent 400.
+    // run fail the row-depth check that stood below, which dead-lettered the
+    // whole run on a permanent 400.
+    //
+    // A ROW TAKES THE DEPTH THE RECORD GIVES ITS RUN, not the depth the page
+    // says. The file knows only that it sits one level under its parent; the
+    // record knows where that parent sits. A Codex child whose parent a Claude
+    // box run launched is depth 2 here and depth 1 in its own file, and the
+    // check that refused a row at any other depth than its run's dead-lettered
+    // six such children on 2026-09-19.
     // The envelope names the environment; a run without one runs where its
     // parent ran; failing both, a row already in the record keeps its own.
     // Only then is it a worker, and that guess is counted below.
@@ -344,7 +351,7 @@ export const internalIngest = internalMutation({
 
     let previous = -1;
     for (const row of args.rows) {
-      if (!validRow(row) || row.seq <= previous || row.depth !== run.depth) return { ok: false as const, reason: "invalid run row" };
+      if (!validRow(row) || row.seq <= previous) return { ok: false as const, reason: "invalid run row" };
       if (row.overflow !== undefined) return { ok: false as const, reason: "overflow must be stamped separately" };
       if (row.provenance.fileVersion !== run.file.storedHash) return { ok: false as const, reason: "row file version mismatch" };
       previous = row.seq;
@@ -470,7 +477,7 @@ export const internalIngest = internalMutation({
     let inserted = 0, skipped = 0;
     for (const row of args.rows) {
       if (await rowAt(ctx, run.runId, row.seq)) { skipped += 1; continue; }
-      await ctx.db.insert("claudeMessages", { runId: run.runId, seq: row.seq, turn: row.turn, kind: row.kind, content: row.content, provenance: row.provenance, digest: row.digest, depth: row.depth, parentToolUseId: row.parentToolUseId, createdAt: row.createdAt });
+      await ctx.db.insert("claudeMessages", { runId: run.runId, seq: row.seq, turn: row.turn, kind: row.kind, content: row.content, provenance: row.provenance, digest: row.digest, depth: run.depth, parentToolUseId: row.parentToolUseId, createdAt: row.createdAt });
       inserted += 1;
     }
     // Three writers converge on this field; whoever is first wins, so a later
