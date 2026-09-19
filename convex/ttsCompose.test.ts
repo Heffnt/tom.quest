@@ -743,7 +743,7 @@ describe("the runners run", () => {
 
 // ── The hourly line ─────────────────────────────────────────────────────────
 function hourly(overrides: Partial<HourlyFacts> = {}): HourlyFacts {
-  return { now: 1_757_000_000_000, since: 1_756_996_400_000, running: [], batches: [], changes: [], ...overrides };
+  return { now: 1_757_000_000_000, since: 1_756_996_400_000, running: [], batches: [], changes: [], runners: [], ...overrides };
 }
 
 describe("composeHourly", () => {

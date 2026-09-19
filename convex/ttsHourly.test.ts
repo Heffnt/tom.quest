@@ -35,7 +35,7 @@ const HOUR = 3_600_000;
 const SINCE = NOW - HOUR;
 
 function facts(over: Partial<HourlyFacts> = {}): HourlyFacts {
-  return { now: NOW, since: SINCE, running: [], batches: [], changes: [], ...over };
+  return { now: NOW, since: SINCE, running: [], batches: [], changes: [], runners: [], ...over };
 }
 
 async function insertTodo(t: ReturnType<typeof convexTest>, statement: string, batchId?: Id<"batches">) {
@@ -144,6 +144,25 @@ describe("the one-line form", () => {
       expect(text).not.toContain(value);
     }
     expect(text).toBe(`Three sessions are working <${TTS_BATCHES_LINK}|a batch>, and nothing else changed.`);
+  });
+
+  it("names the live runners after what ran, and never on their own", () => {
+    const runner = (title: string, status: "running" | "waiting-on-tom") => ({
+      runnerId: title, title, status, lastCheckIn: null, openQuestion: status === "waiting-on-tom",
+    });
+    expect(composeHourly(facts({ runners: [runner("The train25 campaign", "running")] }))).toBeNull();
+    const captured = [{ kind: "captured" as const, at: SINCE + 1, text: "one", detail: null, link: null }];
+    expect(
+      composeHourly(facts({ changes: captured, runners: [runner("The train25 campaign", "waiting-on-tom")] }))?.firstLine,
+    ).toBe(`The runner <${TTS_BATCHES_LINK}|The train25 campaign> is waiting on your answer, and 1 item was captured.`);
+    expect(
+      composeHourly(
+        facts({
+          changes: captured,
+          runners: [runner("A", "waiting-on-tom"), runner("B", "running"), runner("C", "running")],
+        }),
+      )?.firstLine,
+    ).toBe(`Three <${TTS_BATCHES_LINK}|runners> are live, one of them waiting on you, and 1 item was captured.`);
   });
 
   it("counts the changes rather than listing them, however many there are", () => {
@@ -656,6 +675,38 @@ describe("sendHourlyUpdate", () => {
     await t.action(internal.ttsSync.sendHourlyUpdate, {});
     expect(posts).toHaveLength(0);
     expect(await rowsOfKind(t, HOURLY_UPDATE_SENT)).toHaveLength(2);
+  });
+
+  // A LIVE RUNNER IS NOT ACTIVITY. Its steps run every few minutes for as
+  // long as it lives; were it to count, no hour would ever be quiet again. It
+  // is named in an hour that speaks for another reason, and only then.
+  it("stays silent for an hour whose only fact is a live runner, and names it in an hour that speaks", async () => {
+    const withRunner = async () => {
+      const t = convexTest(schema, modules);
+      await t.mutation(internal.ttsRunners.internalCreateRunner, {
+        seed: {
+          title: "The train25 campaign",
+          type: "campaign",
+          experimentHost: "turing",
+          repo: "ComplexMultiTrigger",
+          stepMs: 10 * 60_000,
+          from: { kind: "prompt", text: "Watch the sweep." },
+        },
+      });
+      return t;
+    };
+    const posts = stubSlack();
+
+    const quiet = await withRunner();
+    await quiet.action(internal.ttsSync.sendHourlyUpdate, {});
+    expect(posts).toHaveLength(0);
+    expect(dataOf((await rowsOfKind(quiet, HOURLY_UPDATE_SENT))[0])).toMatchObject({ quiet: true, posted: false });
+
+    const busy = await withRunner();
+    await busyHour(busy);
+    await busy.action(internal.ttsSync.sendHourlyUpdate, {});
+    expect(posts).toHaveLength(1);
+    expect(posts[0].text).toContain(`The runner <${TTS_BATCHES_LINK}|The train25 campaign> is running, and 1 item was captured.`);
   });
 
   /** Make the hour NOT quiet: one capture inside the window is enough, and it

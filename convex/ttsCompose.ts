@@ -557,6 +557,9 @@ export type HourlyFacts = {
   running: RunningSession[];
   batches: BatchWorked[];
   changes: Change[];
+  /** Every live runner. Named in an hour that already speaks; never what makes
+   *  an hour speak (isQuietHour). */
+  runners: RunnerFact[];
 };
 
 export function elapsedText(ms: number): string {
@@ -568,6 +571,11 @@ export function elapsedText(ms: number): string {
   return m === 0 ? `${h}h` : `${h}h${String(m).padStart(2, "0")}m`;
 }
 
+/** A LIVE RUNNER IS NOT ACTIVITY HERE. Its steps run every few minutes for as
+ *  long as it lives, so counting it would make every hour speak and retire the
+ *  silence rule without anyone deciding to. The runners are named inside an
+ *  hour that speaks for another reason (composeHourly); an hour with nothing
+ *  else is still silent. */
 export function isQuietHour(f: HourlyFacts): boolean {
   return f.running.length === 0 && f.batches.length === 0 && f.changes.length === 0;
 }
@@ -993,6 +1001,10 @@ export function composeHourly(f: HourlyFacts): Message | null {
       `${capitalise(countWord(f.batches.length))} ${plural(f.batches.length, "batch", "batches")} moved, ${linked(b.statement, TAB_BATCHES)} among them`,
     );
   }
+  if (f.runners.length > 0) {
+    const clause = runnersClause(f.runners);
+    clauses.push(clauses.length === 0 ? capitalise(clause) : clause);
+  }
   const changed = changeClauses(f.changes);
   if (changed.length > 0) clauses.push(joinClauses(changed));
   else if (clauses.length > 0) clauses.push("nothing else changed");
@@ -1138,6 +1150,18 @@ export function composeRunnerAsk(f: RunnerAskFacts, o: { canReply: boolean }): M
 
 export function runnerAskBody(f: RunnerAskFacts): string {
   return f.question.trim();
+}
+
+/** The hourly line's runners clause, linking the batches tab where they are
+ *  listed. */
+function runnersClause(runners: RunnerFact[]): string {
+  const waiting = runners.filter((r) => r.status === "waiting-on-tom").length;
+  if (runners.length === 1) {
+    const doing = waiting === 1 ? "is waiting on your answer" : "is running";
+    return `the runner ${linked(runners[0].title, TAB_BATCHES)} ${doing}`;
+  }
+  const on = waiting === 0 ? "" : `, ${countWord(waiting)} of them waiting on you`;
+  return `${countWord(runners.length)} ${linked("runners", TAB_BATCHES)} are live${on}`;
 }
 
 function joinWithAnd(parts: string[]): string {
