@@ -2,6 +2,7 @@
 // All persisted dates are epoch-ms numbers (convex/schema.ts dtsTodos).
 
 import type { Doc } from "@/convex/_generated/dataModel";
+import type { runnerStatus } from "@/convex/ttsRunners";
 
 export type Todo = Doc<"dtsTodos">;
 export type Batch = Doc<"batches">;
@@ -279,6 +280,15 @@ export function selectToday(
   take(waking, "waking");
   return { overdue, due, scheduled, ready, waking, entries };
 }
+
+/** A runner's status in words, the same on the batches tab and the run view. */
+export const RUNNER_STATUS_WORDS: Record<ReturnType<typeof runnerStatus>, string> = {
+  running: "running",
+  "waiting-on-tom": "waiting on Tom",
+  done: "done",
+  failed: "failed",
+  "handed-off": "handed off",
+};
 
 export function errMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);

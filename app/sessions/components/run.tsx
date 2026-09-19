@@ -25,6 +25,7 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import Info from "@/app/tts/components/info";
+import { RUNNER_STATUS_WORDS } from "@/app/tts/lib";
 import type { SessionModel, TranscriptMessage } from "../lib";
 import { useRunRows } from "../use-run-rows";
 import {
@@ -723,7 +724,7 @@ function Lead({
         )}
         {runner && (
           <span className="text-text-muted">
-            a step of the runner {runner.title}, which is {runner.status}
+            a step of the runner {runner.title}, which is {RUNNER_STATUS_WORDS[runner.status]}
           </span>
         )}
         {continues !== undefined && (

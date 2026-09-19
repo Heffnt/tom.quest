@@ -22,17 +22,9 @@ import { useAuth } from "@/app/lib/auth";
 import Markdown from "@/app/sessions/components/markdown";
 import Info from "./info";
 import SectionHeader from "./section-header";
-import { ageText, errMessage, fmtDate, untilText } from "@/app/tts/lib";
+import { RUNNER_STATUS_WORDS, ageText, errMessage, fmtDate, untilText } from "@/app/tts/lib";
 
 type Runner = FunctionReturnType<typeof api.ttsRunners.listRunners>[number];
-
-const STATUS_WORDS: Record<Runner["status"], string> = {
-  running: "running",
-  "waiting-on-tom": "waiting on Tom",
-  done: "done",
-  failed: "failed",
-  "handed-off": "handed off",
-};
 
 /** The run view on /sessions, which reads ?run= on arrival. */
 function runHref(runId: string): string {
@@ -159,7 +151,7 @@ function RunnerRow({
                 waiting ? "rounded border border-accent/60 px-1 text-accent" : "text-text-faint"
               }`}
             >
-              {STATUS_WORDS[r.status]}
+              {RUNNER_STATUS_WORDS[r.status]}
             </span>
           </span>
           <span className="block truncate text-xs text-text-muted">

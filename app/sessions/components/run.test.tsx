@@ -642,6 +642,14 @@ describe("a runner's step", () => {
     expect(convex.seen).toContain('ttsRunners:runnerTitle:{"runnerId":"k17runner"}');
   });
 
+  it("says a runner waiting on Tom in words, never the raw status", () => {
+    convex.runs = { "run-step": runDoc({ runId: "run-step", origin: "runner:k17runner", kind: "runner-step" }) };
+    convex.runners = { k17runner: { title: "TRAIN25 campaign", status: "waiting-on-tom" } };
+    render(<Run runId="run-step" depth={0} now={NOW} onOpenRun={onOpenRun} onOpenSession={onOpenSession} />);
+    expect(body()).toContain("a step of the runner TRAIN25 campaign, which is waiting on Tom");
+    expect(body()).not.toContain("waiting-on-tom");
+  });
+
   it("does not ask for a runner on a run that is not a step", () => {
     loadTree();
     root();
