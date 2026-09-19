@@ -252,7 +252,7 @@ describe("the step prompt", () => {
   const COMMIT = "0123abcd0123abcd0123abcd0123abcd0123abcd";
   // The research page names the repository, which is how a CMT runner's step
   // is granted his research: the repository row, not a todo category.
-  const RESEARCH = "---\nupdated: 2026-09-09\ncategories: [research, cmt, complexmultitrigger]\n---\n\n# Research\n\n## Current state\n\n- The September campaign.\n";
+  const RESEARCH = "---\nupdated: 2026-09-09\ncategories: [study-one, study-two, complexmultitrigger]\n---\n\n# Research\n\n## Current state\n\n- The September campaign.\n";
 
   async function publish(t: TestConvex<typeof schema>) {
     const { contextPublication } = await import("../scripts/context-fixture.mjs");

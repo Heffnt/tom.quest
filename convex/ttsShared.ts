@@ -1026,6 +1026,8 @@ export function slackHourKey(utcMs: number): string {
 // Six rooms, each with one purpose and one cadence: #tts-today (the morning
 // message), #tts-decisions (object, or let it stand), #tts-needs-you (settle
 // it), #tts-hourly (glance), #tts-broken (the box is failing), #dump (capture).
+// A seventh, #tts-runners, holds one thread per runner, its root the runner's
+// first check-in (convex/ttsRunners.ts).
 // Tom's steps to create them and set these ids are slack-design.md §5.1.
 //
 // This lives here rather than in convex/ttsSync.ts, which owns the Slack door,
@@ -1039,7 +1041,6 @@ const CHANNEL_ENV: Record<SlackChannelKind, string> = {
   needsYou: "SLACK_TTS_NEEDS_YOU_CHANNEL_ID",
   hourly: "SLACK_TTS_HOURLY_CHANNEL_ID",
   broken: "SLACK_TTS_BROKEN_CHANNEL_ID",
-  // One thread per runner, its root the runner's first check-in.
   runners: "SLACK_TTS_RUNNERS_CHANNEL_ID",
 };
 

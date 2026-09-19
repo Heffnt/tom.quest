@@ -548,7 +548,7 @@ describe("the runner-step caller", () => {
   it("judges, captures nothing, carries his intent, and takes the repository's area and repo skill", () => {
     expect(CONTEXT_CALLERS["runner-step"]).toEqual({ judges: true, captures: false });
     expect(INTENT_CALLERS).toContain("runner-step");
-    const research = "---\nupdated: 2026-09-18\ncategories: [research, cmt, complexmultitrigger]\n---\n\n# Research\n";
+    const research = "---\nupdated: 2026-09-18\ncategories: [study-one, study-two, complexmultitrigger]\n---\n\n# Research\n";
     const routed = routeSkills({
       subject: { kind: "repo", repo: "ComplexMultiTrigger" },
       caller: "runner-step",
