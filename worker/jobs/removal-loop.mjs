@@ -550,16 +550,20 @@ export async function runRemovalLoop({ force = false, dryRun = false, base = "ma
     // 0. FLOW CONTROL, before anything else.
     const open = ghJson(io, [
       "pr", "list", "--repo", REPO_SLUG, "--label", LABEL, "--state", "open",
-      "--json", "number,headRefOid,headRefName,title,url,body",
+      "--json", "number,headRefOid,headRefName,baseRefName,title,url,body",
     ]) ?? [];
     if (open.length > 0) {
       const pr = open[0];
       if (dryRun) {
         io.out(`[removal-loop] DRY RUN — pull request ${pr.number} is open, so only the merge pass would run.`);
-        return { ...result, action: "held", pr: pr.number };
+        result = { ...result, action: "held", pr: pr.number };
+        return result;
       }
-      refreshClone(io, base);
-      const pass = await mergePass({ io, env: resolvedEnv, state, pr, base, day, note });
+      // The pull request's own base, which is main except for a loop run by
+      // hand with --base: its audit diffs against the branch it would merge into.
+      const prBase = pr.baseRefName || base;
+      refreshClone(io, prBase);
+      const pass = await mergePass({ io, env: resolvedEnv, state, pr, base: prBase, day, note });
       result = { ...result, ...pass, pr: pr.number };
       await record({ held: true, pr: pr.number, url: pr.url, action: pass.action, reason: pass.reason });
       return result;
@@ -607,7 +611,8 @@ export async function runRemovalLoop({ force = false, dryRun = false, base = "ma
     if (dryRun) {
       io.out(`[removal-loop] DRY RUN — picked ${violation.ruleId} in ${violation.path} (${violation.lines} line(s), ${violation.files} file(s)) of ${picked.baseline} in the baseline at ${base} ${baseSha.slice(0, 7)}; branch ${branch}. Nothing spawned, nothing posted.`);
       io.out(fullPrompt);
-      return { ...result, action: "dry-run", violation, branch, prompt: fullPrompt };
+      result = { ...result, action: "dry-run", violation, branch, prompt: fullPrompt };
+      return result;
     }
 
     // 2. THE ACTUATOR.
