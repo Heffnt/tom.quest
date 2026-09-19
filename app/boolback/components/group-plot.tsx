@@ -90,7 +90,7 @@ type Extent = {
 /** A run scheduled into a panel under one series (the duplication unit). */
 type PanelPt = { row: RunRow; key: string };
 
-export type FacetPanel = { id: string; value: string; count: number; pts: PanelPt[] };
+type FacetPanel = { id: string; value: string; count: number; pts: PanelPt[] };
 
 /** Sort a parameter's values by its rule: numericSort ascending, else lexical
  *  (the same ordering the flat param facet uses for its panels). */
