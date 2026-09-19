@@ -1,61 +1,50 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import TomGate from "@/app/components/tom-gate";
-import { BANK, type Depth } from "./data/types";
+import { usePersistedSettings } from "@/app/lib/hooks/use-persisted-settings";
+import { BANK, type Question } from "./data/types";
 import {
-  advance,
-  effectiveDepth,
-  INITIAL_STATE,
-  MAX_DEPTH,
+  FRAMES,
+  INITIAL_FILTERS,
+  KINDS,
+  matches,
+  next,
+  refined,
   topicsOf,
-  type DepthFilter,
-  type Mode,
-  type QuestionsState,
+  type Filters,
+  type TopicFilter,
 } from "./lib/pick";
 
-const USED_KEY = "questions.used";
-const DEPTH_KEY = "questions.depth";
-
-const WALK: ReadonlyArray<{ mode: Mode; label: string }> = [
-  { mode: "stay", label: "stay" },
-  { mode: "deeper", label: "deeper" },
-  { mode: "lighten", label: "lighten" },
-];
-
-const DEPTH_CHIPS: readonly DepthFilter[] = ["auto", 1, 2, 3];
-
-function isDepth(value: unknown): value is Depth {
-  return value === 1 || value === 2 || value === 3;
-}
+/** The settings key this page owns, and the only shape it stores under it. */
+const SETTINGS_KEY = "questions";
+type QuestionsSettings = { seen: string[] };
+const SETTINGS_DEFAULTS: QuestionsSettings = { seen: [] };
 
 /**
- * What survives a reload: the ids already asked, and how deep the walk had got.
- * Read after mount so the server's render and the first client render agree,
- * and wrapped because storage throws outright in a locked-down browser.
+ * Everything one activation moves at once. Held together rather than in three
+ * states because a draw reads all three: two taps before a commit have to
+ * compose, and they only can if each one starts from what the last one left.
  */
-function restored(): QuestionsState {
-  try {
-    const rawUsed = window.localStorage.getItem(USED_KEY);
-    const rawDepth = Number(window.localStorage.getItem(DEPTH_KEY));
-    const parsed: unknown = rawUsed === null ? [] : JSON.parse(rawUsed);
-    const used = new Set<string>(Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : []);
-    return { ...INITIAL_STATE, used, depth: isDepth(rawDepth) ? rawDepth : 1 };
-  } catch {
-    // No storage, or storage holding something this page did not write.
-    return INITIAL_STATE;
-  }
+type View = { filters: Filters; seen: ReadonlySet<string>; current: Question | null };
+
+/**
+ * The view after a draw. `spend` says whether the question on screen is used up
+ * by the move: next spends it, a chip does not, which is what lets you browse
+ * the properties without burning through the bank.
+ */
+function drawn(view: View, filters: Filters, spend: boolean): View {
+  const shownId = view.current?.id ?? null;
+  const seen = spend && shownId !== null ? new Set(view.seen).add(shownId) : view.seen;
+  return { filters, seen, current: next(BANK, filters, seen, shownId) };
 }
 
-function Chip({
-  label,
-  selected,
-  onSelect,
-}: {
-  label: string;
-  selected: boolean;
-  onSelect: () => void;
-}) {
+/** The no-filter sentinel is null everywhere but here, where it reads "any". */
+function chipLabel(option: unknown): string {
+  return option === null ? "any" : String(option);
+}
+
+function Chip({ label, selected, onSelect }: { label: string; selected: boolean; onSelect: () => void }) {
   return (
     <button
       type="button"
@@ -72,6 +61,32 @@ function Chip({
   );
 }
 
+function ChipRow<Option>({
+  label,
+  options,
+  selected,
+  onSelect,
+}: {
+  label: string;
+  options: readonly Option[];
+  selected: Option;
+  onSelect: (option: Option) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="w-14 shrink-0 text-sm text-text-faint">{label}</span>
+      {options.map((option) => (
+        <Chip
+          key={chipLabel(option)}
+          label={chipLabel(option)}
+          selected={selected === option}
+          onSelect={() => onSelect(option)}
+        />
+      ))}
+    </div>
+  );
+}
+
 function TextLink({ label, onClick }: { label: string; onClick: () => void }) {
   return (
     <button
@@ -85,107 +100,133 @@ function TextLink({ label, onClick }: { label: string; onClick: () => void }) {
 }
 
 function Questions() {
-  const [state, setState] = useState<QuestionsState>(INITIAL_STATE);
-  const [ready, setReady] = useState(false);
-  // Collapsed on every load, deliberately: the walk is the page, and the panel
-  // is the exception you go looking for.
+  const [stored, storeSettings, hydrated] = usePersistedSettings<QuestionsSettings>(
+    SETTINGS_KEY,
+    SETTINGS_DEFAULTS,
+  );
+  const [view, setView] = useState<View>(() => ({
+    filters: INITIAL_FILTERS,
+    seen: new Set<string>(),
+    current: null,
+  }));
+  const [showAll, setShowAll] = useState(false);
+  // Collapsed on every load, deliberately: one question is the page, and the
+  // panel is the exception you go looking for.
   const [propertiesOpen, setPropertiesOpen] = useState(false);
 
-  const topics = useMemo(() => topicsOf(BANK), []);
+  const topicOptions = useMemo<readonly TopicFilter[]>(() => [null, ...topicsOf(BANK)], []);
+  const matched = useMemo(() => matches(BANK, view.filters), [view.filters]);
+  const seenHere = matched.filter((question) => view.seen.has(question.id)).length;
+
+  // The set the store handed over, kept so the mirror below can tell it apart
+  // from a set this page made. Seeding waits for the store: the first question
+  // has to be drawn around the ids already spent, not before them.
+  const seeded = useRef<ReadonlySet<string> | null>(null);
 
   useEffect(() => {
-    setState(advance(BANK, restored(), "stay"));
-    setReady(true);
-  }, []);
+    if (!hydrated || seeded.current !== null) return;
+    const seen = new Set(stored.seen);
+    seeded.current = seen;
+    setView((prev) => ({ ...prev, seen, current: next(BANK, prev.filters, seen, null) }));
+  }, [hydrated, stored.seen]);
 
+  // Every set an activation makes goes back to the store; the seeded one does
+  // not, so hydration never writes its own value back over a newer one.
   useEffect(() => {
-    if (!ready) return;
-    try {
-      window.localStorage.setItem(USED_KEY, JSON.stringify([...state.used]));
-      window.localStorage.setItem(DEPTH_KEY, String(state.depth));
-    } catch {
-      // Storage is a convenience here; the session works without it.
-    }
-  }, [ready, state.used, state.depth]);
+    if (seeded.current === null || view.seen === seeded.current) return;
+    storeSettings({ seen: [...view.seen] });
+  }, [view.seen, storeSettings]);
 
-  const move = (mode: Mode) => setState((previous) => advance(BANK, previous, mode));
+  const advance = () => setView((prev) => drawn(prev, prev.filters, true));
 
-  const filter = (filters: QuestionsState["filters"]) =>
-    setState((previous) => advance(BANK, { ...previous, filters }, "filter"));
+  const refine = (patch: Partial<Filters>) =>
+    setView((prev) => {
+      const filters = refined(prev.filters, patch);
+      return filters === prev.filters ? prev : drawn(prev, filters, false);
+    });
 
-  const current = state.current;
-  const atDepth = effectiveDepth(state.depth, state.filters);
+  const shown = view.current;
+  const meta =
+    shown !== null
+      ? `${shown.depth} · ${shown.frame} · ${shown.topic}${view.seen.has(shown.id) ? " · seen" : ""}`
+      : matched.length === 0
+        ? "Nothing matches."
+        : "";
 
   return (
     <div className="mx-auto w-full max-w-[40rem] px-6 pt-6 pb-16">
       {/* Tall enough to hold the longest question in the bank at either type
-          size, so the buttons below sit at the same place from one question to
+          size, so the button below sits at the same place from one question to
           the next. */}
       <div className="flex min-h-56 items-start sm:min-h-48">
-        <p className="font-display text-2xl leading-snug text-text sm:text-3xl">
-          {ready ? (current?.text ?? "Nothing left here.") : ""}
-        </p>
+        <p className="font-display text-2xl leading-snug text-text sm:text-3xl">{shown?.text ?? ""}</p>
       </div>
 
-      <p className="mt-2 h-5 text-sm text-text-muted">
-        {current === null ? "" : `${current.depth} · ${current.frame} · ${current.topic}`}
-      </p>
+      <p className="mt-2 h-5 text-sm text-text-muted">{meta}</p>
 
-      <div className="mt-6 grid grid-cols-3 gap-2">
-        {WALK.map(({ mode, label }) => (
-          <button
-            key={mode}
-            type="button"
-            onClick={() => move(mode)}
-            disabled={mode === "deeper" && atDepth === MAX_DEPTH}
-            className="rounded-lg border border-border bg-surface px-3 py-3 text-base text-text transition-colors hover:border-accent/50 hover:bg-surface-alt disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border disabled:hover:bg-surface"
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <button
+        type="button"
+        onClick={advance}
+        className="mt-6 w-full rounded-lg border border-border bg-surface px-3 py-3 text-base text-text transition-colors hover:border-accent/50 hover:bg-surface-alt"
+      >
+        next
+      </button>
 
-      <div className="mt-4">
-        <TextLink label="skip" onClick={() => move("skip")} />
-      </div>
-
-      <div className="mt-8">
+      <div className="mt-4 flex items-center gap-4">
         <TextLink label="properties" onClick={() => setPropertiesOpen((open) => !open)} />
-        {propertiesOpen && (
-          <div className="mt-4 rounded-lg border border-border bg-surface/40 p-4">
-            <div className="flex flex-wrap gap-2">
-              {DEPTH_CHIPS.map((chip) => (
-                <Chip
-                  key={String(chip)}
-                  label={String(chip)}
-                  selected={state.filters.depth === chip}
-                  onSelect={() => filter({ ...state.filters, depth: chip })}
-                />
-              ))}
-            </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {["any", ...topics].map((topic) => (
-                <Chip
-                  key={topic}
-                  label={topic}
-                  selected={state.filters.topic === topic}
-                  onSelect={() => filter({ ...state.filters, topic })}
-                />
-              ))}
-            </div>
-          </div>
-        )}
+        <TextLink label={`view all ${matched.length}`} onClick={() => setShowAll((open) => !open)} />
       </div>
 
       <div className="mt-10 flex items-center gap-3 text-sm text-text-faint">
         <span className="tabular-nums">
-          used {state.used.size} of {BANK.length}
+          seen {seenHere} of {matched.length}
         </span>
         <TextLink
-          label="reset used"
-          onClick={() => setState((previous) => ({ ...previous, used: new Set<string>() }))}
+          label="reset seen"
+          onClick={() => setView((prev) => ({ ...prev, seen: new Set<string>() }))}
         />
       </div>
+
+      {/* The panel and the list come last on the page, so opening either one
+          moves nothing that was already on screen. */}
+      {propertiesOpen && (
+        <div className="mt-4 space-y-3 rounded-lg border border-border bg-surface/40 p-4">
+          <ChipRow label="kind" options={KINDS} selected={view.filters.kind} onSelect={(kind) => refine({ kind })} />
+          <ChipRow
+            label="frame"
+            options={FRAMES}
+            selected={view.filters.frame}
+            onSelect={(frame) => refine({ frame })}
+          />
+          <ChipRow
+            label="topic"
+            options={topicOptions}
+            selected={view.filters.topic}
+            onSelect={(topic) => refine({ topic })}
+          />
+        </div>
+      )}
+
+      {showAll && (
+        <ul className="mt-4 divide-y divide-border rounded-lg border border-border">
+          {matched.map((question) => (
+            <li key={question.id}>
+              <button
+                type="button"
+                onClick={() => setView((prev) => ({ ...prev, current: question }))}
+                className={`block w-full px-3 py-2 text-left text-base transition-colors hover:bg-surface-alt ${
+                  view.seen.has(question.id) ? "text-text-muted" : "text-text"
+                }`}
+              >
+                {question.text}{" "}
+                <span className="text-sm text-text-faint">
+                  {question.depth} · {question.frame}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

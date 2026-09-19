@@ -3,7 +3,7 @@ import QuestionsClient from "./questions-client";
 
 export const metadata: Metadata = {
   title: "Questions | tom.Quest",
-  description: "One conversation question at a time, by depth.",
+  description: "One question at a time, by kind, frame and topic.",
 };
 
 export default function QuestionsPage() {

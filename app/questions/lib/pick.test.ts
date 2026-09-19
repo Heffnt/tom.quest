@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Question } from "../data/types";
 import { BANK } from "../data/types";
-import { advance, INITIAL_STATE, pick, topicsOf, type QuestionsState, type Rng } from "./pick";
+import { FRAMES, INITIAL_FILTERS, KINDS, matches, next, refined, topicsOf, type Filters, type Rng } from "./pick";
 
 const question = (over: Partial<Question> & { id: string }): Question => ({
   text: `question ${over.id}`,
@@ -16,164 +16,148 @@ const question = (over: Partial<Question> & { id: string }): Question => ({
 
 /** Always the first candidate, so every assertion below is about the ordering. */
 const first: Rng = () => 0;
+/** Always the last candidate, so an assertion can tell a pool's ends apart. */
+const last: Rng = () => 0.999;
 
-const state = (over: Partial<QuestionsState> = {}): QuestionsState => ({
-  ...INITIAL_STATE,
-  ...over,
+const filters = (over: Partial<Filters> = {}): Filters => ({ ...INITIAL_FILTERS, ...over });
+
+const ids = (questions: readonly Question[]): string[] => questions.map((entry) => entry.id);
+
+const none = new Set<string>();
+
+describe("the no-filter sentinel", () => {
+  it("is null on every filter, and opens every chip row", () => {
+    expect(INITIAL_FILTERS).toEqual({ kind: null, frame: null, topic: null });
+    expect(KINDS[0]).toBeNull();
+    expect(FRAMES[0]).toBeNull();
+  });
+
+  it("never collides with a topic the bank calls any", () => {
+    const bank = [question({ id: "named", topic: "any" }), question({ id: "other", topic: "taste" })];
+    expect(ids(matches(bank, filters({ topic: null })))).toEqual(["named", "other"]);
+    expect(ids(matches(bank, filters({ topic: "any" })))).toEqual(["named"]);
+  });
 });
 
-describe("pick", () => {
-  it("caps the walk at depth 3", () => {
-    const bank = [question({ id: "a", depth: 3 }), question({ id: "b", depth: 3 })];
-    const deeper = advance(bank, state({ depth: 3, current: bank[0] }), "deeper", first);
-    expect(deeper.depth).toBe(3);
-    expect(deeper.current?.depth).toBe(3);
+describe("refined", () => {
+  it("returns the filters it was given when the patch selects what is already selected", () => {
+    const current = filters({ kind: 2, topic: "taste" });
+    expect(refined(current, { topic: "taste" })).toBe(current);
+    expect(refined(current, { kind: 2 })).toBe(current);
+    expect(refined(current, { frame: null })).toBe(current);
+    expect(refined(current, {})).toBe(current);
   });
 
-  it("walks one depth at a time up to the cap", () => {
-    const bank = [question({ id: "a", depth: 1 }), question({ id: "b", depth: 2 }), question({ id: "c", depth: 3 })];
-    let walked = advance(bank, state(), "stay", first);
-    expect(walked.depth).toBe(1);
-    walked = advance(bank, walked, "deeper", first);
-    expect(walked.depth).toBe(2);
-    walked = advance(bank, walked, "deeper", first);
-    expect(walked.depth).toBe(3);
-    walked = advance(bank, walked, "deeper", first);
-    expect(walked.depth).toBe(3);
+  it("returns new filters when the patch changes one", () => {
+    const current = filters({ topic: "taste" });
+    const updated = refined(current, { topic: "memory" });
+    expect(updated).not.toBe(current);
+    expect(updated).toEqual({ kind: null, frame: null, topic: "memory" });
+    expect(refined(current, { topic: null })).not.toBe(current);
+  });
+});
+
+describe("matches", () => {
+  const bank = [
+    question({ id: "d1", depth: 1, frame: "hypothetical", topic: "taste" }),
+    question({ id: "d2", depth: 2, frame: "observation", topic: "memory" }),
+    question({ id: "d3", depth: 3, frame: "value", topic: "taste" }),
+    question({ id: "light", depth: 1, frame: "appraisal", topic: "humour", release: true }),
+  ];
+
+  it("admits every question, release included, on the initial filters", () => {
+    expect(ids(matches(bank, filters()))).toEqual(["d1", "d2", "d3", "light"]);
   });
 
-  it("serves only release questions when lightening", () => {
-    const bank = [
-      question({ id: "heavy1", depth: 3 }),
-      question({ id: "heavy2", depth: 1 }),
-      question({ id: "light", depth: 2, release: true, topic: "humour" }),
+  it("admits only the questions at a numeric kind, and never a release one", () => {
+    expect(ids(matches(bank, filters({ kind: 1 })))).toEqual(["d1"]);
+    expect(ids(matches(bank, filters({ kind: 2 })))).toEqual(["d2"]);
+    expect(ids(matches(bank, filters({ kind: 3 })))).toEqual(["d3"]);
+  });
+
+  it("admits only release questions on the lighter kind", () => {
+    const lighter = matches(bank, filters({ kind: "lighter" }));
+    expect(ids(lighter)).toEqual(["light"]);
+    expect(lighter.every((entry) => entry.release)).toBe(true);
+  });
+
+  it("filters on frame alone", () => {
+    expect(ids(matches(bank, filters({ frame: "observation" })))).toEqual(["d2"]);
+    expect(ids(matches(bank, filters({ frame: "appraisal" })))).toEqual(["light"]);
+  });
+
+  it("filters on topic alone", () => {
+    expect(ids(matches(bank, filters({ topic: "taste" })))).toEqual(["d1", "d3"]);
+  });
+
+  it("combines all three filters", () => {
+    expect(ids(matches(bank, filters({ kind: 3, frame: "value", topic: "taste" })))).toEqual(["d3"]);
+    expect(matches(bank, filters({ kind: 3, frame: "value", topic: "memory" }))).toEqual([]);
+    expect(matches(bank, filters({ kind: 1, frame: "appraisal" }))).toEqual([]);
+  });
+
+  it("keeps bank order rather than filter order", () => {
+    const shuffled = [
+      question({ id: "third", topic: "taste" }),
+      question({ id: "first", topic: "taste" }),
+      question({ id: "second", topic: "taste" }),
     ];
-    const lightened = advance(bank, state({ depth: 3 }), "lighten", first);
-    expect(lightened.current?.id).toBe("light");
-    expect(lightened.current?.release).toBe(true);
+    expect(ids(matches(shuffled, filters({ topic: "taste" })))).toEqual(["third", "first", "second"]);
+    expect(ids(matches(shuffled, filters()))).toEqual(["third", "first", "second"]);
   });
+});
 
-  it("never serves a release question on the depth walk", () => {
-    const bank = [question({ id: "light", release: true }), question({ id: "heavy" })];
-    expect(advance(bank, state(), "stay", first).current?.id).toBe("heavy");
-  });
-
-  it("marks the current question used on a walk", () => {
+describe("next", () => {
+  it("never returns the question already on screen", () => {
     const bank = [question({ id: "a" }), question({ id: "b" })];
-    const walked = advance(bank, state({ current: bank[0] }), "stay", first);
-    expect([...walked.used]).toEqual(["a"]);
-    expect(walked.current?.id).toBe("b");
+    expect(next(bank, filters(), none, "a", first)?.id).toBe("b");
+    expect(next(bank, filters(), none, "b", first)?.id).toBe("a");
+    expect(next(bank, filters(), none, "b", last)?.id).toBe("a");
   });
 
-  it("does not mark the current question used on a skip", () => {
-    const bank = [question({ id: "a" }), question({ id: "b" })];
-    const skipped = advance(bank, state({ current: bank[0] }), "skip", first);
-    expect([...skipped.used]).toEqual([]);
-    expect(skipped.current?.id).toBe("b");
+  it("prefers a question not yet seen", () => {
+    const bank = [question({ id: "seen1" }), question({ id: "seen2" }), question({ id: "fresh" })];
+    const seen = new Set(["seen1", "seen2"]);
+    expect(next(bank, filters(), seen, null, first)?.id).toBe("fresh");
+    expect(next(bank, filters(), seen, null, last)?.id).toBe("fresh");
   });
 
-  it("does not mark the current question used when a filter is chosen", () => {
-    const bank = [question({ id: "a" }), question({ id: "b", depth: 2 })];
-    const filtered = advance(
-      bank,
-      state({ current: bank[0], filters: { depth: 2, topic: "any" } }),
-      "filter",
-      first,
-    );
-    expect([...filtered.used]).toEqual([]);
-    expect(filtered.current?.id).toBe("b");
-  });
-
-  it("prefers a topic never served over one already served", () => {
-    const bank = [
-      question({ id: "taste1", topic: "taste" }),
-      question({ id: "taste2", topic: "taste" }),
-      question({ id: "memory1", topic: "memory" }),
-    ];
-    const rotated = pick(bank, state({ history: ["taste1"], used: new Set(["taste1"]) }), "stay", first);
-    expect(rotated.question?.topic).toBe("memory");
-  });
-
-  it("returns to the topic served longest ago once every topic has been served", () => {
-    const bank = [
-      question({ id: "taste1", topic: "taste" }),
-      question({ id: "memory1", topic: "memory" }),
-      question({ id: "taste2", topic: "taste" }),
-      question({ id: "memory2", topic: "memory" }),
-    ];
-    // taste last at position 0, memory last at position 1: taste is older.
-    const rotated = pick(
-      bank,
-      state({ history: ["taste1", "memory1"], used: new Set(["taste1", "memory1"]) }),
-      "stay",
-      first,
-    );
-    expect(rotated.question?.id).toBe("taste2");
-  });
-
-  it("rotates the frame within the chosen topic", () => {
-    const bank = [
-      question({ id: "hyp1", topic: "taste", frame: "hypothetical" }),
-      question({ id: "hyp2", topic: "taste", frame: "hypothetical" }),
-      question({ id: "obs1", topic: "taste", frame: "observation" }),
-    ];
-    const rotated = pick(bank, state({ history: ["hyp1"], used: new Set(["hyp1"]) }), "stay", first);
-    expect(rotated.question?.frame).toBe("observation");
-    expect(rotated.question?.id).toBe("obs1");
-  });
-
-  it("falls back to a used question rather than running dry", () => {
-    const bank = [question({ id: "only" })];
-    const exhausted = pick(bank, state({ used: new Set(["only"]) }), "stay", first);
-    expect(exhausted.question?.id).toBe("only");
-  });
-
-  it("falls back on a lighten with every release question used", () => {
-    const bank = [question({ id: "light", release: true }), question({ id: "heavy" })];
-    const exhausted = pick(bank, state({ used: new Set(["light"]) }), "lighten", first);
-    expect(exhausted.question?.id).toBe("light");
-  });
-
-  it("returns null when nothing in the bank can answer the move", () => {
-    const bank = [question({ id: "light", release: true })];
-    expect(pick(bank, state(), "stay", first).question).toBeNull();
-    expect(pick([], state(), "stay", first).question).toBeNull();
-  });
-
-  it("returns null when no question carries the filtered topic", () => {
-    const bank = [question({ id: "a", topic: "taste" })];
-    const nothing = pick(bank, state({ filters: { depth: "auto", topic: "memory" } }), "stay", first);
-    expect(nothing.question).toBeNull();
-  });
-
-  it("clears the question on screen when the pool is empty", () => {
-    const bank = [question({ id: "a", topic: "taste" })];
-    const emptied = advance(
-      bank,
-      state({ current: bank[0], filters: { depth: "auto", topic: "memory" } }),
-      "filter",
-      first,
-    );
-    expect(emptied.current).toBeNull();
-    expect(emptied.history).toEqual([]);
-  });
-
-  it("lets a pinned depth filter override the walked depth", () => {
-    const bank = [question({ id: "one", depth: 1 }), question({ id: "three", depth: 3 })];
-    const pinned = pick(bank, state({ depth: 1, filters: { depth: 3, topic: "any" } }), "stay", first);
-    expect(pinned.question?.id).toBe("three");
-  });
-
-  it("never serves the question already on screen", () => {
-    const bank = [question({ id: "a" }), question({ id: "b" })];
-    expect(pick(bank, state({ current: bank[0] }), "skip", first).question?.id).toBe("b");
-  });
-
-  it("records every served question in history", () => {
+  it("cycles through the match set again once everything in it is seen", () => {
     const bank = [question({ id: "a" }), question({ id: "b" }), question({ id: "c" })];
-    let walked = advance(bank, state(), "stay", first);
-    walked = advance(bank, walked, "stay", first);
-    expect(walked.history).toEqual(["a", "b"]);
+    const seen = new Set(["a", "b", "c"]);
+    expect(next(bank, filters(), seen, "a", first)?.id).toBe("b");
+    expect(next(bank, filters(), seen, "a", last)?.id).toBe("c");
+  });
+
+  it("serves an already-seen question rather than emptying the page", () => {
+    const bank = [question({ id: "a" }), question({ id: "b" })];
+    const seen = new Set(["a", "b"]);
+    const served = next(bank, filters(), seen, "a", first);
+    expect(served).not.toBeNull();
+    expect(seen.has(served?.id ?? "")).toBe(true);
+  });
+
+  it("draws only from the match set the filters describe", () => {
+    const bank = [
+      question({ id: "d1", depth: 1 }),
+      question({ id: "d2", depth: 2, topic: "memory" }),
+      question({ id: "light", release: true }),
+    ];
+    expect(next(bank, filters({ kind: 2 }), none, null, first)?.id).toBe("d2");
+    expect(next(bank, filters({ kind: "lighter" }), none, null, first)?.id).toBe("light");
+    expect(next(bank, filters({ topic: "memory" }), none, null, last)?.id).toBe("d2");
+  });
+
+  it("returns null when nothing matches", () => {
+    const bank = [question({ id: "a", topic: "taste" })];
+    expect(next(bank, filters({ topic: "memory" }), none, null, first)).toBeNull();
+    expect(next(bank, filters({ kind: "lighter" }), none, null, first)).toBeNull();
+    expect(next([], filters(), none, null, first)).toBeNull();
+  });
+
+  it("holds the one match on screen rather than blanking the page", () => {
+    const bank = [question({ id: "only" }), question({ id: "other", depth: 2 })];
+    expect(next(bank, filters({ kind: 1 }), new Set(["only"]), "only", first)?.id).toBe("only");
   });
 });
 
