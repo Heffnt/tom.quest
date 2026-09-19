@@ -802,6 +802,10 @@ function slackReplyChannels(): Set<string> {
       process.env.SLACK_TTS_DECISIONS_CHANNEL_ID,
       process.env.SLACK_TTS_NEEDS_YOU_CHANNEL_ID,
       process.env.SLACK_TTS_BROKEN_CHANNEL_ID,
+      // The removal loop's room: a reply in a pull request's thread is his
+      // objection to it (convex/ttsSync.ts sendRemoval). Without this line
+      // the thread would look answerable and every reply would be dropped.
+      process.env.SLACK_TTS_SIMPLIFY_CHANNEL_ID,
     ].filter((id): id is string => typeof id === "string" && id !== ""),
   );
 }
@@ -2402,6 +2406,20 @@ const ttsSimplifyOpen = httpAction(async (ctx, request) => {
 });
 
 http.route({ path: "/tts/simplify-open", method: "GET", handler: ttsSimplifyOpen });
+
+// GET /tts/removals-open — every removal-loop pull request posted in the last
+// month, as of its newest round: whether his day to object has closed, and
+// his words if he replied (convex/ttsSimplify.ts internalOpenRemovals). The
+// daily loop asks, then merges, rewrites or closes. A read only.
+const ttsRemovalsOpen = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  return jsonResponse(200, {
+    removals: await ctx.runQuery(internal.ttsSimplify.internalOpenRemovals, {}),
+  });
+});
+
+http.route({ path: "/tts/removals-open", method: "GET", handler: ttsRemovalsOpen });
 
 // POST /tts/weekly-decisions — the two findings the Friday evals run makes
 // WITHOUT Tom: a capability case that passed every trial and so graduated into

@@ -23,6 +23,7 @@ import { HOURLY_UPDATE_ABANDONED, HOURLY_UPDATE_SENT } from "./ttsHourly";
 import {
   composeBroken,
   composeDecision,
+  composeRemoval,
   composeHourly,
   dropFaultyLines,
   fit,
@@ -30,6 +31,7 @@ import {
   renderSlack,
   type BrokenFact,
   type DecisionFact,
+  type RemovalFact,
   type HourlyFacts,
   type Message,
 } from "./ttsCompose";
@@ -531,6 +533,50 @@ export const sendDecision = internalAction({
     const canReply = replyRouteLive();
     const posted = await postSlack(ctx, {
       text: renderChecked(composeDecision(fact, { canReply }), canReply, "decision"),
+      subject: { kind: "ask", id: args.askId },
+      channel,
+    });
+    return posted.ok ? { sent: true } : { sent: false, error: posted.error };
+  },
+});
+
+// ── #tts-simplify: one thread per removal-loop pull request ──────────────────
+// The removal loop (worker/jobs/removal-loop.mjs) opens one pull request at a
+// time, and each gets one message here, sent when its "removal-loop-pr" event
+// is recorded (convex/ttsNightly.ts internalRecordWorkerEvent). The subject is
+// the same `ask` subject sendDecision posts under, keyed `loop:<number>`, so a
+// reply in the thread is an objection to that pull request through the route
+// that already exists (convex/ttsSlack.ts, case "ask").
+//
+// THE CLAIM IS PER ROUND, not per askId. A reply rewrites the branch and the
+// loop posts again to restart his day to object; a claim on the askId alone
+// would swallow that second message whenever it fell on the same TTS day.
+export const sendRemoval = internalAction({
+  args: {
+    askId: v.string(),
+    pr: v.number(),
+    url: v.string(),
+    subject: v.string(),
+    reason: v.optional(v.string()),
+    round: v.optional(v.number()),
+  },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ sent: boolean; reason?: string; error?: string }> => {
+    const channel = channelFor("simplify");
+    if (channel === null) return { sent: false, reason: "not configured" };
+    const claim = await ctx.runMutation(internal.ttsSlack.internalClaimSlackItem, {
+      day: ttsDayKey(Date.now()),
+      ask: "object",
+      itemId: `${args.askId}#${args.round ?? 0}`,
+      channel: "simplify",
+    });
+    if (!claim.claimed) return { sent: false, reason: `already claimed by ${claim.by}` };
+    const canReply = replyRouteLive();
+    const fact: RemovalFact = args;
+    const posted = await postSlack(ctx, {
+      text: renderChecked(composeRemoval(fact, { canReply }), canReply, "removal"),
       subject: { kind: "ask", id: args.askId },
       channel,
     });

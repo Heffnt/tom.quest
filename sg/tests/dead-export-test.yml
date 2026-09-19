@@ -1,0 +1,11 @@
+id: dead-export
+valid:
+  - "export default function Page() { return null; }"
+  - "const local = 1;"
+  - "export { local };"
+invalid:
+  - "export function named() {}"
+  - "export async function later() {}"
+  - "export const LIMIT = 5;"
+  - "export type Shape = { a: number };"
+  - "export interface Props { a: number }"

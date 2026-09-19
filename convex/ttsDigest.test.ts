@@ -4,7 +4,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { DELEGATE_DECISION } from "./ttsAsk";
 import { MERGE } from "./ttsMerge";
-import { SIMPLIFY_PROPOSAL } from "./ttsSimplify";
+import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import {
   DIGEST_SENT,
@@ -634,6 +634,45 @@ describe("internalComposeToday", () => {
     );
     expect(text).not.toContain("nobody proposed for real");
     expect(objectionAskIds).toEqual(["simplify:s1"]);
+  });
+
+  // THE REMOVAL LOOP's pull request closes its window on "a digest sent a day
+  // after it", so the digest carries it, keyed like its #tts-simplify thread.
+  it("lists a removal-loop pull request under its thread's key, and leaves a dry run out", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIVE_AM);
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("dtsEvents", {
+        at: FIVE_AM - 1800_000,
+        kind: REMOVAL_LOOP_PR,
+        key: "loop:7",
+        data: {
+          pr: 7,
+          url: "https://github.com/Heffnt/tom.quest/pull/7",
+          subject: "removed the second copy of the tick formatter",
+          ruleId: "duplicated-helper",
+          path: "app/boolback/components/plot-surface.tsx",
+        },
+      });
+      await ctx.db.insert("dtsEvents", {
+        at: FIVE_AM - 1200_000,
+        kind: REMOVAL_LOOP_PR,
+        key: "loop:8",
+        data: { pr: 8, url: "https://github.com/Heffnt/tom.quest/pull/8", subject: "removed nothing for real", dryRun: true },
+      });
+    });
+    const { text, objectionAskIds } = await t.query(internal.ttsDigest.internalComposeToday, {
+      day: DAY_KEY,
+      now: FIVE_AM,
+      canReply: true,
+    });
+    expect(text).toContain(
+      "1. Removed the second copy of the tick formatter, because duplicated-helper in app/boolback/components/plot-surface.tsx.",
+    );
+    expect(text).not.toContain("nothing for real");
+    expect(objectionAskIds).toEqual(["loop:7"]);
   });
 
   // THE CAP AND THE NUMBERING ARE ONE INVARIANT: a number Tom types must name
@@ -1714,6 +1753,95 @@ describe("sendDecision", () => {
     expect(args.todoId).toBe(todoId);
     expect(args.decision).toBe("read the BDDR paper was ruled a revise from your own words");
     expect(args.reason).toBe("the twin has to be matched, not resampled");
+  });
+});
+
+
+// #tts-simplify: the removal loop's one open pull request, a thread each.
+describe("sendRemoval", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  function stub() {
+    const posts: { channel: string; text: string }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: { body?: string }) => {
+        const body = JSON.parse(init?.body ?? "{}") as { channel: string; text: string };
+        posts.push({ channel: body.channel, text: body.text });
+        return { ok: true, status: 200, json: async () => ({ ok: true, ts: `${posts.length}.0` }) };
+      }),
+    );
+    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
+    vi.stubEnv("SLACK_TTS_SIMPLIFY_CHANNEL_ID", "C0SIMPLIFY");
+    return posts;
+  }
+
+  const pr = {
+    askId: "loop:7",
+    pr: 7,
+    url: "https://github.com/Heffnt/tom.quest/pull/7",
+    subject: "removals: the second copy of the tick formatter is gone",
+    reason: "duplicated-helper in app/boolback/components/plot-surface.tsx",
+  };
+
+  it("posts to #tts-simplify under the ask subject a reply resolves against", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    const posts = stub();
+    expect(await t.action(internal.ttsSync.sendRemoval, pr)).toEqual({ sent: true });
+    expect(posts).toHaveLength(1);
+    expect(posts[0].channel).toBe("C0SIMPLIFY");
+    expect(posts[0].text).toBe(
+      [
+        "Pull request 7 removes one thing; it merges after the next digest unless you object.",
+        `- <${pr.url}|Removals: the second copy of the tick formatter is gone, because duplicated-helper in app/boolback/components/plot-surface.tsx.>`,
+      ].join("\n"),
+    );
+    const rows = await t.run(async (ctx) => ctx.db.query("dtsEvents").collect());
+    const sent = rows.filter((e) => e.kind === SLACK_SENT);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].data).toMatchObject({ subject: { kind: "ask", id: "loop:7" } });
+  });
+
+  it("posts a rewritten round again the same day, and one round only once", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    const posts = stub();
+    await t.action(internal.ttsSync.sendRemoval, pr);
+    expect(await t.action(internal.ttsSync.sendRemoval, pr)).toMatchObject({ sent: false });
+    expect(await t.action(internal.ttsSync.sendRemoval, { ...pr, round: 1 })).toEqual({ sent: true });
+    expect(posts).toHaveLength(2);
+    expect(posts[1].text).toContain("was rewritten after your reply");
+  });
+
+  it("posts nothing while #tts-simplify has no id", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    const posts = stub();
+    vi.stubEnv("SLACK_TTS_SIMPLIFY_CHANNEL_ID", "");
+    expect(await t.action(internal.ttsSync.sendRemoval, pr)).toMatchObject({ sent: false, reason: "not configured" });
+    expect(posts).toHaveLength(0);
+  });
+});
+
+// The worker records the event; Convex sends the message. The hook is what
+// makes "the loop posted" and "the row exists" one fact.
+describe("a removal-loop pull request recorded", () => {
+  it("schedules one #tts-simplify message keyed like the row, and none for a dry run", async () => {
+    const t = convexTest(schema, modules);
+    await withTom(t);
+    const pr = { pr: 7, url: "https://github.com/Heffnt/tom.quest/pull/7", subject: "removed a copy", ruleId: "dead-export", path: "app/a.ts" };
+    await t.mutation(internal.ttsNightly.internalRecordWorkerEvent, { kind: REMOVAL_LOOP_PR, key: "loop:7", data: { ...pr, round: 1 } });
+    await t.mutation(internal.ttsNightly.internalRecordWorkerEvent, { kind: REMOVAL_LOOP_PR, key: "loop:9", data: { ...pr, pr: 9, dryRun: true } });
+    const scheduled = await t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) => job.name.includes("sendRemoval")),
+    );
+    expect(scheduled.map((job) => job.args[0])).toEqual([
+      { askId: "loop:7", pr: 7, url: pr.url, subject: "removed a copy", reason: "dead-export in app/a.ts", round: 1 },
+    ]);
   });
 });
 

@@ -27,7 +27,7 @@ import { clip } from "../worker/jobs/clip.mjs";
 // The kinds this pen routes onward besides LEARNING_CHANGE. Their rows,
 // their fields and the reasoning are documented where they are declared.
 import { LEARNING_CHECK_FAILED, REPO_PROPOSAL } from "./ttsDigest";
-import { SIMPLIFY_PROPOSAL } from "./ttsSimplify";
+import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 
 // ── The export ───────────────────────────────────────────────────────────────
 // Every table in the schema except the auth ones (the six @convex-dev/auth
@@ -653,6 +653,25 @@ export const internalRecordWorkerEvent = internalMutation({
             }
           : {}),
       });
+    }
+    // A REMOVAL-LOOP PULL REQUEST goes to #tts-simplify, its own room, as it
+    // is recorded: one message per round, keyed `loop:<number>` like the row,
+    // so a reply resolves to it (convex/ttsSync.ts sendRemoval). A dry run's
+    // row is a proof the path works and goes to nobody.
+    if (kind === REMOVAL_LOOP_PR) {
+      const d = (data ?? {}) as Record<string, unknown>;
+      if (d.dryRun !== true && typeof d.pr === "number" && typeof d.url === "string") {
+        await ctx.scheduler.runAfter(0, internal.ttsSync.sendRemoval, {
+          askId: key ?? `loop:${d.pr}`,
+          pr: d.pr,
+          url: d.url,
+          subject: typeof d.subject === "string" ? d.subject : "a removal",
+          ...(typeof d.ruleId === "string" && typeof d.path === "string"
+            ? { reason: `${d.ruleId} in ${d.path}` }
+            : {}),
+          ...(typeof d.round === "number" ? { round: d.round } : {}),
+        });
+      }
     }
     // THE NIGHT THAT UNDID ITSELF. Not a decision — nothing stands to object
     // to — and not a quiet night either, which is exactly the confusion a

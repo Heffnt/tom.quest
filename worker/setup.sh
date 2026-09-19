@@ -109,6 +109,27 @@ fi
 # rebuild does not discover it only when the first Codex session fails.
 codex login status || echo "  codex is NOT logged in — see NEXT STEPS below"
 
+# ast-grep, the removal loop's structural search (scripts/removal-sensor.mjs,
+# scripts/check-removals.mjs). PINNED to the version the guardrails check
+# names, so the box and CI parse a file the same way and write the same
+# baseline. INSTALLED AS `ast-grep` ONLY, from the release zip rather than
+# npm: the npm package also links a binary called `sg`, and /usr/bin/sg on
+# this box is util-linux's newgrp, which a global npm install would replace.
+# The zip's checksum is checked before anything is unpacked.
+AST_GREP_VERSION=0.45.3
+AST_GREP_SHA256=f8ac830881339d1edee6b2652f54798c0f4da5a827f2db38a08ee31117783ce8
+if [ "$(ast-grep --version 2>/dev/null)" != "ast-grep $AST_GREP_VERSION" ]; then
+  AST_GREP_TMP="$(mktemp -d)"
+  curl -fsSL -o "$AST_GREP_TMP/ast-grep.zip" \
+    "https://github.com/ast-grep/ast-grep/releases/download/$AST_GREP_VERSION/app-x86_64-unknown-linux-gnu.zip"
+  echo "$AST_GREP_SHA256  $AST_GREP_TMP/ast-grep.zip" | sha256sum -c -
+  python3 -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extract('ast-grep', sys.argv[2])" \
+    "$AST_GREP_TMP/ast-grep.zip" "$AST_GREP_TMP"
+  install -m 0755 "$AST_GREP_TMP/ast-grep" /usr/local/bin/ast-grep
+  rm -rf "$AST_GREP_TMP"
+fi
+echo "ast-grep: $(ast-grep --version || true)"
+
 echo "== [5/10] headless browser (Playwright + Chromium) =="
 # A session that changes a tom.quest page can look at the result instead of
 # asking Tom to look. Playwright is installed GLOBALLY (not as a repo dep) and
@@ -563,6 +584,15 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # #tts-decisions message per proposal. Both UTC slots on one line; the job's
 # own NY-hour guard keeps one (worker/jobs/simplify.mjs).
 30 8,9 * * 5 root /usr/bin/flock -n /var/lock/tts-simplify.lock /usr/bin/node /opt/tts/simplify.mjs >> /var/log/tts/simplify.log 2>&1
+
+# THE REMOVAL LOOP at 5 a.m. New York, every day, an hour after the nightly
+# job: one structural smell becomes one pull request, one open at a time, and
+# an open one is merged, rewritten or closed on Tom's reply in #tts-simplify.
+# Both UTC slots on one line; the job's own NY-hour guard keeps one
+# (worker/jobs/removal-loop.mjs). No copy line of its own: it is a flat job
+# whose imports are all in worker/jobs, and what it runs from the repository
+# it runs in its own clone.
+0 9,10 * * * root /usr/bin/flock -n /var/lock/tts-removal-loop.lock /usr/bin/node /opt/tts/removal-loop.mjs >> /var/log/tts/removal-loop.log 2>&1
 
 # Evals. The box POLLS: it has no inbound door, so a GitHub Action posts a
 # request to Convex and this tick picks up the oldest unanswered one and runs
