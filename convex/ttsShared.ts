@@ -1002,6 +1002,11 @@ export const SLACK_SUBJECT = v.union(
   // thread is an objection to that one decision.
   v.object({ kind: v.literal("ask"), id: v.string() }),
   v.object({ kind: v.literal("job"), id: v.string() }),
+  // A RUNNER (convex/ttsRunners.ts): its check-in thread in #tts-runners and
+  // its questions in #tts-needs-you. It names its producer for the reason the
+  // two above do; a reply in either thread is an answer to that runner's
+  // newest open question.
+  v.object({ kind: v.literal("runner"), id: v.id("runners") }),
 );
 export type SlackSubject = Infer<typeof SLACK_SUBJECT>;
 
@@ -1026,7 +1031,7 @@ export function slackHourKey(utcMs: number): string {
 // This lives here rather than in convex/ttsSync.ts, which owns the Slack door,
 // because that file is "use node" and convex/http.ts — the route that opens a
 // needs-you thread — is a plain-runtime module that cannot import it.
-export type SlackChannelKind = "today" | "decisions" | "needsYou" | "hourly" | "broken";
+export type SlackChannelKind = "today" | "decisions" | "needsYou" | "hourly" | "broken" | "runners";
 
 const CHANNEL_ENV: Record<SlackChannelKind, string> = {
   today: "SLACK_TTS_TODAY_CHANNEL_ID",
@@ -1034,6 +1039,8 @@ const CHANNEL_ENV: Record<SlackChannelKind, string> = {
   needsYou: "SLACK_TTS_NEEDS_YOU_CHANNEL_ID",
   hourly: "SLACK_TTS_HOURLY_CHANNEL_ID",
   broken: "SLACK_TTS_BROKEN_CHANNEL_ID",
+  // One thread per runner, its root the runner's first check-in.
+  runners: "SLACK_TTS_RUNNERS_CHANNEL_ID",
 };
 
 /** Each channel, or null when its variable is unset. Missing = log once and do

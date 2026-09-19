@@ -342,3 +342,188 @@ describe("the step prompt", () => {
     expect(answered).toContain("which is running");
   });
 });
+
+describe("the check-in", () => {
+  const GOOD = "The sweep has 12 jobs running.\n\nNothing changed, and nothing failed.";
+  const PASS = { verdict: "pass" as const, complaints: [], attempts: 1, judgeModel: "fable" };
+
+  async function claimed(t: TestConvex<typeof schema>, over: Partial<RunnerSeed> = {}) {
+    const { internal } = await import("./_generated/api");
+    const runnerId = await t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed(over) });
+    const step = await t.run(async (ctx) => (await ctx.db.query("runnerSteps").collect())[0]);
+    const claim = await t.mutation(internal.ttsRunners.internalClaimRunnerStep, { stepId: step._id });
+    if (!claim.admitted) throw new Error(claim.reason);
+    await t.mutation(internal.ttsRunners.internalRecordStepFacts, { stepId: step._id, facts: { version: 1, jobs: { live: 12, running: 12 }, frontier: { size: 100, done: 40, remaining: 60, unchecked: 0 }, gpuHours: { spent: 3.5, budget: 500 } } });
+    return { runnerId, stepRunId: claim.stepRunId, stepId: step._id, internal };
+  }
+
+  it("records the check-in, the document and the schedule, and frees the lease, in one step", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { runnerId, stepRunId, stepId, internal } = await claimed(t);
+    const result = await t.mutation(internal.ttsRunners.internalRecordStep, { runnerId, stepRunId, decision: "continue", checkIn: GOOD, document: "# TRAIN25\n\nVersion two.\n", asks: [], graded: PASS });
+    expect(result.nextStepAt).toBe(Date.now() + TEN_MINUTES);
+    const state = await t.run(async (ctx) => ({
+      runner: await ctx.db.get(runnerId),
+      step: await ctx.db.get(stepId),
+      events: await ctx.db.query("runnerEvents").withIndex("by_runner_at", (q) => q.eq("runnerId", runnerId)).collect(),
+    }));
+    expect(state.runner?.lease).toBeUndefined();
+    expect(state.runner?.documentVersion).toBe(2);
+    expect(state.runner?.document).toContain("Version two.");
+    expect(state.step?.status).toBe("done");
+    const checkIn = state.events.find((e) => e.kind === "check-in")!;
+    expect(checkIn.graded?.verdict).toBe("pass");
+    // The facts come from the box's post on the step row, not from the pen.
+    expect((checkIn.data as { facts: { jobs: { live: number } } }).facts.jobs.live).toBe(12);
+    expect(state.events.map((e) => e.kind)).toEqual(["document", "check-in", "document"]);
+  });
+
+  it("refuses a body with no grade, a step without the lease, and an act while a blocking question is open", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { runnerId, stepRunId, internal } = await claimed(t);
+    const base = { runnerId, stepRunId, decision: "continue" as const, checkIn: GOOD, document: "d", asks: [] };
+    await expect(t.mutation(internal.ttsRunners.internalRecordStep, base)).rejects.toThrow(/only with its grade/);
+    await expect(t.mutation(internal.ttsRunners.internalRecordStep, { ...base, stepRunId: "claude:box:00000000-0000-4000-8000-000000000000", graded: PASS })).rejects.toThrow(/does not hold the runner's lease/);
+    await t.run((ctx) => ctx.db.insert("runnerEvents", { runnerId, at: Date.now(), kind: "ask", tier: "plan", blocking: true, text: "Skip pythia?" }));
+    await expect(t.mutation(internal.ttsRunners.internalRecordStep, { ...base, decision: "change", graded: PASS })).rejects.toThrow(/may only continue or ask/);
+    const events = await t.run((ctx) => ctx.db.query("runnerEvents").withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runnerId).eq("kind", "check-in")).collect());
+    expect(events).toEqual([]);
+  });
+
+  it("marks a forged pass on a malformed check-in as failed", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { runnerId, stepRunId, internal } = await claimed(t);
+    await t.mutation(internal.ttsRunners.internalRecordStep, { runnerId, stepRunId, decision: "continue", checkIn: "## Status\n\nFine", document: "d", asks: [], graded: PASS });
+    const checkIn = await t.run(async (ctx) => (await ctx.db.query("runnerEvents").withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runnerId).eq("kind", "check-in")).collect())[0]);
+    expect(checkIn.graded?.verdict).toBe("fail");
+    expect(checkIn.graded?.complaints.join(" ")).toMatch(/checkin-heading/);
+  });
+
+  it("ends the runner on finish, and the status derives done", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { runnerId, stepRunId, internal } = await claimed(t);
+    await t.mutation(internal.ttsRunners.internalRecordStep, { runnerId, stepRunId, decision: "finish", checkIn: GOOD, document: "d", asks: [], graded: PASS });
+    const runner = await t.run((ctx) => ctx.db.get(runnerId));
+    expect(runner?.endedReason).toBe("finish");
+    expect(runnerStatus({ runner: runner!, openBlockingAsks: 0 })).toBe("done");
+    vi.advanceTimersByTime(TEN_MINUTES * 2);
+    await t.mutation(internal.ttsRunners.internalRunnerSweep, {});
+    const requested = await t.run(async (ctx) => (await ctx.db.query("runnerSteps").collect()).filter((s) => s.status === "requested"));
+    expect(requested).toEqual([]);
+  });
+});
+
+describe("composeCheckIn", () => {
+  const base = {
+    title: "TRAIN25 campaign",
+    number: 3,
+    decision: "continue" as const,
+    facts: { jobs: { live: 12, running: 11 }, frontier: { size: 21081, done: 20412, remaining: 669, unchecked: 0 }, gpuHours: { spent: 41.5, budget: 500 } },
+    failures: 0,
+    skipped: 0,
+    asks: 0,
+    checkIn: "Nothing changed.",
+    graded: { verdict: "pass" as const, complaints: [] },
+    runUrl: "https://www.tom.quest/sessions?run=claude%3Abox%3Ax",
+  };
+
+  it("still composes one line when nothing changed, the numbers in their fixed order", async () => {
+    const { composeCheckIn, checkInBody, renderSlack } = await import("./ttsCompose");
+    const message = composeCheckIn(base);
+    expect(message.firstLine).toBe("TRAIN25 campaign, check-in 3: 11 of 12 jobs running, 20412 of 21081 results done, 41.5 of 500 GPU-hours used; it changed nothing.");
+    expect(renderSlack(message)).toContain("Open the step that wrote this check-in.");
+    expect(checkInBody(base)).toBe("Nothing changed.");
+  });
+
+  it("says when the box read nothing, and when steps failed or were skipped", async () => {
+    const { composeCheckIn } = await import("./ttsCompose");
+    const line = composeCheckIn({ ...base, facts: null, failures: 1, skipped: 2 }).firstLine;
+    expect(line).toContain("the jobs were not read");
+    expect(line).toContain("one step failed since the last check-in");
+    expect(line).toContain("two steps were skipped because the one before was still running");
+  });
+
+  it("posts a check-in that failed its grade marked", async () => {
+    const { checkInBody } = await import("./ttsCompose");
+    const body = checkInBody({ ...base, graded: { verdict: "fail", complaints: ["The word grinder is coined."] } });
+    expect(body.startsWith("This check-in did not pass the writing check. The word grinder is coined.")).toBe(true);
+    expect(body.endsWith("Nothing changed.")).toBe(true);
+  });
+});
+
+describe("a question for Tom", () => {
+  const PASS = { verdict: "pass" as const, complaints: [], attempts: 1, judgeModel: "fable" };
+  const ASKING = "Two cells are stuck.\n\n## Rulings requested\n\n1. Should I skip pythia? If you do not answer, I keep training it.";
+
+  it("opens a needs-you thread, holds the runner to observing, and his reply reaches the next step", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("SLACK_TTS_NEEDS_YOU_CHANNEL_ID", "CNEEDS");
+    const t = convexTest(schema, modules);
+    const { internal } = await import("./_generated/api");
+    const runnerId = await t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed() });
+    const step = await t.run(async (ctx) => (await ctx.db.query("runnerSteps").collect())[0]);
+    const claim = await t.mutation(internal.ttsRunners.internalClaimRunnerStep, { stepId: step._id });
+    if (!claim.admitted) throw new Error(claim.reason);
+    await t.mutation(internal.ttsRunners.internalRecordStep, {
+      runnerId, stepRunId: claim.stepRunId, decision: "ask", checkIn: ASKING, document: "d",
+      asks: [{ tier: "plan", blocking: true, text: "Should I skip pythia?" }], graded: PASS,
+    });
+    // The ask is routed: this probe may not call the delegate, so it is Tom's.
+    const ask = await t.run(async (ctx) => (await ctx.db.query("runnerEvents").withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runnerId).eq("kind", "ask")).collect())[0]);
+    expect((ask.data as { answerer: string }).answerer).toBe("tom");
+    const routed = await t.mutation(internal.ttsRunners.internalRouteAsk, { askId: ask._id });
+    expect(routed).toEqual({ routed: true, answerer: "tom" });
+    const opened = await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, { runner: { runnerId, askId: ask._id }, reason: "Should I skip pythia?", key: `runner-ask:${ask._id}` });
+    expect(opened.opened).toBe(true);
+    // A redelivered ask opens nothing twice.
+    expect((await t.mutation(internal.ttsSlack.internalOpenNeedsTomThread, { runner: { runnerId, askId: ask._id }, reason: "x", key: `runner-ask:${ask._id}` })).opened).toBe(false);
+    let runner = await t.run((ctx) => ctx.db.get(runnerId));
+    expect(runnerStatus({ runner: runner!, openBlockingAsks: 1 })).toBe("waiting-on-tom");
+
+    // His reply in the thread: the door's slack-sent row names the runner.
+    const reply = await t.mutation(internal.ttsSlack.internalRouteReply, {
+      subject: { kind: "runner", id: runnerId },
+      text: "Yes, skip pythia.",
+      at: { channel: "CNEEDS", ts: "2.0", threadTs: "1.0" },
+    });
+    expect(reply).toEqual({ outcome: "runner-reply", runnerId });
+    const answered = await t.run((ctx) => ctx.db.get(ask._id));
+    expect(answered?.answerText).toBe("Yes, skip pythia.");
+    const { openBlockingAsks: open } = await import("./ttsRunners");
+    expect(await t.run(async (ctx) => (await open(ctx, runnerId)).length)).toBe(0);
+    runner = await t.run((ctx) => ctx.db.get(runnerId));
+    expect(runnerStatus({ runner: runner!, openBlockingAsks: 0 })).toBe("running");
+    // It is not a ruling.
+    expect(await t.run((ctx) => ctx.db.query("dtsRulings").collect())).toEqual([]);
+  });
+
+  it("composes the question whole under a first line that says whether the runner is holding still", async () => {
+    const { composeRunnerAsk, runnerAskBody, renderSlack } = await import("./ttsCompose");
+    const facts = { title: "TRAIN25 campaign", question: "Should I skip pythia? If you do not answer, I keep training it.", tier: "plan" as const, blocking: true, stepUrl: "https://www.tom.quest/sessions?run=x" };
+    const text = renderSlack(composeRunnerAsk(facts, { canReply: true }));
+    expect(text.split("\n")[0]).toBe("The runner TRAIN25 campaign has a question about what the experiment is only you can settle. Its steps change nothing until you answer.");
+    expect(text).toContain("reply here");
+    expect(runnerAskBody(facts)).toBe(facts.question);
+  });
+
+  it("caps the delegate per runner, across its steps", async () => {
+    const t = convexTest(schema, modules);
+    const { internal } = await import("./_generated/api");
+    const { DELEGATE_MAX_PER_RUNNER } = await import("./ttsAsk");
+    const runnerId = await t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed({ delegateAllowed: true }) });
+    const ask = (i: number) => ({
+      askId: `0000000${i}`, runnerId, question: "Resubmit on the long partition?", options: ["yes", "no"], recommendation: "yes",
+      fallback: "no", decision: "yes", reason: "The short partition keeps timing out.", refused: false, refusedBecause: null,
+      model: "fable", ms: 1, promptSha: "x",
+    });
+    const results = [];
+    for (let i = 0; i <= DELEGATE_MAX_PER_RUNNER; i += 1) results.push(await t.mutation(internal.ttsAsk.internalRecordAsk, ask(i)));
+    expect(results.slice(0, DELEGATE_MAX_PER_RUNNER).every((r) => !r.capped)).toBe(true);
+    expect(results[DELEGATE_MAX_PER_RUNNER].capped).toBe(true);
+    await expect(t.mutation(internal.ttsAsk.internalRecordAsk, { ...ask(9), runnerId: "nonsense" })).rejects.toThrow(/Unknown runner id/);
+  });
+});

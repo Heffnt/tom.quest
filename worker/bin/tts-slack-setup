@@ -44,13 +44,14 @@
 // and Slack sends nothing until reaction_added / reaction_removed are
 // subscribed and reactions:read is granted.
 //
-// It prints exactly six lines to standard output, nothing else:
+// It prints exactly seven lines to standard output, nothing else:
 //
 //   SLACK_TTS_TODAY_CHANNEL_ID=C…
 //   SLACK_TTS_DECISIONS_CHANNEL_ID=C…
 //   SLACK_TTS_NEEDS_YOU_CHANNEL_ID=C…
 //   SLACK_TTS_HOURLY_CHANNEL_ID=C…
 //   SLACK_TTS_BROKEN_CHANNEL_ID=C…
+//   SLACK_TTS_RUNNERS_CHANNEL_ID=C…
 //   TOM_SLACK_USER_ID=U…
 //
 // Both go into the Convex deployment's env (secrets/convex.env, then
@@ -77,9 +78,11 @@ const CHANNELS = [
   ["SLACK_TTS_NEEDS_YOU_CHANNEL_ID", "tts-needs-you"],
   ["SLACK_TTS_HOURLY_CHANNEL_ID", "tts-hourly"],
   ["SLACK_TTS_BROKEN_CHANNEL_ID", "tts-broken"],
+  // One thread per runner (convex/ttsRunners.ts): its check-ins, every step.
+  ["SLACK_TTS_RUNNERS_CHANNEL_ID", "tts-runners"],
 ];
 // What Tom sets by hand at api.slack.com/apps, printed by every run that gets
-// as far as the six lines. These are NOT channels and this script does not
+// as far as the seven lines. These are NOT channels and this script does not
 // create them: Slack
 // exposes no bot-token door onto an app's own event subscriptions or scopes,
 // so the one action is his either way and the script's job is to say exactly
@@ -325,7 +328,7 @@ async function main() {
       process.stdout.write(`${envName}=${channel}\n`);
     }
     process.stdout.write(`TOM_SLACK_USER_ID=${tomId}\n`);
-    // Standard error, not standard output: the six lines above are parsed into
+    // Standard error, not standard output: the seven lines above are parsed into
     // the Convex env and a seventh kind of line there would break whatever
     // reads them. This is an instruction to a person.
     printAppConfiguration();

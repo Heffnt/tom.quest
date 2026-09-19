@@ -5,12 +5,14 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { requireTom } from "./authRoles";
 import { redactSecrets } from "../worker/session-host/redact.mjs";
+import { checkInFailures } from "../scripts/checkin-rules.mjs";
 import { assembleContext, type ContextSubject } from "./ttsContext";
 import {
   BOX_TOOLS_PARAGRAPH,
   DAEMON_RESTART_SENTENCE,
   NARROW_LIST,
   RUNNER_ANSWERER,
+  RUNNER_DECISION,
   RUNNER_TIERS,
   RUNNER_TIER,
   RUNNER_TYPE,
@@ -755,3 +757,231 @@ export const internalRecordStepFacts = internalMutation({
     return { recorded: true };
   },
 });
+
+// ── The check-in ─────────────────────────────────────────────────────────────
+
+const ASK = v.object({ tier: RUNNER_TIER, blocking: v.boolean(), text: v.string() });
+const GRADED = v.object({
+  verdict: v.union(v.literal("pass"), v.literal("fail")),
+  complaints: v.array(v.string()),
+  attempts: v.number(),
+  judgeModel: v.string(),
+});
+
+export const RUNNER_ASK_MAX_CHARS = 600;
+
+/**
+ * THE STEP PEN'S RECORD, in one transaction: the check-in, the rewritten
+ * document, one ask per question, the next step scheduled and the lease
+ * released together, so a crash between posting and releasing is impossible.
+ *
+ * Refused, in a sentence and writing nothing: a body with no grade (the
+ * grading cannot be skipped), a step that does not hold the runner's lease, a
+ * decision an observe-only step may not take. The form rules run again here,
+ * so a forged pass on a malformed check-in is recorded as a fail and posted
+ * marked anyway.
+ */
+export const internalRecordStep = internalMutation({
+  args: {
+    runnerId: v.id("runners"),
+    stepRunId: v.string(),
+    decision: RUNNER_DECISION,
+    checkIn: v.string(),
+    document: v.string(),
+    asks: v.array(ASK),
+    nextStepMs: v.optional(v.number()),
+    graded: v.optional(GRADED),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    if (!args.graded) throw new Error("A check-in is recorded only with its grade; call it through tts-runner-step.");
+    const runner = await ctx.db.get(args.runnerId);
+    if (!runner) throw new Error("No such runner.");
+    if (runner.endedAt !== undefined) throw new Error("This runner has ended; its steps check in no more.");
+    if (runner.lease?.stepRunId !== args.stepRunId) {
+      throw new Error("This step does not hold the runner's lease: it ran past its deadline and was written off, and the next step has the runner now.");
+    }
+    const blocking = await openBlockingAsks(ctx, runner._id);
+    if (blocking.length > 0 && args.decision !== "continue" && args.decision !== "ask") {
+      throw new Error("While Tom has not answered a blocking question, a step may only continue or ask.");
+    }
+    if (args.document.trim() === "") throw new Error("The rewritten document is empty.");
+    if (args.document.length > RUNNER_DOCUMENT_MAX) throw new Error(`A runner's document is at most ${RUNNER_DOCUMENT_MAX} characters.`);
+    for (const ask of args.asks) {
+      if (ask.text.trim() === "" || ask.text.length > RUNNER_ASK_MAX_CHARS) throw new Error(`Each question is one to ${RUNNER_ASK_MAX_CHARS} characters.`);
+    }
+    if (args.decision === "ask" && args.asks.length === 0) throw new Error("A decision of ask carries at least one question.");
+
+    // The record's own form check. The pen ran it too; this is the door.
+    const faults = checkInFailures(args.checkIn);
+    const graded = faults.length > 0 && args.graded.verdict === "pass"
+      ? { ...args.graded, verdict: "fail" as const, complaints: [...args.graded.complaints, ...faults.map((f) => `${f.id}: ${f.why}.`)] }
+      : args.graded;
+
+    const recent = await ctx.db
+      .query("runnerSteps")
+      .withIndex("by_runner_due", (q) => q.eq("runnerId", runner._id))
+      .order("desc")
+      .take(20);
+    const step = recent.find((row) => row.stepRunId === args.stepRunId);
+    const since = await sinceLastCheckIn(ctx, runner._id);
+    const number = (await ctx.db
+      .query("runnerEvents")
+      .withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runner._id).eq("kind", "check-in"))
+      .collect()).length + 1;
+
+    const checkInId = await ctx.db.insert("runnerEvents", {
+      runnerId: runner._id,
+      at: now,
+      kind: "check-in",
+      stepRunId: args.stepRunId,
+      text: args.checkIn.trim(),
+      decision: args.decision,
+      graded,
+      data: {
+        number,
+        facts: step?.facts ?? null,
+        failures: since.failures.length,
+        skipped: since.deferred,
+        asks: args.asks.length,
+      },
+    });
+    const documentVersion = runner.documentVersion + 1;
+    await ctx.db.insert("runnerEvents", {
+      runnerId: runner._id,
+      at: now,
+      kind: "document",
+      stepRunId: args.stepRunId,
+      text: args.document,
+      data: { version: documentVersion },
+    });
+    const knownAwayNow = args.asks.length > 0 ? await knownAway(ctx, now) : { away: false, because: "" };
+    const askIds: Id<"runnerEvents">[] = [];
+    for (const ask of args.asks) {
+      const answerer = answererFor(runner, ask.tier, { knownAway: knownAwayNow.away });
+      askIds.push(await ctx.db.insert("runnerEvents", {
+        runnerId: runner._id,
+        at: now,
+        kind: "ask",
+        stepRunId: args.stepRunId,
+        tier: ask.tier,
+        blocking: ask.blocking,
+        text: ask.text.trim(),
+        data: { answerer: answerer.answerer, marked: answerer.marked, because: answerer.because },
+      }));
+    }
+    if (step) await ctx.db.patch(step._id, { status: "done", finishedAt: now });
+
+    // The schedule and the lease, together.
+    const ends = args.decision === "finish" || args.decision === "hand-off";
+    const stepMs = args.nextStepMs !== undefined
+      ? Math.min(Math.max(Math.round(args.nextStepMs), RUNNER_STEP_MIN_MS), RUNNER_STEP_MAX_MS)
+      : runner.stepMs;
+    const nextStepAt = now + stepMs;
+    await ctx.db.patch(runner._id, {
+      document: args.document,
+      documentVersion,
+      lease: undefined,
+      ...(ends ? { endedAt: now, endedReason: args.decision === "finish" ? "finish" as const : "hand-off" as const } : { nextStepAt }),
+    });
+    if (!ends) await ctx.scheduler.runAt(nextStepAt, internal.ttsRunners.internalOpenStep, { runnerId: runner._id });
+
+    await ctx.scheduler.runAfter(0, internal.ttsSync.sendRunnerCheckIn, { checkInId });
+    for (const askId of askIds) {
+      await ctx.scheduler.runAfter(0, internal.ttsRunners.internalRouteAsk, { askId });
+    }
+    return { recorded: true, checkInId, ...(ends ? { ended: args.decision } : { nextStepAt }) };
+  },
+});
+
+/** Where a recorded ask goes. Tom's opens a #tts-needs-you thread; the
+ *  delegate's and the step's own are recorded and answered where they are
+ *  asked (the step calls tts-ask itself), and say so on the row. */
+export const internalRouteAsk = internalMutation({
+  args: { askId: v.id("runnerEvents") },
+  handler: async (ctx, { askId }) => {
+    const ask = await ctx.db.get(askId);
+    if (!ask || ask.kind !== "ask") return { routed: false };
+    const answerer = (ask.data as { answerer?: RunnerAnswerer } | undefined)?.answerer;
+    if (answerer !== "tom") return { routed: false, answerer };
+    await ctx.scheduler.runAfter(0, internal.ttsSlack.internalOpenNeedsTomThread, {
+      runner: { runnerId: ask.runnerId, askId },
+      reason: ask.text ?? "",
+      key: `runner-ask:${askId}`,
+    });
+    return { routed: true, answerer };
+  },
+});
+
+/** What the check-in post reads: the composer's facts, and the thread it
+ *  goes in. */
+export const internalCheckInFacts = internalQuery({
+  args: { checkInId: v.id("runnerEvents") },
+  handler: async (ctx, { checkInId }) => {
+    const event = await ctx.db.get(checkInId);
+    if (!event || event.kind !== "check-in") return null;
+    const runner = await ctx.db.get(event.runnerId);
+    if (!runner) return null;
+    const first = await ctx.db
+      .query("runnerEvents")
+      .withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runner._id).eq("kind", "check-in"))
+      .order("asc")
+      .first();
+    const data = (event.data ?? {}) as { number?: number; facts?: unknown; failures?: number; skipped?: number; asks?: number };
+    return {
+      runnerId: runner._id,
+      threadTs: first && first._id !== event._id ? first.slackTs : undefined,
+      isRoot: first?._id === event._id,
+      facts: {
+        title: runner.title,
+        number: data.number ?? 1,
+        decision: event.decision ?? "continue",
+        facts: (data.facts ?? null) as never,
+        failures: data.failures ?? 0,
+        skipped: data.skipped ?? 0,
+        asks: data.asks ?? 0,
+        checkIn: event.text ?? "",
+        graded: { verdict: event.graded?.verdict ?? "fail", complaints: event.graded?.complaints ?? [] },
+        runUrl: runLink(event.stepRunId ?? ""),
+      },
+    };
+  },
+});
+
+/** The post's Slack ts on its check-in event: the first one is the thread
+ *  root every later check-in replies under. */
+export const internalCheckInPosted = internalMutation({
+  args: { checkInId: v.id("runnerEvents"), ts: v.string() },
+  handler: async (ctx, { checkInId, ts }) => {
+    await ctx.db.patch(checkInId, { slackTs: ts });
+  },
+});
+
+// ── Tom's reply ──────────────────────────────────────────────────────────────
+
+/**
+ * A reply of Tom's in a runner's thread, in #tts-runners or #tts-needs-you. It
+ * is a reply event the next step reads whole, and it answers the runner's
+ * newest open question. It is not a ruling: the rulings table is for todos and
+ * batches, and his words stay his on the event.
+ */
+export async function recordRunnerReply(ctx: MutationCtx, runnerId: Id<"runners">, text: string, at: { channel: string; ts: string; threadTs: string }) {
+  const runner = await ctx.db.get(runnerId);
+  if (!runner) throw new Error("The runner this thread belongs to no longer exists.");
+  const now = Date.now();
+  const open = await ctx.db
+    .query("runnerEvents")
+    .withIndex("by_open_ask", (q) => q.eq("runnerId", runnerId).eq("kind", "ask").eq("answeredAt", undefined))
+    .order("desc")
+    .first();
+  if (open) await ctx.db.patch(open._id, { answeredAt: now, answerText: text });
+  await ctx.db.insert("runnerEvents", {
+    runnerId,
+    at: now,
+    kind: "reply",
+    text,
+    slackTs: at.ts,
+    data: { channel: at.channel, threadTs: at.threadTs, ...(open ? { answers: open._id } : {}) },
+  });
+  return { outcome: "runner-reply" as const, runnerId };
+}

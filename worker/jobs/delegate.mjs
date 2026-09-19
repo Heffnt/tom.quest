@@ -38,6 +38,7 @@ export const DELEGATE_MAX_TURNS = 6;
 export const DELEGATE_MODEL = "claude-fable-5"; // ttsShared SESSION_MODELS.fable.id
 export const DELEGATE_MAX_PER_SESSION = 5;
 export const DELEGATE_MAX_PER_JOB = 3;
+export const DELEGATE_MAX_PER_RUNNER = 5;
 
 const WIKITOM_DIR = process.env.WIKITOM_DIR || "/root/wikitom";
 const PRELUDE_SCRIPT = process.env.TTS_PRELUDE_SCRIPT || "/opt/tts/scripts/prelude.mjs";
@@ -86,7 +87,7 @@ export function parseAnswer(text) {
   }
 }
 
-const callerName = (ask) => (ask.sessionId ? "a worker" : "the " + ask.job + " job");
+const callerName = (ask) => (ask.sessionId ? "a worker" : ask.runnerId ? "a runner watching an experiment" : "the " + ask.job + " job");
 const todoStatement = (ask) =>
   typeof ask.subject === "string" && ask.subject.trim()
     ? ask.subject.trim()
@@ -189,7 +190,7 @@ export function delegatePrompt(ask, { layers, narrowList }) {
 }
 
 function counterPath(ask, base) {
-  const caller = ask.sessionId ?? ask.job;
+  const caller = ask.sessionId ?? (ask.runnerId ? `runner-${ask.runnerId}` : ask.job);
   return path.join(base, "count", String(caller).replace(/[^A-Za-z0-9._-]/g, "_"));
 }
 function localCount(io, ask) {
@@ -251,7 +252,9 @@ export async function askDelegate(ask, suppliedIo = {}) {
   }
   const cap = ask.sessionId
     ? (state.delegate?.maxPerSession ?? DELEGATE_MAX_PER_SESSION)
-    : (state.delegate?.maxPerJob ?? DELEGATE_MAX_PER_JOB);
+    : ask.runnerId
+      ? (state.delegate?.maxPerRunner ?? DELEGATE_MAX_PER_RUNNER)
+      : (state.delegate?.maxPerJob ?? DELEGATE_MAX_PER_JOB);
 
   // The caller's prior context, read BEFORE the ask: how many it has spent,
   // and every objection Tom has already made on this item. Those objections go
@@ -261,6 +264,7 @@ export async function askDelegate(ask, suppliedIo = {}) {
   try {
     const query = new URLSearchParams();
     if (ask.sessionId) query.set("sessionId", ask.sessionId);
+    if (ask.runnerId) query.set("runnerId", ask.runnerId);
     if (ask.job) query.set("job", ask.job);
     if (ask.todoId) query.set("todoId", ask.todoId);
     context = (await io.convexFetch(env, "/tts/ask-context?" + query.toString())) ?? context;

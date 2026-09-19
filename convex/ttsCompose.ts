@@ -934,6 +934,121 @@ export function composeHourly(f: HourlyFacts): Message | null {
   return { firstLine: `${joinWithAnd(clauses)}${since}.`, lines: [] };
 }
 
+/** One runner check-in, as the numbers the box read and the words the step
+ *  wrote. `facts` is the sensor's block (worker/runs/runner-sensor.mjs), which
+ *  may be absent or partial: a step whose box read nothing still checks in. */
+export type CheckInFacts = {
+  title: string;
+  /** 1 for the runner's first check-in. */
+  number: number;
+  decision: "continue" | "change" | "ask" | "hand-off" | "finish";
+  facts: {
+    jobs?: { live?: number; running?: number; unavailable?: string };
+    frontier?: { size?: number; done?: number; remaining?: number; unchecked?: number; unavailable?: string };
+    gpuHours?: { spent?: number; budget?: number };
+  } | null;
+  /** Steps that failed, and steps skipped because the one before still ran,
+   *  since the last check-in. */
+  failures: number;
+  skipped: number;
+  asks: number;
+  /** The step's own words, already past the form rules and the judge. */
+  checkIn: string;
+  graded: { verdict: "pass" | "fail"; complaints: string[] };
+  runUrl: string;
+};
+
+const DECISION_WORDS: Record<CheckInFacts["decision"], string> = {
+  continue: "it changed nothing",
+  change: "it made one change",
+  ask: "it asked a question",
+  "hand-off": "it handed the runner on",
+  finish: "it finished the runner",
+};
+
+/** The first line: the numbers, in the same order every step, so one
+ *  check-in reads against the last. */
+export function checkInNumbers(f: CheckInFacts): string {
+  const parts: string[] = [];
+  const jobs = f.facts?.jobs;
+  if (jobs && jobs.unavailable === undefined && typeof jobs.live === "number") {
+    parts.push(`${jobs.running ?? 0} of ${jobs.live} ${plural(jobs.live, "job", "jobs")} running`);
+  } else {
+    parts.push("the jobs were not read");
+  }
+  const frontier = f.facts?.frontier;
+  if (frontier && frontier.unavailable === undefined && typeof frontier.size === "number") {
+    // A done count with nodes left unchecked is a floor, and says so.
+    const floor = (frontier.unchecked ?? 0) > 0 ? "at least " : "";
+    parts.push(`${floor}${frontier.done ?? 0} of ${frontier.size} results done`);
+  }
+  const hours = f.facts?.gpuHours;
+  if (hours && typeof hours.spent === "number") {
+    parts.push(typeof hours.budget === "number" ? `${hours.spent} of ${hours.budget} GPU-hours used` : `${hours.spent} GPU-hours used`);
+  }
+  if (f.failures > 0) parts.push(`${countWord(f.failures)} ${plural(f.failures, "step", "steps")} failed since the last check-in`);
+  if (f.skipped > 0) parts.push(`${countWord(f.skipped)} ${plural(f.skipped, "step was", "steps were")} skipped because the one before was still running`);
+  return `${f.title}, check-in ${f.number}: ${parts.join(", ")}; ${DECISION_WORDS[f.decision]}.`;
+}
+
+/** A runner check-in. NEVER NULL, unlike composeHourly: a step with nothing
+ *  changed still posts, because the tick is what Tom relies on. The first line
+ *  and the link go through the form like every message; the step's own words
+ *  follow verbatim (checkInBody), since they passed their own form rules and
+ *  a judge and their paragraphs are longer than one Slack line. */
+export function composeCheckIn(f: CheckInFacts): Message {
+  const first = checkInNumbers(f);
+  return {
+    firstLine: first.length <= FIRST_LINE_CHARS ? first : `${f.title}, check-in ${f.number}: ${DECISION_WORDS[f.decision]}.`,
+    lines: [{ role: "item", text: "Open the step that wrote this check-in.", url: f.runUrl }],
+  };
+}
+
+/** The step's own words, and the mark when they did not pass the writing
+ *  check. */
+export function checkInBody(f: CheckInFacts): string {
+  const body = f.checkIn.trim();
+  if (f.graded.verdict === "pass") return body;
+  const why = f.graded.complaints.length > 0 ? ` ${f.graded.complaints.join(" ")}` : "";
+  return `This check-in did not pass the writing check.${why}\n\n${body}`;
+}
+
+/** A runner's question for Tom, in #tts-needs-you. */
+export type RunnerAskFacts = {
+  title: string;
+  question: string;
+  tier: "routine" | "plan" | "setup";
+  /** Whether the runner's steps only observe until he answers. */
+  blocking: boolean;
+  stepUrl: string;
+};
+
+const TIER_WORDS: Record<RunnerAskFacts["tier"], string> = {
+  routine: "a question inside its plan",
+  plan: "a question about what the experiment is",
+  setup: "a question about what the experiment costs or where it runs",
+};
+
+/** The first line and the link go through the form; the question itself
+ *  follows whole (runnerAskBody), because a question cut to one Slack line is
+ *  a question he cannot answer. */
+export function composeRunnerAsk(f: RunnerAskFacts, o: { canReply: boolean }): Message {
+  const hold = f.blocking
+    ? "Its steps change nothing until you answer."
+    : "Its steps carry on while you decide.";
+  const lines: Line[] = [{ role: "item", text: "Open the step that asked.", url: f.stepUrl }];
+  note(lines, "needs-you", o.canReply, "reply here, and the runner's next step reads your answer whole.");
+  const first = `The runner ${f.title} has ${TIER_WORDS[f.tier]} only you can settle. ${hold}`;
+  return {
+    firstLine: first.length <= FIRST_LINE_CHARS ? first : `A runner has ${TIER_WORDS[f.tier]} only you can settle. ${hold}`,
+    lines,
+  };
+}
+
+export function runnerAskBody(f: RunnerAskFacts): string {
+  return f.question.trim();
+}
+
 function joinWithAnd(parts: string[]): string {
   return parts.length <= 1
     ? parts.join("")

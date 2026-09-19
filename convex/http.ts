@@ -8,6 +8,7 @@ import { nowContext } from "./tts";
 import { isRulingVerdict } from "./ttsRulings";
 import {
   DELEGATE_MAX_PER_JOB,
+  DELEGATE_MAX_PER_RUNNER,
   DELEGATE_MAX_PER_SESSION,
   DELEGATE_MAX_TURNS,
   DELEGATE_TIMEOUT_MS,
@@ -1196,6 +1197,7 @@ const ttsState = httpAction(async (ctx, request) => {
     delegate: {
       maxPerSession: DELEGATE_MAX_PER_SESSION,
       maxPerJob: DELEGATE_MAX_PER_JOB,
+      maxPerRunner: DELEGATE_MAX_PER_RUNNER,
       maxTurns: DELEGATE_MAX_TURNS,
       timeoutMs: DELEGATE_TIMEOUT_MS,
     },
@@ -1599,7 +1601,8 @@ const ttsAsk = httpAction(async (ctx, request) => {
   }
   const hasSession = nonempty(b.sessionId);
   const hasJob = nonempty(b.job);
-  if (hasSession === hasJob) return jsonResponse(400, { error: "exactly one of sessionId or job is required" });
+  const hasRunner = nonempty(b.runnerId);
+  if ([hasSession, hasJob, hasRunner].filter(Boolean).length !== 1) return jsonResponse(400, { error: "exactly one of sessionId, runnerId or job is required" });
   if (b.todoId !== undefined && !nonempty(b.todoId)) return jsonResponse(400, { error: "todoId, when given, must be non-empty" });
   if (!nonempty(b.question) || (b.question as string).trim().length > 400) return jsonResponse(400, { error: "question (1-400 characters) required" });
   if (!Array.isArray(b.options) || b.options.length < 2 || b.options.length > 5 || !b.options.every(nonempty)) return jsonResponse(400, { error: "options must be 2-5 non-empty strings" });
@@ -1619,6 +1622,7 @@ const ttsAsk = httpAction(async (ctx, request) => {
     const result = await ctx.runMutation(internal.ttsAsk.internalRecordAsk, {
       askId: b.askId as string, sessionId: hasSession ? b.sessionId as string : undefined,
       job: hasJob ? b.job as string : undefined, todoId: b.todoId as string | undefined,
+      runnerId: hasRunner ? b.runnerId as string : undefined,
       question: (b.question as string).trim(), options,
       recommendation: (b.recommendation as string).trim(), fallback: (b.fallback as string).trim(),
       decision: b.decision as string | null, reason: (b.reason as string).trim(),
@@ -1628,6 +1632,7 @@ const ttsAsk = httpAction(async (ctx, request) => {
     const context = await ctx.runQuery(internal.ttsAsk.internalAskContext, {
       sessionId: hasSession ? b.sessionId as string : undefined,
       job: hasJob ? b.job as string : undefined,
+      runnerId: hasRunner ? b.runnerId as string : undefined,
       todoId: b.todoId as string | undefined,
     });
     return jsonResponse(200, { ok: true, askId: b.askId, ...result, priorObjections: context.priorObjections });
@@ -1649,12 +1654,14 @@ const ttsAskContext = httpAction(async (ctx, request) => {
   const nonempty = (value: string | null) => (value !== null && value.trim() !== "" ? value.trim() : undefined);
   const sessionId = nonempty(params.get("sessionId"));
   const job = nonempty(params.get("job"));
-  if ((sessionId === undefined) === (job === undefined)) {
-    return jsonResponse(400, { error: "exactly one of sessionId or job is required" });
+  const runnerId = nonempty(params.get("runnerId"));
+  if ([sessionId, job, runnerId].filter((one) => one !== undefined).length !== 1) {
+    return jsonResponse(400, { error: "exactly one of sessionId, runnerId or job is required" });
   }
   const context = await ctx.runQuery(internal.ttsAsk.internalAskContext, {
     sessionId,
     job,
+    runnerId,
     todoId: nonempty(params.get("todoId")),
   });
   return jsonResponse(200, context);
@@ -3281,6 +3288,64 @@ function runnerBodyFault(b: Record<string, unknown>): string | null {
 }
 
 http.route({ path: "/tts/runner", method: "POST", handler: ttsRunner });
+
+// POST /tts/runner-step — a runner step's check-in, through tts-runner-step.
+// Body { runnerId, stepRunId, decision, checkIn, document, asks: [{ tier,
+// blocking, text }], nextStepMs?, graded: { verdict, complaints, attempts,
+// judgeModel } }. The record (convex/ttsRunners.ts internalRecordStep) refuses
+// a body with no grade and runs the form rules again itself; everything else
+// it writes is one transaction with the next step's schedule and the lease's
+// release.
+const ttsRunnerStep = httpAction(async (ctx, request) => {
+  const denied = ttsAuth(request);
+  if (denied) return denied;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(400, { error: "invalid JSON body" });
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  if (typeof b.runnerId !== "string" || b.runnerId === "") return jsonResponse(400, { error: "runnerId required" });
+  if (!validRunId(b.stepRunId)) return jsonResponse(400, { error: "stepRunId is not a run id" });
+  if (!["continue", "change", "ask", "hand-off", "finish"].includes(b.decision as string)) {
+    return jsonResponse(400, { error: "decision must be continue, change, ask, hand-off or finish" });
+  }
+  if (typeof b.checkIn !== "string" || typeof b.document !== "string") return jsonResponse(400, { error: "checkIn and document (strings) required" });
+  const asks = b.asks ?? [];
+  if (!Array.isArray(asks) || !asks.every((a) => {
+    const ask = a as Record<string, unknown> | null;
+    return ask !== null && typeof ask === "object" && ["routine", "plan", "setup"].includes(ask.tier as string) && typeof ask.blocking === "boolean" && typeof ask.text === "string";
+  })) {
+    return jsonResponse(400, { error: "asks must be a list of { tier: routine|plan|setup, blocking, text }" });
+  }
+  if (b.nextStepMs !== undefined && typeof b.nextStepMs !== "number") return jsonResponse(400, { error: "nextStepMs must be a number" });
+  const g = b.graded as Record<string, unknown> | undefined;
+  const graded = g !== undefined && g !== null && typeof g === "object"
+    && (g.verdict === "pass" || g.verdict === "fail")
+    && Array.isArray(g.complaints) && g.complaints.every((c) => typeof c === "string")
+    && typeof g.attempts === "number" && typeof g.judgeModel === "string"
+    ? { verdict: g.verdict as "pass" | "fail", complaints: g.complaints as string[], attempts: g.attempts, judgeModel: g.judgeModel }
+    : undefined;
+  if (g !== undefined && graded === undefined) return jsonResponse(400, { error: "graded must be { verdict: pass|fail, complaints, attempts, judgeModel }" });
+  try {
+    const result = await ctx.runMutation(internal.ttsRunners.internalRecordStep, {
+      runnerId: b.runnerId as Id<"runners">,
+      stepRunId: b.stepRunId,
+      decision: b.decision as "continue" | "change" | "ask" | "hand-off" | "finish",
+      checkIn: b.checkIn,
+      document: b.document,
+      asks: (asks as { tier: "routine" | "plan" | "setup"; blocking: boolean; text: string }[]).map((a) => ({ tier: a.tier, blocking: a.blocking, text: a.text })),
+      ...(b.nextStepMs !== undefined ? { nextStepMs: b.nextStepMs as number } : {}),
+      ...(graded !== undefined ? { graded } : {}),
+    });
+    return jsonResponse(200, { ok: true, ...result });
+  } catch (e) {
+    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+http.route({ path: "/tts/runner-step", method: "POST", handler: ttsRunnerStep });
 
 // POST /tts/session-outcome — a worker's outcome pen. Body:
 // { sessionId, outcome: "completed"|"errored", summary?, planRepair? }. It lives under the
