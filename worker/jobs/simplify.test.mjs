@@ -126,7 +126,7 @@ function sample() {
 function input(overrides = {}) {
   return {
     window: { since: NOW - 28 * 86_400_000, until: NOW, weeks: 4 },
-    runs: { total: 100, capped: false, byOrigin: {}, byRunner: {}, byHost: {}, byKind: {}, withContext: 90, layersKnownTrue: 80 },
+    runs: { total: 100, capped: false, byOrigin: {}, byCli: {}, byHost: {}, byKind: {}, withContext: 90, layersKnownTrue: 80 },
     layers: [],
     skills: [
       { name: "graphify-search", offered: 100, used: 95 },

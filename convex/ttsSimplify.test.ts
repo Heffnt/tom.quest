@@ -54,6 +54,7 @@ async function seedRun(t: TestConvex<typeof schema>, over: RunOver = {}) {
       origin: over.origin ?? "cli",
       host: over.host ?? "box",
       cli: over.cli ?? "claude",
+      environment: "worker",
       parserVersion: "1",
       kind: over.kind ?? "session",
       status: "ended",
@@ -149,7 +150,6 @@ describe("internalSimplifyInput — the counts off the runs in the window", () =
     expect(facts.runs.layersKnownTrue).toBe(4);
     expect(facts.runs.byHost).toEqual({ box: 4, laptop: 1 });
     expect(facts.runs.byCli).toEqual({ claude: 4, codex: 1 });
-    expect(facts.runs.byRunner).toEqual({ claude: 4, codex: 1 });
     expect(facts.runs.byKind).toEqual({ session: 4, job: 1 });
     expect(facts.runs.byOrigin).toEqual({ cli: 4, "codex-cli": 1 });
 

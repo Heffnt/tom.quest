@@ -1031,7 +1031,7 @@ export function factsBlock({ day, input, table, repoReadable, failures }) {
       withContext: Number(runs.withContext ?? 0) || 0,
       layersKnownTrue: Number(runs.layersKnownTrue ?? 0) || 0,
       byOrigin: runs.byOrigin ?? {},
-      byCli: runs.byCli ?? runs.byRunner ?? {},
+      byCli: runs.byCli ?? {},
       byHost: runs.byHost ?? {},
       byKind: runs.byKind ?? {},
     },

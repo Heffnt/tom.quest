@@ -288,17 +288,14 @@ describe("runs", () => {
     });
   });
 
-  it("takes the CLI under either spelling, stores it as cli, and refuses a run naming neither", async () => {
+  it("refuses a run under the old runner spelling, a run naming no cli, and a cli its id contradicts", async () => {
     const t = convexTest(schema, modules);
     const legacy: Record<string, unknown> = run({ runner: "claude" });
     delete legacy.cli;
-    expect(await t.mutation(internal.runs.internalIngest, ingest(legacy as never) as never)).toMatchObject({ ok: true });
-    const stored = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique());
-    expect(stored).toMatchObject({ cli: "claude" });
-    expect(stored).not.toHaveProperty("runner");
+    await expect(t.mutation(internal.runs.internalIngest, ingest(legacy as never) as never)).rejects.toThrow();
     const nameless: Record<string, unknown> = run({ runId: "claude:laptop:nameless-run", rootRunId: "claude:laptop:nameless-run" });
     delete nameless.cli;
-    expect(await t.mutation(internal.runs.internalIngest, ingest(nameless as never) as never)).toEqual({ ok: false, reason: "invalid run record" });
+    await expect(t.mutation(internal.runs.internalIngest, ingest(nameless as never) as never)).rejects.toThrow();
     expect(await t.mutation(internal.runs.internalIngest, ingest(run({ runId: "claude:laptop:mismatched-run", rootRunId: "claude:laptop:mismatched-run", cli: "codex" })) as never)).toEqual({ ok: false, reason: "invalid run record" });
   });
 
@@ -397,103 +394,6 @@ describe("runs", () => {
     expect((await t.run(async (ctx) => ctx.db.get(second)))?.runId).toBeUndefined();
     await expect(t.mutation(internal.runs.internalBackfillRunIds, { limit: 0 })).rejects.toThrow();
     await expect(t.mutation(internal.runs.internalBackfillRunIds, { limit: 501 })).rejects.toThrow();
-  });
-
-  it("backfills the environment from the session, then the kind, and leaves a named one alone", async () => {
-    const t = convexTest(schema, modules);
-    const unattended = await session(t, { mode: "autonomous" });
-    const talkedTo = await session(t, { mode: "interactive" });
-    const seed = async (name: string, overrides: Record<string, unknown>, environment?: string) => {
-      const runId = `claude:laptop:${name}`;
-      await t.mutation(internal.runs.internalIngest, ingest(run({ runId, rootRunId: runId, file: { ...run().file, path: `C:/${name}.jsonl` }, ...overrides }), []) as never);
-      await t.run(async (ctx) => {
-        const stored = await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique();
-        await ctx.db.patch(stored!._id, { environment: environment as never });
-      });
-      return runId;
-    };
-    const ids = {
-      unattended: await seed("unattended-session", { sessionId: unattended, kind: "job" }),
-      talkedTo: await seed("talked-to-session", { sessionId: talkedTo }),
-      laptopChat: await seed("laptop-terminal-chat", { kind: "session" }),
-      job: await seed("cron-started-job", { kind: "job" }),
-      named: await seed("already-named-run", { kind: "job" }, "runner"),
-    };
-    let cursor: string | undefined;
-    let patched = 0;
-    for (;;) {
-      const page = await t.mutation(internal.runs.internalBackfillRunEnvironment, { cursor, limit: 2 });
-      patched += page.patched;
-      if (page.cursor === null) break;
-      cursor = page.cursor;
-    }
-    expect(patched).toBe(4);
-    const environmentOf = (runId: string) => t.run(async (ctx) => (await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique())?.environment);
-    expect(await environmentOf(ids.unattended)).toBe("worker");
-    expect(await environmentOf(ids.talkedTo)).toBe("session");
-    expect(await environmentOf(ids.laptopChat)).toBe("session");
-    expect(await environmentOf(ids.job)).toBe("worker");
-    expect(await environmentOf(ids.named)).toBe("runner");
-    // A second pass finds nothing left to do.
-    expect(await t.mutation(internal.runs.internalBackfillRunEnvironment, { limit: 500 })).toMatchObject({ scanned: 5, patched: 0, cursor: null });
-    await expect(t.mutation(internal.runs.internalBackfillRunEnvironment, { limit: 501 })).rejects.toThrow("1 to 500");
-  });
-
-  it("backfills cli from runner on runs and file versions, counts what is missing, and names a row with neither", async () => {
-    const t = convexTest(schema, modules);
-    const drain = async (fn: (args: { cursor?: string; limit: number }) => Promise<{ cursor: string | null } & Record<string, unknown>>, key: string) => {
-      let cursor: string | undefined;
-      let total = 0;
-      const unnamed: string[] = [];
-      for (;;) {
-        const page = await fn({ cursor, limit: 2 });
-        total += page[key] as number;
-        if (Array.isArray(page.unnamed)) unnamed.push(...(page.unnamed as string[]));
-        if (page.cursor === null) break;
-        cursor = page.cursor;
-      }
-      return { total, unnamed };
-    };
-    const legacy: Array<[string, "claude" | "codex"]> = [["claude:laptop:legacy-claude", "claude"], ["codex:laptop:legacy-codex", "codex"]];
-    for (const [runId, cli] of legacy) {
-      await t.mutation(internal.runs.internalIngest, ingest(run({ runId, rootRunId: runId, cli, environment: "worker", file: { ...run().file, path: `C:/${cli}.jsonl`, storeKey: `runs/${cli}` } }), []) as never);
-      await t.run(async (ctx) => {
-        const stored = await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique();
-        await ctx.db.patch(stored!._id, { cli: undefined, runner: cli });
-        for (const version of await ctx.db.query("runFileVersions").withIndex("by_run_id_and_file_version", (q) => q.eq("runId", runId)).collect()) {
-          await ctx.db.patch(version._id, { cli: undefined, runner: cli });
-        }
-      });
-    }
-    const current = "claude:laptop:current-run";
-    await t.mutation(internal.runs.internalIngest, ingest(run({ runId: current, rootRunId: current, environment: "session", file: { ...run().file, path: "C:/current.jsonl", storeKey: "runs/current" } }), []) as never);
-    const nameless = "claude:laptop:nameless-run";
-    await t.mutation(internal.runs.internalIngest, ingest(run({ runId: nameless, rootRunId: nameless, file: { ...run().file, path: "C:/nameless.jsonl" } }), []) as never);
-    await t.run(async (ctx) => {
-      const stored = await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", nameless)).unique();
-      await ctx.db.patch(stored!._id, { cli: undefined, environment: undefined });
-    });
-
-    expect((await drain((a) => t.query(internal.runs.internalCountRunsMissingCli, a), "missing")).total).toBe(3);
-    expect((await drain((a) => t.query(internal.runs.internalCountRunsMissingEnvironment, a), "missing")).total).toBe(1);
-    expect((await drain((a) => t.query(internal.runs.internalCountFileVersionsMissingCli, a), "missing")).total).toBe(2);
-
-    const runs = await drain((a) => t.mutation(internal.runs.internalBackfillRunCli, a), "patched");
-    expect(runs).toEqual({ total: 2, unnamed: [nameless] });
-    expect(await drain((a) => t.mutation(internal.runs.internalBackfillFileVersionCli, a), "patched")).toEqual({ total: 2, unnamed: [] });
-    for (const [runId, cli] of legacy) {
-      const stored = await t.run(async (ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique());
-      expect(stored?.cli).toBe(cli);
-      const versions = await t.run(async (ctx) => ctx.db.query("runFileVersions").withIndex("by_run_id_and_file_version", (q) => q.eq("runId", runId)).collect());
-      expect(versions.map((version) => version.cli)).toEqual([cli]);
-    }
-
-    // Only the nameless row is left, and a second pass changes nothing.
-    expect((await drain((a) => t.query(internal.runs.internalCountRunsMissingCli, a), "missing")).total).toBe(1);
-    expect((await drain((a) => t.query(internal.runs.internalCountFileVersionsMissingCli, a), "missing")).total).toBe(0);
-    expect((await drain((a) => t.mutation(internal.runs.internalBackfillRunCli, a), "patched")).total).toBe(0);
-    await expect(t.mutation(internal.runs.internalBackfillRunCli, { limit: 501 })).rejects.toThrow("1 to 500");
-    await expect(t.query(internal.runs.internalCountRunsMissingCli, { limit: 0 })).rejects.toThrow("1 to 500");
   });
 
   it("switches getMessages from daemon rows to the same run-row page shape", async () => {
@@ -723,7 +623,7 @@ describe("runs", () => {
           title: runId, kind: "adhoc", repo: "none", status: "ended",
           statusChangedAt: Date.now(), nextSeq: 0, createdAt: Date.now(), runId,
         } as never);
-        await ctx.db.insert("runs", { ...run({ runId, rootRunId: runId, sessionId, status: "ended" }), ingestedAt: Date.now() } as never);
+        await ctx.db.insert("runs", { ...run({ runId, rootRunId: runId, sessionId, status: "ended" }), environment: "worker", ingestedAt: Date.now() } as never);
       }
     });
     const first = await t.query(internal.runs.internalEligibleComparisons, { status: "ended", paginationOpts: { cursor: null, numItems: 100 } });
@@ -857,7 +757,7 @@ describe("runs: materialize requests", () => {
 
     const oldest = await t.query(internal.runs.internalNextMaterialize, {});
     expect(oldest.request).toMatchObject({
-      requestId: orphan, runId: "codex:box:vanished-thread", cli: "codex", runner: "codex", host: "box",
+      requestId: orphan, runId: "codex:box:vanished-thread", cli: "codex", host: "box",
       threadId: "vanished-thread", depth: 0, parentRunId: null, hasRows: false, fromLine: 0,
       file: { storeKey: null, sidecarStoredHash: null, totalLines: null },
     });
@@ -866,9 +766,10 @@ describe("runs: materialize requests", () => {
     // A backlog run has no rows, so the parse starts at line 0.
     const backlog = await t.query(internal.runs.internalNextMaterialize, {});
     expect(backlog.request).toMatchObject({
-      runId: "claude:laptop:root-run", cli: "claude", runner: "claude", host: "laptop", threadId: "root-run",
+      runId: "claude:laptop:root-run", cli: "claude", host: "laptop", threadId: "root-run",
       hasRows: false, fromLine: 0, file: { storeKey: STORE_KEY, totalLines: 4000, committedLine: 0 },
     });
+    expect(backlog.request).not.toHaveProperty("runner");
 
     // A continuation resumes from the lines already in the record.
     await t.run(async (ctx) => {
@@ -968,7 +869,7 @@ describe("runs: eviction", () => {
     await t.run(async (ctx) => {
       const existing = await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique();
       if (existing) await ctx.db.patch(existing._id, { rowsUntil: now - DAY_MS });
-      else await ctx.db.insert("runs", { ...storedRun({ status: "ended", startedAt: now - 61 * DAY_MS, lastLineAt: now - 60 * DAY_MS }), ingestedAt: now, rowsUntil: now - DAY_MS } as never);
+      else await ctx.db.insert("runs", { ...storedRun({ status: "ended", startedAt: now - 61 * DAY_MS, lastLineAt: now - 60 * DAY_MS }), environment: "worker", ingestedAt: now, rowsUntil: now - DAY_MS } as never);
       for (let seq = 0; seq < rows; seq += 1) {
         const overflow = seq < 2 ? { sha256: "a".repeat(64), byteLength: 6, chunkCount: 2 } : undefined;
         await ctx.db.insert("claudeMessages", { runId, seq, turn: 0, kind: "user", content: { text: "x" }, digest: "0123456789abcdef", depth: 0, createdAt: seq + 1, overflow } as never);
@@ -1036,7 +937,7 @@ describe("runs: eviction", () => {
     ];
     await t.run(async (ctx) => {
       for (const record of kept) {
-        await ctx.db.insert("runs", { ...storedRun({ ...record, rootRunId: record.runId, startedAt: 1 }), ingestedAt: now, rowsUntil: now - DAY_MS } as never);
+        await ctx.db.insert("runs", { ...storedRun({ ...record, rootRunId: record.runId, startedAt: 1 }), environment: "worker", ingestedAt: now, rowsUntil: now - DAY_MS } as never);
         await ctx.db.insert("claudeMessages", { runId: record.runId, seq: 0, turn: 0, kind: "user", content: { text: "x" }, digest: "0123456789abcdef", depth: 0, createdAt: 1 } as never);
       }
     });
@@ -1169,7 +1070,7 @@ describe("runs: one run's tool calls, by its registration token", () => {
   ) {
     await t.run(async (ctx) => {
       await ctx.db.insert("runs", {
-        ...storedRun({ runId: TRACE_RUN_ID, rootRunId: TRACE_RUN_ID, host: "box", kind: "job", status: "ended" }),
+        ...storedRun({ runId: TRACE_RUN_ID, rootRunId: TRACE_RUN_ID, host: "box", kind: "job", status: "ended", environment: "worker" }),
         regToken: TOKEN,
         ...(outcome === null ? {} : { outcome }),
         ingestedAt: 1,

@@ -13,7 +13,7 @@
 #
 #   tts-run [flags] < prompt.txt
 #
-# Flags: --cli claude|codex (--runner, the old spelling, warns), --repo NAME,
+# Flags: --cli claude|codex, --repo NAME,
 # --ref REF, --cwd DIR, --model NAME, --effort LEVEL, --sandbox MODE,
 # --schema FILE, --allowed-tools A,B, --disallowed-tools A,B,
 # --permission-mode MODE, --max-turns N, --output-format text|json, --tests,

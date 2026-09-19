@@ -465,7 +465,7 @@ function symbolDefined(text, symbol) {
 const ENTITY_SPECS = Object.freeze([
   {
     id: "runId",
-    shape: "<runner>:<host>:<thread id>[/<agent id>]",
+    shape: "<cli>:<host>:<thread id>[/<agent id>]",
     regexFrom: { file: "convex/runs.ts", name: "RUN_ID" },
     mintedIn: "worker/runs/ingest.mjs",
     mintedPattern: /`claude:\$\{host\}:/,

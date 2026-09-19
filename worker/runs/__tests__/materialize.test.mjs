@@ -46,7 +46,7 @@ function pending(world, { file: fileOverrides = {}, ...overrides } = {}) {
     slice: 1,
     requestedBy: "tom",
     requestedAt: NOW,
-    runner: world.runtime,
+    cli: world.runtime,
     host: world.host,
     threadId: world.threadId,
     depth: 0,
@@ -333,11 +333,10 @@ describe("runs materialize", () => {
 });
 
 describe("the request's CLI", () => {
-  // The door sends `cli` and `runner` for one release; a box reads either.
-  it("reads cli, and runner where an older door sends only that", () => {
+  it("reads cli, and no longer the old runner spelling", () => {
     const base = { requestId: "request-one", runId: "codex:box:thread-one", host: "box" };
     expect(normalizeRequest({ ...base, cli: "codex" })).toMatchObject({ cli: "codex", threadId: "thread-one" });
-    expect(normalizeRequest({ ...base, runner: "codex" })).toMatchObject({ cli: "codex", threadId: "thread-one" });
+    expect(normalizeRequest({ ...base, runner: "codex" })).toMatchObject({ cli: "claude" });
     expect(normalizeRequest({ ...base, runId: "claude:box:thread-one" })).toMatchObject({ cli: "claude", threadId: "thread-one" });
   });
 });
