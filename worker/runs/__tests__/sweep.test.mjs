@@ -349,6 +349,20 @@ describe("run sweep", () => {
     expect(ingests).toHaveLength(2);
   });
 
+  it("leaves a run unmarked when the page that lands was queued by the older parser", async () => {
+    const dir = temp(); const stateDir = path.join(dir, "state");
+    const item = runFile(dir, [claudeUserTurn({ text: "first" })]);
+    await sweepRunFile(item, { stateDir, store: store(), post: async (route) => { if (route === "/runs/ingest") throw Object.assign(new Error("down"), { status: 503 }); return { ok: true }; }, now: () => NOW });
+    const queued = fs.readdirSync(path.join(stateDir, "queue")).map((name) => path.join(stateDir, "queue", name));
+    expect(queued).toHaveLength(1);
+    const { wholeFileHeader: _mark, ...older } = JSON.parse(fs.readFileSync(queued[0], "utf8"));
+    fs.writeFileSync(queued[0], JSON.stringify(older));
+    await drainQueue({ stateDir, post: async (route, body) => (route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true }), now: () => NOW + 1 });
+    const state = JSON.parse(fs.readFileSync(stateFileFor(stateDir, "claude:laptop:session"), "utf8"));
+    expect(state.committedLine).toBe(1);
+    expect(state.wholeFileHeader).toBeUndefined();
+  });
+
   it("drops a dead-letter page that names no run and keeps the rest", async () => {
     const dir = temp(); const stateDir = path.join(dir, "state"); const deadDir = path.join(stateDir, "deadletter");
     fs.mkdirSync(deadDir, { recursive: true });

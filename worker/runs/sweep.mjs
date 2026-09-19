@@ -296,8 +296,10 @@ function stateAfterDelivery(item, response, now) {
     reportedAbandoned: item.markAbandoned || false,
     envelopeMtimeMs: item.envelopeMtimeMs ?? 0,
     // The record now holds this run's header as read off the whole file; see
-    // refreshClaudeHeaders, the one reader of this mark.
-    wholeFileHeader: true,
+    // refreshClaudeHeaders, the one reader of this mark. It rides the page
+    // from when the page was built, because a page queued by the older parser
+    // and delivered later still carries that parser's header.
+    ...(item.wholeFileHeader ? { wholeFileHeader: true } : {}),
     // A Codex tail often starts after session_meta. Retain the accepted run
     // and its safe meta facts so that tail has the same identity and context.
     ...((item.payload.run.cli ?? item.payload.run.runner) === "codex" ? { run: item.payload.run, codexMeta: item.codexMeta } : {}),
@@ -490,6 +492,7 @@ function queuePages({ merged, overflows, endSeen, envelopeMtimeMs, sourceBytes, 
       pages,
       endSeen,
       envelopeMtimeMs,
+      wholeFileHeader: true,
       ...((merged.run.cli ?? merged.run.runner) === "codex" ? { codexMeta } : {}),
       cursorProofs,
       payload: {
