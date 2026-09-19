@@ -1,5 +1,5 @@
 import { v, type Infer } from "convex/values";
-import { internalMutation, internalQuery, mutation } from "./_generated/server";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
@@ -985,3 +985,20 @@ export async function recordRunnerReply(ctx: MutationCtx, runnerId: Id<"runners"
   });
   return { outcome: "runner-reply" as const, runnerId };
 }
+
+// ── The page ─────────────────────────────────────────────────────────────────
+
+/** The runner a step run belongs to, by the id in its `runner:<id>` origin:
+ *  its title and its derived status, for the sessions page's run view. Behind
+ *  the same gate as the run record it sits beside. */
+export const runnerTitle = query({
+  args: { runnerId: v.string() },
+  handler: async (ctx, { runnerId }) => {
+    await requireTom(ctx, "Runs");
+    const id = ctx.db.normalizeId("runners", runnerId);
+    const runner = id === null ? null : await ctx.db.get(id);
+    if (!runner) return null;
+    const blocking = await openBlockingAsks(ctx, runner._id);
+    return { title: runner.title, status: runnerStatus({ runner, openBlockingAsks: blocking.length }) };
+  },
+});
