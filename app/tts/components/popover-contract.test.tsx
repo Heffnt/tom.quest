@@ -337,7 +337,7 @@ const RUN = {
   linkKnown: true,
   origin: "nightly-learning",
   host: "box",
-  runner: "claude",
+  cli: "claude",
   parserVersion: "runs-parser-1",
   kind: "worker",
   status: "ended",

@@ -137,7 +137,7 @@ function runDoc(over: Record<string, unknown>) {
     linkKnown: true,
     origin: "nightly-learning",
     host: "box",
-    runner: "claude",
+    cli: "claude",
     parserVersion: "claude/1",
     kind: "worker",
     status: "ended",

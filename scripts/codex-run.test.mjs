@@ -156,7 +156,7 @@ describe("codex-run registration", () => {
       writer: { file: "scripts/codex-run.mjs", job: "audit" },
       registration: {
         host: "box",
-        runner: "codex",
+        cli: "codex",
         origin: "cron:audit",
         kind: "codex-child",
         parentRunId: "claude:box:parent-session",

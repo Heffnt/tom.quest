@@ -122,7 +122,7 @@ describe("GET /tts/run-trace", () => {
     await t.run(async (ctx) => {
       await ctx.db.insert("runs", {
         runId: RUN_ID, rootRunId: RUN_ID, depth: 0, linkKnown: true, origin: "job:audit",
-        host: "box", runner: "codex", parserVersion: "runs-parser-1", kind: "job", status: "ended",
+        host: "box", cli: "codex", parserVersion: "runs-parser-1", kind: "job", status: "ended",
         startedAt: 1, lastLineAt: 2, attachments: [], regToken: TOKEN,
         outcome: {
           turns: 12, toolCalls: 3,
@@ -331,7 +331,7 @@ describe("POST /tts/audit: what the audit saw", () => {
 const body = {
   run: {
     runId: "claude:laptop:http-run", rootRunId: "claude:laptop:http-run", depth: 0, linkKnown: true,
-    origin: "unknown", host: "laptop", runner: "claude", parserVersion: "runs-parser-1", kind: "session", status: "unknown", startedAt: 1, lastLineAt: 1, attachments: [],
+    origin: "unknown", host: "laptop", cli: "claude", parserVersion: "runs-parser-1", kind: "session", status: "unknown", startedAt: 1, lastLineAt: 1, attachments: [],
     file: { path: "C:/http.jsonl", sourceHash: "a".repeat(64), storedHash: "b".repeat(64), bytes: 1, storedBytes: 1, committedLine: 1, committedPrefixSha256: "c".repeat(64) },
   },
   rows: [], children: [], previousCommittedLine: 0, previousPrefixSha256: "d".repeat(64),
@@ -602,7 +602,7 @@ describe("/runs/materialize*: the queue the box drains", () => {
     const handed = await t.fetch("/runs/materialize-request", { headers: { "X-Sessions-Key": "right" } });
     expect(handed.status).toBe(200);
     const { request } = await handed.json();
-    expect(request).toMatchObject({ runId: "claude:laptop:http-run", runner: "claude", host: "laptop", threadId: "http-run", slice: 1, requestedBy: "worker", hasRows: false, fromLine: 0, file: { storeKey: "runs/claude/laptop/http-run/stored.jsonl.gz", totalLines: 4000 } });
+    expect(request).toMatchObject({ runId: "claude:laptop:http-run", cli: "claude", runner: "claude", host: "laptop", threadId: "http-run", slice: 1, requestedBy: "worker", hasRows: false, fromLine: 0, file: { storeKey: "runs/claude/laptop/http-run/stored.jsonl.gz", totalLines: 4000 } });
 
     const answer = await t.fetch("/runs/materialize-answer", {
       method: "POST", headers: KEY,
@@ -722,7 +722,7 @@ describe("POST /slack/events: a reaction on the morning digest", () => {
       });
       await ctx.db.insert("runs", {
         runId: RUN_ID, rootRunId: RUN_ID, depth: 0, linkKnown: true, origin: "cron:write-slack",
-        host: "box", runner: "claude", parserVersion: "runs-parser-1", kind: "job", status: "ended",
+        host: "box", cli: "claude", parserVersion: "runs-parser-1", kind: "job", status: "ended",
         startedAt: 1_756_999_000_000, lastLineAt: 1_757_000_000_000, attachments: [],
         model: "claude-fable", regToken: TOKEN,
         outcome: {

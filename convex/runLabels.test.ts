@@ -27,7 +27,7 @@ async function seedRun(
       linkKnown: true,
       origin: "cron:plan-graphs",
       host: "box",
-      runner: "claude",
+      cli: "claude",
       parserVersion: "runs-parser-1",
       kind: "job",
       status: "ended",

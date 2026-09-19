@@ -34,7 +34,7 @@ async function withTom(t: ReturnType<typeof convexTest>) {
 function run(overrides: Record<string, unknown> = {}) {
   return {
     runId: "claude:laptop:root-run", rootRunId: "claude:laptop:root-run", depth: 0, linkKnown: true,
-    origin: "unknown", host: "laptop", runner: "claude", parserVersion: "runs-parser-1", kind: "session", status: "unknown", startedAt: 1, lastLineAt: 2,
+    origin: "unknown", host: "laptop", cli: "claude", parserVersion: "runs-parser-1", kind: "session", status: "unknown", startedAt: 1, lastLineAt: 2,
     attachments: [],
     file: { path: "C:/root.jsonl", sourceHash: SOURCE_HASH, storedHash: STORED_HASH, bytes: 10, storedBytes: 8, committedLine: 1, committedPrefixSha256: PREFIX_HASH },
     ...overrides,
@@ -220,7 +220,7 @@ describe("runs", () => {
       .toMatchObject({ ok: true, inserted: 1 });
 
     const parent = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:orchestrator")).unique());
-    expect(parent).toMatchObject({ host: "laptop", runner: "claude", kind: "unknown", depth: 0, rootRunId: "claude:laptop:orchestrator" });
+    expect(parent).toMatchObject({ host: "laptop", cli: "claude", kind: "unknown", depth: 0, rootRunId: "claude:laptop:orchestrator" });
 
     const children = await t.run((ctx) => ctx.db.query("runs").withIndex("by_parent", (q) => q.eq("parentRunId", "claude:laptop:orchestrator")).collect());
     expect(children.map((entry) => entry.runId).sort()).toEqual(["claude:box:box-child-one", "claude:box:box-child-two"]);
@@ -288,6 +288,20 @@ describe("runs", () => {
     });
   });
 
+  it("takes the CLI under either spelling, stores it as cli, and refuses a run naming neither", async () => {
+    const t = convexTest(schema, modules);
+    const legacy: Record<string, unknown> = run({ runner: "claude" });
+    delete legacy.cli;
+    expect(await t.mutation(internal.runs.internalIngest, ingest(legacy as never) as never)).toMatchObject({ ok: true });
+    const stored = await t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", "claude:laptop:root-run")).unique());
+    expect(stored).toMatchObject({ cli: "claude" });
+    expect(stored).not.toHaveProperty("runner");
+    const nameless: Record<string, unknown> = run({ runId: "claude:laptop:nameless-run", rootRunId: "claude:laptop:nameless-run" });
+    delete nameless.cli;
+    expect(await t.mutation(internal.runs.internalIngest, ingest(nameless as never) as never)).toEqual({ ok: false, reason: "invalid run record" });
+    expect(await t.mutation(internal.runs.internalIngest, ingest(run({ runId: "claude:laptop:mismatched-run", rootRunId: "claude:laptop:mismatched-run", cli: "codex" })) as never)).toEqual({ ok: false, reason: "invalid run record" });
+  });
+
   it("stores mode only for session runs", async () => {
     const t = convexTest(schema, modules);
     expect(await t.mutation(internal.runs.internalIngest, ingest(run({ mode: "interactive" })) as never)).toMatchObject({ ok: true });
@@ -313,33 +327,33 @@ describe("runs", () => {
     expect((await viewer.query(api.runs.rows, { runId: "claude:laptop:root-run", paginationOpts: { cursor: null, numItems: 1 } })).page[0]).toMatchObject({ hasOverflow: true, fullByteLength: 11 });
   });
 
-  for (const runner of ["claude", "codex"] as const) {
-    it(`derives a three-level ${runner} tree parent-first`, async () => {
+  for (const cli of ["claude", "codex"] as const) {
+    it(`derives a three-level ${cli} tree parent-first`, async () => {
       const t = convexTest(schema, modules);
-      const parent = `${runner}:laptop:parent-run`;
-      const first = `${runner}:laptop:first-child`;
-      const second = `${runner}:laptop:second-child`;
-      const parentRun = run({ runId: parent, rootRunId: parent, runner, kind: runner === "claude" ? "session" : "unknown" });
-      expect(await t.mutation(internal.runs.internalIngest, ingest(parentRun, [], [child(first, parent, parent, 1, runner === "claude")]) as never)).toMatchObject({ ok: true });
-      const firstRun = run({ runId: first, parentRunId: parent, rootRunId: parent, depth: 1, runner, kind: runner === "claude" ? "subagent" : "codex-child", linkKnown: runner === "claude", ...(runner === "claude" ? { spawnedByToolUseId: "exact-tool-use" } : {}) });
-      const firstResponse = await t.mutation(internal.runs.internalIngest, ingest(firstRun, [row(0, { depth: 1 })], [child(second, first, parent, 2, runner === "claude")]) as never);
+      const parent = `${cli}:laptop:parent-run`;
+      const first = `${cli}:laptop:first-child`;
+      const second = `${cli}:laptop:second-child`;
+      const parentRun = run({ runId: parent, rootRunId: parent, cli, kind: cli === "claude" ? "session" : "unknown" });
+      expect(await t.mutation(internal.runs.internalIngest, ingest(parentRun, [], [child(first, parent, parent, 1, cli === "claude")]) as never)).toMatchObject({ ok: true });
+      const firstRun = run({ runId: first, parentRunId: parent, rootRunId: parent, depth: 1, cli, kind: cli === "claude" ? "subagent" : "codex-child", linkKnown: cli === "claude", ...(cli === "claude" ? { spawnedByToolUseId: "exact-tool-use" } : {}) });
+      const firstResponse = await t.mutation(internal.runs.internalIngest, ingest(firstRun, [row(0, { depth: 1 })], [child(second, first, parent, 2, cli === "claude")]) as never);
       expect(firstResponse, JSON.stringify(firstResponse)).toMatchObject({ ok: true });
-      const secondRun = run({ runId: second, parentRunId: first, rootRunId: parent, depth: 2, runner, kind: runner === "claude" ? "subagent" : "codex-child", linkKnown: runner === "claude", ...(runner === "claude" ? { spawnedByToolUseId: "exact-tool-use" } : {}) });
+      const secondRun = run({ runId: second, parentRunId: first, rootRunId: parent, depth: 2, cli, kind: cli === "claude" ? "subagent" : "codex-child", linkKnown: cli === "claude", ...(cli === "claude" ? { spawnedByToolUseId: "exact-tool-use" } : {}) });
       expect(await t.mutation(internal.runs.internalIngest, ingest(secondRun, [row(0, { depth: 2 })]) as never)).toMatchObject({ ok: true });
       const tree = await t.run((ctx) => ctx.db.query("runs").withIndex("by_root_depth", (q) => q.eq("rootRunId", parent)).collect());
       expect(tree.map((entry) => [entry.runId, entry.depth])).toEqual(expect.arrayContaining([[parent, 0], [first, 1], [second, 2]]));
     });
 
-    it(`repairs a three-level ${runner} tree when children arrive first`, async () => {
+    it(`repairs a three-level ${cli} tree when children arrive first`, async () => {
       const t = convexTest(schema, modules);
-      const parent = `${runner}:laptop:parent-run`;
-      const first = `${runner}:laptop:first-child`;
-      const second = `${runner}:laptop:second-child`;
-      const secondRun = run({ runId: second, parentRunId: first, rootRunId: first, depth: 1, runner, kind: runner === "claude" ? "subagent" : "codex-child", linkKnown: runner === "claude", ...(runner === "claude" ? { spawnedByToolUseId: "exact-tool-use" } : {}) });
+      const parent = `${cli}:laptop:parent-run`;
+      const first = `${cli}:laptop:first-child`;
+      const second = `${cli}:laptop:second-child`;
+      const secondRun = run({ runId: second, parentRunId: first, rootRunId: first, depth: 1, cli, kind: cli === "claude" ? "subagent" : "codex-child", linkKnown: cli === "claude", ...(cli === "claude" ? { spawnedByToolUseId: "exact-tool-use" } : {}) });
       expect(await t.mutation(internal.runs.internalIngest, ingest(secondRun, [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
-      const firstRun = run({ runId: first, parentRunId: parent, rootRunId: parent, depth: 1, runner, kind: runner === "claude" ? "subagent" : "codex-child", linkKnown: runner === "claude", ...(runner === "claude" ? { spawnedByToolUseId: "exact-tool-use" } : {}) });
+      const firstRun = run({ runId: first, parentRunId: parent, rootRunId: parent, depth: 1, cli, kind: cli === "claude" ? "subagent" : "codex-child", linkKnown: cli === "claude", ...(cli === "claude" ? { spawnedByToolUseId: "exact-tool-use" } : {}) });
       expect(await t.mutation(internal.runs.internalIngest, ingest(firstRun, [row(0, { depth: 1 })]) as never)).toMatchObject({ ok: true });
-      const parentRun = run({ runId: parent, rootRunId: parent, runner, kind: runner === "claude" ? "session" : "unknown" });
+      const parentRun = run({ runId: parent, rootRunId: parent, cli, kind: cli === "claude" ? "session" : "unknown" });
       expect(await t.mutation(internal.runs.internalIngest, ingest(parentRun, []) as never)).toMatchObject({ ok: true });
       const tree = await t.run((ctx) => ctx.db.query("runs").withIndex("by_root_depth", (q) => q.eq("rootRunId", parent)).collect());
       expect(tree.map((entry) => [entry.runId, entry.depth])).toEqual(expect.arrayContaining([[parent, 0], [first, 1], [second, 2]]));
@@ -663,7 +677,7 @@ describe("runs", () => {
     expect(stored).toMatchObject({ status: "abandoned", abandonedAt: 123, origin: "job" });
     const manifest = await t.query(internal.runs.internalManifest, { since: 0 });
     expect(manifest.entries).toEqual([expect.objectContaining({
-      run_id: "claude:laptop:root-run", thread_id: "root-run", file_version: STORED_HASH,
+      run_id: "claude:laptop:root-run", cli: "claude", thread_id: "root-run", file_version: STORED_HASH,
       store_key: "runs/claude/laptop/root/stored.jsonl.gz", parent_run_id: null,
     })]);
     expect((await t.query(internal.runs.internalManifest, { since: manifest.entries[0].at, afterRunId: manifest.entries[0].run_id, afterFileVersion: manifest.entries[0].file_version })).entries).toEqual([]);
@@ -775,7 +789,7 @@ describe("runs: materialize requests", () => {
 
     const oldest = await t.query(internal.runs.internalNextMaterialize, {});
     expect(oldest.request).toMatchObject({
-      requestId: orphan, runId: "codex:box:vanished-thread", runner: "codex", host: "box",
+      requestId: orphan, runId: "codex:box:vanished-thread", cli: "codex", runner: "codex", host: "box",
       threadId: "vanished-thread", depth: 0, parentRunId: null, hasRows: false, fromLine: 0,
       file: { storeKey: null, sidecarStoredHash: null, totalLines: null },
     });
@@ -784,7 +798,7 @@ describe("runs: materialize requests", () => {
     // A backlog run has no rows, so the parse starts at line 0.
     const backlog = await t.query(internal.runs.internalNextMaterialize, {});
     expect(backlog.request).toMatchObject({
-      runId: "claude:laptop:root-run", runner: "claude", host: "laptop", threadId: "root-run",
+      runId: "claude:laptop:root-run", cli: "claude", runner: "claude", host: "laptop", threadId: "root-run",
       hasRows: false, fromLine: 0, file: { storeKey: STORE_KEY, totalLines: 4000, committedLine: 0 },
     });
 

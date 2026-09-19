@@ -680,7 +680,7 @@ const spooled = opts.runner === "codex" ? null : writeRegistration({
   writer: { file: "worker/runs/box-run.mjs", job: "box-run" },
   registration: {
     host: "box",
-    runner: opts.runner,
+    cli: opts.runner,
     origin: "session",
     kind: "subagent",
     ...(namedEnvironment ? { environment: namedEnvironment } : opts.parent ? {} : { environment: "worker" }),

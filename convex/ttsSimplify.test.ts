@@ -32,7 +32,7 @@ type RunOver = {
   depth?: number;
   origin?: string;
   host?: "laptop" | "box";
-  runner?: "claude" | "codex";
+  cli?: "claude" | "codex";
   kind?: "session" | "worker" | "code" | "prospect" | "job" | "delegate" | "subagent" | "codex-child" | "unknown";
   context?: Record<string, unknown> | null;
 };
@@ -52,7 +52,7 @@ async function seedRun(t: TestConvex<typeof schema>, over: RunOver = {}) {
       linkKnown: true,
       origin: over.origin ?? "cli",
       host: over.host ?? "box",
-      runner: over.runner ?? "claude",
+      cli: over.cli ?? "claude",
       parserVersion: "1",
       kind: over.kind ?? "session",
       status: "ended",
@@ -131,7 +131,7 @@ describe("internalSimplifyInput — the counts off the runs in the window", () =
     await seedRun(t, { context: { skillsUsed: ["graphify"], hooks: [] } });
     await seedRun(t, {
       host: "laptop",
-      runner: "codex",
+      cli: "codex",
       kind: "code",
       origin: "codex-cli",
       context: { cwd: "C:/repo/CMT", tools: ["Bash"], layersDenied: [] },
@@ -147,6 +147,7 @@ describe("internalSimplifyInput — the counts off the runs in the window", () =
     expect(facts.runs.withContext).toBe(4);
     expect(facts.runs.layersKnownTrue).toBe(4);
     expect(facts.runs.byHost).toEqual({ box: 4, laptop: 1 });
+    expect(facts.runs.byCli).toEqual({ claude: 4, codex: 1 });
     expect(facts.runs.byRunner).toEqual({ claude: 4, codex: 1 });
     expect(facts.runs.byKind).toEqual({ session: 4, code: 1 });
     expect(facts.runs.byOrigin).toEqual({ cli: 4, "codex-cli": 1 });

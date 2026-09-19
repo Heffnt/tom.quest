@@ -438,7 +438,7 @@ export function parseClaudeFile({ path, text, host, fileVersion, fromLine = 0, b
     runId,
     ...(child.isSubagent ? { parentRunId: child.parentAgentId ? `${rootRunId}/${child.parentAgentId}` : rootRunId } : {}),
     ...(child.isSubagent && child.toolUseId ? { spawnedByToolUseId: child.toolUseId } : {}),
-    rootRunId, depth: child.depth, linkKnown: child.isSubagent ? Boolean(child.toolUseId) : true, origin: child.workflowId ? "workflow" : "unknown", host, runner: "claude", ...(actualModel ? { model: actualModel } : {}), ...(runtimeVersion ? { runtimeVersion } : {}), parserVersion: PARSER_VERSION,
+    rootRunId, depth: child.depth, linkKnown: child.isSubagent ? Boolean(child.toolUseId) : true, origin: child.workflowId ? "workflow" : "unknown", host, cli: "claude", ...(actualModel ? { model: actualModel } : {}), ...(runtimeVersion ? { runtimeVersion } : {}), parserVersion: PARSER_VERSION,
     ...(sessionModelOf(actualModel) ? { sessionModel: sessionModelOf(actualModel) } : {}), kind: child.isSubagent ? "subagent" : human ? "session" : "unknown", status: "unknown", startedAt, lastLineAt, context, attachments,
     outcome: { ...(finalTextSeq !== undefined ? { finalTextSeq } : {}), totals, ...(price === null ? {} : { costUsd: price, priceTableVersion: priceTableVersion() }), turns: Math.max(1, turn + 1), toolCalls },
     file: { path, sourceHash: sha256(Buffer.from(text)), storedHash: fileVersion, bytes: Buffer.byteLength(text), storedBytes: 0, committedLine: baseLine + lines.length, committedPrefixSha256: prefixHash(lines, lines.length), ...(child.isSubagent && sidecarStoredHash(agentMeta, sidecar) ? { sidecarStoredHash: sidecarStoredHash(agentMeta, sidecar) } : {}), incompleteTail },
@@ -578,7 +578,7 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
   // it; an explicit baseLine wins when both are present.
   const baseLine = suppliedBaseLine ?? fromLine;
   if (!Number.isInteger(baseLine) || baseLine < 0) throw new RangeError("baseLine must be a non-negative integer");
-  let recoveredPrior = baseLine > 0 && priorRun?.runner === "codex" ? priorRun : null;
+  let recoveredPrior = baseLine > 0 && (priorRun?.cli ?? priorRun?.runner) === "codex" ? priorRun : null;
   let recoveredMeta = priorMeta && typeof priorMeta === "object" ? priorMeta : null;
   const turnIdsKnown = Array.isArray(recoveredMeta?.turnIds);
   // Fold state is the small part of a Codex rollout that cannot be recovered
@@ -795,7 +795,7 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
   const endedReason = typeof taskComplete?.reason === "string" && taskComplete.reason !== ""
     ? taskComplete.reason
     : priorOutcome.endedReason;
-  const run = { runId, ...(parentRunId ? { parentRunId } : {}), rootRunId, depth: parentId ? 1 : 0, linkKnown: !parentId, origin: "unknown", host, runner: "codex", ...(model ? { model } : {}), ...(sessionModelOf(model) ? { sessionModel: sessionModelOf(model) } : {}), ...(effort ? { effort } : {}), ...(runtimeVersion ?? meta.cli_version ? { runtimeVersion: runtimeVersion ?? meta.cli_version } : {}), parserVersion: PARSER_VERSION, kind: parentId ? "codex-child" : "unknown", status: "unknown", startedAt, lastLineAt, context, attachments, outcome: { ...(finalTextSeq !== undefined ? { finalTextSeq } : {}), ...(endedReason !== undefined ? { endedReason } : {}), totals, ...(price === null ? {} : { costUsd: price, priceTableVersion: priceTableVersion() }), turns: Math.max(number(priorOutcome.turns), 1, turns.size), toolCalls }, file: { path, sourceHash: sha256(Buffer.from(text)), storedHash: fileVersion, bytes: Buffer.byteLength(text), storedBytes: 0, committedLine: baseLine + lines.length, committedPrefixSha256: prefixHash(lines, lines.length), incompleteTail } };
+  const run = { runId, ...(parentRunId ? { parentRunId } : {}), rootRunId, depth: parentId ? 1 : 0, linkKnown: !parentId, origin: "unknown", host, cli: "codex", ...(model ? { model } : {}), ...(sessionModelOf(model) ? { sessionModel: sessionModelOf(model) } : {}), ...(effort ? { effort } : {}), ...(runtimeVersion ?? meta.cli_version ? { runtimeVersion: runtimeVersion ?? meta.cli_version } : {}), parserVersion: PARSER_VERSION, kind: parentId ? "codex-child" : "unknown", status: "unknown", startedAt, lastLineAt, context, attachments, outcome: { ...(finalTextSeq !== undefined ? { finalTextSeq } : {}), ...(endedReason !== undefined ? { endedReason } : {}), totals, ...(price === null ? {} : { costUsd: price, priceTableVersion: priceTableVersion() }), turns: Math.max(number(priorOutcome.turns), 1, turns.size), toolCalls }, file: { path, sourceHash: sha256(Buffer.from(text)), storedHash: fileVersion, bytes: Buffer.byteLength(text), storedBytes: 0, committedLine: baseLine + lines.length, committedPrefixSha256: prefixHash(lines, lines.length), incompleteTail } };
   const result = finishResult({ run, rows, children, attachments, lastLine: baseLine + lines.length, incompleteTail, dropped });
   // This is sweep state only, never a Convex run field. It keeps the pieces a
   // later tail needs without copying base_instructions text onto disk again.

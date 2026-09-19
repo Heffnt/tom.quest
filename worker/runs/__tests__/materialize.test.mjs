@@ -8,7 +8,7 @@ import { claudeToolResult, claudeUserTurn, jsonl } from "./fixtures.mjs";
 import { PARSER_VERSION, parseClaudeFile } from "../ingest.mjs";
 import { openStore } from "../store.mjs";
 import { prefixSha256, storeText } from "../sweep.mjs";
-import { FAILURE, MAX_SLICES, serveMaterialize } from "../materialize.mjs";
+import { FAILURE, MAX_SLICES, normalizeRequest, serveMaterialize } from "../materialize.mjs";
 
 const NOW = Date.parse("2026-01-01T00:00:00.000Z");
 const EMPTY_SHA = crypto.createHash("sha256").update(Buffer.alloc(0)).digest("hex");
@@ -329,5 +329,15 @@ describe("runs materialize", () => {
 
     expect(result.status).toBe("served");
     expect(identity(db.rowsOf(world.runId))).toEqual(identity(directParse(world).rows));
+  });
+});
+
+describe("the request's CLI", () => {
+  // The door sends `cli` and `runner` for one release; a box reads either.
+  it("reads cli, and runner where an older door sends only that", () => {
+    const base = { requestId: "request-one", runId: "codex:box:thread-one", host: "box" };
+    expect(normalizeRequest({ ...base, cli: "codex" })).toMatchObject({ cli: "codex", threadId: "thread-one" });
+    expect(normalizeRequest({ ...base, runner: "codex" })).toMatchObject({ cli: "codex", threadId: "thread-one" });
+    expect(normalizeRequest({ ...base, runId: "claude:box:thread-one" })).toMatchObject({ cli: "claude", threadId: "thread-one" });
   });
 });

@@ -1053,7 +1053,7 @@ export class Session {
         writer: { file: "worker/session-host/session.mjs", job: "session-host" },
         registration: {
           host,
-          runner: spec.family,
+          cli: spec.family,
           origin: this.mode === "autonomous" ? "daemon" : "session",
           kind: this.mode === "autonomous" ? "job" : "session",
           environment: this.mode === "autonomous" ? "worker" : "session",

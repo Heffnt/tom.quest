@@ -221,7 +221,7 @@ describe("box-run stdout contract", () => {
     expect(writer.file).toBe("worker/runs/box-run.mjs");
     expect(registration).toMatchObject({
       host: "box",
-      runner: "claude",
+      cli: "claude",
       origin: "session",
       kind: "subagent",
       parentRunId: parent,

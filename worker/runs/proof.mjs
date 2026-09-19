@@ -132,7 +132,7 @@ if (!args.claude || !args.codex) {
   // Three positions in the root and one real child prove the pointer shape
   // without turning a structural proof into a full transcript replay.
   for (const result of parsed.slice(0, 2)) {
-    const runtime = result.run.runner; const id = threadOf(result.run);
+    const runtime = result.run.cli; const id = threadOf(result.run);
     const candidates = result.rows.filter((entry) => entry.provenance.sourceKind !== "context");
     const sample = [...new Set([0, Math.floor((candidates.length - 1) / 2), candidates.length - 1])].filter((index) => index >= 0).map((index) => candidates[index]);
     for (const row of sample) {
@@ -173,7 +173,7 @@ if (!args.claude || !args.codex) {
     line(`level=${depth} runs=${level.length} shown=${shown.length}`);
     for (const result of shown) {
       const run = result.run; const totals = run.outcome.totals; const indent = "  ".repeat(run.depth);
-      line(`${indent}${run.runId} ${run.runner} ${run.model ?? "-"} ${run.kind} rows=${result.rows.length} turns=${run.outcome.turns} tools=${run.outcome.toolCalls} in=${totals.inputTokens} cr=${totals.cacheReadTokens} cw=${totals.cacheWriteTokens} out=${totals.outputTokens} think=${totals.thinkingTokens} cost=${run.outcome.costUsd ?? "-"} status=${run.status}`);
+      line(`${indent}${run.runId} ${run.cli} ${run.model ?? "-"} ${run.kind} rows=${result.rows.length} turns=${run.outcome.turns} tools=${run.outcome.toolCalls} in=${totals.inputTokens} cr=${totals.cacheReadTokens} cw=${totals.cacheWriteTokens} out=${totals.outputTokens} think=${totals.thinkingTokens} cost=${run.outcome.costUsd ?? "-"} status=${run.status}`);
       const drops = Object.entries(result.dropped).sort(([a], [b]) => a.localeCompare(b)).map(([kind, count]) => `${kind}:${count}`).join(",");
       const record = recordByResult.get(result);
       const sidecar = run.file.sidecarStoredHash ? ` sidecar-object=${run.file.sidecarStoredHash.slice(0, 12)}` : "";

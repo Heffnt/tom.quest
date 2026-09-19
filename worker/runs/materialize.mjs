@@ -97,17 +97,18 @@ export function normalizeRequest(raw) {
   const requestId = text(raw.requestId);
   if (!requestId) return null;
   const runId = text(raw.runId);
-  const runner = raw.runner === "codex" ? "codex" : "claude";
+  // `runner` is the door's old spelling, still sent for one release.
+  const cli = (raw.cli ?? raw.runner) === "codex" ? "codex" : "claude";
   const host = raw.host === "box" ? "box" : "laptop";
   const source = raw.file && typeof raw.file === "object" ? raw.file : {};
-  const prefix = `${runner}:${host}:`;
+  const prefix = `${cli}:${host}:`;
   const threadId = text(raw.threadId) || (runId.startsWith(prefix) ? runId.slice(prefix.length) : "");
   const committedLine = Math.max(0, integer(source.committedLine, 0));
   const hasRows = raw.hasRows === true;
   return {
     requestId,
     runId,
-    runner,
+    cli,
     host,
     threadId,
     slice: Math.max(1, integer(raw.slice, 1)),
@@ -268,7 +269,7 @@ async function readSidecar(store, request) {
   const { sidecarStoredHash } = request.file;
   if (!sidecarStoredHash) return null;
   try {
-    const bytes = await store.get({ runtime: request.runner, threadId: request.threadId, host: request.host, fileVersion: sidecarStoredHash, kind: "sidecar" });
+    const bytes = await store.get({ runtime: request.cli, threadId: request.threadId, host: request.host, fileVersion: sidecarStoredHash, kind: "sidecar" });
     const meta = JSON.parse(Buffer.from(bytes).toString("utf8"));
     return meta && typeof meta === "object" ? meta : null;
   } catch {
@@ -326,10 +327,10 @@ export async function materializeOnce(request, {
     if (!file.storeKey || !SHA256.test(file.storedHash)) throw new Refusal(FAILURE.noStoreKey);
     if (file.bytes > maxFileBytes) throw new Refusal(FAILURE.tooLarge);
 
-    const storeBytes = await getObject(store, { runtime: request.runner, threadId: request.threadId, host: request.host, fileVersion: file.storedHash, kind: "transcript" });
+    const storeBytes = await getObject(store, { runtime: request.cli, threadId: request.threadId, host: request.host, fileVersion: file.storedHash, kind: "transcript" });
     if (storeBytes.length > maxFileBytes) throw new Refusal(FAILURE.tooLarge);
 
-    const isClaudeSubagent = request.runner === "claude" && request.threadId.includes("/");
+    const isClaudeSubagent = request.cli === "claude" && request.threadId.includes("/");
     let agentMeta = null;
     let sidecarMissing = false;
     if (isClaudeSubagent) {
@@ -349,7 +350,7 @@ export async function materializeOnce(request, {
       fileVersion: file.storedHash,
       baseLine: request.fromLine,
     };
-    const result = request.runner === "codex"
+    const result = request.cli === "codex"
       ? parseCodexFile(common)
       : parseClaudeFile({
         ...common,

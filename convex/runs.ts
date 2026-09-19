@@ -17,6 +17,8 @@ const RUN_KIND = v.union(
 // runner. Named by the launcher's envelope, else inherited from the parent row.
 const RUN_ENVIRONMENT = v.union(v.literal("session"), v.literal("worker"), v.literal("runner"));
 type RunEnvironment = "session" | "worker" | "runner";
+const RUN_CLI = v.union(v.literal("claude"), v.literal("codex"));
+type RunCli = "claude" | "codex";
 const RUN_STATUS = v.union(v.literal("running"), v.literal("ended"), v.literal("failed"), v.literal("abandoned"), v.literal("unknown"));
 const RUN_MODE = v.union(v.literal("interactive"), v.literal("autonomous"));
 const ROW_KIND = v.union(
@@ -71,7 +73,10 @@ const OUTCOME = v.object({
 });
 const RUN = v.object({
   runId: v.string(), parentRunId: v.optional(v.string()), rootRunId: v.string(), depth: v.number(), spawnedByToolUseId: v.optional(v.string()), linkKnown: v.boolean(),
-  origin: v.string(), continuesRunId: v.optional(v.string()), host: v.union(v.literal("laptop"), v.literal("box")), runner: v.union(v.literal("claude"), v.literal("codex")),
+  origin: v.string(), continuesRunId: v.optional(v.string()), host: v.union(v.literal("laptop"), v.literal("box")),
+  // The CLI family the run ran under. `runner` is its old name, accepted until
+  // every writer says `cli`; a payload must carry one of them.
+  cli: v.optional(RUN_CLI), runner: v.optional(RUN_CLI),
   environment: v.optional(RUN_ENVIRONMENT),
   model: v.optional(v.string()), sessionModel: v.optional(SESSION_MODEL), effort: v.optional(v.string()), runtimeVersion: v.optional(v.string()), parserVersion: v.string(), kind: RUN_KIND, status: RUN_STATUS,
   mode: v.optional(RUN_MODE), startedAt: v.number(), lastLineAt: v.number(), context: v.optional(CONTEXT), outcome: v.optional(OUTCOME), attachments: v.array(ATTACHMENT),
@@ -138,8 +143,8 @@ function validHash(value: unknown): value is string {
 function validRunId(runId: unknown): runId is string {
   return typeof runId === "string" && RUN_ID.test(runId);
 }
-function runIdMatches(runId: string, runner: "claude" | "codex", host: "laptop" | "box") {
-  return runId.startsWith(`${runner}:${host}:`);
+function runIdMatches(runId: string, cli: RunCli, host: "laptop" | "box") {
+  return runId.startsWith(`${cli}:${host}:`);
 }
 function isStubFile(file: { path: string; sourceHash: string; storedHash: string; bytes: number; storedBytes: number; committedLine: number; committedPrefixSha256: string }) {
   return file.path === "" && file.sourceHash === "" && file.storedHash === "" && file.bytes === 0 && file.storedBytes === 0 && file.committedLine === 0 && file.committedPrefixSha256 === "";
@@ -184,13 +189,13 @@ function event(ctx: MutationCtx, kind: string, data: Record<string, unknown>) {
   return ctx.db.insert("dtsEvents", { at: Date.now(), kind, data });
 }
 
-// A PLACEHOLDER'S HOST AND RUNNER COME FROM THE ID IT IS STUBBING, never from
+// A PLACEHOLDER'S HOST AND CLI COME FROM THE ID IT IS STUBBING, never from
 // the run that revealed it. A cross-host parent link is ordinary now — the
 // laptop orchestrator spawns box runs through worker/runs/box-run.mjs, which
 // names the laptop session as the box run's parent — so taking them from the
 // revealing run would record a laptop session as a box run, and the sessions
 // view would show Tom that false fact. runIdMatches already requires a run id
-// to name its own host and runner, so the id is the honest source and both
+// to name its own host and CLI, so the id is the honest source and both
 // call sites (a parent stub and a child stub) are right by the same rule.
 // parserVersion and the timestamps stay with the revealing run: it is the only
 // evidence of when the placeholder's run was alive. The environment stays with
@@ -198,9 +203,9 @@ function event(ctx: MutationCtx, kind: string, data: Record<string, unknown>) {
 // parent runs until an envelope of its own says otherwise.
 function stub(run: { runId: string; parentRunId?: string; rootRunId: string; depth: number; spawnedByToolUseId?: string; linkKnown: boolean }, evidence: { parserVersion: string; lastLineAt: number; environment?: RunEnvironment }, kind: "subagent" | "codex-child" | "unknown") {
   const host: "laptop" | "box" = run.runId.startsWith("claude:laptop:") || run.runId.startsWith("codex:laptop:") ? "laptop" : "box";
-  const runner: "claude" | "codex" = run.runId.startsWith("codex:") ? "codex" : "claude";
+  const cli: RunCli = run.runId.startsWith("codex:") ? "codex" : "claude";
   return {
-    ...run, host, runner, kind, status: "unknown" as const, origin: "unknown", parserVersion: evidence.parserVersion,
+    ...run, host, cli, kind, status: "unknown" as const, origin: "unknown", parserVersion: evidence.parserVersion,
     ...(evidence.environment ? { environment: evidence.environment } : {}),
     startedAt: evidence.lastLineAt, lastLineAt: evidence.lastLineAt, attachments: [],
     file: { path: "", sourceHash: "", storedHash: "", bytes: 0, storedBytes: 0, committedLine: 0, committedPrefixSha256: "" }, ingestedAt: Date.now(),
@@ -228,15 +233,16 @@ function validOutcome(outcome: {
 }
 
 function validRunPayload(run: {
-  runId: string; parentRunId?: string; rootRunId: string; depth: number; spawnedByToolUseId?: string; linkKnown: boolean; origin: string; continuesRunId?: string; host: "laptop" | "box"; runner: "claude" | "codex"; kind: string; mode?: "interactive" | "autonomous"; startedAt: number; lastLineAt: number; context?: { baseInstructionsHash?: string; contextWindow?: number }; outcome?: Parameters<typeof validOutcome>[0]; attachments: { file: string; bytes: number; sha256: string }[]; file: Parameters<typeof validFile>[0];
+  runId: string; parentRunId?: string; rootRunId: string; depth: number; spawnedByToolUseId?: string; linkKnown: boolean; origin: string; continuesRunId?: string; host: "laptop" | "box"; cli?: RunCli; runner?: RunCli; kind: string; mode?: "interactive" | "autonomous"; startedAt: number; lastLineAt: number; context?: { baseInstructionsHash?: string; contextWindow?: number }; outcome?: Parameters<typeof validOutcome>[0]; attachments: { file: string; bytes: number; sha256: string }[]; file: Parameters<typeof validFile>[0];
 }) {
-  // ONLY A RUN'S OWN ID MUST NAME ITS OWN HOST AND RUNNER. The edge ids may
+  // ONLY A RUN'S OWN ID MUST NAME ITS OWN HOST AND CLI. The edge ids may
   // name another: worker/runs/box-run.mjs makes a laptop session the parent of
   // a box run, so that run's parentRunId and rootRunId are laptop ids and
   // holding them to the child's host would refuse the whole record. They are
   // still checked as ids, and the root rule below — a run with no parent must
   // be its own root — keeps a root's own id and its rootRunId in agreement.
-  if (!validRunId(run.runId) || !validRunId(run.rootRunId) || !runIdMatches(run.runId, run.runner, run.host)) return false;
+  const cli = run.cli ?? run.runner;
+  if (cli === undefined || !validRunId(run.runId) || !validRunId(run.rootRunId) || !runIdMatches(run.runId, cli, run.host)) return false;
   if (run.parentRunId !== undefined && !validRunId(run.parentRunId)) return false;
   if (run.continuesRunId !== undefined && !validRunId(run.continuesRunId)) return false;
   if (run.mode !== undefined && run.kind !== "session") return false;
@@ -314,11 +320,15 @@ export const internalIngest = internalMutation({
     // Only then is it a worker, and that guess is counted below.
     const environment: RunEnvironment = args.run.environment ?? knownParent?.environment ?? existing?.environment ?? "worker";
     const environmentDefaulted = args.run.environment === undefined && knownParent?.environment === undefined && existing?.environment === undefined;
-    let run = { ...args.run, rootRunId, depth, environment };
+    // Read once, under its new name: every line below says `cli`, and a row
+    // this ingest writes carries only that spelling.
+    const { runner: legacyCli, ...named } = args.run;
+    const cli: RunCli = named.cli ?? legacyCli!;
+    let run = { ...named, cli, rootRunId, depth, environment };
     // A box Claude root has the same CLI id as its live session. Resolve that
     // exact join in the ingest transaction so a missed daemon stamp repairs
     // itself without a second worker round trip.
-    if (run.sessionId === undefined && run.runner === "claude" && run.host === "box" && run.depth === 0) {
+    if (run.sessionId === undefined && run.cli === "claude" && run.host === "box" && run.depth === 0) {
       const sdkSessionId = run.runId.slice("claude:box:".length);
       if (run.runId.startsWith("claude:box:") && sdkSessionId !== "" && !sdkSessionId.includes("/")) {
         const session = await ctx.db
@@ -420,7 +430,7 @@ export const internalIngest = internalMutation({
       if (existing.kind === "unknown") patch.kind = run.kind;
       if (existing.origin === "unknown") patch.origin = run.origin;
       if (!existing.linkKnown && run.linkKnown && run.spawnedByToolUseId) { patch.linkKnown = true; patch.spawnedByToolUseId = run.spawnedByToolUseId; }
-      if (isStubFile(existing.file)) Object.assign(patch, { parentRunId: run.parentRunId, rootRunId: run.rootRunId, depth: run.depth, host: run.host, runner: run.runner, environment: run.environment, startedAt: run.startedAt });
+      if (isStubFile(existing.file)) Object.assign(patch, { parentRunId: run.parentRunId, rootRunId: run.rootRunId, depth: run.depth, host: run.host, cli: run.cli, environment: run.environment, startedAt: run.startedAt });
       await ctx.db.patch(existing._id, patch);
     }
 
@@ -428,10 +438,10 @@ export const internalIngest = internalMutation({
     // keeps every verified version the nightly manifest must write exactly
     // once, including versions created in the same millisecond.
     if (!isStubFile(run.file) && run.file.storeKey !== undefined && !(await fileVersionAt(ctx, run.runId, run.file.storedHash))) {
-      const prefix = `${run.runner}:${run.host}:`;
+      const prefix = `${run.cli}:${run.host}:`;
       await ctx.db.insert("runFileVersions", {
         runId: run.runId,
-        runner: run.runner,
+        cli: run.cli,
         host: run.host,
         threadId: run.runId.startsWith(prefix) ? run.runId.slice(prefix.length) : run.runId,
         depth: run.depth,
@@ -831,7 +841,9 @@ export const internalManifest = internalQuery({
         .filter((version) => !hasCompositeCheckpoint || version.at > since || version.runId > afterRunId || (version.runId === afterRunId && version.fileVersion > afterFileVersion))
         .map((version) => ({
           run_id: version.runId,
-          runner: version.runner,
+          // The manifest is append-only: lines written before the rename say
+          // `runner`, lines written after say `cli`.
+          cli: version.cli ?? version.runner,
           host: version.host,
           thread_id: version.threadId,
           depth: version.depth,
@@ -1069,7 +1081,8 @@ export const internalNextMaterialize = internalQuery({
     // still answerable: it comes back with `storeKey: null` so the job writes
     // `failed` and the queue drains. Skipping it would park it at the head of
     // the queue forever — the queue is drained by answers, not by attempts.
-    const prefix = run ? `${run.runner}:${run.host}:` : `${request.runId.split(":").slice(0, 2).join(":")}:`;
+    const cli = run ? (run.cli ?? run.runner) : undefined;
+    const prefix = run ? `${cli}:${run.host}:` : `${request.runId.split(":").slice(0, 2).join(":")}:`;
     const file = run
       ? {
           path: run.file.path, sourceHash: run.file.sourceHash, storedHash: run.file.storedHash,
@@ -1090,7 +1103,9 @@ export const internalNextMaterialize = internalQuery({
       request: {
         requestId: request._id, runId: request.runId, slice: request.slice,
         requestedBy: request.requestedBy, requestedAt: request.requestedAt,
-        runner: run?.runner ?? request.runId.split(":")[0],
+        // Both spellings for one release: a box not yet rolled reads `runner`.
+        cli: cli ?? request.runId.split(":")[0],
+        runner: cli ?? request.runId.split(":")[0],
         host: run?.host ?? request.runId.split(":")[1],
         threadId: request.runId.startsWith(prefix) ? request.runId.slice(prefix.length) : request.runId,
         depth: run?.depth ?? 0,

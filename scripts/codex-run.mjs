@@ -439,7 +439,7 @@ const spooled = writeRegistration({
   },
   registration: {
     host: process.env.RUN_HOST === "box" || process.env.RUN_HOST === "laptop" ? process.env.RUN_HOST : null,
-    runner: "codex",
+    cli: "codex",
     origin: process.env.TTS_RUN_ORIGIN || "job",
     kind: process.env.TTS_RUN_PARENT_RUN_ID ? "codex-child" : "job",
     // A launcher's word wins; a child with a parent says nothing and runs where

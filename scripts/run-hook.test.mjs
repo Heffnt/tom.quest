@@ -83,7 +83,7 @@ describe("run lifecycle hook", () => {
             expect(envelope).toMatchObject({
               token: null,
               writer: { file: "scripts/run-hook.mjs", job: "run-hook" },
-              registration: { runner, hooksConfigured: ["SessionStart", "SessionEnd", "Stop", "SubagentStart", "SubagentStop"] },
+              registration: { cli: runner, hooksConfigured: ["SessionStart", "SessionEnd", "Stop", "SubagentStart", "SubagentStop"] },
               claim: { by: `hook:${event}`, runFile: path.resolve(runFile) },
             });
           } else {
@@ -101,7 +101,7 @@ describe("run lifecycle hook", () => {
     const spooled = writeRegistration({
       spoolDir,
       writer: { file: "worker/jobs/evals.mjs", job: "evals" },
-      registration: { host: "laptop", runner: "claude", origin: "cron:evals", kind: "job" },
+      registration: { host: "laptop", cli: "claude", origin: "cron:evals", kind: "job" },
     });
     writeRegistrationReceipt({
       runFile: payload.transcript_path,

@@ -297,7 +297,7 @@ function stateAfterDelivery(item, response, now) {
     envelopeMtimeMs: item.envelopeMtimeMs ?? 0,
     // A Codex tail often starts after session_meta. Retain the accepted run
     // and its safe meta facts so that tail has the same identity and context.
-    ...(item.payload.run.runner === "codex" ? { run: item.payload.run, codexMeta: item.codexMeta } : {}),
+    ...((item.payload.run.cli ?? item.payload.run.runner) === "codex" ? { run: item.payload.run, codexMeta: item.codexMeta } : {}),
   };
 }
 
@@ -464,7 +464,7 @@ function queuePages({ merged, overflows, endSeen, envelopeMtimeMs, sourceBytes, 
       pages,
       endSeen,
       envelopeMtimeMs,
-      ...(merged.run.runner === "codex" ? { codexMeta } : {}),
+      ...((merged.run.cli ?? merged.run.runner) === "codex" ? { codexMeta } : {}),
       cursorProofs,
       payload: {
         run,
