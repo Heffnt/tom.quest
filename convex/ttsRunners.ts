@@ -7,6 +7,7 @@ import { requireTom } from "./authRoles";
 import { redactSecrets } from "../worker/session-host/redact.mjs";
 import { CHECKIN_RULES, checkInFailures } from "../scripts/checkin-rules.mjs";
 import { assembleContext, type ContextSubject } from "./ttsContext";
+import type { RunnerFact } from "./ttsCompose";
 import {
   BOX_TOOLS_PARAGRAPH,
   DAEMON_RESTART_SENTENCE,
@@ -74,13 +75,17 @@ export function runnerStatus({
   return openBlockingAsks > 0 ? "waiting-on-tom" : "running";
 }
 
-/** This runner's asks Tom has not answered that hold its steps to observing. */
-export async function openBlockingAsks(ctx: QueryCtx, runnerId: Id<"runners">) {
-  const open = await ctx.db
+/** This runner's asks nobody has answered, blocking or not. */
+async function openAsks(ctx: QueryCtx, runnerId: Id<"runners">) {
+  return ctx.db
     .query("runnerEvents")
     .withIndex("by_open_ask", (q) => q.eq("runnerId", runnerId).eq("kind", "ask").eq("answeredAt", undefined))
     .take(50);
-  return open.filter((ask) => ask.blocking === true);
+}
+
+/** This runner's asks Tom has not answered that hold its steps to observing. */
+export async function openBlockingAsks(ctx: QueryCtx, runnerId: Id<"runners">) {
+  return (await openAsks(ctx, runnerId)).filter((ask) => ask.blocking === true);
 }
 
 // ── The asking rubric ────────────────────────────────────────────────────────
@@ -1014,6 +1019,67 @@ export async function recordRunnerReply(ctx: MutationCtx, runnerId: Id<"runners"
 }
 
 // ── The page ─────────────────────────────────────────────────────────────────
+
+/** How much of a check-in's first line the digest and the page print. */
+const CHECK_IN_LINE_CHARS = 120;
+
+/** A check-in's first line of prose: the first line that is neither blank, a
+ *  heading nor a table row, cut at a word boundary with no ellipsis. Null for
+ *  no check-in. The digest's runner line and the page's row both print it. */
+export function checkInFirstLine(text: string | undefined): string | null {
+  if (text === undefined) return null;
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
+  const line = lines.find((l) => !/^#{1,6}\s/.test(l) && !/^\|.*\|$/.test(l)) ?? lines[0];
+  if (line === undefined) return null;
+  if (line.length <= CHECK_IN_LINE_CHARS) return line;
+  const cut = line.slice(0, CHECK_IN_LINE_CHARS);
+  const space = cut.lastIndexOf(" ");
+  return (space > 0 ? cut.slice(0, space) : cut).replace(/[\s,;:—-]+$/, "");
+}
+
+/** The newest check-in of a runner, or null. */
+async function lastCheckIn(ctx: QueryCtx, runnerId: Id<"runners">) {
+  return ctx.db
+    .query("runnerEvents")
+    .withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runnerId).eq("kind", "check-in"))
+    .order("desc")
+    .first();
+}
+
+/** Every live runner as the morning message and the hourly update state it,
+ *  the ones waiting on Tom first, then newest first. The same read the sweep
+ *  makes, capped lower: this is a list for him, not a schedule. */
+export async function liveRunnerFacts(ctx: QueryCtx): Promise<RunnerFact[]> {
+  const live = await ctx.db
+    .query("runners")
+    .withIndex("by_ended", (q) => q.eq("endedAt", undefined))
+    .take(20);
+  const rows = await Promise.all(
+    live.map(async (runner) => {
+      const open = await openAsks(ctx, runner._id);
+      const status = runnerStatus({ runner, openBlockingAsks: open.filter((ask) => ask.blocking === true).length });
+      const checkIn = await lastCheckIn(ctx, runner._id);
+      return {
+        createdAt: runner.createdAt,
+        fact: {
+          runnerId: runner._id as string,
+          title: runner.title,
+          // A live runner's status is one of these two (runnerStatus).
+          status: status === "waiting-on-tom" ? ("waiting-on-tom" as const) : ("running" as const),
+          lastCheckIn: checkInFirstLine(checkIn?.text),
+          openQuestion: open.length > 0,
+        },
+      };
+    }),
+  );
+  return rows
+    .sort(
+      (a, b) =>
+        Number(b.fact.status === "waiting-on-tom") - Number(a.fact.status === "waiting-on-tom") ||
+        b.createdAt - a.createdAt,
+    )
+    .map((row) => row.fact);
+}
 
 /** The runner a step run belongs to, by the id in its `runner:<id>` origin:
  *  its title and its derived status, for the sessions page's run view. Behind
