@@ -319,6 +319,28 @@ async function recoverDeadLetterReport(stateDir, post, fs) {
   }
 }
 
+// A PAGE FOR NO RUN IS DROPPED, NOT PARKED. The parsers fall back to
+// `<cli>:<host>:unknown` (or `.../unknown` for an agent) when no line they read
+// names the run. The record refuses that id every time, and nothing else ever
+// empties the dead letter, so such a page would sit there for good and hold
+// the dead-letter alarm up. The file it failed to name is still swept under
+// the id its discovery gives it; only the page that can never land goes.
+const UNNAMED_RUN = /^(claude|codex):[a-z]+:(unknown(\/.*)?|[^/]+\/unknown)$/;
+
+function dropUnnamedDeadLetters(stateDir, fs, log) {
+  const dir = path.join(stateDir, "deadletter");
+  let names = [];
+  try { names = fs.readdirSync(dir).filter((name) => name.endsWith(".json")); } catch { return 0; }
+  let dropped = 0;
+  for (const name of names) {
+    const runId = readJson(path.join(dir, name), fs)?.runId;
+    if (typeof runId !== "string" || !UNNAMED_RUN.test(runId)) continue;
+    try { fs.unlinkSync(path.join(dir, name)); dropped += 1; } catch {}
+  }
+  if (dropped > 0) log(`runs-sweep deadletter dropped=${dropped} reason=page names no run`);
+  return dropped;
+}
+
 async function deadLetter(file, item, { stateDir, post, fs }) {
   const dir = path.join(stateDir, "deadletter");
   fs.mkdirSync(dir, { recursive: true });
@@ -336,6 +358,7 @@ export async function drainQueue({
   backoffMs = sweepBackoffMs,
   log = () => {},
 } = {}) {
+  dropUnnamedDeadLetters(stateDir, fs, log);
   await recoverDeadLetterReport(stateDir, post, fs);
   const items = queueFiles(stateDir, fs).map((file) => ({ file, item: readJson(file, fs) })).filter(({ item }) => item?.runId && item?.payload);
   items.sort((a, b) => a.item.createdAt - b.item.createdAt || (a.item.runId === b.item.runId ? a.item.page - b.item.page : a.item.runId.localeCompare(b.item.runId)));
@@ -502,13 +525,27 @@ async function parseAndStore(item, { stateDir, store, fs, post, now, markAbandon
   const common = { path: item.path, text: textFromLine(sourceText, fromLine), host: item.host, fileVersion: stored.fileVersion, baseLine: fromLine };
   let parsed;
   if (item.runtime !== "claude") parsed = parseCodexFile({ ...common, contextText: sourceText, priorRun: previous?.run, priorMeta: previous?.codexMeta });
-  else if (item.kind === "subagent") {
+  else {
     // A child's sidecar carries its depth and its spawning tool-use id, so it
     // is part of the record and gets its own immutable object beside the run.
-    const sidecar = await storeSidecar(item, { store, fs });
-    parsed = parseClaudeFile({ ...common, agentMeta: agentMeta(item, fs), parentSessionId: item.threadId.split("/")[0], sidecar, attachments: sidecar?.pointer ? [sidecar.pointer] : [] });
-  } else {
-    parsed = parseClaudeFile({ ...common, attachments: discoverChildren(item.path, { fs }).toolResults });
+    const sidecar = item.kind === "subagent" ? await storeSidecar(item, { store, fs }) : null;
+    const facts = item.kind === "subagent"
+      ? { agentMeta: agentMeta(item, fs), parentSessionId: item.threadId.split("/")[0], sidecar, attachments: sidecar?.pointer ? [sidecar.pointer] : [] }
+      : { attachments: discoverChildren(item.path, { fs }).toolResults };
+    parsed = parseClaudeFile({ ...common, ...facts });
+    // A CLAUDE RUN'S HEADER LIVES ONLY IN ITS LINES. The session id, the times
+    // and the totals are read off the lines the parser is handed, so a pass
+    // with no line past the cursor — the abandonment pass over a finished
+    // file, or a registration that landed after the last line — named its run
+    // `claude:<host>:unknown` with zero totals. The record refused that id,
+    // and the abandonment pass, never marked done, re-sent it every two
+    // minutes into the dead letter: 728 pages on 2026-09-18 from two daemon
+    // sessions. A subagent's id survives (its sidecar names it), so its page
+    // is accepted and would zero its outcome instead. Codex recovers its header
+    // from the saved run; a Claude cursor saves none, so such a pass reads its
+    // header off the whole file and carries no rows, since every row it
+    // could carry is already committed.
+    if (fromLine > 0 && parsed.lastLine === fromLine) parsed = { ...parseClaudeFile({ ...common, ...facts, text: sourceText, baseLine: 0 }), rows: [] };
   }
   Object.assign(parsed.run.file, { sourceHash: stored.sourceHash, storedHash: stored.storedHash, bytes: stored.bytes, storedBytes: stored.storedBytes, storeKey: stored.key, committedLine: parsed.lastLine });
   const merged = mergeRegistration({ parsed, envelope, host: item.host });
