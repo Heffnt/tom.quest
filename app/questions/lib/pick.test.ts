@@ -1,7 +1,19 @@
 import { describe, expect, it } from "vitest";
 import type { Question } from "../data/types";
 import { BANK } from "../data/types";
-import { FRAMES, INITIAL_FILTERS, KINDS, matches, next, refined, topicsOf, type Filters, type Rng } from "./pick";
+import {
+  FRAMES,
+  INITIAL_FILTERS,
+  KINDS,
+  canStep,
+  kindOf,
+  matches,
+  refined,
+  startIndex,
+  stepped,
+  topicsOf,
+  type Filters,
+} from "./pick";
 
 const question = (over: Partial<Question> & { id: string }): Question => ({
   text: `question ${over.id}`,
@@ -14,16 +26,9 @@ const question = (over: Partial<Question> & { id: string }): Question => ({
   ...over,
 });
 
-/** Always the first candidate, so every assertion below is about the ordering. */
-const first: Rng = () => 0;
-/** Always the last candidate, so an assertion can tell a pool's ends apart. */
-const last: Rng = () => 0.999;
-
 const filters = (over: Partial<Filters> = {}): Filters => ({ ...INITIAL_FILTERS, ...over });
 
 const ids = (questions: readonly Question[]): string[] => questions.map((entry) => entry.id);
-
-const none = new Set<string>();
 
 describe("the no-filter sentinel", () => {
   it("is null on every filter, and opens every chip row", () => {
@@ -107,57 +112,106 @@ describe("matches", () => {
   });
 });
 
-describe("next", () => {
-  it("never returns the question already on screen", () => {
-    const bank = [question({ id: "a" }), question({ id: "b" })];
-    expect(next(bank, filters(), none, "a", first)?.id).toBe("b");
-    expect(next(bank, filters(), none, "b", first)?.id).toBe("a");
-    expect(next(bank, filters(), none, "b", last)?.id).toBe("a");
+describe("kindOf", () => {
+  it("returns lighter for a release question regardless of its depth", () => {
+    expect(kindOf(question({ id: "release", depth: 3, release: true }))).toBe("lighter");
   });
 
-  it("prefers a question not yet seen", () => {
-    const bank = [question({ id: "seen1" }), question({ id: "seen2" }), question({ id: "fresh" })];
-    const seen = new Set(["seen1", "seen2"]);
-    expect(next(bank, filters(), seen, null, first)?.id).toBe("fresh");
-    expect(next(bank, filters(), seen, null, last)?.id).toBe("fresh");
+  it("returns the depth for a non-release question at each of 1, 2 and 3", () => {
+    for (const depth of [1, 2, 3] as const) {
+      expect(kindOf(question({ id: `depth-${depth}`, depth }))).toBe(depth);
+    }
   });
 
-  it("cycles through the match set again once everything in it is seen", () => {
-    const bank = [question({ id: "a" }), question({ id: "b" }), question({ id: "c" })];
-    const seen = new Set(["a", "b", "c"]);
-    expect(next(bank, filters(), seen, "a", first)?.id).toBe("b");
-    expect(next(bank, filters(), seen, "a", last)?.id).toBe("c");
+  it("round-trips every committed bank question through its kind filter", () => {
+    for (const entry of BANK) {
+      expect(matches(BANK, { ...INITIAL_FILTERS, kind: kindOf(entry) })).toContain(entry);
+    }
+  });
+});
+
+describe("startIndex", () => {
+  const list = [question({ id: "first" }), question({ id: "second" }), question({ id: "third" })];
+
+  it("returns 0 for an empty list", () => {
+    expect(startIndex([], new Set(), null)).toBe(0);
   });
 
-  it("serves an already-seen question rather than emptying the page", () => {
-    const bank = [question({ id: "a" }), question({ id: "b" })];
-    const seen = new Set(["a", "b"]);
-    const served = next(bank, filters(), seen, "a", first);
-    expect(served).not.toBeNull();
-    expect(seen.has(served?.id ?? "")).toBe(true);
+  it("returns the current id position even when it is seen and an unseen question comes earlier", () => {
+    expect(startIndex(list, new Set(["second"]), "second")).toBe(1);
   });
 
-  it("draws only from the match set the filters describe", () => {
-    const bank = [
-      question({ id: "d1", depth: 1 }),
-      question({ id: "d2", depth: 2, topic: "memory" }),
-      question({ id: "light", release: true }),
-    ];
-    expect(next(bank, filters({ kind: 2 }), none, null, first)?.id).toBe("d2");
-    expect(next(bank, filters({ kind: "lighter" }), none, null, first)?.id).toBe("light");
-    expect(next(bank, filters({ topic: "memory" }), none, null, last)?.id).toBe("d2");
+  it("returns the first unseen position when the current id is null", () => {
+    expect(startIndex(list, new Set(["first"]), null)).toBe(1);
   });
 
-  it("returns null when nothing matches", () => {
-    const bank = [question({ id: "a", topic: "taste" })];
-    expect(next(bank, filters({ topic: "memory" }), none, null, first)).toBeNull();
-    expect(next(bank, filters({ kind: "lighter" }), none, null, first)).toBeNull();
-    expect(next([], filters(), none, null, first)).toBeNull();
+  it("returns the first unseen position when the current id is not in the list", () => {
+    expect(startIndex(list, new Set(["first"]), "elsewhere")).toBe(1);
   });
 
-  it("holds the one match on screen rather than blanking the page", () => {
-    const bank = [question({ id: "only" }), question({ id: "other", depth: 2 })];
-    expect(next(bank, filters({ kind: 1 }), new Set(["only"]), "only", first)?.id).toBe("only");
+  it("returns 0 when every question is seen and the current id is not in the list", () => {
+    expect(startIndex(list, new Set(ids(list)), "elsewhere")).toBe(0);
+  });
+});
+
+describe("stepped", () => {
+  const list = [question({ id: "first" }), question({ id: "second" }), question({ id: "third" })];
+
+  it("moves forward from the middle and returns a new set with the left question and every input id", () => {
+    const seen = new Set(["already-seen"]);
+    const result = stepped(list, 1, seen, 1);
+    expect(result.index).toBe(2);
+    expect(result.seen).not.toBe(seen);
+    expect([...result.seen]).toEqual(["already-seen", "second"]);
+  });
+
+  it("does not mutate the input set when moving forward", () => {
+    const seen = new Set(["already-seen"]);
+    stepped(list, 1, seen, 1);
+    expect([...seen]).toEqual(["already-seen"]);
+  });
+
+  it("returns the same index and identical set when moving forward at the last index", () => {
+    const seen = new Set<string>();
+    const result = stepped(list, 2, seen, 1);
+    expect(result.index).toBe(2);
+    expect(result.seen).toBe(seen);
+  });
+
+  it("moves back from the middle and returns a new set with the left question and every input id", () => {
+    const seen = new Set(["already-seen"]);
+    const result = stepped(list, 1, seen, -1);
+    expect(result.index).toBe(0);
+    expect(result.seen).not.toBe(seen);
+    expect([...result.seen]).toEqual(["already-seen", "second"]);
+    expect([...seen]).toEqual(["already-seen"]);
+  });
+
+  it("returns the same index and identical set when no question is left at index 0", () => {
+    const seen = new Set<string>();
+    const result = stepped(list, 0, seen, -1);
+    expect(result.index).toBe(0);
+    expect(result.seen).toBe(seen);
+  });
+
+  it("returns the same index and identical set on an empty list in both directions", () => {
+    const seen = new Set<string>();
+    expect(stepped([], 0, seen, 1)).toEqual({ index: 0, seen });
+    expect(stepped([], 0, seen, 1).seen).toBe(seen);
+    expect(stepped([], 0, seen, -1)).toEqual({ index: 0, seen });
+    expect(stepped([], 0, seen, -1).seen).toBe(seen);
+  });
+});
+
+describe("canStep", () => {
+  it("is false in both directions on one entry, false at each end, and true otherwise", () => {
+    const list = [question({ id: "first" }), question({ id: "second" }), question({ id: "third" })];
+    expect(canStep([list[0]], 0, -1)).toBe(false);
+    expect(canStep([list[0]], 0, 1)).toBe(false);
+    expect(canStep(list, 0, -1)).toBe(false);
+    expect(canStep(list, 2, 1)).toBe(false);
+    expect(canStep(list, 0, 1)).toBe(true);
+    expect(canStep(list, 2, -1)).toBe(true);
   });
 });
 
