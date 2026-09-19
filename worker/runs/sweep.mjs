@@ -843,7 +843,11 @@ export async function refreshClaudeHeaders({
     let refreshed = 0, left = 0, gone = 0, failed = 0;
     for (const name of names) {
       const state = readJson(path.join(config.stateDir, "state", name), fs);
-      if (!state?.runId?.startsWith("claude:") || state.deferred || !state.verified || state.wholeFileHeader || pending.has(state.runId)) continue;
+      // A backlog run is recorded at cursor 0 with no rows by design, and its
+      // header was read off the whole file when it was imported; sweeping it
+      // here would ingest its whole transcript instead.
+      if (!state?.runId?.startsWith("claude:") || state.deferred || state.backlog || !(state.committedLine > 0)) continue;
+      if (!state.verified || state.wholeFileHeader || pending.has(state.runId)) continue;
       if (refreshed >= limit) { left += 1; continue; }
       const described = state.path ? describeRunFile(state.path, { roots: config.roots, host: config.host, fs }) : null;
       if (!described) { gone += 1; continue; }

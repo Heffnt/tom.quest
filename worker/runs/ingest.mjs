@@ -677,12 +677,13 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
   let usageTotals = recoveredMeta?.usageTotals && typeof recoveredMeta.usageTotals === "object"
     ? recoveredMeta.usageTotals
     : emptyTotals();
-  // CONTEXT_WINDOW IS NOT A SIZE ON CODEX 0.153.3. Its session_meta writes
+  // CONTEXT_WINDOW IS NOT A SIZE. Codex 0.153.3's session_meta writes
   // `context_window` as an object naming a window id, and the record's
   // contextWindow is a number of tokens, so passing the header through
   // refused every box Codex run from that version on (285 dead-letter pages
   // by 2026-09-19). The size is `model_context_window` on each token_count
-  // event; it is kept in sweep state because a tail may carry none.
+  // event, the only place it is read; it is kept in sweep state because a
+  // tail may carry none.
   let modelContextWindow = Number.isFinite(recoveredMeta?.modelContextWindow) ? recoveredMeta.modelContextWindow : undefined;
   let taskComplete = null;
   let lastAssistantText = null;
@@ -805,7 +806,7 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
     ...(meta.base_instructions?.text ? { baseInstructionsHash: sha256(meta.base_instructions.text) } : {}),
     ...(meta.baseInstructionsHash ? { baseInstructionsHash: meta.baseInstructionsHash } : {}),
     ...(meta.originator ? { originator: meta.originator } : {}),
-    ...(Number.isFinite(meta.context_window) ? { contextWindow: meta.context_window } : Number.isFinite(modelContextWindow) ? { contextWindow: modelContextWindow } : {}),
+    ...(Number.isFinite(modelContextWindow) ? { contextWindow: modelContextWindow } : {}),
     ...(permissionMode ? { permissionMode } : {}),
   };
   if (baseLine === 0) rows.unshift({ seq: 0, turn: 0, kind: "context", content: { ...(model ? { model } : {}), ...context, prompt }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: 0, block: 0, sourceKind: "context" }), createdAt: startedAt });
@@ -830,10 +831,13 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
     : priorOutcome.endedReason;
   const run = { runId, ...(parentRunId ? { parentRunId } : {}), rootRunId, depth: parentId ? 1 : 0, linkKnown: !parentId, origin: "unknown", host, cli: "codex", ...(model ? { model } : {}), ...(sessionModelOf(model) ? { sessionModel: sessionModelOf(model) } : {}), ...(effort ? { effort } : {}), ...(runtimeVersion ?? meta.cli_version ? { runtimeVersion: runtimeVersion ?? meta.cli_version } : {}), parserVersion: PARSER_VERSION, kind: parentId ? "codex-child" : "unknown", status: "unknown", startedAt, lastLineAt, context, attachments, outcome: { ...(finalTextSeq !== undefined ? { finalTextSeq } : {}), ...(endedReason !== undefined ? { endedReason } : {}), totals, ...(price === null ? {} : { costUsd: price, priceTableVersion: priceTableVersion() }), turns: Math.max(number(priorOutcome.turns), 1, turns.size), toolCalls }, file: { path, sourceHash: sha256(Buffer.from(text)), storedHash: fileVersion, bytes: Buffer.byteLength(text), storedBytes: 0, committedLine: baseLine + lines.length, committedPrefixSha256: prefixHash(lines, lines.length), incompleteTail } };
   // A ROW SITS AT ITS RUN'S DEPTH, and the record refuses one that does not.
-  // The rows are emitted as the lines are read, and a line need not come after
-  // the session_meta that makes this run a child, so the depth is settled here
-  // once the whole parse knows it. Before this, every spawn_agent child's rows
-  // said depth 0 under a depth-1 run and the whole child was refused.
+  // The field cannot go: the record stores it on every row and the transcript
+  // view draws a row as nested by it, for Claude subagents as for Codex
+  // children. The rows are emitted as the lines are read, and a line need not
+  // come after the session_meta that makes this run a child, so the depth is
+  // settled here once the whole parse knows it. Before this, every spawn_agent
+  // child's rows said depth 0 under a depth-1 run and the whole child was
+  // refused.
   for (const row of rows) row.depth = run.depth;
   const result = finishResult({ run, rows, children, attachments, lastLine: baseLine + lines.length, incompleteTail, dropped });
   // This is sweep state only, never a Convex run field. It keeps the pieces a

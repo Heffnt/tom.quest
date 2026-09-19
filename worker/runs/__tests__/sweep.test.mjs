@@ -135,8 +135,9 @@ describe("run sweep", () => {
     const file = path.join(project, "rollout.jsonl");
     const catalog = codexSkillsInstructions({ roots: { r0: "C:/skills" }, skills: [{ name: "tom-write", file: "r0/tom-write/SKILL.md" }] });
     fs.writeFileSync(file, jsonl([
-      codexMeta({ id: "child", parent: "parent", cwd: "C:/work", cliVersion: "0.153.3", git: { branch: "main", commit_hash: "a".repeat(40) }, baseInstructions: "original instructions", contextWindow: 272_000 }),
+      codexMeta({ id: "child", parent: "parent", cwd: "C:/work", cliVersion: "0.153.3", git: { branch: "main", commit_hash: "a".repeat(40) }, baseInstructions: "original instructions" }),
       codexTurnContext({ model: "gpt-5.6-terra", effort: "xhigh" }),
+      codexTokenCount({ modelContextWindow: 272_000 }),
       codexDeveloper(catalog),
     ]));
     let stat = fs.statSync(file);
@@ -339,6 +340,12 @@ describe("run sweep", () => {
     expect(JSON.parse(fs.readFileSync(stateFile, "utf8")).wholeFileHeader).toBe(true);
     const second = await refreshClaudeHeaders({ config: cfg, store: store(), post, now: () => NOW + 2, log: () => {} });
     expect(second).toMatchObject({ refreshed: 0, left: 0 });
+    expect(ingests).toHaveLength(2);
+    // A backlog run is recorded at cursor 0 with no rows by design; the
+    // refresh must not sweep its whole transcript in.
+    fs.writeFileSync(stateFile, JSON.stringify({ ...unmarked, committedLine: 0, backlog: true }));
+    const third = await refreshClaudeHeaders({ config: cfg, store: store(), post, now: () => NOW + 3, log: () => {} });
+    expect(third).toMatchObject({ refreshed: 0, left: 0 });
     expect(ingests).toHaveLength(2);
   });
 
