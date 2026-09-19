@@ -752,6 +752,17 @@ export const BOX_TOOLS_PARAGRAPH = [
   "- `tts-turing health|gpus|jobs|output <name>` reads the WPI Turing cluster through the API's read-only key, and `tts-turing tree [path]|node [path]|read <path>` reads the experiment results tree (a path is relative to its root). It cannot allocate, cancel, run, or read files outside the results tree — those need Tom. A verb answering 401 means the read key is not installed yet, or turing-api has not been redeployed with the results tree on that key; record that in your outcome instead of retrying.",
 ].join("\n");
 
+// What a runner step on a Turing experiment is told about acting on the
+// cluster. Only a runner step's process holds the runner key, so this is told
+// to runner steps alone; BOX_TOOLS_PARAGRAPH, what sessions are told, stays
+// true for them as written.
+export const RUNNER_ACT_PARAGRAPH = [
+  "One command acts on the cluster, and only a runner step has its key:",
+  "- `tts-turing-act launch --runner <runner id> --label <short label> --gpu-type <type> --minutes <n> --command '<command>' [--command ...] [--project-dir <dir in the CMT checkout>] [--count <n>] [--memory-mb <n>]` starts a job named for this runner. Every command must run a script file inside the CMT checkout on the cluster (`python <script>`, `bash <script>` or the script's own path), one plain command per line with no `;`, `&`, `|`, redirection or `$`. Relative paths are read from the project directory.",
+  "- `tts-turing-act cancel --runner <runner id> --job <job id>` cancels a job this runner launched. The cluster refuses any other job, the GPU pool's included, and that refusal is final: report it, do not retry it.",
+  "Before a launch the command checks this runner's GPU-hour budget against the hours already spent and booked. When it refuses (it exits 6 and says why), nothing was sent: raise a setup question for Tom saying what the launch was for and how many GPU-hours it needs, and say what you will do if he does not answer. It exits 3 when the box has no runner key yet; say so in the check-in and act on nothing. After a launch or cancel it reads the queue back and prints what it saw; that line is the verification you name in the check-in. Record every launch and cancel with the pen's `--act`.",
+].join("\n");
+
 // The daemon that runs THIS session runs every other live session on the box
 // too, so an agent that restarts it to pick up its own change kills itself
 // mid-turn and takes the rest of the fleet with it. Named in every prompt

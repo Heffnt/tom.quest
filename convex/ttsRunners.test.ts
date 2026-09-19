@@ -329,6 +329,25 @@ describe("the step prompt", () => {
     expect(contract).toContain("one short Markdown table with two columns");
     expect(prompt).not.toContain("name the tier you judged in the check-in");
     expect(claimed.sensor).toEqual({ specs: ["sweeps/train/train25_*.yaml"], budgetGpuHours: 500, failures: [] });
+    // A runner on a Turing experiment is told how to act on the cluster, and
+    // records each act with the pen.
+    expect(prompt).toContain("tts-turing-act launch --runner");
+    expect(prompt).toContain("--act 'launch|<job id>|");
+    expect(prompt).toContain("On the cluster you may launch jobs for this experiment");
+    expect(contract).toContain("Name at most two this way and count the rest");
+  });
+
+  it("tells a runner whose experiment is on the box nothing about acting on the cluster", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    await publish(t);
+    const { internal } = await import("./_generated/api");
+    await t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed({ experimentHost: "box" }) });
+    const prompt = (await claimedPrompt(t)).prompt;
+    expect(prompt).not.toContain("tts-turing-act");
+    expect(prompt).not.toContain("--act '");
+    // What sessions are told about the read-only command is unchanged.
+    expect(prompt).toContain("It cannot allocate, cancel, run, or read files outside the results tree");
   });
 
   it("builds an observe-only step while a blocking ask is unanswered, and carries Tom's reply once it comes", async () => {
@@ -340,6 +359,7 @@ describe("the step prompt", () => {
     const askId = await t.run((ctx) => ctx.db.insert("runnerEvents", { runnerId, at: Date.now(), kind: "ask", tier: "plan", blocking: true, text: "Should the next stage skip pythia?" }));
     const blocked = (await claimedPrompt(t)).prompt;
     expect(blocked).toContain("ACT: change nothing.");
+    expect(blocked).not.toContain("tts-turing-act");
     expect(blocked).toContain("Should the next stage skip pythia?");
     expect(blocked).toContain("DECIDE one of: continue or ask.");
     expect(blocked).toContain("which is waiting-on-tom");
@@ -406,6 +426,38 @@ describe("the check-in", () => {
     await t.run((ctx) => ctx.db.insert("runnerEvents", { runnerId, at: Date.now(), kind: "ask", tier: "plan", blocking: true, text: "Skip pythia?" }));
     await expect(t.mutation(internal.ttsRunners.internalRecordStep, { ...base, decision: "change", graded: PASS })).rejects.toThrow(/may only continue or ask/);
     const events = await t.run((ctx) => ctx.db.query("runnerEvents").withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runnerId).eq("kind", "check-in")).collect());
+    expect(events).toEqual([]);
+  });
+
+  it("records each launch and cancel as an act beside the check-in, and counts them", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { runnerId, stepRunId, internal } = await claimed(t);
+    const acts = [
+      { verb: "launch" as const, jobId: "4101", text: "Launched one probe job to test the new data path; the queue showed it by its name." },
+      { verb: "cancel" as const, jobId: "4101", text: "Cancelled the probe once it had started; the next read of the queue no longer showed it." },
+    ];
+    await t.mutation(internal.ttsRunners.internalRecordStep, { runnerId, stepRunId, decision: "change", checkIn: GOOD, document: "d", asks: [], acts, graded: PASS });
+    const events = await t.run((ctx) => ctx.db.query("runnerEvents").withIndex("by_runner_at", (q) => q.eq("runnerId", runnerId)).collect());
+    const recorded = events.filter((e) => e.kind === "act");
+    expect(recorded.map((e) => e.data)).toEqual([{ verb: "launch", jobId: "4101" }, { verb: "cancel", jobId: "4101" }]);
+    expect(recorded.every((e) => e.stepRunId === stepRunId)).toBe(true);
+    expect(recorded[0].text).toContain("the queue showed it");
+    expect((events.find((e) => e.kind === "check-in")!.data as { acts: number }).acts).toBe(2);
+  });
+
+  it("refuses acts on an observe-only step, too many acts, and an act with no words", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { runnerId, stepRunId, internal } = await claimed(t);
+    const act = { verb: "launch" as const, jobId: "4101", text: "Launched a probe; seen in the queue by name." };
+    const base = { runnerId, stepRunId, decision: "continue" as const, checkIn: GOOD, document: "d", asks: [], graded: PASS };
+    await expect(t.mutation(internal.ttsRunners.internalRecordStep, { ...base, acts: Array(11).fill(act) })).rejects.toThrow(/at most 10/);
+    await expect(t.mutation(internal.ttsRunners.internalRecordStep, { ...base, acts: [{ ...act, text: " " }] })).rejects.toThrow(/one to 300 characters/);
+    await expect(t.mutation(internal.ttsRunners.internalRecordStep, { ...base, acts: [{ ...act, text: "x".repeat(301) }] })).rejects.toThrow(/one to 300 characters/);
+    await t.run((ctx) => ctx.db.insert("runnerEvents", { runnerId, at: Date.now(), kind: "ask", tier: "plan", blocking: true, text: "Skip pythia?" }));
+    await expect(t.mutation(internal.ttsRunners.internalRecordStep, { ...base, acts: [act] })).rejects.toThrow(/records no launch or cancel/);
+    const events = await t.run((ctx) => ctx.db.query("runnerEvents").withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runnerId).eq("kind", "act")).collect());
     expect(events).toEqual([]);
   });
 
