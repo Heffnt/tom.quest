@@ -2,60 +2,40 @@
 
 import { useEffect, useMemo, useState } from "react";
 import TomGate from "@/app/components/tom-gate";
-import { BANK, type Depth } from "./data/types";
+import { BANK, type Question } from "./data/types";
 import {
-  advance,
-  effectiveDepth,
-  INITIAL_STATE,
-  MAX_DEPTH,
+  FRAMES,
+  INITIAL_FILTERS,
+  KINDS,
+  matches,
+  next,
   topicsOf,
-  type DepthFilter,
-  type Mode,
-  type QuestionsState,
+  type Filters,
+  type KindFilter,
 } from "./lib/pick";
 
-const USED_KEY = "questions.used";
-const DEPTH_KEY = "questions.depth";
-
-const WALK: ReadonlyArray<{ mode: Mode; label: string }> = [
-  { mode: "stay", label: "stay" },
-  { mode: "deeper", label: "deeper" },
-  { mode: "lighten", label: "lighten" },
-];
-
-const DEPTH_CHIPS: readonly DepthFilter[] = ["auto", 1, 2, 3];
-
-function isDepth(value: unknown): value is Depth {
-  return value === 1 || value === 2 || value === 3;
-}
+const SEEN_KEY = "questions.seen";
+/** Keys the depth walk wrote, cleared on arrival so no stale walk survives it. */
+const RETIRED_KEYS = ["questions.used", "questions.depth"];
 
 /**
- * What survives a reload: the ids already asked, and how deep the walk had got.
- * Read after mount so the server's render and the first client render agree,
- * and wrapped because storage throws outright in a locked-down browser.
+ * What survives a reload: the ids already asked. Read after mount so the
+ * server's render and the first client render agree, and wrapped because
+ * storage throws outright in a locked-down browser.
  */
-function restored(): QuestionsState {
+function restored(): Set<string> {
   try {
-    const rawUsed = window.localStorage.getItem(USED_KEY);
-    const rawDepth = Number(window.localStorage.getItem(DEPTH_KEY));
-    const parsed: unknown = rawUsed === null ? [] : JSON.parse(rawUsed);
-    const used = new Set<string>(Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : []);
-    return { ...INITIAL_STATE, used, depth: isDepth(rawDepth) ? rawDepth : 1 };
+    for (const key of RETIRED_KEYS) window.localStorage.removeItem(key);
+    const raw = window.localStorage.getItem(SEEN_KEY);
+    const parsed: unknown = raw === null ? [] : JSON.parse(raw);
+    return new Set<string>(Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : []);
   } catch {
     // No storage, or storage holding something this page did not write.
-    return INITIAL_STATE;
+    return new Set<string>();
   }
 }
 
-function Chip({
-  label,
-  selected,
-  onSelect,
-}: {
-  label: string;
-  selected: boolean;
-  onSelect: () => void;
-}) {
+function Chip({ label, selected, onSelect }: { label: string; selected: boolean; onSelect: () => void }) {
   return (
     <button
       type="button"
@@ -72,6 +52,32 @@ function Chip({
   );
 }
 
+function ChipRow({
+  label,
+  options,
+  selected,
+  onSelect,
+}: {
+  label: string;
+  options: readonly (string | number)[];
+  selected: string | number;
+  onSelect: (option: string | number) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="w-14 shrink-0 text-sm text-text-faint">{label}</span>
+      {options.map((option) => (
+        <Chip
+          key={String(option)}
+          label={String(option)}
+          selected={selected === option}
+          onSelect={() => onSelect(option)}
+        />
+      ))}
+    </div>
+  );
+}
+
 function TextLink({ label, onClick }: { label: string; onClick: () => void }) {
   return (
     <button
@@ -85,106 +91,125 @@ function TextLink({ label, onClick }: { label: string; onClick: () => void }) {
 }
 
 function Questions() {
-  const [state, setState] = useState<QuestionsState>(INITIAL_STATE);
+  const [filters, setFilters] = useState<Filters>(INITIAL_FILTERS);
+  const [current, setCurrent] = useState<Question | null>(null);
+  const [seen, setSeen] = useState<ReadonlySet<string>>(() => new Set<string>());
+  const [showAll, setShowAll] = useState(false);
   const [ready, setReady] = useState(false);
-  // Collapsed on every load, deliberately: the walk is the page, and the panel
-  // is the exception you go looking for.
+  // Collapsed on every load, deliberately: one question is the page, and the
+  // panel is the exception you go looking for.
   const [propertiesOpen, setPropertiesOpen] = useState(false);
 
   const topics = useMemo(() => topicsOf(BANK), []);
+  const matched = useMemo(() => matches(BANK, filters), [filters]);
+  const seenHere = matched.filter((question) => seen.has(question.id)).length;
 
   useEffect(() => {
-    setState(advance(BANK, restored(), "stay"));
+    const stored = restored();
+    setSeen(stored);
+    setCurrent(next(BANK, INITIAL_FILTERS, stored, null));
     setReady(true);
   }, []);
 
   useEffect(() => {
     if (!ready) return;
     try {
-      window.localStorage.setItem(USED_KEY, JSON.stringify([...state.used]));
-      window.localStorage.setItem(DEPTH_KEY, String(state.depth));
+      window.localStorage.setItem(SEEN_KEY, JSON.stringify([...seen]));
     } catch {
       // Storage is a convenience here; the session works without it.
     }
-  }, [ready, state.used, state.depth]);
+  }, [ready, seen]);
 
-  const move = (mode: Mode) => setState((previous) => advance(BANK, previous, mode));
+  // Next spends the question on screen; a chip does not, which is what lets you
+  // browse the properties without burning through the bank.
+  const advance = () => {
+    const spent = new Set(seen);
+    if (current !== null) spent.add(current.id);
+    setSeen(spent);
+    setCurrent(next(BANK, filters, spent, current?.id ?? null));
+  };
 
-  const filter = (filters: QuestionsState["filters"]) =>
-    setState((previous) => advance(BANK, { ...previous, filters }, "filter"));
-
-  const current = state.current;
-  const atDepth = effectiveDepth(state.depth, state.filters);
+  const refine = (patch: Partial<Filters>) => {
+    const updated = { ...filters, ...patch };
+    setFilters(updated);
+    setCurrent(next(BANK, updated, seen, current?.id ?? null));
+  };
 
   return (
     <div className="mx-auto w-full max-w-[40rem] px-6 pt-6 pb-16">
       {/* Tall enough to hold the longest question in the bank at either type
-          size, so the buttons below sit at the same place from one question to
+          size, so the button below sits at the same place from one question to
           the next. */}
       <div className="flex min-h-56 items-start sm:min-h-48">
-        <p className="font-display text-2xl leading-snug text-text sm:text-3xl">
-          {ready ? (current?.text ?? "Nothing left here.") : ""}
-        </p>
+        <p className="font-display text-2xl leading-snug text-text sm:text-3xl">{ready ? (current?.text ?? "") : ""}</p>
       </div>
 
       <p className="mt-2 h-5 text-sm text-text-muted">
-        {current === null ? "" : `${current.depth} · ${current.frame} · ${current.topic}`}
+        {!ready ? "" : current === null ? "Nothing matches." : `${current.depth} · ${current.frame} · ${current.topic}`}
       </p>
 
-      <div className="mt-6 grid grid-cols-3 gap-2">
-        {WALK.map(({ mode, label }) => (
-          <button
-            key={mode}
-            type="button"
-            onClick={() => move(mode)}
-            disabled={mode === "deeper" && atDepth === MAX_DEPTH}
-            className="rounded-lg border border-border bg-surface px-3 py-3 text-base text-text transition-colors hover:border-accent/50 hover:bg-surface-alt disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border disabled:hover:bg-surface"
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <button
+        type="button"
+        onClick={advance}
+        className="mt-6 w-full rounded-lg border border-border bg-surface px-3 py-3 text-base text-text transition-colors hover:border-accent/50 hover:bg-surface-alt"
+      >
+        next
+      </button>
 
-      <div className="mt-4">
-        <TextLink label="skip" onClick={() => move("skip")} />
-      </div>
-
-      <div className="mt-8">
+      <div className="mt-4 flex items-center gap-4">
         <TextLink label="properties" onClick={() => setPropertiesOpen((open) => !open)} />
-        {propertiesOpen && (
-          <div className="mt-4 rounded-lg border border-border bg-surface/40 p-4">
-            <div className="flex flex-wrap gap-2">
-              {DEPTH_CHIPS.map((chip) => (
-                <Chip
-                  key={String(chip)}
-                  label={String(chip)}
-                  selected={state.filters.depth === chip}
-                  onSelect={() => filter({ ...state.filters, depth: chip })}
-                />
-              ))}
-            </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {["any", ...topics].map((topic) => (
-                <Chip
-                  key={topic}
-                  label={topic}
-                  selected={state.filters.topic === topic}
-                  onSelect={() => filter({ ...state.filters, topic })}
-                />
-              ))}
-            </div>
-          </div>
-        )}
+        <TextLink label={`view all ${matched.length}`} onClick={() => setShowAll((open) => !open)} />
       </div>
+
+      {propertiesOpen && (
+        <div className="mt-4 space-y-3 rounded-lg border border-border bg-surface/40 p-4">
+          <ChipRow
+            label="kind"
+            options={KINDS as readonly (string | number)[]}
+            selected={filters.kind}
+            onSelect={(option) => refine({ kind: option as KindFilter })}
+          />
+          <ChipRow
+            label="frame"
+            options={FRAMES}
+            selected={filters.frame}
+            onSelect={(option) => refine({ frame: option as Filters["frame"] })}
+          />
+          <ChipRow
+            label="topic"
+            options={["any", ...topics]}
+            selected={filters.topic}
+            onSelect={(option) => refine({ topic: String(option) })}
+          />
+        </div>
+      )}
+
+      {showAll && (
+        <ul className="mt-4 divide-y divide-border rounded-lg border border-border">
+          {matched.map((question) => (
+            <li key={question.id}>
+              <button
+                type="button"
+                onClick={() => setCurrent(question)}
+                className={`block w-full px-3 py-2 text-left text-base transition-colors hover:bg-surface-alt ${
+                  seen.has(question.id) ? "text-text-muted" : "text-text"
+                }`}
+              >
+                {question.text}{" "}
+                <span className="text-sm text-text-faint">
+                  {question.depth} · {question.frame}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
 
       <div className="mt-10 flex items-center gap-3 text-sm text-text-faint">
         <span className="tabular-nums">
-          used {state.used.size} of {BANK.length}
+          seen {seenHere} of {matched.length}
         </span>
-        <TextLink
-          label="reset used"
-          onClick={() => setState((previous) => ({ ...previous, used: new Set<string>() }))}
-        />
+        <TextLink label="reset seen" onClick={() => setSeen(new Set<string>())} />
       </div>
     </div>
   );
