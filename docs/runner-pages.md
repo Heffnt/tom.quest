@@ -1,0 +1,33 @@
+# The runner pages
+
+A runner is a chain of short step runs on the Jarvis Box that watches one experiment. Each step starts from the runner's handoff document, checks in, rewrites the document and ends; the next step is due one step length later. Until this change a runner reached Tom only through its check-ins in Slack and its questions in #tts-needs-you. This change puts runners on the TTS page, in the morning message and in the hourly update.
+
+## The batches tab
+
+The batches tab at tom.quest/tts, the tab the page opens on, now lists the box's runners above the batch cards. Each live runner is one row, newest first. The row shows the runner's title, the host its experiment runs on (Turing or the box), whether it is a campaign or a probe, its step length, when it last checked in with the first line of that check-in, when its next step is due, and its status in words: running, waiting on Tom, done, failed or handed off. A runner with a blocking question Tom has not answered carries the words "waiting on Tom" in a bordered marker, not just a colour.
+
+A runner's title is a link to its newest step run on tom.quest/sessions. That opens the run view the sessions page already has. The view names the runner the step belongs to, and its "continues" link opens the step before it, so the whole chain of steps can be walked back from there. The run view itself is unchanged.
+
+The arrow at the start of a row expands it in place, showing three things:
+
+- A "document" button that shows the runner's handoff document as its last step wrote it, rendered as formatted text and read-only, with its version number.
+- The questions the runner asked. Each shows its tier in words ("a question inside its plan", "a question about what the experiment is", "a question about what the experiment costs or where it runs"), whether it holds the runner's steps until it is answered, and whether it has been answered, with Tom's answer when it has.
+- Its check-ins, newest first. Each shows its time, its decision in words (for example "it changed nothing" or "it asked a question"), a note when it did not pass the writing check, a link to the step run that wrote it, and the check-in's text.
+
+Runners that have ended sit under a fold headed "ended runners" with their count.
+
+The page's only action is Tom's: "New runner" opens a dialog with a title, the type, the host, the repo, the step length in minutes and the objective, and creates the runner through the createRunner mutation that already existed. Nothing on the page ends a runner, answers a question or edits a document. A runner still ends only through its own step's decision, and a question is still answered in its #tts-needs-you thread.
+
+## The morning message
+
+The morning message in #tts-today now carries a runners section after the objection list and before the calendar. The objection list stays second. The section opens with a line counting the live runners and how many wait on Tom, then gives one line per live runner, with the ones waiting on him first. Each line says what the runner is doing, whether a question of its is open, and the first line of its last check-in, and links to the batches tab. For example: "TRAIN25 campaign is waiting on your answer; its last check-in reads: 14 of 20 jobs are running and 212 of 400 results are done." A runner that has never checked in is said to have not checked in yet, with no number. On a morning with no live runner the section is absent.
+
+The morning message is normally written by a Fable run from a facts block, and a verifier refuses any line whose links and numbers are not in a fact the line cites. Each live runner is now one fact in that block. So a runner line in a Fable-written message is checked like every other line, and a line naming a runner without citing its fact is refused.
+
+The first line of the morning message is unchanged. It still says nothing about a runner waiting on Tom.
+
+## The hourly update
+
+When the hourly update in #tts-hourly posts, it now names the live runners after what ran. With one runner it names the runner and links it to the batches tab: "The runner TRAIN25 campaign is waiting on your answer, and 1 item was captured." With several it counts them and how many wait on Tom.
+
+A live runner never makes an hour post on its own. An hour whose only fact is a live runner still posts nothing and still records its window as quiet. This is a decision taken, and Tom can object to it. A runner's steps run every few minutes for as long as it lives, so counting a live runner as activity would make every hour post and would end the rule that a quiet hour is silent. The runner still reaches Tom through its own check-ins, and through this line in any hour that has something else to say.
