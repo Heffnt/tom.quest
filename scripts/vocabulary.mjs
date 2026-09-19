@@ -910,6 +910,7 @@ const CHANNEL_WHAT = Object.freeze({
   needsYou: "a thread per todo only Tom can settle",
   hourly: "the hourly line",
   broken: "one line per distinct failure",
+  runners: "a thread per runner, a check-in every step",
 });
 
 // REMOVAL CHECK: cannot remove, and it is not a second copy of the register.
@@ -930,6 +931,7 @@ const CHANNEL_NAME = Object.freeze({
   needsYou: "#tts-needs-you",
   hourly: "#tts-hourly",
   broken: "#tts-broken",
+  runners: "#tts-runners",
 });
 
 // ── D1: two statements of one term ───────────────────────────────────────────
