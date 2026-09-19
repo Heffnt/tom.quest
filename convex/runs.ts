@@ -1412,3 +1412,29 @@ export const internalBackfillRunIds = internalMutation({
     return { scanned: page.page.length, patched, cursor: page.isDone ? null : page.continueCursor };
   },
 });
+
+/**
+ * Gives every run row the launchers never named an environment. A run joined
+ * to a session is a worker when that session ran unattended and a session
+ * otherwise. A run with no session row but kind `session` is a laptop chat
+ * Tom talked to, which the run hook now names a session too. Everything else
+ * was started by a job, and is a worker. A row that already names one is left
+ * alone.
+ */
+export const internalBackfillRunEnvironment = internalMutation({
+  args: { cursor: v.optional(v.string()), limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const limit = args.limit ?? 200;
+    if (!positiveInteger(limit) || limit > 500) throw new Error("backfill limit must be an integer from 1 to 500");
+    const page = await ctx.db.query("runs").withIndex("by_ingested_at_and_run_id").order("asc").paginate({ cursor: args.cursor ?? null, numItems: limit });
+    let patched = 0;
+    for (const run of page.page) {
+      if (run.environment !== undefined) continue;
+      const session = run.sessionId ? await ctx.db.get(run.sessionId) : null;
+      const environment: RunEnvironment = session ? (session.mode === "autonomous" ? "worker" : "session") : run.kind === "session" ? "session" : "worker";
+      await ctx.db.patch(run._id, { environment });
+      patched += 1;
+    }
+    return { scanned: page.page.length, patched, cursor: page.isDone ? null : page.continueCursor };
+  },
+});

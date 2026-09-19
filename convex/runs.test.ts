@@ -385,6 +385,46 @@ describe("runs", () => {
     await expect(t.mutation(internal.runs.internalBackfillRunIds, { limit: 501 })).rejects.toThrow();
   });
 
+  it("backfills the environment from the session, then the kind, and leaves a named one alone", async () => {
+    const t = convexTest(schema, modules);
+    const unattended = await session(t, { mode: "autonomous" });
+    const talkedTo = await session(t, { mode: "interactive" });
+    const seed = async (name: string, overrides: Record<string, unknown>, environment?: string) => {
+      const runId = `claude:laptop:${name}`;
+      await t.mutation(internal.runs.internalIngest, ingest(run({ runId, rootRunId: runId, file: { ...run().file, path: `C:/${name}.jsonl` }, ...overrides }), []) as never);
+      await t.run(async (ctx) => {
+        const stored = await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique();
+        await ctx.db.patch(stored!._id, { environment: environment as never });
+      });
+      return runId;
+    };
+    const ids = {
+      unattended: await seed("unattended-session", { sessionId: unattended, kind: "job" }),
+      talkedTo: await seed("talked-to-session", { sessionId: talkedTo }),
+      laptopChat: await seed("laptop-terminal-chat", { kind: "session" }),
+      job: await seed("cron-started-job", { kind: "job" }),
+      named: await seed("already-named-run", { kind: "job" }, "runner"),
+    };
+    let cursor: string | undefined;
+    let patched = 0;
+    for (;;) {
+      const page = await t.mutation(internal.runs.internalBackfillRunEnvironment, { cursor, limit: 2 });
+      patched += page.patched;
+      if (page.cursor === null) break;
+      cursor = page.cursor;
+    }
+    expect(patched).toBe(4);
+    const environmentOf = (runId: string) => t.run(async (ctx) => (await ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique())?.environment);
+    expect(await environmentOf(ids.unattended)).toBe("worker");
+    expect(await environmentOf(ids.talkedTo)).toBe("session");
+    expect(await environmentOf(ids.laptopChat)).toBe("session");
+    expect(await environmentOf(ids.job)).toBe("worker");
+    expect(await environmentOf(ids.named)).toBe("runner");
+    // A second pass finds nothing left to do.
+    expect(await t.mutation(internal.runs.internalBackfillRunEnvironment, { limit: 500 })).toMatchObject({ scanned: 5, patched: 0, cursor: null });
+    await expect(t.mutation(internal.runs.internalBackfillRunEnvironment, { limit: 501 })).rejects.toThrow("1 to 500");
+  });
+
   it("switches getMessages from daemon rows to the same run-row page shape", async () => {
     const t = convexTest(schema, modules);
     const sessionId = await session(t, { status: "running" });
