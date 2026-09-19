@@ -350,7 +350,9 @@ no lockfile, no install step, no supply-chain surface — see
 `@anthropic-ai/claude-agent-sdk` (pinned to 0.3.250, the version whose
 behavior was validated on the Jarvis Box), because interactive sessions need the
 SDK's streaming input, `interrupt()`, `canUseTool`, and resume-by-id — none
-of which the `claude -p` CLI wrapping used by the cron jobs can provide.
+of which a `claude -p` child can provide. Every other run on the box, the
+cron jobs' model calls and the delegate's included, is a `claude -p` or Codex
+child started by `worker/runs/box-run.mjs`.
 `setup.sh` runs `npm install --omit=dev` in `/opt/tts/session-host/` as part
 of the install; that is the whole ceremony.
 

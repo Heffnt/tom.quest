@@ -59,6 +59,30 @@ the auto-session scheduler in Convex admits — including the worker missions
 that carry out his `approve` and `archive` rulings on code todos (see "The
 code-todo ruling loop"), and the weekly session the Friday job opens.
 
+## One launcher
+
+Every unattended run on the box is started by `worker/runs/box-run.mjs`,
+installed as `tts-run`. A worker starts in exactly two ways: a request row in
+the record that the session daemon claims, or a process that hands `tts-run` a
+prompt and reads the report. No job spawns its own `claude`: a job's model
+call goes through `runClaude` in `worker/jobs/tts-lib.mjs`, which composes
+the job's registration and calls box-run's `boxRunSync` in the same process.
+So a job's call takes one of the box's `RUN_MAX_PARALLEL` slots (default 2)
+like any other run, its child gets the scrubbed environment, and its envelope
+names box-run as the launcher while its `origin` still says `cron:<job>`. The
+delegate's ask is the same call, with `origin` `cron:delegate`.
+
+A cron line is under `flock -n`, so a call that waits for a slot costs a
+skipped tick and never a pile-up. The two callers that must not wait without
+end bound it: the delegate by its ask's timeout, after which the ask is
+recorded as silence, and the evals `--serve` pass, which has no flock, by each
+call's own model timeout. `RUN_MAX_PARALLEL` is an env value, so the number
+can be raised on the box without a deploy.
+
+The session daemon is the one thing that does not go through box-run: it
+drives the Agent SDK, whose streaming input and interrupts a `claude -p`
+child cannot give (`worker/session-host/README.md`).
+
 ## The planner
 
 `plan-graphs.mjs` runs three passes on one half-hourly tick, under flock:
