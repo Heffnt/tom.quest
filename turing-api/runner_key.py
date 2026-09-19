@@ -38,8 +38,9 @@ _LABEL_RE = re.compile(r"^[A-Za-z0-9_.-]{1,40}$")
 # Characters that make a line more than one command, redirect it, or expand
 # something the check did not see. The commands are typed into an interactive
 # bash inside the job, so `!` (history expansion) and parentheses (subshells)
-# are refused along with the obvious ones.
-_SHELL_METACHARACTERS = set(";&|<>$`{}()!\n\r")
+# are refused along with the obvious ones, and so are the glob and tilde
+# characters, which bash would expand into arguments the check never read.
+_SHELL_METACHARACTERS = set(";&|<>$`{}()!*?[]~\n\r")
 
 # Interpreters whose first non-flag argument is the script they run.
 _INTERPRETERS = {"python", "python3", "bash", "sh"}

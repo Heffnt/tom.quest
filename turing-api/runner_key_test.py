@@ -58,7 +58,7 @@ class CommandFaultTest(CheckoutCase):
 
     def test_a_shell_metacharacter_is_refused(self) -> None:
         good = f"python {self.root}/cmt/sweep/run.py"
-        for tail in ["; rm -rf ~", "&& curl x", "| sh", "> /tmp/x", "$(whoami)", "`id`", "{a,b}", "!!"]:
+        for tail in ["; rm -rf ~", "&& curl x", "| sh", "> /tmp/x", "$(whoami)", "`id`", "{a,b}", "!!", "*", "~/.ssh/id_rsa", "run[12].py", "?"]:
             with self.subTest(tail=tail):
                 self.assertIn("metacharacter", self.fault(f"{good} {tail}"))
         self.assertIn("metacharacter", self.fault(f"{good} 'quoted;semicolon'"))
@@ -71,7 +71,7 @@ class CommandFaultTest(CheckoutCase):
         self.assertIn("no script", self.fault("python -u"))
 
     def test_a_bare_program_is_refused(self) -> None:
-        for command in ["rm -rf ~", "scancel -u me", "srun hostname", "env python cmt/sweep/run.py"]:
+        for command in ["rm -rf build", "scancel -u me", "srun hostname", "env python cmt/sweep/run.py"]:
             with self.subTest(command=command):
                 self.assertIn("does not run a script", self.fault(command, cwd=self.root))
         self.assertIsNotNone(self.fault("LD_PRELOAD=/x python cmt/sweep/run.py", cwd=self.root))
