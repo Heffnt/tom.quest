@@ -843,7 +843,7 @@ export async function refreshClaudeHeaders({
     ]);
     let names = [];
     try { names = fs.readdirSync(path.join(config.stateDir, "state")).filter((name) => name.endsWith(".json")).sort(); } catch {}
-    let refreshed = 0, left = 0, gone = 0, failed = 0;
+    let refreshed = 0, left = 0, gone = 0, failed = 0, refused = 0;
     for (const name of names) {
       const state = readJson(path.join(config.stateDir, "state", name), fs);
       // A run at cursor 0 was never swept in pieces: it is deferred to the
@@ -852,11 +852,14 @@ export async function refreshClaudeHeaders({
       // transcript instead.
       if (!state?.runId?.startsWith("claude:") || !(state.committedLine > 0)) continue;
       if (state.wholeFileHeader) continue;
+      // The sweep has refused this file as rewritten or shrunk, and it refuses
+      // the refresh the same way, so it is counted apart and never retried.
+      if (state.refused) { refused += 1; continue; }
       // A run with a page still queued or parked waits, for the reason the
       // sweep skips it: its state is behind the record until that page lands,
       // and a page built from it would be refused as a rewrite. It is still
       // left to do, so a later batch takes it once the page has landed.
-      if (pending.has(state.runId) || refreshed >= limit) { left += 1; continue; }
+      if (pending.has(state.runId) || refreshed + failed >= limit) { left += 1; continue; }
       const described = state.path ? describeRunFile(state.path, { roots: config.roots, host: config.host, fs }) : null;
       if (!described) { gone += 1; continue; }
       try {
@@ -870,8 +873,8 @@ export async function refreshClaudeHeaders({
         say(`runs-sweep refresh kept run=${state.runId} reason=${String(error?.message ?? error).slice(0, 200)}`);
       }
     }
-    say(`runs-sweep refresh refreshed=${refreshed} failed=${failed} gone=${gone} left=${left}`);
-    return { started: true, refreshed, failed, gone, left };
+    say(`runs-sweep refresh refreshed=${refreshed} failed=${failed} refused=${refused} gone=${gone} left=${left}`);
+    return { started: true, refreshed, failed, refused, gone, left };
   } finally {
     lock.release();
   }

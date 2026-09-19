@@ -754,7 +754,7 @@ node /opt/tts/plan-graphs.mjs             # prepare, brief, plan — now
 node /opt/tts/plan-graphs.mjs --force     # also re-prepare and re-brief EVERYTHING
 node /opt/tts/nightly.mjs --force         # the nightly job, every step, now
 node /opt/tts/runs/sweep.mjs --full       # recover every changed run file
-node /opt/tts/runs/sweep.mjs --refresh-claude-headers 200  # re-send up to 200 Claude runs' whole-file totals; repeat until left=0
+node /opt/tts/runs/sweep.mjs --refresh-claude-headers 200  # re-send up to 200 Claude runs' whole-file totals; repeat until left=0 and failed=0
 node /opt/tts/runs-compare.mjs            # compare eligible shadow sessions
 node /opt/tts/runs/backlog.mjs --build-list    # the one expensive walk; writes the work list
 node /opt/tts/runs/backlog.mjs --status       # counts, remaining bytes, budget; writes nothing

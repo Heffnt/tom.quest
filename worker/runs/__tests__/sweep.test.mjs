@@ -385,6 +385,29 @@ describe("run sweep", () => {
     expect(state.wholeFileHeader).toBeUndefined();
   });
 
+  it("caps a batch at its limit counting failures, and never retries a refused file", async () => {
+    const dir = temp(); const stateDir = path.join(dir, "state");
+    const item = runFile(dir, [claudeUserTurn({ text: "first" })]);
+    const other = { ...item, threadId: "other", path: path.join(path.dirname(item.path), "other.jsonl") };
+    fs.copyFileSync(item.path, other.path);
+    const accept = async (route, body) => (route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true });
+    await sweepRunFile(item, { stateDir, store: store(), post: accept, now: () => NOW });
+    await sweepRunFile(other, { stateDir, store: store(), post: accept, now: () => NOW });
+    for (const runId of ["claude:laptop:session", "claude:laptop:other"]) {
+      const file = stateFileFor(stateDir, runId);
+      const { wholeFileHeader: _mark, ...unmarked } = JSON.parse(fs.readFileSync(file, "utf8"));
+      fs.writeFileSync(file, JSON.stringify(unmarked));
+    }
+    const down = async (route) => { if (route === "/runs/ingest") throw Object.assign(new Error("down"), { status: 503 }); return { ok: true }; };
+    const capped = await refreshClaudeHeaders({ config: config(dir, item), store: store(), post: down, limit: 1, now: () => NOW + 1, log: () => {} });
+    expect(capped).toMatchObject({ refreshed: 0, failed: 1, left: 1 });
+    const refusedFile = stateFileFor(stateDir, "claude:laptop:other");
+    fs.writeFileSync(refusedFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(refusedFile, "utf8")), refused: { kind: "runs-file-rewritten" } }));
+    fs.rmSync(path.join(stateDir, "queue"), { recursive: true, force: true });
+    const next = await refreshClaudeHeaders({ config: config(dir, item), store: store(), post: accept, now: () => NOW + 2, log: () => {} });
+    expect(next).toMatchObject({ refreshed: 1, failed: 0, refused: 1, left: 0 });
+  });
+
   it("counts a run whose page is still queued as left, not done", async () => {
     const dir = temp(); const stateDir = path.join(dir, "state");
     const item = runFile(dir, [claudeUserTurn({ text: "first" })]);
