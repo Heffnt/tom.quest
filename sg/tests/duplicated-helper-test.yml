@@ -1,0 +1,30 @@
+id: duplicated-helper
+valid:
+  - |
+    function five(a) {
+      const b = a + 1;
+      const c = b + 1;
+      // a comment is not a statement
+      const d = c + 1;
+      const e = d + 1;
+      return e;
+    }
+invalid:
+  - |
+    function six(a) {
+      const b = a + 1;
+      const c = b + 1;
+      const d = c + 1;
+      const e = d + 1;
+      const f = e + 1;
+      return f;
+    }
+  - |
+    const six = (a) => {
+      const b = a + 1;
+      const c = b + 1;
+      const d = c + 1;
+      const e = d + 1;
+      const f = e + 1;
+      return f;
+    };

@@ -18,6 +18,10 @@ knowledge:
   - "e2e/**"
   - "vqc/*.ts" # the guard tests and vqc/cites.ts, their shared home
   - "AGENTS.md"
+  - "sgconfig.yml"
+  - "sg/rules/**" # the removal sensor's four rules
+  - "sg/tests/**"
+  - "sg/goldens/**" # the hand-written after-state per rule
 
 choice:
   - "secrets/*.env" # gitignored, but classified: real current intent
@@ -29,6 +33,7 @@ choice:
 derived:
   - "convex/_generated/**"
   - "pnpm-lock.yaml"
+  - "sg/baseline.tsv" # scripts/removal-sensor.mjs --write-baseline only
 
 scratch:
   - "tts/**" # design-history docs; the living spec is WikiTom tts/spec.md
