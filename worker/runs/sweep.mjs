@@ -851,11 +851,12 @@ export async function refreshClaudeHeaders({
       // its header off the whole file. Sweeping it here would ingest its whole
       // transcript instead.
       if (!state?.runId?.startsWith("claude:") || !(state.committedLine > 0)) continue;
-      // A run with a page still queued or parked is skipped for the reason the
+      if (state.wholeFileHeader) continue;
+      // A run with a page still queued or parked waits, for the reason the
       // sweep skips it: its state is behind the record until that page lands,
-      // and a page built from it would be refused as a rewrite.
-      if (state.wholeFileHeader || pending.has(state.runId)) continue;
-      if (refreshed >= limit) { left += 1; continue; }
+      // and a page built from it would be refused as a rewrite. It is still
+      // left to do, so a later batch takes it once the page has landed.
+      if (pending.has(state.runId) || refreshed >= limit) { left += 1; continue; }
       const described = state.path ? describeRunFile(state.path, { roots: config.roots, host: config.host, fs }) : null;
       if (!described) { gone += 1; continue; }
       try {

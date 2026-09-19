@@ -385,6 +385,21 @@ describe("run sweep", () => {
     expect(state.wholeFileHeader).toBeUndefined();
   });
 
+  it("counts a run whose page is still queued as left, not done", async () => {
+    const dir = temp(); const stateDir = path.join(dir, "state");
+    const item = runFile(dir, [claudeUserTurn({ text: "first" })]);
+    await sweepRunFile(item, { stateDir, store: store(), post: async (route, body) => (route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true }), now: () => NOW });
+    const stateFile = stateFileFor(stateDir, "claude:laptop:session");
+    const { wholeFileHeader: _mark, ...unmarked } = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    fs.writeFileSync(stateFile, JSON.stringify(unmarked));
+    fs.mkdirSync(path.join(stateDir, "queue"), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, "queue", "1-page.json"), JSON.stringify({ runId: "claude:laptop:session", page: 0, pages: 1, payload: {} }));
+    const posts = [];
+    const result = await refreshClaudeHeaders({ config: config(dir, item), store: store(), post: async (route) => { posts.push(route); return { ok: true }; }, now: () => NOW + 1, log: () => {} });
+    expect(result).toMatchObject({ refreshed: 0, left: 1 });
+    expect(posts).not.toContain("/runs/ingest");
+  });
+
   it("drops a dead-letter page that names no run and keeps the rest", async () => {
     const dir = temp(); const stateDir = path.join(dir, "state"); const deadDir = path.join(stateDir, "deadletter");
     fs.mkdirSync(deadDir, { recursive: true });
