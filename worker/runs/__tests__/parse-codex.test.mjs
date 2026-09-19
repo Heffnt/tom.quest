@@ -21,6 +21,24 @@ describe("Codex parser", () => {
     if (payload.type === "future-event") expect(result.rows.some((entry) => entry.kind === "system")).toBe(true);
     else expect(result.rows.filter((entry) => entry.kind !== "context")).toHaveLength(0);
   });
+  // witness: every box Codex run on CLI 0.153.3 was refused by the record
+  // (285 dead-letter pages by 2026-09-19) because session_meta.context_window
+  // is an object naming a window id there, and it reached contextWindow.
+  it("reads the context window size off token_count when session_meta names a window id", () => {
+    const whole = [
+      codexMeta({ contextWindow: { window_id: "w-1" } }),
+      codexTurnContext(),
+      codexTokenCount({ modelContextWindow: 258_400 }),
+      codexResponseItem("message", { role: "assistant", content: [{ output_text: "later" }] }),
+    ];
+    const result = parse(whole);
+    expect(result.run.context.contextWindow).toBe(258_400);
+    expect(result.rows.find((row) => row.kind === "context").content.contextWindow).toBe(258_400);
+    // A tail with no token_count keeps the size its sweep state carried.
+    const tail = parseCodexFile({ path: "/rollout.jsonl", text: jsonl(whole.slice(3)), contextText: jsonl(whole), host: "laptop", fileVersion: "v", baseLine: 3, priorRun: result.run, priorMeta: result.codexMeta });
+    expect(tail.run.context.contextWindow).toBe(258_400);
+    expect(parse([codexMeta({ contextWindow: { window_id: "w-1" } }), codexTurnContext()]).run.context).not.toHaveProperty("contextWindow");
+  });
   it("takes model/effort from turn context and hashes base instructions", () => {
     const result = parse([codexMeta({ baseInstructions: "private base" }), codexTurnContext({ model: "model", effort: "xhigh" })]);
     expect(result.run).toMatchObject({ model: "model", effort: "xhigh" });

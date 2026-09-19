@@ -652,6 +652,13 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
   let usageTotals = recoveredMeta?.usageTotals && typeof recoveredMeta.usageTotals === "object"
     ? recoveredMeta.usageTotals
     : emptyTotals();
+  // CONTEXT_WINDOW IS NOT A SIZE ON CODEX 0.153.3. Its session_meta writes
+  // `context_window` as an object naming a window id, and the record's
+  // contextWindow is a number of tokens, so passing the header through
+  // refused every box Codex run from that version on (285 dead-letter pages
+  // by 2026-09-19). The size is `model_context_window` on each token_count
+  // event; it is kept in sweep state because a tail may carry none.
+  let modelContextWindow = Number.isFinite(recoveredMeta?.modelContextWindow) ? recoveredMeta.modelContextWindow : undefined;
   let taskComplete = null;
   let lastAssistantText = null;
   // Store only the redacted-text hash in sweep state: it is enough to join an
@@ -706,6 +713,7 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
     } else if (entry.type === "event_msg") {
       if (payload.type === "token_count") {
         lastTokenCount = payload.info?.total_token_usage ?? null;
+        if (Number.isFinite(payload.info?.model_context_window)) modelContextWindow = payload.info.model_context_window;
         const lastUsage = payload.info?.last_token_usage;
         if (number(lastUsage?.input_tokens) > 272_000) {
           // Rollouts normally emit one token_count per response. Prefer a
@@ -772,7 +780,7 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
     ...(meta.base_instructions?.text ? { baseInstructionsHash: sha256(meta.base_instructions.text) } : {}),
     ...(meta.baseInstructionsHash ? { baseInstructionsHash: meta.baseInstructionsHash } : {}),
     ...(meta.originator ? { originator: meta.originator } : {}),
-    ...(meta.context_window ? { contextWindow: meta.context_window } : {}),
+    ...(Number.isFinite(meta.context_window) ? { contextWindow: meta.context_window } : Number.isFinite(modelContextWindow) ? { contextWindow: modelContextWindow } : {}),
     ...(permissionMode ? { permissionMode } : {}),
   };
   if (baseLine === 0) rows.unshift({ seq: 0, turn: 0, kind: "context", content: { ...(model ? { model } : {}), ...context, prompt }, depth: parentId ? 1 : 0, provenance: provenance({ path, fileVersion, line: 0, block: 0, sourceKind: "context" }), createdAt: startedAt });
@@ -807,6 +815,7 @@ export function parseCodexFile({ path, text, contextText = text, host, fileVersi
     ...(meta.git ? { git: meta.git } : {}),
     ...(meta.originator ? { originator: meta.originator } : {}),
     ...(meta.context_window ? { context_window: meta.context_window } : {}),
+    ...(Number.isFinite(modelContextWindow) ? { modelContextWindow } : {}),
     ...(context.baseInstructionsHash ? { baseInstructionsHash: context.baseInstructionsHash } : {}),
     turnIds: [...turns.keys()],
     currentTurn,

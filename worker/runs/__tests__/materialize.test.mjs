@@ -241,9 +241,10 @@ describe("runs materialize", () => {
   });
 
   it("answers a throw inside the parse rather than leaving the head of the queue stuck", async () => {
-    // A non-finite number reaches the Codex context window, which the parser
-    // refuses to hand to Convex. No injection: the file alone does it.
-    const world = scene({ runtime: "codex", threadId: "thread-cccc", text: `{"type":"session_meta","payload":{"id":"thread-cccc","context_window":1e999},"timestamp":"2026-01-01T00:00:00.000Z"}\n` });
+    // A non-finite number reaches an event the parser records as itself, and
+    // the parser refuses to hand it to Convex. No injection: the file alone
+    // does it.
+    const world = scene({ runtime: "codex", threadId: "thread-cccc", text: `{"type":"session_meta","payload":{"id":"thread-cccc"},"timestamp":"2026-01-01T00:00:00.000Z"}\n{"type":"event_msg","payload":{"type":"future","n":1e999},"timestamp":"2026-01-01T00:00:00.000Z"}\n` });
     const db = convex();
     const result = await serve(world, db, pending(world));
     expect(result).toMatchObject({ status: "failed", reason: FAILURE.noRows, answered: true });
