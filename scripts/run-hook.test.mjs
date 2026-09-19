@@ -133,6 +133,7 @@ describe("run lifecycle hook", () => {
     expect(envelope.registration).toMatchObject({
       host: null,
       origin: "laptop",
+      environment: "session",
       layersKnown: true,
       layersGiven: ["operate"],
       layersDenied: [],
@@ -169,6 +170,17 @@ describe("run lifecycle hook", () => {
       layersGiven: [],
       layersDenied: [],
     });
+    // Silent, so the record gives it its parent's environment.
+    expect(envelope.registration).not.toHaveProperty("environment");
+  });
+
+  it("names no environment for a box session, whose launcher owns that word", () => {
+    const f = fixture();
+    const payload = payloadFor(f.root, "claude", "SessionStart");
+    expect(run(payload, { ...f, env: { RUN_HOST: "box" } }).status).toBe(0);
+    const envelope = JSON.parse(fs.readFileSync(registrationSidecarPath(payload.transcript_path), "utf8"));
+    expect(envelope.registration).toMatchObject({ host: "box", kind: "session" });
+    expect(envelope.registration).not.toHaveProperty("environment");
   });
 
   it("SessionEnd preserves registration and claim while adding end", () => {

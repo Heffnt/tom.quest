@@ -153,6 +153,10 @@ function hookRegistration(payload, event, runFile, env) {
     ...(runner ? { runner } : {}),
     origin: laptop ? "laptop" : firstString(env.TTS_RUN_ORIGIN) ?? "unknown",
     kind: subagent ? "subagent" : "session",
+    // Only the laptop's own chat is named a session here. A subagent says
+    // nothing and inherits its parent's; on the box the launcher's envelope
+    // names it, and a word from this hook would overrule the launcher's.
+    ...(laptop && !subagent ? { environment: "session" } : {}),
     cwd: firstString(payload.cwd),
     ...(subagent && runner && host && parentThread
       ? { parentRunId: `${runner}:${host}:${parentThread}` }

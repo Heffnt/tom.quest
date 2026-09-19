@@ -661,6 +661,7 @@ export function runClaude(
         runner: "claude",
         origin: registration.origin ?? `cron:${job}`,
         kind: registration.kind ?? "job",
+        environment: registration.environment ?? "worker",
         modelRequested: model ?? null,
         effortRequested: null,
         cwd: path.resolve(cwd ?? process.cwd()),

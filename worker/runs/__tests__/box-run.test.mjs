@@ -33,7 +33,7 @@ function fakeCli(tag) {
     // The two registration variables are recorded beside argv because they are
     // the whole of what box-run.mjs hands a child about the record it belongs
     // to, and the child is the only place they can be observed.
-    'const seen = () => ({ argv: process.argv.slice(2), cwd: process.cwd(), regToken: process.env.TTS_RUN_REG_TOKEN ?? null, parent: process.env.TTS_RUN_PARENT_RUN_ID ?? null, slotHeld: process.env.TTS_RUN_SLOT_HELD ?? null });',
+    'const seen = () => ({ argv: process.argv.slice(2), cwd: process.cwd(), regToken: process.env.TTS_RUN_REG_TOKEN ?? null, parent: process.env.TTS_RUN_PARENT_RUN_ID ?? null, environment: process.env.TTS_RUN_ENVIRONMENT ?? null, slotHeld: process.env.TTS_RUN_SLOT_HELD ?? null });',
     'if (process.env.FAKE_RECORD) fs.writeFileSync(process.env.FAKE_RECORD, JSON.stringify({ ...seen(), started }));',
     'let stdin = "";',
     'try { stdin = fs.readFileSync(0, "utf8"); } catch {}',
@@ -198,6 +198,7 @@ describe("box-run stdout contract", () => {
     expect(result.status).toBe(0);
     const seen = JSON.parse(fs.readFileSync(record, "utf8"));
     expect(seen.parent).toBe(parent);
+    expect(seen.environment).toBeNull();
     // No token, because there is no envelope here for one to claim.
     expect(seen.regToken).toBeNull();
     const spoolDir = path.join(stateDir, "registration");
@@ -230,7 +231,38 @@ describe("box-run stdout contract", () => {
       linkKnown: false,
       layersKnown: false,
     });
+    // With a parent the envelope names no environment: the record gives the
+    // run its parent's.
+    expect(registration).not.toHaveProperty("environment");
     expect(registration.tools.denied).toEqual(["AskUserQuestion"]);
+  });
+
+  it("calls a run with no parent a worker, and takes a launcher's named environment over both", () => {
+    const envelopeOf = (args, env) => {
+      const stateDir = temp("state");
+      const result = run(["--repo", "none", ...args], { stateDir, env: { CLAUDE_BIN: fakeCli("environment"), ...env } });
+      expect(result.status).toBe(0);
+      const spoolDir = path.join(stateDir, "registration");
+      const [name] = fs.readdirSync(spoolDir).filter((entry) => entry.endsWith(".json"));
+      return JSON.parse(fs.readFileSync(path.join(spoolDir, name), "utf8")).registration;
+    };
+    const parent = "claude:laptop:11111111-2222-4333-8444-555555555555";
+    expect(envelopeOf([], {}).environment).toBe("worker");
+    expect(envelopeOf([], { TTS_RUN_ENVIRONMENT: "runner" }).environment).toBe("runner");
+    expect(envelopeOf(["--parent", parent], { TTS_RUN_ENVIRONMENT: "session" }).environment).toBe("session");
+    expect(envelopeOf([], { TTS_RUN_ENVIRONMENT: "autonomous" }).environment).toBe("worker");
+  });
+
+  it("tells a Codex child a named environment and clears one that is not", () => {
+    const seenWith = (env) => {
+      const stateDir = temp("state");
+      const record = path.join(stateDir, "record.json");
+      const result = run(["--repo", "none", "--runner", "codex"], { stateDir, env: { TTS_CODEX_BIN: fakeCli("codex-environment"), FAKE_RECORD: record, ...env } });
+      expect(result.status).toBe(0);
+      return JSON.parse(fs.readFileSync(record, "utf8"));
+    };
+    expect(seenWith({ TTS_RUN_ENVIRONMENT: "runner" }).environment).toBe("runner");
+    expect(seenWith({ TTS_RUN_ENVIRONMENT: "nonsense" }).environment).toBeNull();
   });
 });
 

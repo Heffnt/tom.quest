@@ -670,6 +670,11 @@ try {
 // as an unparented `job` and the tree edge this whole transport exists to
 // record was lost. This file therefore writes nothing for Codex and hands over
 // the one fact codex-run cannot know: the parent, below.
+// WHERE THE RUN STARTS is named only for a run nobody launched from a parent:
+// with --parent the record gives the run its parent's environment, and a word
+// here would overrule that with a guess. A launcher that knows better says so
+// in TTS_RUN_ENVIRONMENT, which wins over both.
+const namedEnvironment = ["session", "worker", "runner"].includes(process.env.TTS_RUN_ENVIRONMENT) ? process.env.TTS_RUN_ENVIRONMENT : null;
 const spooled = opts.runner === "codex" ? null : writeRegistration({
   spoolDir: process.env.TTS_RUN_REG_SPOOL || path.join(stateDir, "registration"),
   writer: { file: "worker/runs/box-run.mjs", job: "box-run" },
@@ -678,6 +683,7 @@ const spooled = opts.runner === "codex" ? null : writeRegistration({
     runner: opts.runner,
     origin: "session",
     kind: "subagent",
+    ...(namedEnvironment ? { environment: namedEnvironment } : opts.parent ? {} : { environment: "worker" }),
     modelRequested: opts.model,
     ...(opts.effort ? { effortRequested: opts.effort } : {}),
     cwd,
@@ -726,6 +732,10 @@ const childEnv = {
 // the launcher names neither, which is this case.
 if (opts.runner === "codex" && opts.parent) childEnv.TTS_RUN_PARENT_RUN_ID = opts.parent;
 else delete childEnv.TTS_RUN_PARENT_RUN_ID;
+// The environment follows the same one-writer rule: codex-run.mjs names it in
+// the only Codex envelope, so only the Codex child is told.
+if (opts.runner === "codex" && namedEnvironment) childEnv.TTS_RUN_ENVIRONMENT = namedEnvironment;
+else delete childEnv.TTS_RUN_ENVIRONMENT;
 
 let bin;
 let args;

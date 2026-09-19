@@ -442,6 +442,28 @@ describe("runClaude receipt", () => {
     expect(receipt.runToken.length).toBeGreaterThan(0);
   }, SPAWN_TIMEOUT_MS);
 
+  it("names a worker unless the caller named another environment", () => {
+    const envelopeFor = (registration) => {
+      const spool = fs.mkdtempSync(path.join(os.tmpdir(), "tts-lib-environment-"));
+      const previous = process.env.TTS_RUN_REG_SPOOL;
+      process.env.TTS_RUN_REG_SPOOL = spool;
+      try {
+        runClaude("p", { model: "haiku", timeoutMs: 1, registration });
+      } catch {
+        // The spawn fails; the envelope is written before it.
+      } finally {
+        if (previous === undefined) delete process.env.TTS_RUN_REG_SPOOL;
+        else process.env.TTS_RUN_REG_SPOOL = previous;
+      }
+      const [name] = fs.readdirSync(spool).filter((entry) => entry.endsWith(".json"));
+      const envelope = JSON.parse(fs.readFileSync(path.join(spool, name), "utf8"));
+      fs.rmSync(spool, { recursive: true, force: true });
+      return envelope.registration;
+    };
+    expect(envelopeFor({ layersKnown: false }).environment).toBe("worker");
+    expect(envelopeFor({ layersKnown: false, environment: "session" }).environment).toBe("session");
+  }, SPAWN_TIMEOUT_MS);
+
   it("writes nothing into a receipt when no registration was asked for", () => {
     const receipt = {};
     try {

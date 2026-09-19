@@ -1056,6 +1056,7 @@ export class Session {
           runner: spec.family,
           origin: this.mode === "autonomous" ? "daemon" : "session",
           kind: this.mode === "autonomous" ? "job" : "session",
+          environment: this.mode === "autonomous" ? "worker" : "session",
           modelRequested: this.model,
           effortRequested: spec.effort ?? null,
           cwd: this.workdir,

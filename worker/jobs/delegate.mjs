@@ -347,6 +347,7 @@ export async function askDelegate(ask, suppliedIo = {}) {
                 registration: {
                   origin: "cron:delegate",
                   kind: "delegate",
+                  environment: "worker",
                   ...(typeof ask.todoId === "string" ? { todoId: ask.todoId } : {}),
                   layersKnown: !fallback,
                   layersGiven: fallback ? [] : [...DELEGATE_LAYERS],
