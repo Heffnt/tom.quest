@@ -321,6 +321,7 @@ describe("the step prompt", () => {
     expect(contract).toContain("`tts-search skills write` prints it");
     expect(contract).toContain("Never ask him to type a command.");
     expect(contract).toContain("The default is the recommendation");
+    expect(contract).toContain("reread the draft once as the judge will");
     for (const rule of (await import("../scripts/checkin-rules.mjs")).CHECKIN_RULES) expect(contract).toContain(rule.why);
     expect(contract).toContain("describe the thing instead");
     expect(contract).toContain("exit code or an HTTP status in words");
