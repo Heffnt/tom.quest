@@ -775,6 +775,13 @@ NEXT STEPS (manual, in order):
      Restart tts-session-host after adding it, or running sessions won't see
      it:  systemctl restart tts-session-host
 
+     TURING_RUNNER_KEY is optional and lets a runner step launch and cancel
+     its own jobs (POST /allocate and DELETE /jobs/{id}, runner-named jobs
+     only) through tts-turing-act. It must match TURING_RUNNER_KEY in
+     turing-api/.env on every login node, and differ from both other keys.
+     Only a runner step's process receives it; sessions never do. Restart
+     tts-session-host after adding it, the same as the read key.
+
   2. Log in both Claude Max accounts (interactive, over this SSH session —
      run it twice, switching the BROWSER profile between runs; each login is
      filed into the slot matching the account that actually signed in):
