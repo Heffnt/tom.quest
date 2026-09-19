@@ -993,6 +993,35 @@ export function composeDecision(f: DecisionFact, o: { canReply: boolean }): Mess
   return { firstLine: "Object if this is wrong; silence means it stands.", lines };
 }
 
+/** One removal-loop pull request, in #tts-simplify: the one thing it removes,
+ *  a link to it, and what silence does. `round` counts the rewrites his
+ *  replies have asked for; a rewritten pull request says so, because the
+ *  message restarts the day he has to object. */
+export type RemovalFact = {
+  pr: number;
+  url: string;
+  subject: string;
+  reason?: string;
+  round?: number;
+};
+
+export function composeRemoval(f: RemovalFact, o: { canReply: boolean }): Message {
+  const lines: Line[] = [
+    {
+      role: "item",
+      section: "removal",
+      text: statement(`${capitalise(stripStop(f.subject))}${f.reason ? `, because ${stripStop(f.reason)}` : ""}`),
+      url: f.url,
+    },
+  ];
+  note(lines, "removal", o.canReply, 'reply "revert" to close it, or say what to change and the branch is rewritten.');
+  const firstLine =
+    (f.round ?? 0) > 0
+      ? `Pull request ${f.pr} was rewritten after your reply; it merges after the next digest unless you object again.`
+      : `Pull request ${f.pr} removes one thing; it merges after the next digest unless you object.`;
+  return { firstLine, lines };
+}
+
 /** A failure, in #tts-broken. A failure with no link is one line and no item
  *  lines — the single case where a message is its first line alone, which the
  *  form allows. */

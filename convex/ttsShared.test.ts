@@ -47,8 +47,10 @@ describe("channelFor", () => {
   it("answers each channel's own variable", () => {
     vi.stubEnv("SLACK_TTS_NEEDS_YOU_CHANNEL_ID", "C0NEEDSYOU");
     vi.stubEnv("SLACK_TTS_BROKEN_CHANNEL_ID", "C0BROKEN");
+    vi.stubEnv("SLACK_TTS_SIMPLIFY_CHANNEL_ID", "C0SIMPLIFY");
     expect(channelFor("needsYou")).toBe("C0NEEDSYOU");
     expect(channelFor("broken")).toBe("C0BROKEN");
+    expect(channelFor("simplify")).toBe("C0SIMPLIFY");
   });
 
   it("falls back to SLACK_TTS_CHANNEL_ID for the morning and nothing else", () => {
@@ -58,10 +60,12 @@ describe("channelFor", () => {
     vi.stubEnv("SLACK_TTS_DECISIONS_CHANNEL_ID", "");
     vi.stubEnv("SLACK_TTS_HOURLY_CHANNEL_ID", "");
     vi.stubEnv("SLACK_TTS_BROKEN_CHANNEL_ID", "");
+    vi.stubEnv("SLACK_TTS_SIMPLIFY_CHANNEL_ID", "");
     expect(channelFor("today")).toBe("C0TTS");
     expect(channelFor("needsYou")).toBeNull();
     expect(channelFor("decisions")).toBeNull();
     expect(channelFor("hourly")).toBeNull();
     expect(channelFor("broken")).toBeNull();
+    expect(channelFor("simplify")).toBeNull();
   });
 });

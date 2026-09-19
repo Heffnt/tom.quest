@@ -19,6 +19,12 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # scripts/check-removals.mjs fails without ast-grep rather than passing,
+      # so it is installed here at the version the check names. It also reads
+      # main's sg/baseline.tsv to refuse a baseline regenerated upward, and a
+      # pull request's shallow checkout has no main until it is fetched.
+      - run: npm install -g @ast-grep/cli@0.45.3
+      - run: git fetch --no-tags --depth=1 origin main:refs/remotes/origin/main
       - run: pnpm check:guardrails
 
   secret-scan:

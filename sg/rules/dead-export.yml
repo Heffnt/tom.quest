@@ -1,0 +1,21 @@
+id: dead-export
+language: tsx
+severity: info
+ignores:
+  - "**/*.test.*"
+  - "**/__tests__/**"
+  - "**/*.d.ts"
+  - "convex/_generated/**"
+message: an exported name
+rule:
+  kind: export_statement
+  not:
+    regex: ^export\s+default\b
+  has:
+    field: declaration
+    any:
+      - kind: function_declaration
+      - kind: generator_function_declaration
+      - kind: lexical_declaration
+      - kind: type_alias_declaration
+      - kind: interface_declaration

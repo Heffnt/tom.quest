@@ -972,16 +972,17 @@ export function slackHourKey(utcMs: number): string {
   return `${nyCalendarDayKey(utcMs)}T${String(nyLocalHour(utcMs)).padStart(2, "0")}`;
 }
 
-// ── The six channels (slack-design.md §1) ────────────────────────────────────
-// Six rooms, each with one purpose and one cadence: #tts-today (the morning
+// ── The seven channels (slack-design.md §1) ──────────────────────────────────
+// Seven rooms, each with one purpose and one cadence: #tts-today (the morning
 // message), #tts-decisions (object, or let it stand), #tts-needs-you (settle
-// it), #tts-hourly (glance), #tts-broken (the box is failing), #dump (capture).
+// it), #tts-hourly (glance), #tts-broken (the box is failing), #tts-simplify
+// (the removal loop's one open pull request, to object to), #dump (capture).
 // Tom's steps to create them and set these ids are slack-design.md §5.1.
 //
 // This lives here rather than in convex/ttsSync.ts, which owns the Slack door,
 // because that file is "use node" and convex/http.ts — the route that opens a
 // needs-you thread — is a plain-runtime module that cannot import it.
-export type SlackChannelKind = "today" | "decisions" | "needsYou" | "hourly" | "broken";
+export type SlackChannelKind = "today" | "decisions" | "needsYou" | "hourly" | "broken" | "simplify";
 
 const CHANNEL_ENV: Record<SlackChannelKind, string> = {
   today: "SLACK_TTS_TODAY_CHANNEL_ID",
@@ -989,6 +990,7 @@ const CHANNEL_ENV: Record<SlackChannelKind, string> = {
   needsYou: "SLACK_TTS_NEEDS_YOU_CHANNEL_ID",
   hourly: "SLACK_TTS_HOURLY_CHANNEL_ID",
   broken: "SLACK_TTS_BROKEN_CHANNEL_ID",
+  simplify: "SLACK_TTS_SIMPLIFY_CHANNEL_ID",
 };
 
 /** Each channel, or null when its variable is unset. Missing = log once and do

@@ -1,0 +1,25 @@
+id: duplicated-helper
+language: tsx
+severity: info
+ignores:
+  - "**/*.test.*"
+  - "**/__tests__/**"
+  - "**/*.d.ts"
+  - "convex/_generated/**"
+message: a helper body
+rule:
+  kind: statement_block
+  inside:
+    field: body
+    any:
+      - kind: function_declaration
+      - kind: function_expression
+      - kind: arrow_function
+      - kind: method_definition
+      - kind: generator_function_declaration
+  has:
+    nthChild:
+      position: 6
+      ofRule:
+        not:
+          kind: comment

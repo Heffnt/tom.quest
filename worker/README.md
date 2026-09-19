@@ -320,6 +320,41 @@ node /opt/tts/nightly.mjs --force --only=post      # one step, or a comma list
 Nothing here prints a token: the deploy key is a file git reads, and
 `TTS_WORKER_KEY` travels only in a request header.
 
+## The removal loop
+
+`worker/jobs/removal-loop.mjs`, every day at 5 a.m. New York. It turns one
+complexity smell into one pull request, and keeps only one open at a time.
+
+- **What it measures.** Four structural rules in `sg/rules/` (the same helper
+  in two files, an export no other file names, a boolean option nobody sets,
+  a guard repeating a guard), run by ast-grep through
+  `scripts/removal-sensor.mjs`. `sg/baseline.tsv` is the committed list;
+  `pnpm check:guardrails` fails any change that adds to it.
+- **What it does.** With no loop pull request open, it refreshes its own clone
+  at `/var/cache/tts/removal-loop/tom.quest`, runs that clone's
+  `scripts/removal-pick.mjs` to choose the smallest listed violation, hands it
+  to one Opus box run, opens the pull request with the `loop-removal` label,
+  records a `removal-loop-pr` event (which posts to `#tts-simplify`), and runs
+  `tts-audit` on the pushed head.
+- **With one open**, it only runs the merge pass: merge after a day and a
+  digest with no reply and the merge gate open; close on a reply opening with
+  "revert"; rewrite the branch from any other reply.
+- **Local state** is `/var/lib/tts/removal-loop.json`: violations a run
+  declined, corrections waiting for the next pull request, heads audited.
+  Losing it costs one repeated question, never a wrong merge.
+
+**The actuator is Opus, by decision, not by default.** The loop landed on
+2026-09-19 while Codex was at its weekly cap. The run's real deliverable is
+the pull-request body, a ground-up explanation Tom reads, which is Opus's
+work; the deletion itself, against a hand-written after-state, is mechanical
+and would suit `--runner codex --model gpt-5.6-terra`. The switch waits for one
+Opus body on record and one Codex body written for the same kind of
+violation, compared side by side; `ACTUATOR_RUNNER` and `ACTUATOR_MODEL` at
+the top of the job are the two lines that change.
+
+The label is created once: `gh label create loop-removal --repo
+Heffnt/tom.quest --description "the removal loop's one open pull request"`.
+
 ## The code-todo ruling loop
 
 CMT (`github.com/Heffnt/ComplexMultiTrigger`) keeps its standing intent in
@@ -645,6 +680,11 @@ Both go into `secrets/convex.env` under those names, then `pnpm secrets:sync`.
 `TOM_SLACK_USER_ID` is the one Slack user whose threaded replies the events
 route acts on. The token is never printed.
 
+The same run creates `#tts-simplify`, the removal loop's channel, and prints
+`SLACK_TTS_SIMPLIFY_CHANNEL_ID=C…` beside the hourly line; it goes into
+`secrets/convex.env` the same way. Until it is set the loop still opens its
+pull request, and the send logs one line and posts nothing.
+
 ## Switching Claude accounts
 
 Jobs run under `CLAUDE_CONFIG_DIR=/root/.claude-accounts/active`, a symlink:
@@ -674,6 +714,8 @@ node /opt/tts/runs/materialize.mjs --serve    # serve one open-from-store reques
 node /opt/tts/runs/materialize.mjs --run <id> # rebuild one run's rows from the store
 node /opt/tts/weekly.mjs --force          # the weekly job, now (refuses a rerun)
 node /opt/tts/weekly.mjs --force --overwrite   # rerun the same day on purpose
+node /opt/tts/removal-loop.mjs --force --dry-run   # pick today's violation, print the prompt, spawn nothing
+node /opt/tts/removal-loop.mjs --force    # the removal loop's tick, now
 ```
 
 The nightly job's `--force` skips its 4-a.m.-New-York hour guard (cron fires
@@ -683,6 +725,6 @@ it at both 08:00 and 09:00 UTC and the guard keeps exactly the slot that is
 ## Logs
 
 Cron output: one `/var/log/tts/<job>.log` per job (poll-dump, poll-gmail,
-poll-canvas, apply-time-notes, plan-graphs, nightly, weekly,
+poll-canvas, apply-time-notes, plan-graphs, nightly, weekly, removal-loop,
 reingest-overflow, runs-sweep, runs-compare, runs-backlog, runs-materialize),
 truncated monthly by cron — they are convenience, not state.

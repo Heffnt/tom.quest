@@ -14,7 +14,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { recordMissedKeepingDate } from "./tts";
 import { DELEGATE_DECISION, objectionRank, stripNarrowListId } from "./ttsAsk";
 import { MERGE } from "./ttsMerge";
-import { SIMPLIFY_PROPOSAL } from "./ttsSimplify";
+import { REMOVAL_LOOP_PR, SIMPLIFY_PROPOSAL } from "./ttsSimplify";
 import { EVALS_RUN, PRELUDE_DELIVERY } from "./ttsEvals";
 import {
   DAY_MS,
@@ -641,6 +641,27 @@ export async function gatherTodayFacts(
           refusedBecause: refused
             ? `needs-his-words — ${sentence ?? "it changes a line you reviewed"}`
             : undefined,
+          merged: false,
+        });
+        break;
+      }
+      case REMOVAL_LOOP_PR: {
+        // The removal loop's pull request, the same way a proposal is listed:
+        // its window closes on "a digest sent after a day", so the digest must
+        // carry it. Keyed like its #tts-simplify thread, so "revert <n>" on
+        // the morning thread resolves the same row a reply in that thread
+        // does. A rewrite is a new row and is listed again, deliberately: the
+        // window restarted.
+        if (d.dryRun === true) break;
+        const rule = str(d.ruleId);
+        const path = str(d.path);
+        rawObjections.push({
+          at: e.at,
+          askId: e.key ?? "",
+          todoId: undefined,
+          decision: str(d.subject) ?? null,
+          reason: rule !== undefined && path !== undefined ? `${rule} in ${path}` : undefined,
+          refused: false,
           merged: false,
         });
         break;

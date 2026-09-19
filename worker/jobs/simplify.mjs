@@ -196,7 +196,7 @@ export const GREP_EXCLUDES = [
 export const GATE_CHECKS = ["tests", "audit", "evals"];
 /** The three jobs of .github/workflows/guardrails.yml. */
 export const GUARDRAILS_JOBS = ["static-boundaries", "secret-scan", "tests"];
-/** The eight scripts `pnpm check:guardrails` runs inside static-boundaries.
+/** The nine scripts `pnpm check:guardrails` runs inside static-boundaries.
  *  Their pass/fail history is inside that job's log, and this job does not
  *  parse logs — so each row says `failuresKnown: false` and is forced to
  *  keep. ADD A SCRIPT TO package.json's check:guardrails AND IT NEEDS A LINE
@@ -219,6 +219,10 @@ export const STATIC_BOUNDARY_SCRIPTS = [
   // and had no line here until check 8 of scripts/check-session-mirrors.mjs
   // asked for one, which is the whole point of that check.
   "check-vocabulary",
+  // The removal loop's ratchet: a change that adds one of the four structural
+  // smells fails, and sg/baseline.tsv only moves down. Listed here for the
+  // reason every line above is — check 8 of scripts/check-session-mirrors.mjs.
+  "check-removals",
 ];
 
 /** The directory walk's skip list, taken from scripts/check-agents-md.mjs so

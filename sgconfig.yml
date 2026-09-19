@@ -1,0 +1,6 @@
+ruleDirs:
+  - sg/rules
+languageGlobs:
+  tsx: ["*.ts", "*.mts", "*.cts", "*.js", "*.mjs", "*.cjs"]
+testConfigs:
+  - testDir: sg/tests
