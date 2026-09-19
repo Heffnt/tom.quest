@@ -8,6 +8,7 @@ import { EVALS_RUN } from "./ttsEvals";
 import { AUDIT_VERDICT, TESTS_RUN, commitKey } from "./ttsMerge";
 import {
   OBJECTION_FLOOR_MS,
+  REMOVAL_LOOP_PR,
   SAMPLE_RUNS,
   SIMPLIFY_ADMITTED,
   SIMPLIFY_PROPOSAL,
@@ -430,3 +431,94 @@ describe("the window", () => {
     expect(window.until - window.since).toBe(WINDOW_WEEKS * 7 * 86_400_000);
   });
 });
+
+// ── The removal loop's window ────────────────────────────────────────────────
+
+const openRemovals = (t: TestConvex<typeof schema>, now = NOW) =>
+  t.query(internal.ttsSimplify.internalOpenRemovals, { now });
+
+async function seedRemoval(t: TestConvex<typeof schema>, pr: number, ago: number, extra: Record<string, unknown> = {}) {
+  await seedEvent(
+    t,
+    REMOVAL_LOOP_PR,
+    NOW - ago,
+    {
+      pr,
+      url: `https://github.com/Heffnt/tom.quest/pull/${pr}`,
+      subject: "removals: the second tick formatter is gone",
+      ruleId: "duplicated-helper",
+      path: "app/boolback/components/plot-surface.tsx",
+      round: 0,
+      ...extra,
+    },
+    `loop:${pr}`,
+  );
+}
+
+describe("internalOpenRemovals — a day, a digest, and his words", () => {
+  it("is not closed with no digest after the floor, and closed with one", async () => {
+    const t = convex();
+    await seedRemoval(t, 7, 3 * DAY);
+    await seedEvent(t, DIGEST_SENT, NOW - 3 * DAY + 20 * HOUR, { day: "2027-01-15" });
+    expect((await openRemovals(t))[0]).toMatchObject({ askId: "loop:7", pr: 7, windowClosed: false, objection: null });
+    await seedEvent(t, DIGEST_SENT, NOW - 3 * DAY + 30 * HOUR, { day: "2027-01-16" });
+    expect((await openRemovals(t))[0]).toMatchObject({ windowClosed: true, objection: null });
+  });
+
+  it("returns his words, and never closes the window, once he replied", async () => {
+    const t = convex();
+    await seedRemoval(t, 7, 5 * DAY);
+    await seedEvent(t, DIGEST_SENT, NOW - 3 * DAY, { day: "2027-01-16" });
+    await seedEvent(t, DELEGATE_OBJECTION, NOW - 2 * DAY, { text: "keep the export, delete the caller", revert: false }, "loop:7");
+    const [row] = await openRemovals(t);
+    expect(row.windowClosed).toBe(false);
+    expect(row.objection).toEqual({ at: NOW - 2 * DAY, text: "keep the export, delete the caller", revert: false });
+  });
+
+  it("measures a rewrite's window from the rewrite, and forgets the reply it answered", async () => {
+    const t = convex();
+    await seedRemoval(t, 7, 5 * DAY);
+    await seedEvent(t, DELEGATE_OBJECTION, NOW - 4 * DAY, { text: "not like that", revert: false }, "loop:7");
+    await seedRemoval(t, 7, 3 * DAY, { round: 1 });
+    await seedEvent(t, DIGEST_SENT, NOW - 3 * DAY + 20 * HOUR, { day: "2027-01-15" });
+    let [row] = await openRemovals(t);
+    expect(row).toMatchObject({ round: 1, at: NOW - 3 * DAY, objection: null, windowClosed: false });
+    await seedEvent(t, DIGEST_SENT, NOW - HOUR, { day: "2027-01-18" });
+    [row] = await openRemovals(t);
+    expect(row.windowClosed).toBe(true);
+  });
+
+  it("carries a revert as a revert", async () => {
+    const t = convex();
+    await seedRemoval(t, 8, 2 * DAY);
+    await seedEvent(t, DELEGATE_OBJECTION, NOW - DAY, { text: "revert", revert: true }, "loop:8");
+    expect((await openRemovals(t))[0].objection).toMatchObject({ revert: true });
+  });
+
+  it("never returns a dry run", async () => {
+    const t = convex();
+    await seedRemoval(t, 9, 3 * DAY, { dryRun: true });
+    await seedEvent(t, DIGEST_SENT, NOW - HOUR, { day: "2027-01-18" });
+    expect(await openRemovals(t)).toEqual([]);
+  });
+});
+
+describe("a reply in a loop pull request's thread", () => {
+  it("is recorded as an objection on its key, which the window then reads", async () => {
+    const t = convex();
+    // The recorder stamps the wall clock, so this test lives on it too.
+    const real = Date.now();
+    await seedEvent(t, REMOVAL_LOOP_PR, real - 2 * DAY, { pr: 7, url: "https://github.com/Heffnt/tom.quest/pull/7" }, "loop:7");
+    await t.mutation(internal.ttsAsk.internalRecordDelegateObjection, {
+      askId: "loop:7",
+      text: "keep it, a test reads it",
+      revert: false,
+      sentence: "keep it, a test reads it",
+      channel: "C0SIMPLIFY",
+      ts: "2.0",
+      threadTs: "1.0",
+    });
+    expect((await openRemovals(t, Date.now() + HOUR))[0].objection).toMatchObject({ text: "keep it, a test reads it", revert: false });
+  });
+});
+

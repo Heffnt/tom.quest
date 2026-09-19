@@ -45,6 +45,20 @@ export const SIMPLIFY_ADMITTED = "simplify-admitted";
 /** The weekly run's own summary row, the twin of "weekly-run". */
 export const SIMPLIFY_RUN = "simplify-run";
 
+// ── Event kinds the removal loop owns ────────────────────────────────────────
+// worker/jobs/removal-loop.mjs, the daily job that turns one structural smell
+// into one pull request. Its thread lives in #tts-simplify, but its objection
+// window is THIS file's, read the same way, so the two cannot disagree about
+// what "a day and a digest" means.
+
+/** One posting of a loop pull request to #tts-simplify, keyed `loop:<number>`
+ *  — the askId of its thread, so a reply resolves by one lookup. A rewrite
+ *  after his reply is a NEW row on the same key with a higher `round`, and the
+ *  window restarts from it. */
+export const REMOVAL_LOOP_PR = "removal-loop-pr";
+// The loop's own tick row, "removal-loop-run", is the job's alone: nothing
+// here reads it, so it is spelled in worker/jobs/removal-loop.mjs and not here.
+
 /** Four weeks. One week is too few runs to see a rule that nothing uses —
  *  a quiet week would propose deleting the layer nobody happened to need —
  *  and a quarter is long enough that a rule changed in week two is judged on
@@ -600,5 +614,95 @@ export const internalOpenProposals = internalQuery({
     // Oldest first: the proposal that has waited longest is admitted first, so
     // a cap downstream cuts the newest rather than the one he has seen most.
     return open.sort((a, b) => a.at - b.at);
+  },
+});
+
+// ── The removal loop's window ────────────────────────────────────────────────
+
+/** How far back the loop's postings are read. The loop holds one pull request
+ *  open at a time and merges or closes it within days; a month is a ceiling on
+ *  a stuck one, not a budget. */
+const REMOVAL_SCAN_MS = 30 * 24 * 60 * 60 * 1000;
+/** Rows read. One posting a day and a few rewrites fit in a hundred. */
+const REMOVAL_SCAN = 200;
+
+type OpenRemoval = {
+  /** `loop:<number>`, the thread's askId and the posting row's key. */
+  askId: string;
+  pr: number | null;
+  url: string | null;
+  subject: string | null;
+  /** Rewrites so far. The window below is measured from THIS round's post. */
+  round: number;
+  /** When this round was posted. */
+  at: number;
+  /** His newest reply AFTER this round was posted, or null. A reply to an
+   *  earlier round was already answered by the rewrite that made this one. */
+  objection: { at: number; text: string | null; revert: boolean } | null;
+  /** No objection to this round, a day has passed since it was posted, and a
+   *  digest went out after that. The loop merges only on this. */
+  windowClosed: boolean;
+};
+
+/**
+ * Every loop pull request posted in the last month, as of its newest round.
+ *
+ * A NEAR-COPY OF internalOpenProposals above, on purpose: the same
+ * OBJECTION_FLOOR_MS, the same one-row DIGEST_SENT range read, the same
+ * DELEGATE_OBJECTION point lookup. It differs in two ways, each for a reason.
+ * It RETURNS the objected ones instead of dropping them, because a reply to a
+ * loop pull request is not the end of it — the loop rewrites the branch from
+ * his words, and it needs the words. And an objection counts only when it is
+ * newer than the round's post, because the rewrite answered the older ones.
+ *
+ * A dry run's posting is never returned: it went to nobody.
+ */
+export const internalOpenRemovals = internalQuery({
+  args: { now: v.optional(v.number()) },
+  handler: async (ctx, args): Promise<OpenRemoval[]> => {
+    const now = args.now ?? Date.now();
+    const rows = await ctx.db
+      .query("dtsEvents")
+      .withIndex("by_kind_at", (q) => q.eq("kind", REMOVAL_LOOP_PR).gte("at", now - REMOVAL_SCAN_MS).lte("at", now))
+      .order("desc")
+      .take(REMOVAL_SCAN);
+
+    const out: OpenRemoval[] = [];
+    const seen = new Set<string>();
+    for (const row of rows) {
+      const askId = row.key;
+      // Newest first, so the first row seen for a key is its current round.
+      if (askId === undefined || seen.has(askId)) continue;
+      seen.add(askId);
+      const data = (row.data ?? {}) as Record<string, unknown>;
+      if (data.dryRun === true) continue;
+      const objected = await keyedRow(ctx, DELEGATE_OBJECTION, askId);
+      const objection =
+        objected !== null && objected.at > row.at
+          ? (() => {
+              const d = (objected.data ?? {}) as Record<string, unknown>;
+              return { at: objected.at, text: str(d.text), revert: d.revert === true };
+            })()
+          : null;
+      let windowClosed = false;
+      if (objection === null) {
+        const sent = await ctx.db
+          .query("dtsEvents")
+          .withIndex("by_kind_at", (q) => q.eq("kind", DIGEST_SENT).gt("at", row.at + OBJECTION_FLOOR_MS))
+          .take(1);
+        windowClosed = sent.length > 0 && now > row.at + OBJECTION_FLOOR_MS;
+      }
+      out.push({
+        askId,
+        pr: num(data.pr),
+        url: str(data.url),
+        subject: str(data.subject),
+        round: num(data.round) ?? 0,
+        at: row.at,
+        objection,
+        windowClosed,
+      });
+    }
+    return out.sort((a, b) => a.at - b.at);
   },
 });
