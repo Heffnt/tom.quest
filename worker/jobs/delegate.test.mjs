@@ -312,7 +312,7 @@ describe("askDelegate", () => {
     expect(calls.posted.decision).toBe(null);
   });
 
-  it("asks through the launcher with the ask's own timeout as its slot wait", async () => {
+  it("asks through the launcher with the ask's own timeout and no slot wait", async () => {
     let options = null;
     const { io } = harness({
       state: { delegate: { maxPerSession: DELEGATE_MAX_PER_SESSION, maxPerJob: 3, timeoutMs: 90_000 } },
@@ -327,8 +327,9 @@ describe("askDelegate", () => {
     expect(options).toMatchObject({
       allowedTools: ["Read", "Glob", "Grep"],
       timeoutMs: 90_000,
-      slotWaitMs: 90_000,
     });
+    // A job's call takes no box slot, so there is no wait to bound.
+    expect(options).not.toHaveProperty("slotWaitMs");
     expect(options.cwd).toContain(ask().askId);
     expect(options.registration).toMatchObject({ origin: "cron:delegate", kind: "delegate" });
   });
@@ -373,27 +374,6 @@ describe("askDelegate", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 30_000);
-
-  it("records a busy box as silence with the same ask row, so the caller takes its fallback", async () => {
-    const { io, calls } = harness({
-      io: {
-        runClaude: () => {
-          throw Object.assign(new Error("claude failed: the box is busy: 2 runs hold all 2 slots"), { reason: "busy" });
-        },
-      },
-    });
-    const result = await askDelegate(ask(), io);
-    expect(result.decision).toBe(null);
-    expect(result.refused).toBe(false);
-    expect(calls.posted.reason).toMatch(/^box-busy: /);
-    // The row is the ordinary ask row: the caller's words, the answer shape,
-    // the model and the prompt's hash, and nothing new.
-    expect(calls.posted).toMatchObject({ ...ask(), decision: null, refused: false, refusedBecause: null, model: "fable" });
-    expect(calls.posted.promptSha).toMatch(/^[0-9a-f]{8}$/);
-    expect(Object.keys(calls.posted).sort()).toEqual(
-      [...new Set([...Object.keys(ask()), "decision", "reason", "refused", "refusedBecause", "model", "ms", "promptSha"])].sort(),
-    );
-  });
 
   it("refuses to guess the narrow list when the record does not serve one", async () => {
     const { io } = harness({ state: { narrowList: [] } });

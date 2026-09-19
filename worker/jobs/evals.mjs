@@ -2844,18 +2844,12 @@ export function parseArgs(argv) {
 /** The io a real run uses. Everything that touches the network, git, the disk
  *  or a model lives here, so the test drives runEvals with none of them.
  *
- *  A `--serve` pass waits for a box slot no longer than the call's own model
- *  timeout. It runs every five minutes with no flock on its cron line, so two
- *  passes that each waited without end could overlap behind a busy box; past
- *  the wait the call throws, and that is the runner failure a regeneration
- *  already records. */
-export function realIo(env, { serve = false } = {}) {
-  const bounded = (options = {}) => serve
-    ? { ...options, slotWaitMs: options.slotWaitMs ?? options.timeoutMs ?? REGEN_TIMEOUT_MS }
-    : options;
+ *  Its model calls take no box slot (box-run.mjs's noSlot): the runs a pass
+ *  scores hold the slots while they wait for its answer. */
+export function realIo(env) {
   return {
     now: () => Date.now(),
-    runClaude: async (prompt, options) => runClaude(prompt, bounded(options)),
+    runClaude: async (prompt, options) => runClaude(prompt, options),
     layers: (tomquestTree, wikitomTree, names) => layersFor(tomquestTree, wikitomTree, names),
     // The skill half of a name set, assembled by running the PINNED tree's own
     // scripts/publish-skills.mjs against the PINNED WikiTom tree and reading
@@ -3660,7 +3654,7 @@ async function runMain(options) {
   const pruned = pruneStaleWorktrees(WORK_DIR);
   if (pruned.length > 0) console.log(`[evals] cleared ${pruned.length} worktree(s) left by runs that died`);
   const env = loadEnv({ require: ["CONVEX_SITE_URL", "TTS_WORKER_KEY"] });
-  const io = realIo(env, { serve: options.serve });
+  const io = realIo(env);
 
   // --faults-only ANSWERS ONE QUESTION AND SCORES NO EVAL SET: does the auditor
   // still refuse the three changes it must refuse. It runs the fixtures

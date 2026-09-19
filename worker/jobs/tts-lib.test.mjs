@@ -7,7 +7,7 @@
 // ones the two old spellings disagreed about, so they are what a re-split
 // would break first.
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -593,8 +593,8 @@ describe("runClaude through the box launcher", () => {
     // The same flags runClaude always handed the CLI: JSON out, eight turns
     // by default, the model, and nothing else.
     expect(seen.argv).toEqual(["-p", "--output-format", "json", "--max-turns", "8", "--model", "haiku"]);
-    // Every job call runs under the active account, and holds a slot the
-    // subtree under it shares.
+    // Every job call runs under the active account, and its child never
+    // queues for a slot of its own.
     expect(seen.config).toBe("/root/.claude-accounts/active");
     expect(seen.slotHeld).toBe("1");
   }, SPAWN_TIMEOUT_MS);
@@ -609,14 +609,37 @@ describe("runClaude through the box launcher", () => {
     expect(() => runClaude("p", { model: "haiku" })).toThrow("claude failed (subtype: error_during_execution): the envelope carried no result");
   }, SPAWN_TIMEOUT_MS);
 
-  it("gives up on a full box after slotWaitMs and says the box is busy", () => {
-    vi.stubEnv("CLAUDE_BIN", fakeClaude("never"));
-    vi.stubEnv("RUN_MAX_PARALLEL", "1");
-    fs.writeFileSync(path.join(runState, "semaphore.json"), JSON.stringify({ count: 1, holders: [{ id: "held0001", pid: process.pid, at: Date.now() }] }));
-    let thrown = null;
-    try { runClaude("p", { model: "haiku", slotWaitMs: 100 }); } catch (error) { thrown = error; }
-    expect(thrown?.message).toMatch(/^claude failed: the box is busy/);
-    expect(thrown?.reason).toBe("busy");
+  // THE EVALS DEADLOCK OF 2026-09-19. Two box runs held both slots while they
+  // waited for their pull requests' evals, and the evals pass's model call
+  // queued for a slot behind them, so nobody finished. A job's call takes no
+  // slot: with both held it runs at once. The call runs in a child process
+  // under a hard timeout because a queued call waits synchronously, which no
+  // test timeout in this process could interrupt: were it to queue again, the
+  // child is killed and the test fails instead of hanging the suite.
+  it("runs a job's call at once with both slots held, and takes none itself", () => {
+    const held = { count: 2, holders: [
+      { id: "held0001", pid: process.pid, at: Date.now() },
+      { id: "held0002", pid: process.pid, at: Date.now() },
+    ] };
+    const counter = path.join(runState, "semaphore.json");
+    fs.writeFileSync(counter, JSON.stringify(held));
+    const lib = pathToFileURL(path.join(import.meta.dirname, "tts-lib.mjs")).href;
+    const call = spawnSync(process.execPath, [
+      "--input-type=module",
+      "-e",
+      `const { runClaude } = await import(${JSON.stringify(lib)}); process.stdout.write(runClaude("p", { model: "haiku" }));`,
+    ], {
+      encoding: "utf8",
+      timeout: 15_000,
+      env: {
+        ...process.env,
+        CLAUDE_BIN: fakeClaude(JSON.stringify({ type: "result", subtype: "success", result: "scored" })),
+        RUN_MAX_PARALLEL: "2",
+      },
+    });
+    expect(call.error?.code).toBeUndefined();
+    expect(call.stdout).toBe("scored");
+    expect(JSON.parse(fs.readFileSync(counter, "utf8"))).toEqual(held);
   }, SPAWN_TIMEOUT_MS);
 });
 

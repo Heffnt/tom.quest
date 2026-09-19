@@ -645,12 +645,12 @@ describe("box-run in process", () => {
     expect(claimed.registration.cwd).toBe(own);
   });
 
-  it("gives up on a full box after the caller's wait, starts nothing, and says the box is busy", () => {
+  it("gives up on a full box after the caller's wait, starts nothing, and says the box is busy", async () => {
     const { env, stateDir, record } = inProcess("inproc-busy", { RUN_MAX_PARALLEL: "1" });
     const holder = { id: "holder01", pid: process.pid, at: Date.now() };
     fs.writeFileSync(path.join(stateDir, "semaphore.json"), `${JSON.stringify({ count: 1, holders: [holder] })}\n`);
     let thrown = null;
-    try { entry.boxRunSync({ prompt: "p", env, slotWaitMs: 120, registration: null }); } catch (error) { thrown = error; }
+    try { await entry.boxRun({ prompt: "p", env, slotWaitMs: 120, registration: null }); } catch (error) { thrown = error; }
     expect(thrown).toBeInstanceOf(entry.BoxRunError);
     expect(thrown.reason).toBe("busy");
     expect(thrown.exitCode).toBe(75);
