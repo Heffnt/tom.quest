@@ -45,7 +45,6 @@ export default function RunnersBlock({ now }: { now: number }) {
   if (runners === undefined) return null;
   const live = runners.filter((r) => r.endedAt === null);
   const ended = runners.filter((r) => r.endedAt !== null);
-  if (runners.length === 0 && !isTom) return null;
 
   const toggle = (id: string) =>
     setExpanded((prev) => {

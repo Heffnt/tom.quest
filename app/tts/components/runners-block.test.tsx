@@ -173,13 +173,15 @@ describe("the runners block", () => {
     expect(screen.getByRole("link", { name: "TRAIN25 campaign" })).toBeTruthy();
   });
 
-  it("renders nothing while loading, and nothing for a reader with no runners to see", () => {
+  it("renders nothing while loading, and the empty header to every reader once loaded", () => {
     convex.data = {};
     const { container } = render(<RunnersBlock now={NOW} />);
     expect(container.textContent).toBe("");
     cleanup();
     convex.isTom = false;
     convex.data = { [getFunctionName(api.ttsRunners.listRunners)]: [] };
-    expect(render(<RunnersBlock now={NOW} />).container.textContent).toBe("");
+    render(<RunnersBlock now={NOW} />);
+    expect(screen.getByText("runners")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "New runner" })).toBeNull();
   });
 });

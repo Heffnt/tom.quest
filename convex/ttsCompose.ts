@@ -660,8 +660,13 @@ export function runnerLine(r: RunnerFact): string {
     const cut = said.slice(0, Math.max(0, room));
     said = stripStop(cut.slice(0, Math.max(0, cut.lastIndexOf(" "))).replace(/[\s,;:—-]+$/, ""));
   }
-  return statement(said.length < 12 ? head : `${lead}${said}`);
+  // A check-in cut to a few words ("14 of 20") says nothing true on its own,
+  // so under MIN_SAID characters the line drops the quote and keeps the head.
+  return statement(said.length < MIN_SAID ? head : `${lead}${said}`);
 }
+
+/** The shortest cut check-in a runner line still quotes. */
+const MIN_SAID = 12;
 
 /** The runners run's lead: how many are live, and how many wait on him. */
 export function runnersLead(n: number, waiting: number): string {
