@@ -914,6 +914,17 @@ function prepareRun(options) {
     // in the only Codex envelope, so only the Codex child is told.
     if (opts.cli === "codex" && namedEnvironment) childEnv.TTS_RUN_ENVIRONMENT = namedEnvironment;
     else delete childEnv.TTS_RUN_ENVIRONMENT;
+    // THE RUNNER KEY REACHES A RUNNER STEP'S PROCESS AND NOTHING ELSE. The scrub
+    // above removed it; it goes back only when this run's own envelope is a
+    // runner step's (runner-step.mjs's stepRegistration), which no command line
+    // can ask for: a subagent the step spawns through box-run registers as a
+    // `subagent` under its own envelope, and a Codex run carries no envelope
+    // from here, so neither gets it back. Keyed on the registration, not on
+    // TTS_RUN_ENVIRONMENT, which a model can export and which only Codex
+    // children are told. What the step's own shell runs inherits it, and
+    // tts-turing-act is what spends it.
+    if (isRunnerStep(opts.registration) && env.TURING_RUNNER_KEY) childEnv.TURING_RUNNER_KEY = env.TURING_RUNNER_KEY;
+    else delete childEnv.TURING_RUNNER_KEY;
 
     let bin;
     let args;
@@ -949,6 +960,11 @@ function prepareRun(options) {
     if (spooled) wrapped.runToken = spooled.token;
     throw wrapped;
   }
+}
+
+/** A runner step's own envelope: the one run that holds the runner key. */
+function isRunnerStep(registration) {
+  return registration?.environment === "runner" && registration?.kind === "runner-step";
 }
 
 function namedEnvironmentOf(env) {

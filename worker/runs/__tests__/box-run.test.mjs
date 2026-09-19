@@ -33,7 +33,7 @@ function fakeCli(tag) {
     // The two registration variables are recorded beside argv because they are
     // the whole of what box-run.mjs hands a child about the record it belongs
     // to, and the child is the only place they can be observed.
-    'const seen = () => ({ argv: process.argv.slice(2), cwd: process.cwd(), regToken: process.env.TTS_RUN_REG_TOKEN ?? null, parent: process.env.TTS_RUN_PARENT_RUN_ID ?? null, environment: process.env.TTS_RUN_ENVIRONMENT ?? null, slotHeld: process.env.TTS_RUN_SLOT_HELD ?? null });',
+    'const seen = () => ({ argv: process.argv.slice(2), cwd: process.cwd(), regToken: process.env.TTS_RUN_REG_TOKEN ?? null, parent: process.env.TTS_RUN_PARENT_RUN_ID ?? null, environment: process.env.TTS_RUN_ENVIRONMENT ?? null, slotHeld: process.env.TTS_RUN_SLOT_HELD ?? null, runnerKey: process.env.TURING_RUNNER_KEY ?? null });',
     'if (process.env.FAKE_RECORD) fs.writeFileSync(process.env.FAKE_RECORD, JSON.stringify({ ...seen(), started }));',
     'let stdin = "";',
     'try { stdin = fs.readFileSync(0, "utf8"); } catch {}',
@@ -643,6 +643,23 @@ describe("box-run in process", () => {
     expect(claimed.writer.file).toBe("worker/runs/box-run.mjs");
     expect(claimed.registration.origin).toBe("cron:poll-gmail");
     expect(claimed.registration.cwd).toBe(own);
+  });
+
+  it("hands the runner key to a runner step's process and to no other run", () => {
+    const step = { host: "box", cli: "claude", origin: "runner:k97abc", kind: "runner-step", environment: "runner" };
+    const cases = [
+      [step, "runner-key"],
+      [{ ...step, kind: "job", environment: "worker" }, null],
+      // A subagent the step spawns registers under its own envelope; exporting
+      // the environment name does not earn it the key.
+      [{ ...step, kind: "subagent" }, null],
+      [null, null],
+    ];
+    for (const [registration, expected] of cases) {
+      const { env, seen } = inProcess(`inproc-runner-key-${registration?.kind ?? "none"}`, { TURING_RUNNER_KEY: "runner-key", TTS_RUN_ENVIRONMENT: "runner" });
+      entry.boxRunSync({ prompt: "p", env, cwd: temp("runner-key-cwd"), registration });
+      expect(seen().runnerKey, `registration ${registration?.kind ?? "none"}`).toBe(expected);
+    }
   });
 
   it("gives up on a full box after the caller's wait, starts nothing, and says the box is busy", () => {

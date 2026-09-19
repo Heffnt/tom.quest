@@ -17,8 +17,9 @@
 //             checkout (_build_frontier(expand_specs(specs))), the nodes
 //             known done on Turing, and the remainder
 //   failures  step failures since the last check-in (handed in by the claim)
-//   gpuHours  GPU-hours seen on the account's running jobs since this runner
-//             began, against its budget
+//   gpuHours  GPU-hours seen on this runner's own running jobs (named
+//             runner:<id>:) since it began, against its budget; the pool's
+//             jobs and Tom's own never count against it
 //
 // DONE-NESS IS READ ON TURING, AND IT IS BUDGETED. The results tree is on the
 // cluster, not the box, and the read key opens one directory listing per call,
@@ -43,7 +44,7 @@ const execFile = promisify(execFileCb);
 const CHECK_BUDGET = 1500;
 const CHECK_CONCURRENCY = 12;
 const FACTS_VERSION = 1;
-const DEFAULT_CACHE_DIR = "/var/lib/tts/runners";
+export const DEFAULT_CACHE_DIR = "/var/lib/tts/runners";
 
 /** The Python the frontier count runs, in the checkout. It prints the frontier
  *  node paths relative to the output root, one JSON list. CMT_OUTPUT is a
@@ -91,10 +92,15 @@ function because(error) {
   return text.slice(0, 200) || "no reason given";
 }
 
-function readCache(file) {
+export function readCache(file) {
   try {
     const cache = JSON.parse(fs.readFileSync(file, "utf8"));
-    return { done: Array.isArray(cache.done) ? cache.done : [], jobs: cache.jobs && typeof cache.jobs === "object" ? cache.jobs : {} };
+    return {
+      done: Array.isArray(cache.done) ? cache.done : [],
+      jobs: cache.jobs && typeof cache.jobs === "object" ? cache.jobs : {},
+      ...(typeof cache.budgetGpuHours === "number" ? { budgetGpuHours: cache.budgetGpuHours } : {}),
+      ...(typeof cache.readAt === "number" ? { readAt: cache.readAt } : {}),
+    };
   } catch {
     return { done: [], jobs: {} };
   }
@@ -241,21 +247,85 @@ async function frontierFact({ cwd, specs, cache, deps, scratchRoot }) {
   return { specs: expanded.specs.length, size: nodes.length, done, remaining: nodes.length - done, unchecked: checked.unchecked };
 }
 
-function gpuHoursFact(jobs, cache, budget, now) {
+/** GPU-hours one job from the job list has used so far; null when it is not
+ *  running or its start cannot be read. */
+function jobGpuHours(job, now) {
+  if (!String(job.status).startsWith("RUNNING")) return null;
+  const started = parseStart(job.start_time, now);
+  if (started === null) return null;
+  return ((now - started) / 3_600_000) * (gpusInGres(job.gres) || 1);
+}
+
+/** Whether a job from the job list is this runner's: tts-turing-act names
+ *  every job it launches runner:<id>:<label>. */
+function ownJob(job, runnerId) {
+  return String(job.job_name ?? "").startsWith(`runner:${runnerId}:`);
+}
+
+/** Fold a job list into the cache's per-job hours (a job's hours only ever
+ *  grow) and return the total. Only this runner's jobs count, and a cached
+ *  entry counts only if it carries this runner's job name, so hours an
+ *  earlier sensor cached for other jobs on the account drop out. The ONE spend
+ *  sum: the sensor's facts row and tts-turing-act's budget check both read it.
+ *  `cacheJobs` is changed in place. */
+function spentGpuHours(cacheJobs, jobs, runnerId, now) {
+  for (const job of jobs ?? []) {
+    if (!ownJob(job, runnerId)) continue;
+    const hours = jobGpuHours(job, now);
+    if (hours === null) continue;
+    const seen = cacheJobs[job.job_id]?.gpuHours ?? 0;
+    cacheJobs[job.job_id] = { gpuHours: Math.max(seen, hours), name: String(job.job_name) };
+  }
+  return Object.values(cacheJobs)
+    .filter((job) => ownJob({ job_name: job.name }, runnerId))
+    .reduce((sum, job) => sum + job.gpuHours, 0);
+}
+
+/**
+ * Whether a launch fits the runner's budget, decided before anything is sent.
+ *
+ * input: { cache (the sensor's cache file, parsed, or null), jobs (the job
+ *          list, or null when it could not be read), runnerId, gpus, minutes,
+ *          now }
+ * returns { ok: true, spent, committed, request, budget } or
+ *         { ok: false, reason } with the sentence the step raises.
+ *
+ * Spent is the sensor's own sum over this runner's jobs. Committed is the time still left on this
+ * runner's live jobs, so two launches in one step cannot each pass against the
+ * same spend. The job list must be readable: a launch is refused rather than
+ * counted against a spend of zero that nobody saw.
+ */
+export function launchVerdict({ cache, jobs, runnerId, gpus, minutes, now }) {
+  const budget = cache?.budgetGpuHours;
+  if (typeof budget !== "number" || !Number.isFinite(budget)) {
+    return { ok: false, reason: "no GPU-hour budget is recorded for this runner, so it cannot launch; ask Tom to set one" };
+  }
+  if (!Array.isArray(jobs)) {
+    return { ok: false, reason: "the cluster's job list could not be read, so the spend is unknown and the launch is refused rather than assumed free" };
+  }
+  const spent = spentGpuHours({ ...(cache.jobs ?? {}) }, jobs, runnerId, now);
+  const committed = jobs
+    .filter((job) => ownJob(job, runnerId))
+    .reduce((sum, job) => sum + (Math.max(0, Number(job.time_remaining_seconds) || 0) / 3600) * (gpusInGres(job.gres) || 1), 0);
+  const request = (gpus * minutes) / 60;
+  const total = spent + committed + request;
+  const numbers = { spent: round(spent), committed: round(committed), request: round(request), budget };
+  if (total > budget + 1e-9) {
+    return {
+      ok: false,
+      ...numbers,
+      reason: `this launch asks for ${numbers.request} GPU-hours; with ${numbers.spent} spent and ${numbers.committed} still booked on this runner's live jobs, it would cross the ${budget}-hour budget`,
+    };
+  }
+  return { ok: true, ...numbers };
+}
+
+function gpuHoursFact(jobs, cache, runnerId, budget, now) {
   if (jobs.unavailable) {
-    const spent = Object.values(cache.jobs).reduce((sum, job) => sum + job.gpuHours, 0);
+    const spent = spentGpuHours(cache.jobs, [], runnerId, now);
     return { spent: round(spent), ...(budget !== undefined ? { budget } : {}), note: "no jobs read this step; the total is as last seen" };
   }
-  for (const job of jobs.raw) {
-    if (!String(job.status).startsWith("RUNNING")) continue;
-    const started = parseStart(job.start_time, now);
-    const gpus = gpusInGres(job.gres) || 1;
-    if (started === null) continue;
-    const hours = ((now - started) / 3_600_000) * gpus;
-    const seen = cache.jobs[job.job_id]?.gpuHours ?? 0;
-    cache.jobs[job.job_id] = { gpuHours: Math.max(seen, hours) };
-  }
-  const spent = Object.values(cache.jobs).reduce((sum, job) => sum + job.gpuHours, 0);
+  const spent = spentGpuHours(cache.jobs, jobs.raw, runnerId, now);
   return { spent: round(spent), ...(budget !== undefined ? { budget } : {}) };
 }
 
@@ -278,7 +348,13 @@ export async function sense(input, deps = defaultDeps) {
     cwd: input.cwd, specs: input.specs, cache, deps,
     scratchRoot: path.join(cacheDir, "scratch-output"),
   });
-  const gpuHours = gpuHoursFact(jobs, cache, input.budgetGpuHours, now);
+  const gpuHours = gpuHoursFact(jobs, cache, input.runnerId, input.budgetGpuHours, now);
+  // THE BUDGET RIDES THE CACHE, written here from the claim, so tts-turing-act
+  // reads it from the record's own copy and never from its command line. A
+  // runner with no budget leaves none, and cannot launch.
+  if (input.budgetGpuHours !== undefined) cache.budgetGpuHours = input.budgetGpuHours;
+  else delete cache.budgetGpuHours;
+  cache.readAt = now;
   writeCache(cachePath, cache);
   const jobsOut = { ...jobs };
   delete jobsOut.raw;
@@ -309,6 +385,6 @@ export function renderFacts(facts) {
   lines.push(`Step failures since the last check-in: ${facts.failures.sinceLastStep}.`);
   for (const line of facts.failures.lines) lines.push(`- ${line}`);
   const h = facts.gpuHours;
-  lines.push(`GPU-hours seen on running jobs since this runner began: ${h.spent}${h.budget !== undefined ? ` of a ${h.budget}-hour budget` : ", no budget set"}${h.note ? ` (${h.note})` : ""}.`);
+  lines.push(`GPU-hours seen on this runner's running jobs since it began: ${h.spent}${h.budget !== undefined ? ` of a ${h.budget}-hour budget` : ", no budget set"}${h.note ? ` (${h.note})` : ""}.`);
   return lines.join("\n");
 }

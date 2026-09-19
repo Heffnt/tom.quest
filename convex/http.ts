@@ -3309,8 +3309,8 @@ http.route({ path: "/tts/runner", method: "POST", handler: ttsRunner });
 
 // POST /tts/runner-step — a runner step's check-in, through tts-runner-step.
 // Body { runnerId, stepRunId, decision, checkIn, document, asks: [{ tier,
-// blocking, text }], nextStepMs?, graded: { verdict, complaints, attempts,
-// judgeModel } }. The record (convex/ttsRunners.ts internalRecordStep) refuses
+// blocking, text }], acts?: [{ verb: launch|cancel, jobId, text }],
+// nextStepMs?, graded: { verdict, complaints, attempts, judgeModel } }. The record (convex/ttsRunners.ts internalRecordStep) refuses
 // a body with no grade and runs the form rules again itself; everything else
 // it writes is one transaction with the next step's schedule and the lease's
 // release.
@@ -3337,6 +3337,13 @@ const ttsRunnerStep = httpAction(async (ctx, request) => {
   })) {
     return jsonResponse(400, { error: "asks must be a list of { tier: routine|plan|setup, blocking, text }" });
   }
+  const acts = b.acts ?? [];
+  if (!Array.isArray(acts) || !acts.every((a) => {
+    const act = a as Record<string, unknown> | null;
+    return act !== null && typeof act === "object" && (act.verb === "launch" || act.verb === "cancel") && typeof act.jobId === "string" && typeof act.text === "string";
+  })) {
+    return jsonResponse(400, { error: "acts must be a list of { verb: launch|cancel, jobId, text }" });
+  }
   if (b.nextStepMs !== undefined && typeof b.nextStepMs !== "number") return jsonResponse(400, { error: "nextStepMs must be a number" });
   const g = b.graded as Record<string, unknown> | undefined;
   const graded = g !== undefined && g !== null && typeof g === "object"
@@ -3354,6 +3361,7 @@ const ttsRunnerStep = httpAction(async (ctx, request) => {
       checkIn: b.checkIn,
       document: b.document,
       asks: (asks as { tier: "routine" | "plan" | "setup"; blocking: boolean; text: string }[]).map((a) => ({ tier: a.tier, blocking: a.blocking, text: a.text })),
+      acts: (acts as { verb: "launch" | "cancel"; jobId: string; text: string }[]).map((a) => ({ verb: a.verb, jobId: a.jobId, text: a.text })),
       ...(b.nextStepMs !== undefined ? { nextStepMs: b.nextStepMs as number } : {}),
       ...(graded !== undefined ? { graded } : {}),
     });

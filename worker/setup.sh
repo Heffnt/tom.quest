@@ -378,7 +378,8 @@ cp "$WORKER_DIR"/bin/* /usr/local/bin/
 chmod +x /usr/local/bin/tts-account /usr/local/bin/tts-browse \
   /usr/local/bin/tts-turing /usr/local/bin/tts-git-credential \
   /usr/local/bin/tts-codex /usr/local/bin/tts-run /usr/local/bin/tts-search \
-  /usr/local/bin/tts-ask /usr/local/bin/tts-audit /usr/local/bin/tts-runner-step
+  /usr/local/bin/tts-ask /usr/local/bin/tts-audit /usr/local/bin/tts-runner-step \
+  /usr/local/bin/tts-turing-act
 
 # GitHub credentials for sessions (ledger graduation sessions-cannot-open-prs,
 # 2026-08-31). Two consumers, one source of truth (GH_TOKEN in worker.env):
@@ -774,6 +775,13 @@ NEXT STEPS (manual, in order):
      it authorizes POST /sessions/{name}/run, i.e. arbitrary cluster shell.
      Restart tts-session-host after adding it, or running sessions won't see
      it:  systemctl restart tts-session-host
+
+     TURING_RUNNER_KEY is optional and lets a runner step launch and cancel
+     its own jobs (POST /allocate and DELETE /jobs/{id}, runner-named jobs
+     only) through tts-turing-act. It must match TURING_RUNNER_KEY in
+     turing-api/.env on every login node, and differ from both other keys.
+     Only a runner step's process receives it; sessions never do. Restart
+     tts-session-host after adding it, the same as the read key.
 
   2. Log in both Claude Max accounts (interactive, over this SSH session —
      run it twice, switching the BROWSER profile between runs; each login is

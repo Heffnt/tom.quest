@@ -1,0 +1,17 @@
+{
+  "id": "checkin-act-verified-pass",
+  "job": "checkin",
+  "partition": "checkins/pass",
+  "kind": "regression",
+  "verdict": "approve",
+  "confirmedByTom": false,
+  "trials": 1,
+  "negative": false,
+  "input": {
+    "checkIn": "TRAIN25 campaign watch is an agent that checks the TRAIN25 experiment every 10 minutes, each check a step. TRAIN25 is the sweep that trains 25-epoch backdoor models on the Turing cluster.\n\nThe first column below names what was counted and the second gives the number read this step.\n\n| What was counted | This step |\n| --- | --- |\n| Jobs of the experiment running on the cluster | 12 |\n| Free A100 GPUs | 3 |\n| Models the sweep must train | 261 |\n| Models known finished | 240 |\n| My steps that failed since the last check-in | 0 |\n| GPU-hours this runner's jobs used since I began | 41 of a 60-hour budget |\n\nI launched one job on one A100 GPU for 30 minutes to retrain the model whose last run stopped when its node failed, and the next read of the cluster's job queue showed it there under its name, waiting for a GPU.\n\nI cancelled the older copy of that same retraining job, which I had launched in the step before, so the model does not train twice, and the next read of the queue no longer listed it.\n\nNothing else changed."
+  },
+  "expected": {
+    "verdict": "pass",
+    "rubric": "A check-in from a step that acted on the cluster: the runner is called by its title and said to be an agent, the experiment is defined, the numbers stand in a table whose columns are defined, and each of the two acts, one launch and one cancel, is one sentence saying what it was for and how it was seen to take effect on the job queue, in words, with no job-scheduler jargon or command. The judge must pass it."
+  }
+}

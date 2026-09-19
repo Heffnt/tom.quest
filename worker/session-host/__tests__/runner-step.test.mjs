@@ -25,7 +25,7 @@ const admitted = {
   sensor: { specs: ["sweeps/train/train25_*.yaml"], failures: [] },
 };
 
-function harness({ claim = admitted, exitCode = 0, runThrows = null, senseThrows = false } = {}) {
+function harness({ claim = admitted, exitCode = 0, runThrows = null, senseThrows = false, env = {} } = {}) {
   const posts = [];
   const senses = [];
   const runs = [];
@@ -47,12 +47,26 @@ function harness({ claim = admitted, exitCode = 0, runThrows = null, senseThrows
     log: () => {},
     sense: async (input) => { senses.push(input); if (senseThrows) throw new Error("no python"); return { version: 1, jobs: { live: 1 } }; },
     renderFacts: () => "Jobs: 1 on the account.",
-    env: {},
+    env,
   };
   return { posts, runs, deps, release, senses };
 }
 
 describe("launchRunnerStep", () => {
+  it("launches with the runner key only when the record says the step may act on the cluster", async () => {
+    const env = { TURING_RUNNER_KEY: "runner-key", PATH: "/usr/bin" };
+    for (const [actsOnCluster, expected] of [[true, "runner-key"], [false, undefined], [undefined, undefined]]) {
+      const h = harness({ claim: { ...admitted, actsOnCluster }, env });
+      const done = launchRunnerStep(new Map(), row, h.deps);
+      h.release();
+      await done;
+      expect(h.runs[0].env.TURING_RUNNER_KEY, `actsOnCluster ${actsOnCluster}`).toBe(expected);
+      expect(h.runs[0].env.PATH).toBe("/usr/bin");
+    }
+    // The daemon's own environment is untouched.
+    expect(env.TURING_RUNNER_KEY).toBe("runner-key");
+  });
+
   it("claims, launches under the minted id with the step's envelope, and reports the exit", async () => {
     const h = harness();
     const steps = new Map();

@@ -12,6 +12,7 @@ import {
   BOX_TOOLS_PARAGRAPH,
   DAEMON_RESTART_SENTENCE,
   NARROW_LIST,
+  RUNNER_ACT_PARAGRAPH,
   RUNNER_ANSWERER,
   RUNNER_DECISION,
   RUNNER_TIERS,
@@ -496,6 +497,10 @@ export const internalClaimRunnerStep = internalMutation({
       admitted: true as const,
       stepRunId,
       runnerId: runner._id,
+      // The box hands the step the runner key only when this is true, so a step
+      // told to change nothing cannot act on the cluster and then find its
+      // check-in refused, which would leave the act out of the record.
+      actsOnCluster: mayActOnCluster(runner, (await openBlockingAsks(ctx, runner._id)).length),
       repo: runner.repo,
       ...(runner.ref !== undefined ? { ref: runner.ref } : {}),
       model: runner.model ?? DEFAULT_RUNNER_MODEL,
@@ -678,11 +683,20 @@ function checkInContract(runner: Pick<Doc<"runners">, "title" | "stepMs">): stri
     "- Name only what Tom needs to know where the experiment stands or to answer a question. The document is written in the code's words: a script, a log, a stop condition or a stage you mention is described by what it does, in words, or left out. Never ask him to type a command.",
     "- Describe a process's exit code or an HTTP status in words: say the step's process was stopped by a signal, or the cluster refused the request as unauthorized, never the bare number.",
     `- For every question open for Tom, new or still unanswered, say what the next step will do if he does not answer, and when, as one clock time given once: the next step runs about ${minutes} minutes after this check-in is recorded, unless you move it with --next-step-ms, and a moved step says why. A new question goes under the one "Rulings requested" heading, numbered, each one paragraph: what is gained and lost each way, the one you recommend and why, and that default. The default is the recommendation, since Tom takes a recommendation he does not answer as agreed.`,
-    `- Put the numbers from the facts block in one short Markdown table with two columns, what was counted and what this step found, and say so in the sentence before it, with what one unit of work is: one stage of the pipeline for one sweep setting, such as training one model, finished once its output folder holds a completion marker. The table takes about a third of the length cap, so the prose around it stays short. Its rows, in these words: jobs of the experiment running on the cluster; GPUs free on the cluster; units of work the sweep files ask for (the frontier's size); units known finished (its done count); my steps that failed since the last check-in; GPU-hours the experiment's jobs used since I began. A quantity the box could not read or check is a row that says so and why, in words, with no number: a count carried over from an earlier step or a total of zero because nothing was read counts nothing seen.`,
+    `- Put the numbers from the facts block in one short Markdown table with two columns, what was counted and what this step found, and say so in the sentence before it, with what one unit of work is: one stage of the pipeline for one sweep setting, such as training one model, finished once its output folder holds a completion marker. The table takes about a third of the length cap, so the prose around it stays short. Its rows, in these words: jobs of the experiment running on the cluster; GPUs free on the cluster; units of work the sweep files ask for (the frontier's size); units known finished (its done count); my steps that failed since the last check-in; GPU-hours this runner's jobs used since I began. A quantity the box could not read or check is a row that says so and why, in words, with no number: a count carried over from an earlier step or a total of zero because nothing was read counts nothing seen.`,
     "- Say what was seen and what was done; never grade your own work.",
+    "- Name each job this step launched or cancelled on the cluster in one sentence: what it was for, and how you saw it take effect, the new job in the queue by its name or the cancelled one gone from it. Name at most two this way and count the rest in one sentence, since the table already takes a third of the length cap. A launch the budget refused, or one the cluster refused as not this runner's to make, is said in words, with what you will do instead.",
     "- Write no colon in a prose line; the label rule refuses a short opening phrase before one.",
     "- Before you call the pen, reread the draft once as the judge will: find each word Tom would not know, from this prompt, the document or the code, and define it where it first appears or cut it.",
   ].join("\n");
+}
+
+/** Whether a step may launch and cancel jobs on the cluster: its experiment
+ *  runs on Turing and no blocking question of Tom's is open. The one predicate
+ *  the prompt, the claim (whether the box hands the step the runner key) and
+ *  the record (whether it takes the step's acts) all read. */
+function mayActOnCluster(runner: Pick<Doc<"runners">, "experimentHost">, openBlockingAsks: number): boolean {
+  return runner.experimentHost === "turing" && openBlockingAsks === 0;
 }
 
 function stepBranch(runnerId: Id<"runners">): string {
@@ -735,14 +749,18 @@ async function buildRunnerStepPrompt(
   if (since.deferred > 0) missed.push(`- ${since.deferred} step${since.deferred === 1 ? " was" : "s were"} skipped because the step before was still running.`);
 
   const decisions = observeOnly ? "continue or ask" : "continue, change, ask, hand-off or finish";
+  // A runner on a Turing experiment may launch and cancel its own jobs there,
+  // through tts-turing-act; an observe-only step may not act at all.
+  const actsOnCluster = mayActOnCluster(runner, blocking.length);
   const act = observeOnly
     ? `ACT: change nothing. Tom has not answered ${blocking.length === 1 ? "the blocking question" : `${blocking.length} blocking questions`} this runner asked (${blocking.map((ask) => `"${ask.text ?? ""}"`).join("; ")}), so this step observes and checks in, and does not act on the experiment, the checkout or the document's plan.`
-    : `ACT on the decision. A change is the smallest one the document asks for, and the check-in says what it changed and how to undo it. Files you change in the checkout are committed on the branch ${stepBranch(runner._id)}, pushed with \`git push origin HEAD:refs/heads/${stepBranch(runner._id)}\`, and never merged or pushed to master; the checkout is deleted when this step ends, so an unpushed commit is lost.`;
+    : `ACT on the decision. A change is the smallest one the document asks for, and the check-in says what it changed and how to undo it. Files you change in the checkout are committed on the branch ${stepBranch(runner._id)}, pushed with \`git push origin HEAD:refs/heads/${stepBranch(runner._id)}\`, and never merged or pushed to master; the checkout is deleted when this step ends, so an unpushed commit is lost.${actsOnCluster ? " On the cluster you may launch jobs for this experiment and cancel the ones this runner launched, with `tts-turing-act` (under Tools), inside the runner's GPU-hour budget; each launch or cancel is recorded with the pen's `--act` and verified in the queue." : ""}`;
 
   const pen = [
     "The step pen records your check-in and schedules the next step. Write the check-in to a file and the rewritten document to another, then call:",
     `\`tts-runner-step --runner ${runner._id} --step-run ${stepRunId} --decision <${decisions.replaceAll(" or ", "|").replaceAll(", ", "|")}> --check-in-file <path> --document <path>\``,
     "Add `--ask 'tier|blocking|question'` once per question for Tom (tier is routine, plan or setup; blocking is yes or no), and `--next-step-ms <n>` to bring the next step forward or push it back once.",
+    ...(actsOnCluster ? ["Add `--act 'launch|<job id>|<what it was for and how it was verified>'` or `--act 'cancel|<job id>|<...>'` once per launch or cancel this step made; each becomes one entry in the record beside the check-in."] : []),
     "The pen checks the check-in against Tom's writing standard, first by its form rules and then by a judge. If it exits 5 it prints what failed and records nothing: rewrite the check-in once and call it again. A second failure is recorded and posted marked as having failed the writing check.",
   ];
   if (runner.delegateAllowed) {
@@ -770,7 +788,7 @@ async function buildRunnerStepPrompt(
     checkInContract(runner),
     renderRubric(runner, away),
     `## Never, in any cell of the rubric\n\nThese are Tom's alone. The delegate refuses them and so do you; a step that reaches one checks in with an ask for Tom and changes nothing:\n${narrow}`,
-    `## Tools\n\n${BOX_TOOLS_PARAGRAPH}\n\n${DAEMON_RESTART_SENTENCE}`,
+    `## Tools\n\n${BOX_TOOLS_PARAGRAPH}${actsOnCluster ? `\n\n${RUNNER_ACT_PARAGRAPH}` : ""}\n\n${DAEMON_RESTART_SENTENCE}`,
     `## The pens\n\n${pen.join("\n\n")}`,
     "## Ending\n\nCall the step pen once it has accepted the check-in, then stop. A step that ends without checking in is recorded as a failed step and Tom hears about it in #tts-broken.",
   ].filter((part) => part !== "").join("\n\n");
@@ -802,6 +820,11 @@ const GRADED = v.object({
 
 const RUNNER_ASK_MAX_CHARS = 600;
 
+// One launch or cancel a step made on the experiment, as the pen reports it.
+const ACT = v.object({ verb: v.union(v.literal("launch"), v.literal("cancel")), jobId: v.string(), text: v.string() });
+const RUNNER_ACTS_MAX = 10;
+const RUNNER_ACT_MAX_CHARS = 300;
+
 /**
  * THE STEP PEN'S RECORD, in one transaction: the check-in, the rewritten
  * document, one ask per question, the next step scheduled and the lease
@@ -821,6 +844,7 @@ export const internalRecordStep = internalMutation({
     checkIn: v.string(),
     document: v.string(),
     asks: v.array(ASK),
+    acts: v.optional(v.array(ACT)),
     nextStepMs: v.optional(v.number()),
     graded: v.optional(GRADED),
   },
@@ -843,6 +867,17 @@ export const internalRecordStep = internalMutation({
       if (ask.text.trim() === "" || ask.text.length > RUNNER_ASK_MAX_CHARS) throw new Error(`Each question is one to ${RUNNER_ASK_MAX_CHARS} characters.`);
     }
     if (args.decision === "ask" && args.asks.length === 0) throw new Error("A decision of ask carries at least one question.");
+    const acts = args.acts ?? [];
+    if (acts.length > 0 && !mayActOnCluster(runner, blocking.length)) {
+      throw new Error(blocking.length > 0
+        ? "While Tom has not answered a blocking question, a step changes nothing, so it records no launch or cancel."
+        : "This runner's experiment is not on the cluster, so its steps record no launch or cancel there.");
+    }
+    if (acts.length > RUNNER_ACTS_MAX) throw new Error(`A step records at most ${RUNNER_ACTS_MAX} launches and cancels.`);
+    for (const act of acts) {
+      if (!/^\d+$/.test(act.jobId.trim())) throw new Error("Each launch or cancel names its job by its cluster job number.");
+      if (act.text.trim() === "" || act.text.length > RUNNER_ACT_MAX_CHARS) throw new Error(`Each launch or cancel is said in one to ${RUNNER_ACT_MAX_CHARS} characters.`);
+    }
 
     // The record's own form check. The pen ran it too; this is the door.
     const faults = checkInFailures(args.checkIn);
@@ -876,8 +911,19 @@ export const internalRecordStep = internalMutation({
         failures: since.failures.length,
         skipped: since.deferred,
         asks: args.asks.length,
+        acts: acts.length,
       },
     });
+    for (const act of acts) {
+      await ctx.db.insert("runnerEvents", {
+        runnerId: runner._id,
+        at: now,
+        kind: "act",
+        stepRunId: args.stepRunId,
+        text: act.text.trim(),
+        data: { verb: act.verb, jobId: act.jobId.trim() },
+      });
+    }
     const documentVersion = runner.documentVersion + 1;
     await ctx.db.insert("runnerEvents", {
       runnerId: runner._id,

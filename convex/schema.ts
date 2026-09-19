@@ -1585,6 +1585,10 @@ export default defineSchema({
       v.literal("reply"), // Tom's answer, from the needs-you thread
       v.literal("step-failed"), // an expired lease, or a step that exited without checking in
       v.literal("document"), // a document rewrite; `text` holds the new document
+      // One launch or cancel on the experiment, recorded by the step pen beside
+      // the check-in; `data` holds { verb, jobId }, `text` what it was for and
+      // how it was verified. turing-api keeps the independent server-side log.
+      v.literal("act"),
     ),
     stepRunId: v.optional(v.string()),
     text: v.optional(v.string()),

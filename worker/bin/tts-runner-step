@@ -9,7 +9,9 @@
 // marked as having failed the writing check. On a pass it posts
 // POST /tts/runner-step, which records the check-in, the document and any asks,
 // posts the check-in to the runner's thread, schedules the next step and frees
-// the lease, in one transaction.
+// the lease, in one transaction. Each --act becomes one `act` event in the
+// record beside the check-in: a launch or cancel the step made on the cluster,
+// with what it was for and how it was verified.
 //
 // Exit codes: 0 recorded · 2 usage · 4 the record refused or was unreachable ·
 //             5 the check-in failed its check and was not recorded.
@@ -29,14 +31,15 @@ function usage(message) {
     "                       --check-in-file <path> | --check-in <text>\n" +
     "                       --document <path>\n" +
     "                       [--ask 'routine|plan|setup|yes|no|<question>'] (repeatable)\n" +
+    "                       [--act 'launch|<job id>|<what it was for and how it was verified>'] (repeatable; cancel in place of launch)\n" +
     "                       [--next-step-ms <n>]\n",
   );
   process.exitCode = 2;
 }
 
 function parse(argv) {
-  const out = { asks: [] };
-  const flags = ["--runner", "--step-run", "--decision", "--check-in", "--check-in-file", "--document", "--ask", "--next-step-ms"];
+  const out = { asks: [], acts: [] };
+  const flags = ["--runner", "--step-run", "--decision", "--check-in", "--check-in-file", "--document", "--ask", "--act", "--next-step-ms"];
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     if (flag === "--help" || flag === "-h") return { help: true };
@@ -58,6 +61,14 @@ function parse(argv) {
       if (blocking !== "yes" && blocking !== "no") throw new Error("--ask blocking must be yes or no");
       if (!text) throw new Error("--ask needs its question after the second |");
       out.asks.push({ tier, blocking: blocking === "yes", text });
+    }
+    if (flag === "--act") {
+      const [verb, jobId, ...rest] = value.split("|");
+      const text = rest.join("|").trim();
+      if (verb !== "launch" && verb !== "cancel") throw new Error("--act verb must be launch or cancel");
+      if (!/^\d+$/.test(jobId ?? "")) throw new Error("--act needs the SLURM job id after the first |");
+      if (!text) throw new Error("--act needs what it was for and how it was verified after the second |");
+      out.acts.push({ verb, jobId, text });
     }
   }
   if (!out.runnerId) throw new Error("--runner is required");
@@ -106,6 +117,7 @@ else if (args) {
         checkIn: args.checkIn.trim(),
         document: args.document,
         asks: args.asks,
+        acts: args.acts,
         ...(args.nextStepMs !== undefined ? { nextStepMs: args.nextStepMs } : {}),
         graded: {
           verdict: graded.verdict,
