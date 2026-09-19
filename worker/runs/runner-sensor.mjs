@@ -40,7 +40,7 @@ import { promisify } from "node:util";
 
 const execFile = promisify(execFileCb);
 
-export const CHECK_BUDGET = 1500;
+const CHECK_BUDGET = 1500;
 const CHECK_CONCURRENCY = 12;
 const FACTS_VERSION = 1;
 const DEFAULT_CACHE_DIR = "/var/lib/tts/runners";
@@ -65,7 +65,7 @@ print(json.dumps({"specs": [str(p) for p in specs], "nodes": paths}))
 `;
 
 /** Default runners of the outside world, replaced in the test. */
-export const defaultDeps = {
+const defaultDeps = {
   async turing(args) {
     const { stdout } = await execFile("tts-turing", [...args, "--raw"], { timeout: 90_000, maxBuffer: 16 * 1024 * 1024 });
     return JSON.parse(stdout);

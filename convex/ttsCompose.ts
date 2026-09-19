@@ -937,7 +937,7 @@ export function composeHourly(f: HourlyFacts): Message | null {
 /** One runner check-in, as the numbers the box read and the words the step
  *  wrote. `facts` is the sensor's block (worker/runs/runner-sensor.mjs), which
  *  may be absent or partial: a step whose box read nothing still checks in. */
-export type CheckInFacts = {
+type CheckInFacts = {
   title: string;
   /** 1 for the runner's first check-in. */
   number: number;
@@ -968,7 +968,7 @@ const DECISION_WORDS: Record<CheckInFacts["decision"], string> = {
 
 /** The first line: the numbers, in the same order every step, so one
  *  check-in reads against the last. */
-export function checkInNumbers(f: CheckInFacts): string {
+function checkInNumbers(f: CheckInFacts): string {
   const parts: string[] = [];
   const jobs = f.facts?.jobs;
   if (jobs && jobs.unavailable === undefined && typeof jobs.live === "number") {

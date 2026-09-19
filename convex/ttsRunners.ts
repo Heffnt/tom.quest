@@ -37,18 +37,18 @@ import {
  *  launched with a session id the claim mints (see internalClaimRunnerStep),
  *  and Codex takes no such id, so the default is Claude's strongest rather than
  *  the fleet's DEFAULT_SESSION_MODEL, which is a Codex model. */
-export const DEFAULT_RUNNER_MODEL: SessionModel = "opus";
+const DEFAULT_RUNNER_MODEL: SessionModel = "opus";
 
-export const RUNNER_TITLE_MAX = 200;
-export const RUNNER_DOCUMENT_MAX = 200_000;
+const RUNNER_TITLE_MAX = 200;
+const RUNNER_DOCUMENT_MAX = 200_000;
 /** The shortest step the schedule takes. A step is a whole cold run: shorter
  *  than this and the next is due before the last has read its document. */
-export const RUNNER_STEP_MIN_MS = 5 * 60_000;
-export const RUNNER_STEP_MAX_MS = 24 * 60 * 60_000;
+const RUNNER_STEP_MIN_MS = 5 * 60_000;
+const RUNNER_STEP_MAX_MS = 24 * 60 * 60_000;
 
 // ── Status, derived ──────────────────────────────────────────────────────────
 
-export type RunnerStatus = "done" | "failed" | "handed-off" | "waiting-on-tom" | "running";
+type RunnerStatus = "done" | "failed" | "handed-off" | "waiting-on-tom" | "running";
 
 /**
  * THE ONE HOME of a runner's status. It is not a field (the schema says why);
@@ -97,7 +97,7 @@ export async function openBlockingAsks(ctx: QueryCtx, runnerId: Id<"runners">) {
 // (NARROW_LIST) is refused in every cell; that refusal is the delegate's own
 // and the step prompt's, not a cell here.
 
-export type AnswererRuling = {
+type AnswererRuling = {
   answerer: RunnerAnswerer;
   /** The delegate answered a setup question in Tom's absence: the digest's
    *  objection list must carry it. */
@@ -135,7 +135,7 @@ export function answererFor(
 
 // ── Known away ───────────────────────────────────────────────────────────────
 
-export const KNOWN_AWAY_QUIET_MS = 2 * 60 * 60_000;
+const KNOWN_AWAY_QUIET_MS = 2 * 60 * 60_000;
 
 /**
  * Whether Tom is known to be away, and the sentence why. Away is: no turn from
@@ -205,7 +205,7 @@ const RUNNER_SOURCE = v.union(
   v.object({ kind: v.literal("document"), text: v.string() }),
 );
 
-export const RUNNER_SEED = {
+const RUNNER_SEED = {
   title: v.string(),
   type: RUNNER_TYPE,
   experimentHost: v.union(v.literal("turing"), v.literal("box")),
@@ -264,13 +264,13 @@ export function runnerSeedFaults(seed: RunnerSeed): string[] {
 
 /** The one-section document a runner started from a prompt holds until its
  *  first step writes the rest. */
-export function promptDocument(title: string, text: string): string {
+function promptDocument(title: string, text: string): string {
   return `# ${title}\n\n## Objective\n\n${text.trim()}\n`;
 }
 
 /** A successor's document: the predecessor's final document under a section
  *  that says where it came from. */
-export function handoffDocument(from: { title: string; document: string }): string {
+function handoffDocument(from: { title: string; document: string }): string {
   return `## Handed off from ${from.title}\n\nThis runner continues the one named above. Its final document follows as it stood.\n\n${from.document.trim()}\n`;
 }
 
@@ -279,7 +279,7 @@ export function handoffDocument(from: { title: string; document: string }): stri
  * document event, and the first step request, due now; a Convex mutation is
  * one transaction, so a refusal writes none of the three.
  */
-export async function insertRunner(
+async function insertRunner(
   ctx: MutationCtx,
   seed: RunnerSeed,
   createdBy: Doc<"runners">["createdBy"],
@@ -365,7 +365,7 @@ async function liveStep(ctx: QueryCtx, runnerId: Id<"runners">) {
   return recent.find((step) => step.status === "requested" || step.status === "claimed") ?? null;
 }
 
-export const STEP_DEFERRED_REASON = "deferred: the step before it was still running";
+const STEP_DEFERRED_REASON = "deferred: the step before it was still running";
 
 /**
  * Open the runner's next step: a runnerSteps row, requested, due now. Nothing
@@ -374,7 +374,7 @@ export const STEP_DEFERRED_REASON = "deferred: the step before it was still runn
  * recorded as a deferred step, never as silence, so the next check-in can say
  * a step was skipped and why.
  */
-export async function openStep(ctx: MutationCtx, runnerId: Id<"runners">, now: number) {
+async function openStep(ctx: MutationCtx, runnerId: Id<"runners">, now: number) {
   const runner = await ctx.db.get(runnerId);
   if (!runner || runner.endedAt !== undefined) return null;
   if (await liveStep(ctx, runnerId)) return null;
@@ -410,7 +410,7 @@ export const internalOpenStep = internalMutation({
 /** How long a step may hold its runner: four step lengths, at most two hours.
  *  A step alive past this is a step whose process died, and the sweep frees
  *  the runner for the next. */
-export function leaseMs(stepMs: number): number {
+function leaseMs(stepMs: number): number {
   return Math.min(4 * stepMs, 2 * 60 * 60_000);
 }
 
@@ -423,11 +423,11 @@ export function runLink(runId: string): string {
  *  The box starts the CLI with that session id, so the run record's own id for
  *  the step is known before the step exists, and the next step's
  *  continuesRunId names it exactly. */
-export function mintStepRunId(): string {
+function mintStepRunId(): string {
   return `claude:box:${crypto.randomUUID()}`;
 }
 
-export const STEP_FAILED = {
+const STEP_FAILED = {
   restarted: "the box's daemon restarted while this step was running",
   noCheckIn: "the step ended without checking in",
   notLaunched: "the box could not launch the step",
@@ -601,7 +601,7 @@ export const FACTS_PLACEHOLDER = "@@RUNNER_FACTS@@";
 
 /** Everything since this runner's last check-in that the next step must see:
  *  Tom's replies, whole, and every step that failed or was skipped. */
-export async function sinceLastCheckIn(ctx: QueryCtx, runnerId: Id<"runners">) {
+async function sinceLastCheckIn(ctx: QueryCtx, runnerId: Id<"runners">) {
   const last = await ctx.db
     .query("runnerEvents")
     .withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runnerId).eq("kind", "check-in"))
@@ -637,7 +637,7 @@ const ANSWERER_WORDS: Record<RunnerAnswerer, string> = {
 };
 
 /** The rubric column for this runner, overrides applied, as the step reads it. */
-export function renderRubric(runner: Pick<Doc<"runners">, "type" | "delegateAllowed" | "askOverrides">, knownAwayNow: { away: boolean; because: string }): string {
+function renderRubric(runner: Pick<Doc<"runners">, "type" | "delegateAllowed" | "askOverrides">, knownAwayNow: { away: boolean; because: string }): string {
   const lines = [
     `The asking rubric for this runner (a ${runner.type}). Before you ask anything, judge its tier. The tier names are this prompt's words, not Tom's: a check-in describes the kind of question in plain words and never names its tier.`,
   ];
@@ -694,7 +694,7 @@ function stepBranch(runnerId: Id<"runners">): string {
  * clause says change nothing, and the decisions narrow to continue or ask.
  * Steps keep running on schedule, so Tom still gets his tick.
  */
-export async function buildRunnerStepPrompt(
+async function buildRunnerStepPrompt(
   ctx: QueryCtx,
   { runner, stepRunId, now }: { runner: Doc<"runners">; stepRunId: string; now: number },
 ): Promise<string> {
@@ -795,7 +795,7 @@ const GRADED = v.object({
   judgeModel: v.string(),
 });
 
-export const RUNNER_ASK_MAX_CHARS = 600;
+const RUNNER_ASK_MAX_CHARS = 600;
 
 /**
  * THE STEP PEN'S RECORD, in one transaction: the check-in, the rewritten

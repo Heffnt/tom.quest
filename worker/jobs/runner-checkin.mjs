@@ -21,11 +21,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { extractJsonObject, runClaude } from "./tts-lib.mjs";
 import { JUDGE_MODEL, JUDGE_RETRIES } from "./evals.mjs";
 
-export const CHECKIN_JUDGE_TIMEOUT_MS = 3 * 60 * 1000;
+const CHECKIN_JUDGE_TIMEOUT_MS = 3 * 60 * 1000;
 
 /** The form rules, from wherever this install keeps them: beside the jobs on
  *  the box (/opt/tts), under scripts/ in a checkout. */
-export async function loadCheckInRules() {
+async function loadCheckInRules() {
   const here = path.dirname(fileURLToPath(import.meta.url));
   for (const candidate of [
     path.join(here, "checkin-rules.mjs"),
@@ -37,7 +37,7 @@ export async function loadCheckInRules() {
 }
 
 /** His writing standard as the judge reads it: the write skill's two pages. */
-export function readWritingStandard(wikitomDir = process.env.WIKITOM_DIR || "/root/wikitom") {
+function readWritingStandard(wikitomDir = process.env.WIKITOM_DIR || "/root/wikitom") {
   const pages = ["writing.md", "ground.md"].map((name) => {
     try {
       return fs.readFileSync(path.join(wikitomDir, "model-of-tom", name), "utf8");

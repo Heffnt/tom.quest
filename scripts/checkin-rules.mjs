@@ -20,7 +20,7 @@ export const CHECKIN_MAX_CHARS = 1500;
 
 /** The one heading a check-in may carry, and the only place a numbered list
  *  may stand. */
-export const RULINGS_HEADING = "Rulings requested";
+const RULINGS_HEADING = "Rulings requested";
 
 const HEADING = /^ {0,3}#{1,6}\s+(.*?)\s*#*\s*$/;
 // A Markdown table row. His writing standard puts enumerable facts in tables,

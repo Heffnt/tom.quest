@@ -775,12 +775,9 @@ export const RUNNER_DECISION = v.union(
   v.literal("continue"), v.literal("change"), v.literal("ask"), v.literal("hand-off"), v.literal("finish"),
 );
 export const RUNNER_ENDED_REASON = v.union(v.literal("finish"), v.literal("hand-off"), v.literal("failed"));
-export type RunnerType = Infer<typeof RUNNER_TYPE>;
 export type RunnerTier = Infer<typeof RUNNER_TIER>;
 export type RunnerAnswerer = Infer<typeof RUNNER_ANSWERER>;
-export type RunnerDecision = Infer<typeof RUNNER_DECISION>;
 export const RUNNER_TIERS: readonly RunnerTier[] = ["routine", "plan", "setup"];
-export const RUNNER_DECISIONS: readonly RunnerDecision[] = ["continue", "change", "ask", "hand-off", "finish"];
 
 export const NO_REPO = "none";
 
