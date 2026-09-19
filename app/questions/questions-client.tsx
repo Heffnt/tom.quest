@@ -161,13 +161,12 @@ function Questions() {
   });
 
   useEffect(() => {
-    if (!hydrated) return;
     if (seeded.current === null || view.seen === seeded.current) {
-      // Covers the render after hydration and before the seed's setView has applied, when view.seen is still empty.
+      // A null seed covers pre-hydration; its identity then excludes the seeded view.
       return;
     }
     storeSettings({ seen: [...view.seen] });
-  }, [hydrated, storeSettings, view.seen]);
+  }, [storeSettings, view.seen]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -177,7 +176,6 @@ function Questions() {
   const step = (direction: 1 | -1) => {
     setView((previous) => {
       const result = stepped(list, previous.index, previous.seen, direction);
-      if (result.seen === previous.seen) return previous;
       return { ...previous, ...result };
     });
   };
@@ -196,7 +194,6 @@ function Questions() {
 
   const selectListIndex = (index: number) => {
     setView((previous) => {
-      if (previous.index === index) return previous;
       return { ...previous, index };
     });
     setDrawerContent(null);
@@ -276,7 +273,7 @@ function Questions() {
       ) : list.length === 0 ? (
         <p className="px-4 py-3 text-sm text-text-muted">Nothing matches.</p>
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div>
           <ul className="divide-y divide-border">
             {list.map((question, index) => (
               <li key={question.id}>

@@ -74,6 +74,15 @@ describe("QuestionsClient", () => {
     expect(screen.getByText(/^1 of 53/)).toBeTruthy();
   });
 
+  it("leaves the question and settings unchanged when a disabled step is clicked", () => {
+    renderQuestions();
+
+    fireEvent.click(screen.getByRole("button", { name: "prev" }));
+
+    expect(screen.getByText(BANK[0].text)).toBeTruthy();
+    expect(settingsMock.storeSettings).not.toHaveBeenCalled();
+  });
+
   it("moves next to the second question, enables prev, and stores the left id", () => {
     renderQuestions();
 
@@ -200,6 +209,17 @@ describe("QuestionsClient", () => {
     const { dialog } = openDrawer("options");
 
     expect(dialog.firstElementChild?.classList.contains("touch-none")).toBe(true);
+  });
+
+  it("puts drawer segments and options content in the shared scroll container", () => {
+    renderQuestions();
+    const { dialog } = openDrawer("options");
+    const scrollContainer = screen.getByTestId("questions-drawer-scroll");
+
+    expect(scrollContainer.classList.contains("overflow-y-auto")).toBe(true);
+    expect(scrollContainer.contains(within(dialog).getByRole("button", { name: "options" }))).toBe(true);
+    expect(scrollContainer.contains(within(dialog).getByRole("button", { name: `list ${BANK.length}` }))).toBe(true);
+    expect(scrollContainer.contains(within(dialog).getByRole("button", { name: "reset seen" }))).toBe(true);
   });
 
   it("selects a list row and closes the drawer", () => {
