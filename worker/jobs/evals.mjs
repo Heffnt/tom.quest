@@ -1581,7 +1581,7 @@ export async function runTriggerCase(trigger, one, io, router = null, publicatio
       maxTurns: JOBS.run.opts.maxTurns,
       registration: {
         origin: "cron:evals",
-        kind: "trigger",
+        kind: "job",
         layersKnown: true,
         layersGiven: [],
         layersDenied: [],

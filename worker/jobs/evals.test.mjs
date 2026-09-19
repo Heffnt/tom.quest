@@ -2015,6 +2015,12 @@ describe("trigger case methods", () => {
       skillsRefused: [],
       wikitomCommit: "wiki1",
     });
+    // The record refuses a kind outside RUN_KIND and the ingest sets the run
+    // aside, so the kind is checked against the schema's own list.
+    const schema = fs.readFileSync(path.resolve("convex/runs.ts"), "utf8");
+    const union = schema.match(/const RUN_KIND = v\.union\(([\s\S]*?)\);/)[1];
+    const accepted = [...union.matchAll(/v\.literal\("([^"]+)"\)/g)].map((match) => match[1]);
+    expect(accepted).toContain(received.options.registration.kind);
   });
 
   it("skips a prompt case when no pinned publication is supplied", async () => {
