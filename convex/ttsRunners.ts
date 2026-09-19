@@ -5,8 +5,13 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { requireTom } from "./authRoles";
 import { redactSecrets } from "../worker/session-host/redact.mjs";
+import { assembleContext, type ContextSubject } from "./ttsContext";
 import {
+  BOX_TOOLS_PARAGRAPH,
+  DAEMON_RESTART_SENTENCE,
+  NARROW_LIST,
   RUNNER_ANSWERER,
+  RUNNER_TIERS,
   RUNNER_TIER,
   RUNNER_TYPE,
   SESSION_MODEL,
@@ -208,6 +213,7 @@ export const RUNNER_SEED = {
   model: v.optional(SESSION_MODEL),
   delegateAllowed: v.optional(v.boolean()),
   budgetGpuHours: v.optional(v.number()),
+  specs: v.optional(v.array(v.string())),
   askOverrides: v.optional(v.array(v.object({ tier: RUNNER_TIER, answerer: RUNNER_ANSWERER }))),
   subject: v.optional(RUNNER_SUBJECT),
   from: RUNNER_SOURCE,
@@ -236,6 +242,12 @@ export function runnerSeedFaults(seed: RunnerSeed): string[] {
   }
   if (seed.budgetGpuHours !== undefined && !(Number.isFinite(seed.budgetGpuHours) && seed.budgetGpuHours >= 0)) {
     faults.push("The GPU-hour budget must be a number of hours, zero or more.");
+  }
+  if (seed.specs !== undefined) {
+    if (seed.repo === NO_REPO) faults.push("Sweep specs need a repo to expand them in.");
+    if (seed.specs.length > 50 || seed.specs.some((spec) => !/^[\w.*?/[\]-]{1,200}$/.test(spec) || spec.startsWith("/") || spec.split("/").includes(".."))) {
+      faults.push("Sweep specs are at most fifty glob patterns relative to the repo.");
+    }
   }
   const tiers = (seed.askOverrides ?? []).map((cell) => cell.tier);
   if (new Set(tiers).size !== tiers.length) faults.push("Each tier may be overridden once.");
@@ -294,6 +306,7 @@ export async function insertRunner(
     stepMs: seed.stepMs,
     nextStepAt: now,
     ...(seed.budgetGpuHours !== undefined ? { budgetGpuHours: seed.budgetGpuHours } : {}),
+    ...(seed.specs !== undefined ? { specs: seed.specs } : {}),
     ...(seed.model !== undefined ? { model: seed.model } : {}),
     delegateAllowed: seed.delegateAllowed ?? true,
     ...(seed.askOverrides !== undefined ? { askOverrides: seed.askOverrides } : {}),
@@ -470,7 +483,8 @@ export const internalClaimRunnerStep = internalMutation({
     const stepRunId = mintStepRunId();
     await ctx.db.patch(runner._id, { lease: { stepRunId, deadline: now + leaseMs(runner.stepMs), takenAt: now } });
     await ctx.db.patch(stepId, { status: "claimed", claimedAt: now, stepRunId });
-    const prompt = await buildStepPrompt(ctx, (await ctx.db.get(runner._id))!, stepRunId, now);
+    const prompt = await buildRunnerStepPrompt(ctx, { runner: (await ctx.db.get(runner._id))!, stepRunId, now });
+    const since = await sinceLastCheckIn(ctx, runner._id);
     return {
       admitted: true as const,
       stepRunId,
@@ -480,6 +494,12 @@ export const internalClaimRunnerStep = internalMutation({
       model: runner.model ?? DEFAULT_RUNNER_MODEL,
       ...(step.previousStepRunId !== undefined ? { previousStepRunId: step.previousStepRunId } : {}),
       prompt,
+      // What the box's sensor needs beside the checkout.
+      sensor: {
+        specs: runner.specs ?? [],
+        ...(runner.budgetGpuHours !== undefined ? { budgetGpuHours: runner.budgetGpuHours } : {}),
+        failures: since.failures.map((failure) => ({ at: failure.at, text: failure.text ?? "" })),
+      },
     };
   },
 });
@@ -572,10 +592,166 @@ export const internalRunnerSweep = internalMutation({
 
 // ── The step prompt ──────────────────────────────────────────────────────────
 
-async function buildStepPrompt(ctx: QueryCtx, runner: Doc<"runners">, stepRunId: string, _now: number): Promise<string> {
-  return [
-    `You are one step of the runner "${runner.title}". Your step run id is ${stepRunId}.`,
-    "## The document",
-    runner.document,
-  ].join("\n\n");
+/** Where the daemon writes the sensor's facts block into the prompt. A daemon
+ *  that has not been rolled out yet leaves it, and the step reads the line
+ *  below it saying the facts were not read. */
+export const FACTS_PLACEHOLDER = "@@RUNNER_FACTS@@";
+
+/** Everything since this runner's last check-in that the next step must see:
+ *  Tom's replies, whole, and every step that failed or was skipped. */
+export async function sinceLastCheckIn(ctx: QueryCtx, runnerId: Id<"runners">) {
+  const last = await ctx.db
+    .query("runnerEvents")
+    .withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runnerId).eq("kind", "check-in"))
+    .order("desc")
+    .first();
+  const since = last?.at ?? 0;
+  const replies = await ctx.db
+    .query("runnerEvents")
+    .withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runnerId).eq("kind", "reply").gt("at", since))
+    .take(50);
+  const failures = await ctx.db
+    .query("runnerEvents")
+    .withIndex("by_runner_kind_at", (q) => q.eq("runnerId", runnerId).eq("kind", "step-failed").gt("at", since))
+    .take(50);
+  const steps = await ctx.db
+    .query("runnerSteps")
+    .withIndex("by_runner_due", (q) => q.eq("runnerId", runnerId).gt("dueAt", since))
+    .take(100);
+  const deferred = steps.filter((step) => step.status === "failed" && step.reason === STEP_DEFERRED_REASON).length;
+  return { lastCheckIn: last, replies, failures, deferred };
 }
+
+const TIER_MEANING: Record<RunnerTier, string> = {
+  routine: "a question inside the plan the document already states: which cell to look at, whether a warning is the known benign one, when to look again",
+  plan: "a question that changes what the experiment is: a different spec, a stage skipped, a result read a new way, a stop condition moved",
+  setup: "a question that changes what the experiment costs or where it runs: more GPUs, a longer time limit, another partition, a spend against the budget",
+};
+
+const ANSWERER_WORDS: Record<RunnerAnswerer, string> = {
+  self: "you decide it and say what you decided in the check-in",
+  tom: "Tom answers it: raise it with --ask, and it opens a thread in #tts-needs-you",
+  delegate: "the delegate answers it through tts-ask; its answer is a decision Tom may object to",
+};
+
+/** The rubric column for this runner, overrides applied, as the step reads it. */
+export function renderRubric(runner: Pick<Doc<"runners">, "type" | "delegateAllowed" | "askOverrides">, knownAwayNow: { away: boolean; because: string }): string {
+  const lines = [
+    `The asking rubric for this runner (a ${runner.type}). Before you ask anything, judge its tier, and name the tier you judged in the check-in:`,
+  ];
+  for (const tier of RUNNER_TIERS) {
+    const now = answererFor(runner, tier, { knownAway: knownAwayNow.away });
+    const later = tier === "plan" && runner.type === "campaign" && now.answerer === "tom"
+      ? answererFor(runner, tier, { knownAway: knownAwayNow.away, stepsUnanswered: 1 })
+      : null;
+    const after = later && later.answerer !== now.answerer ? ` If a whole step passes with no answer from Tom, ${ANSWERER_WORDS[later.answerer]}.` : "";
+    lines.push(`- ${tier}: ${TIER_MEANING[tier]}. Now, ${ANSWERER_WORDS[now.answerer]}${now.marked ? ", and it is marked for his objection list in the morning" : ""}.${after}`);
+  }
+  lines.push(`Tom is ${knownAwayNow.away ? "known to be away" : "taken to be present"} right now: ${knownAwayNow.because}.`);
+  if (!runner.delegateAllowed) lines.push("This runner may never call the delegate; every question that is not yours to decide is Tom's.");
+  return lines.join("\n");
+}
+
+function stepBranch(runnerId: Id<"runners">): string {
+  return `runner/${runnerId}`;
+}
+
+/**
+ * The prompt one step starts from, cold. In order: what a step is, the
+ * document, the facts block, Tom's replies since the last step, the failures
+ * and skips since then, the step contract, the rubric, the never list, the
+ * tools, the pens, and how to end.
+ *
+ * A runner with an unanswered blocking ask gets an OBSERVE-ONLY step: the act
+ * clause says change nothing, and the decisions narrow to continue or ask.
+ * Steps keep running on schedule, so Tom still gets his tick.
+ */
+export async function buildRunnerStepPrompt(
+  ctx: QueryCtx,
+  { runner, stepRunId, now }: { runner: Doc<"runners">; stepRunId: string; now: number },
+): Promise<string> {
+  const since = await sinceLastCheckIn(ctx, runner._id);
+  const blocking = await openBlockingAsks(ctx, runner._id);
+  const observeOnly = blocking.length > 0;
+  const away = await knownAway(ctx, now);
+  const status = runnerStatus({ runner, openBlockingAsks: blocking.length });
+
+  const subject: ContextSubject = runner.subject?.kind === "todo"
+    ? { kind: "todo", todoId: runner.subject.todoId }
+    : runner.subject?.kind === "batch"
+      ? { kind: "batch", batchId: runner.subject.batchId }
+      : runner.repo !== NO_REPO
+        ? { kind: "repo", repo: runner.repo }
+        : { kind: "none" };
+  // A step whose skills cannot be routed still runs, and says so, as the box's
+  // session-start hook does. assembleContext fails closed on an unposted
+  // publication, and a throw here would roll the claim back and leave the
+  // request to be claimed and refused on every poll.
+  let grants: string;
+  try {
+    grants = (await assembleContext(ctx, subject, { reachesTom: true, caller: "runner-step", now })).grants;
+  } catch (error) {
+    grants = `SKILLS could not be routed: ${error instanceof Error ? error.message : String(error)}`;
+  }
+
+  const replies = since.replies.length === 0
+    ? "Tom has not replied since the last step."
+    : since.replies.map((reply) => `Tom replied at ${new Date(reply.at).toISOString()}:\n> ${(reply.text ?? "").split("\n").join("\n> ")}`).join("\n\n");
+  const missed: string[] = [];
+  for (const failure of since.failures) missed.push(`- A step failed: ${failure.text ?? "no reason recorded"}.`);
+  if (since.deferred > 0) missed.push(`- ${since.deferred} step${since.deferred === 1 ? " was" : "s were"} skipped because the step before was still running.`);
+
+  const decisions = observeOnly ? "continue or ask" : "continue, change, ask, hand-off or finish";
+  const act = observeOnly
+    ? `ACT: change nothing. Tom has not answered ${blocking.length === 1 ? "the blocking question" : `${blocking.length} blocking questions`} this runner asked (${blocking.map((ask) => `"${ask.text ?? ""}"`).join("; ")}), so this step observes and checks in, and does not act on the experiment, the checkout or the document's plan.`
+    : `ACT on the decision. A change is the smallest one the document asks for, and the check-in says what it changed and how to undo it. Files you change in the checkout are committed on the branch ${stepBranch(runner._id)}, pushed with \`git push origin HEAD:refs/heads/${stepBranch(runner._id)}\`, and never merged or pushed to master; the checkout is deleted when this step ends, so an unpushed commit is lost.`;
+
+  const pen = [
+    "The step pen records your check-in and schedules the next step. Write the check-in to a file and the rewritten document to another, then call:",
+    `\`tts-runner-step --runner ${runner._id} --step-run ${stepRunId} --decision <${decisions.replaceAll(" or ", "|").replaceAll(", ", "|")}> --check-in-file <path> --document <path>\``,
+    "Add `--ask 'tier|blocking|question'` once per question for Tom (tier is routine, plan or setup; blocking is yes or no), and `--next-step-ms <n>` to bring the next step forward or push it back once.",
+    "The pen checks the check-in against Tom's writing standard, first by its form rules and then by a judge. If it exits 5 it prints what failed and records nothing: rewrite the check-in once and call it again. A second failure is recorded and posted marked as having failed the writing check.",
+  ];
+  if (runner.delegateAllowed) {
+    pen.push(`For a question the rubric gives the delegate: \`tts-ask --runner ${runner._id} --question "<one sentence>" --option "<a>" --option "<b>" --recommend "<the one you would take>" --fallback "<what you will do if it does not answer>"\`. It answers questions about how the work is run, never about what the experiment finds. At most five asks a day for this runner.`);
+  }
+
+  const narrow = NARROW_LIST.map((item) => `- ${item.decision}`).join("\n");
+  const facts = `${FACTS_PLACEHOLDER}\n(If the line above is the bare placeholder, the box did not read the facts for this step: say so in the check-in and read what you need with the commands below.)`;
+
+  return [
+    grants,
+    `You are one step of the runner "${runner.title}" (runner ${runner._id}), which is ${status}. A runner watches one experiment through a chain of short steps: each starts cold, reads the document below as its whole memory, looks at the experiment, decides one thing, acts on it, checks in, rewrites the document for the step after it, and ends. Nothing is re-entered, and nothing you do not write into the document survives this step. Your step run is ${stepRunId}.`,
+    `## The document (version ${runner.documentVersion})\n\n${runner.document}`,
+    `## The facts, read by the box before you started\n\n${facts}`,
+    `## Tom's replies since the last step\n\n${replies}`,
+    `## Since the last check-in\n\n${missed.length > 0 ? missed.join("\n") : "No step failed or was skipped."}`,
+    [
+      "## The step",
+      `OBSERVE. The facts above were read by deterministic code; start from them and judge. Look further where the document asks: the cluster with \`tts-turing jobs|gpus|output <name>\`, the results tree with \`tts-turing tree|node|read <path>\` (paths relative to the results root), and the checkout of ${runner.repo === NO_REPO ? "no repository (this step has an empty scratch directory)" : runner.repo} that is your working directory.`,
+      `DECIDE one of: ${decisions}. Continue means the experiment needs nothing from you this step. Change means you will make one change. Ask means a question you may not answer yourself. Hand-off means this runner's work continues under a new runner from its document. Finish means the document's stop condition holds.`,
+      act,
+      "VERIFY every act on a channel other than the one that acted: a job submitted is seen in the queue, a file written is read back, a post is seen by its stored timestamp. The check-in names the verification for each act.",
+      "CHECK IN through the pen below, with the document rewritten so the next step can start cold from it: what the experiment is, where it stands, what this step saw and did, and what the next step should look at first.",
+    ].join("\n\n"),
+    renderRubric(runner, away),
+    `## Never, in any cell of the rubric\n\nThese are Tom's alone. The delegate refuses them and so do you; a step that reaches one checks in with an ask for Tom and changes nothing:\n${narrow}`,
+    `## Tools\n\n${BOX_TOOLS_PARAGRAPH}\n\n${DAEMON_RESTART_SENTENCE}`,
+    `## The pens\n\n${pen.join("\n\n")}`,
+    "## Ending\n\nCall the step pen once it has accepted the check-in, then stop. A step that ends without checking in is recorded as a failed step and Tom hears about it in #tts-broken.",
+  ].filter((part) => part !== "").join("\n\n");
+}
+
+// ── The facts ────────────────────────────────────────────────────────────────
+
+/** The facts block the box's sensor read for one claimed step. Held on the
+ *  step row, and copied onto the check-in from there. */
+export const internalRecordStepFacts = internalMutation({
+  args: { stepId: v.id("runnerSteps"), facts: v.any() },
+  handler: async (ctx, { stepId, facts }) => {
+    const step = await ctx.db.get(stepId);
+    if (!step || step.status !== "claimed") return { recorded: false };
+    await ctx.db.patch(stepId, { facts });
+    return { recorded: true };
+  },
+});

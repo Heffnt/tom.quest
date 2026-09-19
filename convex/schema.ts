@@ -1543,6 +1543,11 @@ export default defineSchema({
     // past its deadline is a step that died, and the sweep clears it.
     lease: v.optional(v.object({ stepRunId: v.string(), deadline: v.number(), takenAt: v.number() })),
     budgetGpuHours: v.optional(v.number()),
+    // The sweep specs the experiment drains, as glob patterns relative to the
+    // repo (`sweeps/train/train25_*.yaml`). The step's sensor expands them to
+    // CMT's build frontier to count what is done and what remains; absent,
+    // the facts block says the frontier was not counted.
+    specs: v.optional(v.array(v.string())),
     model: v.optional(SESSION_MODEL),
     delegateAllowed: v.boolean(),
     askOverrides: v.optional(v.array(v.object({ tier: RUNNER_TIER, answerer: RUNNER_ANSWERER }))),
@@ -1620,6 +1625,10 @@ export default defineSchema({
     reason: v.optional(v.string()),
     // Becomes the step run's continuesRunId.
     previousStepRunId: v.optional(v.string()),
+    // The sensor's facts block (worker/runs/runner-sensor.mjs), posted by the
+    // daemon before the model starts. The check-in copies it from here, never
+    // from the step's own pen, so a step cannot restate its own numbers.
+    facts: v.optional(v.any()),
   })
     .index("by_status_due", ["status", "dueAt"])
     .index("by_runner_due", ["runnerId", "dueAt"]),

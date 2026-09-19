@@ -32,8 +32,15 @@ export function slotWaitFor(stepMs) {
   return Math.max(60_000, Math.min(stepMs, 10 * 60_000));
 }
 
-/** The envelope a step's run is registered under. */
-export function stepRegistration(admitted, prompt, sha256) {
+/** Where Convex left room for the facts block (convex/ttsRunners.ts). */
+export const FACTS_PLACEHOLDER = "@@RUNNER_FACTS@@";
+
+/** The envelope a step's run is registered under.
+ *
+ *  NO promptSha256. The envelope is written when the checkout is made, and the
+ *  sensor writes its facts into the prompt after that, so a hash here would be
+ *  of a prompt the model never saw. */
+export function stepRegistration(admitted) {
   return {
     host: "box",
     cli: "claude",
@@ -49,7 +56,6 @@ export function stepRegistration(admitted, prompt, sha256) {
     skillsGranted: [],
     skillsRefused: [],
     hooksConfigured: ["SessionStart", "SessionEnd", "Stop", "SubagentStart", "SubagentStop"],
-    promptSha256: sha256(prompt),
   };
 }
 
@@ -58,13 +64,19 @@ export function stepRegistration(admitted, prompt, sha256) {
  * any await, so a poll tick during the async tail sees it held and does not
  * launch it twice (the same shape as claimSession).
  *
- * deps: { post(path, body) -> json, run(options) -> { exitCode }, log,
- *         sha256(text) -> hex, env }
+ * deps: { post(path, body) -> json, run(options) -> { exitCode }, log, env,
+ *         sense(input) -> facts, renderFacts(facts) -> text }
+ *
+ * THE SENSOR RUNS BEFORE THE MODEL, in the step's own checkout: box-run calls
+ * beforeSpawn once the worktree exists. The facts go to the record first and
+ * into the prompt second, so the check-in's numbers come from the box, never
+ * from the step's pen. A sensor that fails leaves the placeholder, and the
+ * prompt tells the step what that means.
  * Returns the promise of the whole step, for a test to await; the daemon
  * does not.
  */
 export function launchRunnerStep(steps, row, deps) {
-  const { post, run, log, sha256 } = deps;
+  const { post, run, log } = deps;
   if (steps.has(row.stepId)) return steps.get(row.stepId);
   const work = (async () => {
     let admitted;
@@ -95,7 +107,17 @@ export function launchRunnerStep(steps, row, deps) {
         permissionMode: "acceptEdits",
         allowedTools: deps.allowedTools,
         deniedTools: deps.deniedTools,
-        registration: stepRegistration(admitted, admitted.prompt, sha256),
+        registration: stepRegistration(admitted),
+        beforeSpawn: async ({ cwd, prompt }) => {
+          try {
+            const facts = await deps.sense({ runnerId: admitted.runnerId, cwd, ...(admitted.sensor ?? {}) });
+            await post("/runner-steps/facts", { stepId: row.stepId, facts });
+            return prompt.replace(FACTS_PLACEHOLDER, deps.renderFacts(facts));
+          } catch (err) {
+            log(`runner step ${row.stepId}: the sensor failed:`, String(err?.message ?? err));
+            return prompt;
+          }
+        },
         slotWaitMs: slotWaitFor(row.stepMs ?? 10 * 60_000),
         env: deps.env,
       });

@@ -543,3 +543,21 @@ describe("the grant list is stable", () => {
     ]);
   });
 });
+
+describe("the runner-step caller", () => {
+  it("judges, captures nothing, carries his intent, and takes the repository's area and repo skill", () => {
+    expect(CONTEXT_CALLERS["runner-step"]).toEqual({ judges: true, captures: false });
+    expect(INTENT_CALLERS).toContain("runner-step");
+    const research = "---\nupdated: 2026-09-18\ncategories: [research, cmt, complexmultitrigger]\n---\n\n# Research\n";
+    const routed = routeSkills({
+      subject: { kind: "repo", repo: "ComplexMultiTrigger" },
+      caller: "runner-step",
+      pages: [{ path: "model-of-tom/areas/research.md", body: research }],
+      record: {},
+      cwd: null,
+      repoDirs: {},
+      published: ["write", "know-intent", "know-week", "know-research", "repo-complexmultitrigger"],
+    });
+    expect(routed.granted).toEqual(["write", "know-intent", "know-research", "repo-complexmultitrigger"]);
+  });
+});

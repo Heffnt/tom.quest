@@ -21,11 +21,13 @@ const admitted = {
   repo: "ComplexMultiTrigger",
   model: "opus",
   previousStepRunId: "claude:box:7c9e6679-7425-40de-944b-e07fc1f90ae7",
-  prompt: "one step",
+  prompt: "one step\n\n@@RUNNER_FACTS@@\n\nthe rest",
+  sensor: { specs: ["sweeps/train/train25_*.yaml"], failures: [] },
 };
 
-function harness({ claim = admitted, exitCode = 0, runThrows = null } = {}) {
+function harness({ claim = admitted, exitCode = 0, runThrows = null, senseThrows = false } = {}) {
   const posts = [];
+  const senses = [];
   const runs = [];
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
@@ -36,15 +38,18 @@ function harness({ claim = admitted, exitCode = 0, runThrows = null } = {}) {
     },
     run: async (options) => {
       runs.push(options);
+      // box-run calls the hook once the checkout exists, before the child.
+      options.sentPrompt = await options.beforeSpawn({ cwd: "/work/checkout", prompt: options.prompt });
       await gate;
       if (runThrows) throw runThrows;
       return { exitCode };
     },
     log: () => {},
-    sha256: () => "f".repeat(64),
+    sense: async (input) => { senses.push(input); if (senseThrows) throw new Error("no python"); return { version: 1, jobs: { live: 1 } }; },
+    renderFacts: () => "Jobs: 1 on the account.",
     env: {},
   };
-  return { posts, runs, deps, release };
+  return { posts, runs, deps, release, senses };
 }
 
 describe("launchRunnerStep", () => {
@@ -57,8 +62,13 @@ describe("launchRunnerStep", () => {
     h.release();
     const result = await done;
     expect(result).toMatchObject({ launched: true, claimed: true, exitCode: 0 });
-    expect(h.posts.map((p) => p.route)).toEqual(["/runner-steps/claim", "/runner-steps/finish"]);
-    expect(h.posts[1].body).toEqual({ stepId: "step1", exitCode: 0, launched: true });
+    expect(h.posts.map((p) => p.route)).toEqual(["/runner-steps/claim", "/runner-steps/facts", "/runner-steps/finish"]);
+    expect(h.posts[2].body).toEqual({ stepId: "step1", exitCode: 0, launched: true });
+    // The sensor ran in the step's checkout, its facts went to the record, and
+    // the model's prompt carries them where Convex left room.
+    expect(h.senses).toEqual([{ runnerId: "runner1", cwd: "/work/checkout", specs: ["sweeps/train/train25_*.yaml"], failures: [] }]);
+    expect(h.posts[1].body).toEqual({ stepId: "step1", facts: { version: 1, jobs: { live: 1 } } });
+    expect(h.runs[0].sentPrompt).toBe("one step\n\nJobs: 1 on the account.\n\nthe rest");
     expect(h.runs).toHaveLength(1);
     const run = h.runs[0];
     expect(run.sessionId).toBe("0f8fad5b-d9cb-469f-a165-70867728950e");
@@ -87,11 +97,20 @@ describe("launchRunnerStep", () => {
     const done = launchRunnerStep(new Map(), row, h.deps);
     h.release();
     await done;
-    expect(h.posts[1].body).toEqual({ stepId: "step1", exitCode: 75, launched: false });
+    expect(h.posts.at(-1).body).toEqual({ stepId: "step1", exitCode: 75, launched: false });
+  });
+
+  it("launches with the placeholder left when the sensor fails", async () => {
+    const h = harness({ senseThrows: true });
+    const done = launchRunnerStep(new Map(), row, h.deps);
+    h.release();
+    await done;
+    expect(h.runs[0].sentPrompt).toBe(admitted.prompt);
+    expect(h.posts.map((p) => p.route)).toEqual(["/runner-steps/claim", "/runner-steps/finish"]);
   });
 
   it("names the first step's chain as starting nowhere", () => {
-    const registration = stepRegistration({ ...admitted, previousStepRunId: undefined }, "p", () => "0");
+    const registration = stepRegistration({ ...admitted, previousStepRunId: undefined });
     expect(registration.continuesRunId).toBeNull();
   });
 

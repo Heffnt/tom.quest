@@ -39,7 +39,6 @@ import { Session, gitErrorText } from "./session.mjs";
 import { CODEX_BIN, codexArgs, resolveCodexBin, spawnCodex } from "./codex-bin.mjs";
 import { planRow } from "./poll-plan.mjs";
 import { launchRunnerStep } from "./runner-step.mjs";
-import { createHash } from "node:crypto";
 
 const VERSION = "0.3.0";
 // Identifies THIS process lifetime to the server (claudeDaemonHealth) — a
@@ -509,6 +508,11 @@ async function boxRunner() {
   boxRunModule ??= await import("../runs/box-run.mjs");
   return boxRunModule;
 }
+let sensorModule = null;
+async function sensor() {
+  sensorModule ??= await import("../runs/runner-sensor.mjs");
+  return sensorModule;
+}
 
 function launchStep(env, steps, row) {
   return launchRunnerStep(steps, row, {
@@ -518,7 +522,8 @@ function launchStep(env, steps, row) {
       return boxRun({ ...options, allowedTools: [...TOOLS_ALLOWED], deniedTools: [...BANNED_TOOLS] });
     },
     log,
-    sha256: (text) => createHash("sha256").update(text).digest("hex"),
+    sense: async (input) => (await sensor()).sense(input),
+    renderFacts: (facts) => sensorModule.renderFacts(facts),
     env: process.env,
   });
 }

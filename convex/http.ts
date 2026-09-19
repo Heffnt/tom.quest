@@ -3185,7 +3185,7 @@ http.route({ path: "/tts/session", method: "POST", handler: ttsSession });
 
 // POST /tts/runner — open a runner (convex/ttsRunners.ts). Body: { title,
 // type, experimentHost, repo, ref?, stepMs, model?, delegateAllowed?,
-// budgetGpuHours?, askOverrides?, subject?, from, runId? }, where `from` is
+// budgetGpuHours?, specs?, askOverrides?, subject?, from, runId? }, where `from` is
 // { kind: "prompt", text } | { kind: "handoff", runnerId } | { kind:
 // "document", text }. A `document` is taken as given: that is how a CMT
 // dev/handoff file becomes a runner, the calling run having read the file.
@@ -3219,6 +3219,7 @@ const ttsRunner = httpAction(async (ctx, request) => {
       ...(b.model !== undefined ? { model: b.model as never } : {}),
       ...(b.delegateAllowed !== undefined ? { delegateAllowed: b.delegateAllowed as boolean } : {}),
       ...(b.budgetGpuHours !== undefined ? { budgetGpuHours: b.budgetGpuHours as number } : {}),
+      ...(b.specs !== undefined ? { specs: b.specs as string[] } : {}),
       ...(b.askOverrides !== undefined ? { askOverrides: b.askOverrides as never } : {}),
       ...(subject !== undefined
         ? {
@@ -3252,6 +3253,7 @@ function runnerBodyFault(b: Record<string, unknown>): string | null {
   if (b.model !== undefined && !isSessionModel(b.model)) return "model is not a session model.";
   if (b.delegateAllowed !== undefined && typeof b.delegateAllowed !== "boolean") return "delegateAllowed must be true or false.";
   if (b.budgetGpuHours !== undefined && typeof b.budgetGpuHours !== "number") return "budgetGpuHours must be a number.";
+  if (b.specs !== undefined && (!Array.isArray(b.specs) || !b.specs.every((spec) => typeof spec === "string"))) return "specs must be a list of glob patterns.";
   if (b.runId !== undefined && !validRunId(b.runId)) return "runId is not a run id.";
   if (b.askOverrides !== undefined) {
     const cells = b.askOverrides;
@@ -3444,6 +3446,28 @@ const runnerStepFinish = httpAction(async (ctx, request) => {
 });
 
 http.route({ path: "/runner-steps/finish", method: "POST", handler: runnerStepFinish });
+
+// POST /runner-steps/facts — the sensor's facts block for a claimed step,
+// posted by the daemon before the model starts. Body { stepId, facts }. The
+// check-in takes its facts from here, never from the step's own pen.
+const RUNNER_FACTS_MAX_BYTES = 64 * 1024;
+const runnerStepFacts = httpAction(async (ctx, request) => {
+  const denied = sessionsAuth(request);
+  if (denied) return denied;
+  const parsed = await boundedJson(request, RUNNER_FACTS_MAX_BYTES);
+  if ("tooLarge" in parsed) return jsonResponse(413, { error: "facts too large" });
+  if ("invalid" in parsed) return jsonResponse(400, { error: "invalid JSON body" });
+  const b = (parsed.body ?? {}) as Record<string, unknown>;
+  if (typeof b.stepId !== "string" || b.stepId === "") return jsonResponse(400, { error: "stepId required" });
+  if (b.facts === null || typeof b.facts !== "object" || Array.isArray(b.facts)) return jsonResponse(400, { error: "facts (an object) required" });
+  try {
+    return jsonResponse(200, await ctx.runMutation(internal.ttsRunners.internalRecordStepFacts, { stepId: b.stepId as Id<"runnerSteps">, facts: b.facts }));
+  } catch (e) {
+    return jsonResponse(400, { error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+http.route({ path: "/runner-steps/facts", method: "POST", handler: runnerStepFacts });
 
 const sessionsIngest = httpAction(async (ctx, request) => {
   const denied = sessionsAuth(request);

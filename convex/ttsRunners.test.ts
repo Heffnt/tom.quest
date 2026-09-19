@@ -246,3 +246,99 @@ describe("the step lease", () => {
     expect(sessions).toEqual([]);
   });
 });
+
+describe("the step prompt", () => {
+  const COMMIT = "0123abcd0123abcd0123abcd0123abcd0123abcd";
+  // The research page names the repository, which is how a CMT runner's step
+  // is granted his research: the repository row, not a todo category.
+  const RESEARCH = "---\nupdated: 2026-09-09\ncategories: [research, cmt, complexmultitrigger]\n---\n\n# Research\n\n## Current state\n\n- The September campaign.\n";
+
+  async function publish(t: TestConvex<typeof schema>) {
+    const { contextPublication } = await import("../scripts/context-fixture.mjs");
+    const publication = contextPublication(COMMIT);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("modelOfTomPublication", {
+        key: "current", commit: COMMIT, committedAt: 1, pushed: true,
+        operate: publication.layers.operate,
+        headers: publication.headers.filter((header: { layers: string[] }) => header.layers.join(",") === "operate"),
+      });
+      for (const file of publication.files) {
+        const body = file.path === "model-of-tom/areas/research.md" ? RESEARCH : file.body;
+        await ctx.db.insert("modelOfTomFiles", {
+          name: file.path.slice("model-of-tom/".length).replace(/\.md$/, ""),
+          body, sourcePath: file.path, bytes: body.length, commit: COMMIT, syncedAt: 1, pushed: true,
+        });
+      }
+      for (const name of ["write", "know-intent", "know-week", "know-research", "know-admin", "repo-complexmultitrigger"]) {
+        await ctx.db.insert("ttsSkills", {
+          name,
+          group: name === "write" ? "write" : name.startsWith("repo-") ? "repo" : "know",
+          description: `what ${name} covers`, body: `the body of ${name}`, references: [],
+          sourcePaths: [`model-of-tom/${name}.md`], commit: COMMIT, syncedAt: 1, pushed: true,
+        });
+      }
+    });
+  }
+
+  async function claimedPrompt(t: TestConvex<typeof schema>) {
+    const { internal } = await import("./_generated/api");
+    const steps = await t.run((ctx) => ctx.db.query("runnerSteps").withIndex("by_status_due", (q) => q.eq("status", "requested")).collect());
+    const claimed = await t.mutation(internal.ttsRunners.internalClaimRunnerStep, { stepId: steps[0]._id });
+    if (!claimed.admitted) throw new Error(claimed.reason);
+    return claimed;
+  }
+
+  it("grants what the design says and carries the document, the rubric, the never list and the pen", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    await publish(t);
+    const { internal } = await import("./_generated/api");
+    const runnerId = await t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed({ specs: ["sweeps/train/train25_*.yaml"], budgetGpuHours: 500 }) });
+    const claimed = await claimedPrompt(t);
+    const prompt = claimed.prompt;
+    const grants = prompt.slice(0, prompt.indexOf("You are one step"));
+    for (const name of ["write", "know-intent", "know-research", "repo-complexmultitrigger"]) expect(grants).toContain(name);
+    expect(grants).not.toContain("know-admin");
+    expect(prompt).toContain("Watch the sweep.");
+    expect(prompt).toContain("@@RUNNER_FACTS@@");
+    expect(prompt).toContain("DECIDE one of: continue, change, ask, hand-off or finish.");
+    // A probe that may not call the delegate: every question not its own is Tom's.
+    expect(prompt).toContain("- plan: a question that changes what the experiment is");
+    expect(prompt).toMatch(/- plan: [^\n]*Now, Tom answers it/);
+    expect(prompt).toContain("This runner may never call the delegate");
+    expect(prompt).not.toContain("tts-ask --runner");
+    for (const item of (await import("./ttsShared")).NARROW_LIST) expect(prompt).toContain(item.decision);
+    expect(prompt).toContain(`tts-runner-step --runner ${runnerId} --step-run ${claimed.stepRunId}`);
+    expect(prompt).toContain("tts-turing tree|node|read <path>");
+    expect(prompt).toContain("Never restart, stop, or kill `tts-session-host`");
+    expect(claimed.sensor).toEqual({ specs: ["sweeps/train/train25_*.yaml"], budgetGpuHours: 500, failures: [] });
+  });
+
+  it("builds an observe-only step while a blocking ask is unanswered, and carries Tom's reply once it comes", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    await publish(t);
+    const { internal } = await import("./_generated/api");
+    const runnerId = await t.mutation(internal.ttsRunners.internalCreateRunner, { seed: seed({ delegateAllowed: true }) });
+    const askId = await t.run((ctx) => ctx.db.insert("runnerEvents", { runnerId, at: Date.now(), kind: "ask", tier: "plan", blocking: true, text: "Should the next stage skip pythia?" }));
+    const blocked = (await claimedPrompt(t)).prompt;
+    expect(blocked).toContain("ACT: change nothing.");
+    expect(blocked).toContain("Should the next stage skip pythia?");
+    expect(blocked).toContain("DECIDE one of: continue or ask.");
+    expect(blocked).toContain("which is waiting-on-tom");
+    expect(blocked).toContain(`tts-ask --runner ${runnerId}`);
+
+    // Tom answers; the lease is freed and the next step reads his words whole.
+    vi.advanceTimersByTime(1000);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(askId, { answeredAt: Date.now(), answerText: "Yes, skip pythia." });
+      await ctx.db.insert("runnerEvents", { runnerId, at: Date.now(), kind: "reply", text: "Yes, skip pythia.\nThe 1.4b too." });
+      await ctx.db.patch(runnerId, { lease: undefined });
+      await ctx.db.insert("runnerSteps", { runnerId, environment: "runner", dueAt: Date.now(), status: "requested" });
+    });
+    const answered = (await claimedPrompt(t)).prompt;
+    expect(answered).not.toContain("ACT: change nothing.");
+    expect(answered).toContain("> Yes, skip pythia.\n> The 1.4b too.");
+    expect(answered).toContain("which is running");
+  });
+});

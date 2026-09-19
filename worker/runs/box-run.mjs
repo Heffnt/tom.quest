@@ -1018,7 +1018,8 @@ function finishRun(run, { stdout, code, signal, timedOut }) {
  * Takes: prompt, cli, model, effort, sandbox, schema, cwd or repo/ref,
  * allowedTools, deniedTools, permissionMode, maxTurns, timeoutMs, outputFormat,
  * registration (an envelope object, or null for none), slotWaitMs, sessionId
- * (claude only: the CLI session id to start the run under),
+ * (claude only: the CLI session id to start the run under), beforeSpawn
+ * (async ({ cwd, prompt }) -> the prompt to send),
  * tests/install, parent/root/depth, keepWorktree, env (default process.env),
  * onReap (handed the reap as soon as there is one).
  *
@@ -1027,6 +1028,20 @@ function finishRun(run, { stdout, code, signal, timedOut }) {
  */
 export async function boxRun(options) {
   const run = prepareRun(options);
+  // A caller's last word on the prompt, once the checkout exists and before
+  // the child starts: a runner step's sensor reads the experiment in the
+  // step's own worktree and writes its facts into the prompt here, so the
+  // model sees them before it sees anything else (worker/runs/runner-sensor.mjs).
+  // In process only; the command line has no such door.
+  if (typeof options?.beforeSpawn === "function") {
+    try {
+      const prompt = await options.beforeSpawn({ cwd: run.cwd, prompt: run.opts.prompt });
+      if (typeof prompt === "string" && prompt.trim()) run.opts.prompt = prompt;
+    } catch (error) {
+      run.reap();
+      throw Object.assign(new BoxRunError(`the caller's pre-launch step failed: ${error?.message ?? error}`), { runToken: run.spooled?.token ?? null });
+    }
+  }
   fs.mkdirSync(path.dirname(run.errLog), { recursive: true });
   const errStream = fs.createWriteStream(run.errLog);
   let child;
