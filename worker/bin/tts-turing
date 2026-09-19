@@ -8,18 +8,28 @@
 # authorizes POST /sessions/{name}/run, i.e. arbitrary commands on the cluster.
 #
 # So this command carries the OTHER key. TURING_READ_KEY (turing-api's
-# verify_read_key) opens exactly three endpoints, and this script has exactly
-# four verbs, one per open endpoint plus the unauthenticated health probe:
+# verify_read_key) opens exactly six endpoints, and this script has exactly
+# seven verbs, one per open endpoint plus the unauthenticated health probe:
 #
 #   tts-turing health                    GET /health                (no key)
 #   tts-turing gpus                      GET /gpu-report
 #   tts-turing jobs                      GET /jobs
 #   tts-turing output <session> [lines]  GET /sessions/<name>/output
+#   tts-turing tree [path]               GET /cmt-dirs
+#   tts-turing node [path]               GET /cmt-node
+#   tts-turing read <path> [max_bytes]   GET /cmt-file
+#
+# The last three read the experiment results tree and nothing else: turing-api
+# jails them to $BOOLEAN_BACKDOOR_OUTPUT, and a path is relative to that root.
+# `tree` lists child directories, `node` lists one directory's directories and
+# files with their sizes, `read` previews one file (text, capped at max_bytes,
+# default 65536; a known binary answers with its size only).
 #
 # THERE IS NO WRITE VERB, BY CONSTRUCTION. Allocating a GPU, cancelling a job,
-# running a command in a session, and reading files off the cluster all stay
-# behind the full key, which is deliberately absent from /etc/tts/worker.env.
-# A session that needs one of those asks Tom; it does not reach for a curl.
+# running a command in a session, and reading files outside the results tree
+# all stay behind the full key, which is deliberately absent from
+# /etc/tts/worker.env. A session that needs one of those asks Tom; it does not
+# reach for a curl.
 #
 # Flags:
 #   --raw        print the response body exactly as received (default is
@@ -42,6 +52,9 @@ usage: tts-turing <verb> [args] [--raw] [--url BASE]
   gpus                      GPU report: nodes, free GPUs by type, GPU jobs
   jobs                      this account's SLURM jobs
   output <session> [lines]  last N lines (default 500) of a tmux session
+  tree [path]               child directories in the experiment results tree
+  node [path]               one results directory: its directories and files
+  read <path> [max_bytes]   preview one results file (default 65536 bytes)
 
 Reads TURING_READ_KEY from the environment. That key opens these endpoints
 and nothing else — there is no write verb here and none is coming.
@@ -125,8 +138,9 @@ UNAUTH
   fi
 }
 
-# URL-encode one path segment: a tmux session name is caller-supplied and can
-# carry characters that would otherwise change which path is requested.
+# URL-encode one value: a tmux session name or a results path is
+# caller-supplied and can carry characters that would otherwise change which
+# path is requested.
 encode_segment() {
   python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1" \
     2>/dev/null || printf '%s' "$1"
@@ -153,6 +167,24 @@ case "$VERB" in
       ''|*[!0-9]*) echo "tts-turing: lines must be a number, got '${lines}'" >&2; exit 2 ;;
     esac
     request "/sessions/${session}/output?lines=${lines}" key
+    ;;
+  tree|node)
+    [ "${#ARGS[@]}" -le 1 ] || usage
+    endpoint="/cmt-dirs"
+    [ "$VERB" = "node" ] && endpoint="/cmt-node"
+    if [ "${#ARGS[@]}" -eq 1 ]; then
+      request "${endpoint}?path=$(encode_segment "${ARGS[0]}")" key
+    else
+      request "${endpoint}" key
+    fi
+    ;;
+  read)
+    [ "${#ARGS[@]}" -ge 1 ] && [ "${#ARGS[@]}" -le 2 ] || usage
+    max_bytes="${ARGS[1]:-65536}"
+    case "$max_bytes" in
+      ''|*[!0-9]*) echo "tts-turing: max_bytes must be a number, got '${max_bytes}'" >&2; exit 2 ;;
+    esac
+    request "/cmt-file?path=$(encode_segment "${ARGS[0]}")&max_bytes=${max_bytes}" key
     ;;
   *)
     echo "tts-turing: unknown verb '${VERB}'" >&2

@@ -11,7 +11,8 @@
 ## keys
 
 - `TURING_API_KEY` (`verify_api_key`) opens the whole surface, `POST /sessions/{name}/run` included, which is arbitrary shell on the cluster.
-- `TURING_READ_KEY` (`verify_read_key`) opens only `GET /gpu-report`, `GET /jobs` and `GET /sessions/{name}/output`; it accepts either key, and an unset read key fails closed to the full key.
+- `TURING_READ_KEY` (`verify_read_key`) opens only `GET /gpu-report`, `GET /jobs`, `GET /sessions/{name}/output` and the artifact tree's three reads, `GET /cmt-dirs`, `GET /cmt-node` and `GET /cmt-file`; it accepts either key, and an unset read key fails closed to the full key.
+- The three artifact reads are jailed to `$BOOLEAN_BACKDOOR_OUTPUT`, so the read key sees the experiment results tree and nothing else of the filesystem; `/dirs` and `/file` stay on the full key.
 - A caller that looks but never acts holds the read key alone.
 - A new endpoint defaults to `verify_api_key`; moving one to the read door widens what every read-key holder sees.
 

@@ -144,7 +144,8 @@ curls work. Those two are the only keys passed EXPLICITLY; the rest of the
 daemon's env is inherited minus the `env-scrub.mjs` list (`SESSIONS_WORKER_KEY`,
 `GH_TOKEN`, the `TOMQUEST_AGENT_*` pair, `TURING_API_KEY`, `CODEX_API_KEY`,
 `OPENAI_API_KEY`), so a session also sees `TURING_READ_KEY` when the box has one — the cluster API's
-read-only credential behind `tts-turing` (three GETs, no write verb; the full
+read-only credential behind `tts-turing` (six GETs, three of them the jailed
+experiment results tree; no write verb; the full
 `TURING_API_KEY` is not on this box at all). A daemon-stamped outcome (time
 cap, turn failure, restart)
 never overwrites an agent-recorded one — the server ignores it when an

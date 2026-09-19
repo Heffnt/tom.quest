@@ -205,7 +205,7 @@ class ListJobsTest(unittest.TestCase):
 
 
 class ReadKeyTest(unittest.TestCase):
-    """TURING_READ_KEY opens three GETs and nothing else.
+    """TURING_READ_KEY opens six GETs and nothing else.
 
     The point of the split: a holder of the read key can SEE the cluster
     (GPU report, job list, session output) and cannot ACT on it. The write
@@ -248,6 +248,24 @@ class ReadKeyTest(unittest.TestCase):
             )
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.json()["output"], "hello")
+
+    def test_read_key_opens_the_artifact_tree(self) -> None:
+        """/cmt-dirs, /cmt-node and /cmt-file are jailed to the results tree,
+        so a runner step may read the experiment's artifacts on the read key."""
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "sweep").mkdir()
+            Path(root, "sweep", "done.json").write_text("{}", encoding="utf-8")
+            full, read = self._with_keys()
+            with full, read, patch("main.boolback_snapshot.cmt_root", return_value=Path(root)):
+                dirs = _request("GET", "/cmt-dirs", headers={"X-API-Key": self.READ})
+                node = _request("GET", "/cmt-node", params={"path": "sweep"}, headers={"X-API-Key": self.READ})
+                read_file = _request("GET", "/cmt-file", params={"path": "sweep/done.json"}, headers={"X-API-Key": self.READ})
+                outside = _request("GET", "/cmt-file", params={"path": "../../etc/passwd"}, headers={"X-API-Key": self.READ})
+        self.assertEqual(dirs.status_code, 200)
+        self.assertEqual(dirs.json()["dirs"], ["sweep"])
+        self.assertEqual(node.status_code, 200)
+        self.assertEqual(read_file.status_code, 200)
+        self.assertEqual(outside.status_code, 403)
 
     # -- and nothing else ------------------------------------------------------
 
