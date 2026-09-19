@@ -27,7 +27,7 @@ const VIOLATION = {
   text: "export type ExamplePanel = { id: string };",
 };
 const BODY = "### What was removed\nA type nobody else names.\n\n### Why it cannot be needed\nNothing imports it.\n\n### What a person would notice\nNothing.";
-const REPORT = `SUBJECT: boolback: the facet panel type is local to the plot\n\n${BODY}\nbox-run: run abcd1234 host box runner claude exit 0 after 300s\n`;
+const REPORT = `SUBJECT: boolback: the facet panel type is local to the plot\n\n${BODY}\nbox-run: run abcd1234 host box cli claude exit 0 after 300s\n`;
 
 /** A fake of every door. `open` and `closed` are what gh lists; `removals` is
  *  what GET /tts/removals-open answers; `report` is what the box run prints. */
@@ -144,7 +144,7 @@ describe("a day with no loop pull request open", () => {
   });
 
   it("records a decline, opens nothing, and never picks it again", async () => {
-    const w = world({ report: "DECLINED: a string names it in a cron line\nbox-run: run a host box runner claude exit 0 after 9s\n" });
+    const w = world({ report: "DECLINED: a string names it in a cron line\nbox-run: run a host box cli claude exit 0 after 9s\n" });
     const result = await run(w);
     expect(result.action).toBe("declined");
     expect(w.calls.gh.some((a) => a[1] === "create")).toBe(false);

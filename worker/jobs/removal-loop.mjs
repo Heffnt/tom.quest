@@ -129,7 +129,7 @@ const STEERING_PREFIX = "removal-loop-";
 const STEERING_ALWAYS = ["ground-up-explanations"];
 
 /** The line box-run.mjs appends to a run's report, which is not the report. */
-const STATUS_LINE_RE = /^box-run: run \S+ host \S+ runner \S+ exit .*$/m;
+const STATUS_LINE_RE = /^box-run: run \S+ host \S+ cli \S+ exit .*$/m;
 
 // ── Small pure pieces ────────────────────────────────────────────────────────
 
