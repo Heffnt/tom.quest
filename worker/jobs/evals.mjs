@@ -2887,7 +2887,7 @@ export function realIo(env) {
     // that one posts to /tts/audit and would write an audit row for a commit
     // that does not exist — and it gates nothing, so the second family's
     // opinion is not what is being bought here.
-    audit: async (prompt) => runClaude(prompt, bounded({
+    audit: async (prompt) => runClaude(prompt, {
       model: FAULT_AUDIT_MODEL,
       timeoutMs: FAULT_AUDIT_TIMEOUT_MS,
       maxTurns: FAULT_AUDIT_MAX_TURNS,
@@ -2898,7 +2898,7 @@ export function realIo(env) {
         layersGiven: [],
         layersDenied: [],
       },
-    })),
+    }),
     loadModules,
     cmtDir: () => cacheRepoDir(env, { name: "ComplexMultiTrigger", owner: "Heffnt", branch: "master" }),
     taskRepos: (tomquestTree) => {

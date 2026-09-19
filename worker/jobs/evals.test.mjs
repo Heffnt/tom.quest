@@ -55,6 +55,7 @@ import {
   runnerFailure,
   runTask,
   runTriggerCase,
+  realIo,
   runTrials,
   serveRequest,
   scoreLearning,
@@ -3131,4 +3132,35 @@ describe("the judge-retry count on the aggregate", () => {
     expect(aggregate([one("a", { judgeRetries: 1 }), one("b", { judgeRetries: 1 }), one("c")])
       .judgeRetries).toBe(2);
   });
+});
+
+// THE REAL IO'S MODEL CALLS RUN, against a fake CLI. Every other case drives
+// runEvals with a stubbed io, so a broken reference inside realIo — the
+// planted-fault auditor once called a helper that had been deleted — failed
+// only on the box, as an unavailable audit on every fault.
+describe("the real io's model calls", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("reaches the launcher for a trial and for the planted-fault auditor", async () => {
+    const state = fs.mkdtempSync(path.join(os.tmpdir(), "evals-real-io-"));
+    try {
+      const fake = path.join(state, "claude");
+      fs.writeFileSync(fake, [
+        "#!/usr/bin/env node",
+        'try { require("node:fs").readFileSync(0, "utf8"); } catch {}',
+        `process.stdout.write(${JSON.stringify(JSON.stringify({ type: "result", subtype: "success", result: "answered" }))});`,
+      ].join("\n"));
+      fs.chmodSync(fake, 0o755);
+      vi.stubEnv("CLAUDE_BIN", fake);
+      vi.stubEnv("RUN_SWEEP_STATE_DIR", state);
+      vi.stubEnv("RUN_ENV_FILE", path.join(state, "no-such-env"));
+      vi.stubEnv("TTS_RUN_REG_SPOOL", path.join(state, "spool"));
+      vi.stubEnv("TTS_RUN_SLOT_HELD", "");
+      const io = realIo({});
+      await expect(io.runClaude("p", { model: "haiku", cwd: state })).resolves.toBe("answered");
+      await expect(io.audit("p")).resolves.toBe("answered");
+    } finally {
+      fs.rmSync(state, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
