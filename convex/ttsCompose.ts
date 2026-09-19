@@ -1036,7 +1036,9 @@ type CheckInFacts = {
   runUrl: string;
 };
 
-const DECISION_WORDS: Record<CheckInFacts["decision"], string> = {
+/** A check-in's decision in words: the ONE home of that phrasing, read by the
+ *  check-in's first line below and by the runners block on the batches tab. */
+export const runnerDecisionWords: Record<CheckInFacts["decision"], string> = {
   continue: "it changed nothing",
   change: "it made one change",
   ask: "it asked a question",
@@ -1066,7 +1068,7 @@ function checkInNumbers(f: CheckInFacts): string {
   }
   if (f.failures > 0) parts.push(`${countWord(f.failures)} ${plural(f.failures, "step", "steps")} failed since the last check-in`);
   if (f.skipped > 0) parts.push(`${countWord(f.skipped)} ${plural(f.skipped, "step was", "steps were")} skipped because the one before was still running`);
-  return `${f.title}, check-in ${f.number}: ${parts.join(", ")}; ${DECISION_WORDS[f.decision]}.`;
+  return `${f.title}, check-in ${f.number}: ${parts.join(", ")}; ${runnerDecisionWords[f.decision]}.`;
 }
 
 /** A runner check-in. NEVER NULL, unlike composeHourly: a step with nothing
@@ -1077,7 +1079,7 @@ function checkInNumbers(f: CheckInFacts): string {
 export function composeCheckIn(f: CheckInFacts): Message {
   const first = checkInNumbers(f);
   return {
-    firstLine: first.length <= FIRST_LINE_CHARS ? first : `${f.title}, check-in ${f.number}: ${DECISION_WORDS[f.decision]}.`,
+    firstLine: first.length <= FIRST_LINE_CHARS ? first : `${f.title}, check-in ${f.number}: ${runnerDecisionWords[f.decision]}.`,
     lines: [{ role: "item", text: "Open the step that wrote this check-in.", url: f.runUrl }],
   };
 }

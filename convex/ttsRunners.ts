@@ -1026,7 +1026,7 @@ const CHECK_IN_LINE_CHARS = 120;
 /** A check-in's first line of prose: the first line that is neither blank, a
  *  heading nor a table row, cut at a word boundary with no ellipsis. Null for
  *  no check-in. The digest's runner line and the page's row both print it. */
-export function checkInFirstLine(text: string | undefined): string | null {
+function checkInFirstLine(text: string | undefined): string | null {
   if (text === undefined) return null;
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
   const line = lines.find((l) => !/^#{1,6}\s/.test(l) && !/^\|.*\|$/.test(l)) ?? lines[0];
