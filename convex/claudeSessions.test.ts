@@ -1020,7 +1020,7 @@ describe("claude sessions", () => {
     const tom = await withTom(t);
     const sessionId = await createBasicSession(tom);
     await t.run(async (ctx) =>
-      ctx.db.patch(sessionId, { mode: "autonomous" as const }),
+      ctx.db.patch(sessionId, { mode: "autonomous" as const, runId: "claude:box:first-thread" }),
     );
     await t.mutation(internal.claudeSessions.internalIngest, {
       sessionId,
@@ -1039,6 +1039,8 @@ describe("claude sessions", () => {
     });
     expect(session?.status).toBe("idle");
     expect(session?.mode).toBe("interactive");
+    // The run the reopen starts continues the one the session was recorded as.
+    expect((await t.run((ctx) => ctx.db.get(sessionId)))?.continuesRunId).toBe("claude:box:first-thread");
     // The previous ending is history, not a claim about the present state —
     // it stays on the row, and the transcript that follows keeps it honest.
     expect(session?.endedReason).toBe("autonomous run complete");
@@ -2108,6 +2110,7 @@ describe("session model changes", () => {
       model: "opus",
       initialPrompt: "hello",
     });
+    await t.run(async (ctx) => ctx.db.patch(oldId, { runId: "claude:box:forked-thread" }));
 
     const forkId = await tom.mutation(api.claudeSessions.forkSessionAs, {
       sessionId: oldId,
@@ -2117,6 +2120,7 @@ describe("session model changes", () => {
     const fork = await sessionRow(t, forkId);
     expect(fork.model).toBe("gpt-5.6-sol");
     expect(fork.forkedFrom).toBe(oldId);
+    expect(fork.continuesRunId).toBe("claude:box:forked-thread");
     expect(fork.title).toBe("the boolean sweep (as gpt-5.6-sol)");
     expect(fork.mode).toBe("interactive");
     // The subject rides across: same checkout, same kind.

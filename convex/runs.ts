@@ -337,6 +337,13 @@ export const internalIngest = internalMutation({
         if (session) run = { ...run, sessionId: session._id };
       }
     }
+    // A reopened or forked session names the run it continues. Its next run
+    // takes that link; the run it names never does, so a late page of the old
+    // run cannot link to itself.
+    if (run.sessionId !== undefined && run.continuesRunId === undefined) {
+      const session = await ctx.db.get(run.sessionId);
+      if (session?.continuesRunId !== undefined && session.continuesRunId !== run.runId) run = { ...run, continuesRunId: session.continuesRunId };
+    }
 
     let previous = -1;
     for (const row of args.rows) {

@@ -492,6 +492,17 @@ describe("runs", () => {
     expect(storedSession?.runId).toBe("claude:box:sdk-root");
   });
 
+  it("gives a session's next run the run it continues, and never links the old run to itself", async () => {
+    const t = convexTest(schema, modules);
+    const sessionId = await session(t, { sdkSessionId: "sdk-after-reopen", continuesRunId: "claude:box:sdk-before-reopen" });
+    const at = (runId: string) => t.run((ctx) => ctx.db.query("runs").withIndex("by_run_id", (q) => q.eq("runId", runId)).unique());
+    await t.mutation(internal.runs.internalIngest, ingest(run({ runId: "claude:box:sdk-after-reopen", rootRunId: "claude:box:sdk-after-reopen", host: "box" }), [], []) as never);
+    expect(await at("claude:box:sdk-after-reopen")).toMatchObject({ sessionId, continuesRunId: "claude:box:sdk-before-reopen" });
+    // A late page of the old run, carrying the same session, stays unlinked.
+    await t.mutation(internal.runs.internalIngest, ingest(run({ runId: "claude:box:sdk-before-reopen", rootRunId: "claude:box:sdk-before-reopen", host: "box", sessionId }), [], []) as never);
+    expect((await at("claude:box:sdk-before-reopen"))?.continuesRunId).toBeUndefined();
+  });
+
   it("compares row sets without recording text and cuts over a clean terminal run", async () => {
     const t = convexTest(schema, modules);
     const sessionId = await session(t);

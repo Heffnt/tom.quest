@@ -531,6 +531,8 @@ type SessionSeed = {
   /** Provenance for a "reopen as": the session this one continues on another
    * model (forkSessionAs). */
   forkedFrom?: Id<"claudeSessions">;
+  /** The run the forked session was recorded as, which this one continues. */
+  continuesRunId?: string;
   /** Kind "weekly" only (schema: agendaDay, agendaSubjects): the day the
    * Friday job ran for, and the todo and batch ids its agenda's forks name. */
   agendaDay?: string;
@@ -583,6 +585,7 @@ async function insertSession(
     // which is exactly what modelFamily() reads an absent field as.
     model: seed.model ?? DEFAULT_SESSION_MODEL,
     forkedFrom: seed.forkedFrom,
+    continuesRunId: seed.continuesRunId,
     agendaDay: seed.agendaDay,
     agendaSubjects: seed.agendaSubjects,
     status: "requested",
@@ -1098,6 +1101,9 @@ async function reopenSessionFrom(
     // session after the agent's next final turn, under a wall-clock cap) and
     // close the conversation out from under him.
     mode: "interactive",
+    // A reopen resumes the CLI thread under a new SDK id, so what follows is a
+    // new run; this names the one it continues.
+    ...(session.runId ? { continuesRunId: session.runId } : {}),
     // ...but the flip must not ERASE the fact that this was an autonomous
     // run: the scheduler's per-todo backoff walk reads history by
     // `mode === "autonomous"`, and a reopened-then-ended run vanishing from
@@ -1274,6 +1280,7 @@ async function forkSessionAsFrom(
       mode: "interactive",
       model,
       forkedFrom: sessionId,
+      continuesRunId: session.runId,
       prompt: () => buildForkPrompt(sessionId, model, text),
     },
     now,

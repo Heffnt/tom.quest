@@ -1200,6 +1200,10 @@ export default defineSchema({
     // The run this session's CLI file is recorded as (§23). One session is one
     // run; absent until the sweep or backfill writes the derivable CLI id.
     runId: v.optional(v.string()),
+    // The run this session continues: the old session's run after a reopen,
+    // the forked session's run after a "reopen as". The run the ingest records
+    // for this session takes it as its own continuesRunId.
+    continuesRunId: v.optional(v.string()),
     // The finalized-row source is switched per session only after its shadow
     // comparison is clean. Absent is the legacy daemon path.
     rowsFrom: v.optional(
