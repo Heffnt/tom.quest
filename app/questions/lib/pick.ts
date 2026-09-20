@@ -46,6 +46,33 @@ export function matches(bank: readonly Question[], filters: Filters): Question[]
   return bank.filter((question) => admits(question, filters));
 }
 
+function mulberry32(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state += 0x6d2b79f5;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 0x1_0000_0000;
+  };
+}
+
+/** Every entry in list, Fisher-Yates shuffled deterministically from seed. */
+export function shuffled(list: readonly Question[], seed: number): Question[] {
+  const result = [...list];
+  const random = mulberry32(seed);
+  for (let index = result.length - 1; index > 0; index -= 1) {
+    const otherIndex = Math.floor(random() * (index + 1));
+    [result[index], result[otherIndex]] = [result[otherIndex], result[index]];
+  }
+  return result;
+}
+
+/** Draws a positive 32-bit seed; random is injectable so tests stay deterministic. */
+export function newSeed(random: () => number = Math.random): number {
+  return Math.floor(random() * 0xffff_ffff) + 1;
+}
+
 /**
  * The filters a patch produces, or the very object passed in when the patch
  * selects what is already selected. The page leans on that identity: a tap on
