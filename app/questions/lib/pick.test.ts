@@ -8,7 +8,9 @@ import {
   canStep,
   kindOf,
   matches,
+  newSeed,
   refined,
+  shuffled,
   startIndex,
   stepped,
   topicsOf,
@@ -109,6 +111,48 @@ describe("matches", () => {
     ];
     expect(ids(matches(shuffled, filters({ topic: "taste" })))).toEqual(["third", "first", "second"]);
     expect(ids(matches(shuffled, filters()))).toEqual(["third", "first", "second"]);
+  });
+});
+
+describe("shuffled", () => {
+  it("returns the same order for the same seed", () => {
+    expect(ids(shuffled(BANK, 1234))).toEqual(ids(shuffled(BANK, 1234)));
+  });
+
+  it("returns different orders for two seeds on the committed bank", () => {
+    expect(ids(shuffled(BANK, 1))).not.toEqual(ids(shuffled(BANK, 2)));
+  });
+
+  it("does not mutate its input", () => {
+    const list = [question({ id: "first" }), question({ id: "second" })];
+    const before = [...list];
+    shuffled(list, 1234);
+    expect(list).toEqual(before);
+  });
+
+  it("preserves the exact multiset of ids", () => {
+    expect(ids(shuffled(BANK, 1234)).sort()).toEqual(ids(BANK).sort());
+  });
+
+  it("returns an empty list for an empty list", () => {
+    expect(shuffled([], 1234)).toEqual([]);
+  });
+
+  it("returns its one item", () => {
+    const only = question({ id: "only" });
+    expect(shuffled([only], 1234)).toEqual([only]);
+  });
+});
+
+describe("newSeed", () => {
+  it("returns positive integers that differ for different injected random values", () => {
+    const first = newSeed(() => 0);
+    const second = newSeed(() => 0.5);
+    expect(Number.isInteger(first)).toBe(true);
+    expect(first).toBeGreaterThan(0);
+    expect(Number.isInteger(second)).toBe(true);
+    expect(second).toBeGreaterThan(0);
+    expect(first).not.toBe(second);
   });
 });
 

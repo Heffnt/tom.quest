@@ -13,7 +13,9 @@ import {
   canStep,
   kindOf,
   matches,
+  newSeed,
   refined,
+  shuffled,
   startIndex,
   stepped,
   topicsOf,
@@ -25,11 +27,11 @@ import {
 
 /** The settings key this page owns, and the only shape it stores under it. */
 const SETTINGS_KEY = "questions";
-type QuestionsSettings = { seen: string[] };
-const SETTINGS_DEFAULTS: QuestionsSettings = { seen: [] };
+type QuestionsSettings = { seen: string[]; seed: number };
+const SETTINGS_DEFAULTS: QuestionsSettings = { seen: [], seed: 0 };
 
 /** The options, seen ids and position always change together. */
-type View = { filters: Filters; seen: ReadonlySet<string>; index: number };
+type View = { filters: Filters; seen: ReadonlySet<string>; seed: number; index: number };
 
 /** The no-filter sentinel is null everywhere but here, where it reads "any". */
 function chipLabel(option: unknown): string {
@@ -138,35 +140,40 @@ function Questions() {
   const [view, setView] = useState<View>(() => ({
     filters: INITIAL_FILTERS,
     seen: new Set<string>(),
+    seed: 0,
     index: 0,
   }));
   const [drawerContent, setDrawerContent] = useState<DrawerContent | null>(null);
   const drawerOpenerRef = useRef<HTMLButtonElement>(null);
   const seeded = useRef<ReadonlySet<string> | null>(null);
+  const activated = useRef(false);
   const topicOptions = useMemo<readonly TopicFilter[]>(() => [null, ...topicsOf(BANK)], []);
-  const list = useMemo(() => matches(BANK, view.filters), [view.filters]);
+  const list = useMemo(() => shuffled(matches(BANK, view.filters), view.seed), [view.filters, view.seed]);
   const current = hydrated ? list[view.index] ?? null : null;
   const seenInList = list.filter((question) => view.seen.has(question.id)).length;
 
-  // The seed's identity distinguishes hydration from an activation: it is
+  // The seeded set's identity distinguishes hydration from an activation: it is
   // never mirrored back into settings.
   const seedFromSettings = useEffectEvent(() => {
     const seen = new Set(stored.seen);
-    seeded.current = seen;
+    const freshStart = stored.seed === 0 || stored.seen.length === 0;
+    // An evening in progress keeps its order so prev still walks back over what he has asked, and a fresh start gets a new order.
+    const seed = freshStart ? newSeed() : stored.seed;
+    seeded.current = freshStart ? null : seen;
+    activated.current = true;
     setView((previous) => ({
       ...previous,
       seen,
-      index: startIndex(matches(BANK, previous.filters), seen, null),
+      seed,
+      index: startIndex(shuffled(matches(BANK, previous.filters), seed), seen, null),
     }));
   });
 
   useEffect(() => {
-    if (seeded.current === null || view.seen === seeded.current) {
-      // A null seed covers pre-hydration; its identity then excludes the seeded view.
-      return;
-    }
-    storeSettings({ seen: [...view.seen] });
-  }, [storeSettings, view.seen]);
+    // Before activation no stored state has been read; afterward seeded identity excludes that read.
+    if (!activated.current || view.seen === seeded.current) return;
+    storeSettings({ seen: [...view.seen], seed: view.seed });
+  }, [storeSettings, view.seen, view.seed]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -184,13 +191,25 @@ function Questions() {
     setView((previous) => {
       const filters = refined(previous.filters, patch);
       if (filters === previous.filters) return previous;
-      const nextList = matches(BANK, filters);
+      const nextList = shuffled(matches(BANK, filters), previous.seed);
       const currentId = list[previous.index]?.id ?? null;
       return { ...previous, filters, index: startIndex(nextList, previous.seen, currentId) };
     });
   };
 
-  const resetSeen = () => setView((previous) => ({ ...previous, seen: new Set<string>() }));
+  const resetSeen = () =>
+    setView((previous) => {
+      const seed = newSeed();
+      const seen = new Set<string>();
+      const nextList = shuffled(matches(BANK, previous.filters), seed);
+      // Keeping the current id makes reset unseen without moving the question on screen.
+      return {
+        ...previous,
+        seen,
+        seed,
+        index: startIndex(nextList, seen, list[previous.index]?.id ?? null),
+      };
+    });
 
   const selectListIndex = (index: number) => {
     setView((previous) => {
@@ -263,9 +282,9 @@ function Questions() {
               >
                 reset seen
               </button>
-              <Info side="below" call="storeSettings({ seen: [] })">
-                Empties the seen set stored under the questions settings key, so every question reads as unseen again;
-                the question on screen stays.
+              <Info side="below" call="storeSettings({ seen: [], seed: newSeed() })">
+                Empties the seen set stored under the questions settings key and draws a new order, so every question
+                reads as unseen again; the question on screen stays.
               </Info>
             </span>
           </div>

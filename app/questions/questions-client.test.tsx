@@ -3,10 +3,13 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { useEffect, useState } from "react";
 import { BANK } from "./data/types";
 import QuestionsClient from "./questions-client";
-import { matches, type Filters } from "./lib/pick";
+import { kindOf, matches, shuffled, type Filters } from "./lib/pick";
+
+const FRESH_SEED = 1;
+const freshOrder = () => shuffled(BANK, FRESH_SEED);
 
 const settingsMock = vi.hoisted(() => ({
-  stored: { seen: [] as string[] },
+  stored: { seen: [] as string[], seed: 0 },
   rerender: null as (() => void) | null,
   storeSettings: vi.fn(),
 }));
@@ -32,14 +35,19 @@ function StatefulQuestions() {
   return <QuestionsClient />;
 }
 
-function renderQuestions(seen: string[] = []) {
-  settingsMock.stored = { seen };
+function renderQuestions(
+  { seen = [], seed = 0 }: { seen?: string[]; seed?: number } = {},
+  clearStoredWrites = true,
+) {
+  settingsMock.stored = { seen, seed };
   settingsMock.storeSettings.mockReset();
-  settingsMock.storeSettings.mockImplementation((patch: { seen?: string[] }) => {
+  settingsMock.storeSettings.mockImplementation((patch: { seen?: string[]; seed?: number }) => {
     settingsMock.stored = { ...settingsMock.stored, ...patch };
     settingsMock.rerender?.();
   });
-  return render(<StatefulQuestions />);
+  const result = render(<StatefulQuestions />);
+  if (clearStoredWrites) settingsMock.storeSettings.mockClear();
+  return result;
 }
 
 function rowFor(question: (typeof BANK)[number]) {
@@ -56,19 +64,23 @@ function openDrawer(content: "options" | "list") {
   return { opener, dialog: screen.getByRole("dialog", { name: content }) };
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 beforeEach(() => {
-  settingsMock.stored = { seen: [] };
+  vi.spyOn(Math, "random").mockReturnValue(0);
+  settingsMock.stored = { seen: [], seed: 0 };
   settingsMock.rerender = null;
   settingsMock.storeSettings.mockReset();
 });
 
 describe("QuestionsClient", () => {
-  it("shows the first bank question with prev disabled, next enabled, and 1 of 53 on a fresh load", () => {
+  it("shows the first shuffled question with prev disabled, next enabled, and 1 of 53 on a fresh load", () => {
     renderQuestions();
 
-    expect(screen.getByText(BANK[0].text)).toBeTruthy();
+    expect(screen.getByText(freshOrder()[0].text)).toBeTruthy();
     expect(screen.getByRole("button", { name: "prev" }).hasAttribute("disabled")).toBe(true);
     expect(screen.getByRole("button", { name: "next" }).hasAttribute("disabled")).toBe(false);
     expect(screen.getByText(/^1 of 53/)).toBeTruthy();
@@ -79,18 +91,18 @@ describe("QuestionsClient", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "prev" }));
 
-    expect(screen.getByText(BANK[0].text)).toBeTruthy();
+    expect(screen.getByText(freshOrder()[0].text)).toBeTruthy();
     expect(settingsMock.storeSettings).not.toHaveBeenCalled();
   });
 
-  it("moves next to the second question, enables prev, and stores the left id", () => {
+  it("moves next to the second shuffled question, enables prev, and stores the left id and seed", () => {
     renderQuestions();
 
     fireEvent.click(screen.getByRole("button", { name: "next" }));
 
-    expect(screen.getByText(BANK[1].text)).toBeTruthy();
+    expect(screen.getByText(freshOrder()[1].text)).toBeTruthy();
     expect(screen.getByRole("button", { name: "prev" }).hasAttribute("disabled")).toBe(false);
-    expect(settingsMock.storeSettings).toHaveBeenLastCalledWith({ seen: [BANK[0].id] });
+    expect(settingsMock.storeSettings).toHaveBeenLastCalledWith({ seen: [freshOrder()[0].id], seed: FRESH_SEED });
   });
 
   it("moves prev and stores the question it left", () => {
@@ -99,8 +111,11 @@ describe("QuestionsClient", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "prev" }));
 
-    expect(screen.getByText(BANK[0].text)).toBeTruthy();
-    expect(settingsMock.storeSettings).toHaveBeenLastCalledWith({ seen: [BANK[0].id, BANK[1].id] });
+    expect(screen.getByText(freshOrder()[0].text)).toBeTruthy();
+    expect(settingsMock.storeSettings).toHaveBeenLastCalledWith({
+      seen: [freshOrder()[0].id, freshOrder()[1].id],
+      seed: FRESH_SEED,
+    });
   });
 
   it("mirrors each seen change once despite persisted-state rerenders and leaves filter changes alone", () => {
@@ -120,7 +135,7 @@ describe("QuestionsClient", () => {
     expect(settingsMock.storeSettings).toHaveBeenCalledTimes(3);
   });
 
-  it("marks the final bank question seen when leaving it with prev", () => {
+  it("marks the final shuffled question seen when leaving it with prev", () => {
     renderQuestions();
 
     for (let index = 1; index < BANK.length; index += 1) {
@@ -128,26 +143,29 @@ describe("QuestionsClient", () => {
     }
 
     const next = screen.getByRole("button", { name: "next" });
-    expect(screen.getByText(BANK.at(-1)?.text ?? "")).toBeTruthy();
+    expect(screen.getByText(freshOrder().at(-1)?.text ?? "")).toBeTruthy();
     expect(next).toBeTruthy();
     expect(next.hasAttribute("disabled")).toBe(true);
 
     fireEvent.click(screen.getByRole("button", { name: "prev" }));
 
-    expect(settingsMock.storeSettings).toHaveBeenLastCalledWith({ seen: BANK.map((question) => question.id) });
+    expect(settingsMock.storeSettings).toHaveBeenLastCalledWith({
+      seen: freshOrder().map((question) => question.id),
+      seed: FRESH_SEED,
+    });
   });
 
-  it("starts at the fourth question when the first three ids are seen", () => {
-    renderQuestions(BANK.slice(0, 3).map((question) => question.id));
+  it("starts at the fourth shuffled question when the first three shuffled ids are seen", () => {
+    renderQuestions({ seen: freshOrder().slice(0, 3).map((question) => question.id) });
 
-    expect(screen.getByText(BANK[3].text)).toBeTruthy();
+    expect(screen.getByText(freshOrder()[3].text)).toBeTruthy();
     expect(screen.getByText(/^4 of 53/)).toBeTruthy();
   });
 
   it("starts at index 0 when every bank id is seen", () => {
-    renderQuestions(BANK.map((question) => question.id));
+    renderQuestions({ seen: BANK.map((question) => question.id) });
 
-    expect(screen.getByText(BANK[0].text)).toBeTruthy();
+    expect(screen.getByText(freshOrder()[0].text)).toBeTruthy();
     expect(screen.getByText(/^1 of 53/)).toBeTruthy();
   });
 
@@ -170,12 +188,18 @@ describe("QuestionsClient", () => {
   it("keeps an admitted current question and updates its position when choosing a kind", () => {
     renderQuestions();
     const { dialog } = openDrawer("options");
-    const kindOneList = matches(BANK, { kind: 1, frame: null, topic: null } satisfies Filters);
+    const current = freshOrder()[0];
+    const kindList = shuffled(
+      matches(BANK, { kind: kindOf(current), frame: null, topic: null } satisfies Filters),
+      FRESH_SEED,
+    );
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "1" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: String(kindOf(current)) }));
 
-    expect(screen.getByText(BANK[0].text)).toBeTruthy();
-    expect(screen.getByText(new RegExp(`^${kindOneList.findIndex((question) => question.id === BANK[0].id) + 1} of ${kindOneList.length}`))).toBeTruthy();
+    expect(screen.getByText(current.text)).toBeTruthy();
+    expect(
+      screen.getByText(new RegExp(`^${kindList.findIndex((question) => question.id === current.id) + 1} of ${kindList.length}`)),
+    ).toBeTruthy();
   });
 
   it("does nothing when the already-selected chip is tapped", () => {
@@ -184,7 +208,7 @@ describe("QuestionsClient", () => {
 
     fireEvent.click(within(dialog).getAllByRole("button", { name: "any" })[0]);
 
-    expect(screen.getByText(BANK[0].text)).toBeTruthy();
+    expect(screen.getByText(freshOrder()[0].text)).toBeTruthy();
     expect(settingsMock.storeSettings).not.toHaveBeenCalled();
   });
 
@@ -227,9 +251,9 @@ describe("QuestionsClient", () => {
     renderQuestions();
     openDrawer("list");
 
-    fireEvent.click(rowFor(BANK[1]));
+    fireEvent.click(rowFor(freshOrder()[1]));
 
-    expect(screen.getByText(BANK[1].text)).toBeTruthy();
+    expect(screen.getByText(freshOrder()[1].text)).toBeTruthy();
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
@@ -237,7 +261,7 @@ describe("QuestionsClient", () => {
     renderQuestions();
     openDrawer("list");
 
-    expect(rowFor(BANK[0]).getAttribute("aria-current")).toBe("true");
+    expect(rowFor(freshOrder()[0]).getAttribute("aria-current")).toBe("true");
   });
 
   it("closes by Escape, backdrop and close control and returns focus to the opener", () => {
@@ -286,14 +310,50 @@ describe("QuestionsClient", () => {
     expect(screen.getByText("matches(BANK, { ...filters, kind: null })")).toBeTruthy();
   });
 
-  it("resets seen in settings and leaves the current question in place", () => {
-    renderQuestions();
-    fireEvent.click(screen.getByRole("button", { name: "next" }));
+  it("uses the stored order without drawing a seed when stored seen ids are non-empty", () => {
+    const seed = 1234;
+    const order = shuffled(BANK, seed);
+    renderQuestions({ seen: [order[0].id], seed }, false);
+
+    expect(screen.getByText(order[1].text)).toBeTruthy();
+    expect(settingsMock.storeSettings).not.toHaveBeenCalled();
+  });
+
+  it("draws and stores a fresh seed when stored seen ids are empty", () => {
+    renderQuestions({ seen: [], seed: 1234 }, false);
+
+    expect(screen.getByText(freshOrder()[0].text)).toBeTruthy();
+    expect(settingsMock.storeSettings).toHaveBeenLastCalledWith({ seen: [], seed: FRESH_SEED });
+  });
+
+  it("resets seen with a new seed and leaves the current question in place", () => {
+    const previousSeed = 1234;
+    const previousOrder = shuffled(BANK, previousSeed);
+    renderQuestions({ seen: [previousOrder[0].id], seed: previousSeed });
     const { dialog } = openDrawer("options");
 
     fireEvent.click(within(dialog).getByRole("button", { name: "reset seen" }));
 
-    expect(settingsMock.storeSettings).toHaveBeenLastCalledWith({ seen: [] });
-    expect(screen.getByText(BANK[1].text)).toBeTruthy();
+    expect(settingsMock.storeSettings).toHaveBeenLastCalledWith({ seen: [], seed: FRESH_SEED });
+    expect(FRESH_SEED).not.toBe(previousSeed);
+    expect(screen.getByText(previousOrder[1].text)).toBeTruthy();
+  });
+
+  it("walks the same questions in the same order after a reload with a stored seed", () => {
+    const seed = 1234;
+    const order = shuffled(BANK, seed);
+    const first = renderQuestions({ seen: [order[0].id], seed });
+
+    expect(screen.getByText(order[1].text)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "next" }));
+    expect(screen.getByText(order[2].text)).toBeTruthy();
+    const saved = settingsMock.stored;
+    first.unmount();
+
+    renderQuestions(saved, false);
+
+    expect(screen.getByText(order[2].text)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "prev" }));
+    expect(screen.getByText(order[1].text)).toBeTruthy();
   });
 });
