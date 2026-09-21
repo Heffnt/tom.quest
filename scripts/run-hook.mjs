@@ -158,10 +158,17 @@ function hookRegistration(payload, event, runFile, env) {
   // `claude` typed into an ssh shell are the two ways such a session exists on
   // the box, and both are Tom's: it is a session with him, not a worker. Both
   // carry RUN_HOST=box from the line worker/setup.sh puts atop /root/.bashrc,
-  // the same line that gives them the account slot and so this hook. A
-  // process tagged TTS_BOX_RUN_ID was launched by box-run.mjs and only lacks a
-  // token because its spool write failed; it is not Tom's and stays unnamed.
-  const unlaunchedBoxSession = host === "box" && !subagent && cli === "claude" && !firstString(env.TTS_BOX_RUN_ID);
+  // the same line that gives them the account slot and so this hook.
+  //
+  // REMOVAL CHECK: two tokenless starts are not Tom's and stay unnamed, so the
+  // envelope their starter wrote keeps its words. A process tagged
+  // TTS_BOX_RUN_ID was launched by box-run.mjs and lacks a token only because
+  // its spool write failed. A process carrying TTS_RUN_PARENT_RUN_ID was
+  // started under a run that already exists: the session daemon resumes its
+  // sessions after a restart that way (worker/session-host/session.mjs), with
+  // no new token, and naming it here would overwrite the daemon's environment.
+  const started = firstString(env.TTS_BOX_RUN_ID, env.TTS_RUN_PARENT_RUN_ID);
+  const unlaunchedBoxSession = host === "box" && !subagent && cli === "claude" && !started;
   return {
     host,
     ...(cli ? { cli } : {}),

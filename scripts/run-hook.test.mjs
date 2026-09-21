@@ -214,6 +214,18 @@ describe("run lifecycle hook", () => {
     expect(envelope.registration).not.toHaveProperty("environment");
   });
 
+  it("leaves a daemon session resumed after a restart with the daemon's environment", () => {
+    const f = fixture();
+    const payload = payloadFor(f.root, "claude", "SessionStart");
+    const sidecar = registrationSidecarPath(payload.transcript_path);
+    fs.mkdirSync(path.dirname(sidecar), { recursive: true });
+    fs.writeFileSync(sidecar, JSON.stringify({ token: "daemon-token", registration: { host: "box", origin: "daemon", kind: "job", environment: "worker" } }));
+    expect(run(payload, { ...f, env: { RUN_HOST: "box", TTS_RUN_PARENT_RUN_ID: "claude:box:parent" } }).status).toBe(0);
+    const envelope = JSON.parse(fs.readFileSync(sidecar, "utf8"));
+    expect(envelope.registration).toMatchObject({ environment: "worker" });
+    expect(envelope.registration.origin).not.toBe("desktop");
+  });
+
   it("names no environment for a box subagent, which inherits its parent's", () => {
     const f = fixture();
     const payload = payloadFor(f.root, "claude", "SubagentStart");
