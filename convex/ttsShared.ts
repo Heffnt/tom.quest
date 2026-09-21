@@ -830,38 +830,45 @@ export function runnerCeilingWords(ceiling: RunnerCeiling): string {
 /** The form of Tom's reply that sets a runner's ceiling, in words, for the
  *  step prompt and the docs. parseCeilingReply reads exactly this. */
 export const CEILING_REPLY_FORM =
-  'a reply in the runner\'s thread that starts with the word "ceiling" and names any of the three numbers, such as "ceiling 8 GPUs, 12 hours, 256 GB"; a number it does not name stays as it was, hours are turned into minutes and GB into thousands of MB';
+  'a reply in the runner\'s thread that starts with the word "ceiling" and says nothing but the numbers it changes, each once, such as "ceiling 8 GPUs, 12 hours, 256 GB"; a number it does not name stays as it was, hours are turned into minutes and GB into thousands of MB';
 
 /**
  * Tom's reply as a ceiling change, or null when the reply is not one. A reply
  * is one when its first word is "ceiling". It names numbers with their units:
  * GPUs; minutes or hours; MB or GB (a GB is 1000 MB, as 128 GB is the 128000
- * MB default). What it does not name keeps the current value. A reply that
- * starts with the word but names nothing, or a number that breaks the rules,
- * comes back with its fault, and the ceiling does not change.
+ * MB default). What it does not name keeps the current value. A reply that is
+ * not exactly that form, or a number that breaks the rules, comes back with
+ * its fault, and the ceiling does not change.
  */
 export function parseCeilingReply(text: string, current: RunnerCeiling): { ceiling: RunnerCeiling } | { fault: string } | null {
   const body = text.trim();
   if (!/^ceiling\b/i.test(body)) return null;
-  if (/[-+]\s*\d/.test(body)) return { fault: "A ceiling reply names plain numbers with no sign, such as ceiling 8 GPUs, 12 hours." };
+  // THE WHOLE REPLY IS THE FORM OR IT CHANGES NOTHING. Only the word, then
+  // number-and-unit pairs joined by commas or "and", each quantity once: a
+  // reply that says anything else ("8 GPUs, not 16 GPUs", "-16 GPUs", "about
+  // 16 GPUs") is a sentence for Tom's reader, not a number for this one, and
+  // reading a number out of it could widen a runner past what he meant.
+  const pair = "(\\d+(?:\\.\\d+)?)\\s*(gpus?|minutes?|mins?|hours?|hrs?|gb|mb)";
+  const form = new RegExp(`^ceiling\\s*:?\\s*${pair}(?:\\s*(?:,|,?\\s+and)?\\s+${pair})*\\s*\\.?$`, "i");
+  if (!form.test(body)) return { fault: CEILING_REPLY_REFUSED };
   const next = { ...current };
-  let named = 0;
-  // A number counts only when nothing number-like touches it on the left: a
-  // sign, a letter, a digit or a point. "ceiling -16 GPUs" is not 16 GPUs.
-  for (const match of body.matchAll(/(?<![\w.+-])(\d+(?:\.\d+)?)\s*(gpus?|minutes?|mins?|hours?|hrs?|gb|mb)\b/gi)) {
+  const seen = new Set<keyof RunnerCeiling>();
+  for (const match of body.matchAll(new RegExp(pair, "gi"))) {
     const n = Number(match[1]);
     const unit = match[2].toLowerCase();
-    named += 1;
-    if (unit.startsWith("gpu")) next.gpus = n;
-    else if (unit.startsWith("min")) next.minutes = n;
-    else if (unit.startsWith("h")) next.minutes = Math.round(n * 60);
+    const key: keyof RunnerCeiling = unit.startsWith("gpu") ? "gpus" : unit.endsWith("b") ? "memoryMb" : "minutes";
+    if (seen.has(key)) return { fault: CEILING_REPLY_REFUSED };
+    seen.add(key);
+    if (unit.startsWith("gpu") || unit === "mb" || unit.startsWith("min")) next[key] = n;
     else if (unit === "gb") next.memoryMb = Math.round(n * 1000);
-    else next.memoryMb = n;
+    else next.minutes = Math.round(n * 60);
   }
-  if (named === 0) return { fault: 'The reply starts with "ceiling" but names no number of GPUs, minutes, hours, MB or GB.' };
   const faults = runnerCeilingFaults(next);
   return faults.length > 0 ? { fault: faults.join(" ") } : { ceiling: next };
 }
+
+const CEILING_REPLY_REFUSED =
+  'A ceiling reply is only the word "ceiling" and the new numbers, each named once, such as "ceiling 8 GPUs, 12 hours, 256 GB".';
 
 export const NO_REPO = "none";
 
