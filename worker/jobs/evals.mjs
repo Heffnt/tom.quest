@@ -1826,6 +1826,9 @@ export async function runTrials(id, basePassed, once) {
   const passing = results.find((result) => result.judged === "pass");
   return {
     ...(passing ?? first),
+    // A retry that passed is a flaky case, and the first trial is the one that
+    // failed: its reason is the one worth keeping (the row's result entry).
+    ...(passing ? { failedReason: first.reason } : {}),
     trials: { head: results.length, headPassed: results.filter((result) => result.judged === "pass").length },
   };
 }
@@ -2758,9 +2761,17 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
       // a measured case whose record did not come back: the difference between
       // "not asked" and "asked, no answer". The efficiency block counts only
       // the cases that were asked.
+      //
+      // `reason` is the scorer's own sentence, the failing trial's when one
+      // failed (runCase's reason, runTrials's failedReason), so a flaky case
+      // can be told from a failing one without re-running it. A passing case
+      // keeps its reason too: the repair brief under Tom's 2026-09-21 ruling
+      // asks for every item's, and a pass for the wrong reason shows only in
+      // it. Bounded, because the row holds every scored case.
       results: scoredAll.map((result) => ({
         id: result.id,
         judged: result.judged,
+        ...resultReason(result.failedReason ?? result.reason),
         ...(result.errored === true ? { errored: true } : {}),
         ...(result.method === undefined ? {} : { method: result.method }),
         passK: result.passK ?? (result.trials === undefined
@@ -2783,6 +2794,14 @@ export async function runEvals({ repo, sha, limit = PR_ITEMS, jobs = null, weekl
     tomquest.remove();
     wikitom.remove();
   }
+}
+
+/** A scorer's reason as a result entry keeps it: redacted, at most
+ *  RESULT_REASON_CHARS characters, absent when there is none. */
+const RESULT_REASON_CHARS = 300;
+function resultReason(reason) {
+  if (typeof reason !== "string" || reason.trim() === "") return {};
+  return { reason: redactSecrets(reason.trim()).slice(0, RESULT_REASON_CHARS) };
 }
 
 const FLAGS = new Set(["--serve", "--weekly", "--force", "--ablation", "--faults-only", "--dry-run"]);

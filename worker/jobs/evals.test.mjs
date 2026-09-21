@@ -578,6 +578,8 @@ describe("the head trials", () => {
     expect(calls.count).toBe(2);
     expect(result.judged).toBe("pass");
     expect(result.trials).toEqual({ head: 2, headPassed: 1 });
+    // The reason kept for the row is the failed trial's, not the pass's.
+    expect(result.failedReason).toBe("trial 1");
     expect(isFlaky(result)).toBe(true);
     const stamped = await stampAgainstBase(rowFor(result), basePassing);
     expect(stamped).toMatchObject({ pass: 1, fail: 0, flaky: 1, regressions: 0 });
@@ -1660,8 +1662,30 @@ describe("runEvals over a run case", () => {
     const run = await runEvals({ repo: "tom.quest", sha: "head" }, io);
     expect(run).toMatchObject({ items: 1, pass: 1, fail: 0 });
     expect(io.calls.regen).toBe(1);
-    expect(run.results).toEqual([{ id: "a", judged: "pass", passK: true, tokensMedian: null }]);
+    expect(run.results).toEqual([{ id: "a", judged: "pass", reason: "judge 1", passK: true, tokensMedian: null }]);
     expect(run.ablation).toEqual([]);
+  });
+
+  // witness: a result entry carried only {id, judged, passK}, so a flaky case
+  // could not be told from a failing one without re-running it (the
+  // learning-ground-said-knows trace, 2026-09-19).
+  it("keeps the failing trial's reason on a flaky case's result entry", async () => {
+    const dir = caseDir();
+    const io = runIoFor(dir, ["pass", "fail", "pass"]);
+    const run = await runEvals({ repo: "tom.quest", sha: "head", weekly: true }, io);
+    expect(run.results).toEqual([expect.objectContaining({ id: "a", judged: "pass", passK: false, reason: "judge 2" })]);
+  });
+
+  it("bounds a result entry's reason to 300 characters", async () => {
+    const dir = caseDir();
+    const io = runIoFor(dir, ["fail"]);
+    const judge = io.runClaude;
+    io.runClaude = async (prompt, options) => {
+      const answer = await judge(prompt, options);
+      return String(prompt).startsWith("You are judging") ? JSON.stringify({ ...JSON.parse(answer), reason: "x".repeat(400) }) : answer;
+    };
+    const run = await runEvals({ repo: "tom.quest", sha: "head" }, io);
+    expect(run.results[0].reason).toBe("x".repeat(300));
   });
 
   it("posts a nonmeasurement when the scored request was replaced mid-run", async () => {

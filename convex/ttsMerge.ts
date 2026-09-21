@@ -10,7 +10,7 @@ import {
   evalsProtocolStatus,
   evalsRequestFor,
 } from "./ttsEvals";
-import { commitKey, mergeKey } from "./ttsShared";
+import { commitKey, mergeKey, SESSION_REPOS } from "./ttsShared";
 import { redactSecrets } from "../worker/session-host/redact.mjs";
 
 // ── THE MECHANICAL MERGE GATE (Tom, 2026-09-09) ─────────────────────────────
@@ -658,6 +658,87 @@ export const internalRecordAudit = internalMutation({
 });
 
 /**
+ * Whether GitHub shows `sha` merged into `repo`'s main branch, the one GitHub
+ * names as its default (ComplexMultiTrigger's is master): on that branch
+ * itself (it is at the sha or ahead of it), or the head of a pull request
+ * merged into it.
+ * The second is how a squash merge lands, where the head commit never reaches
+ * main (worker/jobs/removal-loop.mjs merges that way).
+ *
+ * POST /tts/merge asks this before it records, because the record cannot be
+ * corrected afterwards: a merge row is written once per sha, and a second
+ * report returns the first. PR #196 was recorded at c4e73b5 on 2026-09-19 from
+ * a merge command GitHub had refused; its real merge landed half an hour later
+ * as 9f1096a, and that row stands. The three checks cannot catch this, since
+ * they are about the commit and not about whether it was merged.
+ *
+ * Fail-closed like the gate: a GitHub that cannot be asked is a merge not
+ * recorded, and the reporter can post again. ONE EXCEPTION, said in `why`:
+ * a repository GitHub will not show the record's token at all (404 on the
+ * repository itself; GITHUB_MIRROR_TOKEN does not cover WikiTom, see
+ * convex/ttsSync.ts). Refusing there would leave every merge of that
+ * repository with no row and no line to object to, which costs Tom more than
+ * a row that says it was not checked; the row and its decisions line say so.
+ */
+export async function mergedOnMain(
+  repo: string,
+  sha: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ merged: boolean; why: string }> {
+  const slug = (SESSION_REPOS as Record<string, string>)[repo];
+  // Both values go into a GitHub URL: an unknown repo has no slug to ask
+  // about, and a value that is not a sha (a branch name, a path) would ask
+  // GitHub a different question than whether this commit merged.
+  if (!slug) return { merged: false, why: `${repo} is not a repository the record knows` };
+  if (!/^[0-9a-f]{7,40}$/i.test(sha)) return { merged: false, why: `${sha} is not a commit sha` };
+  const token = process.env.GITHUB_MIRROR_TOKEN;
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "tts-merge",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+  const ask = async (path: string) => {
+    try {
+      const res = await fetchImpl(`https://api.github.com/repos/${slug}${path ? `/${path}` : ""}`, { headers });
+      return { status: res.status, body: res.ok ? ((await res.json()) as unknown) : null };
+    } catch {
+      return { status: 0, body: null };
+    }
+  };
+  const info = await ask("");
+  // 404 only: GitHub answers a repository a token cannot see with 404, and a
+  // 403 can be a rate limit, which must not pass as permission.
+  if (info.status === 404) {
+    return { merged: true, why: `not checked against GitHub: the record's token cannot read ${repo}` };
+  }
+  const main = (info.body as { default_branch?: unknown } | null)?.default_branch;
+  if (typeof main !== "string" || main === "") {
+    return { merged: false, why: `GitHub could not be asked for ${repo}'s main branch (status ${info.status})` };
+  }
+  const compare = await ask(`compare/${sha}...${encodeURIComponent(main)}`);
+  const status = (compare.body as { status?: unknown } | null)?.status;
+  // compare BASE...HEAD with main as the head: "ahead" means main has every
+  // commit of the sha and more, "identical" that main is at it.
+  if (status === "identical" || status === "ahead") return { merged: true, why: `${sha.slice(0, 7)} is on ${main}` };
+  const pulls = await ask(`commits/${sha}/pulls`);
+  const merged = Array.isArray(pulls.body)
+    ? (pulls.body as { number?: unknown; merged_at?: unknown; base?: { ref?: unknown }; head?: { sha?: unknown } }[])
+        // The pull request's HEAD, not any commit in it: GitHub lists every
+        // pull request a commit belongs to, and an earlier commit of a
+        // squash-merged one was never what merged.
+        .find((pull) => typeof pull?.merged_at === "string" && pull.base?.ref === main &&
+          typeof pull.head?.sha === "string" && pull.head.sha.toLowerCase().startsWith(sha.toLowerCase()))
+    : undefined;
+  if (merged) return { merged: true, why: `${sha.slice(0, 7)} is the head of pull request #${String(merged.number)}, merged into ${main}` };
+  // A 404 from the comparison is GitHub not knowing the commit, which is an
+  // answer (not merged); any other failure means it was not asked.
+  if (compare.status !== 200 && compare.status !== 404) {
+    return { merged: false, why: `GitHub could not be asked whether ${sha.slice(0, 7)} is on ${main} (status ${compare.status})` };
+  }
+  return { merged: false, why: `${sha.slice(0, 7)} is not on ${main} and belongs to no pull request merged into it` };
+}
+
+/**
  * POST /tts/merge writes exactly this event, and ONLY after the three checks
  * above pass. A merge is reported for objection, never placed on the narrow
  * list: the delegate did not make this decision.
@@ -673,6 +754,9 @@ export const internalRecordMerge = internalMutation({
     sha: v.string(),
     subject: v.string(),
     todoId: v.optional(v.string()),
+    // What GitHub said about the merge (mergedOnMain), kept on the row. The
+    // one caller, POST /tts/merge, always has it.
+    mainCheck: v.string(),
   },
   handler: async (ctx, args) => {
     const gate = await mergeGateFor(ctx, args.repo, args.sha);
@@ -689,7 +773,7 @@ export const internalRecordMerge = internalMutation({
       ctx,
       MERGE,
       todoId ?? undefined,
-      { repo: args.repo, sha: args.sha, subject: args.subject },
+      { repo: args.repo, sha: args.sha, subject: args.subject, mainCheck: args.mainCheck },
       key,
     );
     // ONE LINE IN #tts-decisions as it is recorded, through the one decisions
@@ -703,7 +787,7 @@ export const internalRecordMerge = internalMutation({
       askId: key,
       ...(todoId === undefined || todoId === null ? {} : { todoId: todoId as string }),
       decision: `merged ${args.repo}@${args.sha.slice(0, 7)}: ${args.subject}`,
-      reason: gate.checks.map((check) => check.why).join("; "),
+      reason: [...gate.checks.map((check) => check.why), args.mainCheck].join("; "),
       refused: false,
     });
     return { recorded: true, id, existing: false, gate };

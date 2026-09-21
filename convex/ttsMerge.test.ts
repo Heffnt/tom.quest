@@ -1,5 +1,5 @@
 import { convexTest, type TestConvex } from "convex-test";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import schema from "./schema";
 import { internal } from "./_generated/api";
 import {
@@ -15,6 +15,7 @@ import {
   checkRowPassed,
   commitKey,
   compactCount,
+  mergedOnMain,
   removalNotesOf,
 } from "./ttsMerge";
 import { COVERAGE_NOT_REQUIRED, EVALS_REQUEST, EVALS_RUN } from "./ttsEvals";
@@ -71,6 +72,27 @@ const cleanEvals = (t: TestConvex<typeof schema>, sha = SHA) =>
   seedFact(t, EVALS_RUN, { regressions: 0, goldenCoverage: true, pass: 40, items: 40 }, sha);
 const observeEvalsProtocol = (t: TestConvex<typeof schema>, boxEvalsVersion = EVALS_PROTOCOL) =>
   t.mutation(internal.ttsEvals.internalObserveBoxEvalsProtocol, { boxEvalsVersion });
+
+/** GitHub as POST /tts/merge asks it: how SHA compares with main, and the
+ *  pull requests SHA belongs to. */
+function github({ compare = "ahead", pulls = [] as unknown[], status = 200, main = "main" } = {}) {
+  const asked: string[] = [];
+  const fake = vi.fn(async (url: string | URL | Request) => {
+    const path = String(url);
+    asked.push(path);
+    if (status !== 200) return new Response("", { status });
+    if (path.includes("/compare/")) return Response.json({ status: compare });
+    if (path.includes("/pulls")) return Response.json(pulls);
+    if (/\/repos\/Heffnt\/[^/]+$/.test(path)) return Response.json({ default_branch: main });
+    return new Response("", { status: 404 });
+  });
+  return { fake, asked };
+}
+
+// Every merge report below is about a sha GitHub shows on main, unless a test
+// says otherwise.
+beforeEach(() => vi.stubGlobal("fetch", github().fake));
+afterEach(() => vi.unstubAllGlobals());
 
 const mergeReport = (t: TestConvex<typeof schema>, over: Record<string, unknown> = {}) =>
   post(t, "/tts/merge", {
@@ -632,6 +654,49 @@ describe("a merge the gate allows", () => {
     expect(args.reason).toContain("no regression");
   });
 
+  // witness: PR #196 was recorded at c4e73b5 on 2026-09-19 from a merge
+  // command GitHub had refused; the row cannot be corrected once written.
+  it("refuses to record a sha that is not on main and was merged by no pull request", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    vi.stubGlobal("fetch", github({ compare: "diverged", pulls: [{ number: 196, merged_at: null, base: { ref: "main" } }] }).fake);
+    const t = convex();
+    await gated(t);
+    const response = await mergeReport(t);
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toContain("is not on main");
+    expect(await mergeRows(t)).toEqual([]);
+  });
+
+  it("records the head of a squash-merged pull request, whose commit never reaches main", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    vi.stubGlobal("fetch", github({ compare: "diverged", pulls: [{ number: 207, merged_at: "2026-09-21T12:00:00Z", base: { ref: "main" }, head: { sha: SHA } }] }).fake);
+    const t = convex();
+    await gated(t);
+    expect((await mergeReport(t)).status).toBe(200);
+    expect(await mergeRows(t)).toHaveLength(1);
+  });
+
+  it("records a merge of a repository the token cannot read, and says it was not checked", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    vi.stubGlobal("fetch", github({ status: 404 }).fake);
+    const t = convex();
+    await gated(t);
+    expect((await mergeReport(t)).status).toBe(200);
+    const [row] = await mergeRows(t);
+    expect((row.data as { mainCheck?: string }).mainCheck).toContain("not checked against GitHub");
+  });
+
+  it("records nothing when GitHub cannot be asked", async () => {
+    vi.stubEnv("TTS_WORKER_KEY", KEY);
+    vi.stubGlobal("fetch", github({ status: 403 }).fake);
+    const t = convex();
+    await gated(t);
+    const response = await mergeReport(t);
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toContain("GitHub could not be asked");
+    expect(await mergeRows(t)).toEqual([]);
+  });
+
   it("400s a report missing its repo, sha or subject", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
     const t = convex();
@@ -954,6 +1019,42 @@ describe("POST /tts/audit — the second check's own door", () => {
     expect(gate.checks.find((c: { name: string }) => c.name === "audit").why).toContain(
       "It deletes the only caller of a live route.",
     );
+  });
+});
+
+describe("mergedOnMain", () => {
+  it("asks GitHub how the sha compares with the repository's main", async () => {
+    const { fake, asked } = github({ compare: "identical" });
+    expect(await mergedOnMain(REPO, SHA, fake as unknown as typeof fetch)).toMatchObject({ merged: true });
+    expect(asked).toEqual(["https://api.github.com/repos/Heffnt/tom.quest", `https://api.github.com/repos/Heffnt/tom.quest/compare/${SHA}...main`]);
+  });
+
+  // witness: the first version compared against main by name, and
+  // ComplexMultiTrigger's main branch is master.
+  it("compares against the branch GitHub names as the repository's default", async () => {
+    const { fake, asked } = github({ main: "master", compare: "diverged", pulls: [{ number: 3, merged_at: "2026-09-21T12:00:00Z", base: { ref: "master" }, head: { sha: SHA } }] });
+    expect(await mergedOnMain("ComplexMultiTrigger", SHA, fake as unknown as typeof fetch)).toMatchObject({ merged: true, why: expect.stringContaining("merged into master") });
+    expect(asked[1]).toBe(`https://api.github.com/repos/Heffnt/ComplexMultiTrigger/compare/${SHA}...master`);
+  });
+
+  it("refuses a repository the record does not know and a value that is not a sha", async () => {
+    const { fake, asked } = github();
+    expect(await mergedOnMain("elsewhere", SHA, fake as unknown as typeof fetch)).toMatchObject({ merged: false });
+    expect(await mergedOnMain(REPO, "main", fake as unknown as typeof fetch)).toMatchObject({ merged: false });
+    expect(asked).toEqual([]);
+  });
+
+  // witness: the sixth audit of PR #207 — GitHub lists a merged pull request
+  // for every commit in it, and an earlier commit of a squash merge never
+  // reached main.
+  it("does not count a commit of a merged pull request that was not its head", async () => {
+    const { fake } = github({ compare: "diverged", pulls: [{ number: 8, merged_at: "2026-09-21T12:00:00Z", base: { ref: "main" }, head: { sha: "f".repeat(40) } }] });
+    expect(await mergedOnMain(REPO, SHA, fake as unknown as typeof fetch)).toMatchObject({ merged: false });
+  });
+
+  it("does not count a pull request merged into another branch", async () => {
+    const { fake } = github({ compare: "diverged", pulls: [{ number: 9, merged_at: "2026-09-21T12:00:00Z", base: { ref: "release" } }] });
+    expect(await mergedOnMain(REPO, SHA, fake as unknown as typeof fetch)).toMatchObject({ merged: false });
   });
 });
 

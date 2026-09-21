@@ -336,8 +336,8 @@ export function formatTodoResult(row, fallback = "todo") {
 
 /**
  * One evals run as one line: the event id, the day, the repository and commit
- * it scored, the counts the runner recorded, and the ids of the items that did
- * not pass. The failing ids are what a session actually acts on, so they are
+ * it scored, the counts the runner recorded, the ids of the items that did
+ * not pass with each one's reason, and the passing items that failed a trial. The failing ids are what a session actually acts on, so they are
  * named rather than left as a count the reader must go and expand.
  *
  * The row is the raw dtsEvents row the door returns — `at` for the instant and
@@ -351,10 +351,24 @@ export function formatEvalsResult(row, fallback = "evals") {
     .filter(([key]) => data[key] !== undefined && data[key] !== null)
     .map(([key, name]) => `${name}=${singleLine(data[key])}`)
     .join(" ");
-  const failures = Array.isArray(data.failures)
-    ? data.failures.map((failure) => singleLine(failure?.id ?? "")).filter(Boolean).join(",")
-    : "";
-  return `${citedId("evals", row, fallback)} ${date} repo=${singleLine(data.repo)} sha=${singleLine(data.sha)}${counts ? ` ${counts}` : ""}${failures ? ` failures=${quoted(failures)}` : ""}`;
+  const failing = Array.isArray(data.failures) ? data.failures.filter((failure) => singleLine(failure?.id ?? "") !== "") : [];
+  const failures = failing.map((failure) => singleLine(failure.id)).join(",");
+  // WHY EACH ONE DID NOT PASS, and which passing cases failed a trial: the
+  // scorer's reason off the case's result entry (bounded there), else off
+  // the failure, which is all a row written before the entries had reasons
+  // carries; those rows are the record's history and stay. A flaky case reads apart from a failing one without a re-run.
+  const results = Array.isArray(data.results) ? data.results : [];
+  const reasonOf = (id, fallbackReason) => {
+    const reason = results.find((result) => result?.id === id)?.reason ?? fallbackReason;
+    // Cut here as well: a failures-list reason on an older row is unbounded.
+    return typeof reason === "string" && reason.trim() !== "" ? `${singleLine(id)}: ${singleLine(reason.slice(0, 300))}` : "";
+  };
+  const reasons = failing.map((failure) => reasonOf(failure.id, failure.reason)).filter(Boolean).join("; ");
+  const flaky = results
+    .filter((result) => result?.judged === "pass" && result?.passK === false && typeof result?.id === "string")
+    .map((result) => reasonOf(result.id) || singleLine(result.id))
+    .join("; ");
+  return `${citedId("evals", row, fallback)} ${date} repo=${singleLine(data.repo)} sha=${singleLine(data.sha)}${counts ? ` ${counts}` : ""}${failures ? ` failures=${quoted(failures)}` : ""}${reasons ? ` reasons=${quoted(reasons)}` : ""}${flaky ? ` flaky=${quoted(flaky)}` : ""}`;
 }
 
 /** Dispatch only to a result type whose fields have an intentional contract. */

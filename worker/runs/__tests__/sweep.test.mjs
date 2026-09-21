@@ -610,6 +610,32 @@ describe("run sweep", () => {
     expect(deletable({ host: "box", kind: "session" }, { verified: true, endSeen: true, gitTracked: false }, { now: NOW })).toMatchObject({ ok: false, reason: expect.stringContaining("cutover") });
   });
 
+  // witness: the refusal read `importedBy`, which nothing writes, so a
+  // backlog-imported file (the only copy of a transcript the record has no
+  // rows for) was never refused (run a372dfa4).
+  it("refuses to delete a backlog-imported file and allows an ordinary uploaded one", () => {
+    const uploaded = { verified: true, endSeen: true, gitTracked: false };
+    const laptopSession = { host: "laptop", kind: "session" };
+    expect(deletable(laptopSession, uploaded, { now: NOW })).toEqual({ ok: true, reason: "eligible" });
+    expect(deletable(laptopSession, { ...uploaded, backlog: true }, { now: NOW })).toEqual({ ok: false, reason: "backlog" });
+  });
+
+  // witness: the fourth audit of PR #207 — the abandonment pass rebuilt the
+  // state entry from scratch and dropped the marker, so the next check
+  // allowed the deletion.
+  it("keeps the backlog marker when a pass rewrites the file's state", async () => {
+    const dir = temp(); const stateDir = path.join(dir, "state");
+    const item = runFile(dir, [claudeUserTurn({ text: "hello" })]);
+    const post = async (route, body) => route === "/runs/ingest" ? { ok: true, committedLine: body.run.file.committedLine } : { ok: true };
+    await sweepRunFile(item, { stateDir, store: store(), post, now: () => NOW });
+    const stateFile = stateFileFor(stateDir, "claude:laptop:session");
+    fs.writeFileSync(stateFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(stateFile, "utf8")), backlog: true }));
+    await sweepRunFile(item, { stateDir, store: store(), post, now: () => NOW + 1, markAbandoned: true });
+    const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    expect(state).toMatchObject({ reportedAbandoned: true, backlog: true });
+    expect(deletable({ host: "laptop", kind: "session" }, { ...state, gitTracked: false }, { now: NOW + 1 })).toEqual({ ok: false, reason: "backlog" });
+  });
+
   it("keeps only stale claim pointers with a readable live target envelope", async () => {
     const dir = temp(); const item = runFile(dir); const cfg = config(dir, item);
     const registrationDir = path.join(cfg.stateDir, "registration");
