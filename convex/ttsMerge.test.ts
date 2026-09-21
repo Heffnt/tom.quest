@@ -688,7 +688,7 @@ describe("a merge the gate allows", () => {
 
   it("records nothing when GitHub cannot be asked", async () => {
     vi.stubEnv("TTS_WORKER_KEY", KEY);
-    vi.stubGlobal("fetch", github({ status: 503 }).fake);
+    vi.stubGlobal("fetch", github({ status: 403 }).fake);
     const t = convex();
     await gated(t);
     const response = await mergeReport(t);
