@@ -193,6 +193,13 @@ describe("the ceiling", () => {
     expect(parseCeilingReply("ceiling 17 gpus", d)).toMatchObject({ fault: expect.stringContaining("at most 16") });
     expect(parseCeilingReply("ceiling 25 hours", d)).toMatchObject({ fault: expect.stringContaining("at most 1440") });
     expect(parseCeilingReply("ceiling please", d)).toMatchObject({ fault: expect.stringContaining("names no number") });
+    // A signed or embedded number is not read as a positive one.
+    expect(parseCeilingReply("ceiling -16 GPUs", d)).toMatchObject({ fault: expect.stringContaining("no sign") });
+    expect(parseCeilingReply("ceiling +16 GPUs", d)).toMatchObject({ fault: expect.stringContaining("no sign") });
+    expect(parseCeilingReply("ceiling 16 GPUs, -5 hours", d)).toMatchObject({ fault: expect.stringContaining("no sign") });
+    expect(parseCeilingReply("ceiling x16 GPUs", d)).toMatchObject({ fault: expect.stringContaining("names no number") });
+    expect(parseCeilingReply("ceiling 2.5 GPUs", d)).toMatchObject({ fault: expect.stringContaining("whole number") });
+    expect(parseCeilingReply("ceiling 1.5 hours", d)).toEqual({ ceiling: { gpus: 2, minutes: 90, memoryMb: 128000 } });
   });
 
   it("moves on Tom's reply in the runner's thread, recorded with the old and new numbers, and the next step reads it", async () => {

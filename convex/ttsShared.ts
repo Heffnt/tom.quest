@@ -843,9 +843,12 @@ export const CEILING_REPLY_FORM =
 export function parseCeilingReply(text: string, current: RunnerCeiling): { ceiling: RunnerCeiling } | { fault: string } | null {
   const body = text.trim();
   if (!/^ceiling\b/i.test(body)) return null;
+  if (/[-+]\s*\d/.test(body)) return { fault: "A ceiling reply names plain numbers with no sign, such as ceiling 8 GPUs, 12 hours." };
   const next = { ...current };
   let named = 0;
-  for (const match of body.matchAll(/(\d+(?:\.\d+)?)\s*(gpus?|minutes?|mins?|hours?|hrs?|gb|mb)\b/gi)) {
+  // A number counts only when nothing number-like touches it on the left: a
+  // sign, a letter, a digit or a point. "ceiling -16 GPUs" is not 16 GPUs.
+  for (const match of body.matchAll(/(?<![\w.+-])(\d+(?:\.\d+)?)\s*(gpus?|minutes?|mins?|hours?|hrs?|gb|mb)\b/gi)) {
     const n = Number(match[1]);
     const unit = match[2].toLowerCase();
     named += 1;
