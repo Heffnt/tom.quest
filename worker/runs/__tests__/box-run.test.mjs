@@ -56,7 +56,7 @@ function fakeCli(tag) {
 }
 
 /** A bare mirror where ensureMirror expects one, built locally so the run never
- * clones from GitHub. `remote update --prune` on a remote-less bare repository
+ * clones from GitHub. `remote update` on a remote-less bare repository
  * is a no-op, which is exactly the "mirror already present" path. */
 function localMirror(stateDir, repo) {
   const mirror = path.join(stateDir, "repos", `${repo}.git`);
@@ -317,6 +317,36 @@ describe("box-run worktrees", () => {
     const after = spawnSync("git", ["-C", mirror, "config", "--get", "remote.origin.mirror"], { encoding: "utf8" });
     expect(after.stdout.trim()).toBe("");
     expect(after.status).toBe(1);
+  }, GIT_FIXTURE_MS);
+
+  // witness: run 96feb5c4 (2026-09-18) lost its first commits because another
+  // run's mirror refresh ran `remote update --prune`, which deleted the branch
+  // the first run had made in its worktree and not yet pushed.
+  it("keeps a branch a live worktree has checked out when the refresh prunes", () => {
+    const stateDir = temp("state");
+    const upstream = temp("upstream");
+    execFileSync("git", ["init", "-q", "-b", "main", upstream]);
+    git(upstream, "commit", "-q", "--allow-empty", "-m", "seed");
+    git(upstream, "branch", "deleted-upstream");
+    const mirror = path.join(stateDir, "repos", "tom.quest.git");
+    fs.mkdirSync(path.dirname(mirror), { recursive: true });
+    execFileSync("git", ["clone", "-q", "--mirror", upstream, mirror]);
+    git(upstream, "branch", "-D", "deleted-upstream");
+    // A live run's worktree on a branch GitHub has never seen, and a local
+    // branch nobody has checked out.
+    const live = path.join(temp("live"), "wt");
+    git(mirror, "worktree", "add", "-q", "-b", "run/unpushed", live, "main");
+    git(mirror, "branch", "left-behind", "main");
+    const result = run(["--repo", "tom.quest", "--ref", "main"], {
+      stateDir,
+      env: { CLAUDE_BIN: fakeCli("prune") },
+    });
+    expect(result.status).toBe(0);
+    const heads = git(mirror, "for-each-ref", "--format=%(refname)", "refs/heads").trim().split("\n");
+    expect(heads).toContain("refs/heads/run/unpushed");
+    expect(heads).not.toContain("refs/heads/left-behind");
+    expect(heads).not.toContain("refs/heads/deleted-upstream");
+    expect(result.stderr).toContain("kept refs/heads/run/unpushed");
   }, GIT_FIXTURE_MS);
 
   it("reaps the work directory after a failing run too", () => {

@@ -628,10 +628,13 @@ function ensureMirror(repo, reposDir, env) {
     fs.mkdirSync(reposDir, { recursive: true });
     note(`mirroring ${repo}`);
     gitOrFail(["clone", "--mirror", url, mirror], `could not mirror ${repo}`, { env: gitEnv });
-  } else if (git(["-C", mirror, "remote", "update", "--prune"], { env: gitEnv }).status !== 0) {
-    // A stale mirror is still a usable mirror when the ref is already in it.
-    // Refusing here would turn a network blip into a refused run.
-    note(`could not update the ${repo} mirror; using what is already there`);
+  } else {
+    if (git(["-C", mirror, "remote", "update"], { env: gitEnv }).status !== 0) {
+      // A stale mirror is still a usable mirror when the ref is already in it.
+      // Refusing here would turn a network blip into a refused run.
+      note(`could not update the ${repo} mirror; using what is already there`);
+    }
+    pruneMirror(mirror, gitEnv);
   }
   // THE MIRROR FLAG COMES OFF, EVERY TIME, AND THIS IS NOT COSMETIC.
   // `clone --mirror` is `--bare` plus the fetch refspec plus
@@ -649,13 +652,47 @@ function ensureMirror(repo, reposDir, env) {
   // is the normal path, not an exotic one.
   //
   // Unsetting it leaves the `+refs/*:refs/*` fetch refspec alone, so
-  // `remote update --prune` still mirrors everything IN; only the push side
+  // `remote update` still mirrors everything IN; only the push side
   // goes back to git's ordinary fast-forward-only behaviour. It runs on every
   // call rather than only after a clone, because the box already holds mirrors
   // cloned before this line existed. `--unset` exits 5 on a key that is not
   // there, which is why it is not gitOrFail.
   git(["-C", mirror, "config", "--unset", "remote.origin.mirror"], { env: gitEnv });
   return mirror;
+}
+
+/**
+ * Delete the mirror's refs GitHub no longer has, except a branch a live
+ * worktree has checked out.
+ *
+ * A RUN'S BRANCH LIVES IN THIS MIRROR, NOT IN ITS WORKTREE. A worktree shares
+ * the mirror's refs, so a branch a run makes and has not pushed yet is a ref
+ * here that GitHub does not have, and `remote update --prune` deleted it on
+ * the next run's refresh. The run's HEAD then named a branch that no longer
+ * existed, and its next commit started a new history without the earlier ones
+ * (run 96feb5c4, 2026-09-18). So the prune is done by hand: git's own dry run
+ * names what it would delete, and every branch a worktree names is kept.
+ * A kept branch is the run's to push; the reap removes its worktree, and the
+ * next refresh prunes the branch then if GitHub never got it.
+ */
+function pruneMirror(mirror, env) {
+  const dryRun = git(["-C", mirror, "remote", "prune", "--dry-run", "origin"], { env });
+  if (dryRun.status !== 0) return;
+  const checkedOut = new Set(
+    String(git(["-C", mirror, "worktree", "list", "--porcelain"], { env }).stdout ?? "")
+      .split("\n")
+      .filter((line) => line.startsWith("branch "))
+      .map((line) => line.slice("branch ".length).trim()),
+  );
+  for (const line of String(dryRun.stdout ?? "").split("\n")) {
+    const ref = /\[would prune\]\s+(refs\/\S+)/.exec(line)?.[1];
+    if (!ref) continue;
+    if (checkedOut.has(ref)) {
+      note(`kept ${ref}: a live worktree has it checked out`);
+      continue;
+    }
+    git(["-C", mirror, "update-ref", "-d", ref], { env });
+  }
 }
 
 function resolveRef(mirror, ref, env) {
