@@ -75,7 +75,7 @@ const observeEvalsProtocol = (t: TestConvex<typeof schema>, boxEvalsVersion = EV
 
 /** GitHub as POST /tts/merge asks it: how SHA compares with main, and the
  *  pull requests SHA belongs to. */
-function github({ compare = "ahead", pulls = [] as unknown[], status = 200 } = {}) {
+function github({ compare = "ahead", pulls = [] as unknown[], status = 200, main = "main" } = {}) {
   const asked: string[] = [];
   const fake = vi.fn(async (url: string | URL | Request) => {
     const path = String(url);
@@ -83,6 +83,7 @@ function github({ compare = "ahead", pulls = [] as unknown[], status = 200 } = {
     if (status !== 200) return new Response("", { status });
     if (path.includes("/compare/")) return Response.json({ status: compare });
     if (path.includes("/pulls")) return Response.json(pulls);
+    if (/\/repos\/Heffnt\/[^/]+$/.test(path)) return Response.json({ default_branch: main });
     return new Response("", { status: 404 });
   });
   return { fake, asked };
@@ -1015,7 +1016,15 @@ describe("mergedOnMain", () => {
   it("asks GitHub how the sha compares with the repository's main", async () => {
     const { fake, asked } = github({ compare: "identical" });
     expect(await mergedOnMain(REPO, SHA, fake as unknown as typeof fetch)).toMatchObject({ merged: true });
-    expect(asked[0]).toBe(`https://api.github.com/repos/Heffnt/tom.quest/compare/${SHA}...main`);
+    expect(asked).toEqual(["https://api.github.com/repos/Heffnt/tom.quest", `https://api.github.com/repos/Heffnt/tom.quest/compare/${SHA}...main`]);
+  });
+
+  // witness: the first version compared against main by name, and
+  // ComplexMultiTrigger's main branch is master.
+  it("compares against the branch GitHub names as the repository's default", async () => {
+    const { fake, asked } = github({ main: "master", compare: "diverged", pulls: [{ number: 3, merged_at: "2026-09-21T12:00:00Z", base: { ref: "master" } }] });
+    expect(await mergedOnMain("ComplexMultiTrigger", SHA, fake as unknown as typeof fetch)).toMatchObject({ merged: true, why: expect.stringContaining("merged into master") });
+    expect(asked[1]).toBe(`https://api.github.com/repos/Heffnt/ComplexMultiTrigger/compare/${SHA}...master`);
   });
 
   it("refuses a repository the record does not know and a value that is not a sha", async () => {

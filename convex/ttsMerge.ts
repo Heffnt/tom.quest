@@ -658,8 +658,10 @@ export const internalRecordAudit = internalMutation({
 });
 
 /**
- * Whether GitHub shows `sha` merged into `repo`'s main: on main itself (main
- * is at it or ahead of it), or the head of a pull request merged into main.
+ * Whether GitHub shows `sha` merged into `repo`'s main branch, the one GitHub
+ * names as its default (ComplexMultiTrigger's is master): on that branch
+ * itself (it is at the sha or ahead of it), or the head of a pull request
+ * merged into it.
  * The second is how a squash merge lands, where the head commit never reaches
  * main (worker/jobs/removal-loop.mjs merges that way).
  *
@@ -689,27 +691,32 @@ export async function mergedOnMain(
   };
   const ask = async (path: string) => {
     try {
-      const res = await fetchImpl(`https://api.github.com/repos/${slug}/${path}`, { headers });
+      const res = await fetchImpl(`https://api.github.com/repos/${slug}${path ? `/${path}` : ""}`, { headers });
       return { status: res.status, body: res.ok ? ((await res.json()) as unknown) : null };
     } catch {
       return { status: 0, body: null };
     }
   };
-  const compare = await ask(`compare/${sha}...main`);
+  const info = await ask("");
+  const main = (info.body as { default_branch?: unknown } | null)?.default_branch;
+  if (typeof main !== "string" || main === "") {
+    return { merged: false, why: `GitHub could not be asked for ${repo}'s main branch (status ${info.status})` };
+  }
+  const compare = await ask(`compare/${sha}...${encodeURIComponent(main)}`);
   const status = (compare.body as { status?: unknown } | null)?.status;
   // compare BASE...HEAD with main as the head: "ahead" means main has every
   // commit of the sha and more, "identical" that main is at it.
-  if (status === "identical" || status === "ahead") return { merged: true, why: `${sha.slice(0, 7)} is on main` };
+  if (status === "identical" || status === "ahead") return { merged: true, why: `${sha.slice(0, 7)} is on ${main}` };
   const pulls = await ask(`commits/${sha}/pulls`);
   const merged = Array.isArray(pulls.body)
     ? (pulls.body as { number?: unknown; merged_at?: unknown; base?: { ref?: unknown } }[])
-        .find((pull) => typeof pull?.merged_at === "string" && pull.base?.ref === "main")
+        .find((pull) => typeof pull?.merged_at === "string" && pull.base?.ref === main)
     : undefined;
-  if (merged) return { merged: true, why: `${sha.slice(0, 7)} is the head of pull request #${String(merged.number)}, merged into main` };
+  if (merged) return { merged: true, why: `${sha.slice(0, 7)} is the head of pull request #${String(merged.number)}, merged into ${main}` };
   if (compare.status !== 200 && compare.status !== 404) {
-    return { merged: false, why: `GitHub could not be asked whether ${sha.slice(0, 7)} is on main (status ${compare.status})` };
+    return { merged: false, why: `GitHub could not be asked whether ${sha.slice(0, 7)} is on ${main} (status ${compare.status})` };
   }
-  return { merged: false, why: `${sha.slice(0, 7)} is not on main and belongs to no pull request merged into main` };
+  return { merged: false, why: `${sha.slice(0, 7)} is not on ${main} and belongs to no pull request merged into it` };
 }
 
 /**
