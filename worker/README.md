@@ -761,14 +761,17 @@ The server inherits sshd's bare command environment: the default `PATH`,
 setting for a remote connection's environment, config directory or start
 directory, and `sshd_config` leaves `PermitUserEnvironment` off. Bash sources
 `/root/.bashrc` for an ssh command, so the one lever is the line setup.sh puts
-above that file's "not running interactively" guard:
-`export CLAUDE_CONFIG_DIR=/root/.claude-accounts/active`. With it the CLI runs
-under the active account slot: the slot's login, its `CLAUDE.md` importing the
-agent rules, its hooks, and its `projects/` directory, which the run sweep and
-the nightly archive read. Without it the CLI falls back to `/root/.claude`,
-which no sweep reads. The line reaches every root ssh command, and changes
-none of them in practice: every job sets the variable itself and `box-run.mjs`
-defaults to the same value.
+first in that file, above its "not running interactively" guard:
+`export CLAUDE_CONFIG_DIR=/root/.claude-accounts/active RUN_HOST=box`. With it
+the CLI runs under the active account slot: the slot's login, its `CLAUDE.md`
+importing the agent rules, its hooks, and its `projects/` directory, which the
+run sweep and the nightly archive read. Without it the CLI falls back to
+`/root/.claude`, which no sweep reads. `RUN_HOST=box` rides the same line
+because the box's hooks and scripts learn where they run from it; without it
+the session-start hook would take its laptop branch, pull `/root/wikitom` and
+republish the skills that only the nightly job publishes. The line reaches
+every root ssh command, and changes none of them in practice: every job already
+has both values, and `box-run.mjs` sets the same ones for its children.
 
 No launcher registers a desktop session, so the slot's run hook
 (`scripts/run-hook.mjs`) records it: on the box, a Claude session with no

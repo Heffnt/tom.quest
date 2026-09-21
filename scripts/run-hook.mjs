@@ -135,25 +135,8 @@ function claimFields(payload, event, runFile) {
 // inheriting a claim nobody made for it.
 export const LAPTOP_SESSION_LAYERS = Object.freeze(["operate"]);
 
-// Where the run is: RUN_HOST when it is set, else the run file's path. The box
-// keeps its accounts under /root/.claude-accounts; anything under a plain
-// ~/.claude is the laptop.
-//
-// REMOVAL CHECK: the path cannot be dropped for RUN_HOST alone. A desktop
-// session's hooks run with sshd's bare environment, which carries no RUN_HOST,
-// and a profile variable reaches only a process that bash started; the run
-// file's place under an account slot holds however the CLI was started.
-function placeOf(runFile, env) {
-  if (env.RUN_HOST === "box" || env.RUN_HOST === "laptop") return env.RUN_HOST;
-  const normalized = String(runFile ?? "").replaceAll("\\", "/").toLowerCase();
-  if (normalized.includes("/.claude-accounts/")) return "box";
-  if (normalized.includes("/.claude/")) return "laptop";
-  return null;
-}
-
 function hookRegistration(payload, event, runFile, env) {
   const host = env.RUN_HOST === "box" || env.RUN_HOST === "laptop" ? env.RUN_HOST : null;
-  const place = placeOf(runFile, env);
   const cli = cliOf(payload, runFile, env);
   const parentThread = firstString(payload.session_id, payload.sessionId, payload.thread_id, payload.threadId);
   const toolUseId = firstString(
@@ -162,19 +145,23 @@ function hookRegistration(payload, event, runFile, env) {
     payload.parent_tool_use_id,
     payload.parentToolUseId,
   );
-  const laptop = place === "laptop";
+  const normalizedFile = String(runFile).replaceAll("\\", "/").toLowerCase();
+  // The box keeps its accounts under /root/.claude-accounts; anything under a
+  // plain ~/.claude is the laptop. RUN_HOST wins over both when it is set.
+  const laptop = host === "laptop"
+    || (host === null && normalizedFile.includes("/.claude/") && !normalizedFile.includes("/.claude-accounts/"));
   const subagent = event.startsWith("Subagent");
   const layersKnown = laptop && !subagent && cli === "claude";
   // This function runs only when no launcher handed the session a token, so on
   // the box a Claude session reaching it was started by no launcher. A desktop
   // session (Tom's laptop app, Code tab, driving its own CLI over ssh) and a
   // `claude` typed into an ssh shell are the two ways such a session exists on
-  // the box, and both are Tom's: it is a session with him, not a worker. The
-  // desktop's hook runs with sshd's bare environment, so RUN_HOST is unset
-  // there and the account-slot path of the run file is what says box. A
+  // the box, and both are Tom's: it is a session with him, not a worker. Both
+  // carry RUN_HOST=box from the line worker/setup.sh puts atop /root/.bashrc,
+  // the same line that gives them the account slot and so this hook. A
   // process tagged TTS_BOX_RUN_ID was launched by box-run.mjs and only lacks a
   // token because its spool write failed; it is not Tom's and stays unnamed.
-  const unlaunchedBoxSession = place === "box" && !subagent && cli === "claude" && !firstString(env.TTS_BOX_RUN_ID);
+  const unlaunchedBoxSession = host === "box" && !subagent && cli === "claude" && !firstString(env.TTS_BOX_RUN_ID);
   return {
     host,
     ...(cli ? { cli } : {}),
@@ -228,9 +215,8 @@ function writeCurrentRunPointer(payload, runFile, env, stateDir) {
     const sessionId = firstString(payload.session_id, payload.sessionId);
     const cwd = firstString(payload.cwd);
     if (cli !== "claude" || !sessionId || !cwd) return;
-    // The run id must name the host the sweep records, or scripts/box-agent.mjs
-    // parents a desktop session's box children to a laptop run that never was.
-    const runId = `${cli}:${placeOf(runFile, env) ?? "laptop"}:${sessionId}`;
+    const host = env.RUN_HOST === "box" || env.RUN_HOST === "laptop" ? env.RUN_HOST : null;
+    const runId = `${cli}:${host ?? "laptop"}:${sessionId}`;
     const file = currentRunPointerPath(stateDir, cwd);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const temporary = `${file}.tmp-${process.pid}`;

@@ -32,7 +32,7 @@
 ## Desktop sessions
 
 - A desktop session is Tom's laptop Claude app, Code tab, connected to the box over ssh. The app runs its own CLI copy under `/root/.claude/remote`, outside the session daemon, `tts-run` and the semaphore.
-- The account slot reaches it through one line above the guard in `/root/.bashrc`, `export CLAUDE_CONFIG_DIR=/root/.claude-accounts/active`, which `worker/setup.sh` installs; the app has no setting of its own for this.
+- The account slot reaches it through the first line of `/root/.bashrc`, above its non-interactive guard, `export CLAUDE_CONFIG_DIR=/root/.claude-accounts/active RUN_HOST=box`, which `worker/setup.sh` installs; the app has no setting of its own for this. `RUN_HOST=box` keeps its hooks on their box branches.
 - The run hook records it as a session with Tom: environment `session`, origin `desktop`, because a box Claude session with no launcher token was started by him.
 - Its standing workspace is `/var/cache/tts/desktop/`, one checkout per session repo, never reset; the session pulls and branches itself.
 - No job starts one, and none may.

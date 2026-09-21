@@ -383,9 +383,13 @@ done
 # the config directory. Bash sources ~/.bashrc for an ssh command, but the
 # stock file returns at its "not running interactively" guard, so the line
 # must sit above it; without it the CLI runs from /root/.claude, outside every
-# slot, the agent rules and the run sweep. Every job sets CLAUDE_CONFIG_DIR
-# itself and box-run.mjs defaults to this same value, so nothing else moves.
-PROFILE_LINE='export CLAUDE_CONFIG_DIR=/root/.claude-accounts/active'
+# slot, the agent rules and the run sweep. RUN_HOST=box rides the same line
+# because the box's hooks and scripts learn where they run from it: without it
+# the session-start hook takes its laptop branch, pulls /root/wikitom and
+# republishes the skills the nightly alone publishes. Every job already has
+# both, CLAUDE_CONFIG_DIR from its launcher and RUN_HOST from worker.env, and
+# box-run.mjs sets the same values for its children, so nothing else moves.
+PROFILE_LINE='export CLAUDE_CONFIG_DIR=/root/.claude-accounts/active RUN_HOST=box'
 touch /root/.bashrc
 if grep -qxF "$PROFILE_LINE" /root/.bashrc; then
   echo "  /root/.bashrc: the slot line is already present"

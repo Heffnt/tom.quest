@@ -187,15 +187,13 @@ describe("run lifecycle hook", () => {
     expect(envelope.registration).toMatchObject({ host: "box", kind: "session", environment: "session", origin: "desktop" });
   });
 
-  it("knows the box by the account-slot path when sshd's bare environment carries no RUN_HOST", () => {
+  it("hands a desktop session's box children the box run id, not a laptop one", () => {
     const f = fixture();
     const transcript = path.join(f.root, ".claude-accounts", "active", "projects", "-var-cache-tts-desktop", "desk.jsonl");
     const payload = { hook_event_name: "SessionStart", session_id: "desk", transcript_path: transcript, cwd: f.root };
-    expect(run(payload, { ...f, env: { RUN_HOST: "" } }).status).toBe(0);
+    expect(run(payload, { ...f, env: { RUN_HOST: "box" } }).status).toBe(0);
     const envelope = JSON.parse(fs.readFileSync(registrationSidecarPath(transcript), "utf8"));
-    expect(envelope.registration).toMatchObject({ host: null, cli: "claude", environment: "session", origin: "desktop" });
-    // The pointer box-agent.mjs reads must name the box run the sweep records,
-    // not a laptop run: a laptop id here parented box children to nothing real.
+    expect(envelope.registration).toMatchObject({ host: "box", cli: "claude", environment: "session", origin: "desktop" });
     expect(JSON.parse(fs.readFileSync(currentRunPointerPath(f.state, f.root), "utf8"))).toMatchObject({ runId: "claude:box:desk" });
   });
 
